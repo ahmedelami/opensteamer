@@ -19,11 +19,18 @@ final class BlackHoleRouteManager: @unchecked Sendable {
     }
 
     func prepareRoute() throws -> AudioRoute {
-        let route = try findBlackHoleRoute()
+        let route = try Self.findBlackHoleRoute()
         try applyDefaults(route: route, reason: "startup")
         expectedRoute = route
         logger.info("Routed Mac default output, system output, and input to \(route.name)")
         return route
+    }
+
+    func health(captureDeviceUID: String?) throws -> BlackHoleRouteHealth {
+        guard let expectedRoute else {
+            throw CaptureError.audioRouteUnhealthy("No expected BlackHole route has been prepared")
+        }
+        return try Self.health(expectedRoute: expectedRoute, captureDeviceUID: captureDeviceUID)
     }
 
     func startMonitoring(expectedRoute: AudioRoute) throws {
@@ -125,7 +132,60 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         }
     }
 
-    private func findBlackHoleRoute() throws -> AudioRoute {
+    static func verifyCurrentRoute() throws -> BlackHoleRouteHealth {
+        let route = try findBlackHoleRoute()
+        return try health(expectedRoute: route, captureDeviceUID: route.uid)
+    }
+
+    private static func health(expectedRoute: AudioRoute, captureDeviceUID: String?) throws -> BlackHoleRouteHealth {
+        let expectedUID = expectedRoute.uid ?? ""
+        let output = try endpointHealth(
+            label: "Default Output",
+            selector: kAudioHardwarePropertyDefaultOutputDevice,
+            expectedUID: expectedUID
+        )
+        let systemOutput = try endpointHealth(
+            label: "Default System Output",
+            selector: kAudioHardwarePropertyDefaultSystemOutputDevice,
+            expectedUID: expectedUID
+        )
+        let input = try endpointHealth(
+            label: "Default Input",
+            selector: kAudioHardwarePropertyDefaultInputDevice,
+            expectedUID: expectedUID
+        )
+        let capture = BlackHoleRouteEndpointHealth(
+            label: "Capture Device",
+            name: captureDeviceUID == nil ? "Unknown" : expectedRoute.name,
+            uid: captureDeviceUID ?? "Unknown",
+            matchesExpected: captureDeviceUID == expectedRoute.uid && expectedRoute.uid != nil
+        )
+        return BlackHoleRouteHealth(
+            expectedName: expectedRoute.name,
+            expectedUID: expectedUID.isEmpty ? "Unknown" : expectedUID,
+            defaultOutput: output,
+            defaultSystemOutput: systemOutput,
+            defaultInput: input,
+            captureDevice: capture
+        )
+    }
+
+    private static func endpointHealth(
+        label: String,
+        selector: AudioObjectPropertySelector,
+        expectedUID: String
+    ) throws -> BlackHoleRouteEndpointHealth {
+        let deviceID = try defaultDevice(selector: selector)
+        let uid = deviceUID(deviceID) ?? "Unknown"
+        return BlackHoleRouteEndpointHealth(
+            label: label,
+            name: deviceName(deviceID) ?? "unknown",
+            uid: uid,
+            matchesExpected: !expectedUID.isEmpty && uid == expectedUID
+        )
+    }
+
+    private static func findBlackHoleRoute() throws -> AudioRoute {
         let routes = try Self.allDevices().map {
             AudioRoute(
                 deviceID: $0,
@@ -284,5 +344,52 @@ struct AudioRoute: Sendable {
     var isBlackHole: Bool {
         name.localizedCaseInsensitiveContains("BlackHole") ||
             (uid?.localizedCaseInsensitiveContains("BlackHole") ?? false)
+    }
+}
+
+public enum BlackHoleRouteVerifier {
+    public static func verifyCurrentRoute() throws -> BlackHoleRouteHealth {
+        try BlackHoleRouteManager.verifyCurrentRoute()
+    }
+}
+
+public struct BlackHoleRouteHealth: Sendable, Equatable {
+    public let expectedName: String
+    public let expectedUID: String
+    public let defaultOutput: BlackHoleRouteEndpointHealth
+    public let defaultSystemOutput: BlackHoleRouteEndpointHealth
+    public let defaultInput: BlackHoleRouteEndpointHealth
+    public let captureDevice: BlackHoleRouteEndpointHealth
+
+    public var isHealthy: Bool {
+        defaultOutput.matchesExpected &&
+            defaultSystemOutput.matchesExpected &&
+            defaultInput.matchesExpected &&
+            captureDevice.matchesExpected
+    }
+
+    public func render() -> String {
+        [
+            "BlackHole route health",
+            "----------------------",
+            "Expected: \(expectedName) (\(expectedUID))",
+            defaultOutput.render(),
+            defaultSystemOutput.render(),
+            defaultInput.render(),
+            captureDevice.render(),
+            "Overall: \(isHealthy ? "HEALTHY" : "UNHEALTHY")"
+        ].joined(separator: "\n")
+    }
+}
+
+public struct BlackHoleRouteEndpointHealth: Sendable, Equatable {
+    public let label: String
+    public let name: String
+    public let uid: String
+    public let matchesExpected: Bool
+
+    fileprivate func render() -> String {
+        let marker = matchesExpected ? "OK" : "MISMATCH"
+        return "\(label): \(name) (\(uid)) [\(marker)]"
     }
 }

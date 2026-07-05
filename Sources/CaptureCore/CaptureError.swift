@@ -8,6 +8,7 @@ public enum CaptureError: LocalizedError {
     case audioBufferListFailure(OSStatus)
     case audioDeviceNotFound(String)
     case audioDeviceConfiguration(String, OSStatus)
+    case audioRouteUnhealthy(String)
     case unsupportedAudioFormat(String)
 
     public var errorDescription: String? {
@@ -26,6 +27,8 @@ public enum CaptureError: LocalizedError {
             "Audio device not found: \(detail)"
         case .audioDeviceConfiguration(let detail, let status):
             "Audio device configuration failed: \(detail) returned OSStatus \(status)"
+        case .audioRouteUnhealthy(let detail):
+            "Audio route is not healthy: \(detail)"
         case .unsupportedAudioFormat(let detail):
             "Unsupported audio format: \(detail)"
         }

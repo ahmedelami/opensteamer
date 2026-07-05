@@ -11,6 +11,7 @@ struct CaptureServerOptions {
     var authToken = ProcessInfo.processInfo.environment["MCAP_TOKEN"]?.nilIfEmpty
     var verbose = false
     var listDisplays = false
+    var verifyRouting = false
     var showHelp = false
 
     static let usage = """
@@ -28,6 +29,7 @@ struct CaptureServerOptions {
       --no-bonjour           Disable Bonjour advertisement.
       --token <token>        Require this client token. Defaults to MCAP_TOKEN if set.
       --list-displays        Print displays visible to ScreenCaptureKit.
+      --verify-routing       Verify default output/system/input route to BlackHole and exit.
       --verbose              Print verbose logs.
       --help                 Print this help.
     """
@@ -85,6 +87,8 @@ struct CaptureServerOptions {
                 options.authToken = arguments[index]
             case "--list-displays":
                 options.listDisplays = true
+            case "--verify-routing":
+                options.verifyRouting = true
             case "--verbose":
                 options.verbose = true
             case "--help", "-h":

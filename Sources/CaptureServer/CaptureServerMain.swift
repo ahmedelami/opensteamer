@@ -18,6 +18,15 @@ struct CaptureServerMain {
                 return
             }
 
+            if options.verifyRouting {
+                let health = try BlackHoleRouteVerifier.verifyCurrentRoute()
+                print(health.render())
+                if !health.isHealthy {
+                    exit(2)
+                }
+                return
+            }
+
             let server = try TCPServer(
                 host: options.host,
                 port: options.port,

@@ -49,6 +49,7 @@ final class BlackHoleInputAudioSource: @unchecked Sendable {
                 throw CaptureError.audioBufferListFailure(status)
             }
             audioQueue = queue
+            try Self.setQueueDevice(queue, route: route)
 
             let byteCount = framesPerBuffer * UInt32(channelCount) * UInt32(MemoryLayout<Float>.size)
             for _ in 0..<3 {
@@ -68,6 +69,12 @@ final class BlackHoleInputAudioSource: @unchecked Sendable {
             guard status == noErr else {
                 throw CaptureError.audioBufferListFailure(status)
             }
+            let captureUID = Self.currentQueueDeviceUID(queue) ?? route.uid
+            let health = try routeManager.health(captureDeviceUID: captureUID)
+            guard health.isHealthy else {
+                throw CaptureError.audioRouteUnhealthy(health.render())
+            }
+            logger.info("\n\(health.render())")
         } catch {
             stop()
             throw error
@@ -130,6 +137,40 @@ final class BlackHoleInputAudioSource: @unchecked Sendable {
             mBitsPerChannel: UInt32(MemoryLayout<Float>.size * 8),
             mReserved: 0
         )
+    }
+
+    private static func setQueueDevice(_ queue: AudioQueueRef, route: AudioRoute) throws {
+        guard let uid = route.uid else {
+            throw CaptureError.audioRouteUnhealthy("BlackHole route has no stable CoreAudio UID")
+        }
+        var deviceUID = uid as CFString
+        let status = withUnsafePointer(to: &deviceUID) { pointer in
+            AudioQueueSetProperty(
+                queue,
+                kAudioQueueProperty_CurrentDevice,
+                pointer,
+                UInt32(MemoryLayout<CFString>.size)
+            )
+        }
+        guard status == noErr else {
+            throw CaptureError.audioDeviceConfiguration("set AudioQueue capture device", status)
+        }
+    }
+
+    private static func currentQueueDeviceUID(_ queue: AudioQueueRef) -> String? {
+        var deviceUID: CFString = "" as CFString
+        var size = UInt32(MemoryLayout<CFString>.size)
+        let status = withUnsafeMutablePointer(to: &deviceUID) { pointer in
+            AudioQueueGetProperty(
+                queue,
+                kAudioQueueProperty_CurrentDevice,
+                pointer,
+                &size
+            )
+        }
+        let uid = deviceUID as String
+        guard status == noErr, size > 0, !uid.isEmpty else { return nil }
+        return uid
     }
 }
 
