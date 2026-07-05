@@ -138,6 +138,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
     }
 
     private static func health(expectedRoute: AudioRoute, captureDeviceUID: String?) throws -> BlackHoleRouteHealth {
+        // Verifies normal CoreAudio defaults, not apps that deliberately open a physical output directly.
         let expectedUID = expectedRoute.uid ?? ""
         let output = try endpointHealth(
             label: "Default Output",
