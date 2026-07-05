@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AudioStreamer Tone Test</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      padding: 40px;
+    }
+
+    button {
+      font-size: 22px;
+      margin-right: 12px;
+      padding: 12px 16px;
+    }
+  </style>
+</head>
+<body>
+  <h1>AudioStreamer Tone Test</h1>
+  <button id="start" type="button">Start tone</button>
+  <button id="stop" type="button">Stop</button>
+  <p id="status">Stopped</p>
+  <p id="context-state">AudioContext: none</p>
+  <script>
+    window.audioTest = {
+      context: undefined,
+      oscillator: undefined,
+      gain: undefined
+    };
+
+    document.getElementById("start").addEventListener("click", async () => {
+      window.audioTest.context = new AudioContext();
+      await window.audioTest.context.resume();
+      window.audioTest.oscillator = window.audioTest.context.createOscillator();
+      window.audioTest.gain = window.audioTest.context.createGain();
+      window.audioTest.oscillator.frequency.value = 440;
+      window.audioTest.gain.gain.value = 0.25;
+      window.audioTest.oscillator.connect(window.audioTest.gain).connect(window.audioTest.context.destination);
+      window.audioTest.oscillator.start();
+      document.body.dataset.playing = "true";
+      document.getElementById("status").textContent = "Playing";
+      updateState();
+    });
+
+    document.getElementById("stop").addEventListener("click", async () => {
+      if (window.audioTest.oscillator) {
+        window.audioTest.oscillator.stop();
+      }
+      if (window.audioTest.context) {
+        await window.audioTest.context.close();
+      }
+      document.body.dataset.playing = "false";
+      document.getElementById("status").textContent = "Stopped";
+      updateState();
+    });
+
+    function updateState() {
+      const state = window.audioTest.context
+        ? `${window.audioTest.context.state} @ ${window.audioTest.context.currentTime.toFixed(2)}s`
+        : "none";
+      document.getElementById("context-state").textContent = `AudioContext: ${state}`;
+    }
+
+    setInterval(updateState, 250);
+  </script>
+</body>
+</html>
