@@ -9,12 +9,16 @@ DerivedData/
 *.dSYM/
 *.xcdistributionlogs/
 
-Apps/**/build/
-Apps/**/DerivedData/
-Apps/**/*.xcuserstate
-Apps/**/xcuserdata/
+iOS/**/build/
+iOS/**/DerivedData/
+iOS/**/*.xcuserstate
+iOS/**/xcuserdata/
+macOS/**/build/
+macOS/**/DerivedData/
+macOS/**/*.xcuserstate
+macOS/**/xcuserdata/
 
-RelayBridge/node_modules/
+macOS/RelayBridge/node_modules/
 
 .DS_Store
 *.log

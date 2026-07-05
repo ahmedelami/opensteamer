@@ -18,67 +18,81 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "CaptureCLI",
-            dependencies: ["CaptureCore", "WAV", "Utilities"]
+            dependencies: ["CaptureCore", "WAV", "Utilities"],
+            path: "macOS/Sources/CaptureCLI"
         ),
         .executableTarget(
             name: "CaptureServer",
             dependencies: ["CaptureCore", "Server", "Streaming", "Utilities"],
+            path: "macOS/Sources/CaptureServer",
             exclude: ["Info.plist"],
             linkerSettings: [
                 .unsafeFlags([
                     "-Xlinker", "-sectcreate",
                     "-Xlinker", "__TEXT",
                     "-Xlinker", "__info_plist",
-                    "-Xlinker", "Sources/CaptureServer/Info.plist"
+                    "-Xlinker", "macOS/Sources/CaptureServer/Info.plist"
                 ])
             ]
         ),
         .executableTarget(
             name: "PCMClient",
-            dependencies: ["Streaming", "Utilities"]
+            dependencies: ["Streaming", "Utilities"],
+            path: "macOS/Sources/PCMClient"
         ),
         .executableTarget(
             name: "PCMPlayer",
-            dependencies: ["ClientCore", "Utilities"]
+            dependencies: ["ClientCore", "Utilities"],
+            path: "macOS/Sources/PCMPlayer"
         ),
         .target(
             name: "ClientCore",
-            dependencies: ["Streaming", "Utilities"]
+            dependencies: ["Streaming", "Utilities"],
+            path: "shared/Sources/ClientCore"
         ),
         .target(
             name: "CaptureCore",
-            dependencies: ["WAV", "Utilities", "Streaming"]
+            dependencies: ["WAV", "Utilities", "Streaming"],
+            path: "macOS/Sources/CaptureCore"
         ),
         .target(
             name: "Streaming",
-            dependencies: ["Utilities"]
+            dependencies: ["Utilities"],
+            path: "shared/Sources/Streaming"
         ),
         .target(
             name: "Server",
-            dependencies: ["CaptureCore", "Streaming", "Utilities"]
+            dependencies: ["CaptureCore", "Streaming", "Utilities"],
+            path: "macOS/Sources/Server"
         ),
         .target(
             name: "WAV",
-            dependencies: ["Utilities"]
+            dependencies: ["Utilities"],
+            path: "macOS/Sources/WAV"
         ),
         .target(
-            name: "Utilities"
+            name: "Utilities",
+            path: "shared/Sources/Utilities"
         ),
         .testTarget(
             name: "WAVTests",
-            dependencies: ["WAV"]
+            dependencies: ["WAV"],
+            path: "macOS/Tests/WAVTests"
         ),
         .testTarget(
             name: "CaptureCoreTests",
-            dependencies: ["CaptureCore"]
+            dependencies: ["CaptureCore"],
+            path: "macOS/Tests/CaptureCoreTests"
         ),
         .testTarget(
             name: "StreamingTests",
-            dependencies: ["Streaming"]
+            dependencies: ["Streaming"],
+            path: "shared/Tests/StreamingTests"
         ),
         .testTarget(
             name: "PCMPlayerTests",
-            dependencies: ["ClientCore"]
+            dependencies: ["ClientCore"],
+            path: "macOS/Tests/PCMPlayerTests"
         )
     ]
 )
