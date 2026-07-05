@@ -10,6 +10,7 @@
 		04BF01101F3B3FDD934DADD9 /* AudioStreamerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20A3613FEC27B88241AD9976 /* AudioStreamerApp.swift */; };
 		05F7EA0E62FD674AE6815CA8 /* ClientCore in Frameworks */ = {isa = PBXBuildFile; productRef = 96319EFAADA421A0FAA0B9E5 /* ClientCore */; };
 		0B8EB3C3045577600008F387 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 050B9D5850CB92EC28FFF2F8 /* DiagnosticsView.swift */; };
+		A1B2C3D4E5F60718293A4B5D /* BackgroundPlaybackCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* BackgroundPlaybackCoordinator.swift */; };
 		239CF0DFA6D57C72D95C38DA /* ServerInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = AACE628176C206BD8003E6DD /* ServerInfo.swift */; };
 		273A9D82A8F329A37DEFA52E /* AudioSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69415A249A4906EC4B27E740 /* AudioSessionManager.swift */; };
 		2B863D8FCC7CBF8A949E367A /* BrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB1D53C782C0E8667E890989 /* BrowserView.swift */; };
@@ -30,6 +31,7 @@
 		54F6692646CAE04770E7B892 /* do-you-see-the-gpt-extended */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "do-you-see-the-gpt-extended"; path = ../..; sourceTree = SOURCE_ROOT; };
 		69415A249A4906EC4B27E740 /* AudioSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSessionManager.swift; sourceTree = "<group>"; };
 		74366C19E45DDC6E1480B455 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B5C /* BackgroundPlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundPlaybackCoordinator.swift; sourceTree = "<group>"; };
 		A9707A9ECCCB37428AC23B5F /* PlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerView.swift; sourceTree = "<group>"; };
 		AACE628176C206BD8003E6DD /* ServerInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerInfo.swift; sourceTree = "<group>"; };
 		B99416FB6D3DB6FEF972A55F /* AudioStreamer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AudioStreamer.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -148,6 +150,7 @@
 			isa = PBXGroup;
 			children = (
 				20A3613FEC27B88241AD9976 /* AudioStreamerApp.swift */,
+				A1B2C3D4E5F60718293A4B5C /* BackgroundPlaybackCoordinator.swift */,
 				74366C19E45DDC6E1480B455 /* ContentView.swift */,
 			);
 			path = App;
@@ -239,6 +242,7 @@
 			files = (
 				273A9D82A8F329A37DEFA52E /* AudioSessionManager.swift in Sources */,
 				04BF01101F3B3FDD934DADD9 /* AudioStreamerApp.swift in Sources */,
+				A1B2C3D4E5F60718293A4B5D /* BackgroundPlaybackCoordinator.swift in Sources */,
 				57B3F54439F8DD1903DC741F /* BonjourBrowser.swift in Sources */,
 				2B863D8FCC7CBF8A949E367A /* BrowserView.swift in Sources */,
 				60EDE71F19F0F486F5114A52 /* ContentView.swift in Sources */,

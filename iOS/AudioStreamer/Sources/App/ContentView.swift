@@ -31,8 +31,16 @@ struct ContentView: View {
             viewModel.startBrowsing()
         }
         .onChange(of: scenePhase) { _, newPhase in
-            guard newPhase == .active else { return }
-            viewModel.resumeConnectionIfNeeded()
+            switch newPhase {
+            case .active:
+                viewModel.handleAppBecameActive()
+            case .inactive:
+                viewModel.handleAppBecameInactive()
+            case .background:
+                viewModel.handleAppEnteredBackground()
+            @unknown default:
+                break
+            }
         }
     }
 }

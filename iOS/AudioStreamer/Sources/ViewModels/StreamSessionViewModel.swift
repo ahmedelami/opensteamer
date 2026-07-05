@@ -15,10 +15,12 @@ final class StreamSessionViewModel: ObservableObject {
 
     private let browser = BonjourBrowser()
     private let audioSession = AudioSessionManager()
+    private let backgroundPlayback = BackgroundPlaybackCoordinator()
     private var streamSession: StreamSession?
     private var connectTask: Task<Void, Never>?
     private var metricsTask: Task<Void, Never>?
     private var reconnectAfterInterruption = false
+    private var appIsInBackground = false
     private var connectionGeneration = UUID()
     private var selectedAuthToken: String?
     private var selectedRelayURL: URL?
@@ -91,6 +93,7 @@ final class StreamSessionViewModel: ObservableObject {
         stateText = "Connecting"
         audioSession.startObserving()
         audioRouteText = audioSession.currentRouteDescription
+        publishPlaybackState(isPlaying: false)
         connectionGeneration = UUID()
         let generation = connectionGeneration
         let token = selectedAuthToken
@@ -122,6 +125,7 @@ final class StreamSessionViewModel: ObservableObject {
         stateText = "Connecting"
         audioSession.startObserving()
         audioRouteText = audioSession.currentRouteDescription
+        publishPlaybackState(isPlaying: false)
         connectionGeneration = UUID()
         let generation = connectionGeneration
         let authToken = selectedAuthToken
@@ -143,6 +147,7 @@ final class StreamSessionViewModel: ObservableObject {
         streamSession?.disconnect()
         audioSession.stopObserving()
         audioSession.deactivate()
+        backgroundPlayback.clear()
         connectTask = nil
         metricsTask = nil
         streamSession = nil
@@ -178,10 +183,48 @@ final class StreamSessionViewModel: ObservableObject {
         }
     }
 
+    func handleAppBecameActive() {
+        appIsInBackground = false
+        backgroundPlayback.endTransitionTask()
+        startBrowsing()
+        resumeConnectionIfNeeded()
+        publishPlaybackState(isPlaying: connectTask != nil && streamSession != nil)
+    }
+
+    func handleAppBecameInactive() {
+        guard selectedServer != nil else { return }
+
+        backgroundPlayback.beginTransitionTask()
+        publishPlaybackState(isPlaying: connectTask != nil && streamSession != nil)
+    }
+
+    func handleAppEnteredBackground() {
+        appIsInBackground = true
+        stopBrowsing()
+
+        guard selectedServer != nil else {
+            backgroundPlayback.endTransitionTask()
+            return
+        }
+
+        backgroundPlayback.beginTransitionTask()
+        do {
+            try audioSession.activate()
+            audioRouteText = audioSession.currentRouteDescription
+            try streamSession?.resumeRendering()
+            rendererStateText = streamSession?.rendererStateDescription ?? "Unavailable"
+            publishPlaybackState(isPlaying: connectTask != nil && streamSession != nil)
+        } catch {
+            lastError = "Background audio recovery failed: \(error.localizedDescription)"
+            publishPlaybackState(isPlaying: false)
+        }
+    }
+
     private func runConnectionLoop(server: ServerInfo, relayURL: URL?, authToken: String?, generation: UUID) async {
         defer {
             if generation == connectionGeneration {
                 connectTask = nil
+                publishPlaybackState(isPlaying: false)
             }
         }
 
@@ -195,6 +238,7 @@ final class StreamSessionViewModel: ObservableObject {
             do {
                 try audioSession.activate()
                 audioRouteText = audioSession.currentRouteDescription
+                publishPlaybackState(isPlaying: true)
                 stateText = attempt == 0 ? "Connecting" : "Reconnecting"
                 if let relayURL {
                     _ = try await session.run(
@@ -216,6 +260,7 @@ final class StreamSessionViewModel: ObservableObject {
 
                 if !Task.isCancelled {
                     stateText = "Disconnected"
+                    publishPlaybackState(isPlaying: false)
                 }
                 break
             } catch is CancellationError {
@@ -235,6 +280,10 @@ final class StreamSessionViewModel: ObservableObject {
                     attempt: attempt,
                     delaySeconds: delaySeconds
                 ).displayText
+                publishPlaybackState(isPlaying: false)
+                if appIsInBackground {
+                    backgroundPlayback.beginTransitionTask()
+                }
 
                 try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
                 guard generation == connectionGeneration else {
@@ -267,6 +316,7 @@ final class StreamSessionViewModel: ObservableObject {
         streamSession.pauseRendering()
         rendererStateText = streamSession.rendererStateDescription
         stateText = StreamState.paused.displayText
+        publishPlaybackState(isPlaying: false)
     }
 
     private func handleInterruptionEnded(shouldResume: Bool) {
@@ -282,6 +332,7 @@ final class StreamSessionViewModel: ObservableObject {
             audioRouteText = audioSession.currentRouteDescription
             try streamSession?.resumeRendering()
             rendererStateText = streamSession?.rendererStateDescription ?? "Unavailable"
+            publishPlaybackState(isPlaying: true)
         } catch {
             lastError = error.localizedDescription
             if streamSession == nil || connectTask == nil {
@@ -310,9 +361,19 @@ final class StreamSessionViewModel: ObservableObject {
             try audioSession.activate()
             try streamSession?.restartRendering()
             rendererStateText = streamSession?.rendererStateDescription ?? "Unavailable"
+            publishPlaybackState(isPlaying: true)
         } catch {
             lastError = "\(prefix): \(error.localizedDescription)"
         }
+    }
+
+    private func publishPlaybackState(isPlaying: Bool) {
+        guard let selectedServer else {
+            backgroundPlayback.clear()
+            return
+        }
+
+        backgroundPlayback.publishLiveStream(serverName: selectedServer.name, isPlaying: isPlaying)
     }
 
     private func reconnectDelay(for attempt: Int) -> TimeInterval {

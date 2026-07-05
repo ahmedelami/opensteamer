@@ -155,7 +155,10 @@ public final class StreamSession: @unchecked Sendable {
             }
 
             updateState(.buffering(bufferedFrames: 0, targetFrames: targetFrames))
-            var rendererStarted = false
+            // Starting now lets iOS keep the playback session active while the jitter target fills.
+            try renderer.start()
+            let rendererStarted = true
+            var playbackMarkedPlaying = false
             var lastSequence: UInt32?
             var lastTimestamp: UInt64?
             var lastArrivalNanoseconds: UInt64?
@@ -206,11 +209,10 @@ public final class StreamSession: @unchecked Sendable {
                         : (networkJitterEstimate * 0.9) + (jitterSeconds * 0.1)
                 }
 
-                if !rendererStarted, jitterBuffer.bufferedFrames >= targetFrames {
-                    try renderer.start()
-                    rendererStarted = true
+                if !playbackMarkedPlaying, jitterBuffer.bufferedFrames >= targetFrames {
                     updateState(.playing)
-                } else if !rendererStarted {
+                    playbackMarkedPlaying = true
+                } else if !playbackMarkedPlaying {
                     updateState(.buffering(
                         bufferedFrames: jitterBuffer.bufferedFrames,
                         targetFrames: targetFrames
@@ -240,9 +242,7 @@ public final class StreamSession: @unchecked Sendable {
                 ))
             }
 
-            if !rendererStarted, jitterBuffer.bufferedFrames > 0 {
-                try renderer.start()
-                rendererStarted = true
+            if !playbackMarkedPlaying, jitterBuffer.bufferedFrames > 0 {
                 updateState(.playing)
             }
 
