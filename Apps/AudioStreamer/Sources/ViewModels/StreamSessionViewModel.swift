@@ -10,6 +10,8 @@ final class StreamSessionViewModel: ObservableObject {
     @Published private(set) var metrics = StreamMetrics()
     @Published private(set) var lastError: String?
     @Published private(set) var audioRouteText = "Inactive"
+    @Published private(set) var audioSessionSnapshot = AudioSessionSnapshot.inactive
+    @Published private(set) var rendererStateText = "Unavailable"
 
     private let browser = BonjourBrowser()
     private let audioSession = AudioSessionManager()
@@ -25,12 +27,22 @@ final class StreamSessionViewModel: ObservableObject {
         audioSession.onInterruptionBegan = { [weak self] in
             self?.handleInterruptionBegan()
         }
-        audioSession.onInterruptionEnded = { [weak self] in
-            self?.handleInterruptionEnded()
+        audioSession.onInterruptionEnded = { [weak self] shouldResume in
+            self?.handleInterruptionEnded(shouldResume: shouldResume)
         }
         audioSession.onRouteChanged = { [weak self] message in
             self?.lastError = message
             self?.audioRouteText = self?.audioSession.currentRouteDescription ?? "Unknown"
+        }
+        audioSession.onEngineConfigurationChanged = { [weak self] in
+            self?.handleEngineConfigurationChanged()
+        }
+        audioSession.onMediaServicesReset = { [weak self] in
+            self?.handleMediaServicesReset()
+        }
+        audioSession.onSnapshotChanged = { [weak self] snapshot in
+            self?.audioSessionSnapshot = snapshot
+            self?.audioRouteText = snapshot.outputRoute
         }
     }
 
@@ -140,6 +152,8 @@ final class StreamSessionViewModel: ObservableObject {
         selectedServer = nil
         metrics = StreamMetrics()
         audioRouteText = "Inactive"
+        audioSessionSnapshot = .inactive
+        rendererStateText = "Unavailable"
         stateText = "Idle"
     }
 
@@ -236,9 +250,11 @@ final class StreamSessionViewModel: ObservableObject {
             while !Task.isCancelled {
                 let snapshot = session.snapshot()
                 let state = session.state
+                let rendererState = session.rendererStateDescription
                 await MainActor.run {
                     self?.metrics = snapshot
                     self?.stateText = state.displayText
+                    self?.rendererStateText = rendererState
                 }
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
@@ -246,27 +262,56 @@ final class StreamSessionViewModel: ObservableObject {
     }
 
     private func handleInterruptionBegan() {
-        guard connectTask != nil else { return }
-        connectionGeneration = UUID()
+        guard let streamSession else { return }
         reconnectAfterInterruption = selectedServer != nil
-        connectTask?.cancel()
-        metricsTask?.cancel()
-        streamSession?.disconnect()
-        connectTask = nil
-        metricsTask = nil
-        streamSession = nil
+        streamSession.pauseRendering()
+        rendererStateText = streamSession.rendererStateDescription
         stateText = StreamState.paused.displayText
     }
 
-    private func handleInterruptionEnded() {
+    private func handleInterruptionEnded(shouldResume: Bool) {
         guard reconnectAfterInterruption, let selectedServer else { return }
-        let authToken = selectedAuthToken
-        let relayURL = selectedRelayURL
         reconnectAfterInterruption = false
-        if let relayURL {
-            connect(relayURLString: relayURL.absoluteString, authToken: authToken)
-        } else {
-            connect(to: selectedServer, authToken: authToken)
+
+        if !shouldResume {
+            lastError = "Audio interruption ended without the system resume flag; trying to resume because streaming was active."
+        }
+
+        do {
+            try audioSession.activate()
+            audioRouteText = audioSession.currentRouteDescription
+            try streamSession?.resumeRendering()
+            rendererStateText = streamSession?.rendererStateDescription ?? "Unavailable"
+        } catch {
+            lastError = error.localizedDescription
+            if streamSession == nil || connectTask == nil {
+                let authToken = selectedAuthToken
+                let relayURL = selectedRelayURL
+                if let relayURL {
+                    connect(relayURLString: relayURL.absoluteString, authToken: authToken)
+                } else {
+                    connect(to: selectedServer, authToken: authToken)
+                }
+            }
+        }
+    }
+
+    private func handleEngineConfigurationChanged() {
+        recoverRendererAfterAudioServiceEvent(prefix: "Audio engine configuration recovery failed")
+    }
+
+    private func handleMediaServicesReset() {
+        recoverRendererAfterAudioServiceEvent(prefix: "Media services reset recovery failed")
+    }
+
+    private func recoverRendererAfterAudioServiceEvent(prefix: String) {
+        guard streamSession != nil else { return }
+        do {
+            try audioSession.activate()
+            try streamSession?.restartRendering()
+            rendererStateText = streamSession?.rendererStateDescription ?? "Unavailable"
+        } catch {
+            lastError = "\(prefix): \(error.localizedDescription)"
         }
     }
 

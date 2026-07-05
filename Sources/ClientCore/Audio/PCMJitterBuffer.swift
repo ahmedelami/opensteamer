@@ -1,6 +1,7 @@
 import AVFAudio
 import AudioToolbox
 import Foundation
+import Utilities
 
 public final class PCMJitterBuffer: @unchecked Sendable, PCMFrameProvider {
     private let channels: Int
@@ -128,13 +129,5 @@ public final class PCMJitterBuffer: @unchecked Sendable, PCMFrameProvider {
         samples[writeIndex] = sample
         writeIndex = (writeIndex + 1) % capacitySamples
         availableSamples += 1
-    }
-}
-
-private extension NSLock {
-    func withLock<T>(_ body: () -> T) -> T {
-        lock()
-        defer { unlock() }
-        return body()
     }
 }

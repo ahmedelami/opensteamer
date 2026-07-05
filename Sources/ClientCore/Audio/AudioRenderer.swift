@@ -1,12 +1,16 @@
 import AVFoundation
 import Foundation
 import Streaming
+import Utilities
 
 public final class AudioRenderer {
-    private let engine = AVAudioEngine()
-    private let sourceNode: AVAudioSourceNode
+    private var engine = AVAudioEngine()
+    private var sourceNode: AVAudioSourceNode
     private let format: AVAudioFormat
-    private var started = false
+    private let renderBlock: AVAudioSourceNodeRenderBlock
+    private let lock = NSLock()
+    private var attached = false
+    private var running = false
 
     public init(header: PCMStreamHeader, provider: PCMFrameProvider) throws {
         guard let format = AVAudioFormat(
@@ -18,27 +22,102 @@ public final class AudioRenderer {
             throw AudioRendererError.unsupportedFormat
         }
 
-        self.format = format
-        self.sourceNode = AVAudioSourceNode { _, _, frameCount, audioBufferList in
+        let renderBlock: AVAudioSourceNodeRenderBlock = { _, _, frameCount, audioBufferList in
             provider.render(frameCount: Int(frameCount), audioBufferList: audioBufferList)
             return noErr
         }
+        self.format = format
+        self.renderBlock = renderBlock
+        self.sourceNode = AVAudioSourceNode(renderBlock: renderBlock)
     }
 
     public func start() throws {
-        guard !started else { return }
-        engine.attach(sourceNode)
-        engine.connect(sourceNode, to: engine.mainMixerNode, format: format)
-        engine.prepare()
-        try engine.start()
-        started = true
+        try lock.withLock {
+            try startLocked()
+        }
+    }
+
+    public func pause() {
+        lock.withLock {
+            guard running else { return }
+            engine.pause()
+            running = false
+        }
+    }
+
+    public func restart() throws {
+        try lock.withLock {
+            guard attached else { return }
+            rebuildGraphLocked()
+            try startLocked()
+        }
     }
 
     public func stop() {
-        guard started else { return }
+        lock.withLock {
+            guard attached || running else { return }
+            engine.stop()
+            if attached {
+                engine.detach(sourceNode)
+            }
+            running = false
+            attached = false
+        }
+    }
+}
+
+public extension AudioRenderer {
+    var isRunning: Bool {
+        lock.withLock {
+            running
+        }
+    }
+
+    var stateDescription: String {
+        lock.withLock {
+            if running {
+                return "Running"
+            }
+            if attached {
+                return "Paused"
+            }
+            return "Stopped"
+        }
+    }
+}
+
+private extension AudioRenderer {
+    func startLocked() throws {
+        if !attached {
+            attachGraphLocked()
+        }
+
+        guard !running, !engine.isRunning else {
+            running = engine.isRunning
+            return
+        }
+
+        try engine.start()
+        running = true
+    }
+
+    func attachGraphLocked() {
+        engine.attach(sourceNode)
+        engine.connect(sourceNode, to: engine.mainMixerNode, format: format)
+        engine.prepare()
+        attached = true
+    }
+
+    func rebuildGraphLocked() {
         engine.stop()
-        engine.detach(sourceNode)
-        started = false
+        if attached {
+            engine.detach(sourceNode)
+        }
+        engine = AVAudioEngine()
+        sourceNode = AVAudioSourceNode(renderBlock: renderBlock)
+        attached = false
+        running = false
+        attachGraphLocked()
     }
 }
 

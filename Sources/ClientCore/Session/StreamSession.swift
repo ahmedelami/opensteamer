@@ -1,13 +1,16 @@
 import Foundation
 import Network
 import Streaming
+import Utilities
 
 public final class StreamSession: @unchecked Sendable {
     private let snapshotLock = NSLock()
+    private let rendererLock = NSLock()
     private var storedState: StreamState = .idle
     private var storedMetrics = StreamMetrics()
     private let readerQueue = DispatchQueue(label: "MacCaptureVerifier.ClientCore.StreamSession.reader")
     private var currentReader: (any StreamPacketReading)?
+    private var currentRenderer: AudioRenderer?
 
     public init() {}
 
@@ -34,6 +37,26 @@ public final class StreamSession: @unchecked Sendable {
             return reader
         }
         reader?.cancel()
+    }
+
+    public func pauseRendering() {
+        let renderer = rendererLock.withLock { currentRenderer }
+        renderer?.pause()
+    }
+
+    public func resumeRendering() throws {
+        let renderer = rendererLock.withLock { currentRenderer }
+        try renderer?.start()
+    }
+
+    public func restartRendering() throws {
+        let renderer = rendererLock.withLock { currentRenderer }
+        try renderer?.restart()
+    }
+
+    public var rendererStateDescription: String {
+        let renderer = rendererLock.withLock { currentRenderer }
+        return renderer?.stateDescription ?? "Unavailable"
     }
 
     public func run(
@@ -119,7 +142,17 @@ public final class StreamSession: @unchecked Sendable {
                 capacityFrames: Int(sampleRate * 2)
             )
             let renderer = try AudioRenderer(header: header, provider: jitterBuffer)
-            defer { renderer.stop() }
+            rendererLock.withLock {
+                currentRenderer = renderer
+            }
+            defer {
+                rendererLock.withLock {
+                    if currentRenderer === renderer {
+                        currentRenderer = nil
+                    }
+                }
+                renderer.stop()
+            }
 
             updateState(.buffering(bufferedFrames: 0, targetFrames: targetFrames))
             var rendererStarted = false
@@ -321,13 +354,5 @@ public struct StreamSessionReport: Sendable {
         lines.append("Sequence errors: \(metrics.sequenceErrors)")
         lines.append("Timestamp errors: \(metrics.timestampErrors)")
         return lines.joined(separator: "\n")
-    }
-}
-
-private extension NSLock {
-    func withLock<T>(_ body: () -> T) -> T {
-        lock()
-        defer { unlock() }
-        return body()
     }
 }

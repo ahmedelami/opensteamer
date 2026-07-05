@@ -11,8 +11,21 @@ struct DiagnosticsView: View {
                 MetricRow(title: "Timestamp Errors", value: "\(viewModel.metrics.timestampErrors)")
             }
 
+            Section("Audio Session") {
+                MetricRow(title: "Output Route", value: viewModel.audioSessionSnapshot.outputRoute)
+                MetricRow(title: "Input Route", value: viewModel.audioSessionSnapshot.inputRoute)
+                MetricRow(title: "Category", value: viewModel.audioSessionSnapshot.category)
+                MetricRow(title: "Mode", value: viewModel.audioSessionSnapshot.mode)
+                MetricRow(title: "Policy", value: viewModel.audioSessionSnapshot.routeSharingPolicy)
+                MetricRow(title: "Sample Rate", value: viewModel.audioSessionSnapshot.sampleRate)
+                MetricRow(title: "IO Buffer", value: viewModel.audioSessionSnapshot.ioBufferDuration)
+                MetricRow(title: "Secondary Audio", value: viewModel.audioSessionSnapshot.secondaryAudio)
+                MetricRow(title: "Other Audio", value: viewModel.audioSessionSnapshot.otherAudio)
+                MetricRow(title: "Last Event", value: viewModel.audioSessionSnapshot.lastEvent)
+            }
+
             Section("Renderer") {
-                MetricRow(title: "Output Route", value: viewModel.audioRouteText)
+                MetricRow(title: "State", value: viewModel.rendererStateText)
                 MetricRow(title: "Receive RMS", value: viewModel.metrics.audioRMS.dbFSDescription)
                 MetricRow(title: "Receive Peak", value: viewModel.metrics.audioPeak.dbFSDescription)
                 MetricRow(title: "Playback RMS", value: viewModel.metrics.playbackRMS.dbFSDescription)
