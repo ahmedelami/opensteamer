@@ -1,62 +1,97 @@
 import Foundation
 import Security
 
-enum KeychainStore {
-    private static let service = "org.example.AudioStreamer"
-    private static let remoteTokenAccount = "remote-token"
+protocol RemoteTokenStoring {
+    func loadRemoteToken() throws -> String?
+    func saveRemoteToken(_ token: String) throws
+}
 
-    static func remoteToken() -> String? {
-        var query = baseQuery(account: remoteTokenAccount)
+struct KeychainStore: RemoteTokenStoring {
+    struct Item: Equatable, Sendable {
+        let service: String
+        let account: String
+    }
+
+    // These identifiers shipped in the first TestFlight build with secure token storage.
+    // Keeping them version-independent lets the same Keychain item survive app updates.
+    static let remoteTokenItem = Item(
+        service: "org.example.AudioStreamer",
+        account: "remote-token"
+    )
+
+    private let item: Item
+
+    init(item: Item = Self.remoteTokenItem) {
+        self.item = item
+    }
+
+    func loadRemoteToken() throws -> String? {
+        var query = baseQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess,
-              let data = result as? Data else {
+        switch status {
+        case errSecSuccess:
+            guard let data = result as? Data,
+                  let token = String(data: data, encoding: .utf8) else {
+                throw KeychainStoreError.invalidStoredValue
+            }
+            return token
+        case errSecItemNotFound:
             return nil
+        default:
+            throw KeychainStoreError.operationFailed(status)
         }
-
-        return String(data: data, encoding: .utf8)
     }
 
-    @discardableResult
-    static func saveRemoteToken(_ token: String) -> Bool {
+    func saveRemoteToken(_ token: String) throws {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            return deleteRemoteToken()
+            try deleteRemoteToken()
+            return
         }
 
         let data = Data(trimmed.utf8)
-        let query = baseQuery(account: remoteTokenAccount)
         let updateAttributes = [kSecValueData as String: data]
-
         let updateStatus = SecItemUpdate(
-            query as CFDictionary,
+            baseQuery as CFDictionary,
             updateAttributes as CFDictionary
         )
         if updateStatus == errSecSuccess {
-            return true
+            return
         }
-        guard updateStatus == errSecItemNotFound else { return false }
+        guard updateStatus == errSecItemNotFound else {
+            throw KeychainStoreError.operationFailed(updateStatus)
+        }
 
-        var addQuery = query
+        var addQuery = baseQuery
         addQuery[kSecValueData as String] = data
         addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        guard addStatus == errSecSuccess else {
+            throw KeychainStoreError.operationFailed(addStatus)
+        }
     }
 
-    private static func deleteRemoteToken() -> Bool {
-        let query = baseQuery(account: remoteTokenAccount)
-        let status = SecItemDelete(query as CFDictionary)
-        return status == errSecSuccess || status == errSecItemNotFound
+    private func deleteRemoteToken() throws {
+        let status = SecItemDelete(baseQuery as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainStoreError.operationFailed(status)
+        }
     }
 
-    private static func baseQuery(account: String) -> [String: Any] {
+    private var baseQuery: [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
+            kSecAttrService as String: item.service,
+            kSecAttrAccount as String: item.account
         ]
     }
+}
+
+enum KeychainStoreError: Error, Equatable {
+    case invalidStoredValue
+    case operationFailed(OSStatus)
 }

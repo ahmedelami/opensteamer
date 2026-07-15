@@ -5,8 +5,7 @@ struct BrowserView: View {
     @EnvironmentObject private var worldwideViewModel: WorldwideSessionViewModel
     @AppStorage("remoteHost") private var remoteHost = ""
     @AppStorage("remotePort") private var remotePort = "9000"
-    @State private var remoteToken = ""
-    @State private var tokenStorageError: String?
+    @StateObject private var remoteTokenState = RemoteTokenState()
     @State private var showsToken = false
     @State private var invitationCode = ""
     @State private var showsInvitationCode = false
@@ -110,13 +109,15 @@ struct BrowserView: View {
 
                 HStack {
                     if showsToken {
-                        TextField("Token", text: $remoteToken)
+                        TextField("Activation code", text: $remoteTokenState.token)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                            .accessibilityIdentifier("remoteActivationCode")
                     } else {
-                        SecureField("Token", text: $remoteToken)
+                        SecureField("Activation code", text: $remoteTokenState.token)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                            .accessibilityIdentifier("remoteActivationCode")
                     }
 
                     Button {
@@ -125,15 +126,20 @@ struct BrowserView: View {
                         Image(systemName: showsToken ? "eye.slash" : "eye")
                     }
                     .buttonStyle(.borderless)
-                    .accessibilityLabel(showsToken ? "Hide token" : "Show token")
+                    .accessibilityLabel(
+                        showsToken ? "Hide activation code" : "Show activation code"
+                    )
                 }
 
-                if let tokenStorageError {
-                    Label(tokenStorageError, systemImage: "exclamationmark.triangle")
+                if let storageError = remoteTokenState.storageError {
+                    Label(storageError, systemImage: "exclamationmark.triangle")
                         .font(.caption)
                         .foregroundStyle(.orange)
-                } else if !trimmedRemoteToken.isEmpty {
-                    Label("Saved securely on this iPhone", systemImage: "checkmark.shield")
+                } else if remoteTokenState.isStored && !trimmedRemoteToken.isEmpty {
+                    Label(
+                        "Saved securely and kept across app updates",
+                        systemImage: "checkmark.shield"
+                    )
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -174,10 +180,7 @@ struct BrowserView: View {
         }
         .navigationTitle("AudioStreamer")
         .onAppear {
-            remoteToken = KeychainStore.remoteToken() ?? ""
-        }
-        .onChange(of: remoteToken) { _, newValue in
-            persistRemoteToken(newValue)
+            remoteTokenState.loadIfNeeded()
         }
         .toolbar {
             Button {
@@ -194,7 +197,7 @@ struct BrowserView: View {
     }
 
     private var trimmedRemoteToken: String {
-        remoteToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        remoteTokenState.token.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var trimmedInvitationCode: String {
@@ -218,18 +221,12 @@ struct BrowserView: View {
     }
 
     private func connectRemote() {
-        persistRemoteToken(remoteToken)
+        remoteTokenState.persistNow()
         if isRelayURL {
-            viewModel.connect(relayURLString: trimmedHost, authToken: remoteToken)
+            viewModel.connect(relayURLString: trimmedHost, authToken: remoteTokenState.token)
         } else if let parsedPort {
-            viewModel.connect(host: trimmedHost, port: parsedPort, authToken: remoteToken)
+            viewModel.connect(host: trimmedHost, port: parsedPort, authToken: remoteTokenState.token)
         }
-    }
-
-    private func persistRemoteToken(_ token: String) {
-        tokenStorageError = KeychainStore.saveRemoteToken(token)
-            ? nil
-            : "The token could not be saved securely."
     }
 
     private func connectWorldwide() {
