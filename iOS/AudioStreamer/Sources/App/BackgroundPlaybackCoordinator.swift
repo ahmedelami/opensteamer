@@ -28,9 +28,12 @@ final class BackgroundPlaybackCoordinator {
     }
 
     func publishLiveStream(serverName: String?, isPlaying: Bool) {
+        // Lock-screen metadata is visible outside the unlocked app. Keep it deliberately generic
+        // rather than exposing the paired Mac's user-assigned name.
+        _ = serverName
         MPNowPlayingInfoCenter.default().nowPlayingInfo = [
             MPMediaItemPropertyTitle: "AudioStreamer",
-            MPMediaItemPropertyArtist: serverName ?? "Mac audio stream",
+            MPMediaItemPropertyArtist: "Connected Mac",
             MPMediaItemPropertyAlbumTitle: "Mac audio stream",
             MPNowPlayingInfoPropertyIsLiveStream: true,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0

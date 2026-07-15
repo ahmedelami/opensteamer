@@ -43,6 +43,11 @@ actor WorldwideScreenService {
     private var captureSink: WorldwideScreenSampleSink?
     private var captureAuthorization: WebRTCControlAuthorization?
     private var captureDisplayID: UInt32?
+    private var audioSource: SystemAudioCaptureSource?
+    private var audioSink: WorldwideSystemAudioSampleSink?
+    private var audioAuthorization: WebRTCAudioAuthorization?
+    private var systemAudioStartInProgress = false
+    private var systemAudioIsLive = false
     private var activeInputCapability: WebRTCInputCapability?
     private var activeInputAuthorization: WebRTCInputAuthorization?
     private var isStarted = false
@@ -133,8 +138,12 @@ actor WorldwideScreenService {
         recoveryProofAuthorization?.revoke()
         recoveryProofAuthorization = nil
         revokeCaptureAuthorization()
+        revokeSystemAudioAuthorization()
+        captureSink?.stopForwarding()
+        audioSink?.stopForwarding()
         await coordinator?.cancel()
         await stopScreenCapture()
+        await stopSystemAudio()
         if let peer {
             await peer.close(reason: .hostStopped)
         }
@@ -183,7 +192,7 @@ actor WorldwideScreenService {
             // Arm the proof gate before the first await. Otherwise an already-queued native
             // connected/open event can cancel the coordinator's zero-delay restart.
             installRecoveryProofBoundary(awaitingAnswer: false)
-            await stopScreenCaptureForTransportUncertainty(
+            await stopCaptureForTransportUncertainty(
                 "the viewer requested route recovery"
             )
             await recoveryCoordinator.restartRequested()
@@ -250,6 +259,8 @@ actor WorldwideScreenService {
         recoveryProofAuthorization?.revoke()
         recoveryProofAuthorization = nil
         revokeCaptureAuthorization()
+        revokeSystemAudioAuthorization()
+        await stopSystemAudio()
 
         let coordinator = ICERecoveryCoordinator(
             restart: { [weak self] in
@@ -301,7 +312,14 @@ actor WorldwideScreenService {
             logger.info("Worldwide WebRTC peer state: \(state.rawValue)")
             switch state {
             case .new, .connecting:
+                let previouslyAuthorizedRoute = peerIsConnected
+                    || captureSource != nil
+                    || audioSource != nil
                 peerIsConnected = false
+                if previouslyAuthorizedRoute {
+                    await enterRecovery(reason: "peer route became indeterminate")
+                    await recoveryCoordinator?.iceStateChanged(.disconnected)
+                }
             case .connected:
                 peerIsConnected = true
                 if recoveryProofRequired, let peer {
@@ -309,7 +327,7 @@ actor WorldwideScreenService {
                         peer: peer,
                         epoch: recoveryProofEpoch
                     )
-                } else if markRecoveryHealthyIfPossible() {
+                } else if await markRecoveryHealthyIfPossible() {
                     await recoveryCoordinator?.iceStateChanged(.connected)
                 }
             case .disconnected:
@@ -334,7 +352,7 @@ actor WorldwideScreenService {
                         peer: peer,
                         epoch: recoveryProofEpoch
                     )
-                } else if markRecoveryHealthyIfPossible() {
+                } else if await markRecoveryHealthyIfPossible() {
                     await recoveryCoordinator?.iceStateChanged(state)
                 }
             case .disconnected, .failed:
@@ -346,7 +364,9 @@ actor WorldwideScreenService {
                 await recoveryCoordinator?.iceStateChanged(state)
                 await stop()
             case .new, .checking, .unknown:
-                let previouslyAuthorizedRoute = iceIsConnected || captureSource != nil
+                let previouslyAuthorizedRoute = iceIsConnected
+                    || captureSource != nil
+                    || audioSource != nil
                 iceIsConnected = false
                 if previouslyAuthorizedRoute {
                     // Initial ICE negotiation is allowed to move through these states. Once a
@@ -362,6 +382,7 @@ actor WorldwideScreenService {
 
         case .dataChannelStateChanged(let state):
             logger.debug("Worldwide control channel: \(state.rawValue)")
+            let wasOpen = controlChannelIsOpen
             controlChannelIsOpen = state == .open
             if state == .open {
                 if recoveryProofRequired, let peer {
@@ -369,11 +390,11 @@ actor WorldwideScreenService {
                         peer: peer,
                         epoch: recoveryProofEpoch
                     )
-                } else if markRecoveryHealthyIfPossible() {
+                } else if await markRecoveryHealthyIfPossible() {
                     await recoveryCoordinator?.iceStateChanged(.connected)
                 }
             }
-            if state == .closing || state == .closed {
+            if state == .closing || state == .closed || (wasOpen && state != .open) {
                 await enterRecovery(reason: "control channel unavailable")
                 await recoveryCoordinator?.iceStateChanged(.failed)
             }
@@ -421,7 +442,7 @@ actor WorldwideScreenService {
         case .ended:
             await stop()
 
-        case .identityReceived, .remoteVideoTrack, .negotiationNeeded:
+        case .identityReceived, .remoteVideoTrack, .remoteAudioTrack, .negotiationNeeded:
             break
         }
     }
@@ -829,6 +850,17 @@ actor WorldwideScreenService {
         await stopScreenCapture()
     }
 
+    private func stopCaptureForTransportUncertainty(_ reason: String) async {
+        // Revoke both media gates before either asynchronous ScreenCaptureKit stop begins.
+        revokeCaptureAuthorization()
+        revokeSystemAudioAuthorization()
+        captureSink?.stopForwarding()
+        audioSink?.stopForwarding()
+        await peer?.suspendSystemAudioForTransportUncertainty()
+        await stopScreenCaptureForTransportUncertainty(reason)
+        await stopSystemAudioForTransportUncertainty(reason)
+    }
+
     private func beginICERestart(
         peer: WebRTCPeer,
         peerGeneration generation: UInt64
@@ -837,7 +869,7 @@ actor WorldwideScreenService {
             throw CancellationError()
         }
         let epoch = installRecoveryProofBoundary(awaitingAnswer: true)
-        await stopScreenCaptureForTransportUncertainty("an ICE restart began")
+        await stopCaptureForTransportUncertainty("an ICE restart began")
         guard generation == peerGeneration,
               epoch == recoveryProofEpoch,
               !isStopped,
@@ -858,6 +890,7 @@ actor WorldwideScreenService {
     private func enterRecovery(reason: String) async {
         isRecovering = true
         revokeCaptureAuthorization()
+        revokeSystemAudioAuthorization()
         if recoveryProofRequired {
             // Invalidate a pre-uncertainty Hide/ACK without severing the current offer→answer
             // epoch. Native disconnected events are expected during an in-flight restart.
@@ -866,12 +899,13 @@ actor WorldwideScreenService {
             pendingRecoveryProofRequest = nil
             recoveryProofAcknowledgementInFlight = nil
         }
-        await stopScreenCaptureForTransportUncertainty(reason)
+        await stopCaptureForTransportUncertainty(reason)
     }
 
     @discardableResult
     private func installRecoveryProofBoundary(awaitingAnswer: Bool) -> UInt64 {
         revokeCaptureAuthorization()
+        revokeSystemAudioAuthorization()
         recoveryProofAuthorization?.revoke()
         recoveryProofEpoch &+= 1
         let epoch = recoveryProofEpoch
@@ -942,11 +976,17 @@ actor WorldwideScreenService {
         restartAnswerAppliedEpoch = nil
         recoveryProofRequired = false
         isRecovering = false
+        guard await startSystemAudioOrStopSession() else {
+            await recoverFromSystemAudioStartUncertainty(
+                "system audio could not be enabled after route proof"
+            )
+            return
+        }
         await recoveryCoordinator?.iceStateChanged(.connected)
     }
 
     @discardableResult
-    private func markRecoveryHealthyIfPossible() -> Bool {
+    private func markRecoveryHealthyIfPossible() async -> Bool {
         guard !recoveryProofRequired,
               peerIsConnected,
               iceIsConnected,
@@ -954,7 +994,28 @@ actor WorldwideScreenService {
             return false
         }
         isRecovering = false
+        guard await startSystemAudioOrStopSession() else {
+            await recoverFromSystemAudioStartUncertainty(
+                "system audio could not be enabled on the healthy route"
+            )
+            return false
+        }
         return true
+    }
+
+    private func recoverFromSystemAudioStartUncertainty(_ reason: String) async {
+        guard !isStopped,
+              !isRecovering,
+              !recoveryProofRequired,
+              // Actor reentrancy can deliver another healthy native event while the first
+              // event owns ScreenCaptureKit startup. Pending startup is not route failure; its
+              // owner will publish connected or return here with this flag cleared.
+              !systemAudioStartInProgress,
+              !systemAudioIsLive else {
+            return
+        }
+        await enterRecovery(reason: reason)
+        await recoveryCoordinator?.iceStateChanged(.failed)
     }
 
     private func recoveryDidExhaust(peerGeneration generation: UInt64) async {
@@ -964,11 +1025,16 @@ actor WorldwideScreenService {
         if !recoveryProofRequired,
            peerIsConnected,
            iceIsConnected,
-           controlChannelIsOpen {
+           controlChannelIsOpen,
+           systemAudioIsLive,
+           audioAuthorization?.isValid == true {
             isRecovering = false
             return
         }
-        guard isRecovering || recoveryProofRequired else { return }
+        guard isRecovering
+                || recoveryProofRequired
+                || systemAudioStartInProgress
+                || !systemAudioIsLive else { return }
         logger.error("Worldwide ICE recovery exhausted its bounded attempts")
         await stop()
     }
@@ -1086,6 +1152,174 @@ actor WorldwideScreenService {
         logger.error("Worldwide screen capture stopped unexpectedly: \(message)")
     }
 
+    private func startSystemAudioOrStopSession() async -> Bool {
+        guard !systemAudioStartInProgress else { return false }
+        do {
+            try await startSystemAudio()
+            return !isStopped
+                && systemAudioIsLive
+                && audioSource != nil
+                && audioAuthorization?.isValid == true
+        } catch {
+            guard !isStopped else { return false }
+            if isRecovering
+                || recoveryProofRequired
+                || !transportAllowsCapture
+                || isTransportAudioStartCancellation(error) {
+                logger.debug(
+                    "Worldwide system audio startup yielded to transport recovery: " +
+                    error.localizedDescription
+                )
+                return false
+            }
+            logger.error("Worldwide system audio failed to start: \(error.localizedDescription)")
+            await stop()
+            return false
+        }
+    }
+
+    private func isTransportAudioStartCancellation(_ error: Error) -> Bool {
+        guard let transportError = error as? WebRTCTransportError else { return false }
+        switch transportError {
+        case .transportNotHealthy, .audioAuthorizationRevoked, .transportClosed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func startSystemAudio() async throws {
+        if systemAudioIsLive,
+           audioSource != nil,
+           let audioAuthorization,
+           audioAuthorization.isValid {
+            return
+        }
+        guard !systemAudioStartInProgress,
+              audioSource == nil,
+              transportAllowsCapture else {
+            throw WorldwideScreenServiceError.transportUnavailable
+        }
+        guard let peer, let capturer = peer.externalAudioCapturer else {
+            throw WorldwideScreenServiceError.audioCapturerUnavailable
+        }
+        systemAudioStartInProgress = true
+
+        let authorization = WebRTCAudioAuthorization()
+        let sink = WorldwideSystemAudioSampleSink(
+            capturer: capturer,
+            authorization: authorization
+        ) { [weak self] source, message in
+            authorization.revoke()
+            Task {
+                await self?.systemAudioCaptureDidStop(
+                    source: source,
+                    authorization: authorization,
+                    message: message
+                )
+            }
+        }
+        let source = SystemAudioCaptureSource(
+            displayID: displayID,
+            consumer: sink,
+            logger: logger
+        )
+        audioSink = sink
+        audioSource = source
+        audioAuthorization = authorization
+
+        do {
+            let format = try await source.start()
+            guard audioSource === source,
+                  audioAuthorization === authorization,
+                  authorization.isValid,
+                  transportAllowsCapture,
+                  self.peer === peer else {
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
+
+            try await peer.enableSystemAudioIfTransportHealthy(
+                authorization: authorization
+            )
+            guard audioSource === source,
+                  audioAuthorization === authorization,
+                  authorization.isValid,
+                  transportAllowsCapture,
+                  self.peer === peer else {
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
+
+            sink.beginForwarding()
+            systemAudioIsLive = true
+            systemAudioStartInProgress = false
+            logger.info(
+                "Worldwide system audio is live from display \(format.displayID) at " +
+                "\(format.sampleRate) Hz, \(format.channelCount) channels"
+            )
+        } catch {
+            if audioSource === source {
+                revokeSystemAudioAuthorization()
+                audioSource = nil
+                audioSink = nil
+            }
+            sink.stopForwarding()
+            await peer.suspendSystemAudioForTransportUncertainty()
+            capturer.reset()
+            try? await source.stop()
+            systemAudioStartInProgress = false
+            systemAudioIsLive = false
+            throw error
+        }
+    }
+
+    private func stopSystemAudioForTransportUncertainty(_ reason: String) async {
+        guard audioSource != nil || audioAuthorization != nil else { return }
+        logger.info("Stopping worldwide system audio because \(reason)")
+        await stopSystemAudio()
+    }
+
+    private func stopSystemAudio() async {
+        revokeSystemAudioAuthorization()
+        let source = audioSource
+        let sink = audioSink
+        audioSource = nil
+        audioSink = nil
+        sink?.stopForwarding()
+        await peer?.suspendSystemAudioForTransportUncertainty()
+        peer?.externalAudioCapturer?.reset()
+        guard let source else { return }
+        do {
+            try await source.stop()
+        } catch {
+            logger.error("Worldwide system audio stop failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func systemAudioCaptureDidStop(
+        source: SystemAudioCaptureSource,
+        authorization: WebRTCAudioAuthorization,
+        message: String
+    ) async {
+        guard audioSource === source,
+              audioAuthorization === authorization else { return }
+        revokeSystemAudioAuthorization()
+        audioSink?.stopForwarding()
+        audioSink = nil
+        audioSource = nil
+        await peer?.suspendSystemAudioForTransportUncertainty()
+        peer?.externalAudioCapturer?.reset()
+        logger.error("Worldwide system audio stopped unexpectedly: \(message)")
+        await stop()
+    }
+
+    private func revokeSystemAudioAuthorization() {
+        systemAudioIsLive = false
+        audioAuthorization?.revoke()
+        audioAuthorization = nil
+        audioSink?.stopForwarding()
+        peer?.externalAudioCapturer?.reset()
+    }
+
     private func revokeCaptureAuthorization() {
         // Input revocation is first and synchronous: no queued tap or key may outlive the
         // screen authorization boundary that made the capability valid.
@@ -1175,10 +1409,58 @@ private final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unche
     }
 }
 
+private final class WorldwideSystemAudioSampleSink: SystemAudioSampleConsumer, @unchecked Sendable {
+    private let capturer: MacExternalAudioCapturer
+    private let authorization: WebRTCAudioAuthorization
+    private let didStop: @Sendable (SystemAudioCaptureSource, String) -> Void
+    private let lock = NSLock()
+    private var isForwarding = false
+
+    init(
+        capturer: MacExternalAudioCapturer,
+        authorization: WebRTCAudioAuthorization,
+        didStop: @escaping @Sendable (SystemAudioCaptureSource, String) -> Void
+    ) {
+        self.capturer = capturer
+        self.authorization = authorization
+        self.didStop = didStop
+    }
+
+    func beginForwarding() {
+        lock.withLock { isForwarding = true }
+    }
+
+    func stopForwarding() {
+        lock.withLock { isForwarding = false }
+    }
+
+    func consumeSystemAudioSample(_ sampleBuffer: CMSampleBuffer) {
+        do {
+            try authorization.withValidAuthorization {
+                guard lock.withLock({ isForwarding }) else { return }
+                capturer.capture(sampleBuffer: sampleBuffer)
+            }
+        } catch {
+            // Revocation is the normal boundary for Hide-independent transport teardown.
+        }
+    }
+
+    func systemAudioCaptureSource(
+        _ source: SystemAudioCaptureSource,
+        didStopWithErrorDescription errorDescription: String
+    ) {
+        authorization.revoke()
+        stopForwarding()
+        capturer.reset()
+        didStop(source, errorDescription)
+    }
+}
+
 private enum WorldwideScreenServiceError: LocalizedError {
     case invalidLifecycle
     case signalBeforeReady
     case videoCapturerUnavailable
+    case audioCapturerUnavailable
     case transportUnavailable
     case rendezvous(RendezvousServerError)
 
@@ -1190,6 +1472,8 @@ private enum WorldwideScreenServiceError: LocalizedError {
             "The rendezvous delivered signaling before the WebRTC peer was ready."
         case .videoCapturerUnavailable:
             "The Mac WebRTC screen capturer is unavailable."
+        case .audioCapturerUnavailable:
+            "The Mac WebRTC system-audio capturer is unavailable."
         case .transportUnavailable:
             "The secure media transport is not healthy enough to expose the screen."
         case .rendezvous(let error):

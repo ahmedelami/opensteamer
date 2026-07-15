@@ -840,6 +840,37 @@ public final class WebRTCControlAuthorization: @unchecked Sendable {
     }
 }
 
+/// A host-owned, synchronously revocable capability for exposing captured system audio to the
+/// WebRTC sender. It is intentionally independent of screen visibility: hiding the remote screen
+/// must not mute audio, while any transport-uncertainty boundary revokes this gate immediately.
+public final class WebRTCAudioAuthorization: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isRevoked = false
+
+    public init() {}
+
+    public func revoke() {
+        lock.lock()
+        isRevoked = true
+        lock.unlock()
+    }
+
+    public var isValid: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !isRevoked
+    }
+
+    public func withValidAuthorization<T>(_ operation: () throws -> T) throws -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isRevoked else {
+            throw WebRTCTransportError.audioAuthorizationRevoked
+        }
+        return try operation()
+    }
+}
+
 /// A process-local, synchronously revocable gate for one remote-input generation.
 ///
 /// This is deliberately not part of the Codable wire capability. The host service and
@@ -1029,6 +1060,7 @@ public enum WebRTCTransportEvent: Sendable {
     /// Legacy signaling control event. Worldwide data-channel control uses the typed request/ack events above.
     case controlReceived(RemoteControlCommand)
     case identityReceived(RemotePeerIdentity)
+    case remoteAudioTrack(WebRTCRemoteAudioTrack)
     case remoteVideoTrack(WebRTCRemoteVideoTrack)
     case routeChanged(WebRTCICERouteDiagnostics)
     case statistics(WebRTCStatisticsSnapshot)
@@ -1041,6 +1073,7 @@ public enum WebRTCTransportEvent: Sendable {
 public enum WebRTCTransportError: Error, Equatable, LocalizedError, Sendable {
     case relayPolicyRequiresTURN
     case peerConnectionCreationFailed
+    case audioTrackCreationFailed
     case videoTrackCreationFailed
     case dataChannelCreationFailed
     case invalidRole
@@ -1057,6 +1090,7 @@ public enum WebRTCTransportError: Error, Equatable, LocalizedError, Sendable {
     case controlRequestIDExhausted
     case controlAuthorizationRequired
     case controlAuthorizationRevoked
+    case audioAuthorizationRevoked
     case unknownControlRequest(UInt64)
     case staleControlRequest(UInt64)
     case conflictingControlAcknowledgement(UInt64)
@@ -1076,6 +1110,8 @@ public enum WebRTCTransportError: Error, Equatable, LocalizedError, Sendable {
             "Relay-only testing requires at least one TURN server."
         case .peerConnectionCreationFailed:
             "The WebRTC peer connection could not be created."
+        case .audioTrackCreationFailed:
+            "The WebRTC system-audio track could not be created."
         case .videoTrackCreationFailed:
             "The WebRTC screen video track could not be created."
         case .dataChannelCreationFailed:
@@ -1097,7 +1133,7 @@ public enum WebRTCTransportError: Error, Equatable, LocalizedError, Sendable {
         case .dataChannelUnavailable:
             "The WebRTC control channel is not open."
         case .transportNotHealthy:
-            "The WebRTC transport is not stable and healthy enough for screen capture."
+            "The WebRTC transport is not stable and healthy enough for remote media capture."
         case .dataChannelBackpressured:
             "The WebRTC control channel is temporarily backpressured."
         case .dataChannelSendFailed:
@@ -1108,6 +1144,8 @@ public enum WebRTCTransportError: Error, Equatable, LocalizedError, Sendable {
             "An Active screen acknowledgement requires a current capture authorization."
         case .controlAuthorizationRevoked:
             "The screen-control authorization was revoked before capture could be exposed."
+        case .audioAuthorizationRevoked:
+            "The system-audio authorization was revoked before capture could be exposed."
         case .unknownControlRequest(let id):
             "Control request \(id) is unknown."
         case .staleControlRequest(let id):

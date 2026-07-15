@@ -16,6 +16,7 @@ enum NativePeerEvent: Sendable {
     case gatheringState(WebRTCICEGatheringState)
     case dataChannelState(WebRTCDataChannelState)
     case dataChannelMessage(Data)
+    case remoteAudioTrack(WebRTCRemoteAudioTrack)
     case remoteVideoTrack(WebRTCRemoteVideoTrack)
     case route(WebRTCICERouteDiagnostics)
     case iceCandidateError(WebRTCIceCandidateError)
@@ -320,6 +321,9 @@ extension WebRTCDelegateProxy: LKRTCPeerConnectionDelegate {
         _ peerConnection: LKRTCPeerConnection,
         didAdd stream: LKRTCMediaStream
     ) {
+        for track in stream.audioTracks {
+            emit(.remoteAudioTrack(WebRTCRemoteAudioTrack(track)))
+        }
         for track in stream.videoTracks {
             emit(.remoteVideoTrack(WebRTCRemoteVideoTrack(track)))
         }
@@ -389,8 +393,14 @@ extension WebRTCDelegateProxy: LKRTCPeerConnectionDelegate {
         didAdd rtpReceiver: LKRTCRtpReceiver,
         streams mediaStreams: [LKRTCMediaStream]
     ) {
-        guard let videoTrack = rtpReceiver.track as? LKRTCVideoTrack else { return }
-        emit(.remoteVideoTrack(WebRTCRemoteVideoTrack(videoTrack)))
+        switch rtpReceiver.track {
+        case let audioTrack as LKRTCAudioTrack:
+            emit(.remoteAudioTrack(WebRTCRemoteAudioTrack(audioTrack)))
+        case let videoTrack as LKRTCVideoTrack:
+            emit(.remoteVideoTrack(WebRTCRemoteVideoTrack(videoTrack)))
+        default:
+            break
+        }
     }
 
     func peerConnection(

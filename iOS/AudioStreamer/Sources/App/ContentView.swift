@@ -35,12 +35,13 @@ struct ContentView: View {
             switch newPhase {
             case .active:
                 viewModel.handleAppBecameActive()
+                worldwideViewModel.handleAppBecameActive()
             case .inactive:
                 viewModel.handleAppBecameInactive()
-                worldwideViewModel.beginPassiveScreenTeardown()
+                worldwideViewModel.handleAppBecameInactive()
             case .background:
                 viewModel.handleAppEnteredBackground()
-                worldwideViewModel.beginPassiveScreenTeardown()
+                worldwideViewModel.handleAppEnteredBackground()
             @unknown default:
                 break
             }

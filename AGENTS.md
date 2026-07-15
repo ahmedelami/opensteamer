@@ -33,6 +33,19 @@ manual IP addresses, router configuration, or public TCP ports.
   ICE candidates, or TURN credentials outside their bounded session state.
 - Preserve existing features while adding the remote path. Screen viewing must
   remain independently showable/hideable without disconnecting audio.
+- Worldwide Mac system audio is an independent, send-only Opus track on the same
+  peer connection. With the pinned WebRTC build it is truthfully 48 kHz mono:
+  enter manual ADM rendering before track creation, disable microphone/voice
+  processing, bound injection latency, and synchronously mute/flush both sender
+  and receiver at every transport uncertainty boundary. A fresh current-generation
+  peer/ICE/control proof is required before either side re-enables audio. Show/Hide
+  must affect video and remote input only.
+- The iPhone must use genuine playback plus the Background Audio capability so a
+  user-started stream can continue across Home/lock. Do not synthesize silent audio
+  as a keepalive. Backgrounding hides video and revokes input but retains healthy
+  audio; interruption, private-route loss, uncertainty, and disconnect mute the
+  native remote track itself. Never auto-resume when iOS omits `shouldResume`, and
+  never promise playback after the user force-quits the app.
 - Worldwide Show/Hide must use monotonic request IDs and host acknowledgements.
   The iPhone must not claim the screen is live until Mac capture actually starts.
   Screen capture must fail closed on peer/control uncertainty and require a fresh

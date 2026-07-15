@@ -47,6 +47,14 @@ struct PlayerView: View {
                     LabeledContent("State", value: worldwideViewModel.stateText)
                     LabeledContent("Route", value: worldwideViewModel.routeText)
 
+                    if worldwideViewModel.audioRequiresExplicitResume {
+                        Button {
+                            worldwideViewModel.resumeAudioPlayback()
+                        } label: {
+                            Label("Resume Audio", systemImage: "play.fill")
+                        }
+                    }
+
                     Button {
                         showsWorldwideMacScreen = true
                     } label: {
@@ -70,11 +78,13 @@ struct PlayerView: View {
                 }
             }
 
-            Section {
-                Button(role: .destructive) {
-                    viewModel.disconnect()
-                } label: {
-                    Label("Disconnect", systemImage: "stop.fill")
+            if viewModel.selectedServer != nil {
+                Section {
+                    Button(role: .destructive) {
+                        viewModel.disconnect()
+                    } label: {
+                        Label("Disconnect", systemImage: "stop.fill")
+                    }
                 }
             }
         }

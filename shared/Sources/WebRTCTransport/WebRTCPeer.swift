@@ -26,6 +26,7 @@ public actor WebRTCPeer {
     private static let maximumCandidateUsernameFragmentBytes = 256
 
     public nonisolated let events: AsyncStream<WebRTCTransportEvent>
+    public nonisolated let externalAudioCapturer: MacExternalAudioCapturer?
     public nonisolated let externalVideoCapturer: MacExternalVideoCapturer?
 
     private let role: RemotePeerRole
@@ -33,6 +34,7 @@ public actor WebRTCPeer {
     private let factory: LKRTCPeerConnectionFactory
     private let peerConnection: LKRTCPeerConnection
     private let delegateProxy: WebRTCDelegateProxy
+    private let localAudioTrack: LKRTCAudioTrack?
     private let localVideoTrack: LKRTCVideoTrack?
     private let mediaConstraints: LKRTCMediaConstraints
 
@@ -52,7 +54,9 @@ public actor WebRTCPeer {
     private var requiresCandidateUsernameFragment = false
     private var hasStarted = false
     private var isClosed = false
+    private var currentRemoteAudioTrack: WebRTCRemoteAudioTrack?
     private var currentRemoteVideoTrack: WebRTCRemoteVideoTrack?
+    private var activeSystemAudioAuthorization: WebRTCAudioAuthorization?
     private var currentRoute: WebRTCICERouteDiagnostics?
     private var nextControlRequestID: UInt64 = 1
     private var highestSentControlRequestID: UInt64?
@@ -105,10 +109,22 @@ public actor WebRTCPeer {
         }
         let decoderFactory = LKRTCDefaultVideoDecoderFactory()
         let nativeFactory = LKRTCPeerConnectionFactory(
+            audioDeviceModuleType: .audioEngine,
+            bypassVoiceProcessing: true,
             encoderFactory: encoderFactory,
-            decoderFactory: decoderFactory
+            decoderFactory: decoderFactory,
+            audioProcessingModule: nil
         )
         factory = nativeFactory
+
+        if configuration.role == .host {
+            let audioDeviceModule = nativeFactory.audioDeviceModule
+            guard audioDeviceModule.setPlatformVoiceProcessingAllowed(false) == 0,
+                  audioDeviceModule.setManualRenderingMode(true) == 0,
+                  audioDeviceModule.isManualRenderingMode else {
+                throw WebRTCTransportError.audioTrackCreationFailed
+            }
+        }
 
         let nativeConfiguration = LKRTCConfiguration()
         nativeConfiguration.iceServers = configuration.iceServers.map {
@@ -148,26 +164,59 @@ public actor WebRTCPeer {
         peerConnection = nativePeer
 
         if configuration.role == .host {
-            let source = nativeFactory.videoSource(forScreenCast: true)
-            let track = nativeFactory.videoTrack(with: source, trackId: "screen-video")
-            track.isEnabled = false
-            let transceiverConfiguration = LKRTCRtpTransceiverInit()
-            transceiverConfiguration.direction = .sendOnly
-            transceiverConfiguration.streamIds = ["screen-stream"]
-            guard let transceiver = nativePeer.addTransceiver(
-                with: track,
-                init: transceiverConfiguration
+            let audioCapturer = MacExternalAudioCapturer(
+                audioDeviceModule: nativeFactory.audioDeviceModule
+            )
+            let audioSource = nativeFactory.audioSource(with: nil)
+            let audioTrack = nativeFactory.audioTrack(
+                with: audioSource,
+                trackId: "system-audio"
+            )
+            guard audioTrack.setAudioProcessingOptions(.raw()).isSuccess else {
+                throw WebRTCTransportError.audioTrackCreationFailed
+            }
+            audioTrack.isEnabled = false
+            let audioTransceiverConfiguration = LKRTCRtpTransceiverInit()
+            audioTransceiverConfiguration.direction = .sendOnly
+            audioTransceiverConfiguration.streamIds = ["audio-stream"]
+            guard let audioTransceiver = nativePeer.addTransceiver(
+                with: audioTrack,
+                init: audioTransceiverConfiguration
+            ) else {
+                throw WebRTCTransportError.audioTrackCreationFailed
+            }
+            try Self.preferOpus(
+                on: audioTransceiver,
+                capabilities: nativeFactory.rtpSenderCapabilities(
+                    forKind: kLKRTCMediaStreamTrackKindAudio
+                )
+            )
+            localAudioTrack = audioTrack
+            externalAudioCapturer = audioCapturer
+
+            let videoSource = nativeFactory.videoSource(forScreenCast: true)
+            let videoTrack = nativeFactory.videoTrack(
+                with: videoSource,
+                trackId: "screen-video"
+            )
+            videoTrack.isEnabled = false
+            let videoTransceiverConfiguration = LKRTCRtpTransceiverInit()
+            videoTransceiverConfiguration.direction = .sendOnly
+            videoTransceiverConfiguration.streamIds = ["screen-stream"]
+            guard let videoTransceiver = nativePeer.addTransceiver(
+                with: videoTrack,
+                init: videoTransceiverConfiguration
             ) else {
                 throw WebRTCTransportError.videoTrackCreationFailed
             }
             try Self.preferH264(
-                on: transceiver,
+                on: videoTransceiver,
                 capabilities: nativeFactory.rtpSenderCapabilities(
                     forKind: kLKRTCMediaStreamTrackKindVideo
                 )
             )
-            localVideoTrack = track
-            externalVideoCapturer = MacExternalVideoCapturer(source: source)
+            localVideoTrack = videoTrack
+            externalVideoCapturer = MacExternalVideoCapturer(source: videoSource)
 
             let dataChannelConfiguration = LKRTCDataChannelConfiguration()
             dataChannelConfiguration.isOrdered = true
@@ -183,6 +232,8 @@ public actor WebRTCPeer {
             }
             proxy.installDataChannel(dataChannel)
         } else {
+            localAudioTrack = nil
+            externalAudioCapturer = nil
             localVideoTrack = nil
             externalVideoCapturer = nil
         }
@@ -292,6 +343,7 @@ public actor WebRTCPeer {
             guard applyingRemoteOfferEpoch == offerEpoch else {
                 throw WebRTCTransportError.unexpectedSignal
             }
+            try preferOpusOnAudioTransceivers()
             try preferH264OnVideoTransceivers()
             let answerSDP = try await createAndSetLocalAnswer()
             try ensureOpen()
@@ -828,6 +880,11 @@ public actor WebRTCPeer {
     var isClosedForTesting: Bool {
         isClosed
     }
+
+    var isSystemAudioEnabledForTesting: Bool {
+        localAudioTrack?.isEnabled == true
+            && activeSystemAudioAuthorization?.isValid == true
+    }
 #endif
 
     /// Immediately disables screen media after an application-owned authorization changes.
@@ -837,6 +894,49 @@ public actor WebRTCPeer {
     public func suspendScreenMediaForTransportUncertainty() {
         localVideoTrack?.isEnabled = false
         invalidateInputSession(reason: "Screen media authorization became uncertain.")
+    }
+
+    /// Enables host system audio only while the same actor turn can prove the native transport
+    /// and ordered control lane are healthy. Audio has a separate authorization from screen
+    /// visibility so Hide can disable video without interrupting background listening.
+    public func enableSystemAudioIfTransportHealthy(
+        authorization: WebRTCAudioAuthorization
+    ) throws {
+        try ensureOpen()
+        guard role == .host,
+              let localAudioTrack,
+              let externalAudioCapturer else {
+            throw WebRTCTransportError.invalidRole
+        }
+
+        if let existingAuthorization = activeSystemAudioAuthorization,
+           existingAuthorization !== authorization {
+            suspendSystemAudioForTransportUncertainty()
+        }
+
+        try authorization.withValidAuthorization {
+            guard isTransportHealthyForCapture() else {
+                throw WebRTCTransportError.transportNotHealthy
+            }
+            externalAudioCapturer.setEnabled(true)
+            localAudioTrack.isEnabled = true
+            activeSystemAudioAuthorization = authorization
+        }
+    }
+
+    /// Fail-closes system audio and drops buffered PCM at every transport/recovery uncertainty
+    /// boundary. Re-enabling always requires a fresh authorization and a new health proof.
+    public func suspendSystemAudioForTransportUncertainty() {
+        let authorization = activeSystemAudioAuthorization
+        activeSystemAudioAuthorization = nil
+        localAudioTrack?.isEnabled = false
+        externalAudioCapturer?.setEnabled(false)
+        externalAudioCapturer?.reset()
+        authorization?.revoke()
+    }
+
+    public func remoteAudioTrack() -> WebRTCRemoteAudioTrack? {
+        currentRemoteAudioTrack
     }
 
     public func remoteVideoTrack() -> WebRTCRemoteVideoTrack? {
@@ -969,6 +1069,20 @@ public actor WebRTCPeer {
             emit(.dataChannelStateChanged(state))
         case .dataChannelMessage(let data):
             receiveControlChannelData(data)
+        case .remoteAudioTrack(let track):
+            // Unified Plan can report the same receiver through both legacy stream and modern
+            // receiver callbacks. Adopt it once so duplicate callbacks cannot toggle playout or
+            // produce two application-owned wrappers for one native track.
+            if currentRemoteAudioTrack?.wrapsSameNativeTrack(as: track) == true {
+                return
+            }
+            // Native receive tracks start enabled. Fail closed before publishing the wrapper so
+            // audio cannot escape during the actor -> application lifecycle handoff. The viewer
+            // explicitly unmutes only after its current transport/background-audio proof passes.
+            currentRemoteAudioTrack?.setEnabled(false)
+            track.setEnabled(false)
+            currentRemoteAudioTrack = track
+            emit(.remoteAudioTrack(track))
         case .remoteVideoTrack(let track):
             currentRemoteVideoTrack = track
             emit(.remoteVideoTrack(track))
@@ -1014,6 +1128,8 @@ public actor WebRTCPeer {
     /// gate first, then synchronously close native media and finish the stream.
     private func failClosedForEventDeliveryLoss(_ reason: String) {
         guard !isClosed else { return }
+        suspendSystemAudioForTransportUncertainty()
+        disableRemoteAudioPlayback()
         isClosed = true
         localVideoTrack?.isEnabled = false
         let hostAuthorization = activeHostInputAuthorization
@@ -1285,6 +1401,8 @@ public actor WebRTCPeer {
     }
 
     private func failCloseScreenMedia() {
+        suspendSystemAudioForTransportUncertainty()
+        disableRemoteAudioPlayback()
         localVideoTrack?.isEnabled = false
         // Clear the peer-owned capability before lifecycle state events can reach application
         // actors. This closes the window where their health booleans still describe the old route.
@@ -1631,12 +1749,24 @@ public actor WebRTCPeer {
         }
     }
 
+    private func preferOpusOnAudioTransceivers() throws {
+        let capabilities = factory.rtpReceiverCapabilities(
+            forKind: kLKRTCMediaStreamTrackKindAudio
+        )
+        for transceiver in peerConnection.transceivers {
+            guard transceiver.mediaType == .audio else { continue }
+            try Self.preferOpus(on: transceiver, capabilities: capabilities)
+        }
+    }
+
     private func ensureOpen() throws {
         if isClosed { throw WebRTCTransportError.transportClosed }
     }
 
     private func closeTransport() {
         guard !isClosed else { return }
+        suspendSystemAudioForTransportUncertainty()
+        disableRemoteAudioPlayback()
         localVideoTrack?.isEnabled = false
         invalidateInputSession(reason: "WebRTC transport closed.")
         guard !isClosed else { return }
@@ -1659,6 +1789,13 @@ public actor WebRTCPeer {
         eventContinuation.finish()
     }
 
+    /// Mute native receive rendering synchronously at transport boundaries. Keeping the wrapper
+    /// lets a recovered application session explicitly re-enable the same negotiated track after
+    /// it has re-proved health, without depending on a second receiver callback.
+    private func disableRemoteAudioPlayback() {
+        currentRemoteAudioTrack?.setEnabled(false)
+    }
+
     private static func preferH264(
         on transceiver: LKRTCRtpTransceiver,
         capabilities: LKRTCRtpCapabilities
@@ -1675,6 +1812,24 @@ public actor WebRTCPeer {
             ($0.mimeType as String).caseInsensitiveCompare("video/H264") == .orderedSame
         }) else {
             throw WebRTCTransportError.videoTrackCreationFailed
+        }
+
+        do {
+            _ = try transceiver.setCodecPreferences(codecs, error: ())
+        } catch {
+            throw WebRTCTransportError.nativeFailure(error.localizedDescription)
+        }
+    }
+
+    private static func preferOpus(
+        on transceiver: LKRTCRtpTransceiver,
+        capabilities: LKRTCRtpCapabilities
+    ) throws {
+        let codecs = capabilities.codecs.filter {
+            ($0.mimeType as String).caseInsensitiveCompare("audio/opus") == .orderedSame
+        }
+        guard !codecs.isEmpty else {
+            throw WebRTCTransportError.audioTrackCreationFailed
         }
 
         do {

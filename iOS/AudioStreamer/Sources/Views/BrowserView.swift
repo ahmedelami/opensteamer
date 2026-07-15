@@ -20,6 +20,17 @@ struct BrowserView: View {
             Section("Connect from Anywhere") {
                 if worldwideViewModel.hasActiveSession {
                     LabeledContent("State", value: worldwideViewModel.stateText)
+                    LabeledContent("Audio", value: worldwideViewModel.audioStateText)
+                        .accessibilityIdentifier("worldwideAudioState")
+
+                    if worldwideViewModel.audioRequiresExplicitResume {
+                        Button {
+                            worldwideViewModel.resumeAudioPlayback()
+                        } label: {
+                            Label("Resume Audio", systemImage: "play.fill")
+                        }
+                        .accessibilityIdentifier("resumeWorldwideAudio")
+                    }
 
                     if worldwideViewModel.isPeerConnected {
                         LabeledContent("Route", value: worldwideViewModel.routeText)
@@ -162,7 +173,7 @@ struct BrowserView: View {
                 Section("Available Macs") {
                     ForEach(viewModel.servers) { server in
                         Button {
-                            viewModel.connect(to: server)
+                            connectLocal(to: server)
                         } label: {
                             ServerRow(server: server)
                         }
@@ -221,6 +232,12 @@ struct BrowserView: View {
     }
 
     private func connectRemote() {
+        // The legacy PCM renderer and worldwide WebRTC renderer both own the process-wide
+        // iOS audio session. Keep the UI connection paths mutually exclusive so one renderer
+        // cannot deactivate or reconfigure the other's background playback session.
+        if worldwideViewModel.hasActiveSession {
+            worldwideViewModel.disconnect()
+        }
         remoteTokenState.persistNow()
         if isRelayURL {
             viewModel.connect(relayURLString: trimmedHost, authToken: remoteTokenState.token)
@@ -238,13 +255,25 @@ struct BrowserView: View {
 
         if worldwideViewModel.connect(
             invitationCode: trimmedInvitationCode,
-            debugEndpointOverride: debugEndpoint
+            debugEndpointOverride: debugEndpoint,
+            beforeAudioActivation: {
+                if viewModel.selectedServer != nil {
+                    viewModel.disconnect()
+                }
+            }
         ) {
             // A one-time capability should not remain in visible or persisted UI state.
             invitationCode = ""
             showsInvitationCode = false
             invitationCodeIsFocused = false
         }
+    }
+
+    private func connectLocal(to server: ServerInfo) {
+        if worldwideViewModel.hasActiveSession {
+            worldwideViewModel.disconnect()
+        }
+        viewModel.connect(to: server)
     }
 }
 

@@ -1,3 +1,6 @@
+import AudioToolbox
+import AVFoundation
+import CoreMedia
 import CoreVideo
 import Foundation
 import RemoteSessionCore
@@ -208,6 +211,7 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
                 expectations.viewerConnected,
                 expectations.viewerDataChannelOpen,
                 expectations.directRoute,
+                expectations.remoteAudioTrack,
                 expectations.remoteVideoTrack
             ],
             timeout: 10
@@ -225,6 +229,69 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             )
             return
         }
+
+        let initialOffer = try XCTUnwrap(connectedSnapshot.hostOffers.first)
+        let audioSection = try XCTUnwrap(mediaSection(kind: "audio", in: initialOffer))
+        XCTAssertTrue(audioSection.contains("a=sendonly"))
+        XCTAssertNotNil(
+            audioSection.range(
+                of: #"a=rtpmap:\d+ opus/48000/2"#,
+                options: [.regularExpression, .caseInsensitive]
+            ),
+            "The send-only system-audio section must negotiate 48 kHz Opus."
+        )
+        XCTAssertFalse(audioSection.lowercased().contains("stereo=1"))
+        XCTAssertFalse(audioSection.lowercased().contains("sprop-stereo=1"))
+        XCTAssertNotNil(host.externalAudioCapturer)
+
+        let revokedAudioAuthorization = WebRTCAudioAuthorization()
+        revokedAudioAuthorization.revoke()
+        do {
+            try await host.enableSystemAudioIfTransportHealthy(
+                authorization: revokedAudioAuthorization
+            )
+            XCTFail("A revoked audio authorization must not expose system audio.")
+        } catch let error as WebRTCTransportError {
+            XCTAssertEqual(error, .audioAuthorizationRevoked)
+        }
+
+        let receivedAudioTrack = await recorder.remoteAudioTrack()
+        let remoteAudioTrack = try XCTUnwrap(receivedAudioTrack)
+        XCTAssertFalse(
+            remoteAudioTrack.isEnabled,
+            "A newly received native audio track must remain muted until lifecycle health passes."
+        )
+        remoteAudioTrack.setEnabled(true)
+        XCTAssertTrue(remoteAudioTrack.isEnabled)
+        let audioProbe = DecodedAudioProbe()
+        let audioRenderer = WebRTCAudioPCMRenderer { buffer in
+            audioProbe.observe(buffer)
+        }
+        remoteAudioTrack.addRendererForTesting(audioRenderer)
+        defer { remoteAudioTrack.removeRendererForTesting(audioRenderer) }
+
+        let audioAuthorization = WebRTCAudioAuthorization()
+        try await host.enableSystemAudioIfTransportHealthy(
+            authorization: audioAuthorization
+        )
+        XCTAssertTrue(audioAuthorization.isValid)
+        let audioEnabledBeforeShow = await host.isSystemAudioEnabledForTesting
+        XCTAssertTrue(audioEnabledBeforeShow)
+
+        let audioCapturer = try XCTUnwrap(host.externalAudioCapturer)
+        // ScreenCaptureKit supplies stereo PCM, while this pinned ADM truthfully exposes a mono
+        // WebRTC capture sink. Exercise the production conversion/downmix rather than a shortcut.
+        let stereoTone = try makeStereoToneSampleBuffer()
+        for _ in 0..<75 where !audioProbe.hasReceivedAudio {
+            audioCapturer.capture(sampleBuffer: stereoTone)
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        await fulfillment(of: [audioProbe.receivedAudio], timeout: 5)
+        let audioMeasurement = audioProbe.measurement
+        let captureDiagnostics = audioCapturer.diagnosticsForTesting()
+        let audioFailureContext = "\(captureDiagnostics); \(audioProbe.diagnosticSummary)"
+        XCTAssertEqual(audioMeasurement.channelCount, 1, audioFailureContext)
+        XCTAssertGreaterThan(audioMeasurement.rms, 0.01, audioFailureContext)
 
         let showID = try await viewer.setScreenVisible(true)
         await fulfillment(of: [expectations.showRequestReceived], timeout: 3)
@@ -357,6 +424,12 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             hideSnapshot.controlAcknowledgements.last,
             .init(id: hideID, state: .inactive)
         )
+        XCTAssertTrue(
+            audioAuthorization.isValid,
+            "Hiding video must not revoke the independent system-audio session."
+        )
+        let audioEnabledAfterHide = await host.isSystemAudioEnabledForTesting
+        XCTAssertTrue(audioEnabledAfterHide)
 
         // Repeating an identical host acknowledgement is safe. The wire replay is suppressed at
         // the viewer, while a contradictory acknowledgement for the same ID fails closed.
@@ -378,6 +451,12 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         await fulfillment(of: [expectations.keyFrameAcknowledged], timeout: 3)
 
         try await host.restartICE()
+        XCTAssertFalse(
+            audioAuthorization.isValid,
+            "ICE uncertainty must synchronously revoke system-audio capture."
+        )
+        let audioEnabledDuringRestart = await host.isSystemAudioEnabledForTesting
+        XCTAssertFalse(audioEnabledDuringRestart)
         await fulfillment(
             of: [
                 expectations.secondOfferEmitted,
@@ -453,6 +532,13 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         )
         await fulfillment(of: [expectations.recoveryProbeAcknowledged], timeout: 3)
 
+        let recoveredAudioAuthorization = WebRTCAudioAuthorization()
+        try await host.enableSystemAudioIfTransportHealthy(
+            authorization: recoveredAudioAuthorization
+        )
+        let recoveredAudioEnabled = await host.isSystemAudioEnabledForTesting
+        XCTAssertTrue(recoveredAudioEnabled)
+
         let recoveredShowID = try await viewer.setScreenVisible(true)
         XCTAssertEqual(recoveredShowID, recoveryProbeID + 1)
         await fulfillment(of: [expectations.postRestartShowRequestReceived], timeout: 3)
@@ -489,6 +575,11 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             ],
             timeout: 5
         )
+        XCTAssertFalse(
+            remoteAudioTrack.isEnabled,
+            "Closing the transport must synchronously stop remote audio rendering."
+        )
+        XCTAssertFalse(recoveredAudioAuthorization.isValid)
 
         let finalSnapshot = await recorder.snapshot()
         XCTAssertEqual(finalSnapshot.emitted.host.ends, 1)
@@ -529,6 +620,7 @@ private enum LoopbackMilestone: Hashable, Sendable {
     case viewerConnected
     case viewerDataChannelOpen
     case directRoute
+    case remoteAudioTrack
     case remoteTrack
     case inputRequestReceived
     case inputFeedbackReceived
@@ -603,6 +695,7 @@ private struct LoopbackSnapshot: Sendable {
             .viewerConnected,
             .viewerDataChannelOpen,
             .directRoute,
+            .remoteAudioTrack,
             .remoteTrack
         ])
     }
@@ -614,6 +707,7 @@ private actor LoopbackRecorder {
     private var emitted = DirectionalSignalCounts()
     private var delivered = DirectionalSignalCounts()
     private var forwardingErrors: [String] = []
+    private var retainedRemoteAudioTrack: WebRTCRemoteAudioTrack?
     private var retainedRemoteTrack: WebRTCRemoteVideoTrack?
     private var controlRequests: [WebRTCControlRequest] = []
     private var controlAcknowledgements: [WebRTCControlAcknowledgement] = []
@@ -639,6 +733,9 @@ private actor LoopbackRecorder {
             observed.append(.viewerDataChannelOpen)
         case .routeChanged(let route) where route.kind == .direct:
             observed.append(.directRoute)
+        case .remoteAudioTrack(let track) where side == .viewer:
+            retainedRemoteAudioTrack = track
+            observed.append(.remoteAudioTrack)
         case .remoteVideoTrack(let track) where side == .viewer:
             retainedRemoteTrack = track
             observed.append(.remoteTrack)
@@ -746,6 +843,10 @@ private actor LoopbackRecorder {
         forwardingErrors.append(String(describing: error))
     }
 
+    func remoteAudioTrack() -> WebRTCRemoteAudioTrack? {
+        retainedRemoteAudioTrack
+    }
+
     func snapshot() -> LoopbackSnapshot {
         LoopbackSnapshot(
             milestones: milestones,
@@ -771,6 +872,7 @@ private final class LoopbackExpectations: @unchecked Sendable {
     let viewerConnected = XCTestExpectation(description: "viewer connected")
     let viewerDataChannelOpen = XCTestExpectation(description: "viewer data channel opened")
     let directRoute = XCTestExpectation(description: "ICE selected a direct route")
+    let remoteAudioTrack = XCTestExpectation(description: "viewer received the remote audio track")
     let remoteVideoTrack = XCTestExpectation(description: "viewer received the remote video track")
     let inputRequestReceived = XCTestExpectation(description: "host received remote input")
     let inputFeedbackReceived = XCTestExpectation(description: "viewer received input feedback")
@@ -806,6 +908,7 @@ private final class LoopbackExpectations: @unchecked Sendable {
         case .viewerConnected: viewerConnected.fulfill()
         case .viewerDataChannelOpen: viewerDataChannelOpen.fulfill()
         case .directRoute: directRoute.fulfill()
+        case .remoteAudioTrack: remoteAudioTrack.fulfill()
         case .remoteTrack: remoteVideoTrack.fulfill()
         case .inputRequestReceived: inputRequestReceived.fulfill()
         case .inputFeedbackReceived: inputFeedbackReceived.fulfill()
@@ -850,6 +953,235 @@ private func makePixelBuffer(width: Int, height: Int) throws -> CVPixelBuffer {
     }
     CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
     return pixelBuffer
+}
+
+private func mediaSection(kind: String, in sdp: String) -> String? {
+    let lines = sdp
+        .replacingOccurrences(of: "\r\n", with: "\n")
+        .split(separator: "\n", omittingEmptySubsequences: false)
+        .map(String.init)
+    guard let start = lines.firstIndex(where: { $0.hasPrefix("m=\(kind) ") }) else {
+        return nil
+    }
+    let end = lines[(start + 1)...].firstIndex(where: { $0.hasPrefix("m=") })
+        ?? lines.endIndex
+    return lines[start..<end].joined(separator: "\n")
+}
+
+private struct DecodedAudioMeasurement: Sendable {
+    let channelCount: Int
+    let rms: Double
+
+    static let zero = DecodedAudioMeasurement(
+        channelCount: 0,
+        rms: 0
+    )
+}
+
+private final class DecodedAudioProbe: @unchecked Sendable {
+    let receivedAudio = XCTestExpectation(
+        description: "viewer decoded nonzero PCM from the host system-audio graph"
+    )
+
+    private let lock = NSLock()
+    private var didReceiveAudio = false
+    private var latestMeasurement = DecodedAudioMeasurement.zero
+    private var callbackCount = 0
+    private var observedFormats: Set<String> = []
+
+    var hasReceivedAudio: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return didReceiveAudio
+    }
+
+    var measurement: DecodedAudioMeasurement {
+        lock.lock()
+        defer { lock.unlock() }
+        return latestMeasurement
+    }
+
+    var diagnosticSummary: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return "callbacks=\(callbackCount) formats=\(observedFormats.sorted()) "
+            + "measurement=\(latestMeasurement)"
+    }
+
+    func observe(_ buffer: AVAudioPCMBuffer) {
+        let format = "\(buffer.format.sampleRate)/\(buffer.format.channelCount)ch/"
+            + "\(buffer.format.commonFormat.rawValue)/interleaved=\(buffer.format.isInterleaved)"
+        let measurement = Self.measure(buffer)
+        lock.withLock {
+            callbackCount += 1
+            observedFormats.insert(format)
+            if let measurement {
+                latestMeasurement = measurement
+            }
+        }
+
+        guard let measurement,
+              measurement.channelCount == 1,
+              measurement.rms > 0.01 else {
+            return
+        }
+
+        let shouldFulfill = lock.withLock { () -> Bool in
+            guard !didReceiveAudio else { return false }
+            didReceiveAudio = true
+            return true
+        }
+        if shouldFulfill {
+            receivedAudio.fulfill()
+        }
+    }
+
+    private static func measure(_ buffer: AVAudioPCMBuffer) -> DecodedAudioMeasurement? {
+        let frameCount = Int(buffer.frameLength)
+        let channelCount = Int(buffer.format.channelCount)
+        guard frameCount > 0, channelCount >= 1 else { return nil }
+
+        var energy = 0.0
+        for frame in 0..<frameCount {
+            guard let sample = sample(buffer, frame: frame, channel: 0) else {
+                return nil
+            }
+            energy += sample * sample
+        }
+
+        let divisor = Double(frameCount)
+        return DecodedAudioMeasurement(
+            channelCount: channelCount,
+            rms: sqrt(energy / divisor)
+        )
+    }
+
+    private static func sample(
+        _ buffer: AVAudioPCMBuffer,
+        frame: Int,
+        channel: Int
+    ) -> Double? {
+        let channelCount = Int(buffer.format.channelCount)
+        let sampleIndex = buffer.format.isInterleaved
+            ? frame * channelCount + channel
+            : frame
+        let dataIndex = buffer.format.isInterleaved ? 0 : channel
+
+        switch buffer.format.commonFormat {
+        case .pcmFormatFloat32:
+            guard let data = buffer.floatChannelData else { return nil }
+            return Double(data[dataIndex][sampleIndex])
+        case .pcmFormatInt16:
+            guard let data = buffer.int16ChannelData else { return nil }
+            return Double(data[dataIndex][sampleIndex]) / Double(Int16.max)
+        case .pcmFormatInt32:
+            guard let data = buffer.int32ChannelData else { return nil }
+            return Double(data[dataIndex][sampleIndex]) / Double(Int32.max)
+        default:
+            return nil
+        }
+    }
+}
+
+private func makeStereoToneSampleBuffer() throws -> CMSampleBuffer {
+    let sampleRate = 48_000.0
+    let frameCount = 960
+    let amplitude = 0.08 * Double(Int16.max)
+    var samples = [Int16](repeating: 0, count: frameCount * 2)
+    for frame in 0..<frameCount {
+        let time = Double(frame) / sampleRate
+        samples[frame * 2] = Int16(
+            (sin(2 * .pi * 500 * time) * amplitude).rounded()
+        )
+        samples[frame * 2 + 1] = Int16(
+            (sin(2 * .pi * 1_000 * time) * amplitude).rounded()
+        )
+    }
+
+    let byteCount = samples.count * MemoryLayout<Int16>.size
+    var blockBuffer: CMBlockBuffer?
+    var status = CMBlockBufferCreateWithMemoryBlock(
+        allocator: kCFAllocatorDefault,
+        memoryBlock: nil,
+        blockLength: byteCount,
+        blockAllocator: kCFAllocatorDefault,
+        customBlockSource: nil,
+        offsetToData: 0,
+        dataLength: byteCount,
+        flags: 0,
+        blockBufferOut: &blockBuffer
+    )
+    guard status == kCMBlockBufferNoErr, let blockBuffer else {
+        throw AudioSampleBufferTestError.blockBufferCreationFailed(status)
+    }
+    status = samples.withUnsafeBytes { bytes in
+        guard let baseAddress = bytes.baseAddress else { return kCMBlockBufferBadLengthParameterErr }
+        return CMBlockBufferReplaceDataBytes(
+            with: baseAddress,
+            blockBuffer: blockBuffer,
+            offsetIntoDestination: 0,
+            dataLength: byteCount
+        )
+    }
+    guard status == kCMBlockBufferNoErr else {
+        throw AudioSampleBufferTestError.blockBufferCopyFailed(status)
+    }
+
+    var streamDescription = AudioStreamBasicDescription(
+        mSampleRate: sampleRate,
+        mFormatID: kAudioFormatLinearPCM,
+        mFormatFlags: kLinearPCMFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+        mBytesPerPacket: 4,
+        mFramesPerPacket: 1,
+        mBytesPerFrame: 4,
+        mChannelsPerFrame: 2,
+        mBitsPerChannel: 16,
+        mReserved: 0
+    )
+    var formatDescription: CMAudioFormatDescription?
+    status = CMAudioFormatDescriptionCreate(
+        allocator: kCFAllocatorDefault,
+        asbd: &streamDescription,
+        layoutSize: 0,
+        layout: nil,
+        magicCookieSize: 0,
+        magicCookie: nil,
+        extensions: nil,
+        formatDescriptionOut: &formatDescription
+    )
+    guard status == noErr, let formatDescription else {
+        throw AudioSampleBufferTestError.formatDescriptionCreationFailed(status)
+    }
+
+    var timing = CMSampleTimingInfo(
+        duration: CMTime(value: 1, timescale: 48_000),
+        presentationTimeStamp: .zero,
+        decodeTimeStamp: .invalid
+    )
+    var sampleSize = 4
+    var sampleBuffer: CMSampleBuffer?
+    status = CMSampleBufferCreateReady(
+        allocator: kCFAllocatorDefault,
+        dataBuffer: blockBuffer,
+        formatDescription: formatDescription,
+        sampleCount: frameCount,
+        sampleTimingEntryCount: 1,
+        sampleTimingArray: &timing,
+        sampleSizeEntryCount: 1,
+        sampleSizeArray: &sampleSize,
+        sampleBufferOut: &sampleBuffer
+    )
+    guard status == noErr, let sampleBuffer else {
+        throw AudioSampleBufferTestError.sampleBufferCreationFailed(status)
+    }
+    return sampleBuffer
+}
+
+private enum AudioSampleBufferTestError: Error {
+    case blockBufferCreationFailed(OSStatus)
+    case blockBufferCopyFailed(OSStatus)
+    case formatDescriptionCreationFailed(OSStatus)
+    case sampleBufferCreationFailed(OSStatus)
 }
 
 private enum PixelBufferTestError: Error {

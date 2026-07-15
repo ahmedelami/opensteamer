@@ -198,7 +198,8 @@ final class AudioSessionManager {
                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
                 shouldResume = options.contains(.shouldResume)
             } else {
-                shouldResume = true
+                // Absence of the resume option is not permission to restart audible playback.
+                shouldResume = false
             }
             emitSnapshot(event: shouldResume ? "Audio interruption ended" : "Audio interruption ended without resume flag")
             onInterruptionEnded?(shouldResume)

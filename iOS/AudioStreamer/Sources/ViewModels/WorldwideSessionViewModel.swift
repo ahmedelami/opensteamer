@@ -14,6 +14,10 @@ final class WorldwideSessionViewModel: ObservableObject {
     @Published private(set) var isControlChannelReady = false
     @Published private(set) var isScreenVisible = false
     @Published private(set) var remoteVideoTrack: WebRTCRemoteVideoTrack?
+    @Published private(set) var audioStateText = "Inactive"
+    @Published private(set) var isRemoteAudioAvailable = false
+    @Published private(set) var isRemoteAudioPlaying = false
+    @Published private(set) var audioRequiresExplicitResume = false
     @Published private(set) var routeText = "Unknown"
     @Published private(set) var iceStateText = "Inactive"
     @Published private(set) var remoteDisplayName = "Mac mini"
@@ -25,6 +29,8 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private var signaling: RendezvousSignalingClient?
     private var peer: WebRTCPeer?
+    private var remoteAudioTrack: WebRTCRemoteAudioTrack?
+    private let audioLifecycle: WorldwideAudioLifecycleController
     private var recoveryCoordinator: ICERecoveryCoordinator?
     private var nextICERestartRequestID: UInt64 = 1
     private var iceIsConnected = false
@@ -54,6 +60,19 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var debugScreenVisibilityRequestSender: (@MainActor (Bool) async throws -> UInt64)?
     #endif
 
+    init(audioLifecycle: WorldwideAudioLifecycleController = WorldwideAudioLifecycleController()) {
+        self.audioLifecycle = audioLifecycle
+        audioLifecycle.onSnapshotChanged = { [weak self] snapshot in
+            self?.audioStateText = snapshot.stateText
+            self?.isRemoteAudioAvailable = snapshot.isRemoteAudioAvailable
+            self?.isRemoteAudioPlaying = snapshot.isPlaying
+            self?.audioRequiresExplicitResume = snapshot.requiresExplicitResume
+        }
+        audioLifecycle.onError = { [weak self] message in
+            self?.lastError = message
+        }
+    }
+
     var hasActiveSession: Bool {
         signaling != nil || peer != nil || sessionTask != nil
     }
@@ -74,7 +93,11 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     @discardableResult
-    func connect(invitationCode input: String, debugEndpointOverride: String? = nil) -> Bool {
+    func connect(
+        invitationCode input: String,
+        debugEndpointOverride: String? = nil,
+        beforeAudioActivation: @MainActor () -> Void = {}
+    ) -> Bool {
         guard !isConnecting, !hasActiveSession else { return false }
 
         let invitation: RemoteInvitationCode
@@ -105,7 +128,17 @@ final class WorldwideSessionViewModel: ObservableObject {
             return false
         }
 
+        // Validation is complete. Release any other process-wide audio-session owner only when
+        // this worldwide attempt can actually proceed to WebRTC audio activation.
+        beforeAudioActivation()
         resetPublishedSessionState()
+        do {
+            try audioLifecycle.prepare(serverName: remoteDisplayName)
+        } catch {
+            stateText = "Audio unavailable"
+            lastError = "The iPhone could not prepare background audio: \(error.localizedDescription)"
+            return false
+        }
         isConnecting = true
         stateText = "Connecting securely"
         signaling = client
@@ -128,6 +161,26 @@ final class WorldwideSessionViewModel: ObservableObject {
         tearDown(reason: .viewerDisconnected)
         resetPublishedSessionState()
         stateText = "Not connected"
+    }
+
+    /// Keeps authenticated audio playout alive while independently closing the screen/input
+    /// presentation boundary for privacy.
+    func handleAppBecameActive() {
+        audioLifecycle.appBecameActive()
+    }
+
+    func handleAppBecameInactive() {
+        audioLifecycle.appBecameInactive()
+        hideScreenForPassiveLifecycleIfNeeded()
+    }
+
+    func handleAppEnteredBackground() {
+        audioLifecycle.appEnteredBackground()
+        hideScreenForPassiveLifecycleIfNeeded()
+    }
+
+    func resumeAudioPlayback() {
+        audioLifecycle.resumePlayback()
     }
 
     /// Immediately closes the local input gate before UI code starts an asynchronous Hide.
@@ -771,7 +824,12 @@ final class WorldwideSessionViewModel: ObservableObject {
                 .trimmingCharacters(in: .whitespacesAndNewlines),
                !displayName.isEmpty {
                 remoteDisplayName = displayName
+                audioLifecycle.updateServerName(displayName)
             }
+
+        case .remoteAudioTrack(let track):
+            remoteAudioTrack = track
+            audioLifecycle.remoteAudioBecameAvailable(track)
 
         case .remoteVideoTrack(let track):
             remoteVideoTrack = track
@@ -845,6 +903,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     private func tearDown(reason: RemoteSessionEndReason) {
+        audioLifecycle.stop()
+        remoteAudioTrack = nil
         acceptsActiveScreenAcknowledgement = false
         remoteHideRequired = false
         screenVisibilityOperationGeneration = UUID()
@@ -894,6 +954,11 @@ final class WorldwideSessionViewModel: ObservableObject {
         iceIsConnected = false
         isScreenVisible = false
         remoteVideoTrack = nil
+        remoteAudioTrack = nil
+        audioStateText = "Inactive"
+        isRemoteAudioAvailable = false
+        isRemoteAudioPlaying = false
+        audioRequiresExplicitResume = false
         routeText = "Unknown"
         iceStateText = "Inactive"
         remoteDisplayName = "Mac mini"
@@ -1053,6 +1118,9 @@ final class WorldwideSessionViewModel: ObservableObject {
         remoteHideRequired = false
         invalidateRemoteInputState()
         stateText = "Connected"
+        // The authenticated, current-generation inactive acknowledgement is the recovery proof
+        // that permits remote audio to leave the fail-closed mute gate.
+        audioLifecycle.transportBecameHealthy()
         await recoveryCoordinator?.iceStateChanged(.connected)
     }
 
@@ -1373,6 +1441,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         if !isScreenVisible {
             stateText = "Connected"
         }
+        audioLifecycle.transportBecameHealthy()
         await recoveryCoordinator?.iceStateChanged(state)
     }
 
@@ -1380,6 +1449,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         _ state: String,
         requiresProof: Bool = false
     ) {
+        audioLifecycle.transportBecameUncertain()
         acceptsActiveScreenAcknowledgement = false
         remoteHideRequired = false
         screenVisibilityOperationGeneration = UUID()
@@ -1399,6 +1469,17 @@ final class WorldwideSessionViewModel: ObservableObject {
         iceIsConnected = false
         isScreenVisible = false
         stateText = state
+    }
+
+    private func hideScreenForPassiveLifecycleIfNeeded() {
+        let needsRemoteHide = isScreenVisible
+            || pendingScreenVisibilityRequest?.isVisible == true
+            || acceptsActiveScreenAcknowledgement
+        guard needsRemoteHide else {
+            suspendRemoteInputPresentation()
+            return
+        }
+        beginPassiveScreenTeardown()
     }
 
     private func sendICERestartRequest(
