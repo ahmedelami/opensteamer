@@ -663,14 +663,16 @@ public final class WebRTCAudioPlaybackSession {
     }
 
     #if os(iOS)
-    private static func playbackConfiguration() -> LKRTCAudioSessionConfiguration {
+    static func playbackConfiguration() -> LKRTCAudioSessionConfiguration {
         let configuration = LKRTCAudioSessionConfiguration()
         configuration.category = AVAudioSession.Category.playback.rawValue
-        configuration.categoryOptions = [.allowAirPlay, .mixWithOthers]
+        // Playback already supports AirPlay implicitly. Apple restricts the explicit
+        // `allowAirPlay` option to `playAndRecord`; combining it with `playback` returns
+        // `paramErr` (-50) on physical iPhones even though Simulator accepts it.
+        configuration.categoryOptions = [.mixWithOthers]
         configuration.mode = AVAudioSession.Mode.moviePlayback.rawValue
         configuration.sampleRate = 48_000
         configuration.ioBufferDuration = 0.010
-        configuration.inputNumberOfChannels = 0
         // The pinned WebRTC audio-device module renders this Opus downlink as truthful mono.
         // Do not advertise a stereo session preference that the negotiated media cannot supply.
         configuration.outputNumberOfChannels = 1

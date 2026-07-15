@@ -1,8 +1,72 @@
+import AVFAudio
 import XCTest
 @testable import AudioStreamer
+@testable import WebRTCTransport
 
 @MainActor
 final class WorldwideAudioLifecycleTests: XCTestCase {
+    func testWorldwidePlaybackConfigurationUsesOnlyValidExplicitOptions() {
+        let configuration = WebRTCAudioPlaybackSession.playbackConfiguration()
+
+        XCTAssertEqual(configuration.category, AVAudioSession.Category.playback.rawValue)
+        XCTAssertEqual(configuration.mode, AVAudioSession.Mode.moviePlayback.rawValue)
+        XCTAssertEqual(configuration.categoryOptions, [.mixWithOthers])
+        XCTAssertFalse(configuration.categoryOptions.contains(.allowAirPlay))
+        XCTAssertGreaterThan(configuration.inputNumberOfChannels, 0)
+    }
+
+    func testLegacyLongFormPlaybackConfigurationUsesNoExplicitOptions() {
+        XCTAssertEqual(AudioSessionManager.playbackCategory, .playback)
+        XCTAssertEqual(AudioSessionManager.playbackMode, .moviePlayback)
+        XCTAssertEqual(AudioSessionManager.playbackRouteSharingPolicy, .longFormAudio)
+        XCTAssertTrue(AudioSessionManager.playbackCategoryOptions.isEmpty)
+    }
+
+    func testPhysicalDeviceCanConfigureLegacyBackgroundPlaybackSession() throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip(
+            "AVAudioSession route validation must run on a physical iPhone; "
+                + "Simulator audio does not exercise the hardware session boundary."
+        )
+        #else
+        let manager = AudioSessionManager()
+        defer { manager.deactivate() }
+
+        try manager.activate()
+
+        let session = AVAudioSession.sharedInstance()
+        XCTAssertEqual(session.category, .playback)
+        XCTAssertEqual(session.mode, .moviePlayback)
+        XCTAssertEqual(session.routeSharingPolicy, .longFormAudio)
+        XCTAssertGreaterThan(session.sampleRate, 0)
+        #endif
+    }
+
+    func testXRCanConfigureNativeBackgroundPlaybackSession() throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip(
+            "AVAudioSession route validation must run on a physical iPhone; "
+                + "Simulator audio does not exercise the hardware session boundary."
+        )
+        #else
+        let playback = WebRTCAudioPlaybackSession()
+        defer { playback.deactivate() }
+
+        // This is intentionally an integration test of the real LiveKit/WebRTC ->
+        // AVAudioSession boundary. A category/mode/options mismatch fails here with the
+        // same OSStatus (for example, paramErr / -50) that a TestFlight build reports.
+        try playback.activate()
+
+        let session = AVAudioSession.sharedInstance()
+        XCTAssertEqual(session.category, .playback)
+        XCTAssertEqual(session.mode, .moviePlayback)
+        XCTAssertTrue(session.categoryOptions.contains(.mixWithOthers))
+        // The device may report AirPlay as an implicit playback capability. The separate
+        // configuration invariant checks that AudioStreamer never requests it explicitly.
+        XCTAssertGreaterThan(session.sampleRate, 0)
+        #endif
+    }
+
     func testBackgroundLifecycleKeepsPlaybackPreparedAndNeverDeactivates() throws {
         let fixture = makeFixture()
         var snapshots: [WorldwideAudioLifecycleSnapshot] = []

@@ -38,6 +38,13 @@ final class AudioSessionManager {
 
     private var notificationTokens: [NSObjectProtocol] = []
 
+    #if os(iOS)
+    static let playbackCategory: AVAudioSession.Category = .playback
+    static let playbackMode: AVAudioSession.Mode = .moviePlayback
+    static let playbackRouteSharingPolicy: AVAudioSession.RouteSharingPolicy = .longFormAudio
+    static let playbackCategoryOptions: AVAudioSession.CategoryOptions = []
+    #endif
+
     var currentRouteDescription: String {
         #if os(iOS)
         Self.routeDescription(AVAudioSession.sharedInstance().currentRoute.outputs, emptyValue: "No output route")
@@ -59,10 +66,12 @@ final class AudioSessionManager {
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(
-            .playback,
-            mode: .moviePlayback,
-            policy: .longFormAudio,
-            options: [.mixWithOthers, .allowAirPlay]
+            Self.playbackCategory,
+            mode: Self.playbackMode,
+            policy: Self.playbackRouteSharingPolicy,
+            // Apple permits no category options with the long-form route-sharing policy.
+            // Playback supports AirPlay without explicitly requesting `allowAirPlay`.
+            options: Self.playbackCategoryOptions
         )
         try session.setActive(true, options: [])
         emitSnapshot(event: "Audio session active")
