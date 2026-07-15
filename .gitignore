@@ -19,6 +19,7 @@ macOS/**/*.xcuserstate
 macOS/**/xcuserdata/
 
 macOS/RelayBridge/node_modules/
+services/Rendezvous/node_modules/
 
 .DS_Store
 *.log

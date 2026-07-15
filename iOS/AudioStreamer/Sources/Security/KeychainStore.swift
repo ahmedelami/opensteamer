@@ -20,31 +20,36 @@ enum KeychainStore {
         return String(data: data, encoding: .utf8)
     }
 
-    static func saveRemoteToken(_ token: String) {
+    @discardableResult
+    static func saveRemoteToken(_ token: String) -> Bool {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            deleteRemoteToken()
-            return
+            return deleteRemoteToken()
         }
 
         let data = Data(trimmed.utf8)
         let query = baseQuery(account: remoteTokenAccount)
-        let attributes: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        ]
+        let updateAttributes = [kSecValueData as String: data]
 
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecItemNotFound {
-            var addQuery = query
-            addQuery.merge(attributes) { _, new in new }
-            SecItemAdd(addQuery as CFDictionary, nil)
+        let updateStatus = SecItemUpdate(
+            query as CFDictionary,
+            updateAttributes as CFDictionary
+        )
+        if updateStatus == errSecSuccess {
+            return true
         }
+        guard updateStatus == errSecItemNotFound else { return false }
+
+        var addQuery = query
+        addQuery[kSecValueData as String] = data
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
     }
 
-    private static func deleteRemoteToken() {
+    private static func deleteRemoteToken() -> Bool {
         let query = baseQuery(account: remoteTokenAccount)
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 
     private static func baseQuery(account: String) -> [String: Any] {

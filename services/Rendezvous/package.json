@@ -1,0 +1,17 @@
+{
+  "name": "@audiostream/rendezvous",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Opaque WebRTC signaling rendezvous for AudioStreamer",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node src/cli.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ws": "8.21.0"
+  }
+}

@@ -1,0 +1,4 @@
+# Copy this file to .dev.vars only when testing Cloudflare Realtime TURN locally.
+# Omit both entries entirely to run in direct-STUN-only mode.
+CLOUDFLARE_TURN_KEY_ID="replace-with-a-server-side-turn-key-id"
+CLOUDFLARE_TURN_API_TOKEN="replace-with-the-matching-server-side-api-token"

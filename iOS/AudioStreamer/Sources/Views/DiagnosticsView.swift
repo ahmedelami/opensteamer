@@ -2,6 +2,7 @@ import SwiftUI
 
 struct DiagnosticsView: View {
     @EnvironmentObject private var viewModel: StreamSessionViewModel
+    @EnvironmentObject private var worldwideViewModel: WorldwideSessionViewModel
 
     var body: some View {
         List {
@@ -34,6 +35,46 @@ struct DiagnosticsView: View {
                 MetricRow(title: "Underruns", value: "\(viewModel.metrics.underruns)")
             }
 
+            Section("Worldwide Screen") {
+                MetricRow(title: "State", value: worldwideViewModel.stateText)
+                MetricRow(title: "ICE", value: worldwideViewModel.iceStateText)
+                MetricRow(title: "Route", value: worldwideViewModel.routeText)
+                MetricRow(
+                    title: "Round Trip",
+                    value: worldwideViewModel.statistics?.currentRoundTripTime
+                        .map { $0.formatted(.number.precision(.fractionLength(3))) + " s" }
+                        ?? "Unknown"
+                )
+                MetricRow(
+                    title: "Video",
+                    value: worldwideVideoDescription
+                )
+            }
+
+            if let lastDiagnostic = worldwideViewModel.lastDiagnostic {
+                Section("Worldwide Last Diagnostic") {
+                    Text(lastDiagnostic)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let candidateError = worldwideViewModel.lastICECandidateError {
+                Section("Worldwide ICE Probe") {
+                    MetricRow(title: "Server", value: candidateError.url)
+                    MetricRow(title: "Code", value: "\(candidateError.errorCode)")
+                    MetricRow(
+                        title: "Local Endpoint",
+                        value: candidateError.address.isEmpty
+                            ? "Unknown"
+                            : "\(candidateError.address):\(candidateError.port)"
+                    )
+                    Text(candidateError.reason)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             if let lastError = viewModel.lastError {
                 Section("Last Error") {
                     Text(lastError)
@@ -43,6 +84,19 @@ struct DiagnosticsView: View {
             }
         }
         .navigationTitle("Diagnostics")
+    }
+
+    private var worldwideVideoDescription: String {
+        guard let video = worldwideViewModel.statistics?.inboundVideo else {
+            return "No frames"
+        }
+        let size = if let width = video.frameWidth, let height = video.frameHeight {
+            "\(width)×\(height)"
+        } else {
+            "Unknown size"
+        }
+        guard let framesPerSecond = video.framesPerSecond else { return size }
+        return "\(size) · \(framesPerSecond.formatted(.number.precision(.fractionLength(1)))) fps"
     }
 }
 

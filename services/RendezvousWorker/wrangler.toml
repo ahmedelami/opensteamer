@@ -1,0 +1,28 @@
+name = "audiostreamer-rendezvous"
+main = "src/index.js"
+compatibility_date = "2026-07-13"
+workers_dev = true
+preview_urls = false
+
+[vars]
+INVITATION_TTL_SECONDS = "300"
+TOMBSTONE_TTL_SECONDS = "300"
+STUN_URLS = "stun:stun.cloudflare.com:3478"
+TURN_CREDENTIAL_TTL_SECONDS = "600"
+TURN_FETCH_TIMEOUT_MS = "5000"
+
+[[ratelimits]]
+name = "JOIN_RATE_LIMITER"
+namespace_id = "1001001"
+
+  [ratelimits.simple]
+  limit = 60
+  period = 60
+
+[[durable_objects.bindings]]
+name = "RENDEZVOUS"
+class_name = "RendezvousSession"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RendezvousSession"]

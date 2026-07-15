@@ -39,6 +39,17 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "36F2C6746142D7AF483406D3"
+               BuildableName = "AudioStreamerTests.xctest"
+               BlueprintName = "AudioStreamerTests"
+               ReferencedContainer = "container:AudioStreamer.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
       <CommandLineArguments>
       </CommandLineArguments>

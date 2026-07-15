@@ -15,6 +15,12 @@ targets:
     dependencies:
       - package: MacCaptureVerifier
         product: ClientCore
+      - package: MacCaptureVerifier
+        product: RemoteSessionCore
+      - package: MacCaptureVerifier
+        product: Streaming
+      - package: MacCaptureVerifier
+        product: WebRTCTransport
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer
@@ -25,6 +31,22 @@ targets:
         CURRENT_PROJECT_VERSION: 1
         TARGETED_DEVICE_FAMILY: 1
         SWIFT_VERSION: 6.0
+        AUDIOSTREAMER_RENDEZVOUS_URL: "wss://rendezvous.example.invalid"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     scheme:
-      testTargets: []
+      testTargets:
+        - AudioStreamerTests
+  AudioStreamerTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests
+    dependencies:
+      - target: AudioStreamer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamerTests
+        DEVELOPMENT_TEAM: A1B2C3D4E5
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: 6.0

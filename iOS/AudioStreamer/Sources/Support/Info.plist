@@ -22,12 +22,17 @@
 	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>AudioStreamerRendezvousURL</key>
+	<string>$(AUDIOSTREAMER_RENDEZVOUS_URL)</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_mcap._tcp</string>
+		<string>_mcap-screen._tcp</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>AudioStreamer finds the Mac capture server on your local Wi-Fi network.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>AudioStreamer may use the camera for real-time video features that you explicitly start.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

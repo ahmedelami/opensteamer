@@ -25,6 +25,35 @@ final class StreamSessionViewModel: ObservableObject {
     private var selectedAuthToken: String?
     private var selectedRelayURL: URL?
 
+    var screenVideoConnectionDescriptor: ScreenVideoConnectionDescriptor? {
+        guard selectedRelayURL == nil, let selectedServer else { return nil }
+
+        let screenEndpoint: NWEndpoint
+        switch selectedServer.endpoint {
+        case .service(let name, _, let domain, let interface):
+            screenEndpoint = .service(
+                name: name,
+                type: "_mcap-screen._tcp",
+                domain: domain,
+                interface: interface
+            )
+        case .hostPort(let host, let audioPort):
+            guard audioPort.rawValue < UInt16.max,
+                  let screenPort = NWEndpoint.Port(rawValue: audioPort.rawValue + 1) else {
+                return nil
+            }
+            screenEndpoint = .hostPort(host: host, port: screenPort)
+        default:
+            return nil
+        }
+
+        return ScreenVideoConnectionDescriptor(
+            endpoint: screenEndpoint,
+            authToken: selectedAuthToken,
+            displayName: selectedServer.name
+        )
+    }
+
     init() {
         audioSession.onInterruptionBegan = { [weak self] in
             self?.handleInterruptionBegan()

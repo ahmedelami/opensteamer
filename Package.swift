@@ -10,10 +10,19 @@ let package = Package(
     ],
     products: [
         .library(name: "ClientCore", targets: ["ClientCore"]),
+        .library(name: "RemoteSessionCore", targets: ["RemoteSessionCore"]),
+        .library(name: "Streaming", targets: ["Streaming"]),
+        .library(name: "WebRTCTransport", targets: ["WebRTCTransport"]),
         .executable(name: "CaptureCLI", targets: ["CaptureCLI"]),
         .executable(name: "CaptureServer", targets: ["CaptureServer"]),
         .executable(name: "PCMClient", targets: ["PCMClient"]),
         .executable(name: "PCMPlayer", targets: ["PCMPlayer"])
+    ],
+    dependencies: [
+        .package(
+            url: "https://github.com/livekit/webrtc-xcframework.git",
+            exact: "144.7559.11"
+        )
     ],
     targets: [
         .executableTarget(
@@ -23,7 +32,14 @@ let package = Package(
         ),
         .executableTarget(
             name: "CaptureServer",
-            dependencies: ["CaptureCore", "Server", "Streaming", "Utilities"],
+            dependencies: [
+                "CaptureCore",
+                "RemoteSessionCore",
+                "Server",
+                "Streaming",
+                "Utilities",
+                "WebRTCTransport"
+            ],
             path: "macOS/Sources/CaptureServer",
             exclude: ["Info.plist"],
             linkerSettings: [
@@ -56,6 +72,10 @@ let package = Package(
             path: "macOS/Sources/CaptureCore"
         ),
         .target(
+            name: "RemoteSessionCore",
+            path: "shared/Sources/RemoteSessionCore"
+        ),
+        .target(
             name: "Streaming",
             dependencies: ["Utilities"],
             path: "shared/Sources/Streaming"
@@ -73,6 +93,17 @@ let package = Package(
         .target(
             name: "Utilities",
             path: "shared/Sources/Utilities"
+        ),
+        .target(
+            name: "WebRTCTransport",
+            dependencies: [
+                "RemoteSessionCore",
+                .product(
+                    name: "LiveKitWebRTC",
+                    package: "webrtc-xcframework"
+                )
+            ],
+            path: "shared/Sources/WebRTCTransport"
         ),
         .testTarget(
             name: "WAVTests",
@@ -93,6 +124,19 @@ let package = Package(
             name: "PCMPlayerTests",
             dependencies: ["ClientCore"],
             path: "macOS/Tests/PCMPlayerTests"
+        ),
+        .testTarget(
+            name: "RemoteSessionCoreTests",
+            dependencies: ["RemoteSessionCore"],
+            path: "shared/Tests/RemoteSessionCoreTests"
+        ),
+        .testTarget(
+            name: "WebRTCTransportTests",
+            dependencies: [
+                "RemoteSessionCore",
+                "WebRTCTransport"
+            ],
+            path: "shared/Tests/WebRTCTransportTests"
         )
     ]
 )
