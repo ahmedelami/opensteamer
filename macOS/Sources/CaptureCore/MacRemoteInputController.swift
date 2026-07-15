@@ -62,6 +62,7 @@ public enum MacRemoteInputRejection: Equatable, Sendable {
     case rateLimited
     case displayUnavailable
     case focusChanged
+    case primaryButtonInUse
     case injectionFailed
 }
 
@@ -244,6 +245,92 @@ public final class MacRemoteInputController: @unchecked Sendable {
         guard let focusedEditable = waitForFocusedEditableElement(
             matching: hitEditable.element
         ) else {
+            return .accepted(.none)
+        }
+
+        nextFocusGeneration &+= 1
+        if nextFocusGeneration == 0 {
+            nextFocusGeneration = 1
+        }
+        let focus = AuthorizedFocus(
+            element: focusedEditable.element,
+            generation: nextFocusGeneration
+        )
+        authorizedFocus = focus
+        return .accepted(.editable(generation: focus.generation, secure: false))
+    }
+
+    /// Performs one complete primary-button drag for the exact active screen share.
+    ///
+    /// This is deliberately an atomic action rather than a remotely held mouse state:
+    /// the backend constructs down, dragged, and up events before posting any of them.
+    public func handlePrimaryDrag(
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        start: MacRemoteNormalizedPoint,
+        end: MacRemoteNormalizedPoint
+    ) -> MacRemoteInputResult {
+        withLock {
+            handlePrimaryDragLocked(
+                screenRequestID: screenRequestID,
+                inputSessionID: inputSessionID,
+                start: start,
+                end: end
+            )
+        }
+    }
+
+    private func handlePrimaryDragLocked(
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        start: MacRemoteNormalizedPoint,
+        end: MacRemoteNormalizedPoint
+    ) -> MacRemoteInputResult {
+        // Any pointer action invalidates the prior keyboard grant, including a
+        // malformed, stale, denied, or rate-limited drag.
+        authorizedFocus = nil
+
+        guard allowRemoteControl else {
+            return .rejected(.disabled)
+        }
+        guard let session = matchingSession(
+            screenRequestID: screenRequestID,
+            inputSessionID: inputSessionID
+        ) else {
+            return .rejected(.staleSession)
+        }
+        guard start.isValid, end.isValid else {
+            return .rejected(.invalidPoint)
+        }
+        guard hasCurrentPermissions() else {
+            revokeState()
+            return .rejected(.permissionRequired)
+        }
+        guard let displayBounds = validDisplayBounds(for: session.displayID) else {
+            revokeState()
+            return .rejected(.displayUnavailable)
+        }
+        guard !system.isPhysicalPrimaryButtonPressed() else {
+            return .rejected(.primaryButtonInUse)
+        }
+        // Taps and atomic drags share one pointer-action budget so alternating
+        // action kinds cannot bypass the host's documented click rate limit.
+        guard tapBucket.consume(1, at: clock.now()) else {
+            return .rejected(.rateLimited)
+        }
+
+        let globalStart = MacRemoteInputCoordinateMapper.globalPoint(start, in: displayBounds)
+        let globalEnd = MacRemoteInputCoordinateMapper.globalPoint(end, in: displayBounds)
+        let hitEditable = system.element(at: globalStart).flatMap(editableAncestor(from:))
+
+        guard system.postPrimaryDrag(from: globalStart, to: globalEnd) else {
+            return .rejected(.injectionFailed)
+        }
+
+        guard let hitEditable,
+              let focusedEditable = waitForFocusedEditableElement(
+                  matching: hitEditable.element
+              ) else {
             return .accepted(.none)
         }
 
@@ -551,6 +638,20 @@ enum MacRemoteInputCoordinateMapper {
     }
 }
 
+enum MacRemoteInputDragPath {
+    static let draggedEventCount = 6
+
+    static func points(from start: CGPoint, to end: CGPoint) -> [CGPoint] {
+        (1...draggedEventCount).map { step in
+            let progress = CGFloat(step) / CGFloat(draggedEventCount)
+            return CGPoint(
+                x: start.x + ((end.x - start.x) * progress),
+                y: start.y + ((end.y - start.y) * progress)
+            )
+        }
+    }
+}
+
 private struct TokenBucket {
     let capacity: Double
     let refillPerSecond: Double
@@ -608,6 +709,7 @@ final class MacRemoteAccessibilityElement: @unchecked Sendable {
 protocol MacRemoteInputSystem: Sendable {
     func permissionStatus(promptIfNeeded: Bool) -> MacRemoteInputPermissionStatus
     func displayBounds(for displayID: UInt32) -> CGRect?
+    func isPhysicalPrimaryButtonPressed() -> Bool
 
     func element(at point: CGPoint) -> MacRemoteAccessibilityElement?
     func parent(of element: MacRemoteAccessibilityElement) -> MacRemoteAccessibilityElement?
@@ -623,6 +725,7 @@ protocol MacRemoteInputSystem: Sendable {
     ) -> Bool
 
     func postMouseClick(at point: CGPoint) -> Bool
+    func postPrimaryDrag(from start: CGPoint, to end: CGPoint) -> Bool
     func postUnicodeText(_ text: String) -> Bool
     func postKey(_ key: MacRemoteInputKey) -> Bool
 }
@@ -653,6 +756,10 @@ private struct CoreGraphicsMacRemoteInputSystem: MacRemoteInputSystem {
     func displayBounds(for displayID: UInt32) -> CGRect? {
         guard CGDisplayIsActive(displayID) != 0 else { return nil }
         return CGDisplayBounds(displayID)
+    }
+
+    func isPhysicalPrimaryButtonPressed() -> Bool {
+        CGEventSource.buttonState(.hidSystemState, button: .left)
     }
 
     func element(at point: CGPoint) -> MacRemoteAccessibilityElement? {
@@ -736,6 +843,56 @@ private struct CoreGraphicsMacRemoteInputSystem: MacRemoteInputSystem {
         down.flags = []
         up.flags = []
         down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+        return true
+    }
+
+    func postPrimaryDrag(from start: CGPoint, to end: CGPoint) -> Bool {
+        // All fallible construction happens before the first irreversible post,
+        // so a construction failure can never leave the primary button held.
+        guard let source = CGEventSource(stateID: .privateState),
+              let down = CGEvent(
+                  mouseEventSource: source,
+                  mouseType: .leftMouseDown,
+                  mouseCursorPosition: start,
+                  mouseButton: .left
+              ),
+              let up = CGEvent(
+                  mouseEventSource: source,
+                  mouseType: .leftMouseUp,
+                  mouseCursorPosition: end,
+                  mouseButton: .left
+              ) else {
+            return false
+        }
+
+        var draggedEvents: [CGEvent] = []
+        draggedEvents.reserveCapacity(MacRemoteInputDragPath.draggedEventCount)
+        for point in MacRemoteInputDragPath.points(from: start, to: end) {
+            guard let event = CGEvent(
+                mouseEventSource: source,
+                mouseType: .leftMouseDragged,
+                mouseCursorPosition: point,
+                mouseButton: .left
+            ) else {
+                return false
+            }
+            draggedEvents.append(event)
+        }
+
+        down.setIntegerValueField(.mouseEventClickState, value: 1)
+        up.setIntegerValueField(.mouseEventClickState, value: 1)
+        down.flags = []
+        up.flags = []
+        for event in draggedEvents {
+            event.setIntegerValueField(.mouseEventClickState, value: 1)
+            event.flags = []
+        }
+
+        down.post(tap: .cghidEventTap)
+        for event in draggedEvents {
+            event.post(tap: .cghidEventTap)
+        }
         up.post(tap: .cghidEventTap)
         return true
     }

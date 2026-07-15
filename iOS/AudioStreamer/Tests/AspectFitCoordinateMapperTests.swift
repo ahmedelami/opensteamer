@@ -88,4 +88,68 @@ final class AspectFitCoordinateMapperTests: XCTestCase {
             )
         )
     }
+
+    func testActiveDragClampsOutsideVideoToNearestEdge() throws {
+        let container = CGSize(width: 390, height: 700)
+        let video = CGSize(width: 1_920, height: 1_080)
+        let visibleRect = try XCTUnwrap(
+            AspectFitCoordinateMapper.visibleVideoRect(
+                containerSize: container,
+                videoSize: video
+            )
+        )
+
+        let clamped = try XCTUnwrap(
+            AspectFitCoordinateMapper.clampedNormalizedPoint(
+                for: CGPoint(x: container.width + 200, y: visibleRect.minY - 100),
+                containerSize: container,
+                videoSize: video
+            )
+        )
+
+        XCTAssertEqual(clamped.x, 1, accuracy: 0.000_001)
+        XCTAssertEqual(clamped.y, 0, accuracy: 0.000_001)
+    }
+
+    func testPrimaryDragRequiresMovementAndAnOriginInsideVideo() throws {
+        let container = CGSize(width: 390, height: 700)
+        let video = CGSize(width: 1_920, height: 1_080)
+        let visibleRect = try XCTUnwrap(
+            AspectFitCoordinateMapper.visibleVideoRect(
+                containerSize: container,
+                videoSize: video
+            )
+        )
+        let start = CGPoint(x: visibleRect.midX, y: visibleRect.midY)
+
+        XCTAssertNil(
+            RemotePrimaryDragGesturePolicy.normalizedEndpoints(
+                startLocation: start,
+                endLocation: CGPoint(x: start.x + 2, y: start.y),
+                containerSize: container,
+                videoSize: video
+            )
+        )
+        XCTAssertNil(
+            RemotePrimaryDragGesturePolicy.normalizedEndpoints(
+                startLocation: CGPoint(x: start.x, y: visibleRect.minY - 1),
+                endLocation: start,
+                containerSize: container,
+                videoSize: video
+            )
+        )
+
+        let endpoints = try XCTUnwrap(
+            RemotePrimaryDragGesturePolicy.normalizedEndpoints(
+                startLocation: start,
+                endLocation: CGPoint(x: container.width + 40, y: visibleRect.maxY + 40),
+                containerSize: container,
+                videoSize: video
+            )
+        )
+        XCTAssertEqual(endpoints.start.x, 0.5, accuracy: 0.000_001)
+        XCTAssertEqual(endpoints.start.y, 0.5, accuracy: 0.000_001)
+        XCTAssertEqual(endpoints.end.x, 1, accuracy: 0.000_001)
+        XCTAssertEqual(endpoints.end.y, 1, accuracy: 0.000_001)
+    }
 }

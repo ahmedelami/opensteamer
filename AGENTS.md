@@ -54,8 +54,13 @@ manual IP addresses, router configuration, or public TCP ports.
   successful only after an explicit Inactive acknowledgement; a failed send, timeout,
   or Active-for-Hide acknowledgement closes the peer fail closed. Do not render even
   retained remote frames unless the scene is active and the current Show is confirmed.
-- Only atomic primary taps, bounded committed text, Backspace, and Return belong in
-  the first input protocol. The Mac must revalidate Accessibility focus identity and
+- Only atomic primary taps, atomic primary drags, bounded committed text, Backspace,
+  and Return belong in the first input protocol. Primary drag is an explicitly
+  advertised optional capability: the iPhone sends one bounded start/end action only
+  after a long-press drag finishes, and the Mac constructs down/dragged/up before
+  posting any of them inside one authorization window. No mouse-down state may persist
+  across requests. Drag origins must be inside the aspect-fit image; completed endpoints
+  may clamp to its edge. The Mac must revalidate Accessibility focus identity and
   a host-issued focus generation before every keyboard event. Secure AX text fields
   stay local and must never receive a remote focus generation; AppKit private-use
   function-key scalars are commands rather than text and must be rejected. Never transmit or log

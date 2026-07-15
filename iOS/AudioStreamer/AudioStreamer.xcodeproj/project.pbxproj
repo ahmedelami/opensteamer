@@ -27,6 +27,7 @@
 		73B4A02584D2A5E832DF420C /* KeychainStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B518E85BF0EF4A5552D4842C /* KeychainStoreTests.swift */; };
 		78CFD6D043760661E04C8C53 /* ScreenSessionViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B14F0417395C719D6C848228 /* ScreenSessionViewModel.swift */; };
 		81F249A04C0ECC4D40560057 /* ScreenVideoClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F84611866708D4807A2667C /* ScreenVideoClient.swift */; };
+		87AC3E2B52112B7A16917AA5 /* RemotePrimaryDragGesturePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB1CBA40775CC2DE2220836 /* RemotePrimaryDragGesturePolicy.swift */; };
 		8818F0F68B976534EAEFDE96 /* WorldwideSessionViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 040A05AC7D8550B2475BC1F6 /* WorldwideSessionViewModel.swift */; };
 		8BD5E329C094583AE2E4F832 /* AspectFitCoordinateMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = F606D00D506FB74DC9DC7A11 /* AspectFitCoordinateMapper.swift */; };
 		8E4EFC4FB83ECCB21634E53E /* H264SampleBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F8017428FCB78A9203C0796 /* H264SampleBuilder.swift */; };
@@ -73,6 +74,7 @@
 		9A2275430238D768A3B4A26A /* BackgroundPlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundPlaybackCoordinator.swift; sourceTree = "<group>"; };
 		A8BB180FE348C76A45F232E7 /* SampleBufferScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleBufferScreenView.swift; sourceTree = "<group>"; };
 		A9707A9ECCCB37428AC23B5F /* PlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerView.swift; sourceTree = "<group>"; };
+		AAB1CBA40775CC2DE2220836 /* RemotePrimaryDragGesturePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotePrimaryDragGesturePolicy.swift; sourceTree = "<group>"; };
 		AACE628176C206BD8003E6DD /* ServerInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerInfo.swift; sourceTree = "<group>"; };
 		AFE56EB7F1756F3F406A7BD1 /* ScreenVideoRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVideoRenderer.swift; sourceTree = "<group>"; };
 		B14F0417395C719D6C848228 /* ScreenSessionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenSessionViewModel.swift; sourceTree = "<group>"; };
@@ -242,6 +244,7 @@
 				F606D00D506FB74DC9DC7A11 /* AspectFitCoordinateMapper.swift */,
 				5F8017428FCB78A9203C0796 /* H264SampleBuilder.swift */,
 				62FAFA716A0461C6C237AC01 /* RemoteKeyboardInputView.swift */,
+				AAB1CBA40775CC2DE2220836 /* RemotePrimaryDragGesturePolicy.swift */,
 				A8BB180FE348C76A45F232E7 /* SampleBufferScreenView.swift */,
 				AFE56EB7F1756F3F406A7BD1 /* ScreenVideoRenderer.swift */,
 				1017B4DF7C52C4A0815EE38D /* WebRTCRemoteScreenView.swift */,
@@ -375,6 +378,7 @@
 				8FC809E434FD5ADCDB703018 /* MetricRow.swift in Sources */,
 				B1C53CF9E00071916232F02C /* PlayerView.swift in Sources */,
 				DE4F6E43A7768013156584F7 /* RemoteKeyboardInputView.swift in Sources */,
+				87AC3E2B52112B7A16917AA5 /* RemotePrimaryDragGesturePolicy.swift in Sources */,
 				ECB94F36AB05C5ACAE18EDCD /* RemoteTokenState.swift in Sources */,
 				BD3EF8E3F298C39E811D8A34 /* SampleBufferScreenView.swift in Sources */,
 				78CFD6D043760661E04C8C53 /* ScreenSessionViewModel.swift in Sources */,

@@ -306,17 +306,20 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
     public let inputSessionID: UUID
     public let screenRequestID: UInt64
     public let maxMessageBytes: Int
+    public let supportsPrimaryDrag: Bool
 
     public init(
         inputSessionID: UUID,
         screenRequestID: UInt64,
         protocolVersion: Int = Self.currentProtocolVersion,
-        maxMessageBytes: Int = Self.maximumMessageBytes
+        maxMessageBytes: Int = Self.maximumMessageBytes,
+        supportsPrimaryDrag: Bool = false
     ) {
         self.protocolVersion = protocolVersion
         self.inputSessionID = inputSessionID
         self.screenRequestID = screenRequestID
         self.maxMessageBytes = maxMessageBytes
+        self.supportsPrimaryDrag = supportsPrimaryDrag
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -324,6 +327,7 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
         case inputSessionID
         case screenRequestID
         case maxMessageBytes
+        case supportsPrimaryDrag
     }
 
     public init(from decoder: any Decoder) throws {
@@ -332,6 +336,11 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
         let inputSessionID = try container.decode(UUID.self, forKey: .inputSessionID)
         let screenRequestID = try container.decode(UInt64.self, forKey: .screenRequestID)
         let maxMessageBytes = try container.decode(Int.self, forKey: .maxMessageBytes)
+        let supportsPrimaryDrag = if container.contains(.supportsPrimaryDrag) {
+            try container.decode(Bool.self, forKey: .supportsPrimaryDrag)
+        } else {
+            false
+        }
         guard protocolVersion == Self.currentProtocolVersion,
               inputSessionID != Self.zeroUUID,
               screenRequestID > 0,
@@ -346,7 +355,8 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
             inputSessionID: inputSessionID,
             screenRequestID: screenRequestID,
             protocolVersion: protocolVersion,
-            maxMessageBytes: maxMessageBytes
+            maxMessageBytes: maxMessageBytes,
+            supportsPrimaryDrag: supportsPrimaryDrag
         )
     }
 
@@ -362,6 +372,7 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
         try container.encode(inputSessionID, forKey: .inputSessionID)
         try container.encode(screenRequestID, forKey: .screenRequestID)
         try container.encode(maxMessageBytes, forKey: .maxMessageBytes)
+        try container.encode(supportsPrimaryDrag, forKey: .supportsPrimaryDrag)
     }
 
     var isValid: Bool {
@@ -417,16 +428,18 @@ public struct WebRTCNormalizedPoint: Codable, Equatable, Sendable {
     }
 }
 
-/// The intentionally small first remote-input vocabulary. Return is distinct from inserted text
-/// so control characters never enter the text path.
+/// The intentionally small remote-input vocabulary. Return is distinct from inserted text so
+/// control characters never enter the text path.
 public enum WebRTCInputAction: Codable, Equatable, Sendable {
     case tap(WebRTCNormalizedPoint)
+    case primaryDrag(start: WebRTCNormalizedPoint, end: WebRTCNormalizedPoint)
     case insertText(String, focusGeneration: UInt64)
     case backspace(focusGeneration: UInt64)
     case returnKey(focusGeneration: UInt64)
 
     private enum Kind: String, Codable {
         case tap
+        case primaryDrag
         case text
         case backspace
         case returnKey = "return"
@@ -435,6 +448,8 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case kind
         case point
+        case start
+        case end
         case text
         case focusGeneration
     }
@@ -443,12 +458,25 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(Kind.self, forKey: .kind) {
         case .tap:
-            guard !container.contains(.text), !container.contains(.focusGeneration) else {
+            guard !container.contains(.start), !container.contains(.end),
+                  !container.contains(.text), !container.contains(.focusGeneration) else {
                 throw Self.invalidAction(in: container)
             }
             self = .tap(try container.decode(WebRTCNormalizedPoint.self, forKey: .point))
+        case .primaryDrag:
+            guard !container.contains(.point), !container.contains(.text),
+                  !container.contains(.focusGeneration) else {
+                throw Self.invalidAction(in: container)
+            }
+            self = .primaryDrag(
+                start: try container.decode(WebRTCNormalizedPoint.self, forKey: .start),
+                end: try container.decode(WebRTCNormalizedPoint.self, forKey: .end)
+            )
         case .text:
-            guard !container.contains(.point) else { throw Self.invalidAction(in: container) }
+            guard !container.contains(.point), !container.contains(.start),
+                  !container.contains(.end) else {
+                throw Self.invalidAction(in: container)
+            }
             let text = try container.decode(String.self, forKey: .text)
             let generation = try container.decode(UInt64.self, forKey: .focusGeneration)
             guard Self.isValidCommittedText(text), generation > 0 else {
@@ -456,14 +484,16 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
             }
             self = .insertText(text, focusGeneration: generation)
         case .backspace:
-            guard !container.contains(.point), !container.contains(.text) else {
+            guard !container.contains(.point), !container.contains(.start),
+                  !container.contains(.end), !container.contains(.text) else {
                 throw Self.invalidAction(in: container)
             }
             let generation = try container.decode(UInt64.self, forKey: .focusGeneration)
             guard generation > 0 else { throw Self.invalidAction(in: container) }
             self = .backspace(focusGeneration: generation)
         case .returnKey:
-            guard !container.contains(.point), !container.contains(.text) else {
+            guard !container.contains(.point), !container.contains(.start),
+                  !container.contains(.end), !container.contains(.text) else {
                 throw Self.invalidAction(in: container)
             }
             let generation = try container.decode(UInt64.self, forKey: .focusGeneration)
@@ -484,6 +514,10 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
         case .tap(let point):
             try container.encode(Kind.tap, forKey: .kind)
             try container.encode(point, forKey: .point)
+        case .primaryDrag(let start, let end):
+            try container.encode(Kind.primaryDrag, forKey: .kind)
+            try container.encode(start, forKey: .start)
+            try container.encode(end, forKey: .end)
         case .insertText(let text, let focusGeneration):
             try container.encode(Kind.text, forKey: .kind)
             try container.encode(text, forKey: .text)
@@ -501,6 +535,8 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
         switch self {
         case .tap(let point):
             point.isValid
+        case .primaryDrag(let start, let end):
+            start.isValid && end.isValid
         case .insertText(let text, let focusGeneration):
             focusGeneration > 0 && Self.isValidCommittedText(text)
         case .backspace(let focusGeneration), .returnKey(let focusGeneration):

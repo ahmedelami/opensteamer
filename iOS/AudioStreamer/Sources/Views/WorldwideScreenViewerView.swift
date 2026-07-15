@@ -6,6 +6,7 @@ struct WorldwideScreenViewerView: View {
     @EnvironmentObject private var viewModel: WorldwideSessionViewModel
     @State private var remoteVideoSize = CGSize.zero
     @State private var allowsRemoteInputPresentation = true
+    @State private var primaryDragContext: PrimaryDragContext?
 
     var body: some View {
         ZStack {
@@ -27,6 +28,44 @@ struct WorldwideScreenViewerView: View {
                             SpatialTapGesture()
                                 .onEnded { value in
                                     forwardTap(value.location, containerSize: geometry.size)
+                                }
+                        )
+                        .simultaneousGesture(
+                            LongPressGesture(minimumDuration: 0.35, maximumDistance: 12)
+                                .sequenced(
+                                    before: DragGesture(
+                                        minimumDistance: RemotePrimaryDragGesturePolicy.minimumMovement,
+                                        coordinateSpace: .local
+                                    )
+                                )
+                                .onChanged { value in
+                                    guard case .second(true, .some) = value,
+                                          primaryDragContext == nil,
+                                          viewModel.isRemotePrimaryDragAvailable,
+                                          let inputSessionID = viewModel.remoteInputCapability?.inputSessionID else {
+                                        return
+                                    }
+                                    primaryDragContext = PrimaryDragContext(
+                                        inputSessionID: inputSessionID,
+                                        containerSize: geometry.size,
+                                        videoSize: remoteVideoSize
+                                    )
+                                }
+                                .onEnded { value in
+                                    defer { primaryDragContext = nil }
+                                    guard case .second(true, let drag?) = value,
+                                          let context = primaryDragContext,
+                                          context.inputSessionID == viewModel.remoteInputCapability?.inputSessionID,
+                                          context.containerSize == geometry.size,
+                                          context.videoSize == remoteVideoSize else {
+                                        return
+                                    }
+                                    forwardPrimaryDrag(
+                                        from: drag.startLocation,
+                                        to: drag.location,
+                                        containerSize: context.containerSize,
+                                        videoSize: context.videoSize
+                                    )
                                 }
                         )
                         .overlay {
@@ -89,12 +128,23 @@ struct WorldwideScreenViewerView: View {
             }
         }
         .onDisappear {
+            primaryDragContext = nil
             allowsRemoteInputPresentation = false
             viewModel.beginPassiveScreenTeardown()
         }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase != .active else { return }
+            primaryDragContext = nil
             hideAndDismiss()
+        }
+        .onChange(of: viewModel.remoteInputCapability?.inputSessionID) {
+            primaryDragContext = nil
+        }
+        .onChange(of: viewModel.remoteVideoTrack == nil) {
+            primaryDragContext = nil
+        }
+        .onChange(of: remoteVideoSize) {
+            primaryDragContext = nil
         }
     }
 
@@ -136,7 +186,12 @@ struct WorldwideScreenViewerView: View {
                 .foregroundStyle(.secondary)
 
             if effectiveRemoteInputAvailable {
-                Label("Touch control enabled", systemImage: "hand.tap")
+                Label(
+                    viewModel.isRemotePrimaryDragAvailable
+                        ? "Tap to click · Hold and drag to select or move"
+                        : "Touch control enabled",
+                    systemImage: "hand.tap"
+                )
                     .font(.caption)
                     .foregroundStyle(.green)
                     .accessibilityIdentifier("worldwideRemoteInputEnabled")
@@ -179,6 +234,28 @@ struct WorldwideScreenViewerView: View {
         viewModel.sendRemoteTap(normalizedPoint: normalizedPoint)
     }
 
+    private func forwardPrimaryDrag(
+        from startLocation: CGPoint,
+        to endLocation: CGPoint,
+        containerSize: CGSize,
+        videoSize: CGSize
+    ) {
+        guard effectiveRemoteInputAvailable,
+              viewModel.isRemotePrimaryDragAvailable,
+              let endpoints = RemotePrimaryDragGesturePolicy.normalizedEndpoints(
+                startLocation: startLocation,
+                endLocation: endLocation,
+                containerSize: containerSize,
+                videoSize: videoSize
+              ) else {
+            return
+        }
+        viewModel.sendRemotePrimaryDrag(
+            startNormalizedPoint: endpoints.start,
+            endNormalizedPoint: endpoints.end
+        )
+    }
+
     private var effectiveRemoteInputAvailable: Bool {
         viewModel.isRemoteInputAvailable
             && allowsRemoteInputPresentation
@@ -204,4 +281,10 @@ struct WorldwideScreenViewerView: View {
     ) -> Bool {
         allowsPresentation && isScreenVisible && scenePhase == .active
     }
+}
+
+private struct PrimaryDragContext: Equatable {
+    let inputSessionID: UUID
+    let containerSize: CGSize
+    let videoSize: CGSize
 }

@@ -596,7 +596,8 @@ actor WorldwideScreenService {
         case .armed:
             let capability = WebRTCInputCapability(
                 inputSessionID: inputSessionID,
-                screenRequestID: screenRequestID
+                screenRequestID: screenRequestID,
+                supportsPrimaryDrag: true
             )
             let authorization = WebRTCInputAuthorization()
             activeInputCapability = capability
@@ -678,6 +679,10 @@ actor WorldwideScreenService {
               transportAllowsCapture else {
             return .rejected(.staleSession)
         }
+        if case .primaryDrag = request.action,
+           !capability.supportsPrimaryDrag {
+            return .rejected(.staleSession)
+        }
 
         do {
             return try authorization.withValidAuthorization {
@@ -705,6 +710,14 @@ actor WorldwideScreenService {
                 screenRequestID: request.screenRequestID,
                 inputSessionID: request.inputSessionID,
                 normalizedPoint: .init(x: point.x, y: point.y)
+            )
+
+        case .primaryDrag(let start, let end):
+            remoteInputController.handlePrimaryDrag(
+                screenRequestID: request.screenRequestID,
+                inputSessionID: request.inputSessionID,
+                start: .init(x: start.x, y: start.y),
+                end: .init(x: end.x, y: end.y)
             )
 
         case .insertText(let text, let focusGeneration):
@@ -738,6 +751,8 @@ actor WorldwideScreenService {
         switch action {
         case .tap:
             return "tap"
+        case .primaryDrag:
+            return "primary-drag"
         case .insertText:
             return "committed-text"
         case .backspace:
@@ -792,7 +807,7 @@ actor WorldwideScreenService {
             case .focusChanged:
                 reason = .invalidFocus
                 revokesSession = false
-            case .injectionFailed:
+            case .primaryButtonInUse, .injectionFailed:
                 reason = .injectionFailed
                 revokesSession = false
             }

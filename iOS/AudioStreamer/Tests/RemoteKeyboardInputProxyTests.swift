@@ -30,6 +30,22 @@ final class RemoteKeyboardInputProxyTests: XCTestCase {
         XCTAssertFalse(String(reflecting: metadata).contains(sensitiveText))
     }
 
+    func testTapAndPrimaryDragUsePointerFeedbackMetadata() {
+        XCTAssertEqual(
+            PendingRemoteInputKind(.tap(.init(x: 0.5, y: 0.5))),
+            .pointer
+        )
+        XCTAssertEqual(
+            PendingRemoteInputKind(
+                .primaryDrag(
+                    start: .init(x: 0.1, y: 0.2),
+                    end: .init(x: 0.8, y: 0.9)
+                )
+            ),
+            .pointer
+        )
+    }
+
     @MainActor
     func testInsertTextForwardsExactChunkWithCurrentFocusGeneration() {
         let proxy = RemoteKeyboardInputProxy(frame: .zero)

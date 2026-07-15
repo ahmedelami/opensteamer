@@ -663,7 +663,10 @@ public actor WebRTCPeer {
               authorization === activeViewerInputAuthorization else {
             throw WebRTCTransportError.inputUnavailable
         }
-        guard action.isValid else { throw WebRTCTransportError.invalidInputRequest }
+        guard action.isValid,
+              Self.inputCapability(capability, permits: action) else {
+            throw WebRTCTransportError.invalidInputRequest
+        }
         guard nextInputRequestID < UInt64.max else {
             throw WebRTCTransportError.inputRequestIDExhausted
         }
@@ -772,6 +775,23 @@ public actor WebRTCPeer {
     }
 
 #if DEBUG
+    func installHostInputSessionForTesting(
+        capability: WebRTCInputCapability,
+        authorization: WebRTCInputAuthorization
+    ) throws {
+        try ensureOpen()
+        guard role == .host, capability.isValid else {
+            throw WebRTCTransportError.invalidInputCapability
+        }
+        delegateProxy.markNativeTransportHealthyForTesting()
+        replaceHostInputSession(capability: capability, authorization: authorization)
+    }
+
+    func receiveInputRequestForTesting(_ request: WebRTCInputRequest) -> Bool {
+        receiveInputRequest(request)
+        return receivedInputRequests[request.id] != nil
+    }
+
     func installViewerInputSessionForTesting(
         capability: WebRTCInputCapability,
         authorization: WebRTCInputAuthorization
@@ -1182,8 +1202,9 @@ public actor WebRTCPeer {
               let authorization = activeHostInputAuthorization,
               authorization.isValid,
               request.screenRequestID == capability.screenRequestID,
-              request.inputSessionID == capability.inputSessionID else {
-            failCloseInput("Unexpected or unbound remote-input request.")
+              request.inputSessionID == capability.inputSessionID,
+              Self.inputCapability(capability, permits: request.action) else {
+            failCloseInput("Unexpected, unsupported, or unbound remote-input request.")
             return
         }
 
@@ -1225,6 +1246,18 @@ public actor WebRTCPeer {
         receivedInputRequests[request.id] = binding
         receivedInputRequestOrder.append(request.id)
         emit(.inputRequestReceived(request, authorization: authorization))
+    }
+
+    private static func inputCapability(
+        _ capability: WebRTCInputCapability,
+        permits action: WebRTCInputAction
+    ) -> Bool {
+        switch action {
+        case .primaryDrag:
+            capability.supportsPrimaryDrag
+        case .tap, .insertText, .backspace, .returnKey:
+            true
+        }
     }
 
     private func receiveInputFeedback(_ feedback: WebRTCInputFeedback) {

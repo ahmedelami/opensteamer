@@ -38,6 +38,117 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
     }
 
 #if DEBUG
+    func testViewerRejectsPrimaryDragWhenCapabilityDoesNotAdvertiseIt() async throws {
+        let viewer = try WebRTCPeer(
+            configuration: .init(role: .viewer, iceServers: [])
+        )
+        let capability = WebRTCInputCapability(
+            inputSessionID: sessionID,
+            screenRequestID: 10
+        )
+        let authorization = WebRTCInputAuthorization()
+        try await viewer.installViewerInputSessionForTesting(
+            capability: capability,
+            authorization: authorization
+        )
+
+        do {
+            _ = try await viewer.requestInput(
+                .primaryDrag(
+                    start: .init(x: 0.1, y: 0.2),
+                    end: .init(x: 0.8, y: 0.9)
+                ),
+                capability: capability,
+                authorization: authorization
+            )
+            XCTFail("An unadvertised drag must not reach the native send boundary.")
+        } catch WebRTCTransportError.invalidInputRequest {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        XCTAssertTrue(authorization.isValid)
+        let activeCapability = await viewer.currentInputCapability()
+        XCTAssertEqual(activeCapability, capability)
+        await viewer.close(reason: .viewerDisconnected)
+    }
+
+    func testHostEnforcesPrimaryDragCapabilityWithoutChangingOtherInput() async throws {
+        let host = try WebRTCPeer(
+            configuration: .init(role: .host, iceServers: [])
+        )
+        let capabilityWithoutDrag = WebRTCInputCapability(
+            inputSessionID: sessionID,
+            screenRequestID: 11
+        )
+        let rejectedAuthorization = WebRTCInputAuthorization()
+        try await host.installHostInputSessionForTesting(
+            capability: capabilityWithoutDrag,
+            authorization: rejectedAuthorization
+        )
+
+        let dragWasAccepted = await host.receiveInputRequestForTesting(
+            .init(
+                id: 1,
+                screenRequestID: capabilityWithoutDrag.screenRequestID,
+                inputSessionID: capabilityWithoutDrag.inputSessionID,
+                action: .primaryDrag(
+                    start: .init(x: 0.1, y: 0.2),
+                    end: .init(x: 0.8, y: 0.9)
+                )
+            )
+        )
+        XCTAssertFalse(dragWasAccepted)
+        XCTAssertFalse(rejectedAuthorization.isValid)
+        let capabilityAfterRejectedDrag = await host.currentInputCapability()
+        XCTAssertNil(capabilityAfterRejectedDrag)
+
+        let tapAuthorization = WebRTCInputAuthorization()
+        try await host.installHostInputSessionForTesting(
+            capability: capabilityWithoutDrag,
+            authorization: tapAuthorization
+        )
+        let tapWasAccepted = await host.receiveInputRequestForTesting(
+            .init(
+                id: 2,
+                screenRequestID: capabilityWithoutDrag.screenRequestID,
+                inputSessionID: capabilityWithoutDrag.inputSessionID,
+                action: .tap(.init(x: 0.5, y: 0.5))
+            )
+        )
+        XCTAssertTrue(tapWasAccepted)
+        XCTAssertTrue(tapAuthorization.isValid)
+
+        let capabilityWithDrag = WebRTCInputCapability(
+            inputSessionID: UUID(),
+            screenRequestID: 12,
+            supportsPrimaryDrag: true
+        )
+        let dragAuthorization = WebRTCInputAuthorization()
+        try await host.installHostInputSessionForTesting(
+            capability: capabilityWithDrag,
+            authorization: dragAuthorization
+        )
+        let advertisedDragWasAccepted = await host.receiveInputRequestForTesting(
+            .init(
+                id: 3,
+                screenRequestID: capabilityWithDrag.screenRequestID,
+                inputSessionID: capabilityWithDrag.inputSessionID,
+                action: .primaryDrag(
+                    start: .init(x: 0.2, y: 0.3),
+                    end: .init(x: 0.7, y: 0.8)
+                )
+            )
+        )
+        XCTAssertTrue(advertisedDragWasAccepted)
+        XCTAssertTrue(dragAuthorization.isValid)
+        let activeCapability = await host.currentInputCapability()
+        XCTAssertEqual(activeCapability, capabilityWithDrag)
+
+        await host.close(reason: .hostStopped)
+    }
+
     func testNativeEventBufferOverflowRevokesInputBeforePeerCanDrainBacklog() {
         let proxy = WebRTCDelegateProxy()
         let authorization = WebRTCInputAuthorization()
@@ -125,7 +236,8 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
     func testCapabilityRoundTripsInsideActiveAcknowledgement() throws {
         let capability = WebRTCInputCapability(
             inputSessionID: sessionID,
-            screenRequestID: 11
+            screenRequestID: 11,
+            supportsPrimaryDrag: true
         )
         let acknowledgement = WebRTCControlAcknowledgement(
             id: 11,
@@ -142,9 +254,35 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         )
     }
 
+    func testCapabilityDefaultsPrimaryDragToFalseForLegacyPayload() throws {
+        let data = Data(
+            #"{"protocolVersion":1,"inputSessionID":"8D18B56A-302A-4EC2-A3DA-1070491D7814","screenRequestID":11,"maxMessageBytes":4096}"#.utf8
+        )
+
+        let capability = try JSONDecoder().decode(WebRTCInputCapability.self, from: data)
+
+        XCTAssertFalse(capability.supportsPrimaryDrag)
+        XCTAssertEqual(capability.protocolVersion, WebRTCInputCapability.currentProtocolVersion)
+    }
+
+    func testCapabilityEncodesAndDecodesPrimaryDragSupport() throws {
+        let capability = WebRTCInputCapability(
+            inputSessionID: sessionID,
+            screenRequestID: 11,
+            supportsPrimaryDrag: true
+        )
+
+        let data = try JSONEncoder().encode(capability)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(object["supportsPrimaryDrag"] as? Bool, true)
+        XCTAssertEqual(try JSONDecoder().decode(WebRTCInputCapability.self, from: data), capability)
+    }
+
     func testAllInputActionsRoundTrip() throws {
         let actions: [WebRTCInputAction] = [
             .tap(.init(x: 0, y: 1)),
+            .primaryDrag(start: .init(x: 0.1, y: 0.2), end: .init(x: 0.8, y: 0.9)),
             .insertText("Hello 👋", focusGeneration: 2),
             .backspace(focusGeneration: 3),
             .returnKey(focusGeneration: 4)
@@ -154,6 +292,22 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
             let data = try JSONEncoder().encode(action)
             XCTAssertEqual(try JSONDecoder().decode(WebRTCInputAction.self, from: data), action)
         }
+    }
+
+    func testPrimaryDragUsesStrictWireShape() throws {
+        let action = WebRTCInputAction.primaryDrag(
+            start: .init(x: 0.1, y: 0.2),
+            end: .init(x: 0.8, y: 0.9)
+        )
+
+        let data = try JSONEncoder().encode(action)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(Set(object.keys), Set(["kind", "start", "end"]))
+        XCTAssertEqual(object["kind"] as? String, "primaryDrag")
+        XCTAssertNotNil(object["start"] as? [String: Any])
+        XCTAssertNotNil(object["end"] as? [String: Any])
+        XCTAssertEqual(try JSONDecoder().decode(WebRTCInputAction.self, from: data), action)
     }
 
     func testRequestHistoryBindingDoesNotRetainCommittedText() {
@@ -218,12 +372,46 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         }
     }
 
+    func testPrimaryDragEncoderRejectsInvalidStartOrEnd() {
+        let invalidActions: [WebRTCInputAction] = [
+            .primaryDrag(start: .init(x: -.ulpOfOne, y: 0), end: .init(x: 1, y: 1)),
+            .primaryDrag(start: .init(x: 0, y: 0), end: .init(x: 1 + .ulpOfOne, y: 1)),
+            .primaryDrag(start: .init(x: .nan, y: 0), end: .init(x: 1, y: 1)),
+            .primaryDrag(start: .init(x: 0, y: 0), end: .init(x: 1, y: .infinity))
+        ]
+
+        for action in invalidActions {
+            XCTAssertThrowsError(try JSONEncoder().encode(action))
+        }
+    }
+
+    func testPrimaryDragDecoderRejectsMalformedMixedAndOutOfRangePayloads() {
+        let invalidPayloads = [
+            #"{"kind":"primaryDrag","end":{"x":0.8,"y":0.9}}"#,
+            #"{"kind":"primaryDrag","start":{"x":0.1,"y":0.2}}"#,
+            #"{"kind":"primaryDrag","start":{"x":0.1,"y":0.2},"end":{"x":0.8,"y":0.9},"point":{"x":0.5,"y":0.5}}"#,
+            #"{"kind":"primaryDrag","start":{"x":0.1,"y":0.2},"end":{"x":0.8,"y":0.9},"text":"mixed"}"#,
+            #"{"kind":"primaryDrag","start":{"x":0.1,"y":0.2},"end":{"x":0.8,"y":0.9},"focusGeneration":1}"#,
+            #"{"kind":"primaryDrag","start":{"x":-0.1,"y":0.2},"end":{"x":0.8,"y":0.9}}"#,
+            #"{"kind":"primaryDrag","start":{"x":0.1,"y":0.2},"end":{"x":1.1,"y":0.9}}"#
+        ]
+
+        for payload in invalidPayloads {
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(WebRTCInputAction.self, from: Data(payload.utf8)),
+                "Expected rejection for \(payload)"
+            )
+        }
+    }
+
     func testDecoderRejectsMixedActionPayloadsAndControlText() {
         let mixed = Data(#"{"kind":"tap","point":{"x":0.5,"y":0.5},"focusGeneration":1}"#.utf8)
+        let tapWithDrag = Data(#"{"kind":"tap","point":{"x":0.5,"y":0.5},"start":{"x":0.1,"y":0.1},"end":{"x":0.9,"y":0.9}}"#.utf8)
         let newline = Data(#"{"kind":"text","text":"line\nfeed","focusGeneration":1}"#.utf8)
         let zeroGeneration = Data(#"{"kind":"backspace","focusGeneration":0}"#.utf8)
 
         XCTAssertThrowsError(try JSONDecoder().decode(WebRTCInputAction.self, from: mixed))
+        XCTAssertThrowsError(try JSONDecoder().decode(WebRTCInputAction.self, from: tapWithDrag))
         XCTAssertThrowsError(try JSONDecoder().decode(WebRTCInputAction.self, from: newline))
         XCTAssertThrowsError(try JSONDecoder().decode(WebRTCInputAction.self, from: zeroGeneration))
     }

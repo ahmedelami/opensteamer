@@ -116,6 +116,205 @@ final class MacRemoteInputControllerTests: XCTestCase {
         XCTAssertTrue(system.postedMousePoints.isEmpty)
     }
 
+    func testPrimaryDragMapsBothPointsAndPostsDownDragUpInOrder() {
+        let system = MockMacRemoteInputSystem()
+        system.bounds = CGRect(x: -1_920, y: -400, width: 1_920, height: 1_080)
+        let controller = armedController(system: system)
+
+        XCTAssertEqual(
+            drag(
+                controller,
+                start: .init(x: 0.25, y: 0.75),
+                end: .init(x: 0.75, y: 0.25)
+            ),
+            .accepted(.none)
+        )
+
+        XCTAssertEqual(system.postedDragEvents.count, 8)
+        guard case .down(let down) = system.postedDragEvents[0],
+              case .dragged(let firstDragged) = system.postedDragEvents[1],
+              case .dragged(let finalDragged) = system.postedDragEvents[6],
+              case .up(let up) = system.postedDragEvents[7] else {
+            return XCTFail("Expected one complete down-dragged-path-up sequence")
+        }
+        XCTAssertEqual(down.x, -1_440, accuracy: 0.0001)
+        XCTAssertEqual(down.y, 410, accuracy: 0.0001)
+        XCTAssertEqual(firstDragged.x, -1_280, accuracy: 0.0001)
+        XCTAssertEqual(firstDragged.y, 320, accuracy: 0.0001)
+        XCTAssertEqual(finalDragged.x, -480, accuracy: 0.0001)
+        XCTAssertEqual(finalDragged.y, -130, accuracy: 0.0001)
+        XCTAssertEqual(up.x, finalDragged.x, accuracy: 0.0001)
+        XCTAssertEqual(up.y, finalDragged.y, accuracy: 0.0001)
+    }
+
+    func testPrimaryDragRejectsStaleShowAndInputSession() {
+        let system = MockMacRemoteInputSystem()
+        let controller = armedController(system: system)
+
+        XCTAssertEqual(
+            controller.handlePrimaryDrag(
+                screenRequestID: showID + 1,
+                inputSessionID: sessionID,
+                start: .init(x: 0.1, y: 0.2),
+                end: .init(x: 0.8, y: 0.9)
+            ),
+            .rejected(.staleSession)
+        )
+        XCTAssertEqual(
+            controller.handlePrimaryDrag(
+                screenRequestID: showID,
+                inputSessionID: UUID(),
+                start: .init(x: 0.1, y: 0.2),
+                end: .init(x: 0.8, y: 0.9)
+            ),
+            .rejected(.staleSession)
+        )
+        XCTAssertTrue(system.postedDragEvents.isEmpty)
+    }
+
+    func testPrimaryDragValidatesBothPointsBeforeInjection() {
+        let system = MockMacRemoteInputSystem()
+        let controller = armedController(system: system)
+        let valid = MacRemoteNormalizedPoint(x: 0.5, y: 0.5)
+
+        for (start, end) in [
+            (MacRemoteNormalizedPoint(x: .nan, y: 0.2), valid),
+            (MacRemoteNormalizedPoint(x: -0.001, y: 0.2), valid),
+            (valid, MacRemoteNormalizedPoint(x: 0.2, y: .infinity)),
+            (valid, MacRemoteNormalizedPoint(x: 0.2, y: 1.001))
+        ] {
+            XCTAssertEqual(
+                drag(controller, start: start, end: end),
+                .rejected(.invalidPoint)
+            )
+        }
+        XCTAssertTrue(system.postedDragEvents.isEmpty)
+    }
+
+    func testPrimaryDragRechecksPermissionsAndDisplay() {
+        let system = MockMacRemoteInputSystem()
+        let controller = armedController(system: system)
+
+        system.permissions = .init(accessibilityTrusted: false, postEventAllowed: true)
+        XCTAssertEqual(drag(controller), .rejected(.permissionRequired))
+        XCTAssertTrue(system.postedDragEvents.isEmpty)
+
+        // Permission loss revokes the bound session.
+        system.permissions = .init(accessibilityTrusted: true, postEventAllowed: true)
+        XCTAssertEqual(drag(controller), .rejected(.staleSession))
+
+        XCTAssertEqual(
+            controller.arm(displayID: displayID, screenRequestID: showID, inputSessionID: sessionID),
+            .armed
+        )
+        system.bounds = nil
+        XCTAssertEqual(drag(controller), .rejected(.displayUnavailable))
+        XCTAssertTrue(system.postedDragEvents.isEmpty)
+    }
+
+    func testPrimaryDragSharesTapRateLimitBudget() {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        let controller = armedController(system: system, clock: clock)
+
+        for _ in 0..<11 {
+            XCTAssertEqual(tap(controller), .accepted(.none))
+        }
+        XCTAssertEqual(drag(controller), .accepted(.none))
+        XCTAssertEqual(drag(controller), .rejected(.rateLimited))
+        XCTAssertEqual(system.postedMousePoints.count, 11)
+        XCTAssertEqual(system.postedDragEvents.count, 8)
+
+        clock.advance(by: 0.125)
+        XCTAssertEqual(drag(controller), .accepted(.none))
+    }
+
+    func testPrimaryDragGrantsOnlySameNonsecureEditableFocus() {
+        let system = MockMacRemoteInputSystem()
+        let field = system.makeElement(role: "AXTextArea", settable: true)
+        system.hitElement = field
+        system.currentFocusedElement = field
+        let controller = armedController(system: system)
+
+        XCTAssertEqual(
+            drag(controller),
+            .accepted(.editable(generation: 1, secure: false))
+        )
+        XCTAssertEqual(
+            text(controller, generation: 1, value: "selected replacement"),
+            .accepted(.editable(generation: 1, secure: false))
+        )
+
+        let secure = system.makeElement(
+            role: "AXTextField",
+            subrole: "AXSecureTextField",
+            settable: true
+        )
+        system.hitElement = secure
+        system.currentFocusedElement = secure
+        XCTAssertEqual(drag(controller), .accepted(.none))
+        XCTAssertEqual(
+            text(controller, generation: 1, value: "must stay local"),
+            .rejected(.focusChanged)
+        )
+        XCTAssertEqual(system.postedTexts, ["selected replacement"])
+    }
+
+    func testPrimaryDragRejectsWhilePhysicalPrimaryButtonIsHeld() {
+        let system = MockMacRemoteInputSystem()
+        system.physicalPrimaryButtonPressed = true
+        let controller = armedController(system: system)
+
+        XCTAssertEqual(drag(controller), .rejected(.primaryButtonInUse))
+        XCTAssertTrue(system.postedDragEvents.isEmpty)
+
+        system.physicalPrimaryButtonPressed = false
+        XCTAssertEqual(drag(controller), .accepted(.none))
+        XCTAssertEqual(system.postedDragEvents.count, 8)
+    }
+
+    func testEveryPrimaryDragClearsPriorKeyboardFocusEvenWhenInvalid() {
+        let system = MockMacRemoteInputSystem()
+        let field = system.makeElement(role: "AXTextField", settable: true)
+        system.hitElement = field
+        system.currentFocusedElement = field
+        let controller = armedController(system: system)
+        XCTAssertEqual(tap(controller), .accepted(.editable(generation: 1, secure: false)))
+
+        XCTAssertEqual(
+            drag(controller, end: .init(x: 2, y: 0.5)),
+            .rejected(.invalidPoint)
+        )
+        XCTAssertEqual(
+            text(controller, generation: 1, value: "blocked"),
+            .rejected(.focusChanged)
+        )
+        XCTAssertTrue(system.postedDragEvents.isEmpty)
+    }
+
+    func testPrimaryDragBackendFailureIsAllOrNoneAndGrantsNoFocus() {
+        let system = MockMacRemoteInputSystem()
+        let field = system.makeElement(role: "AXTextField", settable: true)
+        system.hitElement = field
+        system.currentFocusedElement = field
+        system.dragPostSucceeds = false
+        let controller = armedController(system: system)
+
+        XCTAssertEqual(drag(controller), .rejected(.injectionFailed))
+        XCTAssertTrue(system.postedDragEvents.isEmpty)
+        XCTAssertEqual(
+            text(controller, generation: 1, value: "blocked"),
+            .rejected(.focusChanged)
+        )
+
+        system.dragPostSucceeds = true
+        XCTAssertEqual(
+            drag(controller),
+            .accepted(.editable(generation: 1, secure: false))
+        )
+        XCTAssertEqual(system.postedDragEvents.count, 8)
+    }
+
     func testSecureEditableAncestorNeverGrantsRemoteKeyboardFocus() {
         let system = MockMacRemoteInputSystem()
         let hitChild = system.makeElement(role: "AXStaticText", settable: false)
@@ -562,6 +761,19 @@ final class MacRemoteInputControllerTests: XCTestCase {
         )
     }
 
+    private func drag(
+        _ controller: MacRemoteInputController,
+        start: MacRemoteNormalizedPoint = .init(x: 0.25, y: 0.25),
+        end: MacRemoteNormalizedPoint = .init(x: 0.75, y: 0.75)
+    ) -> MacRemoteInputResult {
+        controller.handlePrimaryDrag(
+            screenRequestID: showID,
+            inputSessionID: sessionID,
+            start: start,
+            end: end
+        )
+    }
+
     private func key(
         _ controller: MacRemoteInputController,
         generation: UInt64
@@ -609,6 +821,12 @@ private final class MockMacRemoteInputClock: @unchecked Sendable, MacRemoteInput
 }
 
 private final class MockMacRemoteInputSystem: @unchecked Sendable, MacRemoteInputSystem {
+    enum PostedDragEvent: Equatable {
+        case down(CGPoint)
+        case dragged(CGPoint)
+        case up(CGPoint)
+    }
+
     struct Node {
         var parent: MacRemoteAccessibilityElement?
         var role: String?
@@ -623,15 +841,18 @@ private final class MockMacRemoteInputSystem: @unchecked Sendable, MacRemoteInpu
         postEventAllowed: true
     )
     var bounds: CGRect? = CGRect(x: 0, y: 0, width: 1_920, height: 1_080)
+    var physicalPrimaryButtonPressed = false
     var hitElement: MacRemoteAccessibilityElement?
     var currentFocusedElement: MacRemoteAccessibilityElement?
     var focusSequence: [MacRemoteAccessibilityElement?] = []
 
     var mousePostSucceeds = true
+    var dragPostSucceeds = true
     var textPostSucceeds = true
     var keyPostSucceeds = true
 
     private(set) var postedMousePoints: [CGPoint] = []
+    private(set) var postedDragEvents: [PostedDragEvent] = []
     private(set) var postedTexts: [String] = []
     private(set) var postedKeys: [MacRemoteInputKey] = []
     private var nodes: [ObjectIdentifier: Node] = [:]
@@ -674,6 +895,10 @@ private final class MockMacRemoteInputSystem: @unchecked Sendable, MacRemoteInpu
 
     func displayBounds(for _: UInt32) -> CGRect? {
         bounds
+    }
+
+    func isPhysicalPrimaryButtonPressed() -> Bool {
+        physicalPrimaryButtonPressed
     }
 
     func element(at _: CGPoint) -> MacRemoteAccessibilityElement? {
@@ -721,6 +946,18 @@ private final class MockMacRemoteInputSystem: @unchecked Sendable, MacRemoteInpu
     func postMouseClick(at point: CGPoint) -> Bool {
         guard mousePostSucceeds else { return false }
         postedMousePoints.append(point)
+        return true
+    }
+
+    func postPrimaryDrag(from start: CGPoint, to end: CGPoint) -> Bool {
+        guard dragPostSucceeds else { return false }
+        postedDragEvents.append(.down(start))
+        postedDragEvents.append(
+            contentsOf: MacRemoteInputDragPath.points(from: start, to: end).map {
+                .dragged($0)
+            }
+        )
+        postedDragEvents.append(.up(end))
         return true
     }
 

@@ -252,7 +252,8 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         }
         let inputCapability = WebRTCInputCapability(
             inputSessionID: UUID(),
-            screenRequestID: showID
+            screenRequestID: showID,
+            supportsPrimaryDrag: true
         )
         let hostInputAuthorization = WebRTCInputAuthorization()
         try await host.acknowledgeActiveControlRequestIfTransportHealthy(
@@ -278,7 +279,10 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         XCTAssertFalse(viewerInputAuthorization === hostInputAuthorization)
 
         let inputID = try await viewer.sendInput(
-            .tap(.init(x: 0.25, y: 0.75)),
+            .primaryDrag(
+                start: .init(x: 0.25, y: 0.75),
+                end: .init(x: 0.75, y: 0.25)
+            ),
             capability: inputCapability,
             authorization: viewerInputAuthorization
         )
@@ -289,7 +293,10 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
                 id: inputID,
                 screenRequestID: showID,
                 inputSessionID: inputCapability.inputSessionID,
-                action: .tap(.init(x: 0.25, y: 0.75))
+                action: .primaryDrag(
+                    start: .init(x: 0.25, y: 0.75),
+                    end: .init(x: 0.75, y: 0.25)
+                )
             )
         ])
         XCTAssertTrue(

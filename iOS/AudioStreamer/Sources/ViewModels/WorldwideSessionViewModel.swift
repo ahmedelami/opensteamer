@@ -45,7 +45,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var pendingRemoteInputs: [UInt64: PendingRemoteInput] = [:]
     private var pendingRemoteInputOrder: [UInt64] = []
     private var earlyRemoteInputFeedback: [UInt64: WebRTCInputFeedback] = [:]
-    private var latestTapIntentID: UInt64 = 0
+    private var latestPointerIntentID: UInt64 = 0
     private var remoteInputAuthorization: WebRTCInputAuthorization?
     private var acceptsActiveScreenAcknowledgement = false
     private var remoteHideRequired = false
@@ -67,6 +67,10 @@ final class WorldwideSessionViewModel: ObservableObject {
             && remoteInputAuthorization?.isValid == true
             && isScreenVisible
             && canViewScreen
+    }
+
+    var isRemotePrimaryDragAvailable: Bool {
+        isRemoteInputAvailable && remoteInputCapability?.supportsPrimaryDrag == true
     }
 
     @discardableResult
@@ -347,9 +351,7 @@ final class WorldwideSessionViewModel: ObservableObject {
             return
         }
 
-        latestTapIntentID &+= 1
-        if latestTapIntentID == 0 { latestTapIntentID = 1 }
-        clearRemoteKeyboardFocus()
+        let pointerIntentID = beginRemotePointerIntent()
         enqueueRemoteInput(
             .tap(
                 .init(
@@ -357,8 +359,43 @@ final class WorldwideSessionViewModel: ObservableObject {
                     y: Double(normalizedPoint.y)
                 )
             ),
-            tapIntentID: latestTapIntentID
+            pointerIntentID: pointerIntentID
         )
+    }
+
+    func sendRemotePrimaryDrag(
+        startNormalizedPoint: CGPoint,
+        endNormalizedPoint: CGPoint
+    ) {
+        guard isRemotePrimaryDragAvailable,
+              startNormalizedPoint.x.isFinite,
+              startNormalizedPoint.y.isFinite,
+              endNormalizedPoint.x.isFinite,
+              endNormalizedPoint.y.isFinite else {
+            return
+        }
+
+        let pointerIntentID = beginRemotePointerIntent()
+        enqueueRemoteInput(
+            .primaryDrag(
+                start: .init(
+                    x: Double(startNormalizedPoint.x),
+                    y: Double(startNormalizedPoint.y)
+                ),
+                end: .init(
+                    x: Double(endNormalizedPoint.x),
+                    y: Double(endNormalizedPoint.y)
+                )
+            ),
+            pointerIntentID: pointerIntentID
+        )
+    }
+
+    private func beginRemotePointerIntent() -> UInt64 {
+        latestPointerIntentID &+= 1
+        if latestPointerIntentID == 0 { latestPointerIntentID = 1 }
+        clearRemoteKeyboardFocus()
+        return latestPointerIntentID
     }
 
     func sendRemoteText(_ text: String, focusGeneration: UInt64) {
@@ -379,7 +416,7 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func enqueueRemoteInput(
         _ action: WebRTCInputAction,
-        tapIntentID: UInt64? = nil
+        pointerIntentID: UInt64? = nil
     ) {
         guard let capability = remoteInputCapability,
               let authorization = remoteInputAuthorization,
@@ -400,7 +437,7 @@ final class WorldwideSessionViewModel: ObservableObject {
                 authorization: authorization,
                 sessionGeneration: sessionGeneration,
                 inputGeneration: remoteInputGeneration,
-                tapIntentID: tapIntentID
+                pointerIntentID: pointerIntentID
             )
         )
         startRemoteInputDrainIfNeeded()
@@ -416,7 +453,7 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func remoteInputActionMatchesCurrentFocus(_ action: WebRTCInputAction) -> Bool {
         switch action {
-        case .tap:
+        case .tap, .primaryDrag:
             return true
         case .insertText(_, let generation),
              .backspace(let generation),
@@ -472,7 +509,7 @@ final class WorldwideSessionViewModel: ObservableObject {
                 }
                 pendingRemoteInputs[requestID] = PendingRemoteInput(
                     kind: PendingRemoteInputKind(queued.action),
-                    tapIntentID: queued.tapIntentID
+                    pointerIntentID: queued.pointerIntentID
                 )
                 pendingRemoteInputOrder.append(requestID)
 
@@ -1118,8 +1155,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
 
         switch pending.kind {
-        case .tap:
-            guard pending.tapIntentID == latestTapIntentID else { return }
+        case .pointer:
+            guard pending.pointerIntentID == latestPointerIntentID else { return }
             applyRemoteInputFocus(feedback.focus)
 
         case .keyboard(let generation):
@@ -1190,7 +1227,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         pendingRemoteInputs.removeAll(keepingCapacity: false)
         pendingRemoteInputOrder.removeAll(keepingCapacity: false)
         earlyRemoteInputFeedback.removeAll(keepingCapacity: false)
-        latestTapIntentID = 0
+        latestPointerIntentID = 0
         remoteInputCapability = nil
         clearRemoteKeyboardFocus()
     }
@@ -1225,7 +1262,7 @@ final class WorldwideSessionViewModel: ObservableObject {
                 authorization: authorization,
                 sessionGeneration: sessionGeneration,
                 inputGeneration: remoteInputGeneration,
-                tapIntentID: nil
+                pointerIntentID: nil
             )
         ]
         return authorization
@@ -1460,13 +1497,13 @@ private struct QueuedRemoteInput {
     let authorization: WebRTCInputAuthorization
     let sessionGeneration: UUID
     let inputGeneration: UUID
-    let tapIntentID: UInt64?
+    let pointerIntentID: UInt64?
 }
 
 private extension WebRTCInputAction {
     var requiresRemoteFocus: Bool {
         switch self {
-        case .tap:
+        case .tap, .primaryDrag:
             false
         case .insertText, .backspace, .returnKey:
             true
@@ -1478,17 +1515,17 @@ private struct PendingRemoteInput {
     // Never retain committed text while waiting for host feedback. The full action exists only
     // in the bounded pre-send queue and the native send window; correlation needs this metadata.
     let kind: PendingRemoteInputKind
-    let tapIntentID: UInt64?
+    let pointerIntentID: UInt64?
 }
 
 enum PendingRemoteInputKind: Equatable {
-    case tap
+    case pointer
     case keyboard(focusGeneration: UInt64)
 
     init(_ action: WebRTCInputAction) {
         switch action {
-        case .tap:
-            self = .tap
+        case .tap, .primaryDrag:
+            self = .pointer
         case .insertText(_, let focusGeneration),
              .backspace(let focusGeneration),
              .returnKey(let focusGeneration):

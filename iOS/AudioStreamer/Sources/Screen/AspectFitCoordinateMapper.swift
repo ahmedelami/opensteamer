@@ -62,6 +62,33 @@ enum AspectFitCoordinateMapper {
         }
         return normalized
     }
+
+    /// Maps an active drag to the nearest video edge after its origin has already
+    /// been accepted inside the visible image.
+    static func clampedNormalizedPoint(
+        for location: CGPoint,
+        containerSize: CGSize,
+        videoSize: CGSize
+    ) -> CGPoint? {
+        guard location.x.isFinite,
+              location.y.isFinite,
+              let visibleRect = visibleVideoRect(
+                containerSize: containerSize,
+                videoSize: videoSize
+              ) else {
+            return nil
+        }
+
+        let clampedLocation = CGPoint(
+            x: min(max(location.x, visibleRect.minX), visibleRect.maxX),
+            y: min(max(location.y, visibleRect.minY), visibleRect.maxY)
+        )
+        return normalizedPoint(
+            for: clampedLocation,
+            containerSize: containerSize,
+            videoSize: videoSize
+        )
+    }
 }
 
 private extension CGSize {
