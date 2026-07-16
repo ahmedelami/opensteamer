@@ -59,6 +59,14 @@ struct DiagnosticsView: View {
                 }
             }
 
+            if let audioDiagnostic = worldwideViewModel.audioDiagnostic {
+                Section("Worldwide Audio Diagnostic") {
+                    Text(audioDiagnostic)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             if let candidateError = worldwideViewModel.lastICECandidateError {
                 Section("Worldwide ICE Probe") {
                     MetricRow(title: "Server", value: candidateError.url)

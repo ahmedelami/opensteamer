@@ -23,11 +23,14 @@ struct BrowserView: View {
                     LabeledContent("Audio", value: worldwideViewModel.audioStateText)
                         .accessibilityIdentifier("worldwideAudioState")
 
-                    if worldwideViewModel.audioRequiresExplicitResume {
+                    if worldwideViewModel.canResumeAudioPlayback {
                         Button {
                             worldwideViewModel.resumeAudioPlayback()
                         } label: {
-                            Label("Resume Audio", systemImage: "play.fill")
+                            Label(
+                                worldwideViewModel.audioRecoveryButtonTitle,
+                                systemImage: "play.fill"
+                            )
                         }
                         .accessibilityIdentifier("resumeWorldwideAudio")
                     }
@@ -86,6 +89,11 @@ struct BrowserView: View {
 
                 if let expiration = worldwideViewModel.invitationExpiresAt {
                     LabeledContent("Invitation expires", value: expiration.formatted(date: .omitted, time: .shortened))
+                }
+
+                if let audioError = worldwideViewModel.audioError {
+                    Label(audioError, systemImage: "speaker.slash")
+                        .foregroundStyle(.orange)
                 }
 
                 if let lastError = worldwideViewModel.lastError {

@@ -46,6 +46,13 @@ manual IP addresses, router configuration, or public TCP ports.
   audio; interruption, private-route loss, uncertainty, and disconnect mute the
   native remote track itself. Never auto-resume when iOS omits `shouldResume`, and
   never promise playback after the user force-quits the app.
+- An iPhone audio-session conflict must degrade audio without aborting worldwide
+  signaling, screen viewing, or remote control. Gate manual WebRTC playback before
+  signaling; retry `.moviePlayback` as `.default` only for configuration-stage
+  `NSOSStatusErrorDomain` `badParam`, never for activation failure. Own at most one
+  balanced native activation lease, recover only from explicit lifecycle/route
+  events or user action, and keep audio diagnostics separate from terminal session
+  errors.
 - Worldwide Show/Hide must use monotonic request IDs and host acknowledgements.
   The iPhone must not claim the screen is live until Mac capture actually starts.
   Screen capture must fail closed on peer/control uncertainty and require a fresh

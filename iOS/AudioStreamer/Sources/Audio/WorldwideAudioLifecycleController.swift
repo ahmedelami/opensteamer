@@ -43,6 +43,8 @@ struct WorldwideAudioLifecycleSnapshot: Equatable {
     let isRemoteAudioAvailable: Bool
     let isPlaying: Bool
     let requiresExplicitResume: Bool
+    let errorText: String?
+    let diagnosticText: String?
 }
 
 /// Owns only the iPhone playback side of a worldwide session. Screen privacy remains
@@ -51,7 +53,6 @@ struct WorldwideAudioLifecycleSnapshot: Equatable {
 @MainActor
 final class WorldwideAudioLifecycleController {
     var onSnapshotChanged: ((WorldwideAudioLifecycleSnapshot) -> Void)?
-    var onError: ((String) -> Void)?
 
     private let playback: any WorldwideAudioPlaybackManaging
     private let backgroundPlayback: any BackgroundPlaybackCoordinating
@@ -63,6 +64,8 @@ final class WorldwideAudioLifecycleController {
     private var transportIsHealthy = false
     private var isInterrupted = false
     private var requiresExplicitResume = false
+    private var playbackErrorText: String?
+    private var playbackDiagnosticText: String?
     private var serverName = "Mac mini"
     private var remoteAudioControl: (any WorldwideRemoteAudioControlling)?
 
@@ -105,32 +108,42 @@ final class WorldwideAudioLifecycleController {
             stateText: stateText,
             isRemoteAudioAvailable: hasRemoteAudio,
             isPlaying: isPlaying,
-            requiresExplicitResume: requiresExplicitResume
+            requiresExplicitResume: requiresExplicitResume,
+            errorText: playbackErrorText,
+            diagnosticText: playbackDiagnosticText
         )
     }
 
-    func prepare(serverName: String) throws {
+    func prepare(serverName: String) {
         guard !isPrepared else {
             updateServerName(serverName)
             return
         }
 
-        do {
-            try playback.activate()
-        } catch {
-            // Activation can partially configure the singleton audio session before throwing.
-            // Balance it so a failed connection attempt cannot disturb later media playback.
-            playback.deactivate()
-            throw error
-        }
-
         self.serverName = serverName
         isPrepared = true
-        playbackIsReady = true
+        playbackIsReady = false
         hasRemoteAudio = false
         transportIsHealthy = false
         isInterrupted = false
         requiresExplicitResume = false
+        playbackErrorText = nil
+        playbackDiagnosticText = nil
+
+        do {
+            try playback.activate()
+            playbackIsReady = true
+        } catch {
+            // Activation can partially configure the singleton audio session before throwing.
+            // Balance it, but keep this lifecycle prepared so screen/signaling can connect and
+            // an interruption or route-change notification can retry audio independently.
+            playback.deactivate()
+            recordPlaybackFailure(
+                context: "Initial background audio preparation failed",
+                error: error
+            )
+        }
+
         events.startObserving()
         publishSnapshot()
     }
@@ -209,6 +222,8 @@ final class WorldwideAudioLifecycleController {
         transportIsHealthy = false
         isInterrupted = false
         requiresExplicitResume = false
+        playbackErrorText = nil
+        playbackDiagnosticText = nil
         publishSnapshot()
     }
 
@@ -258,15 +273,21 @@ final class WorldwideAudioLifecycleController {
         do {
             try playback.recover()
             playbackIsReady = true
+            playbackErrorText = nil
             publishSnapshot()
             if isPlaying {
                 backgroundPlayback.endTransitionTask()
             }
         } catch {
             playbackIsReady = false
+            recordPlaybackFailure(context: context, error: error)
             publishSnapshot()
-            onError?("\(context): \(error.localizedDescription)")
         }
+    }
+
+    private func recordPlaybackFailure(context: String, error: Error) {
+        playbackErrorText = "Screen and control are still available. A FaceTime or phone call, or another app, may be using iPhone audio. End it, then tap Retry Audio. Calls running on the Mac remain supported."
+        playbackDiagnosticText = "\(context): \(error.localizedDescription)"
     }
 
     private var isPlaying: Bool {

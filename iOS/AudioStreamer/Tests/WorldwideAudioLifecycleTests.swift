@@ -1,4 +1,5 @@
 import AVFAudio
+import RemoteSessionCore
 import XCTest
 @testable import AudioStreamer
 @testable import WebRTCTransport
@@ -13,6 +14,48 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertEqual(configuration.categoryOptions, [.mixWithOthers])
         XCTAssertFalse(configuration.categoryOptions.contains(.allowAirPlay))
         XCTAssertGreaterThan(configuration.inputNumberOfChannels, 0)
+    }
+
+    func testCompatibilityPlaybackConfigurationChangesOnlyTheMode() {
+        let preferred = WebRTCAudioPlaybackSession.playbackConfiguration()
+        let compatibility = WebRTCAudioPlaybackSession.compatibilityPlaybackConfiguration()
+
+        XCTAssertEqual(compatibility.category, preferred.category)
+        XCTAssertEqual(compatibility.categoryOptions, preferred.categoryOptions)
+        XCTAssertEqual(compatibility.mode, AVAudioSession.Mode.default.rawValue)
+        XCTAssertEqual(compatibility.sampleRate, preferred.sampleRate)
+        XCTAssertEqual(compatibility.ioBufferDuration, preferred.ioBufferDuration)
+        XCTAssertEqual(compatibility.outputNumberOfChannels, preferred.outputNumberOfChannels)
+    }
+
+    func testDefaultModeFallbackIsLimitedToConfigurationOSStatusParamErr() {
+        let parameterError = NSError(domain: NSOSStatusErrorDomain, code: -50)
+        let nestedParameterError = NSError(
+            domain: "LiveKitWebRTC",
+            code: 1,
+            userInfo: [NSUnderlyingErrorKey: parameterError]
+        )
+
+        XCTAssertTrue(
+            WebRTCAudioPlaybackSession.shouldRetryConfigurationWithDefaultMode(
+                after: parameterError
+            )
+        )
+        XCTAssertTrue(
+            WebRTCAudioPlaybackSession.shouldRetryConfigurationWithDefaultMode(
+                after: nestedParameterError
+            )
+        )
+        XCTAssertFalse(
+            WebRTCAudioPlaybackSession.shouldRetryConfigurationWithDefaultMode(
+                after: NSError(domain: NSOSStatusErrorDomain, code: -108)
+            )
+        )
+        XCTAssertFalse(
+            WebRTCAudioPlaybackSession.shouldRetryConfigurationWithDefaultMode(
+                after: NSError(domain: "Unrelated", code: -50)
+            )
+        )
     }
 
     func testLegacyLongFormPlaybackConfigurationUsesNoExplicitOptions() {
@@ -67,12 +110,12 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         #endif
     }
 
-    func testBackgroundLifecycleKeepsPlaybackPreparedAndNeverDeactivates() throws {
+    func testBackgroundLifecycleKeepsPlaybackPreparedAndNeverDeactivates() {
         let fixture = makeFixture()
         var snapshots: [WorldwideAudioLifecycleSnapshot] = []
         fixture.controller.onSnapshotChanged = { snapshots.append($0) }
 
-        try fixture.controller.prepare(serverName: "Office Mac")
+        fixture.controller.prepare(serverName: "Office Mac")
         XCTAssertEqual(fixture.playback.activateCount, 1)
         XCTAssertEqual(fixture.events.startCount, 1)
         XCTAssertEqual(fixture.controller.snapshot.stateText, "Waiting for Mac audio")
@@ -115,9 +158,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertEqual(snapshots.last, inactiveSnapshot)
     }
 
-    func testInterruptionWithoutResumeHintStaysMutedUntilExplicitResume() throws {
+    func testInterruptionWithoutResumeHintStaysMutedUntilExplicitResume() {
         let fixture = makeFixture()
-        try fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.prepare(serverName: "Mac mini")
         fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
         fixture.controller.transportBecameHealthy()
         let recoverCountBeforeInterruption = fixture.playback.recoverCount
@@ -156,9 +199,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertTrue(fixture.remoteAudio.isEnabled)
     }
 
-    func testInterruptionWithResumeHintRecoversAndUnmutes() throws {
+    func testInterruptionWithResumeHintRecoversAndUnmutes() {
         let fixture = makeFixture()
-        try fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.prepare(serverName: "Mac mini")
         fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
         fixture.controller.transportBecameHealthy()
         let recoverCountBeforeInterruption = fixture.playback.recoverCount
@@ -173,9 +216,28 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertTrue(fixture.controller.snapshot.isPlaying)
     }
 
-    func testTransportUncertaintyDoesNotDeactivateAudioSession() throws {
+    func testInitiallyUnavailableAudioRecoversAfterInterruptionEnds() {
         let fixture = makeFixture()
-        try fixture.controller.prepare(serverName: "Mac mini")
+        fixture.playback.activateError = TestAudioError.activation
+        fixture.playback.recoverError = TestAudioError.recovery
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        XCTAssertEqual(fixture.controller.snapshot.stateText, "Playback unavailable")
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+
+        fixture.events.onInterruptionBegan?()
+        fixture.playback.recoverError = nil
+        fixture.events.onInterruptionEnded?(true)
+
+        XCTAssertEqual(fixture.controller.snapshot.stateText, "Playing")
+        XCTAssertNil(fixture.controller.snapshot.errorText)
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+    }
+
+    func testTransportUncertaintyDoesNotDeactivateAudioSession() {
+        let fixture = makeFixture()
+        fixture.controller.prepare(serverName: "Mac mini")
         fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
         fixture.controller.transportBecameHealthy()
         XCTAssertTrue(fixture.remoteAudio.isEnabled)
@@ -194,9 +256,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertTrue(fixture.remoteAudio.isEnabled)
     }
 
-    func testHeadphoneRemovalStaysMutedUntilExplicitResume() throws {
+    func testHeadphoneRemovalStaysMutedUntilExplicitResume() {
         let fixture = makeFixture()
-        try fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.prepare(serverName: "Mac mini")
         fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
         fixture.controller.transportBecameHealthy()
         let recoverCountBeforeRemoval = fixture.playback.recoverCount
@@ -219,11 +281,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertFalse(fixture.controller.snapshot.requiresExplicitResume)
     }
 
-    func testRecoveryFailureIsVisibleButSessionRemainsPreparedForRetry() throws {
+    func testRecoveryFailureIsVisibleButSessionRemainsPreparedForRetry() {
         let fixture = makeFixture()
-        var errors: [String] = []
-        fixture.controller.onError = { errors.append($0) }
-        try fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.prepare(serverName: "Mac mini")
         fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
         fixture.playback.recoverError = TestAudioError.recovery
 
@@ -232,8 +292,12 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertEqual(fixture.controller.snapshot.stateText, "Playback unavailable")
         XCTAssertFalse(fixture.controller.snapshot.isPlaying)
         XCTAssertEqual(fixture.playback.deactivateCount, 0)
-        XCTAssertEqual(errors.count, 1)
-        XCTAssertTrue(errors[0].contains("Audio transport recovery failed"))
+        XCTAssertNotNil(fixture.controller.snapshot.errorText)
+        XCTAssertTrue(
+            fixture.controller.snapshot.diagnosticText?.contains(
+                "Audio transport recovery failed"
+            ) ?? false
+        )
         XCTAssertFalse(fixture.remoteAudio.isEnabled)
 
         fixture.playback.recoverError = nil
@@ -241,23 +305,69 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertEqual(fixture.controller.snapshot.stateText, "Playing")
         XCTAssertTrue(fixture.controller.snapshot.isPlaying)
         XCTAssertTrue(fixture.remoteAudio.isEnabled)
+        XCTAssertNil(fixture.controller.snapshot.errorText)
+        XCTAssertTrue(
+            fixture.controller.snapshot.diagnosticText?.contains("recovery failed") ?? false
+        )
     }
 
-    func testActivationFailureBalancesPartialActivationAndDoesNotObserve() {
+    func testActivationFailureKeepsLifecyclePreparedForIndependentConnectionAndRetry() {
         let fixture = makeFixture()
         fixture.playback.activateError = TestAudioError.activation
 
-        XCTAssertThrowsError(try fixture.controller.prepare(serverName: "Mac mini"))
+        fixture.controller.prepare(serverName: "Mac mini")
         XCTAssertEqual(fixture.playback.activateCount, 1)
         XCTAssertEqual(fixture.playback.deactivateCount, 1)
-        XCTAssertEqual(fixture.events.startCount, 0)
+        XCTAssertEqual(fixture.events.startCount, 1)
         XCTAssertEqual(fixture.background.clearCount, 0)
+        XCTAssertEqual(fixture.controller.snapshot.stateText, "Playback unavailable")
+        XCTAssertFalse(fixture.controller.snapshot.isPlaying)
+        XCTAssertNotNil(fixture.controller.snapshot.errorText)
+        XCTAssertTrue(
+            fixture.controller.snapshot.diagnosticText?.contains("activation failed") ?? false
+        )
+
+        fixture.playback.activateError = nil
+        fixture.events.onRouteChanged?("Audio route changed: category")
+
+        XCTAssertEqual(fixture.playback.recoverCount, 1)
+        XCTAssertEqual(fixture.controller.snapshot.stateText, "Waiting for Mac audio")
+        XCTAssertNil(fixture.controller.snapshot.errorText)
+
+        fixture.controller.stop()
+        XCTAssertEqual(fixture.playback.deactivateCount, 2)
+        XCTAssertEqual(fixture.events.stopCount, 1)
         XCTAssertEqual(fixture.controller.snapshot, inactiveSnapshot)
     }
 
-    func testIdentityUpdateRepublishesNowPlayingMetadata() throws {
+    func testWorldwideConnectionContinuesWhenAudioPreparationIsUnavailable() throws {
         let fixture = makeFixture()
-        try fixture.controller.prepare(serverName: "Mac mini")
+        fixture.playback.activateError = TestAudioError.activation
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let invitation = try RemoteInvitationCode.generate()
+
+        XCTAssertTrue(
+            viewModel.connect(
+                invitationCode: invitation.exportedCode,
+                debugEndpointOverride: "ws://127.0.0.1:9"
+            )
+        )
+        XCTAssertTrue(viewModel.hasActiveSession)
+        XCTAssertEqual(viewModel.stateText, "Connecting securely")
+        XCTAssertEqual(viewModel.audioStateText, "Playback unavailable")
+        XCTAssertTrue(viewModel.canResumeAudioPlayback)
+        XCTAssertTrue(viewModel.audioError?.contains("Screen and control") ?? false)
+        XCTAssertEqual(viewModel.audioRecoveryButtonTitle, "Retry Audio")
+        XCTAssertTrue(viewModel.audioDiagnostic?.contains("activation failed") ?? false)
+        XCTAssertNil(viewModel.lastError)
+
+        viewModel.disconnect()
+        XCTAssertFalse(viewModel.hasActiveSession)
+    }
+
+    func testIdentityUpdateRepublishesNowPlayingMetadata() {
+        let fixture = makeFixture()
+        fixture.controller.prepare(serverName: "Mac mini")
 
         fixture.controller.updateServerName("  Studio Mac  ")
 
@@ -269,7 +379,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             stateText: "Inactive",
             isRemoteAudioAvailable: false,
             isPlaying: false,
-            requiresExplicitResume: false
+            requiresExplicitResume: false,
+            errorText: nil,
+            diagnosticText: nil
         )
     }
 

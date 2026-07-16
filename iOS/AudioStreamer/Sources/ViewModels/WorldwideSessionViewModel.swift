@@ -18,6 +18,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     @Published private(set) var isRemoteAudioAvailable = false
     @Published private(set) var isRemoteAudioPlaying = false
     @Published private(set) var audioRequiresExplicitResume = false
+    @Published private(set) var audioError: String?
+    @Published private(set) var audioDiagnostic: String?
     @Published private(set) var routeText = "Unknown"
     @Published private(set) var iceStateText = "Inactive"
     @Published private(set) var remoteDisplayName = "Mac mini"
@@ -63,13 +65,13 @@ final class WorldwideSessionViewModel: ObservableObject {
     init(audioLifecycle: WorldwideAudioLifecycleController = WorldwideAudioLifecycleController()) {
         self.audioLifecycle = audioLifecycle
         audioLifecycle.onSnapshotChanged = { [weak self] snapshot in
-            self?.audioStateText = snapshot.stateText
-            self?.isRemoteAudioAvailable = snapshot.isRemoteAudioAvailable
-            self?.isRemoteAudioPlaying = snapshot.isPlaying
-            self?.audioRequiresExplicitResume = snapshot.requiresExplicitResume
-        }
-        audioLifecycle.onError = { [weak self] message in
-            self?.lastError = message
+            guard let self else { return }
+            audioStateText = snapshot.stateText
+            isRemoteAudioAvailable = snapshot.isRemoteAudioAvailable
+            isRemoteAudioPlaying = snapshot.isPlaying
+            audioRequiresExplicitResume = snapshot.requiresExplicitResume
+            audioError = snapshot.errorText
+            audioDiagnostic = snapshot.diagnosticText
         }
     }
 
@@ -90,6 +92,15 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     var isRemotePrimaryDragAvailable: Bool {
         isRemoteInputAvailable && remoteInputCapability?.supportsPrimaryDrag == true
+    }
+
+    var canResumeAudioPlayback: Bool {
+        hasActiveSession
+            && (audioRequiresExplicitResume || audioStateText == "Playback unavailable")
+    }
+
+    var audioRecoveryButtonTitle: String {
+        audioStateText == "Playback unavailable" ? "Retry Audio" : "Resume Audio"
     }
 
     @discardableResult
@@ -132,13 +143,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         // this worldwide attempt can actually proceed to WebRTC audio activation.
         beforeAudioActivation()
         resetPublishedSessionState()
-        do {
-            try audioLifecycle.prepare(serverName: remoteDisplayName)
-        } catch {
-            stateText = "Audio unavailable"
-            lastError = "The iPhone could not prepare background audio: \(error.localizedDescription)"
-            return false
-        }
+        audioLifecycle.prepare(serverName: remoteDisplayName)
         isConnecting = true
         stateText = "Connecting securely"
         signaling = client
@@ -959,6 +964,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         isRemoteAudioAvailable = false
         isRemoteAudioPlaying = false
         audioRequiresExplicitResume = false
+        audioError = nil
+        audioDiagnostic = nil
         routeText = "Unknown"
         iceStateText = "Inactive"
         remoteDisplayName = "Mac mini"

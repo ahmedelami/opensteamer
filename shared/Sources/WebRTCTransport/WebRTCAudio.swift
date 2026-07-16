@@ -598,85 +598,273 @@ extension MacExternalAudioCapturer: LKRTCAudioDeviceModuleDelegate {
 }
 #endif
 
+#if os(iOS)
+@MainActor
+protocol WebRTCAudioSessionControlling: AnyObject {
+    var isActive: Bool { get }
+    var isAudioEnabled: Bool { get set }
+
+    func prepareForManualAudio()
+    func lockForConfiguration()
+    func unlockForConfiguration()
+    func configurePlayback(mode: AVAudioSession.Mode) throws
+    func setActive(_ active: Bool) throws
+}
+
+@MainActor
+private final class LiveKitWebRTCAudioSessionController: WebRTCAudioSessionControlling {
+    private var session: LKRTCAudioSession { LKRTCAudioSession.sharedInstance() }
+
+    var isActive: Bool { session.isActive }
+
+    var isAudioEnabled: Bool {
+        get { session.isAudioEnabled }
+        set { session.isAudioEnabled = newValue }
+    }
+
+    func prepareForManualAudio() {
+        session.useManualAudio = true
+        session.ignoresPreferredAttributeConfigurationErrors = true
+    }
+
+    func lockForConfiguration() {
+        session.lockForConfiguration()
+    }
+
+    func unlockForConfiguration() {
+        session.unlockForConfiguration()
+    }
+
+    func configurePlayback(mode: AVAudioSession.Mode) throws {
+        let configuration = WebRTCAudioPlaybackSession.playbackConfiguration(mode: mode)
+        try session.setConfiguration(configuration)
+        // Publish only a configuration that the native session actually accepted. A rejected
+        // candidate must not poison WebRTC's process-wide default for later ADM initialization.
+        LKRTCAudioSessionConfiguration.setWebRTC(configuration)
+    }
+
+    func setActive(_ active: Bool) throws {
+        try session.setActive(active)
+    }
+}
+#endif
+
 /// Coordinates WebRTC's receive-only audio unit with an iOS background-playback session.
+public enum WebRTCAudioPlaybackFailureStage: String, Sendable {
+    case configuration
+    case activation
+}
+
+public struct WebRTCAudioPlaybackSessionError: LocalizedError, Sendable {
+    public let stage: WebRTCAudioPlaybackFailureStage
+    public let underlyingDomain: String
+    public let underlyingCode: Int
+    public let attemptedMode: String
+    public let compatibilityFallbackAttempted: Bool
+    public let currentCategory: String
+    public let currentMode: String
+    public let currentCategoryOptions: UInt
+    public let outputRoute: String
+    public let secondaryAudioShouldBeSilenced: Bool
+    public let otherAudioIsPlaying: Bool
+
+    public var errorDescription: String? {
+        let fallback = compatibilityFallbackAttempted ? "yes" : "no"
+        return "WebRTC audio \(stage.rawValue) failed "
+            + "(\(underlyingDomain) \(underlyingCode)); "
+            + "attemptedMode=\(attemptedMode), fallback=\(fallback), "
+            + "currentCategory=\(currentCategory), currentMode=\(currentMode), "
+            + "currentOptions=\(currentCategoryOptions), route=\(outputRoute), "
+            + "secondarySilenced=\(secondaryAudioShouldBeSilenced), "
+            + "otherAudio=\(otherAudioIsPlaying)."
+    }
+}
+
 @MainActor
 public final class WebRTCAudioPlaybackSession {
     #if os(iOS)
     // Avoid constructing the process-wide WebRTC audio singleton merely because a SwiftUI
     // lifecycle object was initialized. Startup stays side-effect-free until audio is activated.
-    private var session: LKRTCAudioSession { LKRTCAudioSession.sharedInstance() }
-    private var localActivationCount = 0
+    private let sessionProvider: @MainActor () -> any WebRTCAudioSessionControlling
+    private var providedSession: (any WebRTCAudioSessionControlling)?
+    private var ownsActivation = false
+
+    private var session: any WebRTCAudioSessionControlling {
+        if let providedSession {
+            return providedSession
+        }
+        let providedSession = sessionProvider()
+        self.providedSession = providedSession
+        return providedSession
+    }
     #endif
 
-    public init() {}
+    public init() {
+        #if os(iOS)
+        sessionProvider = { LiveKitWebRTCAudioSessionController() }
+        #endif
+    }
+
+    #if os(iOS)
+    init(session: any WebRTCAudioSessionControlling) {
+        sessionProvider = { session }
+    }
+    #endif
 
     public func activate() throws {
         #if os(iOS)
-        let configuration = Self.playbackConfiguration()
-        LKRTCAudioSessionConfiguration.setWebRTC(configuration)
-        session.useManualAudio = true
-        session.ignoresPreferredAttributeConfigurationErrors = true
-        session.lockForConfiguration()
-        defer { session.unlockForConfiguration() }
-        try session.setConfiguration(configuration)
-        if localActivationCount == 0 {
-            try session.setActive(true)
-            localActivationCount += 1
-        }
-        session.isAudioEnabled = true
+        try configureAndActivate()
         #endif
     }
 
     public func recover() throws {
         #if os(iOS)
-        let configuration = Self.playbackConfiguration()
-        LKRTCAudioSessionConfiguration.setWebRTC(configuration)
-        session.useManualAudio = true
-        session.ignoresPreferredAttributeConfigurationErrors = true
-        session.lockForConfiguration()
-        defer { session.unlockForConfiguration() }
-        try session.setConfiguration(configuration)
-        if !session.isActive {
-            try session.setActive(true)
-            localActivationCount += 1
-        }
-        session.isAudioEnabled = true
+        try configureAndActivate()
         #endif
     }
 
     public func deactivate() {
         #if os(iOS)
         session.isAudioEnabled = false
-        guard localActivationCount > 0 else { return }
+        guard ownsActivation else { return }
         session.lockForConfiguration()
         defer { session.unlockForConfiguration() }
-        while localActivationCount > 0 {
-            do {
-                try session.setActive(false)
-                localActivationCount -= 1
-            } catch {
-                // Preserve the unbalanced count so a later deactivate can retry safely.
-                break
-            }
-        }
+        try? session.setActive(false)
+        // One successful setActive(true) creates exactly one local ownership lease. Never
+        // decrement it twice merely because native deactivation reported an error.
+        ownsActivation = false
         #endif
     }
 
     #if os(iOS)
-    static func playbackConfiguration() -> LKRTCAudioSessionConfiguration {
+    private func configureAndActivate() throws {
+        session.prepareForManualAudio()
+        session.isAudioEnabled = false
+        session.lockForConfiguration()
+        defer { session.unlockForConfiguration() }
+
+        var appliedMode = AVAudioSession.Mode.moviePlayback
+        var usedCompatibilityFallback = false
+
+        do {
+            try session.configurePlayback(mode: appliedMode)
+        } catch {
+            guard Self.shouldRetryConfigurationWithDefaultMode(after: error) else {
+                throw Self.sessionError(
+                    stage: .configuration,
+                    underlying: error,
+                    attemptedMode: appliedMode,
+                    compatibilityFallbackAttempted: false
+                )
+            }
+
+            appliedMode = .default
+            do {
+                try session.configurePlayback(mode: appliedMode)
+                usedCompatibilityFallback = true
+            } catch {
+                throw Self.sessionError(
+                    stage: .configuration,
+                    underlying: error,
+                    attemptedMode: appliedMode,
+                    compatibilityFallbackAttempted: true
+                )
+            }
+        }
+
+        if ownsActivation {
+            guard session.isActive else {
+                throw Self.sessionError(
+                    stage: .activation,
+                    underlying: NSError(
+                        domain: "AudioStreamer.WebRTCAudioPlayback",
+                        code: 1,
+                        userInfo: [
+                            NSLocalizedDescriptionKey: "WebRTC still owns its activation lease, but iOS did not restore the interrupted audio session."
+                        ]
+                    ),
+                    attemptedMode: appliedMode,
+                    compatibilityFallbackAttempted: usedCompatibilityFallback
+                )
+            }
+        } else {
+            do {
+                try session.setActive(true)
+                ownsActivation = true
+            } catch {
+                throw Self.sessionError(
+                    stage: .activation,
+                    underlying: error,
+                    attemptedMode: appliedMode,
+                    compatibilityFallbackAttempted: usedCompatibilityFallback
+                )
+            }
+        }
+        session.isAudioEnabled = true
+    }
+
+    static func playbackConfiguration(
+        mode: AVAudioSession.Mode = .moviePlayback
+    ) -> LKRTCAudioSessionConfiguration {
         let configuration = LKRTCAudioSessionConfiguration()
         configuration.category = AVAudioSession.Category.playback.rawValue
         // Playback already supports AirPlay implicitly. Apple restricts the explicit
         // `allowAirPlay` option to `playAndRecord`; combining it with `playback` returns
         // `paramErr` (-50) on physical iPhones even though Simulator accepts it.
         configuration.categoryOptions = [.mixWithOthers]
-        configuration.mode = AVAudioSession.Mode.moviePlayback.rawValue
+        configuration.mode = mode.rawValue
         configuration.sampleRate = 48_000
         configuration.ioBufferDuration = 0.010
         // The pinned WebRTC audio-device module renders this Opus downlink as truthful mono.
         // Do not advertise a stereo session preference that the negotiated media cannot supply.
         configuration.outputNumberOfChannels = 1
         return configuration
+    }
+
+    static func compatibilityPlaybackConfiguration() -> LKRTCAudioSessionConfiguration {
+        playbackConfiguration(mode: .default)
+    }
+
+    static func shouldRetryConfigurationWithDefaultMode(after error: Error) -> Bool {
+        containsInvalidParameter(error as NSError)
+    }
+
+    private static func containsInvalidParameter(_ error: NSError) -> Bool {
+        if error.domain == NSOSStatusErrorDomain,
+           error.code == AVAudioSession.ErrorCode.badParam.rawValue {
+            return true
+        }
+        guard let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError else {
+            return false
+        }
+        return containsInvalidParameter(underlying)
+    }
+
+    private static func sessionError(
+        stage: WebRTCAudioPlaybackFailureStage,
+        underlying error: Error,
+        attemptedMode: AVAudioSession.Mode,
+        compatibilityFallbackAttempted: Bool
+    ) -> WebRTCAudioPlaybackSessionError {
+        let underlying = error as NSError
+        let nativeSession = AVAudioSession.sharedInstance()
+        let route = nativeSession.currentRoute.outputs
+            .map { $0.portType.rawValue }
+            .joined(separator: ",")
+
+        return WebRTCAudioPlaybackSessionError(
+            stage: stage,
+            underlyingDomain: underlying.domain,
+            underlyingCode: underlying.code,
+            attemptedMode: attemptedMode.rawValue,
+            compatibilityFallbackAttempted: compatibilityFallbackAttempted,
+            currentCategory: nativeSession.category.rawValue,
+            currentMode: nativeSession.mode.rawValue,
+            currentCategoryOptions: nativeSession.categoryOptions.rawValue,
+            outputRoute: route.isEmpty ? "none" : route,
+            secondaryAudioShouldBeSilenced: nativeSession.secondaryAudioShouldBeSilencedHint,
+            otherAudioIsPlaying: nativeSession.isOtherAudioPlaying
+        )
     }
     #endif
 }

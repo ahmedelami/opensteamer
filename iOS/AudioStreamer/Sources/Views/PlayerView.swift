@@ -46,12 +46,21 @@ struct PlayerView: View {
                 Section("Worldwide Mac Screen") {
                     LabeledContent("State", value: worldwideViewModel.stateText)
                     LabeledContent("Route", value: worldwideViewModel.routeText)
+                    LabeledContent("Audio", value: worldwideViewModel.audioStateText)
 
-                    if worldwideViewModel.audioRequiresExplicitResume {
+                    if let audioError = worldwideViewModel.audioError {
+                        Label(audioError, systemImage: "speaker.slash")
+                            .foregroundStyle(.orange)
+                    }
+
+                    if worldwideViewModel.canResumeAudioPlayback {
                         Button {
                             worldwideViewModel.resumeAudioPlayback()
                         } label: {
-                            Label("Resume Audio", systemImage: "play.fill")
+                            Label(
+                                worldwideViewModel.audioRecoveryButtonTitle,
+                                systemImage: "play.fill"
+                            )
                         }
                     }
 
