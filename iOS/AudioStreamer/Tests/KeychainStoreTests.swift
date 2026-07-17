@@ -1,5 +1,6 @@
 import XCTest
 import Security
+import RemoteSessionCore
 @testable import AudioStreamer
 
 @MainActor
@@ -15,10 +16,33 @@ final class KeychainStoreTests: XCTestCase {
             KeychainStore.worldwideInvitationCodeItem.account,
             "worldwide-invitation-code"
         )
+        XCTAssertEqual(
+            KeychainStore.worldwideInvitationAdmissionMarkerItem.service,
+            "org.example.AudioStreamer"
+        )
+        XCTAssertEqual(
+            KeychainStore.worldwideInvitationAdmissionMarkerItem.account,
+            "worldwide-invitation-admission-marker"
+        )
+        XCTAssertEqual(
+            KeychainStore.viewerDeviceIdentityItem.service,
+            "org.example.AudioStreamer"
+        )
+        XCTAssertEqual(
+            KeychainStore.viewerDeviceIdentityItem.account,
+            "worldwide-viewer-device-identity"
+        )
+        XCTAssertEqual(KeychainStore.pairedMacItem.service, "org.example.AudioStreamer")
+        XCTAssertEqual(KeychainStore.pairedMacItem.account, "worldwide-paired-mac")
         XCTAssertNotEqual(
             KeychainStore.remoteTokenItem,
             KeychainStore.worldwideInvitationCodeItem
         )
+        XCTAssertNotEqual(
+            KeychainStore.worldwideInvitationCodeItem,
+            KeychainStore.viewerDeviceIdentityItem
+        )
+        XCTAssertNotEqual(KeychainStore.viewerDeviceIdentityItem, KeychainStore.pairedMacItem)
     }
 
     func testKeychainRoundTripSurvivesStoreRecreation() throws {
@@ -172,38 +196,42 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertFalse(state.isStored)
     }
 
-    func testAsyncConnectionFailureBeforeAcceptanceRetainsInvitation() {
+    func testAsyncConnectionFailureBeforeAcceptanceRetainsInvitation() throws {
         let store = RemoteTokenStoreStub(loadResult: .success("still-usable-code"))
         let state = RemoteTokenState(store: store, codeDisplayName: "invitation code")
         var acceptance = InvitationAcceptanceAction()
         let generation = UUID()
-        acceptance.arm(generation: generation) {
+        acceptance.arm(generation: generation) { _ in
             state.clearSavedCode()
         }
 
         acceptance.cancel(generation: generation)
-        acceptance.accept(generation: generation)
+        let completed = try acceptance.completeAuthenticatedPairing(
+            makePairedMacRecord(),
+            generation: generation
+        )
 
+        XCTAssertFalse(completed)
         XCTAssertEqual(state.token, "still-usable-code")
         XCTAssertTrue(state.isStored)
         XCTAssertEqual(store.deleteCount, 0)
     }
 
-    func testRendezvousAcceptanceDeletesInvitationExactlyOnce() {
+    func testRendezvousReadyAloneDoesNotDeleteInvitation() throws {
         let store = RemoteTokenStoreStub(loadResult: .success("consumed-code"))
         let state = RemoteTokenState(store: store, codeDisplayName: "invitation code")
         var acceptance = InvitationAcceptanceAction()
         let generation = UUID()
-        acceptance.arm(generation: generation) {
+        acceptance.arm(generation: generation) { _ in
             state.clearSavedCode()
         }
 
-        acceptance.accept(generation: generation)
-        acceptance.accept(generation: generation)
+        try acceptance.rendezvousBecameReady(generation: generation)
+        try acceptance.rendezvousBecameReady(generation: generation)
 
-        XCTAssertEqual(state.token, "")
-        XCTAssertFalse(state.isStored)
-        XCTAssertEqual(store.deleteCount, 1)
+        XCTAssertEqual(state.token, "consumed-code")
+        XCTAssertTrue(state.isStored)
+        XCTAssertEqual(store.deleteCount, 0)
     }
 
     #if AUDIOSTREAMER_UPDATE_SEED

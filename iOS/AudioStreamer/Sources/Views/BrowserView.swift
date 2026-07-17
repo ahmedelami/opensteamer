@@ -1,6 +1,8 @@
+import RemoteSessionCore
 import SwiftUI
 
 struct BrowserView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var viewModel: StreamSessionViewModel
     @EnvironmentObject private var worldwideViewModel: WorldwideSessionViewModel
     @AppStorage("remoteHost") private var remoteHost = ""
@@ -10,8 +12,13 @@ struct BrowserView: View {
         store: KeychainStore(item: KeychainStore.worldwideInvitationCodeItem),
         codeDisplayName: "invitation code"
     )
+    @StateObject private var viewerPairingState = ViewerPairingState()
+    @StateObject private var invitationAdmissionState = WorldwideInvitationAdmissionState()
+    @StateObject private var worldwideConnection = WorldwideViewerConnectionCoordinator()
     @State private var showsToken = false
     @State private var showsInvitationCode = false
+    @State private var worldwidePreparationTask: Task<Void, Never>?
+    @State private var worldwidePreparationGeneration = UUID()
     @FocusState private var invitationCodeIsFocused: Bool
     #if DEBUG
     @AppStorage("debugWorldwideRendezvousEndpoint")
@@ -47,6 +54,58 @@ struct BrowserView: View {
                     } label: {
                         Label("Disconnect Remote Mac", systemImage: "stop.fill")
                     }
+                } else if worldwideConnection.isConnecting {
+                    LabeledContent("State", value: worldwideConnection.stateText)
+
+                    Button(role: .destructive) {
+                        cancelWorldwidePreparation()
+                    } label: {
+                        Label("Cancel", systemImage: "xmark.circle.fill")
+                    }
+                } else if let pairingRecord = viewerPairingState.pairingRecord {
+                    if pairingRecord.pairingState == .active {
+                        LabeledContent(
+                            "Paired Mac",
+                            value: pairingRecord.remoteDisplayName ?? "Mac"
+                        )
+                        Label(
+                            "Saved securely on this iPhone",
+                            systemImage: "checkmark.shield"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Label(
+                            "Secure pairing needs to finish",
+                            systemImage: "arrow.triangle.2.circlepath"
+                        )
+                        .foregroundStyle(.orange)
+                        Text("Reconnect to recover the authenticated pairing commit. Media stays disabled until both devices are active. If recovery keeps failing, tap Forget Paired Mac, reset pairing on the Mac, and generate a new code.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Button {
+                        connectPairedWorldwide()
+                    } label: {
+                        Label(
+                            pairingRecord.pairingState == .active
+                                ? "Connect to Paired Mac"
+                                : "Finish Secure Pairing",
+                            systemImage: "network.badge.shield.half.filled"
+                        )
+                    }
+                    .accessibilityIdentifier("connectPairedWorldwide")
+
+                    Button(role: .destructive) {
+                        forgetWorldwidePairing()
+                    } label: {
+                        Label("Forget Paired Mac", systemImage: "trash")
+                    }
+
+                    Text("The Mac must be awake with AudioStreamer Host running. Each connection uses fresh end-to-end-encrypted WebRTC keys; direct routing is preferred and TURN is only a fallback.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 } else {
                     HStack {
                         Group {
@@ -80,24 +139,37 @@ struct BrowserView: View {
                     }
 
                     Button {
-                        connectWorldwide()
+                        pairAndConnectWorldwide()
                     } label: {
-                        if worldwideViewModel.isConnecting {
-                            Label("Connecting", systemImage: "hourglass")
-                        } else {
-                            Label("Connect Securely", systemImage: "network.badge.shield.half.filled")
-                        }
+                        Label(
+                            "Pair and Connect Securely",
+                            systemImage: "network.badge.shield.half.filled"
+                        )
                     }
-                    .disabled(trimmedInvitationCode.isEmpty || worldwideViewModel.isConnecting)
+                    .disabled(
+                        trimmedInvitationCode.isEmpty
+                            || invitationAdmissionState.blocksPairing(trimmedInvitationCode)
+                    )
                     .accessibilityIdentifier("connectWorldwide")
 
                     if let storageError = invitationCodeState.storageError {
                         Label(storageError, systemImage: "exclamationmark.triangle")
                             .font(.caption)
                             .foregroundStyle(.orange)
+                    } else if let storageError = invitationAdmissionState.storageError {
+                        Label(storageError, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else if invitationAdmissionState.isAdmitted(trimmedInvitationCode) {
+                        Label(
+                            "This one-time code was already admitted and cannot be retried. Clear it and enter a new code from the Mac.",
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                     } else if invitationCodeState.isStored && !trimmedInvitationCode.isEmpty {
                         Label(
-                            "Saved securely on this iPhone until used",
+                            "Saved securely until authenticated pairing completes",
                             systemImage: "checkmark.shield"
                         )
                         .font(.caption)
@@ -106,15 +178,25 @@ struct BrowserView: View {
 
                     if invitationCodeState.isStored {
                         Button(role: .destructive) {
-                            invitationCodeState.clearSavedCode()
+                            clearSavedInvitation()
                         } label: {
                             Label("Clear Saved Invitation Code", systemImage: "trash")
                         }
                     }
 
-                    Text("The Mac must be awake with AudioStreamer Host running. The app tries direct WebRTC first and otherwise relays end-to-end-encrypted WebRTC media through TURN.")
+                    Text("The one-time code pairs this iPhone to the Mac. After that, the durable device binding survives app and phone restarts; every media connection still gets fresh keys.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+
+                if let storageError = viewerPairingState.storageError {
+                    Label(storageError, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                }
+
+                if let preparationError = worldwideConnection.lastError {
+                    Label(preparationError, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
                 }
 
                 if let expiration = worldwideViewModel.invitationExpiresAt {
@@ -239,6 +321,21 @@ struct BrowserView: View {
         .onAppear {
             invitationCodeState.loadIfNeeded()
             remoteTokenState.loadIfNeeded()
+            viewerPairingState.retryHydrationIfNeeded()
+            invitationAdmissionState.retryHydrationIfNeeded()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            switch newPhase {
+            case .active:
+                viewerPairingState.retryHydrationIfNeeded()
+                invitationAdmissionState.retryHydrationIfNeeded()
+            case .background:
+                // Stop only an in-progress bootstrap/reconnect. An established media session
+                // remains owned by WorldwideSessionViewModel so background audio can continue.
+                cancelWorldwidePreparation()
+            default:
+                break
+            }
         }
         .toolbar {
             Button {
@@ -293,32 +390,146 @@ struct BrowserView: View {
         }
     }
 
-    private func connectWorldwide() {
+    private func pairAndConnectWorldwide() {
+        invitationCodeState.persistNow()
+        guard !invitationAdmissionState.blocksPairing(trimmedInvitationCode) else {
+            worldwideConnection.reportConfigurationError(
+                invitationAdmissionState.storageError
+                    ?? "This one-time invitation was already admitted. Clear it and enter a new code from the Mac."
+            )
+            return
+        }
+        guard let endpoint = configuredWorldwideEndpoint() else {
+            worldwideConnection.reportConfigurationError(
+                "This build does not have a valid worldwide rendezvous endpoint."
+            )
+            return
+        }
+
+        cancelWorldwidePreparation()
+        let invitation = trimmedInvitationCode
+        let generation = UUID()
+        worldwidePreparationGeneration = generation
+        worldwidePreparationTask = Task { @MainActor in
+            do {
+                let client = try await worldwideConnection.pairAndPrepareMediaSession(
+                    invitationCode: invitation,
+                    endpoint: endpoint,
+                    pairingState: viewerPairingState,
+                    onInvitationAdmitted: {
+                        try invitationAdmissionState.markAdmitted(invitation)
+                    },
+                    onAuthenticatedPairingCompleted: clearInvitationAfterPairing
+                )
+                try Task.checkCancellation()
+                await startPreparedWorldwideSession(client)
+            } catch is CancellationError {
+                // Explicit cancellation is already reflected by the coordinator UI.
+            } catch {
+                // The coordinator publishes a non-sensitive, user-facing error.
+            }
+            if worldwidePreparationGeneration == generation {
+                worldwidePreparationTask = nil
+            }
+        }
+    }
+
+    private func connectPairedWorldwide() {
+        guard let endpoint = configuredWorldwideEndpoint() else {
+            worldwideConnection.reportConfigurationError(
+                "This build does not have a valid worldwide rendezvous endpoint."
+            )
+            return
+        }
+
+        cancelWorldwidePreparation()
+        let generation = UUID()
+        worldwidePreparationGeneration = generation
+        worldwidePreparationTask = Task { @MainActor in
+            do {
+                let client = try await worldwideConnection.preparePairedMediaSession(
+                    endpoint: endpoint,
+                    pairingState: viewerPairingState,
+                    onAuthenticatedPairingCompleted: clearInvitationAfterPairing
+                )
+                try Task.checkCancellation()
+                await startPreparedWorldwideSession(client)
+            } catch is CancellationError {
+                // Explicit cancellation is already reflected by the coordinator UI.
+            } catch {
+                // The coordinator publishes a non-sensitive, user-facing error.
+            }
+            if worldwidePreparationGeneration == generation {
+                worldwidePreparationTask = nil
+            }
+        }
+    }
+
+    private func startPreparedWorldwideSession(
+        _ client: RendezvousSignalingClient
+    ) async {
+        let started = worldwideViewModel.connect(
+            signalingClient: client,
+            beforeAudioActivation: {
+                if viewModel.selectedServer != nil {
+                    viewModel.disconnect()
+                }
+            }
+        )
+        guard started else {
+            await client.close()
+            worldwideConnection.reportConfigurationError(
+                "Another worldwide session is already active."
+            )
+            return
+        }
+    }
+
+    private func clearInvitationAfterPairing() {
+        // Active paired state has already reached the this-device-only Keychain before this
+        // destructive cleanup runs. The admission marker remains unless code deletion itself
+        // succeeds, preserving the no-retry invariant across partial Keychain failures.
+        guard invitationCodeState.clearSavedCode() else { return }
+        _ = invitationAdmissionState.clearMarker()
+        showsInvitationCode = false
+        invitationCodeIsFocused = false
+    }
+
+    private func clearSavedInvitation() {
+        guard invitationCodeState.clearSavedCode() else { return }
+        _ = invitationAdmissionState.clearMarker()
+        showsInvitationCode = false
+        invitationCodeIsFocused = false
+    }
+
+    private func forgetWorldwidePairing() {
+        cancelWorldwidePreparation()
+        if worldwideViewModel.hasActiveSession {
+            worldwideViewModel.disconnect()
+        }
+        do {
+            try viewerPairingState.forgetPairedMac()
+            clearSavedInvitation()
+            worldwideConnection.clearError()
+        } catch {
+            // ViewerPairingState publishes the Keychain failure without dropping in-memory state.
+        }
+    }
+
+    private func cancelWorldwidePreparation() {
+        worldwidePreparationGeneration = UUID()
+        worldwidePreparationTask?.cancel()
+        worldwidePreparationTask = nil
+        worldwideConnection.cancel()
+    }
+
+    private func configuredWorldwideEndpoint() -> URL? {
         #if DEBUG
         let debugEndpoint: String? = debugWorldwideRendezvousEndpoint
         #else
         let debugEndpoint: String? = nil
         #endif
-
-        invitationCodeState.persistNow()
-        if worldwideViewModel.connect(
-            invitationCode: trimmedInvitationCode,
-            debugEndpointOverride: debugEndpoint,
-            beforeAudioActivation: {
-                if viewModel.selectedServer != nil {
-                    viewModel.disconnect()
-                }
-            },
-            onInvitationAccepted: {
-                // Retain the one-time code through relaunches, updates, and asynchronous
-                // connection failures. Erase it only after rendezvous accepts this attempt.
-                invitationCodeState.clearSavedCode()
-                showsInvitationCode = false
-                invitationCodeIsFocused = false
-            }
-        ) {
-            // Connection started. Destructive cleanup is deferred to `onInvitationAccepted`.
-        }
+        return WorldwideSessionViewModel.rendezvousEndpoint(debugOverride: debugEndpoint)
     }
 
     private func connectLocal(to server: ServerInfo) {

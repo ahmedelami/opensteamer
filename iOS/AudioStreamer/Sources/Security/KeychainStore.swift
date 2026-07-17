@@ -28,6 +28,28 @@ struct KeychainStore: RemoteTokenStoring {
         account: "worldwide-invitation-code"
     )
 
+    // Records that a one-time invitation reached rendezvous admission. The value is only a
+    // domain-separated digest of the normalized code, never the invitation itself. Keeping
+    // this item version-independent prevents a relaunch or update from retrying a code that
+    // the service has already consumed.
+    static let worldwideInvitationAdmissionMarkerItem = Item(
+        service: "org.example.AudioStreamer",
+        account: "worldwide-invitation-admission-marker"
+    )
+
+    // These stable account names deliberately do not include an app or protocol version.
+    // Codable payloads carry their own versions, while the Keychain identity must survive
+    // ordinary app updates. Both payloads contain secrets and are this-device-only.
+    static let viewerDeviceIdentityItem = Item(
+        service: "org.example.AudioStreamer",
+        account: "worldwide-viewer-device-identity"
+    )
+
+    static let pairedMacItem = Item(
+        service: "org.example.AudioStreamer",
+        account: "worldwide-paired-mac"
+    )
+
     private let item: Item
 
     init(item: Item = Self.remoteTokenItem) {
@@ -35,6 +57,26 @@ struct KeychainStore: RemoteTokenStoring {
     }
 
     func loadRemoteToken() throws -> String? {
+        guard let data = try loadData() else { return nil }
+        guard let token = String(data: data, encoding: .utf8) else {
+            throw KeychainStoreError.invalidStoredValue
+        }
+        return token
+    }
+
+    func saveRemoteToken(_ token: String) throws {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        // An empty SwiftUI binding can be transient during view/app replacement. Never
+        // interpret it as credential deletion; callers must use the explicit delete API.
+        guard !trimmed.isEmpty else { return }
+        try saveData(Data(trimmed.utf8))
+    }
+
+    func deleteRemoteToken() throws {
+        try deleteData()
+    }
+
+    func loadData() throws -> Data? {
         var query = baseQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -43,11 +85,10 @@ struct KeychainStore: RemoteTokenStoring {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         switch status {
         case errSecSuccess:
-            guard let data = result as? Data,
-                  let token = String(data: data, encoding: .utf8) else {
+            guard let data = result as? Data else {
                 throw KeychainStoreError.invalidStoredValue
             }
-            return token
+            return data
         case errSecItemNotFound:
             return nil
         default:
@@ -55,13 +96,7 @@ struct KeychainStore: RemoteTokenStoring {
         }
     }
 
-    func saveRemoteToken(_ token: String) throws {
-        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        // An empty SwiftUI binding can be transient during view/app replacement. Never
-        // interpret it as credential deletion; callers must use the explicit delete API.
-        guard !trimmed.isEmpty else { return }
-
-        let data = Data(trimmed.utf8)
+    func saveData(_ data: Data) throws {
         let updateAttributes = [kSecValueData as String: data]
         let updateStatus = SecItemUpdate(
             baseQuery as CFDictionary,
@@ -83,7 +118,7 @@ struct KeychainStore: RemoteTokenStoring {
         }
     }
 
-    func deleteRemoteToken() throws {
+    func deleteData() throws {
         let status = SecItemDelete(baseQuery as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainStoreError.operationFailed(status)

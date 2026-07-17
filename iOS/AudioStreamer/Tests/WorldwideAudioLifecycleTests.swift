@@ -347,7 +347,7 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         let invitation = try RemoteInvitationCode.generate()
 
         XCTAssertTrue(
-            viewModel.connect(
+            viewModel.debugConnectWithInvitationForTests(
                 invitationCode: invitation.exportedCode,
                 debugEndpointOverride: "ws://127.0.0.1:9"
             )

@@ -60,7 +60,8 @@ final class RemoteTokenState: ObservableObject {
         persistUserEditIfSafe()
     }
 
-    func clearSavedCode() {
+    @discardableResult
+    func clearSavedCode() -> Bool {
         do {
             try store.deleteRemoteToken()
             isApplyingLoadedValue = true
@@ -70,9 +71,11 @@ final class RemoteTokenState: ObservableObject {
             hasUnpersistedUserEdit = false
             isStored = false
             storageError = nil
+            return true
         } catch {
             isApplyingLoadedValue = false
             storageError = "The saved \(codeDisplayName) could not be cleared securely."
+            return false
         }
     }
 
