@@ -61,6 +61,7 @@ final class WebRTCAudioPCMRenderer: NSObject, LKRTCAudioRenderer, @unchecked Sen
 public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
     #if os(macOS)
     private static let maximumQueuedDuration: TimeInterval = 0.120
+    private static let capturedChannelCount: AVAudioChannelCount = 2
 
     private let audioDeviceModule: LKRTCAudioDeviceModule
     private let queue = DispatchQueue(label: "AudioStreamer.WebRTC.ExternalAudio")
@@ -88,32 +89,146 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
     private var inputConfigurationCount = 0
     #endif
 
-    /// `AVAudioConverter` declares its input callback `@Sendable` even though it invokes it
-    /// synchronously for this conversion. Keep the single-use mutable state behind a lock so the
-    /// code remains correct (and warning-free) if that implementation detail changes.
+    /// Supplies at most the number of PCM frames requested by `AVAudioConverter`, retaining any
+    /// unconsumed tail for its next input request.
     private final class ConversionInput: @unchecked Sendable {
         private let lock = NSLock()
-        private var buffer: AVAudioPCMBuffer?
+        private let sourceBuffer: AVAudioPCMBuffer
+        private var nextFrame: AVAudioFramePosition = 0
+        private var failed = false
 
         init(_ buffer: AVAudioPCMBuffer) {
-            self.buffer = buffer
+            sourceBuffer = buffer
+        }
+
+        var consumedFrameCount: AVAudioFramePosition {
+            lock.lock()
+            defer { lock.unlock() }
+            return nextFrame
+        }
+
+        var hasRemainingFrames: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return !failed
+                && nextFrame < AVAudioFramePosition(sourceBuffer.frameLength)
+        }
+
+        var didFail: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return failed
         }
 
         func take(
+            requestedPacketCount: AVAudioPacketCount,
             status: UnsafeMutablePointer<AVAudioConverterInputStatus>
         ) -> AVAudioBuffer? {
             lock.lock()
             defer { lock.unlock() }
-            guard let buffer else {
-                // This is one temporarily available chunk in a continuous PCM stream. EOS would
-                // permanently drain the reused sample-rate converter; `noDataNow` preserves its
-                // filter/priming state for the next ScreenCaptureKit buffer.
+
+            guard !failed, requestedPacketCount > 0 else {
                 status.pointee = .noDataNow
                 return nil
             }
-            self.buffer = nil
+
+            let sourceFrameCount = AVAudioFramePosition(sourceBuffer.frameLength)
+            let remainingFrames = sourceFrameCount - nextFrame
+            guard remainingFrames > 0 else {
+                // Each ScreenCaptureKit buffer is one temporary part of a continuous stream.
+                // `noDataNow` preserves the reused converter's state for the following buffer.
+                status.pointee = .noDataNow
+                return nil
+            }
+
+            let requestedFrames = min(
+                remainingFrames,
+                AVAudioFramePosition(requestedPacketCount)
+            )
+            guard requestedFrames > 0,
+                  requestedFrames <= AVAudioFramePosition(UInt32.max) else {
+                failed = true
+                status.pointee = .noDataNow
+                return nil
+            }
+
+            let suppliedBuffer: AVAudioPCMBuffer?
+            if nextFrame == 0, requestedFrames == sourceFrameCount {
+                suppliedBuffer = sourceBuffer
+            } else {
+                suppliedBuffer = Self.copyFrames(
+                    from: sourceBuffer,
+                    startingAt: nextFrame,
+                    frameCount: AVAudioFrameCount(requestedFrames)
+                )
+            }
+            guard let suppliedBuffer else {
+                failed = true
+                status.pointee = .noDataNow
+                return nil
+            }
+
+            nextFrame += requestedFrames
             status.pointee = .haveData
-            return buffer
+            return suppliedBuffer
+        }
+
+        private static func copyFrames(
+            from sourceBuffer: AVAudioPCMBuffer,
+            startingAt startFrame: AVAudioFramePosition,
+            frameCount: AVAudioFrameCount
+        ) -> AVAudioPCMBuffer? {
+            let sourceFrameCount = AVAudioFramePosition(sourceBuffer.frameLength)
+            guard startFrame >= 0,
+                  frameCount > 0,
+                  startFrame + AVAudioFramePosition(frameCount) <= sourceFrameCount,
+                  let copiedBuffer = AVAudioPCMBuffer(
+                      pcmFormat: sourceBuffer.format,
+                      frameCapacity: frameCount
+                  ) else {
+                return nil
+            }
+
+            copiedBuffer.frameLength = frameCount
+
+            let bytesPerFrame = Int(
+                sourceBuffer.format.streamDescription.pointee.mBytesPerFrame
+            )
+            guard bytesPerFrame > 0 else { return nil }
+
+            let sourceByteOffset = Int(startFrame) * bytesPerFrame
+            let byteCount = Int(frameCount) * bytesPerFrame
+            let sourceAudioBufferList = UnsafeMutablePointer<AudioBufferList>(
+                mutating: sourceBuffer.audioBufferList
+            )
+            let sourceBuffers = UnsafeMutableAudioBufferListPointer(
+                sourceAudioBufferList
+            )
+            let destinationBuffers = UnsafeMutableAudioBufferListPointer(
+                copiedBuffer.mutableAudioBufferList
+            )
+            guard sourceBuffers.count == destinationBuffers.count else {
+                return nil
+            }
+
+            for index in 0..<sourceBuffers.count {
+                let sourceAudioBuffer = sourceBuffers[index]
+                let destinationAudioBuffer = destinationBuffers[index]
+                guard sourceByteOffset + byteCount
+                        <= Int(sourceAudioBuffer.mDataByteSize),
+                      byteCount <= Int(destinationAudioBuffer.mDataByteSize),
+                      let sourceData = sourceAudioBuffer.mData,
+                      let destinationData = destinationAudioBuffer.mData else {
+                    return nil
+                }
+                memcpy(
+                    destinationData,
+                    sourceData.advanced(by: sourceByteOffset),
+                    byteCount
+                )
+            }
+
+            return copiedBuffer
         }
     }
 
@@ -191,17 +306,27 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
             #endif
             return
         }
-        guard let buffer = convertedBuffer(sourceBuffer, to: targetFormat) else {
+        let maximumFrameCount = AVAudioFrameCount(
+            min(
+                Double(UInt32.max),
+                (targetFormat.sampleRate * Self.maximumQueuedDuration).rounded(.up)
+            )
+        )
+        guard let buffers = convertedBuffers(
+            sourceBuffer,
+            to: targetFormat,
+            maximumFrameCount: maximumFrameCount
+        ), !buffers.isEmpty else {
             #if DEBUG
             conversionDropCount += 1
             #endif
             return
         }
 
-        let maximumFrames = AVAudioFramePosition(
-            (targetFormat.sampleRate * Self.maximumQueuedDuration).rounded(.up)
-        )
-        let incomingFrames = AVAudioFramePosition(buffer.frameLength)
+        let maximumFrames = AVAudioFramePosition(maximumFrameCount)
+        let incomingFrames = buffers.reduce(AVAudioFramePosition(0)) {
+            $0 + AVAudioFramePosition($1.frameLength)
+        }
         guard incomingFrames > 0, incomingFrames <= maximumFrames else { return }
 
         if scheduledFrames + incomingFrames > maximumFrames {
@@ -212,29 +337,40 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
         #if DEBUG
         scheduledBufferCount += 1
         #endif
+
         let generation = schedulingGeneration
-        playerNode.scheduleBuffer(
-            buffer,
-            at: nil,
-            options: [],
-            completionCallbackType: .dataPlayedBack
-        ) { [weak self] _ in
-            self?.queue.async { [weak self] in
-                guard let self, generation == schedulingGeneration else { return }
-                scheduledFrames = max(0, scheduledFrames - incomingFrames)
+        for buffer in buffers {
+            let bufferFrames = AVAudioFramePosition(buffer.frameLength)
+            playerNode.scheduleBuffer(
+                buffer,
+                at: nil,
+                options: [],
+                completionCallbackType: .dataPlayedBack
+            ) { [weak self] _ in
+                self?.queue.async { [weak self] in
+                    guard let self, generation == schedulingGeneration else { return }
+                    scheduledFrames = max(0, scheduledFrames - bufferFrames)
+                }
             }
         }
+
         if !playerNode.isPlaying {
             playerNode.play()
         }
     }
 
-    private func convertedBuffer(
+    private func convertedBuffers(
         _ sourceBuffer: AVAudioPCMBuffer,
-        to targetFormat: AVAudioFormat
-    ) -> AVAudioPCMBuffer? {
+        to targetFormat: AVAudioFormat,
+        maximumFrameCount: AVAudioFrameCount
+    ) -> [AVAudioPCMBuffer]? {
+        guard maximumFrameCount > 0 else { return nil }
+
         if sourceBuffer.format == targetFormat {
-            return sourceBuffer
+            guard sourceBuffer.frameLength <= maximumFrameCount else {
+                return nil
+            }
+            return [sourceBuffer]
         }
 
         if converter == nil
@@ -245,32 +381,70 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
         }
         guard let converter else { return nil }
 
-        let ratio = targetFormat.sampleRate / sourceBuffer.format.sampleRate
-        guard ratio.isFinite, ratio > 0 else { return nil }
-        let capacity = AVAudioFrameCount(
-            min(
-                Double(UInt32.max),
-                ceil(Double(sourceBuffer.frameLength) * ratio) + 32
-            )
-        )
-        guard let output = AVAudioPCMBuffer(
-            pcmFormat: targetFormat,
-            frameCapacity: capacity
-        ) else {
-            return nil
+        let input = ConversionInput(sourceBuffer)
+        var outputs: [AVAudioPCMBuffer] = []
+        var producedFrames: AVAudioFrameCount = 0
+
+        while true {
+            let outputCapacity: AVAudioFrameCount
+            if producedFrames < maximumFrameCount {
+                outputCapacity = maximumFrameCount - producedFrames
+            } else {
+                // Probe once beyond the bound. Any further converted frame means this entire
+                // source buffer exceeds the bounded queue and must be dropped, not truncated.
+                outputCapacity = 1
+            }
+
+            guard let output = AVAudioPCMBuffer(
+                pcmFormat: targetFormat,
+                frameCapacity: outputCapacity
+            ) else {
+                converter.reset()
+                return nil
+            }
+
+            let consumedBefore = input.consumedFrameCount
+            var conversionError: NSError?
+            let status = converter.convert(to: output, error: &conversionError) {
+                requestedPacketCount, inputStatus in
+                input.take(
+                    requestedPacketCount: requestedPacketCount,
+                    status: inputStatus
+                )
+            }
+            let consumedAfter = input.consumedFrameCount
+
+            guard status != .error,
+                  conversionError == nil,
+                  !input.didFail else {
+                converter.reset()
+                return nil
+            }
+
+            let outputFrameCount = output.frameLength
+            if outputFrameCount > 0 {
+                guard outputFrameCount <= maximumFrameCount - producedFrames else {
+                    converter.reset()
+                    return nil
+                }
+                outputs.append(output)
+                producedFrames += outputFrameCount
+            }
+
+            if outputFrameCount == 0, consumedAfter == consumedBefore {
+                guard !input.hasRemainingFrames else {
+                    converter.reset()
+                    return nil
+                }
+                break
+            }
         }
 
-        let input = ConversionInput(sourceBuffer)
-        var conversionError: NSError?
-        let status = converter.convert(to: output, error: &conversionError) {
-            _, inputStatus in
-            input.take(status: inputStatus)
-        }
-        guard status != .error, conversionError == nil, output.frameLength > 0 else {
+        guard !outputs.isEmpty else {
             converter.reset()
             return nil
         }
-        return output
+        return outputs
     }
 
     private func configureInput(
@@ -278,13 +452,14 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
         destination: AVAudioNode,
         format: AVAudioFormat
     ) -> Int {
-        // Match LiveKit's pinned PlayerNodeHook: AVAudioPlayerNode cannot render Int16, so a
-        // Float32 edge feeds a mixer that converts to the ADM destination's exact format.
+        // Keep both captured channels through PCM conversion. AVAudioConverter's implicit
+        // stereo-to-mono mapping selects channel zero on this path, so AVAudioMixerNode performs
+        // the actual downmix before the fixed mono Int16 ADM destination.
         guard let playerFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: format.sampleRate,
-            channels: format.channelCount,
-            interleaved: format.isInterleaved
+            channels: Self.capturedChannelCount,
+            interleaved: false
         ) else {
             return -1
         }

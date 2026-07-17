@@ -263,7 +263,10 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         )
         remoteAudioTrack.setEnabled(true)
         XCTAssertTrue(remoteAudioTrack.isEnabled)
-        let audioProbe = DecodedAudioProbe()
+        let requiredSustainedAudioFrames = 5_000
+        let audioProbe = DecodedAudioProbe(
+            requiredNonSilentFrames: requiredSustainedAudioFrames
+        )
         let audioRenderer = WebRTCAudioPCMRenderer { buffer in
             audioProbe.observe(buffer)
         }
@@ -279,19 +282,32 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         XCTAssertTrue(audioEnabledBeforeShow)
 
         let audioCapturer = try XCTUnwrap(host.externalAudioCapturer)
-        // ScreenCaptureKit supplies stereo PCM, while this pinned ADM truthfully exposes a mono
-        // WebRTC capture sink. Exercise the production conversion/downmix rather than a shortcut.
-        let stereoTone = try makeStereoToneSampleBuffer()
-        for _ in 0..<75 where !audioProbe.hasReceivedAudio {
-            audioCapturer.capture(sampleBuffer: stereoTone)
-            try await Task.sleep(for: .milliseconds(20))
+        for _ in 0..<100 where !audioCapturer.diagnosticsForTesting().playerIsReady {
+            try await Task.sleep(for: .milliseconds(10))
         }
+        let readyAudioDiagnostics = audioCapturer.diagnosticsForTesting()
+        XCTAssertTrue(readyAudioDiagnostics.playerIsReady, "\(readyAudioDiagnostics)")
+
+        // ScreenCaptureKit supplies stereo PCM, while this pinned ADM truthfully exposes a mono
+        // WebRTC capture sink. A valid mono injection must include the right channel and must not
+        // truncate one legal 120 ms capture buffer before the ADM's strict 10 ms render loop.
+        let rightOnlyLongTone = try makeStereoToneSampleBuffer(
+            frameCount: 5_760,
+            leftAmplitude: 0,
+            rightAmplitude: 0.08
+        )
+        audioCapturer.capture(sampleBuffer: rightOnlyLongTone)
         await fulfillment(of: [audioProbe.receivedAudio], timeout: 5)
         let audioMeasurement = audioProbe.measurement
         let captureDiagnostics = audioCapturer.diagnosticsForTesting()
         let audioFailureContext = "\(captureDiagnostics); \(audioProbe.diagnosticSummary)"
         XCTAssertEqual(audioMeasurement.channelCount, 1, audioFailureContext)
-        XCTAssertGreaterThan(audioMeasurement.rms, 0.01, audioFailureContext)
+        XCTAssertGreaterThanOrEqual(
+            audioProbe.nonSilentFrameCount,
+            requiredSustainedAudioFrames,
+            "The mono WebRTC ADM input must preserve right-channel system audio and all frames from a 120 ms capture buffer; \(audioFailureContext)"
+        )
+        XCTAssertGreaterThan(audioProbe.maximumRMS, 0.01, audioFailureContext)
 
         let showID = try await viewer.setScreenVisible(true)
         await fulfillment(of: [expectations.showRequestReceived], timeout: 3)
@@ -970,11 +986,15 @@ private func mediaSection(kind: String, in sdp: String) -> String? {
 
 private struct DecodedAudioMeasurement: Sendable {
     let channelCount: Int
+    let frameCount: Int
     let rms: Double
+    let peak: Double
 
     static let zero = DecodedAudioMeasurement(
         channelCount: 0,
-        rms: 0
+        frameCount: 0,
+        rms: 0,
+        peak: 0
     )
 }
 
@@ -983,11 +1003,19 @@ private final class DecodedAudioProbe: @unchecked Sendable {
         description: "viewer decoded nonzero PCM from the host system-audio graph"
     )
 
+    private let requiredNonSilentFrames: Int
     private let lock = NSLock()
     private var didReceiveAudio = false
     private var latestMeasurement = DecodedAudioMeasurement.zero
     private var callbackCount = 0
     private var observedFormats: Set<String> = []
+    private var accumulatedNonSilentFrames = 0
+    private var maximumObservedRMS = 0.0
+
+    init(requiredNonSilentFrames: Int = 1) {
+        precondition(requiredNonSilentFrames > 0)
+        self.requiredNonSilentFrames = requiredNonSilentFrames
+    }
 
     var hasReceivedAudio: Bool {
         lock.lock()
@@ -1001,10 +1029,24 @@ private final class DecodedAudioProbe: @unchecked Sendable {
         return latestMeasurement
     }
 
+    var nonSilentFrameCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return accumulatedNonSilentFrames
+    }
+
+    var maximumRMS: Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return maximumObservedRMS
+    }
+
     var diagnosticSummary: String {
         lock.lock()
         defer { lock.unlock() }
         return "callbacks=\(callbackCount) formats=\(observedFormats.sorted()) "
+            + "nonSilentFrames=\(accumulatedNonSilentFrames) "
+            + "maxRMS=\(maximumObservedRMS) "
             + "measurement=\(latestMeasurement)"
     }
 
@@ -1012,25 +1054,25 @@ private final class DecodedAudioProbe: @unchecked Sendable {
         let format = "\(buffer.format.sampleRate)/\(buffer.format.channelCount)ch/"
             + "\(buffer.format.commonFormat.rawValue)/interleaved=\(buffer.format.isInterleaved)"
         let measurement = Self.measure(buffer)
+        var shouldFulfill = false
         lock.withLock {
             callbackCount += 1
             observedFormats.insert(format)
             if let measurement {
                 latestMeasurement = measurement
+                if measurement.channelCount == 1,
+                   measurement.rms > 0.01 {
+                    accumulatedNonSilentFrames += measurement.frameCount
+                    maximumObservedRMS = max(maximumObservedRMS, measurement.rms)
+                    if !didReceiveAudio,
+                       accumulatedNonSilentFrames >= requiredNonSilentFrames {
+                        didReceiveAudio = true
+                        shouldFulfill = true
+                    }
+                }
             }
         }
 
-        guard let measurement,
-              measurement.channelCount == 1,
-              measurement.rms > 0.01 else {
-            return
-        }
-
-        let shouldFulfill = lock.withLock { () -> Bool in
-            guard !didReceiveAudio else { return false }
-            didReceiveAudio = true
-            return true
-        }
         if shouldFulfill {
             receivedAudio.fulfill()
         }
@@ -1042,17 +1084,21 @@ private final class DecodedAudioProbe: @unchecked Sendable {
         guard frameCount > 0, channelCount >= 1 else { return nil }
 
         var energy = 0.0
+        var peak = 0.0
         for frame in 0..<frameCount {
             guard let sample = sample(buffer, frame: frame, channel: 0) else {
                 return nil
             }
             energy += sample * sample
+            peak = max(peak, abs(sample))
         }
 
         let divisor = Double(frameCount)
         return DecodedAudioMeasurement(
             channelCount: channelCount,
-            rms: sqrt(energy / divisor)
+            frameCount: frameCount,
+            rms: sqrt(energy / divisor),
+            peak: peak
         )
     }
 
@@ -1083,18 +1129,24 @@ private final class DecodedAudioProbe: @unchecked Sendable {
     }
 }
 
-private func makeStereoToneSampleBuffer() throws -> CMSampleBuffer {
+private func makeStereoToneSampleBuffer(
+    frameCount: Int = 960,
+    leftAmplitude: Double = 0.08,
+    rightAmplitude: Double = 0.08,
+    leftFrequency: Double = 500,
+    rightFrequency: Double = 1_000
+) throws -> CMSampleBuffer {
     let sampleRate = 48_000.0
-    let frameCount = 960
-    let amplitude = 0.08 * Double(Int16.max)
+    let leftScale = leftAmplitude * Double(Int16.max)
+    let rightScale = rightAmplitude * Double(Int16.max)
     var samples = [Int16](repeating: 0, count: frameCount * 2)
     for frame in 0..<frameCount {
         let time = Double(frame) / sampleRate
         samples[frame * 2] = Int16(
-            (sin(2 * .pi * 500 * time) * amplitude).rounded()
+            (sin(2 * .pi * leftFrequency * time) * leftScale).rounded()
         )
         samples[frame * 2 + 1] = Int16(
-            (sin(2 * .pi * 1_000 * time) * amplitude).rounded()
+            (sin(2 * .pi * rightFrequency * time) * rightScale).rounded()
         )
     }
 
