@@ -5,6 +5,190 @@ import Testing
 struct RendezvousSignalingClientTests {
     private let endpoint = URL(string: "wss://rendezvous.example.test")!
 
+    @Test func freshPairedMediaUsesLegacyMissingModeHeaderContract() async throws {
+        #expect(RemoteRendezvousMode.invitation.headerValue == nil)
+        #expect(RemoteRendezvousMode.pairing.headerValue == nil)
+        #expect(RemoteRendezvousMode.session.headerValue == nil)
+        #expect(RemoteRendezvousMode.availability.headerValue == "availability")
+        #expect(RemoteRendezvousMode.invitation.webSocketSubprotocol == nil)
+        #expect(RemoteRendezvousMode.session.webSocketSubprotocol == nil)
+        #expect(
+            RemoteRendezvousMode.pairing.webSocketSubprotocol
+                == "audiostreamer.pairing.v1"
+        )
+        #expect(
+            RemoteRendezvousMode.availability.webSocketSubprotocol
+                == "audiostreamer.availability.v1"
+        )
+
+        let credential = RemoteRendezvousCredential(
+            invitation: try makeInvitation(byte: 42)
+        )
+        let fake = FakeRendezvousSocketTransport()
+        let client = try RendezvousSignalingClient(
+            endpoint: endpoint,
+            credential: credential,
+            role: .viewer,
+            mode: .session,
+            transport: fake
+        )
+        _ = try await client.connect()
+        #expect(await fake.connectedMode() == .session)
+        #expect(await fake.connectedURL()?.path == "/v1/rendezvous")
+        #expect(await fake.connectedViewerAdmissionProof() == nil)
+        await client.close()
+
+        #expect(throws: RemoteSessionCoreError.invalidRendezvousCredential) {
+            try RendezvousSignalingClient(
+                endpoint: endpoint,
+                credential: credential,
+                role: .viewer,
+                mode: .availability,
+                transport: FakeRendezvousSocketTransport()
+            )
+        }
+    }
+
+    @Test func upgradeRequestUsesExactAvailabilitySubprotocolOnly() throws {
+        let credential = RemoteRendezvousCredential(
+            invitation: try makeInvitation(byte: 43)
+        )
+        let viewerCredential = RemoteRendezvousCredential(
+            invitation: try makeInvitation(byte: 44)
+        )
+        let availabilityURL = URL(string: "wss://rendezvous.example.test/v2/availability")!
+        let legacyURL = URL(string: "wss://rendezvous.example.test/v1/rendezvous")!
+
+        let hostRequest = try URLSessionRendezvousSocketTransport.makeUpgradeRequest(
+            url: availabilityURL,
+            channelID: credential.channelID,
+            role: .host,
+            admissionProof: credential.admissionProof,
+            viewerAdmissionProof: viewerCredential.admissionProof,
+            mode: .availability
+        )
+        #expect(
+            hostRequest.value(forHTTPHeaderField: "Sec-WebSocket-Protocol")
+                == "audiostreamer.availability.v1"
+        )
+        #expect(
+            hostRequest.value(forHTTPHeaderField: "X-AudioStreamer-Viewer-Admission")
+                == viewerCredential.admissionProof.wireValue
+        )
+
+        let viewerRequest = try URLSessionRendezvousSocketTransport.makeUpgradeRequest(
+            url: availabilityURL,
+            channelID: credential.channelID,
+            role: .viewer,
+            admissionProof: viewerCredential.admissionProof,
+            viewerAdmissionProof: nil,
+            mode: .availability
+        )
+        #expect(
+            viewerRequest.value(forHTTPHeaderField: "Sec-WebSocket-Protocol")
+                == "audiostreamer.availability.v1"
+        )
+        #expect(
+            viewerRequest.value(forHTTPHeaderField: "X-AudioStreamer-Viewer-Admission") == nil
+        )
+
+        for mode in [RemoteRendezvousMode.invitation, .session] {
+            let request = try URLSessionRendezvousSocketTransport.makeUpgradeRequest(
+                url: legacyURL,
+                channelID: credential.channelID,
+                role: .host,
+                admissionProof: credential.admissionProof,
+                viewerAdmissionProof: nil,
+                mode: mode
+            )
+            #expect(request.url?.path == "/v1/rendezvous")
+            #expect(request.value(forHTTPHeaderField: "Sec-WebSocket-Protocol") == nil)
+            #expect(request.value(forHTTPHeaderField: "X-AudioStreamer-Mode") == nil)
+            #expect(
+                request.value(forHTTPHeaderField: "X-AudioStreamer-Viewer-Admission") == nil
+            )
+        }
+
+        let pairingRequest = try URLSessionRendezvousSocketTransport.makeUpgradeRequest(
+            url: legacyURL,
+            channelID: credential.channelID,
+            role: .host,
+            admissionProof: credential.admissionProof,
+            viewerAdmissionProof: nil,
+            mode: .pairing
+        )
+        #expect(pairingRequest.url?.path == "/v1/rendezvous")
+        #expect(
+            pairingRequest.value(forHTTPHeaderField: "Sec-WebSocket-Protocol")
+                == "audiostreamer.pairing.v1"
+        )
+        #expect(pairingRequest.value(forHTTPHeaderField: "X-AudioStreamer-Mode") == nil)
+
+        #expect(throws: RendezvousSignalingError.invalidEndpoint) {
+            try URLSessionRendezvousSocketTransport.makeUpgradeRequest(
+                url: legacyURL,
+                channelID: credential.channelID,
+                role: .host,
+                admissionProof: credential.admissionProof,
+                viewerAdmissionProof: viewerCredential.admissionProof,
+                mode: .availability
+            )
+        }
+    }
+
+    @Test func delegateRequiresExactProtocolEchoWithoutLegacyFallback() async throws {
+        let availabilityProtocol = "audiostreamer.availability.v1"
+        let pairingProtocol = "audiostreamer.pairing.v1"
+
+        func openingError(
+            expected: String?,
+            negotiated: String?
+        ) async -> RendezvousSignalingError? {
+            let delegate = RendezvousWebSocketDelegate(expectedSubprotocol: expected)
+            delegate.didOpen(negotiatedSubprotocol: negotiated)
+            do {
+                try await delegate.waitUntilOpen()
+                return nil
+            } catch {
+                return error as? RendezvousSignalingError
+            }
+        }
+
+        #expect(
+            await openingError(
+                expected: availabilityProtocol,
+                negotiated: availabilityProtocol
+            ) == nil
+        )
+        // An old Worker that upgrades without echoing a protocol is not a v2 endpoint.
+        #expect(
+            await openingError(expected: availabilityProtocol, negotiated: nil)
+                == .connectionFailed
+        )
+        #expect(
+            await openingError(
+                expected: availabilityProtocol,
+                negotiated: "audiostreamer.availability.v2"
+            ) == .connectionFailed
+        )
+        #expect(await openingError(expected: nil, negotiated: nil) == nil)
+        #expect(
+            await openingError(expected: nil, negotiated: availabilityProtocol)
+                == .connectionFailed
+        )
+        #expect(
+            await openingError(expected: pairingProtocol, negotiated: pairingProtocol) == nil
+        )
+        #expect(
+            await openingError(expected: pairingProtocol, negotiated: nil)
+                == .connectionFailed
+        )
+        #expect(
+            await openingError(expected: nil, negotiated: pairingProtocol)
+                == .connectionFailed
+        )
+    }
+
     @Test func endpointPolicyRequiresTLSExceptOnLoopback() throws {
         let invitation = try makeInvitation(byte: 1)
 
@@ -72,6 +256,7 @@ struct RendezvousSignalingClientTests {
         #expect(connectedChannel.wireValue == expectedChannel)
         #expect(connectedRole == .viewer)
         #expect(connectedAdmissionProof == cipher.admissionProof)
+        #expect(await fake.connectedViewerAdmissionProof() == nil)
         #expect(connectedAdmissionProof.wireValue.utf8.count == 43)
         #expect(connectedAdmissionProof.wireValue.utf8.allSatisfy(isBase64URLByte))
         #expect(!connectedURL.absoluteString.contains(invitation.exportedCode))
@@ -505,6 +690,8 @@ private actor FakeRendezvousSocketTransport: RendezvousSocketTransport {
     private var channelID: RendezvousChannelID?
     private var role: RemotePeerRole?
     private var admissionProof: RendezvousAdmissionProof?
+    private var viewerAdmissionProof: RendezvousAdmissionProof?
+    private var mode: RemoteRendezvousMode?
     private var sent = [String]()
     private var queued = [RendezvousSocketMessage]()
     private var waiter: CheckedContinuation<RendezvousSocketMessage, any Error>?
@@ -514,12 +701,16 @@ private actor FakeRendezvousSocketTransport: RendezvousSocketTransport {
         to url: URL,
         channelID: RendezvousChannelID,
         role: RemotePeerRole,
-        admissionProof: RendezvousAdmissionProof
+        admissionProof: RendezvousAdmissionProof,
+        viewerAdmissionProof: RendezvousAdmissionProof?,
+        mode: RemoteRendezvousMode
     ) async throws {
         self.url = url
         self.channelID = channelID
         self.role = role
         self.admissionProof = admissionProof
+        self.viewerAdmissionProof = viewerAdmissionProof
+        self.mode = mode
     }
 
     func send(text: String) async throws {
@@ -558,6 +749,8 @@ private actor FakeRendezvousSocketTransport: RendezvousSocketTransport {
     func connectedChannelID() -> RendezvousChannelID? { channelID }
     func connectedRole() -> RemotePeerRole? { role }
     func connectedAdmissionProof() -> RendezvousAdmissionProof? { admissionProof }
+    func connectedViewerAdmissionProof() -> RendezvousAdmissionProof? { viewerAdmissionProof }
+    func connectedMode() -> RemoteRendezvousMode? { mode }
     func sentTexts() -> [String] { sent }
     func closeCount() -> Int { closes }
 }

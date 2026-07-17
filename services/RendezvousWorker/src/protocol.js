@@ -2,7 +2,13 @@ export const HEADER = Object.freeze({
   channel: "X-AudioStreamer-Channel",
   role: "X-AudioStreamer-Role",
   admission: "X-AudioStreamer-Admission",
+  viewerAdmission: "X-AudioStreamer-Viewer-Admission",
+  mode: "X-AudioStreamer-Mode",
+  webSocketProtocol: "Sec-WebSocket-Protocol",
 });
+
+export const AVAILABILITY_WEBSOCKET_PROTOCOL = "audiostreamer.availability.v1";
+export const PAIRING_WEBSOCKET_PROTOCOL = "audiostreamer.pairing.v1";
 
 export const LIMITS = Object.freeze({
   maximumChannelBytes: 128,
@@ -15,6 +21,7 @@ export const LIMITS = Object.freeze({
 
 const CHANNEL_PATTERN = /^[A-Za-z0-9_-]{22,128}$/;
 const ADMISSION_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const EXCHANGE_ID_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const textEncoder = new TextEncoder();
@@ -71,10 +78,13 @@ const validCanonicalCiphertext = (value) => {
   }
 };
 
-export function validateJoinHeaders(headers) {
+export function validateJoinHeaders(headers, expectedMode = "invitation") {
   const channel = headers.get(HEADER.channel);
   const role = headers.get(HEADER.role);
   const admission = headers.get(HEADER.admission);
+  const viewerAdmission = headers.get(HEADER.viewerAdmission);
+  const modeHeader = headers.get(HEADER.mode);
+  const webSocketProtocol = headers.get(HEADER.webSocketProtocol);
   if (
     typeof channel !== "string" ||
     utf8Length(channel) > LIMITS.maximumChannelBytes ||
@@ -87,7 +97,49 @@ export function validateJoinHeaders(headers) {
   if (!ADMISSION_PATTERN.test(admission ?? "") || proofBytes?.byteLength !== 32) {
     return { error: "invalid_admission" };
   }
-  return { value: { channel, role, admission, proofBytes } };
+
+  if (expectedMode !== "invitation" && expectedMode !== "availability") {
+    return { error: "invalid_mode" };
+  }
+  let selectedMode = expectedMode;
+  if (expectedMode === "invitation") {
+    if (modeHeader !== null) return { error: "invalid_mode" };
+    if (viewerAdmission !== null) return { error: "invalid_viewer_admission" };
+    if (webSocketProtocol === PAIRING_WEBSOCKET_PROTOCOL) {
+      selectedMode = "pairing";
+    } else if (webSocketProtocol !== null) {
+      return { error: "invalid_websocket_protocol" };
+    }
+  } else if (modeHeader !== "availability") {
+    return { error: "invalid_mode" };
+  } else if (webSocketProtocol !== AVAILABILITY_WEBSOCKET_PROTOCOL) {
+    return { error: "invalid_websocket_protocol" };
+  }
+
+  let viewerProofBytes;
+  if (expectedMode === "availability" && role === "host") {
+    viewerProofBytes = decodeCanonicalBase64URL(viewerAdmission);
+    if (
+      !ADMISSION_PATTERN.test(viewerAdmission ?? "") ||
+      viewerProofBytes?.byteLength !== 32
+    ) {
+      return { error: "invalid_viewer_admission" };
+    }
+  } else if (viewerAdmission !== null) {
+    return { error: "invalid_viewer_admission" };
+  }
+
+  return {
+    value: {
+      channel,
+      role,
+      admission,
+      proofBytes,
+      viewerAdmission,
+      viewerProofBytes,
+      mode: selectedMode,
+    },
+  };
 }
 
 export function admissionProofsMatch(expectedValue, receivedBytes) {
@@ -152,6 +204,92 @@ export function validateSignal(raw, { channel, role, expectedSequence }) {
     return { error: "envelope_too_large" };
   }
   if (!validateSealedEnvelope(envelopeBytes, { channel, role, sequence: message.seq })) {
+    return { error: "invalid_envelope" };
+  }
+  return { value: message };
+}
+
+const validExchangeID = (value) => {
+  if (typeof value !== "string" || !EXCHANGE_ID_PATTERN.test(value)) return false;
+  return decodeCanonicalBase64URL(value)?.byteLength === 16;
+};
+
+function validateAvailabilityEnvelope(bytes, { channel, role, exchangeID, sequence }) {
+  let envelope;
+  try {
+    envelope = JSON.parse(textDecoder.decode(bytes));
+  } catch {
+    return false;
+  }
+  if (
+    !exactKeys(envelope, [
+      "channelID",
+      "ciphertext",
+      "direction",
+      "exchangeID",
+      "sequence",
+      "version",
+    ])
+  ) {
+    return false;
+  }
+  const expectedDirection = role === "host" ? "hostToViewer" : "viewerToHost";
+  return (
+    envelope.version === 1 &&
+    envelope.channelID === channel &&
+    envelope.exchangeID === exchangeID &&
+    envelope.direction === expectedDirection &&
+    Number.isSafeInteger(envelope.sequence) &&
+    envelope.sequence === sequence &&
+    validCanonicalCiphertext(envelope.ciphertext)
+  );
+}
+
+export function validateAvailabilitySignal(
+  raw,
+  { channel, role, exchangeID, expectedSequence },
+) {
+  if (typeof raw !== "string" || utf8Length(raw) > LIMITS.maximumWireMessageBytes) {
+    return { error: "invalid_message" };
+  }
+
+  let message;
+  try {
+    message = JSON.parse(raw);
+  } catch {
+    return { error: "invalid_json" };
+  }
+  if (
+    !exactKeys(message, ["envelope", "exchangeID", "seq", "type"]) ||
+    message.type !== "availability-signal"
+  ) {
+    return { error: "invalid_message" };
+  }
+  if (!validExchangeID(message.exchangeID) || message.exchangeID !== exchangeID) {
+    return { error: "invalid_exchange" };
+  }
+  if (
+    !Number.isSafeInteger(message.seq) ||
+    message.seq < 0 ||
+    message.seq > LIMITS.maximumSequence
+  ) {
+    return { error: "invalid_sequence" };
+  }
+  if (message.seq !== expectedSequence) return { error: "unexpected_sequence" };
+
+  const envelopeBytes = decodeCanonicalBase64URL(message.envelope);
+  if (!envelopeBytes) return { error: "invalid_envelope" };
+  if (envelopeBytes.byteLength > LIMITS.maximumEnvelopeBytes) {
+    return { error: "envelope_too_large" };
+  }
+  if (
+    !validateAvailabilityEnvelope(envelopeBytes, {
+      channel,
+      role,
+      exchangeID,
+      sequence: message.seq,
+    })
+  ) {
     return { error: "invalid_envelope" };
   }
   return { value: message };

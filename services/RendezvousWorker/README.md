@@ -5,10 +5,27 @@ This Worker is the public signaling control plane for AudioStreamer's direct Web
 The public surface is deliberately small:
 
 - `GET /healthz` returns `{"ok":true}` and no session data.
-- `WSS /v1/rendezvous` is the only upgrade route.
-- Channel, role, and admission proof are accepted only in the bounded `X-AudioStreamer-Channel`, `X-AudioStreamer-Role`, and `X-AudioStreamer-Admission` upgrade headers. Query-based and alternate-path joins are rejected.
+- `WSS /v1/rendezvous` carries one-use invitation bootstrap and fresh one-use media-session signaling.
+- `WSS /v2/availability` carries only persistent paired-device availability. The distinct path makes new clients fail closed against an old Worker instead of being interpreted as invitation traffic.
+- Channel, role, and the joining role's proof are accepted only in bounded `X-AudioStreamer-Channel`, `X-AudioStreamer-Role`, and `X-AudioStreamer-Admission` upgrade headers. Availability hosts additionally register the independently derived viewer capability in `X-AudioStreamer-Viewer-Admission`, send exact mode `availability`, and require the Worker to echo `Sec-WebSocket-Protocol: audiostreamer.availability.v1`; viewers never send the registration header. Query strings, missing/unknown availability subprotocols, role-swapped proofs, availability headers on v1, and alternate paths are rejected.
 
-The Durable Object stores the first host's admission proof, expiration, consumed bit, and a bounded tombstone. It compares the viewer's separate 32-byte proof before checking viewer occupancy, consuming the invitation, or provisioning TURN. Hibernating WebSocket attachments retain role, generation, next sequence, last activity, and rate-window state. No source path logs channels, proofs, payloads, TURN identifiers, tokens, or credentials.
+Invitation Durable Objects store the first host's admission proof, expiration, consumed bit, and a bounded tombstone. They compare the viewer's 32-byte proof before checking viewer occupancy, consuming the invitation, or provisioning TURN. Availability Durable Objects use a separate `availability:<channel>` namespace and retain distinct host and viewer capabilities so one host can coordinate a sequence of viewer reconnections without either proof claiming the opposite role. Hibernating WebSocket attachments retain mode, role, generation, active exchange ID, next sequence, last activity, and rate-window state. No source path logs channels, proofs, payloads, TURN identifiers, tokens, or credentials.
+
+## Paired-device availability
+
+Availability mode is an opaque coordination path, not device authentication. The Worker checks only possession of the appropriate role-specific 32-byte capability. The Mac and iPhone remain responsible for authenticating their persistent device identities, verifying signed pairing/session transcripts, deriving the availability channel and capabilities, and encrypting every payload.
+
+The first authenticated host creates the persistent availability record and remains connected while viewers join one at a time. Each accepted viewer gets a fresh server-generated canonical 128-bit exchange ID. A viewer departure returns the same host socket to waiting; a host departure closes the active viewer exchange but does not consume the persistent proof. Join and departure mutations are serialized so a stale close callback cannot clear a newer exchange.
+
+Availability mode never provisions or returns TURN credentials. It carries only bounded encrypted coordination envelopes used by endpoints to establish a fresh one-use media rendezvous. Each envelope must bind the availability channel, server exchange ID, sender direction, and monotonic per-exchange sequence outside the opaque ciphertext, and endpoints must authenticate those fields as encryption AAD; mismatches fail closed.
+
+```text
+server -> {"type":"availability-waiting"}
+server -> {"type":"availability-ready","role":"host|viewer","exchangeID":"<128-bit Base64URL>"}
+client -> {"type":"availability-signal","exchangeID":"...","seq":0,"envelope":"<canonical Base64URL>"}
+server -> {"type":"availability-signal","from":"host|viewer","exchangeID":"...","seq":0,"envelope":"<unchanged Base64URL>"}
+server -> {"type":"availability-peer-left","role":"host|viewer","exchangeID":"..."}
+```
 
 ## Local verification
 
@@ -21,7 +38,7 @@ npm run check
 npm run dev
 ```
 
-The pinned Vitest/Workers pool runs the tests in the Workers runtime with a real local Durable Object. Tests cover strict headers and envelopes, host-first admission, proof mismatch, direct-STUN readiness, unchanged forwarding, hibernation recovery, peer departure, consume-once rejection, and non-disclosure through application logs. `npm run check` performs a local Wrangler production bundle dry run and does not deploy.
+The pinned Vitest/Workers pool runs the tests in the Workers runtime with a real local Durable Object. Tests cover strict paths/headers/envelopes, viewer-before-host retry safety, role-swapped and replacement-proof rejection, direct-STUN readiness, unchanged forwarding, hibernation recovery, peer departure, consume-once rejection, and non-disclosure through application logs. `npm run check` performs a local Wrangler production bundle dry run and does not deploy.
 
 ## TURN modes
 
@@ -53,7 +70,7 @@ Wrangler creates the `RendezvousSession` class with the `new_sqlite_classes` mig
 wss://audiostreamer-rendezvous.<workers-subdomain>.workers.dev
 ```
 
-Configure the Mac and iOS clients with that origin only; their shared Swift client appends `/v1/rendezvous`. Do not put a channel, role, proof, or pairing code in the URL. The deployed path prefers direct WebRTC ICE and uses TURN only when direct connectivity fails.
+Configure the Mac and iOS clients with that origin only; their shared Swift clients append `/v1/rendezvous` for invitation/media sessions and `/v2/availability` for durable paired reconnect coordination. Do not put a channel, role, proof, or pairing code in the URL. Deploy this Worker contract before the matching Mac and iOS clients. The media path prefers direct WebRTC ICE and uses TURN only when direct connectivity fails.
 
 The included `JOIN_RATE_LIMITER` binding limits syntactically valid upgrades per edge-observed actor and per channel before a Durable Object is invoked. Its numeric namespace must remain unique within the Cloudflare account; change `namespace_id` before deployment if `1001001` is already used. Cloudflare's binding is intentionally local and eventually consistent, so account-level WAF/bot rules remain useful defense in depth. Per-connection message limits are enforced inside each Durable Object, while the one-object-per-channel design serializes role occupancy and consume-once state.
 

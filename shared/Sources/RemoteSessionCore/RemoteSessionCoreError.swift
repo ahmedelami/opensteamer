@@ -17,6 +17,18 @@ public enum RemoteSessionCoreError: Error, Equatable, LocalizedError, Sendable {
     case replayedSequence
     case sequenceOutsideReplayWindow
     case sequenceExhausted
+    case invalidDeviceIdentity
+    case invalidPairingMessage
+    case unsupportedPairingVersion
+    case pairingRoleConflict
+    case pairingTranscriptMismatch
+    case invalidPairingCommit
+    case invalidPairedDeviceRecord
+    case deviceIdentityMismatch
+    case invalidReconnectMessage
+    case unsupportedReconnectVersion
+    case staleReconnectSequence
+    case invalidRendezvousCredential
 
     public var errorDescription: String? {
         switch self {
@@ -50,6 +62,30 @@ public enum RemoteSessionCoreError: Error, Equatable, LocalizedError, Sendable {
             "The signaling envelope is too old."
         case .sequenceExhausted:
             "The signaling sequence is exhausted."
+        case .invalidDeviceIdentity:
+            "The device identity is invalid."
+        case .invalidPairingMessage:
+            "The pairing message is invalid."
+        case .unsupportedPairingVersion:
+            "This pairing protocol version is not supported."
+        case .pairingRoleConflict:
+            "The pairing peer has an unexpected role."
+        case .pairingTranscriptMismatch:
+            "The pairing transcript does not match."
+        case .invalidPairingCommit:
+            "The pairing commit is invalid."
+        case .invalidPairedDeviceRecord:
+            "The paired-device record is invalid."
+        case .deviceIdentityMismatch:
+            "The local device identity does not match the pairing."
+        case .invalidReconnectMessage:
+            "The reconnect message is invalid."
+        case .unsupportedReconnectVersion:
+            "This reconnect protocol version is not supported."
+        case .staleReconnectSequence:
+            "The reconnect request is stale or has already been used."
+        case .invalidRendezvousCredential:
+            "The rendezvous credential is invalid."
         }
     }
 }

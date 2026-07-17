@@ -62,7 +62,7 @@ public enum RemoteSignalDirection: String, Codable, CaseIterable, Sendable {
     case hostToViewer
     case viewerToHost
 
-    fileprivate var wireByte: UInt8 {
+    internal var wireByte: UInt8 {
         switch self {
         case .hostToViewer: 1
         case .viewerToHost: 2
@@ -95,6 +95,240 @@ public struct SealedSignalingEnvelope: Codable, Equatable, Sendable {
     }
 }
 
+/// Complete secret material for one encrypted rendezvous channel.
+///
+/// The value is intentionally not Codable: durable pair records derive availability
+/// credentials on demand, while reconnect credentials are fresh and session-scoped.
+/// Textual descriptions never reveal routing or key material.
+public struct RemoteRendezvousCredential: Equatable, Sendable, CustomStringConvertible,
+    CustomDebugStringConvertible {
+    public let channelID: RendezvousChannelID
+
+    internal let admissionProof: RendezvousAdmissionProof
+    internal let hostToViewer: Data
+    internal let viewerToHost: Data
+
+    public var description: String { "<redacted remote rendezvous credential>" }
+    public var debugDescription: String { description }
+
+    internal init(invitation: RemoteInvitationCode) {
+        let keys = RemoteSessionKeys(invitation: invitation)
+        channelID = keys.channelID
+        admissionProof = keys.admissionProof
+        hostToViewer = keys.hostToViewer
+        viewerToHost = keys.viewerToHost
+    }
+
+    internal init(keyMaterial: Data, salt: Data, context: String) throws {
+        guard keyMaterial.count >= 32,
+              salt.count >= 16,
+              !context.isEmpty,
+              context.utf8.count <= 128 else {
+            throw RemoteSessionCoreError.invalidRendezvousCredential
+        }
+
+        let derivationSalt = remoteDomainSeparated(
+            "AudioStreamer.DurableRendezvous.Salt.v1",
+            salt,
+            Data(context.utf8)
+        )
+        func derive(_ label: String) -> Data {
+            remoteHKDF(
+                input: keyMaterial,
+                salt: derivationSalt,
+                label: "AudioStreamer.DurableRendezvous.\(context).\(label).v1"
+            )
+        }
+
+        channelID = RendezvousChannelID(derivedBytes: derive("channel"))
+        admissionProof = RendezvousAdmissionProof(derivedBytes: derive("admission"))
+        hostToViewer = derive("host-to-viewer")
+        viewerToHost = derive("viewer-to-host")
+    }
+
+    internal init(
+        channelID: RendezvousChannelID,
+        admissionProof: RendezvousAdmissionProof,
+        hostToViewer: Data,
+        viewerToHost: Data
+    ) throws {
+        guard hostToViewer.count == 32,
+              viewerToHost.count == 32,
+              !remoteConstantTimeEqual(hostToViewer, viewerToHost) else {
+            throw RemoteSessionCoreError.invalidRendezvousCredential
+        }
+        self.channelID = channelID
+        self.admissionProof = admissionProof
+        self.hostToViewer = hostToViewer
+        self.viewerToHost = viewerToHost
+    }
+}
+
+/// Stable pair-scoped routing material for the availability Durable Object. Host and viewer
+/// locators share one v2 channel but carry distinct, role-bound admission capabilities. The
+/// locator intentionally contains no reusable signaling AEAD keys; those are derived only after
+/// the server supplies a fresh 128-bit exchange identifier.
+public struct RemoteAvailabilityLocator: Equatable, Sendable, CustomStringConvertible,
+    CustomDebugStringConvertible {
+    public let channelID: RendezvousChannelID
+
+    internal let localRole: RemotePeerRole
+    internal let admissionProof: RendezvousAdmissionProof
+    /// Supplied only by the host while registering the availability channel. A viewer locator
+    /// does not retain or transmit this registration capability.
+    internal let viewerRegistrationProof: RendezvousAdmissionProof?
+    private let exchangeKeySeed: Data
+    private let pairID: UUID
+
+    internal init(
+        pairRootKey: Data,
+        pairID: UUID,
+        pairingTranscriptHash: Data,
+        localRole: RemotePeerRole
+    ) throws {
+        guard pairRootKey.count == 32,
+              !remoteUUIDIsZero(pairID),
+              pairingTranscriptHash.count == 32 else {
+            throw RemoteSessionCoreError.invalidRendezvousCredential
+        }
+        let routingMaterial = remoteHKDF(
+            input: pairRootKey,
+            salt: remoteDomainSeparated(
+                "AudioStreamer.Availability.Route.Salt.v1",
+                remoteUUIDData(pairID),
+                pairingTranscriptHash
+            ),
+            label: "AudioStreamer.Availability.Route.v1"
+        )
+        channelID = RendezvousChannelID(
+            derivedBytes: remoteHKDF(
+                input: routingMaterial,
+                salt: pairingTranscriptHash,
+                label: "AudioStreamer.Availability.Channel.v2"
+            )
+        )
+        let hostAdmissionProof = RendezvousAdmissionProof(
+            derivedBytes: remoteHKDF(
+                input: routingMaterial,
+                salt: pairingTranscriptHash,
+                label: "AudioStreamer.Availability.Admission.Host.v2"
+            )
+        )
+        let viewerAdmissionProof = RendezvousAdmissionProof(
+            derivedBytes: remoteHKDF(
+                input: routingMaterial,
+                salt: pairingTranscriptHash,
+                label: "AudioStreamer.Availability.Admission.Viewer.v2"
+            )
+        )
+        self.localRole = localRole
+        switch localRole {
+        case .host:
+            admissionProof = hostAdmissionProof
+            viewerRegistrationProof = viewerAdmissionProof
+        case .viewer:
+            admissionProof = viewerAdmissionProof
+            viewerRegistrationProof = nil
+        }
+        exchangeKeySeed = remoteHKDF(
+            input: pairRootKey,
+            salt: remoteDomainSeparated(
+                "AudioStreamer.Availability.ExchangeSeed.Salt.v1",
+                remoteUUIDData(pairID),
+                pairingTranscriptHash
+            ),
+            label: "AudioStreamer.Availability.ExchangeSeed.v1"
+        )
+        self.pairID = pairID
+    }
+
+    public var description: String { "<redacted remote availability locator>" }
+    public var debugDescription: String { description }
+
+    /// Derives direction- and purpose-separated AEAD keys for exactly one server exchange.
+    public func credential(
+        exchangeID: RemoteAvailabilityExchangeID
+    ) throws -> RemoteRendezvousCredential {
+        let salt = remoteDomainSeparated(
+            "AudioStreamer.Availability.Exchange.Salt.v1",
+            remoteUUIDData(pairID),
+            exchangeID.rawValue
+        )
+        return try RemoteRendezvousCredential(
+            channelID: channelID,
+            admissionProof: admissionProof,
+            hostToViewer: remoteHKDF(
+                input: exchangeKeySeed,
+                salt: salt,
+                label: "AudioStreamer.Availability.Exchange.Signaling.HostToViewer.v1"
+            ),
+            viewerToHost: remoteHKDF(
+                input: exchangeKeySeed,
+                salt: salt,
+                label: "AudioStreamer.Availability.Exchange.Signaling.ViewerToHost.v1"
+            )
+        )
+    }
+}
+
+/// Canonical 128-bit server-issued identifier for one availability exchange.
+public struct RemoteAvailabilityExchangeID: Codable, Equatable, Hashable, Sendable,
+    CustomStringConvertible, CustomDebugStringConvertible {
+    public let wireValue: String
+
+    internal let rawValue: Data
+
+    public init(wireValue: String) throws {
+        guard wireValue.utf8.count == 22,
+              wireValue.utf8.allSatisfy({ byte in
+                  switch byte {
+                  case 45, 48...57, 65...90, 95, 97...122: true
+                  default: false
+                  }
+              }) else {
+            throw RemoteSessionCoreError.invalidRendezvousCredential
+        }
+        var standard = wireValue.replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        standard.append("==")
+        guard let decoded = Data(base64Encoded: standard),
+              decoded.count == 16,
+              Self.encode(decoded) == wireValue else {
+            throw RemoteSessionCoreError.invalidRendezvousCredential
+        }
+        self.wireValue = wireValue
+        rawValue = decoded
+    }
+
+    internal init(rawValue: Data) throws {
+        guard rawValue.count == 16 else {
+            throw RemoteSessionCoreError.invalidRendezvousCredential
+        }
+        self.rawValue = rawValue
+        wireValue = Self.encode(rawValue)
+    }
+
+    public var description: String { "<redacted remote availability exchange>" }
+    public var debugDescription: String { description }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        try self.init(wireValue: container.decode(String.self))
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(wireValue)
+    }
+
+    private static func encode(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+}
+
 public struct RemoteSignalingCipher: Sendable {
     public let channelID: RendezvousChannelID
     public let role: RemotePeerRole
@@ -105,18 +339,21 @@ public struct RemoteSignalingCipher: Sendable {
     private let receivingKey: Data
 
     public init(invitation: RemoteInvitationCode, role: RemotePeerRole) {
-        let keys = RemoteSessionKeys(invitation: invitation)
-        channelID = keys.channelID
-        admissionProof = keys.admissionProof
+        self.init(credential: RemoteRendezvousCredential(invitation: invitation), role: role)
+    }
+
+    public init(credential: RemoteRendezvousCredential, role: RemotePeerRole) {
+        channelID = credential.channelID
+        admissionProof = credential.admissionProof
         self.role = role
 
         switch role {
         case .host:
-            sendingKey = keys.hostToViewer
-            receivingKey = keys.viewerToHost
+            sendingKey = credential.hostToViewer
+            receivingKey = credential.viewerToHost
         case .viewer:
-            sendingKey = keys.viewerToHost
-            receivingKey = keys.hostToViewer
+            sendingKey = credential.viewerToHost
+            receivingKey = credential.hostToViewer
         }
     }
 
@@ -311,7 +548,7 @@ private struct RemoteSessionKeys {
     }
 }
 
-private extension SealedSignalingEnvelope {
+internal extension SealedSignalingEnvelope {
     var additionalAuthenticatedData: Data {
         var data = Data("AudioStreamer.Signaling.Envelope.AAD.v1\0".utf8)
         data.append(version)

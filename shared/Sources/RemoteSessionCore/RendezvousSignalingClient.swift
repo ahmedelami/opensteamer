@@ -53,6 +53,34 @@ public enum RendezvousSignalingEvent: Equatable, Sendable {
     case serverError(RendezvousServerError)
 }
 
+/// Selects the server-side rendezvous lifecycle without changing the legacy invitation wire.
+public enum RemoteRendezvousMode: String, Codable, CaseIterable, Sendable {
+    /// Existing one-use invitation bootstrap. No mode header is sent.
+    case invitation
+    /// Authenticated durable-pairing bootstrap on the v1 path with mandatory protocol negotiation.
+    case pairing
+    /// Long-lived, pair-scoped presence/control channel; never carries SDP, ICE, or media.
+    case availability
+    /// Fresh one-use signaling channel derived by an authenticated reconnect handshake.
+    case session
+
+    internal var headerValue: String? {
+        self == .availability ? rawValue : nil
+    }
+
+    internal var webSocketSubprotocol: String? {
+        switch self {
+        case .pairing: "audiostreamer.pairing.v1"
+        case .availability: "audiostreamer.availability.v1"
+        case .invitation, .session: nil
+        }
+    }
+
+    internal var rendezvousPath: String {
+        self == .availability ? "/v2/availability" : "/v1/rendezvous"
+    }
+}
+
 internal enum RendezvousSocketMessage: Equatable, Sendable {
     case text(String)
     case binary(Data)
@@ -63,7 +91,9 @@ internal protocol RendezvousSocketTransport: Sendable {
         to url: URL,
         channelID: RendezvousChannelID,
         role: RemotePeerRole,
-        admissionProof: RendezvousAdmissionProof
+        admissionProof: RendezvousAdmissionProof,
+        viewerAdmissionProof: RendezvousAdmissionProof?,
+        mode: RemoteRendezvousMode
     ) async throws
     func send(text: String) async throws
     func receive() async throws -> RendezvousSocketMessage
@@ -102,6 +132,7 @@ public actor RendezvousSignalingClient {
     private let rendezvousURL: URL
     private let channelID: RendezvousChannelID
     private let admissionProof: RendezvousAdmissionProof
+    private let mode: RemoteRendezvousMode
     private let transport: any RendezvousSocketTransport
     private let sender: RemoteSignalingSender
     private let receiver: RemoteSignalingReceiver
@@ -119,6 +150,7 @@ public actor RendezvousSignalingClient {
         self.role = role
         channelID = cipher.channelID
         admissionProof = cipher.admissionProof
+        mode = .invitation
         rendezvousURL = try Self.makeRendezvousURL(endpoint: endpoint)
         transport = URLSessionRendezvousSocketTransport()
         sender = RemoteSignalingSender(cipher: cipher)
@@ -135,6 +167,61 @@ public actor RendezvousSignalingClient {
         self.role = role
         channelID = cipher.channelID
         admissionProof = cipher.admissionProof
+        mode = .invitation
+        rendezvousURL = try Self.makeRendezvousURL(endpoint: endpoint)
+        self.transport = transport
+        sender = RemoteSignalingSender(cipher: cipher)
+        receiver = RemoteSignalingReceiver(cipher: cipher)
+    }
+
+    public init(
+        endpoint: URL,
+        credential: RemoteRendezvousCredential,
+        role: RemotePeerRole
+    ) throws {
+        try self.init(
+            endpoint: endpoint,
+            credential: credential,
+            role: role,
+            mode: .session
+        )
+    }
+
+    public init(
+        endpoint: URL,
+        credential: RemoteRendezvousCredential,
+        role: RemotePeerRole,
+        mode: RemoteRendezvousMode
+    ) throws {
+        guard mode == .session else {
+            throw RemoteSessionCoreError.invalidRendezvousCredential
+        }
+        let cipher = RemoteSignalingCipher(credential: credential, role: role)
+        self.role = role
+        channelID = cipher.channelID
+        admissionProof = cipher.admissionProof
+        self.mode = mode
+        rendezvousURL = try Self.makeRendezvousURL(endpoint: endpoint)
+        transport = URLSessionRendezvousSocketTransport()
+        sender = RemoteSignalingSender(cipher: cipher)
+        receiver = RemoteSignalingReceiver(cipher: cipher)
+    }
+
+    internal init(
+        endpoint: URL,
+        credential: RemoteRendezvousCredential,
+        role: RemotePeerRole,
+        mode: RemoteRendezvousMode,
+        transport: any RendezvousSocketTransport
+    ) throws {
+        guard mode == .session else {
+            throw RemoteSessionCoreError.invalidRendezvousCredential
+        }
+        let cipher = RemoteSignalingCipher(credential: credential, role: role)
+        self.role = role
+        channelID = cipher.channelID
+        admissionProof = cipher.admissionProof
+        self.mode = mode
         rendezvousURL = try Self.makeRendezvousURL(endpoint: endpoint)
         self.transport = transport
         sender = RemoteSignalingSender(cipher: cipher)
@@ -152,7 +239,9 @@ public actor RendezvousSignalingClient {
                 to: rendezvousURL,
                 channelID: channelID,
                 role: role,
-                admissionProof: admissionProof
+                admissionProof: admissionProof,
+                viewerAdmissionProof: nil,
+                mode: mode
             )
         } catch {
             state = .closed
@@ -667,54 +756,116 @@ public actor RendezvousSignalingClient {
     }
 }
 
-private actor URLSessionRendezvousSocketTransport: RendezvousSocketTransport {
+internal actor URLSessionRendezvousSocketTransport: RendezvousSocketTransport {
     private enum Header {
         static let channel = "X-AudioStreamer-Channel"
         static let role = "X-AudioStreamer-Role"
         static let admission = "X-AudioStreamer-Admission"
+        static let viewerAdmission = "X-AudioStreamer-Viewer-Admission"
+        static let mode = "X-AudioStreamer-Mode"
+        static let webSocketProtocol = "Sec-WebSocket-Protocol"
     }
 
-    private let delegate: RendezvousWebSocketDelegate
-    private let session: URLSession
+    private var delegate: RendezvousWebSocketDelegate?
+    private var session: URLSession?
     private var task: URLSessionWebSocketTask?
 
-    init() {
+    init() {}
+
+    private static func makeSessionConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 24 * 60 * 60
         configuration.urlCache = nil
-        let delegate = RendezvousWebSocketDelegate()
-        self.delegate = delegate
-        session = URLSession(
-            configuration: configuration,
-            delegate: delegate,
-            delegateQueue: nil
-        )
+        return configuration
     }
 
-    func connect(
-        to url: URL,
+    internal static func makeUpgradeRequest(
+        url: URL,
         channelID: RendezvousChannelID,
         role: RemotePeerRole,
-        admissionProof: RendezvousAdmissionProof
-    ) async throws {
-        guard task == nil else {
-            throw RendezvousSignalingError.alreadyConnected
+        admissionProof: RendezvousAdmissionProof,
+        viewerAdmissionProof: RendezvousAdmissionProof?,
+        mode: RemoteRendezvousMode
+    ) throws -> URLRequest {
+        guard url.path == mode.rendezvousPath,
+              url.query == nil,
+              url.fragment == nil else {
+            throw RendezvousSignalingError.invalidEndpoint
+        }
+        let hasValidViewerRegistrationCapability = switch (mode, role) {
+        case (.availability, .host):
+            viewerAdmissionProof != nil && viewerAdmissionProof != admissionProof
+        case (.availability, .viewer), (.invitation, _), (.pairing, _), (.session, _):
+            viewerAdmissionProof == nil
+        }
+        guard hasValidViewerRegistrationCapability else {
+            throw RemoteSessionCoreError.invalidRendezvousCredential
         }
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
         request.setValue(channelID.wireValue, forHTTPHeaderField: Header.channel)
         request.setValue(role.rawValue, forHTTPHeaderField: Header.role)
         request.setValue(admissionProof.wireValue, forHTTPHeaderField: Header.admission)
-        let newTask = session.webSocketTask(with: request)
+        if let viewerAdmissionProof {
+            request.setValue(
+                viewerAdmissionProof.wireValue,
+                forHTTPHeaderField: Header.viewerAdmission
+            )
+        }
+        if let headerValue = mode.headerValue {
+            request.setValue(headerValue, forHTTPHeaderField: Header.mode)
+        }
+        if let webSocketSubprotocol = mode.webSocketSubprotocol {
+            request.setValue(
+                webSocketSubprotocol,
+                forHTTPHeaderField: Header.webSocketProtocol
+            )
+        }
+        return request
+    }
+
+    func connect(
+        to url: URL,
+        channelID: RendezvousChannelID,
+        role: RemotePeerRole,
+        admissionProof: RendezvousAdmissionProof,
+        viewerAdmissionProof: RendezvousAdmissionProof?,
+        mode: RemoteRendezvousMode
+    ) async throws {
+        guard task == nil, session == nil, delegate == nil else {
+            throw RendezvousSignalingError.alreadyConnected
+        }
+        let request = try Self.makeUpgradeRequest(
+            url: url,
+            channelID: channelID,
+            role: role,
+            admissionProof: admissionProof,
+            viewerAdmissionProof: viewerAdmissionProof,
+            mode: mode
+        )
+        let newDelegate = RendezvousWebSocketDelegate(
+            expectedSubprotocol: mode.webSocketSubprotocol
+        )
+        let newSession = URLSession(
+            configuration: Self.makeSessionConfiguration(),
+            delegate: newDelegate,
+            delegateQueue: nil
+        )
+        delegate = newDelegate
+        session = newSession
+        let newTask = newSession.webSocketTask(with: request)
         task = newTask
         newTask.resume()
         do {
-            try await delegate.waitUntilOpen()
+            try await newDelegate.waitUntilOpen()
         } catch {
             newTask.cancel(with: .goingAway, reason: nil)
             task = nil
+            newSession.invalidateAndCancel()
+            session = nil
+            delegate = nil
             throw RendezvousSignalingError.connectionFailed
         }
     }
@@ -743,16 +894,23 @@ private actor URLSessionRendezvousSocketTransport: RendezvousSocketTransport {
     func close() async {
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
-        session.invalidateAndCancel()
+        session?.invalidateAndCancel()
+        session = nil
+        delegate = nil
     }
 }
 
-private final class RendezvousWebSocketDelegate: NSObject, URLSessionWebSocketDelegate,
+internal final class RendezvousWebSocketDelegate: NSObject, URLSessionWebSocketDelegate,
     @unchecked Sendable {
+    private let expectedSubprotocol: String?
     private let lock = NSLock()
     private var result: Result<Void, RendezvousSignalingError>?
     private var waiter: CheckedContinuation<Void, any Error>?
     private var timeoutTask: Task<Void, Never>?
+
+    internal init(expectedSubprotocol: String?) {
+        self.expectedSubprotocol = expectedSubprotocol
+    }
 
     func waitUntilOpen() async throws {
         try await withCheckedThrowingContinuation { continuation in
@@ -780,6 +938,14 @@ private final class RendezvousWebSocketDelegate: NSObject, URLSessionWebSocketDe
         webSocketTask: URLSessionWebSocketTask,
         didOpenWithProtocol protocol: String?
     ) {
+        didOpen(negotiatedSubprotocol: `protocol`)
+    }
+
+    internal func didOpen(negotiatedSubprotocol: String?) {
+        guard negotiatedSubprotocol == expectedSubprotocol else {
+            resolve(.failure(.connectionFailed))
+            return
+        }
         resolve(.success(()))
     }
 
@@ -822,7 +988,7 @@ private final class RendezvousWebSocketDelegate: NSObject, URLSessionWebSocketDe
     }
 }
 
-private extension RemotePeerRole {
+internal extension RemotePeerRole {
     var opposite: RemotePeerRole {
         self == .host ? .viewer : .host
     }
