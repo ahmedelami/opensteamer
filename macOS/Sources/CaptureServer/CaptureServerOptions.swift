@@ -15,6 +15,7 @@ struct CaptureServerOptions {
     var screenBitrate: UInt32 = 12_000_000
     var lanEnabled = true
     var worldwideEnabled = false
+    var resetWorldwidePairing = false
     var allowRemoteControl = false
     var rendezvousURL: URL? = ProcessInfo.processInfo.environment["AUDIOSTREAMER_RENDEZVOUS_URL"]
         .flatMap(URL.init(string:))
@@ -44,6 +45,8 @@ struct CaptureServerOptions {
       --screen-bitrate <bps> H.264 target bitrate. Defaults to 12000000.
       --no-screen            Disable the screen video service.
       --worldwide            Enable one-code WebRTC screen access using the bundled public endpoint.
+      --reset-worldwide-pairing
+                             Forget the paired iPhone before starting worldwide mode.
       --allow-remote-control Allow pointer and keyboard input for the active worldwide screen session.
                              Disabled by default; requires macOS Accessibility permission.
       --rendezvous-url <url> Enable worldwide access with this wss:// endpoint (ws:// loopback for tests).
@@ -123,6 +126,8 @@ struct CaptureServerOptions {
                 options.screenEnabled = false
             case "--worldwide":
                 options.worldwideEnabled = true
+            case "--reset-worldwide-pairing":
+                options.resetWorldwidePairing = true
             case "--allow-remote-control":
                 options.allowRemoteControl = true
             case "--rendezvous-url":
@@ -223,6 +228,10 @@ struct CaptureServerOptions {
                     "--worldwide requires --rendezvous-url or AUDIOSTREAMER_RENDEZVOUS_URL"
                 )
             }
+        } else if options.resetWorldwidePairing {
+            throw CaptureServerOptionError.invalid(
+                "--reset-worldwide-pairing requires --worldwide"
+            )
         } else if options.forceRelay {
             throw CaptureServerOptionError.invalid("--force-relay requires --worldwide")
         } else if options.allowRemoteControl {

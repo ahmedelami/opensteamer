@@ -68,7 +68,7 @@ struct CaptureServerMain {
                 screenService = nil
             }
 
-            let worldwideScreenService: WorldwideScreenService?
+            let worldwideHostCoordinator: WorldwideHostCoordinator?
             if options.worldwideEnabled, let rendezvousURL = options.rendezvousURL {
                 let remoteInputController = MacRemoteInputController(
                     allowRemoteControl: options.allowRemoteControl
@@ -84,7 +84,7 @@ struct CaptureServerMain {
                         )
                     }
                 }
-                let service = try WorldwideScreenService(
+                let coordinator = WorldwideHostCoordinator(
                     endpoint: rendezvousURL,
                     forceRelay: options.forceRelay,
                     displayID: options.displayID,
@@ -94,19 +94,27 @@ struct CaptureServerMain {
                     remoteInputController: remoteInputController,
                     logger: logger
                 )
-                let invitationCode = try await service.start()
-                worldwideScreenService = service
+                let startResult = try await coordinator.start(
+                    resetPairing: options.resetWorldwidePairing
+                )
+                worldwideHostCoordinator = coordinator
 
-                // This is the sole intentional presentation of the pairing capability.
-                // Routine diagnostics must never repeat it or include its derived channel.
-                print("")
-                print("Worldwide one-time connection code")
-                print("----------------------------------")
-                print(invitationCode)
-                print("Enter this code on the iPhone before it expires.")
-                print("")
+                switch startResult {
+                case .invitation(let invitationCode):
+                    // This is the sole intentional presentation of the pairing capability.
+                    // Routine diagnostics must never repeat it or include derived channels.
+                    print("")
+                    print("Worldwide one-time pairing code")
+                    print("-------------------------------")
+                    print(invitationCode)
+                    print("Enter this code on the iPhone before it expires.")
+                    print("")
+                case .paired(let remoteDisplayName):
+                    let name = remoteDisplayName ?? "paired iPhone"
+                    logger.info("Worldwide host is available for \(name)")
+                }
             } else {
-                worldwideScreenService = nil
+                worldwideHostCoordinator = nil
             }
 
             let monitor: Task<Void, Never>?
@@ -129,9 +137,9 @@ struct CaptureServerMain {
                         logger: logger
                     )
                     report = try await manager.run()
-                } else if let worldwideScreenService {
-                    try await waitForWorldwideService(
-                        worldwideScreenService,
+                } else if let worldwideHostCoordinator {
+                    try await waitForWorldwideHost(
+                        worldwideHostCoordinator,
                         duration: options.duration
                     )
                     report = nil
@@ -140,13 +148,13 @@ struct CaptureServerMain {
                 }
             } catch {
                 monitor?.cancel()
-                await worldwideScreenService?.stop()
+                await worldwideHostCoordinator?.stop()
                 await screenService?.stop()
                 server?.stop()
                 throw error
             }
             monitor?.cancel()
-            await worldwideScreenService?.stop()
+            await worldwideHostCoordinator?.stop()
             await screenService?.stop()
             server?.stop()
             if let report, let server {
@@ -176,12 +184,12 @@ struct CaptureServerMain {
         }
     }
 
-    private static func waitForWorldwideService(
-        _ service: WorldwideScreenService,
+    private static func waitForWorldwideHost(
+        _ coordinator: WorldwideHostCoordinator,
         duration: TimeInterval?
     ) async throws {
         guard let duration else {
-            for await _ in service.completion {
+            for try await _ in coordinator.completion {
                 return
             }
             return
@@ -189,7 +197,7 @@ struct CaptureServerMain {
 
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
-                for await _ in service.completion {
+                for try await _ in coordinator.completion {
                     return
                 }
             }

@@ -116,6 +116,11 @@ let package = Package(
             path: "macOS/Tests/CaptureCoreTests"
         ),
         .testTarget(
+            name: "CaptureServerTests",
+            dependencies: ["CaptureServer"],
+            path: "macOS/Tests/CaptureServerTests"
+        ),
+        .testTarget(
             name: "StreamingTests",
             dependencies: ["Streaming"],
             path: "shared/Tests/StreamingTests"

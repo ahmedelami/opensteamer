@@ -4,14 +4,14 @@ import Foundation
 import RemoteSessionCore
 import WebRTCTransport
 
-/// Owns one consume-once invitation and its Mac-side WebRTC screen session.
+/// Owns one consume-once rendezvous and its Mac-side WebRTC screen session.
 ///
 /// The invitation authenticates and encrypts signaling. Reachability still comes from
 /// ICE/STUN and, when a direct candidate pair is impossible, the configured TURN service.
 actor WorldwideScreenService {
     nonisolated let completion: AsyncStream<Void>
 
-    private let invitation: RemoteInvitationCode
+    private let invitation: RemoteInvitationCode?
     private let signaling: RendezvousSignalingClient
     private let icePolicy: WebRTCICEPolicy
     private let displayID: UInt32?
@@ -92,9 +92,58 @@ actor WorldwideScreenService {
         self.logger = logger
     }
 
+    init(
+        endpoint: URL,
+        sessionCredential: RemoteRendezvousCredential,
+        forceRelay: Bool,
+        displayID: UInt32?,
+        maximumWidth: Int,
+        framesPerSecond: Int,
+        maximumVideoBitrate: Int,
+        remoteInputController: MacRemoteInputController,
+        logger: Logger
+    ) throws {
+        let completionPair = AsyncStream<Void>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        completion = completionPair.stream
+        completionContinuation = completionPair.continuation
+        invitation = nil
+        signaling = try RendezvousSignalingClient(
+            endpoint: endpoint,
+            credential: sessionCredential,
+            role: .host
+        )
+        icePolicy = forceRelay ? .relayOnly : .directPreferred
+        self.displayID = displayID
+        self.maximumWidth = maximumWidth
+        self.framesPerSecond = framesPerSecond
+        self.maximumVideoBitrate = maximumVideoBitrate
+        self.remoteInputController = remoteInputController
+        self.logger = logger
+    }
+
     /// Starts the outbound rendezvous connection and deliberately returns the secret once
     /// for presentation to the user. Callers must never put this value in routine logs.
     func start() async throws -> String {
+        guard let invitation else {
+            throw WorldwideScreenServiceError.invalidLifecycle
+        }
+        try await startSignaling()
+        logger.info("Worldwide screen host is waiting for a one-time viewer")
+        return invitation.exportedCode
+    }
+
+    /// Starts a fresh paired-device media rendezvous without exposing session credentials.
+    func startPairedSession() async throws {
+        guard invitation == nil else {
+            throw WorldwideScreenServiceError.invalidLifecycle
+        }
+        try await startSignaling()
+        logger.info("Worldwide screen host is waiting for the paired iPhone media session")
+    }
+
+    private func startSignaling() async throws {
         guard !isStarted, !isStopped else {
             throw WorldwideScreenServiceError.invalidLifecycle
         }
@@ -105,8 +154,6 @@ actor WorldwideScreenService {
             signalingTask = Task { [weak self] in
                 await self?.consumeSignalingEvents(events)
             }
-            logger.info("Worldwide screen host is waiting for a one-time viewer")
-            return invitation.exportedCode
         } catch {
             isStopped = true
             completionContinuation.finish()
@@ -174,7 +221,11 @@ actor WorldwideScreenService {
         switch event {
         case .waiting(let invitationExpiresAt):
             let remaining = max(0, Int(invitationExpiresAt.timeIntervalSinceNow.rounded()))
-            logger.info("One-time invitation is waiting (expires in about \(remaining) seconds)")
+            if invitation == nil {
+                logger.info("Fresh paired media rendezvous expires in about \(remaining) seconds")
+            } else {
+                logger.info("One-time invitation is waiting (expires in about \(remaining) seconds)")
+            }
 
         case .ready(_, _, let iceServers):
             guard peer == nil else { return }
@@ -226,7 +277,7 @@ actor WorldwideScreenService {
             }
 
         case .peerLeft:
-            logger.info("Worldwide viewer disconnected; this one-time invitation is consumed")
+            logger.info("Worldwide viewer disconnected; the media rendezvous is consumed")
             await stop()
 
         case .serverError(let error):
