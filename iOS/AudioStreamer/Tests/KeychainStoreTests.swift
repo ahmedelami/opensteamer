@@ -7,6 +7,18 @@ final class KeychainStoreTests: XCTestCase {
     func testProductionStorageIdentityRemainsCompatibleWithEarlierBuilds() {
         XCTAssertEqual(KeychainStore.remoteTokenItem.service, "org.example.AudioStreamer")
         XCTAssertEqual(KeychainStore.remoteTokenItem.account, "remote-token")
+        XCTAssertEqual(
+            KeychainStore.worldwideInvitationCodeItem.service,
+            "org.example.AudioStreamer"
+        )
+        XCTAssertEqual(
+            KeychainStore.worldwideInvitationCodeItem.account,
+            "worldwide-invitation-code"
+        )
+        XCTAssertNotEqual(
+            KeychainStore.remoteTokenItem,
+            KeychainStore.worldwideInvitationCodeItem
+        )
     }
 
     func testKeychainRoundTripSurvivesStoreRecreation() throws {
@@ -15,7 +27,7 @@ final class KeychainStoreTests: XCTestCase {
             account: UUID().uuidString
         )
         let originalStore = KeychainStore(item: item)
-        defer { try? originalStore.saveRemoteToken("") }
+        defer { try? originalStore.deleteRemoteToken() }
 
         try originalStore.saveRemoteToken("  update-stable-code  \n")
 
@@ -50,7 +62,7 @@ final class KeychainStoreTests: XCTestCase {
             account: UUID().uuidString
         )
         let store = KeychainStore(item: item)
-        defer { try? store.saveRemoteToken("") }
+        defer { try? store.deleteRemoteToken() }
         try store.saveRemoteToken("code")
 
         var query = baseQuery(for: item)
@@ -65,16 +77,30 @@ final class KeychainStoreTests: XCTestCase {
         )
     }
 
-    func testEmptyValueDeletesPersistedItem() throws {
+    func testEmptyValueCannotDeletePersistedItem() throws {
         let item = KeychainStore.Item(
             service: "org.example.AudioStreamer.deletion-tests",
             account: UUID().uuidString
         )
         let store = KeychainStore(item: item)
-        defer { try? store.saveRemoteToken("") }
+        defer { try? store.deleteRemoteToken() }
 
         try store.saveRemoteToken("code")
         try store.saveRemoteToken("")
+
+        XCTAssertEqual(try store.loadRemoteToken(), "code")
+    }
+
+    func testExplicitDeleteRemovesPersistedItem() throws {
+        let item = KeychainStore.Item(
+            service: "org.example.AudioStreamer.explicit-deletion-tests",
+            account: UUID().uuidString
+        )
+        let store = KeychainStore(item: item)
+        defer { try? store.deleteRemoteToken() }
+
+        try store.saveRemoteToken("code")
+        try store.deleteRemoteToken()
 
         XCTAssertNil(try store.loadRemoteToken())
     }
@@ -94,12 +120,12 @@ final class KeychainStoreTests: XCTestCase {
         let store = RemoteTokenStoreStub(loadResults: [.failure(TestFailure.load)])
         let state = RemoteTokenState(store: store)
 
-        state.loadIfNeeded()
         state.persistNow()
 
         XCTAssertEqual(state.token, "")
         XCTAssertNotNil(state.storageError)
         XCTAssertTrue(store.savedValues.isEmpty)
+        XCTAssertEqual(store.deleteCount, 0)
     }
 
     func testTransientReadFailureCanRetryWithoutOverwritingCredential() {
@@ -111,7 +137,6 @@ final class KeychainStoreTests: XCTestCase {
         )
         let state = RemoteTokenState(store: store)
 
-        state.loadIfNeeded()
         state.loadIfNeeded()
 
         XCTAssertEqual(state.token, "existing-code")
@@ -134,13 +159,81 @@ final class KeychainStoreTests: XCTestCase {
     func testExplicitUserClearDeletesCredential() {
         let store = RemoteTokenStoreStub(loadResult: .success("existing-code"))
         let state = RemoteTokenState(store: store)
-        state.loadIfNeeded()
 
         state.token = ""
 
-        XCTAssertEqual(store.savedValues, [""])
+        XCTAssertTrue(store.savedValues.isEmpty)
+        XCTAssertEqual(store.deleteCount, 0)
+        XCTAssertTrue(state.isStored)
+
+        state.clearSavedCode()
+
+        XCTAssertEqual(store.deleteCount, 1)
         XCTAssertFalse(state.isStored)
     }
+
+    func testAsyncConnectionFailureBeforeAcceptanceRetainsInvitation() {
+        let store = RemoteTokenStoreStub(loadResult: .success("still-usable-code"))
+        let state = RemoteTokenState(store: store, codeDisplayName: "invitation code")
+        var acceptance = InvitationAcceptanceAction()
+        let generation = UUID()
+        acceptance.arm(generation: generation) {
+            state.clearSavedCode()
+        }
+
+        acceptance.cancel(generation: generation)
+        acceptance.accept(generation: generation)
+
+        XCTAssertEqual(state.token, "still-usable-code")
+        XCTAssertTrue(state.isStored)
+        XCTAssertEqual(store.deleteCount, 0)
+    }
+
+    func testRendezvousAcceptanceDeletesInvitationExactlyOnce() {
+        let store = RemoteTokenStoreStub(loadResult: .success("consumed-code"))
+        let state = RemoteTokenState(store: store, codeDisplayName: "invitation code")
+        var acceptance = InvitationAcceptanceAction()
+        let generation = UUID()
+        acceptance.arm(generation: generation) {
+            state.clearSavedCode()
+        }
+
+        acceptance.accept(generation: generation)
+        acceptance.accept(generation: generation)
+
+        XCTAssertEqual(state.token, "")
+        XCTAssertFalse(state.isStored)
+        XCTAssertEqual(store.deleteCount, 1)
+    }
+
+    #if AUDIOSTREAMER_UPDATE_SEED
+    func testSeedStableItemsForPhysicalUpdateValidation() throws {
+        let activationStore = KeychainStore(item: KeychainStore.remoteTokenItem)
+        let invitationStore = KeychainStore(item: KeychainStore.worldwideInvitationCodeItem)
+
+        try? activationStore.deleteRemoteToken()
+        try? invitationStore.deleteRemoteToken()
+        try activationStore.saveRemoteToken("UPDATE-BOTTOM-20")
+        try invitationStore.saveRemoteToken("UPDATE-TOP-20")
+
+        XCTAssertEqual(try activationStore.loadRemoteToken(), "UPDATE-BOTTOM-20")
+        XCTAssertEqual(try invitationStore.loadRemoteToken(), "UPDATE-TOP-20")
+    }
+    #endif
+
+    #if AUDIOSTREAMER_UPDATE_VERIFY
+    func testStableItemsSurvivePhysicalUpdate() throws {
+        let activationStore = KeychainStore(item: KeychainStore.remoteTokenItem)
+        let invitationStore = KeychainStore(item: KeychainStore.worldwideInvitationCodeItem)
+        defer {
+            try? activationStore.deleteRemoteToken()
+            try? invitationStore.deleteRemoteToken()
+        }
+
+        XCTAssertEqual(try activationStore.loadRemoteToken(), "UPDATE-BOTTOM-20")
+        XCTAssertEqual(try invitationStore.loadRemoteToken(), "UPDATE-TOP-20")
+    }
+    #endif
 }
 
 private func baseQuery(for item: KeychainStore.Item) -> [String: Any] {
@@ -154,6 +247,7 @@ private func baseQuery(for item: KeychainStore.Item) -> [String: Any] {
 private final class RemoteTokenStoreStub: RemoteTokenStoring {
     private var loadResults: [Result<String?, any Error>]
     private(set) var savedValues: [String] = []
+    private(set) var deleteCount = 0
 
     init(loadResult: Result<String?, any Error>) {
         loadResults = [loadResult]
@@ -170,6 +264,10 @@ private final class RemoteTokenStoreStub: RemoteTokenStoring {
 
     func saveRemoteToken(_ token: String) throws {
         savedValues.append(token)
+    }
+
+    func deleteRemoteToken() throws {
+        deleteCount += 1
     }
 }
 

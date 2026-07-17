@@ -37,6 +37,7 @@
 		8FC809E434FD5ADCDB703018 /* MetricRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBE9EB5455D4F39B9DD93CCC /* MetricRow.swift */; };
 		AB7BBAAA5041A0108E8C3D27 /* WorldwideScreenViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3185D19EF5D285A55015E1C2 /* WorldwideScreenViewerView.swift */; };
 		B1C53CF9E00071916232F02C /* PlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9707A9ECCCB37428AC23B5F /* PlayerView.swift */; };
+		BCB5294B1552F1258BF9FB5E /* InvitationAcceptanceAction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89437364114329E1CF3C6274 /* InvitationAcceptanceAction.swift */; };
 		BD3EF8E3F298C39E811D8A34 /* SampleBufferScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8BB180FE348C76A45F232E7 /* SampleBufferScreenView.swift */; };
 		D6F6359EDAC17315BCE31FAE /* ScreenVideoRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFE56EB7F1756F3F406A7BD1 /* ScreenVideoRenderer.swift */; };
 		DE4F6E43A7768013156584F7 /* RemoteKeyboardInputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62FAFA716A0461C6C237AC01 /* RemoteKeyboardInputView.swift */; };
@@ -76,6 +77,7 @@
 		69415A249A4906EC4B27E740 /* AudioSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSessionManager.swift; sourceTree = "<group>"; };
 		74366C19E45DDC6E1480B455 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		7FBC749C0D5798F82623433A /* RemoteTokenState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTokenState.swift; sourceTree = "<group>"; };
+		89437364114329E1CF3C6274 /* InvitationAcceptanceAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InvitationAcceptanceAction.swift; sourceTree = "<group>"; };
 		9A2275430238D768A3B4A26A /* BackgroundPlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundPlaybackCoordinator.swift; sourceTree = "<group>"; };
 		A8BB180FE348C76A45F232E7 /* SampleBufferScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleBufferScreenView.swift; sourceTree = "<group>"; };
 		A9707A9ECCCB37428AC23B5F /* PlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerView.swift; sourceTree = "<group>"; };
@@ -177,6 +179,7 @@
 		519339E2F701B9BD348C3FB4 /* ViewModels */ = {
 			isa = PBXGroup;
 			children = (
+				89437364114329E1CF3C6274 /* InvitationAcceptanceAction.swift */,
 				7FBC749C0D5798F82623433A /* RemoteTokenState.swift */,
 				B14F0417395C719D6C848228 /* ScreenSessionViewModel.swift */,
 				BDDD6172AB3D3C88EE4AB5FF /* StreamSessionViewModel.swift */,
@@ -385,6 +388,7 @@
 				60EDE71F19F0F486F5114A52 /* ContentView.swift in Sources */,
 				0B8EB3C3045577600008F387 /* DiagnosticsView.swift in Sources */,
 				8E4EFC4FB83ECCB21634E53E /* H264SampleBuilder.swift in Sources */,
+				BCB5294B1552F1258BF9FB5E /* InvitationAcceptanceAction.swift in Sources */,
 				F70762772987F154F9365C1F /* KeychainStore.swift in Sources */,
 				8FC809E434FD5ADCDB703018 /* MetricRow.swift in Sources */,
 				B1C53CF9E00071916232F02C /* PlayerView.swift in Sources */,
@@ -472,7 +476,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer;
+				PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer.dev;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;

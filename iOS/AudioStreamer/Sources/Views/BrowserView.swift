@@ -6,8 +6,11 @@ struct BrowserView: View {
     @AppStorage("remoteHost") private var remoteHost = ""
     @AppStorage("remotePort") private var remotePort = "9000"
     @StateObject private var remoteTokenState = RemoteTokenState()
+    @StateObject private var invitationCodeState = RemoteTokenState(
+        store: KeychainStore(item: KeychainStore.worldwideInvitationCodeItem),
+        codeDisplayName: "invitation code"
+    )
     @State private var showsToken = false
-    @State private var invitationCode = ""
     @State private var showsInvitationCode = false
     @FocusState private var invitationCodeIsFocused: Bool
     #if DEBUG
@@ -48,9 +51,15 @@ struct BrowserView: View {
                     HStack {
                         Group {
                             if showsInvitationCode {
-                                TextField("One-time invitation code", text: $invitationCode)
+                                TextField(
+                                    "One-time invitation code",
+                                    text: $invitationCodeState.token
+                                )
                             } else {
-                                SecureField("One-time invitation code", text: $invitationCode)
+                                SecureField(
+                                    "One-time invitation code",
+                                    text: $invitationCodeState.token
+                                )
                             }
                         }
                         .textInputAutocapitalization(.characters)
@@ -81,6 +90,27 @@ struct BrowserView: View {
                     }
                     .disabled(trimmedInvitationCode.isEmpty || worldwideViewModel.isConnecting)
                     .accessibilityIdentifier("connectWorldwide")
+
+                    if let storageError = invitationCodeState.storageError {
+                        Label(storageError, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else if invitationCodeState.isStored && !trimmedInvitationCode.isEmpty {
+                        Label(
+                            "Saved securely on this iPhone until used",
+                            systemImage: "checkmark.shield"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+
+                    if invitationCodeState.isStored {
+                        Button(role: .destructive) {
+                            invitationCodeState.clearSavedCode()
+                        } label: {
+                            Label("Clear Saved Invitation Code", systemImage: "trash")
+                        }
+                    }
 
                     Text("The Mac must be awake with AudioStreamer Host running. The app tries direct WebRTC first and otherwise relays end-to-end-encrypted WebRTC media through TURN.")
                         .font(.caption)
@@ -163,6 +193,14 @@ struct BrowserView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                if remoteTokenState.isStored {
+                    Button(role: .destructive) {
+                        remoteTokenState.clearSavedCode()
+                    } label: {
+                        Label("Clear Saved Activation Code", systemImage: "trash")
+                    }
+                }
+
                 Button {
                     connectRemote()
                 } label: {
@@ -199,6 +237,7 @@ struct BrowserView: View {
         }
         .navigationTitle("AudioStreamer")
         .onAppear {
+            invitationCodeState.loadIfNeeded()
             remoteTokenState.loadIfNeeded()
         }
         .toolbar {
@@ -220,7 +259,7 @@ struct BrowserView: View {
     }
 
     private var trimmedInvitationCode: String {
-        invitationCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        invitationCodeState.token.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var parsedPort: UInt16? {
@@ -261,6 +300,7 @@ struct BrowserView: View {
         let debugEndpoint: String? = nil
         #endif
 
+        invitationCodeState.persistNow()
         if worldwideViewModel.connect(
             invitationCode: trimmedInvitationCode,
             debugEndpointOverride: debugEndpoint,
@@ -268,12 +308,16 @@ struct BrowserView: View {
                 if viewModel.selectedServer != nil {
                     viewModel.disconnect()
                 }
+            },
+            onInvitationAccepted: {
+                // Retain the one-time code through relaunches, updates, and asynchronous
+                // connection failures. Erase it only after rendezvous accepts this attempt.
+                invitationCodeState.clearSavedCode()
+                showsInvitationCode = false
+                invitationCodeIsFocused = false
             }
         ) {
-            // A one-time capability should not remain in visible or persisted UI state.
-            invitationCode = ""
-            showsInvitationCode = false
-            invitationCodeIsFocused = false
+            // Connection started. Destructive cleanup is deferred to `onInvitationAccepted`.
         }
     }
 

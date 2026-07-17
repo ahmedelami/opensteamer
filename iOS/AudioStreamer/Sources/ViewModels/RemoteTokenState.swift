@@ -6,6 +6,11 @@ final class RemoteTokenState: ObservableObject {
     @Published var token = "" {
         didSet {
             guard !isApplyingLoadedValue else { return }
+            // Empty text is not proof of intentional deletion. Updates, SwiftUI field
+            // replacement, and protected-data transitions may briefly publish it.
+            guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return
+            }
             hasUnpersistedUserEdit = true
             persistUserEditIfSafe()
         }
@@ -15,12 +20,20 @@ final class RemoteTokenState: ObservableObject {
     @Published private(set) var isStored = false
 
     private let store: any RemoteTokenStoring
+    private let codeDisplayName: String
     private var loadState = LoadState.notLoaded
     private var isApplyingLoadedValue = false
     private var hasUnpersistedUserEdit = false
 
-    init(store: any RemoteTokenStoring = KeychainStore()) {
+    init(
+        store: any RemoteTokenStoring = KeychainStore(),
+        codeDisplayName: String = "activation code"
+    ) {
         self.store = store
+        self.codeDisplayName = codeDisplayName
+        // Hydrate before SwiftUI constructs its text field. This removes the launch/update
+        // window in which an initially empty binding could win over the stored value.
+        loadIfNeeded()
     }
 
     func loadIfNeeded() {
@@ -39,7 +52,7 @@ final class RemoteTokenState: ObservableObject {
             loadState = .failed
             // A protected-data or Keychain failure is not evidence that the user cleared the
             // credential. Leave the stored item untouched and surface a recoverable error.
-            storageError = "The saved activation code could not be loaded securely."
+            storageError = "The saved \(codeDisplayName) could not be loaded securely."
         }
     }
 
@@ -47,13 +60,27 @@ final class RemoteTokenState: ObservableObject {
         persistUserEditIfSafe()
     }
 
+    func clearSavedCode() {
+        do {
+            try store.deleteRemoteToken()
+            isApplyingLoadedValue = true
+            token = ""
+            isApplyingLoadedValue = false
+            loadState = .loaded
+            hasUnpersistedUserEdit = false
+            isStored = false
+            storageError = nil
+        } catch {
+            isApplyingLoadedValue = false
+            storageError = "The saved \(codeDisplayName) could not be cleared securely."
+        }
+    }
+
     private func persistUserEditIfSafe() {
         guard hasUnpersistedUserEdit else { return }
 
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        // After a failed read, an empty field is not proof that the user intentionally removed
-        // the existing Keychain item. Require a successful load or a non-empty replacement.
-        guard loadState == .loaded || !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return }
 
         do {
             try store.saveRemoteToken(token)
@@ -63,7 +90,7 @@ final class RemoteTokenState: ObservableObject {
             storageError = nil
         } catch {
             isStored = false
-            storageError = "The activation code could not be saved securely."
+            storageError = "The \(codeDisplayName) could not be saved securely."
         }
     }
 }

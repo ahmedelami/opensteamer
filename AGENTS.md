@@ -19,7 +19,11 @@ manual IP addresses, router configuration, or public TCP ports.
   disabled by default. Coexistence requires an explicit trusted-LAN opt-in.
 - Treat the human-entered code as a short-lived, one-use pairing bootstrap. It
   must not become a reusable bearer token. Bind successful pairing to persistent
-  device identities in Keychain and support per-device revocation/reset.
+  device identities in Keychain and support per-device revocation/reset. The iOS
+  app may retain the currently entered, still-unconsumed invitation only in
+  this-device-only Keychain storage so an in-place update cannot erase it; delete
+  that copy immediately after the connection accepts it or the user explicitly
+  clears it.
 - A code authenticates and locates an invitation; it cannot traverse NAT by
   itself. Production operation therefore depends on reachable rendezvous,
   STUN, and TURN services.
@@ -29,10 +33,14 @@ manual IP addresses, router configuration, or public TCP ports.
   channel, role, and separate 32-byte admission proof only in bounded
   `X-AudioStreamer-*` upgrade headers; reject redirects and query-based joins.
 - Check admission before viewer occupancy, invitation consumption, or TURN
-  issuance. Do not log or persist plaintext invitations, signaling payloads,
-  ICE candidates, or TURN credentials outside their bounded session state.
+  issuance. Do not log plaintext invitations, signaling payloads, ICE candidates,
+  or TURN credentials. Apart from the bounded iOS Keychain exception above, do not
+  persist them outside their bounded session state.
 - Preserve existing features while adding the remote path. Screen viewing must
   remain independently showable/hideable without disconnecting audio.
+- Debug/XCTest iOS builds must use a bundle identifier distinct from the production
+  TestFlight app so physical validation cannot replace the user's release container
+  or masquerade as a TestFlight-to-TestFlight update.
 - Worldwide Mac system audio is an independent, send-only Opus track on the same
   peer connection. With the pinned WebRTC build it is truthfully 48 kHz mono:
   enter manual ADM rendering before track creation, disable microphone/voice

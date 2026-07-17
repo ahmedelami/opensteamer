@@ -4,6 +4,7 @@ import Security
 protocol RemoteTokenStoring {
     func loadRemoteToken() throws -> String?
     func saveRemoteToken(_ token: String) throws
+    func deleteRemoteToken() throws
 }
 
 struct KeychainStore: RemoteTokenStoring {
@@ -17,6 +18,14 @@ struct KeychainStore: RemoteTokenStoring {
     static let remoteTokenItem = Item(
         service: "org.example.AudioStreamer",
         account: "remote-token"
+    )
+
+    // The worldwide invitation remains expiring and consume-once. Persisting the
+    // currently entered value in this-device-only Keychain storage only prevents an
+    // in-place update or process restart from erasing it before use.
+    static let worldwideInvitationCodeItem = Item(
+        service: "org.example.AudioStreamer",
+        account: "worldwide-invitation-code"
     )
 
     private let item: Item
@@ -48,10 +57,9 @@ struct KeychainStore: RemoteTokenStoring {
 
     func saveRemoteToken(_ token: String) throws {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            try deleteRemoteToken()
-            return
-        }
+        // An empty SwiftUI binding can be transient during view/app replacement. Never
+        // interpret it as credential deletion; callers must use the explicit delete API.
+        guard !trimmed.isEmpty else { return }
 
         let data = Data(trimmed.utf8)
         let updateAttributes = [kSecValueData as String: data]
@@ -75,7 +83,7 @@ struct KeychainStore: RemoteTokenStoring {
         }
     }
 
-    private func deleteRemoteToken() throws {
+    func deleteRemoteToken() throws {
         let status = SecItemDelete(baseQuery as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainStoreError.operationFailed(status)

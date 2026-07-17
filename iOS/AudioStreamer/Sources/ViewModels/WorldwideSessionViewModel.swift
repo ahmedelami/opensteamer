@@ -32,6 +32,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var signaling: RendezvousSignalingClient?
     private var peer: WebRTCPeer?
     private var remoteAudioTrack: WebRTCRemoteAudioTrack?
+    private var invitationAcceptanceAction = InvitationAcceptanceAction()
     private let audioLifecycle: WorldwideAudioLifecycleController
     private var recoveryCoordinator: ICERecoveryCoordinator?
     private var nextICERestartRequestID: UInt64 = 1
@@ -107,7 +108,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     func connect(
         invitationCode input: String,
         debugEndpointOverride: String? = nil,
-        beforeAudioActivation: @MainActor () -> Void = {}
+        beforeAudioActivation: @MainActor () -> Void = {},
+        onInvitationAccepted: @escaping @MainActor () -> Void = {}
     ) -> Bool {
         guard !isConnecting, !hasActiveSession else { return false }
 
@@ -155,6 +157,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         restartAnswerAwaitingSendEpoch = nil
         pendingRecoveryProbe = nil
         let generation = sessionGeneration
+        invitationAcceptanceAction.arm(
+            generation: generation,
+            action: onInvitationAccepted
+        )
 
         sessionTask = Task { [weak self] in
             await self?.runSession(client: client, generation: generation)
@@ -634,6 +640,9 @@ final class WorldwideSessionViewModel: ObservableObject {
         case .ready(_, let expiration, let iceServers):
             invitationExpiresAt = expiration
             guard peer == nil else { return }
+            // `connect()` only starts asynchronous signaling. The rendezvous Ready event is
+            // the first definitive proof that this exact invitation was accepted/consumed.
+            invitationAcceptanceAction.accept(generation: generation)
 
             let newPeer = try WebRTCPeer(
                 configuration: WebRTCTransportConfiguration(
@@ -908,6 +917,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     private func tearDown(reason: RemoteSessionEndReason) {
+        invitationAcceptanceAction.cancel(generation: sessionGeneration)
         audioLifecycle.stop()
         remoteAudioTrack = nil
         acceptsActiveScreenAcknowledgement = false
