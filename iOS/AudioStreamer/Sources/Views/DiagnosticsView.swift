@@ -1,4 +1,5 @@
 import SwiftUI
+import WebRTCTransport
 
 struct DiagnosticsView: View {
     @EnvironmentObject private var viewModel: StreamSessionViewModel
@@ -49,6 +50,42 @@ struct DiagnosticsView: View {
                     title: "Video",
                     value: worldwideVideoDescription
                 )
+            }
+
+            Section("Worldwide Audio RTP") {
+                if let audio = worldwideViewModel.statistics?.inboundAudio {
+                    MetricRow(title: "Packets", value: audio.packets.metricDescription)
+                    MetricRow(title: "Lost", value: audio.packetsLost.metricDescription)
+                    MetricRow(
+                        title: "Discarded",
+                        value: audio.packetsDiscarded.metricDescription
+                    )
+                    MetricRow(title: "Network Jitter", value: milliseconds(audio.jitter))
+                    MetricRow(
+                        title: "Jitter Buffer",
+                        value: averageJitterBufferDelay(audio)
+                    )
+                    MetricRow(
+                        title: "Concealed Samples",
+                        value: audio.concealedSamples.metricDescription
+                    )
+                    MetricRow(
+                        title: "Concealment Events",
+                        value: audio.concealmentEvents.metricDescription
+                    )
+                    MetricRow(
+                        title: "Silent Concealment",
+                        value: audio.silentConcealedSamples.metricDescription
+                    )
+                    MetricRow(
+                        title: "Inserted / Removed",
+                        value: "\(audio.insertedSamplesForDeceleration.metricDescription) / "
+                            + audio.removedSamplesForAcceleration.metricDescription
+                    )
+                } else {
+                    Text("No inbound audio statistics")
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if let lastDiagnostic = worldwideViewModel.lastDiagnostic {
@@ -105,6 +142,28 @@ struct DiagnosticsView: View {
         }
         guard let framesPerSecond = video.framesPerSecond else { return size }
         return "\(size) · \(framesPerSecond.formatted(.number.precision(.fractionLength(1)))) fps"
+    }
+
+    private func milliseconds(_ seconds: Double?) -> String {
+        guard let seconds else { return "Unknown" }
+        return (seconds * 1_000).formatted(
+            .number.precision(.fractionLength(1))
+        ) + " ms"
+    }
+
+    private func averageJitterBufferDelay(_ audio: WebRTCAudioStatistics) -> String {
+        guard let totalDelay = audio.jitterBufferDelay,
+              let emittedCount = audio.jitterBufferEmittedCount,
+              emittedCount > 0 else {
+            return "Unknown"
+        }
+        return milliseconds(totalDelay / Double(emittedCount))
+    }
+}
+
+private extension Optional where Wrapped: BinaryInteger {
+    var metricDescription: String {
+        map { String($0) } ?? "Unknown"
     }
 }
 

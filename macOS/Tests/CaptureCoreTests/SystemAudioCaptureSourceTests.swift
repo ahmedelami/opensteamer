@@ -32,4 +32,43 @@ final class SystemAudioCaptureSourceTests: XCTestCase {
             SystemAudioCaptureError.displayNotFound(9).localizedDescription.contains("9")
         )
     }
+
+    func testFeedbackExclusionSelectsOnlyExactIPhoneMirroringBundle() {
+        let bundleIdentifiers: [String?] = [
+            "com.apple.ScreenContinuity",
+            "com.spotify.client",
+            "COM.APPLE.SCREENCONTINUITY",
+            "com.apple.ScreenContinuity.helper",
+            nil,
+            "com.apple.ScreenContinuity"
+        ]
+
+        let excluded = SystemAudioApplicationExclusionPolicy.excludedApplications(
+            from: bundleIdentifiers,
+            bundleIdentifier: { $0 }
+        )
+
+        XCTAssertEqual(excluded, [
+            "com.apple.ScreenContinuity",
+            "com.apple.ScreenContinuity"
+        ])
+    }
+
+    func testOnlyIPhoneMirroringLifecycleEventsRefreshTheAudioFilter() {
+        XCTAssertTrue(
+            SystemAudioApplicationExclusionPolicy.requiresFilterRefresh(
+                bundleIdentifier: "com.apple.ScreenContinuity"
+            )
+        )
+        XCTAssertFalse(
+            SystemAudioApplicationExclusionPolicy.requiresFilterRefresh(
+                bundleIdentifier: "com.apple.ScreenContinuity.helper"
+            )
+        )
+        XCTAssertFalse(
+            SystemAudioApplicationExclusionPolicy.requiresFilterRefresh(
+                bundleIdentifier: nil
+            )
+        )
+    }
 }

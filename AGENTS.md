@@ -55,7 +55,14 @@ manual IP addresses, router configuration, or public TCP ports.
   processing, bound injection latency, and synchronously mute/flush both sender
   and receiver at every transport uncertainty boundary. A fresh current-generation
   peer/ICE/control proof is required before either side re-enables audio. Show/Hide
-  must affect video and remote input only.
+  must affect video and remote input only. The manual ADM consumes player buffers at
+  `.dataRendered`, not `.dataPlayedBack`; the latter has no hardware sink and never
+  completes. Downmix stereo as `(L + R) / 2`, prebuffer 60 ms, cap queued PCM at
+  120 ms, and drop newest on overflow. Serialize rendered completions and capture
+  admission so capture-first can extend an exact boundary while completion-first
+  rebuffers after a proven drain. Keep source-PTS, queue, and RTP concealment
+  diagnostics observable, and exclude iPhone Mirroring audio dynamically so a
+  process relaunch cannot create a capture/playback feedback loop.
 - The iPhone must use genuine playback plus the Background Audio capability so a
   user-started stream can continue across Home/lock. Do not synthesize silent audio
   as a keepalive. Backgrounding hides video and revokes input but retains healthy

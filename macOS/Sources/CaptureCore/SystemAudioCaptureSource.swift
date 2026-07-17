@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import CoreMedia
 import Foundation
@@ -35,6 +36,9 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
     private let stateLock = NSLock()
     private var stream: SCStream?
     private var output: SystemAudioStreamOutput?
+    private var activeDisplayID: UInt32?
+    private var feedbackRefreshGeneration: UInt64 = 0
+    private var workspaceNotificationTokens: [NSObjectProtocol] = []
     private var isStarting = false
     private var cancellationRequested = false
     private var isStopping = false
@@ -52,6 +56,14 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
         self.displayID = displayID
         self.consumer = consumer
         self.logger = logger
+        installWorkspaceObservers()
+    }
+
+    deinit {
+        let notificationCenter = NSWorkspace.shared.notificationCenter
+        for token in workspaceNotificationTokens {
+            notificationCenter.removeObserver(token)
+        }
     }
 
     public func start() async throws -> SystemAudioCaptureFormat {
@@ -68,7 +80,7 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(
                 false,
-                onScreenWindowsOnly: true
+                onScreenWindowsOnly: false
             )
             try ensureStartWasNotCancelled()
             let display = try selectDisplay(from: content.displays)
@@ -76,7 +88,26 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
 
             let configuration = SystemAudioCaptureConfiguration.make()
 
-            let filter = SCContentFilter(display: display, excludingWindows: [])
+            let excludedApplications = SystemAudioApplicationExclusionPolicy.excludedApplications(
+                from: content.applications,
+                bundleIdentifier: \.bundleIdentifier
+            )
+            if excludedApplications.isEmpty {
+                logger.info("System audio feedback exclusion found no iPhone Mirroring process")
+            } else {
+                let processIDs = excludedApplications.map { String($0.processID) }.joined(
+                    separator: ","
+                )
+                logger.info(
+                    "System audio feedback exclusion active for iPhone Mirroring "
+                        + "processes=\(processIDs)"
+                )
+            }
+            let filter = SCContentFilter(
+                display: display,
+                excludingApplications: excludedApplications,
+                exceptingWindows: []
+            )
             let output = SystemAudioStreamOutput(consumer: consumer)
             let stream = SCStream(
                 filter: filter,
@@ -89,6 +120,7 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
                 guard !cancellationRequested else { return false }
                 self.output = output
                 self.stream = stream
+                activeDisplayID = format.displayID
                 return true
             }
             guard installed else {
@@ -108,6 +140,7 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
                     if self.stream === stream {
                         self.stream = nil
                         self.output = nil
+                        activeDisplayID = nil
                         return true
                     }
                     return false
@@ -124,6 +157,17 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
             guard !cancelledAfterStart else {
                 // A concurrent stop owns an installed stream. An unexpected delegate stop has
                 // already detached it. Never race either path with a second native stop here.
+                throw SystemAudioCaptureError.startCancelled
+            }
+            await refreshFeedbackExclusion(
+                for: stream,
+                displayID: format.displayID,
+                generation: stateLock.withLock { feedbackRefreshGeneration }
+            )
+            let cancelledAfterRefresh = stateLock.withLock {
+                cancellationRequested || self.stream !== stream
+            }
+            guard !cancelledAfterRefresh else {
                 throw SystemAudioCaptureError.startCancelled
             }
             return format
@@ -150,6 +194,8 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
             let output = self.output
             self.stream = nil
             self.output = nil
+            activeDisplayID = nil
+            feedbackRefreshGeneration &+= 1
             return (stream, output)
         }
         guard let (stream, output) = stopped else {
@@ -225,6 +271,8 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
             guard !isStopping, stream === stoppedStream else { return false }
             stream = nil
             output = nil
+            activeDisplayID = nil
+            feedbackRefreshGeneration &+= 1
             return true
         }
         guard shouldReport else { return }
@@ -247,6 +295,125 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
         }
 
         return displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? displays[0]
+    }
+
+    private func installWorkspaceObservers() {
+        let notificationCenter = NSWorkspace.shared.notificationCenter
+        workspaceNotificationTokens = [
+            NSWorkspace.didLaunchApplicationNotification,
+            NSWorkspace.didTerminateApplicationNotification
+        ].map { name in
+            notificationCenter.addObserver(
+                forName: name,
+                object: nil,
+                queue: nil
+            ) { [weak self] notification in
+                guard let application = notification.userInfo?[
+                    NSWorkspace.applicationUserInfoKey
+                ] as? NSRunningApplication else {
+                    return
+                }
+                self?.applicationLifecycleChanged(
+                    bundleIdentifier: application.bundleIdentifier
+                )
+            }
+        }
+    }
+
+    private func applicationLifecycleChanged(bundleIdentifier: String?) {
+        guard SystemAudioApplicationExclusionPolicy.requiresFilterRefresh(
+            bundleIdentifier: bundleIdentifier
+        ) else {
+            return
+        }
+        let refresh = stateLock.withLock { () -> (SCStream, UInt32, UInt64)? in
+            guard let stream, let activeDisplayID, !isStopping else { return nil }
+            feedbackRefreshGeneration &+= 1
+            return (stream, activeDisplayID, feedbackRefreshGeneration)
+        }
+        guard let (stream, displayID, generation) = refresh else { return }
+        Task { [weak self] in
+            await self?.refreshFeedbackExclusion(
+                for: stream,
+                displayID: displayID,
+                generation: generation
+            )
+        }
+    }
+
+    private func refreshFeedbackExclusion(
+        for expectedStream: SCStream,
+        displayID: UInt32,
+        generation: UInt64
+    ) async {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(
+                false,
+                onScreenWindowsOnly: false
+            )
+            guard let display = content.displays.first(where: {
+                $0.displayID == displayID
+            }) else {
+                throw SystemAudioCaptureError.displayNotFound(displayID)
+            }
+            let excludedApplications = SystemAudioApplicationExclusionPolicy.excludedApplications(
+                from: content.applications,
+                bundleIdentifier: \.bundleIdentifier
+            )
+            let filter = SCContentFilter(
+                display: display,
+                excludingApplications: excludedApplications,
+                exceptingWindows: []
+            )
+            let isCurrent = stateLock.withLock {
+                stream === expectedStream
+                    && activeDisplayID == displayID
+                    && feedbackRefreshGeneration == generation
+                    && !isStopping
+            }
+            guard isCurrent else { return }
+
+            try await expectedStream.updateContentFilter(filter)
+
+            let processIDs = excludedApplications.map { String($0.processID) }
+                .joined(separator: ",")
+            logger.info(
+                processIDs.isEmpty
+                    ? "System audio feedback exclusion refreshed with no iPhone Mirroring process"
+                    : "System audio feedback exclusion refreshed for iPhone Mirroring "
+                        + "processes=\(processIDs)"
+            )
+        } catch {
+            let isCurrent = stateLock.withLock {
+                stream === expectedStream
+                    && activeDisplayID == displayID
+                    && feedbackRefreshGeneration == generation
+                    && !isStopping
+            }
+            if isCurrent {
+                logger.error(
+                    "System audio feedback exclusion refresh failed: "
+                        + error.localizedDescription
+                )
+            }
+        }
+    }
+}
+
+enum SystemAudioApplicationExclusionPolicy {
+    static let iPhoneMirroringBundleIdentifier = "com.apple.ScreenContinuity"
+
+    static func excludedApplications<Application>(
+        from applications: [Application],
+        bundleIdentifier: (Application) -> String?
+    ) -> [Application] {
+        applications.filter {
+            bundleIdentifier($0) == iPhoneMirroringBundleIdentifier
+        }
+    }
+
+    static func requiresFilterRefresh(bundleIdentifier: String?) -> Bool {
+        bundleIdentifier == iPhoneMirroringBundleIdentifier
     }
 }
 

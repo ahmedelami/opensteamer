@@ -309,6 +309,63 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         )
         XCTAssertGreaterThan(audioProbe.maximumRMS, 0.01, audioFailureContext)
 
+        // Correlated stereo is the common system-audio case. The mono ADM must receive the
+        // arithmetic mean, not AVAudioMixerNode's clipping equal-power sum.
+        let qualityProbe = DecodedAudioProbe(
+            requiredNonSilentFrames: requiredSustainedAudioFrames
+        )
+        let qualityRenderer = WebRTCAudioPCMRenderer { buffer in
+            qualityProbe.observe(buffer)
+        }
+        remoteAudioTrack.addRendererForTesting(qualityRenderer)
+        defer { remoteAudioTrack.removeRendererForTesting(qualityRenderer) }
+        audioCapturer.reset()
+        let correlatedStereoTone = try makeStereoToneSampleBuffer(
+            frameCount: 5_760,
+            leftAmplitude: 0.8,
+            rightAmplitude: 0.8,
+            leftFrequency: 1_000,
+            rightFrequency: 1_000
+        )
+        audioCapturer.capture(sampleBuffer: correlatedStereoTone)
+        await fulfillment(of: [qualityProbe.receivedAudio], timeout: 5)
+        let qualityFailureContext = "\(audioCapturer.diagnosticsForTesting()); "
+            + qualityProbe.diagnosticSummary
+        if ProcessInfo.processInfo.environment["AUDIOSTREAMER_AUDIO_TEST_DIAGNOSTICS"] == "1" {
+            print("AUDIOSTREAMER_AUDIO_QUALITY \(qualityFailureContext)")
+        }
+        XCTAssertGreaterThan(qualityProbe.maximumRMS, 0.50, qualityFailureContext)
+        XCTAssertLessThan(qualityProbe.maximumRMS, 0.65, qualityFailureContext)
+        XCTAssertGreaterThan(qualityProbe.maximumPeak, 0.70, qualityFailureContext)
+        XCTAssertLessThan(qualityProbe.maximumPeak, 0.95, qualityFailureContext)
+
+        // The ADM owns a manually rendered AVAudioEngine. A `.dataPlayedBack` callback never
+        // completes in that graph and leaves this queue permanently full; `.dataRendered` must
+        // transition the finite test input back to buffering after the decoder consumes it.
+        var drainedAudioDiagnostics = audioCapturer.diagnosticsForTesting()
+        for _ in 0..<100
+        where drainedAudioDiagnostics.runtime.queuedFrames != 0
+            || drainedAudioDiagnostics.runtime.phase != "buffering" {
+            try await Task.sleep(for: .milliseconds(10))
+            drainedAudioDiagnostics = audioCapturer.diagnosticsForTesting()
+        }
+        XCTAssertEqual(
+            drainedAudioDiagnostics.runtime.phase,
+            "buffering",
+            "The manual ADM must report the finite PCM input as rendered; "
+                + "\(drainedAudioDiagnostics)"
+        )
+        XCTAssertEqual(
+            drainedAudioDiagnostics.runtime.queuedFrames,
+            0,
+            "Rendered PCM must not remain logically queued; \(drainedAudioDiagnostics)"
+        )
+        XCTAssertGreaterThanOrEqual(
+            drainedAudioDiagnostics.runtime.underruns,
+            1,
+            "The finite-input drain must be objectively observable; \(drainedAudioDiagnostics)"
+        )
+
         let showID = try await viewer.setScreenVisible(true)
         await fulfillment(of: [expectations.showRequestReceived], timeout: 3)
         let showSnapshot = await recorder.snapshot()
@@ -1011,6 +1068,7 @@ private final class DecodedAudioProbe: @unchecked Sendable {
     private var observedFormats: Set<String> = []
     private var accumulatedNonSilentFrames = 0
     private var maximumObservedRMS = 0.0
+    private var maximumObservedPeak = 0.0
 
     init(requiredNonSilentFrames: Int = 1) {
         precondition(requiredNonSilentFrames > 0)
@@ -1041,12 +1099,19 @@ private final class DecodedAudioProbe: @unchecked Sendable {
         return maximumObservedRMS
     }
 
+    var maximumPeak: Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return maximumObservedPeak
+    }
+
     var diagnosticSummary: String {
         lock.lock()
         defer { lock.unlock() }
         return "callbacks=\(callbackCount) formats=\(observedFormats.sorted()) "
             + "nonSilentFrames=\(accumulatedNonSilentFrames) "
             + "maxRMS=\(maximumObservedRMS) "
+            + "maxPeak=\(maximumObservedPeak) "
             + "measurement=\(latestMeasurement)"
     }
 
@@ -1064,6 +1129,7 @@ private final class DecodedAudioProbe: @unchecked Sendable {
                    measurement.rms > 0.01 {
                     accumulatedNonSilentFrames += measurement.frameCount
                     maximumObservedRMS = max(maximumObservedRMS, measurement.rms)
+                    maximumObservedPeak = max(maximumObservedPeak, measurement.peak)
                     if !didReceiveAudio,
                        accumulatedNonSilentFrames >= requiredNonSilentFrames {
                         didReceiveAudio = true

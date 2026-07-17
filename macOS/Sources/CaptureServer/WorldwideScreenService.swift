@@ -480,6 +480,35 @@ actor WorldwideScreenService {
             if let rtt = snapshot.currentRoundTripTime {
                 logger.debug("Worldwide WebRTC RTT: \(Int((rtt * 1_000).rounded())) ms")
             }
+            if let outbound = snapshot.outboundAudio {
+                logger.debug(
+                    "Worldwide audio RTP sentPackets="
+                        + (outbound.packets.map { String($0) } ?? "unknown")
+                        + " bytes=" + (outbound.bytes.map { String($0) } ?? "unknown")
+                )
+            }
+            if let remoteInbound = snapshot.remoteInboundAudio {
+                logger.debug(
+                    "Worldwide audio remote loss="
+                        + (remoteInbound.packetsLost.map { String($0) } ?? "unknown")
+                        + " jitterMs="
+                        + (remoteInbound.jitter.map {
+                            String(format: "%.1f", $0 * 1_000)
+                        } ?? "unknown")
+                )
+            }
+            if let diagnostics = peer?.externalAudioCapturer?.runtimeDiagnostics() {
+                logger.debug(
+                    "Worldwide audio queue phase=\(diagnostics.phase) "
+                        + "frames=\(diagnostics.queuedFrames) "
+                        + "high=\(diagnostics.queueHighWaterFrames) "
+                        + "underruns=\(diagnostics.underruns) "
+                        + "rebuffers=\(diagnostics.rebuffers) "
+                        + "overflowDrops=\(diagnostics.overflowDrops) "
+                        + "sourceGaps=\(diagnostics.sourceGaps) "
+                        + "sourceOverlaps=\(diagnostics.sourceOverlaps)"
+                )
+            }
 
         case .iceCandidateError(let error):
             logger.error(

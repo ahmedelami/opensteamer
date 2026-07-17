@@ -986,7 +986,11 @@ public actor WebRTCPeer {
             availableOutgoingBitrate: nativeSnapshot.availableOutgoingBitrate,
             jitter: nativeSnapshot.jitter,
             outboundVideo: nativeSnapshot.outboundVideo,
-            inboundVideo: nativeSnapshot.inboundVideo
+            inboundVideo: nativeSnapshot.inboundVideo,
+            audioSource: nativeSnapshot.audioSource,
+            outboundAudio: nativeSnapshot.outboundAudio,
+            inboundAudio: nativeSnapshot.inboundAudio,
+            remoteInboundAudio: nativeSnapshot.remoteInboundAudio
         )
     }
 

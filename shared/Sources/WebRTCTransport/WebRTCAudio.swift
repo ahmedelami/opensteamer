@@ -55,17 +55,18 @@ final class WebRTCAudioPCMRenderer: NSObject, LKRTCAudioRenderer, @unchecked Sen
 
 /// Feeds ScreenCaptureKit PCM into WebRTC's AudioEngine input graph.
 ///
-/// The player queue is deliberately bounded. If capture gets ahead of the audio engine, queued
-/// buffers are discarded before the newest buffer is scheduled so latency cannot grow without
-/// bound after a stall or route transition.
+/// The player queue is deliberately bounded. If capture gets ahead of the audio engine, the
+/// newest incoming buffer is dropped so latency cannot grow without bound after a stall or route
+/// transition without destroying PCM that is already continuous.
 public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
     #if os(macOS)
-    private static let maximumQueuedDuration: TimeInterval = 0.120
     private static let capturedChannelCount: AVAudioChannelCount = 2
 
     private let audioDeviceModule: LKRTCAudioDeviceModule
     private let queue = DispatchQueue(label: "AudioStreamer.WebRTC.ExternalAudio")
     private let queueKey = DispatchSpecificKey<Void>()
+    private let captureEpochLock = NSLock()
+    private var captureEpoch: UInt64 = 0
     private var playerNode = AVAudioPlayerNode()
     private var playerMixerNode = AVAudioMixerNode()
 
@@ -76,8 +77,8 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
     private var converter: AVAudioConverter?
     private var converterSourceFormat: AVAudioFormat?
     private var isEnabled = false
-    private var scheduledFrames: AVAudioFramePosition = 0
-    private var schedulingGeneration: UInt64 = 0
+    private var playoutState = AudioPlayoutQueueState()
+    private var sourceTimelineState = AudioCaptureTimelineState()
     #if DEBUG
     private var receivedBufferCount = 0
     private var scheduledBufferCount = 0
@@ -254,19 +255,43 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
               CMSampleBufferGetNumSamples(sampleBuffer) > 0 else {
             return
         }
+        let epoch = captureEpochLock.withLock { captureEpoch }
+        let sourcePTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let sourceFrameCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        let sourceSampleRate = CMSampleBufferGetFormatDescription(sampleBuffer).map {
+            AVAudioFormat(cmAudioFormatDescription: $0).sampleRate
+        }
         let importedPCM = Self.makePCMBuffer(from: sampleBuffer)
         guard let pcmBuffer = importedPCM.buffer else {
-            #if DEBUG
             queue.async { [weak self] in
-                self?.sampleBufferImportDropCount += 1
-                self?.lastSampleBufferImportStatus = importedPCM.status
+                guard let self, captureEpochLock.withLock({ captureEpoch == epoch }) else {
+                    return
+                }
+                if let sourceSampleRate {
+                    recordSourceTimeline(
+                        presentationTimeStamp: sourcePTS,
+                        frameCount: sourceFrameCount,
+                        sampleRate: sourceSampleRate
+                    )
+                }
+                #if DEBUG
+                sampleBufferImportDropCount += 1
+                lastSampleBufferImportStatus = importedPCM.status
+                #endif
             }
-            #endif
             return
         }
 
         queue.async { [weak self] in
-            self?.schedule(pcmBuffer)
+            guard let self, captureEpochLock.withLock({ captureEpoch == epoch }) else {
+                return
+            }
+            recordSourceTimeline(
+                presentationTimeStamp: sourcePTS,
+                frameCount: sourceFrameCount,
+                sampleRate: pcmBuffer.format.sampleRate
+            )
+            schedule(pcmBuffer)
         }
     }
 
@@ -280,12 +305,19 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
     func setEnabled(_ enabled: Bool) {
         syncOnQueue {
             guard isEnabled != enabled else {
-                if !enabled { resetScheduledAudio() }
+                if !enabled { resetPlayerAndConverter() }
                 return
             }
+            invalidatePendingCaptures()
             isEnabled = enabled
-            if !enabled {
-                resetScheduledAudio()
+            playoutState.setEnabled(
+                enabled,
+                renderedFrame: enabled ? nil : currentRenderedFrame()
+            )
+            if enabled {
+                sourceTimelineState.resetBaseline()
+            } else {
+                resetPlayerAndConverter()
             }
         }
     }
@@ -307,10 +339,7 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
             return
         }
         let maximumFrameCount = AVAudioFrameCount(
-            min(
-                Double(UInt32.max),
-                (targetFormat.sampleRate * Self.maximumQueuedDuration).rounded(.up)
-            )
+            AudioPlayoutQueueState.maximumQueuedFrames
         )
         guard let buffers = convertedBuffers(
             sourceBuffer,
@@ -323,38 +352,56 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
             return
         }
 
-        let maximumFrames = AVAudioFramePosition(maximumFrameCount)
-        let incomingFrames = buffers.reduce(AVAudioFramePosition(0)) {
-            $0 + AVAudioFramePosition($1.frameLength)
+        let incomingFrames = buffers.reduce(Int64(0)) {
+            $0 + Int64($1.frameLength)
         }
-        guard incomingFrames > 0, incomingFrames <= maximumFrames else { return }
+        guard incomingFrames > 0,
+              incomingFrames <= AudioPlayoutQueueState.maximumQueuedFrames else {
+            return
+        }
 
-        if scheduledFrames + incomingFrames > maximumFrames {
-            resetScheduledAudio()
+        let decision = playoutState.enqueue(
+            frameCount: incomingFrames,
+            renderedFrame: currentRenderedFrame()
+        )
+        if decision.shouldResetPlayer {
+            resetPlayerForRebuffering()
         }
-        guard isEnabled else { return }
-        scheduledFrames += incomingFrames
+        guard decision.accepted,
+              let scheduleStartFrame = decision.scheduleStartFrame else {
+            return
+        }
         #if DEBUG
         scheduledBufferCount += 1
         #endif
 
-        let generation = schedulingGeneration
+        let generation = playoutState.generation
+        var bufferEndFrame = scheduleStartFrame
         for buffer in buffers {
-            let bufferFrames = AVAudioFramePosition(buffer.frameLength)
+            bufferEndFrame += Int64(buffer.frameLength)
+            let scheduledBufferEndFrame = bufferEndFrame
             playerNode.scheduleBuffer(
                 buffer,
                 at: nil,
                 options: [],
-                completionCallbackType: .dataPlayedBack
+                // The WebRTC ADM pulls this graph in AVAudioEngine manual-rendering mode.
+                // There is no hardware playback sink, so `.dataPlayedBack` never fires;
+                // `.dataRendered` marks the point at which the ADM actually consumed PCM.
+                completionCallbackType: .dataRendered
             ) { [weak self] _ in
                 self?.queue.async { [weak self] in
-                    guard let self, generation == schedulingGeneration else { return }
-                    scheduledFrames = max(0, scheduledFrames - bufferFrames)
+                    guard let self else { return }
+                    if playoutState.completeBuffer(
+                        endingAt: scheduledBufferEndFrame,
+                        generation: generation
+                    ) == .rebuffer {
+                        resetPlayerForRebuffering()
+                    }
                 }
             }
         }
 
-        if !playerNode.isPlaying {
+        if decision.shouldStartPlayback {
             playerNode.play()
         }
     }
@@ -483,11 +530,13 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
 
             engine.connect(playerNode, to: playerMixerNode, format: playerFormat)
             engine.connect(playerMixerNode, to: destination, format: format)
+            // AVAudioMixerNode uses an equal-power stereo fold-down. Applying another -3 dB
+            // makes the effective matrix (L + R) / 2 and prevents correlated stereo clipping.
+            playerMixerNode.outputVolume = Float(1.0 / sqrt(2.0))
             targetFormat = playerFormat
             converter = nil
             converterSourceFormat = nil
-            scheduledFrames = 0
-            schedulingGeneration &+= 1
+            playoutState.resetForLifecycle()
         }
         // The pinned AudioEngine ADM callback is OSStatus-style: zero means the custom graph was
         // installed successfully (the same contract used by LiveKit's PlayerNodeHook tests).
@@ -513,18 +562,99 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
                 graphNotReadyDropCount: graphNotReadyDropCount,
                 conversionDropCount: conversionDropCount,
                 sampleBufferImportDropCount: sampleBufferImportDropCount,
-                lastSampleBufferImportStatus: lastSampleBufferImportStatus
+                lastSampleBufferImportStatus: lastSampleBufferImportStatus,
+                runtime: runtimeDiagnosticsLocked()
             )
         }
     }
     #endif
 
     private func resetScheduledAudio() {
-        schedulingGeneration &+= 1
-        scheduledFrames = 0
+        invalidatePendingCaptures()
+        playoutState.resetForLifecycle(renderedFrame: currentRenderedFrame())
+        sourceTimelineState.resetBaseline()
+        resetPlayerAndConverter()
+    }
+
+    private func resetPlayerAndConverter() {
         converter?.reset()
         playerNode.stop()
         playerNode.reset()
+    }
+
+    private func resetPlayerForRebuffering() {
+        playerNode.stop()
+        playerNode.reset()
+    }
+
+    private func currentRenderedFrame() -> Int64? {
+        guard playoutState.phase == .playing else {
+            return nil
+        }
+        return Self.renderedSampleTime(from: playerNode.lastRenderTime) { [playerNode] in
+            playerNode.playerTime(forNodeTime: $0)
+        }
+    }
+
+    static func renderedSampleTime(
+        from nodeTime: AVAudioTime?,
+        resolvingPlayerTime: (AVAudioTime) -> AVAudioTime?
+    ) -> Int64? {
+        guard let nodeTime,
+              nodeTime.isSampleTimeValid || nodeTime.isHostTimeValid,
+              let playerTime = resolvingPlayerTime(nodeTime),
+              playerTime.isSampleTimeValid,
+              playerTime.sampleTime >= 0 else {
+            return nil
+        }
+        return playerTime.sampleTime
+    }
+
+    private func invalidatePendingCaptures() {
+        captureEpochLock.withLock { captureEpoch &+= 1 }
+    }
+
+    private func recordSourceTimeline(
+        presentationTimeStamp: CMTime,
+        frameCount: Int,
+        sampleRate: Double
+    ) {
+        sourceTimelineState.observe(
+            presentationTimeStamp: presentationTimeStamp,
+            frameCount: frameCount,
+            sampleRate: sampleRate
+        )
+    }
+
+    public func runtimeDiagnostics() -> MacExternalAudioCapturerRuntimeDiagnostics {
+        syncOnQueue { runtimeDiagnosticsLocked() }
+    }
+
+    private func runtimeDiagnosticsLocked() -> MacExternalAudioCapturerRuntimeDiagnostics {
+        let phase: String
+        switch playoutState.phase {
+        case .disabled:
+            phase = "disabled"
+        case .buffering:
+            phase = "buffering"
+        case .playing:
+            phase = "playing"
+        }
+        return MacExternalAudioCapturerRuntimeDiagnostics(
+            phase: phase,
+            generation: playoutState.generation,
+            queuedFrames: playoutState.queuedFrames,
+            queueHighWaterFrames: playoutState.queueHighWaterFrames,
+            underruns: playoutState.underrunCount,
+            rebuffers: playoutState.rebufferCount,
+            overflowDrops: playoutState.overflowDropCount,
+            overflowDroppedFrames: playoutState.overflowDroppedFrames,
+            lifecycleDiscardedFrames: playoutState.lifecycleDiscardedFrames,
+            staleCompletions: playoutState.staleCompletionCount,
+            sourceGaps: sourceTimelineState.gapCount,
+            sourceOverlaps: sourceTimelineState.overlapCount,
+            maximumSourceDiscontinuityFrames: sourceTimelineState.maximumDiscontinuityFrames
+        )
     }
 
     private var playerIsReady: Bool {
@@ -616,6 +746,24 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
     #endif
 }
 
+#if os(macOS)
+public struct MacExternalAudioCapturerRuntimeDiagnostics: Sendable {
+    public let phase: String
+    public let generation: UInt64
+    public let queuedFrames: Int64
+    public let queueHighWaterFrames: Int64
+    public let underruns: Int
+    public let rebuffers: Int
+    public let overflowDrops: Int
+    public let overflowDroppedFrames: Int64
+    public let lifecycleDiscardedFrames: Int64
+    public let staleCompletions: Int
+    public let sourceGaps: Int
+    public let sourceOverlaps: Int
+    public let maximumSourceDiscontinuityFrames: Int64
+}
+#endif
+
 #if DEBUG && os(macOS)
 struct MacExternalAudioCapturerDiagnostics: CustomStringConvertible, Sendable {
     let isEnabled: Bool
@@ -634,6 +782,7 @@ struct MacExternalAudioCapturerDiagnostics: CustomStringConvertible, Sendable {
     let conversionDropCount: Int
     let sampleBufferImportDropCount: Int
     let lastSampleBufferImportStatus: OSStatus?
+    let runtime: MacExternalAudioCapturerRuntimeDiagnostics
 
     var description: String {
         let sampleRate = targetSampleRate.map { String($0) } ?? "nil"
@@ -649,6 +798,8 @@ struct MacExternalAudioCapturerDiagnostics: CustomStringConvertible, Sendable {
             "configs=\(inputConfigurationCount)",
             "received=\(receivedBufferCount)",
             "scheduled=\(scheduledBufferCount)",
+            "queue(phase=\(runtime.phase),frames=\(runtime.queuedFrames),high=\(runtime.queueHighWaterFrames),underruns=\(runtime.underruns),rebuffers=\(runtime.rebuffers),overflowDrops=\(runtime.overflowDrops))",
+            "source(gaps=\(runtime.sourceGaps),overlaps=\(runtime.sourceOverlaps),maxFrames=\(runtime.maximumSourceDiscontinuityFrames))",
             "drops(disabled=\(disabledDropCount),graph=\(graphNotReadyDropCount),conversion=\(conversionDropCount),import=\(sampleBufferImportDropCount))",
             "importStatus=\(lastSampleBufferImportStatus.map { String($0) } ?? "nil")"
         ].joined(separator: " ")
@@ -704,6 +855,7 @@ extension MacExternalAudioCapturer: LKRTCAudioDeviceModuleDelegate {
         isRecordingEnabled: Bool
     ) -> Int {
         syncOnQueue {
+            guard configuredEngine === engine else { return }
             resetScheduledAudio()
         }
         return 0
@@ -716,6 +868,7 @@ extension MacExternalAudioCapturer: LKRTCAudioDeviceModuleDelegate {
         isRecordingEnabled: Bool
     ) -> Int {
         syncOnQueue {
+            guard configuredEngine === engine else { return }
             resetScheduledAudio()
         }
         return 0

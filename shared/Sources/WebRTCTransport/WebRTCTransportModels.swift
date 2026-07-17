@@ -982,6 +982,79 @@ public struct WebRTCVideoStatistics: Codable, Equatable, Sendable {
     }
 }
 
+public struct WebRTCAudioStatistics: Codable, Equatable, Sendable {
+    public let bytes: UInt64?
+    public let packets: UInt64?
+    public let packetsLost: Int64?
+    public let packetsDiscarded: UInt64?
+    public let jitter: Double?
+    public let jitterBufferDelay: Double?
+    public let jitterBufferEmittedCount: UInt64?
+    public let jitterBufferTargetDelay: Double?
+    public let jitterBufferMinimumDelay: Double?
+    public let totalSamplesReceived: UInt64?
+    public let concealedSamples: UInt64?
+    public let silentConcealedSamples: UInt64?
+    public let concealmentEvents: UInt64?
+    public let insertedSamplesForDeceleration: UInt64?
+    public let removedSamplesForAcceleration: UInt64?
+    public let totalAudioEnergy: Double?
+    public let totalSamplesDuration: Double?
+    public let audioLevel: Double?
+    public let totalPacketSendDelay: Double?
+    public let nackCount: UInt64?
+    public let targetBitrate: Double?
+    public let roundTripTime: Double?
+
+    public init(
+        bytes: UInt64? = nil,
+        packets: UInt64? = nil,
+        packetsLost: Int64? = nil,
+        packetsDiscarded: UInt64? = nil,
+        jitter: Double? = nil,
+        jitterBufferDelay: Double? = nil,
+        jitterBufferEmittedCount: UInt64? = nil,
+        jitterBufferTargetDelay: Double? = nil,
+        jitterBufferMinimumDelay: Double? = nil,
+        totalSamplesReceived: UInt64? = nil,
+        concealedSamples: UInt64? = nil,
+        silentConcealedSamples: UInt64? = nil,
+        concealmentEvents: UInt64? = nil,
+        insertedSamplesForDeceleration: UInt64? = nil,
+        removedSamplesForAcceleration: UInt64? = nil,
+        totalAudioEnergy: Double? = nil,
+        totalSamplesDuration: Double? = nil,
+        audioLevel: Double? = nil,
+        totalPacketSendDelay: Double? = nil,
+        nackCount: UInt64? = nil,
+        targetBitrate: Double? = nil,
+        roundTripTime: Double? = nil
+    ) {
+        self.bytes = bytes
+        self.packets = packets
+        self.packetsLost = packetsLost
+        self.packetsDiscarded = packetsDiscarded
+        self.jitter = jitter
+        self.jitterBufferDelay = jitterBufferDelay
+        self.jitterBufferEmittedCount = jitterBufferEmittedCount
+        self.jitterBufferTargetDelay = jitterBufferTargetDelay
+        self.jitterBufferMinimumDelay = jitterBufferMinimumDelay
+        self.totalSamplesReceived = totalSamplesReceived
+        self.concealedSamples = concealedSamples
+        self.silentConcealedSamples = silentConcealedSamples
+        self.concealmentEvents = concealmentEvents
+        self.insertedSamplesForDeceleration = insertedSamplesForDeceleration
+        self.removedSamplesForAcceleration = removedSamplesForAcceleration
+        self.totalAudioEnergy = totalAudioEnergy
+        self.totalSamplesDuration = totalSamplesDuration
+        self.audioLevel = audioLevel
+        self.totalPacketSendDelay = totalPacketSendDelay
+        self.nackCount = nackCount
+        self.targetBitrate = targetBitrate
+        self.roundTripTime = roundTripTime
+    }
+}
+
 public struct WebRTCStatisticsSnapshot: Codable, Equatable, Sendable {
     public let collectedAt: Date
     public let route: WebRTCICERouteDiagnostics?
@@ -990,6 +1063,10 @@ public struct WebRTCStatisticsSnapshot: Codable, Equatable, Sendable {
     public let jitter: Double?
     public let outboundVideo: WebRTCVideoStatistics?
     public let inboundVideo: WebRTCVideoStatistics?
+    public let audioSource: WebRTCAudioStatistics?
+    public let outboundAudio: WebRTCAudioStatistics?
+    public let inboundAudio: WebRTCAudioStatistics?
+    public let remoteInboundAudio: WebRTCAudioStatistics?
 
     public init(
         collectedAt: Date = Date(),
@@ -998,7 +1075,11 @@ public struct WebRTCStatisticsSnapshot: Codable, Equatable, Sendable {
         availableOutgoingBitrate: Double? = nil,
         jitter: Double? = nil,
         outboundVideo: WebRTCVideoStatistics? = nil,
-        inboundVideo: WebRTCVideoStatistics? = nil
+        inboundVideo: WebRTCVideoStatistics? = nil,
+        audioSource: WebRTCAudioStatistics? = nil,
+        outboundAudio: WebRTCAudioStatistics? = nil,
+        inboundAudio: WebRTCAudioStatistics? = nil,
+        remoteInboundAudio: WebRTCAudioStatistics? = nil
     ) {
         self.collectedAt = collectedAt
         self.route = route
@@ -1007,6 +1088,10 @@ public struct WebRTCStatisticsSnapshot: Codable, Equatable, Sendable {
         self.jitter = jitter
         self.outboundVideo = outboundVideo
         self.inboundVideo = inboundVideo
+        self.audioSource = audioSource
+        self.outboundAudio = outboundAudio
+        self.inboundAudio = inboundAudio
+        self.remoteInboundAudio = remoteInboundAudio
     }
 }
 
