@@ -29,9 +29,17 @@ manual IP addresses, router configuration, or public TCP ports.
   STUN, and TURN services.
 - Both apps connect outbound over authenticated TLS/WSS; the user must never
   need inbound router configuration or an exposed public listener.
-- The public rendezvous URL is exactly `/v1/rendezvous`. Put the derived
-  channel, role, and separate 32-byte admission proof only in bounded
-  `X-AudioStreamer-*` upgrade headers; reject redirects and query-based joins.
+- Keep one-use invitation and fresh media-session rendezvous on exactly
+  `/v1/rendezvous`. Persistent paired-device availability uses the distinct
+  `/v2/availability` upgrade route so an old Worker cannot silently interpret a
+  new availability join as an invitation. Put the derived channel, role, and
+  role-specific 32-byte admission proofs only in bounded `X-AudioStreamer-*`
+  upgrade headers. The availability route must positively negotiate and echo
+  `Sec-WebSocket-Protocol: audiostreamer.availability.v1`. The durable-pairing
+  bootstrap on v1 must likewise negotiate `audiostreamer.pairing.v1` and use a
+  namespace disjoint from legacy invitation/media rendezvous. Reject missing or
+  unknown subprotocols where required, redirects, query-based joins, role-swapped
+  proofs, and availability headers on the v1 route.
 - Check admission before viewer occupancy, invitation consumption, or TURN
   issuance. Do not log plaintext invitations, signaling payloads, ICE candidates,
   or TURN credentials. Apart from the bounded iOS Keychain exception above, do not
