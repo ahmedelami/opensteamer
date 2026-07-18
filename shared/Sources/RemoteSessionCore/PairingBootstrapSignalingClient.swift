@@ -329,6 +329,11 @@ public actor PairingBootstrapSignalingClient {
             guard wire.role == role.opposite else {
                 throw RendezvousSignalingError.invalidServerMessage
             }
+            // The Worker may admit a replacement peer on this same one-time invitation.
+            // Pairing transport sequences are scoped to one admitted peer, so both directions
+            // must restart before the departure is observable by the handshake state machine.
+            nextSequence = 0
+            replayGuard = SignalingReplayGuard()
             return .peerLeft(wire.role)
         case "error":
             try Self.requireExactKeys(dictionary, ["type", "error"])

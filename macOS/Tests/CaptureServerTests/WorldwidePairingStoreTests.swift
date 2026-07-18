@@ -4,6 +4,17 @@ import XCTest
 @testable import CaptureServer
 
 final class WorldwidePairingStoreTests: XCTestCase {
+    func testPeerDepartureRestartsOnlyBeforeDurablePairingStateExists() {
+        XCTAssertEqual(
+            worldwidePairingPeerDepartureAction(hasDurableRecord: false),
+            .restartBootstrap
+        )
+        XCTAssertEqual(
+            worldwidePairingPeerDepartureAction(hasDurableRecord: true),
+            .recoverOnAvailability
+        )
+    }
+
     func testRealKeychainBackendRoundTripsAcrossStoreRecreation() throws {
         let service = "org.example.AudioStreamer.CaptureServerTests.\(UUID().uuidString)"
         let account = "pairing-round-trip"

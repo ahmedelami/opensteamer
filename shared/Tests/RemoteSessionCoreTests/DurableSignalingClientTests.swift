@@ -54,6 +54,100 @@ struct DurableSignalingClientTests {
         await viewerClient.close()
     }
 
+    @Test func pairingBootstrapRestartsSequencesAndReplayWindowForReplacementPeer() async throws {
+        let invitation = try RemoteInvitationCode(secret: Data(repeating: 0x17, count: 20))
+        let hostFake = DurableFakeSocketTransport()
+        let viewerFake = DurableFakeSocketTransport()
+        let host = try PairingBootstrapSignalingClient(
+            endpoint: endpoint,
+            invitation: invitation,
+            role: .host,
+            transport: hostFake
+        )
+        let viewer = try PairingBootstrapSignalingClient(
+            endpoint: endpoint,
+            invitation: invitation,
+            role: .viewer,
+            transport: viewerFake
+        )
+        let hostEvents = try await host.connect()
+        let viewerEvents = try await viewer.connect()
+        var hostIterator = hostEvents.makeAsyncIterator()
+        var viewerIterator = viewerEvents.makeAsyncIterator()
+
+        let hostIdentity = try RemoteDeviceIdentity(
+            deviceID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+            role: .host,
+            displayName: "Mac",
+            signingPrivateKeyRawRepresentation: Data(repeating: 0x21, count: 32)
+        )
+        let firstViewerIdentity = try RemoteDeviceIdentity(
+            deviceID: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
+            role: .viewer,
+            displayName: "First iPhone",
+            signingPrivateKeyRawRepresentation: Data(repeating: 0x22, count: 32)
+        )
+        let firstHostHello = try RemotePairingParticipant(
+            identity: hostIdentity,
+            invitation: invitation
+        ).hello
+        let firstViewerHello = try RemotePairingParticipant(
+            identity: firstViewerIdentity,
+            invitation: invitation
+        ).hello
+
+        try await host.send(.hello(firstHostHello))
+        try await viewer.send(.hello(firstViewerHello))
+        await hostFake.push(
+            text: try forwardedText(
+                #require(await viewerFake.sentTexts().first),
+                from: .viewer
+            )
+        )
+        await viewerFake.push(
+            text: try forwardedText(
+                #require(await hostFake.sentTexts().first),
+                from: .host
+            )
+        )
+        #expect(try await hostIterator.next() == .signal(.hello(firstViewerHello)))
+        #expect(try await viewerIterator.next() == .signal(.hello(firstHostHello)))
+
+        await hostFake.push(text: #"{"type":"peer-left","role":"viewer"}"#)
+        await viewerFake.push(text: #"{"type":"peer-left","role":"host"}"#)
+        #expect(try await hostIterator.next() == .peerLeft(.viewer))
+        #expect(try await viewerIterator.next() == .peerLeft(.host))
+
+        let replacementViewerIdentity = try RemoteDeviceIdentity(
+            deviceID: UUID(uuidString: "99999999-8888-7777-6666-555555555555")!,
+            role: .viewer,
+            displayName: "Replacement iPhone",
+            signingPrivateKeyRawRepresentation: Data(repeating: 0x23, count: 32)
+        )
+        let replacementHostHello = try RemotePairingParticipant(
+            identity: hostIdentity,
+            invitation: invitation
+        ).hello
+        let replacementViewerHello = try RemotePairingParticipant(
+            identity: replacementViewerIdentity,
+            invitation: invitation
+        ).hello
+        try await host.send(.hello(replacementHostHello))
+        try await viewer.send(.hello(replacementViewerHello))
+
+        let secondHostOutbound = try #require(await hostFake.sentTexts().last)
+        let secondViewerOutbound = try #require(await viewerFake.sentTexts().last)
+        #expect(try outboundSequence(secondHostOutbound) == 0)
+        #expect(try outboundSequence(secondViewerOutbound) == 0)
+        await hostFake.push(text: try forwardedText(secondViewerOutbound, from: .viewer))
+        await viewerFake.push(text: try forwardedText(secondHostOutbound, from: .host))
+        #expect(try await hostIterator.next() == .signal(.hello(replacementViewerHello)))
+        #expect(try await viewerIterator.next() == .signal(.hello(replacementHostHello)))
+
+        await host.close()
+        await viewer.close()
+    }
+
     @Test func availabilityMapsBoundedUnavailableErrorForTransientRetry() async throws {
         let fake = DurableFakeSocketTransport()
         let client = try PairedAvailabilitySignalingClient(
@@ -314,6 +408,13 @@ struct DurableSignalingClientTests {
         object["from"] = from.rawValue
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         return try #require(String(data: data, encoding: .utf8))
+    }
+
+    private func outboundSequence(_ outbound: String) throws -> UInt64 {
+        let object = try #require(
+            JSONSerialization.jsonObject(with: Data(outbound.utf8)) as? [String: Any]
+        )
+        return try #require(object["seq"] as? UInt64)
     }
 }
 

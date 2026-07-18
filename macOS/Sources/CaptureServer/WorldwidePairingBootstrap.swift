@@ -6,7 +6,7 @@ actor WorldwidePairingBootstrap {
     nonisolated let completion: AsyncThrowingStream<RemotePairedDeviceRecord, Error>
 
     private let identity: RemoteDeviceIdentity
-    private let participant: RemotePairingParticipant
+    private var participant: RemotePairingParticipant
     private let signaling: PairingBootstrapSignalingClient
     private let store: WorldwidePairingStore
     private let logger: Logger
@@ -134,7 +134,25 @@ actor WorldwidePairingBootstrap {
             }
 
         case .peerLeft:
-            throw WorldwidePairingBootstrapError.connectionEndedBeforeCommit
+            switch worldwidePairingPeerDepartureAction(hasDurableRecord: record != nil) {
+            case .restartBootstrap:
+                // The invitation remains owned by the host until a durable record exists. A
+                // replacement viewer must get a fresh ephemeral key, nonce, and transcript;
+                // carrying any hello/agreement state across peers would splice handshakes.
+                participant = try RemotePairingParticipant(
+                    identity: identity,
+                    invitation: invitation
+                )
+                agreement = nil
+                helloSent = false
+                logger.info(
+                    "The iPhone left before durable pairing; waiting for a fresh secure attempt"
+                )
+            case .recoverOnAvailability:
+                // The coordinator will load the already-persisted record and continue the
+                // authenticated commit over paired-device availability.
+                throw WorldwidePairingBootstrapError.connectionEndedBeforeCommit
+            }
 
         case .serverError(let error):
             throw WorldwidePairingBootstrapError.rendezvous(error)
@@ -193,6 +211,17 @@ actor WorldwidePairingBootstrap {
             completionContinuation.finish()
         }
     }
+}
+
+enum WorldwidePairingPeerDepartureAction: Equatable {
+    case restartBootstrap
+    case recoverOnAvailability
+}
+
+func worldwidePairingPeerDepartureAction(
+    hasDurableRecord: Bool
+) -> WorldwidePairingPeerDepartureAction {
+    hasDurableRecord ? .recoverOnAvailability : .restartBootstrap
 }
 
 /// Authenticates every acknowledgement, including an idempotent replay received after the host
