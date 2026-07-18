@@ -307,7 +307,11 @@ export class RendezvousSession extends DurableObject {
       }
     }
 
-    if (role === "viewer") {
+    // Legacy invitations authorize a media session directly, so accepting the viewer is
+    // still the irreversible consume-once boundary. Pairing bootstrap is different: both
+    // devices must first persist their recoverable pair root. Its invitation is consumed
+    // below only when the viewer transmits the durable acknowledgement at sequence 2.
+    if (role === "viewer" && mode !== "pairing") {
       invitation.consumed = true;
       invitation.retireAt = null;
       await this.ctx.storage.put(STORAGE_KEY, invitation);
@@ -546,12 +550,20 @@ export class RendezvousSession extends DurableObject {
     return this.availabilityRoleSockets(role, generation, exchangeID, false)[0];
   }
 
-  webSocketMessage(socket, message) {
+  async webSocketMessage(socket, message) {
     const attachment = socketAttachment(socket);
     if (attachment?.mode === "availability") {
       this.handleAvailabilityMessage(socket, message, attachment);
       return;
     }
+
+    // Serialize invitation messages with joins and departures. In particular, a replacement
+    // viewer must not race the durable sequence-2 consume transition below.
+    await this.serializeMutation(() => this.handleInvitationMessage(socket, message));
+  }
+
+  async handleInvitationMessage(socket, message) {
+    const attachment = socketAttachment(socket);
     const invitation = this.invitation;
     if (
       !attachment ||
@@ -591,6 +603,26 @@ export class RendezvousSession extends DurableObject {
       safeSend(socket, { type: "error", error: result.error });
       safeClose(socket, CLOSE.invalid);
       return;
+    }
+
+    if (
+      invitation.mode === "pairing" &&
+      attachment.role === "viewer" &&
+      result.value.seq === 2 &&
+      !invitation.consumed
+    ) {
+      // Viewer sequence 2 is the authenticated pairing ACK. The host has durably saved its
+      // proposal and the viewer has durably saved its ACK state before this send, so either
+      // side can recover after this point without replaying the one-time invitation. Persist
+      // the tombstone before forwarding the ACK; a crash can never expose a consumed pairing
+      // as reusable merely because the peer did not receive the final wire message.
+      const consumedInvitation = {
+        ...invitation,
+        consumed: true,
+        retireAt: null,
+      };
+      await this.ctx.storage.put(STORAGE_KEY, consumedInvitation);
+      this.invitation = consumedInvitation;
     }
 
     const oppositeRole = attachment.role === "host" ? "viewer" : "host";
@@ -716,6 +748,24 @@ export class RendezvousSession extends DurableObject {
     if (!invitation || attachment.generation !== invitation.generation) return;
     const oppositeRole = attachment.role === "host" ? "viewer" : "host";
     const partner = this.firstOpenRoleSocket(oppositeRole, invitation.generation);
+    if (partner && invitation.mode === "pairing" && !invitation.consumed) {
+      const partnerAttachment = socketAttachment(partner);
+      if (
+        partnerAttachment &&
+        partnerAttachment.role === oppositeRole &&
+        partnerAttachment.generation === invitation.generation
+      ) {
+        // A pre-ACK pairing attempt is recoverably incomplete, not consumed. Let the live
+        // partner start a replacement exchange at the protocol's canonical first sequence.
+        partnerAttachment.nextSequence = 0;
+        partnerAttachment.lastActivityAt = Date.now();
+        try {
+          partner.serializeAttachment(partnerAttachment);
+        } catch {
+          // A concurrent partner close already prevents a replacement exchange on this socket.
+        }
+      }
+    }
     if (partner) safeSend(partner, { type: "peer-left", role: attachment.role });
 
     const remaining = ["host", "viewer"].some(

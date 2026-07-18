@@ -167,6 +167,117 @@ describe("rendezvous Worker and Durable Object", () => {
     pairingViewer.socket.close(1000, "done");
   });
 
+  it("restarts an unconsumed pairing from sequence zero after a partial viewer departs", async () => {
+    const channel = "R".repeat(52);
+    const admission = proof(34);
+    const host = await open(channel, "host", admission, "pairing");
+    expect((await host.nextMessage()).type).toBe("waiting");
+
+    const firstViewer = await open(channel, "viewer", admission, "pairing");
+    await Promise.all([host.nextMessage(), firstViewer.nextMessage()]);
+
+    for (let sequence = 0; sequence < 2; sequence += 1) {
+      const hostEnvelope = signalEnvelope(channel, sequence, "host");
+      host.socket.send(
+        JSON.stringify({ type: "signal", seq: sequence, envelope: hostEnvelope }),
+      );
+      expect(await firstViewer.nextMessage()).toEqual({
+        type: "signal",
+        from: "host",
+        seq: sequence,
+        envelope: hostEnvelope,
+      });
+
+      const viewerEnvelope = signalEnvelope(channel, sequence, "viewer");
+      firstViewer.socket.send(
+        JSON.stringify({ type: "signal", seq: sequence, envelope: viewerEnvelope }),
+      );
+      expect(await host.nextMessage()).toEqual({
+        type: "signal",
+        from: "viewer",
+        seq: sequence,
+        envelope: viewerEnvelope,
+      });
+    }
+
+    const firstViewerLeft = host.nextMessage();
+    firstViewer.socket.close(1000, "interrupted before durable ACK");
+    expect(await firstViewerLeft).toEqual({ type: "peer-left", role: "viewer" });
+
+    const replacementViewer = await open(channel, "viewer", admission, "pairing");
+    const [hostReady, replacementReady] = await Promise.all([
+      host.nextMessage(),
+      replacementViewer.nextMessage(),
+    ]);
+    expect(hostReady.type).toBe("ready");
+    expect(replacementReady.type).toBe("ready");
+
+    // The surviving host had already sent sequences 0 and 1. Reaccepting sequence 0 proves
+    // its hibernation attachment was reset for the replacement pairing exchange.
+    const restartedHostEnvelope = signalEnvelope(channel, 0, "host");
+    host.socket.send(
+      JSON.stringify({ type: "signal", seq: 0, envelope: restartedHostEnvelope }),
+    );
+    expect(await replacementViewer.nextMessage()).toEqual({
+      type: "signal",
+      from: "host",
+      seq: 0,
+      envelope: restartedHostEnvelope,
+    });
+
+    const restartedViewerEnvelope = signalEnvelope(channel, 0, "viewer");
+    replacementViewer.socket.send(
+      JSON.stringify({ type: "signal", seq: 0, envelope: restartedViewerEnvelope }),
+    );
+    expect(await host.nextMessage()).toEqual({
+      type: "signal",
+      from: "viewer",
+      seq: 0,
+      envelope: restartedViewerEnvelope,
+    });
+
+    host.socket.close(1000, "done");
+    replacementViewer.socket.close(1000, "done");
+  });
+
+  it("durably consumes pairing at the viewer sequence-2 ACK and rejects replacement", async () => {
+    const channel = "K".repeat(52);
+    const admission = proof(35);
+    const host = await open(channel, "host", admission, "pairing");
+    await host.nextMessage();
+    const viewer = await open(channel, "viewer", admission, "pairing");
+    await Promise.all([host.nextMessage(), viewer.nextMessage()]);
+
+    for (let sequence = 0; sequence <= 2; sequence += 1) {
+      const envelope = signalEnvelope(channel, sequence, "viewer");
+      viewer.socket.send(JSON.stringify({ type: "signal", seq: sequence, envelope }));
+      expect(await host.nextMessage()).toEqual({
+        type: "signal",
+        from: "viewer",
+        seq: sequence,
+        envelope,
+      });
+    }
+
+    // Force a new object instance so replacement rejection depends on the stored consume
+    // boundary, not merely the in-memory invitation object.
+    const stub = env.RENDEZVOUS.get(env.RENDEZVOUS.idFromName(`pairing:${channel}`));
+    await evictDurableObject(stub);
+
+    const viewerLeft = host.nextMessage();
+    viewer.socket.close(1000, "done");
+    expect(await viewerLeft).toEqual({ type: "peer-left", role: "viewer" });
+
+    const replacement = await open(channel, "viewer", admission, "pairing");
+    expect(await replacement.nextMessage()).toEqual({
+      type: "error",
+      error: "role_already_claimed",
+    });
+
+    host.socket.close(1000, "done");
+    replacement.socket.close(1000, "done");
+  });
+
   it("requires host-first proof and does not consume on a mismatched viewer", async () => {
     const channel = "H".repeat(52);
     const hostProof = proof(2);
