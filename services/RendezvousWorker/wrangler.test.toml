@@ -14,7 +14,10 @@ name = "JOIN_RATE_LIMITER"
 namespace_id = "1001001"
 
   [ratelimits.simple]
-  limit = 60
+  # Keep production's limiter behavior out of cross-test accounting. Individual rate-limit
+  # behavior should use an isolated binding rather than making unrelated WebSocket scenarios
+  # consume one shared test-process bucket.
+  limit = 1000
   period = 60
 
 [[durable_objects.bindings]]

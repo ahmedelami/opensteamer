@@ -752,6 +752,331 @@ describe("rendezvous Worker and Durable Object", () => {
     secondViewer.socket.close(1000, "done");
   });
 
+  it("pairs an authenticated replacement host with the persistent viewer", async () => {
+    const channel = "T".repeat(52);
+    const hostProof = proof(51);
+    const viewerProof = proof(52);
+    const staleHost = await open(channel, "host", hostProof, "availability", viewerProof);
+    await staleHost.nextMessage();
+    const staleViewer = await open(channel, "viewer", viewerProof, "availability");
+    const [, staleReady] = await Promise.all([
+      staleHost.nextMessage(),
+      staleViewer.nextMessage(),
+    ]);
+
+    // Model an abruptly terminated Mac whose hibernating Worker socket still looks OPEN. The
+    // authenticated replacement fences only that stale host and rebinds the healthy viewer to a
+    // fresh exchange; the viewer must not reconnect.
+    const replacementHost = await open(
+      channel,
+      "host",
+      hostProof,
+      "availability",
+      viewerProof,
+    );
+    expect(await staleHost.nextMessage()).toEqual({
+      type: "error",
+      error: "role_already_claimed",
+    });
+    const [replacementHostReady, persistentViewerReady] = await Promise.all([
+      replacementHost.nextMessage(),
+      staleViewer.nextMessage(),
+    ]);
+    expect(replacementHostReady).toEqual({
+      type: "availability-ready",
+      role: "host",
+      exchangeID: persistentViewerReady.exchangeID,
+    });
+    expect(persistentViewerReady).toEqual({
+      type: "availability-ready",
+      role: "viewer",
+      exchangeID: persistentViewerReady.exchangeID,
+    });
+    expect(persistentViewerReady.exchangeID).not.toBe(staleReady.exchangeID);
+
+    const hostEnvelope = availabilityEnvelope(
+      channel,
+      persistentViewerReady.exchangeID,
+      0,
+      "host",
+    );
+    replacementHost.socket.send(
+      JSON.stringify({
+        type: "availability-signal",
+        exchangeID: persistentViewerReady.exchangeID,
+        seq: 0,
+        envelope: hostEnvelope,
+      }),
+    );
+    expect(await staleViewer.nextMessage()).toEqual({
+      type: "availability-signal",
+      from: "host",
+      exchangeID: persistentViewerReady.exchangeID,
+      seq: 0,
+      envelope: hostEnvelope,
+    });
+
+    replacementHost.socket.close(1000, "done");
+    staleViewer.socket.close(1000, "done");
+  });
+
+  it("ignores a delayed stale-host departure after an authenticated replacement", async () => {
+    const channel = "U".repeat(52);
+    const hostProof = proof(53);
+    const viewerProof = proof(54);
+    const staleHost = await open(channel, "host", hostProof, "availability", viewerProof);
+    await staleHost.nextMessage();
+    const staleViewer = await open(channel, "viewer", viewerProof, "availability");
+    const [, staleReady] = await Promise.all([
+      staleHost.nextMessage(),
+      staleViewer.nextMessage(),
+    ]);
+
+    const stub = env.RENDEZVOUS.get(env.RENDEZVOUS.idFromName(`availability:${channel}`));
+    const staleAttachment = await runInDurableObject(stub, (_instance, state) => {
+      const oldHostSocket = state.getWebSockets("host").find((socket) => {
+        const attachment = socket.deserializeAttachment();
+        return (
+          attachment.mode === "availability" &&
+          attachment.exchangeID === staleReady.exchangeID
+        );
+      });
+      return oldHostSocket.deserializeAttachment();
+    });
+
+    const replacementHost = await open(
+      channel,
+      "host",
+      hostProof,
+      "availability",
+      viewerProof,
+    );
+    const [, replacementReady] = await Promise.all([
+      replacementHost.nextMessage(),
+      staleViewer.nextMessage(),
+    ]);
+
+    await runInDurableObject(stub, async (instance) => {
+      let callbackAttachment = { ...staleAttachment, departed: false };
+      const delayedOldHostSocket = {
+        readyState: 3,
+        deserializeAttachment: () => callbackAttachment,
+        serializeAttachment: (next) => {
+          callbackAttachment = next;
+        },
+      };
+      await instance.handleDeparture(delayedOldHostSocket);
+    });
+
+    const hostEnvelope = availabilityEnvelope(
+      channel,
+      replacementReady.exchangeID,
+      0,
+      "host",
+    );
+    replacementHost.socket.send(
+      JSON.stringify({
+        type: "availability-signal",
+        exchangeID: replacementReady.exchangeID,
+        seq: 0,
+        envelope: hostEnvelope,
+      }),
+    );
+    expect(await staleViewer.nextMessage()).toEqual({
+      type: "availability-signal",
+      from: "host",
+      exchangeID: replacementReady.exchangeID,
+      seq: 0,
+      envelope: hostEnvelope,
+    });
+
+    replacementHost.socket.close(1000, "done");
+    staleViewer.socket.close(1000, "done");
+  });
+
+  it("uses an authenticated replacement viewer to restart a ghost host exchange", async () => {
+    const channel = "W".repeat(52);
+    const hostProof = proof(55);
+    const viewerProof = proof(56);
+    const ghostHost = await open(channel, "host", hostProof, "availability", viewerProof);
+    await ghostHost.nextMessage();
+    const ghostViewer = await open(channel, "viewer", viewerProof, "availability");
+    const [, ghostReady] = await Promise.all([
+      ghostHost.nextMessage(),
+      ghostViewer.nextMessage(),
+    ]);
+
+    // A viewer retry is the application-level evidence that the paired host did not answer. The
+    // Worker cannot prove that an OPEN edge socket still reaches the Mac process, so it transiently
+    // retires that host and makes this viewer retry after a fresh host registration.
+    const breaker = await open(channel, "viewer", viewerProof, "availability");
+    expect(await ghostViewer.nextMessage()).toEqual({
+      type: "error",
+      error: "role_already_claimed",
+    });
+    expect(await ghostHost.nextMessage()).toEqual({
+      type: "error",
+      error: "peer_unavailable",
+    });
+    expect(await breaker.nextMessage()).toEqual({
+      type: "error",
+      error: "availability_unavailable",
+    });
+    breaker.socket.close(1000, "retry after host registration");
+
+    const liveHost = await open(channel, "host", hostProof, "availability", viewerProof);
+    expect(await liveHost.nextMessage()).toEqual({ type: "availability-waiting" });
+    const retryViewer = await open(channel, "viewer", viewerProof, "availability");
+    const [liveHostReady, retryViewerReady] = await Promise.all([
+      liveHost.nextMessage(),
+      retryViewer.nextMessage(),
+    ]);
+    expect(liveHostReady.exchangeID).toBe(retryViewerReady.exchangeID);
+    expect(retryViewerReady.exchangeID).not.toBe(ghostReady.exchangeID);
+
+    const viewerEnvelope = availabilityEnvelope(
+      channel,
+      retryViewerReady.exchangeID,
+      0,
+      "viewer",
+    );
+    retryViewer.socket.send(
+      JSON.stringify({
+        type: "availability-signal",
+        exchangeID: retryViewerReady.exchangeID,
+        seq: 0,
+        envelope: viewerEnvelope,
+      }),
+    );
+    expect(await liveHost.nextMessage()).toEqual({
+      type: "availability-signal",
+      from: "viewer",
+      exchangeID: retryViewerReady.exchangeID,
+      seq: 0,
+      envelope: viewerEnvelope,
+    });
+
+    liveHost.socket.close(1000, "done");
+    retryViewer.socket.close(1000, "done");
+  });
+
+  it("ignores delayed ghost-exchange departures after viewer-forced recovery", async () => {
+    const channel = "Y".repeat(52);
+    const hostProof = proof(62);
+    const viewerProof = proof(63);
+    const ghostHost = await open(channel, "host", hostProof, "availability", viewerProof);
+    await ghostHost.nextMessage();
+    const ghostViewer = await open(channel, "viewer", viewerProof, "availability");
+    const [, ghostReady] = await Promise.all([
+      ghostHost.nextMessage(),
+      ghostViewer.nextMessage(),
+    ]);
+
+    const stub = env.RENDEZVOUS.get(env.RENDEZVOUS.idFromName(`availability:${channel}`));
+    const ghostAttachments = await runInDurableObject(stub, (_instance, state) =>
+      ["host", "viewer"].map((role) => {
+        const socket = state.getWebSockets(role).find((candidate) => {
+          const attachment = candidate.deserializeAttachment();
+          return attachment.exchangeID === ghostReady.exchangeID;
+        });
+        return socket.deserializeAttachment();
+      }),
+    );
+
+    const breaker = await open(channel, "viewer", viewerProof, "availability");
+    await Promise.all([
+      ghostHost.nextMessage(),
+      ghostViewer.nextMessage(),
+      breaker.nextMessage(),
+    ]);
+
+    const liveHost = await open(channel, "host", hostProof, "availability", viewerProof);
+    await liveHost.nextMessage();
+    const liveViewer = await open(channel, "viewer", viewerProof, "availability");
+    const [, liveReady] = await Promise.all([
+      liveHost.nextMessage(),
+      liveViewer.nextMessage(),
+    ]);
+
+    await runInDurableObject(stub, async (instance) => {
+      for (const ghostAttachment of ghostAttachments) {
+        let callbackAttachment = { ...ghostAttachment, departed: false };
+        const delayedGhostSocket = {
+          readyState: 3,
+          deserializeAttachment: () => callbackAttachment,
+          serializeAttachment: (next) => {
+            callbackAttachment = next;
+          },
+        };
+        await instance.handleDeparture(delayedGhostSocket);
+      }
+    });
+
+    const envelope = availabilityEnvelope(channel, liveReady.exchangeID, 0, "viewer");
+    liveViewer.socket.send(
+      JSON.stringify({
+        type: "availability-signal",
+        exchangeID: liveReady.exchangeID,
+        seq: 0,
+        envelope,
+      }),
+    );
+    expect(await liveHost.nextMessage()).toEqual({
+      type: "availability-signal",
+      from: "viewer",
+      exchangeID: liveReady.exchangeID,
+      seq: 0,
+      envelope,
+    });
+
+    breaker.socket.close(1000, "done");
+    liveHost.socket.close(1000, "done");
+    liveViewer.socket.close(1000, "done");
+  });
+
+  it("rejects mismatched replacement proofs without disturbing the live exchange", async () => {
+    const channel = "X".repeat(52);
+    const hostProof = proof(57);
+    const viewerProof = proof(58);
+    const host = await open(channel, "host", hostProof, "availability", viewerProof);
+    await host.nextMessage();
+    const viewer = await open(channel, "viewer", viewerProof, "availability");
+    const [, ready] = await Promise.all([host.nextMessage(), viewer.nextMessage()]);
+
+    const wrongHost = await SELF.fetch("https://example.com/v2/availability", {
+      headers: joinHeaders(channel, "host", proof(59), "availability", viewerProof),
+    });
+    expect(wrongHost.status).toBe(404);
+    const wrongViewerRegistration = await SELF.fetch("https://example.com/v2/availability", {
+      headers: joinHeaders(channel, "host", hostProof, "availability", proof(60)),
+    });
+    expect(wrongViewerRegistration.status).toBe(404);
+    const wrongViewer = await SELF.fetch("https://example.com/v2/availability", {
+      headers: joinHeaders(channel, "viewer", proof(61), "availability"),
+    });
+    expect(wrongViewer.status).toBe(404);
+
+    const envelope = availabilityEnvelope(channel, ready.exchangeID, 0, "host");
+    host.socket.send(
+      JSON.stringify({
+        type: "availability-signal",
+        exchangeID: ready.exchangeID,
+        seq: 0,
+        envelope,
+      }),
+    );
+    expect(await viewer.nextMessage()).toEqual({
+      type: "availability-signal",
+      from: "host",
+      exchangeID: ready.exchangeID,
+      seq: 0,
+      envelope,
+    });
+
+    host.socket.close(1000, "done");
+    viewer.socket.close(1000, "done");
+  });
+
   it("retains both role-specific availability proofs across host reconnects", async () => {
     const channel = "D".repeat(52);
     const hostProof = proof(13);

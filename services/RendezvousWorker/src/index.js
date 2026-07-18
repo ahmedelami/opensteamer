@@ -447,26 +447,67 @@ export class RendezvousSession extends DurableObject {
     if (availability.channel !== channel) {
       return json({ error: "availability_unavailable" }, 404);
     }
-    if (this.availabilityRoleSockets(role, availability.generation, undefined, true).length > 0) {
-      return this.rejectAvailabilityWebSocket("role_already_claimed", CLOSE.conflict);
+
+    // Stable, pair-scoped proofs make a duplicate role an authenticated replacement. Snapshot a
+    // healthy opposite socket first, then synchronously fence only the superseded same-role
+    // sockets before installing the replacement. Joins are serialized, and there are no awaits
+    // below this point, so the opposite attachment and replacement attachment move to one fresh
+    // exchange as one mutation. Delayed callbacks remain fenced by `departed` and the old
+    // exchange ID.
+    const oppositeRole = role === "host" ? "viewer" : "host";
+    const sameRoleSockets = this.attachedAvailabilityRoleSockets(
+      role,
+      availability.generation,
+    );
+    let opposite = this.firstOpenAvailabilityRoleSocket(
+      oppositeRole,
+      availability.generation,
+    );
+    let oppositeAttachment = opposite ? socketAttachment(opposite) : undefined;
+    if (
+      !oppositeAttachment ||
+      oppositeAttachment.mode !== "availability" ||
+      oppositeAttachment.role !== oppositeRole ||
+      oppositeAttachment.generation !== availability.generation
+    ) {
+      opposite = undefined;
+      oppositeAttachment = undefined;
     }
 
-    if (role === "host") {
-      if (
-        this.availabilityRoleSockets("viewer", availability.generation, undefined, true).length > 0
-      ) {
-        return this.rejectAvailabilityWebSocket(
-          "availability_unavailable",
-          CLOSE.availabilityUnavailable,
+    // A viewer retry follows an application response timeout. A still-paired host at this point
+    // may be an OPEN edge socket whose Mac application is no longer processing DO messages, so
+    // rebinding it would reproduce the same timeout forever. Retire the superseded viewer
+    // terminally, but notify/close the host transiently so it registers a fresh socket; this
+    // viewer attempt receives unavailable and its bounded outer retry pairs after that host join.
+    const replacesViewerExchange =
+      role === "viewer" &&
+      (sameRoleSockets.length > 0 || typeof oppositeAttachment?.exchangeID === "string");
+    if (replacesViewerExchange) {
+      this.retireAvailabilityRoleSocketsForReplacement(role, availability.generation);
+      this.retireAvailabilityRoleSocketsForReplacement(
+        "host",
+        availability.generation,
+        "peer_unavailable",
+        CLOSE.retry,
+      );
+      return this.rejectAvailabilityWebSocket(
+        "availability_unavailable",
+        CLOSE.availabilityUnavailable,
+      );
+    }
+
+    this.retireAvailabilityRoleSocketsForReplacement(role, availability.generation);
+
+    if (!opposite) {
+      if (role === "host") {
+        const accepted = this.acceptAvailabilityWebSocket(
+          "host",
+          availability.generation,
+          null,
         );
+        safeSend(accepted.server, { type: "availability-waiting" });
+        return accepted.response;
       }
-      const accepted = this.acceptAvailabilityWebSocket("host", availability.generation, null);
-      safeSend(accepted.server, { type: "availability-waiting" });
-      return accepted.response;
-    }
-
-    const host = this.firstOpenAvailabilityRoleSocket("host", availability.generation, null);
-    if (!host) {
       return this.rejectAvailabilityWebSocket(
         "availability_unavailable",
         CLOSE.availabilityUnavailable,
@@ -474,47 +515,90 @@ export class RendezvousSession extends DurableObject {
     }
 
     const exchangeID = randomExchangeID();
-    const hostAttachment = socketAttachment(host);
-    if (!hostAttachment || hostAttachment.mode !== "availability") {
+    oppositeAttachment.exchangeID = exchangeID;
+    oppositeAttachment.nextSequence = 0;
+    oppositeAttachment.lastActivityAt = now;
+    try {
+      opposite.serializeAttachment(oppositeAttachment);
+    } catch {
+      this.retireAvailabilityRoleSocketsForReplacement(
+        oppositeRole,
+        availability.generation,
+        "peer_unavailable",
+        CLOSE.retry,
+      );
+      if (role === "host") {
+        const accepted = this.acceptAvailabilityWebSocket(
+          "host",
+          availability.generation,
+          null,
+        );
+        safeSend(accepted.server, { type: "availability-waiting" });
+        return accepted.response;
+      }
       return this.rejectAvailabilityWebSocket(
         "availability_unavailable",
         CLOSE.availabilityUnavailable,
       );
     }
-    hostAttachment.exchangeID = exchangeID;
-    hostAttachment.nextSequence = 0;
-    hostAttachment.lastActivityAt = now;
-    host.serializeAttachment(hostAttachment);
 
     const accepted = this.acceptAvailabilityWebSocket(
-      "viewer",
+      role,
       availability.generation,
       exchangeID,
     );
-    const hostReady = safeSend(host, {
+    // A fresh ready event itself is the exchange-reset boundary. Do not precede it with
+    // peer-left: the persistent client intentionally treats peer-left as an outer-attempt
+    // failure, while its ready parser safely replaces the exchange cipher and sequence state.
+    const oppositeReady = safeSend(opposite, {
       type: "availability-ready",
-      role: "host",
+      role: oppositeRole,
       exchangeID,
     });
-    const viewerReady = safeSend(accepted.server, {
+    const replacementReady = safeSend(accepted.server, {
       type: "availability-ready",
-      role: "viewer",
+      role,
       exchangeID,
     });
-    if (!hostReady || !viewerReady) {
-      hostAttachment.exchangeID = null;
-      hostAttachment.nextSequence = 0;
-      try {
-        host.serializeAttachment(hostAttachment);
-      } catch {
-        // A failed ready send can coincide with the host disconnecting.
-      }
-      safeClose(accepted.server, CLOSE.retry);
-      if (hostReady) {
-        safeSend(host, { type: "availability-peer-left", role: "viewer", exchangeID });
-        safeSend(host, { type: "availability-waiting" });
+    if (!oppositeReady || !replacementReady) {
+      if (oppositeRole === "host") {
+        oppositeAttachment.exchangeID = null;
+        oppositeAttachment.nextSequence = 0;
+        oppositeAttachment.lastActivityAt = Date.now();
+        try {
+          opposite.serializeAttachment(oppositeAttachment);
+        } catch {
+          // A failed ready send can coincide with the host disconnecting.
+        }
+        safeClose(accepted.server, CLOSE.retry);
+        if (oppositeReady) {
+          safeSend(opposite, { type: "availability-waiting" });
+        } else {
+          safeClose(opposite, CLOSE.retry);
+        }
       } else {
-        safeClose(host, CLOSE.retry);
+        const replacementAttachment = socketAttachment(accepted.server);
+        if (replacementAttachment?.mode === "availability") {
+          replacementAttachment.exchangeID = null;
+          replacementAttachment.nextSequence = 0;
+          replacementAttachment.lastActivityAt = Date.now();
+          try {
+            accepted.server.serializeAttachment(replacementAttachment);
+          } catch {
+            // A concurrent replacement close already prevents a waiting host transition.
+          }
+        }
+        this.retireAvailabilityRoleSocketsForReplacement(
+          "viewer",
+          availability.generation,
+          "peer_unavailable",
+          CLOSE.retry,
+        );
+        if (replacementReady) {
+          safeSend(accepted.server, { type: "availability-waiting" });
+        } else {
+          safeClose(accepted.server, CLOSE.retry);
+        }
       }
     }
     return accepted.response;
@@ -615,6 +699,51 @@ export class RendezvousSession extends DurableObject {
 
   firstOpenAvailabilityRoleSocket(role, generation, exchangeID = undefined) {
     return this.availabilityRoleSockets(role, generation, exchangeID, false)[0];
+  }
+
+  attachedAvailabilityRoleSockets(role, generation) {
+    return this.ctx.getWebSockets(role).filter((socket) => {
+      const attachment = socketAttachment(socket);
+      return (
+        attachment?.mode === "availability" &&
+        attachment.role === role &&
+        attachment.generation === generation &&
+        !attachment.departed
+      );
+    });
+  }
+
+  retireAvailabilityRoleSocketsForReplacement(
+    role,
+    generation,
+    error = "role_already_claimed",
+    closeReason = CLOSE.conflict,
+  ) {
+    const entries = this.attachedAvailabilityRoleSockets(role, generation).map((socket) => ({
+      socket,
+      attachment: socketAttachment(socket),
+    }));
+    const now = Date.now();
+
+    // Serialize the superseded state before emitting the replacement/recovery error or closing.
+    // The old exchange ID stays attached so even a copied/delayed callback cannot target a peer
+    // that has already been rebound or has registered a fresh socket.
+    for (const { socket, attachment } of entries) {
+      if (!attachment) continue;
+      attachment.departed = true;
+      attachment.lastActivityAt = now;
+      try {
+        socket.serializeAttachment(attachment);
+      } catch {
+        // A fully detached socket is already retired from the live exchange.
+      }
+    }
+
+    for (const { socket, attachment } of entries) {
+      if (!attachment) continue;
+      safeSend(socket, { type: "error", error });
+      safeClose(socket, closeReason);
+    }
   }
 
   async webSocketMessage(socket, message) {
@@ -770,6 +899,7 @@ export class RendezvousSession extends DurableObject {
   handleAvailabilityMessage(socket, message, attachment) {
     const availability = this.availability;
     if (
+      attachment.departed ||
       (attachment.role !== "host" && attachment.role !== "viewer") ||
       !availability ||
       attachment.generation !== availability.generation ||
