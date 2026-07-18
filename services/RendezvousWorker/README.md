@@ -19,11 +19,15 @@ The first capability-authorized host creates the persistent availability record 
 
 Availability mode never provisions or returns TURN credentials. It carries only bounded encrypted coordination envelopes used by endpoints to establish a fresh one-use media rendezvous. Each envelope must bind the availability channel, server exchange ID, sender direction, and monotonic per-exchange sequence outside the opaque ciphertext, and endpoints must authenticate those fields as encryption AAD; mismatches fail closed.
 
+After a valid waiting or ready state, the Mac sends periodic host-only application probes in addition to WebSocket ping/pong. The Worker echoes the nonce only for the current capability-authorized host connection. Missing acknowledgements make the Mac close and reconnect its socket; probes count toward the message-rate limit but never change exchange or encrypted signaling sequence state.
+
 ```text
 server -> {"type":"availability-waiting"}
 server -> {"type":"availability-ready","role":"host|viewer","exchangeID":"<128-bit Base64URL>"}
 client -> {"type":"availability-signal","exchangeID":"...","seq":0,"envelope":"<canonical Base64URL>"}
 server -> {"type":"availability-signal","from":"host|viewer","exchangeID":"...","seq":0,"envelope":"<unchanged Base64URL>"}
+host -> {"type":"availability-probe","nonce":"<128-bit canonical Base64URL>"}
+server -> {"type":"availability-probe-ack","nonce":"<same value>"}
 server -> {"type":"availability-peer-left","role":"host|viewer","exchangeID":"..."}
 ```
 

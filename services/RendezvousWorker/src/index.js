@@ -6,6 +6,7 @@ import {
   LIMITS,
   PAIRING_WEBSOCKET_PROTOCOL,
   admissionProofsMatch,
+  inspectAvailabilityProbe,
   validateAvailabilitySignal,
   validateJoinHeaders,
   validateSignal,
@@ -121,6 +122,7 @@ const validAvailabilityAttachment = (value) =>
   Number.isSafeInteger(value.lastActivityAt) &&
   Number.isSafeInteger(value.rateWindowStartedAt) &&
   Number.isSafeInteger(value.rateCount) &&
+  (value.connectionID === undefined || typeof value.connectionID === "string") &&
   typeof value.departed === "boolean";
 
 const socketAttachment = (socket) => {
@@ -154,6 +156,7 @@ const newAvailabilityAttachment = (role, generation, now, exchangeID = null) => 
   lastActivityAt: now,
   rateWindowStartedAt: now,
   rateCount: 0,
+  connectionID: crypto.randomUUID(),
   departed: false,
 });
 
@@ -898,6 +901,11 @@ export class RendezvousSession extends DurableObject {
 
   handleAvailabilityMessage(socket, message, attachment) {
     const availability = this.availability;
+    const probe = inspectAvailabilityProbe(message);
+    if (probe.matched) {
+      this.handleAvailabilityProbe(socket, attachment, availability, probe);
+      return;
+    }
     if (
       attachment.departed ||
       (attachment.role !== "host" && attachment.role !== "viewer") ||
@@ -965,6 +973,58 @@ export class RendezvousSession extends DurableObject {
 
     attachment.nextSequence += 1;
     socket.serializeAttachment(attachment);
+  }
+
+  handleAvailabilityProbe(socket, attachment, availability, probe) {
+    const currentHost = availability
+      ? this.firstOpenAvailabilityRoleSocket("host", availability.generation)
+      : undefined;
+    const currentHostAttachment = currentHost ? socketAttachment(currentHost) : undefined;
+    const isAuthorizedHost =
+      !attachment.departed &&
+      attachment.role === "host" &&
+      availability !== null &&
+      attachment.generation === availability.generation &&
+      typeof attachment.connectionID === "string" &&
+      currentHostAttachment?.connectionID === attachment.connectionID;
+    if (!isAuthorizedHost) {
+      // Preserve the existing observable policy for a capability-authorized viewer sending a
+      // message outside its role. Stale, departed, rejected, or otherwise non-current sockets
+      // receive no oracle response; they are simply closed before any attachment can be mutated.
+      if (
+        !attachment.departed &&
+        attachment.role === "viewer" &&
+        availability !== null &&
+        attachment.generation === availability.generation
+      ) {
+        safeSend(socket, { type: "error", error: "invalid_message" });
+      }
+      safeClose(socket, CLOSE.invalid);
+      return;
+    }
+    if (probe.error) {
+      safeSend(socket, { type: "error", error: probe.error });
+      safeClose(socket, CLOSE.invalid);
+      return;
+    }
+
+    const now = Date.now();
+    attachment.lastActivityAt = now;
+    if (now - attachment.rateWindowStartedAt >= LIMITS.messageRateWindowMs) {
+      attachment.rateWindowStartedAt = now;
+      attachment.rateCount = 0;
+    }
+    attachment.rateCount += 1;
+    socket.serializeAttachment(attachment);
+    if (attachment.rateCount > LIMITS.messageRateLimit) {
+      safeSend(socket, { type: "error", error: "rate_limited" });
+      safeClose(socket, CLOSE.rate);
+      return;
+    }
+
+    if (!safeSend(socket, { type: "availability-probe-ack", nonce: probe.value.nonce })) {
+      safeClose(socket, CLOSE.retry);
+    }
   }
 
   async webSocketClose(socket) {

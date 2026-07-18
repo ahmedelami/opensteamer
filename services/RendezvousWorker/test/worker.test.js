@@ -5,6 +5,7 @@ import {
   SELF,
 } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
+import { LIMITS } from "../src/protocol.js";
 
 const base64URL = (bytes) =>
   btoa(String.fromCharCode(...bytes))
@@ -13,6 +14,7 @@ const base64URL = (bytes) =>
     .replace(/=+$/, "");
 
 const proof = (fill) => base64URL(new Uint8Array(32).fill(fill));
+const probeNonce = (fill) => base64URL(new Uint8Array(16).fill(fill));
 const joinHeaders = (channel, role, admission, mode, viewerAdmission) => ({
   Upgrade: "websocket",
   "X-AudioStreamer-Channel": channel,
@@ -750,6 +752,199 @@ describe("rendezvous Worker and Durable Object", () => {
 
     host.socket.close(1000, "done");
     secondViewer.socket.close(1000, "done");
+  });
+
+  it("acknowledges a canonical availability probe only on the current host socket", async () => {
+    const channel = "F".repeat(52);
+    const hostProof = proof(64);
+    const viewerProof = proof(65);
+    const host = await open(channel, "host", hostProof, "availability", viewerProof);
+    await host.nextMessage();
+
+    const waitingNonce = probeNonce(66);
+    host.socket.send(JSON.stringify({ type: "availability-probe", nonce: waitingNonce }));
+    expect(await host.nextMessage()).toEqual({
+      type: "availability-probe-ack",
+      nonce: waitingNonce,
+    });
+
+    const viewer = await open(channel, "viewer", viewerProof, "availability");
+    const [, ready] = await Promise.all([host.nextMessage(), viewer.nextMessage()]);
+    const stub = env.RENDEZVOUS.get(env.RENDEZVOUS.idFromName(`availability:${channel}`));
+    await evictDurableObject(stub);
+    const pairedNonce = probeNonce(67);
+    host.socket.send(JSON.stringify({ type: "availability-probe", nonce: pairedNonce }));
+    expect(await host.nextMessage()).toEqual({
+      type: "availability-probe-ack",
+      nonce: pairedNonce,
+    });
+
+    // App probes prove that this host process can traverse the DO message path. They are not a
+    // replacement for viewer timeout recovery, and they do not consume encrypted sequence slots.
+    const envelope = availabilityEnvelope(channel, ready.exchangeID, 0, "host");
+    host.socket.send(
+      JSON.stringify({
+        type: "availability-signal",
+        exchangeID: ready.exchangeID,
+        seq: 0,
+        envelope,
+      }),
+    );
+    expect(await viewer.nextMessage()).toEqual({
+      type: "availability-signal",
+      from: "host",
+      exchangeID: ready.exchangeID,
+      seq: 0,
+      envelope,
+    });
+
+    host.socket.close(1000, "done");
+    viewer.socket.close(1000, "done");
+  });
+
+  it("rejects an availability probe sent by the viewer role", async () => {
+    const channel = "G".repeat(52);
+    const hostProof = proof(68);
+    const viewerProof = proof(69);
+    const host = await open(channel, "host", hostProof, "availability", viewerProof);
+    await host.nextMessage();
+    const viewer = await open(channel, "viewer", viewerProof, "availability");
+    await Promise.all([host.nextMessage(), viewer.nextMessage()]);
+
+    viewer.socket.send(
+      JSON.stringify({ type: "availability-probe", nonce: probeNonce(70) }),
+    );
+    expect(await viewer.nextMessage()).toEqual({
+      type: "error",
+      error: "invalid_message",
+    });
+
+    host.socket.close(1000, "done");
+    viewer.socket.close(1000, "done");
+  });
+
+  it("applies the availability message-rate limit to host probes", async () => {
+    const channel = "3".repeat(52);
+    const hostProof = proof(74);
+    const viewerProof = proof(75);
+    const host = await open(channel, "host", hostProof, "availability", viewerProof);
+    await host.nextMessage();
+
+    const stub = env.RENDEZVOUS.get(env.RENDEZVOUS.idFromName(`availability:${channel}`));
+    await runInDurableObject(stub, (_instance, state) => {
+      const socket = state.getWebSockets("host").find((candidate) => {
+        const attachment = candidate.deserializeAttachment();
+        return attachment.mode === "availability" && !attachment.departed;
+      });
+      const attachment = socket.deserializeAttachment();
+      attachment.rateWindowStartedAt = Date.now();
+      attachment.rateCount = LIMITS.messageRateLimit - 1;
+      socket.serializeAttachment(attachment);
+    });
+
+    const allowedNonce = probeNonce(76);
+    host.socket.send(JSON.stringify({ type: "availability-probe", nonce: allowedNonce }));
+    expect(await host.nextMessage()).toEqual({
+      type: "availability-probe-ack",
+      nonce: allowedNonce,
+    });
+
+    host.socket.send(
+      JSON.stringify({ type: "availability-probe", nonce: probeNonce(77) }),
+    );
+    expect(await host.nextMessage()).toEqual({
+      type: "error",
+      error: "rate_limited",
+    });
+
+    host.socket.close(1000, "done");
+  });
+
+  it("does not acknowledge or mutate through a delayed superseded-host probe", async () => {
+    const channel = "I".repeat(52);
+    const hostProof = proof(71);
+    const viewerProof = proof(72);
+    const staleHost = await open(channel, "host", hostProof, "availability", viewerProof);
+    await staleHost.nextMessage();
+    const viewer = await open(channel, "viewer", viewerProof, "availability");
+    const [, staleReady] = await Promise.all([
+      staleHost.nextMessage(),
+      viewer.nextMessage(),
+    ]);
+
+    const stub = env.RENDEZVOUS.get(env.RENDEZVOUS.idFromName(`availability:${channel}`));
+    const staleAttachment = await runInDurableObject(stub, (_instance, state) => {
+      const socket = state.getWebSockets("host").find((candidate) => {
+        const attachment = candidate.deserializeAttachment();
+        return attachment.exchangeID === staleReady.exchangeID;
+      });
+      return socket.deserializeAttachment();
+    });
+
+    const replacementHost = await open(
+      channel,
+      "host",
+      hostProof,
+      "availability",
+      viewerProof,
+    );
+    expect(await staleHost.nextMessage()).toEqual({
+      type: "error",
+      error: "role_already_claimed",
+    });
+    const [, replacementReady] = await Promise.all([
+      replacementHost.nextMessage(),
+      viewer.nextMessage(),
+    ]);
+
+    const probeEffects = await runInDurableObject(stub, (instance) => {
+      const sent = [];
+      const serialized = [];
+      const closed = [];
+      const delayedSocket = {
+        readyState: 1,
+        deserializeAttachment: () => ({ ...staleAttachment, departed: false }),
+        serializeAttachment: (attachment) => serialized.push(attachment),
+        send: (message) => sent.push(JSON.parse(message)),
+        close: (code, reason) => closed.push([code, reason]),
+      };
+      instance.handleAvailabilityMessage(
+        delayedSocket,
+        JSON.stringify({ type: "availability-probe", nonce: probeNonce(73) }),
+        { ...staleAttachment, departed: false },
+      );
+      return { sent, serialized, closed };
+    });
+    expect(probeEffects).toEqual({
+      sent: [],
+      serialized: [],
+      closed: [[4400, "invalid request"]],
+    });
+
+    const envelope = availabilityEnvelope(
+      channel,
+      replacementReady.exchangeID,
+      0,
+      "host",
+    );
+    replacementHost.socket.send(
+      JSON.stringify({
+        type: "availability-signal",
+        exchangeID: replacementReady.exchangeID,
+        seq: 0,
+        envelope,
+      }),
+    );
+    expect(await viewer.nextMessage()).toEqual({
+      type: "availability-signal",
+      from: "host",
+      exchangeID: replacementReady.exchangeID,
+      seq: 0,
+      envelope,
+    });
+
+    replacementHost.socket.close(1000, "done");
+    viewer.socket.close(1000, "done");
   });
 
   it("pairs a capability-authorized replacement host with the persistent viewer", async () => {

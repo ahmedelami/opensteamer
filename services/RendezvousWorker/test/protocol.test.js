@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   admissionProofsMatch,
+  inspectAvailabilityProbe,
   validateAvailabilitySignal,
   validateJoinHeaders,
   validateSignal,
@@ -171,5 +172,27 @@ describe("upgrade and signaling validation", () => {
         options,
       ).error,
     ).toBe("invalid_message");
+  });
+
+  it("recognizes only exact availability probes with canonical 128-bit nonces", () => {
+    const nonce = base64URL(new Uint8Array(16).fill(0x7a));
+    const message = { type: "availability-probe", nonce };
+    expect(inspectAvailabilityProbe(JSON.stringify(message))).toEqual({
+      matched: true,
+      value: message,
+    });
+    expect(
+      inspectAvailabilityProbe(
+        JSON.stringify({ ...message, nonce: `${nonce.slice(0, -1)}h` }),
+      ),
+    ).toEqual({ matched: true, error: "invalid_message" });
+    expect(
+      inspectAvailabilityProbe(JSON.stringify({ ...message, extra: true })),
+    ).toEqual({ matched: true, error: "invalid_message" });
+    expect(
+      inspectAvailabilityProbe(
+        JSON.stringify({ type: "availability-signal", nonce }),
+      ),
+    ).toEqual({ matched: false });
   });
 });

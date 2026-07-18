@@ -209,10 +209,43 @@ export function validateSignal(raw, { channel, role, expectedSequence }) {
   return { value: message };
 }
 
-const validExchangeID = (value) => {
+const validCanonical128BitBase64URL = (value) => {
   if (typeof value !== "string" || !EXCHANGE_ID_PATTERN.test(value)) return false;
   return decodeCanonicalBase64URL(value)?.byteLength === 16;
 };
+
+const validExchangeID = validCanonical128BitBase64URL;
+
+// Probe inspection is deliberately non-consuming for all other availability messages, which
+// continue through the encrypted-signal validator. Once the exact probe type is present, however,
+// its schema and 128-bit nonce must be canonical or the caller fails closed as invalid_message.
+export function inspectAvailabilityProbe(raw) {
+  if (typeof raw !== "string" || utf8Length(raw) > LIMITS.maximumWireMessageBytes) {
+    return { matched: false };
+  }
+
+  let message;
+  try {
+    message = JSON.parse(raw);
+  } catch {
+    return { matched: false };
+  }
+  if (
+    message === null ||
+    typeof message !== "object" ||
+    Array.isArray(message) ||
+    message.type !== "availability-probe"
+  ) {
+    return { matched: false };
+  }
+  if (
+    !exactKeys(message, ["nonce", "type"]) ||
+    !validCanonical128BitBase64URL(message.nonce)
+  ) {
+    return { matched: true, error: "invalid_message" };
+  }
+  return { matched: true, value: message };
+}
 
 function validateAvailabilityEnvelope(bytes, { channel, role, exchangeID, sequence }) {
   let envelope;
