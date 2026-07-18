@@ -1,4 +1,9 @@
-import { env, evictDurableObject, SELF } from "cloudflare:test";
+import {
+  env,
+  evictDurableObject,
+  runInDurableObject,
+  SELF,
+} from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 
 const base64URL = (bytes) =>
@@ -288,6 +293,74 @@ describe("rendezvous Worker and Durable Object", () => {
       envelope: restartedViewerEnvelope,
     });
 
+    host.socket.close(1000, "done");
+    replacementViewer.socket.close(1000, "done");
+  });
+
+  it("ignores a delayed departure from an older pairing attempt", async () => {
+    const channel = "D".repeat(52);
+    const admission = proof(40);
+    const host = await open(channel, "host", admission, "pairing");
+    await host.nextMessage();
+    const firstViewer = await open(channel, "viewer", admission, "pairing");
+    await Promise.all([host.nextMessage(), firstViewer.nextMessage()]);
+
+    const stub = env.RENDEZVOUS.get(
+      env.RENDEZVOUS.idFromName(`pairing:${channel}`),
+    );
+    const staleAttachment = await runInDurableObject(
+      stub,
+      (_instance, state) => {
+        const [oldViewerSocket] = state.getWebSockets("viewer");
+        const attachment = oldViewerSocket.deserializeAttachment();
+        // Simulate Cloudflare omitting a disconnected socket before its queued close callback
+        // runs. Occupancy no longer sees it, while its original callback data is retained below.
+        oldViewerSocket.serializeAttachment({ ...attachment, departed: true });
+        return attachment;
+      },
+    );
+
+    const replacementViewer = await open(channel, "viewer", admission, "pairing");
+    expect(await host.nextMessage()).toEqual({ type: "peer-left", role: "viewer" });
+    const [hostReady, replacementReady] = await Promise.all([
+      host.nextMessage(),
+      replacementViewer.nextMessage(),
+    ]);
+    expect(hostReady.type).toBe("ready");
+    expect(replacementReady.type).toBe("ready");
+
+    await runInDurableObject(stub, async (instance) => {
+      let callbackAttachment = { ...staleAttachment, departed: false };
+      const delayedOldSocket = {
+        readyState: 3,
+        deserializeAttachment: () => callbackAttachment,
+        serializeAttachment: (next) => {
+          callbackAttachment = next;
+        },
+      };
+      await instance.handleDeparture(delayedOldSocket);
+    });
+
+    const hostEnvelope = signalEnvelope(channel, 0, "host");
+    host.socket.send(JSON.stringify({ type: "signal", seq: 0, envelope: hostEnvelope }));
+    expect(await replacementViewer.nextMessage()).toEqual({
+      type: "signal",
+      from: "host",
+      seq: 0,
+      envelope: hostEnvelope,
+    });
+    const viewerEnvelope = signalEnvelope(channel, 0, "viewer");
+    replacementViewer.socket.send(
+      JSON.stringify({ type: "signal", seq: 0, envelope: viewerEnvelope }),
+    );
+    expect(await host.nextMessage()).toEqual({
+      type: "signal",
+      from: "viewer",
+      seq: 0,
+      envelope: viewerEnvelope,
+    });
+
+    firstViewer.socket.close(1000, "stale attempt done");
     host.socket.close(1000, "done");
     replacementViewer.socket.close(1000, "done");
   });

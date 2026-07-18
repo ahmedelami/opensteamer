@@ -78,6 +78,9 @@ const validInvitation = (value) =>
   typeof value.consumed === "boolean" &&
   (value.viewerAckForwarded === undefined ||
     typeof value.viewerAckForwarded === "boolean") &&
+  (value.pairingAttemptID === undefined ||
+    value.pairingAttemptID === null ||
+    typeof value.pairingAttemptID === "string") &&
   (value.retireAt === null || Number.isSafeInteger(value.retireAt));
 
 const validAvailability = (value) =>
@@ -101,6 +104,9 @@ const validAttachment = (value) =>
   Number.isSafeInteger(value.lastActivityAt) &&
   Number.isSafeInteger(value.rateWindowStartedAt) &&
   Number.isSafeInteger(value.rateCount) &&
+  (value.pairingAttemptID === undefined ||
+    value.pairingAttemptID === null ||
+    typeof value.pairingAttemptID === "string") &&
   typeof value.departed === "boolean";
 
 const validAvailabilityAttachment = (value) =>
@@ -126,7 +132,7 @@ const socketAttachment = (socket) => {
   }
 };
 
-const newAttachment = (role, generation, now) => ({
+const newAttachment = (role, generation, now, pairingAttemptID = null) => ({
   version: STATE_VERSION,
   role,
   generation,
@@ -134,6 +140,7 @@ const newAttachment = (role, generation, now) => ({
   lastActivityAt: now,
   rateWindowStartedAt: now,
   rateCount: 0,
+  pairingAttemptID,
   departed: false,
 });
 
@@ -252,7 +259,11 @@ export class RendezvousSession extends DurableObject {
         consumed: false,
         retireAt: null,
         ...(mode === "pairing"
-          ? { mode: "pairing", viewerAckForwarded: false }
+          ? {
+              mode: "pairing",
+              viewerAckForwarded: false,
+              pairingAttemptID: null,
+            }
           : {}),
       };
       await this.ctx.storage.put(STORAGE_KEY, this.invitation);
@@ -278,21 +289,6 @@ export class RendezvousSession extends DurableObject {
     if (occupiedRole) {
       return this.rejectWebSocket("role_already_claimed", CLOSE.conflict, mode);
     }
-    if (
-      mode === "pairing" &&
-      !invitation.consumed &&
-      invitation.viewerAckForwarded === true
-    ) {
-      // A replacement role starts a fresh sequence transcript. Prior ACK-routing evidence
-      // cannot authorize completion in the new attempt, even within the same invitation.
-      invitation = {
-        ...invitation,
-        viewerAckForwarded: false,
-      };
-      await this.ctx.storage.put(STORAGE_KEY, invitation);
-      this.invitation = invitation;
-    }
-
     const oppositeRole = role === "host" ? "viewer" : "host";
     let opposite = this.firstOpenRoleSocket(oppositeRole, invitation.generation);
     if (role === "viewer") {
@@ -334,6 +330,38 @@ export class RendezvousSession extends DurableObject {
       }
     }
 
+    let pairingAttemptID = null;
+    if (mode === "pairing" && opposite) {
+      const previousAttemptID = invitation.pairingAttemptID ?? null;
+      pairingAttemptID = crypto.randomUUID();
+      invitation = {
+        ...invitation,
+        viewerAckForwarded: false,
+        pairingAttemptID,
+      };
+      await this.ctx.storage.put(STORAGE_KEY, invitation);
+      this.invitation = invitation;
+
+      const oppositeAttachment = socketAttachment(opposite);
+      if (
+        !oppositeAttachment ||
+        oppositeAttachment.role !== oppositeRole ||
+        oppositeAttachment.generation !== invitation.generation
+      ) {
+        return this.rejectWebSocket("invitation_unavailable", CLOSE.unavailable, mode);
+      }
+      oppositeAttachment.nextSequence = 0;
+      oppositeAttachment.pairingAttemptID = pairingAttemptID;
+      oppositeAttachment.lastActivityAt = Date.now();
+      opposite.serializeAttachment(oppositeAttachment);
+      if (previousAttemptID !== null) {
+        // A stale role socket disappeared before its close callback reset the survivor. Bind
+        // the survivor to the replacement attempt and order peer-left before ready. The old
+        // callback carries its prior attempt ID and cannot disturb this new transcript.
+        safeSend(opposite, { type: "peer-left", role });
+      }
+    }
+
     // Legacy invitations authorize a media session directly, so accepting the viewer is
     // still the irreversible consume-once boundary. Pairing bootstrap is different: both
     // devices must first persist their recoverable pair root. Its invitation is consumed
@@ -344,7 +372,12 @@ export class RendezvousSession extends DurableObject {
       await this.ctx.storage.put(STORAGE_KEY, invitation);
     }
 
-    const accepted = this.acceptWebSocket(role, invitation.generation, mode);
+    const accepted = this.acceptWebSocket(
+      role,
+      invitation.generation,
+      mode,
+      pairingAttemptID,
+    );
     if (!opposite) {
       safeSend(accepted.server, {
         type: "waiting",
@@ -487,11 +520,18 @@ export class RendezvousSession extends DurableObject {
     return accepted.response;
   }
 
-  acceptWebSocket(role, generation, mode = "invitation") {
+  acceptWebSocket(
+    role,
+    generation,
+    mode = "invitation",
+    pairingAttemptID = null,
+  ) {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.ctx.acceptWebSocket(server, [role]);
-    server.serializeAttachment(newAttachment(role, generation, Date.now()));
+    server.serializeAttachment(
+      newAttachment(role, generation, Date.now(), pairingAttemptID),
+    );
     return {
       server,
       response: new Response(null, {
@@ -598,6 +638,14 @@ export class RendezvousSession extends DurableObject {
       (attachment.role !== "host" && attachment.role !== "viewer") ||
       !invitation ||
       attachment.generation !== invitation.generation
+    ) {
+      safeClose(socket, CLOSE.invalid);
+      return;
+    }
+    if (
+      invitation.mode === "pairing" &&
+      (typeof invitation.pairingAttemptID !== "string" ||
+        attachment.pairingAttemptID !== invitation.pairingAttemptID)
     ) {
       safeClose(socket, CLOSE.invalid);
       return;
@@ -822,12 +870,22 @@ export class RendezvousSession extends DurableObject {
     if (!invitation || attachment.generation !== invitation.generation) return;
     if (
       invitation.mode === "pairing" &&
+      (attachment.pairingAttemptID ?? null) !==
+        (invitation.pairingAttemptID ?? null)
+    ) {
+      // The current pairing attempt replaced this socket before its close callback ran.
+      // Never let a stale callback reset the live attempt's progress or survivor sequence.
+      return;
+    }
+    if (
+      invitation.mode === "pairing" &&
       !invitation.consumed &&
-      invitation.viewerAckForwarded === true
+      (invitation.pairingAttemptID ?? null) !== null
     ) {
       invitation = {
         ...invitation,
         viewerAckForwarded: false,
+        pairingAttemptID: null,
       };
       await this.ctx.storage.put(STORAGE_KEY, invitation);
       this.invitation = invitation;
@@ -844,6 +902,7 @@ export class RendezvousSession extends DurableObject {
         // A pre-ACK pairing attempt is recoverably incomplete, not consumed. Let the live
         // partner start a replacement exchange at the protocol's canonical first sequence.
         partnerAttachment.nextSequence = 0;
+        partnerAttachment.pairingAttemptID = null;
         partnerAttachment.lastActivityAt = Date.now();
         try {
           partner.serializeAttachment(partnerAttachment);
