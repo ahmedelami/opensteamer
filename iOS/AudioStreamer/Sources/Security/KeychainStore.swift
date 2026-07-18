@@ -28,10 +28,10 @@ struct KeychainStore: RemoteTokenStoring {
         account: "worldwide-invitation-code"
     )
 
-    // Records that a one-time invitation reached rendezvous admission. The value is only a
-    // domain-separated digest of the normalized code, never the invitation itself. Keeping
-    // this item version-independent prevents a relaunch or update from retrying a code that
-    // the service has already consumed.
+    // Records the admission boundary only after a recoverable viewer pairing record is durable.
+    // The value is a domain-separated digest of the normalized code, never the invitation itself.
+    // Keeping this item version-independent prevents a relaunch or update from retrying a code
+    // that the service has consumed; the paired-device record is then the relaunch route.
     static let worldwideInvitationAdmissionMarkerItem = Item(
         service: "org.example.AudioStreamer",
         account: "worldwide-invitation-admission-marker"

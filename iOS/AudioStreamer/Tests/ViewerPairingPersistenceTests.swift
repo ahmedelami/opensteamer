@@ -212,10 +212,12 @@ final class ViewerPairingPersistenceTests: XCTestCase {
 
     func testAuthenticatedCompletionPersistsBeforeInvitationDeletionExactlyOnce() throws {
         let identity = try RemoteDeviceIdentity.generate(role: .viewer)
-        let record = try makePairedMacRecord(localIdentity: identity)
+        let records = try makePairingRecords(viewerIdentity: identity)
         var events: [String] = []
+        var saveCount = 0
         let store = ViewerPairingStoreStub(identity: identity) {
-            events.append("persist-pair")
+            saveCount += 1
+            events.append(saveCount == 1 ? "persist-recoverable-pair" : "persist-active-pair")
         }
         let state = ViewerPairingState(store: store)
         var invitationDeleteCount = 0
@@ -233,32 +235,51 @@ final class ViewerPairingPersistenceTests: XCTestCase {
             invitationDeleteCount += 1
         }
 
-        try acceptance.rendezvousBecameReady(generation: generation)
-        try acceptance.rendezvousBecameReady(generation: generation)
-        XCTAssertEqual(events, ["persist-admission-marker"])
+        // Sequence 1: the recoverable viewer acknowledgement is durable first.
+        try state.savePairingRecord(records.viewerAcceptedIssued)
+        // Sequence 2 boundary: persist admission immediately before the ACK is sent.
+        try acceptance.persistAdmissionAfterRecoverablePairing(
+            records.viewerAcceptedIssued,
+            generation: generation
+        )
+        try acceptance.persistAdmissionAfterRecoverablePairing(
+            records.viewerAcceptedIssued,
+            generation: generation
+        )
+        XCTAssertEqual(
+            events,
+            ["persist-recoverable-pair", "persist-admission-marker"]
+        )
         XCTAssertEqual(invitationDeleteCount, 0)
 
         XCTAssertTrue(
-            try acceptance.completeAuthenticatedPairing(record, generation: generation)
+            try acceptance.completeAuthenticatedPairing(
+                records.viewerActive,
+                generation: generation
+            )
         )
         XCTAssertFalse(
-            try acceptance.completeAuthenticatedPairing(record, generation: generation)
+            try acceptance.completeAuthenticatedPairing(
+                records.viewerActive,
+                generation: generation
+            )
         )
 
         XCTAssertEqual(
             events,
             [
+                "persist-recoverable-pair",
                 "persist-admission-marker",
-                "persist-pair",
+                "persist-active-pair",
                 "delete-invitation",
                 "delete-admission-marker"
             ]
         )
         XCTAssertEqual(invitationDeleteCount, 1)
-        XCTAssertEqual(state.pairedMac, record)
+        XCTAssertEqual(state.pairedMac, records.viewerActive)
     }
 
-    func testFailureBeforeReadyLeavesInvitationRetryable() throws {
+    func testFailureBeforeRecoverableBoundaryLeavesInvitationRetryable() throws {
         let invitation = try RemoteInvitationCode.generate()
         let store = WorldwideInvitationAdmissionStoreStub()
         let admissionState = WorldwideInvitationAdmissionState(store: store)
@@ -279,21 +300,44 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         XCTAssertNil(store.digest)
     }
 
-    func testReadyThenCrashReconstructsSavedCodeAsAdmittedAndBlocked() throws {
+    func testPendingRecordCannotPersistAdmissionBoundary() throws {
+        let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let pendingRecord = try makePairedMacRecord(
+            localIdentity: identity,
+            pairingState: .pending
+        )
+        var admissionCount = 0
+        var acceptance = InvitationAcceptanceAction()
+        let generation = UUID()
+        acceptance.arm(
+            generation: generation,
+            onAdmitted: { admissionCount += 1 },
+            action: { _ in }
+        )
+
+        XCTAssertThrowsError(
+            try acceptance.persistAdmissionAfterRecoverablePairing(
+                pendingRecord,
+                generation: generation
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? InvitationAcceptanceError,
+                .pairingIsNotRecoverable
+            )
+        }
+        XCTAssertEqual(admissionCount, 0)
+    }
+
+    func testReadyThenProcessDeathWithoutPairLeavesSavedInvitationRetryable() throws {
         let items = makeKeychainItems(testName: #function)
         defer { deleteKeychainItems(items) }
         let invitation = try RemoteInvitationCode.generate()
         let invitationStore = KeychainStore(item: items.invitationCode)
         try invitationStore.saveRemoteToken(invitation.exportedCode)
 
-        let admissionState = WorldwideInvitationAdmissionState(
-            store: WorldwideInvitationAdmissionKeychainStore(
-                item: items.admissionMarker
-            )
-        )
-        try admissionState.markAdmitted(invitation.exportedCode)
-
-        // Simulate process death before any authenticated pair record exists.
+        // Simulate rendezvous readiness followed by process death before an authenticated,
+        // recoverable record exists. Readiness no longer persists an admission marker.
         let relaunchedCode = RemoteTokenState(
             store: KeychainStore(item: items.invitationCode),
             codeDisplayName: "invitation code"
@@ -312,18 +356,75 @@ final class ViewerPairingPersistenceTests: XCTestCase {
 
         XCTAssertEqual(relaunchedCode.token, invitation.exportedCode)
         XCTAssertTrue(relaunchedCode.isStored)
-        XCTAssertTrue(relaunchedAdmission.isAdmitted(relaunchedCode.token))
-        XCTAssertTrue(relaunchedAdmission.blocksPairing(relaunchedCode.token))
+        XCTAssertFalse(relaunchedAdmission.isAdmitted(relaunchedCode.token))
+        XCTAssertFalse(relaunchedAdmission.blocksPairing(relaunchedCode.token))
         XCTAssertNil(relaunchedPair.pairingRecord)
+        XCTAssertNil(try KeychainStore(item: items.admissionMarker).loadData())
+    }
 
-        let persistedDigest = try XCTUnwrap(
-            KeychainStore(item: items.admissionMarker).loadData()
+    func testAdmissionBoundaryRelaunchesThroughRecoverablePairingRecord() throws {
+        let items = makeKeychainItems(testName: #function)
+        defer { deleteKeychainItems(items) }
+        let invitation = try RemoteInvitationCode.generate()
+        try KeychainStore(item: items.invitationCode).saveRemoteToken(
+            invitation.exportedCode
         )
-        XCTAssertEqual(
-            persistedDigest.count,
-            WorldwideInvitationAdmissionKeychainStore.digestByteCount
+        let pairingStore = ViewerPairingKeychainStore(
+            identityItem: items.identity,
+            pairedMacItem: items.pairedMac
         )
-        XCTAssertNotEqual(persistedDigest, Data(invitation.exportedCode.utf8))
+        let identity = try pairingStore.loadOrCreateViewerIdentity()
+        let recoverableRecord = try makePairedMacRecord(
+            localIdentity: identity,
+            pairingState: .acceptedIssued
+        )
+        let pairingState = ViewerPairingState(store: pairingStore)
+        let admissionState = WorldwideInvitationAdmissionState(
+            store: WorldwideInvitationAdmissionKeychainStore(
+                item: items.admissionMarker
+            )
+        )
+        var acceptance = InvitationAcceptanceAction()
+        let generation = UUID()
+        acceptance.arm(
+            generation: generation,
+            onAdmitted: {
+                try admissionState.markAdmitted(invitation.exportedCode)
+            },
+            action: { _ in }
+        )
+
+        // Match the coordinator's sequence: durable recovery first, then admission marker,
+        // immediately before the viewer acknowledgement would be transmitted.
+        try pairingState.savePairingRecord(recoverableRecord)
+        try acceptance.persistAdmissionAfterRecoverablePairing(
+            recoverableRecord,
+            generation: generation
+        )
+
+        let relaunchedCode = RemoteTokenState(
+            store: KeychainStore(item: items.invitationCode),
+            codeDisplayName: "invitation code"
+        )
+        let relaunchedAdmission = WorldwideInvitationAdmissionState(
+            store: WorldwideInvitationAdmissionKeychainStore(
+                item: items.admissionMarker
+            )
+        )
+        let relaunchedPair = ViewerPairingState(
+            store: ViewerPairingKeychainStore(
+                identityItem: items.identity,
+                pairedMacItem: items.pairedMac
+            )
+        )
+
+        XCTAssertEqual(relaunchedCode.token, invitation.exportedCode)
+        XCTAssertTrue(relaunchedAdmission.blocksPairing(relaunchedCode.token))
+        XCTAssertEqual(relaunchedPair.pairingRecord, recoverableRecord)
+        guard case .resend(let acknowledgement) = relaunchedPair.recoveryAction else {
+            return XCTFail("Expected relaunch to route through the durable viewer ACK")
+        }
+        XCTAssertEqual(acknowledgement.phase, .acknowledgement)
     }
 
     func testDifferentInvitationBypassesPriorAdmissionMarker() throws {
@@ -410,7 +511,7 @@ final class ViewerPairingPersistenceTests: XCTestCase {
                 invitationCode: firstInvitation.exportedCode,
                 endpoint: endpoint,
                 pairingState: pairingState,
-                onInvitationAdmitted: {},
+                onRecoverableInvitationAdmitted: {},
                 onAuthenticatedPairingCompleted: {}
             )
         }
@@ -422,7 +523,7 @@ final class ViewerPairingPersistenceTests: XCTestCase {
                 invitationCode: replacementInvitation.exportedCode,
                 endpoint: endpoint,
                 pairingState: pairingState,
-                onInvitationAdmitted: {},
+                onRecoverableInvitationAdmitted: {},
                 onAuthenticatedPairingCompleted: {}
             )
         }
@@ -444,6 +545,7 @@ final class ViewerPairingPersistenceTests: XCTestCase {
     func testPairingPreparationKeepsBackgroundLeaseUntilExplicitCancellation() async throws {
         let client = PairingBootstrapTransportStub()
         let backgroundTask = PairingBackgroundTaskStub()
+        var admissionCount = 0
         let coordinator = WorldwideViewerConnectionCoordinator(
             bootstrapClientFactory: { _, _ in client },
             pairingBackgroundTask: backgroundTask
@@ -460,15 +562,23 @@ final class ViewerPairingPersistenceTests: XCTestCase {
                 invitationCode: invitation.exportedCode,
                 endpoint: endpoint,
                 pairingState: pairingState,
-                onInvitationAdmitted: {},
+                onRecoverableInvitationAdmitted: { admissionCount += 1 },
                 onAuthenticatedPairingCompleted: {}
             )
         }
         try await waitForConnect(client)
+        await client.yield(
+            .ready(
+                role: .viewer,
+                invitationExpiresAt: Date().addingTimeInterval(60)
+            )
+        )
+        try await waitForSentPayloadCount(1, client: client)
 
         XCTAssertTrue(coordinator.isConnecting)
         XCTAssertEqual(backgroundTask.beginCount, 1)
         XCTAssertEqual(backgroundTask.endCount, 0)
+        XCTAssertEqual(admissionCount, 0, "Rendezvous readiness alone must not block the saved code")
 
         // App scene backgrounding no longer calls coordinator.cancel(). The lease remains
         // active so the short authenticated commit can reach durable paired-device storage.
@@ -673,7 +783,7 @@ func makePairedMacRecord() throws -> RemotePairedDeviceRecord {
     )
 }
 
-private func makePairedMacRecord(
+func makePairedMacRecord(
     localIdentity: RemoteDeviceIdentity,
     pairingState: RemotePairingPersistenceState = .active
 ) throws -> RemotePairedDeviceRecord {
@@ -755,6 +865,7 @@ private actor PairingBootstrapTransportStub: ViewerPairingBootstrapTransport {
     private let continuation: PairingBootstrapSignalingClient.EventStream.Continuation
     private var connectCount = 0
     private var closeCount = 0
+    private var sentPayloads: [RemotePairingPayload] = []
     private var shouldSuspendClose: Bool
     private var closeContinuation: CheckedContinuation<Void, Never>?
 
@@ -770,7 +881,9 @@ private actor PairingBootstrapTransportStub: ViewerPairingBootstrapTransport {
         return stream
     }
 
-    func send(_ payload: RemotePairingPayload) async throws {}
+    func send(_ payload: RemotePairingPayload) async throws {
+        sentPayloads.append(payload)
+    }
 
     func close() async {
         closeCount += 1
@@ -791,6 +904,11 @@ private actor PairingBootstrapTransportStub: ViewerPairingBootstrapTransport {
 
     func connectCallCount() -> Int { connectCount }
     func closeCallCount() -> Int { closeCount }
+    func sentPayloadsSnapshot() -> [RemotePairingPayload] { sentPayloads }
+
+    func yield(_ event: PairingBootstrapSignalingEvent) {
+        continuation.yield(event)
+    }
 }
 
 @MainActor
@@ -892,6 +1010,17 @@ private func waitForConnect(
 ) async throws {
     for _ in 0..<500 {
         if await client.connectCallCount() > 0 { return }
+        try await Task<Never, Never>.sleep(nanoseconds: 2_000_000)
+    }
+    throw PairingTestFailure.timeout
+}
+
+private func waitForSentPayloadCount(
+    _ expectedCount: Int,
+    client: PairingBootstrapTransportStub
+) async throws {
+    for _ in 0..<500 {
+        if await client.sentPayloadsSnapshot().count >= expectedCount { return }
         try await Task<Never, Never>.sleep(nanoseconds: 2_000_000)
     }
     throw PairingTestFailure.timeout

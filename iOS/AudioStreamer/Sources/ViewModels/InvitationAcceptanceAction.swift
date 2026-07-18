@@ -1,8 +1,9 @@
 import Foundation
 import RemoteSessionCore
 
-/// Holds destructive invitation cleanup behind an authenticated, durably persisted pairing.
-/// A rendezvous `.ready` event consumes transport admission but proves no device identity.
+/// Holds invitation admission and cleanup behind durably persisted pairing boundaries.
+/// Rendezvous readiness alone proves no device identity and must not turn a saved code into a
+/// locally blocked credential when there is not yet a pairing record that can resume after launch.
 @MainActor
 struct InvitationAcceptanceAction {
     private var generation: UUID?
@@ -21,10 +22,18 @@ struct InvitationAcceptanceAction {
         didPersistAdmission = false
     }
 
-    /// Persists the consume-once admission boundary exactly once. Ready still does not erase
-    /// the invitation: authenticated active pairing must be durable before cleanup may run.
-    mutating func rendezvousBecameReady(generation: UUID) throws {
+    /// Persists the consume-once admission boundary exactly once, after the viewer's recoverable
+    /// acknowledgement state has already been saved. Call this immediately before transmitting
+    /// that acknowledgement. A process death can then resume from the paired-device record
+    /// instead of presenting the saved one-time code as an unusable credential.
+    mutating func persistAdmissionAfterRecoverablePairing(
+        _ record: RemotePairedDeviceRecord,
+        generation: UUID
+    ) throws {
         guard self.generation == generation, !didPersistAdmission else { return }
+        guard record.pairingState == .acceptedIssued else {
+            throw InvitationAcceptanceError.pairingIsNotRecoverable
+        }
         try admissionAction?()
         didPersistAdmission = true
     }
@@ -59,5 +68,6 @@ struct InvitationAcceptanceAction {
 }
 
 enum InvitationAcceptanceError: Error, Equatable {
+    case pairingIsNotRecoverable
     case pairingIsNotActive
 }

@@ -96,7 +96,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         invitationCode input: String,
         endpoint: URL,
         pairingState: ViewerPairingState,
-        onInvitationAdmitted: @escaping @MainActor () throws -> Void,
+        onRecoverableInvitationAdmitted: @escaping @MainActor () throws -> Void,
         onAuthenticatedPairingCompleted: @escaping @MainActor () -> Void
     ) async throws -> RendezvousSignalingClient {
         let operationID = try beginOperation(state: "Pairing securely")
@@ -109,7 +109,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                 endpoint: endpoint,
                 pairingState: pairingState,
                 operationID: operationID,
-                onInvitationAdmitted: onInvitationAdmitted,
+                onRecoverableInvitationAdmitted: onRecoverableInvitationAdmitted,
                 onAuthenticatedPairingCompleted: onAuthenticatedPairingCompleted
             )
             try requireCurrentOperation(operationID)
@@ -206,7 +206,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         endpoint: URL,
         pairingState: ViewerPairingState,
         operationID: UUID,
-        onInvitationAdmitted: @escaping @MainActor () throws -> Void,
+        onRecoverableInvitationAdmitted: @escaping @MainActor () throws -> Void,
         onAuthenticatedPairingCompleted: @escaping @MainActor () -> Void
     ) async throws -> RemotePairedDeviceRecord {
         try requireCurrentOperation(operationID)
@@ -230,7 +230,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         var acceptance = InvitationAcceptanceAction()
         acceptance.arm(
             generation: generation,
-            onAdmitted: onInvitationAdmitted
+            onAdmitted: onRecoverableInvitationAdmitted
         ) { record in
             try pairingState.saveAuthenticatedPairing(record)
             onAuthenticatedPairingCompleted()
@@ -246,10 +246,9 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                     stateText = "Waiting for Mac until \(expiration.formatted(date: .omitted, time: .shortened))"
 
                 case .ready:
-                    // The rendezvous has now consumed the one-time invitation. Persist that
-                    // boundary before sending identity material, so a process crash cannot
-                    // silently resubmit the same now-dead credential on relaunch.
-                    try acceptance.rendezvousBecameReady(generation: generation)
+                    // Readiness alone leaves no durable authenticated state to resume. Do not
+                    // mark the saved invitation as admitted until the viewer acknowledgement
+                    // record has reached Keychain below.
                     guard !helloSent else { continue }
                     helloSent = true
                     stateText = "Authenticating Mac"
@@ -297,6 +296,14 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                         // Crash-safe boundary: ACK state is durable before every transmission.
                         try pairingState.savePairingRecord(current)
                         record = current
+                        // The one-time admission marker follows the recoverable record and is
+                        // written immediately before sequence-2 (viewer ACK) transmission. Thus
+                        // every admitted relaunch can route through pairing recovery, never the
+                        // raw invitation field.
+                        try acceptance.persistAdmissionAfterRecoverablePairing(
+                            current,
+                            generation: generation
+                        )
                         try await client.send(.commit(acknowledgement))
 
                     case .completion:
@@ -460,7 +467,6 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                     stateText = "Waiting for paired Mac"
 
                 case .ready:
-                    try acceptance.rendezvousBecameReady(generation: recoveryGeneration)
                     switch record.pairingState {
                     case .pending:
                         stateText = "Recovering secure pairing"

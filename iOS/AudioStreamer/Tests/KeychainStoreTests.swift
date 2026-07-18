@@ -217,17 +217,28 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(store.deleteCount, 0)
     }
 
-    func testRendezvousReadyAloneDoesNotDeleteInvitation() throws {
+    func testRecoverablePairingBoundaryDoesNotDeleteInvitation() throws {
         let store = RemoteTokenStoreStub(loadResult: .success("consumed-code"))
         let state = RemoteTokenState(store: store, codeDisplayName: "invitation code")
+        let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let recoverableRecord = try makePairedMacRecord(
+            localIdentity: identity,
+            pairingState: .acceptedIssued
+        )
         var acceptance = InvitationAcceptanceAction()
         let generation = UUID()
         acceptance.arm(generation: generation) { _ in
             state.clearSavedCode()
         }
 
-        try acceptance.rendezvousBecameReady(generation: generation)
-        try acceptance.rendezvousBecameReady(generation: generation)
+        try acceptance.persistAdmissionAfterRecoverablePairing(
+            recoverableRecord,
+            generation: generation
+        )
+        try acceptance.persistAdmissionAfterRecoverablePairing(
+            recoverableRecord,
+            generation: generation
+        )
 
         XCTAssertEqual(state.token, "consumed-code")
         XCTAssertTrue(state.isStored)

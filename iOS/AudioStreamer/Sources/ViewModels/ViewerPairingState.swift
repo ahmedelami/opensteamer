@@ -106,9 +106,10 @@ enum ViewerPairingStateError: Error, Equatable {
 
 /// Main-actor projection of the durable consume-once invitation boundary.
 ///
-/// A saved invitation may remain visible after a crash, but once its matching admission marker
-/// exists it is deliberately non-retryable. A different valid invitation has a different digest
-/// and remains usable. Storage failures fail closed until protected Keychain data can be read.
+/// An admission marker is created only after a recoverable pairing record is durable. If its
+/// matching saved invitation remains visible after a crash, the app resumes through that record
+/// instead of retrying the one-time code. A different valid invitation has a different digest and
+/// remains usable. Storage failures fail closed until protected Keychain data can be read.
 @MainActor
 final class WorldwideInvitationAdmissionState: ObservableObject {
     @Published private(set) var storageError: String?

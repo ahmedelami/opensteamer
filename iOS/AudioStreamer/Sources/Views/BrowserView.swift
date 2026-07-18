@@ -332,7 +332,7 @@ struct BrowserView: View {
             default:
                 // Pairing and reconnect are intentionally allowed to finish under the
                 // coordinator's short iOS background-task lease. Only the explicit Cancel
-                // button may abandon a consume-once invitation after rendezvous admission.
+                // button may abandon the authenticated transition before durable recovery.
                 break
             }
         }
@@ -415,7 +415,7 @@ struct BrowserView: View {
                     invitationCode: invitation,
                     endpoint: endpoint,
                     pairingState: viewerPairingState,
-                    onInvitationAdmitted: {
+                    onRecoverableInvitationAdmitted: {
                         try invitationAdmissionState.markAdmitted(invitation)
                     },
                     onAuthenticatedPairingCompleted: clearInvitationAfterPairing
