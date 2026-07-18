@@ -163,6 +163,36 @@ struct DurableSignalingClientTests {
         await client.close()
     }
 
+    @Test func availabilityCloseWinningSuspendedConnectCannotReopenClient() async throws {
+        let fake = DurableFakeSocketTransport()
+        await fake.suspendConnects()
+        let client = try PairedAvailabilitySignalingClient(
+            endpoint: endpoint,
+            locator: makeLocator(role: .viewer),
+            role: .viewer,
+            transport: fake
+        )
+
+        let connectTask = Task {
+            try await client.connect()
+        }
+        #expect(await eventually { await fake.hasSuspendedConnect() })
+
+        // Close must be allowed to win while `connect()` is suspended inside the transport.
+        await client.close()
+        await fake.resumeSuspendedConnect()
+
+        do {
+            _ = try await connectTask.value
+            Issue.record("A completed transport connect must not resurrect a closed client")
+        } catch {
+            #expect(error as? RendezvousSignalingError == .connectionClosed)
+        }
+        // The resumed transport is closed again in case it installed a socket after the first
+        // close raced ahead of its connect completion.
+        #expect(await fake.closeCallCount() == 2)
+    }
+
     @Test func availabilityClosesBeforeHeartbeatWhenFirstProtocolStateNeverArrives() async throws {
         let fake = DurableFakeSocketTransport()
         let client = try PairedAvailabilitySignalingClient(
@@ -790,6 +820,8 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
     private var pingCount = 0
     private var shouldSuspendApplicationProbeSends = false
     private var suspendedApplicationProbeSend: CheckedContinuation<Void, any Error>?
+    private var shouldSuspendConnects = false
+    private var suspendedConnect: CheckedContinuation<Void, any Error>?
     private var probeSendWaiter: CheckedContinuation<String, any Error>?
     private var closeCalls = 0
     private var queued = [RendezvousSocketMessage]()
@@ -808,6 +840,11 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
         self.admissionProof = admissionProof
         self.viewerAdmissionProof = viewerAdmissionProof
         self.mode = mode
+        if shouldSuspendConnects {
+            try await withCheckedThrowingContinuation {
+                suspendedConnect = $0
+            }
+        }
     }
 
     func send(text: String) async throws {
@@ -843,6 +880,16 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
     }
 
     func failPings() { pingsFail = true }
+
+    func suspendConnects() { shouldSuspendConnects = true }
+
+    func hasSuspendedConnect() -> Bool { suspendedConnect != nil }
+
+    func resumeSuspendedConnect() {
+        shouldSuspendConnects = false
+        suspendedConnect?.resume()
+        suspendedConnect = nil
+    }
 
     func sentPingCount() -> Int { pingCount }
 
