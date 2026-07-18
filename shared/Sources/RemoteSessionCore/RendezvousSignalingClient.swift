@@ -250,6 +250,14 @@ public actor RendezvousSignalingClient {
             throw RendezvousSignalingError.connectionFailed
         }
 
+        // `transport.connect` is an actor-reentrant suspension point. A concurrent `close()` can
+        // therefore win while the socket is still opening and move this client to `.closed`.
+        // Never let a later successful connect completion resurrect that closed client.
+        guard state == .idle else {
+            await transport.close()
+            throw RendezvousSignalingError.connectionClosed
+        }
+
         let pair = EventStream.makeStream(
             bufferingPolicy: .bufferingOldest(Limits.maximumEventBufferCount)
         )

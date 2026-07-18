@@ -148,6 +148,67 @@ struct DurableSignalingClientTests {
         await viewer.close()
     }
 
+    @Test func pairingBootstrapCloseWinningSuspendedConnectCannotReopenClient() async throws {
+        let fake = DurableFakeSocketTransport()
+        await fake.suspendConnects()
+        let invitation = try RemoteInvitationCode(secret: Data(repeating: 0x27, count: 20))
+        let client = try PairingBootstrapSignalingClient(
+            endpoint: endpoint,
+            invitation: invitation,
+            role: .viewer,
+            transport: fake
+        )
+
+        let connectTask = Task {
+            try await client.connect()
+        }
+        #expect(await eventually { await fake.hasSuspendedConnect() })
+
+        // Close must remain authoritative even if the transport later reports a successful open.
+        await client.close()
+        await fake.resumeSuspendedConnect()
+
+        do {
+            _ = try await connectTask.value
+            Issue.record("A completed pairing transport connect must not resurrect a closed client")
+        } catch {
+            #expect(error as? RendezvousSignalingError == .connectionClosed)
+        }
+        #expect(await fake.closeCallCount() == 2)
+    }
+
+    @Test func sessionCloseWinningSuspendedConnectCannotReopenClient() async throws {
+        let fake = DurableFakeSocketTransport()
+        await fake.suspendConnects()
+        let credential = RemoteRendezvousCredential(
+            invitation: try RemoteInvitationCode(secret: Data(repeating: 0x37, count: 20))
+        )
+        let client = try RendezvousSignalingClient(
+            endpoint: endpoint,
+            credential: credential,
+            role: .viewer,
+            mode: .session,
+            transport: fake
+        )
+
+        let connectTask = Task {
+            try await client.connect()
+        }
+        #expect(await eventually { await fake.hasSuspendedConnect() })
+
+        // Disconnect must not be undone by the actor resuming from its transport open await.
+        await client.close()
+        await fake.resumeSuspendedConnect()
+
+        do {
+            _ = try await connectTask.value
+            Issue.record("A completed media transport connect must not resurrect a closed client")
+        } catch {
+            #expect(error as? RendezvousSignalingError == .connectionClosed)
+        }
+        #expect(await fake.closeCallCount() == 2)
+    }
+
     @Test func availabilityMapsBoundedUnavailableErrorForTransientRetry() async throws {
         let fake = DurableFakeSocketTransport()
         let client = try PairedAvailabilitySignalingClient(
