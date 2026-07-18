@@ -247,8 +247,8 @@ struct CaptureServerMain {
 
             let outcome = try await group.next()
             if outcome == .terminationSignal {
-                // URLSession WebSockets otherwise remain registered at the Worker after launchd
-                // replaces this process, rejecting the replacement host as a role conflict.
+                // Close the availability socket before process replacement so stale exchange state
+                // does not outlive this host instance.
                 await coordinator.stop()
             }
             group.cancelAll()

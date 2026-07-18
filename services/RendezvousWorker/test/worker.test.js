@@ -752,7 +752,7 @@ describe("rendezvous Worker and Durable Object", () => {
     secondViewer.socket.close(1000, "done");
   });
 
-  it("pairs an authenticated replacement host with the persistent viewer", async () => {
+  it("pairs a capability-authorized replacement host with the persistent viewer", async () => {
     const channel = "T".repeat(52);
     const hostProof = proof(51);
     const viewerProof = proof(52);
@@ -765,7 +765,7 @@ describe("rendezvous Worker and Durable Object", () => {
     ]);
 
     // Model an abruptly terminated Mac whose hibernating Worker socket still looks OPEN. The
-    // authenticated replacement fences only that stale host and rebinds the healthy viewer to a
+    // capability-authorized replacement fences only that stale host and rebinds the open viewer to a
     // fresh exchange; the viewer must not reconnect.
     const replacementHost = await open(
       channel,
@@ -820,7 +820,7 @@ describe("rendezvous Worker and Durable Object", () => {
     staleViewer.socket.close(1000, "done");
   });
 
-  it("ignores a delayed stale-host departure after an authenticated replacement", async () => {
+  it("ignores a delayed stale-host departure after a capability-authorized replacement", async () => {
     const channel = "U".repeat(52);
     const hostProof = proof(53);
     const viewerProof = proof(54);
@@ -894,7 +894,7 @@ describe("rendezvous Worker and Durable Object", () => {
     staleViewer.socket.close(1000, "done");
   });
 
-  it("uses an authenticated replacement viewer to restart a ghost host exchange", async () => {
+  it("uses a capability-authorized replacement viewer to restart a ghost host exchange", async () => {
     const channel = "W".repeat(52);
     const hostProof = proof(55);
     const viewerProof = proof(56);
@@ -906,7 +906,7 @@ describe("rendezvous Worker and Durable Object", () => {
       ghostViewer.nextMessage(),
     ]);
 
-    // A viewer retry is the application-level evidence that the paired host did not answer. The
+    // A viewer retry can indicate that the paired host did not answer on the current exchange. The
     // Worker cannot prove that an OPEN edge socket still reaches the Mac process, so it transiently
     // retires that host and makes this viewer retry after a fresh host registration.
     const breaker = await open(channel, "viewer", viewerProof, "availability");

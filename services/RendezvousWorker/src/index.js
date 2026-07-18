@@ -448,8 +448,8 @@ export class RendezvousSession extends DurableObject {
       return json({ error: "availability_unavailable" }, 404);
     }
 
-    // Stable, pair-scoped proofs make a duplicate role an authenticated replacement. Snapshot a
-    // healthy opposite socket first, then synchronously fence only the superseded same-role
+    // Stable, pair-scoped proofs make a duplicate role a capability-authorized replacement.
+    // Snapshot an open opposite socket first, then synchronously fence only the superseded same-role
     // sockets before installing the replacement. Joins are serialized, and there are no awaits
     // below this point, so the opposite attachment and replacement attachment move to one fresh
     // exchange as one mutation. Delayed callbacks remain fenced by `departed` and the old
@@ -474,8 +474,8 @@ export class RendezvousSession extends DurableObject {
       oppositeAttachment = undefined;
     }
 
-    // A viewer retry follows an application response timeout. A still-paired host at this point
-    // may be an OPEN edge socket whose Mac application is no longer processing DO messages, so
+    // A viewer retry can indicate an exchange that no longer reaches the iPhone application.
+    // A still-paired host may be an OPEN edge socket whose Mac application is not processing DO messages, so
     // rebinding it would reproduce the same timeout forever. Retire the superseded viewer
     // terminally, but notify/close the host transiently so it registers a fresh socket; this
     // viewer attempt receives unavailable and its bounded outer retry pairs after that host join.
