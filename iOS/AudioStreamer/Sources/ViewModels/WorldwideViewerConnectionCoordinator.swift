@@ -46,6 +46,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
     private let availabilityRetryDeadlineNanoseconds: UInt64
     private let availabilityMonotonicNow: AvailabilityMonotonicNow
     private let availabilityRetrySleep: AvailabilityRetrySleep
+    private let pairingBackgroundTask: any TransitionBackgroundTaskCoordinating
     private var activeOperationID: UUID?
     private var bootstrapClient: (any ViewerPairingBootstrapTransport)?
     private var bootstrapClientOperationID: UUID?
@@ -79,13 +80,16 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
             let boundedDelay = min(jitteredDelay, remaining)
             guard boundedDelay > 0 else { return }
             try await Task<Never, Never>.sleep(nanoseconds: boundedDelay)
-        }
+        },
+        pairingBackgroundTask: any TransitionBackgroundTaskCoordinating =
+            AppTransitionBackgroundTaskCoordinator(name: "AudioStreamerSecurePairing")
     ) {
         makeBootstrapClient = bootstrapClientFactory
         makeAvailabilityClient = availabilityClientFactory
         self.availabilityRetryDeadlineNanoseconds = availabilityRetryDeadlineNanoseconds
         self.availabilityMonotonicNow = availabilityMonotonicNow
         self.availabilityRetrySleep = availabilityRetrySleep
+        self.pairingBackgroundTask = pairingBackgroundTask
     }
 
     func pairAndPrepareMediaSession(
@@ -180,6 +184,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         activeOperationID = nil
         isConnecting = false
         stateText = "Not connected"
+        pairingBackgroundTask.endTransitionTask()
         let transports = removeTransports(ownedBy: operationID)
         Task {
             await transports.bootstrap?.close()
@@ -597,6 +602,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         isConnecting = true
         stateText = state
         lastError = nil
+        pairingBackgroundTask.beginTransitionTask()
         return operationID
     }
 
@@ -608,6 +614,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         guard activeOperationID == operationID else { return }
         activeOperationID = nil
         isConnecting = false
+        pairingBackgroundTask.endTransitionTask()
     }
 
     private func requireIdentity(

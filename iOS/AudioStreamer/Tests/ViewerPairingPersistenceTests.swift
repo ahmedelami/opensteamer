@@ -441,6 +441,45 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         _ = await replacementTask.result
     }
 
+    func testPairingPreparationKeepsBackgroundLeaseUntilExplicitCancellation() async throws {
+        let client = PairingBootstrapTransportStub()
+        let backgroundTask = PairingBackgroundTaskStub()
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            bootstrapClientFactory: { _, _ in client },
+            pairingBackgroundTask: backgroundTask
+        )
+        let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let pairingState = ViewerPairingState(
+            store: ViewerPairingStoreStub(identity: identity)
+        )
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+        let invitation = try RemoteInvitationCode.generate()
+
+        let task = Task { @MainActor in
+            try await coordinator.pairAndPrepareMediaSession(
+                invitationCode: invitation.exportedCode,
+                endpoint: endpoint,
+                pairingState: pairingState,
+                onInvitationAdmitted: {},
+                onAuthenticatedPairingCompleted: {}
+            )
+        }
+        try await waitForConnect(client)
+
+        XCTAssertTrue(coordinator.isConnecting)
+        XCTAssertEqual(backgroundTask.beginCount, 1)
+        XCTAssertEqual(backgroundTask.endCount, 0)
+
+        // App scene backgrounding no longer calls coordinator.cancel(). The lease remains
+        // active so the short authenticated commit can reach durable paired-device storage.
+        coordinator.cancel()
+        _ = await task.result
+
+        XCTAssertFalse(coordinator.isConnecting)
+        XCTAssertEqual(backgroundTask.beginCount, 1)
+        XCTAssertEqual(backgroundTask.endCount, 1)
+    }
+
     func testAvailabilityRetriesWhenHostRegistrationIsNotReady() async throws {
         let identity = try RemoteDeviceIdentity.generate(role: .viewer)
         let activeRecord = try makePairedMacRecord(localIdentity: identity)
@@ -752,6 +791,20 @@ private actor PairingBootstrapTransportStub: ViewerPairingBootstrapTransport {
 
     func connectCallCount() -> Int { connectCount }
     func closeCallCount() -> Int { closeCount }
+}
+
+@MainActor
+private final class PairingBackgroundTaskStub: TransitionBackgroundTaskCoordinating {
+    private(set) var beginCount = 0
+    private(set) var endCount = 0
+
+    func beginTransitionTask() {
+        beginCount += 1
+    }
+
+    func endTransitionTask() {
+        endCount += 1
+    }
 }
 
 private actor PairedAvailabilityTransportStub: ViewerPairedAvailabilityTransport {

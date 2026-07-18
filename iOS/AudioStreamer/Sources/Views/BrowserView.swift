@@ -162,7 +162,7 @@ struct BrowserView: View {
                             .foregroundStyle(.orange)
                     } else if invitationAdmissionState.isAdmitted(trimmedInvitationCode) {
                         Label(
-                            "This one-time code was already admitted and cannot be retried. Clear it and enter a new code from the Mac.",
+                            "Pairing was interrupted after this one-time code was accepted. Reset pairing on the Mac, then clear this code and generate a new one.",
                             systemImage: "exclamationmark.triangle"
                         )
                         .font(.caption)
@@ -329,11 +329,10 @@ struct BrowserView: View {
             case .active:
                 viewerPairingState.retryHydrationIfNeeded()
                 invitationAdmissionState.retryHydrationIfNeeded()
-            case .background:
-                // Stop only an in-progress bootstrap/reconnect. An established media session
-                // remains owned by WorldwideSessionViewModel so background audio can continue.
-                cancelWorldwidePreparation()
             default:
+                // Pairing and reconnect are intentionally allowed to finish under the
+                // coordinator's short iOS background-task lease. Only the explicit Cancel
+                // button may abandon a consume-once invitation after rendezvous admission.
                 break
             }
         }

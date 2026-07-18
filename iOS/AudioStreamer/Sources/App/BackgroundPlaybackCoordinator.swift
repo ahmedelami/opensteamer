@@ -2,19 +2,30 @@ import MediaPlayer
 import UIKit
 
 @MainActor
-final class BackgroundPlaybackCoordinator {
+protocol TransitionBackgroundTaskCoordinating: AnyObject {
+    func beginTransitionTask()
+    func endTransitionTask()
+}
+
+/// A bounded iOS background-task lease for short state transitions that must finish atomically.
+/// It does not grant continuous background execution and must never be used as a media lifetime.
+@MainActor
+final class AppTransitionBackgroundTaskCoordinator: TransitionBackgroundTaskCoordinating {
+    private let name: String
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+
+    init(name: String) {
+        self.name = name
+    }
 
     func beginTransitionTask() {
         guard backgroundTask == .invalid else { return }
 
-        // This is only transition grace; continuous background eligibility comes from active audio playback.
-        let task = UIApplication.shared.beginBackgroundTask(withName: "AudioStreamerBackgroundPlayback") { [weak self] in
+        let task = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
             Task { @MainActor in
                 self?.endTransitionTask()
             }
         }
-
         guard task != .invalid else { return }
         backgroundTask = task
     }
@@ -25,6 +36,22 @@ final class BackgroundPlaybackCoordinator {
         let task = backgroundTask
         backgroundTask = .invalid
         UIApplication.shared.endBackgroundTask(task)
+    }
+}
+
+@MainActor
+final class BackgroundPlaybackCoordinator {
+    private let transitionTask = AppTransitionBackgroundTaskCoordinator(
+        name: "AudioStreamerBackgroundPlayback"
+    )
+
+    func beginTransitionTask() {
+        // This is only transition grace; continuous background eligibility comes from active audio playback.
+        transitionTask.beginTransitionTask()
+    }
+
+    func endTransitionTask() {
+        transitionTask.endTransitionTask()
     }
 
     func publishLiveStream(serverName: String?, isPlaying: Bool) {
@@ -47,3 +74,5 @@ final class BackgroundPlaybackCoordinator {
         endTransitionTask()
     }
 }
+
+extension BackgroundPlaybackCoordinator: TransitionBackgroundTaskCoordinating {}
