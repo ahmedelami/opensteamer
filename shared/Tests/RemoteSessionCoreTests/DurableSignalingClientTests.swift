@@ -252,6 +252,254 @@ struct DurableSignalingClientTests {
         #expect(await fake.sentPingCount() == 1)
     }
 
+    @Test func hostSendsCanonicalProbeAndMatchingAckKeepsAvailabilityOpen() async throws {
+        let fake = DurableFakeSocketTransport()
+        let heartbeatSleep = FirstHeartbeatThenParkSleep()
+        let nonce = Data(0..<16)
+        let client = try PairedAvailabilitySignalingClient(
+            endpoint: endpoint,
+            locator: makeLocator(role: .host),
+            role: .host,
+            transport: fake,
+            livenessIntervalNanoseconds: 0,
+            livenessTimeoutNanoseconds: 1_000_000_000,
+            livenessSleep: { nanoseconds in
+                try await heartbeatSleep.sleep(nanoseconds: nanoseconds)
+            },
+            applicationProbeAckTimeoutNanoseconds: 60_000_000_000,
+            applicationProbeNonceGenerator: { nonce }
+        )
+        let stream = try await client.connect()
+        var iterator = stream.makeAsyncIterator()
+        await fake.push(text: #"{"type":"availability-waiting"}"#)
+        #expect(try await iterator.next() == .waiting)
+
+        let probe = try await fake.waitForProbeSend()
+        #expect(
+            probe ==
+                #"{"nonce":"AAECAwQFBgcICQoLDA0ODw","type":"availability-probe"}"#
+        )
+        #expect(await fake.sentPingCount() == 1)
+
+        await fake.push(
+            text: #"{"type":"availability-probe-ack","nonce":"AAECAwQFBgcICQoLDA0ODw"}"#
+        )
+        await fake.push(text: #"{"type":"availability-waiting"}"#)
+        #expect(try await iterator.next() == .waiting)
+        await client.close()
+    }
+
+    @Test func viewerHeartbeatsNeverSendApplicationProbes() async throws {
+        let fake = DurableFakeSocketTransport()
+        let heartbeatSleep = FirstHeartbeatThenParkSleep()
+        let client = try PairedAvailabilitySignalingClient(
+            endpoint: endpoint,
+            locator: makeLocator(role: .viewer),
+            role: .viewer,
+            transport: fake,
+            livenessIntervalNanoseconds: 0,
+            livenessTimeoutNanoseconds: 1_000_000_000,
+            livenessSleep: { nanoseconds in
+                try await heartbeatSleep.sleep(nanoseconds: nanoseconds)
+            }
+        )
+        let stream = try await client.connect()
+        var iterator = stream.makeAsyncIterator()
+        await fake.push(text: #"{"type":"availability-waiting"}"#)
+
+        #expect(try await iterator.next() == .waiting)
+        #expect(await eventually { await heartbeatSleep.isParked() })
+        #expect(await fake.sentPingCount() == 1)
+        #expect(await fake.sentTexts().isEmpty)
+        await client.close()
+    }
+
+    @Test func missingApplicationProbeAckClosesHostAvailability() async throws {
+        let fake = DurableFakeSocketTransport()
+        let client = try PairedAvailabilitySignalingClient(
+            endpoint: endpoint,
+            locator: makeLocator(role: .host),
+            role: .host,
+            transport: fake,
+            livenessIntervalNanoseconds: 0,
+            livenessTimeoutNanoseconds: 1_000_000_000,
+            livenessSleep: { _ in },
+            applicationProbeAckTimeoutNanoseconds: 1,
+            applicationProbeAckSleep: { _ in
+                _ = try await fake.waitForProbeSend()
+            },
+            applicationProbeNonceGenerator: { Data(repeating: 0xA1, count: 16) }
+        )
+        let stream = try await client.connect()
+        var iterator = stream.makeAsyncIterator()
+        await fake.push(text: #"{"type":"availability-waiting"}"#)
+        #expect(try await iterator.next() == .waiting)
+
+        do {
+            _ = try await iterator.next()
+            Issue.record("Expected the missing probe acknowledgement to close availability")
+        } catch {
+            #expect(error as? RendezvousSignalingError == .connectionClosed)
+        }
+        #expect(await fake.sentTexts().count == 1)
+        #expect(await fake.closeCallCount() >= 1)
+    }
+
+    @Test func probeDeadlineClosesHostWhileTransportSendIsSuspended() async throws {
+        let fake = DurableFakeSocketTransport()
+        await fake.suspendApplicationProbeSends()
+        let client = try PairedAvailabilitySignalingClient(
+            endpoint: endpoint,
+            locator: makeLocator(role: .host),
+            role: .host,
+            transport: fake,
+            livenessIntervalNanoseconds: 0,
+            livenessTimeoutNanoseconds: 1_000_000_000,
+            livenessSleep: { _ in },
+            applicationProbeAckTimeoutNanoseconds: 1,
+            applicationProbeAckSleep: { _ in
+                _ = try await fake.waitForProbeSend()
+            },
+            applicationProbeNonceGenerator: { Data(repeating: 0xB2, count: 16) }
+        )
+        let stream = try await client.connect()
+        var iterator = stream.makeAsyncIterator()
+        await fake.push(text: #"{"type":"availability-waiting"}"#)
+        #expect(try await iterator.next() == .waiting)
+
+        do {
+            _ = try await iterator.next()
+            Issue.record("Expected the armed deadline to close a suspended probe send")
+        } catch {
+            #expect(error as? RendezvousSignalingError == .connectionClosed)
+        }
+        #expect(await fake.sentTexts().count == 1)
+        #expect(await fake.closeCallCount() >= 1)
+    }
+
+    @Test func staleProbeAckFailsClosedAndCannotBlessReplacementClient() async throws {
+        let fake = DurableFakeSocketTransport()
+        let nonce = Data(repeating: 0xC3, count: 16)
+        let oldClient = try PairedAvailabilitySignalingClient(
+            endpoint: endpoint,
+            locator: makeLocator(role: .host),
+            role: .host,
+            transport: fake,
+            livenessIntervalNanoseconds: 0,
+            livenessTimeoutNanoseconds: 1_000_000_000,
+            livenessSleep: { _ in },
+            applicationProbeAckTimeoutNanoseconds: 1,
+            applicationProbeAckSleep: { _ in
+                _ = try await fake.waitForProbeSend()
+            },
+            applicationProbeNonceGenerator: { nonce }
+        )
+        let oldStream = try await oldClient.connect()
+        var oldIterator = oldStream.makeAsyncIterator()
+        await fake.push(text: #"{"type":"availability-waiting"}"#)
+        #expect(try await oldIterator.next() == .waiting)
+        do {
+            _ = try await oldIterator.next()
+            Issue.record("Expected the old client probe to time out")
+        } catch {
+            #expect(error as? RendezvousSignalingError == .connectionClosed)
+        }
+
+        // Simulate an acknowledgement arriving on a reused test transport only after the old
+        // client has been closed. A replacement with the same injected nonce still has no pending
+        // probe, so the late acknowledgement must be rejected rather than authenticating it.
+        await fake.push(
+            text: #"{"type":"availability-probe-ack","nonce":"w8PDw8PDw8PDw8PDw8PDww"}"#
+        )
+        let replacement = try PairedAvailabilitySignalingClient(
+            endpoint: endpoint,
+            locator: makeLocator(role: .host),
+            role: .host,
+            transport: fake,
+            firstProtocolStateTimeoutNanoseconds: 60_000_000_000,
+            applicationProbeNonceGenerator: { nonce }
+        )
+        let replacementStream = try await replacement.connect()
+        var replacementIterator = replacementStream.makeAsyncIterator()
+        do {
+            _ = try await replacementIterator.next()
+            Issue.record("Expected a late acknowledgement to fail the replacement closed")
+        } catch {
+            #expect(error as? RendezvousSignalingError == .invalidServerMessage)
+        }
+        #expect(await fake.sentTexts().count == 1)
+    }
+
+    @Test func mismatchedAckForActiveProbeFailsClosed() async throws {
+        let fake = DurableFakeSocketTransport()
+        let heartbeatSleep = FirstHeartbeatThenParkSleep()
+        let client = try PairedAvailabilitySignalingClient(
+            endpoint: endpoint,
+            locator: makeLocator(role: .host),
+            role: .host,
+            transport: fake,
+            livenessIntervalNanoseconds: 0,
+            livenessTimeoutNanoseconds: 1_000_000_000,
+            livenessSleep: { nanoseconds in
+                try await heartbeatSleep.sleep(nanoseconds: nanoseconds)
+            },
+            applicationProbeAckTimeoutNanoseconds: 60_000_000_000,
+            applicationProbeNonceGenerator: { Data(repeating: 0xE5, count: 16) }
+        )
+        let stream = try await client.connect()
+        var iterator = stream.makeAsyncIterator()
+        await fake.push(text: #"{"type":"availability-waiting"}"#)
+        #expect(try await iterator.next() == .waiting)
+        _ = try await fake.waitForProbeSend()
+
+        await fake.push(
+            text: #"{"type":"availability-probe-ack","nonce":"AAAAAAAAAAAAAAAAAAAAAA"}"#
+        )
+        do {
+            _ = try await iterator.next()
+            Issue.record("Expected a mismatched active-probe acknowledgement to fail closed")
+        } catch {
+            #expect(error as? RendezvousSignalingError == .invalidServerMessage)
+        }
+        #expect(await fake.closeCallCount() >= 1)
+    }
+
+    @Test func matchingAckBeforeSuspendedSendReturnsCompletesExactProbe() async throws {
+        let fake = DurableFakeSocketTransport()
+        await fake.suspendApplicationProbeSends()
+        let heartbeatSleep = FirstHeartbeatThenParkSleep()
+        let client = try PairedAvailabilitySignalingClient(
+            endpoint: endpoint,
+            locator: makeLocator(role: .host),
+            role: .host,
+            transport: fake,
+            livenessIntervalNanoseconds: 0,
+            livenessTimeoutNanoseconds: 1_000_000_000,
+            livenessSleep: { nanoseconds in
+                try await heartbeatSleep.sleep(nanoseconds: nanoseconds)
+            },
+            applicationProbeAckTimeoutNanoseconds: 60_000_000_000,
+            applicationProbeNonceGenerator: { Data(0..<16) }
+        )
+        let stream = try await client.connect()
+        var iterator = stream.makeAsyncIterator()
+        await fake.push(text: #"{"type":"availability-waiting"}"#)
+        #expect(try await iterator.next() == .waiting)
+        _ = try await fake.waitForProbeSend()
+
+        await fake.push(
+            text: #"{"type":"availability-probe-ack","nonce":"AAECAwQFBgcICQoLDA0ODw"}"#
+        )
+        // The receive loop asks for its next message only after it parsed and recorded the ack.
+        #expect(await eventually { await fake.hasSuspendedReceive() })
+        await fake.resumeSuspendedApplicationProbeSend()
+        #expect(await eventually { await heartbeatSleep.isParked() })
+
+        await fake.push(text: #"{"type":"availability-waiting"}"#)
+        #expect(try await iterator.next() == .waiting)
+        await client.close()
+    }
+
     @Test func availabilityRejectsUnboundedOrExtendedErrorSchemas() async throws {
         let oversizedError = String(repeating: "a", count: 65)
         for text in [
@@ -505,9 +753,31 @@ struct DurableSignalingClientTests {
         )
         return try #require(object["seq"] as? UInt64)
     }
+
+    private func eventually(_ predicate: () async -> Bool) async -> Bool {
+        for _ in 0..<10_000 {
+            if await predicate() { return true }
+            await Task.yield()
+        }
+        return false
+    }
 }
 
 private enum DurableFakeSocketError: Error { case closed }
+
+private actor FirstHeartbeatThenParkSleep {
+    private var callCount = 0
+    private var parked = false
+
+    func sleep(nanoseconds _: UInt64) async throws {
+        callCount += 1
+        guard callCount > 1 else { return }
+        parked = true
+        try await Task<Never, Never>.sleep(nanoseconds: 60_000_000_000)
+    }
+
+    func isParked() -> Bool { parked }
+}
 
 private actor DurableFakeSocketTransport: RendezvousSocketTransport {
     private var url: URL?
@@ -518,6 +788,10 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
     private var sent = [String]()
     private var pingsFail = false
     private var pingCount = 0
+    private var shouldSuspendApplicationProbeSends = false
+    private var suspendedApplicationProbeSend: CheckedContinuation<Void, any Error>?
+    private var probeSendWaiter: CheckedContinuation<String, any Error>?
+    private var closeCalls = 0
     private var queued = [RendezvousSocketMessage]()
     private var waiter: CheckedContinuation<RendezvousSocketMessage, any Error>?
 
@@ -536,7 +810,17 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
         self.mode = mode
     }
 
-    func send(text: String) async throws { sent.append(text) }
+    func send(text: String) async throws {
+        sent.append(text)
+        guard Self.isApplicationProbe(text) else { return }
+        probeSendWaiter?.resume(returning: text)
+        probeSendWaiter = nil
+        if shouldSuspendApplicationProbeSends {
+            try await withCheckedThrowingContinuation {
+                suspendedApplicationProbeSend = $0
+            }
+        }
+    }
 
     func receive() async throws -> RendezvousSocketMessage {
         if !queued.isEmpty { return queued.removeFirst() }
@@ -549,13 +833,37 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
     }
 
     func close() async {
+        closeCalls += 1
         waiter?.resume(throwing: DurableFakeSocketError.closed)
         waiter = nil
+        suspendedApplicationProbeSend?.resume(throwing: DurableFakeSocketError.closed)
+        suspendedApplicationProbeSend = nil
+        probeSendWaiter?.resume(throwing: DurableFakeSocketError.closed)
+        probeSendWaiter = nil
     }
 
     func failPings() { pingsFail = true }
 
     func sentPingCount() -> Int { pingCount }
+
+    func suspendApplicationProbeSends() { shouldSuspendApplicationProbeSends = true }
+
+    func resumeSuspendedApplicationProbeSend() {
+        shouldSuspendApplicationProbeSends = false
+        suspendedApplicationProbeSend?.resume()
+        suspendedApplicationProbeSend = nil
+    }
+
+    func waitForProbeSend() async throws -> String {
+        if let probe = sent.first(where: Self.isApplicationProbe) {
+            return probe
+        }
+        return try await withCheckedThrowingContinuation { probeSendWaiter = $0 }
+    }
+
+    func closeCallCount() -> Int { closeCalls }
+
+    func hasSuspendedReceive() -> Bool { waiter != nil }
 
     func push(text: String) {
         if let waiter {
@@ -574,4 +882,8 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
     }
     func connectedMode() -> RemoteRendezvousMode? { mode }
     func sentTexts() -> [String] { sent }
+
+    private static func isApplicationProbe(_ text: String) -> Bool {
+        text.contains(#""type":"availability-probe""#)
+    }
 }

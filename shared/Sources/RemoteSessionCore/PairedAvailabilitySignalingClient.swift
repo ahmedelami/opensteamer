@@ -193,6 +193,7 @@ internal struct RemoteAvailabilityCipher: Sendable {
 public actor PairedAvailabilitySignalingClient {
     public typealias EventStream = AsyncThrowingStream<PairedAvailabilitySignalingEvent, Error>
     internal typealias LivenessSleep = @Sendable (UInt64) async throws -> Void
+    internal typealias ProbeNonceGenerator = @Sendable () throws -> Data
 
     private enum State {
         case idle
@@ -208,6 +209,8 @@ public actor PairedAvailabilitySignalingClient {
         static let firstProtocolStateTimeoutNanoseconds: UInt64 = 8_000_000_000
         static let livenessIntervalNanoseconds: UInt64 = 15_000_000_000
         static let livenessTimeoutNanoseconds: UInt64 = 5_000_000_000
+        static let applicationProbeAckTimeoutNanoseconds: UInt64 = 5_000_000_000
+        static let applicationProbeNonceBytes = 16
     }
 
     private let role: RemotePeerRole
@@ -219,12 +222,17 @@ public actor PairedAvailabilitySignalingClient {
     private let livenessTimeoutNanoseconds: UInt64
     private let firstProtocolStateSleep: LivenessSleep
     private let livenessSleep: LivenessSleep
+    private let applicationProbeAckTimeoutNanoseconds: UInt64
+    private let applicationProbeAckSleep: LivenessSleep
+    private let applicationProbeNonceGenerator: ProbeNonceGenerator
 
     private var state = State.idle
     private var continuation: EventStream.Continuation?
     private var receiveTask: Task<Void, Never>?
     private var firstProtocolStateDeadlineTask: Task<Void, Never>?
     private var livenessTask: Task<Void, Never>?
+    private var pendingApplicationProbe: PendingAvailabilityProbe?
+    private var applicationProbeDeadlineTask: Task<Void, Never>?
     private var exchangeID: RemoteAvailabilityExchangeID?
     private var cipher: RemoteAvailabilityCipher?
     private var nextSequence: UInt64 = 0
@@ -247,6 +255,9 @@ public actor PairedAvailabilitySignalingClient {
         livenessTimeoutNanoseconds = Limits.livenessTimeoutNanoseconds
         firstProtocolStateSleep = Self.defaultLivenessSleep
         livenessSleep = Self.defaultLivenessSleep
+        applicationProbeAckTimeoutNanoseconds = Limits.applicationProbeAckTimeoutNanoseconds
+        applicationProbeAckSleep = Self.defaultLivenessSleep
+        applicationProbeNonceGenerator = Self.defaultApplicationProbeNonce
     }
 
     internal init(
@@ -261,13 +272,20 @@ public actor PairedAvailabilitySignalingClient {
         firstProtocolStateSleep: @escaping LivenessSleep = PairedAvailabilitySignalingClient
             .defaultLivenessSleep,
         livenessSleep: @escaping LivenessSleep = PairedAvailabilitySignalingClient
-            .defaultLivenessSleep
+            .defaultLivenessSleep,
+        applicationProbeAckTimeoutNanoseconds: UInt64 = Limits
+            .applicationProbeAckTimeoutNanoseconds,
+        applicationProbeAckSleep: @escaping LivenessSleep = PairedAvailabilitySignalingClient
+            .defaultLivenessSleep,
+        applicationProbeNonceGenerator: @escaping ProbeNonceGenerator =
+            PairedAvailabilitySignalingClient.defaultApplicationProbeNonce
     ) throws {
         guard locator.localRole == role else {
             throw RemoteSessionCoreError.invalidRendezvousCredential
         }
         guard firstProtocolStateTimeoutNanoseconds > 0,
-              livenessTimeoutNanoseconds > 0 else {
+              livenessTimeoutNanoseconds > 0,
+              applicationProbeAckTimeoutNanoseconds > 0 else {
             throw RemoteSessionCoreError.invalidRendezvousCredential
         }
         self.role = role
@@ -279,6 +297,9 @@ public actor PairedAvailabilitySignalingClient {
         self.livenessTimeoutNanoseconds = livenessTimeoutNanoseconds
         self.firstProtocolStateSleep = firstProtocolStateSleep
         self.livenessSleep = livenessSleep
+        self.applicationProbeAckTimeoutNanoseconds = applicationProbeAckTimeoutNanoseconds
+        self.applicationProbeAckSleep = applicationProbeAckSleep
+        self.applicationProbeNonceGenerator = applicationProbeNonceGenerator
     }
 
     public func connect() async throws -> EventStream {
@@ -375,7 +396,9 @@ public actor PairedAvailabilitySignalingClient {
                 return
             }
             do {
-                let event = try parse(text: text)
+                guard let event = try parse(text: text) else {
+                    continue
+                }
                 beginLivenessIfProtocolStateValidated(by: event)
                 guard let continuation else { return }
                 switch continuation.yield(event) {
@@ -443,6 +466,9 @@ public actor PairedAvailabilitySignalingClient {
                 try await transport.sendPing(
                     timeoutNanoseconds: livenessTimeoutNanoseconds
                 )
+                if role == .host {
+                    try await sendApplicationProbe()
+                }
             } catch is CancellationError {
                 return
             } catch {
@@ -454,7 +480,102 @@ public actor PairedAvailabilitySignalingClient {
         }
     }
 
-    private func parse(text: String) throws -> PairedAvailabilitySignalingEvent {
+    private func sendApplicationProbe() async throws {
+        guard role == .host,
+              pendingApplicationProbe == nil,
+              applicationProbeDeadlineTask == nil else {
+            throw RendezvousSignalingError.connectionClosed
+        }
+        let nonce = try applicationProbeNonceGenerator()
+        guard nonce.count == Limits.applicationProbeNonceBytes else {
+            throw RemoteSessionCoreError.invalidSignalPayload
+        }
+        let encodedNonce = Self.base64URLEncoded(nonce)
+        let wireData = try remoteCanonicalData(
+            AvailabilityProbeWire(type: "availability-probe", nonce: encodedNonce)
+        )
+        guard wireData.count <= Limits.maximumWireMessageBytes,
+              let text = String(data: wireData, encoding: .utf8) else {
+            throw RemoteSessionCoreError.invalidSignalPayload
+        }
+
+        let resolver = AvailabilityProbeAckResolver()
+        pendingApplicationProbe = PendingAvailabilityProbe(
+            nonce: nonce,
+            resolver: resolver
+        )
+        // Arm before `send`: URLSession normally completes the send promptly, but a wedged
+        // transport must not suppress the application-level liveness deadline.
+        applicationProbeDeadlineTask = Task { [weak self, resolver] in
+            await self?.applicationProbeDeadlineLoop(resolver: resolver)
+        }
+
+        try await transport.send(text: text)
+        try applicationProbeSendCompleted(resolver: resolver)
+        try await resolver.wait()
+    }
+
+    private func applicationProbeDeadlineLoop(
+        resolver: AvailabilityProbeAckResolver
+    ) async {
+        do {
+            try await applicationProbeAckSleep(applicationProbeAckTimeoutNanoseconds)
+            try Task.checkCancellation()
+            guard state == .connected,
+                  pendingApplicationProbe?.resolver === resolver else {
+                return
+            }
+            await finish(throwing: RendezvousSignalingError.connectionClosed)
+        } catch is CancellationError {
+            return
+        } catch {
+            if state == .connected,
+               pendingApplicationProbe?.resolver === resolver {
+                await finish(throwing: RendezvousSignalingError.connectionClosed)
+            }
+        }
+    }
+
+    private func applicationProbeSendCompleted(
+        resolver: AvailabilityProbeAckResolver
+    ) throws {
+        guard state == .connected,
+              var pending = pendingApplicationProbe,
+              pending.resolver === resolver else {
+            throw RendezvousSignalingError.connectionClosed
+        }
+        pending.sendCompleted = true
+        if pending.ackReceived {
+            completeApplicationProbe(pending)
+        } else {
+            pendingApplicationProbe = pending
+        }
+    }
+
+    private func receiveApplicationProbeAck(nonce: Data) throws {
+        guard role == .host,
+              var pending = pendingApplicationProbe,
+              remoteConstantTimeEqual(pending.nonce, nonce) else {
+            throw RendezvousSignalingError.invalidServerMessage
+        }
+        pending.ackReceived = true
+        if pending.sendCompleted {
+            completeApplicationProbe(pending)
+        } else {
+            pendingApplicationProbe = pending
+        }
+    }
+
+    private func completeApplicationProbe(_ pending: PendingAvailabilityProbe) {
+        guard pendingApplicationProbe?.resolver === pending.resolver else { return }
+        pendingApplicationProbe = nil
+        let deadlineTask = applicationProbeDeadlineTask
+        applicationProbeDeadlineTask = nil
+        deadlineTask?.cancel()
+        pending.resolver.resolve(.success(()))
+    }
+
+    private func parse(text: String) throws -> PairedAvailabilitySignalingEvent? {
         let data = Data(text.utf8)
         guard !data.isEmpty, data.count <= Limits.maximumWireMessageBytes,
               let object = try? JSONSerialization.jsonObject(with: data),
@@ -533,6 +654,19 @@ public actor PairedAvailabilitySignalingClient {
             replayGuard = SignalingReplayGuard()
             return .peerLeft(role: wire.role, exchangeID: currentExchange)
 
+        case "availability-probe-ack":
+            try Self.requireExactKeys(dictionary, ["type", "nonce"])
+            let wire = try Self.decode(AvailabilityProbeAckWire.self, from: data)
+            let nonce = try Self.decodeBase64URL(
+                wire.nonce,
+                maximumDecodedBytes: Limits.applicationProbeNonceBytes
+            )
+            guard nonce.count == Limits.applicationProbeNonceBytes else {
+                throw RendezvousSignalingError.invalidServerMessage
+            }
+            try receiveApplicationProbeAck(nonce: nonce)
+            return nil
+
         case "error":
             try Self.requireExactKeys(dictionary, ["type", "error"])
             let wire = try Self.decode(AvailabilityErrorWire.self, from: data)
@@ -560,9 +694,15 @@ public actor PairedAvailabilitySignalingClient {
         firstProtocolStateDeadlineTask = nil
         let activeLivenessTask = livenessTask
         livenessTask = nil
+        let activeApplicationProbeDeadlineTask = applicationProbeDeadlineTask
+        applicationProbeDeadlineTask = nil
+        let activeApplicationProbe = pendingApplicationProbe
+        pendingApplicationProbe = nil
         activeTask?.cancel()
         activeFirstProtocolStateDeadlineTask?.cancel()
         activeLivenessTask?.cancel()
+        activeApplicationProbeDeadlineTask?.cancel()
+        activeApplicationProbe?.resolver.resolve(.failure(CancellationError()))
         await transport.close()
         if let error {
             activeContinuation?.finish(throwing: error)
@@ -588,6 +728,10 @@ public actor PairedAvailabilitySignalingClient {
 
     private static func defaultLivenessSleep(_ nanoseconds: UInt64) async throws {
         try await Task<Never, Never>.sleep(nanoseconds: nanoseconds)
+    }
+
+    private static func defaultApplicationProbeNonce() throws -> Data {
+        try remoteRandomBytes(count: Limits.applicationProbeNonceBytes)
     }
 
     private static func makeRendezvousURL(endpoint: URL) throws -> URL {
@@ -740,4 +884,54 @@ private struct AvailabilityPeerLeftWire: Decodable {
 
 private struct AvailabilityErrorWire: Decodable {
     let error: String
+}
+
+private struct AvailabilityProbeWire: Encodable {
+    let type: String
+    let nonce: String
+}
+
+private struct AvailabilityProbeAckWire: Decodable {
+    let nonce: String
+}
+
+private struct PendingAvailabilityProbe: Sendable {
+    let nonce: Data
+    let resolver: AvailabilityProbeAckResolver
+    var sendCompleted = false
+    var ackReceived = false
+}
+
+private final class AvailabilityProbeAckResolver: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<Void, any Error>?
+    private var continuation: CheckedContinuation<Void, any Error>?
+
+    func wait() async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let immediate = lock.withLock { () -> Result<Void, any Error>? in
+                    if let result { return result }
+                    self.continuation = continuation
+                    return nil
+                }
+                if let immediate {
+                    continuation.resume(with: immediate)
+                }
+            }
+        } onCancel: {
+            resolve(.failure(CancellationError()))
+        }
+    }
+
+    func resolve(_ newResult: Result<Void, any Error>) {
+        let waiter = lock.withLock { () -> CheckedContinuation<Void, any Error>? in
+            guard result == nil else { return nil }
+            result = newResult
+            let waiter = continuation
+            continuation = nil
+            return waiter
+        }
+        waiter?.resume(with: newResult)
+    }
 }

@@ -40,6 +40,12 @@ manual IP addresses, router configuration, or public TCP ports.
   namespace disjoint from legacy invitation/media rendezvous. Reject missing or
   unknown subprotocols where required, redirects, query-based joins, role-swapped
   proofs, and availability headers on the v1 route.
+- Treat HTTP 101 and WebSocket ping/pong as transport evidence, not proof that the
+  availability Durable Object still routes application messages. After the first
+  valid waiting/ready state, the Mac host must send bounded host-only nonce probes.
+  Only the current capability-authorized host socket may receive an acknowledgement;
+  a missing acknowledgement closes that exact client and enters normal backoff.
+  Probes must not alter exchange identifiers or encrypted signaling sequence state.
 - Check admission before viewer occupancy, invitation consumption, or TURN
   issuance. Do not log plaintext invitations, signaling payloads, ICE candidates,
   or TURN credentials. Apart from the bounded iOS Keychain exception above, do not
