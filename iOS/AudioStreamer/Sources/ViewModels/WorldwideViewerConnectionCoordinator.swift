@@ -179,6 +179,105 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         }
     }
 
+    /// Recovers a pairing that stopped after either peer had persisted only part of the
+    /// distributed commit. A partial viewer record alone cannot reveal whether the Mac is
+    /// still serving the one-time bootstrap or has already moved to pair-scoped availability.
+    /// Retry the still-saved invitation first, then fall back to the latest durable record.
+    func recoverInterruptedPairingAndPrepareMediaSession(
+        invitationCode input: String,
+        endpoint: URL,
+        pairingState: ViewerPairingState,
+        onRecoverableInvitationAdmitted: @escaping @MainActor () throws -> Void,
+        onAuthenticatedPairingCompleted: @escaping @MainActor () -> Void
+    ) async throws -> RendezvousSignalingClient {
+        let operationID = try beginOperation(state: "Recovering secure pairing")
+        defer { finishOperation(operationID) }
+
+        do {
+            do {
+                let invitation = try RemoteInvitationCode(input)
+                var replacementRetry = 0
+                let activeRecord: RemotePairedDeviceRecord
+                while true {
+                    do {
+                        activeRecord = try await bootstrapPairing(
+                            invitation: invitation,
+                            endpoint: endpoint,
+                            pairingState: pairingState,
+                            operationID: operationID,
+                            onRecoverableInvitationAdmitted: onRecoverableInvitationAdmitted,
+                            onAuthenticatedPairingCompleted: onAuthenticatedPairingCompleted
+                        )
+                        break
+                    } catch {
+                        try Task.checkCancellation()
+                        try requireCurrentOperation(operationID)
+                        guard replacementRetry < 3,
+                              isTransientBootstrapReplacementError(error) else {
+                            throw error
+                        }
+                        // A force-closed socket can briefly remain in the network stack after
+                        // process relaunch. Retry the same saved capability before concluding
+                        // that the Mac has moved to pair-scoped availability.
+                        replacementRetry += 1
+                        stateText = "Waiting for the saved invitation"
+                        try await Task<Never, Never>.sleep(
+                            for: .milliseconds(200 * replacementRetry)
+                        )
+                    }
+                }
+                try requireCurrentOperation(operationID)
+                stateText = "Finding paired Mac"
+                let client = try await prepareMediaSession(
+                    endpoint: endpoint,
+                    identity: try requireIdentity(pairingState),
+                    record: activeRecord,
+                    pairingState: pairingState,
+                    operationID: operationID,
+                    onAuthenticatedPairingCompleted: nil
+                )
+                try requireCurrentOperation(operationID)
+                stateText = "Starting secure media"
+                lastError = nil
+                return client
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Confirmation and ACK sends cross a distributed durability boundary. If the
+                // Mac advanced farther than this process observed, raw bootstrap rejects while
+                // the latest Keychain record remains the authenticated recovery credential.
+                try requireCurrentOperation(operationID)
+                let identity = try requireIdentity(pairingState)
+                let recoverableRecord = try requireRecoverableRecord(pairingState)
+                stateText = "Recovering saved secure pairing"
+                let client = try await prepareMediaSession(
+                    endpoint: endpoint,
+                    identity: identity,
+                    record: recoverableRecord,
+                    pairingState: pairingState,
+                    operationID: operationID,
+                    onAuthenticatedPairingCompleted: onAuthenticatedPairingCompleted
+                )
+                try requireCurrentOperation(operationID)
+                stateText = "Starting secure media"
+                lastError = nil
+                return client
+            }
+        } catch is CancellationError {
+            await closeTransports(ownedBy: operationID)
+            if activeOperationID == operationID {
+                stateText = "Not connected"
+            }
+            throw CancellationError()
+        } catch {
+            await closeTransports(ownedBy: operationID)
+            if activeOperationID == operationID {
+                publish(error)
+            }
+            throw error
+        }
+    }
+
     func cancel() {
         guard let operationID = activeOperationID else { return }
         activeOperationID = nil
@@ -260,7 +359,6 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                     }
                     let accepted = try participant.accept(peerHello)
                     agreement = accepted
-                    try await client.send(.confirmation(try accepted.makeConfirmation()))
 
                 case .signal(.confirmation(let peerConfirmation)):
                     guard let agreement, record == nil else {
@@ -272,6 +370,11 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                     // Persist the pair root before either side enters the commit protocol.
                     try pairingState.savePairingRecord(pending)
                     record = pending
+                    // The viewer confirmation is deliberately asymmetric: the Mac cannot
+                    // create a durable record until it receives this message, and this message
+                    // is never sent until the viewer's matching record is already durable.
+                    // Therefore a Mac-side partial record always has an iPhone recovery peer.
+                    try await client.send(.confirmation(try agreement.makeConfirmation()))
                     stateText = "Committing secure pairing"
 
                 case .signal(.commit(let commit)):
@@ -597,6 +700,18 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         }
         return connectionError == .pairedMacUnavailable
             || connectionError == .rendezvous(.peerUnavailable)
+    }
+
+    private func isTransientBootstrapReplacementError(_ error: any Error) -> Bool {
+        if let signalingError = error as? RendezvousSignalingError {
+            return signalingError == .connectionFailed
+                || signalingError == .connectionClosed
+        }
+        guard let connectionError = error as? WorldwideViewerConnectionError else {
+            return false
+        }
+        return connectionError == .pairingEndedBeforeCommit
+            || connectionError == .rendezvous(.roleConflict)
     }
 
     private func beginOperation(state: String) throws -> UUID {

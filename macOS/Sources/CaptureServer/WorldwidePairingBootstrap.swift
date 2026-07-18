@@ -118,6 +118,10 @@ actor WorldwidePairingBootstrap {
                 peerConfirmation: peerConfirmation
             )
             try store.savePairedViewer(pending, for: identity)
+            // Publish the first durable record to the local recovery state immediately. The
+            // viewer never sends this confirmation until its matching pending record is saved,
+            // so a departure from this point onward is safe to continue on availability.
+            record = pending
             let proposal = try pending.prepareProposal(using: identity)
             try store.savePairedViewer(pending, for: identity)
             record = pending

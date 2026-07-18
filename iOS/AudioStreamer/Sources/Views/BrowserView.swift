@@ -80,7 +80,7 @@ struct BrowserView: View {
                             systemImage: "arrow.triangle.2.circlepath"
                         )
                         .foregroundStyle(.orange)
-                        Text("Reconnect to recover the authenticated pairing commit. Media stays disabled until both devices are active. If recovery keeps failing, tap Forget Paired Mac, reset pairing on the Mac, and generate a new code.")
+                        Text("Reconnect retries the saved invitation first, then uses the authenticated recovery record if the Mac already advanced. Media stays disabled until both devices are active.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -442,15 +442,36 @@ struct BrowserView: View {
         }
 
         cancelWorldwidePreparation()
+        invitationCodeState.persistNow()
+        let interruptedInvitation = trimmedInvitationCode
+        let needsInterruptedRecovery =
+            viewerPairingState.pairingRecord?.pairingState != .active
+                && !interruptedInvitation.isEmpty
         let generation = UUID()
         worldwidePreparationGeneration = generation
         worldwidePreparationTask = Task { @MainActor in
             do {
-                let client = try await worldwideConnection.preparePairedMediaSession(
-                    endpoint: endpoint,
-                    pairingState: viewerPairingState,
-                    onAuthenticatedPairingCompleted: clearInvitationAfterPairing
-                )
+                let client: RendezvousSignalingClient
+                if needsInterruptedRecovery {
+                    client = try await worldwideConnection
+                        .recoverInterruptedPairingAndPrepareMediaSession(
+                            invitationCode: interruptedInvitation,
+                            endpoint: endpoint,
+                            pairingState: viewerPairingState,
+                            onRecoverableInvitationAdmitted: {
+                                try invitationAdmissionState.markAdmitted(
+                                    interruptedInvitation
+                                )
+                            },
+                            onAuthenticatedPairingCompleted: clearInvitationAfterPairing
+                        )
+                } else {
+                    client = try await worldwideConnection.preparePairedMediaSession(
+                        endpoint: endpoint,
+                        pairingState: viewerPairingState,
+                        onAuthenticatedPairingCompleted: clearInvitationAfterPairing
+                    )
+                }
                 try Task.checkCancellation()
                 await startPreparedWorldwideSession(client)
             } catch is CancellationError {

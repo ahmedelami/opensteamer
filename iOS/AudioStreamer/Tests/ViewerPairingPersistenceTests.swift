@@ -491,6 +491,221 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         XCTAssertEqual(invitationDeleteCount, 0)
     }
 
+    func testViewerPersistsPendingRecordBeforeSendingItsConfirmation() async throws {
+        let client = PairingBootstrapTransportStub()
+        let invitation = try RemoteInvitationCode.generate()
+        let viewerIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let hostIdentity = try RemoteDeviceIdentity.generate(role: .host)
+        let hostParticipant = try RemotePairingParticipant(
+            identity: hostIdentity,
+            invitation: invitation
+        )
+        let store = ViewerPairingStoreStub(identity: viewerIdentity)
+        let pairingState = ViewerPairingState(store: store)
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            bootstrapClientFactory: { _, _ in client }
+        )
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+
+        let task = Task { @MainActor in
+            try await coordinator.pairAndPrepareMediaSession(
+                invitationCode: invitation.exportedCode,
+                endpoint: endpoint,
+                pairingState: pairingState,
+                onRecoverableInvitationAdmitted: {},
+                onAuthenticatedPairingCompleted: {}
+            )
+        }
+        try await waitForConnect(client)
+        await client.yield(
+            .ready(role: .viewer, invitationExpiresAt: Date().addingTimeInterval(60))
+        )
+        try await waitForSentPayloadCount(1, client: client)
+
+        let initialPayloads = await client.sentPayloadsSnapshot()
+        guard case .hello(let viewerHello) = initialPayloads[0] else {
+            coordinator.cancel()
+            _ = await task.result
+            return XCTFail("Expected the viewer hello first")
+        }
+        let hostAgreement = try hostParticipant.accept(viewerHello)
+
+        // Receiving the host hello establishes an in-memory agreement only. Sending a viewer
+        // confirmation here would let the Mac persist first and strand a relaunched iPhone.
+        await client.yield(.signal(.hello(hostParticipant.hello)))
+        for _ in 0..<10 { await Task.yield() }
+        let preConfirmationPayloadCount = await client.sentPayloadsSnapshot().count
+        XCTAssertEqual(preConfirmationPayloadCount, 1)
+        XCTAssertNil(store.record)
+
+        await client.yield(
+            .signal(.confirmation(try hostAgreement.makeConfirmation()))
+        )
+        try await waitForSentPayloadCount(2, client: client)
+        XCTAssertEqual(store.record?.pairingState, .pending)
+        let finalPayloads = await client.sentPayloadsSnapshot()
+        guard case .confirmation(let viewerConfirmation) = finalPayloads[1] else {
+            coordinator.cancel()
+            _ = await task.result
+            return XCTFail("Expected the durable viewer confirmation second")
+        }
+        XCTAssertNoThrow(
+            try hostAgreement.makePendingRecord(peerConfirmation: viewerConfirmation)
+        )
+
+        coordinator.cancel()
+        _ = await task.result
+    }
+
+    func testViewerPersistenceFailurePreventsConfirmationTransmission() async throws {
+        let client = PairingBootstrapTransportStub()
+        let invitation = try RemoteInvitationCode.generate()
+        let viewerIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let hostIdentity = try RemoteDeviceIdentity.generate(role: .host)
+        let hostParticipant = try RemotePairingParticipant(
+            identity: hostIdentity,
+            invitation: invitation
+        )
+        let store = ViewerPairingStoreStub(identity: viewerIdentity)
+        store.saveError = PairingTestFailure.save
+        let pairingState = ViewerPairingState(store: store)
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            bootstrapClientFactory: { _, _ in client }
+        )
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+
+        let task = Task { @MainActor in
+            try await coordinator.pairAndPrepareMediaSession(
+                invitationCode: invitation.exportedCode,
+                endpoint: endpoint,
+                pairingState: pairingState,
+                onRecoverableInvitationAdmitted: {},
+                onAuthenticatedPairingCompleted: {}
+            )
+        }
+        try await waitForConnect(client)
+        await client.yield(
+            .ready(role: .viewer, invitationExpiresAt: Date().addingTimeInterval(60))
+        )
+        try await waitForSentPayloadCount(1, client: client)
+        let payloads = await client.sentPayloadsSnapshot()
+        guard case .hello(let viewerHello) = payloads[0] else {
+            return XCTFail("Expected the viewer hello first")
+        }
+        let hostAgreement = try hostParticipant.accept(viewerHello)
+        await client.yield(.signal(.hello(hostParticipant.hello)))
+        await client.yield(
+            .signal(.confirmation(try hostAgreement.makeConfirmation()))
+        )
+
+        let result = await task.result
+        guard case .failure = result else {
+            return XCTFail("Expected Keychain persistence to fail the bootstrap")
+        }
+        let finalPayloadCount = await client.sentPayloadsSnapshot().count
+        XCTAssertEqual(finalPayloadCount, 1)
+        XCTAssertNil(store.record)
+        XCTAssertNotNil(pairingState.storageError)
+    }
+
+    func testInterruptedPairingRetriesSavedInvitationThenFallsBackToDurablePair() async throws {
+        let invitation = try RemoteInvitationCode.generate()
+        let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let acceptedIssued = try makePairedMacRecord(
+            localIdentity: identity,
+            pairingState: .acceptedIssued
+        )
+        let store = ViewerPairingStoreStub(identity: identity)
+        store.record = acceptedIssued
+        let pairingState = ViewerPairingState(store: store)
+        let bootstrap = PairingBootstrapTransportStub()
+        let availability = PairedAvailabilityTransportStub()
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            bootstrapClientFactory: { _, _ in bootstrap },
+            availabilityClientFactory: { _, _ in availability }
+        )
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+
+        let task = Task { @MainActor in
+            try await coordinator.recoverInterruptedPairingAndPrepareMediaSession(
+                invitationCode: invitation.exportedCode,
+                endpoint: endpoint,
+                pairingState: pairingState,
+                onRecoverableInvitationAdmitted: {},
+                onAuthenticatedPairingCompleted: {}
+            )
+        }
+        try await waitForConnect(bootstrap)
+        await bootstrap.yield(.serverError(.peerUnavailable))
+        try await waitForConnect(availability)
+
+        let bootstrapCloseCount = await bootstrap.closeCallCount()
+        XCTAssertEqual(bootstrapCloseCount, 1)
+        XCTAssertEqual(pairingState.pairingRecord, acceptedIssued)
+        XCTAssertTrue(coordinator.isConnecting)
+        XCTAssertEqual(coordinator.stateText, "Recovering saved secure pairing")
+
+        let exchangeID = try RemoteAvailabilityExchangeID(
+            wireValue: "AAAAAAAAAAAAAAAAAAAAAA"
+        )
+        await availability.yield(.ready(role: .viewer, exchangeID: exchangeID))
+        try await waitForSentPayloadCount(1, client: availability)
+        let recoveryPayloads = await availability.sentPayloadsSnapshot()
+        guard case .pairingCommit(let acknowledgement) = recoveryPayloads[0] else {
+            coordinator.cancel()
+            _ = await task.result
+            return XCTFail("Expected the durable acknowledgement fallback")
+        }
+        XCTAssertEqual(acknowledgement.phase, .acknowledgement)
+
+        coordinator.cancel()
+        _ = await task.result
+    }
+
+    func testInterruptedPairingRetriesTransientReplacementConflict() async throws {
+        let invitation = try RemoteInvitationCode.generate()
+        let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let acceptedIssued = try makePairedMacRecord(
+            localIdentity: identity,
+            pairingState: .acceptedIssued
+        )
+        let store = ViewerPairingStoreStub(identity: identity)
+        store.record = acceptedIssued
+        let pairingState = ViewerPairingState(store: store)
+        let staleSocketAttempt = PairingBootstrapTransportStub()
+        let replacementAttempt = PairingBootstrapTransportStub()
+        var bootstrapClients = [staleSocketAttempt, replacementAttempt]
+        let availability = PairedAvailabilityTransportStub()
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            bootstrapClientFactory: { _, _ in bootstrapClients.removeFirst() },
+            availabilityClientFactory: { _, _ in availability }
+        )
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+
+        let task = Task { @MainActor in
+            try await coordinator.recoverInterruptedPairingAndPrepareMediaSession(
+                invitationCode: invitation.exportedCode,
+                endpoint: endpoint,
+                pairingState: pairingState,
+                onRecoverableInvitationAdmitted: {},
+                onAuthenticatedPairingCompleted: {}
+            )
+        }
+        try await waitForConnect(staleSocketAttempt)
+        await staleSocketAttempt.yield(.serverError(.roleConflict))
+        try await waitForConnect(replacementAttempt)
+        XCTAssertEqual(bootstrapClients.count, 0)
+
+        // Once the old socket was reconciled, an unavailable bootstrap means the Mac already
+        // advanced to pair-scoped recovery rather than that the saved code was lost.
+        await replacementAttempt.yield(.serverError(.peerUnavailable))
+        try await waitForConnect(availability)
+        XCTAssertTrue(coordinator.isConnecting)
+
+        coordinator.cancel()
+        _ = await task.result
+    }
+
     func testCancelledOperationCannotCloseOrResetReplacementOperation() async throws {
         let firstClient = PairingBootstrapTransportStub(suspendClose: true)
         let replacementClient = PairingBootstrapTransportStub()
