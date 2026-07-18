@@ -7,7 +7,7 @@
 	<key>CFBundleExecutable</key>
 	<string>CaptureServer</string>
 	<key>CFBundleIdentifier</key>
-	<string>org.example.AudioStreamer.MacCaptureHost</string>
+	<string>org.example.AudioStreamer.CaptureServer</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
