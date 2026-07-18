@@ -1,8 +1,11 @@
+import AVFoundation
 import Foundation
 import WebRTCTransport
 
 @MainActor
 protocol WorldwideAudioPlaybackManaging: AnyObject {
+    var requiresRuntimePlayoutProof: Bool { get }
+
     func activate() throws
     func recover() throws
     func deactivate()
@@ -33,7 +36,9 @@ protocol WorldwideRemoteAudioControlling: AnyObject {
     func setEnabled(_ enabled: Bool)
 }
 
-extension WebRTCAudioPlaybackSession: WorldwideAudioPlaybackManaging {}
+extension WebRTCAudioPlaybackSession: WorldwideAudioPlaybackManaging {
+    var requiresRuntimePlayoutProof: Bool { true }
+}
 extension BackgroundPlaybackCoordinator: BackgroundPlaybackCoordinating {}
 extension AudioSessionManager: AudioSessionEventMonitoring {}
 extension WebRTCRemoteAudioTrack: WorldwideRemoteAudioControlling {}
@@ -53,13 +58,17 @@ struct WorldwideAudioLifecycleSnapshot: Equatable {
 @MainActor
 final class WorldwideAudioLifecycleController {
     var onSnapshotChanged: ((WorldwideAudioLifecycleSnapshot) -> Void)?
+    /// The custom WebRTC audio device owns AVAudioSession/RemoteIO. App lifecycle and route
+    /// policy call this only after reopening WebRTC's manual audio gate so the active peer can
+    /// authorize a device rebuild on its ADM thread.
+    var onPlaybackRecoveryRequested: (() -> Void)?
 
     private let playback: any WorldwideAudioPlaybackManaging
     private let backgroundPlayback: any BackgroundPlaybackCoordinating
     private let events: any AudioSessionEventMonitoring
-
     private var isPrepared = false
     private var playbackIsReady = false
+    private var runtimePlayoutIsReady = false
     private var hasRemoteAudio = false
     private var transportIsHealthy = false
     private var isInterrupted = false
@@ -88,10 +97,14 @@ final class WorldwideAudioLifecycleController {
             self?.routeChanged(message)
         }
         events.onEngineConfigurationChanged = { [weak self] in
-            self?.recoverPlayback(context: "Audio engine recovery failed")
+            self?.recoverPlayback(
+                context: "Audio engine recovery failed"
+            )
         }
         events.onMediaServicesReset = { [weak self] in
-            self?.recoverPlayback(context: "Audio services recovery failed")
+            self?.recoverPlayback(
+                context: "Audio services recovery failed"
+            )
         }
     }
 
@@ -123,6 +136,7 @@ final class WorldwideAudioLifecycleController {
         self.serverName = serverName
         isPrepared = true
         playbackIsReady = false
+        runtimePlayoutIsReady = !playback.requiresRuntimePlayoutProof
         hasRemoteAudio = false
         transportIsHealthy = false
         isInterrupted = false
@@ -218,6 +232,7 @@ final class WorldwideAudioLifecycleController {
         backgroundPlayback.clear()
         isPrepared = false
         playbackIsReady = false
+        runtimePlayoutIsReady = false
         hasRemoteAudio = false
         transportIsHealthy = false
         isInterrupted = false
@@ -233,6 +248,30 @@ final class WorldwideAudioLifecycleController {
         guard isPrepared else { return }
         requiresExplicitResume = false
         recoverPlayback(context: "Audio resume failed")
+    }
+
+    /// Accepts proof from the actual output-only RemoteIO device. Signaling, a decoded track, and
+    /// WebRTC's global audio gate are not sufficient evidence that the iPhone is producing sound.
+    func updateRuntimePlayout(
+        isReady: Bool,
+        failureMessage: String? = nil,
+        diagnostic: String? = nil
+    ) {
+        guard isPrepared, playback.requiresRuntimePlayoutProof else { return }
+        runtimePlayoutIsReady = isReady
+        if let failureMessage {
+            playbackIsReady = false
+            playbackErrorText = failureMessage
+            playbackDiagnosticText = diagnostic
+        } else if isReady {
+            playbackIsReady = true
+            playbackErrorText = nil
+            playbackDiagnosticText = nil
+        }
+        publishSnapshot()
+        if isPlaying {
+            backgroundPlayback.endTransitionTask()
+        }
     }
 
     private func interruptionBegan() {
@@ -273,7 +312,10 @@ final class WorldwideAudioLifecycleController {
         do {
             try playback.recover()
             playbackIsReady = true
+            runtimePlayoutIsReady = !playback.requiresRuntimePlayoutProof
             playbackErrorText = nil
+            playbackDiagnosticText = nil
+            onPlaybackRecoveryRequested?()
             publishSnapshot()
             if isPlaying {
                 backgroundPlayback.endTransitionTask()
@@ -291,6 +333,12 @@ final class WorldwideAudioLifecycleController {
     }
 
     private var isPlaying: Bool {
+        shouldEnableRemoteAudio && runtimePlayoutIsReady
+    }
+
+    /// Open the decoded-track gate so RemoteIO can produce the callbacks that constitute runtime
+    /// proof. Background/Now Playing status still waits for `runtimePlayoutIsReady` above.
+    private var shouldEnableRemoteAudio: Bool {
         isPrepared
             && playbackIsReady
             && hasRemoteAudio
@@ -306,12 +354,13 @@ final class WorldwideAudioLifecycleController {
         if !hasRemoteAudio { return "Waiting for Mac audio" }
         if requiresExplicitResume { return "Paused — resume audio" }
         if !transportIsHealthy { return "Reconnecting audio" }
+        if !runtimePlayoutIsReady { return "Starting playback" }
         return "Playing"
     }
 
     private func publishSnapshot() {
         let snapshot = snapshot
-        remoteAudioControl?.setEnabled(snapshot.isPlaying)
+        remoteAudioControl?.setEnabled(shouldEnableRemoteAudio)
         if isPrepared {
             backgroundPlayback.publishLiveStream(
                 serverName: serverName,

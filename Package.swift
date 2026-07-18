@@ -98,12 +98,68 @@ let package = Package(
             name: "WebRTCTransport",
             dependencies: [
                 "RemoteSessionCore",
+                .target(
+                    name: "IOSWebRTCAudioDeviceShim",
+                    condition: .when(platforms: [.iOS])
+                ),
+                .target(
+                    name: "MacWebRTCAudioDeviceShim",
+                    condition: .when(platforms: [.macOS])
+                ),
                 .product(
                     name: "LiveKitWebRTC",
                     package: "webrtc-xcframework"
                 )
             ],
             path: "shared/Sources/WebRTCTransport"
+        ),
+        .target(
+            name: "MacWebRTCAudioDeviceShim",
+            dependencies: [
+                .product(
+                    name: "LiveKitWebRTC",
+                    package: "webrtc-xcframework"
+                )
+            ],
+            path: "shared/Sources/MacWebRTCAudioDeviceShim",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("AudioToolbox")
+            ]
+        ),
+        .target(
+            name: "IOSWebRTCAudioDeviceShim",
+            dependencies: [
+                .product(
+                    name: "LiveKitWebRTC",
+                    package: "webrtc-xcframework"
+                )
+            ],
+            path: "shared/Sources/IOSWebRTCAudioDeviceShim",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("AudioToolbox"),
+                .linkedFramework("AVFAudio")
+            ]
+        ),
+        .target(
+            name: "MacWebRTCAudioDeviceShimTestSupport",
+            dependencies: [
+                .target(
+                    name: "MacWebRTCAudioDeviceShim",
+                    condition: .when(platforms: [.macOS])
+                ),
+                .product(
+                    name: "LiveKitWebRTC",
+                    package: "webrtc-xcframework",
+                    condition: .when(platforms: [.macOS])
+                )
+            ],
+            path: "shared/Tests/MacWebRTCAudioDeviceShimTestSupport",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("AudioToolbox")
+            ]
         ),
         .testTarget(
             name: "WAVTests",
@@ -142,6 +198,25 @@ let package = Package(
                 "WebRTCTransport"
             ],
             path: "shared/Tests/WebRTCTransportTests"
+        ),
+        .testTarget(
+            name: "MacWebRTCAudioDeviceShimTests",
+            dependencies: [
+                .target(
+                    name: "MacWebRTCAudioDeviceShim",
+                    condition: .when(platforms: [.macOS])
+                ),
+                .target(
+                    name: "MacWebRTCAudioDeviceShimTestSupport",
+                    condition: .when(platforms: [.macOS])
+                ),
+                .product(
+                    name: "LiveKitWebRTC",
+                    package: "webrtc-xcframework",
+                    condition: .when(platforms: [.macOS])
+                )
+            ],
+            path: "shared/Tests/MacWebRTCAudioDeviceShimTests"
         )
     ]
 )

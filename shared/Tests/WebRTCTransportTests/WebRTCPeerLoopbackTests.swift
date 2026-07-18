@@ -134,16 +134,73 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         await host.close(reason: .protocolError)
     }
 
+    func testNewViewerAnswersAnOlderMonoOfferWithoutIntroducingStereoPolicy() async throws {
+        let host = try WebRTCPeer(
+            configuration: WebRTCTransportConfiguration(role: .host, iceServers: [])
+        )
+        let viewer = try WebRTCPeer.makeHeadlessViewerForTesting(
+            configuration: WebRTCTransportConfiguration(role: .viewer, iceServers: [])
+        )
+        defer {
+            Task {
+                await host.close(reason: .normal)
+                await viewer.close(reason: .normal)
+            }
+        }
+
+        let offerTask = Task<String?, Never> {
+            for await event in host.events {
+                if case .outboundSignal(.offer(let sdp)) = event {
+                    return sdp
+                }
+            }
+            return nil
+        }
+        try await host.start()
+        let emittedOffer = await offerTask.value
+        let productOffer = try XCTUnwrap(emittedOffer)
+        let oldOffer = productOffer.replacingOccurrences(
+            of: ";stereo=1;sprop-stereo=1;maxaveragebitrate=192000",
+            with: ""
+        )
+        XCTAssertNotEqual(productOffer, oldOffer)
+
+        let answerTask = Task<String?, Never> {
+            for await event in viewer.events {
+                if case .outboundSignal(.answer(let sdp)) = event {
+                    return sdp
+                }
+            }
+            return nil
+        }
+        try await viewer.handle(.offer(sdp: oldOffer))
+        let emittedAnswer = await answerTask.value
+        let answer = try XCTUnwrap(emittedAnswer)
+        let audioSection = try XCTUnwrap(mediaSection(kind: "audio", in: answer))
+
+        XCTAssertFalse(audioSection.lowercased().contains("stereo=1"))
+        XCTAssertFalse(audioSection.lowercased().contains("sprop-stereo=1"))
+        XCTAssertFalse(audioSection.lowercased().contains("maxaveragebitrate="))
+    }
+
     func testHostViewerLoopbackNegotiatesControlsVideoAndCloses() async throws {
         let host = try WebRTCPeer(
             configuration: WebRTCTransportConfiguration(role: .host, iceServers: [])
         )
-        let viewer = try WebRTCPeer(
+        let viewer = try WebRTCPeer.makeHeadlessViewerForTesting(
             configuration: WebRTCTransportConfiguration(role: .viewer, iceServers: [])
         )
         let recorder = LoopbackRecorder()
         let expectations = LoopbackExpectations()
         let secondAnswerDeliveryGate = SecondAnswerDeliveryGate()
+        // The custom Mac viewer is a headless test sink. Production iOS owns RemoteIO playout;
+        // this explicit pull keeps the codec proof independent of Mac audio hardware/CoreAudio.
+        let headlessPlayout = Task {
+            while !Task.isCancelled {
+                _ = await viewer.pullHeadlessMacViewerAudioForTesting()
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+        }
 
         let hostForwarder = Task {
             do {
@@ -199,6 +256,7 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
 
         defer {
             Task { await secondAnswerDeliveryGate.release() }
+            headlessPlayout.cancel()
             hostForwarder.cancel()
             viewerForwarder.cancel()
         }
@@ -218,6 +276,15 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         )
 
         let connectedSnapshot = await recorder.snapshot()
+        if ProcessInfo.processInfo.environment["AUDIOSTREAMER_AUDIO_TEST_DIAGNOSTICS"] == "1",
+           !connectedSnapshot.hasAllConnectionMilestones {
+            print(
+                "AUDIOSTREAMER_CONNECTION_FAILURE milestones=\(connectedSnapshot.milestones) "
+                    + "emitted=\(connectedSnapshot.emitted) "
+                    + "delivered=\(connectedSnapshot.delivered) "
+                    + "forwardingErrors=\(connectedSnapshot.forwardingErrors)"
+            )
+        }
         guard connectedSnapshot.hasAllConnectionMilestones else {
             await host.close(reason: .protocolError)
             await fulfillment(
@@ -240,8 +307,19 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             ),
             "The send-only system-audio section must negotiate 48 kHz Opus."
         )
-        XCTAssertFalse(audioSection.lowercased().contains("stereo=1"))
-        XCTAssertFalse(audioSection.lowercased().contains("sprop-stereo=1"))
+        assertHighFidelityOpusPolicy(in: audioSection)
+        let initialAnswer = try XCTUnwrap(connectedSnapshot.viewerAnswers.first)
+        let answerAudioSection = try XCTUnwrap(
+            mediaSection(kind: "audio", in: initialAnswer)
+        )
+        assertHighFidelityOpusPolicy(in: answerAudioSection)
+
+        let senderEncodings = await host.audioSenderEncodingParametersForTesting()
+        XCTAssertFalse(senderEncodings.isEmpty)
+        for encoding in senderEncodings {
+            XCTAssertEqual(encoding.maximumBitrateBps, 192_000)
+            XCTAssertNil(encoding.minimumBitrateBps)
+        }
         XCTAssertNotNil(host.externalAudioCapturer)
 
         let revokedAudioAuthorization = WebRTCAudioAuthorization()
@@ -263,16 +341,6 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         )
         remoteAudioTrack.setEnabled(true)
         XCTAssertTrue(remoteAudioTrack.isEnabled)
-        let requiredSustainedAudioFrames = 5_000
-        let audioProbe = DecodedAudioProbe(
-            requiredNonSilentFrames: requiredSustainedAudioFrames
-        )
-        let audioRenderer = WebRTCAudioPCMRenderer { buffer in
-            audioProbe.observe(buffer)
-        }
-        remoteAudioTrack.addRendererForTesting(audioRenderer)
-        defer { remoteAudioTrack.removeRendererForTesting(audioRenderer) }
-
         let audioAuthorization = WebRTCAudioAuthorization()
         try await host.enableSystemAudioIfTransportHealthy(
             authorization: audioAuthorization
@@ -282,89 +350,179 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         XCTAssertTrue(audioEnabledBeforeShow)
 
         let audioCapturer = try XCTUnwrap(host.externalAudioCapturer)
-        for _ in 0..<100 where !audioCapturer.diagnosticsForTesting().playerIsReady {
-            try await Task.sleep(for: .milliseconds(10))
-        }
         let readyAudioDiagnostics = audioCapturer.diagnosticsForTesting()
         XCTAssertTrue(readyAudioDiagnostics.playerIsReady, "\(readyAudioDiagnostics)")
+        XCTAssertTrue(readyAudioDiagnostics.usesCustomStereoDevice, "\(readyAudioDiagnostics)")
+        XCTAssertTrue(readyAudioDiagnostics.customDeviceRecording, "\(readyAudioDiagnostics)")
+        XCTAssertEqual(
+            readyAudioDiagnostics.admInputCallbackCount,
+            0,
+            "No source callback means no synthetic ADM callback or silence; \(readyAudioDiagnostics)"
+        )
+        XCTAssertEqual(readyAudioDiagnostics.admInputSampleRate, 48_000)
+        XCTAssertEqual(readyAudioDiagnostics.admInputChannelCount, 2)
+        XCTAssertEqual(readyAudioDiagnostics.admInputCommonFormat, .pcmFormatInt16)
+        XCTAssertEqual(readyAudioDiagnostics.admInputIsInterleaved, true)
+        XCTAssertEqual(readyAudioDiagnostics.customDeviceDeliveryFailures, 0)
 
-        // ScreenCaptureKit supplies stereo PCM, while this pinned ADM truthfully exposes a mono
-        // WebRTC capture sink. A valid mono injection must include the right channel and must not
-        // truncate one legal 120 ms capture buffer before the ADM's strict 10 ms render loop.
+        let processingState = await host.audioProcessingStateForTesting()
+        XCTAssertTrue(processingState.hasAudioProcessingModule)
+        for (name, component) in [
+            ("AEC", processingState.echoCancellation),
+            ("NS", processingState.noiseSuppression),
+            ("AGC", processingState.autoGainControl),
+            ("HPF", processingState.highPassFilter)
+        ] {
+            XCTAssertEqual(
+                component.requestedEnabled,
+                false,
+                "\(name) must be explicitly disabled by the raw system-audio track."
+            )
+            XCTAssertFalse(
+                component.softwareActive,
+                "\(name) software processing must not touch system audio."
+            )
+            XCTAssertFalse(
+                component.platformActive,
+                "\(name) platform processing must not touch system audio."
+            )
+        }
+
+        // Right-only PCM fails both the old mono input and a fake dual-mono SDP patch: channel one
+        // must arrive with energy while channel zero remains quiet after an actual Opus round trip.
+        // Each source probe is 100 ms / 4,800 frames after conversion. Requiring materially more
+        // than 2,400 decoded qualifying frames catches the pinned native direct-input bug that
+        // consumed only `frameCount` Int16 elements (half of interleaved stereo) per callback.
+        let requiredSustainedAudioFrames = 3_840
+        let rightOnlyProbe = DecodedAudioProbe(
+            mode: .rightOnly,
+            requiredQualifyingFrames: requiredSustainedAudioFrames
+        )
+        let rightOnlyRenderer = WebRTCAudioPCMRenderer { buffer in
+            rightOnlyProbe.observe(buffer)
+        }
+        remoteAudioTrack.addRendererForTesting(rightOnlyRenderer)
         let rightOnlyLongTone = try makeStereoToneSampleBuffer(
-            frameCount: 5_760,
+            frameCount: 4_800,
             leftAmplitude: 0,
-            rightAmplitude: 0.08
+            rightAmplitude: 0.20
         )
         audioCapturer.capture(sampleBuffer: rightOnlyLongTone)
-        await fulfillment(of: [audioProbe.receivedAudio], timeout: 5)
-        let audioMeasurement = audioProbe.measurement
+        await fulfillment(of: [rightOnlyProbe.receivedAudio], timeout: 5)
+        remoteAudioTrack.removeRendererForTesting(rightOnlyRenderer)
+        let rightOnlyMeasurement = rightOnlyProbe.measurement
         let captureDiagnostics = audioCapturer.diagnosticsForTesting()
-        let audioFailureContext = "\(captureDiagnostics); \(audioProbe.diagnosticSummary)"
-        XCTAssertEqual(audioMeasurement.channelCount, 1, audioFailureContext)
+        let rightOnlyFailureContext = "\(captureDiagnostics); "
+            + rightOnlyProbe.diagnosticSummary
+        XCTAssertEqual(rightOnlyMeasurement.channelCount, 2, rightOnlyFailureContext)
         XCTAssertGreaterThanOrEqual(
-            audioProbe.nonSilentFrameCount,
+            rightOnlyMeasurement.frameCount,
             requiredSustainedAudioFrames,
-            "The mono WebRTC ADM input must preserve right-channel system audio and all frames from a 120 ms capture buffer; \(audioFailureContext)"
+            rightOnlyFailureContext
         )
-        XCTAssertGreaterThan(audioProbe.maximumRMS, 0.01, audioFailureContext)
+        XCTAssertGreaterThan(rightOnlyMeasurement.rightRMS, 0.05, rightOnlyFailureContext)
+        XCTAssertLessThan(
+            rightOnlyMeasurement.leftRMS,
+            rightOnlyMeasurement.rightRMS * 0.15,
+            "Right-only input must not become dual mono; \(rightOnlyFailureContext)"
+        )
 
-        // Correlated stereo is the common system-audio case. The mono ADM must receive the
-        // arithmetic mean, not AVAudioMixerNode's clipping equal-power sum.
-        let qualityProbe = DecodedAudioProbe(
-            requiredNonSilentFrames: requiredSustainedAudioFrames
+        // Anti-phase stereo cancels to silence in any mono fold-down. Surviving equal energy with
+        // strongly negative correlation proves two independent encoded and decoded channels.
+        let antiPhaseProbe = DecodedAudioProbe(
+            mode: .antiPhase,
+            requiredQualifyingFrames: requiredSustainedAudioFrames
         )
-        let qualityRenderer = WebRTCAudioPCMRenderer { buffer in
-            qualityProbe.observe(buffer)
+        let antiPhaseRenderer = WebRTCAudioPCMRenderer { buffer in
+            antiPhaseProbe.observe(buffer)
         }
-        remoteAudioTrack.addRendererForTesting(qualityRenderer)
-        defer { remoteAudioTrack.removeRendererForTesting(qualityRenderer) }
+        remoteAudioTrack.addRendererForTesting(antiPhaseRenderer)
         audioCapturer.reset()
-        let correlatedStereoTone = try makeStereoToneSampleBuffer(
-            frameCount: 5_760,
-            leftAmplitude: 0.8,
-            rightAmplitude: 0.8,
+        let antiPhaseStereoTone = try makeStereoFloatToneSampleBuffer(
+            frameCount: 4_410,
+            sampleRate: 44_100,
+            leftAmplitude: 0.35,
+            rightAmplitude: -0.35,
             leftFrequency: 1_000,
             rightFrequency: 1_000
         )
-        audioCapturer.capture(sampleBuffer: correlatedStereoTone)
-        await fulfillment(of: [qualityProbe.receivedAudio], timeout: 5)
-        let qualityFailureContext = "\(audioCapturer.diagnosticsForTesting()); "
-            + qualityProbe.diagnosticSummary
+        audioCapturer.capture(sampleBuffer: antiPhaseStereoTone)
+        await fulfillment(of: [antiPhaseProbe.receivedAudio], timeout: 5)
+        remoteAudioTrack.removeRendererForTesting(antiPhaseRenderer)
+        let antiPhaseMeasurement = antiPhaseProbe.measurement
+        let antiPhaseFailureContext = "\(audioCapturer.diagnosticsForTesting()); "
+            + antiPhaseProbe.diagnosticSummary
         if ProcessInfo.processInfo.environment["AUDIOSTREAMER_AUDIO_TEST_DIAGNOSTICS"] == "1" {
-            print("AUDIOSTREAMER_AUDIO_QUALITY \(qualityFailureContext)")
+            print("AUDIOSTREAMER_AUDIO_RIGHT_ONLY \(rightOnlyFailureContext)")
+            print("AUDIOSTREAMER_AUDIO_ANTI_PHASE \(antiPhaseFailureContext)")
+            let hostStatistics = await host.statisticsSnapshot()
+            let viewerStatistics = await viewer.statisticsSnapshot()
+            print("AUDIOSTREAMER_AUDIO_SDP \(audioSection.replacingOccurrences(of: "\r\n", with: " | "))")
+            print("AUDIOSTREAMER_AUDIO_HOST_STATS \(hostStatistics)")
+            print("AUDIOSTREAMER_AUDIO_VIEWER_STATS \(viewerStatistics)")
         }
-        XCTAssertGreaterThan(qualityProbe.maximumRMS, 0.50, qualityFailureContext)
-        XCTAssertLessThan(qualityProbe.maximumRMS, 0.65, qualityFailureContext)
-        XCTAssertGreaterThan(qualityProbe.maximumPeak, 0.70, qualityFailureContext)
-        XCTAssertLessThan(qualityProbe.maximumPeak, 0.95, qualityFailureContext)
+        XCTAssertEqual(antiPhaseMeasurement.channelCount, 2, antiPhaseFailureContext)
+        XCTAssertGreaterThan(antiPhaseMeasurement.leftRMS, 0.10, antiPhaseFailureContext)
+        XCTAssertGreaterThan(antiPhaseMeasurement.rightRMS, 0.10, antiPhaseFailureContext)
+        XCTAssertLessThan(antiPhaseMeasurement.correlation, -0.85, antiPhaseFailureContext)
+        XCTAssertEqual(
+            antiPhaseMeasurement.leftRMS,
+            antiPhaseMeasurement.rightRMS,
+            accuracy: 0.03,
+            antiPhaseFailureContext
+        )
 
-        // The ADM owns a manually rendered AVAudioEngine. A `.dataPlayedBack` callback never
-        // completes in that graph and leaves this queue permanently full; `.dataRendered` must
-        // transition the finite test input back to buffering after the decoder consumes it.
-        var drainedAudioDiagnostics = audioCapturer.diagnosticsForTesting()
-        for _ in 0..<100
-        where drainedAudioDiagnostics.runtime.queuedFrames != 0
-            || drainedAudioDiagnostics.runtime.phase != "buffering" {
-            try await Task.sleep(for: .milliseconds(10))
-            drainedAudioDiagnostics = audioCapturer.diagnosticsForTesting()
+        var audioTargetBitrate: Double?
+        for _ in 0..<100 where audioTargetBitrate == nil {
+            audioTargetBitrate = await host.statisticsSnapshot().outboundAudio?.targetBitrate
+            if audioTargetBitrate == nil {
+                try await Task.sleep(for: .milliseconds(10))
+            }
         }
         XCTAssertEqual(
+            try XCTUnwrap(audioTargetBitrate),
+            192_000,
+            accuracy: 1,
+            "Native outbound stats must reflect the product's 192 kbps Opus policy."
+        )
+
+        // Source-clock delivery is synchronous and queue-free: two finite source callbacks produce
+        // only source-backed frames, with no application timer continuing after the input ends.
+        let drainedAudioDiagnostics = audioCapturer.diagnosticsForTesting()
+        XCTAssertEqual(
             drainedAudioDiagnostics.runtime.phase,
-            "buffering",
-            "The manual ADM must report the finite PCM input as rendered; "
+            "direct",
+            "The custom input path must remain source-clock direct; "
                 + "\(drainedAudioDiagnostics)"
         )
         XCTAssertEqual(
             drainedAudioDiagnostics.runtime.queuedFrames,
             0,
-            "Rendered PCM must not remain logically queued; \(drainedAudioDiagnostics)"
+            "Source-clock delivery must not create an application PCM queue; \(drainedAudioDiagnostics)"
         )
         XCTAssertGreaterThanOrEqual(
-            drainedAudioDiagnostics.runtime.underruns,
-            1,
-            "The finite-input drain must be objectively observable; \(drainedAudioDiagnostics)"
+            drainedAudioDiagnostics.customDeviceDeliveredFrames,
+            9_600,
+            "Both 100 ms stereo probes must reach WebRTC; \(drainedAudioDiagnostics)"
         )
+        XCTAssertGreaterThanOrEqual(drainedAudioDiagnostics.admInputCallbackCount, 2)
+        XCTAssertEqual(drainedAudioDiagnostics.customDeviceRejectedFrames, 0)
+        XCTAssertEqual(drainedAudioDiagnostics.customDeviceNativeDeliveryErrors, 0)
+        XCTAssertEqual(drainedAudioDiagnostics.customDeviceRenderInvocations, 2)
+        XCTAssertEqual(drainedAudioDiagnostics.customDeviceRenderCopiedFrames, 9_600)
+        XCTAssertEqual(
+            drainedAudioDiagnostics.customDeviceRenderCopiedSampleElements,
+            19_200
+        )
+        XCTAssertEqual(drainedAudioDiagnostics.customDeviceRenderNotInvoked, 0)
+        XCTAssertEqual(drainedAudioDiagnostics.customDeviceRenderMultipleInvocations, 0)
+        XCTAssertEqual(drainedAudioDiagnostics.customDeviceRenderValidationFailures, 0)
+        XCTAssertEqual(drainedAudioDiagnostics.customDevicePrefilledInputDeliveries, 0)
+        XCTAssertGreaterThanOrEqual(drainedAudioDiagnostics.customDeviceTimestampResets, 1)
+        XCTAssertEqual(drainedAudioDiagnostics.runtime.underruns, 0)
+        XCTAssertEqual(drainedAudioDiagnostics.runtime.rebuffers, 0)
+        XCTAssertEqual(drainedAudioDiagnostics.runtime.overflowDrops, 0)
+        XCTAssertEqual(drainedAudioDiagnostics.customDeviceDeliveryFailures, 0)
 
         let showID = try await viewer.setScreenVisible(true)
         await fulfillment(of: [expectations.showRequestReceived], timeout: 3)
@@ -560,6 +718,12 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         let restartSnapshot = await recorder.snapshot()
         XCTAssertEqual(restartSnapshot.hostOffers.count, 2)
         XCTAssertEqual(restartSnapshot.viewerAnswers.count, 2)
+        for description in restartSnapshot.hostOffers + restartSnapshot.viewerAnswers {
+            let restartAudioSection = try XCTUnwrap(
+                mediaSection(kind: "audio", in: description)
+            )
+            assertHighFidelityOpusPolicy(in: restartAudioSection)
+        }
         let firstOfferFragments = ICEUsernameFragmentParser.fragments(
             inSessionDescription: restartSnapshot.hostOffers[0]
         )
@@ -1041,100 +1205,132 @@ private func mediaSection(kind: String, in sdp: String) -> String? {
     return lines[start..<end].joined(separator: "\n")
 }
 
+private func assertHighFidelityOpusPolicy(
+    in audioSection: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    XCTAssertTrue(
+        audioSection.lowercased().contains(
+            "stereo=1;sprop-stereo=1;maxaveragebitrate=192000"
+        ),
+        "The negotiated Opus fmtp must carry the complete high-fidelity policy.\n\(audioSection)",
+        file: file,
+        line: line
+    )
+}
+
 private struct DecodedAudioMeasurement: Sendable {
     let channelCount: Int
     let frameCount: Int
-    let rms: Double
-    let peak: Double
+    let leftRMS: Double
+    let rightRMS: Double
+    let leftPeak: Double
+    let rightPeak: Double
+    let correlation: Double
 
     static let zero = DecodedAudioMeasurement(
         channelCount: 0,
         frameCount: 0,
-        rms: 0,
-        peak: 0
+        leftRMS: 0,
+        rightRMS: 0,
+        leftPeak: 0,
+        rightPeak: 0,
+        correlation: 0
     )
 }
 
 private final class DecodedAudioProbe: @unchecked Sendable {
-    let receivedAudio = XCTestExpectation(
-        description: "viewer decoded nonzero PCM from the host system-audio graph"
-    )
-
-    private let requiredNonSilentFrames: Int
-    private let lock = NSLock()
-    private var didReceiveAudio = false
-    private var latestMeasurement = DecodedAudioMeasurement.zero
-    private var callbackCount = 0
-    private var observedFormats: Set<String> = []
-    private var accumulatedNonSilentFrames = 0
-    private var maximumObservedRMS = 0.0
-    private var maximumObservedPeak = 0.0
-
-    init(requiredNonSilentFrames: Int = 1) {
-        precondition(requiredNonSilentFrames > 0)
-        self.requiredNonSilentFrames = requiredNonSilentFrames
+    enum Mode: Sendable {
+        case rightOnly
+        case antiPhase
     }
 
-    var hasReceivedAudio: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return didReceiveAudio
+    let receivedAudio = XCTestExpectation(
+        description: "viewer decoded qualifying two-channel PCM from the host"
+    )
+
+    private struct Batch {
+        let channelCount: Int
+        let frameCount: Int
+        let leftEnergy: Double
+        let rightEnergy: Double
+        let crossEnergy: Double
+        let leftPeak: Double
+        let rightPeak: Double
+
+        var leftRMS: Double { sqrt(leftEnergy / Double(frameCount)) }
+        var rightRMS: Double { sqrt(rightEnergy / Double(frameCount)) }
+        var correlation: Double {
+            let denominator = sqrt(leftEnergy * rightEnergy)
+            return denominator > 0 ? crossEnergy / denominator : 0
+        }
+    }
+
+    private let mode: Mode
+    private let requiredQualifyingFrames: Int
+    private let lock = NSLock()
+    private var didReceiveAudio = false
+    private var callbackCount = 0
+    private var observedFormats: Set<String> = []
+    private var channelCount = 0
+    private var qualifyingFrames = 0
+    private var leftEnergy = 0.0
+    private var rightEnergy = 0.0
+    private var crossEnergy = 0.0
+    private var leftPeak = 0.0
+    private var rightPeak = 0.0
+
+    init(mode: Mode, requiredQualifyingFrames: Int) {
+        precondition(requiredQualifyingFrames > 0)
+        self.mode = mode
+        self.requiredQualifyingFrames = requiredQualifyingFrames
     }
 
     var measurement: DecodedAudioMeasurement {
         lock.lock()
         defer { lock.unlock() }
-        return latestMeasurement
-    }
-
-    var nonSilentFrameCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return accumulatedNonSilentFrames
-    }
-
-    var maximumRMS: Double {
-        lock.lock()
-        defer { lock.unlock() }
-        return maximumObservedRMS
-    }
-
-    var maximumPeak: Double {
-        lock.lock()
-        defer { lock.unlock() }
-        return maximumObservedPeak
+        guard qualifyingFrames > 0 else { return .zero }
+        let denominator = sqrt(leftEnergy * rightEnergy)
+        return DecodedAudioMeasurement(
+            channelCount: channelCount,
+            frameCount: qualifyingFrames,
+            leftRMS: sqrt(leftEnergy / Double(qualifyingFrames)),
+            rightRMS: sqrt(rightEnergy / Double(qualifyingFrames)),
+            leftPeak: leftPeak,
+            rightPeak: rightPeak,
+            correlation: denominator > 0 ? crossEnergy / denominator : 0
+        )
     }
 
     var diagnosticSummary: String {
         lock.lock()
         defer { lock.unlock() }
         return "callbacks=\(callbackCount) formats=\(observedFormats.sorted()) "
-            + "nonSilentFrames=\(accumulatedNonSilentFrames) "
-            + "maxRMS=\(maximumObservedRMS) "
-            + "maxPeak=\(maximumObservedPeak) "
-            + "measurement=\(latestMeasurement)"
+            + "qualifyingFrames=\(qualifyingFrames) "
+            + "measurement=\(measurementLocked())"
     }
 
     func observe(_ buffer: AVAudioPCMBuffer) {
         let format = "\(buffer.format.sampleRate)/\(buffer.format.channelCount)ch/"
             + "\(buffer.format.commonFormat.rawValue)/interleaved=\(buffer.format.isInterleaved)"
-        let measurement = Self.measure(buffer)
+        let batch = Self.measure(buffer)
         var shouldFulfill = false
         lock.withLock {
             callbackCount += 1
             observedFormats.insert(format)
-            if let measurement {
-                latestMeasurement = measurement
-                if measurement.channelCount == 1,
-                   measurement.rms > 0.01 {
-                    accumulatedNonSilentFrames += measurement.frameCount
-                    maximumObservedRMS = max(maximumObservedRMS, measurement.rms)
-                    maximumObservedPeak = max(maximumObservedPeak, measurement.peak)
-                    if !didReceiveAudio,
-                       accumulatedNonSilentFrames >= requiredNonSilentFrames {
-                        didReceiveAudio = true
-                        shouldFulfill = true
-                    }
+            if let batch, batch.channelCount == 2, qualifies(batch) {
+                channelCount = batch.channelCount
+                qualifyingFrames += batch.frameCount
+                leftEnergy += batch.leftEnergy
+                rightEnergy += batch.rightEnergy
+                crossEnergy += batch.crossEnergy
+                leftPeak = max(leftPeak, batch.leftPeak)
+                rightPeak = max(rightPeak, batch.rightPeak)
+                if !didReceiveAudio,
+                   qualifyingFrames >= requiredQualifyingFrames {
+                    didReceiveAudio = true
+                    shouldFulfill = true
                 }
             }
         }
@@ -1144,27 +1340,62 @@ private final class DecodedAudioProbe: @unchecked Sendable {
         }
     }
 
-    private static func measure(_ buffer: AVAudioPCMBuffer) -> DecodedAudioMeasurement? {
-        let frameCount = Int(buffer.frameLength)
-        let channelCount = Int(buffer.format.channelCount)
-        guard frameCount > 0, channelCount >= 1 else { return nil }
-
-        var energy = 0.0
-        var peak = 0.0
-        for frame in 0..<frameCount {
-            guard let sample = sample(buffer, frame: frame, channel: 0) else {
-                return nil
-            }
-            energy += sample * sample
-            peak = max(peak, abs(sample))
+    private func qualifies(_ batch: Batch) -> Bool {
+        switch mode {
+        case .rightOnly:
+            return batch.rightRMS > 0.01
+                && batch.leftRMS < batch.rightRMS * 0.25
+        case .antiPhase:
+            return batch.leftRMS > 0.01
+                && batch.rightRMS > 0.01
+                && batch.correlation < -0.5
         }
+    }
 
-        let divisor = Double(frameCount)
+    private func measurementLocked() -> DecodedAudioMeasurement {
+        guard qualifyingFrames > 0 else { return .zero }
+        let denominator = sqrt(leftEnergy * rightEnergy)
         return DecodedAudioMeasurement(
             channelCount: channelCount,
+            frameCount: qualifyingFrames,
+            leftRMS: sqrt(leftEnergy / Double(qualifyingFrames)),
+            rightRMS: sqrt(rightEnergy / Double(qualifyingFrames)),
+            leftPeak: leftPeak,
+            rightPeak: rightPeak,
+            correlation: denominator > 0 ? crossEnergy / denominator : 0
+        )
+    }
+
+    private static func measure(_ buffer: AVAudioPCMBuffer) -> Batch? {
+        let frameCount = Int(buffer.frameLength)
+        let channelCount = Int(buffer.format.channelCount)
+        guard frameCount > 0, channelCount == 2 else { return nil }
+
+        var leftEnergy = 0.0
+        var rightEnergy = 0.0
+        var crossEnergy = 0.0
+        var leftPeak = 0.0
+        var rightPeak = 0.0
+        for frame in 0..<frameCount {
+            guard let left = sample(buffer, frame: frame, channel: 0),
+                  let right = sample(buffer, frame: frame, channel: 1) else {
+                return nil
+            }
+            leftEnergy += left * left
+            rightEnergy += right * right
+            crossEnergy += left * right
+            leftPeak = max(leftPeak, abs(left))
+            rightPeak = max(rightPeak, abs(right))
+        }
+
+        return Batch(
+            channelCount: channelCount,
             frameCount: frameCount,
-            rms: sqrt(energy / divisor),
-            peak: peak
+            leftEnergy: leftEnergy,
+            rightEnergy: rightEnergy,
+            crossEnergy: crossEnergy,
+            leftPeak: leftPeak,
+            rightPeak: rightPeak
         )
     }
 
@@ -1277,6 +1508,109 @@ private func makeStereoToneSampleBuffer(
         decodeTimeStamp: .invalid
     )
     var sampleSize = 4
+    var sampleBuffer: CMSampleBuffer?
+    status = CMSampleBufferCreateReady(
+        allocator: kCFAllocatorDefault,
+        dataBuffer: blockBuffer,
+        formatDescription: formatDescription,
+        sampleCount: frameCount,
+        sampleTimingEntryCount: 1,
+        sampleTimingArray: &timing,
+        sampleSizeEntryCount: 1,
+        sampleSizeArray: &sampleSize,
+        sampleBufferOut: &sampleBuffer
+    )
+    guard status == noErr, let sampleBuffer else {
+        throw AudioSampleBufferTestError.sampleBufferCreationFailed(status)
+    }
+    return sampleBuffer
+}
+
+/// Models a non-WebRTC-native ScreenCaptureKit format so the end-to-end stereo proof also
+/// exercises sample-format conversion and resampling into the custom device's exact 48 kHz
+/// interleaved Int16 contract.
+private func makeStereoFloatToneSampleBuffer(
+    frameCount: Int,
+    sampleRate: Double,
+    leftAmplitude: Double,
+    rightAmplitude: Double,
+    leftFrequency: Double,
+    rightFrequency: Double
+) throws -> CMSampleBuffer {
+    var samples = [Float32](repeating: 0, count: frameCount * 2)
+    for frame in 0..<frameCount {
+        let time = Double(frame) / sampleRate
+        samples[frame * 2] = Float32(
+            sin(2 * .pi * leftFrequency * time) * leftAmplitude
+        )
+        samples[frame * 2 + 1] = Float32(
+            sin(2 * .pi * rightFrequency * time) * rightAmplitude
+        )
+    }
+
+    let byteCount = samples.count * MemoryLayout<Float32>.size
+    var blockBuffer: CMBlockBuffer?
+    var status = CMBlockBufferCreateWithMemoryBlock(
+        allocator: kCFAllocatorDefault,
+        memoryBlock: nil,
+        blockLength: byteCount,
+        blockAllocator: kCFAllocatorDefault,
+        customBlockSource: nil,
+        offsetToData: 0,
+        dataLength: byteCount,
+        flags: 0,
+        blockBufferOut: &blockBuffer
+    )
+    guard status == kCMBlockBufferNoErr, let blockBuffer else {
+        throw AudioSampleBufferTestError.blockBufferCreationFailed(status)
+    }
+    status = samples.withUnsafeBytes { bytes in
+        guard let baseAddress = bytes.baseAddress else {
+            return kCMBlockBufferBadLengthParameterErr
+        }
+        return CMBlockBufferReplaceDataBytes(
+            with: baseAddress,
+            blockBuffer: blockBuffer,
+            offsetIntoDestination: 0,
+            dataLength: byteCount
+        )
+    }
+    guard status == kCMBlockBufferNoErr else {
+        throw AudioSampleBufferTestError.blockBufferCopyFailed(status)
+    }
+
+    var streamDescription = AudioStreamBasicDescription(
+        mSampleRate: sampleRate,
+        mFormatID: kAudioFormatLinearPCM,
+        mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+        mBytesPerPacket: 8,
+        mFramesPerPacket: 1,
+        mBytesPerFrame: 8,
+        mChannelsPerFrame: 2,
+        mBitsPerChannel: 32,
+        mReserved: 0
+    )
+    var formatDescription: CMAudioFormatDescription?
+    status = CMAudioFormatDescriptionCreate(
+        allocator: kCFAllocatorDefault,
+        asbd: &streamDescription,
+        layoutSize: 0,
+        layout: nil,
+        magicCookieSize: 0,
+        magicCookie: nil,
+        extensions: nil,
+        formatDescriptionOut: &formatDescription
+    )
+    guard status == noErr, let formatDescription else {
+        throw AudioSampleBufferTestError.formatDescriptionCreationFailed(status)
+    }
+
+    var timing = CMSampleTimingInfo(
+        duration: CMTime(value: 1, timescale: CMTimeScale(sampleRate)),
+        presentationTimeStamp: .zero,
+        decodeTimeStamp: .invalid
+    )
+    var sampleSize = 8
     var sampleBuffer: CMSampleBuffer?
     status = CMSampleBufferCreateReady(
         allocator: kCFAllocatorDefault,

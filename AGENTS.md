@@ -50,30 +50,48 @@ manual IP addresses, router configuration, or public TCP ports.
   TestFlight app so physical validation cannot replace the user's release container
   or masquerade as a TestFlight-to-TestFlight update.
 - Worldwide Mac system audio is an independent, send-only Opus track on the same
-  peer connection. With the pinned WebRTC build it is truthfully 48 kHz mono:
-  enter manual ADM rendering before track creation, disable microphone/voice
-  processing, bound injection latency, and synchronously mute/flush both sender
-  and receiver at every transport uncertainty boundary. A fresh current-generation
+  peer connection. The production fidelity contract is 48 kHz interleaved Int16
+  stereo from ScreenCaptureKit through a custom input-only WebRTC audio device,
+  `stereo=1;sprop-stereo=1`, and a 192 kbps sender ceiling. Deliver each complete
+  source callback directly and synchronously from one serialized source-clock path;
+  never add a second 10 ms timer, ring, prebuffer, clock PLL, partial-buffer padding,
+  synthetic silence, or an unbounded dispatch backlog. WebRTC's FineAudioBuffer owns
+  its internal 10 ms accumulation/splitting. Keep PCM blocked until the sender track
+  is active and the live factory state proves AEC, NS, AGC, HPF, and platform voice
+  processing are all off; bind that approval to the exact native StartRecording
+  generation so a later restart fails closed. Synchronously mute both sender and
+  receiver at every transport uncertainty boundary. A fresh current-generation
   peer/ICE/control proof is required before either side re-enables audio. Show/Hide
-  must affect video and remote input only. The manual ADM consumes player buffers at
-  `.dataRendered`, not `.dataPlayedBack`; the latter has no hardware sink and never
-  completes. Downmix stereo as `(L + R) / 2`, prebuffer 60 ms, cap queued PCM at
-  120 ms, and drop newest on overflow. Serialize rendered completions and capture
-  admission so capture-first can extend an exact boundary while completion-first
-  rebuffers after a proven drain. Keep source-PTS, queue, and RTP concealment
-  diagnostics observable, and exclude iPhone Mirroring audio dynamically so a
-  process relaunch cannot create a capture/playback feedback loop.
-- The iPhone must use genuine playback plus the Background Audio capability so a
+  affects video and remote input only. Keep source-PTS and RTP concealment diagnostics
+  observable, and exclude iPhone Mirroring audio dynamically so a process relaunch
+  cannot create a capture/playback feedback loop.
+- LiveKitWebRTC `144.7559.11` has a pinned stereo input-bridge quirk: its prefilled
+  `AudioBufferList` branch forwards `frameCount` Int16 elements even though interleaved
+  stereo contains `frameCount * 2`. Feed Mac PCM through the synchronous nil-input
+  `renderBlock` branch, which allocates and forwards the complete channel-multiplied
+  buffer. Keep a regression test for arbitrary callback sizes; do not switch back to
+  the direct prefilled-buffer branch or compensate by falsifying the frame count. A
+  native `noErr` is not delivery proof because an inactive ADM returns success without
+  invoking the block: accept a callback only after exactly one validated render copy of
+  `frameCount * 2` elements. A serial dispatch queue may change pthreads, so synchronously
+  notify the delegate of input interruption before delivering on a different thread.
+- The iPhone must use one custom output-only RemoteIO device, a `.playback` audio
+  session in `.default` mode with no category options, and the Background Audio capability so a
   user-started stream can continue across Home/lock. Do not synthesize silent audio
-  as a keepalive. Backgrounding hides video and revokes input but retains healthy
+  as a keepalive, open a microphone input bus, instantiate VoiceProcessingIO, use a
+  call-oriented audio-session category/mode, or add a second renderer/ring. Pull
+  decoded stereo directly from WebRTC in the RemoteIO render callback. Do not use
+  `.moviePlayback`: Apple documents route-dependent output enhancement for that mode,
+  which violates the general Mac-audio fidelity contract. Backgrounding
+  hides video and revokes input but retains healthy
   audio; interruption, private-route loss, uncertainty, and disconnect mute the
   native remote track itself. Never auto-resume when iOS omits `shouldResume`, and
   never promise playback after the user force-quits the app.
 - An iPhone audio-session conflict must degrade audio without aborting worldwide
   signaling, screen viewing, or remote control. Gate manual WebRTC playback before
-  signaling; retry `.moviePlayback` as `.default` only for configuration-stage
-  `NSOSStatusErrorDomain` `badParam`, never for activation failure. Own at most one
-  balanced native activation lease, recover only from explicit lifecycle/route
+  signaling; never fall back from `.playback` / `.default` / no options to a movie,
+  chat, record, mixing, or call-oriented configuration. Own at most one balanced
+  native activation lease, recover only from explicit lifecycle/route
   events or user action, and keep audio diagnostics separate from terminal session
   errors.
 - Worldwide Show/Hide must use monotonic request IDs and host acknowledgements.

@@ -10,52 +10,12 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         let configuration = WebRTCAudioPlaybackSession.playbackConfiguration()
 
         XCTAssertEqual(configuration.category, AVAudioSession.Category.playback.rawValue)
-        XCTAssertEqual(configuration.mode, AVAudioSession.Mode.moviePlayback.rawValue)
-        XCTAssertEqual(configuration.categoryOptions, [.mixWithOthers])
+        XCTAssertEqual(configuration.mode, AVAudioSession.Mode.default.rawValue)
+        XCTAssertEqual(configuration.categoryOptions, [])
+        XCTAssertFalse(configuration.categoryOptions.contains(.mixWithOthers))
         XCTAssertFalse(configuration.categoryOptions.contains(.allowAirPlay))
         XCTAssertGreaterThan(configuration.inputNumberOfChannels, 0)
-    }
-
-    func testCompatibilityPlaybackConfigurationChangesOnlyTheMode() {
-        let preferred = WebRTCAudioPlaybackSession.playbackConfiguration()
-        let compatibility = WebRTCAudioPlaybackSession.compatibilityPlaybackConfiguration()
-
-        XCTAssertEqual(compatibility.category, preferred.category)
-        XCTAssertEqual(compatibility.categoryOptions, preferred.categoryOptions)
-        XCTAssertEqual(compatibility.mode, AVAudioSession.Mode.default.rawValue)
-        XCTAssertEqual(compatibility.sampleRate, preferred.sampleRate)
-        XCTAssertEqual(compatibility.ioBufferDuration, preferred.ioBufferDuration)
-        XCTAssertEqual(compatibility.outputNumberOfChannels, preferred.outputNumberOfChannels)
-    }
-
-    func testDefaultModeFallbackIsLimitedToConfigurationOSStatusParamErr() {
-        let parameterError = NSError(domain: NSOSStatusErrorDomain, code: -50)
-        let nestedParameterError = NSError(
-            domain: "LiveKitWebRTC",
-            code: 1,
-            userInfo: [NSUnderlyingErrorKey: parameterError]
-        )
-
-        XCTAssertTrue(
-            WebRTCAudioPlaybackSession.shouldRetryConfigurationWithDefaultMode(
-                after: parameterError
-            )
-        )
-        XCTAssertTrue(
-            WebRTCAudioPlaybackSession.shouldRetryConfigurationWithDefaultMode(
-                after: nestedParameterError
-            )
-        )
-        XCTAssertFalse(
-            WebRTCAudioPlaybackSession.shouldRetryConfigurationWithDefaultMode(
-                after: NSError(domain: NSOSStatusErrorDomain, code: -108)
-            )
-        )
-        XCTAssertFalse(
-            WebRTCAudioPlaybackSession.shouldRetryConfigurationWithDefaultMode(
-                after: NSError(domain: "Unrelated", code: -50)
-            )
-        )
+        XCTAssertEqual(configuration.outputNumberOfChannels, 2)
     }
 
     func testLegacyLongFormPlaybackConfigurationUsesNoExplicitOptions() {
@@ -81,31 +41,6 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertEqual(session.category, .playback)
         XCTAssertEqual(session.mode, .moviePlayback)
         XCTAssertEqual(session.routeSharingPolicy, .longFormAudio)
-        XCTAssertGreaterThan(session.sampleRate, 0)
-        #endif
-    }
-
-    func testXRCanConfigureNativeBackgroundPlaybackSession() throws {
-        #if targetEnvironment(simulator)
-        throw XCTSkip(
-            "AVAudioSession route validation must run on a physical iPhone; "
-                + "Simulator audio does not exercise the hardware session boundary."
-        )
-        #else
-        let playback = WebRTCAudioPlaybackSession()
-        defer { playback.deactivate() }
-
-        // This is intentionally an integration test of the real LiveKit/WebRTC ->
-        // AVAudioSession boundary. A category/mode/options mismatch fails here with the
-        // same OSStatus (for example, paramErr / -50) that a TestFlight build reports.
-        try playback.activate()
-
-        let session = AVAudioSession.sharedInstance()
-        XCTAssertEqual(session.category, .playback)
-        XCTAssertEqual(session.mode, .moviePlayback)
-        XCTAssertTrue(session.categoryOptions.contains(.mixWithOthers))
-        // The device may report AirPlay as an implicit playback capability. The separate
-        // configuration invariant checks that AudioStreamer never requests it explicitly.
         XCTAssertGreaterThan(session.sampleRate, 0)
         #endif
     }
@@ -306,8 +241,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertTrue(fixture.controller.snapshot.isPlaying)
         XCTAssertTrue(fixture.remoteAudio.isEnabled)
         XCTAssertNil(fixture.controller.snapshot.errorText)
-        XCTAssertTrue(
-            fixture.controller.snapshot.diagnosticText?.contains("recovery failed") ?? false
+        XCTAssertNil(
+            fixture.controller.snapshot.diagnosticText,
+            "A successful retry must clear the obsolete live failure diagnostic."
         )
     }
 
@@ -374,6 +310,45 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertEqual(fixture.background.publications.last?.serverName, "Studio Mac")
     }
 
+    func testProductionPlaybackWaitsForLiveRemoteIOProofAndSurfacesDeviceFailure() {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+
+        XCTAssertTrue(
+            fixture.remoteAudio.isEnabled,
+            "The decoded track must open so RemoteIO can produce runtime proof."
+        )
+        XCTAssertEqual(fixture.controller.snapshot.stateText, "Starting playback")
+        XCTAssertFalse(fixture.controller.snapshot.isPlaying)
+
+        fixture.controller.updateRuntimePlayout(isReady: true)
+
+        XCTAssertEqual(fixture.controller.snapshot.stateText, "Playing")
+        XCTAssertTrue(fixture.controller.snapshot.isPlaying)
+
+        fixture.controller.updateRuntimePlayout(
+            isReady: false,
+            failureMessage: "The iPhone audio output could not start.",
+            diagnostic: "RemoteIO start failed (-50)."
+        )
+
+        XCTAssertEqual(fixture.controller.snapshot.stateText, "Playback unavailable")
+        XCTAssertFalse(fixture.controller.snapshot.isPlaying)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertEqual(
+            fixture.controller.snapshot.errorText,
+            "The iPhone audio output could not start."
+        )
+        XCTAssertEqual(
+            fixture.controller.snapshot.diagnosticText,
+            "RemoteIO start failed (-50)."
+        )
+    }
+
     private var inactiveSnapshot: WorldwideAudioLifecycleSnapshot {
         WorldwideAudioLifecycleSnapshot(
             stateText: "Inactive",
@@ -429,6 +404,7 @@ private final class RemoteAudioStub: WorldwideRemoteAudioControlling {
 
 @MainActor
 private final class AudioPlaybackStub: WorldwideAudioPlaybackManaging {
+    var requiresRuntimePlayoutProof = false
     var activateError: (any Error)?
     var recoverError: (any Error)?
     private(set) var activateCount = 0

@@ -1,10 +1,12 @@
 @preconcurrency import LiveKitWebRTC
+#if os(macOS)
+import MacWebRTCAudioDeviceShim
+#endif
 import AVFoundation
 import CoreMedia
 import Foundation
 
-/// A remote WebRTC audio track. Native WebRTC renders enabled remote tracks through its
-/// audio-device module; this wrapper gives the application an explicit lifetime and mute gate.
+/// A remote WebRTC audio track with an explicit lifetime, mute gate, and decoded-PCM sink API.
 public final class WebRTCRemoteAudioTrack: @unchecked Sendable {
     private let nativeTrack: LKRTCAudioTrack
     public let trackID: String
@@ -38,8 +40,8 @@ public final class WebRTCRemoteAudioTrack: @unchecked Sendable {
 }
 
 #if DEBUG
-/// A native receive tap used by loopback tests to prove that encoded PCM traverses the custom
-/// ADM graph, Opus sender, network peer, decoder, and remote track—not merely SDP negotiation.
+/// Passive test tap only. Production iOS playout has one custom RemoteIO audio device and no
+/// decoded-PCM renderer, AVAudioEngine, PCM copy, or application ring buffer.
 final class WebRTCAudioPCMRenderer: NSObject, LKRTCAudioRenderer, @unchecked Sendable {
     private let handler: @Sendable (AVAudioPCMBuffer) -> Void
 
@@ -53,16 +55,18 @@ final class WebRTCAudioPCMRenderer: NSObject, LKRTCAudioRenderer, @unchecked Sen
 }
 #endif
 
-/// Feeds ScreenCaptureKit PCM into WebRTC's AudioEngine input graph.
+/// Feeds ScreenCaptureKit PCM into WebRTC's input-only audio device.
 ///
-/// The player queue is deliberately bounded. If capture gets ahead of the audio engine, the
-/// newest incoming buffer is dropped so latency cannot grow without bound after a stall or route
-/// transition without destroying PCM that is already continuous.
+/// The production custom device follows ScreenCaptureKit's source clock: each converted hardware
+/// callback is synchronously delivered on this one serial queue with its full arbitrary frame
+/// count. WebRTC's native FineAudioBuffer owns 10 ms splitting/accumulation; there is no app-side
+/// recording timer, ring, resampler, jitter buffer, or synthetic silence.
 public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
     #if os(macOS)
     private static let capturedChannelCount: AVAudioChannelCount = 2
 
-    private let audioDeviceModule: LKRTCAudioDeviceModule
+    private let audioDeviceModule: LKRTCAudioDeviceModule?
+    private let stereoAudioDevice: ASMacStereoAudioDevice?
     private let queue = DispatchQueue(label: "AudioStreamer.WebRTC.ExternalAudio")
     private let queueKey = DispatchSpecificKey<Void>()
     private let captureEpochLock = NSLock()
@@ -88,6 +92,11 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
     private var sampleBufferImportDropCount = 0
     private var lastSampleBufferImportStatus: OSStatus?
     private var inputConfigurationCount = 0
+    private var admInputCallbackCount = 0
+    private var admInputSampleRate: Double?
+    private var admInputChannelCount: Int?
+    private var admInputCommonFormat: AVAudioCommonFormat?
+    private var admInputIsInterleaved: Bool?
     #endif
 
     /// Supplies at most the number of PCM frames requested by `AVAudioConverter`, retaining any
@@ -235,20 +244,41 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
 
     init(audioDeviceModule: LKRTCAudioDeviceModule) {
         self.audioDeviceModule = audioDeviceModule
+        stereoAudioDevice = nil
         super.init()
         queue.setSpecific(key: queueKey, value: ())
         audioDeviceModule.observer = self
     }
 
+    /// Production Mac-host path. Unlike the legacy AudioEngine ADM bridge, this device requests
+    /// two recording channels from WebRTC and accepts only 48 kHz interleaved Int16 stereo PCM.
+    /// The device is input-only and never opens a physical microphone.
+    init?(stereoAudioDevice: ASMacStereoAudioDevice) {
+        guard let stereoFormat = AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: 48_000,
+            channels: Self.capturedChannelCount,
+            interleaved: true
+        ) else {
+            return nil
+        }
+        audioDeviceModule = nil
+        self.stereoAudioDevice = stereoAudioDevice
+        super.init()
+        queue.setSpecific(key: queueKey, value: ())
+        targetFormat = stereoFormat
+    }
+
     deinit {
-        audioDeviceModule.observer = nil
+        audioDeviceModule?.observer = nil
         syncOnQueue {
             tearDownPlayer(detach: true)
         }
     }
 
-    /// Accepts one ScreenCaptureKit audio sample buffer. Invalid, unsupported, stale, or excess
-    /// PCM is dropped; capture callbacks are never blocked on WebRTC playback.
+    /// Accepts one ScreenCaptureKit audio sample buffer. Conversion and native delivery are
+    /// synchronously serialized on the source queue: a slow downstream callback backpressures this
+    /// capture callback instead of accumulating an unbounded hidden FIFO and drifting from live.
     public func capture(sampleBuffer: CMSampleBuffer) {
         guard sampleBuffer.isValid,
               CMSampleBufferDataIsReady(sampleBuffer),
@@ -263,8 +293,8 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
         }
         let importedPCM = Self.makePCMBuffer(from: sampleBuffer)
         guard let pcmBuffer = importedPCM.buffer else {
-            queue.async { [weak self] in
-                guard let self, captureEpochLock.withLock({ captureEpoch == epoch }) else {
+            syncOnQueue {
+                guard captureEpochLock.withLock({ captureEpoch == epoch }) else {
                     return
                 }
                 if let sourceSampleRate {
@@ -282,8 +312,8 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
             return
         }
 
-        queue.async { [weak self] in
-            guard let self, captureEpochLock.withLock({ captureEpoch == epoch }) else {
+        syncOnQueue {
+            guard captureEpochLock.withLock({ captureEpoch == epoch }) else {
                 return
             }
             recordSourceTimeline(
@@ -302,10 +332,21 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
         }
     }
 
+    /// Opens the device's generation gate only after the peer has proved the live sender APM is
+    /// raw. A later native StartRecording invalidates this approval automatically.
+    func approveCurrentRecordingGeneration() -> Bool {
+        syncOnQueue {
+            stereoAudioDevice?.approveCurrentRecordingGeneration() ?? true
+        }
+    }
+
     func setEnabled(_ enabled: Bool) {
         syncOnQueue {
             guard isEnabled != enabled else {
-                if !enabled { resetPlayerAndConverter() }
+                if !enabled {
+                    stereoAudioDevice?.revokeRecordingAdmission()
+                    resetPlayerAndConverter()
+                }
                 return
             }
             invalidatePendingCaptures()
@@ -317,6 +358,7 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
             if enabled {
                 sourceTimelineState.resetBaseline()
             } else {
+                stereoAudioDevice?.revokeRecordingAdmission()
                 resetPlayerAndConverter()
             }
         }
@@ -330,6 +372,10 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
             #if DEBUG
             disabledDropCount += 1
             #endif
+            return
+        }
+        if let stereoAudioDevice {
+            schedule(sourceBuffer, on: stereoAudioDevice)
             return
         }
         guard playerIsReady, let targetFormat else {
@@ -406,6 +452,73 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
         }
     }
 
+    private func schedule(
+        _ sourceBuffer: AVAudioPCMBuffer,
+        on stereoAudioDevice: ASMacStereoAudioDevice
+    ) {
+        guard playerIsReady, let targetFormat else {
+            #if DEBUG
+            graphNotReadyDropCount += 1
+            #endif
+            return
+        }
+        let maximumFrameCount = AVAudioFrameCount(
+            AudioPlayoutQueueState.maximumQueuedFrames
+        )
+        guard let buffers = convertedBuffers(
+            sourceBuffer,
+            to: targetFormat,
+            maximumFrameCount: maximumFrameCount
+        ), !buffers.isEmpty else {
+            #if DEBUG
+            conversionDropCount += 1
+            #endif
+            return
+        }
+
+        for buffer in buffers {
+            guard buffer.format.sampleRate == 48_000,
+                  buffer.format.channelCount == Self.capturedChannelCount,
+                  buffer.format.commonFormat == .pcmFormatInt16,
+                  buffer.format.isInterleaved,
+                  buffer.frameLength > 0 else {
+                #if DEBUG
+                conversionDropCount += 1
+                #endif
+                return
+            }
+            let audioBuffers = UnsafeMutableAudioBufferListPointer(
+                buffer.mutableAudioBufferList
+            )
+            let frameCount = Int(buffer.frameLength)
+            let requiredByteCount = frameCount
+                * Int(Self.capturedChannelCount)
+                * MemoryLayout<Int16>.size
+            guard audioBuffers.count == 1,
+                  audioBuffers[0].mNumberChannels == Self.capturedChannelCount,
+                  Int(audioBuffers[0].mDataByteSize) >= requiredByteCount,
+                  let data = audioBuffers[0].mData else {
+                #if DEBUG
+                conversionDropCount += 1
+                #endif
+                return
+            }
+            let accepted = stereoAudioDevice.deliverInterleavedStereoInt16(
+                data.assumingMemoryBound(to: Int16.self),
+                frameCount: UInt(frameCount)
+            )
+            guard accepted else {
+                #if DEBUG
+                conversionDropCount += 1
+                #endif
+                return
+            }
+            #if DEBUG
+            scheduledBufferCount += 1
+            #endif
+        }
+    }
+
     private func convertedBuffers(
         _ sourceBuffer: AVAudioPCMBuffer,
         to targetFormat: AVAudioFormat,
@@ -424,6 +537,9 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
             || converterSourceFormat != sourceBuffer.format
             || converter?.outputFormat != targetFormat {
             converter = AVAudioConverter(from: sourceBuffer.format, to: targetFormat)
+            // This is a continuous live stream, not an offline file. Avoid adding a priming
+            // delay every time ScreenCaptureKit changes format or capture is re-authorized.
+            converter?.primeMethod = .none
             converterSourceFormat = sourceBuffer.format
         }
         guard let converter else { return nil }
@@ -546,16 +662,77 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
     #if DEBUG
     func diagnosticsForTesting() -> MacExternalAudioCapturerDiagnostics {
         syncOnQueue {
-            MacExternalAudioCapturerDiagnostics(
+            let device = stereoAudioDevice?.diagnostics
+            return MacExternalAudioCapturerDiagnostics(
                 isEnabled: isEnabled,
-                hasConfiguredEngine: configuredEngine != nil,
-                engineIsRunning: configuredEngine?.isRunning == true,
+                usesCustomStereoDevice: stereoAudioDevice != nil,
+                hasConfiguredEngine: device?.initialized == true || configuredEngine != nil,
+                engineIsRunning: device?.recording == true || configuredEngine?.isRunning == true,
                 playerIsAttached: playerIsAttached,
                 playerIsReady: playerIsReady,
-                playerIsPlaying: playerNode.isPlaying,
+                playerIsPlaying: device?.recording == true || playerNode.isPlaying,
                 targetSampleRate: targetFormat?.sampleRate,
                 targetChannelCount: targetFormat.map { Int($0.channelCount) },
-                inputConfigurationCount: inputConfigurationCount,
+                inputConfigurationCount: stereoAudioDevice == nil ? inputConfigurationCount : 1,
+                admInputCallbackCount: device.map { Int(clamping: $0.deliveryCallbackCount) }
+                    ?? admInputCallbackCount,
+                admInputSampleRate: stereoAudioDevice == nil ? admInputSampleRate : 48_000,
+                admInputChannelCount: stereoAudioDevice == nil ? admInputChannelCount : 2,
+                admInputCommonFormat: stereoAudioDevice == nil
+                    ? admInputCommonFormat
+                    : .pcmFormatInt16,
+                admInputIsInterleaved: stereoAudioDevice == nil
+                    ? admInputIsInterleaved
+                    : true,
+                customDeviceRecording: device?.recording ?? false,
+                customDeviceDeliveredFrames: device.map {
+                    Int64(clamping: $0.deliveredFrameCount)
+                } ?? 0,
+                customDeviceRejectedFrames: device.map {
+                    Int64(clamping: $0.rejectedFrameCount)
+                } ?? 0,
+                customDeviceDeliveryFailures: device.map {
+                    Int(clamping: $0.deliveryFailureCount)
+                } ?? 0,
+                customDeviceNativeDeliveryErrors: device.map {
+                    Int(clamping: $0.nativeDeliveryErrorCount)
+                } ?? 0,
+                customDeviceRenderInvocations: device.map {
+                    Int64(clamping: $0.renderInvocationCount)
+                } ?? 0,
+                customDeviceRenderCopiedFrames: device.map {
+                    Int64(clamping: $0.renderCopiedFrameCount)
+                } ?? 0,
+                customDeviceRenderCopiedSampleElements: device.map {
+                    Int64(clamping: $0.renderCopiedSampleElementCount)
+                } ?? 0,
+                customDeviceRenderNotInvoked: device.map {
+                    Int(clamping: $0.renderNotInvokedCount)
+                } ?? 0,
+                customDeviceRenderMultipleInvocations: device.map {
+                    Int(clamping: $0.renderMultipleInvocationCount)
+                } ?? 0,
+                customDeviceRenderValidationFailures: device.map {
+                    Int(clamping: $0.renderValidationFailureCount)
+                } ?? 0,
+                customDevicePrefilledInputDeliveries: device.map {
+                    Int(clamping: $0.prefilledInputDataDeliveryCount)
+                } ?? 0,
+                customDeviceTimestampResets: device.map {
+                    Int(clamping: $0.timestampResetCount)
+                } ?? 0,
+                customDeviceThreadChanges: device.map {
+                    Int(clamping: $0.deliveryThreadChangeCount)
+                } ?? 0,
+                customDeviceRecordingGeneration: device.map {
+                    Int64(clamping: $0.recordingGeneration)
+                } ?? 0,
+                customDeviceApprovedRecordingGeneration: device.map {
+                    Int64(clamping: $0.approvedRecordingGeneration)
+                } ?? 0,
+                customDeviceAdmissionBlockedFrames: device.map {
+                    Int64(clamping: $0.admissionBlockedFrameCount)
+                } ?? 0,
                 receivedBufferCount: receivedBufferCount,
                 scheduledBufferCount: scheduledBufferCount,
                 disabledDropCount: disabledDropCount,
@@ -578,6 +755,9 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
 
     private func resetPlayerAndConverter() {
         converter?.reset()
+        if stereoAudioDevice != nil {
+            return
+        }
         playerNode.stop()
         playerNode.reset()
     }
@@ -631,6 +811,32 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
     }
 
     private func runtimeDiagnosticsLocked() -> MacExternalAudioCapturerRuntimeDiagnostics {
+        if let stereoAudioDevice {
+            let device = stereoAudioDevice.diagnostics
+            let phase: String
+            if !isEnabled {
+                phase = "disabled"
+            } else if device.recording {
+                phase = "direct"
+            } else {
+                phase = "waiting"
+            }
+            return MacExternalAudioCapturerRuntimeDiagnostics(
+                phase: phase,
+                generation: playoutState.generation,
+                queuedFrames: 0,
+                queueHighWaterFrames: 0,
+                underruns: 0,
+                rebuffers: 0,
+                overflowDrops: 0,
+                overflowDroppedFrames: 0,
+                lifecycleDiscardedFrames: Int64(clamping: device.rejectedFrameCount),
+                staleCompletions: 0,
+                sourceGaps: sourceTimelineState.gapCount,
+                sourceOverlaps: sourceTimelineState.overlapCount,
+                maximumSourceDiscontinuityFrames: sourceTimelineState.maximumDiscontinuityFrames
+            )
+        }
         let phase: String
         switch playoutState.phase {
         case .disabled:
@@ -658,7 +864,15 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
     }
 
     private var playerIsReady: Bool {
-        playerIsAttached
+        if let stereoAudioDevice {
+            let diagnostics = stereoAudioDevice.diagnostics
+            return diagnostics.initialized
+                && targetFormat?.sampleRate == 48_000
+                && targetFormat?.channelCount == Self.capturedChannelCount
+                && targetFormat?.commonFormat == .pcmFormatInt16
+                && targetFormat?.isInterleaved == true
+        }
+        return playerIsAttached
             && configuredEngine?.isRunning == true
             && playerNode.engine != nil
             && inputGraphIsConnected
@@ -742,6 +956,7 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
 
     public func capture(sampleBuffer: CMSampleBuffer) {}
     public func reset() {}
+    func approveCurrentRecordingGeneration() -> Bool { true }
     func setEnabled(_ enabled: Bool) {}
     #endif
 }
@@ -767,6 +982,7 @@ public struct MacExternalAudioCapturerRuntimeDiagnostics: Sendable {
 #if DEBUG && os(macOS)
 struct MacExternalAudioCapturerDiagnostics: CustomStringConvertible, Sendable {
     let isEnabled: Bool
+    let usesCustomStereoDevice: Bool
     let hasConfiguredEngine: Bool
     let engineIsRunning: Bool
     let playerIsAttached: Bool
@@ -775,6 +991,28 @@ struct MacExternalAudioCapturerDiagnostics: CustomStringConvertible, Sendable {
     let targetSampleRate: Double?
     let targetChannelCount: Int?
     let inputConfigurationCount: Int
+    let admInputCallbackCount: Int
+    let admInputSampleRate: Double?
+    let admInputChannelCount: Int?
+    let admInputCommonFormat: AVAudioCommonFormat?
+    let admInputIsInterleaved: Bool?
+    let customDeviceRecording: Bool
+    let customDeviceDeliveredFrames: Int64
+    let customDeviceRejectedFrames: Int64
+    let customDeviceDeliveryFailures: Int
+    let customDeviceNativeDeliveryErrors: Int
+    let customDeviceRenderInvocations: Int64
+    let customDeviceRenderCopiedFrames: Int64
+    let customDeviceRenderCopiedSampleElements: Int64
+    let customDeviceRenderNotInvoked: Int
+    let customDeviceRenderMultipleInvocations: Int
+    let customDeviceRenderValidationFailures: Int
+    let customDevicePrefilledInputDeliveries: Int
+    let customDeviceTimestampResets: Int
+    let customDeviceThreadChanges: Int
+    let customDeviceRecordingGeneration: Int64
+    let customDeviceApprovedRecordingGeneration: Int64
+    let customDeviceAdmissionBlockedFrames: Int64
     let receivedBufferCount: Int
     let scheduledBufferCount: Int
     let disabledDropCount: Int
@@ -787,14 +1025,21 @@ struct MacExternalAudioCapturerDiagnostics: CustomStringConvertible, Sendable {
     var description: String {
         let sampleRate = targetSampleRate.map { String($0) } ?? "nil"
         let channels = targetChannelCount.map { String($0) } ?? "nil"
+        let admSampleRate = admInputSampleRate.map { String($0) } ?? "nil"
+        let admChannels = admInputChannelCount.map { String($0) } ?? "nil"
+        let admCommonFormat = admInputCommonFormat.map { String($0.rawValue) } ?? "nil"
+        let admInterleaved = admInputIsInterleaved.map { String($0) } ?? "nil"
         return [
             "enabled=\(isEnabled)",
+            "customStereo=\(usesCustomStereoDevice)",
             "configured=\(hasConfiguredEngine)",
             "running=\(engineIsRunning)",
             "attached=\(playerIsAttached)",
             "ready=\(playerIsReady)",
             "playing=\(playerIsPlaying)",
             "format=\(sampleRate)/\(channels)ch",
+            "admInput=\(admSampleRate)/\(admChannels)ch/common=\(admCommonFormat)/interleaved=\(admInterleaved)/callbacks=\(admInputCallbackCount)",
+            "device(recording=\(customDeviceRecording),generation=\(customDeviceRecordingGeneration)/approved=\(customDeviceApprovedRecordingGeneration),delivered=\(customDeviceDeliveredFrames),rejected=\(customDeviceRejectedFrames),admissionBlocked=\(customDeviceAdmissionBlockedFrames),failures=\(customDeviceDeliveryFailures),nativeErrors=\(customDeviceNativeDeliveryErrors),render(invocations=\(customDeviceRenderInvocations),frames=\(customDeviceRenderCopiedFrames),elements=\(customDeviceRenderCopiedSampleElements),notInvoked=\(customDeviceRenderNotInvoked),multiple=\(customDeviceRenderMultipleInvocations),validation=\(customDeviceRenderValidationFailures),prefilled=\(customDevicePrefilledInputDeliveries)),timestampResets=\(customDeviceTimestampResets),threadChanges=\(customDeviceThreadChanges))",
             "configs=\(inputConfigurationCount)",
             "received=\(receivedBufferCount)",
             "scheduled=\(scheduledBufferCount)",
@@ -894,8 +1139,17 @@ extension MacExternalAudioCapturer: LKRTCAudioDeviceModuleDelegate {
         format: AVAudioFormat,
         context: [AnyHashable: Any]
     ) -> Int {
+        syncOnQueue {
+            #if DEBUG
+            admInputCallbackCount += 1
+            admInputSampleRate = format.sampleRate
+            admInputChannelCount = Int(format.channelCount)
+            admInputCommonFormat = format.commonFormat
+            admInputIsInterleaved = format.isInterleaved
+            #endif
+        }
         // Manual rendering is the privacy boundary: no physical microphone source may enter the
-        // graph, and the pinned ADM's render sink is fixed 48 kHz interleaved Int16 mono.
+        // legacy graph. Production hosts use the input-only custom stereo device above.
         guard source == nil,
               engine.isInManualRenderingMode,
               format.sampleRate == 48_000,
@@ -923,6 +1177,7 @@ extension MacExternalAudioCapturer: LKRTCAudioDeviceModuleDelegate {
     public func audioDeviceModuleDidUpdateDevices(
         _ audioDeviceModule: LKRTCAudioDeviceModule
     ) {}
+
 }
 #endif
 
@@ -977,7 +1232,8 @@ private final class LiveKitWebRTCAudioSessionController: WebRTCAudioSessionContr
 }
 #endif
 
-/// Coordinates WebRTC's receive-only audio unit with an iOS background-playback session.
+/// Controls only WebRTC's manual global audio gate on iOS. The injected output-only audio device
+/// is the sole owner of AVAudioSession configuration/activation and of the RemoteIO instance.
 public enum WebRTCAudioPlaybackFailureStage: String, Sendable {
     case configuration
     case activation
@@ -1015,8 +1271,6 @@ public final class WebRTCAudioPlaybackSession {
     // lifecycle object was initialized. Startup stays side-effect-free until audio is activated.
     private let sessionProvider: @MainActor () -> any WebRTCAudioSessionControlling
     private var providedSession: (any WebRTCAudioSessionControlling)?
-    private var ownsActivation = false
-
     private var session: any WebRTCAudioSessionControlling {
         if let providedSession {
             return providedSession
@@ -1054,118 +1308,35 @@ public final class WebRTCAudioPlaybackSession {
     public func deactivate() {
         #if os(iOS)
         session.isAudioEnabled = false
-        guard ownsActivation else { return }
-        session.lockForConfiguration()
-        defer { session.unlockForConfiguration() }
-        try? session.setActive(false)
-        // One successful setActive(true) creates exactly one local ownership lease. Never
-        // decrement it twice merely because native deactivation reported an error.
-        ownsActivation = false
         #endif
     }
 
     #if os(iOS)
     private func configureAndActivate() throws {
         session.prepareForManualAudio()
-        session.isAudioEnabled = false
-        session.lockForConfiguration()
-        defer { session.unlockForConfiguration() }
-
-        var appliedMode = AVAudioSession.Mode.moviePlayback
-        var usedCompatibilityFallback = false
-
-        do {
-            try session.configurePlayback(mode: appliedMode)
-        } catch {
-            guard Self.shouldRetryConfigurationWithDefaultMode(after: error) else {
-                throw Self.sessionError(
-                    stage: .configuration,
-                    underlying: error,
-                    attemptedMode: appliedMode,
-                    compatibilityFallbackAttempted: false
-                )
-            }
-
-            appliedMode = .default
-            do {
-                try session.configurePlayback(mode: appliedMode)
-                usedCompatibilityFallback = true
-            } catch {
-                throw Self.sessionError(
-                    stage: .configuration,
-                    underlying: error,
-                    attemptedMode: appliedMode,
-                    compatibilityFallbackAttempted: true
-                )
-            }
-        }
-
-        if ownsActivation {
-            guard session.isActive else {
-                throw Self.sessionError(
-                    stage: .activation,
-                    underlying: NSError(
-                        domain: "AudioStreamer.WebRTCAudioPlayback",
-                        code: 1,
-                        userInfo: [
-                            NSLocalizedDescriptionKey: "WebRTC still owns its activation lease, but iOS did not restore the interrupted audio session."
-                        ]
-                    ),
-                    attemptedMode: appliedMode,
-                    compatibilityFallbackAttempted: usedCompatibilityFallback
-                )
-            }
-        } else {
-            do {
-                try session.setActive(true)
-                ownsActivation = true
-            } catch {
-                throw Self.sessionError(
-                    stage: .activation,
-                    underlying: error,
-                    attemptedMode: appliedMode,
-                    compatibilityFallbackAttempted: usedCompatibilityFallback
-                )
-            }
-        }
+        // `isAudioEnabled == false` halts both incoming and outgoing native audio, including
+        // custom RTCAudioDevice callbacks. Keep the gate open while the custom output device is
+        // active; that device, not LKRTCAudioSession, owns category, mode, activation, and I/O.
         session.isAudioEnabled = true
     }
 
     static func playbackConfiguration(
-        mode: AVAudioSession.Mode = .moviePlayback
+        mode: AVAudioSession.Mode = .default
     ) -> LKRTCAudioSessionConfiguration {
         let configuration = LKRTCAudioSessionConfiguration()
         configuration.category = AVAudioSession.Category.playback.rawValue
         // Playback already supports AirPlay implicitly. Apple restricts the explicit
         // `allowAirPlay` option to `playAndRecord`; combining it with `playback` returns
         // `paramErr` (-50) on physical iPhones even though Simulator accepts it.
-        configuration.categoryOptions = [.mixWithOthers]
+        configuration.categoryOptions = []
+        // General Mac audio must not request MoviePlayback's route-dependent enhancement.
+        // `.default` also avoids every voice/chat mode while retaining background playback.
         configuration.mode = mode.rawValue
         configuration.sampleRate = 48_000
         configuration.ioBufferDuration = 0.010
-        // The pinned WebRTC audio-device module renders this Opus downlink as truthful mono.
-        // Do not advertise a stereo session preference that the negotiated media cannot supply.
-        configuration.outputNumberOfChannels = 1
+        // The injected output-only RemoteIO device keeps the two Opus channels independent.
+        configuration.outputNumberOfChannels = 2
         return configuration
-    }
-
-    static func compatibilityPlaybackConfiguration() -> LKRTCAudioSessionConfiguration {
-        playbackConfiguration(mode: .default)
-    }
-
-    static func shouldRetryConfigurationWithDefaultMode(after error: Error) -> Bool {
-        containsInvalidParameter(error as NSError)
-    }
-
-    private static func containsInvalidParameter(_ error: NSError) -> Bool {
-        if error.domain == NSOSStatusErrorDomain,
-           error.code == AVAudioSession.ErrorCode.badParam.rawValue {
-            return true
-        }
-        guard let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError else {
-            return false
-        }
-        return containsInvalidParameter(underlying)
     }
 
     private static func sessionError(

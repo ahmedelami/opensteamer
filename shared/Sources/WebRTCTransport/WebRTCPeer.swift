@@ -1,4 +1,9 @@
 @preconcurrency import LiveKitWebRTC
+#if os(macOS)
+import MacWebRTCAudioDeviceShim
+#elseif os(iOS)
+import IOSWebRTCAudioDeviceShim
+#endif
 import Foundation
 import RemoteSessionCore
 
@@ -17,6 +22,59 @@ struct WebRTCInputRequestBinding: Equatable, Sendable {
     }
 }
 
+#if DEBUG
+struct WebRTCAudioSenderEncodingParameters: Equatable, Sendable {
+    let maximumBitrateBps: Int?
+    let minimumBitrateBps: Int?
+}
+
+struct WebRTCAudioProcessingComponentSnapshot: Equatable, Sendable {
+    let requestedEnabled: Bool?
+    let softwareActive: Bool
+    let platformActive: Bool
+}
+
+struct WebRTCAudioProcessingSnapshot: Equatable, Sendable {
+    let hasAudioProcessingModule: Bool
+    let echoCancellation: WebRTCAudioProcessingComponentSnapshot
+    let noiseSuppression: WebRTCAudioProcessingComponentSnapshot
+    let autoGainControl: WebRTCAudioProcessingComponentSnapshot
+    let highPassFilter: WebRTCAudioProcessingComponentSnapshot
+}
+#endif
+
+#if os(iOS)
+/// Runtime proof that iOS is using one output-only RemoteIO media path rather than WebRTC's
+/// call-oriented default audio device or a duplicate application renderer.
+public struct WebRTCIOSPlayoutDiagnostics: Sendable {
+    public let initialized: Bool
+    public let playoutInitialized: Bool
+    public let playing: Bool
+    public let sessionActive: Bool
+    public let ownsSessionActivation: Bool
+    public let remoteIOCreated: Bool
+    public let inputBusEnabled: Bool
+    public let outputBusEnabled: Bool
+    public let recoveryRequired: Bool
+    public let explicitResumeRequired: Bool
+    public let categoryIsMediaPlayback: Bool
+    public let modeIsDefault: Bool
+    public let sampleRate: Double
+    public let outputIOBufferDuration: TimeInterval
+    public let outputChannelCount: Int
+    public let audioUnitSubType: UInt32
+    public let failureCode: Int
+    public let lastLifecycleStatus: Int32
+    public let failureMessage: String?
+    public let playoutCallbackCount: UInt64
+    public let playoutFrameCount: UInt64
+    public let playoutFailureCount: UInt64
+    public let unexpectedRecordingRequestCount: UInt64
+    public let lastPlayoutFrameCount: UInt32
+    public let lastPlayoutStatus: Int32
+}
+#endif
+
 public actor WebRTCPeer {
     private static let controlHistoryLimit = 256
     private static let inputHistoryLimit = 256
@@ -24,6 +82,9 @@ public actor WebRTCPeer {
     private static let maximumCandidateBytes = 8_192
     private static let maximumCandidateMIDBytes = 128
     private static let maximumCandidateUsernameFragmentBytes = 256
+    #if DEBUG && os(macOS)
+    @TaskLocal private static var useHeadlessMacViewerAudioForTesting = false
+    #endif
 
     public nonisolated let events: AsyncStream<WebRTCTransportEvent>
     public nonisolated let externalAudioCapturer: MacExternalAudioCapturer?
@@ -37,6 +98,14 @@ public actor WebRTCPeer {
     private let localAudioTrack: LKRTCAudioTrack?
     private let localVideoTrack: LKRTCVideoTrack?
     private let mediaConstraints: LKRTCMediaConstraints
+    #if os(macOS)
+    // The native custom-ADM factory is expected to retain its device, but keeping ownership
+    // explicit also supports the DEBUG headless viewer used by hardware-independent codec tests.
+    private let macStereoAudioDevice: ASMacStereoAudioDevice?
+    #endif
+    #if os(iOS)
+    private let iOSStereoPlayoutAudioDevice: ASIOSStereoPlayoutAudioDevice?
+    #endif
 
     private var delegateEventTask: Task<Void, Never>?
     private var statisticsTask: Task<Void, Never>?
@@ -57,6 +126,8 @@ public actor WebRTCPeer {
     private var currentRemoteAudioTrack: WebRTCRemoteAudioTrack?
     private var currentRemoteVideoTrack: WebRTCRemoteVideoTrack?
     private var activeSystemAudioAuthorization: WebRTCAudioAuthorization?
+    private var pendingSystemAudioAuthorization: WebRTCAudioAuthorization?
+    private var systemAudioAdmissionEpoch: UInt64 = 0
     private var currentRoute: WebRTCICERouteDiagnostics?
     private var nextControlRequestID: UInt64 = 1
     private var highestSentControlRequestID: UInt64?
@@ -108,15 +179,114 @@ public actor WebRTCPeer {
             encoderFactory.preferredCodec = h264
         }
         let decoderFactory = LKRTCDefaultVideoDecoderFactory()
-        let nativeFactory = LKRTCPeerConnectionFactory(
+        let nativeFactory: LKRTCPeerConnectionFactory
+        #if os(macOS)
+        let stereoAudioDevice: ASMacStereoAudioDevice?
+        if configuration.role == .host {
+            var preflightError: NSError?
+            guard ASMacWebRTCAudioDevicePreflight(&preflightError) else {
+                throw WebRTCTransportError.nativeFailure(
+                    preflightError?.localizedDescription
+                        ?? "The pinned custom stereo audio-device ABI is unavailable."
+                )
+            }
+            let device = ASMacStereoAudioDevice()
+            var factoryError: NSError?
+            guard let customFactory = ASCreateMacStereoPeerConnectionFactory(
+                encoderFactory,
+                decoderFactory,
+                device,
+                &factoryError
+            ) else {
+                throw WebRTCTransportError.nativeFailure(
+                    factoryError?.localizedDescription
+                        ?? "The input-only stereo WebRTC factory could not be created."
+                )
+            }
+            stereoAudioDevice = device
+            nativeFactory = customFactory
+        } else {
+            #if DEBUG
+            if Self.useHeadlessMacViewerAudioForTesting {
+                var preflightError: NSError?
+                guard ASMacWebRTCAudioDevicePreflight(&preflightError) else {
+                    throw WebRTCTransportError.nativeFailure(
+                        preflightError?.localizedDescription
+                            ?? "The headless test audio device is unavailable."
+                    )
+                }
+                let device = ASMacStereoAudioDevice()
+                var factoryError: NSError?
+                guard let customFactory = ASCreateMacStereoPeerConnectionFactory(
+                    encoderFactory,
+                    decoderFactory,
+                    device,
+                    &factoryError
+                ) else {
+                    throw WebRTCTransportError.nativeFailure(
+                        factoryError?.localizedDescription
+                            ?? "The headless test WebRTC factory could not be created."
+                    )
+                }
+                stereoAudioDevice = device
+                nativeFactory = customFactory
+            } else {
+                stereoAudioDevice = nil
+                nativeFactory = LKRTCPeerConnectionFactory(
+                    audioDeviceModuleType: .audioEngine,
+                    bypassVoiceProcessing: true,
+                    encoderFactory: encoderFactory,
+                    decoderFactory: decoderFactory,
+                    audioProcessingModule: nil
+                )
+            }
+            #else
+            stereoAudioDevice = nil
+            nativeFactory = LKRTCPeerConnectionFactory(
+                audioDeviceModuleType: .audioEngine,
+                bypassVoiceProcessing: true,
+                encoderFactory: encoderFactory,
+                decoderFactory: decoderFactory,
+                audioProcessingModule: nil
+            )
+            #endif
+        }
+        #elseif os(iOS)
+        let stereoPlayoutDevice: ASIOSStereoPlayoutAudioDevice?
+        if configuration.role == .viewer {
+            let device = ASIOSStereoPlayoutAudioDevice()
+            stereoPlayoutDevice = device
+            nativeFactory = LKRTCPeerConnectionFactory(
+                encoderFactory: encoderFactory,
+                decoderFactory: decoderFactory,
+                audioDevice: device
+            )
+        } else {
+            stereoPlayoutDevice = nil
+            nativeFactory = LKRTCPeerConnectionFactory(
+                audioDeviceModuleType: .audioEngine,
+                bypassVoiceProcessing: true,
+                encoderFactory: encoderFactory,
+                decoderFactory: decoderFactory,
+                audioProcessingModule: nil
+            )
+        }
+        iOSStereoPlayoutAudioDevice = stereoPlayoutDevice
+        #else
+        nativeFactory = LKRTCPeerConnectionFactory(
             audioDeviceModuleType: .audioEngine,
             bypassVoiceProcessing: true,
             encoderFactory: encoderFactory,
             decoderFactory: decoderFactory,
             audioProcessingModule: nil
         )
+        #endif
         factory = nativeFactory
+        #if os(macOS)
+        macStereoAudioDevice = stereoAudioDevice
+        #endif
 
+        #if !os(macOS)
         if configuration.role == .host {
             let audioDeviceModule = nativeFactory.audioDeviceModule
             guard audioDeviceModule.setPlatformVoiceProcessingAllowed(false) == 0,
@@ -125,6 +295,7 @@ public actor WebRTCPeer {
                 throw WebRTCTransportError.audioTrackCreationFailed
             }
         }
+        #endif
 
         let nativeConfiguration = LKRTCConfiguration()
         nativeConfiguration.iceServers = configuration.iceServers.map {
@@ -164,17 +335,23 @@ public actor WebRTCPeer {
         peerConnection = nativePeer
 
         if configuration.role == .host {
+            #if os(macOS)
+            guard let stereoAudioDevice,
+                  let audioCapturer = MacExternalAudioCapturer(
+                      stereoAudioDevice: stereoAudioDevice
+                  ) else {
+                throw WebRTCTransportError.audioTrackCreationFailed
+            }
+            #else
             let audioCapturer = MacExternalAudioCapturer(
                 audioDeviceModule: nativeFactory.audioDeviceModule
             )
+            #endif
             let audioSource = nativeFactory.audioSource(with: nil)
             let audioTrack = nativeFactory.audioTrack(
                 with: audioSource,
                 trackId: "system-audio"
             )
-            guard audioTrack.setAudioProcessingOptions(.raw()).isSuccess else {
-                throw WebRTCTransportError.audioTrackCreationFailed
-            }
             audioTrack.isEnabled = false
             let audioTransceiverConfiguration = LKRTCRtpTransceiverInit()
             audioTransceiverConfiguration.direction = .sendOnly
@@ -185,11 +362,20 @@ public actor WebRTCPeer {
             ) else {
                 throw WebRTCTransportError.audioTrackCreationFailed
             }
+            // Apply raw processing only after the track is attached to its sender. Before that,
+            // WebRTC merely stores the request on the source; adding the sender subsequently
+            // installs communication defaults (AEC/NS/AGC/HPF) on the shared voice engine.
+            guard audioTrack.setAudioProcessingOptions(.raw()).isSuccess else {
+                throw WebRTCTransportError.audioTrackCreationFailed
+            }
             try Self.preferOpus(
                 on: audioTransceiver,
                 capabilities: nativeFactory.rtpSenderCapabilities(
                     forKind: kLKRTCMediaStreamTrackKindAudio
                 )
+            )
+            try Self.applyHighFidelityAudioSenderParameters(
+                to: audioTransceiver.sender
             )
             localAudioTrack = audioTrack
             externalAudioCapturer = audioCapturer
@@ -345,7 +531,7 @@ public actor WebRTCPeer {
             }
             try preferOpusOnAudioTransceivers()
             try preferH264OnVideoTransceivers()
-            let answerSDP = try await createAndSetLocalAnswer()
+            let answerSDP = try await createAndSetLocalAnswer(remoteOfferSDP: sdp)
             try ensureOpen()
             guard applyingRemoteOfferEpoch == offerEpoch else {
                 throw WebRTCTransportError.unexpectedSignal
@@ -377,6 +563,9 @@ public actor WebRTCPeer {
                   applyingRemoteAnswerEpoch == offerEpoch else {
                 throw WebRTCTransportError.unexpectedSignal
             }
+            // A disabled sender stores this request. `enableSystemAudioIfTransportHealthy` applies
+            // and verifies it after transport health is proven and immediately before PCM flows.
+            try requestRawSystemAudioProcessing()
             try installRemoteICEUsernameFragments(from: sdp)
             remoteDescriptionIsSet = true
             try await flushRemoteCandidates(expectedEpoch: offerEpoch)
@@ -442,6 +631,7 @@ public actor WebRTCPeer {
         requiresCandidateUsernameFragment = true
         pendingLocalCandidates.removeAll(keepingCapacity: true)
         pendingRemoteCandidates.removeAll(keepingCapacity: true)
+        suspendSystemAudioForTransportUncertainty()
         invalidateCurrentRoute()
         failCloseScreenMedia()
         peerConnection.restartIce()
@@ -827,6 +1017,25 @@ public actor WebRTCPeer {
     }
 
 #if DEBUG
+    #if os(macOS)
+    nonisolated static func makeHeadlessViewerForTesting(
+        configuration: WebRTCTransportConfiguration
+    ) throws -> WebRTCPeer {
+        try $useHeadlessMacViewerAudioForTesting.withValue(true) {
+            try WebRTCPeer(configuration: configuration)
+        }
+    }
+
+    func pullHeadlessMacViewerAudioForTesting(frameCount: Int = 480) -> Bool {
+        guard role == .viewer,
+              frameCount > 0,
+              let macStereoAudioDevice else {
+            return false
+        }
+        return macStereoAudioDevice.pullHeadlessPlayoutFrames(UInt(frameCount))
+    }
+    #endif
+
     func installHostInputSessionForTesting(
         capability: WebRTCInputCapability,
         authorization: WebRTCInputAuthorization
@@ -885,6 +1094,48 @@ public actor WebRTCPeer {
         localAudioTrack?.isEnabled == true
             && activeSystemAudioAuthorization?.isValid == true
     }
+
+    func audioSenderEncodingParametersForTesting() -> [WebRTCAudioSenderEncodingParameters] {
+        peerConnection.transceivers
+            .filter { $0.mediaType == .audio && $0.sender.track != nil }
+            .flatMap { transceiver in
+                transceiver.sender.parameters.encodings.map { encoding in
+                    WebRTCAudioSenderEncodingParameters(
+                        maximumBitrateBps: encoding.maxBitrateBps?.intValue,
+                        minimumBitrateBps: encoding.minBitrateBps?.intValue
+                    )
+                }
+            }
+    }
+
+    func audioProcessingStateForTesting() -> WebRTCAudioProcessingSnapshot {
+        let state = factory.audioProcessingState
+        return WebRTCAudioProcessingSnapshot(
+            hasAudioProcessingModule: state.hasAudioProcessingModule,
+            echoCancellation: Self.audioProcessingComponentSnapshot(
+                state.echoCancellation
+            ),
+            noiseSuppression: Self.audioProcessingComponentSnapshot(
+                state.noiseSuppression
+            ),
+            autoGainControl: Self.audioProcessingComponentSnapshot(
+                state.autoGainControl
+            ),
+            highPassFilter: Self.audioProcessingComponentSnapshot(
+                state.highPassFilter
+            )
+        )
+    }
+
+    private static func audioProcessingComponentSnapshot(
+        _ state: LKRTCAudioProcessingComponentState
+    ) -> WebRTCAudioProcessingComponentSnapshot {
+        WebRTCAudioProcessingComponentSnapshot(
+            requestedEnabled: state.requested?.isEnabled,
+            softwareActive: state.isSoftwareActive,
+            platformActive: state.isPlatformActive
+        )
+    }
 #endif
 
     /// Immediately disables screen media after an application-owned authorization changes.
@@ -901,7 +1152,7 @@ public actor WebRTCPeer {
     /// visibility so Hide can disable video without interrupting background listening.
     public func enableSystemAudioIfTransportHealthy(
         authorization: WebRTCAudioAuthorization
-    ) throws {
+    ) async throws {
         try ensureOpen()
         guard role == .host,
               let localAudioTrack,
@@ -913,14 +1164,48 @@ public actor WebRTCPeer {
            existingAuthorization !== authorization {
             suspendSystemAudioForTransportUncertainty()
         }
+        try authorization.withValidAuthorization {}
+        systemAudioAdmissionEpoch &+= 1
+        let admissionEpoch = systemAudioAdmissionEpoch
+        activeSystemAudioAuthorization = nil
+        pendingSystemAudioAuthorization = authorization
+        externalAudioCapturer.setEnabled(false)
+        localAudioTrack.isEnabled = true
 
-        try authorization.withValidAuthorization {
+        do {
             guard isTransportHealthyForCapture() else {
                 throw WebRTCTransportError.transportNotHealthy
             }
-            externalAudioCapturer.setEnabled(true)
-            localAudioTrack.isEnabled = true
-            activeSystemAudioAuthorization = authorization
+            try await awaitRawSystemAudioProcessing(
+                admissionEpoch: admissionEpoch,
+                authorization: authorization
+            )
+            try authorization.withValidAuthorization {
+                guard systemAudioAdmissionEpoch == admissionEpoch,
+                      pendingSystemAudioAuthorization === authorization,
+                      isTransportHealthyForCapture(),
+                      localAudioTrack.isEnabled else {
+                    throw WebRTCTransportError.transportNotHealthy
+                }
+                guard externalAudioCapturer.approveCurrentRecordingGeneration() else {
+                    throw WebRTCTransportError.nativeFailure(
+                        "The current WebRTC recording generation is unavailable for admission."
+                    )
+                }
+                // No source PCM is admitted until both the active voice engine and exact native
+                // StartRecording generation have passed their fail-closed gates.
+                externalAudioCapturer.setEnabled(true)
+                pendingSystemAudioAuthorization = nil
+                activeSystemAudioAuthorization = authorization
+            }
+        } catch {
+            if systemAudioAdmissionEpoch == admissionEpoch {
+                pendingSystemAudioAuthorization = nil
+                localAudioTrack.isEnabled = false
+                externalAudioCapturer.setEnabled(false)
+                externalAudioCapturer.reset()
+            }
+            throw error
         }
     }
 
@@ -928,11 +1213,17 @@ public actor WebRTCPeer {
     /// boundary. Re-enabling always requires a fresh authorization and a new health proof.
     public func suspendSystemAudioForTransportUncertainty() {
         let authorization = activeSystemAudioAuthorization
+        let pendingAuthorization = pendingSystemAudioAuthorization
+        systemAudioAdmissionEpoch &+= 1
         activeSystemAudioAuthorization = nil
+        pendingSystemAudioAuthorization = nil
         localAudioTrack?.isEnabled = false
         externalAudioCapturer?.setEnabled(false)
         externalAudioCapturer?.reset()
         authorization?.revoke()
+        if pendingAuthorization !== authorization {
+            pendingAuthorization?.revoke()
+        }
     }
 
     public func remoteAudioTrack() -> WebRTCRemoteAudioTrack? {
@@ -946,6 +1237,44 @@ public actor WebRTCPeer {
     public func routeDiagnostics() -> WebRTCICERouteDiagnostics? {
         currentRoute
     }
+
+    #if os(iOS)
+    public func iOSPlayoutDiagnostics() -> WebRTCIOSPlayoutDiagnostics? {
+        guard let device = iOSStereoPlayoutAudioDevice else { return nil }
+        let value = device.diagnostics
+        return WebRTCIOSPlayoutDiagnostics(
+            initialized: value.initialized,
+            playoutInitialized: value.playoutInitialized,
+            playing: value.playing,
+            sessionActive: value.sessionActive,
+            ownsSessionActivation: value.ownsSessionActivation,
+            remoteIOCreated: value.remoteIOCreated,
+            inputBusEnabled: value.inputBusEnabled,
+            outputBusEnabled: value.outputBusEnabled,
+            recoveryRequired: value.recoveryRequired,
+            explicitResumeRequired: value.explicitResumeRequired,
+            categoryIsMediaPlayback: value.categoryIsMediaPlayback,
+            modeIsDefault: value.modeIsDefault,
+            sampleRate: value.sampleRate,
+            outputIOBufferDuration: value.outputIOBufferDuration,
+            outputChannelCount: value.outputChannelCount,
+            audioUnitSubType: value.audioUnitSubType,
+            failureCode: value.failureCode.rawValue,
+            lastLifecycleStatus: value.lastLifecycleStatus,
+            failureMessage: device.lastLifecycleFailureMessage,
+            playoutCallbackCount: value.playoutCallbackCount,
+            playoutFrameCount: value.playoutFrameCount,
+            playoutFailureCount: value.playoutFailureCount,
+            unexpectedRecordingRequestCount: value.unexpectedRecordingRequestCount,
+            lastPlayoutFrameCount: value.lastPlayoutFrameCount,
+            lastPlayoutStatus: value.lastPlayoutStatus
+        )
+    }
+
+    public func requestIOSPlayoutRecovery() {
+        iOSStereoPlayoutAudioDevice?.requestPlayoutRecovery()
+    }
+    #endif
 
     /// A fresh native snapshot used in addition to application-owned recovery gates before the
     /// host enables capture. It is deliberately not the ICE-restart success oracle: libwebrtc can
@@ -1569,7 +1898,8 @@ public actor WebRTCPeer {
     }
 
     private func createAndSetLocalOffer() async throws -> String {
-        try await withCheckedThrowingContinuation {
+        try applyHighFidelityAudioSenderParameters()
+        let sdp = try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<String, any Error>) in
             peerConnection.offer(for: mediaConstraints) { [peerConnection] description, error in
                 guard let description else {
@@ -1578,19 +1908,23 @@ public actor WebRTCPeer {
                     )
                     return
                 }
-                peerConnection.setLocalDescription(description) { error in
+                let localDescription = Self.applyingHighFidelityOpusPolicy(to: description)
+                peerConnection.setLocalDescription(localDescription) { error in
                     if let error {
                         continuation.resume(throwing: WebRTCTransportError.nativeFailure(error.localizedDescription))
                     } else {
-                        continuation.resume(returning: description.sdp as String)
+                        continuation.resume(returning: localDescription.sdp as String)
                     }
                 }
             }
         }
+        try requestRawSystemAudioProcessing()
+        return sdp
     }
 
-    private func createAndSetLocalAnswer() async throws -> String {
-        try await withCheckedThrowingContinuation {
+    private func createAndSetLocalAnswer(remoteOfferSDP: String) async throws -> String {
+        try applyHighFidelityAudioSenderParameters()
+        return try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<String, any Error>) in
             peerConnection.answer(for: mediaConstraints) { [peerConnection] description, error in
                 guard let description else {
@@ -1599,15 +1933,43 @@ public actor WebRTCPeer {
                     )
                     return
                 }
-                peerConnection.setLocalDescription(description) { error in
+                let localDescription = Self.applyingHighFidelityOpusAnswerPolicy(
+                    to: description,
+                    remoteOfferSDP: remoteOfferSDP
+                )
+                peerConnection.setLocalDescription(localDescription) { error in
                     if let error {
                         continuation.resume(throwing: WebRTCTransportError.nativeFailure(error.localizedDescription))
                     } else {
-                        continuation.resume(returning: description.sdp as String)
+                        continuation.resume(returning: localDescription.sdp as String)
                     }
                 }
             }
         }
+    }
+
+    private static func applyingHighFidelityOpusPolicy(
+        to description: LKRTCSessionDescription
+    ) -> LKRTCSessionDescription {
+        LKRTCSessionDescription(
+            type: description.type,
+            sdp: OpusStereoSDP.applyingHighFidelityPolicy(
+                to: description.sdp as String
+            )
+        )
+    }
+
+    private static func applyingHighFidelityOpusAnswerPolicy(
+        to description: LKRTCSessionDescription,
+        remoteOfferSDP: String
+    ) -> LKRTCSessionDescription {
+        LKRTCSessionDescription(
+            type: description.type,
+            sdp: OpusStereoSDP.applyingHighFidelityAnswerPolicy(
+                to: description.sdp as String,
+                remoteOffer: remoteOfferSDP
+            )
+        )
     }
 
     private func setRemoteDescription(sdp: String, type: LKRTCSdpType) async throws {
@@ -1763,6 +2125,88 @@ public actor WebRTCPeer {
         }
     }
 
+    private func applyHighFidelityAudioSenderParameters() throws {
+        for transceiver in peerConnection.transceivers {
+            guard transceiver.mediaType == .audio,
+                  transceiver.sender.track != nil else {
+                continue
+            }
+            try Self.applyHighFidelityAudioSenderParameters(to: transceiver.sender)
+        }
+    }
+
+    /// Sender attachment and offer application can install WebRTC's communication defaults after
+    /// a source-level raw request was accepted, so every negotiation stores a fresh raw request.
+    private func requestRawSystemAudioProcessing() throws {
+        guard role == .host, let localAudioTrack else { return }
+        let result = localAudioTrack.setAudioProcessingOptions(.raw())
+        guard result.isSuccess else {
+            throw WebRTCTransportError.nativeFailure(
+                "WebRTC rejected raw system-audio processing: \(result.message)"
+            )
+        }
+    }
+
+    /// The native voice engine may apply a successful track option asynchronously. Keep captured
+    /// PCM blocked for at most 200 ms and trust only the live factory state, never the setter result.
+    private func awaitRawSystemAudioProcessing(
+        admissionEpoch: UInt64,
+        authorization: WebRTCAudioAuthorization
+    ) async throws {
+        for attempt in 0...20 {
+            try requestRawSystemAudioProcessing()
+            if rawSystemAudioProcessingIsLive() {
+                return
+            }
+            if attempt == 20 {
+                throw WebRTCTransportError.nativeFailure(
+                    "WebRTC did not disable call-oriented processing within 200 ms: "
+                        + rawSystemAudioProcessingDiagnostic()
+                )
+            }
+            try await Task.sleep(for: .milliseconds(10))
+            try authorization.withValidAuthorization {}
+            guard systemAudioAdmissionEpoch == admissionEpoch,
+                  pendingSystemAudioAuthorization === authorization,
+                  localAudioTrack?.isEnabled == true,
+                  isTransportHealthyForCapture() else {
+                throw WebRTCTransportError.transportNotHealthy
+            }
+        }
+    }
+
+    private func rawSystemAudioProcessingIsLive() -> Bool {
+        let state = factory.audioProcessingState
+        let components = [
+            state.echoCancellation,
+            state.noiseSuppression,
+            state.autoGainControl,
+            state.highPassFilter
+        ]
+        return components.allSatisfy { component in
+            component.requested?.isEnabled == false
+                && !component.isSoftwareActive
+                && !component.isPlatformActive
+        }
+    }
+
+    private func rawSystemAudioProcessingDiagnostic() -> String {
+        let state = factory.audioProcessingState
+        return [
+            ("AEC", state.echoCancellation),
+            ("NS", state.noiseSuppression),
+            ("AGC", state.autoGainControl),
+            ("HPF", state.highPassFilter)
+        ].map { name, component in
+                "\(name){requested=\(String(describing: component.requested?.isEnabled)),"
+                    + "softwareResolved=\(component.isSoftwareResolved),"
+                    + "softwareActive=\(component.isSoftwareActive),"
+                    + "platformResolved=\(component.isPlatformResolved),"
+                    + "platformActive=\(component.isPlatformActive),"
+                    + "effective=\(component.effective.rawValue)}"
+        }.joined(separator: " ")
+    }
+
     private func ensureOpen() throws {
         if isClosed { throw WebRTCTransportError.transportClosed }
     }
@@ -1840,6 +2284,34 @@ public actor WebRTCPeer {
             _ = try transceiver.setCodecPreferences(codecs, error: ())
         } catch {
             throw WebRTCTransportError.nativeFailure(error.localizedDescription)
+        }
+    }
+
+    private static func applyHighFidelityAudioSenderParameters(
+        to sender: LKRTCRtpSender
+    ) throws {
+        let parameters = sender.parameters
+        guard !parameters.encodings.isEmpty else {
+            throw WebRTCTransportError.nativeFailure(
+                "The system-audio sender did not expose an RTP encoding."
+            )
+        }
+
+        for encoding in parameters.encodings {
+            encoding.maxBitrateBps = NSNumber(value: OpusStereoSDP.maximumAverageBitrateBps)
+            encoding.minBitrateBps = nil
+        }
+        sender.parameters = parameters
+
+        let appliedEncodings = sender.parameters.encodings
+        guard appliedEncodings.count == parameters.encodings.count,
+              appliedEncodings.allSatisfy({
+                  $0.maxBitrateBps?.intValue == OpusStereoSDP.maximumAverageBitrateBps
+                      && $0.minBitrateBps == nil
+              }) else {
+            throw WebRTCTransportError.nativeFailure(
+                "WebRTC rejected the high-fidelity system-audio bitrate policy."
+            )
         }
     }
 

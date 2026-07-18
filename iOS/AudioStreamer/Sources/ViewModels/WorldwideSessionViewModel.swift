@@ -1,3 +1,4 @@
+import AudioToolbox
 import CoreGraphics
 import Foundation
 import RemoteSessionCore
@@ -38,6 +39,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var iceIsConnected = false
     private var sessionTask: Task<Void, Never>?
     private var peerEventTask: Task<Void, Never>?
+    private var audioPlayoutProofTask: Task<Void, Never>?
     private var controlAcknowledgementTimeoutTask: Task<Void, Never>?
     private var pendingScreenVisibilityRequest: PendingScreenVisibilityRequest?
     private var earlyControlAcknowledgements: [UInt64: ReceivedControlAcknowledgement] = [:]
@@ -72,6 +74,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             audioRequiresExplicitResume = snapshot.requiresExplicitResume
             audioError = snapshot.errorText
             audioDiagnostic = snapshot.diagnosticText
+        }
+        audioLifecycle.onPlaybackRecoveryRequested = { [weak self] in
+            self?.beginIOSPlayoutProof(requestRecovery: true)
         }
     }
 
@@ -855,6 +860,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         case .remoteAudioTrack(let track):
             remoteAudioTrack = track
             audioLifecycle.remoteAudioBecameAvailable(track)
+            beginIOSPlayoutProof(requestRecovery: false)
 
         case .remoteVideoTrack(let track):
             remoteVideoTrack = track
@@ -867,6 +873,7 @@ final class WorldwideSessionViewModel: ObservableObject {
 
         case .statistics(let snapshot):
             statistics = snapshot
+            refreshIOSPlayoutProof()
 
         case .iceCandidateError(let error):
             // ICE may still select a healthy route through a different interface or URL.
@@ -948,11 +955,13 @@ final class WorldwideSessionViewModel: ObservableObject {
         sessionGeneration = UUID()
         sessionTask?.cancel()
         peerEventTask?.cancel()
+        audioPlayoutProofTask?.cancel()
 
         let oldSignaling = signaling
         let oldPeer = peer
         sessionTask = nil
         peerEventTask = nil
+        audioPlayoutProofTask = nil
         signaling = nil
         peer = nil
         iceIsConnected = false
@@ -991,6 +1000,121 @@ final class WorldwideSessionViewModel: ObservableObject {
         remoteDisplayName = "Mac mini"
         invitationExpiresAt = nil
         statistics = nil
+    }
+
+    /// A signaling/ICE success is not proof that iOS is actually rendering full-band stereo.
+    /// Poll the custom output-only RemoteIO long enough to observe its realtime callback, and
+    /// publish the native failure instead of claiming "Playing" on a call/HFP-style route.
+    private func beginIOSPlayoutProof(requestRecovery: Bool) {
+        audioPlayoutProofTask?.cancel()
+        guard let proofPeer = peer else { return }
+        let generation = sessionGeneration
+        audioPlayoutProofTask = Task { [weak self] in
+            guard let self else { return }
+            if requestRecovery {
+                await proofPeer.requestIOSPlayoutRecovery()
+            }
+
+            for _ in 0..<40 {
+                guard !Task.isCancelled,
+                      generation == sessionGeneration,
+                      peer === proofPeer else { return }
+                if let diagnostics = await proofPeer.iOSPlayoutDiagnostics(),
+                   applyIOSPlayoutDiagnostics(diagnostics) {
+                    return
+                }
+                do {
+                    try await Task.sleep(for: .milliseconds(50))
+                } catch {
+                    return
+                }
+            }
+
+            guard !Task.isCancelled,
+                  generation == sessionGeneration,
+                  peer === proofPeer else { return }
+            audioLifecycle.updateRuntimePlayout(
+                isReady: false,
+                failureMessage: "The iPhone audio output did not start in full-quality stereo.",
+                diagnostic: "RemoteIO produced no verified playout callback within two seconds."
+            )
+        }
+    }
+
+    private func refreshIOSPlayoutProof() {
+        guard let proofPeer = peer else { return }
+        let generation = sessionGeneration
+        Task { [weak self] in
+            guard let self,
+                  generation == sessionGeneration,
+                  peer === proofPeer,
+                  let diagnostics = await proofPeer.iOSPlayoutDiagnostics() else { return }
+            _ = applyIOSPlayoutDiagnostics(diagnostics)
+        }
+    }
+
+    /// Returns true once the snapshot is terminal for the current proof attempt: either verified
+    /// media playout or a concrete native failure. Incomplete startup snapshots keep polling.
+    @discardableResult
+    private func applyIOSPlayoutDiagnostics(
+        _ diagnostics: WebRTCIOSPlayoutDiagnostics
+    ) -> Bool {
+        let usesRemoteIO = diagnostics.audioUnitSubType == kAudioUnitSubType_RemoteIO
+        let isHealthy = diagnostics.initialized
+            && diagnostics.playoutInitialized
+            && diagnostics.playing
+            && diagnostics.sessionActive
+            && diagnostics.ownsSessionActivation
+            && diagnostics.remoteIOCreated
+            && !diagnostics.inputBusEnabled
+            && diagnostics.outputBusEnabled
+            && !diagnostics.recoveryRequired
+            && !diagnostics.explicitResumeRequired
+            && diagnostics.categoryIsMediaPlayback
+            && diagnostics.modeIsDefault
+            && abs(diagnostics.sampleRate - 48_000) < 1
+            && diagnostics.outputChannelCount == 2
+            && usesRemoteIO
+            && diagnostics.playoutCallbackCount > 0
+            && diagnostics.playoutFailureCount == 0
+            && diagnostics.unexpectedRecordingRequestCount == 0
+            && diagnostics.lastPlayoutStatus == noErr
+
+        if isHealthy {
+            audioLifecycle.updateRuntimePlayout(isReady: true)
+            return true
+        }
+
+        let nativeFailure = diagnostics.failureCode != 0
+            || diagnostics.playoutFailureCount > 0
+            || diagnostics.unexpectedRecordingRequestCount > 0
+            || diagnostics.lastPlayoutStatus != noErr
+            || diagnostics.recoveryRequired
+            || diagnostics.explicitResumeRequired
+        guard nativeFailure else {
+            audioLifecycle.updateRuntimePlayout(isReady: false)
+            return false
+        }
+
+        let message: String
+        if diagnostics.unexpectedRecordingRequestCount > 0 || diagnostics.inputBusEnabled {
+            message = "The iPhone refused audio because the route tried to use a call-style input path."
+        } else if !diagnostics.categoryIsMediaPlayback
+            || !diagnostics.modeIsDefault
+            || diagnostics.outputChannelCount != 2
+            || abs(diagnostics.sampleRate - 48_000) >= 1 {
+            message = "The iPhone refused a degraded call-quality audio route. End the phone or FaceTime call, then retry audio."
+        } else {
+            message = "The iPhone full-quality stereo output could not start."
+        }
+        let diagnostic = diagnostics.failureMessage
+            ?? "RemoteIO failure=\(diagnostics.failureCode), status=\(diagnostics.lastLifecycleStatus), renderStatus=\(diagnostics.lastPlayoutStatus), callbacks=\(diagnostics.playoutCallbackCount), failures=\(diagnostics.playoutFailureCount), recordRequests=\(diagnostics.unexpectedRecordingRequestCount)."
+        audioLifecycle.updateRuntimePlayout(
+            isReady: false,
+            failureMessage: message,
+            diagnostic: diagnostic
+        )
+        return true
     }
 
     private func handleControlAcknowledgement(
