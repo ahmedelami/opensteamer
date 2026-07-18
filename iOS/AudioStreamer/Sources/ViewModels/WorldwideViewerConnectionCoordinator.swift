@@ -40,12 +40,17 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         _ baseDelayNanoseconds: UInt64,
         _ remainingDeadlineNanoseconds: UInt64
     ) async throws -> Void
+    typealias ReconnectResponseTimeoutSleep = @Sendable (
+        _ timeoutNanoseconds: UInt64
+    ) async throws -> Void
 
     private let makeBootstrapClient: BootstrapClientFactory
     private let makeAvailabilityClient: AvailabilityClientFactory
     private let availabilityRetryDeadlineNanoseconds: UInt64
     private let availabilityMonotonicNow: AvailabilityMonotonicNow
     private let availabilityRetrySleep: AvailabilityRetrySleep
+    private let reconnectResponseTimeoutNanoseconds: UInt64
+    private let reconnectResponseTimeoutSleep: ReconnectResponseTimeoutSleep
     private let pairingBackgroundTask: any TransitionBackgroundTaskCoordinating
     private var activeOperationID: UUID?
     private var bootstrapClient: (any ViewerPairingBootstrapTransport)?
@@ -81,6 +86,10 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
             guard boundedDelay > 0 else { return }
             try await Task<Never, Never>.sleep(nanoseconds: boundedDelay)
         },
+        reconnectResponseTimeoutNanoseconds: UInt64 = 8_000_000_000,
+        reconnectResponseTimeoutSleep: @escaping ReconnectResponseTimeoutSleep = { timeout in
+            try await Task<Never, Never>.sleep(nanoseconds: timeout)
+        },
         pairingBackgroundTask: any TransitionBackgroundTaskCoordinating =
             AppTransitionBackgroundTaskCoordinator(name: "AudioStreamerSecurePairing")
     ) {
@@ -89,6 +98,11 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         self.availabilityRetryDeadlineNanoseconds = availabilityRetryDeadlineNanoseconds
         self.availabilityMonotonicNow = availabilityMonotonicNow
         self.availabilityRetrySleep = availabilityRetrySleep
+        self.reconnectResponseTimeoutNanoseconds = max(
+            1,
+            reconnectResponseTimeoutNanoseconds
+        )
+        self.reconnectResponseTimeoutSleep = reconnectResponseTimeoutSleep
         self.pairingBackgroundTask = pairingBackgroundTask
     }
 
@@ -476,6 +490,11 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         while true {
             try Task.checkCancellation()
             try requireCurrentOperation(operationID)
+            guard let remainingDeadline = availabilityRetryTimeRemaining(
+                since: retryStartedAt
+            ) else {
+                throw WorldwideViewerConnectionError.pairedMacUnavailable
+            }
             do {
                 return try await prepareMediaSessionAttempt(
                     endpoint: endpoint,
@@ -483,7 +502,11 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                     record: record,
                     pairingState: pairingState,
                     operationID: operationID,
-                    onAuthenticatedPairingCompleted: onAuthenticatedPairingCompleted
+                    onAuthenticatedPairingCompleted: onAuthenticatedPairingCompleted,
+                    reconnectResponseTimeoutNanoseconds: min(
+                        reconnectResponseTimeoutNanoseconds,
+                        remainingDeadline
+                    )
                 )
             } catch {
                 try Task.checkCancellation()
@@ -542,7 +565,8 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         record initialRecord: RemotePairedDeviceRecord,
         pairingState: ViewerPairingState,
         operationID: UUID,
-        onAuthenticatedPairingCompleted: (@MainActor () -> Void)?
+        onAuthenticatedPairingCompleted: (@MainActor () -> Void)?,
+        reconnectResponseTimeoutNanoseconds: UInt64
     ) async throws -> RendezvousSignalingClient {
         try requireCurrentOperation(operationID)
         let client = try makeAvailabilityClient(
@@ -553,12 +577,16 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         availabilityClientOperationID = operationID
         var record = initialRecord
         var reconnect: RemoteReconnectInitiator?
+        var activeAvailabilityExchangeID: RemoteAvailabilityExchangeID?
+        var reconnectExchangeID: RemoteAvailabilityExchangeID?
+        var reconnectResponseDeadlineTask: Task<Void, Never>?
         let recoveryGeneration = UUID()
         var acceptance = InvitationAcceptanceAction()
         acceptance.arm(generation: recoveryGeneration) { activeRecord in
             try pairingState.saveAuthenticatedPairing(activeRecord)
             onAuthenticatedPairingCompleted?()
         }
+        defer { reconnectResponseDeadlineTask?.cancel() }
 
         do {
             let events = try await client.connect()
@@ -569,7 +597,8 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                 case .waiting:
                     stateText = "Waiting for paired Mac"
 
-                case .ready:
+                case .ready(_, let exchangeID):
+                    activeAvailabilityExchangeID = exchangeID
                     switch record.pairingState {
                     case .pending:
                         stateText = "Recovering secure pairing"
@@ -597,12 +626,22 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                                 generation: recoveryGeneration
                             )
                         }
-                        guard reconnect == nil else { continue }
+                        if let reconnectExchangeID {
+                            guard reconnectExchangeID != exchangeID else { continue }
+                            reconnectResponseDeadlineTask?.cancel()
+                            reconnectResponseDeadlineTask = nil
+                            reconnect = nil
+                        }
                         let initiator = try record.beginReconnect(using: identity)
                         // The monotonic request counter must be durable before transmission.
                         try pairingState.savePairingRecord(record)
                         reconnect = initiator
+                        reconnectExchangeID = exchangeID
                         stateText = "Authorizing fresh session"
+                        reconnectResponseDeadlineTask = makeReconnectResponseDeadlineTask(
+                            client: client,
+                            timeoutNanoseconds: reconnectResponseTimeoutNanoseconds
+                        )
                         try await client.send(.reconnectRequest(initiator.request))
                     case .acceptedReceived:
                         throw WorldwideViewerConnectionError.invalidPairingRecovery
@@ -644,7 +683,12 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                         let initiator = try record.beginReconnect(using: identity)
                         try pairingState.savePairingRecord(record)
                         reconnect = initiator
+                        reconnectExchangeID = activeAvailabilityExchangeID
                         stateText = "Authorizing fresh session"
+                        reconnectResponseDeadlineTask = makeReconnectResponseDeadlineTask(
+                            client: client,
+                            timeoutNanoseconds: reconnectResponseTimeoutNanoseconds
+                        )
                         try await client.send(.reconnectRequest(initiator.request))
 
                     case .acknowledgement, .activationAcknowledgement:
@@ -655,6 +699,8 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                     guard let reconnect else {
                         throw WorldwideViewerConnectionError.unexpectedAvailabilityMessage
                     }
+                    reconnectResponseDeadlineTask?.cancel()
+                    reconnectResponseDeadlineTask = nil
                     let credential = try reconnect.complete(with: response)
                     if availabilityClientOperationID == operationID {
                         availabilityClient = nil
@@ -690,10 +736,32 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         }
     }
 
+    /// A connected WebSocket is not proof that the paired Mac is still able to answer this
+    /// exchange. Closing this exact attempt turns a silent response into the same recoverable
+    /// availability failure as `peerLeft`, so the outer loop reloads the latest durable reconnect
+    /// counter before sending another request. The task captures no coordinator-global client and
+    /// therefore cannot close a replacement operation.
+    private func makeReconnectResponseDeadlineTask(
+        client: any ViewerPairedAvailabilityTransport,
+        timeoutNanoseconds: UInt64
+    ) -> Task<Void, Never> {
+        let timeoutSleep = reconnectResponseTimeoutSleep
+        return Task {
+            do {
+                try await timeoutSleep(timeoutNanoseconds)
+                try Task.checkCancellation()
+            } catch {
+                return
+            }
+            await client.close()
+        }
+    }
+
     private func isTransientAvailabilityError(_ error: any Error) -> Bool {
         if let signalingError = error as? RendezvousSignalingError {
             return signalingError == .connectionFailed
                 || signalingError == .connectionClosed
+                || signalingError == .sendFailed
         }
         guard let connectionError = error as? WorldwideViewerConnectionError else {
             return false

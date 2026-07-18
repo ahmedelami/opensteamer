@@ -1778,7 +1778,7 @@ private enum WorldwideSessionError: Error, LocalizedError {
         case .signalBeforeReady:
             "The service sent media setup before the secure session was ready."
         case .macDisconnected:
-            "The Mac disconnected. Generate a new one-time invitation to reconnect."
+            "The Mac disconnected. Reconnect to the saved paired Mac when it is available."
         case .restartUnavailable:
             "The secure media recovery request could not be sent for this session."
         case .screenControlUnavailable:

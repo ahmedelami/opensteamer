@@ -889,6 +889,163 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         _ = await task.result
     }
 
+    func testSilentReconnectResponseClosesAttemptAndRetriesWithNextSequence() async throws {
+        let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let activeRecord = try makePairedMacRecord(localIdentity: identity)
+        let store = ViewerPairingStoreStub(identity: identity)
+        store.record = activeRecord
+        let pairingState = ViewerPairingState(store: store)
+        let silentClient = PairedAvailabilityTransportStub()
+        let retryClient = PairedAvailabilityTransportStub()
+        var clients = [silentClient, retryClient]
+        let clock = AvailabilityRetryClockStub()
+        let responseTimeout = ReconnectResponseTimeoutStub(
+            timeoutsBeforeBlocking: 1,
+            timeoutDelayNanoseconds: 1_000_000
+        )
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            availabilityClientFactory: { _, _ in clients.removeFirst() },
+            availabilityMonotonicNow: clock.now,
+            availabilityRetrySleep: clock.sleep,
+            reconnectResponseTimeoutNanoseconds: 1,
+            reconnectResponseTimeoutSleep: responseTimeout.sleep
+        )
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+        let exchangeID = try RemoteAvailabilityExchangeID(
+            wireValue: "AAAAAAAAAAAAAAAAAAAAAA"
+        )
+
+        let task = Task { @MainActor in
+            try await coordinator.preparePairedMediaSession(
+                endpoint: endpoint,
+                pairingState: pairingState,
+                onAuthenticatedPairingCompleted: {}
+            )
+        }
+        try await waitForConnect(silentClient)
+        await silentClient.yield(.ready(role: .viewer, exchangeID: exchangeID))
+        try await waitForConnect(retryClient)
+
+        let firstPayloads = await silentClient.sentPayloadsSnapshot()
+        let firstRequest = try XCTUnwrap(reconnectRequest(in: firstPayloads))
+        let silentClientCloseCount = await silentClient.closeCallCount()
+        XCTAssertGreaterThanOrEqual(silentClientCloseCount, 1)
+        XCTAssertEqual(clock.recordedBaseDelays(), [250_000_000])
+
+        await retryClient.yield(.ready(role: .viewer, exchangeID: exchangeID))
+        try await waitForSentPayloadCount(2, client: retryClient)
+        let retryPayloads = await retryClient.sentPayloadsSnapshot()
+        let retryRequest = try XCTUnwrap(reconnectRequest(in: retryPayloads))
+
+        XCTAssertEqual(retryRequest.sequence, firstRequest.sequence + 1)
+        XCTAssertEqual(coordinator.stateText, "Authorizing fresh session")
+        XCTAssertTrue(coordinator.isConnecting)
+        XCTAssertTrue(clients.isEmpty)
+
+        coordinator.cancel()
+        _ = await task.result
+    }
+
+    func testReconnectDeadlineAlsoBoundsASuspendedRequestSend() async throws {
+        let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let activeRecord = try makePairedMacRecord(localIdentity: identity)
+        let store = ViewerPairingStoreStub(identity: identity)
+        store.record = activeRecord
+        let pairingState = ViewerPairingState(store: store)
+        let suspendedClient = PairedAvailabilityTransportStub(suspendReconnectSend: true)
+        let retryClient = PairedAvailabilityTransportStub()
+        var clients = [suspendedClient, retryClient]
+        let clock = AvailabilityRetryClockStub()
+        let responseTimeout = ReconnectResponseTimeoutStub(
+            timeoutsBeforeBlocking: 1,
+            timeoutDelayNanoseconds: 1_000_000
+        )
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            availabilityClientFactory: { _, _ in clients.removeFirst() },
+            availabilityMonotonicNow: clock.now,
+            availabilityRetrySleep: clock.sleep,
+            reconnectResponseTimeoutNanoseconds: 1,
+            reconnectResponseTimeoutSleep: responseTimeout.sleep
+        )
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+        let exchangeID = try RemoteAvailabilityExchangeID(
+            wireValue: "AAAAAAAAAAAAAAAAAAAAAA"
+        )
+
+        let task = Task { @MainActor in
+            try await coordinator.preparePairedMediaSession(
+                endpoint: endpoint,
+                pairingState: pairingState,
+                onAuthenticatedPairingCompleted: {}
+            )
+        }
+        try await waitForConnect(suspendedClient)
+        await suspendedClient.yield(.ready(role: .viewer, exchangeID: exchangeID))
+        try await waitForConnect(retryClient)
+
+        let suspendedCloseCount = await suspendedClient.closeCallCount()
+        XCTAssertGreaterThanOrEqual(suspendedCloseCount, 1)
+        XCTAssertEqual(clock.recordedBaseDelays(), [250_000_000])
+        XCTAssertTrue(coordinator.isConnecting)
+
+        coordinator.cancel()
+        _ = await task.result
+    }
+
+    func testFreshExchangeImmediatelyResendsWithANewerReconnectSequence() async throws {
+        let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let activeRecord = try makePairedMacRecord(localIdentity: identity)
+        let store = ViewerPairingStoreStub(identity: identity)
+        store.record = activeRecord
+        let pairingState = ViewerPairingState(store: store)
+        let client = PairedAvailabilityTransportStub()
+        let responseTimeout = ReconnectResponseTimeoutStub(timeoutsBeforeBlocking: 0)
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            availabilityClientFactory: { _, _ in client },
+            reconnectResponseTimeoutNanoseconds: 60_000_000_000,
+            reconnectResponseTimeoutSleep: responseTimeout.sleep
+        )
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+        let firstExchange = try RemoteAvailabilityExchangeID(
+            wireValue: "AAAAAAAAAAAAAAAAAAAAAA"
+        )
+        let replacementExchange = try RemoteAvailabilityExchangeID(
+            wireValue: "AQEBAQEBAQEBAQEBAQEBAQ"
+        )
+
+        let task = Task { @MainActor in
+            try await coordinator.preparePairedMediaSession(
+                endpoint: endpoint,
+                pairingState: pairingState,
+                onAuthenticatedPairingCompleted: {}
+            )
+        }
+        try await waitForConnect(client)
+        await client.yield(.ready(role: .viewer, exchangeID: firstExchange))
+        try await waitForSentPayloadCount(2, client: client)
+        await client.yield(.ready(role: .viewer, exchangeID: replacementExchange))
+        try await waitForSentPayloadCount(4, client: client)
+
+        let requests = reconnectRequests(in: await client.sentPayloadsSnapshot())
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests[1].sequence, requests[0].sequence + 1)
+        let closeCount = await client.closeCallCount()
+        XCTAssertEqual(closeCount, 0)
+        XCTAssertEqual(coordinator.stateText, "Authorizing fresh session")
+
+        coordinator.cancel()
+        _ = await task.result
+    }
+
+    func testPreviousMediaErrorIsHiddenOnlyDuringFreshSessionPreparation() {
+        XCTAssertFalse(
+            BrowserView.shouldShowPreviousMediaError(isPreparingFreshSession: true)
+        )
+        XCTAssertTrue(
+            BrowserView.shouldShowPreviousMediaError(isPreparingFreshSession: false)
+        )
+    }
+
     func testAvailabilityRetryUsesThirtySecondDeadlineAndFourSecondCap() async throws {
         let identity = try RemoteDeviceIdentity.generate(role: .viewer)
         let activeRecord = try makePairedMacRecord(localIdentity: identity)
@@ -1144,15 +1301,21 @@ private actor PairedAvailabilityTransportStub: ViewerPairedAvailabilityTransport
     private let stream: PairedAvailabilitySignalingClient.EventStream
     private let continuation: PairedAvailabilitySignalingClient.EventStream.Continuation
     private let connectError: RendezvousSignalingError?
+    private let suspendReconnectSend: Bool
     private var connectCount = 0
     private var closeCount = 0
     private var sentPayloads: [RemoteAvailabilityPayload] = []
+    private var reconnectSendContinuation: CheckedContinuation<Void, any Error>?
 
-    init(connectError: RendezvousSignalingError? = nil) {
+    init(
+        connectError: RendezvousSignalingError? = nil,
+        suspendReconnectSend: Bool = false
+    ) {
         let pair = PairedAvailabilitySignalingClient.EventStream.makeStream()
         stream = pair.stream
         continuation = pair.continuation
         self.connectError = connectError
+        self.suspendReconnectSend = suspendReconnectSend
     }
 
     func connect() async throws -> PairedAvailabilitySignalingClient.EventStream {
@@ -1163,10 +1326,18 @@ private actor PairedAvailabilityTransportStub: ViewerPairedAvailabilityTransport
 
     func send(_ payload: RemoteAvailabilityPayload) async throws {
         sentPayloads.append(payload)
+        if suspendReconnectSend, case .reconnectRequest = payload {
+            try await withCheckedThrowingContinuation { continuation in
+                reconnectSendContinuation = continuation
+            }
+        }
     }
 
     func close() async {
         closeCount += 1
+        let suspendedSend = reconnectSendContinuation
+        reconnectSendContinuation = nil
+        suspendedSend?.resume(throwing: RendezvousSignalingError.sendFailed)
         continuation.finish()
     }
 
@@ -1217,6 +1388,56 @@ private final class AvailabilityRetryClockStub: @unchecked Sendable {
 
     private func advance(by delta: UInt64) {
         lock.withLock { currentNanoseconds += delta }
+    }
+}
+
+private final class ReconnectResponseTimeoutStub: @unchecked Sendable {
+    private let lock = NSLock()
+    private let timeoutsBeforeBlocking: Int
+    private let timeoutDelayNanoseconds: UInt64
+    private var callCount = 0
+
+    init(
+        timeoutsBeforeBlocking: Int,
+        timeoutDelayNanoseconds: UInt64 = 0
+    ) {
+        self.timeoutsBeforeBlocking = timeoutsBeforeBlocking
+        self.timeoutDelayNanoseconds = timeoutDelayNanoseconds
+    }
+
+    func sleep(_ timeoutNanoseconds: UInt64) async throws {
+        _ = timeoutNanoseconds
+        let shouldTimeout = lock.withLock { () -> Bool in
+            callCount += 1
+            return callCount <= timeoutsBeforeBlocking
+        }
+        if shouldTimeout {
+            if timeoutDelayNanoseconds > 0 {
+                try await Task<Never, Never>.sleep(nanoseconds: timeoutDelayNanoseconds)
+            }
+            return
+        }
+        try await Task<Never, Never>.sleep(nanoseconds: 10_000_000_000)
+    }
+}
+
+private func reconnectRequest(
+    in payloads: [RemoteAvailabilityPayload]
+) -> RemoteReconnectRequest? {
+    for payload in payloads {
+        if case .reconnectRequest(let request) = payload {
+            return request
+        }
+    }
+    return nil
+}
+
+private func reconnectRequests(
+    in payloads: [RemoteAvailabilityPayload]
+) -> [RemoteReconnectRequest] {
+    payloads.compactMap { payload in
+        guard case .reconnectRequest(let request) = payload else { return nil }
+        return request
     }
 }
 

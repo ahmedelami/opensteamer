@@ -208,7 +208,9 @@ struct BrowserView: View {
                         .foregroundStyle(.orange)
                 }
 
-                if let lastError = worldwideViewModel.lastError {
+                if Self.shouldShowPreviousMediaError(
+                    isPreparingFreshSession: worldwideConnection.isConnecting
+                ), let lastError = worldwideViewModel.lastError {
                     Label(lastError, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
                 }
@@ -372,6 +374,12 @@ struct BrowserView: View {
 
     private var canConnectRemote: Bool {
         !trimmedHost.isEmpty && (isRelayURL || parsedPort != nil)
+    }
+
+    static func shouldShowPreviousMediaError(
+        isPreparingFreshSession: Bool
+    ) -> Bool {
+        !isPreparingFreshSession
     }
 
     private func connectRemote() {
