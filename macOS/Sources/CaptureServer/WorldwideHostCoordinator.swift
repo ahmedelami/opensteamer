@@ -188,7 +188,7 @@ actor WorldwideHostCoordinator {
     }
 
     private func runAvailabilityLoop() async {
-        var retryDelaySeconds = 1
+        var retryPolicy = WorldwideAvailabilityRetryPolicy()
         while !Task.isCancelled, !isStopped {
             do {
                 guard let record = pairedRecord else {
@@ -201,12 +201,14 @@ actor WorldwideHostCoordinator {
                 )
                 availabilityClient = client
                 let events = try await client.connect()
-                retryDelaySeconds = 1
-                logger.info("Worldwide paired-device availability is online")
                 for try await event in events {
                     try Task.checkCancellation()
                     guard !isStopped, availabilityClient === client else { return }
                     try await handleAvailabilityEvent(event, client: client)
+                    if event.validatesHostAvailability,
+                       retryPolicy.observedValidAvailabilityState() {
+                        logger.info("Worldwide paired-device availability is online")
+                    }
                 }
                 guard !isStopped else { return }
                 throw RendezvousSignalingError.connectionClosed
@@ -220,6 +222,7 @@ actor WorldwideHostCoordinator {
                 let client = availabilityClient
                 availabilityClient = nil
                 await client?.close()
+                let retryDelaySeconds = retryPolicy.delayAfterFailure()
                 logger.error(
                     "Worldwide availability disconnected; retrying in " +
                     "\(retryDelaySeconds) seconds (\(error.localizedDescription))"
@@ -229,7 +232,6 @@ actor WorldwideHostCoordinator {
                 } catch {
                     return
                 }
-                retryDelaySeconds = min(retryDelaySeconds * 2, 30)
             }
         }
     }
@@ -243,6 +245,11 @@ actor WorldwideHostCoordinator {
             logger.debug("Worldwide availability is waiting for the paired iPhone")
 
         case .ready(_, let exchangeID):
+            if let activeExchangeID = lifecycle.activeExchangeID,
+               activeExchangeID != exchangeID.wireValue {
+                await stopActiveMediaSession()
+                lifecycle.availabilityPeerLeft(exchangeID: activeExchangeID)
+            }
             try lifecycle.availabilityReady(exchangeID: exchangeID.wireValue)
             try await sendPairingRecoveryIfNeeded(client: client)
 
@@ -266,8 +273,8 @@ actor WorldwideHostCoordinator {
             lifecycle.availabilityPeerLeft(exchangeID: exchangeID.wireValue)
             logger.debug("The paired iPhone left the availability exchange")
 
-        case .serverError:
-            throw WorldwideHostCoordinatorError.unexpectedAvailabilityPayload
+        case .serverError(let error):
+            throw WorldwideHostCoordinatorError.availabilityServer(error)
         }
     }
 
@@ -470,6 +477,7 @@ enum WorldwideHostCoordinatorError: LocalizedError {
     case activePairMissing
     case reconnectWithoutExchange
     case unexpectedAvailabilityPayload
+    case availabilityServer(RendezvousServerError)
 
     var errorDescription: String? {
         switch self {
@@ -483,6 +491,29 @@ enum WorldwideHostCoordinatorError: LocalizedError {
             "The reconnect request is not bound to an active availability exchange."
         case .unexpectedAvailabilityPayload:
             "The paired iPhone sent an unexpected availability payload."
+        case .availabilityServer(let error):
+            switch error {
+            case .peerUnavailable:
+                "The paired iPhone is no longer available on this exchange."
+            case .rateLimited:
+                "The availability service rate-limited the Mac; retrying with backoff."
+            case .roleConflict:
+                "Another Mac availability connection still owns this paired-device channel."
+            case .invitationUnavailable, .invitationExpired, .requestRejected:
+                "The availability service rejected the Mac connection."
+            }
+        }
+    }
+
+}
+
+private extension PairedAvailabilitySignalingEvent {
+    var validatesHostAvailability: Bool {
+        switch self {
+        case .waiting, .ready:
+            true
+        case .signal, .peerLeft, .serverError:
+            false
         }
     }
 }

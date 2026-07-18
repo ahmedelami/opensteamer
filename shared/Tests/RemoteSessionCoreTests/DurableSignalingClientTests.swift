@@ -163,6 +163,95 @@ struct DurableSignalingClientTests {
         await client.close()
     }
 
+    @Test func availabilityClosesBeforeHeartbeatWhenFirstProtocolStateNeverArrives() async throws {
+        let fake = DurableFakeSocketTransport()
+        let client = try PairedAvailabilitySignalingClient(
+            endpoint: endpoint,
+            locator: makeLocator(role: .host),
+            role: .host,
+            transport: fake,
+            firstProtocolStateTimeoutNanoseconds: 1,
+            livenessIntervalNanoseconds: 0,
+            livenessTimeoutNanoseconds: 1_000_000_000,
+            firstProtocolStateSleep: { _ in },
+            livenessSleep: { _ in }
+        )
+        let stream = try await client.connect()
+        var iterator = stream.makeAsyncIterator()
+
+        do {
+            _ = try await iterator.next()
+            Issue.record("Expected the first-protocol-state deadline to close availability")
+        } catch {
+            #expect(error as? RendezvousSignalingError == .connectionClosed)
+        }
+        #expect(await fake.sentPingCount() == 0)
+    }
+
+    @Test func availabilityValidFirstStateCancelsDeadlineAndStartsHeartbeat() async throws {
+        let exchangeID = try RemoteAvailabilityExchangeID(rawValue: Data(0..<16))
+        let states: [(String, PairedAvailabilitySignalingEvent)] = [
+            (#"{"type":"availability-waiting"}"#, .waiting),
+            (
+                #"{"type":"availability-ready","role":"host","exchangeID":"\#(exchangeID.wireValue)"}"#,
+                .ready(role: .host, exchangeID: exchangeID)
+            ),
+        ]
+
+        for (text, expectedEvent) in states {
+            let fake = DurableFakeSocketTransport()
+            await fake.failPings()
+            let client = try PairedAvailabilitySignalingClient(
+                endpoint: endpoint,
+                locator: makeLocator(role: .host),
+                role: .host,
+                transport: fake,
+                firstProtocolStateTimeoutNanoseconds: 60_000_000_000,
+                livenessIntervalNanoseconds: 0,
+                livenessTimeoutNanoseconds: 1_000_000_000,
+                livenessSleep: { _ in }
+            )
+            let stream = try await client.connect()
+            var iterator = stream.makeAsyncIterator()
+            await fake.push(text: text)
+
+            #expect(try await iterator.next() == expectedEvent)
+            do {
+                _ = try await iterator.next()
+                Issue.record("Expected failed post-state heartbeat to close availability")
+            } catch {
+                #expect(error as? RendezvousSignalingError == .connectionClosed)
+            }
+            #expect(await fake.sentPingCount() == 1)
+        }
+    }
+
+    @Test func availabilityPingFailureClosesAVisiblyOpenGhostSocket() async throws {
+        let fake = DurableFakeSocketTransport()
+        await fake.failPings()
+        let client = try PairedAvailabilitySignalingClient(
+            endpoint: endpoint,
+            locator: makeLocator(role: .host),
+            role: .host,
+            transport: fake,
+            livenessIntervalNanoseconds: 0,
+            livenessTimeoutNanoseconds: 1_000_000_000,
+            livenessSleep: { _ in }
+        )
+        let stream = try await client.connect()
+        var iterator = stream.makeAsyncIterator()
+        await fake.push(text: #"{"type":"availability-waiting"}"#)
+
+        #expect(try await iterator.next() == .waiting)
+        do {
+            _ = try await iterator.next()
+            Issue.record("Expected the failed liveness probe to close availability")
+        } catch {
+            #expect(error as? RendezvousSignalingError == .connectionClosed)
+        }
+        #expect(await fake.sentPingCount() == 1)
+    }
+
     @Test func availabilityRejectsUnboundedOrExtendedErrorSchemas() async throws {
         let oversizedError = String(repeating: "a", count: 65)
         for text in [
@@ -427,6 +516,8 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
     private var viewerAdmissionProof: RendezvousAdmissionProof?
     private var mode: RemoteRendezvousMode?
     private var sent = [String]()
+    private var pingsFail = false
+    private var pingCount = 0
     private var queued = [RendezvousSocketMessage]()
     private var waiter: CheckedContinuation<RendezvousSocketMessage, any Error>?
 
@@ -452,10 +543,19 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
         return try await withCheckedThrowingContinuation { waiter = $0 }
     }
 
+    func sendPing(timeoutNanoseconds _: UInt64) async throws {
+        pingCount += 1
+        if pingsFail { throw DurableFakeSocketError.closed }
+    }
+
     func close() async {
         waiter?.resume(throwing: DurableFakeSocketError.closed)
         waiter = nil
     }
+
+    func failPings() { pingsFail = true }
+
+    func sentPingCount() -> Int { pingCount }
 
     func push(text: String) {
         if let waiter {

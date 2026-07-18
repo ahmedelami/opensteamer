@@ -192,6 +192,7 @@ internal struct RemoteAvailabilityCipher: Sendable {
 /// exchange identifier. It cannot carry SDP, ICE, or media signaling.
 public actor PairedAvailabilitySignalingClient {
     public typealias EventStream = AsyncThrowingStream<PairedAvailabilitySignalingEvent, Error>
+    internal typealias LivenessSleep = @Sendable (UInt64) async throws -> Void
 
     private enum State {
         case idle
@@ -204,16 +205,26 @@ public actor PairedAvailabilitySignalingClient {
         static let maximumEnvelopeBytes = 65_536
         static let maximumSequence: UInt64 = 2_147_483_647
         static let maximumEventBufferCount = 256
+        static let firstProtocolStateTimeoutNanoseconds: UInt64 = 8_000_000_000
+        static let livenessIntervalNanoseconds: UInt64 = 15_000_000_000
+        static let livenessTimeoutNanoseconds: UInt64 = 5_000_000_000
     }
 
     private let role: RemotePeerRole
     private let rendezvousURL: URL
     private let locator: RemoteAvailabilityLocator
     private let transport: any RendezvousSocketTransport
+    private let firstProtocolStateTimeoutNanoseconds: UInt64
+    private let livenessIntervalNanoseconds: UInt64
+    private let livenessTimeoutNanoseconds: UInt64
+    private let firstProtocolStateSleep: LivenessSleep
+    private let livenessSleep: LivenessSleep
 
     private var state = State.idle
     private var continuation: EventStream.Continuation?
     private var receiveTask: Task<Void, Never>?
+    private var firstProtocolStateDeadlineTask: Task<Void, Never>?
+    private var livenessTask: Task<Void, Never>?
     private var exchangeID: RemoteAvailabilityExchangeID?
     private var cipher: RemoteAvailabilityCipher?
     private var nextSequence: UInt64 = 0
@@ -231,21 +242,43 @@ public actor PairedAvailabilitySignalingClient {
         self.locator = locator
         rendezvousURL = try Self.makeRendezvousURL(endpoint: endpoint)
         transport = URLSessionRendezvousSocketTransport()
+        firstProtocolStateTimeoutNanoseconds = Limits.firstProtocolStateTimeoutNanoseconds
+        livenessIntervalNanoseconds = Limits.livenessIntervalNanoseconds
+        livenessTimeoutNanoseconds = Limits.livenessTimeoutNanoseconds
+        firstProtocolStateSleep = Self.defaultLivenessSleep
+        livenessSleep = Self.defaultLivenessSleep
     }
 
     internal init(
         endpoint: URL,
         locator: RemoteAvailabilityLocator,
         role: RemotePeerRole,
-        transport: any RendezvousSocketTransport
+        transport: any RendezvousSocketTransport,
+        firstProtocolStateTimeoutNanoseconds: UInt64 = Limits
+            .firstProtocolStateTimeoutNanoseconds,
+        livenessIntervalNanoseconds: UInt64 = Limits.livenessIntervalNanoseconds,
+        livenessTimeoutNanoseconds: UInt64 = Limits.livenessTimeoutNanoseconds,
+        firstProtocolStateSleep: @escaping LivenessSleep = PairedAvailabilitySignalingClient
+            .defaultLivenessSleep,
+        livenessSleep: @escaping LivenessSleep = PairedAvailabilitySignalingClient
+            .defaultLivenessSleep
     ) throws {
         guard locator.localRole == role else {
+            throw RemoteSessionCoreError.invalidRendezvousCredential
+        }
+        guard firstProtocolStateTimeoutNanoseconds > 0,
+              livenessTimeoutNanoseconds > 0 else {
             throw RemoteSessionCoreError.invalidRendezvousCredential
         }
         self.role = role
         self.locator = locator
         rendezvousURL = try Self.makeRendezvousURL(endpoint: endpoint)
         self.transport = transport
+        self.firstProtocolStateTimeoutNanoseconds = firstProtocolStateTimeoutNanoseconds
+        self.livenessIntervalNanoseconds = livenessIntervalNanoseconds
+        self.livenessTimeoutNanoseconds = livenessTimeoutNanoseconds
+        self.firstProtocolStateSleep = firstProtocolStateSleep
+        self.livenessSleep = livenessSleep
     }
 
     public func connect() async throws -> EventStream {
@@ -277,6 +310,11 @@ public actor PairedAvailabilitySignalingClient {
         }
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
+        }
+        // HTTP 101 alone does not prove that the Worker admitted this role. Require its first
+        // valid protocol state before treating the socket as live or beginning periodic pings.
+        firstProtocolStateDeadlineTask = Task { [weak self] in
+            await self?.firstProtocolStateDeadlineLoop()
         }
         return pair.stream
     }
@@ -338,6 +376,7 @@ public actor PairedAvailabilitySignalingClient {
             }
             do {
                 let event = try parse(text: text)
+                beginLivenessIfProtocolStateValidated(by: event)
                 guard let continuation else { return }
                 switch continuation.yield(event) {
                 case .enqueued:
@@ -354,6 +393,62 @@ public actor PairedAvailabilitySignalingClient {
                 }
             } catch {
                 await finish(throwing: error)
+                return
+            }
+        }
+    }
+
+    private func firstProtocolStateDeadlineLoop() async {
+        do {
+            try await firstProtocolStateSleep(firstProtocolStateTimeoutNanoseconds)
+            try Task.checkCancellation()
+            guard state == .connected,
+                  firstProtocolStateDeadlineTask != nil else {
+                return
+            }
+            await finish(throwing: RendezvousSignalingError.connectionClosed)
+        } catch is CancellationError {
+            return
+        } catch {
+            if state == .connected, firstProtocolStateDeadlineTask != nil {
+                await finish(throwing: RendezvousSignalingError.connectionClosed)
+            }
+        }
+    }
+
+    private func beginLivenessIfProtocolStateValidated(
+        by event: PairedAvailabilitySignalingEvent
+    ) {
+        switch event {
+        case .waiting, .ready:
+            break
+        case .signal, .peerLeft, .serverError:
+            return
+        }
+        guard let deadlineTask = firstProtocolStateDeadlineTask else { return }
+        firstProtocolStateDeadlineTask = nil
+        deadlineTask.cancel()
+        guard livenessTask == nil else { return }
+        livenessTask = Task { [weak self] in
+            await self?.livenessLoop()
+        }
+    }
+
+    private func livenessLoop() async {
+        while state == .connected, !Task.isCancelled {
+            do {
+                try await livenessSleep(livenessIntervalNanoseconds)
+                try Task.checkCancellation()
+                guard state == .connected else { return }
+                try await transport.sendPing(
+                    timeoutNanoseconds: livenessTimeoutNanoseconds
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                if state == .connected {
+                    await finish(throwing: RendezvousSignalingError.connectionClosed)
+                }
                 return
             }
         }
@@ -461,7 +556,13 @@ public actor PairedAvailabilitySignalingClient {
         continuation = nil
         let activeTask = receiveTask
         receiveTask = nil
+        let activeFirstProtocolStateDeadlineTask = firstProtocolStateDeadlineTask
+        firstProtocolStateDeadlineTask = nil
+        let activeLivenessTask = livenessTask
+        livenessTask = nil
         activeTask?.cancel()
+        activeFirstProtocolStateDeadlineTask?.cancel()
+        activeLivenessTask?.cancel()
         await transport.close()
         if let error {
             activeContinuation?.finish(throwing: error)
@@ -483,6 +584,10 @@ public actor PairedAvailabilitySignalingClient {
             senderRole == .host && response.isStructurallyValid
         }
         guard valid else { throw RemoteSessionCoreError.invalidSignalPayload }
+    }
+
+    private static func defaultLivenessSleep(_ nanoseconds: UInt64) async throws {
+        try await Task<Never, Never>.sleep(nanoseconds: nanoseconds)
     }
 
     private static func makeRendezvousURL(endpoint: URL) throws -> URL {

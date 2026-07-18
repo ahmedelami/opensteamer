@@ -97,6 +97,7 @@ internal protocol RendezvousSocketTransport: Sendable {
     ) async throws
     func send(text: String) async throws
     func receive() async throws -> RendezvousSocketMessage
+    func sendPing(timeoutNanoseconds: UInt64) async throws
     func close() async
 }
 
@@ -891,12 +892,92 @@ internal actor URLSessionRendezvousSocketTransport: RendezvousSocketTransport {
         }
     }
 
+    func sendPing(timeoutNanoseconds: UInt64) async throws {
+        guard let task else {
+            throw RendezvousSignalingError.notConnected
+        }
+        try await BoundedWebSocketPing.run(timeoutNanoseconds: timeoutNanoseconds) { completion in
+            task.sendPing(pongReceiveHandler: completion)
+        }
+    }
+
     func close() async {
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         session?.invalidateAndCancel()
         session = nil
         delegate = nil
+    }
+}
+
+/// Converts Foundation's callback-only WebSocket ping into a cancellation-aware bounded await.
+/// `URLSessionWebSocketTask.sendPing` completes only after the matching pong or an error, but the
+/// callback itself has no timeout and cannot be cancelled. The resolver lets either deadline or
+/// task cancellation release the awaiting liveness loop without waiting for that callback.
+internal enum BoundedWebSocketPing {
+    typealias Start = (@escaping @Sendable ((any Error)?) -> Void) -> Void
+
+    static func run(
+        timeoutNanoseconds: UInt64,
+        start: Start
+    ) async throws {
+        guard timeoutNanoseconds > 0 else {
+            throw RendezvousSignalingError.connectionClosed
+        }
+
+        let resolver = WebSocketPingResolver()
+        start { error in
+            if let error {
+                resolver.resolve(.failure(error))
+            } else {
+                resolver.resolve(.success(()))
+            }
+        }
+        let timeoutTask = Task {
+            do {
+                try await Task<Never, Never>.sleep(nanoseconds: timeoutNanoseconds)
+            } catch {
+                return
+            }
+            resolver.resolve(.failure(RendezvousSignalingError.connectionClosed))
+        }
+        defer { timeoutTask.cancel() }
+
+        try await withTaskCancellationHandler {
+            try await resolver.wait()
+        } onCancel: {
+            resolver.resolve(.failure(CancellationError()))
+        }
+    }
+}
+
+private final class WebSocketPingResolver: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<Void, any Error>?
+    private var continuation: CheckedContinuation<Void, any Error>?
+
+    func wait() async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            let immediate = lock.withLock { () -> Result<Void, any Error>? in
+                if let result { return result }
+                self.continuation = continuation
+                return nil
+            }
+            if let immediate {
+                continuation.resume(with: immediate)
+            }
+        }
+    }
+
+    func resolve(_ newResult: Result<Void, any Error>) {
+        let waiter = lock.withLock { () -> CheckedContinuation<Void, any Error>? in
+            guard result == nil else { return nil }
+            result = newResult
+            let waiter = continuation
+            continuation = nil
+            return waiter
+        }
+        waiter?.resume(with: newResult)
     }
 }
 

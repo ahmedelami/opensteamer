@@ -2,6 +2,33 @@ import XCTest
 @testable import CaptureServer
 
 final class WorldwideHostLifecycleTests: XCTestCase {
+    func testAvailabilityBackoffDoesNotResetForUpgradeFollowedByServerError() {
+        var policy = WorldwideAvailabilityRetryPolicy()
+
+        XCTAssertEqual(policy.delayAfterFailure(), 1)
+        XCTAssertEqual(policy.delayAfterFailure(), 2)
+        XCTAssertEqual(policy.delayAfterFailure(), 4)
+        XCTAssertEqual(policy.delayAfterFailure(), 8)
+        XCTAssertEqual(policy.delayAfterFailure(), 16)
+        XCTAssertEqual(policy.delayAfterFailure(), 30)
+        XCTAssertEqual(policy.delayAfterFailure(), 30)
+        XCTAssertFalse(policy.hasValidatedConnection)
+    }
+
+    func testValidAvailabilityStateResetsBackoffAndIsReportedOncePerConnection() {
+        var policy = WorldwideAvailabilityRetryPolicy()
+        XCTAssertEqual(policy.delayAfterFailure(), 1)
+        XCTAssertEqual(policy.delayAfterFailure(), 2)
+
+        XCTAssertTrue(policy.observedValidAvailabilityState())
+        XCTAssertFalse(policy.observedValidAvailabilityState())
+        XCTAssertTrue(policy.hasValidatedConnection)
+        XCTAssertEqual(policy.delayAfterFailure(), 1)
+
+        XCTAssertTrue(policy.observedValidAvailabilityState())
+        XCTAssertEqual(policy.nextDelaySeconds, 1)
+    }
+
     func testMediaDepartureReturnsPairedHostToAvailability() throws {
         var lifecycle = WorldwideHostLifecycle()
         try lifecycle.start(hasPairedViewer: true)

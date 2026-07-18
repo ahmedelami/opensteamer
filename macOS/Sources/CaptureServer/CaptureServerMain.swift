@@ -27,6 +27,14 @@ struct CaptureServerMain {
                 return
             }
 
+            let worldwideHostProcessLock: WorldwideHostProcessLock?
+            if options.worldwideEnabled {
+                worldwideHostProcessLock = try WorldwideHostProcessLock.acquire()
+            } else {
+                worldwideHostProcessLock = nil
+            }
+            defer { worldwideHostProcessLock?.release() }
+
             let server: TCPServer?
             if options.lanEnabled {
                 let lanServer = try TCPServer(
@@ -126,9 +134,21 @@ struct CaptureServerMain {
                 monitor = nil
             }
 
+            // Leave LAN-only signal behavior untouched. Worldwide mode needs a short async cleanup
+            // window so its persistent availability WebSocket cannot outlive a replaced host.
+            let terminationSignals = worldwideHostCoordinator.map { _ in
+                ProcessTerminationSignalMonitor()
+            }
+            defer { terminationSignals?.cancel() }
+
             let report: StreamingCaptureReport?
             do {
                 if let server {
+                    let terminationTask = makeCoexistenceTerminationTask(
+                        coordinator: worldwideHostCoordinator,
+                        terminationSignals: terminationSignals
+                    )
+                    defer { terminationTask?.cancel() }
                     let manager = StreamingCaptureManager(
                         duration: options.duration,
                         displayID: options.displayID,
@@ -137,10 +157,11 @@ struct CaptureServerMain {
                         logger: logger
                     )
                     report = try await manager.run()
-                } else if let worldwideHostCoordinator {
+                } else if let worldwideHostCoordinator, let terminationSignals {
                     try await waitForWorldwideHost(
                         worldwideHostCoordinator,
-                        duration: options.duration
+                        duration: options.duration,
+                        terminationSignals: terminationSignals.events
                     )
                     report = nil
                 } else {
@@ -184,27 +205,52 @@ struct CaptureServerMain {
         }
     }
 
+    private static func makeCoexistenceTerminationTask(
+        coordinator: WorldwideHostCoordinator?,
+        terminationSignals: ProcessTerminationSignalMonitor?
+    ) -> Task<Void, Never>? {
+        guard let coordinator, let terminationSignals else { return nil }
+        return Task {
+            for await signalNumber in terminationSignals.events {
+                guard !Task.isCancelled else { return }
+                await coordinator.stop()
+                terminationSignals.resumeDefaultHandlingAndReraise(signalNumber)
+            }
+        }
+    }
+
     private static func waitForWorldwideHost(
         _ coordinator: WorldwideHostCoordinator,
-        duration: TimeInterval?
+        duration: TimeInterval?,
+        terminationSignals: AsyncStream<Int32>
     ) async throws {
-        guard let duration else {
-            for try await _ in coordinator.completion {
-                return
-            }
-            return
-        }
-
-        try await withThrowingTaskGroup(of: Void.self) { group in
+        try await withThrowingTaskGroup(of: WorldwideHostWaitOutcome.self) { group in
             group.addTask {
                 for try await _ in coordinator.completion {
-                    return
+                    return .coordinatorEnded
                 }
+                return .coordinatorEnded
             }
             group.addTask {
-                try await Task.sleep(for: .seconds(duration))
+                for await _ in terminationSignals {
+                    try Task.checkCancellation()
+                    return .terminationSignal
+                }
+                return .terminationSignal
             }
-            _ = try await group.next()
+            if let duration {
+                group.addTask {
+                    try await Task.sleep(for: .seconds(duration))
+                    return .durationElapsed
+                }
+            }
+
+            let outcome = try await group.next()
+            if outcome == .terminationSignal {
+                // URLSession WebSockets otherwise remain registered at the Worker after launchd
+                // replaces this process, rejecting the replacement host as a role conflict.
+                await coordinator.stop()
+            }
             group.cancelAll()
         }
     }
@@ -240,6 +286,12 @@ struct CaptureServerMain {
             }
         }
     }
+}
+
+private enum WorldwideHostWaitOutcome: Equatable {
+    case coordinatorEnded
+    case durationElapsed
+    case terminationSignal
 }
 
 private enum CaptureServerMainError: LocalizedError {

@@ -5,6 +5,40 @@ import Testing
 struct RendezvousSignalingClientTests {
     private let endpoint = URL(string: "wss://rendezvous.example.test")!
 
+    @Test func boundedWebSocketPingCompletesFromPongCallback() async throws {
+        try await BoundedWebSocketPing.run(timeoutNanoseconds: 1_000_000_000) { completion in
+            completion(nil)
+        }
+    }
+
+    @Test func boundedWebSocketPingTimesOutWhenCallbackNeverArrives() async {
+        do {
+            try await BoundedWebSocketPing.run(timeoutNanoseconds: 1_000_000) { _ in }
+            Issue.record("Expected the silent ping to time out")
+        } catch {
+            #expect(error as? RendezvousSignalingError == .connectionClosed)
+        }
+    }
+
+    @Test func boundedWebSocketPingReleasesImmediatelyOnCancellation() async {
+        let task = Task {
+            try await BoundedWebSocketPing.run(
+                timeoutNanoseconds: 60_000_000_000
+            ) { _ in }
+        }
+        await Task.yield()
+        task.cancel()
+
+        do {
+            try await task.value
+            Issue.record("Expected ping cancellation")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            Issue.record("Expected CancellationError, got \(error)")
+        }
+    }
+
     @Test func freshPairedMediaUsesLegacyMissingModeHeaderContract() async throws {
         #expect(RemoteRendezvousMode.invitation.headerValue == nil)
         #expect(RemoteRendezvousMode.pairing.headerValue == nil)
@@ -725,6 +759,8 @@ private actor FakeRendezvousSocketTransport: RendezvousSocketTransport {
             waiter = continuation
         }
     }
+
+    func sendPing(timeoutNanoseconds _: UInt64) async throws {}
 
     func close() async {
         closes += 1
