@@ -240,7 +240,59 @@ describe("rendezvous Worker and Durable Object", () => {
     replacementViewer.socket.close(1000, "done");
   });
 
-  it("durably consumes pairing at the viewer sequence-2 ACK and rejects replacement", async () => {
+  it("orders a stale viewer departure before immediate replacement ready", async () => {
+    const channel = "J".repeat(52);
+    const admission = proof(39);
+    const host = await open(channel, "host", admission, "pairing");
+    await host.nextMessage();
+    const firstViewer = await open(channel, "viewer", admission, "pairing");
+    await Promise.all([host.nextMessage(), firstViewer.nextMessage()]);
+
+    const oldHostEnvelope = signalEnvelope(channel, 0, "host");
+    host.socket.send(
+      JSON.stringify({ type: "signal", seq: 0, envelope: oldHostEnvelope }),
+    );
+    await firstViewer.nextMessage();
+
+    // Do not await peer-left. The replacement join must reconcile a CLOSED socket whose
+    // deferred close callback has not necessarily run, then enqueue peer-left/reset first.
+    firstViewer.socket.close(1000, "replace immediately");
+    const replacementViewer = await open(channel, "viewer", admission, "pairing");
+    expect(await host.nextMessage()).toEqual({ type: "peer-left", role: "viewer" });
+    const [hostReady, replacementReady] = await Promise.all([
+      host.nextMessage(),
+      replacementViewer.nextMessage(),
+    ]);
+    expect(hostReady.type).toBe("ready");
+    expect(replacementReady.type).toBe("ready");
+
+    const restartedHostEnvelope = signalEnvelope(channel, 0, "host");
+    host.socket.send(
+      JSON.stringify({ type: "signal", seq: 0, envelope: restartedHostEnvelope }),
+    );
+    expect(await replacementViewer.nextMessage()).toEqual({
+      type: "signal",
+      from: "host",
+      seq: 0,
+      envelope: restartedHostEnvelope,
+    });
+    const restartedViewerEnvelope = signalEnvelope(channel, 0, "viewer");
+    replacementViewer.socket.send(
+      JSON.stringify({ type: "signal", seq: 0, envelope: restartedViewerEnvelope }),
+    );
+    // A delayed stale departure would appear here instead of the replacement's signal.
+    expect(await host.nextMessage()).toEqual({
+      type: "signal",
+      from: "viewer",
+      seq: 0,
+      envelope: restartedViewerEnvelope,
+    });
+
+    host.socket.close(1000, "done");
+    replacementViewer.socket.close(1000, "done");
+  });
+
+  it("does not let opaque viewer sequence 2 consume the pairing invitation", async () => {
     const channel = "K".repeat(52);
     const admission = proof(35);
     const host = await open(channel, "host", admission, "pairing");
@@ -248,7 +300,21 @@ describe("rendezvous Worker and Durable Object", () => {
     const viewer = await open(channel, "viewer", admission, "pairing");
     await Promise.all([host.nextMessage(), viewer.nextMessage()]);
 
+    // Drive every pre-completion transport position. These test envelopes are intentionally
+    // opaque/fake; even after forwarding viewer sequence 2, the Worker has no evidence the Mac
+    // authenticated it until the Mac emits sequence 3.
     for (let sequence = 0; sequence <= 2; sequence += 1) {
+      const hostEnvelope = signalEnvelope(channel, sequence, "host");
+      host.socket.send(
+        JSON.stringify({ type: "signal", seq: sequence, envelope: hostEnvelope }),
+      );
+      expect(await viewer.nextMessage()).toEqual({
+        type: "signal",
+        from: "host",
+        seq: sequence,
+        envelope: hostEnvelope,
+      });
+
       const envelope = signalEnvelope(channel, sequence, "viewer");
       viewer.socket.send(JSON.stringify({ type: "signal", seq: sequence, envelope }));
       expect(await host.nextMessage()).toEqual({
@@ -259,8 +325,155 @@ describe("rendezvous Worker and Durable Object", () => {
       });
     }
 
-    // Force a new object instance so replacement rejection depends on the stored consume
-    // boundary, not merely the in-memory invitation object.
+    // Force a new object instance to prove that fake ciphertext did not persist a consume
+    // tombstone merely because it occupied the viewer ACK's transport sequence.
+    const stub = env.RENDEZVOUS.get(env.RENDEZVOUS.idFromName(`pairing:${channel}`));
+    await evictDurableObject(stub);
+
+    const viewerLeft = host.nextMessage();
+    viewer.socket.close(1000, "done");
+    expect(await viewerLeft).toEqual({ type: "peer-left", role: "viewer" });
+
+    const replacement = await open(channel, "viewer", admission, "pairing");
+    const [hostReady, replacementReady] = await Promise.all([
+      host.nextMessage(),
+      replacement.nextMessage(),
+    ]);
+    expect(hostReady.type).toBe("ready");
+    expect(replacementReady.type).toBe("ready");
+
+    host.socket.close(1000, "done");
+    replacement.socket.close(1000, "done");
+  });
+
+  it("rejects a viewer ACK position before the host proposal position", async () => {
+    const channel = "O".repeat(52);
+    const admission = proof(37);
+    const host = await open(channel, "host", admission, "pairing");
+    await host.nextMessage();
+    const viewer = await open(channel, "viewer", admission, "pairing");
+    await Promise.all([host.nextMessage(), viewer.nextMessage()]);
+
+    for (let sequence = 0; sequence < 2; sequence += 1) {
+      const envelope = signalEnvelope(channel, sequence, "viewer");
+      viewer.socket.send(JSON.stringify({ type: "signal", seq: sequence, envelope }));
+      expect(await host.nextMessage()).toEqual({
+        type: "signal",
+        from: "viewer",
+        seq: sequence,
+        envelope,
+      });
+    }
+
+    const earlyAcknowledgement = signalEnvelope(channel, 2, "viewer");
+    viewer.socket.send(
+      JSON.stringify({ type: "signal", seq: 2, envelope: earlyAcknowledgement }),
+    );
+    expect(await viewer.nextMessage()).toEqual({
+      type: "error",
+      error: "invalid_message",
+    });
+    expect(await host.nextMessage()).toEqual({ type: "peer-left", role: "viewer" });
+    host.socket.close(1000, "done");
+  });
+
+  it("does not let host sequence 3 consume without persisted viewer-ACK progress", async () => {
+    const channel = "L".repeat(52);
+    const admission = proof(38);
+    const host = await open(channel, "host", admission, "pairing");
+    await host.nextMessage();
+    const viewer = await open(channel, "viewer", admission, "pairing");
+    await Promise.all([host.nextMessage(), viewer.nextMessage()]);
+
+    for (let sequence = 0; sequence <= 2; sequence += 1) {
+      const envelope = signalEnvelope(channel, sequence, "host");
+      host.socket.send(JSON.stringify({ type: "signal", seq: sequence, envelope }));
+      expect(await viewer.nextMessage()).toEqual({
+        type: "signal",
+        from: "host",
+        seq: sequence,
+        envelope,
+      });
+    }
+
+    const unsupportedCompletion = signalEnvelope(channel, 3, "host");
+    host.socket.send(
+      JSON.stringify({ type: "signal", seq: 3, envelope: unsupportedCompletion }),
+    );
+    expect(await host.nextMessage()).toEqual({
+      type: "error",
+      error: "invalid_message",
+    });
+    expect(await viewer.nextMessage()).toEqual({ type: "peer-left", role: "host" });
+    viewer.socket.close(1000, "done");
+
+    const replacementHost = await open(channel, "host", admission, "pairing");
+    expect((await replacementHost.nextMessage()).type).toBe("waiting");
+    const replacementViewer = await open(channel, "viewer", admission, "pairing");
+    const [hostReady, viewerReady] = await Promise.all([
+      replacementHost.nextMessage(),
+      replacementViewer.nextMessage(),
+    ]);
+    expect(hostReady.type).toBe("ready");
+    expect(viewerReady.type).toBe("ready");
+    replacementHost.socket.close(1000, "done");
+    replacementViewer.socket.close(1000, "done");
+  });
+
+  it("durably consumes pairing only at the host post-ACK completion", async () => {
+    const channel = "C".repeat(52);
+    const admission = proof(36);
+    const host = await open(channel, "host", admission, "pairing");
+    await host.nextMessage();
+    const viewer = await open(channel, "viewer", admission, "pairing");
+    await Promise.all([host.nextMessage(), viewer.nextMessage()]);
+
+    // The real bootstrap alternates hello, confirmation, proposal/ACK, and completion.
+    // Ciphertext stays opaque to the Worker; only the host's post-validation sequence 3 is
+    // the consume boundary.
+    for (let sequence = 0; sequence <= 2; sequence += 1) {
+      const hostEnvelope = signalEnvelope(channel, sequence, "host");
+      host.socket.send(
+        JSON.stringify({ type: "signal", seq: sequence, envelope: hostEnvelope }),
+      );
+      expect(await viewer.nextMessage()).toEqual({
+        type: "signal",
+        from: "host",
+        seq: sequence,
+        envelope: hostEnvelope,
+      });
+
+      const viewerEnvelope = signalEnvelope(channel, sequence, "viewer");
+      viewer.socket.send(
+        JSON.stringify({ type: "signal", seq: sequence, envelope: viewerEnvelope }),
+      );
+      expect(await host.nextMessage()).toEqual({
+        type: "signal",
+        from: "viewer",
+        seq: sequence,
+        envelope: viewerEnvelope,
+      });
+    }
+
+    // Eviction proves the Worker persisted same-generation ACK-forwarding progress rather
+    // than relying on an in-memory observation when it later accepts host completion.
+    const preCompletionStub = env.RENDEZVOUS.get(
+      env.RENDEZVOUS.idFromName(`pairing:${channel}`),
+    );
+    await evictDurableObject(preCompletionStub);
+
+    const completionEnvelope = signalEnvelope(channel, 3, "host");
+    host.socket.send(
+      JSON.stringify({ type: "signal", seq: 3, envelope: completionEnvelope }),
+    );
+    expect(await viewer.nextMessage()).toEqual({
+      type: "signal",
+      from: "host",
+      seq: 3,
+      envelope: completionEnvelope,
+    });
+
+    // Recreate the Durable Object so rejection is proven by the persisted tombstone.
     const stub = env.RENDEZVOUS.get(env.RENDEZVOUS.idFromName(`pairing:${channel}`));
     await evictDurableObject(stub);
 

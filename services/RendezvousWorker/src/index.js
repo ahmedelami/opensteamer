@@ -76,6 +76,8 @@ const validInvitation = (value) =>
   (value.mode === undefined || value.mode === "pairing") &&
   Number.isSafeInteger(value.expiresAt) &&
   typeof value.consumed === "boolean" &&
+  (value.viewerAckForwarded === undefined ||
+    typeof value.viewerAckForwarded === "boolean") &&
   (value.retireAt === null || Number.isSafeInteger(value.retireAt));
 
 const validAvailability = (value) =>
@@ -249,21 +251,46 @@ export class RendezvousSession extends DurableObject {
         expiresAt: now + invitationTtlMs,
         consumed: false,
         retireAt: null,
-        ...(mode === "pairing" ? { mode: "pairing" } : {}),
+        ...(mode === "pairing"
+          ? { mode: "pairing", viewerAckForwarded: false }
+          : {}),
       };
       await this.ctx.storage.put(STORAGE_KEY, this.invitation);
       await this.ctx.storage.setAlarm(this.invitation.expiresAt);
     }
 
-    const invitation = this.invitation;
+    let invitation = this.invitation;
     if (invitation.channel !== channel) return json({ error: "invitation_unavailable" }, 404);
     if ((invitation.mode ?? "invitation") !== mode) {
       return json({ error: "invitation_unavailable" }, 404);
     }
 
+    // A closed hibernating socket can disappear from the occupied-role query before its
+    // deferred close callback runs. Reconcile it inside the serialized join mutation so the
+    // surviving peer observes reset/peer-left before any replacement ready event.
+    await this.reconcileClosedInvitationRoleSockets(role, invitation.generation);
+    if (!this.invitation || this.invitation.generation !== invitation.generation) {
+      return this.rejectWebSocket("invitation_unavailable", CLOSE.unavailable, mode);
+    }
+    invitation = this.invitation;
+
     const occupiedRole = this.roleSockets(role, invitation.generation, true).length > 0;
     if (occupiedRole) {
       return this.rejectWebSocket("role_already_claimed", CLOSE.conflict, mode);
+    }
+    if (
+      mode === "pairing" &&
+      !invitation.consumed &&
+      invitation.viewerAckForwarded === true
+    ) {
+      // A replacement role starts a fresh sequence transcript. Prior ACK-routing evidence
+      // cannot authorize completion in the new attempt, even within the same invitation.
+      invitation = {
+        ...invitation,
+        viewerAckForwarded: false,
+      };
+      await this.ctx.storage.put(STORAGE_KEY, invitation);
+      this.invitation = invitation;
     }
 
     const oppositeRole = role === "host" ? "viewer" : "host";
@@ -310,7 +337,7 @@ export class RendezvousSession extends DurableObject {
     // Legacy invitations authorize a media session directly, so accepting the viewer is
     // still the irreversible consume-once boundary. Pairing bootstrap is different: both
     // devices must first persist their recoverable pair root. Its invitation is consumed
-    // below only when the viewer transmits the durable acknowledgement at sequence 2.
+    // below only when the host transmits completion after validating that acknowledgement.
     if (role === "viewer" && mode !== "pairing") {
       invitation.consumed = true;
       invitation.retireAt = null;
@@ -558,7 +585,7 @@ export class RendezvousSession extends DurableObject {
     }
 
     // Serialize invitation messages with joins and departures. In particular, a replacement
-    // viewer must not race the durable sequence-2 consume transition below.
+    // join must not race the host-confirmed consume transition below.
     await this.serializeMutation(() => this.handleInvitationMessage(socket, message));
   }
 
@@ -567,6 +594,7 @@ export class RendezvousSession extends DurableObject {
     const invitation = this.invitation;
     if (
       !attachment ||
+      attachment.departed ||
       (attachment.role !== "host" && attachment.role !== "viewer") ||
       !invitation ||
       attachment.generation !== invitation.generation
@@ -607,15 +635,39 @@ export class RendezvousSession extends DurableObject {
 
     if (
       invitation.mode === "pairing" &&
+      !invitation.consumed &&
       attachment.role === "viewer" &&
-      result.value.seq === 2 &&
+      result.value.seq === 2
+    ) {
+      const host = this.firstOpenRoleSocket("host", invitation.generation);
+      const hostAttachment = host ? socketAttachment(host) : undefined;
+      if (!host || !hostAttachment || hostAttachment.nextSequence < 3) {
+        // Cross-direction sequencing is visible even though ciphertext is not. Refuse a viewer
+        // ACK position until the host proposal position was forwarded.
+        safeSend(socket, { type: "error", error: "invalid_message" });
+        safeClose(socket, CLOSE.invalid);
+        return;
+      }
+    }
+
+    if (
+      invitation.mode === "pairing" &&
+      attachment.role === "host" &&
+      result.value.seq === 3 &&
       !invitation.consumed
     ) {
-      // Viewer sequence 2 is the authenticated pairing ACK. The host has durably saved its
-      // proposal and the viewer has durably saved its ACK state before this send, so either
-      // side can recover after this point without replaying the one-time invitation. Persist
-      // the tombstone before forwarding the ACK; a crash can never expose a consumed pairing
-      // as reusable merely because the peer did not receive the final wire message.
+      if (invitation.viewerAckForwarded !== true) {
+        // Host completion is authoritative only after this same invitation generation
+        // durably recorded successful forwarding of the viewer ACK position.
+        safeSend(socket, { type: "error", error: "invalid_message" });
+        safeClose(socket, CLOSE.invalid);
+        return;
+      }
+      // Host sequence 3 is the completion sent only after the Mac has decrypted and
+      // authenticated the viewer ACK, then durably saved its accepted/completion state. The
+      // Worker cannot authenticate opaque viewer ciphertext, so viewer sequence 2 alone must
+      // never consume an invitation. Persist the tombstone before forwarding the host's
+      // completion: after this point the Mac and iPhone both have recoverable pairing records.
       const consumedInvitation = {
         ...invitation,
         consumed: true,
@@ -641,8 +693,30 @@ export class RendezvousSession extends DurableObject {
       return;
     }
 
+    const recordsViewerAckProgress =
+      invitation.mode === "pairing" &&
+      attachment.role === "viewer" &&
+      result.value.seq === 2 &&
+      !invitation.consumed;
+
+    // Advance the hibernation attachment before the separate progress write. If persistence
+    // fails or the actor is evicted between them, the host-confirmed consume step fails closed
+    // and both authenticated peers can continue on availability; the viewer sequence cannot
+    // be rolled back after progress was durably recorded.
     attachment.nextSequence += 1;
     socket.serializeAttachment(attachment);
+
+    if (recordsViewerAckProgress) {
+      // This is routing evidence, not authentication: the Worker still cannot inspect the
+      // ciphertext. Persist it only after the ACK position was successfully forwarded so a
+      // hibernation/restart cannot turn host-only sequence 3 into a consume boundary.
+      const progressedInvitation = {
+        ...invitation,
+        viewerAckForwarded: true,
+      };
+      await this.ctx.storage.put(STORAGE_KEY, progressedInvitation);
+      this.invitation = progressedInvitation;
+    }
   }
 
   handleAvailabilityMessage(socket, message, attachment) {
@@ -744,8 +818,20 @@ export class RendezvousSession extends DurableObject {
       // The socket may already be fully detached.
     }
 
-    const invitation = this.invitation;
+    let invitation = this.invitation;
     if (!invitation || attachment.generation !== invitation.generation) return;
+    if (
+      invitation.mode === "pairing" &&
+      !invitation.consumed &&
+      invitation.viewerAckForwarded === true
+    ) {
+      invitation = {
+        ...invitation,
+        viewerAckForwarded: false,
+      };
+      await this.ctx.storage.put(STORAGE_KEY, invitation);
+      this.invitation = invitation;
+    }
     const oppositeRole = attachment.role === "host" ? "viewer" : "host";
     const partner = this.firstOpenRoleSocket(oppositeRole, invitation.generation);
     if (partner && invitation.mode === "pairing" && !invitation.consumed) {
@@ -775,6 +861,21 @@ export class RendezvousSession extends DurableObject {
       invitation.retireAt = Date.now() + parseDurationMs(this.env.TOMBSTONE_TTL_SECONDS, 300);
       await this.ctx.storage.put(STORAGE_KEY, invitation);
       await this.ctx.storage.setAlarm(invitation.retireAt);
+    }
+  }
+
+  async reconcileClosedInvitationRoleSockets(role, generation) {
+    const closedSockets = this.ctx.getWebSockets(role).filter((socket) => {
+      const attachment = socketAttachment(socket);
+      return (
+        attachment?.role === role &&
+        attachment.generation === generation &&
+        !attachment.departed &&
+        socket.readyState === CLOSED
+      );
+    });
+    for (const socket of closedSockets) {
+      await this.handleDeparture(socket);
     }
   }
 
