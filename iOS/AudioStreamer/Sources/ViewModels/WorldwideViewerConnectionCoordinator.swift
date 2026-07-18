@@ -73,7 +73,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                 role: .viewer
             )
         },
-        availabilityRetryDeadlineNanoseconds: UInt64 = 30_000_000_000,
+        availabilityRetryDeadlineNanoseconds: UInt64 = 60_000_000_000,
         availabilityMonotonicNow: @escaping AvailabilityMonotonicNow = {
             DispatchTime.now().uptimeNanoseconds
         },
