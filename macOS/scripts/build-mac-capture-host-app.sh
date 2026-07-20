@@ -2,7 +2,7 @@
 set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-APP_DIR="$ROOT_DIR/build/MacCaptureHost.app"
+APP_DIR="$ROOT_DIR/build/AudioStreamer Host.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
@@ -58,5 +58,5 @@ codesign --force --sign "$SIGNING_IDENTITY" \
     "$EXECUTABLE"
 codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$APP_DIR"
 codesign --verify --deep --strict "$APP_DIR"
-echo "Signed MacCaptureHost with: $SIGNING_IDENTITY" >&2
+echo "Signed AudioStreamer Host with: $SIGNING_IDENTITY" >&2
 echo "$APP_DIR"

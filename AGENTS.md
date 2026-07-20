@@ -55,6 +55,10 @@ manual IP addresses, router configuration, or public TCP ports.
 - Debug/XCTest iOS builds must use a bundle identifier distinct from the production
   TestFlight app so physical validation cannot replace the user's release container
   or masquerade as a TestFlight-to-TestFlight update.
+- Run the persistent Mac service from the signed `AudioStreamer Host.app` bundle with
+  identifier `org.example.AudioStreamer.CaptureServer`. Keep that privacy-visible name
+  unique and stable: an older `MacCaptureHost.app` or a naked executable can bind
+  Screen Recording or Accessibility permission to the wrong macOS code identity.
 - Worldwide Mac system audio is an independent, send-only Opus track on the same
   peer connection. The production fidelity contract is 48 kHz interleaved Int16
   stereo from ScreenCaptureKit through a custom input-only WebRTC audio device,
