@@ -87,8 +87,8 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring {
     }
 
     func loadOrCreateViewerIdentity() throws -> RemoteDeviceIdentity {
-        if let stored = try identityStore.loadData() {
-            return try decodeViewerIdentity(stored)
+        if let identity = try loadViewerIdentity() {
+            return identity
         }
 
         let identity = try RemoteDeviceIdentity.generate(role: .viewer)
@@ -100,6 +100,13 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring {
             throw ViewerPairingStoreError.identityPersistenceFailed
         }
         return identity
+    }
+
+    /// Strictly reads the durable viewer identity without silently creating a replacement.
+    /// Update/recovery validation uses this boundary so a missing Keychain item is observable.
+    func loadViewerIdentity() throws -> RemoteDeviceIdentity? {
+        guard let stored = try identityStore.loadData() else { return nil }
+        return try decodeViewerIdentity(stored)
     }
 
     func loadPairedMac(

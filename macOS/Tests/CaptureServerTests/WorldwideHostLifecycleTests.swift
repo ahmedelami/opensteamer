@@ -2,6 +2,16 @@ import XCTest
 @testable import CaptureServer
 
 final class WorldwideHostLifecycleTests: XCTestCase {
+    func testPeerStateLogBindsConnectedEventToExactHostProcess() {
+        XCTAssertEqual(
+            WorldwideScreenService.peerStateLogMessage(
+                state: "connected",
+                processIdentifier: 42_071
+            ),
+            "Worldwide WebRTC peer state: connected pid=42071"
+        )
+    }
+
     func testAvailabilityBackoffDoesNotResetForUpgradeFollowedByServerError() {
         var policy = WorldwideAvailabilityRetryPolicy()
 

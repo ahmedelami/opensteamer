@@ -55,3 +55,21 @@ targets:
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: 6.0
+  AudioStreamerUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - UITests
+    dependencies:
+      - target: AudioStreamer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamerUITests
+        DEVELOPMENT_TEAM: A1B2C3D4E5
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: 6.0
+        TEST_TARGET_NAME: AudioStreamer
+    scheme:
+      testTargets:
+        - AudioStreamerUITests

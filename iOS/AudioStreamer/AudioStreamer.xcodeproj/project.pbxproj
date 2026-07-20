@@ -24,6 +24,7 @@
 		4143F45C6B78A6426ED1CD2B /* RemoteSessionCore in Frameworks */ = {isa = PBXBuildFile; productRef = 47C2A81C09AE79F1FCB48E97 /* RemoteSessionCore */; };
 		4B1D8309983DA8A6E5551C5D /* AspectFitCoordinateMapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61DD1147B47CCE7221BD4398 /* AspectFitCoordinateMapperTests.swift */; };
 		4EFD8D22029ADCFD2889CDBB /* WebRTCRemoteScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1017B4DF7C52C4A0815EE38D /* WebRTCRemoteScreenView.swift */; };
+		57287A8C866FF2B8877DB5E5 /* PairedReconnectPhysicalUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BED52153519FDBD8535CE3BD /* PairedReconnectPhysicalUITests.swift */; };
 		57B3F54439F8DD1903DC741F /* BonjourBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8A081AC46F228CB0FF856AE /* BonjourBrowser.swift */; };
 		5AEE6663606D8F28AC333783 /* WorldwideAudioLifecycleController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16071DF448515BF9F5671B2D /* WorldwideAudioLifecycleController.swift */; };
 		6020A049BF2A81A4BC088C69 /* RemoteKeyboardInputProxyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60B3F49127B84C5F62A09AA /* RemoteKeyboardInputProxyTests.swift */; };
@@ -33,6 +34,7 @@
 		7D417DEBAF7A9627A28581B2 /* ViewerPairingState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15ECA0B0153A494961DD762E /* ViewerPairingState.swift */; };
 		81F249A04C0ECC4D40560057 /* ScreenVideoClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F84611866708D4807A2667C /* ScreenVideoClient.swift */; };
 		87AC3E2B52112B7A16917AA5 /* RemotePrimaryDragGesturePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB1CBA40775CC2DE2220836 /* RemotePrimaryDragGesturePolicy.swift */; };
+		87EFB225568927CB1D55540D /* WorldwidePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BC031FAA019C1740A630F40 /* WorldwidePresentationTests.swift */; };
 		8818F0F68B976534EAEFDE96 /* WorldwideSessionViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 040A05AC7D8550B2475BC1F6 /* WorldwideSessionViewModel.swift */; };
 		8BD5E329C094583AE2E4F832 /* AspectFitCoordinateMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = F606D00D506FB74DC9DC7A11 /* AspectFitCoordinateMapper.swift */; };
 		8E4EFC4FB83ECCB21634E53E /* H264SampleBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F8017428FCB78A9203C0796 /* H264SampleBuilder.swift */; };
@@ -60,6 +62,13 @@
 			remoteGlobalIDString = CC38CACB178347405D099BDA;
 			remoteInfo = AudioStreamer;
 		};
+		EC5D79AAE450A437C6E69578 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5127BC660033F41BD50AC6AD /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = CC38CACB178347405D099BDA;
+			remoteInfo = AudioStreamer;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
@@ -81,6 +90,7 @@
 		61DD1147B47CCE7221BD4398 /* AspectFitCoordinateMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AspectFitCoordinateMapperTests.swift; sourceTree = "<group>"; };
 		62FAFA716A0461C6C237AC01 /* RemoteKeyboardInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteKeyboardInputView.swift; sourceTree = "<group>"; };
 		69415A249A4906EC4B27E740 /* AudioSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSessionManager.swift; sourceTree = "<group>"; };
+		6BC031FAA019C1740A630F40 /* WorldwidePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwidePresentationTests.swift; sourceTree = "<group>"; };
 		74366C19E45DDC6E1480B455 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		7FBC749C0D5798F82623433A /* RemoteTokenState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTokenState.swift; sourceTree = "<group>"; };
 		8658B98B47BDCAA170BB2DD5 /* ViewerPairingPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerPairingPersistenceTests.swift; sourceTree = "<group>"; };
@@ -96,12 +106,14 @@
 		B99416FB6D3DB6FEF972A55F /* AudioStreamer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AudioStreamer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BBCDC2E0DA8378EA635DACE3 /* WorldwideRemoteInputLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideRemoteInputLifecycleTests.swift; sourceTree = "<group>"; };
 		BDDD6172AB3D3C88EE4AB5FF /* StreamSessionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamSessionViewModel.swift; sourceTree = "<group>"; };
+		BED52153519FDBD8535CE3BD /* PairedReconnectPhysicalUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairedReconnectPhysicalUITests.swift; sourceTree = "<group>"; };
 		C515FF2D22852D646E2F3532 /* ScreenVideoConnectionDescriptor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVideoConnectionDescriptor.swift; sourceTree = "<group>"; };
 		CACD921FC4DA50E4A6662435 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		CB1D53C782C0E8667E890989 /* BrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserView.swift; sourceTree = "<group>"; };
 		CB6518D8E380A2F0521A61D7 /* WebRTCAudioPlaybackSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebRTCAudioPlaybackSessionTests.swift; sourceTree = "<group>"; };
 		D361E8872DE933953B70CFAD /* ViewerPairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerPairingStore.swift; sourceTree = "<group>"; };
 		D60B3F49127B84C5F62A09AA /* RemoteKeyboardInputProxyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteKeyboardInputProxyTests.swift; sourceTree = "<group>"; };
+		D63D930F60971C1B4FFAF952 /* AudioStreamerUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AudioStreamerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		EA163095E9F23FC2234A92AF /* ScreenViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenViewerView.swift; sourceTree = "<group>"; };
 		EBE9EB5455D4F39B9DD93CCC /* MetricRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricRow.swift; sourceTree = "<group>"; };
 		F606D00D506FB74DC9DC7A11 /* AspectFitCoordinateMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AspectFitCoordinateMapper.swift; sourceTree = "<group>"; };
@@ -138,6 +150,7 @@
 				177201D2B90247ACE27C17B4 /* Packages */,
 				15CCA89F445DF06910B9271E /* Sources */,
 				7376F4DA73EF2211F3CA93CD /* Tests */,
+				FF0CBCF6ED74B8B18A0812C5 /* UITests */,
 				3B25DF5CF46AEA18AF550249 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -181,6 +194,7 @@
 			children = (
 				B99416FB6D3DB6FEF972A55F /* AudioStreamer.app */,
 				01FFC28A42AAAD0DB2D22D7D /* AudioStreamerTests.xctest */,
+				D63D930F60971C1B4FFAF952 /* AudioStreamerUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -221,6 +235,7 @@
 				8658B98B47BDCAA170BB2DD5 /* ViewerPairingPersistenceTests.swift */,
 				CB6518D8E380A2F0521A61D7 /* WebRTCAudioPlaybackSessionTests.swift */,
 				06490A68677BBEDABF2CD9BB /* WorldwideAudioLifecycleTests.swift */,
+				6BC031FAA019C1740A630F40 /* WorldwidePresentationTests.swift */,
 				BBCDC2E0DA8378EA635DACE3 /* WorldwideRemoteInputLifecycleTests.swift */,
 			);
 			path = Tests;
@@ -276,9 +291,35 @@
 			path = Screen;
 			sourceTree = "<group>";
 		};
+		FF0CBCF6ED74B8B18A0812C5 /* UITests */ = {
+			isa = PBXGroup;
+			children = (
+				BED52153519FDBD8535CE3BD /* PairedReconnectPhysicalUITests.swift */,
+			);
+			path = UITests;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		176A875FD6AE2E086BBE5211 /* AudioStreamerUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1EB571901C49BC30EA2E85E9 /* Build configuration list for PBXNativeTarget "AudioStreamerUITests" */;
+			buildPhases = (
+				297522438465075B1F2BFEBE /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				769A13A10DD9AB469D74AC57 /* PBXTargetDependency */,
+			);
+			name = AudioStreamerUITests;
+			packageProductDependencies = (
+			);
+			productName = AudioStreamerUITests;
+			productReference = D63D930F60971C1B4FFAF952 /* AudioStreamerUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		36F2C6746142D7AF483406D3 /* AudioStreamerTests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = CC475FDC4D3409DFCC4B3626 /* Build configuration list for PBXNativeTarget "AudioStreamerTests" */;
@@ -329,6 +370,11 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					176A875FD6AE2E086BBE5211 = {
+						DevelopmentTeam = A1B2C3D4E5;
+						ProvisioningStyle = Automatic;
+						TestTargetID = CC38CACB178347405D099BDA;
+					};
 					36F2C6746142D7AF483406D3 = {
 						DevelopmentTeam = A1B2C3D4E5;
 						ProvisioningStyle = Automatic;
@@ -358,6 +404,7 @@
 			targets = (
 				CC38CACB178347405D099BDA /* AudioStreamer */,
 				36F2C6746142D7AF483406D3 /* AudioStreamerTests */,
+				176A875FD6AE2E086BBE5211 /* AudioStreamerUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -374,6 +421,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		297522438465075B1F2BFEBE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				57287A8C866FF2B8877DB5E5 /* PairedReconnectPhysicalUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		9587E9B673A5DC89F1A8FED7 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -384,6 +439,7 @@
 				E48BA802F5CF1C3B54BBB00A /* ViewerPairingPersistenceTests.swift in Sources */,
 				047D0294CA4AA108507C3AC5 /* WebRTCAudioPlaybackSessionTests.swift in Sources */,
 				1CF0BDB1DD1F8186279DC802 /* WorldwideAudioLifecycleTests.swift in Sources */,
+				87EFB225568927CB1D55540D /* WorldwidePresentationTests.swift in Sources */,
 				2A374460D16FD4AADF8C3179 /* WorldwideRemoteInputLifecycleTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -429,6 +485,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		769A13A10DD9AB469D74AC57 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = CC38CACB178347405D099BDA /* AudioStreamer */;
+			targetProxy = EC5D79AAE450A437C6E69578 /* PBXContainerItemProxy */;
+		};
 		D6FABCE5A1E1BDC63C63120E /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = CC38CACB178347405D099BDA /* AudioStreamer */;
@@ -437,6 +498,26 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		14D9993E2900D5121BF1AA5F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = A1B2C3D4E5;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamerUITests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = AudioStreamer;
+			};
+			name = Debug;
+		};
 		3B31BEDEA8C1A1C2C5B3EEBD /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -498,6 +579,26 @@
 				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
+		};
+		823BDD5DC0A9393323EDFB34 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = A1B2C3D4E5;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamerUITests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = AudioStreamer;
+			};
+			name = Release;
 		};
 		B7EA9F937C3C60F07C3EFA13 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -648,6 +749,15 @@
 			buildConfigurations = (
 				6C463EC1550C43494941C421 /* Debug */,
 				F36678D4222AFD29B205A8E0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		1EB571901C49BC30EA2E85E9 /* Build configuration list for PBXNativeTarget "AudioStreamerUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				14D9993E2900D5121BF1AA5F /* Debug */,
+				823BDD5DC0A9393323EDFB34 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

@@ -11,6 +11,13 @@ import WebRTCTransport
 actor WorldwideScreenService {
     nonisolated let completion: AsyncStream<Void>
 
+    nonisolated static func peerStateLogMessage(
+        state: String,
+        processIdentifier: Int32
+    ) -> String {
+        "Worldwide WebRTC peer state: \(state) pid=\(processIdentifier)"
+    }
+
     private let invitation: RemoteInvitationCode?
     private let signaling: RendezvousSignalingClient
     private let icePolicy: WebRTCICEPolicy
@@ -360,7 +367,12 @@ actor WorldwideScreenService {
             try await signaling.send(payload)
 
         case .peerStateChanged(let state):
-            logger.info("Worldwide WebRTC peer state: \(state.rawValue)")
+            logger.info(
+                Self.peerStateLogMessage(
+                    state: state.rawValue,
+                    processIdentifier: ProcessInfo.processInfo.processIdentifier
+                )
+            )
             switch state {
             case .new, .connecting:
                 let previouslyAuthorizedRoute = peerIsConnected
