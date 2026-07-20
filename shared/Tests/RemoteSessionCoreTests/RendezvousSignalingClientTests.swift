@@ -66,11 +66,15 @@ struct RendezvousSignalingClientTests {
             mode: .session,
             transport: fake
         )
-        _ = try await client.connect()
+        // Retain the event stream through the explicit close. Dropping it invokes
+        // `onTermination` and would race this test's connected-state assertions.
+        let stream = try await client.connect()
+        var iterator = stream.makeAsyncIterator()
         #expect(await fake.connectedMode() == .session)
         #expect(await fake.connectedURL()?.path == "/v1/rendezvous")
         #expect(await fake.connectedViewerAdmissionProof() == nil)
         await client.close()
+        #expect(try await iterator.next() == nil)
 
         #expect(throws: RemoteSessionCoreError.invalidRendezvousCredential) {
             try RendezvousSignalingClient(
@@ -272,7 +276,10 @@ struct RendezvousSignalingClientTests {
             transport: fake
         )
 
+        // Retain an iterator while checking the connected transport metadata. Dropping the
+        // stream would intentionally close the client through `onTermination`.
         let stream = try await client.connect()
+        var iterator = stream.makeAsyncIterator()
         let connectedURL = try #require(await fake.connectedURL())
         let components = try #require(URLComponents(url: connectedURL, resolvingAgainstBaseURL: false))
         let cipher = RemoteSignalingCipher(
@@ -297,7 +304,6 @@ struct RendezvousSignalingClientTests {
         #expect(!connectedURL.absoluteString.contains(invitation.canonicalCode))
         #expect(!connectedURL.absoluteString.contains(expectedChannel))
 
-        var iterator = stream.makeAsyncIterator()
         await client.close()
         #expect(try await iterator.next() == nil)
         #expect(await fake.closeCount() == 1)
@@ -312,7 +318,10 @@ struct RendezvousSignalingClientTests {
             role: .host,
             transport: fake
         )
-        _ = try await client.connect()
+        // The stream owns the tested session lifetime; discarding it can close the actor before
+        // the first send and turn this wire-format assertion into a scheduler-dependent test.
+        let stream = try await client.connect()
+        var iterator = stream.makeAsyncIterator()
 
         let payload = RemoteSignalPayload.offer(sdp: "v=0\r\na=setup:actpass\r\n")
         try await client.send(payload)
@@ -334,6 +343,7 @@ struct RendezvousSignalingClientTests {
         let viewer = RemoteSignalingCipher(invitation: invitation, role: .viewer)
         #expect(try viewer.open(envelope) == payload)
         await client.close()
+        #expect(try await iterator.next() == nil)
     }
 
     @Test func candidateUsernameFragmentIsBounded() async throws {
@@ -345,7 +355,10 @@ struct RendezvousSignalingClientTests {
             role: .host,
             transport: fake
         )
-        _ = try await client.connect()
+        // Keep the stream alive until every candidate is sent. Its termination deliberately
+        // closes the client, so `_ = connect()` makes this validation test nondeterministic.
+        let stream = try await client.connect()
+        var iterator = stream.makeAsyncIterator()
 
         let candidateSDP = "candidate:1 1 UDP 1 192.0.2.1 50000 typ host"
         try await client.send(
@@ -377,6 +390,7 @@ struct RendezvousSignalingClientTests {
             }
         }
         await client.close()
+        #expect(try await iterator.next() == nil)
     }
 
     @Test func waitingReadyErrorAndPeerLeftMessagesParseWithBoundedICEData() async throws {
