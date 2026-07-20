@@ -20,4 +20,29 @@ final class CaptureServerOptionsTests: XCTestCase {
         XCTAssertFalse(options.lanEnabled)
         XCTAssertNil(options.duration)
     }
+
+    func testRemoteControlIsOffByDefaultInWorldwideMode() throws {
+        let options = try CaptureServerOptions.parse(["CaptureServer", "--worldwide"])
+
+        XCTAssertTrue(options.worldwideEnabled)
+        XCTAssertFalse(options.allowRemoteControl)
+    }
+
+    func testRemoteControlRequiresWorldwideMode() {
+        XCTAssertThrowsError(
+            try CaptureServerOptions.parse(["CaptureServer", "--allow-remote-control"])
+        )
+    }
+
+    func testRemoteControlIsEnabledOnlyByExplicitWorldwideOptIn() throws {
+        let options = try CaptureServerOptions.parse([
+            "CaptureServer",
+            "--worldwide",
+            "--allow-remote-control",
+        ])
+
+        XCTAssertTrue(options.worldwideEnabled)
+        XCTAssertTrue(options.allowRemoteControl)
+        XCTAssertFalse(options.lanEnabled)
+    }
 }

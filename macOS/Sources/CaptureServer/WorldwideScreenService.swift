@@ -4,6 +4,39 @@ import Foundation
 import RemoteSessionCore
 import WebRTCTransport
 
+enum WorldwideScreenInactiveTransitionFailure {
+    case nativeStop(any Error)
+    case acknowledgement(any Error)
+}
+
+/// Linearizes the native ScreenCaptureKit stop with the protocol-level Inactive ACK.
+///
+/// A viewer must never interpret Inactive as proof that screen capture stopped when the native
+/// stop actually threw. The fail-closed callback therefore runs before this operation returns,
+/// and the acknowledgement closure is unreachable on that path.
+enum WorldwideScreenInactiveTransition {
+    static func perform(
+        isolation: isolated (any Actor)? = #isolation,
+        stopNativeCapture: () async throws -> Void,
+        acknowledgeInactive: () async throws -> Void,
+        failClosed: (any Error) async -> Void
+    ) async -> WorldwideScreenInactiveTransitionFailure? {
+        do {
+            try await stopNativeCapture()
+        } catch {
+            await failClosed(error)
+            return .nativeStop(error)
+        }
+
+        do {
+            try await acknowledgeInactive()
+            return nil
+        } catch {
+            return .acknowledgement(error)
+        }
+    }
+}
+
 /// Owns one consume-once rendezvous and its Mac-side WebRTC screen session.
 ///
 /// The invitation authenticates and encrypts signaling. Reachability still comes from
@@ -196,7 +229,16 @@ actor WorldwideScreenService {
         captureSink?.stopForwarding()
         audioSink?.stopForwarding()
         await coordinator?.cancel()
-        await stopScreenCapture()
+        do {
+            try await stopScreenCapture()
+        } catch {
+            // Session shutdown must continue through peer/signaling close even when
+            // ScreenCaptureKit cannot confirm its native stop.
+            logger.error(
+                "Worldwide screen capture stop failed during session close: " +
+                error.localizedDescription
+            )
+        }
         await stopSystemAudio()
         if let peer {
             await peer.close(reason: .hostStopped)
@@ -541,7 +583,9 @@ actor WorldwideScreenService {
 
     private func handleControlRequest(_ request: WebRTCControlRequest) async {
         guard let peer else {
-            await stopScreenCapture()
+            _ = await stopScreenCaptureOrCloseSession(
+                context: "a control request arrived without a peer"
+            )
             return
         }
 
@@ -556,7 +600,6 @@ actor WorldwideScreenService {
 
         switch request.command {
         case .showScreen:
-            var activeAcknowledgementWasSent = false
             do {
                 guard transportAllowsCapture else {
                     throw WorldwideScreenServiceError.transportUnavailable
@@ -582,7 +625,6 @@ actor WorldwideScreenService {
                     inputCapability: inputSession?.capability,
                     inputAuthorization: inputSession?.authorization
                 )
-                activeAcknowledgementWasSent = true
                 let inputSessionRemainsCurrent: Bool
                 if let inputSession {
                     inputSessionRemainsCurrent = activeInputCapability == inputSession.capability
@@ -602,15 +644,26 @@ actor WorldwideScreenService {
                       transportAllowsCapture else {
                     // The Active transition linearized before a newer uncertainty boundary.
                     // Stop immediately and never send a contradictory ACK for the same ID.
-                    await stopScreenCapture()
+                    _ = await stopScreenCaptureOrCloseSession(
+                        context: "screen authorization changed during Active acknowledgement"
+                    )
                     await peer.suspendScreenMediaForTransportUncertainty()
                     logger.error("Worldwide screen authorization changed during Active acknowledgement")
                     return
                 }
             } catch {
-                await stopScreenCapture()
-                if !activeAcknowledgementWasSent {
-                    try? await peer.acknowledgeControlRequest(id: request.id, state: .inactive)
+                if isNativeScreenStopFailure(error) {
+                    logger.error(
+                        "Worldwide screen Show could not verify native capture shutdown: " +
+                        error.localizedDescription
+                    )
+                    await stop()
+                } else {
+                    _ = await acknowledgeInactiveAfterVerifiedScreenStop(
+                        peer: peer,
+                        requestID: request.id,
+                        context: "screen Show failed before Active acknowledgement"
+                    )
                 }
                 logger.error("Worldwide screen Show failed closed: \(error.localizedDescription)")
             }
@@ -624,7 +677,11 @@ actor WorldwideScreenService {
                 if pendingRecoveryProofRequest.map({ request.id > $0.id }) != false {
                     pendingRecoveryProofRequest = proofRequest
                 }
-                await stopScreenCapture()
+                guard await stopScreenCaptureOrCloseSession(
+                    context: "recovery-proof Hide"
+                ) else {
+                    return
+                }
                 await completePendingRecoveryProofIfPossible(
                     peer: peer,
                     epoch: proofRequest.epoch
@@ -632,12 +689,11 @@ actor WorldwideScreenService {
                 return
             }
 
-            await stopScreenCapture()
-            do {
-                try await peer.acknowledgeControlRequest(id: request.id, state: .inactive)
-            } catch {
-                logger.error("Worldwide screen Hide acknowledgement failed: \(error.localizedDescription)")
-            }
+            _ = await acknowledgeInactiveAfterVerifiedScreenStop(
+                peer: peer,
+                requestID: request.id,
+                context: "screen Hide"
+            )
 
         case .requestKeyFrame:
             // RTP feedback remains WebRTC-owned; acknowledge the screen state without reusing a
@@ -648,14 +704,12 @@ actor WorldwideScreenService {
                transportAllowsCapture {
                 let authorizationPeerGeneration = peerGeneration
                 let authorizationRecoveryEpoch = recoveryProofEpoch
-                var activeAcknowledgementWasSent = false
                 do {
                     try await peer.acknowledgeControlRequestIfTransportHealthy(
                         id: request.id,
                         state: .active,
                         authorization: authorization
                     )
-                    activeAcknowledgementWasSent = true
                     guard authorizationPeerGeneration == peerGeneration,
                           authorizationRecoveryEpoch == recoveryProofEpoch,
                           self.peer === peer,
@@ -663,19 +717,19 @@ actor WorldwideScreenService {
                           captureAuthorization === authorization,
                           authorization.isValid,
                           transportAllowsCapture else {
-                        await stopScreenCapture()
+                        _ = await stopScreenCaptureOrCloseSession(
+                            context: "key-frame state changed during acknowledgement"
+                        )
                         await peer.suspendScreenMediaForTransportUncertainty()
                         logger.error("Worldwide key-frame state changed during acknowledgement")
                         return
                     }
                 } catch {
-                    await stopScreenCapture()
-                    if !activeAcknowledgementWasSent {
-                        try? await peer.acknowledgeControlRequest(
-                            id: request.id,
-                            state: .inactive
-                        )
-                    }
+                    _ = await acknowledgeInactiveAfterVerifiedScreenStop(
+                        peer: peer,
+                        requestID: request.id,
+                        context: "key-frame request failed before Active acknowledgement"
+                    )
                     await peer.suspendScreenMediaForTransportUncertainty()
                     logger.error("Worldwide key-frame acknowledgement failed: \(error.localizedDescription)")
                 }
@@ -690,6 +744,71 @@ actor WorldwideScreenService {
                 }
             }
         }
+    }
+
+    @discardableResult
+    private func acknowledgeInactiveAfterVerifiedScreenStop(
+        peer: WebRTCPeer,
+        requestID: UInt64,
+        context: String
+    ) async -> Bool {
+        let failure = await WorldwideScreenInactiveTransition.perform(
+            stopNativeCapture: {
+                try await self.stopScreenCapture()
+            },
+            acknowledgeInactive: {
+                try await peer.acknowledgeControlRequest(
+                    id: requestID,
+                    state: .inactive
+                )
+            },
+            failClosed: { error in
+                self.logger.error(
+                    "Worldwide native screen stop failed during \(context); " +
+                    "closing the peer/session without an Inactive acknowledgement: " +
+                    error.localizedDescription
+                )
+                await self.stop()
+            }
+        )
+
+        guard let failure else { return true }
+        switch failure {
+        case .nativeStop:
+            // The fail-closed closure has already closed the peer and rendezvous.
+            return false
+        case .acknowledgement(let error):
+            logger.error(
+                "Worldwide screen Inactive acknowledgement failed during \(context): " +
+                error.localizedDescription
+            )
+            return false
+        }
+    }
+
+    @discardableResult
+    private func stopScreenCaptureOrCloseSession(context: String) async -> Bool {
+        do {
+            try await stopScreenCapture()
+            return true
+        } catch {
+            logger.error(
+                "Worldwide native screen stop failed during \(context); " +
+                "closing the peer/session: " + error.localizedDescription
+            )
+            await stop()
+            return false
+        }
+    }
+
+    private func isNativeScreenStopFailure(_ error: any Error) -> Bool {
+        guard let serviceError = error as? WorldwideScreenServiceError else {
+            return false
+        }
+        if case .nativeScreenStopFailed = serviceError {
+            return true
+        }
+        return false
     }
 
     private func armRemoteInputIfAvailable(
@@ -939,7 +1058,9 @@ actor WorldwideScreenService {
         guard captureSource != nil else { return }
         // Privacy is fail-closed: a recovered peer must receive a fresh, acknowledged Show.
         logger.info("Stopping worldwide screen capture because \(reason)")
-        await stopScreenCapture()
+        _ = await stopScreenCaptureOrCloseSession(
+            context: "transport uncertainty: \(reason)"
+        )
     }
 
     private func stopCaptureForTransportUncertainty(_ reason: String) async {
@@ -1182,13 +1303,6 @@ actor WorldwideScreenService {
                   captureAuthorization === authorization,
                   authorization.isValid,
                   transportAllowsCapture else {
-                if captureSource === source {
-                    revokeCaptureAuthorization()
-                    captureSource = nil
-                    captureSink = nil
-                }
-                sink.stopForwarding()
-                try? await source.stop()
                 throw WorldwideScreenServiceError.transportUnavailable
             }
             captureDisplayID = format.displayID
@@ -1204,17 +1318,25 @@ actor WorldwideScreenService {
             )
             return authorization
         } catch {
+            let startError = error
             if captureSource === source {
                 revokeCaptureAuthorization()
                 captureSource = nil
                 captureSink = nil
             }
             sink.stopForwarding()
-            throw error
+            do {
+                // Even a failed post-start health check can leave a native SCStream running.
+                // Never turn that uncertainty into a protocol-level Inactive acknowledgement.
+                try await source.stop()
+            } catch {
+                throw WorldwideScreenServiceError.nativeScreenStopFailed(error)
+            }
+            throw startError
         }
     }
 
-    private func stopScreenCapture() async {
+    private func stopScreenCapture() async throws {
         revokeCaptureAuthorization()
         let source = captureSource
         let sink = captureSink
@@ -1222,11 +1344,7 @@ actor WorldwideScreenService {
         captureSink = nil
         sink?.stopForwarding()
         guard let source else { return }
-        do {
-            try await source.stop()
-        } catch {
-            logger.error("Worldwide screen capture stop failed: \(error.localizedDescription)")
-        }
+        try await source.stop()
     }
 
     private func screenCaptureDidStop(
@@ -1554,6 +1672,7 @@ private enum WorldwideScreenServiceError: LocalizedError {
     case videoCapturerUnavailable
     case audioCapturerUnavailable
     case transportUnavailable
+    case nativeScreenStopFailed(any Error)
     case rendezvous(RendezvousServerError)
 
     var errorDescription: String? {
@@ -1568,6 +1687,9 @@ private enum WorldwideScreenServiceError: LocalizedError {
             "The Mac WebRTC system-audio capturer is unavailable."
         case .transportUnavailable:
             "The secure media transport is not healthy enough to expose the screen."
+        case .nativeScreenStopFailed(let error):
+            "The native screen source could not confirm that capture stopped " +
+                "(\(error.localizedDescription))."
         case .rendezvous(let error):
             "The rendezvous rejected the session (\(String(describing: error)))."
         }

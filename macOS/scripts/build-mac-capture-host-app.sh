@@ -2,7 +2,8 @@
 set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-APP_DIR="$ROOT_DIR/build/AudioStreamer Host.app"
+APP_OUTPUT_DIR="${MAC_CAPTURE_APP_OUTPUT_DIR:-$ROOT_DIR/build}"
+APP_DIR="$APP_OUTPUT_DIR/AudioStreamer Host.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
@@ -24,8 +25,15 @@ if [[ -z "$SIGNING_IDENTITY" ]]; then
 fi
 
 cd "$ROOT_DIR"
-swift build --product CaptureServer
-BIN_DIR="$(swift build --show-bin-path)"
+if [[ -n "${MAC_CAPTURE_PREBUILT_BIN_DIR:-}" ]]; then
+    # Integration tests already hold SwiftPM's workspace lock. Reuse the exact
+    # products compiled for that test run while still exercising all packaging,
+    # rpath, signing, and artifact-verification steps below.
+    BIN_DIR="$MAC_CAPTURE_PREBUILT_BIN_DIR"
+else
+    swift build --product CaptureServer
+    BIN_DIR="$(swift build --show-bin-path)"
+fi
 EXECUTABLE_SOURCE="$BIN_DIR/CaptureServer"
 WEBRTC_FRAMEWORK_SOURCE="$BIN_DIR/LiveKitWebRTC.framework"
 EXECUTABLE="$MACOS_DIR/CaptureServer"
@@ -57,6 +65,12 @@ codesign --force --sign "$SIGNING_IDENTITY" \
     --timestamp=none \
     "$EXECUTABLE"
 codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$APP_DIR"
-codesign --verify --deep --strict "$APP_DIR"
+
+VERIFY_ARGUMENTS=("$APP_DIR")
+if [[ -n "${MAC_CAPTURE_EXPECTED_TEAM_ID:-}" ]]; then
+    VERIFY_ARGUMENTS+=("$MAC_CAPTURE_EXPECTED_TEAM_ID")
+fi
+"$ROOT_DIR/macOS/scripts/verify-mac-host-bundle.sh" "${VERIFY_ARGUMENTS[@]}"
+
 echo "Signed AudioStreamer Host with: $SIGNING_IDENTITY" >&2
 echo "$APP_DIR"

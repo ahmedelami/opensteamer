@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import AVFoundation
 import XCTest
 
 final class PhysicalValidationScriptTests: XCTestCase {
@@ -149,6 +150,469 @@ final class PhysicalValidationScriptTests: XCTestCase {
             encoding: .utf8
         )
         XCTAssertEqual(runStatus, "status=self-test-passed\n")
+    }
+
+    func testReconnectDriverRequiresEveryCriticalPhysicalActivityArtifact() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AudioStreamer-activity-oracle-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        enum FixtureMutation {
+            case replacing(String)
+            case relocatingAttachment(String)
+            case emptyPayload(String)
+            case missingPayload(String)
+            case malformedPayload(String)
+            case malformedUUID(String)
+            case zeroTimestamp(String)
+            case wrongLifetime(String)
+            case swappingAttachments(String, String)
+            case relocatingNestedActivity(String)
+            case failedActivity(String)
+            case zeroActivityStart(String)
+            case duplicateTestRun
+        }
+        typealias AttachmentMapping = (parent: String, name: String)
+
+        let requiredStrings = [
+            "Same-process host restart and reconnect 1",
+            "Same-process host restart and reconnect 2",
+            "Same-process host restart and reconnect 3",
+            "Explicit disconnect and same-process reconnect",
+            "Cold-launch saved-pair reconnect",
+            "Physical background audio continuity oracle",
+            "Physical screen Show-Hide and same-session audio oracle",
+            "WebRTC route - host restart reconnect 1",
+            "WebRTC route - host restart reconnect 2",
+            "WebRTC route - host restart reconnect 3",
+            "test iPhone Direct route before host restart 1",
+            "test iPhone Direct route before host restart 2",
+            "test iPhone Direct route before host restart 3",
+            "test iPhone recovered in same process 1",
+            "test iPhone recovered in same process 2",
+            "test iPhone recovered in same process 3",
+            "WebRTC route - before explicit disconnect",
+            "WebRTC route - same-process reconnect after explicit disconnect",
+            "WebRTC route - cold-launch saved-pair reconnect",
+            "Background native audio continuity evidence",
+            "WebRTC route - after background audio proof",
+            "test iPhone live Mac screen with authenticated input capability",
+            "Decoded screen pixel freshness evidence",
+            "Authenticated screen Show-Hide evidence",
+            "Same-session audio continuity across screen Show-Hide",
+            "WebRTC route - after hiding the cold-launch Mac screen",
+        ]
+        let criticalAttachmentMappings: [AttachmentMapping] = [
+            ("restart-1", "WebRTC route - host restart reconnect 1"),
+            ("restart-1", "test iPhone Direct route before host restart 1"),
+            ("restart-1", "test iPhone recovered in same process 1"),
+            ("restart-2", "WebRTC route - host restart reconnect 2"),
+            ("restart-2", "test iPhone Direct route before host restart 2"),
+            ("restart-2", "test iPhone recovered in same process 2"),
+            ("restart-3", "WebRTC route - host restart reconnect 3"),
+            ("restart-3", "test iPhone Direct route before host restart 3"),
+            ("restart-3", "test iPhone recovered in same process 3"),
+            ("explicit", "WebRTC route - before explicit disconnect"),
+            (
+                "explicit",
+                "WebRTC route - same-process reconnect after explicit disconnect"
+            ),
+            ("cold", "WebRTC route - cold-launch saved-pair reconnect"),
+            ("cold", "WebRTC route - after background audio proof"),
+            ("cold", "WebRTC route - after hiding the cold-launch Mac screen"),
+            ("background", "Background native audio continuity evidence"),
+            (
+                "screen",
+                "test iPhone live Mac screen with authenticated input capability"
+            ),
+            ("screen", "Decoded screen pixel freshness evidence"),
+            ("screen", "Authenticated screen Show-Hide evidence"),
+            ("screen", "Same-session audio continuity across screen Show-Hide"),
+        ]
+        func fixture(
+            mutation: FixtureMutation? = nil,
+            useTURNRelay: Bool = false
+        ) throws -> URL {
+            func value(_ string: String) -> String {
+                if case let .replacing(removed)? = mutation, string == removed {
+                    return "mutated-away"
+                }
+                if useTURNRelay {
+                    return string.replacingOccurrences(
+                        of: "test iPhone Direct route before host restart",
+                        with: "test iPhone TURN relay route before host restart"
+                    )
+                }
+                return string
+            }
+            func effectiveParent(for mapping: AttachmentMapping) -> String {
+                switch mutation {
+                case let .relocatingAttachment(name)? where mapping.name == name:
+                    return mapping.parent == "explicit" ? "restart-1" : "explicit"
+                case let .swappingAttachments(first, second)? where mapping.name == first:
+                    return criticalAttachmentMappings.first { $0.name == second }!.parent
+                case let .swappingAttachments(first, second)? where mapping.name == second:
+                    return criticalAttachmentMappings.first { $0.name == first }!.parent
+                default:
+                    return mapping.parent
+                }
+            }
+            func attachment(for mapping: AttachmentMapping, index: Int) -> [String: Any] {
+                var attachment: [String: Any] = [
+                    "name": value(mapping.name),
+                    "payloadId": "0~FixturePayload_\(index)_abcdefghijklmnop",
+                    "uuid": String(
+                        format: "00000000-0000-4000-8000-%012d",
+                        index + 1
+                    ),
+                    "timestamp": 1_784_000_000.0 + Double(index),
+                    "lifetime": "keepAlways",
+                ]
+                switch mutation {
+                case let .emptyPayload(name)? where mapping.name == name:
+                    attachment["payloadId"] = ""
+                case let .missingPayload(name)? where mapping.name == name:
+                    attachment.removeValue(forKey: "payloadId")
+                case let .malformedPayload(name)? where mapping.name == name:
+                    attachment["payloadId"] = "not a valid xcresult payload id"
+                case let .malformedUUID(name)? where mapping.name == name:
+                    attachment["uuid"] = "not-a-uuid"
+                case let .zeroTimestamp(name)? where mapping.name == name:
+                    attachment["timestamp"] = 0
+                case let .wrongLifetime(name)? where mapping.name == name:
+                    attachment["lifetime"] = "deleteOnSuccess"
+                default:
+                    break
+                }
+                return attachment
+            }
+            func attachments(for parent: String) -> [[String: Any]] {
+                criticalAttachmentMappings.enumerated().compactMap { index, mapping in
+                    guard effectiveParent(for: mapping) == parent else { return nil }
+                    return attachment(for: mapping, index: index)
+                }
+            }
+            func activity(
+                id: String,
+                title: String,
+                childActivities: [[String: Any]] = []
+            ) -> [String: Any] {
+                var result: [String: Any] = [
+                    "title": value(title),
+                    "startTime": 1_784_000_100.0,
+                    "isAssociatedWithFailure": false,
+                    "attachments": attachments(for: id),
+                ]
+                if !childActivities.isEmpty {
+                    result["childActivities"] = childActivities
+                }
+                if case let .failedActivity(target)? = mutation, target == id {
+                    result["isAssociatedWithFailure"] = true
+                }
+                if case let .zeroActivityStart(target)? = mutation, target == id {
+                    result["startTime"] = 0
+                }
+                return result
+            }
+            let background = activity(
+                id: "background",
+                title: "Physical background audio continuity oracle"
+            )
+            let screen = activity(
+                id: "screen",
+                title: "Physical screen Show-Hide and same-session audio oracle"
+            )
+            var coldChildren = [background, screen]
+            var relocatedChildren: [[String: Any]] = []
+            if case let .relocatingNestedActivity(id)? = mutation {
+                if id == "background" {
+                    coldChildren.removeFirst()
+                    relocatedChildren.append(background)
+                } else if id == "screen" {
+                    coldChildren.removeLast()
+                    relocatedChildren.append(screen)
+                }
+            }
+            var rootActivities = [
+                activity(
+                    id: "restart-1",
+                    title: "Same-process host restart and reconnect 1"
+                ),
+                activity(
+                    id: "restart-2",
+                    title: "Same-process host restart and reconnect 2"
+                ),
+                activity(
+                    id: "restart-3",
+                    title: "Same-process host restart and reconnect 3"
+                ),
+                activity(
+                    id: "explicit",
+                    title: "Explicit disconnect and same-process reconnect"
+                ),
+                activity(
+                    id: "cold",
+                    title: "Cold-launch saved-pair reconnect",
+                    childActivities: coldChildren
+                ),
+            ]
+            rootActivities.append(contentsOf: relocatedChildren)
+            let testRun: [String: Any] = [
+                "activities": rootActivities,
+                "device": [
+                    "deviceId": "self-test-device",
+                    "deviceName": "test iPhone",
+                    "architecture": "arm64",
+                    "modelName": "test iPhone",
+                    "platform": "iOS",
+                    "osVersion": "18.x",
+                ],
+                "testPlanConfiguration": [
+                    "configurationId": "1",
+                    "configurationName": "Test Scheme Action",
+                ],
+            ]
+            var testRuns: [[String: Any]] = [testRun]
+            if case .duplicateTestRun? = mutation {
+                testRuns.append(testRun)
+            }
+            let object: [String: Any] = [
+                "testIdentifier":
+                    "PairedReconnectPhysicalUITests/" +
+                    "testThreeSameProcessHostRestartsThenColdRelaunchPreservePairing()",
+                "testIdentifierURL":
+                    "test://com.apple.xcode/AudioStreamer/AudioStreamerUITests/" +
+                    "PairedReconnectPhysicalUITests/" +
+                    "testThreeSameProcessHostRestartsThenColdRelaunchPreservePairing",
+                "testName":
+                    "testThreeSameProcessHostRestartsThenColdRelaunchPreservePairing()",
+                "testRuns": testRuns,
+            ]
+            let url = root.appendingPathComponent("fixture-\(UUID().uuidString).json")
+            try JSONSerialization.data(withJSONObject: object).write(to: url)
+            return url
+        }
+
+        func assertRejected(_ mutation: FixtureMutation, _ message: String) throws {
+            let mutantArtifact = root.appendingPathComponent("mutant-\(UUID().uuidString)")
+            let mutant = try runPhysicalDriverSelfTest(
+                physicalDrivers[2],
+                mode: "validate-physical-activities",
+                artifactDirectory: mutantArtifact,
+                timeout: 5,
+                additionalEnvironment: [
+                    "AUDIOSTREAMER_SELF_TEST_ACTIVITIES_JSON":
+                        try fixture(mutation: mutation).path,
+                ]
+            )
+            XCTAssertTrue(mutant.exitedWithinDeadline, mutant.diagnostic)
+            XCTAssertNotEqual(mutant.terminationStatus, 0, message)
+        }
+
+        let validArtifact = root.appendingPathComponent("valid-run")
+        let valid = try runPhysicalDriverSelfTest(
+            physicalDrivers[2],
+            mode: "validate-physical-activities",
+            artifactDirectory: validArtifact,
+            timeout: 5,
+            additionalEnvironment: [
+                "AUDIOSTREAMER_SELF_TEST_ACTIVITIES_JSON": try fixture().path,
+            ]
+        )
+        XCTAssertTrue(valid.exitedWithinDeadline, valid.diagnostic)
+        XCTAssertEqual(valid.terminationStatus, 0, valid.diagnostic)
+
+        let turnArtifact = root.appendingPathComponent("valid-turn-run")
+        let turn = try runPhysicalDriverSelfTest(
+            physicalDrivers[2],
+            mode: "validate-physical-activities",
+            artifactDirectory: turnArtifact,
+            timeout: 5,
+            additionalEnvironment: [
+                "AUDIOSTREAMER_SELF_TEST_ACTIVITIES_JSON":
+                    try fixture(useTURNRelay: true).path,
+            ]
+        )
+        XCTAssertTrue(turn.exitedWithinDeadline, turn.diagnostic)
+        XCTAssertEqual(turn.terminationStatus, 0, turn.diagnostic)
+
+        for required in requiredStrings {
+            try assertRejected(
+                .replacing(required),
+                "Missing required activity evidence escaped: \(required)"
+            )
+        }
+        for mapping in criticalAttachmentMappings {
+            try assertRejected(
+                .relocatingAttachment(mapping.name),
+                "Relocated evidence escaped its exact XCTActivity: \(mapping.name)"
+            )
+            try assertRejected(
+                .emptyPayload(mapping.name),
+                "Empty xcresult payload metadata escaped: \(mapping.name)"
+            )
+        }
+        try assertRejected(
+            .swappingAttachments(
+                "WebRTC route - host restart reconnect 1",
+                "WebRTC route - before explicit disconnect"
+            ),
+            "Swapped evidence names escaped their exact XCTActivity parents"
+        )
+        try assertRejected(
+            .relocatingNestedActivity("background"),
+            "The background oracle escaped after relocation outside the cold-launch activity"
+        )
+        try assertRejected(
+            .relocatingNestedActivity("screen"),
+            "The screen oracle escaped after relocation outside the cold-launch activity"
+        )
+        let metadataSubject = criticalAttachmentMappings[0].name
+        try assertRejected(
+            .missingPayload(metadataSubject),
+            "Missing xcresult payload identity escaped"
+        )
+        try assertRejected(
+            .malformedPayload(metadataSubject),
+            "Malformed xcresult payload identity escaped"
+        )
+        try assertRejected(
+            .malformedUUID(metadataSubject),
+            "Malformed attachment UUID escaped"
+        )
+        try assertRejected(
+            .zeroTimestamp(metadataSubject),
+            "Non-positive attachment timestamp escaped"
+        )
+        try assertRejected(
+            .wrongLifetime(metadataSubject),
+            "Non-retained critical attachment escaped"
+        )
+        try assertRejected(
+            .failedActivity("restart-1"),
+            "Failure-associated critical activity escaped"
+        )
+        try assertRejected(
+            .zeroActivityStart("restart-1"),
+            "Untimestamped critical activity escaped"
+        )
+        try assertRejected(
+            .duplicateTestRun,
+            "A second test run made the physical activity evidence ambiguous"
+        )
+    }
+
+    func testReconnectDriverStartsOneLongLivedDeterministicToneProcess() throws {
+        let artifactDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AudioStreamer-tone-oracle-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: artifactDirectory) }
+        let result = try runPhysicalDriverSelfTest(
+            physicalDrivers[2],
+            mode: "audio-oracle-tone",
+            artifactDirectory: artifactDirectory,
+            timeout: 8,
+            additionalEnvironment: [
+                "AUDIOSTREAMER_AUDIO_ORACLE_DURATION_SECONDS": "2",
+            ]
+        )
+        XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
+        XCTAssertEqual(result.terminationStatus, 0, result.diagnostic)
+        let tone = artifactDirectory.appendingPathComponent(
+            "physical-audio-oracle-tone.wav"
+        )
+        let attributes = try FileManager.default.attributesOfItem(atPath: tone.path)
+        XCTAssertGreaterThan(attributes[.size] as? UInt64 ?? 0, 380_000)
+        let audioFile = try AVAudioFile(forReading: tone)
+        XCTAssertEqual(audioFile.processingFormat.sampleRate, 48_000)
+        XCTAssertEqual(audioFile.processingFormat.channelCount, 2)
+        let buffer = try XCTUnwrap(
+            AVAudioPCMBuffer(
+                pcmFormat: audioFile.processingFormat,
+                frameCapacity: AVAudioFrameCount(audioFile.length)
+            )
+        )
+        try audioFile.read(into: buffer)
+        XCTAssertEqual(buffer.frameLength, 96_000)
+        let channels = try XCTUnwrap(buffer.floatChannelData)
+        let segmentFrames = 24_000
+        func segmentMean(_ channel: Int, _ segment: Int) -> Double {
+            let range = (segment * segmentFrames)..<((segment + 1) * segmentFrames)
+            return range.reduce(0.0) { $0 + abs(Double(channels[channel][$1])) }
+                / Double(segmentFrames)
+        }
+        func segmentCrossingRate(_ channel: Int, _ segment: Int) -> Double {
+            let start = segment * segmentFrames
+            let end = (segment + 1) * segmentFrames
+            var previousSign = 0
+            var crossings = 0
+            for frame in start..<end {
+                let sample = channels[channel][frame]
+                guard sample != 0 else { continue }
+                let sign = sample < 0 ? -1 : 1
+                if previousSign != 0, sign != previousSign {
+                    crossings += 1
+                }
+                previousSign = sign
+            }
+            return Double(crossings) / 0.5
+        }
+        for lowSegment in [0, 2] {
+            XCTAssertTrue((1_500...2_500).contains(segmentCrossingRate(0, lowSegment)))
+            XCTAssertTrue((2_300...3_700).contains(segmentCrossingRate(1, lowSegment)))
+        }
+        for highSegment in [1, 3] {
+            XCTAssertTrue((15_000...17_000).contains(segmentCrossingRate(0, highSegment)))
+            XCTAssertTrue((21_000...23_000).contains(segmentCrossingRate(1, highSegment)))
+        }
+        XCTAssertGreaterThan(segmentMean(0, 0), segmentMean(0, 1) * 2.5)
+        XCTAssertLessThan(segmentMean(0, 0), segmentMean(0, 1) * 3.5)
+        XCTAssertGreaterThan(segmentMean(1, 2), segmentMean(1, 3) * 2.5)
+        XCTAssertLessThan(segmentMean(1, 2), segmentMean(1, 3) * 3.5)
+        XCTAssertEqual(
+            try String(
+                contentsOf: artifactDirectory.appendingPathComponent("run-status.txt"),
+                encoding: .utf8
+            ),
+            "status=self-test-passed\n"
+        )
+    }
+
+    func testReconnectDriverStartsAndCleansUpChangingScreenChallenge() throws {
+        let artifactDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AudioStreamer-screen-oracle-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: artifactDirectory) }
+        let result = try runPhysicalDriverSelfTest(
+            physicalDrivers[2],
+            mode: "screen-oracle-challenge",
+            artifactDirectory: artifactDirectory,
+            timeout: 8
+        )
+        XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
+        XCTAssertEqual(result.terminationStatus, 0, result.diagnostic)
+        let heartbeat = try String(
+            contentsOf: artifactDirectory.appendingPathComponent(
+                "physical-screen-oracle-heartbeat.txt"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(heartbeat.hasPrefix("counter="), heartbeat)
+        let cleanup = try String(
+            contentsOf: artifactDirectory.appendingPathComponent(
+                "physical-screen-oracle-cleanup.txt"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(cleanup.hasPrefix("state=terminated pid="), cleanup)
+        XCTAssertTrue(cleanup.contains(" first="), cleanup)
+        XCTAssertTrue(cleanup.contains(" last="), cleanup)
+        XCTAssertEqual(
+            try String(
+                contentsOf: artifactDirectory.appendingPathComponent("run-status.txt"),
+                encoding: .utf8
+            ),
+            "status=self-test-passed\n"
+        )
     }
 
     func testBaselineAndReconnectDeleteStaleDerivedDataBeforeSelfTests() throws {
@@ -1161,7 +1625,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
         _ driver: PhysicalDriver,
         mode: String,
         artifactDirectory: URL,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        additionalEnvironment: [String: String] = [:]
     ) throws -> ZshProbeResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -1170,6 +1635,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
         ] + driver.arguments(artifactDirectory)
         var environment = ProcessInfo.processInfo.environment
         environment["AUDIOSTREAMER_SCRIPT_SELF_TEST"] = mode
+        environment.merge(additionalEnvironment) { _, replacement in replacement }
         process.environment = environment
         let standardOutput = Pipe()
         let standardError = Pipe()
