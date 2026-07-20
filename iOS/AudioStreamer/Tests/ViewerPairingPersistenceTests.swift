@@ -557,6 +557,66 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         _ = await task.result
     }
 
+    func testCancellationDuringViewerConfirmationSendCannotPublishCommittingState() async throws {
+        let client = PairingBootstrapTransportStub(
+            suspendViewerConfirmationSend: true
+        )
+        let invitation = try RemoteInvitationCode.generate()
+        let viewerIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let hostIdentity = try RemoteDeviceIdentity.generate(role: .host)
+        let hostParticipant = try RemotePairingParticipant(
+            identity: hostIdentity,
+            invitation: invitation
+        )
+        let pairingState = ViewerPairingState(
+            store: ViewerPairingStoreStub(identity: viewerIdentity)
+        )
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            bootstrapClientFactory: { _, _ in client }
+        )
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+
+        let task = Task { @MainActor in
+            try await coordinator.pairAndPrepareMediaSession(
+                invitationCode: invitation.exportedCode,
+                endpoint: endpoint,
+                pairingState: pairingState,
+                onRecoverableInvitationAdmitted: {},
+                onAuthenticatedPairingCompleted: {}
+            )
+        }
+        try await waitForConnect(client)
+        await client.yield(
+            .ready(role: .viewer, invitationExpiresAt: Date().addingTimeInterval(60))
+        )
+        try await waitForSentPayloadCount(1, client: client)
+
+        let helloPayloads = await client.sentPayloadsSnapshot()
+        guard case .hello(let viewerHello) = helloPayloads[0] else {
+            coordinator.cancel()
+            task.cancel()
+            _ = await task.result
+            return XCTFail("Expected the viewer hello first")
+        }
+        let hostAgreement = try hostParticipant.accept(viewerHello)
+        await client.yield(.signal(.hello(hostParticipant.hello)))
+        await client.yield(
+            .signal(.confirmation(try hostAgreement.makeConfirmation()))
+        )
+        try await waitForViewerConfirmationSendSuspension(client)
+
+        coordinator.cancel()
+        task.cancel()
+        XCTAssertEqual(coordinator.stateText, "Not connected")
+        XCTAssertFalse(coordinator.isConnecting)
+
+        await client.resumeViewerConfirmationSend()
+        _ = await task.result
+
+        XCTAssertEqual(coordinator.stateText, "Not connected")
+        XCTAssertFalse(coordinator.isConnecting)
+    }
+
     func testViewerPersistenceFailurePreventsConfirmationTransmission() async throws {
         let client = PairingBootstrapTransportStub()
         let invitation = try RemoteInvitationCode.generate()
@@ -620,9 +680,13 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         let pairingState = ViewerPairingState(store: store)
         let bootstrap = PairingBootstrapTransportStub()
         let availability = PairedAvailabilityTransportStub()
+        var availabilityFactoryCallCount = 0
         let coordinator = WorldwideViewerConnectionCoordinator(
             bootstrapClientFactory: { _, _ in bootstrap },
-            availabilityClientFactory: { _, _ in availability }
+            availabilityClientFactory: { _, _ in
+                availabilityFactoryCallCount += 1
+                return availability
+            }
         )
         let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
 
@@ -641,6 +705,7 @@ final class ViewerPairingPersistenceTests: XCTestCase {
 
         let bootstrapCloseCount = await bootstrap.closeCallCount()
         XCTAssertEqual(bootstrapCloseCount, 1)
+        XCTAssertEqual(availabilityFactoryCallCount, 1)
         XCTAssertEqual(pairingState.pairingRecord, acceptedIssued)
         XCTAssertTrue(coordinator.isConnecting)
         XCTAssertEqual(coordinator.stateText, "Recovering saved secure pairing")
@@ -660,6 +725,117 @@ final class ViewerPairingPersistenceTests: XCTestCase {
 
         coordinator.cancel()
         _ = await task.result
+    }
+
+    func testSuccessfulRecoveryBootstrapAvailabilityDeadlineDoesNotFallbackOrRestartBudget() async throws {
+        let invitation = try RemoteInvitationCode.generate()
+        let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let oldRecoverableRecord = try makePairedMacRecord(
+            localIdentity: identity,
+            pairingState: .acceptedIssued
+        )
+        let store = ViewerPairingStoreStub(identity: identity)
+        store.record = oldRecoverableRecord
+        let pairingState = ViewerPairingState(store: store)
+        let bootstrap = PairingBootstrapTransportStub()
+        let availability = PairedAvailabilityTransportStub(connectError: .connectionFailed)
+        let clock = AvailabilityRetryClockStub()
+        var availabilityFactoryCallCount = 0
+        var authenticatedCompletionCount = 0
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            bootstrapClientFactory: { _, _ in bootstrap },
+            availabilityClientFactory: { _, _ in
+                availabilityFactoryCallCount += 1
+                return availability
+            },
+            availabilityRetryDeadlineNanoseconds: 1,
+            availabilityMonotonicNow: clock.now,
+            availabilityRetrySleep: clock.sleep
+        )
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+
+        let task = Task { @MainActor in
+            try await coordinator.recoverInterruptedPairingAndPrepareMediaSession(
+                invitationCode: invitation.exportedCode,
+                endpoint: endpoint,
+                pairingState: pairingState,
+                onRecoverableInvitationAdmitted: {},
+                onAuthenticatedPairingCompleted: { authenticatedCompletionCount += 1 }
+            )
+        }
+        try await driveBootstrapPairingToCompletion(
+            client: bootstrap,
+            invitation: invitation
+        )
+
+        do {
+            _ = try await task.value
+            XCTFail("The exhausted availability attempt must fail")
+        } catch {
+            XCTAssertEqual(error as? RendezvousSignalingError, .connectionFailed)
+        }
+
+        XCTAssertEqual(authenticatedCompletionCount, 1)
+        XCTAssertEqual(
+            availabilityFactoryCallCount,
+            1,
+            "A successful bootstrap must not let an availability failure enter fallback"
+        )
+        XCTAssertEqual(clock.now(), 1, "Recovery gets exactly one monotonic availability budget")
+        XCTAssertEqual(pairingState.pairingRecord?.pairingState, .active)
+    }
+
+    func testSuccessfulRecoveryBootstrapNontransientAvailabilityErrorDoesNotFallback() async throws {
+        let invitation = try RemoteInvitationCode.generate()
+        let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let oldRecoverableRecord = try makePairedMacRecord(
+            localIdentity: identity,
+            pairingState: .acceptedIssued
+        )
+        let store = ViewerPairingStoreStub(identity: identity)
+        store.record = oldRecoverableRecord
+        let pairingState = ViewerPairingState(store: store)
+        let bootstrap = PairingBootstrapTransportStub()
+        let availability = PairedAvailabilityTransportStub(connectError: .invalidServerMessage)
+        let clock = AvailabilityRetryClockStub()
+        var availabilityFactoryCallCount = 0
+        var authenticatedCompletionCount = 0
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            bootstrapClientFactory: { _, _ in bootstrap },
+            availabilityClientFactory: { _, _ in
+                availabilityFactoryCallCount += 1
+                return availability
+            },
+            availabilityMonotonicNow: clock.now,
+            availabilityRetrySleep: clock.sleep
+        )
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+
+        let task = Task { @MainActor in
+            try await coordinator.recoverInterruptedPairingAndPrepareMediaSession(
+                invitationCode: invitation.exportedCode,
+                endpoint: endpoint,
+                pairingState: pairingState,
+                onRecoverableInvitationAdmitted: {},
+                onAuthenticatedPairingCompleted: { authenticatedCompletionCount += 1 }
+            )
+        }
+        try await driveBootstrapPairingToCompletion(
+            client: bootstrap,
+            invitation: invitation
+        )
+
+        do {
+            _ = try await task.value
+            XCTFail("A malformed availability response must fail")
+        } catch {
+            XCTAssertEqual(error as? RendezvousSignalingError, .invalidServerMessage)
+        }
+
+        XCTAssertEqual(authenticatedCompletionCount, 1)
+        XCTAssertEqual(availabilityFactoryCallCount, 1)
+        XCTAssertEqual(clock.sleepCallCount(), 0)
+        XCTAssertEqual(pairingState.pairingRecord?.pairingState, .active)
     }
 
     func testInterruptedPairingRetriesTransientReplacementConflict() async throws {
@@ -835,6 +1011,12 @@ final class ViewerPairingPersistenceTests: XCTestCase {
 
         XCTAssertTrue(coordinator.isConnecting)
         XCTAssertEqual(coordinator.stateText, "Waiting for paired Mac")
+        guard case .waitingForAvailability(let attempt) = coordinator.savedPairConnectionState else {
+            coordinator.cancel()
+            _ = await task.result
+            return XCTFail("A transient host-registration race must remain recoverable")
+        }
+        XCTAssertEqual(attempt.pairID, activeRecord.pairID)
         XCTAssertTrue(clients.isEmpty)
         let firstCloseCount = await firstClient.closeCallCount()
         let retryCloseCount = await retryClient.closeCallCount()
@@ -844,6 +1026,7 @@ final class ViewerPairingPersistenceTests: XCTestCase {
 
         coordinator.cancel()
         _ = await task.result
+        XCTAssertEqual(coordinator.savedPairConnectionState, .idle)
     }
 
     func testActiveViewerResendsActivationProofBeforeReconnectRequest() async throws {
@@ -887,6 +1070,207 @@ final class ViewerPairingPersistenceTests: XCTestCase {
 
         coordinator.cancel()
         _ = await task.result
+    }
+
+    func testCancelledSuspendedActivationCannotResavePairAfterForget() async throws {
+        let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let activeRecord = try makePairedMacRecord(localIdentity: identity)
+        let store = ViewerPairingStoreStub(identity: identity)
+        store.record = activeRecord
+        let pairingState = ViewerPairingState(store: store)
+        let client = PairedAvailabilityTransportStub(suspendActivationSend: true)
+        var authenticatedCompletionCount = 0
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            availabilityClientFactory: { _, _ in client }
+        )
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+        let exchangeID = try RemoteAvailabilityExchangeID(
+            wireValue: "AAAAAAAAAAAAAAAAAAAAAA"
+        )
+        let attemptFinished = expectation(
+            description: "Cancelled activation attempt terminates promptly"
+        )
+
+        let task = Task { @MainActor in
+            defer { attemptFinished.fulfill() }
+            return try await coordinator.preparePairedMediaSession(
+                endpoint: endpoint,
+                pairingState: pairingState,
+                onAuthenticatedPairingCompleted: { authenticatedCompletionCount += 1 }
+            )
+        }
+        try await waitForConnect(client)
+        await client.yield(.ready(role: .viewer, exchangeID: exchangeID))
+        try await waitForActivationSendSuspension(client)
+
+        task.cancel()
+        try pairingState.forgetPairedMac()
+        await client.resumeActivationSend()
+        await fulfillment(of: [attemptFinished], timeout: 1)
+        // If a mutation removes the post-await guard, the expectation above turns red. Closing
+        // the stub then ensures the intentionally broken run still terminates promptly.
+        await client.close()
+
+        do {
+            _ = try await task.value
+            XCTFail("The cancelled availability attempt must not resume")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        let payloads = await client.sentPayloadsSnapshot()
+        XCTAssertEqual(payloads.count, 1, "The cancelled task must not create a reconnect request")
+        XCTAssertNil(store.record, "A resumed old send must not resurrect the forgotten pair")
+        XCTAssertNil(pairingState.pairingRecord)
+        XCTAssertEqual(store.saveCount, 0, "No reconnect counter may become durable after Forget")
+        XCTAssertEqual(authenticatedCompletionCount, 0)
+        XCTAssertEqual(store.deleteCount, 1)
+    }
+
+    func testCancelledSuspendedActivationCannotOverwriteReplacementPair() async throws {
+        let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let oldRecord = try makePairedMacRecord(localIdentity: identity)
+        let replacementRecord = try makePairedMacRecord(localIdentity: identity)
+        XCTAssertNotEqual(oldRecord.pairID, replacementRecord.pairID)
+        let replacementSequence = replacementRecord.nextOutboundReconnectSequence
+        let store = ViewerPairingStoreStub(identity: identity)
+        store.record = oldRecord
+        let pairingState = ViewerPairingState(store: store)
+        let client = PairedAvailabilityTransportStub(suspendActivationSend: true)
+        var authenticatedCompletionCount = 0
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            availabilityClientFactory: { _, _ in client }
+        )
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+        let exchangeID = try RemoteAvailabilityExchangeID(
+            wireValue: "AAAAAAAAAAAAAAAAAAAAAA"
+        )
+        let attemptFinished = expectation(
+            description: "Replaced-pair activation attempt terminates promptly"
+        )
+
+        let task = Task { @MainActor in
+            defer { attemptFinished.fulfill() }
+            return try await coordinator.preparePairedMediaSession(
+                endpoint: endpoint,
+                pairingState: pairingState,
+                onAuthenticatedPairingCompleted: { authenticatedCompletionCount += 1 }
+            )
+        }
+        try await waitForConnect(client)
+        await client.yield(.ready(role: .viewer, exchangeID: exchangeID))
+        try await waitForActivationSendSuspension(client)
+
+        task.cancel()
+        try pairingState.saveAuthenticatedPairing(replacementRecord)
+        await client.resumeActivationSend()
+        await fulfillment(of: [attemptFinished], timeout: 1)
+        await client.close()
+
+        do {
+            _ = try await task.value
+            XCTFail("The old pair attempt must not continue after replacement")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        let payloads = await client.sentPayloadsSnapshot()
+        XCTAssertEqual(payloads.count, 1, "The old pair must not advance its reconnect counter")
+        XCTAssertEqual(store.record, replacementRecord)
+        XCTAssertEqual(pairingState.pairedMac, replacementRecord)
+        XCTAssertEqual(store.saveCount, 1, "Only the explicit replacement save is permitted")
+        XCTAssertEqual(store.savedRecords, [replacementRecord])
+        XCTAssertEqual(
+            store.record?.nextOutboundReconnectSequence,
+            replacementSequence,
+            "The old attempt must not advance the replacement pair's counter"
+        )
+        XCTAssertEqual(authenticatedCompletionCount, 0)
+    }
+
+    func testThreeColdReconnectPayloadSequencesAreAcceptedByTheRealHostRecord() async throws {
+        let viewerIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let records = try makePairingRecords(viewerIdentity: viewerIdentity)
+        let store = ViewerPairingStoreStub(identity: viewerIdentity)
+        store.record = records.viewerActive
+        var hostRecord = records.hostAcceptedReceived
+        guard case .resend(let durableActivation) = records.viewerActive.recoveryAction else {
+            return XCTFail("Active viewer fixture must carry its durable activation proof")
+        }
+        try hostRecord.acceptActivationAcknowledgement(durableActivation)
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test"))
+        let exchangeIDs = try [
+            "AAAAAAAAAAAAAAAAAAAAAA",
+            "AQEBAQEBAQEBAQEBAQEBAQ",
+            "AgICAgICAgICAgICAgICAg",
+        ].map(RemoteAvailabilityExchangeID.init(wireValue:))
+        var reconnectSequences: [UInt64] = []
+        let originalPairID = records.viewerActive.pairID
+
+        for cycle in 0..<3 {
+            // Rebuild all process-local coordinator and observable state while retaining only
+            // the store-backed identity and record, matching a force-terminated cold launch.
+            let pairingState = ViewerPairingState(store: store)
+            let transport = PairedAvailabilityTransportStub()
+            let coordinator = WorldwideViewerConnectionCoordinator(
+                availabilityClientFactory: { _, _ in transport }
+            )
+            let task = Task { @MainActor in
+                try await coordinator.preparePairedMediaSession(
+                    endpoint: endpoint,
+                    pairingState: pairingState,
+                    onAuthenticatedPairingCompleted: {}
+                )
+            }
+
+            try await waitForConnect(transport)
+            await transport.yield(
+                .ready(role: .viewer, exchangeID: exchangeIDs[cycle])
+            )
+            try await waitForSentPayloadCount(2, client: transport)
+            let payloads = await transport.sentPayloadsSnapshot()
+            XCTAssertEqual(payloads.count, 2)
+
+            guard case .pairingCommit(let activation) = payloads[0] else {
+                coordinator.cancel()
+                _ = await task.result
+                return XCTFail("Every cold reconnect must send activation proof first")
+            }
+            // Exercise the production host record's verifier. This exact call rejects the
+            // malformed/proposal/completion payloads that surface in host logs as
+            // `unexpectedAvailabilityPayload`.
+            try hostRecord.acceptActivationAcknowledgement(activation)
+
+            guard case .reconnectRequest(let request) = payloads[1] else {
+                coordinator.cancel()
+                _ = await task.result
+                return XCTFail("Activation proof must be followed by a reconnect request")
+            }
+            reconnectSequences.append(request.sequence)
+            let responder = try hostRecord.respond(
+                to: request,
+                using: records.hostIdentity
+            )
+            await transport.yield(.signal(.reconnectResponse(responder.response)))
+
+            let mediaClient = try await task.value
+            await mediaClient.close()
+            XCTAssertEqual(store.record?.pairID, originalPairID)
+            XCTAssertEqual(pairingState.pairedMac?.pairID, originalPairID)
+            XCTAssertEqual(coordinator.savedPairConnectionState, .idle)
+            XCTAssertNil(coordinator.lastError)
+        }
+
+        XCTAssertEqual(reconnectSequences.count, 3)
+        XCTAssertEqual(reconnectSequences[1], reconnectSequences[0] + 1)
+        XCTAssertEqual(reconnectSequences[2], reconnectSequences[1] + 1)
+        XCTAssertEqual(
+            hostRecord.highestAcceptedReconnectSequence,
+            reconnectSequences.last
+        )
+        XCTAssertEqual(store.record?.nextOutboundReconnectSequence, reconnectSequences[2] + 1)
+        XCTAssertEqual(store.record?.pairingState, .active)
+        XCTAssertEqual(hostRecord.pairingState, .active)
     }
 
     func testSilentReconnectResponseClosesAttemptAndRetriesWithNextSequence() async throws {
@@ -1037,13 +1421,350 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         _ = await task.result
     }
 
-    func testPreviousMediaErrorIsHiddenOnlyDuringFreshSessionPreparation() {
-        XCTAssertFalse(
-            BrowserView.shouldShowPreviousMediaError(isPreparingFreshSession: true)
+    func testPairedIdleSuppressesTerminalErrorFromPreviousMediaSession() {
+        let pairID = UUID()
+        let previousDisconnect =
+            "The Mac disconnected. Reconnect to the saved paired Mac when it is available."
+
+        XCTAssertNil(
+            BrowserView.worldwideStatusPresentation(
+                hasActiveSession: false,
+                isPreparingFreshSession: false,
+                pairedMacID: pairID,
+                savedPairState: .idle,
+                preparationError: nil,
+                mediaError: previousDisconnect
+            ),
+            "A durable paired-idle screen must not render history from a terminated media session"
         )
-        XCTAssertTrue(
-            BrowserView.shouldShowPreviousMediaError(isPreparingFreshSession: false)
+        XCTAssertEqual(
+            BrowserView.pairedMacPresentation(
+                pairID: pairID,
+                isPairingActive: true,
+                savedPairState: .idle
+            ),
+            BrowserView.PairedMacPresentation(
+                primaryActionTitle: "Connect to Paired Mac",
+                recovery: nil
+            )
         )
+    }
+
+    func testPreparationErrorIsTheOnlyErrorDuringFreshSessionPreparation() {
+        let pairID = UUID()
+        XCTAssertEqual(
+            BrowserView.worldwideStatusPresentation(
+                hasActiveSession: false,
+                isPreparingFreshSession: true,
+                pairedMacID: pairID,
+                savedPairState: .waitingForAvailability(
+                    .init(attemptID: UUID(), pairID: pairID)
+                ),
+                preparationError: "The current attempt failed.",
+                mediaError: "Old media failure"
+            ),
+            .preparationError("The current attempt failed.")
+        )
+    }
+
+    func testMatchingAvailabilityDeadlineShowsRetainedPairRecoveryOnly() {
+        let pairID = UUID()
+        let context = SavedPairAttemptContext(attemptID: UUID(), pairID: pairID)
+        let paired = BrowserView.pairedMacPresentation(
+            pairID: pairID,
+            isPairingActive: true,
+            savedPairState: .unavailableAfterDeadline(context)
+        )
+
+        XCTAssertEqual(paired.primaryActionTitle, "Retry Saved Pairing")
+        XCTAssertEqual(paired.recovery?.title, "Paired Mac Unavailable")
+        XCTAssertEqual(paired.recovery?.message, BrowserView.savedPairUnavailableMessage)
+        XCTAssertEqual(
+            BrowserView.worldwideStatusPresentation(
+                hasActiveSession: false,
+                isPreparingFreshSession: false,
+                pairedMacID: pairID,
+                savedPairState: .unavailableAfterDeadline(context),
+                preparationError: nil,
+                mediaError: "Old media failure"
+            ),
+            .savedPairUnavailable(
+                title: "Paired Mac Unavailable",
+                message: BrowserView.savedPairUnavailableMessage
+            )
+        )
+
+        let lowercased = BrowserView.savedPairUnavailableMessage.lowercased()
+        for forbiddenClaim in ["expired", "deleted", "lost", "reset", "pair again"] {
+            XCTAssertFalse(
+                lowercased.contains(forbiddenClaim),
+                "Reachability alone must not claim that pairing was \(forbiddenClaim)"
+            )
+        }
+    }
+
+    func testUnavailableStateFromSupersededPairCannotAffectCurrentPair() {
+        let currentPairID = UUID()
+        let oldContext = SavedPairAttemptContext(
+            attemptID: UUID(),
+            pairID: UUID()
+        )
+        XCTAssertEqual(
+            BrowserView.pairedMacPresentation(
+                pairID: currentPairID,
+                isPairingActive: true,
+                savedPairState: .unavailableAfterDeadline(oldContext)
+            ),
+            BrowserView.PairedMacPresentation(
+                primaryActionTitle: "Connect to Paired Mac",
+                recovery: nil
+            )
+        )
+        XCTAssertNil(
+            BrowserView.worldwideStatusPresentation(
+                hasActiveSession: false,
+                isPreparingFreshSession: false,
+                pairedMacID: currentPairID,
+                savedPairState: .unavailableAfterDeadline(oldContext),
+                preparationError: nil,
+                mediaError: "Old media failure"
+            )
+        )
+    }
+
+    func testMediaErrorBelongsOnlyToCurrentMediaOrUnpairedPresentation() {
+        XCTAssertEqual(
+            BrowserView.worldwideStatusPresentation(
+                hasActiveSession: true,
+                isPreparingFreshSession: false,
+                pairedMacID: UUID(),
+                savedPairState: .idle,
+                preparationError: nil,
+                mediaError: "Current media failed"
+            ),
+            .mediaError("Current media failed")
+        )
+        XCTAssertEqual(
+            BrowserView.worldwideStatusPresentation(
+                hasActiveSession: false,
+                isPreparingFreshSession: false,
+                pairedMacID: nil,
+                savedPairState: .idle,
+                preparationError: nil,
+                mediaError: "Unpaired media failed"
+            ),
+            .mediaError("Unpaired media failed")
+        )
+        XCTAssertNil(
+            BrowserView.worldwideStatusPresentation(
+                hasActiveSession: false,
+                isPreparingFreshSession: true,
+                pairedMacID: nil,
+                savedPairState: .idle,
+                preparationError: nil,
+                mediaError: "Old media failed"
+            )
+        )
+    }
+
+    func testAbsoluteDeadlineClosesAHealthySocketThatWaitsForeverForTheMac() async throws {
+        let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let activeRecord = try makePairedMacRecord(localIdentity: identity)
+        let store = ViewerPairingStoreStub(identity: identity)
+        store.record = activeRecord
+        let pairingState = ViewerPairingState(store: store)
+        let transport = PairedAvailabilityTransportStub()
+        let clock = AvailabilityRetryClockStub()
+        let deadline = AvailabilityAttemptDeadlineStub()
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            availabilityClientFactory: { _, _ in transport },
+            availabilityRetryDeadlineNanoseconds: 100,
+            availabilityMonotonicNow: clock.now,
+            availabilityRetrySleep: clock.sleep,
+            availabilityAttemptDeadlineSleep: deadline.sleep
+        )
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+
+        let task = Task { @MainActor in
+            try await coordinator.preparePairedMediaSession(
+                endpoint: endpoint,
+                pairingState: pairingState,
+                onAuthenticatedPairingCompleted: {}
+            )
+        }
+        try await waitForConnect(transport)
+        await transport.yield(.waiting)
+        try await waitForAvailabilityDeadline(deadline)
+
+        clock.advance(by: 100)
+        await deadline.fire()
+        let outcome = await boundedPairedMediaAttemptOutcome(task)
+        XCTAssertEqual(
+            outcome,
+            .failure(.pairedMacUnavailable),
+            "A hostless waiting socket must fail promptly at the absolute deadline"
+        )
+
+        let closeCount = await transport.closeCallCount()
+        // Production close is idempotent. The deadline must effectively close the socket; the
+        // attempt's ordinary catch cleanup is intentionally also allowed to request closure.
+        XCTAssertGreaterThanOrEqual(closeCount, 1)
+        XCTAssertFalse(coordinator.isConnecting)
+        XCTAssertEqual(pairingState.pairedMac, activeRecord)
+        guard case .unavailableAfterDeadline(let attempt) = coordinator.savedPairConnectionState else {
+            return XCTFail("Silent waiting must end in retained-pair recovery")
+        }
+        XCTAssertEqual(attempt.pairID, activeRecord.pairID)
+        XCTAssertNil(coordinator.lastError)
+        XCTAssertEqual(coordinator.stateText, "Paired Mac unavailable")
+        let armedTimeout = await deadline.armedTimeout()
+        let connectCount = await transport.connectCallCount()
+        XCTAssertEqual(armedTimeout, 100)
+        XCTAssertEqual(connectCount, 1)
+    }
+
+    func testDeadlineCloseBeforeReadySendStillPublishesRetainedPairRecovery() async throws {
+        let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let activeRecord = try makePairedMacRecord(localIdentity: identity)
+        let store = ViewerPairingStoreStub(identity: identity)
+        store.record = activeRecord
+        let pairingState = ViewerPairingState(store: store)
+        let transport = PairedAvailabilityTransportStub(suspendFirstSendUntilClose: true)
+        let clock = AvailabilityRetryClockStub()
+        let deadline = AvailabilityAttemptDeadlineStub()
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            availabilityClientFactory: { _, _ in transport },
+            availabilityRetryDeadlineNanoseconds: 100,
+            availabilityMonotonicNow: clock.now,
+            availabilityRetrySleep: clock.sleep,
+            availabilityAttemptDeadlineSleep: deadline.sleep
+        )
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+        let exchangeID = try RemoteAvailabilityExchangeID(
+            wireValue: "AAAAAAAAAAAAAAAAAAAAAA"
+        )
+
+        let task = Task { @MainActor in
+            try await coordinator.preparePairedMediaSession(
+                endpoint: endpoint,
+                pairingState: pairingState,
+                onAuthenticatedPairingCompleted: {}
+            )
+        }
+        try await waitForConnect(transport)
+        await transport.yield(.ready(role: .viewer, exchangeID: exchangeID))
+        try await waitForFirstSendSuspension(transport)
+
+        // Force close to win after `.ready` was dequeued but before its first payload can send.
+        // The production transport reports `.notConnected` at this boundary; it is a transient
+        // consequence of the authoritative deadline, not a reason to discard or indict the pair.
+        clock.advance(by: 100)
+        await deadline.fire()
+
+        let outcome = await boundedPairedMediaAttemptOutcome(task)
+        XCTAssertEqual(
+            outcome,
+            .failure(nil),
+            "The low-level close race remains a signaling error while UI state is normalized below"
+        )
+        XCTAssertEqual(pairingState.pairedMac, activeRecord)
+        guard case .unavailableAfterDeadline(let attempt) = coordinator.savedPairConnectionState else {
+            return XCTFail("Deadline-close send races must retain the pair as unavailable")
+        }
+        XCTAssertEqual(attempt.pairID, activeRecord.pairID)
+        XCTAssertNil(coordinator.lastError)
+        XCTAssertEqual(coordinator.stateText, "Paired Mac unavailable")
+        let closeCount = await transport.closeCallCount()
+        XCTAssertGreaterThanOrEqual(closeCount, 1)
+    }
+
+    func testReconnectResponseAtAbsoluteDeadlineCannotStartMedia() async throws {
+        let viewerIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let records = try makePairingRecords(viewerIdentity: viewerIdentity)
+        let store = ViewerPairingStoreStub(identity: viewerIdentity)
+        store.record = records.viewerActive
+        let pairingState = ViewerPairingState(store: store)
+        var hostRecord = records.hostAcceptedReceived
+        guard case .resend(let durableActivation) = records.viewerActive.recoveryAction else {
+            return XCTFail("Active viewer fixture must carry its durable activation proof")
+        }
+        try hostRecord.acceptActivationAcknowledgement(durableActivation)
+
+        let transport = PairedAvailabilityTransportStub()
+        let clock = AvailabilityRetryClockStub()
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            availabilityClientFactory: { _, _ in transport },
+            availabilityRetryDeadlineNanoseconds: 100,
+            availabilityMonotonicNow: clock.now,
+            availabilityRetrySleep: clock.sleep,
+            availabilityAttemptDeadlineSleep: { _ in
+                try await Task<Never, Never>.sleep(nanoseconds: 10_000_000_000)
+            },
+            reconnectResponseTimeoutSleep: { _ in
+                try await Task<Never, Never>.sleep(nanoseconds: 10_000_000_000)
+            }
+        )
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test"))
+        let exchangeID = try RemoteAvailabilityExchangeID(
+            wireValue: "AAAAAAAAAAAAAAAAAAAAAA"
+        )
+
+        let task = Task { @MainActor in
+            try await coordinator.preparePairedMediaSession(
+                endpoint: endpoint,
+                pairingState: pairingState,
+                onAuthenticatedPairingCompleted: {}
+            )
+        }
+        try await waitForConnect(transport)
+        await transport.yield(.ready(role: .viewer, exchangeID: exchangeID))
+        try await waitForSentPayloadCount(2, client: transport)
+        let payloads = await transport.sentPayloadsSnapshot()
+        guard case .pairingCommit(let activation) = payloads[0],
+              case .reconnectRequest(let request) = payloads[1] else {
+            coordinator.cancel()
+            _ = await task.result
+            return XCTFail("Expected activation proof followed by reconnect request")
+        }
+        try hostRecord.acceptActivationAcknowledgement(activation)
+        let responder = try hostRecord.respond(to: request, using: records.hostIdentity)
+
+        // The response is cryptographically valid, but it arrives on the exact monotonic
+        // boundary. It must not resurrect an availability attempt whose budget is exhausted.
+        clock.advance(by: 100)
+        await transport.yield(.signal(.reconnectResponse(responder.response)))
+
+        let outcome = await boundedPairedMediaAttemptOutcome(task)
+        XCTAssertEqual(
+            outcome,
+            .failure(.pairedMacUnavailable),
+            "A reconnect response at the absolute deadline must not start media"
+        )
+        XCTAssertEqual(pairingState.pairedMac?.pairID, records.viewerActive.pairID)
+        guard case .unavailableAfterDeadline(let attempt) = coordinator.savedPairConnectionState else {
+            return XCTFail("Boundary exhaustion must publish retained-pair recovery")
+        }
+        XCTAssertEqual(attempt.pairID, records.viewerActive.pairID)
+        XCTAssertNil(coordinator.lastError)
+    }
+
+    func testFreshAttemptRetiresTerminalMediaHistoryButPassiveLifecycleDoesNot() {
+        let viewModel = WorldwideSessionViewModel()
+        viewModel.debugFailSessionForTests("Previous terminal media error")
+        XCTAssertEqual(viewModel.lastError, "Previous terminal media error")
+
+        viewModel.handleAppBecameInactive()
+        viewModel.handleAppEnteredBackground()
+        viewModel.handleAppBecameActive()
+        XCTAssertEqual(
+            viewModel.lastError,
+            "Previous terminal media error",
+            "Passive lifecycle events must not silently rewrite a real outcome"
+        )
+
+        viewModel.beginFreshConnectionAttempt()
+        XCTAssertNil(viewModel.lastError)
+        XCTAssertEqual(viewModel.stateText, "Not connected")
     }
 
     func testAvailabilityRetryUsesThirtySecondDeadlineAndFourSecondCap() async throws {
@@ -1099,6 +1820,12 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         )
         XCTAssertFalse(coordinator.isConnecting)
         XCTAssertEqual(pairingState.pairedMac, activeRecord)
+        guard case .unavailableAfterDeadline(let attempt) = coordinator.savedPairConnectionState else {
+            return XCTFail("Deadline exhaustion must publish retained-pair recovery")
+        }
+        XCTAssertEqual(attempt.pairID, activeRecord.pairID)
+        XCTAssertNil(coordinator.lastError)
+        XCTAssertEqual(coordinator.stateText, "Paired Mac unavailable")
         for client in clients {
             let closeCount = await client.closeCallCount()
             XCTAssertEqual(closeCount, 1)
@@ -1146,6 +1873,7 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         XCTAssertEqual(factoryCallCount, 1)
         XCTAssertFalse(coordinator.isConnecting)
         XCTAssertEqual(pairingState.pairedMac, activeRecord)
+        XCTAssertEqual(coordinator.savedPairConnectionState, .idle)
     }
 }
 
@@ -1173,6 +1901,7 @@ func makePairedMacRecord(
 }
 
 private struct PairingRecords {
+    let hostIdentity: RemoteDeviceIdentity
     let viewerPending: RemotePairedDeviceRecord
     let viewerAcceptedIssued: RemotePairedDeviceRecord
     let viewerActive: RemotePairedDeviceRecord
@@ -1225,6 +1954,7 @@ private func makePairingRecords(
     )
 
     return PairingRecords(
+        hostIdentity: hostIdentity,
         viewerPending: viewerPending,
         viewerAcceptedIssued: viewerAcceptedIssued,
         viewerActive: viewerActive,
@@ -1240,12 +1970,18 @@ private actor PairingBootstrapTransportStub: ViewerPairingBootstrapTransport {
     private var sentPayloads: [RemotePairingPayload] = []
     private var shouldSuspendClose: Bool
     private var closeContinuation: CheckedContinuation<Void, Never>?
+    private var shouldSuspendViewerConfirmationSend: Bool
+    private var viewerConfirmationSendContinuation: CheckedContinuation<Void, Never>?
 
-    init(suspendClose: Bool = false) {
+    init(
+        suspendClose: Bool = false,
+        suspendViewerConfirmationSend: Bool = false
+    ) {
         let pair = PairingBootstrapSignalingClient.EventStream.makeStream()
         stream = pair.stream
         continuation = pair.continuation
         shouldSuspendClose = suspendClose
+        shouldSuspendViewerConfirmationSend = suspendViewerConfirmationSend
     }
 
     func connect() async throws -> PairingBootstrapSignalingClient.EventStream {
@@ -1255,6 +1991,12 @@ private actor PairingBootstrapTransportStub: ViewerPairingBootstrapTransport {
 
     func send(_ payload: RemotePairingPayload) async throws {
         sentPayloads.append(payload)
+        if shouldSuspendViewerConfirmationSend,
+           case .confirmation = payload {
+            await withCheckedContinuation { continuation in
+                viewerConfirmationSendContinuation = continuation
+            }
+        }
     }
 
     func close() async {
@@ -1271,6 +2013,17 @@ private actor PairingBootstrapTransportStub: ViewerPairingBootstrapTransport {
         shouldSuspendClose = false
         let pending = closeContinuation
         closeContinuation = nil
+        pending?.resume()
+    }
+
+    func viewerConfirmationSendIsSuspended() -> Bool {
+        viewerConfirmationSendContinuation != nil
+    }
+
+    func resumeViewerConfirmationSend() {
+        shouldSuspendViewerConfirmationSend = false
+        let pending = viewerConfirmationSendContinuation
+        viewerConfirmationSendContinuation = nil
         pending?.resume()
     }
 
@@ -1302,20 +2055,30 @@ private actor PairedAvailabilityTransportStub: ViewerPairedAvailabilityTransport
     private let continuation: PairedAvailabilitySignalingClient.EventStream.Continuation
     private let connectError: RendezvousSignalingError?
     private let suspendReconnectSend: Bool
+    private let suspendActivationSend: Bool
+    private let suspendFirstSendUntilClose: Bool
     private var connectCount = 0
     private var closeCount = 0
+    private var isClosed = false
     private var sentPayloads: [RemoteAvailabilityPayload] = []
+    private var didSuspendFirstSend = false
+    private var firstSendContinuation: CheckedContinuation<Void, Never>?
     private var reconnectSendContinuation: CheckedContinuation<Void, any Error>?
+    private var activationSendContinuation: CheckedContinuation<Void, any Error>?
 
     init(
         connectError: RendezvousSignalingError? = nil,
-        suspendReconnectSend: Bool = false
+        suspendReconnectSend: Bool = false,
+        suspendActivationSend: Bool = false,
+        suspendFirstSendUntilClose: Bool = false
     ) {
         let pair = PairedAvailabilitySignalingClient.EventStream.makeStream()
         stream = pair.stream
         continuation = pair.continuation
         self.connectError = connectError
         self.suspendReconnectSend = suspendReconnectSend
+        self.suspendActivationSend = suspendActivationSend
+        self.suspendFirstSendUntilClose = suspendFirstSendUntilClose
     }
 
     func connect() async throws -> PairedAvailabilitySignalingClient.EventStream {
@@ -1325,25 +2088,54 @@ private actor PairedAvailabilityTransportStub: ViewerPairedAvailabilityTransport
     }
 
     func send(_ payload: RemoteAvailabilityPayload) async throws {
+        if suspendFirstSendUntilClose, !didSuspendFirstSend {
+            didSuspendFirstSend = true
+            await withCheckedContinuation { continuation in
+                firstSendContinuation = continuation
+            }
+        }
+        guard !isClosed else { throw RendezvousSignalingError.notConnected }
         sentPayloads.append(payload)
         if suspendReconnectSend, case .reconnectRequest = payload {
             try await withCheckedThrowingContinuation { continuation in
                 reconnectSendContinuation = continuation
             }
         }
+        if suspendActivationSend,
+           case .pairingCommit(let commit) = payload,
+           commit.phase == .activationAcknowledgement {
+            try await withCheckedThrowingContinuation { continuation in
+                activationSendContinuation = continuation
+            }
+        }
     }
 
     func close() async {
         closeCount += 1
+        isClosed = true
+        let suspendedFirstSend = firstSendContinuation
+        firstSendContinuation = nil
+        suspendedFirstSend?.resume()
         let suspendedSend = reconnectSendContinuation
         reconnectSendContinuation = nil
         suspendedSend?.resume(throwing: RendezvousSignalingError.sendFailed)
+        let suspendedActivation = activationSendContinuation
+        activationSendContinuation = nil
+        suspendedActivation?.resume(throwing: RendezvousSignalingError.sendFailed)
         continuation.finish()
     }
 
     func connectCallCount() -> Int { connectCount }
     func closeCallCount() -> Int { closeCount }
     func sentPayloadsSnapshot() -> [RemoteAvailabilityPayload] { sentPayloads }
+    func activationSendIsSuspended() -> Bool { activationSendContinuation != nil }
+    func firstSendIsSuspended() -> Bool { firstSendContinuation != nil }
+
+    func resumeActivationSend() {
+        let suspendedActivation = activationSendContinuation
+        activationSendContinuation = nil
+        suspendedActivation?.resume()
+    }
 
     func yield(_ event: PairedAvailabilitySignalingEvent) {
         continuation.yield(event)
@@ -1386,8 +2178,77 @@ private final class AvailabilityRetryClockStub: @unchecked Sendable {
         lock.withLock { baseDelays.append(baseDelay) }
     }
 
-    private func advance(by delta: UInt64) {
+    func advance(by delta: UInt64) {
         lock.withLock { currentNanoseconds += delta }
+    }
+}
+
+private actor AvailabilityAttemptDeadlineStub {
+    private var timeoutNanoseconds: UInt64?
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func sleep(_ timeoutNanoseconds: UInt64) async throws {
+        self.timeoutNanoseconds = timeoutNanoseconds
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+            }
+            try Task.checkCancellation()
+        } onCancel: {
+            Task { await self.cancelPendingSleep() }
+        }
+    }
+
+    func armedTimeout() -> UInt64? { timeoutNanoseconds }
+
+    func fire() {
+        let pending = continuation
+        continuation = nil
+        pending?.resume()
+    }
+
+    private func cancelPendingSleep() {
+        let pending = continuation
+        continuation = nil
+        pending?.resume()
+    }
+}
+
+private enum PairedMediaAttemptOutcome: Equatable, Sendable {
+    case success
+    case failure(WorldwideViewerConnectionError?)
+    case timedOut
+}
+
+private func boundedPairedMediaAttemptOutcome(
+    _ task: Task<RendezvousSignalingClient, any Error>,
+    timeoutNanoseconds: UInt64 = 1_000_000_000
+) async -> PairedMediaAttemptOutcome {
+    await withTaskGroup(of: PairedMediaAttemptOutcome.self) { group in
+        group.addTask {
+            do {
+                _ = try await task.value
+                return .success
+            } catch {
+                return .failure(error as? WorldwideViewerConnectionError)
+            }
+        }
+        group.addTask {
+            do {
+                try await Task<Never, Never>.sleep(nanoseconds: timeoutNanoseconds)
+            } catch {
+                return .timedOut
+            }
+            return .timedOut
+        }
+
+        let outcome = await group.next() ?? .timedOut
+        if outcome == .timedOut {
+            task.cancel()
+        }
+        group.cancelAll()
+        return outcome
     }
 }
 
@@ -1462,11 +2323,104 @@ private func waitForSentPayloadCount(
     throw PairingTestFailure.timeout
 }
 
+private func waitForViewerConfirmationSendSuspension(
+    _ client: PairingBootstrapTransportStub
+) async throws {
+    for _ in 0..<500 {
+        if await client.viewerConfirmationSendIsSuspended() { return }
+        try await Task<Never, Never>.sleep(nanoseconds: 2_000_000)
+    }
+    throw PairingTestFailure.timeout
+}
+
+private func waitForActivationSendSuspension(
+    _ client: PairedAvailabilityTransportStub
+) async throws {
+    for _ in 0..<500 {
+        if await client.activationSendIsSuspended() { return }
+        try await Task<Never, Never>.sleep(nanoseconds: 2_000_000)
+    }
+    throw PairingTestFailure.timeout
+}
+
+private func waitForFirstSendSuspension(
+    _ client: PairedAvailabilityTransportStub
+) async throws {
+    for _ in 0..<500 {
+        if await client.firstSendIsSuspended() { return }
+        try await Task<Never, Never>.sleep(nanoseconds: 2_000_000)
+    }
+    throw PairingTestFailure.timeout
+}
+
+private func driveBootstrapPairingToCompletion(
+    client: PairingBootstrapTransportStub,
+    invitation: RemoteInvitationCode
+) async throws {
+    let hostIdentity = try RemoteDeviceIdentity.generate(role: .host)
+    let hostParticipant = try RemotePairingParticipant(
+        identity: hostIdentity,
+        invitation: invitation
+    )
+
+    try await waitForConnect(client)
+    await client.yield(
+        .ready(role: .viewer, invitationExpiresAt: Date().addingTimeInterval(60))
+    )
+    try await waitForSentPayloadCount(1, client: client)
+    let helloPayloads = await client.sentPayloadsSnapshot()
+    guard case .hello(let viewerHello) = helloPayloads[0] else {
+        throw PairingTestFailure.unexpectedPayload
+    }
+    let hostAgreement = try hostParticipant.accept(viewerHello)
+
+    await client.yield(.signal(.hello(hostParticipant.hello)))
+    await client.yield(
+        .signal(.confirmation(try hostAgreement.makeConfirmation()))
+    )
+    try await waitForSentPayloadCount(2, client: client)
+    let confirmationPayloads = await client.sentPayloadsSnapshot()
+    guard case .confirmation(let viewerConfirmation) = confirmationPayloads[1] else {
+        throw PairingTestFailure.unexpectedPayload
+    }
+
+    var hostRecord = try hostAgreement.makePendingRecord(
+        peerConfirmation: viewerConfirmation
+    )
+    let proposal = try hostRecord.prepareProposal(using: hostIdentity)
+    await client.yield(.signal(.commit(proposal)))
+    try await waitForSentPayloadCount(3, client: client)
+    let acknowledgementPayloads = await client.sentPayloadsSnapshot()
+    guard case .commit(let acknowledgement) = acknowledgementPayloads[2] else {
+        throw PairingTestFailure.unexpectedPayload
+    }
+    try hostRecord.acceptAcknowledgement(acknowledgement)
+
+    let completion = try hostRecord.prepareCompletion(using: hostIdentity)
+    await client.yield(.signal(.commit(completion)))
+    try await waitForSentPayloadCount(4, client: client)
+    let activationPayloads = await client.sentPayloadsSnapshot()
+    guard case .commit(let activation) = activationPayloads[3] else {
+        throw PairingTestFailure.unexpectedPayload
+    }
+    try hostRecord.acceptActivationAcknowledgement(activation)
+}
+
 private func waitForRetrySleep(
     _ clock: AvailabilityRetryClockStub
 ) async throws {
     for _ in 0..<500 {
         if clock.sleepCallCount() > 0 { return }
+        try await Task<Never, Never>.sleep(nanoseconds: 2_000_000)
+    }
+    throw PairingTestFailure.timeout
+}
+
+private func waitForAvailabilityDeadline(
+    _ deadline: AvailabilityAttemptDeadlineStub
+) async throws {
+    for _ in 0..<500 {
+        if await deadline.armedTimeout() != nil { return }
         try await Task<Never, Never>.sleep(nanoseconds: 2_000_000)
     }
     throw PairingTestFailure.timeout
@@ -1501,6 +2455,8 @@ private final class ViewerPairingStoreStub: ViewerPairingStoring {
     var onSave: () -> Void
     private(set) var identityLoadCount = 0
     private(set) var deleteCount = 0
+    private(set) var saveCount = 0
+    private(set) var savedRecords: [RemotePairedDeviceRecord] = []
 
     init(identity: RemoteDeviceIdentity, onSave: @escaping () -> Void = {}) {
         self.identity = identity
@@ -1523,6 +2479,8 @@ private final class ViewerPairingStoreStub: ViewerPairingStoring {
     ) throws {
         if let saveError { throw saveError }
         onSave()
+        saveCount += 1
+        savedRecords.append(record)
         self.record = record
     }
 
@@ -1615,4 +2573,5 @@ private enum PairingTestFailure: Error {
     case save
     case load
     case timeout
+    case unexpectedPayload
 }

@@ -349,6 +349,232 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         )
     }
 
+    func testRetiredPollingProofCannotApplyHealthyDiagnosticsToReplacementAudio() async throws {
+        try await assertRetiredPollingProofCannotMutateReplacement(
+            diagnostics: healthyIOSPlayoutDiagnostics()
+        )
+    }
+
+    func testRetiredPollingProofCannotApplyTerminalDiagnosticsToReplacementAudio() async throws {
+        try await assertRetiredPollingProofCannotMutateReplacement(
+            diagnostics: terminalIOSPlayoutDiagnostics()
+        )
+    }
+
+    func testRetiredRefreshCannotApplyTerminalDiagnosticsToReplacementAudio() async throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let oldPeer = try makeAudioRacePeer()
+        let replacementPeer = try makeAudioRacePeer()
+        let readStarted = expectation(description: "retired refresh suspended in diagnostics")
+        let refreshFinished = expectation(description: "retired refresh returned")
+        let diagnosticsGate = AudioNonCooperativeGate<WebRTCIOSPlayoutDiagnostics>()
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader { peer in
+            XCTAssertTrue(peer === oldPeer)
+            readStarted.fulfill()
+            return await diagnosticsGate.wait()
+        }
+
+        fixture.controller.prepare(serverName: "Old Mac")
+        viewModel.debugInstallIOSPlayoutPeerForRaceTests(oldPeer)
+        Task { @MainActor in
+            await viewModel.debugRefreshIOSPlayoutProofForRaceTests()
+            refreshFinished.fulfill()
+        }
+        await fulfillment(of: [readStarted], timeout: 2)
+
+        viewModel.disconnect()
+        prepareReplacementAudio(fixture.controller)
+        viewModel.debugInstallIOSPlayoutPeerForRaceTests(replacementPeer)
+        let replacementBeforeResume = PublishedAudioState(viewModel)
+
+        await diagnosticsGate.open(terminalIOSPlayoutDiagnostics())
+        await fulfillment(of: [refreshFinished], timeout: 2)
+
+        XCTAssertEqual(PublishedAudioState(viewModel), replacementBeforeResume)
+        viewModel.disconnect()
+        await oldPeer.close()
+        await replacementPeer.close()
+    }
+
+    func testRetiredRecoveryAuthorizationBlocksDelayedNativeSideEffect() async throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let oldPeer = try makeAudioRacePeer()
+        let replacementPeer = try makeAudioRacePeer()
+        let requestStarted = expectation(description: "retired recovery request suspended")
+        let proofFinished = expectation(description: "retired recovery proof returned")
+        let requestGate = AudioNonCooperativeGate<Void>()
+        let nativeRecoveryCount = AudioLockedInteger()
+        viewModel.debugInstallIOSPlayoutRecoveryRequester { peer, authorization in
+            XCTAssertTrue(peer === oldPeer)
+            requestStarted.fulfill()
+            await requestGate.wait()
+            authorization.performIfValidForTesting {
+                nativeRecoveryCount.increment()
+            }
+        }
+
+        fixture.controller.prepare(serverName: "Old Mac")
+        viewModel.debugInstallIOSPlayoutPeerForRaceTests(oldPeer)
+        let oldProof = try XCTUnwrap(
+            viewModel.debugBeginIOSPlayoutProofForRaceTests(requestRecovery: true)
+        )
+        Task { @MainActor in
+            await oldProof.value
+            proofFinished.fulfill()
+        }
+        await fulfillment(of: [requestStarted], timeout: 2)
+        XCTAssertTrue(viewModel.debugIOSPlayoutRecoveryIsAuthorized)
+
+        viewModel.disconnect()
+        XCTAssertFalse(viewModel.debugIOSPlayoutRecoveryIsAuthorized)
+        prepareReplacementAudio(fixture.controller)
+        viewModel.debugInstallIOSPlayoutPeerForRaceTests(replacementPeer)
+        let replacementBeforeResume = PublishedAudioState(viewModel)
+
+        await requestGate.open(())
+        await fulfillment(of: [proofFinished], timeout: 2)
+
+        XCTAssertEqual(nativeRecoveryCount.value, 0)
+        XCTAssertEqual(PublishedAudioState(viewModel), replacementBeforeResume)
+        viewModel.disconnect()
+        await oldPeer.close()
+        await replacementPeer.close()
+    }
+
+    func testSuccessfulRecoveryWaitsForQueuedNativeAttemptBeforeReadingDiagnostics() async throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let peer = try makeAudioRacePeer()
+        let requestQueued = expectation(description: "native recovery request queued")
+        let pendingObserved = expectation(description: "proof observed queued native recovery")
+        let diagnosticsRead = expectation(description: "post-recovery diagnostics read")
+        let proofFinished = expectation(description: "successful recovery proof finished")
+        var queuedAuthorization: WebRTCIOSPlayoutRecoveryAuthorization?
+        var didObservePending = false
+        var diagnosticReadCount = 0
+
+        viewModel.debugInstallIOSPlayoutRecoveryRequester { requestedPeer, authorization in
+            XCTAssertTrue(requestedPeer === peer)
+            queuedAuthorization = authorization
+            requestQueued.fulfill()
+        }
+        viewModel.debugInstallIOSPlayoutRecoveryPendingObserver {
+            guard !didObservePending else { return }
+            didObservePending = true
+            pendingObserved.fulfill()
+        }
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader { requestedPeer in
+            XCTAssertTrue(requestedPeer === peer)
+            diagnosticReadCount += 1
+            diagnosticsRead.fulfill()
+            return healthyIOSPlayoutDiagnostics()
+        }
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        XCTAssertEqual(viewModel.audioStateText, "Starting playback")
+        viewModel.debugInstallIOSPlayoutPeerForRaceTests(peer)
+        let proof = try XCTUnwrap(
+            viewModel.debugBeginIOSPlayoutProofForRaceTests(requestRecovery: true)
+        )
+        Task { @MainActor in
+            await proof.value
+            proofFinished.fulfill()
+        }
+
+        await fulfillment(of: [requestQueued, pendingObserved], timeout: 2)
+        XCTAssertEqual(diagnosticReadCount, 0)
+
+        // A statistics event must not publish the stale terminal snapshot while the native
+        // recovery block remains queued under this same authorization.
+        await viewModel.debugRefreshIOSPlayoutProofForRaceTests()
+        XCTAssertEqual(diagnosticReadCount, 0)
+
+        let authorization = try XCTUnwrap(queuedAuthorization)
+        XCTAssertTrue(authorization.performIfValidForTesting {})
+        XCTAssertFalse(authorization.isValid)
+
+        await fulfillment(of: [diagnosticsRead, proofFinished], timeout: 2)
+        XCTAssertEqual(diagnosticReadCount, 1)
+        XCTAssertEqual(viewModel.audioStateText, "Playing")
+        XCTAssertTrue(viewModel.isRemoteAudioPlaying)
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    private func assertRetiredPollingProofCannotMutateReplacement(
+        diagnostics: WebRTCIOSPlayoutDiagnostics,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let oldPeer = try makeAudioRacePeer()
+        let replacementPeer = try makeAudioRacePeer()
+        let readStarted = expectation(description: "retired polling proof suspended")
+        let proofFinished = expectation(description: "retired polling proof returned")
+        let diagnosticsGate = AudioNonCooperativeGate<WebRTCIOSPlayoutDiagnostics>()
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader { peer in
+            XCTAssertTrue(peer === oldPeer, file: file, line: line)
+            readStarted.fulfill()
+            return await diagnosticsGate.wait()
+        }
+
+        fixture.controller.prepare(serverName: "Old Mac")
+        viewModel.debugInstallIOSPlayoutPeerForRaceTests(oldPeer)
+        let oldProof = try XCTUnwrap(
+            viewModel.debugBeginIOSPlayoutProofForRaceTests(requestRecovery: false),
+            file: file,
+            line: line
+        )
+        Task { @MainActor in
+            await oldProof.value
+            proofFinished.fulfill()
+        }
+        await fulfillment(of: [readStarted], timeout: 2)
+
+        viewModel.disconnect()
+        prepareReplacementAudio(fixture.controller)
+        viewModel.debugInstallIOSPlayoutPeerForRaceTests(replacementPeer)
+        let replacementBeforeResume = PublishedAudioState(viewModel)
+
+        await diagnosticsGate.open(diagnostics)
+        await fulfillment(of: [proofFinished], timeout: 2)
+
+        XCTAssertEqual(
+            PublishedAudioState(viewModel),
+            replacementBeforeResume,
+            file: file,
+            line: line
+        )
+        viewModel.disconnect()
+        await oldPeer.close()
+        await replacementPeer.close()
+    }
+
+    private func prepareReplacementAudio(_ controller: WorldwideAudioLifecycleController) {
+        controller.prepare(serverName: "Replacement Mac")
+        controller.updateRuntimePlayout(
+            isReady: false,
+            failureMessage: "Replacement sentinel failure",
+            diagnostic: "Replacement sentinel diagnostic"
+        )
+    }
+
+    private func makeAudioRacePeer() throws -> WebRTCPeer {
+        try WebRTCPeer(
+            configuration: WebRTCTransportConfiguration(role: .viewer, iceServers: [])
+        )
+    }
+
     private var inactiveSnapshot: WorldwideAudioLifecycleSnapshot {
         WorldwideAudioLifecycleSnapshot(
             stateText: "Inactive",
@@ -378,6 +604,124 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             remoteAudio: remoteAudio
         )
     }
+}
+
+@MainActor
+private struct PublishedAudioState: Equatable {
+    let stateText: String
+    let isAvailable: Bool
+    let isPlaying: Bool
+    let requiresResume: Bool
+    let error: String?
+    let diagnostic: String?
+
+    init(_ viewModel: WorldwideSessionViewModel) {
+        stateText = viewModel.audioStateText
+        isAvailable = viewModel.isRemoteAudioAvailable
+        isPlaying = viewModel.isRemoteAudioPlaying
+        requiresResume = viewModel.audioRequiresExplicitResume
+        error = viewModel.audioError
+        diagnostic = viewModel.audioDiagnostic
+    }
+}
+
+private actor AudioNonCooperativeGate<Value: Sendable> {
+    private var value: Value?
+    private var waiters: [CheckedContinuation<Value, Never>] = []
+
+    func wait() async -> Value {
+        if let value { return value }
+        return await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open(_ value: Value) {
+        guard self.value == nil else { return }
+        self.value = value
+        let pending = waiters
+        waiters.removeAll(keepingCapacity: false)
+        for waiter in pending {
+            waiter.resume(returning: value)
+        }
+    }
+}
+
+private final class AudioLockedInteger: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = 0
+
+    var value: Int { lock.withLock { storage } }
+
+    func increment() {
+        lock.withLock { storage += 1 }
+    }
+}
+
+private func healthyIOSPlayoutDiagnostics() -> WebRTCIOSPlayoutDiagnostics {
+    WebRTCIOSPlayoutDiagnostics(
+        initialized: true,
+        playoutInitialized: true,
+        playing: true,
+        sessionActive: true,
+        ownsSessionActivation: true,
+        remoteIOCreated: true,
+        inputBusEnabled: false,
+        outputBusEnabled: true,
+        recoveryRequired: false,
+        explicitResumeRequired: false,
+        categoryIsMediaPlayback: true,
+        modeIsDefault: true,
+        sampleRate: 48_000,
+        outputIOBufferDuration: 0.01,
+        outputChannelCount: 2,
+        audioUnitSubType: kAudioUnitSubType_RemoteIO,
+        failureCode: 0,
+        lastLifecycleStatus: noErr,
+        failureMessage: nil,
+        playoutCallbackCount: 1,
+        playoutFrameCount: 480,
+        playoutFailureCount: 0,
+        unexpectedRecordingRequestCount: 0,
+        recoveryRequestCount: 0,
+        recoveryAuthorizationRejectionCount: 0,
+        recoveryRebuildCount: 0,
+        lastPlayoutFrameCount: 480,
+        lastPlayoutStatus: noErr
+    )
+}
+
+private func terminalIOSPlayoutDiagnostics() -> WebRTCIOSPlayoutDiagnostics {
+    WebRTCIOSPlayoutDiagnostics(
+        initialized: true,
+        playoutInitialized: false,
+        playing: false,
+        sessionActive: false,
+        ownsSessionActivation: false,
+        remoteIOCreated: false,
+        inputBusEnabled: false,
+        outputBusEnabled: false,
+        recoveryRequired: true,
+        explicitResumeRequired: true,
+        categoryIsMediaPlayback: true,
+        modeIsDefault: true,
+        sampleRate: 48_000,
+        outputIOBufferDuration: 0.01,
+        outputChannelCount: 2,
+        audioUnitSubType: kAudioUnitSubType_RemoteIO,
+        failureCode: 19,
+        lastLifecycleStatus: -50,
+        failureMessage: "Retired native recovery failure",
+        playoutCallbackCount: 0,
+        playoutFrameCount: 0,
+        playoutFailureCount: 1,
+        unexpectedRecordingRequestCount: 0,
+        recoveryRequestCount: 0,
+        recoveryAuthorizationRejectionCount: 0,
+        recoveryRebuildCount: 0,
+        lastPlayoutFrameCount: 0,
+        lastPlayoutStatus: -50
+    )
 }
 
 @MainActor

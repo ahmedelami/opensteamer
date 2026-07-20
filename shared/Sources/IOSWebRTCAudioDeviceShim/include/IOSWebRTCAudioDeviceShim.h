@@ -59,9 +59,45 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
     uint64_t playoutFrameCount;
     uint64_t playoutFailureCount;
     uint64_t unexpectedRecordingRequestCount;
+    uint64_t recoveryRequestCount;
+    uint64_t recoveryAuthorizationRejectionCount;
+    uint64_t recoveryRebuildCount;
     uint32_t lastPlayoutFrameCount;
     int32_t lastPlayoutStatus;
 } ASIOSStereoPlayoutDiagnostics;
+
+/// A synchronously revocable, one-shot gate for one explicit playout-recovery attempt.
+///
+/// Revocation and the authorized native operation share one lock. Once `revoke` returns, a
+/// recovery block that was queued earlier can no longer begin or continue through this gate. A
+/// successful authorized operation consumes the gate before releasing the lock.
+@interface ASIOSStereoPlayoutRecoveryAuthorization : NSObject
+
+@property(nonatomic, readonly, getter=isValid) BOOL valid;
+
+- (void)revoke;
+
+/// Runs `operation` only while this authorization still owns the recovery boundary. The shared
+/// lock remains held until the operation returns, making a concurrent `revoke` a synchronous
+/// barrier. Native recovery code uses this immediately around its final side effects.
+- (BOOL)performIfValid:(NS_NOESCAPE dispatch_block_t)operation;
+
+@end
+
+#if DEBUG
+/// Drives the real queued recovery boundary without starting playout or touching audio hardware.
+@interface ASIOSStereoPlayoutRecoveryTestHarness : NSObject
+
+@property(nonatomic, readonly) ASIOSStereoPlayoutDiagnostics diagnostics;
+@property(nonatomic, readonly) NSUInteger queuedOperationCount;
+
+- (void)queueRecoveryWithAuthorization:
+    (ASIOSStereoPlayoutRecoveryAuthorization *)authorization
+    NS_SWIFT_NAME(queueRecovery(authorization:));
+- (BOOL)runNextQueuedOperation;
+
+@end
+#endif
 
 /// Output-only WebRTC audio device for iPhone/iPad viewers.
 ///
@@ -77,8 +113,11 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
 /// Explicitly authorizes a safe rebuild after the application has applied its interruption/route
 /// policy and recovered the manual WebRTC audio gate. System notifications only fail closed; they
 /// never call this method implicitly. It may be called from any thread and mutates the device on
-/// WebRTC's ADM thread.
-- (void)requestPlayoutRecovery;
+/// WebRTC's ADM thread. The exact attempt authorization is checked again inside that queued native
+/// operation immediately around the recovery side effects.
+- (void)requestPlayoutRecoveryWithAuthorization:
+    (ASIOSStereoPlayoutRecoveryAuthorization *)authorization
+    NS_SWIFT_NAME(requestPlayoutRecovery(authorization:));
 
 @end
 

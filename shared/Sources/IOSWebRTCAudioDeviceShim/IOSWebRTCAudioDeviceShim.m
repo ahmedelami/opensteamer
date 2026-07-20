@@ -28,6 +28,9 @@ typedef struct ASRealtimeDiagnostics {
     atomic_uint_fast64_t frameCount;
     atomic_uint_fast64_t failureCount;
     atomic_uint_fast64_t recordingRequestCount;
+    atomic_uint_fast64_t recoveryRequestCount;
+    atomic_uint_fast64_t recoveryAuthorizationRejectionCount;
+    atomic_uint_fast64_t recoveryRebuildCount;
     atomic_uint_fast32_t lastFrameCount;
     atomic_int_fast32_t lastStatus;
 } ASRealtimeDiagnostics;
@@ -48,6 +51,12 @@ typedef struct ASLifecycleDiagnostics {
     atomic_int_fast32_t failureCode;
     atomic_int_fast32_t lastLifecycleStatus;
 } ASLifecycleDiagnostics;
+
+@interface ASIOSStereoPlayoutRecoveryAuthorization () {
+    os_unfair_lock _lock;
+    atomic_bool _valid;
+}
+@end
 
 @interface ASIOSStereoPlayoutAudioDevice () {
 @public
@@ -109,6 +118,170 @@ static void ASZeroAudioBufferList(AudioBufferList *bufferList) {
         }
     }
 }
+
+@implementation ASIOSStereoPlayoutRecoveryAuthorization
+
+- (instancetype)init {
+    self = [super init];
+    if (self != nil) {
+        _lock = OS_UNFAIR_LOCK_INIT;
+        atomic_init(&_valid, true);
+    }
+    return self;
+}
+
+- (BOOL)isValid {
+    // Status polling can occur on MainActor while the native ADM thread performs a rebuild.
+    // The ownership lock remains the revocation barrier, but observing pending/completed state
+    // must never block the app UI behind AVAudioSession or RemoteIO work.
+    return atomic_load_explicit(&_valid, memory_order_acquire);
+}
+
+- (void)revoke {
+    os_unfair_lock_lock(&_lock);
+    atomic_store_explicit(&_valid, false, memory_order_release);
+    os_unfair_lock_unlock(&_lock);
+}
+
+- (BOOL)performIfValid:(NS_NOESCAPE dispatch_block_t)operation {
+    os_unfair_lock_lock(&_lock);
+    if (!atomic_load_explicit(&_valid, memory_order_acquire)) {
+        os_unfair_lock_unlock(&_lock);
+        return NO;
+    }
+    operation();
+    atomic_store_explicit(&_valid, false, memory_order_release);
+    os_unfair_lock_unlock(&_lock);
+    return YES;
+}
+
+@end
+
+#if DEBUG
+@interface ASIOSStereoPlayoutRecoveryHarnessDelegate : NSObject <LKRTCAudioDeviceDelegate>
+@property(nonatomic, strong) NSMutableArray<dispatch_block_t> *queuedOperations;
+- (nullable dispatch_block_t)takeNextOperation;
+@end
+
+@implementation ASIOSStereoPlayoutRecoveryHarnessDelegate
+
+- (instancetype)init {
+    self = [super init];
+    if (self != nil) {
+        _queuedOperations = [NSMutableArray array];
+    }
+    return self;
+}
+
+- (LKRTCAudioDeviceDeliverRecordedDataBlock)deliverRecordedData {
+    return ^OSStatus(
+        AudioUnitRenderActionFlags *actionFlags,
+        const AudioTimeStamp *timestamp,
+        NSInteger inputBusNumber,
+        UInt32 frameCount,
+        const AudioBufferList *inputData,
+        void *renderContext,
+        LKRTCAudioDeviceRenderRecordedDataBlock renderBlock
+    ) {
+        return noErr;
+    };
+}
+
+- (double)preferredInputSampleRate { return ASSampleRate; }
+- (NSTimeInterval)preferredInputIOBufferDuration { return ASIOBufferDuration; }
+- (double)preferredOutputSampleRate { return ASSampleRate; }
+- (NSTimeInterval)preferredOutputIOBufferDuration { return ASIOBufferDuration; }
+
+- (LKRTCAudioDeviceGetPlayoutDataBlock)getPlayoutData {
+    return ^OSStatus(
+        AudioUnitRenderActionFlags *actionFlags,
+        const AudioTimeStamp *timestamp,
+        NSInteger inputBusNumber,
+        UInt32 frameCount,
+        AudioBufferList *outputData
+    ) {
+        return noErr;
+    };
+}
+
+- (void)notifyAudioInputParametersChange {}
+- (void)notifyAudioOutputParametersChange {}
+- (void)notifyAudioInputInterrupted {}
+- (void)notifyAudioOutputInterrupted {}
+
+- (void)dispatchAsync:(dispatch_block_t)block {
+    @synchronized (self) {
+        [self.queuedOperations addObject:[block copy]];
+    }
+}
+
+- (void)dispatchSync:(dispatch_block_t)block {
+    block();
+}
+
+- (nullable dispatch_block_t)takeNextOperation {
+    @synchronized (self) {
+        if (self.queuedOperations.count == 0) {
+            return nil;
+        }
+        dispatch_block_t operation = self.queuedOperations.firstObject;
+        [self.queuedOperations removeObjectAtIndex:0];
+        return operation;
+    }
+}
+
+@end
+
+@interface ASIOSStereoPlayoutRecoveryTestHarness ()
+@property(nonatomic, strong) ASIOSStereoPlayoutAudioDevice *device;
+@property(nonatomic, strong) ASIOSStereoPlayoutRecoveryHarnessDelegate *delegate;
+@end
+
+@implementation ASIOSStereoPlayoutRecoveryTestHarness
+
+- (instancetype)init {
+    self = [super init];
+    if (self == nil) {
+        return nil;
+    }
+    _device = [[ASIOSStereoPlayoutAudioDevice alloc] init];
+    _delegate = [[ASIOSStereoPlayoutRecoveryHarnessDelegate alloc] init];
+    if (![_device initializeWithDelegate:_delegate]) {
+        return nil;
+    }
+    return self;
+}
+
+- (void)dealloc {
+    [self.device terminateDevice];
+}
+
+- (ASIOSStereoPlayoutDiagnostics)diagnostics {
+    return self.device.diagnostics;
+}
+
+- (NSUInteger)queuedOperationCount {
+    @synchronized (self.delegate) {
+        return self.delegate.queuedOperations.count;
+    }
+}
+
+- (void)queueRecoveryWithAuthorization:
+    (ASIOSStereoPlayoutRecoveryAuthorization *)authorization {
+    [self.device requestPlayoutRecoveryWithAuthorization:authorization];
+}
+
+- (BOOL)runNextQueuedOperation {
+    dispatch_block_t operation = [self.delegate takeNextOperation];
+    if (operation == nil) {
+        return NO;
+    }
+    operation();
+    return YES;
+}
+
+@end
+#endif
 
 /// Realtime boundary: no allocation, lock, log, conversion, or intermediate PCM queue.
 static OSStatus ASRemoteIORender(
@@ -174,6 +347,9 @@ static OSStatus ASRemoteIORender(
     atomic_init(&_realtime.frameCount, 0);
     atomic_init(&_realtime.failureCount, 0);
     atomic_init(&_realtime.recordingRequestCount, 0);
+    atomic_init(&_realtime.recoveryRequestCount, 0);
+    atomic_init(&_realtime.recoveryAuthorizationRejectionCount, 0);
+    atomic_init(&_realtime.recoveryRebuildCount, 0);
     atomic_init(&_realtime.lastFrameCount, 0);
     atomic_init(&_realtime.lastStatus, noErr);
     atomic_init(&_lifecycle.initialized, false);
@@ -372,8 +548,18 @@ static OSStatus ASRemoteIORender(
 
 - (BOOL)stopRecording { return YES; }
 
-- (void)requestPlayoutRecovery {
+- (void)requestPlayoutRecoveryWithAuthorization:
+    (ASIOSStereoPlayoutRecoveryAuthorization *)authorization {
+    atomic_fetch_add_explicit(&_realtime.recoveryRequestCount, 1, memory_order_relaxed);
     id<LKRTCAudioDeviceDelegate> delegate = self.delegate;
+    if (!authorization.isValid) {
+        atomic_fetch_add_explicit(
+            &_realtime.recoveryAuthorizationRejectionCount,
+            1,
+            memory_order_relaxed
+        );
+        return;
+    }
     if (delegate == nil) {
         return;
     }
@@ -383,32 +569,46 @@ static OSStatus ASRemoteIORender(
         if (self == nil || !self->_initialized) {
             return;
         }
-        // App lifecycle signals may request recovery while healthy playout is already running.
-        // Treat those signals as idempotent: rebuilding RemoteIO would introduce an audible gap
-        // and briefly relinquish an otherwise valid media-playback audio session.
-        if (!self->_recoveryRequired
-            && !self->_explicitResumeRequired
-            && self->_playing
-            && self->_playoutInitialized
-            && self->_audioUnit != NULL
-            && [self ownsCurrentSessionActivation]) {
-            return;
+        BOOL authorized = [authorization performIfValid:^{
+            // App lifecycle signals may request recovery while healthy playout is already running.
+            // Treat those signals as idempotent: rebuilding RemoteIO would introduce an audible gap
+            // and briefly relinquish an otherwise valid media-playback audio session.
+            if (!self->_recoveryRequired
+                && !self->_explicitResumeRequired
+                && self->_playing
+                && self->_playoutInitialized
+                && self->_audioUnit != NULL
+                && [self ownsCurrentSessionActivation]) {
+                return;
+            }
+            if (self->_interrupted) {
+                [self publishFailureCode:ASIOSStereoPlayoutFailureInterruption
+                                 status:noErr
+                                message:@"Audio remains interrupted; explicit recovery cannot start yet."];
+                return;
+            }
+            self->_recoveryRequired = NO;
+            self->_explicitResumeRequired = NO;
+            atomic_store_explicit(&self->_lifecycle.recoveryRequired, false, memory_order_relaxed);
+            atomic_store_explicit(
+                &self->_lifecycle.explicitResumeRequired,
+                false,
+                memory_order_relaxed
+            );
+            atomic_fetch_add_explicit(
+                &self->_realtime.recoveryRebuildCount,
+                1,
+                memory_order_relaxed
+            );
+            [self rebuildAfterExplicitRecovery];
+        }];
+        if (!authorized) {
+            atomic_fetch_add_explicit(
+                &self->_realtime.recoveryAuthorizationRejectionCount,
+                1,
+                memory_order_relaxed
+            );
         }
-        if (self->_interrupted) {
-            [self publishFailureCode:ASIOSStereoPlayoutFailureInterruption
-                             status:noErr
-                            message:@"Audio remains interrupted; explicit recovery cannot start yet."];
-            return;
-        }
-        self->_recoveryRequired = NO;
-        self->_explicitResumeRequired = NO;
-        atomic_store_explicit(&self->_lifecycle.recoveryRequired, false, memory_order_relaxed);
-        atomic_store_explicit(
-            &self->_lifecycle.explicitResumeRequired,
-            false,
-            memory_order_relaxed
-        );
-        [self rebuildAfterExplicitRecovery];
     }];
 }
 
@@ -457,6 +657,18 @@ static OSStatus ASRemoteIORender(
         .playoutFrameCount = atomic_load_explicit(&_realtime.frameCount, memory_order_relaxed),
         .playoutFailureCount = atomic_load_explicit(&_realtime.failureCount, memory_order_relaxed),
         .unexpectedRecordingRequestCount = atomic_load_explicit(&_realtime.recordingRequestCount, memory_order_relaxed),
+        .recoveryRequestCount = atomic_load_explicit(
+            &_realtime.recoveryRequestCount,
+            memory_order_relaxed
+        ),
+        .recoveryAuthorizationRejectionCount = atomic_load_explicit(
+            &_realtime.recoveryAuthorizationRejectionCount,
+            memory_order_relaxed
+        ),
+        .recoveryRebuildCount = atomic_load_explicit(
+            &_realtime.recoveryRebuildCount,
+            memory_order_relaxed
+        ),
         .lastPlayoutFrameCount = atomic_load_explicit(&_realtime.lastFrameCount, memory_order_relaxed),
         .lastPlayoutStatus = atomic_load_explicit(&_realtime.lastStatus, memory_order_relaxed),
     };

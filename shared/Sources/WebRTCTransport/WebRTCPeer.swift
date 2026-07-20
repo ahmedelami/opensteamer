@@ -44,6 +44,69 @@ struct WebRTCAudioProcessingSnapshot: Equatable, Sendable {
 #endif
 
 #if os(iOS)
+/// Revocable ownership for one explicit native RemoteIO recovery attempt.
+///
+/// The Objective-C gate is linearizable: revocation shares the lock held across the final native
+/// rebuild, so an ADM block queued by a retired peer cannot reactivate audio for a newer session.
+public final class WebRTCIOSPlayoutRecoveryAuthorization: @unchecked Sendable {
+    fileprivate let native = ASIOSStereoPlayoutRecoveryAuthorization()
+
+    public init() {}
+
+    public var isValid: Bool { native.isValid }
+
+    public func revoke() {
+        native.revoke()
+    }
+
+    #if DEBUG
+    @discardableResult
+    public func performIfValidForTesting(_ operation: () -> Void) -> Bool {
+        native.performIfValid(operation)
+    }
+    #endif
+}
+
+#if DEBUG
+public struct WebRTCIOSPlayoutRecoveryTestDiagnostics: Equatable, Sendable {
+    public let requestCount: UInt64
+    public let authorizationRejectionCount: UInt64
+    public let rebuildCount: UInt64
+    public let sessionActive: Bool
+    public let remoteIOCreated: Bool
+}
+
+public final class WebRTCIOSPlayoutRecoveryTestHarness: @unchecked Sendable {
+    private let native = ASIOSStereoPlayoutRecoveryTestHarness()
+
+    public init() {}
+
+    public var queuedOperationCount: Int { Int(native.queuedOperationCount) }
+
+    public var diagnostics: WebRTCIOSPlayoutRecoveryTestDiagnostics {
+        let value = native.diagnostics
+        return WebRTCIOSPlayoutRecoveryTestDiagnostics(
+            requestCount: value.recoveryRequestCount,
+            authorizationRejectionCount: value.recoveryAuthorizationRejectionCount,
+            rebuildCount: value.recoveryRebuildCount,
+            sessionActive: value.sessionActive,
+            remoteIOCreated: value.remoteIOCreated
+        )
+    }
+
+    public func queueRecovery(
+        authorization: WebRTCIOSPlayoutRecoveryAuthorization
+    ) {
+        native.queueRecovery(authorization: authorization.native)
+    }
+
+    @discardableResult
+    public func runNextQueuedOperation() -> Bool {
+        native.runNextQueuedOperation()
+    }
+}
+#endif
+
 /// Runtime proof that iOS is using one output-only RemoteIO media path rather than WebRTC's
 /// call-oriented default audio device or a duplicate application renderer.
 public struct WebRTCIOSPlayoutDiagnostics: Sendable {
@@ -70,6 +133,9 @@ public struct WebRTCIOSPlayoutDiagnostics: Sendable {
     public let playoutFrameCount: UInt64
     public let playoutFailureCount: UInt64
     public let unexpectedRecordingRequestCount: UInt64
+    public let recoveryRequestCount: UInt64
+    public let recoveryAuthorizationRejectionCount: UInt64
+    public let recoveryRebuildCount: UInt64
     public let lastPlayoutFrameCount: UInt32
     public let lastPlayoutStatus: Int32
 }
@@ -1266,13 +1332,22 @@ public actor WebRTCPeer {
             playoutFrameCount: value.playoutFrameCount,
             playoutFailureCount: value.playoutFailureCount,
             unexpectedRecordingRequestCount: value.unexpectedRecordingRequestCount,
+            recoveryRequestCount: value.recoveryRequestCount,
+            recoveryAuthorizationRejectionCount:
+                value.recoveryAuthorizationRejectionCount,
+            recoveryRebuildCount: value.recoveryRebuildCount,
             lastPlayoutFrameCount: value.lastPlayoutFrameCount,
             lastPlayoutStatus: value.lastPlayoutStatus
         )
     }
 
-    public func requestIOSPlayoutRecovery() {
-        iOSStereoPlayoutAudioDevice?.requestPlayoutRecovery()
+    public func requestIOSPlayoutRecovery(
+        authorization: WebRTCIOSPlayoutRecoveryAuthorization
+    ) {
+        guard !isClosed, authorization.isValid else { return }
+        iOSStereoPlayoutAudioDevice?.requestPlayoutRecovery(
+            authorization: authorization.native
+        )
     }
     #endif
 

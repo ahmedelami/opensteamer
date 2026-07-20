@@ -40,6 +40,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var sessionTask: Task<Void, Never>?
     private var peerEventTask: Task<Void, Never>?
     private var audioPlayoutProofTask: Task<Void, Never>?
+    private var audioPlayoutRecoveryAuthorization: WebRTCIOSPlayoutRecoveryAuthorization?
     private var controlAcknowledgementTimeoutTask: Task<Void, Never>?
     private var pendingScreenVisibilityRequest: PendingScreenVisibilityRequest?
     private var earlyControlAcknowledgements: [UInt64: ReceivedControlAcknowledgement] = [:]
@@ -62,6 +63,23 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var screenVisibilityOperationGeneration = UUID()
     #if DEBUG
     private var debugScreenVisibilityRequestSender: (@MainActor (Bool) async throws -> UInt64)?
+    private var debugStatisticsStarter: (@MainActor (WebRTCPeer) async throws -> Void)?
+    private var debugSessionRunner: (@MainActor () async -> Void)?
+    private var debugIOSPlayoutDiagnosticsReader: (
+        @MainActor (WebRTCPeer) async -> WebRTCIOSPlayoutDiagnostics?
+    )?
+    private var debugIOSPlayoutRecoveryRequester: (
+        @MainActor (WebRTCPeer, WebRTCIOSPlayoutRecoveryAuthorization) async -> Void
+    )?
+    private var debugIOSPlayoutRecoveryPendingObserver: (@MainActor () -> Void)?
+    private var debugRemoteInputSender: (
+        @MainActor (
+            WebRTCPeer,
+            WebRTCInputAction,
+            WebRTCInputCapability,
+            WebRTCInputAuthorization
+        ) async throws -> UInt64
+    )?
     #endif
 
     init(audioLifecycle: WorldwideAudioLifecycleController = WorldwideAudioLifecycleController()) {
@@ -187,6 +205,15 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     func disconnect() {
         tearDown(reason: .viewerDisconnected)
+        resetPublishedSessionState()
+        stateText = "Not connected"
+    }
+
+    /// Retires terminal presentation from an earlier media session before the coordinator starts
+    /// a new pairing/reconnect attempt. Passive scene lifecycle changes intentionally do not call
+    /// this method, so backgrounding alone cannot rewrite a real terminal outcome.
+    func beginFreshConnectionAttempt() {
+        guard !hasActiveSession else { return }
         resetPublishedSessionState()
         stateText = "Not connected"
     }
@@ -574,8 +601,9 @@ final class WorldwideSessionViewModel: ObservableObject {
 
             do {
                 guard !Task.isCancelled, queued.authorization.isValid else { return }
-                let requestID = try await peer.sendInput(
+                let requestID = try await sendRemoteInput(
                     queued.action,
+                    peer: peer,
                     capability: queued.capability,
                     authorization: queued.authorization
                 )
@@ -598,6 +626,19 @@ final class WorldwideSessionViewModel: ObservableObject {
                     handleRemoteInputFeedback(feedback)
                 }
             } catch {
+                // Actor sends are reentrant and may complete after this input generation was
+                // revoked and a replacement capability was installed. An old failure must never
+                // clear focus, diagnostics, authorization, or queued work belonging to the new
+                // session. Treat loss of any exact ownership proof as a stale terminal return.
+                guard !Task.isCancelled,
+                      inputGeneration == remoteInputGeneration,
+                      queued.sessionGeneration == sessionGeneration,
+                      self.peer === peer,
+                      queued.capability == remoteInputCapability,
+                      queued.authorization === remoteInputAuthorization,
+                      queued.authorization.isValid else {
+                    return
+                }
                 if let transportError = error as? WebRTCTransportError,
                    transportError == .invalidInputRequest {
                     clearRemoteKeyboardFocus()
@@ -612,6 +653,29 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
     }
 
+    private func sendRemoteInput(
+        _ action: WebRTCInputAction,
+        peer: WebRTCPeer,
+        capability: WebRTCInputCapability,
+        authorization: WebRTCInputAuthorization
+    ) async throws -> UInt64 {
+        #if DEBUG
+        if let debugRemoteInputSender {
+            return try await debugRemoteInputSender(
+                peer,
+                action,
+                capability,
+                authorization
+            )
+        }
+        #endif
+        return try await peer.sendInput(
+            action,
+            capability: capability,
+            authorization: authorization
+        )
+    }
+
     private func runSession(
         client: RendezvousSignalingClient,
         generation: UUID
@@ -622,6 +686,13 @@ final class WorldwideSessionViewModel: ObservableObject {
                 isConnecting = false
             }
         }
+
+        #if DEBUG
+        if let debugSessionRunner {
+            await debugSessionRunner()
+            return
+        }
+        #endif
 
         do {
             let events = try await client.connect()
@@ -682,7 +753,16 @@ final class WorldwideSessionViewModel: ObservableObject {
             peer = newPeer
             recoveryCoordinator = coordinator
             startPeerEventLoop(peer: newPeer, signaling: client, generation: generation)
-            try await newPeer.startStatistics()
+            try await startStatistics(for: newPeer)
+            // Statistics startup crosses the peer actor and is allowed to finish
+            // non-cooperatively after disconnect or supersession. Re-prove every ownership
+            // dimension before publishing negotiation state for this attempt.
+            guard !Task.isCancelled,
+                  generation == sessionGeneration,
+                  signaling === client,
+                  peer === newPeer else {
+                return
+            }
             isConnecting = true
             stateText = "Negotiating secure media"
 
@@ -715,6 +795,16 @@ final class WorldwideSessionViewModel: ObservableObject {
         case .serverError(let error):
             throw WorldwideSessionError.server(error)
         }
+    }
+
+    private func startStatistics(for peer: WebRTCPeer) async throws {
+        #if DEBUG
+        if let debugStatisticsStarter {
+            try await debugStatisticsStarter(peer)
+            return
+        }
+        #endif
+        try await peer.startStatistics()
     }
 
     private func startPeerEventLoop(
@@ -935,6 +1025,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     private func tearDown(reason: RemoteSessionEndReason) {
+        retireIOSPlayoutRecoveryAttempt()
         audioLifecycle.stop()
         remoteAudioTrack = nil
         acceptsActiveScreenAcknowledgement = false
@@ -1005,21 +1096,64 @@ final class WorldwideSessionViewModel: ObservableObject {
     /// A signaling/ICE success is not proof that iOS is actually rendering full-band stereo.
     /// Poll the custom output-only RemoteIO long enough to observe its realtime callback, and
     /// publish the native failure instead of claiming "Playing" on a call/HFP-style route.
-    private func beginIOSPlayoutProof(requestRecovery: Bool) {
+    @discardableResult
+    private func beginIOSPlayoutProof(
+        requestRecovery: Bool
+    ) -> Task<Void, Never>? {
+        retireIOSPlayoutRecoveryAttempt()
         audioPlayoutProofTask?.cancel()
-        guard let proofPeer = peer else { return }
+        guard let proofPeer = peer else { return nil }
         let generation = sessionGeneration
-        audioPlayoutProofTask = Task { [weak self] in
+        let recoveryAuthorization: WebRTCIOSPlayoutRecoveryAuthorization?
+        if requestRecovery {
+            let authorization = WebRTCIOSPlayoutRecoveryAuthorization()
+            audioPlayoutRecoveryAuthorization = authorization
+            recoveryAuthorization = authorization
+        } else {
+            recoveryAuthorization = nil
+        }
+        let proofTask = Task { [weak self] in
             guard let self else { return }
-            if requestRecovery {
-                await proofPeer.requestIOSPlayoutRecovery()
+            if let recoveryAuthorization {
+                guard !Task.isCancelled,
+                      generation == sessionGeneration,
+                      peer === proofPeer,
+                      audioPlayoutRecoveryAuthorization === recoveryAuthorization else {
+                    return
+                }
+                await requestIOSPlayoutRecovery(
+                    on: proofPeer,
+                    authorization: recoveryAuthorization
+                )
             }
 
             for _ in 0..<40 {
-                guard !Task.isCancelled,
-                      generation == sessionGeneration,
-                      peer === proofPeer else { return }
-                if let diagnostics = await proofPeer.iOSPlayoutDiagnostics(),
+                if let recoveryAuthorization {
+                    guard !Task.isCancelled,
+                          generation == sessionGeneration,
+                          peer === proofPeer,
+                          audioPlayoutRecoveryAuthorization === recoveryAuthorization else {
+                        return
+                    }
+                    // The native gate is consumed only after the queued ADM recovery block has
+                    // finished. Do not mistake its pre-recovery failure snapshot for the result
+                    // of the new attempt.
+                    if recoveryAuthorization.isValid {
+                        #if DEBUG
+                        debugIOSPlayoutRecoveryPendingObserver?()
+                        #endif
+                        do {
+                            try await Task.sleep(for: .milliseconds(50))
+                        } catch {
+                            return
+                        }
+                        continue
+                    }
+                }
+                if let diagnostics = await ownedIOSPlayoutDiagnostics(
+                    from: proofPeer,
+                    sessionGeneration: generation
+                ),
                    applyIOSPlayoutDiagnostics(diagnostics) {
                     return
                 }
@@ -1039,18 +1173,81 @@ final class WorldwideSessionViewModel: ObservableObject {
                 diagnostic: "RemoteIO produced no verified playout callback within two seconds."
             )
         }
+        audioPlayoutProofTask = proofTask
+        return proofTask
     }
 
     private func refreshIOSPlayoutProof() {
         guard let proofPeer = peer else { return }
         let generation = sessionGeneration
         Task { [weak self] in
-            guard let self,
-                  generation == sessionGeneration,
-                  peer === proofPeer,
-                  let diagnostics = await proofPeer.iOSPlayoutDiagnostics() else { return }
-            _ = applyIOSPlayoutDiagnostics(diagnostics)
+            await self?.refreshIOSPlayoutProof(
+                from: proofPeer,
+                sessionGeneration: generation
+            )
         }
+    }
+
+    private func refreshIOSPlayoutProof(
+        from proofPeer: WebRTCPeer,
+        sessionGeneration generation: UUID
+    ) async {
+        let recoveryAuthorization = audioPlayoutRecoveryAuthorization
+        guard recoveryAuthorization?.isValid != true else { return }
+        guard let diagnostics = await ownedIOSPlayoutDiagnostics(
+            from: proofPeer,
+            sessionGeneration: generation
+        ) else { return }
+        // Statistics can arrive while an explicit native rebuild is queued. Accept only a
+        // snapshot owned by the exact recovery state captured before the suspension; otherwise a
+        // pre-recovery failure could disable audio while the current attempt is still pending.
+        guard audioPlayoutRecoveryAuthorization === recoveryAuthorization,
+              recoveryAuthorization?.isValid != true else { return }
+        _ = applyIOSPlayoutDiagnostics(diagnostics)
+    }
+
+    private func ownedIOSPlayoutDiagnostics(
+        from proofPeer: WebRTCPeer,
+        sessionGeneration generation: UUID
+    ) async -> WebRTCIOSPlayoutDiagnostics? {
+        guard !Task.isCancelled,
+              generation == sessionGeneration,
+              peer === proofPeer else { return nil }
+
+        let diagnostics: WebRTCIOSPlayoutDiagnostics?
+        #if DEBUG
+        if let debugIOSPlayoutDiagnosticsReader {
+            diagnostics = await debugIOSPlayoutDiagnosticsReader(proofPeer)
+        } else {
+            diagnostics = await proofPeer.iOSPlayoutDiagnostics()
+        }
+        #else
+        diagnostics = await proofPeer.iOSPlayoutDiagnostics()
+        #endif
+
+        guard !Task.isCancelled,
+              generation == sessionGeneration,
+              peer === proofPeer else { return nil }
+        return diagnostics
+    }
+
+    private func requestIOSPlayoutRecovery(
+        on proofPeer: WebRTCPeer,
+        authorization: WebRTCIOSPlayoutRecoveryAuthorization
+    ) async {
+        #if DEBUG
+        if let debugIOSPlayoutRecoveryRequester {
+            await debugIOSPlayoutRecoveryRequester(proofPeer, authorization)
+            return
+        }
+        #endif
+        await proofPeer.requestIOSPlayoutRecovery(authorization: authorization)
+    }
+
+    private func retireIOSPlayoutRecoveryAttempt() {
+        let authorization = audioPlayoutRecoveryAuthorization
+        audioPlayoutRecoveryAuthorization = nil
+        authorization?.revoke()
     }
 
     /// Returns true once the snapshot is terminal for the current proof attempt: either verified
@@ -1452,6 +1649,140 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     #if DEBUG
+    func debugInstallStatisticsStarter(
+        _ starter: @escaping @MainActor (WebRTCPeer) async throws -> Void
+    ) {
+        debugStatisticsStarter = starter
+    }
+
+    /// Keeps production `connect` ownership active without opening a real WebSocket, allowing
+    /// reentrancy tests to prove whether a replacement connect is accepted deterministically.
+    func debugInstallSessionRunner(_ runner: @escaping @MainActor () async -> Void) {
+        debugSessionRunner = runner
+    }
+
+    func debugInstallIOSPlayoutDiagnosticsReader(
+        _ reader: @escaping @MainActor (WebRTCPeer) async -> WebRTCIOSPlayoutDiagnostics?
+    ) {
+        debugIOSPlayoutDiagnosticsReader = reader
+    }
+
+    func debugInstallIOSPlayoutRecoveryRequester(
+        _ requester: @escaping @MainActor (
+            WebRTCPeer,
+            WebRTCIOSPlayoutRecoveryAuthorization
+        ) async -> Void
+    ) {
+        debugIOSPlayoutRecoveryRequester = requester
+    }
+
+    func debugInstallIOSPlayoutRecoveryPendingObserver(
+        _ observer: @escaping @MainActor () -> Void
+    ) {
+        debugIOSPlayoutRecoveryPendingObserver = observer
+    }
+
+    func debugInstallIOSPlayoutPeerForRaceTests(_ newPeer: WebRTCPeer) {
+        precondition(peer == nil)
+        sessionGeneration = UUID()
+        peer = newPeer
+    }
+
+    func debugBeginIOSPlayoutProofForRaceTests(
+        requestRecovery: Bool
+    ) -> Task<Void, Never>? {
+        beginIOSPlayoutProof(requestRecovery: requestRecovery)
+    }
+
+    func debugRefreshIOSPlayoutProofForRaceTests() async {
+        guard let proofPeer = peer else { return }
+        await refreshIOSPlayoutProof(
+            from: proofPeer,
+            sessionGeneration: sessionGeneration
+        )
+    }
+
+    var debugIOSPlayoutRecoveryIsAuthorized: Bool {
+        audioPlayoutRecoveryAuthorization?.isValid == true
+    }
+
+    func debugDeliverReadyForRaceTests() async throws {
+        guard let signaling else { throw CancellationError() }
+        let generation = sessionGeneration
+        try await handleSignalingEvent(
+            .ready(
+                role: .host,
+                invitationExpiresAt: Date().addingTimeInterval(60),
+                iceServers: []
+            ),
+            client: signaling,
+            generation: generation
+        )
+    }
+
+    func debugSignalingIs(_ client: RendezvousSignalingClient) -> Bool {
+        signaling === client
+    }
+
+    func debugInstallRemoteInputSender(
+        _ sender: @escaping @MainActor (
+            WebRTCPeer,
+            WebRTCInputAction,
+            WebRTCInputCapability,
+            WebRTCInputAuthorization
+        ) async throws -> UInt64
+    ) {
+        debugRemoteInputSender = sender
+    }
+
+    /// Installs a complete, synthetic input generation without starting its drain. Tests can
+    /// then suspend the old generation inside the injectable send and replace it atomically.
+    @discardableResult
+    func debugInstallQueuedRemoteInputSessionForRaceTests(
+        peer newPeer: WebRTCPeer,
+        focusGeneration: UInt64,
+        diagnostic: String
+    ) -> WebRTCInputAuthorization {
+        invalidateRemoteInputState()
+        sessionGeneration = UUID()
+        peer = newPeer
+        let capability = WebRTCInputCapability(
+            inputSessionID: UUID(),
+            screenRequestID: focusGeneration,
+            supportsPrimaryDrag: true
+        )
+        let authorization = WebRTCInputAuthorization()
+        remoteInputCapability = capability
+        remoteInputAuthorization = authorization
+        focusedInputGeneration = focusGeneration
+        focusedInputIsSecure = false
+        isPeerConnected = true
+        iceIsConnected = true
+        isControlChannelReady = true
+        isScreenVisible = true
+        lastDiagnostic = diagnostic
+        remoteInputQueue = [
+            QueuedRemoteInput(
+                action: .returnKey(focusGeneration: focusGeneration),
+                capability: capability,
+                authorization: authorization,
+                sessionGeneration: sessionGeneration,
+                inputGeneration: remoteInputGeneration,
+                pointerIntentID: nil
+            )
+        ]
+        return authorization
+    }
+
+    func debugDrainRemoteInputQueueForRaceTests() async {
+        await drainRemoteInputQueue(inputGeneration: remoteInputGeneration)
+    }
+
+    /// Routes tests through the production terminal-session path without requiring live media.
+    func debugFailSessionForTests(_ message: String) {
+        failSession(message, generation: sessionGeneration)
+    }
+
     /// Installs non-sensitive synthetic state for lifecycle ordering tests only. Release builds
     /// contain neither this hook nor the snapshot type.
     @discardableResult
@@ -1489,6 +1820,8 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     var debugRemoteInputState: WorldwideRemoteInputDebugState {
         WorldwideRemoteInputDebugState(
+            capability: remoteInputCapability,
+            authorizationIdentity: remoteInputAuthorization.map(ObjectIdentifier.init),
             capabilityInstalled: remoteInputCapability != nil,
             authorizationInstalled: remoteInputAuthorization != nil,
             focusGeneration: focusedInputGeneration,
@@ -1698,6 +2031,8 @@ private struct PendingScreenVisibilityRequest {
 
 #if DEBUG
 struct WorldwideRemoteInputDebugState: Equatable {
+    let capability: WebRTCInputCapability?
+    let authorizationIdentity: ObjectIdentifier?
     let capabilityInstalled: Bool
     let authorizationInstalled: Bool
     let focusGeneration: UInt64?

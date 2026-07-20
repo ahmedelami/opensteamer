@@ -18,6 +18,21 @@ protocol ViewerPairedAvailabilityTransport: AnyObject, Sendable {
 
 extension PairedAvailabilitySignalingClient: ViewerPairedAvailabilityTransport {}
 
+struct SavedPairAttemptContext: Equatable, Sendable {
+    let attemptID: UUID
+    let pairID: UUID
+}
+
+/// Attempt-scoped reachability state for a durable pair. None of these cases revoke, expire,
+/// deactivate, or delete the Keychain record. In particular, deadline exhaustion cannot tell a
+/// sleeping Mac from a network outage or a Mac that was reset locally.
+enum SavedPairConnectionState: Equatable, Sendable {
+    case idle
+    case waitingForAvailability(SavedPairAttemptContext)
+    case preparingSession(SavedPairAttemptContext)
+    case unavailableAfterDeadline(SavedPairAttemptContext)
+}
+
 /// Performs the identity bootstrap and paired reconnect phases that precede ordinary WebRTC
 /// media signaling. Invitation transport never carries SDP/ICE, and persistent availability
 /// never carries media signaling; each connection derives a fresh one-use session credential.
@@ -26,6 +41,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
     @Published private(set) var isConnecting = false
     @Published private(set) var stateText = "Not connected"
     @Published private(set) var lastError: String?
+    @Published private(set) var savedPairConnectionState: SavedPairConnectionState = .idle
 
     typealias BootstrapClientFactory = (
         URL,
@@ -40,6 +56,9 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         _ baseDelayNanoseconds: UInt64,
         _ remainingDeadlineNanoseconds: UInt64
     ) async throws -> Void
+    typealias AvailabilityAttemptDeadlineSleep = @Sendable (
+        _ timeoutNanoseconds: UInt64
+    ) async throws -> Void
     typealias ReconnectResponseTimeoutSleep = @Sendable (
         _ timeoutNanoseconds: UInt64
     ) async throws -> Void
@@ -49,6 +68,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
     private let availabilityRetryDeadlineNanoseconds: UInt64
     private let availabilityMonotonicNow: AvailabilityMonotonicNow
     private let availabilityRetrySleep: AvailabilityRetrySleep
+    private let availabilityAttemptDeadlineSleep: AvailabilityAttemptDeadlineSleep
     private let reconnectResponseTimeoutNanoseconds: UInt64
     private let reconnectResponseTimeoutSleep: ReconnectResponseTimeoutSleep
     private let pairingBackgroundTask: any TransitionBackgroundTaskCoordinating
@@ -86,6 +106,9 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
             guard boundedDelay > 0 else { return }
             try await Task<Never, Never>.sleep(nanoseconds: boundedDelay)
         },
+        availabilityAttemptDeadlineSleep: @escaping AvailabilityAttemptDeadlineSleep = { timeout in
+            try await Task<Never, Never>.sleep(nanoseconds: timeout)
+        },
         reconnectResponseTimeoutNanoseconds: UInt64 = 8_000_000_000,
         reconnectResponseTimeoutSleep: @escaping ReconnectResponseTimeoutSleep = { timeout in
             try await Task<Never, Never>.sleep(nanoseconds: timeout)
@@ -98,6 +121,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         self.availabilityRetryDeadlineNanoseconds = availabilityRetryDeadlineNanoseconds
         self.availabilityMonotonicNow = availabilityMonotonicNow
         self.availabilityRetrySleep = availabilityRetrySleep
+        self.availabilityAttemptDeadlineSleep = availabilityAttemptDeadlineSleep
         self.reconnectResponseTimeoutNanoseconds = max(
             1,
             reconnectResponseTimeoutNanoseconds
@@ -115,6 +139,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
     ) async throws -> RendezvousSignalingClient {
         let operationID = try beginOperation(state: "Pairing securely")
         defer { finishOperation(operationID) }
+        var savedPairContext: SavedPairAttemptContext?
 
         do {
             let invitation = try RemoteInvitationCode(input)
@@ -127,6 +152,12 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                 onAuthenticatedPairingCompleted: onAuthenticatedPairingCompleted
             )
             try requireCurrentOperation(operationID)
+            let context = try beginSavedPairAttempt(
+                operationID: operationID,
+                record: activeRecord,
+                pairingState: pairingState
+            )
+            savedPairContext = context
             stateText = "Finding paired Mac"
             let client = try await prepareMediaSession(
                 endpoint: endpoint,
@@ -134,22 +165,37 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                 record: activeRecord,
                 pairingState: pairingState,
                 operationID: operationID,
-                onAuthenticatedPairingCompleted: nil
+                onAuthenticatedPairingCompleted: nil,
+                savedPairContext: context
             )
-            try requireCurrentOperation(operationID)
+            try requireCurrentSavedPairAttempt(
+                context,
+                pairingState: pairingState,
+                operationID: operationID
+            )
+            savedPairConnectionState = .idle
             stateText = "Starting secure media"
             lastError = nil
             return client
         } catch is CancellationError {
             await closeTransports(ownedBy: operationID)
             if activeOperationID == operationID {
+                savedPairConnectionState = .idle
                 stateText = "Not connected"
             }
             throw CancellationError()
         } catch {
             await closeTransports(ownedBy: operationID)
             if activeOperationID == operationID {
-                publish(error)
+                if !publishSavedPairExhaustion(
+                    error,
+                    context: savedPairContext,
+                    pairingState: pairingState,
+                    operationID: operationID
+                ) {
+                    savedPairConnectionState = .idle
+                    publish(error)
+                }
             }
             throw error
         }
@@ -162,32 +208,54 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
     ) async throws -> RendezvousSignalingClient {
         let operationID = try beginOperation(state: "Finding paired Mac")
         defer { finishOperation(operationID) }
+        var savedPairContext: SavedPairAttemptContext?
 
         do {
             let identity = try requireIdentity(pairingState)
             let record = try requireRecoverableRecord(pairingState)
+            let context = try beginSavedPairAttempt(
+                operationID: operationID,
+                record: record,
+                pairingState: pairingState
+            )
+            savedPairContext = context
             let client = try await prepareMediaSession(
                 endpoint: endpoint,
                 identity: identity,
                 record: record,
                 pairingState: pairingState,
                 operationID: operationID,
-                onAuthenticatedPairingCompleted: onAuthenticatedPairingCompleted
+                onAuthenticatedPairingCompleted: onAuthenticatedPairingCompleted,
+                savedPairContext: context
             )
-            try requireCurrentOperation(operationID)
+            try requireCurrentSavedPairAttempt(
+                context,
+                pairingState: pairingState,
+                operationID: operationID
+            )
+            savedPairConnectionState = .idle
             stateText = "Starting secure media"
             lastError = nil
             return client
         } catch is CancellationError {
             await closeTransports(ownedBy: operationID)
             if activeOperationID == operationID {
+                savedPairConnectionState = .idle
                 stateText = "Not connected"
             }
             throw CancellationError()
         } catch {
             await closeTransports(ownedBy: operationID)
             if activeOperationID == operationID {
-                publish(error)
+                if !publishSavedPairExhaustion(
+                    error,
+                    context: savedPairContext,
+                    pairingState: pairingState,
+                    operationID: operationID
+                ) {
+                    savedPairConnectionState = .idle
+                    publish(error)
+                }
             }
             throw error
         }
@@ -206,15 +274,24 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
     ) async throws -> RendezvousSignalingClient {
         let operationID = try beginOperation(state: "Recovering secure pairing")
         defer { finishOperation(operationID) }
+        var savedPairContext: SavedPairAttemptContext?
 
         do {
+            let recordToPrepare: RemotePairedDeviceRecord
+            var completionAfterAvailability: (@MainActor () -> Void)? =
+                onAuthenticatedPairingCompleted
+            var usesDurableFallback = false
+
+            // This catch intentionally covers only acquisition through the one-time bootstrap.
+            // Once bootstrap succeeds, every availability/media-preparation error belongs to that
+            // single attempt and must propagate through the outer handler instead of silently
+            // starting a second full deadline against the durable record.
             do {
                 let invitation = try RemoteInvitationCode(input)
                 var replacementRetry = 0
-                let activeRecord: RemotePairedDeviceRecord
                 while true {
                     do {
-                        activeRecord = try await bootstrapPairing(
+                        recordToPrepare = try await bootstrapPairing(
                             invitation: invitation,
                             endpoint: endpoint,
                             pairingState: pairingState,
@@ -240,20 +317,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                         )
                     }
                 }
-                try requireCurrentOperation(operationID)
-                stateText = "Finding paired Mac"
-                let client = try await prepareMediaSession(
-                    endpoint: endpoint,
-                    identity: try requireIdentity(pairingState),
-                    record: activeRecord,
-                    pairingState: pairingState,
-                    operationID: operationID,
-                    onAuthenticatedPairingCompleted: nil
-                )
-                try requireCurrentOperation(operationID)
-                stateText = "Starting secure media"
-                lastError = nil
-                return client
+                completionAfterAvailability = nil
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -261,32 +325,57 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                 // Mac advanced farther than this process observed, raw bootstrap rejects while
                 // the latest Keychain record remains the authenticated recovery credential.
                 try requireCurrentOperation(operationID)
-                let identity = try requireIdentity(pairingState)
-                let recoverableRecord = try requireRecoverableRecord(pairingState)
-                stateText = "Recovering saved secure pairing"
-                let client = try await prepareMediaSession(
-                    endpoint: endpoint,
-                    identity: identity,
-                    record: recoverableRecord,
-                    pairingState: pairingState,
-                    operationID: operationID,
-                    onAuthenticatedPairingCompleted: onAuthenticatedPairingCompleted
-                )
-                try requireCurrentOperation(operationID)
-                stateText = "Starting secure media"
-                lastError = nil
-                return client
+                recordToPrepare = try requireRecoverableRecord(pairingState)
+                usesDurableFallback = true
             }
+
+            try requireCurrentOperation(operationID)
+            let context = try beginSavedPairAttempt(
+                operationID: operationID,
+                record: recordToPrepare,
+                pairingState: pairingState
+            )
+            savedPairContext = context
+            stateText = usesDurableFallback
+                ? "Recovering saved secure pairing"
+                : "Finding paired Mac"
+            let client = try await prepareMediaSession(
+                endpoint: endpoint,
+                identity: try requireIdentity(pairingState),
+                record: recordToPrepare,
+                pairingState: pairingState,
+                operationID: operationID,
+                onAuthenticatedPairingCompleted: completionAfterAvailability,
+                savedPairContext: context
+            )
+            try requireCurrentSavedPairAttempt(
+                context,
+                pairingState: pairingState,
+                operationID: operationID
+            )
+            savedPairConnectionState = .idle
+            stateText = "Starting secure media"
+            lastError = nil
+            return client
         } catch is CancellationError {
             await closeTransports(ownedBy: operationID)
             if activeOperationID == operationID {
+                savedPairConnectionState = .idle
                 stateText = "Not connected"
             }
             throw CancellationError()
         } catch {
             await closeTransports(ownedBy: operationID)
             if activeOperationID == operationID {
-                publish(error)
+                if !publishSavedPairExhaustion(
+                    error,
+                    context: savedPairContext,
+                    pairingState: pairingState,
+                    operationID: operationID
+                ) {
+                    savedPairConnectionState = .idle
+                    publish(error)
+                }
             }
             throw error
         }
@@ -296,6 +385,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         guard let operationID = activeOperationID else { return }
         activeOperationID = nil
         isConnecting = false
+        savedPairConnectionState = .idle
         stateText = "Not connected"
         pairingBackgroundTask.endTransitionTask()
         let transports = removeTransports(ownedBy: operationID)
@@ -307,9 +397,11 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
 
     func clearError() {
         lastError = nil
+        savedPairConnectionState = .idle
     }
 
     func reportConfigurationError(_ message: String) {
+        savedPairConnectionState = .idle
         stateText = "Service unavailable"
         lastError = message
     }
@@ -389,6 +481,8 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                     // is never sent until the viewer's matching record is already durable.
                     // Therefore a Mac-side partial record always has an iPhone recovery peer.
                     try await client.send(.confirmation(try agreement.makeConfirmation()))
+                    try Task.checkCancellation()
+                    try requireCurrentOperation(operationID)
                     stateText = "Committing secure pairing"
 
                 case .signal(.commit(let commit)):
@@ -481,7 +575,8 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         record initialRecord: RemotePairedDeviceRecord,
         pairingState: ViewerPairingState,
         operationID: UUID,
-        onAuthenticatedPairingCompleted: (@MainActor () -> Void)?
+        onAuthenticatedPairingCompleted: (@MainActor () -> Void)?,
+        savedPairContext: SavedPairAttemptContext
     ) async throws -> RendezvousSignalingClient {
         var record = initialRecord
         var retryIndex = 0
@@ -489,42 +584,100 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
 
         while true {
             try Task.checkCancellation()
-            try requireCurrentOperation(operationID)
+            try transitionSavedPairAttempt(
+                to: .waitingForAvailability(savedPairContext),
+                context: savedPairContext,
+                pairingState: pairingState,
+                operationID: operationID
+            )
             guard let remainingDeadline = availabilityRetryTimeRemaining(
                 since: retryStartedAt
             ) else {
-                throw WorldwideViewerConnectionError.pairedMacUnavailable
+                let error = WorldwideViewerConnectionError.pairedMacUnavailable
+                try markSavedPairDeadlineExhausted(
+                    error,
+                    context: savedPairContext,
+                    pairingState: pairingState,
+                    operationID: operationID
+                )
+                throw error
             }
             do {
-                return try await prepareMediaSessionAttempt(
+                let mediaClient = try await prepareMediaSessionAttempt(
                     endpoint: endpoint,
                     identity: identity,
                     record: record,
                     pairingState: pairingState,
                     operationID: operationID,
                     onAuthenticatedPairingCompleted: onAuthenticatedPairingCompleted,
+                    savedPairContext: savedPairContext,
+                    availabilityDeadlineNanoseconds: remainingDeadline,
                     reconnectResponseTimeoutNanoseconds: min(
                         reconnectResponseTimeoutNanoseconds,
                         remainingDeadline
                     )
                 )
+                // A valid response that was already buffered can race the attempt deadline's
+                // transport close. Re-check the coordinator's authoritative monotonic budget
+                // before allowing that response to create a session beyond the advertised
+                // availability window.
+                guard availabilityRetryTimeRemaining(since: retryStartedAt) != nil else {
+                    await mediaClient.close()
+                    let error = WorldwideViewerConnectionError.pairedMacUnavailable
+                    try markSavedPairDeadlineExhausted(
+                        error,
+                        context: savedPairContext,
+                        pairingState: pairingState,
+                        operationID: operationID
+                    )
+                    throw error
+                }
+                return mediaClient
             } catch {
                 try Task.checkCancellation()
-                try requireCurrentOperation(operationID)
-                guard isTransientAvailabilityError(error),
-                      let remaining = availabilityRetryTimeRemaining(
-                        since: retryStartedAt
-                      ) else {
+                try requireCurrentSavedPairAttempt(
+                    savedPairContext,
+                    pairingState: pairingState,
+                    operationID: operationID
+                )
+                guard isTransientAvailabilityError(error) else {
+                    throw error
+                }
+                guard let remaining = availabilityRetryTimeRemaining(
+                    since: retryStartedAt
+                ) else {
+                    try markSavedPairDeadlineExhausted(
+                        error,
+                        context: savedPairContext,
+                        pairingState: pairingState,
+                        operationID: operationID
+                    )
                     throw error
                 }
 
+                try transitionSavedPairAttempt(
+                    to: .waitingForAvailability(savedPairContext),
+                    context: savedPairContext,
+                    pairingState: pairingState,
+                    operationID: operationID
+                )
                 stateText = "Waiting for paired Mac"
                 let delay = availabilityRetryBaseDelay(retryIndex: retryIndex)
                 retryIndex += 1
                 try await availabilityRetrySleep(delay, remaining)
                 try Task.checkCancellation()
-                try requireCurrentOperation(operationID)
+                try requireCurrentSavedPairAttempt(
+                    savedPairContext,
+                    pairingState: pairingState,
+                    operationID: operationID
+                )
                 guard availabilityRetryTimeRemaining(since: retryStartedAt) != nil else {
+                    try markSavedPairDeadlineExhausted(
+                        error,
+                        context: savedPairContext,
+                        pairingState: pairingState,
+                        operationID: operationID
+                    )
                     throw error
                 }
 
@@ -566,9 +719,15 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         pairingState: ViewerPairingState,
         operationID: UUID,
         onAuthenticatedPairingCompleted: (@MainActor () -> Void)?,
+        savedPairContext: SavedPairAttemptContext,
+        availabilityDeadlineNanoseconds: UInt64,
         reconnectResponseTimeoutNanoseconds: UInt64
     ) async throws -> RendezvousSignalingClient {
-        try requireCurrentOperation(operationID)
+        try requireCurrentSavedPairAttempt(
+            savedPairContext,
+            pairingState: pairingState,
+            operationID: operationID
+        )
         let client = try makeAvailabilityClient(
             endpoint,
             try initialRecord.availabilityLocator()
@@ -579,25 +738,60 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         var reconnect: RemoteReconnectInitiator?
         var activeAvailabilityExchangeID: RemoteAvailabilityExchangeID?
         var reconnectExchangeID: RemoteAvailabilityExchangeID?
+        let availabilityDeadlineTask = makeAvailabilityAttemptDeadlineTask(
+            client: client,
+            timeoutNanoseconds: availabilityDeadlineNanoseconds
+        )
         var reconnectResponseDeadlineTask: Task<Void, Never>?
         let recoveryGeneration = UUID()
         var acceptance = InvitationAcceptanceAction()
         acceptance.arm(generation: recoveryGeneration) { activeRecord in
+            try self.requireCurrentSavedPairMutation(
+                savedPairContext,
+                record: activeRecord,
+                pairingState: pairingState,
+                operationID: operationID
+            )
             try pairingState.saveAuthenticatedPairing(activeRecord)
+            try self.requireCurrentSavedPairMutation(
+                savedPairContext,
+                record: activeRecord,
+                pairingState: pairingState,
+                operationID: operationID
+            )
             onAuthenticatedPairingCompleted?()
         }
-        defer { reconnectResponseDeadlineTask?.cancel() }
+        defer {
+            availabilityDeadlineTask.cancel()
+            reconnectResponseDeadlineTask?.cancel()
+        }
 
         do {
             let events = try await client.connect()
             for try await event in events {
                 try Task.checkCancellation()
-                try requireCurrentOperation(operationID)
+                try requireCurrentSavedPairAttempt(
+                    savedPairContext,
+                    pairingState: pairingState,
+                    operationID: operationID
+                )
                 switch event {
                 case .waiting:
+                    try transitionSavedPairAttempt(
+                        to: .waitingForAvailability(savedPairContext),
+                        context: savedPairContext,
+                        pairingState: pairingState,
+                        operationID: operationID
+                    )
                     stateText = "Waiting for paired Mac"
 
                 case .ready(_, let exchangeID):
+                    try transitionSavedPairAttempt(
+                        to: .preparingSession(savedPairContext),
+                        context: savedPairContext,
+                        pairingState: pairingState,
+                        operationID: operationID
+                    )
                     activeAvailabilityExchangeID = exchangeID
                     switch record.pairingState {
                     case .pending:
@@ -617,6 +811,12 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                             }
                             // Resend the durable activation proof before the reconnect request.
                             try await client.send(.pairingCommit(activation))
+                            try requireCurrentSavedPairMutation(
+                                savedPairContext,
+                                record: record,
+                                pairingState: pairingState,
+                                operationID: operationID
+                            )
                         case .none, .awaitProposal, .issueProposal, .issueCompletion:
                             throw WorldwideViewerConnectionError.invalidPairingRecovery
                         }
@@ -679,6 +879,12 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                         )
                         // Persist active state before sending its signed activation proof.
                         try await client.send(.pairingCommit(activation))
+                        try requireCurrentSavedPairMutation(
+                            savedPairContext,
+                            record: record,
+                            pairingState: pairingState,
+                            operationID: operationID
+                        )
                         guard reconnect == nil else { continue }
                         let initiator = try record.beginReconnect(using: identity)
                         try pairingState.savePairingRecord(record)
@@ -707,7 +913,12 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                         availabilityClientOperationID = nil
                     }
                     await client.close()
-                    try requireCurrentOperation(operationID)
+                    try requireCurrentSavedPairMutation(
+                        savedPairContext,
+                        record: record,
+                        pairingState: pairingState,
+                        operationID: operationID
+                    )
                     return try RendezvousSignalingClient(
                         endpoint: endpoint,
                         credential: credential,
@@ -736,6 +947,27 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         }
     }
 
+    /// Every suspension point permits cancellation, explicit Forget, or a newly authenticated
+    /// replacement pair to run on the main actor. No result resumed from that suspension may
+    /// persist, invoke completion callbacks, or advance reconnect state unless both the operation
+    /// and the exact durable pair are still authoritative.
+    private func requireCurrentSavedPairMutation(
+        _ context: SavedPairAttemptContext,
+        record: RemotePairedDeviceRecord,
+        pairingState: ViewerPairingState,
+        operationID: UUID
+    ) throws {
+        try Task.checkCancellation()
+        try requireCurrentSavedPairAttempt(
+            context,
+            pairingState: pairingState,
+            operationID: operationID
+        )
+        guard record.pairID == context.pairID else {
+            throw WorldwideViewerConnectionError.incompletePairing
+        }
+    }
+
     /// A connected WebSocket is not proof that the paired Mac is still able to answer this
     /// exchange. Closing this exact attempt turns a silent response into the same recoverable
     /// availability failure as `peerLeft`, so the outer loop reloads the latest durable reconnect
@@ -757,9 +989,29 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         }
     }
 
+    /// Keeps the coordinator's monotonic retry deadline authoritative while one healthy socket
+    /// emits `waiting` forever or its upgrade/receive path goes silent. The task captures the
+    /// exact attempt client, so it cannot close a newer retry or replacement operation.
+    private func makeAvailabilityAttemptDeadlineTask(
+        client: any ViewerPairedAvailabilityTransport,
+        timeoutNanoseconds: UInt64
+    ) -> Task<Void, Never> {
+        let deadlineSleep = availabilityAttemptDeadlineSleep
+        return Task {
+            do {
+                try await deadlineSleep(timeoutNanoseconds)
+                try Task.checkCancellation()
+            } catch {
+                return
+            }
+            await client.close()
+        }
+    }
+
     private func isTransientAvailabilityError(_ error: any Error) -> Bool {
         if let signalingError = error as? RendezvousSignalingError {
-            return signalingError == .connectionFailed
+            return signalingError == .notConnected
+                || signalingError == .connectionFailed
                 || signalingError == .connectionClosed
                 || signalingError == .sendFailed
         }
@@ -782,6 +1034,114 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
             || connectionError == .rendezvous(.roleConflict)
     }
 
+    private func beginSavedPairAttempt(
+        operationID: UUID,
+        record: RemotePairedDeviceRecord,
+        pairingState: ViewerPairingState
+    ) throws -> SavedPairAttemptContext {
+        let context = SavedPairAttemptContext(
+            attemptID: operationID,
+            pairID: record.pairID
+        )
+        try transitionSavedPairAttempt(
+            to: .waitingForAvailability(context),
+            context: context,
+            pairingState: pairingState,
+            operationID: operationID
+        )
+        return context
+    }
+
+    /// Prevents an async callback from one connection attempt (or from a replaced pair) from
+    /// changing the presentation of the current durable pair.
+    private func requireCurrentSavedPairAttempt(
+        _ context: SavedPairAttemptContext,
+        pairingState: ViewerPairingState,
+        operationID: UUID
+    ) throws {
+        try requireCurrentOperation(operationID)
+        guard context.attemptID == operationID,
+              let durableRecord = pairingState.pairingRecord,
+              durableRecord.pairID == context.pairID else {
+            savedPairConnectionState = .idle
+            throw WorldwideViewerConnectionError.incompletePairing
+        }
+    }
+
+    private func transitionSavedPairAttempt(
+        to state: SavedPairConnectionState,
+        context: SavedPairAttemptContext,
+        pairingState: ViewerPairingState,
+        operationID: UUID
+    ) throws {
+        try requireCurrentSavedPairAttempt(
+            context,
+            pairingState: pairingState,
+            operationID: operationID
+        )
+        let stateContext: SavedPairAttemptContext
+        switch state {
+        case .idle:
+            savedPairConnectionState = .idle
+            return
+        case .waitingForAvailability(let candidate),
+             .preparingSession(let candidate),
+             .unavailableAfterDeadline(let candidate):
+            stateContext = candidate
+        }
+        guard stateContext == context else {
+            savedPairConnectionState = .idle
+            throw WorldwideViewerConnectionError.incompletePairing
+        }
+        savedPairConnectionState = state
+    }
+
+    private func markSavedPairDeadlineExhausted(
+        _ error: any Error,
+        context: SavedPairAttemptContext,
+        pairingState: ViewerPairingState,
+        operationID: UUID
+    ) throws {
+        guard isTransientAvailabilityError(error) else { throw error }
+        try transitionSavedPairAttempt(
+            to: .unavailableAfterDeadline(context),
+            context: context,
+            pairingState: pairingState,
+            operationID: operationID
+        )
+        stateText = "Paired Mac unavailable"
+        // Reachability failure is a recoverable presentation state. The durable pair remains
+        // authoritative and no generic error may imply that it expired or must be replaced.
+        lastError = nil
+    }
+
+    /// Only preserves the typed recovery state that an actual monotonic-deadline branch marked.
+    /// A transient error from any other source must still use the normal error presentation.
+    @discardableResult
+    private func publishSavedPairExhaustion(
+        _ error: any Error,
+        context: SavedPairAttemptContext?,
+        pairingState: ViewerPairingState,
+        operationID: UUID
+    ) -> Bool {
+        guard isTransientAvailabilityError(error),
+              activeOperationID == operationID,
+              let context,
+              context.attemptID == operationID,
+              let durableRecord = pairingState.pairingRecord,
+              durableRecord.pairID == context.pairID else {
+            return false
+        }
+
+        guard case .unavailableAfterDeadline(let exhaustedContext) = savedPairConnectionState,
+              exhaustedContext == context else {
+            return false
+        }
+
+        lastError = nil
+        return true
+    }
+
     private func beginOperation(state: String) throws -> UUID {
         guard activeOperationID == nil else {
             throw WorldwideViewerConnectionError.alreadyConnecting
@@ -789,6 +1149,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         let operationID = UUID()
         activeOperationID = operationID
         isConnecting = true
+        savedPairConnectionState = .idle
         stateText = state
         lastError = nil
         pairingBackgroundTask.beginTransitionTask()

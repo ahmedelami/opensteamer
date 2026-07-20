@@ -1,5 +1,7 @@
-import XCTest
+import RemoteSessionCore
 import SwiftUI
+import WebRTCTransport
+import XCTest
 @testable import AudioStreamer
 
 final class WorldwideRemoteInputLifecycleTests: XCTestCase {
@@ -187,6 +189,132 @@ final class WorldwideRemoteInputLifecycleTests: XCTestCase {
 }
 
 @MainActor
+final class WorldwideSessionGenerationFenceTests: XCTestCase {
+    func testCancelledStatisticsStartupCannotPublishIntoReplacementSession() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let statisticsStarted = expectation(description: "old statistics startup suspended")
+        let staleReadyFinished = expectation(description: "old ready handler finished")
+        let gate = NonCooperativeAsyncGate()
+        viewModel.debugInstallStatisticsStarter { _ in
+            statisticsStarted.fulfill()
+            await gate.wait()
+        }
+        viewModel.debugInstallSessionRunner {
+            try? await Task.sleep(for: .seconds(60))
+        }
+
+        let oldClient = try makeSignalingClient()
+        XCTAssertTrue(viewModel.connect(signalingClient: oldClient))
+        let staleReady = Task { @MainActor in
+            defer { staleReadyFinished.fulfill() }
+            try await viewModel.debugDeliverReadyForRaceTests()
+        }
+
+        await fulfillment(of: [statisticsStarted], timeout: 2)
+
+        // Disconnect rotates every production ownership token and cancels actor work. The
+        // injected startup deliberately ignores cancellation, matching a non-cooperative actor
+        // operation that returns only after the replacement has been accepted.
+        viewModel.disconnect()
+        let replacementClient = try makeSignalingClient()
+        XCTAssertTrue(viewModel.connect(signalingClient: replacementClient))
+        XCTAssertTrue(viewModel.debugSignalingIs(replacementClient))
+        staleReady.cancel()
+        await gate.open()
+
+        await fulfillment(of: [staleReadyFinished], timeout: 2)
+        _ = await staleReady.result
+
+        XCTAssertTrue(viewModel.isConnecting)
+        XCTAssertEqual(viewModel.stateText, "Connecting securely")
+        XCTAssertTrue(viewModel.debugSignalingIs(replacementClient))
+        XCTAssertTrue(viewModel.hasActiveSession)
+        viewModel.disconnect()
+    }
+
+    func testStaleInputUnavailableCannotRevokeReplacementInputSession() async throws {
+        try await assertStaleInputFailureCannotMutateReplacement(.inputUnavailable)
+    }
+
+    func testStaleInvalidInputRequestCannotClearReplacementFocusOrQueue() async throws {
+        try await assertStaleInputFailureCannotMutateReplacement(.invalidInputRequest)
+    }
+
+    private func assertStaleInputFailureCannotMutateReplacement(
+        _ error: WebRTCTransportError,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let sendStarted = expectation(description: "old input send suspended")
+        let oldDrainFinished = expectation(description: "old input drain finished")
+        let gate = NonCooperativeAsyncGate()
+        viewModel.debugInstallRemoteInputSender { _, _, _, _ in
+            sendStarted.fulfill()
+            await gate.wait()
+            throw error
+        }
+
+        let oldPeer = try makeViewerPeer()
+        let replacementPeer = try makeViewerPeer()
+        let oldAuthorization = viewModel.debugInstallQueuedRemoteInputSessionForRaceTests(
+            peer: oldPeer,
+            focusGeneration: 101,
+            diagnostic: "Old diagnostic"
+        )
+        let oldDrain = Task { @MainActor in
+            await viewModel.debugDrainRemoteInputQueueForRaceTests()
+            oldDrainFinished.fulfill()
+        }
+
+        await fulfillment(of: [sendStarted], timeout: 2)
+
+        let replacementAuthorization =
+            viewModel.debugInstallQueuedRemoteInputSessionForRaceTests(
+                peer: replacementPeer,
+                focusGeneration: 202,
+                diagnostic: "Replacement diagnostic"
+            )
+        let replacementBeforeResume = viewModel.debugRemoteInputState
+        XCTAssertFalse(oldAuthorization.isValid, file: file, line: line)
+        XCTAssertTrue(replacementAuthorization.isValid, file: file, line: line)
+        XCTAssertEqual(replacementBeforeResume.focusGeneration, 202, file: file, line: line)
+        XCTAssertEqual(replacementBeforeResume.queuedActionCount, 1, file: file, line: line)
+        XCTAssertEqual(viewModel.lastDiagnostic, "Replacement diagnostic", file: file, line: line)
+
+        await gate.open()
+        await fulfillment(of: [oldDrainFinished], timeout: 2)
+        await oldDrain.value
+
+        let replacementAfterResume = viewModel.debugRemoteInputState
+        XCTAssertEqual(replacementAfterResume, replacementBeforeResume, file: file, line: line)
+        XCTAssertTrue(replacementAuthorization.isValid, file: file, line: line)
+        XCTAssertEqual(viewModel.lastDiagnostic, "Replacement diagnostic", file: file, line: line)
+
+        viewModel.disconnect()
+        await oldPeer.close()
+        await replacementPeer.close()
+    }
+
+    private func makeSignalingClient() throws -> RendezvousSignalingClient {
+        try RendezvousSignalingClient(
+            endpoint: XCTUnwrap(URL(string: "wss://generation-fence.invalid")),
+            invitation: RemoteInvitationCode.generate(),
+            role: .viewer
+        )
+    }
+
+    private func makeViewerPeer() throws -> WebRTCPeer {
+        try WebRTCPeer(
+            configuration: WebRTCTransportConfiguration(
+                role: .viewer,
+                iceServers: []
+            )
+        )
+    }
+}
+
+@MainActor
 private final class LifecycleProbe {
     var hideStarted = false
     var hideFailed = false
@@ -210,6 +338,30 @@ private actor AsyncGate {
         let currentWaiters = waiters
         waiters.removeAll(keepingCapacity: false)
         for waiter in currentWaiters {
+            waiter.resume()
+        }
+    }
+}
+
+/// Checked continuations intentionally do not observe task cancellation. This models the exact
+/// actor-reentrancy failure mode: teardown cancels A, but A still returns after B is installed.
+private actor NonCooperativeAsyncGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        guard !isOpen else { return }
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll(keepingCapacity: false)
+        for waiter in pending {
             waiter.resume()
         }
     }

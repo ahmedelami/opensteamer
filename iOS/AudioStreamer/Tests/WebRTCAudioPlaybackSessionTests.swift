@@ -6,6 +6,87 @@ import XCTest
 
 @MainActor
 final class WebRTCAudioPlaybackSessionTests: XCTestCase {
+    func testRecoveryAuthorizationRejectsSideEffectsAfterRevocation() {
+        let authorization = WebRTCIOSPlayoutRecoveryAuthorization()
+        let counter = LockedInteger()
+
+        authorization.revoke()
+
+        XCTAssertFalse(
+            authorization.performIfValidForTesting {
+                counter.increment()
+            }
+        )
+        XCTAssertEqual(counter.value, 0)
+        XCTAssertFalse(authorization.isValid)
+    }
+
+    func testRecoveryAuthorizationRevocationWaitsForAuthorizedNativeBoundary() {
+        let authorization = WebRTCIOSPlayoutRecoveryAuthorization()
+        let operationStarted = DispatchSemaphore(value: 0)
+        let allowOperationToFinish = DispatchSemaphore(value: 0)
+        let operationFinished = DispatchSemaphore(value: 0)
+        let revokeStarted = DispatchSemaphore(value: 0)
+        let revokeFinished = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            authorization.performIfValidForTesting {
+                operationStarted.signal()
+                _ = allowOperationToFinish.wait(timeout: .now() + 2)
+            }
+            operationFinished.signal()
+        }
+        XCTAssertEqual(operationStarted.wait(timeout: .now() + 1), .success)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            revokeStarted.signal()
+            authorization.revoke()
+            revokeFinished.signal()
+        }
+        XCTAssertEqual(revokeStarted.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(
+            revokeFinished.wait(timeout: .now() + 0.25),
+            .timedOut,
+            "Synchronous revocation must wait for an authorized native operation to linearize."
+        )
+
+        allowOperationToFinish.signal()
+        XCTAssertEqual(operationFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(revokeFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertFalse(authorization.isValid)
+    }
+
+    func testQueuedNativeRecoveryRejectsRevokedAttemptBeforeRebuild() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        let retiredAuthorization = WebRTCIOSPlayoutRecoveryAuthorization()
+
+        harness.queueRecovery(authorization: retiredAuthorization)
+        XCTAssertEqual(harness.queuedOperationCount, 1)
+        XCTAssertEqual(harness.diagnostics.requestCount, 1)
+        XCTAssertEqual(harness.diagnostics.rebuildCount, 0)
+
+        retiredAuthorization.revoke()
+        XCTAssertTrue(harness.runNextQueuedOperation())
+
+        let rejected = harness.diagnostics
+        XCTAssertEqual(rejected.requestCount, 1)
+        XCTAssertEqual(rejected.authorizationRejectionCount, 1)
+        XCTAssertEqual(rejected.rebuildCount, 0)
+        XCTAssertFalse(rejected.sessionActive)
+        XCTAssertFalse(rejected.remoteIOCreated)
+
+        let currentAuthorization = WebRTCIOSPlayoutRecoveryAuthorization()
+        harness.queueRecovery(authorization: currentAuthorization)
+        XCTAssertTrue(harness.runNextQueuedOperation())
+
+        let accepted = harness.diagnostics
+        XCTAssertEqual(accepted.requestCount, 2)
+        XCTAssertEqual(accepted.authorizationRejectionCount, 1)
+        XCTAssertEqual(accepted.rebuildCount, 1)
+        XCTAssertFalse(accepted.sessionActive)
+        XCTAssertFalse(accepted.remoteIOCreated)
+    }
+
     func testActivationOpensOnlyTheManualWebRTCGate() throws {
         let native = WebRTCAudioSessionStub()
         let playback = WebRTCAudioPlaybackSession(session: native)
@@ -168,7 +249,10 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
 
         // A normal app-lifecycle recovery signal must be idempotent while this exact device owns
         // healthy playout. In particular, it must not tear down RemoteIO and produce an audible gap.
-        await viewer.requestIOSPlayoutRecovery()
+        let healthyRecoveryAuthorization = WebRTCIOSPlayoutRecoveryAuthorization()
+        await viewer.requestIOSPlayoutRecovery(
+            authorization: healthyRecoveryAuthorization
+        )
         try await Task.sleep(for: .milliseconds(50))
         let healthyRecoveryDiagnostics = await viewer.iOSPlayoutDiagnostics()
         let afterHealthyRecoveryRequest = try XCTUnwrap(healthyRecoveryDiagnostics)
@@ -208,7 +292,10 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         XCTAssertEqual(failedClosed.failureCode, 19)
         XCTAssertNotNil(failedClosed.failureMessage)
 
-        await viewer.requestIOSPlayoutRecovery()
+        let routeRecoveryAuthorization = WebRTCIOSPlayoutRecoveryAuthorization()
+        await viewer.requestIOSPlayoutRecovery(
+            authorization: routeRecoveryAuthorization
+        )
         var recovered = await viewer.iOSPlayoutDiagnostics()
         for _ in 0..<500 where recovered?.playing != true {
             try await Task.sleep(for: .milliseconds(10))
@@ -264,6 +351,17 @@ private final class LockedFailures: @unchecked Sendable {
 
     func append(_ error: any Error) {
         lock.withLock { storage.append(String(describing: error)) }
+    }
+}
+
+private final class LockedInteger: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = 0
+
+    var value: Int { lock.withLock { storage } }
+
+    func increment() {
+        lock.withLock { storage += 1 }
     }
 }
 
