@@ -97,6 +97,15 @@ manual IP addresses, router configuration, or public TCP ports.
   audio; interruption, private-route loss, uncertainty, and disconnect mute the
   native remote track itself. Never auto-resume when iOS omits `shouldResume`, and
   never promise playback after the user force-quits the app.
+- Physical audio release validation must observe final RemoteIO PCM, not merely RTP statistics or
+  callback clocks. Drive a time-varying stereo challenge containing both ordinary and >8 kHz
+  content, require its bounded envelope-transition and per-channel band signatures across
+  foreground, Home, and Screen Show/Hide intervals, and reject callback gaps over 25 ms,
+  near-silence, clipping, audio-unit rebuilds, frozen callbacks, rapid gain pumping, cumulative
+  non-sinusoidal callback shape, and cross-callback phase discontinuities. A healthy final callback
+  must never erase bad callbacks earlier in the measured interval. Keep telephone-band low-pass,
+  flattened/square PCM, and repeated 10 ms phase-reset mutants so call-quality or audible-click
+  regressions cannot pass as full fidelity.
 - An iPhone audio-session conflict must degrade audio without aborting worldwide
   signaling, screen viewing, or remote control. Gate manual WebRTC playback before
   signaling; never fall back from `.playback` / `.default` / no options to a movie,
@@ -107,7 +116,9 @@ manual IP addresses, router configuration, or public TCP ports.
 - Worldwide Show/Hide must use monotonic request IDs and host acknowledgements.
   The iPhone must not claim the screen is live until Mac capture actually starts.
   Screen capture must fail closed on peer/control uncertainty and require a fresh
-  acknowledged Show after recovery.
+  acknowledged Show after recovery. Physical release evidence must separately require decoded
+  frame cadence and decoded pixel-change cadence; a high frame counter over 1–2 pixel updates per
+  second is a slideshow, not a live screen.
 - Worldwide remote input is a separate, host-authorized capability and is off by
   default. It may be enabled only by launching the host with both `--worldwide` and
   `--allow-remote-control`; the trusted-LAN viewer remains view-only. Input uses the
@@ -171,6 +182,10 @@ claim "works anywhere" until TURN is active and unrelated-network plus forced-TU
 physical-device tests pass.
 
 ## Commits
+
+Release validation must follow [TESTING_ORACLES.md](TESTING_ORACLES.md). A source string, mocked
+state transition, UI label, or stale artifact is not sufficient proof of a production behavior;
+use the independent artifact/runtime oracle and mutation described there.
 
 Every commit message should include a concise `Why:` section and a concise `What:` section.
 
