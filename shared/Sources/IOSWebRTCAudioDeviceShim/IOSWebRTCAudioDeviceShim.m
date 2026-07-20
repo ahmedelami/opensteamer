@@ -522,8 +522,9 @@ static inline void ASRecordWaveformQualityState(
 
 /// Measures the exact signed-16-bit interleaved stereo bytes returned by WebRTC to RemoteIO.
 /// This is intentionally integer-only, allocation-free, and lock-free because it runs on the
-/// realtime render thread. The counters are evidence of PCM content at the final native output
-/// boundary; callback/frame demand alone can advance even when a buggy playout block writes silence.
+/// realtime render thread. The counters are evidence of PCM at RemoteIO's render-input boundary,
+/// before iOS system mixing, route DSP, the DAC, and the speaker; callback/frame demand alone can
+/// advance even when a buggy playout block writes silence.
 static inline void ASAnalyzeRenderedPCM(
     ASRealtimeDiagnostics *diagnostics,
     const AudioBufferList *outputData,

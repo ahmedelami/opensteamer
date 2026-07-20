@@ -474,6 +474,21 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         XCTAssertEqual(native.unlockCount, 0)
     }
 
+    func testManualDisabledPreparationNeverActivatesOrConfiguresAudioSession() {
+        let native = WebRTCAudioSessionStub()
+        native.isAudioEnabled = true
+        let playback = WebRTCAudioPlaybackSession(session: native)
+
+        playback.prepareManualAudioDisabled()
+
+        XCTAssertFalse(native.isAudioEnabled)
+        XCTAssertEqual(native.prepareCount, 1)
+        XCTAssertTrue(native.configuredModes.isEmpty)
+        XCTAssertTrue(native.setActiveValues.isEmpty)
+        XCTAssertEqual(native.lockCount, 0)
+        XCTAssertEqual(native.unlockCount, 0)
+    }
+
     func testDeactivationClosesTheGateWithoutCompetingForAVAudioSessionOwnership() throws {
         let native = WebRTCAudioSessionStub()
         let playback = WebRTCAudioPlaybackSession(session: native)

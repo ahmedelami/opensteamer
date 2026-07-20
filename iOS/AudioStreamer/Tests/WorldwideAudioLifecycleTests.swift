@@ -93,6 +93,304 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertEqual(snapshots.last, inactiveSnapshot)
     }
 
+    func testActiveCallAtStartupNeverOpensNativeAudioGate() {
+        let fixture = makeFixture(nonEndedCallCount: 1)
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        fixture.controller.appBecameActive()
+        fixture.events.onRouteChanged?("Audio route changed: category")
+        fixture.events.onEngineConfigurationChanged?()
+        fixture.events.onMediaServicesReset?()
+
+        XCTAssertEqual(fixture.callActivity.startCount, 1)
+        XCTAssertEqual(fixture.playback.activateCount, 0)
+        XCTAssertEqual(fixture.playback.recoverCount, 0)
+        XCTAssertEqual(fixture.playback.prepareManualAudioDisabledCount, 1)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertEqual(
+            fixture.controller.snapshot.stateText,
+            "Audio paused — iPhone call active"
+        )
+        XCTAssertTrue(fixture.controller.snapshot.errorText?.contains("Screen and control") == true)
+    }
+
+    func testEnabledTrackArrivingDuringActiveCallIsImmediatelyDisabled() {
+        let fixture = makeFixture(nonEndedCallCount: 1)
+        let arrivingTrack = RemoteAudioStub(initiallyEnabled: true)
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(arrivingTrack)
+
+        XCTAssertEqual(arrivingTrack.enabledValues, [false])
+        XCTAssertFalse(arrivingTrack.isEnabled)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
+        XCTAssertTrue(fixture.controller.snapshot.isRemoteAudioAvailable)
+        XCTAssertFalse(fixture.controller.snapshot.isPlaying)
+        XCTAssertEqual(
+            fixture.controller.snapshot.stateText,
+            "Audio paused — iPhone call active"
+        )
+    }
+
+    func testLiveCallPreflightBeatsQueuedCallKitCallbackBeforeRecovery() {
+        let fixture = makeFixture()
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        let recoverCountBeforeCall = fixture.playback.recoverCount
+        XCTAssertTrue(fixture.playback.nativeAudioEnabled)
+
+        // Model CXCallObserver.calls changing before its main-queue delegate callback arrives.
+        fixture.callActivity.stageLiveNonEndedCallCountWithoutCallback(1)
+        fixture.controller.appBecameActive()
+
+        XCTAssertEqual(fixture.playback.recoverCount, recoverCountBeforeCall)
+        XCTAssertEqual(fixture.playback.prepareManualAudioDisabledCount, 1)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertEqual(
+            fixture.controller.snapshot.stateText,
+            "Audio paused — iPhone call active"
+        )
+    }
+
+    func testEveryGateOpeningRecoveryInvalidatesProofBeforeNativeRecover() {
+        let fixture = makeFixture()
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        let recoverCountBeforeEvent = fixture.playback.recoverCount
+        let staleAuthorization = WebRTCIOSPlayoutRecoveryAuthorization()
+        fixture.controller.onAudioProofInvalidated = { requiresFreshRecovery in
+            XCTAssertFalse(requiresFreshRecovery)
+            staleAuthorization.revoke()
+        }
+        fixture.playback.onRecover = {
+            XCTAssertFalse(
+                staleAuthorization.isValid,
+                "Proof authorization must be revoked before the native gate can reopen."
+            )
+        }
+
+        fixture.events.onEngineConfigurationChanged?()
+
+        XCTAssertEqual(fixture.playback.recoverCount, recoverCountBeforeEvent + 1)
+        XCTAssertFalse(staleAuthorization.isValid)
+        XCTAssertTrue(fixture.playback.nativeAudioEnabled)
+    }
+
+    func testCallWhilePlayingClosesBothAudioGatesUntilFinalCallEnds() {
+        let fixture = makeFixture()
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        XCTAssertTrue(fixture.playback.nativeAudioEnabled)
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+        let recoverCountBeforeCall = fixture.playback.recoverCount
+
+        fixture.callActivity.setNonEndedCallCount(1)
+
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertEqual(fixture.playback.prepareManualAudioDisabledCount, 1)
+        XCTAssertEqual(fixture.playback.recoverCount, recoverCountBeforeCall)
+        XCTAssertFalse(fixture.controller.snapshot.isPlaying)
+
+        // A second overlapping call and every ordinary recovery stimulus must remain fail-closed.
+        fixture.callActivity.setNonEndedCallCount(2)
+        fixture.controller.appBecameActive()
+        fixture.controller.appEnteredBackground()
+        fixture.events.onRouteChanged?("Audio route changed: category")
+        fixture.events.onEngineConfigurationChanged?()
+        fixture.events.onMediaServicesReset?()
+        fixture.callActivity.setNonEndedCallCount(1)
+
+        XCTAssertEqual(fixture.playback.recoverCount, recoverCountBeforeCall)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+
+        fixture.callActivity.setNonEndedCallCount(0)
+
+        XCTAssertEqual(fixture.playback.recoverCount, recoverCountBeforeCall + 1)
+        XCTAssertTrue(fixture.playback.nativeAudioEnabled)
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+        XCTAssertEqual(fixture.controller.snapshot.stateText, "Playing")
+    }
+
+    func testCallStartPreservesAuthenticatedScreenControlAndPeer() async throws {
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        let peer = try makeAudioRacePeer()
+        let screen = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        let screenStateBeforeCall = viewModel.debugScreenPresentationState
+        let sessionStateBeforeCall = viewModel.stateText
+
+        XCTAssertTrue(viewModel.canViewScreen)
+        XCTAssertTrue(viewModel.remoteInputIsAvailable(for: screen.lease))
+        XCTAssertTrue(screen.authorization.isValid)
+
+        fixture.callActivity.setNonEndedCallCount(1)
+
+        XCTAssertFalse(viewModel.isRemoteAudioPlaying)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
+        XCTAssertNil(viewModel.lastError)
+        XCTAssertEqual(viewModel.stateText, sessionStateBeforeCall)
+        XCTAssertTrue(viewModel.isPeerConnected)
+        XCTAssertTrue(viewModel.isControlChannelReady)
+        XCTAssertTrue(viewModel.canViewScreen)
+        XCTAssertTrue(viewModel.remoteInputIsAvailable(for: screen.lease))
+        XCTAssertTrue(screen.authorization.isValid)
+        let screenStateAfterCall = viewModel.debugScreenPresentationState
+        XCTAssertEqual(screenStateAfterCall.sessionGeneration, screenStateBeforeCall.sessionGeneration)
+        XCTAssertEqual(screenStateAfterCall.currentLease, screenStateBeforeCall.currentLease)
+        XCTAssertEqual(screenStateAfterCall.activeLease, screenStateBeforeCall.activeLease)
+        XCTAssertEqual(screenStateAfterCall.isScreenVisible, screenStateBeforeCall.isScreenVisible)
+        XCTAssertEqual(screenStateAfterCall.inputAvailable, screenStateBeforeCall.inputAvailable)
+        XCTAssertEqual(screenStateAfterCall.remoteHideRequired, screenStateBeforeCall.remoteHideRequired)
+        XCTAssertEqual(screenStateAfterCall.pendingRequestKey, screenStateBeforeCall.pendingRequestKey)
+        XCTAssertEqual(
+            screenStateAfterCall.displacedPendingRequestCount,
+            screenStateBeforeCall.displacedPendingRequestCount
+        )
+        XCTAssertEqual(screenStateAfterCall.hasActiveSession, screenStateBeforeCall.hasActiveSession)
+        XCTAssertTrue(viewModel.debugScreenPeerIs(peer))
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testCallEndWaitsForInterruptionAndExplicitResumePolicy() {
+        let fixture = makeFixture()
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        let recoverCountBeforeCall = fixture.playback.recoverCount
+
+        fixture.callActivity.setNonEndedCallCount(1)
+        fixture.events.onInterruptionBegan?()
+        fixture.callActivity.setNonEndedCallCount(0)
+
+        XCTAssertEqual(fixture.playback.recoverCount, recoverCountBeforeCall)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
+
+        fixture.events.onInterruptionEnded?(false)
+        fixture.controller.appBecameActive()
+
+        XCTAssertTrue(fixture.controller.snapshot.requiresExplicitResume)
+        XCTAssertEqual(fixture.playback.recoverCount, recoverCountBeforeCall)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+
+        fixture.controller.resumePlayback()
+
+        XCTAssertEqual(fixture.playback.recoverCount, recoverCountBeforeCall + 1)
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+    }
+
+    func testFinalCallEndRequiresFreshAdvancingProofBeforePlaying() async throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let peer = try makeAudioRacePeer()
+        let recoveryRequested = expectation(description: "post-call native recovery requested")
+        let floorReadStarted = expectation(description: "post-call floor read started")
+        let advanceReadStarted = expectation(description: "post-call advance read started")
+        let floorGate = AudioNonCooperativeGate<WebRTCIOSPlayoutDiagnostics>()
+        let advanceGate = AudioNonCooperativeGate<WebRTCIOSPlayoutDiagnostics>()
+        var diagnosticsReadCount = 0
+
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader { requestedPeer in
+            XCTAssertTrue(requestedPeer === peer)
+            diagnosticsReadCount += 1
+            switch diagnosticsReadCount {
+            case 1:
+                return iosPlayoutDiagnostics(callbacks: 9, frames: 4_320, failures: 0)
+            case 2:
+                floorReadStarted.fulfill()
+                return await floorGate.wait()
+            default:
+                advanceReadStarted.fulfill()
+                return await advanceGate.wait()
+            }
+        }
+        viewModel.debugInstallIOSPlayoutRecoveryRequester { requestedPeer, authorization in
+            XCTAssertTrue(requestedPeer === peer)
+            XCTAssertTrue(authorization.performIfValidForTesting {})
+            authorization.revoke()
+            recoveryRequested.fulfill()
+        }
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        viewModel.debugInstallIOSPlayoutPeerForRaceTests(peer)
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        fixture.controller.updateRuntimePlayout(isReady: true)
+        let recoverCountBeforeCall = fixture.playback.recoverCount
+        let preCallGeneration = viewModel.debugAudioPolicyGeneration
+        XCTAssertEqual(fixture.controller.snapshot.stateText, "Playing")
+
+        fixture.callActivity.setNonEndedCallCount(1)
+        let activeCallGeneration = viewModel.debugAudioPolicyGeneration
+        XCTAssertNotEqual(activeCallGeneration, preCallGeneration)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertFalse(fixture.controller.snapshot.isPlaying)
+
+        fixture.callActivity.setNonEndedCallCount(0)
+        let postCallGeneration = viewModel.debugAudioPolicyGeneration
+        XCTAssertNotEqual(postCallGeneration, activeCallGeneration)
+        XCTAssertNotEqual(postCallGeneration, preCallGeneration)
+
+        XCTAssertEqual(fixture.playback.recoverCount, recoverCountBeforeCall + 1)
+        XCTAssertTrue(fixture.playback.nativeAudioEnabled)
+        XCTAssertTrue(
+            fixture.remoteAudio.isEnabled,
+            "The decoded track must open only to let RemoteIO produce fresh proof."
+        )
+        XCTAssertEqual(fixture.controller.snapshot.stateText, "Starting playback")
+        XCTAssertFalse(fixture.controller.snapshot.isPlaying)
+        XCTAssertTrue(viewModel.debugAudioPolicyRequiresFreshRecovery)
+
+        await fulfillment(of: [recoveryRequested, floorReadStarted], timeout: 2)
+        let handle = try XCTUnwrap(viewModel.debugIOSPlayoutProofState.handle)
+        XCTAssertEqual(
+            handle.audioPolicyGeneration,
+            postCallGeneration
+        )
+        let floor = iosPlayoutDiagnostics(callbacks: 10, frames: 4_800, failures: 0)
+        await floorGate.open(floor)
+        await fulfillment(of: [advanceReadStarted], timeout: 2)
+        XCTAssertEqual(viewModel.debugIOSPlayoutProofState.handle, handle)
+        XCTAssertEqual(viewModel.debugIOSPlayoutProofState.stage, .awaitingFreshEvidence)
+        XCTAssertEqual(viewModel.debugIOSPlayoutProofState.callbackFloor, 10)
+        XCTAssertEqual(viewModel.debugIOSPlayoutProofState.frameFloor, 4_800)
+        XCTAssertEqual(fixture.controller.snapshot.stateText, "Starting playback")
+        XCTAssertFalse(fixture.controller.snapshot.isPlaying)
+
+        await advanceGate.open(
+            iosPlayoutDiagnostics(callbacks: 11, frames: 5_280, failures: 0)
+        )
+        let deadline = ContinuousClock.now + .seconds(1)
+        while !fixture.controller.snapshot.isPlaying,
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(fixture.controller.snapshot.stateText, "Playing")
+        XCTAssertTrue(fixture.controller.snapshot.isPlaying)
+        XCTAssertFalse(viewModel.debugAudioPolicyRequiresFreshRecovery)
+        XCTAssertNil(viewModel.debugIOSPlayoutProofState.handle)
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
     func testInterruptionWithoutResumeHintStaysMutedUntilExplicitResume() {
         let fixture = makeFixture()
         fixture.controller.prepare(serverName: "Mac mini")
@@ -106,6 +404,7 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertEqual(fixture.controller.snapshot.stateText, "Interrupted")
         XCTAssertFalse(fixture.controller.snapshot.isPlaying)
         XCTAssertFalse(fixture.background.publications.last?.isPlaying ?? true)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
         XCTAssertFalse(fixture.remoteAudio.isEnabled)
 
         fixture.events.onInterruptionEnded?(false)
@@ -114,10 +413,13 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertTrue(fixture.controller.snapshot.requiresExplicitResume)
         XCTAssertEqual(fixture.controller.snapshot.stateText, "Paused — resume audio")
         XCTAssertFalse(fixture.controller.snapshot.isPlaying)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
         XCTAssertFalse(fixture.remoteAudio.isEnabled)
 
         fixture.controller.appBecameActive()
         XCTAssertTrue(fixture.controller.snapshot.requiresExplicitResume)
+        XCTAssertEqual(fixture.playback.recoverCount, recoverCountBeforeInterruption)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
         XCTAssertFalse(fixture.remoteAudio.isEnabled)
         let recoverCountAfterForeground = fixture.playback.recoverCount
 
@@ -201,6 +503,7 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         fixture.events.onRouteChanged?("Audio route changed: device unavailable")
 
         XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
         XCTAssertTrue(fixture.controller.snapshot.requiresExplicitResume)
         XCTAssertEqual(fixture.playback.recoverCount, recoverCountBeforeRemoval)
 
@@ -582,8 +885,216 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertEqual(second.failureCount, first.failureCount)
         XCTAssertTrue(second.fullQualityInvariantsHold)
 
+        diagnostics.set(
+            iosPlayoutDiagnostics(
+                callbacks: 10,
+                frames: 4_800,
+                failures: 0
+            )
+        )
+        await viewModel.debugRefreshIOSPlayoutOracleForTests(from: peer)
+        XCTAssertEqual(
+            viewModel.audioPlayoutOracle,
+            second,
+            "An older same-generation snapshot must not overwrite advancing proof."
+        )
+
         viewModel.disconnect()
         XCTAssertNil(viewModel.audioPlayoutOracle)
+        await peer.close()
+    }
+
+    func testCallPolicyGenerationRejectsStatsReadAcrossCallStartAndEnd() async throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let peer = try makeAudioRacePeer()
+        let readStarted = expectation(description: "statistics read suspended before call")
+        let readFinished = expectation(description: "stale statistics read returned")
+        let diagnosticsGate = AudioNonCooperativeGate<WebRTCIOSPlayoutDiagnostics>()
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader { requestedPeer in
+            XCTAssertTrue(requestedPeer === peer)
+            readStarted.fulfill()
+            return await diagnosticsGate.wait()
+        }
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        viewModel.debugInstallIOSPlayoutPeerForRaceTests(peer)
+        let refreshTask = Task { @MainActor in
+            await viewModel.debugRefreshIOSPlayoutOracleForTests(from: peer)
+            readFinished.fulfill()
+        }
+        await fulfillment(of: [readStarted], timeout: 2)
+        await diagnosticsGate.waitUntilBlocked()
+
+        // A Boolean-only guard would be false again when the suspended read resumes and would
+        // incorrectly publish this pre-call green snapshot. Both transitions must rotate policy.
+        fixture.callActivity.setNonEndedCallCount(1)
+        fixture.callActivity.setNonEndedCallCount(0)
+        await diagnosticsGate.open(healthyIOSPlayoutDiagnostics())
+        await fulfillment(of: [readFinished], timeout: 2)
+        await refreshTask.value
+
+        XCTAssertNil(viewModel.audioPlayoutOracle)
+        XCTAssertTrue(viewModel.hasActiveSession)
+        XCTAssertEqual(fixture.playback.prepareManualAudioDisabledCount, 1)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testCallStartRevokesQueuedNativeRecoveryWithoutDisconnectingPeer() async throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let peer = try makeAudioRacePeer()
+        let requestStarted = expectation(description: "native recovery request suspended")
+        let proofFinished = expectation(description: "call-retired proof returned")
+        let requestGate = AudioNonCooperativeGate<Void>()
+        let nativeRecoveryCount = AudioLockedInteger()
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader { requestedPeer in
+            XCTAssertTrue(requestedPeer === peer)
+            return iosPlayoutDiagnostics(callbacks: 10, frames: 4_800, failures: 0)
+        }
+        viewModel.debugInstallIOSPlayoutRecoveryRequester { requestedPeer, authorization in
+            XCTAssertTrue(requestedPeer === peer)
+            requestStarted.fulfill()
+            await requestGate.wait()
+            authorization.performIfValidForTesting {
+                nativeRecoveryCount.increment()
+            }
+        }
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        viewModel.debugInstallIOSPlayoutPeerForRaceTests(peer)
+        let proof = try XCTUnwrap(
+            viewModel.debugBeginIOSPlayoutProofForRaceTests(requestRecovery: true)
+        )
+        Task { @MainActor in
+            await proof.value
+            proofFinished.fulfill()
+        }
+        await fulfillment(of: [requestStarted], timeout: 2)
+        let authorization = try XCTUnwrap(
+            viewModel.debugIOSPlayoutRecoveryAuthorizationForTests
+        )
+        XCTAssertTrue(authorization.isValid)
+
+        fixture.callActivity.setNonEndedCallCount(1)
+
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertFalse(viewModel.debugIOSPlayoutRecoveryIsAuthorized)
+        XCTAssertTrue(viewModel.hasActiveSession)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
+
+        await requestGate.open(())
+        await fulfillment(of: [proofFinished], timeout: 2)
+        XCTAssertEqual(nativeRecoveryCount.value, 0)
+        XCTAssertNil(viewModel.audioPlayoutOracle)
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testCallBlockedCallbacksCannotCreateProofReadOrAuthorization() async throws {
+        let fixture = makeFixture(nonEndedCallCount: 1)
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let peer = try makeAudioRacePeer()
+        var diagnosticReadCount = 0
+        var nativeRecoveryRequestCount = 0
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader { requestedPeer in
+            XCTAssertTrue(requestedPeer === peer)
+            diagnosticReadCount += 1
+            return healthyIOSPlayoutDiagnostics()
+        }
+        viewModel.debugInstallIOSPlayoutRecoveryRequester { requestedPeer, _ in
+            XCTAssertTrue(requestedPeer === peer)
+            nativeRecoveryRequestCount += 1
+        }
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        viewModel.debugInstallIOSPlayoutPeerForRaceTests(peer)
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        fixture.controller.appBecameActive()
+        fixture.controller.appEnteredBackground()
+        fixture.events.onRouteChanged?("Audio route changed: category")
+        fixture.events.onEngineConfigurationChanged?()
+        fixture.events.onMediaServicesReset?()
+
+        XCTAssertNil(viewModel.debugBeginIOSPlayoutProofForRaceTests(requestRecovery: false))
+        XCTAssertNil(viewModel.debugBeginIOSPlayoutProofForRaceTests(requestRecovery: true))
+        await viewModel.debugRefreshIOSPlayoutProofForRaceTests()
+        await viewModel.debugRefreshIOSPlayoutOracleForTests(from: peer)
+
+        XCTAssertEqual(diagnosticReadCount, 0)
+        XCTAssertEqual(nativeRecoveryRequestCount, 0)
+        XCTAssertNil(viewModel.debugIOSPlayoutProofState.handle)
+        XCTAssertFalse(viewModel.debugIOSPlayoutRecoveryIsAuthorized)
+        XCTAssertNil(viewModel.audioPlayoutOracle)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertTrue(viewModel.hasActiveSession)
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testInterruptionBeforeCallKitRevokesQueuedNativeRecovery() async throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let peer = try makeAudioRacePeer()
+        let requestStarted = expectation(description: "native recovery request suspended")
+        let proofFinished = expectation(description: "interruption-retired proof returned")
+        let requestGate = AudioNonCooperativeGate<Void>()
+        let nativeRecoveryCount = AudioLockedInteger()
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader { requestedPeer in
+            XCTAssertTrue(requestedPeer === peer)
+            return iosPlayoutDiagnostics(callbacks: 10, frames: 4_800, failures: 0)
+        }
+        viewModel.debugInstallIOSPlayoutRecoveryRequester { requestedPeer, authorization in
+            XCTAssertTrue(requestedPeer === peer)
+            requestStarted.fulfill()
+            await requestGate.wait()
+            authorization.performIfValidForTesting {
+                nativeRecoveryCount.increment()
+            }
+        }
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        viewModel.debugInstallIOSPlayoutPeerForRaceTests(peer)
+        let proof = try XCTUnwrap(
+            viewModel.debugBeginIOSPlayoutProofForRaceTests(requestRecovery: true)
+        )
+        Task { @MainActor in
+            await proof.value
+            proofFinished.fulfill()
+        }
+        await fulfillment(of: [requestStarted], timeout: 2)
+        let authorization = try XCTUnwrap(
+            viewModel.debugIOSPlayoutRecoveryAuthorizationForTests
+        )
+        XCTAssertTrue(authorization.isValid)
+
+        // AVAudioSession can report the interruption before CallKit reports the call. The first
+        // signal must already close native playout and revoke the exact queued side effect.
+        fixture.events.onInterruptionBegan?()
+
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertFalse(viewModel.debugIOSPlayoutRecoveryIsAuthorized)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
+        XCTAssertTrue(viewModel.hasActiveSession)
+
+        fixture.callActivity.setNonEndedCallCount(1)
+        await requestGate.open(())
+        await fulfillment(of: [proofFinished], timeout: 2)
+        XCTAssertEqual(nativeRecoveryCount.value, 0)
+        XCTAssertNil(viewModel.audioPlayoutOracle)
+
+        viewModel.disconnect()
         await peer.close()
     }
 
@@ -1085,13 +1596,27 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         let wrongAttempt = WorldwideIOSPlayoutProofDebugHandle(
             proofAttemptID: UUID(),
             counterWindowID: handle.counterWindowID,
-            sessionGeneration: handle.sessionGeneration
+            sessionGeneration: handle.sessionGeneration,
+            audioPolicyGeneration: handle.audioPolicyGeneration
         )
 
         XCTAssertFalse(
             viewModel.debugEvaluateIOSPlayoutDiagnosticsForTests(
                 iosPlayoutDiagnostics(callbacks: 65, frames: 31_200, failures: 0),
                 handle: wrongAttempt,
+                source: .statistics
+            )
+        )
+        let wrongPolicy = WorldwideIOSPlayoutProofDebugHandle(
+            proofAttemptID: handle.proofAttemptID,
+            counterWindowID: handle.counterWindowID,
+            sessionGeneration: handle.sessionGeneration,
+            audioPolicyGeneration: UUID()
+        )
+        XCTAssertFalse(
+            viewModel.debugEvaluateIOSPlayoutDiagnosticsForTests(
+                iosPlayoutDiagnostics(callbacks: 65, frames: 31_200, failures: 0),
+                handle: wrongPolicy,
                 source: .statistics
             )
         )
@@ -1110,7 +1635,8 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         let wrongWindow = WorldwideIOSPlayoutProofDebugHandle(
             proofAttemptID: handle.proofAttemptID,
             counterWindowID: UUID(),
-            sessionGeneration: handle.sessionGeneration
+            sessionGeneration: handle.sessionGeneration,
+            audioPolicyGeneration: handle.audioPolicyGeneration
         )
 
         XCTAssertFalse(
@@ -1143,7 +1669,8 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         let wrongWindow = WorldwideIOSPlayoutProofDebugHandle(
             proofAttemptID: handle.proofAttemptID,
             counterWindowID: UUID(),
-            sessionGeneration: handle.sessionGeneration
+            sessionGeneration: handle.sessionGeneration,
+            audioPolicyGeneration: handle.audioPolicyGeneration
         )
         XCTAssertFalse(
             viewModel.debugEvaluateIOSPlayoutDiagnosticsForTests(
@@ -1385,21 +1912,24 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         )
     }
 
-    private func makeFixture() -> AudioLifecycleFixture {
+    private func makeFixture(nonEndedCallCount: Int = 0) -> AudioLifecycleFixture {
         let playback = AudioPlaybackStub()
         let background = BackgroundPlaybackStub()
         let events = AudioSessionEventsStub()
+        let callActivity = CallActivityStub(nonEndedCallCount: nonEndedCallCount)
         let remoteAudio = RemoteAudioStub()
         let controller = WorldwideAudioLifecycleController(
             playback: playback,
             backgroundPlayback: background,
-            events: events
+            events: events,
+            callActivity: callActivity
         )
         return AudioLifecycleFixture(
             controller: controller,
             playback: playback,
             background: background,
             events: events,
+            callActivity: callActivity,
             remoteAudio: remoteAudio
         )
     }
@@ -1635,15 +2165,21 @@ private struct AudioLifecycleFixture {
     let playback: AudioPlaybackStub
     let background: BackgroundPlaybackStub
     let events: AudioSessionEventsStub
+    let callActivity: CallActivityStub
     let remoteAudio: RemoteAudioStub
 }
 
 @MainActor
 private final class RemoteAudioStub: WorldwideRemoteAudioControlling {
+    private let initiallyEnabled: Bool
     private(set) var enabledValues: [Bool] = []
 
+    init(initiallyEnabled: Bool = false) {
+        self.initiallyEnabled = initiallyEnabled
+    }
+
     var isEnabled: Bool {
-        enabledValues.last ?? false
+        enabledValues.last ?? initiallyEnabled
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -1656,22 +2192,76 @@ private final class AudioPlaybackStub: WorldwideAudioPlaybackManaging {
     var requiresRuntimePlayoutProof = false
     var activateError: (any Error)?
     var recoverError: (any Error)?
+    var onRecover: (() -> Void)?
     private(set) var activateCount = 0
     private(set) var recoverCount = 0
+    private(set) var prepareManualAudioDisabledCount = 0
     private(set) var deactivateCount = 0
+    private(set) var nativeAudioEnabled = false
 
     func activate() throws {
         activateCount += 1
         if let activateError { throw activateError }
+        nativeAudioEnabled = true
     }
 
     func recover() throws {
         recoverCount += 1
+        onRecover?()
         if let recoverError { throw recoverError }
+        nativeAudioEnabled = true
+    }
+
+    func prepareManualAudioDisabled() {
+        prepareManualAudioDisabledCount += 1
+        nativeAudioEnabled = false
     }
 
     func deactivate() {
         deactivateCount += 1
+        nativeAudioEnabled = false
+    }
+}
+
+@MainActor
+private final class CallActivityStub: WorldwideCallActivityObserving {
+    private(set) var nonEndedCallCount: Int
+    private var stagedLiveNonEndedCallCount: Int?
+    var liveNonEndedCallCount: Int {
+        stagedLiveNonEndedCallCount ?? nonEndedCallCount
+    }
+    var onNonEndedCallCountChanged: ((Int) -> Void)?
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
+    private var isObserving = false
+
+    init(nonEndedCallCount: Int = 0) {
+        self.nonEndedCallCount = max(0, nonEndedCallCount)
+    }
+
+    func startObserving() {
+        startCount += 1
+        isObserving = true
+    }
+
+    func stopObserving() {
+        stopCount += 1
+        isObserving = false
+        nonEndedCallCount = 0
+    }
+
+    func setNonEndedCallCount(_ count: Int) {
+        let normalized = max(0, count)
+        stagedLiveNonEndedCallCount = nil
+        guard normalized != nonEndedCallCount else { return }
+        nonEndedCallCount = normalized
+        if isObserving {
+            onNonEndedCallCountChanged?(normalized)
+        }
+    }
+
+    func stageLiveNonEndedCallCountWithoutCallback(_ count: Int) {
+        stagedLiveNonEndedCallCount = max(0, count)
     }
 }
 

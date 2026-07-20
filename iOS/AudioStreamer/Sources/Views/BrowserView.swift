@@ -382,7 +382,7 @@ struct BrowserView: View {
             Color.clear
             .frame(width: 1, height: 1)
             .accessibilityElement()
-            .accessibilityLabel("Native audio playout proof")
+            .accessibilityLabel("RemoteIO render-input proof")
             .accessibilityValue(oracle.accessibilityValue)
             .accessibilityIdentifier("worldwideAudioPlayoutOracle")
         }

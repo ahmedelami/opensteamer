@@ -53,6 +53,7 @@ struct WorldwideIOSPlayoutProofDebugHandle: Equatable, Sendable {
     let proofAttemptID: UUID
     let counterWindowID: UUID
     let sessionGeneration: UUID
+    let audioPolicyGeneration: UUID
 }
 
 enum WorldwideIOSPlayoutProofDebugSource: Sendable {
@@ -99,6 +100,7 @@ private final class IOSPlayoutProofAttempt {
     let proofAttemptID: UUID
     let counterWindowID: UUID
     let sessionGeneration: UUID
+    let audioPolicyGeneration: UUID
     let expectedPeer: WebRTCPeer?
     var stage: IOSPlayoutProofStage
     var recoveryAuthorization: WebRTCIOSPlayoutRecoveryAuthorization?
@@ -118,12 +120,14 @@ private final class IOSPlayoutProofAttempt {
         proofAttemptID: UUID = UUID(),
         counterWindowID: UUID = UUID(),
         sessionGeneration: UUID,
+        audioPolicyGeneration: UUID,
         expectedPeer: WebRTCPeer?,
         stage: IOSPlayoutProofStage
     ) {
         self.proofAttemptID = proofAttemptID
         self.counterWindowID = counterWindowID
         self.sessionGeneration = sessionGeneration
+        self.audioPolicyGeneration = audioPolicyGeneration
         self.expectedPeer = expectedPeer
         self.stage = stage
     }
@@ -192,6 +196,15 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var audioPlayoutProofTimeoutTask: Task<Void, Never>?
     private var audioPlayoutRecoveryAuthorization: WebRTCIOSPlayoutRecoveryAuthorization?
     private var iosPlayoutProofAttempt: IOSPlayoutProofAttempt?
+    /// Session identity intentionally survives an audio-only call conflict. This separate token
+    /// rotates at both call boundaries so a suspended pre-call read cannot publish after the call
+    /// starts and ends on the same peer.
+    private var audioPolicyGeneration = UUID()
+    private var verifiedAudioPolicyGeneration: UUID?
+    private var isAudioBlockedByCall = false
+    /// Remains armed until a native recovery establishes a new floor and then observes strictly
+    /// advancing callbacks and frames. It covers call, interruption, and private-route closure.
+    private var audioPolicyRequiresFreshRecovery = false
     private var controlAcknowledgementTimeoutTask: Task<Void, Never>?
     private var pendingScreenVisibilityRequest: PendingScreenVisibilityRequest?
     private var earlyControlAcknowledgements: [
@@ -280,6 +293,14 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
         audioLifecycle.onPlaybackRecoveryRequested = { [weak self] in
             self?.beginIOSPlayoutProof(requestRecovery: true)
+        }
+        audioLifecycle.onCallActivityChanged = { [weak self] isActive in
+            self?.callActivityChanged(isActive: isActive)
+        }
+        audioLifecycle.onAudioProofInvalidated = { [weak self] requiresFreshRecovery in
+            self?.invalidateAudioPolicyProof(
+                requiresFreshRecovery: requiresFreshRecovery
+            )
         }
     }
 
@@ -1576,6 +1597,10 @@ final class WorldwideSessionViewModel: ObservableObject {
     private func tearDown(reason: RemoteSessionEndReason) {
         retireIOSPlayoutRecoveryAttempt()
         audioLifecycle.stop()
+        audioPolicyGeneration = UUID()
+        verifiedAudioPolicyGeneration = nil
+        isAudioBlockedByCall = false
+        audioPolicyRequiresFreshRecovery = false
         remoteAudioTrack = nil
         resetScreenPresentationState(
             rotateQueueGeneration: true,
@@ -1640,22 +1665,51 @@ final class WorldwideSessionViewModel: ObservableObject {
         statistics = nil
     }
 
-    /// A signaling/ICE success is not proof that iOS is actually rendering full-band stereo.
+    private func callActivityChanged(isActive: Bool) {
+        guard isAudioBlockedByCall != isActive else { return }
+        isAudioBlockedByCall = isActive
+        invalidateAudioPolicyProof(requiresFreshRecovery: isActive)
+    }
+
+    private func invalidateAudioPolicyProof(requiresFreshRecovery: Bool) {
+        // Rotate first so every suspended read/proof immediately loses ownership, including the
+        // difficult case where an interruption or call starts and ends before a non-cooperative
+        // await resumes.
+        if requiresFreshRecovery {
+            audioPolicyRequiresFreshRecovery = true
+        }
+        audioPolicyGeneration = UUID()
+        verifiedAudioPolicyGeneration = nil
+        audioPlayoutOracle = nil
+        audioPlayoutProofTask?.cancel()
+        audioPlayoutProofTask = nil
+        retireIOSPlayoutRecoveryAttempt()
+    }
+
+    /// A signaling/ICE success is not proof that RemoteIO is receiving healthy media PCM. Its
+    /// callback buffer is still before iOS's final system mixer, route processing, DAC, and speaker.
     /// Recovery owns an immutable pre-request regression baseline; its first post-authorization
     /// snapshot establishes the new cumulative-counter floor.
     @discardableResult
     private func beginIOSPlayoutProof(
         requestRecovery: Bool
     ) -> Task<Void, Never>? {
+        guard !isAudioBlockedByCall else { return nil }
         retireIOSPlayoutRecoveryAttempt()
         audioPlayoutProofTask?.cancel()
+        audioPlayoutProofTask = nil
         guard let proofPeer = peer else { return nil }
 
+        let requiresRecovery = requestRecovery || audioPolicyRequiresFreshRecovery
+        let proofAudioPolicyGeneration = audioPolicyGeneration
+        verifiedAudioPolicyGeneration = nil
+        audioPlayoutOracle = nil
         audioLifecycle.updateRuntimePlayout(isReady: false)
         let attempt = IOSPlayoutProofAttempt(
             sessionGeneration: sessionGeneration,
+            audioPolicyGeneration: proofAudioPolicyGeneration,
             expectedPeer: proofPeer,
-            stage: requestRecovery ? .awaitingRecoveryBaseline : .awaitingInitialFloor
+            stage: requiresRecovery ? .awaitingRecoveryBaseline : .awaitingInitialFloor
         )
         iosPlayoutProofAttempt = attempt
         audioPlayoutProofTimeoutTask?.cancel()
@@ -1673,7 +1727,7 @@ final class WorldwideSessionViewModel: ObservableObject {
             guard let self, let attempt else { return }
             var remainingPolls = 40
 
-            if requestRecovery {
+            if requiresRecovery {
                 var capturedRecoveryBaseline = false
                 while remainingPolls > 0 {
                     guard iosPlayoutProofAttemptIsOwned(attempt) else { return }
@@ -1803,7 +1857,8 @@ final class WorldwideSessionViewModel: ObservableObject {
             publishIOSPlayoutOracle(
                 diagnostics,
                 from: proofPeer,
-                generation: attempt.sessionGeneration
+                generation: attempt.sessionGeneration,
+                policyGeneration: attempt.audioPolicyGeneration
             )
         }
         return diagnostics
@@ -1824,25 +1879,44 @@ final class WorldwideSessionViewModel: ObservableObject {
         from sourcePeer: WebRTCPeer,
         generation: UUID
     ) async {
+        let expectedPolicyGeneration = audioPolicyGeneration
         guard generation == sessionGeneration,
-              peer === sourcePeer else { return }
+              peer === sourcePeer,
+              !isAudioBlockedByCall,
+              verifiedAudioPolicyGeneration == expectedPolicyGeneration else { return }
         guard let diagnostics = await readIOSPlayoutDiagnostics(from: sourcePeer) else {
             return
         }
+        guard generation == sessionGeneration,
+              peer === sourcePeer,
+              !isAudioBlockedByCall,
+              audioPolicyGeneration == expectedPolicyGeneration,
+              verifiedAudioPolicyGeneration == expectedPolicyGeneration else { return }
         publishIOSPlayoutOracle(
             diagnostics,
             from: sourcePeer,
-            generation: generation
+            generation: generation,
+            policyGeneration: expectedPolicyGeneration
         )
     }
 
     private func publishIOSPlayoutOracle(
         _ diagnostics: WebRTCIOSPlayoutDiagnostics,
         from sourcePeer: WebRTCPeer,
-        generation: UUID
+        generation: UUID,
+        policyGeneration: UUID
     ) {
         guard generation == sessionGeneration,
-              peer === sourcePeer else { return }
+              peer === sourcePeer,
+              !isAudioBlockedByCall,
+              policyGeneration == audioPolicyGeneration,
+              verifiedAudioPolicyGeneration == policyGeneration else { return }
+        if let current = audioPlayoutOracle,
+           current.sessionGeneration == generation {
+            guard diagnostics.playoutCallbackCount >= current.callbackCount,
+                  diagnostics.playoutFrameCount >= current.frameCount,
+                  diagnostics.playoutFailureCount >= current.failureCount else { return }
+        }
         audioPlayoutOracle = WorldwideAudioPlayoutOracleSnapshot(
             sessionGeneration: generation,
             diagnostics: diagnostics,
@@ -1867,7 +1941,9 @@ final class WorldwideSessionViewModel: ObservableObject {
         _ attempt: IOSPlayoutProofAttempt
     ) -> Bool {
         guard iosPlayoutProofAttempt === attempt,
-              attempt.sessionGeneration == sessionGeneration else { return false }
+              attempt.sessionGeneration == sessionGeneration,
+              attempt.audioPolicyGeneration == audioPolicyGeneration,
+              !isAudioBlockedByCall else { return false }
         if let expectedPeer = attempt.expectedPeer {
             return peer === expectedPeer
         }
@@ -1882,6 +1958,7 @@ final class WorldwideSessionViewModel: ObservableObject {
               attempt.proofAttemptID == handle.proofAttemptID,
               attempt.counterWindowID == handle.counterWindowID,
               attempt.sessionGeneration == handle.sessionGeneration,
+              attempt.audioPolicyGeneration == handle.audioPolicyGeneration,
               iosPlayoutProofAttemptIsOwned(attempt) else { return nil }
         return attempt
     }
@@ -1909,7 +1986,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         retireIOSPlayoutRecoveryAttempt(attempt)
         audioLifecycle.updateRuntimePlayout(
             isReady: false,
-            failureMessage: "The iPhone audio output did not start in full-quality stereo.",
+            failureMessage: "The iPhone 48 kHz stereo render path did not start.",
             diagnostic: "RemoteIO produced no verified playout callback within two seconds."
         )
     }
@@ -1988,16 +2065,28 @@ final class WorldwideSessionViewModel: ObservableObject {
               let callbackFloor = attempt.callbackFloor,
               let frameFloor = attempt.frameFloor else { return false }
 
-        let fullQualityInvariantsHold =
+        let renderInputInvariantsHold =
             WorldwideAudioPlayoutOracleSnapshot.routeInvariantsHold(diagnostics)
         let hasFreshCallbackAndFrames = diagnostics.playoutCallbackCount > callbackFloor
             && diagnostics.playoutFrameCount > frameFloor
 
-        guard fullQualityInvariantsHold, hasFreshCallbackAndFrames else {
+        guard renderInputInvariantsHold, hasFreshCallbackAndFrames else {
             audioLifecycle.updateRuntimePlayout(isReady: false)
             return false
         }
 
+        verifiedAudioPolicyGeneration = attempt.audioPolicyGeneration
+        if attempt.recoveryBaseline != nil {
+            audioPolicyRequiresFreshRecovery = false
+        }
+        if let sourcePeer = attempt.expectedPeer ?? peer {
+            publishIOSPlayoutOracle(
+                diagnostics,
+                from: sourcePeer,
+                generation: attempt.sessionGeneration,
+                policyGeneration: attempt.audioPolicyGeneration
+            )
+        }
         retireIOSPlayoutRecoveryAttempt(attempt)
         audioLifecycle.updateRuntimePlayout(isReady: true)
         return true
@@ -2019,7 +2108,7 @@ final class WorldwideSessionViewModel: ObservableObject {
             || abs(diagnostics.sampleRate - 48_000) >= 1 {
             message = "The iPhone refused a degraded call-quality audio route. End the phone or FaceTime call, then retry audio."
         } else {
-            message = "The iPhone full-quality stereo output could not start."
+            message = "The iPhone 48 kHz stereo render path could not start."
         }
         let diagnostic = diagnosticOverride
             ?? diagnostics.failureMessage
@@ -2544,6 +2633,9 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     func debugRefreshIOSPlayoutOracleForTests(from sourcePeer: WebRTCPeer) async {
+        // This hook tests publication/race mechanics directly; production can arm this token
+        // only after a fresh proof window observes advancing callbacks and frames.
+        verifiedAudioPolicyGeneration = audioPolicyGeneration
         await refreshIOSPlayoutOracle(
             from: sourcePeer,
             generation: sessionGeneration
@@ -2552,6 +2644,14 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     var debugIOSPlayoutRecoveryIsAuthorized: Bool {
         audioPlayoutRecoveryAuthorization?.isValid == true
+    }
+
+    var debugAudioPolicyGeneration: UUID {
+        audioPolicyGeneration
+    }
+
+    var debugAudioPolicyRequiresFreshRecovery: Bool {
+        audioPolicyRequiresFreshRecovery
     }
 
     var debugIOSPlayoutRecoveryAuthorizationForTests:
@@ -2569,19 +2669,22 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
         retireIOSPlayoutRecoveryAttempt()
         audioPlayoutProofTask?.cancel()
+        audioPlayoutProofTask = nil
         audioLifecycle.updateRuntimePlayout(isReady: false)
 
-        let authorization = requestRecovery
+        let requiresRecovery = requestRecovery || audioPolicyRequiresFreshRecovery
+        let authorization = requiresRecovery
             ? WebRTCIOSPlayoutRecoveryAuthorization()
             : nil
         let attempt = IOSPlayoutProofAttempt(
             sessionGeneration: sessionGeneration,
+            audioPolicyGeneration: audioPolicyGeneration,
             expectedPeer: expectedPeer,
-            stage: requestRecovery
+            stage: requiresRecovery
                 ? .awaitingRecoveryBaseline
                 : .awaitingInitialFloor
         )
-        if requestRecovery {
+        if requiresRecovery {
             attempt.captureRecoveryBaseline(
                 callbackCount: preRecoveryDiagnostics?.playoutCallbackCount ?? 0,
                 frameCount: preRecoveryDiagnostics?.playoutFrameCount ?? 0,
@@ -2599,7 +2702,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         return WorldwideIOSPlayoutProofDebugHandle(
             proofAttemptID: attempt.proofAttemptID,
             counterWindowID: attempt.counterWindowID,
-            sessionGeneration: attempt.sessionGeneration
+            sessionGeneration: attempt.sessionGeneration,
+            audioPolicyGeneration: attempt.audioPolicyGeneration
         )
     }
 
@@ -2627,7 +2731,8 @@ final class WorldwideSessionViewModel: ObservableObject {
             WorldwideIOSPlayoutProofDebugHandle(
                 proofAttemptID: attempt.proofAttemptID,
                 counterWindowID: attempt.counterWindowID,
-                sessionGeneration: attempt.sessionGeneration
+                sessionGeneration: attempt.sessionGeneration,
+                audioPolicyGeneration: attempt.audioPolicyGeneration
             )
         }
         let debugStage: WorldwideIOSPlayoutProofDebugStage?

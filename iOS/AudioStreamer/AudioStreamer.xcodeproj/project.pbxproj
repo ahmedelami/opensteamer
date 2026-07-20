@@ -33,6 +33,7 @@
 		5B68963A9B756B8296B00E02 /* PhysicalOracleEvaluator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D78D757E570C129549C4EA03 /* PhysicalOracleEvaluator.swift */; };
 		6020A049BF2A81A4BC088C69 /* RemoteKeyboardInputProxyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60B3F49127B84C5F62A09AA /* RemoteKeyboardInputProxyTests.swift */; };
 		60EDE71F19F0F486F5114A52 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74366C19E45DDC6E1480B455 /* ContentView.swift */; };
+		6D76AEAC08EE392DFC15DD83 /* WorldwideCallActivityObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0F56FE4648A235DEBC2FEFF /* WorldwideCallActivityObserver.swift */; };
 		73B4A02584D2A5E832DF420C /* KeychainStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B518E85BF0EF4A5552D4842C /* KeychainStoreTests.swift */; };
 		78CFD6D043760661E04C8C53 /* ScreenSessionViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B14F0417395C719D6C848228 /* ScreenSessionViewModel.swift */; };
 		7D417DEBAF7A9627A28581B2 /* ViewerPairingState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15ECA0B0153A494961DD762E /* ViewerPairingState.swift */; };
@@ -119,6 +120,7 @@
 		CACD921FC4DA50E4A6662435 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		CB1D53C782C0E8667E890989 /* BrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserView.swift; sourceTree = "<group>"; };
 		CB6518D8E380A2F0521A61D7 /* WebRTCAudioPlaybackSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebRTCAudioPlaybackSessionTests.swift; sourceTree = "<group>"; };
+		D0F56FE4648A235DEBC2FEFF /* WorldwideCallActivityObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideCallActivityObserver.swift; sourceTree = "<group>"; };
 		D361E8872DE933953B70CFAD /* ViewerPairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerPairingStore.swift; sourceTree = "<group>"; };
 		D60B3F49127B84C5F62A09AA /* RemoteKeyboardInputProxyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteKeyboardInputProxyTests.swift; sourceTree = "<group>"; };
 		D63D930F60971C1B4FFAF952 /* AudioStreamerUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AudioStreamerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -302,6 +304,7 @@
 			children = (
 				69415A249A4906EC4B27E740 /* AudioSessionManager.swift */,
 				16071DF448515BF9F5671B2D /* WorldwideAudioLifecycleController.swift */,
+				D0F56FE4648A235DEBC2FEFF /* WorldwideCallActivityObserver.swift */,
 			);
 			path = Audio;
 			sourceTree = "<group>";
@@ -509,6 +512,7 @@
 				C75D88FDE2FF92F496A07E79 /* ViewerPairingStore.swift in Sources */,
 				4EFD8D22029ADCFD2889CDBB /* WebRTCRemoteScreenView.swift in Sources */,
 				5AEE6663606D8F28AC333783 /* WorldwideAudioLifecycleController.swift in Sources */,
+				6D76AEAC08EE392DFC15DD83 /* WorldwideCallActivityObserver.swift in Sources */,
 				89932D4466735E0FFAD49C09 /* WorldwidePhysicalOracles.swift in Sources */,
 				AB7BBAAA5041A0108E8C3D27 /* WorldwideScreenViewerView.swift in Sources */,
 				8818F0F68B976534EAEFDE96 /* WorldwideSessionViewModel.swift in Sources */,

@@ -97,8 +97,11 @@ manual IP addresses, router configuration, or public TCP ports.
   audio; interruption, private-route loss, uncertainty, and disconnect mute the
   native remote track itself. Never auto-resume when iOS omits `shouldResume`, and
   never promise playback after the user force-quits the app.
-- Physical audio release validation must observe final RemoteIO PCM, not merely RTP statistics or
-  callback clocks. Drive a time-varying stereo challenge containing both ordinary and >8 kHz
+- Physical audio release validation must observe the output-only RemoteIO render-input PCM, not
+  merely RTP statistics or callback clocks. This is the last app-observable pre-system-output
+  boundary; it does not prove what the later iOS mixer, route processing, DAC, or speaker emits.
+  A claim about final acoustic output requires independent wired or external capture. Drive a
+  time-varying stereo challenge containing both ordinary and >8 kHz
   content, require its bounded envelope-transition and per-channel band signatures across
   foreground, Home, and Screen Show/Hide intervals, and reject callback gaps over 25 ms,
   near-silence, clipping, audio-unit rebuilds, frozen callbacks, rapid gain pumping, cumulative
@@ -109,10 +112,16 @@ manual IP addresses, router configuration, or public TCP ports.
 - An iPhone audio-session conflict must degrade audio without aborting worldwide
   signaling, screen viewing, or remote control. Gate manual WebRTC playback before
   signaling; never fall back from `.playback` / `.default` / no options to a movie,
-  chat, record, mixing, or call-oriented configuration. Own at most one balanced
-  native activation lease, recover only from explicit lifecycle/route
-  events or user action, and keep audio diagnostics separate from terminal session
-  errors.
+  chat, record, mixing, or call-oriented configuration. Observe only CallKit's aggregate
+  non-ended-call count—never call identities or handles. If an iPhone call already exists at
+  startup or begins later, synchronously close both the decoded-track gate and WebRTC's native
+  audio gate while leaving the peer, screen, and control alive. Rotate a dedicated audio-policy
+  generation at both call boundaries so cancelled or non-cooperative pre-call reads cannot
+  publish stale proof after a fast start/end transition. After the final call ends, rebuild audio
+  and require a new advancing RemoteIO proof window before claiming playback; never claim crisp
+  media audio during an active iPhone call. Calls running on the Mac remain supported. Own at
+  most one balanced native activation lease, recover only from explicit lifecycle/route events
+  or user action, and keep audio diagnostics separate from terminal session errors.
 - Worldwide Show/Hide must use monotonic request IDs and host acknowledgements.
   The iPhone must not claim the screen is live until Mac capture actually starts.
   Screen capture must fail closed on peer/control uncertainty and require a fresh

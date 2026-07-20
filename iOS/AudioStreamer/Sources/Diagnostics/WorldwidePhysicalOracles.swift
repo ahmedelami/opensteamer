@@ -3,8 +3,9 @@ import Foundation
 import WebRTCTransport
 
 /// Non-secret, machine-readable evidence exported through accessibility for the physical release
-/// gate. These values deliberately contain only ephemeral session identity and monotonic native
-/// counters; pairing material, signaling credentials, and media never enter the accessibility tree.
+/// gate. These values deliberately contain only ephemeral session identity and monotonic RemoteIO
+/// render-input counters from before iOS's final mixer/route/DAC/speaker output. Pairing material,
+/// signaling credentials, and media never enter the accessibility tree.
 struct WorldwideAudioPlayoutOracleSnapshot: Equatable, Sendable {
     let sessionGeneration: UUID
     let callbackCount: UInt64

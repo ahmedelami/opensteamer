@@ -1305,6 +1305,17 @@ public final class WebRTCAudioPlaybackSession {
         #endif
     }
 
+    /// Places WebRTC in manual-audio mode while keeping its process-wide native audio gate
+    /// closed. This is the only safe startup state while an iPhone cellular, FaceTime, or other
+    /// CallKit call owns the final system route: do not activate or reconfigure AVAudioSession,
+    /// and do not allow a queued RemoteIO rebuild to recreate call-quality playout.
+    public func prepareManualAudioDisabled() {
+        #if os(iOS)
+        session.prepareForManualAudio()
+        session.isAudioEnabled = false
+        #endif
+    }
+
     public func deactivate() {
         #if os(iOS)
         session.isAudioEnabled = false
