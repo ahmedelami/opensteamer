@@ -1,5 +1,6 @@
 import CaptureCore
 import Foundation
+import RemoteSessionCore
 import Server
 
 @main
@@ -100,6 +101,9 @@ struct CaptureServerMain {
                     framesPerSecond: options.screenFramesPerSecond,
                     maximumVideoBitrate: Int(options.screenBitrate),
                     remoteInputController: remoteInputController,
+                    connectionTelemetry: LocalConnectionTelemetryJournal.applicationSupport(
+                        component: "mac-host"
+                    ),
                     logger: logger
                 )
                 let startResult = try await coordinator.start(
@@ -117,9 +121,8 @@ struct CaptureServerMain {
                     print(invitationCode)
                     print("Enter this code on the iPhone before it expires.")
                     print("")
-                case .paired(let remoteDisplayName):
-                    let name = remoteDisplayName ?? "paired iPhone"
-                    logger.info("Worldwide host is available for \(name)")
+                case .paired:
+                    logger.info("Worldwide host is available for the paired iPhone")
                 }
             } else {
                 worldwideHostCoordinator = nil
@@ -149,14 +152,31 @@ struct CaptureServerMain {
                         terminationSignals: terminationSignals
                     )
                     defer { terminationTask?.cancel() }
-                    let manager = StreamingCaptureManager(
-                        duration: options.duration,
-                        displayID: options.displayID,
-                        captureMode: options.captureMode,
-                        sink: server,
-                        logger: logger
-                    )
-                    report = try await manager.run()
+                    if let worldwideHostCoordinator {
+                        let duration = options.duration
+                        let displayID = options.displayID
+                        let captureMode = options.captureMode
+                        report = try await runCoexistingLANAndWorldwide(
+                            coordinator: worldwideHostCoordinator
+                        ) {
+                            try await StreamingCaptureManager(
+                                duration: duration,
+                                displayID: displayID,
+                                captureMode: captureMode,
+                                sink: server,
+                                logger: logger
+                            ).run()
+                        }
+                    } else {
+                        let manager = StreamingCaptureManager(
+                            duration: options.duration,
+                            displayID: options.displayID,
+                            captureMode: options.captureMode,
+                            sink: server,
+                            logger: logger
+                        )
+                        report = try await manager.run()
+                    }
                 } else if let worldwideHostCoordinator, let terminationSignals {
                     try await waitForWorldwideHost(
                         worldwideHostCoordinator,
@@ -215,6 +235,35 @@ struct CaptureServerMain {
                 guard !Task.isCancelled else { return }
                 await coordinator.stop()
                 terminationSignals.resumeDefaultHandlingAndReraise(signalNumber)
+            }
+        }
+    }
+
+    /// Races legacy LAN capture against the supervised worldwide host. If worldwide availability
+    /// terminates first, the LAN task is cancelled and the error reaches `main`, allowing launchd
+    /// to replace the otherwise-live process instead of leaving half of coexistence mode wedged.
+    static func runCoexistingLANAndWorldwide(
+        coordinator: WorldwideHostCoordinator,
+        runLAN: @escaping @Sendable () async throws -> StreamingCaptureReport
+    ) async throws -> StreamingCaptureReport {
+        try await withThrowingTaskGroup(of: CoexistenceOutcome.self) { group in
+            group.addTask {
+                .lanFinished(try await runLAN())
+            }
+            group.addTask {
+                for try await _ in coordinator.completion {}
+                return .worldwideEnded
+            }
+            defer { group.cancelAll() }
+
+            guard let outcome = try await group.next() else {
+                throw CaptureServerMainError.worldwideHostEndedDuringLAN
+            }
+            switch outcome {
+            case .lanFinished(let report):
+                return report
+            case .worldwideEnded:
+                throw CaptureServerMainError.worldwideHostEndedDuringLAN
             }
         }
     }
@@ -294,10 +343,21 @@ private enum WorldwideHostWaitOutcome: Equatable {
     case terminationSignal
 }
 
+private enum CoexistenceOutcome: Sendable {
+    case lanFinished(StreamingCaptureReport)
+    case worldwideEnded
+}
+
 private enum CaptureServerMainError: LocalizedError {
     case noEnabledService
+    case worldwideHostEndedDuringLAN
 
     var errorDescription: String? {
-        "No capture service is enabled."
+        switch self {
+        case .noEnabledService:
+            "No capture service is enabled."
+        case .worldwideHostEndedDuringLAN:
+            "Worldwide availability ended while the LAN capture service was still running."
+        }
     }
 }

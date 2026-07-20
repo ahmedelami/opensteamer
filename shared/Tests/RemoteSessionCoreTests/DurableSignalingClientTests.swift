@@ -343,6 +343,45 @@ struct DurableSignalingClientTests {
         #expect(await fake.sentPingCount() == 1)
     }
 
+    @Test func transportCancellationPingFailsClosedWhenLivenessTaskIsNotCancelled() async throws {
+        let fake = DurableFakeSocketTransport()
+        await fake.failPings(with: .cancellation)
+        let client = try PairedAvailabilitySignalingClient(
+            endpoint: endpoint,
+            locator: makeLocator(role: .host),
+            role: .host,
+            transport: fake,
+            livenessIntervalNanoseconds: 0,
+            livenessTimeoutNanoseconds: 1_000_000_000,
+            livenessSleep: { _ in }
+        )
+        let stream = try await client.connect()
+        var iterator = stream.makeAsyncIterator()
+        await fake.push(text: #"{"type":"availability-waiting"}"#)
+
+        #expect(try await iterator.next() == .waiting)
+        let pingWasAttempted = await eventually { await fake.sentPingCount() == 1 }
+        #expect(pingWasAttempted)
+        #expect(await fake.lastPingTaskWasCancelled() == false)
+
+        // Never wait directly on the stream until the observable transport-close oracle fires.
+        // That keeps this regression bounded even against the old bug, which left the stream open
+        // forever after swallowing the transport's literal `CancellationError`.
+        let transportWasClosed = await eventually { await fake.closeCallCount() >= 1 }
+        guard transportWasClosed else {
+            Issue.record("A cancellation-shaped transport failure left availability open")
+            await client.close()
+            return
+        }
+
+        do {
+            _ = try await iterator.next()
+            Issue.record("Expected the availability stream to finish with connectionClosed")
+        } catch {
+            #expect(error as? RendezvousSignalingError == .connectionClosed)
+        }
+    }
+
     @Test func hostSendsCanonicalProbeAndMatchingAckKeepsAvailabilityOpen() async throws {
         let fake = DurableFakeSocketTransport()
         let heartbeatSleep = FirstHeartbeatThenParkSleep()
@@ -856,6 +895,12 @@ struct DurableSignalingClientTests {
 
 private enum DurableFakeSocketError: Error { case closed }
 
+private enum DurableFakePingFailure: Sendable {
+    case none
+    case closed
+    case cancellation
+}
+
 private actor FirstHeartbeatThenParkSleep {
     private var callCount = 0
     private var parked = false
@@ -877,8 +922,9 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
     private var viewerAdmissionProof: RendezvousAdmissionProof?
     private var mode: RemoteRendezvousMode?
     private var sent = [String]()
-    private var pingsFail = false
+    private var pingFailure = DurableFakePingFailure.none
     private var pingCount = 0
+    private var pingTaskCancellationStates = [Bool]()
     private var shouldSuspendApplicationProbeSends = false
     private var suspendedApplicationProbeSend: CheckedContinuation<Void, any Error>?
     private var shouldSuspendConnects = false
@@ -927,7 +973,15 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
 
     func sendPing(timeoutNanoseconds _: UInt64) async throws {
         pingCount += 1
-        if pingsFail { throw DurableFakeSocketError.closed }
+        pingTaskCancellationStates.append(Task.isCancelled)
+        switch pingFailure {
+        case .none:
+            return
+        case .closed:
+            throw DurableFakeSocketError.closed
+        case .cancellation:
+            throw CancellationError()
+        }
     }
 
     func close() async {
@@ -940,7 +994,9 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
         probeSendWaiter = nil
     }
 
-    func failPings() { pingsFail = true }
+    func failPings(with failure: DurableFakePingFailure = .closed) {
+        pingFailure = failure
+    }
 
     func suspendConnects() { shouldSuspendConnects = true }
 
@@ -953,6 +1009,8 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
     }
 
     func sentPingCount() -> Int { pingCount }
+
+    func lastPingTaskWasCancelled() -> Bool? { pingTaskCancellationStates.last }
 
     func suspendApplicationProbeSends() { shouldSuspendApplicationProbeSends = true }
 

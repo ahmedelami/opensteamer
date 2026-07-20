@@ -1,9 +1,11 @@
+import RemoteSessionCore
 import SwiftUI
 import WebRTCTransport
 
 struct DiagnosticsView: View {
     @EnvironmentObject private var viewModel: StreamSessionViewModel
     @EnvironmentObject private var worldwideViewModel: WorldwideSessionViewModel
+    @EnvironmentObject private var worldwideConnection: WorldwideViewerConnectionCoordinator
 
     var body: some View {
         List {
@@ -50,6 +52,51 @@ struct DiagnosticsView: View {
                     title: "Video",
                     value: worldwideVideoDescription
                 )
+            }
+
+            Section("Connection Timeline") {
+                MetricRow(
+                    title: "Local Journal",
+                    value: worldwideConnection.connectionTelemetrySnapshot.persistenceHealthy
+                        ? "Healthy"
+                        : "Persistence unavailable"
+                )
+                MetricRow(
+                    title: "Retained Events",
+                    value: "\(worldwideConnection.connectionTelemetrySnapshot.events.count)"
+                )
+                if worldwideConnection.connectionTelemetrySnapshot.droppedEventCount > 0 {
+                    MetricRow(
+                        title: "Older Events Dropped",
+                        value: "\(worldwideConnection.connectionTelemetrySnapshot.droppedEventCount)"
+                    )
+                }
+                if worldwideConnection.connectionTelemetrySnapshot.events.isEmpty {
+                    Text("No connection attempts recorded yet")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(
+                        Array(worldwideConnection.connectionTelemetrySnapshot.events.suffix(20).reversed())
+                    ) { event in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(event.stage.rawValue)
+                                    .font(.callout.weight(.semibold))
+                                Spacer()
+                                Text(event.timestamp, style: .time)
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(connectionEventDetail(event))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+                Text("Stored only on this device; no automatic telemetry upload.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Worldwide Audio RTP") {
@@ -158,6 +205,26 @@ struct DiagnosticsView: View {
             return "Unknown"
         }
         return milliseconds(totalDelay / Double(emittedCount))
+    }
+
+    private func connectionEventDetail(_ event: ConnectionTelemetryEvent) -> String {
+        var details: [String] = []
+        if event.stage == .viewerWorkerWaitingForHost {
+            details.append("Worker authenticated the iPhone; paired Mac was not present")
+        }
+        if let retry = event.retryOrdinal {
+            details.append("retry \(retry)")
+        }
+        if let failure = event.failure {
+            details.append("failure \(failure.rawValue)")
+        }
+        if let terminal = event.terminal {
+            details.append("terminal \(terminal.rawValue)")
+        }
+        if let attempt = event.attemptReference {
+            details.append("attempt \(attempt.rawValue.prefix(8))")
+        }
+        return details.isEmpty ? "Connection transition" : details.joined(separator: " · ")
     }
 }
 

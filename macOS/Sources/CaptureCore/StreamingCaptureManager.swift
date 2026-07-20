@@ -30,21 +30,24 @@ public final class StreamingCaptureManager {
         let monitor = Task {
             await StreamingCaptureManager.monitorProgress(processor: processor, logger: logger)
         }
+        defer { monitor.cancel() }
 
         switch captureMode {
         case .screen:
             let source = ScreenCaptureAudioSource(displayID: displayID, logger: logger)
-            try await source.start(consumer: processor)
-            try await waitForRequestedDuration()
-            try await source.stop()
+            try await Self.runStartedSource(
+                start: { try await source.start(consumer: processor) },
+                wait: { try await self.waitForRequestedDuration() },
+                stop: { try await source.stop() }
+            )
         case .blackHoleInput:
             let source = BlackHoleInputAudioSource(logger: logger)
-            try source.start(consumer: processor)
-            try await waitForRequestedDuration()
-            source.stop()
+            try await Self.runStartedSource(
+                start: { try source.start(consumer: processor) },
+                wait: { try await self.waitForRequestedDuration() },
+                stop: { source.stop() }
+            )
         }
-
-        monitor.cancel()
 
         let summary = try processor.finish()
         let elapsed = Date().timeIntervalSince(startedAt)
@@ -59,6 +62,32 @@ public final class StreamingCaptureManager {
             bytesStreamed: summary.bytesStreamed,
             packetsStreamed: summary.packetsStreamed
         )
+    }
+
+    /// Runs one capture source and guarantees one best-effort stop after a successfully started
+    /// source, including when the wait is cancelled by worldwide-host supervision. The original
+    /// wait error wins over a cleanup error so cancellation still reaches the process supervisor.
+    static func runStartedSource(
+        start: () async throws -> Void,
+        wait: () async throws -> Void,
+        stop: @escaping () async throws -> Void
+    ) async throws {
+        try await start()
+        let cleanupOperation = CancellationShieldedCleanup(stop)
+        do {
+            try await wait()
+        } catch {
+            let cleanup = Task {
+                try await cleanupOperation.run()
+            }
+            _ = try? await cleanup.value
+            throw error
+        }
+        let cleanup = Task {
+            try await cleanupOperation.run()
+        }
+        try await cleanup.value
+        try Task.checkCancellation()
     }
 
     private func waitForRequestedDuration() async throws {
@@ -90,5 +119,31 @@ public final class StreamingCaptureManager {
                 return
             }
         }
+    }
+}
+
+/// Transfers a single source-owned cleanup closure into an uncancelled task after capture waiting
+/// has ended. `runStartedSource` awaits that task before returning, so the unchecked boundary is
+/// limited to this one, lock-enforced ownership handoff rather than declaring the mutable capture
+/// source itself `Sendable`.
+private final class CancellationShieldedCleanup: @unchecked Sendable {
+    private let lock = NSLock()
+    private var operation: (() async throws -> Void)?
+
+    init(_ operation: @escaping () async throws -> Void) {
+        self.operation = operation
+    }
+
+    func run() async throws {
+        guard let operation = takeOperation() else { return }
+        try await operation()
+    }
+
+    private func takeOperation() -> (() async throws -> Void)? {
+        lock.lock()
+        defer { lock.unlock() }
+        let operation = operation
+        self.operation = nil
+        return operation
     }
 }

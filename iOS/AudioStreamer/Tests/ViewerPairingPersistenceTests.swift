@@ -1589,12 +1589,14 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         let transport = PairedAvailabilityTransportStub()
         let clock = AvailabilityRetryClockStub()
         let deadline = AvailabilityAttemptDeadlineStub()
+        let telemetry = ViewerConnectionTelemetryRecorderStub()
         let coordinator = WorldwideViewerConnectionCoordinator(
             availabilityClientFactory: { _, _ in transport },
             availabilityRetryDeadlineNanoseconds: 100,
             availabilityMonotonicNow: clock.now,
             availabilityRetrySleep: clock.sleep,
-            availabilityAttemptDeadlineSleep: deadline.sleep
+            availabilityAttemptDeadlineSleep: deadline.sleep,
+            connectionTelemetry: telemetry
         )
         let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
 
@@ -1607,6 +1609,7 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         }
         try await waitForConnect(transport)
         await transport.yield(.waiting)
+        try await waitForTelemetryStage(.viewerWorkerWaitingForHost, recorder: telemetry)
         try await waitForAvailabilityDeadline(deadline)
 
         clock.advance(by: 100)
@@ -1634,6 +1637,29 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         let connectCount = await transport.connectCallCount()
         XCTAssertEqual(armedTimeout, 100)
         XCTAssertEqual(connectCount, 1)
+        XCTAssertEqual(
+            telemetry.snapshot().events.map(\.stage),
+            [
+                .attemptStarted,
+                .availabilitySocketOpening,
+                .availabilitySocketOpened,
+                .viewerWorkerWaitingForHost,
+                .availabilityDeadlineExpired,
+                .attemptFailed,
+            ]
+        )
+        XCTAssertEqual(
+            telemetry.snapshot().events.filter { $0.terminal != nil }.count,
+            1
+        )
+        XCTAssertEqual(
+            telemetry.snapshot().events.last?.failure,
+            .availabilityDeadlineExpired
+        )
+        XCTAssertEqual(
+            coordinator.connectionTelemetrySnapshot,
+            telemetry.snapshot()
+        )
     }
 
     func testDeadlineCloseBeforeReadySendStillPublishesRetainedPairRecovery() async throws {
@@ -1852,6 +1878,7 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         store.record = activeRecord
         let pairingState = ViewerPairingState(store: store)
         let clock = AvailabilityRetryClockStub(blocksUntilCancelled: true)
+        let telemetry = ViewerConnectionTelemetryRecorderStub()
         var factoryCallCount = 0
         let coordinator = WorldwideViewerConnectionCoordinator(
             availabilityClientFactory: { _, _ in
@@ -1861,7 +1888,8 @@ final class ViewerPairingPersistenceTests: XCTestCase {
                 )
             },
             availabilityMonotonicNow: clock.now,
-            availabilityRetrySleep: clock.sleep
+            availabilityRetrySleep: clock.sleep,
+            connectionTelemetry: telemetry
         )
         let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
 
@@ -1886,6 +1914,20 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         XCTAssertEqual(factoryCallCount, 1)
         XCTAssertFalse(coordinator.isConnecting)
         XCTAssertEqual(pairingState.pairedMac, activeRecord)
+        XCTAssertEqual(
+            telemetry.snapshot().events.map(\.stage),
+            [
+                .attemptStarted,
+                .availabilitySocketOpening,
+                .retryScheduled,
+                .attemptCancelled,
+            ]
+        )
+        XCTAssertEqual(
+            telemetry.snapshot().events.filter { $0.terminal != nil }.count,
+            1,
+            "Cancel and the resumed task catch must share one terminal oracle"
+        )
         XCTAssertEqual(coordinator.savedPairConnectionState, .idle)
     }
 }
@@ -2439,6 +2481,17 @@ private func waitForAvailabilityDeadline(
     throw PairingTestFailure.timeout
 }
 
+private func waitForTelemetryStage(
+    _ stage: ConnectionTelemetryStage,
+    recorder: ViewerConnectionTelemetryRecorderStub
+) async throws {
+    for _ in 0..<500 {
+        if recorder.snapshot().events.contains(where: { $0.stage == stage }) { return }
+        try await Task<Never, Never>.sleep(nanoseconds: 2_000_000)
+    }
+    throw PairingTestFailure.timeout
+}
+
 private func waitForConnect(
     _ client: PairedAvailabilityTransportStub
 ) async throws {
@@ -2580,6 +2633,48 @@ private func assertThisDeviceOnly(
         file: file,
         line: line
     )
+}
+
+private final class ViewerConnectionTelemetryRecorderStub:
+    ConnectionTelemetryRecording,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var events: [ConnectionTelemetryEvent] = []
+
+    func record(_ draft: ConnectionTelemetryDraft) -> ConnectionTelemetrySnapshot {
+        lock.withLock {
+            events.append(
+                ConnectionTelemetryEvent(
+                    id: UInt64(events.count + 1),
+                    timestamp: Date(timeIntervalSince1970: 0),
+                    monotonicNanoseconds: UInt64(events.count),
+                    role: draft.role,
+                    stage: draft.stage,
+                    attemptReference: draft.attemptReference,
+                    pairReference: draft.pairReference,
+                    exchangeReference: draft.exchangeReference,
+                    retryOrdinal: draft.retryOrdinal,
+                    delayMilliseconds: draft.delayMilliseconds,
+                    failure: draft.failure,
+                    terminal: draft.terminal
+                )
+            )
+            return snapshotLocked()
+        }
+    }
+
+    func snapshot() -> ConnectionTelemetrySnapshot {
+        lock.withLock { snapshotLocked() }
+    }
+
+    private func snapshotLocked() -> ConnectionTelemetrySnapshot {
+        ConnectionTelemetrySnapshot(
+            events: events,
+            droppedEventCount: 0,
+            persistenceHealthy: true
+        )
+    }
 }
 
 private enum PairingTestFailure: Error {

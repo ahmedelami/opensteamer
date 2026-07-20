@@ -42,6 +42,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
     @Published private(set) var stateText = "Not connected"
     @Published private(set) var lastError: String?
     @Published private(set) var savedPairConnectionState: SavedPairConnectionState = .idle
+    @Published private(set) var connectionTelemetrySnapshot: ConnectionTelemetrySnapshot
 
     typealias BootstrapClientFactory = (
         URL,
@@ -72,11 +73,15 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
     private let reconnectResponseTimeoutNanoseconds: UInt64
     private let reconnectResponseTimeoutSleep: ReconnectResponseTimeoutSleep
     private let pairingBackgroundTask: any TransitionBackgroundTaskCoordinating
+    private let connectionTelemetry: any ConnectionTelemetryRecording
     private var activeOperationID: UUID?
     private var bootstrapClient: (any ViewerPairingBootstrapTransport)?
     private var bootstrapClientOperationID: UUID?
     private var availabilityClient: (any ViewerPairedAvailabilityTransport)?
     private var availabilityClientOperationID: UUID?
+    private var terminalTelemetryAttempts = Set<UUID>()
+    private var terminalTelemetryOrder: [UUID] = []
+    private var deadlineTelemetryAttempts = Set<UUID>()
 
     init(
         bootstrapClientFactory: @escaping BootstrapClientFactory = { endpoint, invitation in
@@ -113,6 +118,8 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         reconnectResponseTimeoutSleep: @escaping ReconnectResponseTimeoutSleep = { timeout in
             try await Task<Never, Never>.sleep(nanoseconds: timeout)
         },
+        connectionTelemetry: any ConnectionTelemetryRecording =
+            NoopConnectionTelemetryRecorder(),
         pairingBackgroundTask: any TransitionBackgroundTaskCoordinating =
             AppTransitionBackgroundTaskCoordinator(name: "AudioStreamerSecurePairing")
     ) {
@@ -127,6 +134,8 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
             reconnectResponseTimeoutNanoseconds
         )
         self.reconnectResponseTimeoutSleep = reconnectResponseTimeoutSleep
+        self.connectionTelemetry = connectionTelemetry
+        connectionTelemetrySnapshot = connectionTelemetry.snapshot()
         self.pairingBackgroundTask = pairingBackgroundTask
     }
 
@@ -176,8 +185,18 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
             savedPairConnectionState = .idle
             stateText = "Starting secure media"
             lastError = nil
+            recordTerminalTelemetryOnce(
+                context: context,
+                operationID: operationID,
+                terminal: .success
+            )
             return client
         } catch is CancellationError {
+            recordTerminalTelemetryOnce(
+                context: savedPairContext,
+                operationID: operationID,
+                terminal: .cancelled
+            )
             await closeTransports(ownedBy: operationID)
             if activeOperationID == operationID {
                 savedPairConnectionState = .idle
@@ -185,6 +204,15 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
             }
             throw CancellationError()
         } catch {
+            recordTerminalTelemetryOnce(
+                context: savedPairContext,
+                operationID: operationID,
+                terminal: .failed,
+                failure: terminalConnectionTelemetryFailure(
+                    for: error,
+                    context: savedPairContext
+                )
+            )
             await closeTransports(ownedBy: operationID)
             if activeOperationID == operationID {
                 if !publishSavedPairExhaustion(
@@ -236,8 +264,18 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
             savedPairConnectionState = .idle
             stateText = "Starting secure media"
             lastError = nil
+            recordTerminalTelemetryOnce(
+                context: context,
+                operationID: operationID,
+                terminal: .success
+            )
             return client
         } catch is CancellationError {
+            recordTerminalTelemetryOnce(
+                context: savedPairContext,
+                operationID: operationID,
+                terminal: .cancelled
+            )
             await closeTransports(ownedBy: operationID)
             if activeOperationID == operationID {
                 savedPairConnectionState = .idle
@@ -245,6 +283,15 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
             }
             throw CancellationError()
         } catch {
+            recordTerminalTelemetryOnce(
+                context: savedPairContext,
+                operationID: operationID,
+                terminal: .failed,
+                failure: terminalConnectionTelemetryFailure(
+                    for: error,
+                    context: savedPairContext
+                )
+            )
             await closeTransports(ownedBy: operationID)
             if activeOperationID == operationID {
                 if !publishSavedPairExhaustion(
@@ -356,8 +403,18 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
             savedPairConnectionState = .idle
             stateText = "Starting secure media"
             lastError = nil
+            recordTerminalTelemetryOnce(
+                context: context,
+                operationID: operationID,
+                terminal: .success
+            )
             return client
         } catch is CancellationError {
+            recordTerminalTelemetryOnce(
+                context: savedPairContext,
+                operationID: operationID,
+                terminal: .cancelled
+            )
             await closeTransports(ownedBy: operationID)
             if activeOperationID == operationID {
                 savedPairConnectionState = .idle
@@ -365,6 +422,15 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
             }
             throw CancellationError()
         } catch {
+            recordTerminalTelemetryOnce(
+                context: savedPairContext,
+                operationID: operationID,
+                terminal: .failed,
+                failure: terminalConnectionTelemetryFailure(
+                    for: error,
+                    context: savedPairContext
+                )
+            )
             await closeTransports(ownedBy: operationID)
             if activeOperationID == operationID {
                 if !publishSavedPairExhaustion(
@@ -383,6 +449,11 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
 
     func cancel() {
         guard let operationID = activeOperationID else { return }
+        recordTerminalTelemetryOnce(
+            context: nil,
+            operationID: operationID,
+            terminal: .cancelled
+        )
         activeOperationID = nil
         isConnecting = false
         savedPairConnectionState = .idle
@@ -584,6 +655,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
 
         while true {
             try Task.checkCancellation()
+            let retryOrdinal = UInt16(clamping: retryIndex)
             try transitionSavedPairAttempt(
                 to: .waitingForAvailability(savedPairContext),
                 context: savedPairContext,
@@ -594,6 +666,10 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                 since: retryStartedAt
             ) else {
                 let error = WorldwideViewerConnectionError.pairedMacUnavailable
+                recordAvailabilityDeadlineTelemetryOnce(
+                    context: savedPairContext,
+                    retryOrdinal: retryOrdinal
+                )
                 try markSavedPairDeadlineExhausted(
                     error,
                     context: savedPairContext,
@@ -603,6 +679,11 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                 throw error
             }
             do {
+                recordConnectionTelemetry(
+                    .availabilitySocketOpening,
+                    context: savedPairContext,
+                    retryOrdinal: retryOrdinal
+                )
                 let mediaClient = try await prepareMediaSessionAttempt(
                     endpoint: endpoint,
                     identity: identity,
@@ -611,6 +692,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                     operationID: operationID,
                     onAuthenticatedPairingCompleted: onAuthenticatedPairingCompleted,
                     savedPairContext: savedPairContext,
+                    retryOrdinal: retryOrdinal,
                     availabilityDeadlineNanoseconds: remainingDeadline,
                     reconnectResponseTimeoutNanoseconds: min(
                         reconnectResponseTimeoutNanoseconds,
@@ -624,6 +706,10 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                 guard availabilityRetryTimeRemaining(since: retryStartedAt) != nil else {
                     await mediaClient.close()
                     let error = WorldwideViewerConnectionError.pairedMacUnavailable
+                    recordAvailabilityDeadlineTelemetryOnce(
+                        context: savedPairContext,
+                        retryOrdinal: retryOrdinal
+                    )
                     try markSavedPairDeadlineExhausted(
                         error,
                         context: savedPairContext,
@@ -646,6 +732,10 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                 guard let remaining = availabilityRetryTimeRemaining(
                     since: retryStartedAt
                 ) else {
+                    recordAvailabilityDeadlineTelemetryOnce(
+                        context: savedPairContext,
+                        retryOrdinal: retryOrdinal
+                    )
                     try markSavedPairDeadlineExhausted(
                         error,
                         context: savedPairContext,
@@ -663,6 +753,13 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                 )
                 stateText = "Waiting for paired Mac"
                 let delay = availabilityRetryBaseDelay(retryIndex: retryIndex)
+                recordConnectionTelemetry(
+                    .retryScheduled,
+                    context: savedPairContext,
+                    retryOrdinal: retryOrdinal,
+                    delayMilliseconds: delay / 1_000_000,
+                    failure: connectionTelemetryFailure(for: error)
+                )
                 retryIndex += 1
                 try await availabilityRetrySleep(delay, remaining)
                 try Task.checkCancellation()
@@ -672,6 +769,10 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                     operationID: operationID
                 )
                 guard availabilityRetryTimeRemaining(since: retryStartedAt) != nil else {
+                    recordAvailabilityDeadlineTelemetryOnce(
+                        context: savedPairContext,
+                        retryOrdinal: retryOrdinal
+                    )
                     try markSavedPairDeadlineExhausted(
                         error,
                         context: savedPairContext,
@@ -720,6 +821,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         operationID: UUID,
         onAuthenticatedPairingCompleted: (@MainActor () -> Void)?,
         savedPairContext: SavedPairAttemptContext,
+        retryOrdinal: UInt16,
         availabilityDeadlineNanoseconds: UInt64,
         reconnectResponseTimeoutNanoseconds: UInt64
     ) async throws -> RendezvousSignalingClient {
@@ -740,7 +842,9 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         var reconnectExchangeID: RemoteAvailabilityExchangeID?
         let availabilityDeadlineTask = makeAvailabilityAttemptDeadlineTask(
             client: client,
-            timeoutNanoseconds: availabilityDeadlineNanoseconds
+            timeoutNanoseconds: availabilityDeadlineNanoseconds,
+            context: savedPairContext,
+            retryOrdinal: retryOrdinal
         )
         var reconnectResponseDeadlineTask: Task<Void, Never>?
         let recoveryGeneration = UUID()
@@ -768,6 +872,11 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
 
         do {
             let events = try await client.connect()
+            recordConnectionTelemetry(
+                .availabilitySocketOpened,
+                context: savedPairContext,
+                retryOrdinal: retryOrdinal
+            )
             for try await event in events {
                 try Task.checkCancellation()
                 try requireCurrentSavedPairAttempt(
@@ -777,6 +886,11 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                 )
                 switch event {
                 case .waiting:
+                    recordConnectionTelemetry(
+                        .viewerWorkerWaitingForHost,
+                        context: savedPairContext,
+                        retryOrdinal: retryOrdinal
+                    )
                     try transitionSavedPairAttempt(
                         to: .waitingForAvailability(savedPairContext),
                         context: savedPairContext,
@@ -786,6 +900,12 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                     stateText = "Waiting for paired Mac"
 
                 case .ready(_, let exchangeID):
+                    recordConnectionTelemetry(
+                        .availabilityReady,
+                        context: savedPairContext,
+                        exchangeID: exchangeID.wireValue,
+                        retryOrdinal: retryOrdinal
+                    )
                     try transitionSavedPairAttempt(
                         to: .preparingSession(savedPairContext),
                         context: savedPairContext,
@@ -840,9 +960,17 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                         stateText = "Authorizing fresh session"
                         reconnectResponseDeadlineTask = makeReconnectResponseDeadlineTask(
                             client: client,
-                            timeoutNanoseconds: reconnectResponseTimeoutNanoseconds
+                            timeoutNanoseconds: reconnectResponseTimeoutNanoseconds,
+                            context: savedPairContext,
+                            retryOrdinal: retryOrdinal
                         )
                         try await client.send(.reconnectRequest(initiator.request))
+                        recordConnectionTelemetry(
+                            .reconnectRequestSent,
+                            context: savedPairContext,
+                            exchangeID: exchangeID.wireValue,
+                            retryOrdinal: retryOrdinal
+                        )
                     case .acceptedReceived:
                         throw WorldwideViewerConnectionError.invalidPairingRecovery
                     }
@@ -893,9 +1021,17 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                         stateText = "Authorizing fresh session"
                         reconnectResponseDeadlineTask = makeReconnectResponseDeadlineTask(
                             client: client,
-                            timeoutNanoseconds: reconnectResponseTimeoutNanoseconds
+                            timeoutNanoseconds: reconnectResponseTimeoutNanoseconds,
+                            context: savedPairContext,
+                            retryOrdinal: retryOrdinal
                         )
                         try await client.send(.reconnectRequest(initiator.request))
+                        recordConnectionTelemetry(
+                            .reconnectRequestSent,
+                            context: savedPairContext,
+                            exchangeID: activeAvailabilityExchangeID?.wireValue,
+                            retryOrdinal: retryOrdinal
+                        )
 
                     case .acknowledgement, .activationAcknowledgement:
                         throw WorldwideViewerConnectionError.unexpectedAvailabilityMessage
@@ -907,6 +1043,12 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                     }
                     reconnectResponseDeadlineTask?.cancel()
                     reconnectResponseDeadlineTask = nil
+                    recordConnectionTelemetry(
+                        .reconnectResponseReceived,
+                        context: savedPairContext,
+                        exchangeID: reconnectExchangeID?.wireValue,
+                        retryOrdinal: retryOrdinal
+                    )
                     let credential = try reconnect.complete(with: response)
                     if availabilityClientOperationID == operationID {
                         availabilityClient = nil
@@ -918,6 +1060,12 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                         record: record,
                         pairingState: pairingState,
                         operationID: operationID
+                    )
+                    recordConnectionTelemetry(
+                        .mediaSignalingPrepared,
+                        context: savedPairContext,
+                        exchangeID: reconnectExchangeID?.wireValue,
+                        retryOrdinal: retryOrdinal
                     )
                     return try RendezvousSignalingClient(
                         endpoint: endpoint,
@@ -975,7 +1123,9 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
     /// therefore cannot close a replacement operation.
     private func makeReconnectResponseDeadlineTask(
         client: any ViewerPairedAvailabilityTransport,
-        timeoutNanoseconds: UInt64
+        timeoutNanoseconds: UInt64,
+        context: SavedPairAttemptContext,
+        retryOrdinal: UInt16
     ) -> Task<Void, Never> {
         let timeoutSleep = reconnectResponseTimeoutSleep
         return Task {
@@ -985,6 +1135,12 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
             } catch {
                 return
             }
+            recordConnectionTelemetry(
+                .reconnectResponseTimedOut,
+                context: context,
+                retryOrdinal: retryOrdinal,
+                failure: .reconnectResponseTimedOut
+            )
             await client.close()
         }
     }
@@ -994,7 +1150,9 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
     /// exact attempt client, so it cannot close a newer retry or replacement operation.
     private func makeAvailabilityAttemptDeadlineTask(
         client: any ViewerPairedAvailabilityTransport,
-        timeoutNanoseconds: UInt64
+        timeoutNanoseconds: UInt64,
+        context: SavedPairAttemptContext,
+        retryOrdinal: UInt16
     ) -> Task<Void, Never> {
         let deadlineSleep = availabilityAttemptDeadlineSleep
         return Task {
@@ -1004,6 +1162,10 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
             } catch {
                 return
             }
+            recordAvailabilityDeadlineTelemetryOnce(
+                context: context,
+                retryOrdinal: retryOrdinal
+            )
             await client.close()
         }
     }
@@ -1049,6 +1211,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
             pairingState: pairingState,
             operationID: operationID
         )
+        recordConnectionTelemetry(.attemptStarted, context: context)
         return context
     }
 
@@ -1165,6 +1328,137 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         activeOperationID = nil
         isConnecting = false
         pairingBackgroundTask.endTransitionTask()
+    }
+
+    private func recordConnectionTelemetry(
+        _ stage: ConnectionTelemetryStage,
+        context: SavedPairAttemptContext,
+        exchangeID: String? = nil,
+        retryOrdinal: UInt16? = nil,
+        delayMilliseconds: UInt64? = nil,
+        failure: ConnectionTelemetryFailure? = nil,
+        terminal: ConnectionTelemetryTerminal? = nil
+    ) {
+        guard terminal != nil || !terminalTelemetryAttempts.contains(context.attemptID) else {
+            return
+        }
+        let snapshot = connectionTelemetry.record(
+            ConnectionTelemetryDraft(
+                role: .viewer,
+                stage: stage,
+                attemptReference: .derive(domain: .attempt, uuid: context.attemptID),
+                pairReference: .derive(domain: .pair, uuid: context.pairID),
+                exchangeReference: exchangeID.map {
+                    .derive(domain: .exchange, bytes: Data($0.utf8))
+                },
+                retryOrdinal: retryOrdinal,
+                delayMilliseconds: delayMilliseconds,
+                failure: failure,
+                terminal: terminal
+            )
+        )
+        connectionTelemetrySnapshot = snapshot
+    }
+
+    private func recordAvailabilityDeadlineTelemetryOnce(
+        context: SavedPairAttemptContext,
+        retryOrdinal: UInt16
+    ) {
+        guard deadlineTelemetryAttempts.insert(context.attemptID).inserted else { return }
+        recordConnectionTelemetry(
+            .availabilityDeadlineExpired,
+            context: context,
+            retryOrdinal: retryOrdinal,
+            failure: .availabilityDeadlineExpired
+        )
+    }
+
+    private func recordTerminalTelemetryOnce(
+        context: SavedPairAttemptContext?,
+        operationID: UUID,
+        terminal: ConnectionTelemetryTerminal,
+        failure: ConnectionTelemetryFailure? = nil
+    ) {
+        guard terminalTelemetryAttempts.insert(operationID).inserted else { return }
+        terminalTelemetryOrder.append(operationID)
+        if terminalTelemetryOrder.count > 512 {
+            let retired = terminalTelemetryOrder.removeFirst()
+            terminalTelemetryAttempts.remove(retired)
+            deadlineTelemetryAttempts.remove(retired)
+        }
+        let stage: ConnectionTelemetryStage = switch terminal {
+        case .success: .attemptSucceeded
+        case .cancelled: .attemptCancelled
+        case .failed: .attemptFailed
+        }
+        if let context {
+            recordConnectionTelemetry(
+                stage,
+                context: context,
+                failure: failure,
+                terminal: terminal
+            )
+            return
+        }
+        connectionTelemetrySnapshot = connectionTelemetry.record(
+            ConnectionTelemetryDraft(
+                role: .viewer,
+                stage: stage,
+                attemptReference: .derive(domain: .attempt, uuid: operationID),
+                failure: failure,
+                terminal: terminal
+            )
+        )
+    }
+
+    private func connectionTelemetryFailure(
+        for error: any Error
+    ) -> ConnectionTelemetryFailure {
+        if error is CancellationError { return .transportCancellation }
+        if let signaling = error as? RendezvousSignalingError {
+            switch signaling {
+            case .connectionClosed, .notConnected:
+                return .connectionClosed
+            case .connectionFailed:
+                return .connectionFailed
+            case .sendFailed:
+                return .sendFailed
+            case .invalidServerMessage, .eventBufferOverflow:
+                return .protocolViolation
+            case .invalidEndpoint, .alreadyConnected:
+                return .unknown
+            }
+        }
+        if let viewer = error as? WorldwideViewerConnectionError {
+            switch viewer {
+            case .pairedMacUnavailable, .rendezvous(.peerUnavailable):
+                return .peerUnavailable
+            case .rendezvous(.roleConflict):
+                return .roleConflict
+            case .unexpectedPairingMessage, .invalidPairingRecovery,
+                 .unexpectedAvailabilityMessage:
+                return .protocolViolation
+            case .alreadyConnecting, .invalidViewerIdentity, .incompletePairing,
+                 .pairingEndedBeforeCommit, .rendezvous:
+                return .unknown
+            }
+        }
+        if let core = error as? RemoteSessionCoreError,
+           core == .authenticationFailed {
+            return .authenticationFailed
+        }
+        return .unknown
+    }
+
+    private func terminalConnectionTelemetryFailure(
+        for error: any Error,
+        context: SavedPairAttemptContext?
+    ) -> ConnectionTelemetryFailure {
+        if let context,
+           deadlineTelemetryAttempts.contains(context.attemptID) {
+            return .availabilityDeadlineExpired
+        }
+        return connectionTelemetryFailure(for: error)
     }
 
     private func requireIdentity(

@@ -477,9 +477,13 @@ public actor PairedAvailabilitySignalingClient {
                 if role == .host {
                     try await sendApplicationProbe()
                 }
-            } catch is CancellationError {
-                return
             } catch {
+                // A transport callback can report `CancellationError` even though this owning
+                // liveness task was never cancelled. Only task cancellation is a quiet shutdown;
+                // a cancellation-shaped transport failure must fail the visible connection.
+                if error is CancellationError, Task.isCancelled {
+                    return
+                }
                 if state == .connected {
                     await finish(throwing: RendezvousSignalingError.connectionClosed)
                 }

@@ -7,6 +7,14 @@ enum WorldwideHostStartResult: Equatable {
     case paired(remoteDisplayName: String?)
 }
 
+protocol WorldwideHostAvailabilityTransport: AnyObject, Sendable {
+    func connect() async throws -> PairedAvailabilitySignalingClient.EventStream
+    func send(_ payload: RemoteAvailabilityPayload) async throws
+    func close() async
+}
+
+extension PairedAvailabilitySignalingClient: WorldwideHostAvailabilityTransport {}
+
 actor WorldwideHostCoordinator {
     nonisolated let completion: AsyncThrowingStream<Void, Error>
 
@@ -21,15 +29,23 @@ actor WorldwideHostCoordinator {
     private let logger: Logger
     private let hostDisplayName: String?
     private let completionContinuation: AsyncThrowingStream<Void, Error>.Continuation
+    private let makeAvailabilityClient: @Sendable (
+        URL,
+        RemoteAvailabilityLocator
+    ) throws -> any WorldwideHostAvailabilityTransport
+    private let availabilityRetrySleep: @Sendable (Int) async throws -> Void
+    private let availabilityLoopOverride: (@Sendable () async -> Void)?
+    private let connectionTelemetry: any ConnectionTelemetryRecording
 
     private var lifecycle = WorldwideHostLifecycle()
     private var identity: RemoteDeviceIdentity?
     private var pairedRecord: RemotePairedDeviceRecord?
     private var pairingBootstrap: WorldwidePairingBootstrap?
-    private var availabilityClient: PairedAvailabilitySignalingClient?
+    private var availabilityClient: (any WorldwideHostAvailabilityTransport)?
     private var mediaService: WorldwideScreenService?
     private var pairingTask: Task<Void, Never>?
     private var availabilityTask: Task<Void, Never>?
+    private var availabilityGeneration: UUID?
     private var mediaCompletionTask: Task<Void, Never>?
     private var isStarted = false
     private var isStopped = false
@@ -44,6 +60,22 @@ actor WorldwideHostCoordinator {
         remoteInputController: MacRemoteInputController,
         store: WorldwidePairingStore = WorldwidePairingStore(),
         hostDisplayName: String? = Host.current().localizedName,
+        availabilityClientFactory: @escaping @Sendable (
+            URL,
+            RemoteAvailabilityLocator
+        ) throws -> any WorldwideHostAvailabilityTransport = { endpoint, locator in
+            try PairedAvailabilitySignalingClient(
+                endpoint: endpoint,
+                locator: locator,
+                role: .host
+            )
+        },
+        availabilityRetrySleep: @escaping @Sendable (Int) async throws -> Void = {
+            try await Task.sleep(for: .seconds($0))
+        },
+        availabilityLoopOverride: (@Sendable () async -> Void)? = nil,
+        connectionTelemetry: any ConnectionTelemetryRecording =
+            NoopConnectionTelemetryRecorder(),
         logger: Logger
     ) {
         let pair = AsyncThrowingStream<Void, Error>.makeStream(
@@ -60,6 +92,10 @@ actor WorldwideHostCoordinator {
         self.remoteInputController = remoteInputController
         self.store = store
         self.hostDisplayName = hostDisplayName
+        makeAvailabilityClient = availabilityClientFactory
+        self.availabilityRetrySleep = availabilityRetrySleep
+        self.availabilityLoopOverride = availabilityLoopOverride
+        self.connectionTelemetry = connectionTelemetry
         self.logger = logger
     }
 
@@ -182,40 +218,79 @@ actor WorldwideHostCoordinator {
 
     private func startAvailabilityLoop() {
         guard availabilityTask == nil, !isStopped else { return }
+        let generation = UUID()
+        availabilityGeneration = generation
+        recordConnectionTelemetry(
+            .availabilityLoopStarted,
+            generation: generation
+        )
+        let override = availabilityLoopOverride
         availabilityTask = Task { [weak self] in
-            await self?.runAvailabilityLoop()
+            guard let self else { return }
+            if let override {
+                await override()
+            } else {
+                await self.runAvailabilityLoop()
+            }
+            await self.availabilityLoopDidEnd(generation: generation)
         }
+    }
+
+    private func availabilityLoopDidEnd(generation: UUID) async {
+        guard availabilityGeneration == generation else { return }
+        availabilityGeneration = nil
+        availabilityTask = nil
+        guard !Task.isCancelled, !isStopped else { return }
+        recordConnectionTelemetry(
+            .availabilityLoopUnexpectedlyEnded,
+            generation: generation,
+            failure: .unexpectedLoopEnd,
+            terminal: .failed
+        )
+        await shutdown(
+            throwing: WorldwideHostCoordinatorError.availabilityLoopEndedUnexpectedly
+        )
     }
 
     private func runAvailabilityLoop() async {
         var retryPolicy = WorldwideAvailabilityRetryPolicy()
+        var retryOrdinal: UInt16 = 0
         while !Task.isCancelled, !isStopped {
             do {
                 guard let record = pairedRecord else {
                     throw WorldwideHostCoordinatorError.activePairMissing
                 }
-                let client = try PairedAvailabilitySignalingClient(
-                    endpoint: endpoint,
-                    locator: record.availabilityLocator(),
-                    role: .host
+                let client = try makeAvailabilityClient(
+                    endpoint,
+                    record.availabilityLocator()
+                )
+                recordConnectionTelemetry(
+                    .availabilitySocketOpening,
+                    retryOrdinal: retryOrdinal
                 )
                 availabilityClient = client
                 let events = try await client.connect()
+                recordConnectionTelemetry(
+                    .availabilitySocketOpened,
+                    retryOrdinal: retryOrdinal
+                )
                 for try await event in events {
                     try Task.checkCancellation()
-                    guard !isStopped, availabilityClient === client else { return }
+                    guard !isStopped, isCurrentAvailabilityClient(client) else { return }
                     try await handleAvailabilityEvent(event, client: client)
                     if event.validatesHostAvailability,
                        retryPolicy.observedValidAvailabilityState() {
+                        retryOrdinal = 0
                         logger.info("Worldwide paired-device availability is online")
                     }
                 }
                 guard !isStopped else { return }
                 throw RendezvousSignalingError.connectionClosed
-            } catch is CancellationError {
-                return
             } catch {
-                guard !isStopped else { return }
+                // Foundation transports can surface a literal CancellationError without
+                // cancelling this owner task. Treat only owner cancellation as terminal;
+                // otherwise the durable-pair availability loop must clean up and retry.
+                guard !Task.isCancelled, !isStopped else { return }
                 if let exchangeID = lifecycle.activeExchangeID {
                     lifecycle.availabilityPeerLeft(exchangeID: exchangeID)
                 }
@@ -223,28 +298,53 @@ actor WorldwideHostCoordinator {
                 availabilityClient = nil
                 await client?.close()
                 let retryDelaySeconds = retryPolicy.delayAfterFailure()
+                recordConnectionTelemetry(
+                    .retryScheduled,
+                    retryOrdinal: retryOrdinal,
+                    delayMilliseconds: UInt64(retryDelaySeconds) * 1_000,
+                    failure: connectionTelemetryFailure(for: error)
+                )
+                retryOrdinal = retryOrdinal == .max ? .max : retryOrdinal + 1
+                let sanitizedFailure = connectionTelemetryFailure(for: error).rawValue
                 logger.error(
                     "Worldwide availability disconnected; retrying in " +
-                    "\(retryDelaySeconds) seconds (\(error.localizedDescription))"
+                    "\(retryDelaySeconds) seconds " +
+                    "(failure=\(sanitizedFailure))"
                 )
                 do {
-                    try await Task.sleep(for: .seconds(retryDelaySeconds))
+                    try await availabilityRetrySleep(retryDelaySeconds)
                 } catch {
-                    return
+                    guard !Task.isCancelled, !isStopped else { return }
+                    logger.error(
+                        "Worldwide availability retry delay failed without owner " +
+                        "cancellation; retrying immediately"
+                    )
                 }
             }
         }
     }
 
+    private func isCurrentAvailabilityClient(
+        _ client: any WorldwideHostAvailabilityTransport
+    ) -> Bool {
+        guard let availabilityClient else { return false }
+        return ObjectIdentifier(availabilityClient) == ObjectIdentifier(client)
+    }
+
     private func handleAvailabilityEvent(
         _ event: PairedAvailabilitySignalingEvent,
-        client: PairedAvailabilitySignalingClient
+        client: any WorldwideHostAvailabilityTransport
     ) async throws {
         switch event {
         case .waiting:
+            recordConnectionTelemetry(.hostWorkerWaitingForViewer)
             logger.debug("Worldwide availability is waiting for the paired iPhone")
 
         case .ready(_, let exchangeID):
+            recordConnectionTelemetry(
+                .availabilityReady,
+                exchangeID: exchangeID.wireValue
+            )
             if let activeExchangeID = lifecycle.activeExchangeID,
                activeExchangeID != exchangeID.wireValue {
                 await stopActiveMediaSession()
@@ -260,6 +360,10 @@ actor WorldwideHostCoordinator {
             guard let exchangeValue = lifecycle.activeExchangeID else {
                 throw WorldwideHostCoordinatorError.reconnectWithoutExchange
             }
+            recordConnectionTelemetry(
+                .reconnectRequestReceived,
+                exchangeID: exchangeValue
+            )
             try await beginMediaSession(
                 request: request,
                 exchangeID: exchangeValue,
@@ -279,9 +383,9 @@ actor WorldwideHostCoordinator {
     }
 
     private func sendPairingRecoveryIfNeeded(
-        client: PairedAvailabilitySignalingClient
+        client: any WorldwideHostAvailabilityTransport
     ) async throws {
-        guard availabilityClient === client,
+        guard isCurrentAvailabilityClient(client),
               let identity,
               var record = pairedRecord else {
             throw WorldwideHostCoordinatorError.activePairMissing
@@ -313,9 +417,9 @@ actor WorldwideHostCoordinator {
 
     private func handlePairingRecoveryCommit(
         _ commit: RemotePairingCommit,
-        client: PairedAvailabilitySignalingClient
+        client: any WorldwideHostAvailabilityTransport
     ) async throws {
-        guard availabilityClient === client,
+        guard isCurrentAvailabilityClient(client),
               let identity,
               var record = pairedRecord else {
             throw WorldwideHostCoordinatorError.activePairMissing
@@ -347,9 +451,9 @@ actor WorldwideHostCoordinator {
     private func beginMediaSession(
         request: RemoteReconnectRequest,
         exchangeID: String,
-        client: PairedAvailabilitySignalingClient
+        client: any WorldwideHostAvailabilityTransport
     ) async throws {
-        guard availabilityClient === client,
+        guard isCurrentAvailabilityClient(client),
               lifecycle.activeExchangeID == exchangeID,
               let identity,
               var record = pairedRecord else {
@@ -363,7 +467,7 @@ actor WorldwideHostCoordinator {
 
         await stopActiveMediaSession()
         guard !isStopped,
-              availabilityClient === client,
+              isCurrentAvailabilityClient(client),
               lifecycle.activeExchangeID == exchangeID else {
             throw CancellationError()
         }
@@ -384,7 +488,7 @@ actor WorldwideHostCoordinator {
         do {
             try await service.startPairedSession()
             guard !isStopped,
-                  availabilityClient === client,
+                  isCurrentAvailabilityClient(client),
                   lifecycle.activeExchangeID == exchangeID,
                   mediaService === service else {
                 throw CancellationError()
@@ -394,6 +498,14 @@ actor WorldwideHostCoordinator {
                 await self?.mediaDidEnd(service: service, exchangeID: exchangeID)
             }
             try await client.send(.reconnectResponse(responder.response))
+            recordConnectionTelemetry(
+                .reconnectResponseSent,
+                exchangeID: exchangeID
+            )
+            recordConnectionTelemetry(
+                .mediaSignalingPrepared,
+                exchangeID: exchangeID
+            )
             logger.info("A fresh encrypted media rendezvous is ready for the paired iPhone")
         } catch {
             await service.stop()
@@ -446,8 +558,10 @@ actor WorldwideHostCoordinator {
 
         pairingTask?.cancel()
         pairingTask = nil
+        let availabilityTask = availabilityTask
+        self.availabilityTask = nil
+        availabilityGeneration = nil
         availabilityTask?.cancel()
-        availabilityTask = nil
         mediaCompletionTask?.cancel()
         mediaCompletionTask = nil
 
@@ -463,11 +577,91 @@ actor WorldwideHostCoordinator {
         await media?.stop()
 
         if let error {
+            _ = await connectionTelemetry.flush()
             completionContinuation.finish(throwing: error)
         } else {
+            recordConnectionTelemetry(.hostStopped, terminal: .success)
+            _ = await connectionTelemetry.flush()
             completionContinuation.yield(())
             completionContinuation.finish()
         }
+    }
+
+    private func recordConnectionTelemetry(
+        _ stage: ConnectionTelemetryStage,
+        generation: UUID? = nil,
+        exchangeID: String? = nil,
+        retryOrdinal: UInt16? = nil,
+        delayMilliseconds: UInt64? = nil,
+        failure: ConnectionTelemetryFailure? = nil,
+        terminal: ConnectionTelemetryTerminal? = nil
+    ) {
+        let activeGeneration = generation ?? availabilityGeneration
+        let attemptReference = activeGeneration.map {
+            ConnectionTelemetryFingerprint.derive(domain: .attempt, uuid: $0)
+        }
+        let pairReference = pairedRecord.map {
+            ConnectionTelemetryFingerprint.derive(domain: .pair, uuid: $0.pairID)
+        }
+        let exchangeReference = exchangeID.map {
+            ConnectionTelemetryFingerprint.derive(
+                domain: .exchange,
+                bytes: Data($0.utf8)
+            )
+        }
+        connectionTelemetry.record(
+            ConnectionTelemetryDraft(
+                role: .host,
+                stage: stage,
+                attemptReference: attemptReference,
+                pairReference: pairReference,
+                exchangeReference: exchangeReference,
+                retryOrdinal: retryOrdinal,
+                delayMilliseconds: delayMilliseconds,
+                failure: failure,
+                terminal: terminal
+            )
+        )
+    }
+
+    private func connectionTelemetryFailure(
+        for error: any Error
+    ) -> ConnectionTelemetryFailure {
+        if error is CancellationError { return .transportCancellation }
+        if let signaling = error as? RendezvousSignalingError {
+            switch signaling {
+            case .connectionClosed, .notConnected:
+                return .connectionClosed
+            case .connectionFailed:
+                return .connectionFailed
+            case .sendFailed:
+                return .sendFailed
+            case .invalidServerMessage, .eventBufferOverflow:
+                return .protocolViolation
+            case .invalidEndpoint, .alreadyConnected:
+                return .unknown
+            }
+        }
+        if let coordinator = error as? WorldwideHostCoordinatorError {
+            switch coordinator {
+            case .availabilityServer(.peerUnavailable):
+                return .peerUnavailable
+            case .availabilityServer(.roleConflict):
+                return .roleConflict
+            case .unexpectedAvailabilityPayload, .reconnectWithoutExchange:
+                return .protocolViolation
+            case .availabilityLoopEndedUnexpectedly:
+                return .unexpectedLoopEnd
+            case .invalidLifecycle, .pairingEndedBeforeCommit,
+                 .activePairMissing, .availabilityServer:
+                return .unknown
+            }
+        }
+        if let core = error as? RemoteSessionCoreError,
+           core == .authenticationFailed {
+            return .authenticationFailed
+        }
+        return .unknown
     }
 }
 
@@ -478,6 +672,7 @@ enum WorldwideHostCoordinatorError: LocalizedError {
     case reconnectWithoutExchange
     case unexpectedAvailabilityPayload
     case availabilityServer(RendezvousServerError)
+    case availabilityLoopEndedUnexpectedly
 
     var errorDescription: String? {
         switch self {
@@ -502,6 +697,8 @@ enum WorldwideHostCoordinatorError: LocalizedError {
             case .invitationUnavailable, .invitationExpired, .requestRejected:
                 "The availability service rejected the Mac connection."
             }
+        case .availabilityLoopEndedUnexpectedly:
+            "The worldwide availability supervisor ended unexpectedly."
         }
     }
 

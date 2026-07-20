@@ -163,6 +163,7 @@ struct BrowserView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var viewModel: StreamSessionViewModel
     @EnvironmentObject private var worldwideViewModel: WorldwideSessionViewModel
+    @EnvironmentObject private var worldwideConnection: WorldwideViewerConnectionCoordinator
     @AppStorage("remoteHost") private var remoteHost = ""
     @AppStorage("remotePort") private var remotePort = "9000"
     @StateObject private var remoteTokenState = RemoteTokenState()
@@ -172,7 +173,6 @@ struct BrowserView: View {
     )
     @StateObject private var viewerPairingState = ViewerPairingState()
     @StateObject private var invitationAdmissionState = WorldwideInvitationAdmissionState()
-    @StateObject private var worldwideConnection = WorldwideViewerConnectionCoordinator()
     @State private var showsToken = false
     @State private var showsInvitationCode = false
     @State private var worldwidePreparationTask: Task<Void, Never>?

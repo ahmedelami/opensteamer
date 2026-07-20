@@ -1,3 +1,4 @@
+import RemoteSessionCore
 import SwiftUI
 
 enum AudioStreamerAppRootMode {
@@ -20,12 +21,25 @@ struct AudioStreamerApp: App {
     #else
     @StateObject private var viewModel = StreamSessionViewModel()
     @StateObject private var worldwideViewModel = WorldwideSessionViewModel()
+    @StateObject private var worldwideConnection: WorldwideViewerConnectionCoordinator
+
+    init() {
+        let telemetry = LocalConnectionTelemetryJournal.applicationSupport(
+            component: "ios-viewer"
+        )
+        _worldwideConnection = StateObject(
+            wrappedValue: WorldwideViewerConnectionCoordinator(
+                connectionTelemetry: telemetry
+            )
+        )
+    }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(viewModel)
                 .environmentObject(worldwideViewModel)
+                .environmentObject(worldwideConnection)
         }
     }
     #endif
