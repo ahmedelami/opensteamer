@@ -118,6 +118,320 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         XCTAssertEqual(secondPublished.failureCount, 1)
     }
 
+    func testProductionPCMAnalyzerDistinguishesStereoContentSilenceAndClipping() {
+        let harness = WebRTCIOSPlayoutPublicationTestHarness()
+        let stereo: [Int16] = [
+            1_000, -2_000,
+            .max, .min,
+            300, 300,
+            -400, 500,
+        ]
+
+        harness.analyzePCM16(samples: stereo)
+        let content = harness.snapshot
+        XCTAssertEqual(content.pcmSampleCount, 8)
+        XCTAssertEqual(content.pcmNonzeroSampleCount, 8)
+        XCTAssertEqual(content.pcmAbsoluteSampleSum, 70_035)
+        XCTAssertEqual(content.pcmLeftAbsoluteSampleSum, 34_467)
+        XCTAssertEqual(content.pcmRightAbsoluteSampleSum, 35_568)
+        XCTAssertEqual(content.pcmStereoDifferenceAbsoluteSampleSum, 69_435)
+        XCTAssertEqual(content.pcmClippedSampleCount, 2)
+        XCTAssertEqual(content.explicitSilenceCallbackCount, 0)
+        XCTAssertEqual(content.nearSilenceCallbackCount, 0)
+        XCTAssertEqual(content.currentConsecutiveNearSilenceFrameCount, 0)
+        XCTAssertEqual(content.maximumConsecutiveNearSilenceFrameCount, 0)
+        XCTAssertEqual(content.pcmLeftZeroCrossingCount, 1)
+        XCTAssertEqual(content.pcmRightZeroCrossingCount, 1)
+        XCTAssertEqual(content.pcmEnvelopeTransitionCount, 0)
+        XCTAssertEqual(content.lastCallbackMeanMagnitude, 8_754)
+        XCTAssertEqual(content.lastPeakMagnitude, 32_768)
+
+        harness.analyzePCM16(
+            samples: [Int16](repeating: 0, count: 8),
+            outputIsSilence: true
+        )
+        let silence = harness.snapshot
+        XCTAssertEqual(silence.pcmSampleCount, 16)
+        XCTAssertEqual(silence.pcmNonzeroSampleCount, 8)
+        XCTAssertEqual(silence.pcmAbsoluteSampleSum, 70_035)
+        XCTAssertEqual(silence.pcmLeftAbsoluteSampleSum, 34_467)
+        XCTAssertEqual(silence.pcmRightAbsoluteSampleSum, 35_568)
+        XCTAssertEqual(silence.pcmStereoDifferenceAbsoluteSampleSum, 69_435)
+        XCTAssertEqual(silence.pcmClippedSampleCount, 2)
+        XCTAssertEqual(silence.explicitSilenceCallbackCount, 1)
+        XCTAssertEqual(silence.nearSilenceCallbackCount, 1)
+        XCTAssertEqual(silence.currentConsecutiveNearSilenceFrameCount, 4)
+        XCTAssertEqual(silence.maximumConsecutiveNearSilenceFrameCount, 4)
+        XCTAssertEqual(silence.pcmLeftZeroCrossingCount, 1)
+        XCTAssertEqual(silence.pcmRightZeroCrossingCount, 1)
+        XCTAssertEqual(silence.pcmEnvelopeTransitionCount, 0)
+        XCTAssertEqual(silence.lastCallbackMeanMagnitude, 0)
+        XCTAssertEqual(silence.lastPeakMagnitude, 0)
+    }
+
+    func testProductionPCMAnalyzerTracksAndResetsConsecutiveNearSilence() {
+        let harness = WebRTCIOSPlayoutPublicationTestHarness()
+
+        harness.analyzePCM16(samples: [Int16](repeating: 0, count: 960))
+        var snapshot = harness.snapshot
+        XCTAssertEqual(snapshot.nearSilenceCallbackCount, 1)
+        XCTAssertEqual(snapshot.currentConsecutiveNearSilenceFrameCount, 480)
+        XCTAssertEqual(snapshot.maximumConsecutiveNearSilenceFrameCount, 480)
+
+        // Fully nonzero dither is still near-silence because its mean magnitude is below 256.
+        harness.analyzePCM16(samples: [Int16](repeating: 1, count: 480))
+        snapshot = harness.snapshot
+        XCTAssertEqual(snapshot.nearSilenceCallbackCount, 2)
+        XCTAssertEqual(snapshot.currentConsecutiveNearSilenceFrameCount, 720)
+        XCTAssertEqual(snapshot.maximumConsecutiveNearSilenceFrameCount, 720)
+
+        // The deterministic physical tone is comfortably above both density and mean gates.
+        harness.analyzePCM16(samples: [Int16](repeating: 2_000, count: 960))
+        snapshot = harness.snapshot
+        XCTAssertEqual(snapshot.nearSilenceCallbackCount, 2)
+        XCTAssertEqual(snapshot.currentConsecutiveNearSilenceFrameCount, 0)
+        XCTAssertEqual(snapshot.maximumConsecutiveNearSilenceFrameCount, 720)
+
+        // Two loud impulses put mean magnitude above 256 but cannot pass the independent 90%
+        // nonzero-density gate.
+        var sparseImpulse = [Int16](repeating: 0, count: 240)
+        sparseImpulse[0] = .max
+        sparseImpulse[1] = .max
+        harness.analyzePCM16(samples: sparseImpulse)
+        snapshot = harness.snapshot
+        XCTAssertEqual(snapshot.nearSilenceCallbackCount, 3)
+        XCTAssertEqual(snapshot.currentConsecutiveNearSilenceFrameCount, 120)
+        XCTAssertEqual(snapshot.maximumConsecutiveNearSilenceFrameCount, 720)
+
+        harness.analyzePCM16(samples: [Int16](repeating: 2_000, count: 240))
+        harness.analyzePCM16(
+            samples: [Int16](repeating: 0, count: 240),
+            outputIsSilence: true
+        )
+        snapshot = harness.snapshot
+        XCTAssertEqual(snapshot.nearSilenceCallbackCount, 4)
+        XCTAssertEqual(snapshot.currentConsecutiveNearSilenceFrameCount, 120)
+        XCTAssertEqual(snapshot.maximumConsecutiveNearSilenceFrameCount, 720)
+    }
+
+    func testProductionPCMAnalyzerEnforcesExactDensityAndMeanMagnitudeBoundaries() {
+        let densityHarness = WebRTCIOSPlayoutPublicationTestHarness()
+        let exactlyNinetyPercentNonzero =
+            [Int16](repeating: 1_000, count: 180) + [Int16](repeating: 0, count: 20)
+        densityHarness.analyzePCM16(samples: exactlyNinetyPercentNonzero)
+        XCTAssertEqual(densityHarness.snapshot.nearSilenceCallbackCount, 0)
+
+        let eightyNinePercentNonzero =
+            [Int16](repeating: 1_000, count: 178) + [Int16](repeating: 0, count: 22)
+        densityHarness.analyzePCM16(samples: eightyNinePercentNonzero)
+        XCTAssertEqual(densityHarness.snapshot.nearSilenceCallbackCount, 1)
+
+        let magnitudeHarness = WebRTCIOSPlayoutPublicationTestHarness()
+        magnitudeHarness.analyzePCM16(samples: [Int16](repeating: 256, count: 200))
+        XCTAssertEqual(magnitudeHarness.snapshot.nearSilenceCallbackCount, 0)
+        magnitudeHarness.analyzePCM16(samples: [Int16](repeating: 255, count: 200))
+        XCTAssertEqual(magnitudeHarness.snapshot.nearSilenceCallbackCount, 1)
+    }
+
+    func testProductionPCMAnalyzerIdentifiesIndependent997And1499HertzToneChannels() {
+        let harness = WebRTCIOSPlayoutPublicationTestHarness()
+        let sampleRate = 48_000.0
+        let frameCount = 4_800
+        var interleaved = [Int16]()
+        interleaved.reserveCapacity(frameCount * 2)
+        for frame in 0..<frameCount {
+            let time = Double(frame) / sampleRate
+            interleaved.append(
+                Int16((sin(2 * .pi * 997 * time) * 8_000).rounded())
+            )
+            interleaved.append(
+                Int16((sin(2 * .pi * 1_499 * time) * 8_000).rounded())
+            )
+        }
+
+        harness.analyzePCM16(samples: interleaved)
+        var snapshot = harness.snapshot
+        XCTAssertEqual(snapshot.pcmLeftZeroCrossingCount, 199)
+        XCTAssertEqual(snapshot.pcmRightZeroCrossingCount, 299)
+        XCTAssertEqual(snapshot.nearSilenceCallbackCount, 0)
+
+        // Both generated tones end negative. A positive frame proves signs persist across the
+        // callback boundary rather than each buffer being counted independently.
+        harness.analyzePCM16(samples: [100, 100])
+        snapshot = harness.snapshot
+        XCTAssertEqual(snapshot.pcmLeftZeroCrossingCount, 200)
+        XCTAssertEqual(snapshot.pcmRightZeroCrossingCount, 300)
+    }
+
+    func testProductionPCMAnalyzerDetectsCodedBandTransitionsAndRapidGainFlicker() {
+        let coded = WebRTCIOSPlayoutPublicationTestHarness()
+        let sampleRate = 48_000.0
+        let framesPerCallback = 480
+        let callbackCount = 200
+        for callback in 0..<callbackCount {
+            let highBand = (callback / 50).isMultiple(of: 2) == false
+            let amplitude = highBand ? 3_000.0 : 9_000.0
+            let leftFrequency = highBand ? 8_003.0 : 997.0
+            let rightFrequency = highBand ? 11_003.0 : 1_499.0
+            var interleaved = [Int16]()
+            interleaved.reserveCapacity(framesPerCallback * 2)
+            for localFrame in 0..<framesPerCallback {
+                let frame = callback * framesPerCallback + localFrame
+                let time = Double(frame) / sampleRate
+                interleaved.append(
+                    Int16((sin(2 * .pi * leftFrequency * time) * amplitude).rounded())
+                )
+                interleaved.append(
+                    Int16((sin(2 * .pi * rightFrequency * time) * amplitude).rounded())
+                )
+            }
+            coded.analyzePCM16(samples: interleaved)
+        }
+        let codedSnapshot = coded.snapshot
+        XCTAssertEqual(codedSnapshot.nearSilenceCallbackCount, 0)
+        XCTAssertEqual(codedSnapshot.pcmEnvelopeTransitionCount, 3)
+        XCTAssertEqual(codedSnapshot.pcmShapeAnomalyCallbackCount, 0)
+        XCTAssertEqual(
+            codedSnapshot.pcmBoundaryDiscontinuityCallbackCount,
+            0,
+            "The intentional 500 ms level/frequency transitions must not look like phase resets."
+        )
+        XCTAssertEqual(codedSnapshot.pcmLeftZeroCrossingCount, 17_999, accuracy: 2)
+        XCTAssertEqual(codedSnapshot.pcmRightZeroCrossingCount, 25_003, accuracy: 2)
+
+        let flicker = WebRTCIOSPlayoutPublicationTestHarness()
+        for callback in 0..<20 {
+            let magnitude: Int16 = callback.isMultiple(of: 2) ? 8_000 : 1_000
+            flicker.analyzePCM16(samples: [Int16](repeating: magnitude, count: 960))
+        }
+        XCTAssertEqual(
+            flicker.snapshot.pcmEnvelopeTransitionCount,
+            19,
+            "Every alternating 10 ms gain step must be machine-visible."
+        )
+
+        let boundary = WebRTCIOSPlayoutPublicationTestHarness()
+        boundary.analyzePCM16(samples: [Int16](repeating: 2_000, count: 960))
+        boundary.analyzePCM16(samples: [Int16](repeating: 2_800, count: 960))
+        XCTAssertEqual(
+            boundary.snapshot.pcmEnvelopeTransitionCount,
+            0,
+            "The exact 40% tolerance boundary is not a violation."
+        )
+        boundary.analyzePCM16(samples: [Int16](repeating: 2_801, count: 960))
+        XCTAssertEqual(boundary.snapshot.pcmEnvelopeTransitionCount, 0)
+        boundary.analyzePCM16(samples: [Int16](repeating: 1_999, count: 960))
+        XCTAssertEqual(boundary.snapshot.pcmEnvelopeTransitionCount, 1)
+    }
+
+    func testProductionPCMAnalyzerAcceptsContinuousToneAcrossCallbackBoundaries() {
+        let harness = WebRTCIOSPlayoutPublicationTestHarness()
+        let framesPerCallback = 480
+
+        for callback in 0..<100 {
+            harness.analyzePCM16(
+                samples: Self.stereoChallengeTone(
+                    frames: (callback * framesPerCallback)..<((callback + 1) * framesPerCallback)
+                )
+            )
+        }
+
+        let snapshot = harness.snapshot
+        XCTAssertEqual(snapshot.pcmShapeAnomalyCallbackCount, 0)
+        XCTAssertEqual(snapshot.pcmBoundaryDiscontinuityCallbackCount, 0)
+    }
+
+    func testProductionPCMAnalyzerCountsRepeatedPhaseResetBlocksCumulatively() {
+        let harness = WebRTCIOSPlayoutPublicationTestHarness()
+        let resetBlock = Self.stereoChallengeTone(frames: 0..<480)
+
+        for _ in 0..<20 {
+            harness.analyzePCM16(samples: resetBlock)
+        }
+
+        var snapshot = harness.snapshot
+        XCTAssertEqual(snapshot.pcmShapeAnomalyCallbackCount, 0)
+        XCTAssertEqual(
+            snapshot.pcmBoundaryDiscontinuityCallbackCount,
+            19,
+            "Each 10 ms phase reset after the first callback must remain machine-visible."
+        )
+
+        // This block is phase-continuous with the immediately preceding reset block. It proves a
+        // final healthy callback cannot clear the lifetime-cumulative evidence already observed.
+        harness.analyzePCM16(samples: Self.stereoChallengeTone(frames: 480..<960))
+        snapshot = harness.snapshot
+        XCTAssertEqual(snapshot.pcmShapeAnomalyCallbackCount, 0)
+        XCTAssertEqual(snapshot.pcmBoundaryDiscontinuityCallbackCount, 19)
+    }
+
+    func testProductionPCMAnalyzerCountsShapeMutantsCumulatively() {
+        let harness = WebRTCIOSPlayoutPublicationTestHarness()
+
+        let flat = [Int16](repeating: 2_000, count: 960)
+        harness.analyzePCM16(samples: flat)
+        XCTAssertEqual(harness.snapshot.pcmShapeAnomalyCallbackCount, 1)
+
+        var square = [Int16]()
+        square.reserveCapacity(960)
+        for frame in 0..<480 {
+            let sample: Int16 = frame.isMultiple(of: 2) ? 8_000 : -8_000
+            square.append(sample)
+            square.append(sample)
+        }
+        harness.analyzePCM16(samples: square)
+        XCTAssertEqual(harness.snapshot.pcmShapeAnomalyCallbackCount, 2)
+
+        var impulse = [Int16](repeating: 0, count: 960)
+        impulse[240] = .max
+        impulse[241] = .min
+        harness.analyzePCM16(samples: impulse)
+        XCTAssertEqual(harness.snapshot.pcmShapeAnomalyCallbackCount, 3)
+
+        harness.analyzePCM16(samples: Self.stereoChallengeTone(frames: 0..<480))
+        let finalSnapshot = harness.snapshot
+        XCTAssertEqual(
+            finalSnapshot.pcmShapeAnomalyCallbackCount,
+            3,
+            "A final clean callback must not erase prior flat, square, or impulse evidence."
+        )
+    }
+
+    func testProductionSuccessfulCallbackTimingDetectsOnlyGapsBeyond25Milliseconds() {
+        let harness = WebRTCIOSPlayoutPublicationTestHarness()
+
+        harness.recordSuccessfulCallback(atMonotonicTimeNanoseconds: 1_000_000_000)
+        harness.recordSuccessfulCallback(atMonotonicTimeNanoseconds: 1_010_000_000)
+        harness.recordSuccessfulCallback(atMonotonicTimeNanoseconds: 1_035_000_000)
+        var snapshot = harness.snapshot
+        XCTAssertEqual(snapshot.callbackGapViolationCount, 0)
+        XCTAssertEqual(snapshot.maximumCallbackGapNanoseconds, 25_000_000)
+
+        harness.recordSuccessfulCallback(atMonotonicTimeNanoseconds: 1_060_000_001)
+        snapshot = harness.snapshot
+        XCTAssertEqual(snapshot.callbackGapViolationCount, 1)
+        XCTAssertEqual(snapshot.maximumCallbackGapNanoseconds, 25_000_001)
+
+        // A regressed clock reading is ignored and cannot lower the cadence baseline.
+        harness.recordSuccessfulCallback(atMonotonicTimeNanoseconds: 1_050_000_000)
+        harness.recordSuccessfulCallback(atMonotonicTimeNanoseconds: 1_070_000_001)
+        snapshot = harness.snapshot
+        XCTAssertEqual(snapshot.callbackGapViolationCount, 1)
+        XCTAssertEqual(snapshot.maximumCallbackGapNanoseconds, 25_000_001)
+
+        let recurring = WebRTCIOSPlayoutPublicationTestHarness()
+        recurring.recordSuccessfulCallback(atMonotonicTimeNanoseconds: 2_000_000_000)
+        recurring.recordSuccessfulCallback(atMonotonicTimeNanoseconds: 2_020_000_000)
+        recurring.recordSuccessfulCallback(atMonotonicTimeNanoseconds: 2_050_000_000)
+        recurring.recordSuccessfulCallback(atMonotonicTimeNanoseconds: 2_090_000_000)
+        XCTAssertEqual(
+            recurring.snapshot.callbackGapViolationCount,
+            2,
+            "Recurring 30 ms and 40 ms disruptions must both be counted; 20 ms remains tolerated."
+        )
+        XCTAssertEqual(recurring.snapshot.maximumCallbackGapNanoseconds, 40_000_000)
+    }
+
     func testProductionRecoveryPreservesNativeLifetimeCounters() {
         let harness = WebRTCIOSPlayoutRecoveryTestHarness()
         harness.publishCallback(frameCount: 480, status: noErr)
@@ -203,6 +517,17 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         XCTAssertEqual(value.failureCode, 0)
         XCTAssertEqual(value.lastLifecycleStatus, noErr)
         XCTAssertNil(value.failureMessage)
+        XCTAssertEqual(value.playoutCallbackGapViolationCount, 0)
+        XCTAssertEqual(value.playoutMaximumCallbackGapNanoseconds, 0)
+        XCTAssertEqual(value.playoutNearSilenceCallbackCount, 0)
+        XCTAssertEqual(value.playoutCurrentConsecutiveNearSilenceFrameCount, 0)
+        XCTAssertEqual(value.playoutMaximumConsecutiveNearSilenceFrameCount, 0)
+        XCTAssertEqual(value.playoutPCMLeftZeroCrossingCount, 0)
+        XCTAssertEqual(value.playoutPCMRightZeroCrossingCount, 0)
+        XCTAssertEqual(value.playoutPCMEnvelopeTransitionCount, 0)
+        XCTAssertEqual(value.playoutPCMShapeAnomalyCallbackCount, 0)
+        XCTAssertEqual(value.playoutPCMBoundaryDiscontinuityCallbackCount, 0)
+        XCTAssertEqual(value.playoutLastCallbackMeanMagnitude, 0)
         XCTAssertEqual(value.unexpectedRecordingRequestCount, 0)
 
         await viewer.close()
@@ -385,6 +710,22 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
             && !diagnostics.sessionActive
             && !diagnostics.ownsSessionActivation
             && !diagnostics.remoteIOCreated
+    }
+
+    private static func stereoChallengeTone(frames: Range<Int>) -> [Int16] {
+        let sampleRate = 48_000.0
+        var samples = [Int16]()
+        samples.reserveCapacity(frames.count * 2)
+        for frame in frames {
+            let time = Double(frame) / sampleRate
+            samples.append(
+                Int16((sin(2 * .pi * 997 * time) * 9_000).rounded())
+            )
+            samples.append(
+                Int16((sin(2 * .pi * 1_499 * time) * 9_000).rounded())
+            )
+        }
+        return samples
     }
 }
 

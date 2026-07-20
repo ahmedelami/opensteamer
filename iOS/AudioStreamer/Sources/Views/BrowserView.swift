@@ -378,6 +378,15 @@ struct BrowserView: View {
             .accessibilityValue(activeSession.audioStateText)
             .accessibilityIdentifier("worldwideAudioState")
 
+        if let oracle = worldwideViewModel.audioPlayoutOracle {
+            Color.clear
+            .frame(width: 1, height: 1)
+            .accessibilityElement()
+            .accessibilityLabel("Native audio playout proof")
+            .accessibilityValue(oracle.accessibilityValue)
+            .accessibilityIdentifier("worldwideAudioPlayoutOracle")
+        }
+
         if activeSession.canResumeAudioPlayback {
             Button {
                 worldwideViewModel.resumeAudioPlayback()

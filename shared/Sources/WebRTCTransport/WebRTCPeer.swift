@@ -72,7 +72,27 @@ public struct WebRTCIOSPlayoutPublicationTestSnapshot: Equatable, Sendable {
     public let callbackCount: UInt64
     public let frameCount: UInt64
     public let failureCount: UInt64
+    public let pcmSampleCount: UInt64
+    public let pcmNonzeroSampleCount: UInt64
+    public let pcmAbsoluteSampleSum: UInt64
+    public let pcmLeftAbsoluteSampleSum: UInt64
+    public let pcmRightAbsoluteSampleSum: UInt64
+    public let pcmStereoDifferenceAbsoluteSampleSum: UInt64
+    public let pcmClippedSampleCount: UInt64
+    public let explicitSilenceCallbackCount: UInt64
+    public let callbackGapViolationCount: UInt64
+    public let maximumCallbackGapNanoseconds: UInt64
+    public let nearSilenceCallbackCount: UInt64
+    public let currentConsecutiveNearSilenceFrameCount: UInt64
+    public let maximumConsecutiveNearSilenceFrameCount: UInt64
+    public let pcmLeftZeroCrossingCount: UInt64
+    public let pcmRightZeroCrossingCount: UInt64
+    public let pcmEnvelopeTransitionCount: UInt64
+    public let pcmShapeAnomalyCallbackCount: UInt64
+    public let pcmBoundaryDiscontinuityCallbackCount: UInt64
+    public let lastCallbackMeanMagnitude: UInt32
     public let lastFrameCount: UInt32
+    public let lastPeakMagnitude: UInt32
     public let lastStatus: Int32
 }
 
@@ -93,6 +113,15 @@ public final class WebRTCIOSPlayoutPublicationTestHarness: @unchecked Sendable {
         native.publishCallback(withFrameCount: frameCount, status: status)
     }
 
+    public func analyzePCM16(samples: [Int16], outputIsSilence: Bool = false) {
+        let data = samples.withUnsafeBytes { Data($0) }
+        native.analyzePCM16Samples(data, outputIsSilence: outputIsSilence)
+    }
+
+    public func recordSuccessfulCallback(atMonotonicTimeNanoseconds nanoseconds: UInt64) {
+        native.recordSuccessfulCallback(atMonotonicTimeNanoseconds: nanoseconds)
+    }
+
     public func markRecoveryBoundary() {
         native.markRecoveryBoundary()
     }
@@ -104,7 +133,31 @@ public final class WebRTCIOSPlayoutPublicationTestHarness: @unchecked Sendable {
             callbackCount: value.callbackCount,
             frameCount: value.frameCount,
             failureCount: value.failureCount,
+            pcmSampleCount: value.pcmSampleCount,
+            pcmNonzeroSampleCount: value.pcmNonzeroSampleCount,
+            pcmAbsoluteSampleSum: value.pcmAbsoluteSampleSum,
+            pcmLeftAbsoluteSampleSum: value.pcmLeftAbsoluteSampleSum,
+            pcmRightAbsoluteSampleSum: value.pcmRightAbsoluteSampleSum,
+            pcmStereoDifferenceAbsoluteSampleSum:
+                value.pcmStereoDifferenceAbsoluteSampleSum,
+            pcmClippedSampleCount: value.pcmClippedSampleCount,
+            explicitSilenceCallbackCount: value.explicitSilenceCallbackCount,
+            callbackGapViolationCount: value.callbackGapViolationCount,
+            maximumCallbackGapNanoseconds: value.maximumCallbackGapNanoseconds,
+            nearSilenceCallbackCount: value.nearSilenceCallbackCount,
+            currentConsecutiveNearSilenceFrameCount:
+                value.currentConsecutiveNearSilenceFrameCount,
+            maximumConsecutiveNearSilenceFrameCount:
+                value.maximumConsecutiveNearSilenceFrameCount,
+            pcmLeftZeroCrossingCount: value.pcmLeftZeroCrossingCount,
+            pcmRightZeroCrossingCount: value.pcmRightZeroCrossingCount,
+            pcmEnvelopeTransitionCount: value.pcmEnvelopeTransitionCount,
+            pcmShapeAnomalyCallbackCount: value.pcmShapeAnomalyCallbackCount,
+            pcmBoundaryDiscontinuityCallbackCount:
+                value.pcmBoundaryDiscontinuityCallbackCount,
+            lastCallbackMeanMagnitude: value.lastCallbackMeanMagnitude,
             lastFrameCount: value.lastFrameCount,
+            lastPeakMagnitude: value.lastPeakMagnitude,
             lastStatus: value.lastStatus
         )
     }
@@ -178,6 +231,8 @@ public struct WebRTCIOSPlayoutDiagnostics: Sendable {
     public let explicitResumeRequired: Bool
     public let categoryIsMediaPlayback: Bool
     public let modeIsDefault: Bool
+    public let categoryOptionsAreEmpty: Bool
+    public let routeSharingPolicyIsDefault: Bool
     public let sampleRate: Double
     public let outputIOBufferDuration: TimeInterval
     public let outputChannelCount: Int
@@ -188,12 +243,141 @@ public struct WebRTCIOSPlayoutDiagnostics: Sendable {
     public let playoutCallbackCount: UInt64
     public let playoutFrameCount: UInt64
     public let playoutFailureCount: UInt64
+    public let playoutPCMSampleCount: UInt64
+    public let playoutPCMNonzeroSampleCount: UInt64
+    public let playoutPCMAbsoluteSampleSum: UInt64
+    public let playoutPCMLeftAbsoluteSampleSum: UInt64
+    public let playoutPCMRightAbsoluteSampleSum: UInt64
+    public let playoutPCMStereoDifferenceAbsoluteSampleSum: UInt64
+    public let playoutPCMClippedSampleCount: UInt64
+    public let playoutExplicitSilenceCallbackCount: UInt64
+    public let playoutCallbackGapViolationCount: UInt64
+    public let playoutMaximumCallbackGapNanoseconds: UInt64
+    public let playoutNearSilenceCallbackCount: UInt64
+    public let playoutCurrentConsecutiveNearSilenceFrameCount: UInt64
+    public let playoutMaximumConsecutiveNearSilenceFrameCount: UInt64
+    public let playoutPCMLeftZeroCrossingCount: UInt64
+    public let playoutPCMRightZeroCrossingCount: UInt64
+    public let playoutPCMEnvelopeTransitionCount: UInt64
+    public let playoutPCMShapeAnomalyCallbackCount: UInt64
+    public let playoutPCMBoundaryDiscontinuityCallbackCount: UInt64
+    public let playoutLastCallbackMeanMagnitude: UInt32
     public let unexpectedRecordingRequestCount: UInt64
     public let recoveryRequestCount: UInt64
     public let recoveryAuthorizationRejectionCount: UInt64
     public let recoveryRebuildCount: UInt64
     public let lastPlayoutFrameCount: UInt32
+    public let lastPlayoutPeakMagnitude: UInt32
     public let lastPlayoutStatus: Int32
+
+    public init(
+        initialized: Bool,
+        playoutInitialized: Bool,
+        playing: Bool,
+        sessionActive: Bool,
+        ownsSessionActivation: Bool,
+        remoteIOCreated: Bool,
+        inputBusEnabled: Bool,
+        outputBusEnabled: Bool,
+        recoveryRequired: Bool,
+        explicitResumeRequired: Bool,
+        categoryIsMediaPlayback: Bool,
+        modeIsDefault: Bool,
+        categoryOptionsAreEmpty: Bool,
+        routeSharingPolicyIsDefault: Bool,
+        sampleRate: Double,
+        outputIOBufferDuration: TimeInterval,
+        outputChannelCount: Int,
+        audioUnitSubType: UInt32,
+        failureCode: Int,
+        lastLifecycleStatus: Int32,
+        failureMessage: String?,
+        playoutCallbackCount: UInt64,
+        playoutFrameCount: UInt64,
+        playoutFailureCount: UInt64,
+        playoutPCMSampleCount: UInt64,
+        playoutPCMNonzeroSampleCount: UInt64,
+        playoutPCMAbsoluteSampleSum: UInt64,
+        playoutPCMLeftAbsoluteSampleSum: UInt64,
+        playoutPCMRightAbsoluteSampleSum: UInt64,
+        playoutPCMStereoDifferenceAbsoluteSampleSum: UInt64,
+        playoutPCMClippedSampleCount: UInt64,
+        playoutExplicitSilenceCallbackCount: UInt64,
+        unexpectedRecordingRequestCount: UInt64,
+        recoveryRequestCount: UInt64,
+        recoveryAuthorizationRejectionCount: UInt64,
+        recoveryRebuildCount: UInt64,
+        lastPlayoutFrameCount: UInt32,
+        lastPlayoutPeakMagnitude: UInt32,
+        lastPlayoutStatus: Int32,
+        playoutCallbackGapViolationCount: UInt64 = 0,
+        playoutMaximumCallbackGapNanoseconds: UInt64 = 0,
+        playoutNearSilenceCallbackCount: UInt64 = 0,
+        playoutCurrentConsecutiveNearSilenceFrameCount: UInt64 = 0,
+        playoutMaximumConsecutiveNearSilenceFrameCount: UInt64 = 0,
+        playoutPCMLeftZeroCrossingCount: UInt64 = 0,
+        playoutPCMRightZeroCrossingCount: UInt64 = 0,
+        playoutPCMEnvelopeTransitionCount: UInt64 = 0,
+        playoutPCMShapeAnomalyCallbackCount: UInt64 = 0,
+        playoutPCMBoundaryDiscontinuityCallbackCount: UInt64 = 0,
+        playoutLastCallbackMeanMagnitude: UInt32 = 0
+    ) {
+        self.initialized = initialized
+        self.playoutInitialized = playoutInitialized
+        self.playing = playing
+        self.sessionActive = sessionActive
+        self.ownsSessionActivation = ownsSessionActivation
+        self.remoteIOCreated = remoteIOCreated
+        self.inputBusEnabled = inputBusEnabled
+        self.outputBusEnabled = outputBusEnabled
+        self.recoveryRequired = recoveryRequired
+        self.explicitResumeRequired = explicitResumeRequired
+        self.categoryIsMediaPlayback = categoryIsMediaPlayback
+        self.modeIsDefault = modeIsDefault
+        self.categoryOptionsAreEmpty = categoryOptionsAreEmpty
+        self.routeSharingPolicyIsDefault = routeSharingPolicyIsDefault
+        self.sampleRate = sampleRate
+        self.outputIOBufferDuration = outputIOBufferDuration
+        self.outputChannelCount = outputChannelCount
+        self.audioUnitSubType = audioUnitSubType
+        self.failureCode = failureCode
+        self.lastLifecycleStatus = lastLifecycleStatus
+        self.failureMessage = failureMessage
+        self.playoutCallbackCount = playoutCallbackCount
+        self.playoutFrameCount = playoutFrameCount
+        self.playoutFailureCount = playoutFailureCount
+        self.playoutPCMSampleCount = playoutPCMSampleCount
+        self.playoutPCMNonzeroSampleCount = playoutPCMNonzeroSampleCount
+        self.playoutPCMAbsoluteSampleSum = playoutPCMAbsoluteSampleSum
+        self.playoutPCMLeftAbsoluteSampleSum = playoutPCMLeftAbsoluteSampleSum
+        self.playoutPCMRightAbsoluteSampleSum = playoutPCMRightAbsoluteSampleSum
+        self.playoutPCMStereoDifferenceAbsoluteSampleSum =
+            playoutPCMStereoDifferenceAbsoluteSampleSum
+        self.playoutPCMClippedSampleCount = playoutPCMClippedSampleCount
+        self.playoutExplicitSilenceCallbackCount = playoutExplicitSilenceCallbackCount
+        self.unexpectedRecordingRequestCount = unexpectedRecordingRequestCount
+        self.recoveryRequestCount = recoveryRequestCount
+        self.recoveryAuthorizationRejectionCount = recoveryAuthorizationRejectionCount
+        self.recoveryRebuildCount = recoveryRebuildCount
+        self.lastPlayoutFrameCount = lastPlayoutFrameCount
+        self.lastPlayoutPeakMagnitude = lastPlayoutPeakMagnitude
+        self.lastPlayoutStatus = lastPlayoutStatus
+        self.playoutCallbackGapViolationCount = playoutCallbackGapViolationCount
+        self.playoutMaximumCallbackGapNanoseconds = playoutMaximumCallbackGapNanoseconds
+        self.playoutNearSilenceCallbackCount = playoutNearSilenceCallbackCount
+        self.playoutCurrentConsecutiveNearSilenceFrameCount =
+            playoutCurrentConsecutiveNearSilenceFrameCount
+        self.playoutMaximumConsecutiveNearSilenceFrameCount =
+            playoutMaximumConsecutiveNearSilenceFrameCount
+        self.playoutPCMLeftZeroCrossingCount = playoutPCMLeftZeroCrossingCount
+        self.playoutPCMRightZeroCrossingCount = playoutPCMRightZeroCrossingCount
+        self.playoutPCMEnvelopeTransitionCount = playoutPCMEnvelopeTransitionCount
+        self.playoutPCMShapeAnomalyCallbackCount =
+            playoutPCMShapeAnomalyCallbackCount
+        self.playoutPCMBoundaryDiscontinuityCallbackCount =
+            playoutPCMBoundaryDiscontinuityCallbackCount
+        self.playoutLastCallbackMeanMagnitude = playoutLastCallbackMeanMagnitude
+    }
 }
 #endif
 
@@ -1377,6 +1561,8 @@ public actor WebRTCPeer {
             explicitResumeRequired: value.explicitResumeRequired,
             categoryIsMediaPlayback: value.categoryIsMediaPlayback,
             modeIsDefault: value.modeIsDefault,
+            categoryOptionsAreEmpty: value.categoryOptionsAreEmpty,
+            routeSharingPolicyIsDefault: value.routeSharingPolicyIsDefault,
             sampleRate: value.sampleRate,
             outputIOBufferDuration: value.outputIOBufferDuration,
             outputChannelCount: value.outputChannelCount,
@@ -1387,13 +1573,46 @@ public actor WebRTCPeer {
             playoutCallbackCount: value.playoutCallbackCount,
             playoutFrameCount: value.playoutFrameCount,
             playoutFailureCount: value.playoutFailureCount,
+            playoutPCMSampleCount: value.playoutPCMSampleCount,
+            playoutPCMNonzeroSampleCount: value.playoutPCMNonzeroSampleCount,
+            playoutPCMAbsoluteSampleSum: value.playoutPCMAbsoluteSampleSum,
+            playoutPCMLeftAbsoluteSampleSum: value.playoutPCMLeftAbsoluteSampleSum,
+            playoutPCMRightAbsoluteSampleSum: value.playoutPCMRightAbsoluteSampleSum,
+            playoutPCMStereoDifferenceAbsoluteSampleSum:
+                value.playoutPCMStereoDifferenceAbsoluteSampleSum,
+            playoutPCMClippedSampleCount: value.playoutPCMClippedSampleCount,
+            playoutExplicitSilenceCallbackCount:
+                value.playoutExplicitSilenceCallbackCount,
             unexpectedRecordingRequestCount: value.unexpectedRecordingRequestCount,
             recoveryRequestCount: value.recoveryRequestCount,
             recoveryAuthorizationRejectionCount:
                 value.recoveryAuthorizationRejectionCount,
             recoveryRebuildCount: value.recoveryRebuildCount,
             lastPlayoutFrameCount: value.lastPlayoutFrameCount,
-            lastPlayoutStatus: value.lastPlayoutStatus
+            lastPlayoutPeakMagnitude: value.lastPlayoutPeakMagnitude,
+            lastPlayoutStatus: value.lastPlayoutStatus,
+            playoutCallbackGapViolationCount:
+                value.playoutCallbackGapViolationCount,
+            playoutMaximumCallbackGapNanoseconds:
+                value.playoutMaximumCallbackGapNanoseconds,
+            playoutNearSilenceCallbackCount:
+                value.playoutNearSilenceCallbackCount,
+            playoutCurrentConsecutiveNearSilenceFrameCount:
+                value.playoutCurrentConsecutiveNearSilenceFrameCount,
+            playoutMaximumConsecutiveNearSilenceFrameCount:
+                value.playoutMaximumConsecutiveNearSilenceFrameCount,
+            playoutPCMLeftZeroCrossingCount:
+                value.playoutPCMLeftZeroCrossingCount,
+            playoutPCMRightZeroCrossingCount:
+                value.playoutPCMRightZeroCrossingCount,
+            playoutPCMEnvelopeTransitionCount:
+                value.playoutPCMEnvelopeTransitionCount,
+            playoutPCMShapeAnomalyCallbackCount:
+                value.playoutPCMShapeAnomalyCallbackCount,
+            playoutPCMBoundaryDiscontinuityCallbackCount:
+                value.playoutPCMBoundaryDiscontinuityCallbackCount,
+            playoutLastCallbackMeanMagnitude:
+                value.playoutLastCallbackMeanMagnitude
         )
     }
 

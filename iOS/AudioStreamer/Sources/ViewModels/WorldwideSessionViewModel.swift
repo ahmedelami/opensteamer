@@ -161,9 +161,12 @@ final class WorldwideSessionViewModel: ObservableObject {
     @Published private(set) var isControlChannelReady = false
     @Published private(set) var isScreenVisible = false
     @Published private(set) var remoteVideoTrack: WebRTCRemoteVideoTrack?
+    @Published private(set) var screenAcknowledgementOracle:
+        WorldwideScreenAcknowledgementOracleSnapshot?
     @Published private(set) var audioStateText = "Inactive"
     @Published private(set) var isRemoteAudioAvailable = false
     @Published private(set) var isRemoteAudioPlaying = false
+    @Published private(set) var audioPlayoutOracle: WorldwideAudioPlayoutOracleSnapshot?
     @Published private(set) var audioRequiresExplicitResume = false
     @Published private(set) var audioError: String?
     @Published private(set) var audioDiagnostic: String?
@@ -1505,6 +1508,10 @@ final class WorldwideSessionViewModel: ObservableObject {
 
         case .statistics(let snapshot):
             statistics = snapshot
+            await refreshIOSPlayoutOracle(
+                from: sourcePeer,
+                generation: generation
+            )
             refreshIOSPlayoutProof()
 
         case .iceCandidateError(let error):
@@ -1618,9 +1625,11 @@ final class WorldwideSessionViewModel: ObservableObject {
         isScreenVisible = false
         remoteVideoTrack = nil
         remoteAudioTrack = nil
+        screenAcknowledgementOracle = nil
         audioStateText = "Inactive"
         isRemoteAudioAvailable = false
         isRemoteAudioPlaying = false
+        audioPlayoutOracle = nil
         audioRequiresExplicitResume = false
         audioError = nil
         audioDiagnostic = nil
@@ -1786,21 +1795,59 @@ final class WorldwideSessionViewModel: ObservableObject {
               iosPlayoutProofAttemptIsOwned(attempt),
               attempt.expectedPeer === proofPeer else { return nil }
 
-        let diagnostics: WebRTCIOSPlayoutDiagnostics?
-        #if DEBUG
-        if let debugIOSPlayoutDiagnosticsReader {
-            diagnostics = await debugIOSPlayoutDiagnosticsReader(proofPeer)
-        } else {
-            diagnostics = await proofPeer.iOSPlayoutDiagnostics()
-        }
-        #else
-        diagnostics = await proofPeer.iOSPlayoutDiagnostics()
-        #endif
-
+        let diagnostics = await readIOSPlayoutDiagnostics(from: proofPeer)
         guard !Task.isCancelled,
               iosPlayoutProofAttemptIsOwned(attempt),
               attempt.expectedPeer === proofPeer else { return nil }
+        if let diagnostics {
+            publishIOSPlayoutOracle(
+                diagnostics,
+                from: proofPeer,
+                generation: attempt.sessionGeneration
+            )
+        }
         return diagnostics
+    }
+
+    private func readIOSPlayoutDiagnostics(
+        from sourcePeer: WebRTCPeer
+    ) async -> WebRTCIOSPlayoutDiagnostics? {
+        #if DEBUG
+        if let debugIOSPlayoutDiagnosticsReader {
+            return await debugIOSPlayoutDiagnosticsReader(sourcePeer)
+        }
+        #endif
+        return await sourcePeer.iOSPlayoutDiagnostics()
+    }
+
+    private func refreshIOSPlayoutOracle(
+        from sourcePeer: WebRTCPeer,
+        generation: UUID
+    ) async {
+        guard generation == sessionGeneration,
+              peer === sourcePeer else { return }
+        guard let diagnostics = await readIOSPlayoutDiagnostics(from: sourcePeer) else {
+            return
+        }
+        publishIOSPlayoutOracle(
+            diagnostics,
+            from: sourcePeer,
+            generation: generation
+        )
+    }
+
+    private func publishIOSPlayoutOracle(
+        _ diagnostics: WebRTCIOSPlayoutDiagnostics,
+        from sourcePeer: WebRTCPeer,
+        generation: UUID
+    ) {
+        guard generation == sessionGeneration,
+              peer === sourcePeer else { return }
+        audioPlayoutOracle = WorldwideAudioPlayoutOracleSnapshot(
+            sessionGeneration: generation,
+            diagnostics: diagnostics,
+            inboundAudio: statistics?.inboundAudio
+        )
     }
 
     private func requestIOSPlayoutRecovery(
@@ -1941,19 +1988,8 @@ final class WorldwideSessionViewModel: ObservableObject {
               let callbackFloor = attempt.callbackFloor,
               let frameFloor = attempt.frameFloor else { return false }
 
-        let usesRemoteIO = diagnostics.audioUnitSubType == kAudioUnitSubType_RemoteIO
-        let fullQualityInvariantsHold = diagnostics.initialized
-            && diagnostics.playoutInitialized
-            && diagnostics.playing
-            && diagnostics.sessionActive
-            && diagnostics.ownsSessionActivation
-            && diagnostics.remoteIOCreated
-            && diagnostics.outputBusEnabled
-            && diagnostics.categoryIsMediaPlayback
-            && diagnostics.modeIsDefault
-            && abs(diagnostics.sampleRate - 48_000) < 1
-            && diagnostics.outputChannelCount == 2
-            && usesRemoteIO
+        let fullQualityInvariantsHold =
+            WorldwideAudioPlayoutOracleSnapshot.routeInvariantsHold(diagnostics)
         let hasFreshCallbackAndFrames = diagnostics.playoutCallbackCount > callbackFloor
             && diagnostics.playoutFrameCount > frameFloor
 
@@ -2139,6 +2175,12 @@ final class WorldwideSessionViewModel: ObservableObject {
         inputAuthorization: WebRTCInputAuthorization?,
         pending: PendingScreenVisibilityRequest
     ) -> Bool {
+        screenAcknowledgementOracle = WorldwideScreenAcknowledgementOracleSnapshot(
+            sessionGeneration: pending.key.sessionGeneration,
+            requestID: pending.key.requestID,
+            command: pending.isVisible ? .show : .hide,
+            state: acknowledgement.state == .active ? .active : .inactive
+        )
         if pending.isVisible {
             guard acknowledgement.state == .active,
                   currentScreenPresentationLease == pending.lease,
@@ -2499,6 +2541,13 @@ final class WorldwideSessionViewModel: ObservableObject {
         guard let proofPeer = peer,
               let attempt = iosPlayoutProofAttempt else { return }
         await refreshIOSPlayoutProof(for: attempt, from: proofPeer)
+    }
+
+    func debugRefreshIOSPlayoutOracleForTests(from sourcePeer: WebRTCPeer) async {
+        await refreshIOSPlayoutOracle(
+            from: sourcePeer,
+            generation: sessionGeneration
+        )
     }
 
     var debugIOSPlayoutRecoveryIsAuthorized: Bool {

@@ -46,6 +46,7 @@ targets:
     platform: iOS
     sources:
       - Tests
+      - OracleTestSupport
     dependencies:
       - target: AudioStreamer
     settings:
@@ -60,6 +61,7 @@ targets:
     platform: iOS
     sources:
       - UITests
+      - OracleTestSupport
     dependencies:
       - target: AudioStreamer
     settings:

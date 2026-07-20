@@ -2,12 +2,44 @@
 
 #import <AVFAudio/AVFAudio.h>
 #import <AudioToolbox/AudioToolbox.h>
+#import <mach/mach_time.h>
 #import <os/lock.h>
 #import <stdatomic.h>
 
 static const double ASSampleRate = 48000.0;
 static const NSTimeInterval ASIOBufferDuration = 0.010;
 static const UInt32 ASOutputChannelCount = 2;
+// The release route accepts at most a 20 ms IO buffer. A healthy 10 ms RemoteIO cadence therefore
+// gets ordinary scheduler tolerance, but a 30 ms callback separation (one whole preferred buffer
+// late) must fail. This catches recurring short dropouts instead of only catastrophic stalls.
+static const uint64_t ASCallbackGapViolationThresholdNanoseconds = 25000000;
+// Both levels of the physical oracle's coded low/high-band challenge remain above these thresholds
+// after conservative output gain. Requiring density and mean magnitude prevents callback clocks,
+// dither, or isolated impulses from masquerading as audible program content.
+static const uint64_t ASNearSilenceMinimumMeanMagnitude = 256;
+static const uint64_t ASNearSilenceMinimumNonzeroPercent = 90;
+// The physical challenge deliberately changes level every 500 ms. A >40% adjacent-callback
+// change records that ordered envelope transition; rapid gain pumping records far too many, while
+// a frozen/repeated callback records none. The metric is observational outside the release gate.
+static const uint64_t ASEnvelopeTransitionRatioPercent = 140;
+// A clean sine has a mean-absolute/peak ratio of about 64%. These intentionally broad bounds
+// admit callbacks that straddle the physical challenge's 3:1 level transitions while rejecting
+// sparse impulses and flat/square PCM. The release oracle ratio-gates this cumulative evidence;
+// one unusual callback is diagnostic evidence, not an immediate playback failure.
+static const uint64_t ASWaveformShapeMinimumMeanToPeakPercent = 18;
+static const uint64_t ASWaveformShapeMaximumMeanToPeakPercent = 88;
+static const uint64_t ASWaveformShapeMinimumSampleCount = 16;
+// For any sinusoid, a legitimate sample-to-sample boundary step is at most about 1.57 times its
+// mean internal derivative. A 1.75x allowance tolerates quantization and callback sizing, while
+// still detecting every reset of the 997/1499 Hz 10 ms challenge blocks.
+static const uint64_t ASBoundaryJumpToMeanDerivativePercent = 175;
+
+// All realtime counters and sign state must compile to native lock-free instructions on every
+// supported 64-bit iOS device/simulator architecture. A toolchain/architecture that cannot make
+// that guarantee must fail the build instead of silently introducing a callback-side lock.
+_Static_assert(ATOMIC_LONG_LOCK_FREE == 2, "64-bit realtime atomics must be lock-free");
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "32-bit realtime atomics must be lock-free");
+_Static_assert(ATOMIC_BOOL_LOCK_FREE == 2, "boolean realtime atomics must be lock-free");
 
 /// `AVAudioSession` is process-global. Serializing activation/deactivation and assigning every
 /// successful activation a monotonically increasing lease prevents a retiring peer from calling
@@ -24,14 +56,47 @@ typedef NS_ENUM(NSUInteger, ASSystemAudioEvent) {
 };
 
 typedef struct ASRealtimeDiagnostics {
+    uint32_t hostTimebaseNumerator;
+    uint32_t hostTimebaseDenominator;
+    // Single RemoteIO writer sequence: odd while callback evidence is changing, even when a
+    // reader may take a coherent snapshot. This prevents impossible max/count combinations from
+    // being manufactured by independent lock-free atomic reads.
+    atomic_uint_fast64_t publicationSequence;
     atomic_uint_fast64_t callbackCount;
     atomic_uint_fast64_t frameCount;
     atomic_uint_fast64_t failureCount;
+    atomic_uint_fast64_t pcmSampleCount;
+    atomic_uint_fast64_t pcmNonzeroSampleCount;
+    atomic_uint_fast64_t pcmAbsoluteSampleSum;
+    atomic_uint_fast64_t pcmLeftAbsoluteSampleSum;
+    atomic_uint_fast64_t pcmRightAbsoluteSampleSum;
+    atomic_uint_fast64_t pcmStereoDifferenceAbsoluteSampleSum;
+    atomic_uint_fast64_t pcmClippedSampleCount;
+    atomic_uint_fast64_t explicitSilenceCallbackCount;
+    atomic_uint_fast64_t callbackGapViolationCount;
+    atomic_uint_fast64_t maximumCallbackGapNanoseconds;
+    atomic_uint_fast64_t lastSuccessfulCallbackTimeUnits;
+    atomic_uint_fast64_t nearSilenceCallbackCount;
+    atomic_uint_fast64_t currentConsecutiveNearSilenceFrameCount;
+    atomic_uint_fast64_t maximumConsecutiveNearSilenceFrameCount;
+    atomic_uint_fast64_t pcmLeftZeroCrossingCount;
+    atomic_uint_fast64_t pcmRightZeroCrossingCount;
+    atomic_uint_fast64_t pcmEnvelopeTransitionCount;
+    atomic_uint_fast64_t pcmShapeAnomalyCallbackCount;
+    atomic_uint_fast64_t pcmBoundaryDiscontinuityCallbackCount;
+    atomic_uint_fast32_t lastPCMCallbackMeanMagnitude;
+    atomic_bool hasPCMCallbackMeanMagnitude;
+    atomic_int_fast32_t lastPCMLeftNonzeroSign;
+    atomic_int_fast32_t lastPCMRightNonzeroSign;
+    atomic_bool hasPCMCallbackBoundary;
+    atomic_int_fast32_t lastPCMLeftSample;
+    atomic_int_fast32_t lastPCMRightSample;
     atomic_uint_fast64_t recordingRequestCount;
     atomic_uint_fast64_t recoveryRequestCount;
     atomic_uint_fast64_t recoveryAuthorizationRejectionCount;
     atomic_uint_fast64_t recoveryRebuildCount;
     atomic_uint_fast32_t lastFrameCount;
+    atomic_uint_fast32_t lastPeakMagnitude;
     atomic_int_fast32_t lastStatus;
 } ASRealtimeDiagnostics;
 
@@ -122,15 +187,576 @@ static void ASZeroAudioBufferList(AudioBufferList *bufferList) {
 static inline void ASInitializeRealtimeDiagnostics(
     ASRealtimeDiagnostics *diagnostics
 ) {
+    mach_timebase_info_data_t timebase = {0};
+    kern_return_t timebaseStatus = mach_timebase_info(&timebase);
+    diagnostics->hostTimebaseNumerator =
+        timebaseStatus == KERN_SUCCESS && timebase.numer > 0 ? timebase.numer : 1;
+    diagnostics->hostTimebaseDenominator =
+        timebaseStatus == KERN_SUCCESS && timebase.denom > 0 ? timebase.denom : 1;
+    atomic_init(&diagnostics->publicationSequence, 0);
     atomic_init(&diagnostics->callbackCount, 0);
     atomic_init(&diagnostics->frameCount, 0);
     atomic_init(&diagnostics->failureCount, 0);
+    atomic_init(&diagnostics->pcmSampleCount, 0);
+    atomic_init(&diagnostics->pcmNonzeroSampleCount, 0);
+    atomic_init(&diagnostics->pcmAbsoluteSampleSum, 0);
+    atomic_init(&diagnostics->pcmLeftAbsoluteSampleSum, 0);
+    atomic_init(&diagnostics->pcmRightAbsoluteSampleSum, 0);
+    atomic_init(&diagnostics->pcmStereoDifferenceAbsoluteSampleSum, 0);
+    atomic_init(&diagnostics->pcmClippedSampleCount, 0);
+    atomic_init(&diagnostics->explicitSilenceCallbackCount, 0);
+    atomic_init(&diagnostics->callbackGapViolationCount, 0);
+    atomic_init(&diagnostics->maximumCallbackGapNanoseconds, 0);
+    atomic_init(&diagnostics->lastSuccessfulCallbackTimeUnits, 0);
+    atomic_init(&diagnostics->nearSilenceCallbackCount, 0);
+    atomic_init(&diagnostics->currentConsecutiveNearSilenceFrameCount, 0);
+    atomic_init(&diagnostics->maximumConsecutiveNearSilenceFrameCount, 0);
+    atomic_init(&diagnostics->pcmLeftZeroCrossingCount, 0);
+    atomic_init(&diagnostics->pcmRightZeroCrossingCount, 0);
+    atomic_init(&diagnostics->pcmEnvelopeTransitionCount, 0);
+    atomic_init(&diagnostics->pcmShapeAnomalyCallbackCount, 0);
+    atomic_init(&diagnostics->pcmBoundaryDiscontinuityCallbackCount, 0);
+    atomic_init(&diagnostics->lastPCMCallbackMeanMagnitude, 0);
+    atomic_init(&diagnostics->hasPCMCallbackMeanMagnitude, false);
+    atomic_init(&diagnostics->lastPCMLeftNonzeroSign, 0);
+    atomic_init(&diagnostics->lastPCMRightNonzeroSign, 0);
+    atomic_init(&diagnostics->hasPCMCallbackBoundary, false);
+    atomic_init(&diagnostics->lastPCMLeftSample, 0);
+    atomic_init(&diagnostics->lastPCMRightSample, 0);
     atomic_init(&diagnostics->recordingRequestCount, 0);
     atomic_init(&diagnostics->recoveryRequestCount, 0);
     atomic_init(&diagnostics->recoveryAuthorizationRejectionCount, 0);
     atomic_init(&diagnostics->recoveryRebuildCount, 0);
     atomic_init(&diagnostics->lastFrameCount, 0);
+    atomic_init(&diagnostics->lastPeakMagnitude, 0);
     atomic_init(&diagnostics->lastStatus, noErr);
+}
+
+static inline void ASUpdateAtomicMaximum(
+    atomic_uint_fast64_t *maximum,
+    uint64_t candidate
+) {
+    uint_fast64_t observed = atomic_load_explicit(maximum, memory_order_relaxed);
+    while (candidate > observed
+           && !atomic_compare_exchange_weak_explicit(
+               maximum,
+               &observed,
+               candidate,
+               memory_order_relaxed,
+               memory_order_relaxed
+           )) {
+    }
+}
+
+/// RemoteIO has one render writer. Marking its complete evidence transaction odd/even lets a
+/// non-realtime diagnostics reader retry instead of accepting fields from two callback epochs.
+static inline void ASBeginRealtimePublication(
+    ASRealtimeDiagnostics *diagnostics
+) {
+    atomic_fetch_add_explicit(
+        &diagnostics->publicationSequence,
+        1,
+        memory_order_acq_rel
+    );
+}
+
+static inline void ASEndRealtimePublication(
+    ASRealtimeDiagnostics *diagnostics
+) {
+    atomic_fetch_add_explicit(
+        &diagnostics->publicationSequence,
+        1,
+        memory_order_release
+    );
+}
+
+/// Records cadence only for callbacks whose WebRTC playout block completed successfully. The
+/// zero timestamp is reserved as the uninitialized sentinel; production monotonic host time and
+/// the DEBUG harness both provide nonzero nanoseconds.
+static inline void ASRecordSuccessfulCallbackTime(
+    ASRealtimeDiagnostics *diagnostics,
+    uint64_t monotonicTimeUnits,
+    uint32_t nanosecondsNumerator,
+    uint32_t nanosecondsDenominator
+) {
+    if (monotonicTimeUnits == 0 || nanosecondsDenominator == 0) {
+        return;
+    }
+    uint_fast64_t previous = atomic_load_explicit(
+        &diagnostics->lastSuccessfulCallbackTimeUnits,
+        memory_order_relaxed
+    );
+    while (monotonicTimeUnits > previous
+           && !atomic_compare_exchange_weak_explicit(
+               &diagnostics->lastSuccessfulCallbackTimeUnits,
+               &previous,
+               monotonicTimeUnits,
+               memory_order_relaxed,
+               memory_order_relaxed
+           )) {
+    }
+    if (previous == 0 || monotonicTimeUnits <= previous) {
+        return;
+    }
+    uint64_t gapUnits = monotonicTimeUnits - previous;
+    // Split quotient/remainder avoids a compiler-emitted 128-bit division helper on the realtime
+    // path while retaining exact integer conversion for realistic callback gaps.
+    uint64_t wholeUnits = gapUnits / nanosecondsDenominator;
+    uint64_t remainderUnits = gapUnits % nanosecondsDenominator;
+    uint64_t gap = wholeUnits * nanosecondsNumerator
+        + (remainderUnits * nanosecondsNumerator) / nanosecondsDenominator;
+    ASUpdateAtomicMaximum(&diagnostics->maximumCallbackGapNanoseconds, gap);
+    if (gap > ASCallbackGapViolationThresholdNanoseconds) {
+        atomic_fetch_add_explicit(
+            &diagnostics->callbackGapViolationCount,
+            1,
+            memory_order_relaxed
+        );
+    }
+}
+
+static inline void ASRecordNearSilenceState(
+    ASRealtimeDiagnostics *diagnostics,
+    UInt32 frameCount,
+    uint64_t sampleCount,
+    uint64_t nonzeroSampleCount,
+    uint64_t absoluteSampleSum,
+    BOOL outputIsSilence
+) {
+    BOOL insufficientDensity = sampleCount == 0
+        || nonzeroSampleCount * 100
+            < sampleCount * ASNearSilenceMinimumNonzeroPercent;
+    BOOL insufficientMeanMagnitude = sampleCount == 0
+        || absoluteSampleSum < sampleCount * ASNearSilenceMinimumMeanMagnitude;
+    BOOL nearSilence = outputIsSilence
+        || insufficientDensity
+        || insufficientMeanMagnitude;
+    if (!nearSilence) {
+        atomic_store_explicit(
+            &diagnostics->currentConsecutiveNearSilenceFrameCount,
+            0,
+            memory_order_relaxed
+        );
+        return;
+    }
+
+    atomic_fetch_add_explicit(
+        &diagnostics->nearSilenceCallbackCount,
+        1,
+        memory_order_relaxed
+    );
+    uint64_t consecutiveFrames = atomic_fetch_add_explicit(
+        &diagnostics->currentConsecutiveNearSilenceFrameCount,
+        frameCount,
+        memory_order_relaxed
+    ) + frameCount;
+    ASUpdateAtomicMaximum(
+        &diagnostics->maximumConsecutiveNearSilenceFrameCount,
+        consecutiveFrames
+    );
+}
+
+static inline BOOL ASRecordEnvelopeState(
+    ASRealtimeDiagnostics *diagnostics,
+    uint64_t sampleCount,
+    uint64_t absoluteSampleSum
+) {
+    uint32_t meanMagnitude = sampleCount == 0
+        ? 0
+        : (uint32_t)(absoluteSampleSum / sampleCount);
+    uint_fast32_t previous = atomic_exchange_explicit(
+        &diagnostics->lastPCMCallbackMeanMagnitude,
+        meanMagnitude,
+        memory_order_relaxed
+    );
+    bool hadPrevious = atomic_exchange_explicit(
+        &diagnostics->hasPCMCallbackMeanMagnitude,
+        true,
+        memory_order_relaxed
+    );
+    if (!hadPrevious || previous == 0 || meanMagnitude == 0) {
+        return NO;
+    }
+    uint64_t smaller = MIN((uint64_t)previous, (uint64_t)meanMagnitude);
+    uint64_t larger = MAX((uint64_t)previous, (uint64_t)meanMagnitude);
+    if (larger * 100 > smaller * ASEnvelopeTransitionRatioPercent) {
+        atomic_fetch_add_explicit(
+            &diagnostics->pcmEnvelopeTransitionCount,
+            1,
+            memory_order_relaxed
+        );
+        return YES;
+    }
+    return NO;
+}
+
+static inline BOOL ASBoundaryJumpExceedsDerivative(
+    uint64_t boundaryJump,
+    uint64_t internalDerivativeAbsoluteSum,
+    uint64_t internalDerivativeCount
+) {
+    if (boundaryJump == 0 || internalDerivativeCount == 0) {
+        return NO;
+    }
+    if (internalDerivativeAbsoluteSum == 0) {
+        return YES;
+    }
+    return boundaryJump * internalDerivativeCount * 100
+        > internalDerivativeAbsoluteSum * ASBoundaryJumpToMeanDerivativePercent;
+}
+
+/// Records challenge-specific waveform evidence at the exact PCM boundary supplied to RemoteIO.
+/// State is cumulative and intentionally never cleared by a recovery rebuild. Near-silence breaks
+/// boundary continuity so silence/resume cannot be misclassified as a phase reset. A deliberate
+/// >40% coded level transition is likewise excluded from the boundary counter, while its separate
+/// envelope counter remains observable.
+static inline void ASRecordWaveformQualityState(
+    ASRealtimeDiagnostics *diagnostics,
+    uint64_t sampleCount,
+    uint64_t nonzeroSampleCount,
+    uint64_t absoluteSampleSum,
+    uint32_t peakMagnitude,
+    BOOL outputIsSilence,
+    BOOL envelopeTransition,
+    BOOL hasStereoBoundary,
+    int32_t firstLeftSample,
+    int32_t firstRightSample,
+    int32_t lastLeftSample,
+    int32_t lastRightSample,
+    uint64_t leftDerivativeAbsoluteSum,
+    uint64_t rightDerivativeAbsoluteSum,
+    uint64_t leftDerivativeCount,
+    uint64_t rightDerivativeCount
+) {
+    BOOL hasMeasurableShape = !outputIsSilence
+        && peakMagnitude > 0
+        && sampleCount >= ASWaveformShapeMinimumSampleCount;
+    if (hasMeasurableShape) {
+        uint64_t scaledMagnitudeSum = absoluteSampleSum * 100;
+        uint64_t scaledPeakArea = (uint64_t)peakMagnitude * sampleCount;
+        if (scaledMagnitudeSum
+                < scaledPeakArea * ASWaveformShapeMinimumMeanToPeakPercent
+            || scaledMagnitudeSum
+                > scaledPeakArea * ASWaveformShapeMaximumMeanToPeakPercent) {
+            atomic_fetch_add_explicit(
+                &diagnostics->pcmShapeAnomalyCallbackCount,
+                1,
+                memory_order_relaxed
+            );
+        }
+    }
+
+    BOOL insufficientDensity = sampleCount == 0
+        || nonzeroSampleCount * 100
+            < sampleCount * ASNearSilenceMinimumNonzeroPercent;
+    BOOL insufficientMeanMagnitude = sampleCount == 0
+        || absoluteSampleSum < sampleCount * ASNearSilenceMinimumMeanMagnitude;
+    BOOL boundaryEligible = hasStereoBoundary
+        && !outputIsSilence
+        && !insufficientDensity
+        && !insufficientMeanMagnitude;
+    if (!boundaryEligible) {
+        atomic_store_explicit(
+            &diagnostics->hasPCMCallbackBoundary,
+            false,
+            memory_order_relaxed
+        );
+        return;
+    }
+
+    BOOL hadPreviousBoundary = atomic_load_explicit(
+        &diagnostics->hasPCMCallbackBoundary,
+        memory_order_relaxed
+    );
+    int32_t previousLeftSample = (int32_t)atomic_load_explicit(
+        &diagnostics->lastPCMLeftSample,
+        memory_order_relaxed
+    );
+    int32_t previousRightSample = (int32_t)atomic_load_explicit(
+        &diagnostics->lastPCMRightSample,
+        memory_order_relaxed
+    );
+    if (hadPreviousBoundary && !envelopeTransition) {
+        int64_t leftJumpSigned = (int64_t)firstLeftSample - previousLeftSample;
+        int64_t rightJumpSigned = (int64_t)firstRightSample - previousRightSample;
+        uint64_t leftJump = (uint64_t)(
+            leftJumpSigned < 0 ? -leftJumpSigned : leftJumpSigned
+        );
+        uint64_t rightJump = (uint64_t)(
+            rightJumpSigned < 0 ? -rightJumpSigned : rightJumpSigned
+        );
+        if (ASBoundaryJumpExceedsDerivative(
+                leftJump,
+                leftDerivativeAbsoluteSum,
+                leftDerivativeCount
+            )
+            || ASBoundaryJumpExceedsDerivative(
+                rightJump,
+                rightDerivativeAbsoluteSum,
+                rightDerivativeCount
+            )) {
+            atomic_fetch_add_explicit(
+                &diagnostics->pcmBoundaryDiscontinuityCallbackCount,
+                1,
+                memory_order_relaxed
+            );
+        }
+    }
+
+    atomic_store_explicit(
+        &diagnostics->lastPCMLeftSample,
+        lastLeftSample,
+        memory_order_relaxed
+    );
+    atomic_store_explicit(
+        &diagnostics->lastPCMRightSample,
+        lastRightSample,
+        memory_order_relaxed
+    );
+    atomic_store_explicit(
+        &diagnostics->hasPCMCallbackBoundary,
+        true,
+        memory_order_relaxed
+    );
+}
+
+/// Measures the exact signed-16-bit interleaved stereo bytes returned by WebRTC to RemoteIO.
+/// This is intentionally integer-only, allocation-free, and lock-free because it runs on the
+/// realtime render thread. The counters are evidence of PCM content at the final native output
+/// boundary; callback/frame demand alone can advance even when a buggy playout block writes silence.
+static inline void ASAnalyzeRenderedPCM(
+    ASRealtimeDiagnostics *diagnostics,
+    const AudioBufferList *outputData,
+    UInt32 frameCount,
+    AudioUnitRenderActionFlags actionFlags
+) {
+    BOOL outputIsSilence =
+        (actionFlags & kAudioUnitRenderAction_OutputIsSilence) != 0;
+    if (outputIsSilence) {
+        atomic_fetch_add_explicit(
+            &diagnostics->explicitSilenceCallbackCount,
+            1,
+            memory_order_relaxed
+        );
+    }
+    if (outputData == NULL || frameCount == 0) {
+        atomic_store_explicit(&diagnostics->lastPeakMagnitude, 0, memory_order_relaxed);
+        atomic_store_explicit(
+            &diagnostics->hasPCMCallbackBoundary,
+            false,
+            memory_order_relaxed
+        );
+        ASRecordNearSilenceState(
+            diagnostics,
+            frameCount,
+            0,
+            0,
+            0,
+            outputIsSilence
+        );
+        return;
+    }
+
+    uint64_t remainingSamples = (uint64_t)frameCount * ASOutputChannelCount;
+    uint64_t sampleCount = 0;
+    uint64_t nonzeroSampleCount = 0;
+    uint64_t absoluteSampleSum = 0;
+    uint64_t leftAbsoluteSampleSum = 0;
+    uint64_t rightAbsoluteSampleSum = 0;
+    uint64_t stereoDifferenceAbsoluteSampleSum = 0;
+    uint64_t clippedSampleCount = 0;
+    uint64_t leftZeroCrossingCount = 0;
+    uint64_t rightZeroCrossingCount = 0;
+    uint32_t peakMagnitude = 0;
+    int32_t pendingLeftSample = 0;
+    BOOL hasPendingLeftSample = NO;
+    int32_t firstLeftSample = 0;
+    int32_t firstRightSample = 0;
+    int32_t lastLeftSample = 0;
+    int32_t lastRightSample = 0;
+    BOOL hasLeftSample = NO;
+    BOOL hasRightSample = NO;
+    uint64_t leftDerivativeAbsoluteSum = 0;
+    uint64_t rightDerivativeAbsoluteSum = 0;
+    uint64_t leftDerivativeCount = 0;
+    uint64_t rightDerivativeCount = 0;
+    int32_t lastLeftNonzeroSign = (int32_t)atomic_load_explicit(
+        &diagnostics->lastPCMLeftNonzeroSign,
+        memory_order_relaxed
+    );
+    int32_t lastRightNonzeroSign = (int32_t)atomic_load_explicit(
+        &diagnostics->lastPCMRightNonzeroSign,
+        memory_order_relaxed
+    );
+
+    for (UInt32 bufferIndex = 0;
+         bufferIndex < outputData->mNumberBuffers && remainingSamples > 0;
+         ++bufferIndex) {
+        const AudioBuffer *buffer = &outputData->mBuffers[bufferIndex];
+        if (buffer->mData == NULL || buffer->mDataByteSize < sizeof(int16_t)) {
+            continue;
+        }
+        uint64_t availableSamples = buffer->mDataByteSize / sizeof(int16_t);
+        uint64_t samplesToRead = MIN(availableSamples, remainingSamples);
+        const int16_t *samples = (const int16_t *)buffer->mData;
+        for (uint64_t index = 0; index < samplesToRead; ++index) {
+            int32_t sample = samples[index];
+            uint32_t magnitude = (uint32_t)(sample < 0 ? -sample : sample);
+            absoluteSampleSum += magnitude;
+            if (magnitude > 0) {
+                nonzeroSampleCount += 1;
+            }
+            if (magnitude >= 32760) {
+                clippedSampleCount += 1;
+            }
+            if (magnitude > peakMagnitude) {
+                peakMagnitude = magnitude;
+            }
+            if ((sampleCount & 1) == 0) {
+                leftAbsoluteSampleSum += magnitude;
+                pendingLeftSample = sample;
+                hasPendingLeftSample = YES;
+                if (hasLeftSample) {
+                    int32_t derivative = sample - lastLeftSample;
+                    leftDerivativeAbsoluteSum += (uint32_t)(
+                        derivative < 0 ? -derivative : derivative
+                    );
+                    leftDerivativeCount += 1;
+                } else {
+                    firstLeftSample = sample;
+                    hasLeftSample = YES;
+                }
+                lastLeftSample = sample;
+                if (sample != 0) {
+                    int32_t sign = sample < 0 ? -1 : 1;
+                    if (lastLeftNonzeroSign != 0 && sign != lastLeftNonzeroSign) {
+                        leftZeroCrossingCount += 1;
+                    }
+                    lastLeftNonzeroSign = sign;
+                }
+            } else {
+                rightAbsoluteSampleSum += magnitude;
+                if (hasRightSample) {
+                    int32_t derivative = sample - lastRightSample;
+                    rightDerivativeAbsoluteSum += (uint32_t)(
+                        derivative < 0 ? -derivative : derivative
+                    );
+                    rightDerivativeCount += 1;
+                } else {
+                    firstRightSample = sample;
+                    hasRightSample = YES;
+                }
+                lastRightSample = sample;
+                if (hasPendingLeftSample) {
+                    int32_t difference = pendingLeftSample - sample;
+                    stereoDifferenceAbsoluteSampleSum +=
+                        (uint32_t)(difference < 0 ? -difference : difference);
+                }
+                hasPendingLeftSample = NO;
+                if (sample != 0) {
+                    int32_t sign = sample < 0 ? -1 : 1;
+                    if (lastRightNonzeroSign != 0 && sign != lastRightNonzeroSign) {
+                        rightZeroCrossingCount += 1;
+                    }
+                    lastRightNonzeroSign = sign;
+                }
+            }
+            sampleCount += 1;
+        }
+        remainingSamples -= samplesToRead;
+    }
+
+    atomic_fetch_add_explicit(
+        &diagnostics->pcmSampleCount,
+        sampleCount,
+        memory_order_relaxed
+    );
+    atomic_fetch_add_explicit(
+        &diagnostics->pcmNonzeroSampleCount,
+        nonzeroSampleCount,
+        memory_order_relaxed
+    );
+    atomic_fetch_add_explicit(
+        &diagnostics->pcmAbsoluteSampleSum,
+        absoluteSampleSum,
+        memory_order_relaxed
+    );
+    atomic_fetch_add_explicit(
+        &diagnostics->pcmLeftAbsoluteSampleSum,
+        leftAbsoluteSampleSum,
+        memory_order_relaxed
+    );
+    atomic_fetch_add_explicit(
+        &diagnostics->pcmRightAbsoluteSampleSum,
+        rightAbsoluteSampleSum,
+        memory_order_relaxed
+    );
+    atomic_fetch_add_explicit(
+        &diagnostics->pcmStereoDifferenceAbsoluteSampleSum,
+        stereoDifferenceAbsoluteSampleSum,
+        memory_order_relaxed
+    );
+    atomic_fetch_add_explicit(
+        &diagnostics->pcmClippedSampleCount,
+        clippedSampleCount,
+        memory_order_relaxed
+    );
+    atomic_fetch_add_explicit(
+        &diagnostics->pcmLeftZeroCrossingCount,
+        leftZeroCrossingCount,
+        memory_order_relaxed
+    );
+    atomic_fetch_add_explicit(
+        &diagnostics->pcmRightZeroCrossingCount,
+        rightZeroCrossingCount,
+        memory_order_relaxed
+    );
+    atomic_store_explicit(
+        &diagnostics->lastPCMLeftNonzeroSign,
+        lastLeftNonzeroSign,
+        memory_order_relaxed
+    );
+    atomic_store_explicit(
+        &diagnostics->lastPCMRightNonzeroSign,
+        lastRightNonzeroSign,
+        memory_order_relaxed
+    );
+    atomic_store_explicit(
+        &diagnostics->lastPeakMagnitude,
+        peakMagnitude,
+        memory_order_relaxed
+    );
+    BOOL envelopeTransition = ASRecordEnvelopeState(
+        diagnostics,
+        sampleCount,
+        absoluteSampleSum
+    );
+    ASRecordWaveformQualityState(
+        diagnostics,
+        sampleCount,
+        nonzeroSampleCount,
+        absoluteSampleSum,
+        peakMagnitude,
+        outputIsSilence,
+        envelopeTransition,
+        hasLeftSample && hasRightSample,
+        firstLeftSample,
+        firstRightSample,
+        lastLeftSample,
+        lastRightSample,
+        leftDerivativeAbsoluteSum,
+        rightDerivativeAbsoluteSum,
+        leftDerivativeCount,
+        rightDerivativeCount
+    );
+    ASRecordNearSilenceState(
+        diagnostics,
+        frameCount,
+        sampleCount,
+        nonzeroSampleCount,
+        absoluteSampleSum,
+        outputIsSilence
+    );
 }
 
 static inline void ASCrossExplicitRecoveryBoundary(
@@ -150,6 +776,14 @@ static inline ASIOSStereoPlayoutPublicationSnapshot ASLoadPlayoutPublicationSnap
     const ASRealtimeDiagnostics *diagnostics
 ) {
     ASIOSStereoPlayoutPublicationSnapshot snapshot = {0};
+    for (;;) {
+        uint_fast64_t sequenceBefore = atomic_load_explicit(
+            &diagnostics->publicationSequence,
+            memory_order_acquire
+        );
+        if ((sequenceBefore & 1) != 0) {
+            continue;
+        }
     snapshot.callbackCount = atomic_load_explicit(
         &diagnostics->callbackCount,
         memory_order_acquire
@@ -162,14 +796,102 @@ static inline ASIOSStereoPlayoutPublicationSnapshot ASLoadPlayoutPublicationSnap
         &diagnostics->failureCount,
         memory_order_relaxed
     );
+    snapshot.pcmSampleCount = atomic_load_explicit(
+        &diagnostics->pcmSampleCount,
+        memory_order_relaxed
+    );
+    snapshot.pcmNonzeroSampleCount = atomic_load_explicit(
+        &diagnostics->pcmNonzeroSampleCount,
+        memory_order_relaxed
+    );
+    snapshot.pcmAbsoluteSampleSum = atomic_load_explicit(
+        &diagnostics->pcmAbsoluteSampleSum,
+        memory_order_relaxed
+    );
+    snapshot.pcmLeftAbsoluteSampleSum = atomic_load_explicit(
+        &diagnostics->pcmLeftAbsoluteSampleSum,
+        memory_order_relaxed
+    );
+    snapshot.pcmRightAbsoluteSampleSum = atomic_load_explicit(
+        &diagnostics->pcmRightAbsoluteSampleSum,
+        memory_order_relaxed
+    );
+    snapshot.pcmStereoDifferenceAbsoluteSampleSum = atomic_load_explicit(
+        &diagnostics->pcmStereoDifferenceAbsoluteSampleSum,
+        memory_order_relaxed
+    );
+    snapshot.pcmClippedSampleCount = atomic_load_explicit(
+        &diagnostics->pcmClippedSampleCount,
+        memory_order_relaxed
+    );
+    snapshot.explicitSilenceCallbackCount = atomic_load_explicit(
+        &diagnostics->explicitSilenceCallbackCount,
+        memory_order_relaxed
+    );
+    snapshot.callbackGapViolationCount = atomic_load_explicit(
+        &diagnostics->callbackGapViolationCount,
+        memory_order_relaxed
+    );
+    snapshot.maximumCallbackGapNanoseconds = atomic_load_explicit(
+        &diagnostics->maximumCallbackGapNanoseconds,
+        memory_order_relaxed
+    );
+    snapshot.nearSilenceCallbackCount = atomic_load_explicit(
+        &diagnostics->nearSilenceCallbackCount,
+        memory_order_relaxed
+    );
+    snapshot.currentConsecutiveNearSilenceFrameCount = atomic_load_explicit(
+        &diagnostics->currentConsecutiveNearSilenceFrameCount,
+        memory_order_relaxed
+    );
+    snapshot.maximumConsecutiveNearSilenceFrameCount = atomic_load_explicit(
+        &diagnostics->maximumConsecutiveNearSilenceFrameCount,
+        memory_order_relaxed
+    );
+    snapshot.pcmLeftZeroCrossingCount = atomic_load_explicit(
+        &diagnostics->pcmLeftZeroCrossingCount,
+        memory_order_relaxed
+    );
+    snapshot.pcmRightZeroCrossingCount = atomic_load_explicit(
+        &diagnostics->pcmRightZeroCrossingCount,
+        memory_order_relaxed
+    );
+    snapshot.pcmEnvelopeTransitionCount = atomic_load_explicit(
+        &diagnostics->pcmEnvelopeTransitionCount,
+        memory_order_relaxed
+    );
+    snapshot.pcmShapeAnomalyCallbackCount = atomic_load_explicit(
+        &diagnostics->pcmShapeAnomalyCallbackCount,
+        memory_order_relaxed
+    );
+    snapshot.pcmBoundaryDiscontinuityCallbackCount = atomic_load_explicit(
+        &diagnostics->pcmBoundaryDiscontinuityCallbackCount,
+        memory_order_relaxed
+    );
+    snapshot.lastCallbackMeanMagnitude = atomic_load_explicit(
+        &diagnostics->lastPCMCallbackMeanMagnitude,
+        memory_order_relaxed
+    );
     snapshot.lastFrameCount = atomic_load_explicit(
         &diagnostics->lastFrameCount,
+        memory_order_relaxed
+    );
+    snapshot.lastPeakMagnitude = atomic_load_explicit(
+        &diagnostics->lastPeakMagnitude,
         memory_order_relaxed
     );
     snapshot.lastStatus = atomic_load_explicit(
         &diagnostics->lastStatus,
         memory_order_relaxed
     );
+        uint_fast64_t sequenceAfter = atomic_load_explicit(
+            &diagnostics->publicationSequence,
+            memory_order_acquire
+        );
+        if (sequenceBefore == sequenceAfter) {
+            break;
+        }
+    }
     return snapshot;
 }
 
@@ -271,6 +993,29 @@ static inline void ASPublishPlayoutCallback(
         ASCapturePlayoutPrePublicationSnapshot,
         &_prePublicationSnapshot
     );
+}
+
+- (void)analyzePCM16Samples:(NSData *)samples
+             outputIsSilence:(BOOL)outputIsSilence {
+    AudioBufferList output = {0};
+    output.mNumberBuffers = 1;
+    output.mBuffers[0].mNumberChannels = ASOutputChannelCount;
+    output.mBuffers[0].mDataByteSize = (UInt32)samples.length;
+    output.mBuffers[0].mData = (void *)samples.bytes;
+    ASBeginRealtimePublication(&_realtime);
+    ASAnalyzeRenderedPCM(
+        &_realtime,
+        &output,
+        (UInt32)(samples.length / (ASOutputChannelCount * sizeof(int16_t))),
+        outputIsSilence ? kAudioUnitRenderAction_OutputIsSilence : 0
+    );
+    ASEndRealtimePublication(&_realtime);
+}
+
+- (void)recordSuccessfulCallbackAtMonotonicTimeNanoseconds:(uint64_t)nanoseconds {
+    ASBeginRealtimePublication(&_realtime);
+    ASRecordSuccessfulCallbackTime(&_realtime, nanoseconds, 1, 1);
+    ASEndRealtimePublication(&_realtime);
 }
 
 - (void)markRecoveryBoundary {
@@ -448,6 +1193,7 @@ static OSStatus ASRemoteIORender(
         if (actionFlags != NULL) {
             *actionFlags |= kAudioUnitRenderAction_OutputIsSilence;
         }
+        ASBeginRealtimePublication(&device->_realtime);
         ASPublishPlayoutCallback(
             &device->_realtime,
             frameCount,
@@ -456,6 +1202,7 @@ static OSStatus ASRemoteIORender(
             , NULL, NULL
             #endif
         );
+        ASEndRealtimePublication(&device->_realtime);
         return kAudio_ParamError;
     }
 
@@ -468,11 +1215,32 @@ static OSStatus ASRemoteIORender(
         frameCount,
         outputData
     );
+    ASBeginRealtimePublication(&device->_realtime);
     if (status != noErr) {
         ASZeroAudioBufferList(outputData);
         if (actionFlags != NULL) {
             *actionFlags |= kAudioUnitRenderAction_OutputIsSilence;
         }
+    } else {
+        // RemoteIO normally supplies the monotonic host timestamp. `mach_absolute_time` is the
+        // allocation-free fallback; its timebase was cached before playout reached this callback.
+        // Recording only successful callbacks avoids treating error publication as output proof.
+        uint64_t hostTime = timestamp != NULL
+            && (timestamp->mFlags & kAudioTimeStampHostTimeValid) != 0
+                ? timestamp->mHostTime
+                : mach_absolute_time();
+        ASRecordSuccessfulCallbackTime(
+            &device->_realtime,
+            hostTime,
+            device->_realtime.hostTimebaseNumerator,
+            device->_realtime.hostTimebaseDenominator
+        );
+        ASAnalyzeRenderedPCM(
+            &device->_realtime,
+            outputData,
+            frameCount,
+            actionFlags == NULL ? 0 : *actionFlags
+        );
     }
     ASPublishPlayoutCallback(
         &device->_realtime,
@@ -482,6 +1250,7 @@ static OSStatus ASRemoteIORender(
         , NULL, NULL
         #endif
     );
+    ASEndRealtimePublication(&device->_realtime);
     return status;
 }
 
@@ -811,6 +1580,16 @@ static OSStatus ASRemoteIORender(
         memory_order_relaxed
     );
 
+    // Keep all callback-produced fields from one even publication epoch. In particular, a new
+    // maximum gap can never be observed without the violation count written by that same callback.
+    for (;;) {
+        uint_fast64_t sequenceBefore = atomic_load_explicit(
+            &_realtime.publicationSequence,
+            memory_order_acquire
+        );
+        if ((sequenceBefore & 1) != 0) {
+            continue;
+        }
     diagnostics.playoutCallbackCount = atomic_load_explicit(
         &_realtime.callbackCount,
         memory_order_acquire
@@ -823,14 +1602,102 @@ static OSStatus ASRemoteIORender(
         &_realtime.failureCount,
         memory_order_relaxed
     );
+    diagnostics.playoutPCMSampleCount = atomic_load_explicit(
+        &_realtime.pcmSampleCount,
+        memory_order_relaxed
+    );
+    diagnostics.playoutPCMNonzeroSampleCount = atomic_load_explicit(
+        &_realtime.pcmNonzeroSampleCount,
+        memory_order_relaxed
+    );
+    diagnostics.playoutPCMAbsoluteSampleSum = atomic_load_explicit(
+        &_realtime.pcmAbsoluteSampleSum,
+        memory_order_relaxed
+    );
+    diagnostics.playoutPCMLeftAbsoluteSampleSum = atomic_load_explicit(
+        &_realtime.pcmLeftAbsoluteSampleSum,
+        memory_order_relaxed
+    );
+    diagnostics.playoutPCMRightAbsoluteSampleSum = atomic_load_explicit(
+        &_realtime.pcmRightAbsoluteSampleSum,
+        memory_order_relaxed
+    );
+    diagnostics.playoutPCMStereoDifferenceAbsoluteSampleSum = atomic_load_explicit(
+        &_realtime.pcmStereoDifferenceAbsoluteSampleSum,
+        memory_order_relaxed
+    );
+    diagnostics.playoutPCMClippedSampleCount = atomic_load_explicit(
+        &_realtime.pcmClippedSampleCount,
+        memory_order_relaxed
+    );
+    diagnostics.playoutExplicitSilenceCallbackCount = atomic_load_explicit(
+        &_realtime.explicitSilenceCallbackCount,
+        memory_order_relaxed
+    );
+    diagnostics.playoutCallbackGapViolationCount = atomic_load_explicit(
+        &_realtime.callbackGapViolationCount,
+        memory_order_relaxed
+    );
+    diagnostics.playoutMaximumCallbackGapNanoseconds = atomic_load_explicit(
+        &_realtime.maximumCallbackGapNanoseconds,
+        memory_order_relaxed
+    );
+    diagnostics.playoutNearSilenceCallbackCount = atomic_load_explicit(
+        &_realtime.nearSilenceCallbackCount,
+        memory_order_relaxed
+    );
+    diagnostics.playoutCurrentConsecutiveNearSilenceFrameCount = atomic_load_explicit(
+        &_realtime.currentConsecutiveNearSilenceFrameCount,
+        memory_order_relaxed
+    );
+    diagnostics.playoutMaximumConsecutiveNearSilenceFrameCount = atomic_load_explicit(
+        &_realtime.maximumConsecutiveNearSilenceFrameCount,
+        memory_order_relaxed
+    );
+    diagnostics.playoutPCMLeftZeroCrossingCount = atomic_load_explicit(
+        &_realtime.pcmLeftZeroCrossingCount,
+        memory_order_relaxed
+    );
+    diagnostics.playoutPCMRightZeroCrossingCount = atomic_load_explicit(
+        &_realtime.pcmRightZeroCrossingCount,
+        memory_order_relaxed
+    );
+    diagnostics.playoutPCMEnvelopeTransitionCount = atomic_load_explicit(
+        &_realtime.pcmEnvelopeTransitionCount,
+        memory_order_relaxed
+    );
+    diagnostics.playoutPCMShapeAnomalyCallbackCount = atomic_load_explicit(
+        &_realtime.pcmShapeAnomalyCallbackCount,
+        memory_order_relaxed
+    );
+    diagnostics.playoutPCMBoundaryDiscontinuityCallbackCount = atomic_load_explicit(
+        &_realtime.pcmBoundaryDiscontinuityCallbackCount,
+        memory_order_relaxed
+    );
+    diagnostics.playoutLastCallbackMeanMagnitude = atomic_load_explicit(
+        &_realtime.lastPCMCallbackMeanMagnitude,
+        memory_order_relaxed
+    );
     diagnostics.lastPlayoutFrameCount = atomic_load_explicit(
         &_realtime.lastFrameCount,
+        memory_order_relaxed
+    );
+    diagnostics.lastPlayoutPeakMagnitude = atomic_load_explicit(
+        &_realtime.lastPeakMagnitude,
         memory_order_relaxed
     );
     diagnostics.lastPlayoutStatus = atomic_load_explicit(
         &_realtime.lastStatus,
         memory_order_relaxed
     );
+        uint_fast64_t sequenceAfter = atomic_load_explicit(
+            &_realtime.publicationSequence,
+            memory_order_acquire
+        );
+        if (sequenceBefore == sequenceAfter) {
+            break;
+        }
+    }
     diagnostics.unexpectedRecordingRequestCount = atomic_load_explicit(
         &_realtime.recordingRequestCount,
         memory_order_relaxed
@@ -847,6 +1714,9 @@ static OSStatus ASRemoteIORender(
         &_realtime.recoveryRebuildCount,
         memory_order_relaxed
     );
+    diagnostics.categoryOptionsAreEmpty = session.categoryOptions == 0;
+    diagnostics.routeSharingPolicyIsDefault =
+        session.routeSharingPolicy == AVAudioSessionRouteSharingPolicyDefault;
     return diagnostics;
 }
 

@@ -58,12 +58,34 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
     uint64_t playoutCallbackCount;
     uint64_t playoutFrameCount;
     uint64_t playoutFailureCount;
+    uint64_t playoutPCMSampleCount;
+    uint64_t playoutPCMNonzeroSampleCount;
+    uint64_t playoutPCMAbsoluteSampleSum;
+    uint64_t playoutPCMLeftAbsoluteSampleSum;
+    uint64_t playoutPCMRightAbsoluteSampleSum;
+    uint64_t playoutPCMStereoDifferenceAbsoluteSampleSum;
+    uint64_t playoutPCMClippedSampleCount;
+    uint64_t playoutExplicitSilenceCallbackCount;
+    uint64_t playoutCallbackGapViolationCount;
+    uint64_t playoutMaximumCallbackGapNanoseconds;
+    uint64_t playoutNearSilenceCallbackCount;
+    uint64_t playoutCurrentConsecutiveNearSilenceFrameCount;
+    uint64_t playoutMaximumConsecutiveNearSilenceFrameCount;
+    uint64_t playoutPCMLeftZeroCrossingCount;
+    uint64_t playoutPCMRightZeroCrossingCount;
+    uint64_t playoutPCMEnvelopeTransitionCount;
+    uint64_t playoutPCMShapeAnomalyCallbackCount;
+    uint64_t playoutPCMBoundaryDiscontinuityCallbackCount;
+    uint32_t playoutLastCallbackMeanMagnitude;
     uint64_t unexpectedRecordingRequestCount;
     uint64_t recoveryRequestCount;
     uint64_t recoveryAuthorizationRejectionCount;
     uint64_t recoveryRebuildCount;
     uint32_t lastPlayoutFrameCount;
+    uint32_t lastPlayoutPeakMagnitude;
     int32_t lastPlayoutStatus;
+    bool categoryOptionsAreEmpty;
+    bool routeSharingPolicyIsDefault;
 } ASIOSStereoPlayoutDiagnostics;
 
 /// A synchronously revocable, one-shot gate for one explicit playout-recovery attempt.
@@ -89,7 +111,27 @@ typedef struct ASIOSStereoPlayoutPublicationSnapshot {
     uint64_t callbackCount;
     uint64_t frameCount;
     uint64_t failureCount;
+    uint64_t pcmSampleCount;
+    uint64_t pcmNonzeroSampleCount;
+    uint64_t pcmAbsoluteSampleSum;
+    uint64_t pcmLeftAbsoluteSampleSum;
+    uint64_t pcmRightAbsoluteSampleSum;
+    uint64_t pcmStereoDifferenceAbsoluteSampleSum;
+    uint64_t pcmClippedSampleCount;
+    uint64_t explicitSilenceCallbackCount;
+    uint64_t callbackGapViolationCount;
+    uint64_t maximumCallbackGapNanoseconds;
+    uint64_t nearSilenceCallbackCount;
+    uint64_t currentConsecutiveNearSilenceFrameCount;
+    uint64_t maximumConsecutiveNearSilenceFrameCount;
+    uint64_t pcmLeftZeroCrossingCount;
+    uint64_t pcmRightZeroCrossingCount;
+    uint64_t pcmEnvelopeTransitionCount;
+    uint64_t pcmShapeAnomalyCallbackCount;
+    uint64_t pcmBoundaryDiscontinuityCallbackCount;
+    uint32_t lastCallbackMeanMagnitude;
     uint32_t lastFrameCount;
+    uint32_t lastPeakMagnitude;
     int32_t lastStatus;
 } ASIOSStereoPlayoutPublicationSnapshot;
 
@@ -101,6 +143,10 @@ typedef struct ASIOSStereoPlayoutPublicationSnapshot {
 
 - (void)publishCallbackWithFrameCount:(uint32_t)frameCount
                                 status:(int32_t)status;
+- (void)analyzePCM16Samples:(NSData *)samples
+             outputIsSilence:(BOOL)outputIsSilence;
+- (void)recordSuccessfulCallbackAtMonotonicTimeNanoseconds:(uint64_t)nanoseconds
+    NS_SWIFT_NAME(recordSuccessfulCallback(atMonotonicTimeNanoseconds:));
 - (void)markRecoveryBoundary;
 
 @end

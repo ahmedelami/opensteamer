@@ -21,12 +21,16 @@
 		2A374460D16FD4AADF8C3179 /* WorldwideRemoteInputLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBCDC2E0DA8378EA635DACE3 /* WorldwideRemoteInputLifecycleTests.swift */; };
 		2B863D8FCC7CBF8A949E367A /* BrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB1D53C782C0E8667E890989 /* BrowserView.swift */; };
 		363CB31DC76F6FB0CA64208C /* WebRTCTransport in Frameworks */ = {isa = PBXBuildFile; productRef = A418075E96F0B2FD1BEBEB6D /* WebRTCTransport */; };
+		3980269FE07A553E1FC42F5B /* PhysicalOracleEvaluator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D78D757E570C129549C4EA03 /* PhysicalOracleEvaluator.swift */; };
 		4143F45C6B78A6426ED1CD2B /* RemoteSessionCore in Frameworks */ = {isa = PBXBuildFile; productRef = 47C2A81C09AE79F1FCB48E97 /* RemoteSessionCore */; };
 		4B1D8309983DA8A6E5551C5D /* AspectFitCoordinateMapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61DD1147B47CCE7221BD4398 /* AspectFitCoordinateMapperTests.swift */; };
+		4E97E380A713B493786C86B5 /* PhysicalOracleEvaluatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A091098B7ED8D7FAF3929EE8 /* PhysicalOracleEvaluatorTests.swift */; };
 		4EFD8D22029ADCFD2889CDBB /* WebRTCRemoteScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1017B4DF7C52C4A0815EE38D /* WebRTCRemoteScreenView.swift */; };
 		57287A8C866FF2B8877DB5E5 /* PairedReconnectPhysicalUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BED52153519FDBD8535CE3BD /* PairedReconnectPhysicalUITests.swift */; };
 		57B3F54439F8DD1903DC741F /* BonjourBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8A081AC46F228CB0FF856AE /* BonjourBrowser.swift */; };
 		5AEE6663606D8F28AC333783 /* WorldwideAudioLifecycleController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16071DF448515BF9F5671B2D /* WorldwideAudioLifecycleController.swift */; };
+		5B41003A440FA75E536FF50C /* AppArtifactContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65D3D66A75A46064B539A197 /* AppArtifactContractTests.swift */; };
+		5B68963A9B756B8296B00E02 /* PhysicalOracleEvaluator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D78D757E570C129549C4EA03 /* PhysicalOracleEvaluator.swift */; };
 		6020A049BF2A81A4BC088C69 /* RemoteKeyboardInputProxyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60B3F49127B84C5F62A09AA /* RemoteKeyboardInputProxyTests.swift */; };
 		60EDE71F19F0F486F5114A52 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74366C19E45DDC6E1480B455 /* ContentView.swift */; };
 		73B4A02584D2A5E832DF420C /* KeychainStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B518E85BF0EF4A5552D4842C /* KeychainStoreTests.swift */; };
@@ -36,6 +40,7 @@
 		87AC3E2B52112B7A16917AA5 /* RemotePrimaryDragGesturePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB1CBA40775CC2DE2220836 /* RemotePrimaryDragGesturePolicy.swift */; };
 		87EFB225568927CB1D55540D /* WorldwidePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BC031FAA019C1740A630F40 /* WorldwidePresentationTests.swift */; };
 		8818F0F68B976534EAEFDE96 /* WorldwideSessionViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 040A05AC7D8550B2475BC1F6 /* WorldwideSessionViewModel.swift */; };
+		89932D4466735E0FFAD49C09 /* WorldwidePhysicalOracles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22003CE81D086E999A7B86EA /* WorldwidePhysicalOracles.swift */; };
 		8BD5E329C094583AE2E4F832 /* AspectFitCoordinateMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = F606D00D506FB74DC9DC7A11 /* AspectFitCoordinateMapper.swift */; };
 		8E4EFC4FB83ECCB21634E53E /* H264SampleBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F8017428FCB78A9203C0796 /* H264SampleBuilder.swift */; };
 		8FC809E434FD5ADCDB703018 /* MetricRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBE9EB5455D4F39B9DD93CCC /* MetricRow.swift */; };
@@ -82,6 +87,7 @@
 		16071DF448515BF9F5671B2D /* WorldwideAudioLifecycleController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideAudioLifecycleController.swift; sourceTree = "<group>"; };
 		183CF6037FD1DE3BB0A5C3DA /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		20A3613FEC27B88241AD9976 /* AudioStreamerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioStreamerApp.swift; sourceTree = "<group>"; };
+		22003CE81D086E999A7B86EA /* WorldwidePhysicalOracles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwidePhysicalOracles.swift; sourceTree = "<group>"; };
 		2F84611866708D4807A2667C /* ScreenVideoClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVideoClient.swift; sourceTree = "<group>"; };
 		3185D19EF5D285A55015E1C2 /* WorldwideScreenViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideScreenViewerView.swift; sourceTree = "<group>"; };
 		364EA1FAF3C148688BAE1DFC /* WorldwideViewerConnectionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideViewerConnectionCoordinator.swift; sourceTree = "<group>"; };
@@ -89,6 +95,7 @@
 		5F8017428FCB78A9203C0796 /* H264SampleBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = H264SampleBuilder.swift; sourceTree = "<group>"; };
 		61DD1147B47CCE7221BD4398 /* AspectFitCoordinateMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AspectFitCoordinateMapperTests.swift; sourceTree = "<group>"; };
 		62FAFA716A0461C6C237AC01 /* RemoteKeyboardInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteKeyboardInputView.swift; sourceTree = "<group>"; };
+		65D3D66A75A46064B539A197 /* AppArtifactContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppArtifactContractTests.swift; sourceTree = "<group>"; };
 		69415A249A4906EC4B27E740 /* AudioSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSessionManager.swift; sourceTree = "<group>"; };
 		6BC031FAA019C1740A630F40 /* WorldwidePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwidePresentationTests.swift; sourceTree = "<group>"; };
 		74366C19E45DDC6E1480B455 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -96,6 +103,7 @@
 		8658B98B47BDCAA170BB2DD5 /* ViewerPairingPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerPairingPersistenceTests.swift; sourceTree = "<group>"; };
 		89437364114329E1CF3C6274 /* InvitationAcceptanceAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InvitationAcceptanceAction.swift; sourceTree = "<group>"; };
 		9A2275430238D768A3B4A26A /* BackgroundPlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundPlaybackCoordinator.swift; sourceTree = "<group>"; };
+		A091098B7ED8D7FAF3929EE8 /* PhysicalOracleEvaluatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalOracleEvaluatorTests.swift; sourceTree = "<group>"; };
 		A8BB180FE348C76A45F232E7 /* SampleBufferScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleBufferScreenView.swift; sourceTree = "<group>"; };
 		A9707A9ECCCB37428AC23B5F /* PlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerView.swift; sourceTree = "<group>"; };
 		AAB1CBA40775CC2DE2220836 /* RemotePrimaryDragGesturePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotePrimaryDragGesturePolicy.swift; sourceTree = "<group>"; };
@@ -114,6 +122,7 @@
 		D361E8872DE933953B70CFAD /* ViewerPairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerPairingStore.swift; sourceTree = "<group>"; };
 		D60B3F49127B84C5F62A09AA /* RemoteKeyboardInputProxyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteKeyboardInputProxyTests.swift; sourceTree = "<group>"; };
 		D63D930F60971C1B4FFAF952 /* AudioStreamerUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AudioStreamerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D78D757E570C129549C4EA03 /* PhysicalOracleEvaluator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalOracleEvaluator.swift; sourceTree = "<group>"; };
 		EA163095E9F23FC2234A92AF /* ScreenViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenViewerView.swift; sourceTree = "<group>"; };
 		EBE9EB5455D4F39B9DD93CCC /* MetricRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricRow.swift; sourceTree = "<group>"; };
 		F606D00D506FB74DC9DC7A11 /* AspectFitCoordinateMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AspectFitCoordinateMapper.swift; sourceTree = "<group>"; };
@@ -147,6 +156,7 @@
 		150E754A6848282C5E56552A = {
 			isa = PBXGroup;
 			children = (
+				80E8C953F8D42D86A150B38F /* OracleTestSupport */,
 				177201D2B90247ACE27C17B4 /* Packages */,
 				15CCA89F445DF06910B9271E /* Sources */,
 				7376F4DA73EF2211F3CA93CD /* Tests */,
@@ -161,6 +171,7 @@
 				183CF6037FD1DE3BB0A5C3DA /* Assets.xcassets */,
 				DBAF1DDE4C5469C2607EC319 /* App */,
 				EA1926582F77BF1DEDD99555 /* Audio */,
+				4A66A9DEA8FFE3ABFA568C84 /* Diagnostics */,
 				336344DA636AE9FB0802F233 /* Models */,
 				8479B80309BC3C7E59890F72 /* Networking */,
 				F9CE939E230676AE97BD15E2 /* Screen */,
@@ -199,6 +210,14 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		4A66A9DEA8FFE3ABFA568C84 /* Diagnostics */ = {
+			isa = PBXGroup;
+			children = (
+				22003CE81D086E999A7B86EA /* WorldwidePhysicalOracles.swift */,
+			);
+			path = Diagnostics;
+			sourceTree = "<group>";
+		};
 		519339E2F701B9BD348C3FB4 /* ViewModels */ = {
 			isa = PBXGroup;
 			children = (
@@ -229,8 +248,10 @@
 		7376F4DA73EF2211F3CA93CD /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				65D3D66A75A46064B539A197 /* AppArtifactContractTests.swift */,
 				61DD1147B47CCE7221BD4398 /* AspectFitCoordinateMapperTests.swift */,
 				B518E85BF0EF4A5552D4842C /* KeychainStoreTests.swift */,
+				A091098B7ED8D7FAF3929EE8 /* PhysicalOracleEvaluatorTests.swift */,
 				D60B3F49127B84C5F62A09AA /* RemoteKeyboardInputProxyTests.swift */,
 				8658B98B47BDCAA170BB2DD5 /* ViewerPairingPersistenceTests.swift */,
 				CB6518D8E380A2F0521A61D7 /* WebRTCAudioPlaybackSessionTests.swift */,
@@ -239,6 +260,14 @@
 				BBCDC2E0DA8378EA635DACE3 /* WorldwideRemoteInputLifecycleTests.swift */,
 			);
 			path = Tests;
+			sourceTree = "<group>";
+		};
+		80E8C953F8D42D86A150B38F /* OracleTestSupport */ = {
+			isa = PBXGroup;
+			children = (
+				D78D757E570C129549C4EA03 /* PhysicalOracleEvaluator.swift */,
+			);
+			path = OracleTestSupport;
 			sourceTree = "<group>";
 		};
 		8479B80309BC3C7E59890F72 /* Networking */ = {
@@ -426,6 +455,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				57287A8C866FF2B8877DB5E5 /* PairedReconnectPhysicalUITests.swift in Sources */,
+				5B68963A9B756B8296B00E02 /* PhysicalOracleEvaluator.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -433,8 +463,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5B41003A440FA75E536FF50C /* AppArtifactContractTests.swift in Sources */,
 				4B1D8309983DA8A6E5551C5D /* AspectFitCoordinateMapperTests.swift in Sources */,
 				73B4A02584D2A5E832DF420C /* KeychainStoreTests.swift in Sources */,
+				3980269FE07A553E1FC42F5B /* PhysicalOracleEvaluator.swift in Sources */,
+				4E97E380A713B493786C86B5 /* PhysicalOracleEvaluatorTests.swift in Sources */,
 				6020A049BF2A81A4BC088C69 /* RemoteKeyboardInputProxyTests.swift in Sources */,
 				E48BA802F5CF1C3B54BBB00A /* ViewerPairingPersistenceTests.swift in Sources */,
 				047D0294CA4AA108507C3AC5 /* WebRTCAudioPlaybackSessionTests.swift in Sources */,
@@ -476,6 +509,7 @@
 				C75D88FDE2FF92F496A07E79 /* ViewerPairingStore.swift in Sources */,
 				4EFD8D22029ADCFD2889CDBB /* WebRTCRemoteScreenView.swift in Sources */,
 				5AEE6663606D8F28AC333783 /* WorldwideAudioLifecycleController.swift in Sources */,
+				89932D4466735E0FFAD49C09 /* WorldwidePhysicalOracles.swift in Sources */,
 				AB7BBAAA5041A0108E8C3D27 /* WorldwideScreenViewerView.swift in Sources */,
 				8818F0F68B976534EAEFDE96 /* WorldwideSessionViewModel.swift in Sources */,
 				23F592298291FF2A52BB1BB9 /* WorldwideViewerConnectionCoordinator.swift in Sources */,

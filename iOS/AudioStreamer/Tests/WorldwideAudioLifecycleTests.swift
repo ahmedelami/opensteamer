@@ -542,6 +542,260 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         await peer.close()
     }
 
+    func testOngoingPlayoutOraclePublishesAdvancingNativeCountersWithoutProofAttempt() async throws {
+        let (viewModel, _) = makePreparedProofViewModel()
+        let peer = try makeAudioRacePeer()
+        viewModel.debugInstallIOSPlayoutPeerForRaceTests(peer)
+
+        let diagnostics = AudioPlayoutDiagnosticsBox(
+            iosPlayoutDiagnostics(
+                callbacks: 10,
+                frames: 4_800,
+                failures: 0
+            )
+        )
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader { requestedPeer in
+            XCTAssertTrue(requestedPeer === peer)
+            return diagnostics.value
+        }
+
+        XCTAssertNil(viewModel.audioPlayoutOracle)
+        await viewModel.debugRefreshIOSPlayoutOracleForTests(from: peer)
+        let first = try XCTUnwrap(viewModel.audioPlayoutOracle)
+        XCTAssertEqual(first.callbackCount, 10)
+        XCTAssertEqual(first.frameCount, 4_800)
+        XCTAssertEqual(first.failureCount, 0)
+        XCTAssertTrue(first.fullQualityInvariantsHold)
+
+        diagnostics.set(
+            iosPlayoutDiagnostics(
+                callbacks: 11,
+                frames: 5_280,
+                failures: 0
+            )
+        )
+        await viewModel.debugRefreshIOSPlayoutOracleForTests(from: peer)
+        let second = try XCTUnwrap(viewModel.audioPlayoutOracle)
+        XCTAssertEqual(second.sessionGeneration, first.sessionGeneration)
+        XCTAssertGreaterThan(second.callbackCount, first.callbackCount)
+        XCTAssertGreaterThan(second.frameCount, first.frameCount)
+        XCTAssertEqual(second.failureCount, first.failureCount)
+        XCTAssertTrue(second.fullQualityInvariantsHold)
+
+        viewModel.disconnect()
+        XCTAssertNil(viewModel.audioPlayoutOracle)
+        await peer.close()
+    }
+
+    func testPhysicalSnapshotMapsEveryNativeContentAndContinuityCounter() throws {
+        let diagnostics = iosPlayoutDiagnostics(
+            callbacks: 20,
+            frames: 9_600,
+            failures: 0,
+            pcmClippedSampleCount: 3,
+            explicitSilenceCallbackCount: 4,
+            callbackGapViolationCount: 5,
+            maximumCallbackGapNanoseconds: 300_000_000,
+            nearSilenceCallbackCount: 6,
+            currentConsecutiveNearSilenceFrameCount: 480,
+            maximumConsecutiveNearSilenceFrameCount: 960,
+            pcmLeftZeroCrossingCount: 398,
+            pcmRightZeroCrossingCount: 598,
+            pcmEnvelopeTransitionCount: 8,
+            pcmShapeAnomalyCallbackCount: 9,
+            pcmBoundaryDiscontinuityCallbackCount: 10,
+            lastCallbackMeanMagnitude: 1_234,
+            recoveryRebuildCount: 7
+        )
+        let snapshot = WorldwideAudioPlayoutOracleSnapshot(
+            sessionGeneration: UUID(),
+            diagnostics: diagnostics,
+            inboundAudio: WebRTCAudioStatistics(
+                totalAudioEnergy: 0.05,
+                totalSamplesDuration: 0.2
+            )
+        )
+        let parsed = try XCTUnwrap(
+            PhysicalAudioPlayoutSnapshot(accessibilityValue: snapshot.accessibilityValue)
+        )
+        XCTAssertEqual(parsed.callbackCount, diagnostics.playoutCallbackCount)
+        XCTAssertEqual(parsed.frameCount, diagnostics.playoutFrameCount)
+        XCTAssertEqual(parsed.pcmSampleCount, diagnostics.playoutPCMSampleCount)
+        XCTAssertEqual(
+            parsed.pcmNonzeroSampleCount,
+            diagnostics.playoutPCMNonzeroSampleCount
+        )
+        XCTAssertEqual(parsed.pcmAbsoluteSampleSum, diagnostics.playoutPCMAbsoluteSampleSum)
+        XCTAssertEqual(
+            parsed.pcmLeftAbsoluteSampleSum,
+            diagnostics.playoutPCMLeftAbsoluteSampleSum
+        )
+        XCTAssertEqual(
+            parsed.pcmRightAbsoluteSampleSum,
+            diagnostics.playoutPCMRightAbsoluteSampleSum
+        )
+        XCTAssertEqual(
+            parsed.pcmStereoDifferenceAbsoluteSampleSum,
+            diagnostics.playoutPCMStereoDifferenceAbsoluteSampleSum
+        )
+        XCTAssertEqual(parsed.pcmClippedSampleCount, 3)
+        XCTAssertEqual(parsed.explicitSilenceCallbackCount, 4)
+        XCTAssertEqual(parsed.callbackGapViolationCount, 5)
+        XCTAssertEqual(parsed.maximumCallbackGapNanoseconds, 300_000_000)
+        XCTAssertEqual(parsed.nearSilenceCallbackCount, 6)
+        XCTAssertEqual(parsed.currentConsecutiveNearSilenceFrameCount, 480)
+        XCTAssertEqual(parsed.maximumConsecutiveNearSilenceFrameCount, 960)
+        XCTAssertEqual(parsed.pcmLeftZeroCrossingCount, 398)
+        XCTAssertEqual(parsed.pcmRightZeroCrossingCount, 598)
+        XCTAssertEqual(parsed.pcmEnvelopeTransitionCount, 8)
+        XCTAssertEqual(parsed.pcmShapeAnomalyCallbackCount, 9)
+        XCTAssertEqual(parsed.pcmBoundaryDiscontinuityCallbackCount, 10)
+        XCTAssertEqual(parsed.lastCallbackMeanMagnitude, 1_234)
+        XCTAssertEqual(parsed.recoveryRebuildCount, 7)
+        XCTAssertEqual(parsed.lastPeakMagnitude, diagnostics.lastPlayoutPeakMagnitude)
+        XCTAssertEqual(parsed.inboundAudioEnergy, 0.05)
+        XCTAssertEqual(parsed.inboundSamplesDuration, 0.2)
+    }
+
+    func testPhysicalFullQualityPredicateRejectsEveryOneFieldMutation() {
+        let sessionGeneration = UUID()
+        let inboundAudio = WebRTCAudioStatistics(
+            totalAudioEnergy: 0.025,
+            totalSamplesDuration: 0.1
+        )
+        let healthy = iosPlayoutDiagnostics(callbacks: 10, frames: 4_800, failures: 0)
+        XCTAssertTrue(WorldwideAudioPlayoutOracleSnapshot.fullQualityInvariantsHold(healthy))
+        let healthySnapshot = WorldwideAudioPlayoutOracleSnapshot(
+            sessionGeneration: sessionGeneration,
+            diagnostics: healthy,
+            inboundAudio: inboundAudio
+        )
+        XCTAssertTrue(healthySnapshot.fullQualityInvariantsHold)
+        XCTAssertTrue(
+            PhysicalAudioPlayoutSnapshot(
+                accessibilityValue: healthySnapshot.accessibilityValue
+            )?.fullQualityInvariantsHold == true
+        )
+
+        let mutants: [String: WebRTCIOSPlayoutDiagnostics] = [
+            "not-initialized": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0, initialized: false
+            ),
+            "playout-not-initialized": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0, playoutInitialized: false
+            ),
+            "not-playing": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0, playing: false
+            ),
+            "session-inactive": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0, sessionActive: false
+            ),
+            "activation-not-owned": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0, ownsSessionActivation: false
+            ),
+            "remote-io-missing": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0, remoteIOCreated: false
+            ),
+            "input-bus-enabled": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0, inputBusEnabled: true
+            ),
+            "output-bus-disabled": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0, outputBusEnabled: false
+            ),
+            "recovery-required": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0, recoveryRequired: true
+            ),
+            "resume-required": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0, explicitResumeRequired: true
+            ),
+            "call-category": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0,
+                categoryIsMediaPlayback: false
+            ),
+            "call-mode": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0, modeIsDefault: false
+            ),
+            "category-options": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0,
+                categoryOptionsAreEmpty: false
+            ),
+            "route-sharing-policy": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0,
+                routeSharingPolicyIsDefault: false
+            ),
+            "sample-rate": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0, sampleRate: 44_100
+            ),
+            "high-latency-buffer": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0,
+                outputIOBufferDuration: 0.100
+            ),
+            "mono": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0, outputChannelCount: 1
+            ),
+            "voice-processing-io": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0,
+                audioUnitSubType: kAudioUnitSubType_VoiceProcessingIO
+            ),
+            "lifecycle-failure-code": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0,
+                failureCode: 1, lastLifecycleStatus: noErr
+            ),
+            "lifecycle-status": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0,
+                lastLifecycleStatus: -50
+            ),
+            "render-status": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0, lastStatus: -50
+            ),
+            "historical-render-failure": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 1
+            ),
+            "recording-request": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0,
+                unexpectedRecordingRequests: 1
+            ),
+            "zero-last-render": iosPlayoutDiagnostics(
+                callbacks: 10, frames: 4_800, failures: 0,
+                lastPlayoutFrameCount: 0
+            ),
+        ]
+        let expectedNames: Set<String> = [
+            "not-initialized", "playout-not-initialized", "not-playing",
+            "session-inactive", "activation-not-owned", "remote-io-missing",
+            "input-bus-enabled", "output-bus-disabled", "recovery-required",
+            "resume-required", "call-category", "call-mode", "category-options",
+            "route-sharing-policy", "sample-rate", "high-latency-buffer", "mono",
+            "voice-processing-io",
+            "lifecycle-failure-code", "lifecycle-status", "render-status",
+            "historical-render-failure", "recording-request", "zero-last-render",
+        ]
+        XCTAssertEqual(Set(mutants.keys), expectedNames)
+        XCTAssertEqual(mutants.count, expectedNames.count)
+        for name in expectedNames.sorted() {
+            let mutant = mutants[name]!
+            XCTAssertFalse(
+                WorldwideAudioPlayoutOracleSnapshot.fullQualityInvariantsHold(mutant),
+                "Full-quality route mutant escaped: \(name)"
+            )
+            let productionSnapshot = WorldwideAudioPlayoutOracleSnapshot(
+                sessionGeneration: sessionGeneration,
+                diagnostics: mutant,
+                inboundAudio: inboundAudio
+            )
+            XCTAssertFalse(
+                productionSnapshot.fullQualityInvariantsHold,
+                "Snapshot initializer ignored route mutant: \(name)"
+            )
+            XCTAssertFalse(
+                PhysicalAudioPlayoutSnapshot(
+                    accessibilityValue: productionSnapshot.accessibilityValue
+                )?.fullQualityInvariantsHold ?? true,
+                "Serialized/parser pipeline ignored route mutant: \(name)"
+            )
+        }
+    }
+
     func testHistoricalCallbackCannotProveANewCounterWindow() {
         let (viewModel, _) = makePreparedProofViewModel()
         let handle = viewModel.debugStartIOSPlayoutProofAttemptForTests(
@@ -1216,109 +1470,162 @@ private final class AudioLockedInteger: @unchecked Sendable {
     }
 }
 
+private final class AudioPlayoutDiagnosticsBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: WebRTCIOSPlayoutDiagnostics
+
+    init(_ value: WebRTCIOSPlayoutDiagnostics) {
+        storage = value
+    }
+
+    var value: WebRTCIOSPlayoutDiagnostics {
+        lock.withLock { storage }
+    }
+
+    func set(_ value: WebRTCIOSPlayoutDiagnostics) {
+        lock.withLock { storage = value }
+    }
+}
+
 private func iosPlayoutDiagnostics(
     callbacks: UInt64,
     frames: UInt64,
     failures: UInt64,
     lastStatus: Int32 = noErr,
     failureCode: Int = 0,
-    unexpectedRecordingRequests: UInt64 = 0
+    lastLifecycleStatus: Int32? = nil,
+    unexpectedRecordingRequests: UInt64 = 0,
+    initialized: Bool = true,
+    playoutInitialized: Bool = true,
+    playing: Bool = true,
+    sessionActive: Bool = true,
+    ownsSessionActivation: Bool = true,
+    remoteIOCreated: Bool = true,
+    inputBusEnabled: Bool = false,
+    outputBusEnabled: Bool = true,
+    recoveryRequired: Bool = false,
+    explicitResumeRequired: Bool = false,
+    categoryIsMediaPlayback: Bool = true,
+    modeIsDefault: Bool = true,
+    categoryOptionsAreEmpty: Bool = true,
+    routeSharingPolicyIsDefault: Bool = true,
+    sampleRate: Double = 48_000,
+    outputIOBufferDuration: TimeInterval = 0.01,
+    outputChannelCount: Int = 2,
+    audioUnitSubType: UInt32 = kAudioUnitSubType_RemoteIO,
+    pcmSampleCount: UInt64? = nil,
+    pcmNonzeroSampleCount: UInt64? = nil,
+    pcmAbsoluteSampleSum: UInt64? = nil,
+    pcmLeftAbsoluteSampleSum: UInt64? = nil,
+    pcmRightAbsoluteSampleSum: UInt64? = nil,
+    pcmStereoDifferenceAbsoluteSampleSum: UInt64? = nil,
+    pcmClippedSampleCount: UInt64 = 0,
+    explicitSilenceCallbackCount: UInt64 = 0,
+    callbackGapViolationCount: UInt64 = 0,
+    maximumCallbackGapNanoseconds: UInt64 = 10_000_000,
+    nearSilenceCallbackCount: UInt64 = 0,
+    currentConsecutiveNearSilenceFrameCount: UInt64 = 0,
+    maximumConsecutiveNearSilenceFrameCount: UInt64 = 0,
+    pcmLeftZeroCrossingCount: UInt64? = nil,
+    pcmRightZeroCrossingCount: UInt64? = nil,
+    pcmEnvelopeTransitionCount: UInt64? = nil,
+    pcmShapeAnomalyCallbackCount: UInt64 = 0,
+    pcmBoundaryDiscontinuityCallbackCount: UInt64 = 0,
+    lastCallbackMeanMagnitude: UInt32? = nil,
+    recoveryRebuildCount: UInt64 = 0,
+    lastPeakMagnitude: UInt32? = nil,
+    lastPlayoutFrameCount: UInt32? = nil
 ) -> WebRTCIOSPlayoutDiagnostics {
-    WebRTCIOSPlayoutDiagnostics(
-        initialized: true,
-        playoutInitialized: true,
-        playing: true,
-        sessionActive: true,
-        ownsSessionActivation: true,
-        remoteIOCreated: true,
-        inputBusEnabled: false,
-        outputBusEnabled: true,
-        recoveryRequired: false,
-        explicitResumeRequired: false,
-        categoryIsMediaPlayback: true,
-        modeIsDefault: true,
-        sampleRate: 48_000,
-        outputIOBufferDuration: 0.01,
-        outputChannelCount: 2,
-        audioUnitSubType: kAudioUnitSubType_RemoteIO,
+    let renderedSamples = pcmSampleCount ?? frames.multipliedReportingOverflow(by: 2).partialValue
+    let nonzeroSamples = pcmNonzeroSampleCount ?? renderedSamples
+    let absoluteSum = pcmAbsoluteSampleSum ?? nonzeroSamples * 1_000
+    let leftAbsoluteSum = pcmLeftAbsoluteSampleSum ?? absoluteSum / 2
+    let rightAbsoluteSum = pcmRightAbsoluteSampleSum ?? absoluteSum - leftAbsoluteSum
+    return WebRTCIOSPlayoutDiagnostics(
+        initialized: initialized,
+        playoutInitialized: playoutInitialized,
+        playing: playing,
+        sessionActive: sessionActive,
+        ownsSessionActivation: ownsSessionActivation,
+        remoteIOCreated: remoteIOCreated,
+        inputBusEnabled: inputBusEnabled,
+        outputBusEnabled: outputBusEnabled,
+        recoveryRequired: recoveryRequired,
+        explicitResumeRequired: explicitResumeRequired,
+        categoryIsMediaPlayback: categoryIsMediaPlayback,
+        modeIsDefault: modeIsDefault,
+        categoryOptionsAreEmpty: categoryOptionsAreEmpty,
+        routeSharingPolicyIsDefault: routeSharingPolicyIsDefault,
+        sampleRate: sampleRate,
+        outputIOBufferDuration: outputIOBufferDuration,
+        outputChannelCount: outputChannelCount,
+        audioUnitSubType: audioUnitSubType,
         failureCode: failureCode,
-        lastLifecycleStatus: failureCode == 0 ? noErr : lastStatus,
+        lastLifecycleStatus:
+            lastLifecycleStatus ?? (failureCode == 0 ? noErr : lastStatus),
         failureMessage: failureCode == 0 ? nil : "Synthetic lifecycle failure",
         playoutCallbackCount: callbacks,
         playoutFrameCount: frames,
         playoutFailureCount: failures,
+        playoutPCMSampleCount: renderedSamples,
+        playoutPCMNonzeroSampleCount: nonzeroSamples,
+        playoutPCMAbsoluteSampleSum: absoluteSum,
+        playoutPCMLeftAbsoluteSampleSum: leftAbsoluteSum,
+        playoutPCMRightAbsoluteSampleSum: rightAbsoluteSum,
+        playoutPCMStereoDifferenceAbsoluteSampleSum:
+            pcmStereoDifferenceAbsoluteSampleSum ?? absoluteSum / 3,
+        playoutPCMClippedSampleCount: pcmClippedSampleCount,
+        playoutExplicitSilenceCallbackCount: explicitSilenceCallbackCount,
         unexpectedRecordingRequestCount: unexpectedRecordingRequests,
         recoveryRequestCount: 0,
         recoveryAuthorizationRejectionCount: 0,
-        recoveryRebuildCount: 0,
-        lastPlayoutFrameCount: callbacks == 0 ? 0 : 480,
-        lastPlayoutStatus: lastStatus
+        recoveryRebuildCount: recoveryRebuildCount,
+        lastPlayoutFrameCount:
+            lastPlayoutFrameCount ?? (callbacks == 0 ? 0 : 480),
+        lastPlayoutPeakMagnitude:
+            lastPeakMagnitude ?? (nonzeroSamples == 0 ? 0 : 8_000),
+        lastPlayoutStatus: lastStatus,
+        playoutCallbackGapViolationCount: callbackGapViolationCount,
+        playoutMaximumCallbackGapNanoseconds: maximumCallbackGapNanoseconds,
+        playoutNearSilenceCallbackCount: nearSilenceCallbackCount,
+        playoutCurrentConsecutiveNearSilenceFrameCount:
+            currentConsecutiveNearSilenceFrameCount,
+        playoutMaximumConsecutiveNearSilenceFrameCount:
+            maximumConsecutiveNearSilenceFrameCount,
+        playoutPCMLeftZeroCrossingCount:
+            pcmLeftZeroCrossingCount ?? frames * 9_000 / 48_000,
+        playoutPCMRightZeroCrossingCount:
+            pcmRightZeroCrossingCount ?? frames * 12_502 / 48_000,
+        playoutPCMEnvelopeTransitionCount:
+            pcmEnvelopeTransitionCount ?? frames / 24_000,
+        playoutPCMShapeAnomalyCallbackCount: pcmShapeAnomalyCallbackCount,
+        playoutPCMBoundaryDiscontinuityCallbackCount:
+            pcmBoundaryDiscontinuityCallbackCount,
+        playoutLastCallbackMeanMagnitude:
+            lastCallbackMeanMagnitude ?? (nonzeroSamples == 0 ? 0 : 1_000)
     )
 }
 
 private func healthyIOSPlayoutDiagnostics() -> WebRTCIOSPlayoutDiagnostics {
-    WebRTCIOSPlayoutDiagnostics(
-        initialized: true,
-        playoutInitialized: true,
-        playing: true,
-        sessionActive: true,
-        ownsSessionActivation: true,
-        remoteIOCreated: true,
-        inputBusEnabled: false,
-        outputBusEnabled: true,
-        recoveryRequired: false,
-        explicitResumeRequired: false,
-        categoryIsMediaPlayback: true,
-        modeIsDefault: true,
-        sampleRate: 48_000,
-        outputIOBufferDuration: 0.01,
-        outputChannelCount: 2,
-        audioUnitSubType: kAudioUnitSubType_RemoteIO,
-        failureCode: 0,
-        lastLifecycleStatus: noErr,
-        failureMessage: nil,
-        playoutCallbackCount: 1,
-        playoutFrameCount: 480,
-        playoutFailureCount: 0,
-        unexpectedRecordingRequestCount: 0,
-        recoveryRequestCount: 0,
-        recoveryAuthorizationRejectionCount: 0,
-        recoveryRebuildCount: 0,
-        lastPlayoutFrameCount: 480,
-        lastPlayoutStatus: noErr
-    )
+    iosPlayoutDiagnostics(callbacks: 1, frames: 480, failures: 0)
 }
 
 private func terminalIOSPlayoutDiagnostics() -> WebRTCIOSPlayoutDiagnostics {
-    WebRTCIOSPlayoutDiagnostics(
-        initialized: true,
+    iosPlayoutDiagnostics(
+        callbacks: 0,
+        frames: 0,
+        failures: 1,
+        lastStatus: -50,
+        failureCode: 19,
         playoutInitialized: false,
         playing: false,
         sessionActive: false,
         ownsSessionActivation: false,
         remoteIOCreated: false,
-        inputBusEnabled: false,
         outputBusEnabled: false,
         recoveryRequired: true,
         explicitResumeRequired: true,
-        categoryIsMediaPlayback: true,
-        modeIsDefault: true,
-        sampleRate: 48_000,
-        outputIOBufferDuration: 0.01,
-        outputChannelCount: 2,
-        audioUnitSubType: kAudioUnitSubType_RemoteIO,
-        failureCode: 19,
-        lastLifecycleStatus: -50,
-        failureMessage: "Retired native recovery failure",
-        playoutCallbackCount: 0,
-        playoutFrameCount: 0,
-        playoutFailureCount: 1,
-        unexpectedRecordingRequestCount: 0,
-        recoveryRequestCount: 0,
-        recoveryAuthorizationRejectionCount: 0,
-        recoveryRebuildCount: 0,
-        lastPlayoutFrameCount: 0,
-        lastPlayoutStatus: -50
+        lastPlayoutFrameCount: 0
     )
 }
 

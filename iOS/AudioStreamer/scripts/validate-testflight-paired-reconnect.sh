@@ -7,6 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR=${0:A:h}
 PROJECT_DIR=${SCRIPT_DIR:h}
+REPOSITORY_ROOT=${PROJECT_DIR:h:h}
 source "${SCRIPT_DIR}/physical-validation-helpers.zsh"
 DEVICE_UDID=${1:?usage: $0 device-udid expected-production-build [artifact-directory]}
 EXPECTED_BUILD=${2:?usage: $0 [device-udid] expected-production-build [artifact-directory]}
@@ -33,15 +34,25 @@ EXPECTED_TEST_URL="test://com.apple.xcode/AudioStreamer/AudioStreamerUITests/Pai
 HOST_LABEL=${AUDIOSTREAMER_HOST_LAUNCH_AGENT_LABEL:-org.example.audiostreamer.worldwide}
 HOST_SERVICE="gui/${UID}/${HOST_LABEL}"
 HOST_LOG=${AUDIOSTREAMER_HOST_LOG:-/tmp/audiostreamer/worldwide-host.log}
+EXPECTED_MAC_HOST_TEAM_ID=${AUDIOSTREAMER_EXPECTED_TEAM_ID:-A1B2C3D4E5}
+MAC_HOST_BUILD_SCRIPT="${REPOSITORY_ROOT}/macOS/scripts/build-mac-capture-host-app.sh"
+MAC_HOST_DEPLOYMENT_VERIFIER="${REPOSITORY_ROOT}/macOS/scripts/verify-mac-host-deployment.sh"
 HOST_RESTART_DELAY_SECONDS=${AUDIOSTREAMER_HOST_RESTART_DELAY_SECONDS:-8}
 HOST_CONNECTION_WAIT_TIMEOUT_SECONDS=${AUDIOSTREAMER_HOST_CONNECTION_WAIT_TIMEOUT_SECONDS:-90}
 HOST_CHURN_LOCK_ATTEMPTS=${AUDIOSTREAMER_HOST_CHURN_LOCK_ATTEMPTS:-600}
 UI_TEST_TIMEOUT_SECONDS=${AUDIOSTREAMER_UI_TEST_TIMEOUT_SECONDS:-900}
+AUDIO_ORACLE_DURATION_SECONDS=${AUDIOSTREAMER_AUDIO_ORACLE_DURATION_SECONDS:-$((UI_TEST_TIMEOUT_SECONDS + 60))}
 UI_TEST_TERMINATION_GRACE_SECONDS=5
 DEVICE_COMMAND_TIMEOUT_SECONDS=${AUDIOSTREAMER_DEVICE_COMMAND_TIMEOUT_SECONDS:-15}
 DEVICE_LOCK_POLL_SECONDS=${AUDIOSTREAMER_DEVICE_LOCK_POLL_SECONDS:-5}
 HOST_EVENTS="${ARTIFACT_DIR}/host-restart-events.log"
 HOST_STATUS="${ARTIFACT_DIR}/host-restart-status.txt"
+HOST_BUILD_STDOUT="${ARTIFACT_DIR}/host-build-stdout.txt"
+HOST_BUILD_STDERR="${ARTIFACT_DIR}/host-build-stderr.txt"
+HOST_DEPLOYMENT_MANIFEST="${ARTIFACT_DIR}/host-deployment.txt"
+HOST_DEPLOYMENT_STDERR="${ARTIFACT_DIR}/host-deployment-stderr.txt"
+HOST_DEPLOYMENT_RECHECK_STDOUT="${ARTIFACT_DIR}/host-deployment-recheck-stdout.txt"
+HOST_DEPLOYMENT_RECHECK_STDERR="${ARTIFACT_DIR}/host-deployment-recheck-stderr.txt"
 UI_TEST_TIMEOUT_MARKER="${ARTIFACT_DIR}/ui-test-timeout.txt"
 DEVICE_LOCKED_MARKER="${ARTIFACT_DIR}/device-locked-during-test.txt"
 DEVICE_UNAVAILABLE_MARKER="${ARTIFACT_DIR}/device-unavailable-during-test.txt"
@@ -54,6 +65,16 @@ HOST_LOG_PARTIAL_LINE="${ARTIFACT_DIR}/host-log-partial.bin"
 WATCHDOG_STATE="${ARTIFACT_DIR}/watchdog-state.txt"
 WATCHDOG_FAILURE_MARKER="${ARTIFACT_DIR}/watchdog-failure.txt"
 RUN_STATUS="${ARTIFACT_DIR}/run-status.txt"
+AUDIO_ORACLE_TONE="${ARTIFACT_DIR}/physical-audio-oracle-tone.wav"
+AUDIO_ORACLE_TONE_LOG="${ARTIFACT_DIR}/physical-audio-oracle-tone.log"
+AUDIO_ORACLE_TONE_FAILURE_MARKER="${ARTIFACT_DIR}/physical-audio-oracle-tone-failed.txt"
+SCREEN_ORACLE_SOURCE="${SCRIPT_DIR}/physical-screen-oracle-challenge.swift"
+SCREEN_ORACLE_BINARY="${ARTIFACT_DIR}/physical-screen-oracle-challenge"
+SCREEN_ORACLE_HEARTBEAT="${ARTIFACT_DIR}/physical-screen-oracle-heartbeat.txt"
+SCREEN_ORACLE_LOG="${ARTIFACT_DIR}/physical-screen-oracle.log"
+SCREEN_ORACLE_FAILURE_MARKER="${ARTIFACT_DIR}/physical-screen-oracle-failed.txt"
+SCREEN_ORACLE_CLEANUP_PROOF="${ARTIFACT_DIR}/physical-screen-oracle-cleanup.txt"
+ACTIVITIES_JSON="${ARTIFACT_DIR}/activities.json"
 HOST_WATCHER_PID=""
 XCODEBUILD_PID=""
 XCODEBUILD_GROUP_ISOLATED=0
@@ -64,6 +85,8 @@ HOST_LOG_START_DIGEST=""
 EXPECTED_INITIAL_HOST_PID=""
 RUN_SUCCEEDED=0
 CLEANUP_RUNNING=0
+AUDIO_ORACLE_TONE_PID=""
+SCREEN_ORACLE_PID=""
 
 mkdir -p "${ARTIFACT_DIR}"
 print -r -- "status=running" > "${RUN_STATUS}"
@@ -133,6 +156,26 @@ function cleanup_xcodebuild() {
   fi
 }
 
+function cleanup_audio_oracle_tone() {
+  if [[ -n "${AUDIO_ORACLE_TONE_PID}" ]] \
+      && kill -0 "${AUDIO_ORACLE_TONE_PID}" 2>/dev/null; then
+    audiostreamer_terminate_process_tree \
+      "${AUDIO_ORACLE_TONE_PID}" "${UI_TEST_TERMINATION_GRACE_SECONDS}"
+    wait "${AUDIO_ORACLE_TONE_PID}" 2>/dev/null || true
+  fi
+  AUDIO_ORACLE_TONE_PID=""
+}
+
+function cleanup_screen_oracle_challenge() {
+  if [[ -n "${SCREEN_ORACLE_PID}" ]] \
+      && kill -0 "${SCREEN_ORACLE_PID}" 2>/dev/null; then
+    audiostreamer_terminate_process_tree \
+      "${SCREEN_ORACLE_PID}" "${UI_TEST_TERMINATION_GRACE_SECONDS}"
+    wait "${SCREEN_ORACLE_PID}" 2>/dev/null || true
+  fi
+  SCREEN_ORACLE_PID=""
+}
+
 function cleanup_processes() {
   setopt localoptions noerrexit
   trap - ZERR
@@ -148,6 +191,8 @@ function cleanup_processes() {
   stop_host_churn_before_xcodebuild_termination || true
   cleanup_host_watcher
   cleanup_xcodebuild
+  cleanup_audio_oracle_tone
+  cleanup_screen_oracle_challenge
   rmdir "${HOST_CHURN_LOCK}" 2>/dev/null || true
   CLEANUP_RUNNING=0
   return 0
@@ -177,6 +222,9 @@ audiostreamer_require_positive_integer \
   AUDIOSTREAMER_UI_TEST_TIMEOUT_SECONDS \
   "${UI_TEST_TIMEOUT_SECONDS}"
 audiostreamer_require_positive_integer \
+  AUDIOSTREAMER_AUDIO_ORACLE_DURATION_SECONDS \
+  "${AUDIO_ORACLE_DURATION_SECONDS}"
+audiostreamer_require_positive_integer \
   AUDIOSTREAMER_DEVICE_COMMAND_TIMEOUT_SECONDS \
   "${DEVICE_COMMAND_TIMEOUT_SECONDS}"
 audiostreamer_require_positive_integer \
@@ -188,6 +236,12 @@ rm -rf \
   "${RESULT_BUNDLE}" \
   "${HOST_EVENTS}" \
   "${HOST_STATUS}" \
+  "${HOST_BUILD_STDOUT}" \
+  "${HOST_BUILD_STDERR}" \
+  "${HOST_DEPLOYMENT_MANIFEST}" \
+  "${HOST_DEPLOYMENT_STDERR}" \
+  "${HOST_DEPLOYMENT_RECHECK_STDOUT}" \
+  "${HOST_DEPLOYMENT_RECHECK_STDERR}" \
   "${UI_TEST_TIMEOUT_MARKER}" \
   "${DEVICE_LOCKED_MARKER}" \
   "${DEVICE_UNAVAILABLE_MARKER}" \
@@ -199,6 +253,14 @@ rm -rf \
   "${HOST_LOG_PARTIAL_LINE}" \
   "${WATCHDOG_STATE}" \
   "${WATCHDOG_FAILURE_MARKER}" \
+  "${AUDIO_ORACLE_TONE}" \
+  "${AUDIO_ORACLE_TONE_LOG}" \
+  "${AUDIO_ORACLE_TONE_FAILURE_MARKER}" \
+  "${SCREEN_ORACLE_BINARY}" \
+  "${SCREEN_ORACLE_HEARTBEAT}" \
+  "${SCREEN_ORACLE_LOG}" \
+  "${SCREEN_ORACLE_FAILURE_MARKER}" \
+  "${SCREEN_ORACLE_CLEANUP_PROOF}" \
   "${DEVICE_BEFORE}" \
   "${DEVICE_AFTER}" \
   "${LOCK_STATE_BEFORE}" \
@@ -211,6 +273,7 @@ rm -rf \
   "${CANDIDATE_AFTER}" \
   "${ARTIFACT_DIR}/summary.json" \
   "${ARTIFACT_DIR}/tests.json" \
+  "${ACTIVITIES_JSON}" \
   "${ARTIFACT_DIR}/build-results.json" \
   "${ARTIFACT_DIR}/host-launch-agent-before.txt" \
   "${ARTIFACT_DIR}/fast-group-leader-pid.txt" \
@@ -218,6 +281,185 @@ rm -rf \
   "${ARTIFACT_DIR}/cancel-churn-ready.txt" \
   "${ARTIFACT_DIR}/cancel-churn-proceed.txt" \
   "${ARTIFACT_DIR}/cancel-churn-action.txt"
+
+function start_physical_audio_oracle_tone() {
+  /usr/bin/python3 - "${AUDIO_ORACLE_TONE}" "${AUDIO_ORACLE_DURATION_SECONDS}" <<'PY'
+import math
+import struct
+import sys
+import wave
+
+path = sys.argv[1]
+duration_seconds = int(sys.argv[2])
+sample_rate = 48_000
+one_second = bytearray()
+for frame in range(sample_rate):
+    high_band = frame >= sample_rate // 2
+    amplitude = 3_000 if high_band else 9_000
+    left_frequency = 8_003 if high_band else 997
+    right_frequency = 11_003 if high_band else 1_499
+    left = int(amplitude * math.sin(2 * math.pi * left_frequency * frame / sample_rate))
+    right = int(amplitude * math.sin(2 * math.pi * right_frequency * frame / sample_rate))
+    one_second.extend(struct.pack("<hh", left, right))
+with wave.open(path, "wb") as output:
+    output.setnchannels(2)
+    output.setsampwidth(2)
+    output.setframerate(sample_rate)
+    for _ in range(duration_seconds):
+        output.writeframesraw(one_second)
+PY
+  /usr/bin/afplay -v 0.25 "${AUDIO_ORACLE_TONE}" \
+    > "${AUDIO_ORACLE_TONE_LOG}" 2>&1 &
+  AUDIO_ORACLE_TONE_PID=$!
+  sleep 0.25
+  if ! kill -0 "${AUDIO_ORACLE_TONE_PID}" 2>/dev/null; then
+    echo "Refusing device validation: deterministic Mac audio oracle tone did not start." >&2
+    return 1
+  fi
+}
+
+function start_physical_screen_oracle_challenge() {
+  xcrun --sdk macosx swiftc \
+    -parse-as-library \
+    -framework AppKit \
+    "${SCREEN_ORACLE_SOURCE}" \
+    -o "${SCREEN_ORACLE_BINARY}"
+  "${SCREEN_ORACLE_BINARY}" "${SCREEN_ORACLE_HEARTBEAT}" \
+    > "${SCREEN_ORACLE_LOG}" 2>&1 &
+  SCREEN_ORACLE_PID=$!
+  for challenge_poll in {1..100}; do
+    if [[ -s "${SCREEN_ORACLE_HEARTBEAT}" ]]; then
+      break
+    fi
+    if ! kill -0 "${SCREEN_ORACLE_PID}" 2>/dev/null; then
+      echo "Refusing device validation: decoded-screen pixel challenge exited during startup." >&2
+      return 1
+    fi
+    sleep 0.05
+  done
+  if [[ ! -s "${SCREEN_ORACLE_HEARTBEAT}" ]] \
+      || ! kill -0 "${SCREEN_ORACLE_PID}" 2>/dev/null; then
+    echo "Refusing device validation: decoded-screen pixel challenge did not start." >&2
+    return 1
+  fi
+}
+
+function physical_screen_oracle_counter() {
+  local value
+  value=$(cat "${SCREEN_ORACLE_HEARTBEAT}" 2>/dev/null || true)
+  [[ "${value}" =~ '^counter=[0-9]+$' ]] || return 1
+  print -r -- "${value#counter=}"
+}
+
+function validate_required_physical_activities_json() {
+  local activities_file=$1
+  jq -e \
+    --arg test_url "${EXPECTED_TEST_URL}" '
+    # `xcresulttool ... activities` exposes attachment identity and payload metadata, but not
+    # the raw string/screenshot bytes. Validate exactly what is observable: the named payload
+    # must be retained, addressable, timestamped, and UUID-identified on its expected activity.
+    def valid_attachment_metadata:
+      .payloadId? as $payload |
+      .uuid? as $uuid |
+      .timestamp? as $timestamp |
+      .lifetime? as $lifetime |
+      (($payload | type) == "string") and
+      (($payload | length) >= 16) and
+      ($payload | test("^0~[A-Za-z0-9_-]+={0,2}$")) and
+      (($uuid | type) == "string") and
+      ($uuid | test("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")) and
+      (($timestamp | type) == "number") and
+      ($timestamp > 0) and
+      ($lifetime == "keepAlways");
+    def valid_activity_metadata:
+      (.isAssociatedWithFailure? == false) and
+      ((.startTime? | type) == "number") and
+      (.startTime > 0);
+    def one_named_attachment($activity; $name):
+      ([($activity.attachments // [])[] | select(.name? == $name)] as $matches |
+        (($matches | length) == 1) and
+        ($matches[0] | valid_attachment_metadata));
+    def one_matching_attachment($activity; $pattern):
+      ([($activity.attachments // [])[]
+        | select(((.name? // "") | test($pattern)))] as $matches |
+        (($matches | length) == 1) and
+        ($matches[0] | valid_attachment_metadata));
+    def one_activity($activities; $title):
+      [($activities // [])[] | select(.title? == $title)];
+    def one_activity_with_attachments($activities; $title; $names):
+      (one_activity($activities; $title) as $matches |
+        (($matches | length) == 1) and
+        ($matches[0] | valid_activity_metadata) and
+        all($names[]; . as $name | one_named_attachment($matches[0]; $name)));
+    def one_restart_activity($activities; $attempt):
+      (one_activity(
+        $activities;
+        "Same-process host restart and reconnect " + $attempt
+      ) as $matches |
+        (($matches | length) == 1) and
+        ($matches[0] | valid_activity_metadata) and
+        one_named_attachment(
+          $matches[0];
+          "WebRTC route - host restart reconnect " + $attempt
+        ) and
+        one_matching_attachment(
+          $matches[0];
+          "^test iPhone (Direct|TURN relay) route before host restart " + $attempt + "$"
+        ) and
+        one_named_attachment(
+          $matches[0];
+          "test iPhone recovered in same process " + $attempt
+        ));
+    def one_cold_launch_activity($activities):
+      (one_activity($activities; "Cold-launch saved-pair reconnect") as $matches |
+        (($matches | length) == 1) and
+        ($matches[0] | valid_activity_metadata) and
+        one_named_attachment(
+          $matches[0];
+          "WebRTC route - cold-launch saved-pair reconnect"
+        ) and
+        one_named_attachment(
+          $matches[0];
+          "WebRTC route - after background audio proof"
+        ) and
+        one_named_attachment(
+          $matches[0];
+          "WebRTC route - after hiding the cold-launch Mac screen"
+        ) and
+        one_activity_with_attachments(
+          ($matches[0].childActivities // []);
+          "Physical background audio continuity oracle";
+          ["Background native audio continuity evidence"]
+        ) and
+        one_activity_with_attachments(
+          ($matches[0].childActivities // []);
+          "Physical screen Show-Hide and same-session audio oracle";
+          [
+            "test iPhone live Mac screen with authenticated input capability",
+            "Decoded screen pixel freshness evidence",
+            "Authenticated screen Show-Hide evidence",
+            "Same-session audio continuity across screen Show-Hide"
+          ]
+        ));
+    (.testIdentifierURL == $test_url) and
+    ((.testRuns | type) == "array") and
+    ((.testRuns | length) == 1) and
+    ((.testRuns[0].activities | type) == "array") and
+    (.testRuns[0].activities as $root_activities |
+      one_restart_activity($root_activities; "1") and
+      one_restart_activity($root_activities; "2") and
+      one_restart_activity($root_activities; "3") and
+      one_activity_with_attachments(
+        $root_activities;
+        "Explicit disconnect and same-process reconnect";
+        [
+          "WebRTC route - before explicit disconnect",
+          "WebRTC route - same-process reconnect after explicit disconnect"
+        ]
+      ) and
+      one_cold_launch_activity($root_activities))
+  ' "${activities_file}" >/dev/null
+}
 
 function capture_and_validate_device() {
   local output=$1
@@ -278,6 +520,7 @@ function validate_ui_xcresult() {
   local summary
   local tests
   local build_results
+  local activities
 
   summary=$(xcrun xcresulttool get test-results summary \
     --path "${RESULT_BUNDLE}" \
@@ -288,9 +531,14 @@ function validate_ui_xcresult() {
   build_results=$(xcrun xcresulttool get build-results \
     --path "${RESULT_BUNDLE}" \
     --compact)
+  activities=$(xcrun xcresulttool get test-results activities \
+    --path "${RESULT_BUNDLE}" \
+    --test-id "${EXPECTED_TEST_URL}" \
+    --compact)
   print -r -- "${summary}" > "${ARTIFACT_DIR}/summary.json"
   print -r -- "${tests}" > "${ARTIFACT_DIR}/tests.json"
   print -r -- "${build_results}" > "${ARTIFACT_DIR}/build-results.json"
+  print -r -- "${activities}" > "${ACTIVITIES_JSON}"
 
   jq -e \
     --arg udid "${DEVICE_UDID}" \
@@ -349,6 +597,8 @@ function validate_ui_xcresult() {
     (.destination.osVersion == $os) and
     (.destination.platform == $platform)
   ' <<<"${build_results}" >/dev/null
+
+  validate_required_physical_activities_json "${ACTIVITIES_JSON}"
 }
 
 function current_host_pid() {
@@ -361,6 +611,39 @@ function current_host_pid() {
   launchctl print "${HOST_SERVICE}" 2>/dev/null \
     | awk '$1 == "pid" && $2 == "=" { print $3; exit }' \
     || true
+}
+
+# Bind every replacement launchd PID to the same freshly built code identity.
+# A stable path alone is not proof: an already-running process can keep an old
+# vnode mapped after the installed app at that path is atomically replaced.
+function verify_host_deployment_snapshot() {
+  local expected_host_pid=$1
+  local phase=$2
+  local verifier_result
+
+  rm -f "${HOST_DEPLOYMENT_RECHECK_STDOUT}" "${HOST_DEPLOYMENT_RECHECK_STDERR}"
+  if AUDIOSTREAMER_EXPECTED_TEAM_ID="${EXPECTED_MAC_HOST_TEAM_ID}" \
+      AUDIOSTREAMER_EXPECTED_HOST_PID="${expected_host_pid}" \
+      "${MAC_HOST_DEPLOYMENT_VERIFIER}" \
+      > "${HOST_DEPLOYMENT_RECHECK_STDOUT}" \
+      2> "${HOST_DEPLOYMENT_RECHECK_STDERR}"; then
+    verifier_result=0
+  else
+    verifier_result=$?
+  fi
+
+  {
+    print -r -- ""
+    print -r -- "phase=${phase} expected_pid=${expected_host_pid}"
+    cat "${HOST_DEPLOYMENT_RECHECK_STDOUT}" 2>/dev/null || true
+  } >> "${HOST_DEPLOYMENT_MANIFEST}"
+  {
+    print -r -- ""
+    print -r -- "phase=${phase} expected_pid=${expected_host_pid}"
+    cat "${HOST_DEPLOYMENT_RECHECK_STDERR}" 2>/dev/null || true
+  } >> "${HOST_DEPLOYMENT_STDERR}"
+  rm -f "${HOST_DEPLOYMENT_RECHECK_STDOUT}" "${HOST_DEPLOYMENT_RECHECK_STDERR}"
+  return "${verifier_result}"
 }
 
 function kickstart_host_service() {
@@ -742,6 +1025,39 @@ time.sleep(0.5)
 
 # SwiftPM invokes this probe in a separate real zsh process. It protects against shell-runtime
 # failures (such as assigning a read-only special parameter) that `zsh -n` cannot detect.
+if [[ "${AUDIOSTREAMER_SCRIPT_SELF_TEST:-}" == "validate-physical-activities" ]]; then
+  validate_required_physical_activities_json \
+    "${AUDIOSTREAMER_SELF_TEST_ACTIVITIES_JSON:?missing activity fixture}"
+  audiostreamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
+if [[ "${AUDIOSTREAMER_SCRIPT_SELF_TEST:-}" == "audio-oracle-tone" ]]; then
+  start_physical_audio_oracle_tone
+  /usr/bin/afinfo "${AUDIO_ORACLE_TONE}" >/dev/null
+  kill -0 "${AUDIO_ORACLE_TONE_PID}"
+  cleanup_audio_oracle_tone
+  audiostreamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
+if [[ "${AUDIOSTREAMER_SCRIPT_SELF_TEST:-}" == "screen-oracle-challenge" ]]; then
+  start_physical_screen_oracle_challenge
+  first_counter=$(physical_screen_oracle_counter)
+  sleep 0.4
+  second_counter=$(physical_screen_oracle_counter)
+  (( second_counter > first_counter ))
+  kill -0 "${SCREEN_ORACLE_PID}"
+  challenge_pid=${SCREEN_ORACLE_PID}
+  cleanup_screen_oracle_challenge
+  ! kill -0 "${challenge_pid}" 2>/dev/null
+  audiostreamer_write_state \
+    "${SCREEN_ORACLE_CLEANUP_PROOF}" \
+    "state=terminated pid=${challenge_pid} first=${first_counter} last=${second_counter}"
+  audiostreamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
 if [[ "${AUDIOSTREAMER_SCRIPT_SELF_TEST:-}" == "write-host-status" ]]; then
   write_host_status pending 2 1 "runtime self-test"
   audiostreamer_write_state "${RUN_STATUS}" "status=self-test-passed"
@@ -877,6 +1193,13 @@ function churn_host_after_live_connections() {
         release_host_churn_lock
         write_host_status failed "${connections}" "${restarts}" \
           "xcodebuild ended before three host replacements were verified"
+        return 1
+      fi
+      if [[ "${AUDIOSTREAMER_SCRIPT_SELF_TEST:-}" != host-provenance-* ]] \
+          && ! verify_host_deployment_snapshot "${expected_host_pid}" "final"; then
+        release_host_churn_lock
+        write_host_status failed "${connections}" "${restarts}" \
+          "final host PID ${expected_host_pid} did not match the freshly built signed app"
         return 1
       fi
       write_host_status passed "${connections}" "${restarts}" \
@@ -1026,6 +1349,14 @@ function churn_host_after_live_connections() {
       return 1
     fi
 
+    if [[ "${AUDIOSTREAMER_SCRIPT_SELF_TEST:-}" != host-provenance-* ]] \
+        && ! verify_host_deployment_snapshot \
+          "${replacement_pid}" "restart-$((restarts + 1))"; then
+      write_host_status failed "${connections}" "${restarts}" \
+        "replacement host PID ${replacement_pid} did not match the freshly built signed app"
+      return 1
+    fi
+
     restarts=$((restarts + 1))
     expected_host_pid=${replacement_pid}
     observed_host_pids[${replacement_pid}]=1
@@ -1061,6 +1392,35 @@ capture_and_validate_device "${DEVICE_BEFORE}"
 capture_and_require_unlocked "${LOCK_STATE_BEFORE}"
 capture_production_candidate "${APP_LIST_BEFORE}" "${CANDIDATE_BEFORE}"
 
+# Rebuild from this checkout, then bind the physical evidence to that exact signed artifact and
+# live launchd process. A loaded label and PID are insufficient: a legacy app or naked executable
+# can connect while macOS privacy permissions belong to a different code identity.
+if ! "${MAC_HOST_BUILD_SCRIPT}" \
+    > "${HOST_BUILD_STDOUT}" 2> "${HOST_BUILD_STDERR}"; then
+  echo "Refusing device reconnect validation: the signed Mac host build failed." >&2
+  cat "${HOST_BUILD_STDERR}" >&2
+  exit 3
+fi
+if [[ "$(tail -n 1 "${HOST_BUILD_STDOUT}")" \
+    != "${REPOSITORY_ROOT}/build/AudioStreamer Host.app" ]]; then
+  echo "Refusing device reconnect validation: the Mac host build returned an unexpected artifact." >&2
+  exit 3
+fi
+EXPECTED_INITIAL_HOST_PID=$(current_host_pid)
+if [[ -z "${EXPECTED_INITIAL_HOST_PID}" \
+    || "${EXPECTED_INITIAL_HOST_PID}" == *[^0-9]* ]]; then
+  echo "Refusing device reconnect validation: launch agent ${HOST_SERVICE} has no valid running host PID." >&2
+  exit 3
+fi
+if ! AUDIOSTREAMER_EXPECTED_TEAM_ID="${EXPECTED_MAC_HOST_TEAM_ID}" \
+    AUDIOSTREAMER_EXPECTED_HOST_PID="${EXPECTED_INITIAL_HOST_PID}" \
+    "${MAC_HOST_DEPLOYMENT_VERIFIER}" \
+    > "${HOST_DEPLOYMENT_MANIFEST}" 2> "${HOST_DEPLOYMENT_STDERR}"; then
+  echo "Refusing device reconnect validation: the installed/live Mac host does not match the freshly built signed app." >&2
+  cat "${HOST_DEPLOYMENT_STDERR}" >&2
+  exit 3
+fi
+
 if [[ ! -f "${HOST_LOG}" ]]; then
   echo "Refusing device reconnect validation: host log does not exist at ${HOST_LOG}." >&2
   exit 3
@@ -1070,9 +1430,8 @@ if ! launchctl print "${HOST_SERVICE}" \
   echo "Refusing device reconnect validation: launch agent ${HOST_SERVICE} is not loaded." >&2
   exit 3
 fi
-EXPECTED_INITIAL_HOST_PID=$(current_host_pid)
-if [[ -z "${EXPECTED_INITIAL_HOST_PID}" ]]; then
-  echo "Refusing device reconnect validation: launch agent ${HOST_SERVICE} has no running host PID." >&2
+if [[ "$(current_host_pid)" != "${EXPECTED_INITIAL_HOST_PID}" ]]; then
+  echo "Refusing device reconnect validation: the host PID changed after deployment verification." >&2
   exit 3
 fi
 
@@ -1099,6 +1458,10 @@ fi
 rm -f "${HOST_LOG_APPEND_CHUNK}"
 print -rn -- "" > "${HOST_LOG_PARTIAL_LINE}"
 
+start_physical_audio_oracle_tone
+start_physical_screen_oracle_challenge
+SCREEN_ORACLE_LAST_COUNTER=$(physical_screen_oracle_counter)
+
 audiostreamer_start_isolated_validation_process xcodebuild test \
   -project "${PROJECT_DIR}/AudioStreamer.xcodeproj" \
   -scheme AudioStreamerUITests \
@@ -1123,7 +1486,39 @@ HOST_WATCHER_PID=$!
   watchdog_started=${SECONDS}
   lock_poll_started=${SECONDS}
   lock_query_failures=0
+  screen_oracle_stale_polls=0
   while kill -0 "${XCODEBUILD_PID}" 2>/dev/null; do
+    if [[ -z "${AUDIO_ORACLE_TONE_PID}" ]] \
+        || ! kill -0 "${AUDIO_ORACLE_TONE_PID}" 2>/dev/null; then
+      print -r -- \
+        "The deterministic Mac audio oracle tone stopped during physical validation." \
+        > "${AUDIO_ORACLE_TONE_FAILURE_MARKER}"
+      stop_host_churn_before_xcodebuild_termination || true
+      audiostreamer_terminate_isolated_process_group \
+        "${XCODEBUILD_PID}" "${UI_TEST_TERMINATION_GRACE_SECONDS}"
+      audiostreamer_write_state "${WATCHDOG_STATE}" "state=audio-oracle-failure-handled"
+      exit 0
+    fi
+    current_screen_oracle_counter=$(physical_screen_oracle_counter || true)
+    if [[ -z "${SCREEN_ORACLE_PID}" ]] \
+        || ! kill -0 "${SCREEN_ORACLE_PID}" 2>/dev/null \
+        || [[ -z "${current_screen_oracle_counter}" ]] \
+        || (( current_screen_oracle_counter <= SCREEN_ORACLE_LAST_COUNTER )); then
+      screen_oracle_stale_polls=$((screen_oracle_stale_polls + 1))
+    else
+      SCREEN_ORACLE_LAST_COUNTER=${current_screen_oracle_counter}
+      screen_oracle_stale_polls=0
+    fi
+    if (( screen_oracle_stale_polls >= 2 )); then
+      print -r -- \
+        "The deterministic decoded-screen pixel challenge stopped advancing during physical validation." \
+        > "${SCREEN_ORACLE_FAILURE_MARKER}"
+      stop_host_churn_before_xcodebuild_termination || true
+      audiostreamer_terminate_isolated_process_group \
+        "${XCODEBUILD_PID}" "${UI_TEST_TERMINATION_GRACE_SECONDS}"
+      audiostreamer_write_state "${WATCHDOG_STATE}" "state=screen-oracle-failure-handled"
+      exit 0
+    fi
     if (( SECONDS - watchdog_started >= UI_TEST_TIMEOUT_SECONDS )); then
       print -r -- \
         "Timed out after ${UI_TEST_TIMEOUT_SECONDS}s while running the physical device UI gate." \
@@ -1251,6 +1646,10 @@ elif [[ -f "${DEVICE_UNAVAILABLE_MARKER}" ]]; then
   EXPECTED_WATCHDOG_STATE="state=device-unavailable-handled"
 elif [[ -f "${HOST_WATCHER_FAILURE_MARKER}" ]]; then
   EXPECTED_WATCHDOG_STATE="state=host-watcher-failure-handled"
+elif [[ -f "${AUDIO_ORACLE_TONE_FAILURE_MARKER}" ]]; then
+  EXPECTED_WATCHDOG_STATE="state=audio-oracle-failure-handled"
+elif [[ -f "${SCREEN_ORACLE_FAILURE_MARKER}" ]]; then
+  EXPECTED_WATCHDOG_STATE="state=screen-oracle-failure-handled"
 fi
 if ! grep -qx "${EXPECTED_WATCHDOG_STATE}" "${WATCHDOG_STATE}" 2>/dev/null; then
   echo "device lock watchdog lifecycle evidence is incomplete; expected ${EXPECTED_WATCHDOG_STATE}." >&2
@@ -1268,6 +1667,12 @@ elif [[ -f "${DEVICE_UNAVAILABLE_MARKER}" ]]; then
 elif [[ -f "${HOST_WATCHER_FAILURE_MARKER}" ]]; then
   cat "${HOST_WATCHER_FAILURE_MARKER}" >&2
   exit 4
+elif [[ -f "${AUDIO_ORACLE_TONE_FAILURE_MARKER}" ]]; then
+  cat "${AUDIO_ORACLE_TONE_FAILURE_MARKER}" >&2
+  exit 7
+elif [[ -f "${SCREEN_ORACLE_FAILURE_MARKER}" ]]; then
+  cat "${SCREEN_ORACLE_FAILURE_MARKER}" >&2
+  exit 7
 fi
 if (( XCODEBUILD_STATUS == 0 )); then
   capture_and_require_unlocked "${LOCK_STATE_AFTER_XCODEBUILD}"
@@ -1285,6 +1690,17 @@ fi
 if (( XCODEBUILD_STATUS != 0 )); then
   echo "Physical UI test failed with xcodebuild status ${XCODEBUILD_STATUS}." >&2
   exit "${XCODEBUILD_STATUS}"
+fi
+if [[ -z "${AUDIO_ORACLE_TONE_PID}" ]] \
+    || ! kill -0 "${AUDIO_ORACLE_TONE_PID}" 2>/dev/null; then
+  echo "The deterministic Mac audio oracle tone was not alive at final audit." >&2
+  exit 7
+fi
+if [[ -z "${SCREEN_ORACLE_PID}" ]] \
+    || ! kill -0 "${SCREEN_ORACLE_PID}" 2>/dev/null \
+    || [[ ! -s "${SCREEN_ORACLE_HEARTBEAT}" ]]; then
+  echo "The deterministic decoded-screen pixel challenge was not alive at final audit." >&2
+  exit 7
 fi
 
 # The UI test cannot pass its three same-process recovery waits unless churn occurred, but this

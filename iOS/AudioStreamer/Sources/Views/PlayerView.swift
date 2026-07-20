@@ -48,6 +48,16 @@ struct PlayerView: View {
                     LabeledContent("Route", value: worldwideViewModel.routeText)
                     LabeledContent("Audio", value: worldwideViewModel.audioStateText)
 
+                    if let acknowledgement =
+                        worldwideViewModel.screenAcknowledgementOracle {
+                        Color.clear
+                        .frame(width: 1, height: 1)
+                        .accessibilityElement()
+                        .accessibilityLabel("Mac screen acknowledgement")
+                        .accessibilityValue(acknowledgement.accessibilityValue)
+                        .accessibilityIdentifier("worldwideScreenAcknowledgementOracle")
+                    }
+
                     if let audioError = worldwideViewModel.audioError {
                         Label(audioError, systemImage: "speaker.slash")
                             .foregroundStyle(.orange)

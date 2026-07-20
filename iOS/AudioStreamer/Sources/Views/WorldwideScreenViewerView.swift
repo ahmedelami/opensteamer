@@ -1,4 +1,5 @@
 import SwiftUI
+import WebRTCTransport
 
 struct WorldwideScreenViewerView: View {
     @Environment(\.scenePhase) private var scenePhase
@@ -6,6 +7,8 @@ struct WorldwideScreenViewerView: View {
     let lease: WorldwideScreenPresentationLease
     let dismissPresentation: (WorldwideScreenPresentationLease) -> Void
     @State private var remoteVideoSize = CGSize.zero
+    @State private var videoRendererID = UUID()
+    @State private var videoRenderObservation: WebRTCVideoRenderObservation?
     @State private var allowsRemoteInputPresentation = true
     @State private var primaryDragContext: PrimaryDragContext?
 
@@ -20,7 +23,8 @@ struct WorldwideScreenViewerView: View {
                     if allowsRemoteScreenRendering {
                         WebRTCRemoteScreenView(
                             track: viewModel.remoteVideoTrack,
-                            onVideoSizeChanged: { remoteVideoSize = $0 }
+                            onVideoSizeChanged: { remoteVideoSize = $0 },
+                            onVideoFrameRendered: { videoRenderObservation = $0 }
                         )
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .background(.black)
@@ -87,6 +91,8 @@ struct WorldwideScreenViewerView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityLabel("Mac screen video")
+                .accessibilityValue(videoRenderAccessibilityValue)
                 .accessibilityIdentifier("worldwideMacScreenVideo")
 
                 status
@@ -143,6 +149,10 @@ struct WorldwideScreenViewerView: View {
         }
         .onChange(of: viewModel.remoteVideoTrack == nil) {
             primaryDragContext = nil
+            if viewModel.remoteVideoTrack == nil {
+                videoRendererID = UUID()
+                videoRenderObservation = nil
+            }
         }
         .onChange(of: remoteVideoSize) {
             primaryDragContext = nil
@@ -181,6 +191,11 @@ struct WorldwideScreenViewerView: View {
             Text(viewModel.stateText)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(.white)
+                .accessibilityValue(
+                    viewModel.screenAcknowledgementOracle?.accessibilityValue
+                        ?? "unavailable"
+                )
+                .accessibilityIdentifier("worldwideScreenAcknowledgementOracle")
 
             Text(viewModel.routeText == "Unknown" ? "Finding best route" : viewModel.routeText)
                 .font(.caption)
@@ -271,6 +286,22 @@ struct WorldwideScreenViewerView: View {
             allowsPresentation: allowsRemoteInputPresentation,
             isScreenVisible: viewModel.screenPresentationIsVisible(lease)
         )
+    }
+
+    private var videoRenderAccessibilityValue: String {
+        guard let videoRenderObservation else {
+            return WorldwideVideoRenderOracleSnapshot(
+                rendererID: videoRendererID,
+                frameCount: 0,
+                timestampNanoseconds: 0,
+                width: 0,
+                height: 0
+            ).accessibilityValue
+        }
+        return WorldwideVideoRenderOracleSnapshot(
+            rendererID: videoRendererID,
+            observation: videoRenderObservation
+        ).accessibilityValue
     }
 
     static func allowsScreenPresentation(in scenePhase: ScenePhase) -> Bool {

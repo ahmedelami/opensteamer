@@ -472,6 +472,148 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             antiPhaseFailureContext
         )
 
+        // Recognize an explicit stereo preamble before arming the evidence window. A delayed tail
+        // from the preceding anti-phase probe therefore cannot become frame zero. Once armed, keep
+        // every decoded batch: unlike DecodedAudioProbe, this window cannot hide a bad interval by
+        // discarding silence or batches that fail a shape predicate before measurement.
+        let synchronizationPreamble = DeterministicStereoWaveform.synchronizationPreamble()
+        let oracleWaveform = DeterministicStereoWaveform(frameCount: 38_400)
+        XCTAssertGreaterThan(
+            oracleWaveform.peakMagnitude,
+            0.65,
+            "The production proof must exercise music-like high-level PCM."
+        )
+        XCTAssertLessThan(
+            oracleWaveform.peakMagnitude,
+            0.85,
+            "The expected production waveform itself must remain unclipped."
+        )
+        XCTAssertGreaterThan(
+            oracleWaveform.spectralAmplitude(frequency: 8_003, leftChannel: true),
+            0.035,
+            "The source must retain a measurable left-channel pilot above telephone bandwidth."
+        )
+        XCTAssertGreaterThan(
+            oracleWaveform.spectralAmplitude(frequency: 11_003, leftChannel: false),
+            0.035,
+            "The source must retain a measurable right-channel pilot above telephone bandwidth."
+        )
+        // Keep one extra 100 ms source block after the waveform. Native Opus/WebRTC decoding is
+        // delayed relative to the source, so without this guard a fixed-size receive window loses
+        // the waveform's real tail and can only test an interior slice.
+        let trailingGuardFrames = 4_800
+        let unfilteredProbe = UnfilteredDecodedAudioProbe(
+            requiredEvidenceFrames: oracleWaveform.frameCount + trailingGuardFrames,
+            synchronizationPreamble: synchronizationPreamble
+        )
+        let unfilteredRenderer = WebRTCAudioPCMRenderer { buffer in
+            unfilteredProbe.observe(buffer)
+        }
+        remoteAudioTrack.addRendererForTesting(unfilteredRenderer)
+        audioCapturer.reset()
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(
+            unfilteredProbe.beginPostPreambleCapture(),
+            "Residual decoded audio must not be mistaken for the synchronization preamble."
+        )
+        audioCapturer.capture(
+            sampleBuffer: try makeStereoOracleSampleBuffer(
+                waveform: synchronizationPreamble,
+                range: 0..<synchronizationPreamble.frameCount
+            )
+        )
+        await fulfillment(
+            of: [unfilteredProbe.recognizedSynchronizationPreamble],
+            timeout: 5
+        )
+        audioCapturer.reset()
+        XCTAssertTrue(
+            unfilteredProbe.beginPostPreambleCapture(),
+            "The decoded waveform window must not arm before its unique preamble is recognized."
+        )
+        for chunkStart in stride(from: 0, to: oracleWaveform.frameCount, by: 4_800) {
+            let chunkEnd = min(chunkStart + 4_800, oracleWaveform.frameCount)
+            audioCapturer.capture(
+                sampleBuffer: try makeStereoOracleSampleBuffer(
+                    waveform: oracleWaveform,
+                    range: chunkStart..<chunkEnd
+                )
+            )
+        }
+        audioCapturer.capture(
+            sampleBuffer: try makeStereoOracleSampleBuffer(
+                waveform: oracleWaveform,
+                range: 0..<trailingGuardFrames
+            )
+        )
+        await fulfillment(of: [unfilteredProbe.receivedWindow], timeout: 8)
+        remoteAudioTrack.removeRendererForTesting(unfilteredRenderer)
+
+        let decodedWindow = unfilteredProbe.window
+        let genuineWaveformReport = AudioWaveformOracle.evaluate(
+            expected: oracleWaveform,
+            decoded: decodedWindow
+        )
+        if ProcessInfo.processInfo.environment["AUDIOSTREAMER_AUDIO_TEST_DIAGNOSTICS"] == "1" {
+            print(
+                "AUDIOSTREAMER_AUDIO_UNFILTERED \(unfilteredProbe.diagnosticSummary); "
+                    + "\(genuineWaveformReport)"
+            )
+        }
+        XCTAssertTrue(
+            genuineWaveformReport.violations.isEmpty,
+            "The production Opus/WebRTC round trip must preserve one continuous, unfiltered "
+                + "stereo waveform; \(unfilteredProbe.diagnosticSummary); "
+                + "\(genuineWaveformReport)"
+        )
+
+        // These mutations run against the PCM decoded by the genuine transport. They keep the
+        // codec's normal lossiness in the baseline while proving each critical failure mode is
+        // observable by the oracle instead of merely asserting that the happy path passes.
+        let requiredMutationViolations: [String: AudioWaveformViolation] = [
+            "leading edge silence": .dropout,
+            "trailing edge silence": .dropout,
+            "periodic silence": .dropout,
+            "misaligned short dropout": .dropout,
+            "repeated decoded blocks": .temporalDiscontinuity,
+            "dropped decoded samples": .temporalDiscontinuity,
+            "misaligned corruption burst": .temporalDiscontinuity,
+            "moderate broadband distortion": .fidelity,
+            "telephone-band low-pass": .fidelity,
+            "linear gain distortion": .gainDistortion,
+            "clipping": .clipping,
+            "dual-mono channel corruption": .channelCorruption
+        ]
+        let mutations = decodedWindow.criticalMutationCases(
+            alignmentOffset: genuineWaveformReport.alignmentOffsetFrames,
+            expectedFrameCount: oracleWaveform.frameCount
+        )
+        XCTAssertEqual(
+            mutations.count,
+            requiredMutationViolations.count,
+            "Removing a negative control must fail the regression suite."
+        )
+        XCTAssertEqual(
+            Set(mutations.map(\.name)),
+            Set(requiredMutationViolations.keys),
+            "Mutation names are an independent contract owned by this test."
+        )
+        for mutation in mutations {
+            let requiredViolation = try XCTUnwrap(requiredMutationViolations[mutation.name])
+            let report = AudioWaveformOracle.evaluate(
+                expected: oracleWaveform,
+                decoded: mutation.window
+            )
+            if ProcessInfo.processInfo.environment["AUDIOSTREAMER_AUDIO_TEST_DIAGNOSTICS"] == "1" {
+                print("AUDIOSTREAMER_AUDIO_MUTATION \(mutation.name): \(report)")
+            }
+            XCTAssertTrue(
+                report.violations.contains(requiredViolation),
+                "The oracle accepted \(mutation.name), or rejected it for the wrong reason: "
+                    + "\(report)"
+            )
+        }
+
         var audioTargetBitrate: Double?
         for _ in 0..<100 where audioTargetBitrate == nil {
             audioTargetBitrate = await host.statisticsSnapshot().outboundAudio?.targetBitrate
@@ -486,7 +628,7 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             "Native outbound stats must reflect the product's 192 kbps Opus policy."
         )
 
-        // Source-clock delivery is synchronous and queue-free: two finite source callbacks produce
+        // Source-clock delivery is synchronous and queue-free: the finite probe callbacks produce
         // only source-backed frames, with no application timer continuing after the input ends.
         let drainedAudioDiagnostics = audioCapturer.diagnosticsForTesting()
         XCTAssertEqual(
@@ -502,17 +644,18 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         )
         XCTAssertGreaterThanOrEqual(
             drainedAudioDiagnostics.customDeviceDeliveredFrames,
-            9_600,
-            "Both 100 ms stereo probes must reach WebRTC; \(drainedAudioDiagnostics)"
+            57_600,
+            "All probes, the synchronization preamble, and the tail guard must reach WebRTC; "
+                + "\(drainedAudioDiagnostics)"
         )
-        XCTAssertGreaterThanOrEqual(drainedAudioDiagnostics.admInputCallbackCount, 2)
+        XCTAssertGreaterThanOrEqual(drainedAudioDiagnostics.admInputCallbackCount, 12)
         XCTAssertEqual(drainedAudioDiagnostics.customDeviceRejectedFrames, 0)
         XCTAssertEqual(drainedAudioDiagnostics.customDeviceNativeDeliveryErrors, 0)
-        XCTAssertEqual(drainedAudioDiagnostics.customDeviceRenderInvocations, 2)
-        XCTAssertEqual(drainedAudioDiagnostics.customDeviceRenderCopiedFrames, 9_600)
+        XCTAssertEqual(drainedAudioDiagnostics.customDeviceRenderInvocations, 12)
+        XCTAssertEqual(drainedAudioDiagnostics.customDeviceRenderCopiedFrames, 57_600)
         XCTAssertEqual(
             drainedAudioDiagnostics.customDeviceRenderCopiedSampleElements,
-            19_200
+            115_200
         )
         XCTAssertEqual(drainedAudioDiagnostics.customDeviceRenderNotInvoked, 0)
         XCTAssertEqual(drainedAudioDiagnostics.customDeviceRenderMultipleInvocations, 0)
