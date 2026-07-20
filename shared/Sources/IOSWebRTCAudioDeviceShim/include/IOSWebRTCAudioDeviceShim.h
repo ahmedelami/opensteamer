@@ -85,12 +85,34 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
 @end
 
 #if DEBUG
+typedef struct ASIOSStereoPlayoutPublicationSnapshot {
+    uint64_t callbackCount;
+    uint64_t frameCount;
+    uint64_t failureCount;
+    uint32_t lastFrameCount;
+    int32_t lastStatus;
+} ASIOSStereoPlayoutPublicationSnapshot;
+
+/// Invokes the production callback-publication primitive without touching audio hardware.
+@interface ASIOSStereoPlayoutPublicationTestHarness : NSObject
+
+@property(nonatomic, readonly) ASIOSStereoPlayoutPublicationSnapshot prePublicationSnapshot;
+@property(nonatomic, readonly) ASIOSStereoPlayoutPublicationSnapshot snapshot;
+
+- (void)publishCallbackWithFrameCount:(uint32_t)frameCount
+                                status:(int32_t)status;
+- (void)markRecoveryBoundary;
+
+@end
+
 /// Drives the real queued recovery boundary without starting playout or touching audio hardware.
 @interface ASIOSStereoPlayoutRecoveryTestHarness : NSObject
 
 @property(nonatomic, readonly) ASIOSStereoPlayoutDiagnostics diagnostics;
 @property(nonatomic, readonly) NSUInteger queuedOperationCount;
 
+- (void)publishCallbackWithFrameCount:(uint32_t)frameCount
+                                status:(int32_t)status;
 - (void)queueRecoveryWithAuthorization:
     (ASIOSStereoPlayoutRecoveryAuthorization *)authorization
     NS_SWIFT_NAME(queueRecovery(authorization:));

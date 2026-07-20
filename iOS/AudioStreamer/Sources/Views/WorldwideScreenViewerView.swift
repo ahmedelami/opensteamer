@@ -1,9 +1,10 @@
 import SwiftUI
 
 struct WorldwideScreenViewerView: View {
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var viewModel: WorldwideSessionViewModel
+    let lease: WorldwideScreenPresentationLease
+    let dismissPresentation: (WorldwideScreenPresentationLease) -> Void
     @State private var remoteVideoSize = CGSize.zero
     @State private var allowsRemoteInputPresentation = true
     @State private var primaryDragContext: PrimaryDragContext?
@@ -121,7 +122,7 @@ struct WorldwideScreenViewerView: View {
                 rejectPresentationAndDismiss()
                 return
             }
-            let shown = await viewModel.setScreenVisible(true)
+            let shown = await viewModel.setScreenVisible(true, for: lease)
             guard shown, Self.allowsScreenPresentation(in: scenePhase) else {
                 rejectPresentationAndDismiss()
                 return
@@ -130,7 +131,7 @@ struct WorldwideScreenViewerView: View {
         .onDisappear {
             primaryDragContext = nil
             allowsRemoteInputPresentation = false
-            viewModel.beginPassiveScreenTeardown()
+            _ = viewModel.beginPassiveScreenTeardown(for: lease)
         }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase != .active else { return }
@@ -210,16 +211,18 @@ struct WorldwideScreenViewerView: View {
 
     private func hideAndDismiss() {
         allowsRemoteInputPresentation = false
-        viewModel.beginPassiveScreenTeardown {
-            await viewModel.setScreenVisible(false)
-            dismiss()
+        let claimed = viewModel.beginPassiveScreenTeardown(for: lease) {
+            dismissPresentation(lease)
+        }
+        if !claimed {
+            dismissPresentation(lease)
         }
     }
 
     private func rejectPresentationAndDismiss() {
         allowsRemoteInputPresentation = false
-        viewModel.beginPassiveScreenTeardown()
-        dismiss()
+        _ = viewModel.beginPassiveScreenTeardown(for: lease)
+        dismissPresentation(lease)
     }
 
     private func forwardTap(_ location: CGPoint, containerSize: CGSize) {
@@ -257,7 +260,7 @@ struct WorldwideScreenViewerView: View {
     }
 
     private var effectiveRemoteInputAvailable: Bool {
-        viewModel.isRemoteInputAvailable
+        viewModel.remoteInputIsAvailable(for: lease)
             && allowsRemoteInputPresentation
             && scenePhase == .active
     }
@@ -266,7 +269,7 @@ struct WorldwideScreenViewerView: View {
         Self.allowsScreenRendering(
             in: scenePhase,
             allowsPresentation: allowsRemoteInputPresentation,
-            isScreenVisible: viewModel.isScreenVisible
+            isScreenVisible: viewModel.screenPresentationIsVisible(lease)
         )
     }
 

@@ -646,8 +646,7 @@ struct BrowserView: View {
     }
 
     /// Selects exactly one Connect-from-Anywhere surface. Status and invitation metadata are
-    /// derived inside the same reduction so an idle durable pair cannot inherit rows from an
-    /// earlier media session.
+    /// reduced with the same precedence and explicit fresh-attempt retirement boundary.
     static func worldwidePresentation(
         _ input: WorldwidePresentationInput
     ) -> WorldwidePresentation {
@@ -696,12 +695,12 @@ struct BrowserView: View {
         if let pairedMac = input.pairedMac {
             return WorldwidePresentation(
                 surface: .pairedIdle(pairedMac),
-                // A coordinator error is the outcome of the user's latest preparation attempt:
-                // keep it actionable beside the retained pair. Media/audio errors belong to the
-                // previous session and remain structurally suppressed here.
+                // Preparation failures remain first because they belong to the newest explicit
+                // connection attempt. Otherwise retain the current media session's terminal outcome
+                // beside the durable pair until a fresh attempt explicitly retires it.
                 status: input.preparationError.map(
                     WorldwidePresentation.Status.preparationError
-                ),
+                ) ?? input.mediaError.map(WorldwidePresentation.Status.mediaError),
                 invitationExpiresAt: nil
             )
         }

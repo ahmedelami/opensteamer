@@ -1421,12 +1421,12 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         _ = await task.result
     }
 
-    func testPairedIdleSuppressesTerminalErrorFromPreviousMediaSession() {
+    func testPairedIdlePreservesCurrentTerminalMediaError() {
         let pairID = UUID()
         let previousDisconnect =
             "The Mac disconnected. Reconnect to the saved paired Mac when it is available."
 
-        XCTAssertNil(
+        XCTAssertEqual(
             BrowserView.worldwideStatusPresentation(
                 hasActiveSession: false,
                 isPreparingFreshSession: false,
@@ -1435,7 +1435,8 @@ final class ViewerPairingPersistenceTests: XCTestCase {
                 preparationError: nil,
                 mediaError: previousDisconnect
             ),
-            "A durable paired-idle screen must not render history from a terminated media session"
+            .mediaError(previousDisconnect),
+            "A durable pair must keep the current terminal media outcome until a fresh attempt."
         )
         XCTAssertEqual(
             BrowserView.pairedMacPresentation(
@@ -1520,19 +1521,20 @@ final class ViewerPairingPersistenceTests: XCTestCase {
                 recovery: nil
             )
         )
-        XCTAssertNil(
+        XCTAssertEqual(
             BrowserView.worldwideStatusPresentation(
                 hasActiveSession: false,
                 isPreparingFreshSession: false,
                 pairedMacID: currentPairID,
                 savedPairState: .unavailableAfterDeadline(oldContext),
                 preparationError: nil,
-                mediaError: "Old media failure"
-            )
+                mediaError: "Current media failure"
+            ),
+            .mediaError("Current media failure")
         )
     }
 
-    func testMediaErrorBelongsOnlyToCurrentMediaOrUnpairedPresentation() {
+    func testMediaErrorBelongsToCurrentMediaUnpairedOrPairedIdlePresentation() {
         XCTAssertEqual(
             BrowserView.worldwideStatusPresentation(
                 hasActiveSession: true,
@@ -1554,6 +1556,17 @@ final class ViewerPairingPersistenceTests: XCTestCase {
                 mediaError: "Unpaired media failed"
             ),
             .mediaError("Unpaired media failed")
+        )
+        XCTAssertEqual(
+            BrowserView.worldwideStatusPresentation(
+                hasActiveSession: false,
+                isPreparingFreshSession: false,
+                pairedMacID: UUID(),
+                savedPairState: .idle,
+                preparationError: nil,
+                mediaError: "Paired media failed"
+            ),
+            .mediaError("Paired media failed")
         )
         XCTAssertNil(
             BrowserView.worldwideStatusPresentation(

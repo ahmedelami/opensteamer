@@ -225,13 +225,13 @@ final class WorldwidePresentationTests: XCTestCase {
         XCTAssertEqual(presentation.accessibilityValue, "savedPairUnavailable")
     }
 
-    func testPairedIdleKeepsCurrentPreparationFailureButSuppressesHistoricalRows() {
+    func testPairedIdleUsesPreparationFailureBeforeCurrentMediaFailure() {
         let pair = pairedMac()
         let presentation = BrowserView.worldwidePresentation(
             input(
                 pairedMac: pair,
                 preparationError: "Current preparation error",
-                mediaError: "The Mac disconnected.",
+                mediaError: "Current terminal media error",
                 audioError: "Old audio error",
                 invitationExpiresAt: Date()
             )
@@ -260,8 +260,65 @@ final class WorldwidePresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(presentation.surface, .pairedIdle(pair))
-        XCTAssertNil(presentation.status)
+        XCTAssertEqual(presentation.status, .mediaError("Old media error"))
         XCTAssertEqual(presentation.primaryActionTitle, "Connect to Paired Mac")
+        XCTAssertEqual(presentation.accessibilityValue, "pairedIdle")
+    }
+
+    func testOrdinaryPairedIdleFallsBackToCurrentMediaError() {
+        let pair = pairedMac()
+        let presentation = BrowserView.worldwidePresentation(
+            input(
+                pairedMac: pair,
+                mediaError: "The secure media connection closed."
+            )
+        )
+
+        XCTAssertEqual(presentation.surface, .pairedIdle(pair))
+        XCTAssertEqual(
+            presentation.status,
+            .mediaError("The secure media connection closed.")
+        )
+        XCTAssertEqual(presentation.accessibilityValue, "pairedIdle")
+    }
+
+    func testActualSessionFailureSurvivesPassiveLifecycleUntilFreshAttempt() {
+        let viewModel = WorldwideSessionViewModel()
+        let pair = pairedMac()
+        let terminalError = "The secure media connection closed."
+
+        viewModel.debugFailSessionForTests(terminalError)
+        XCTAssertFalse(viewModel.hasActiveSession)
+        XCTAssertEqual(viewModel.lastError, terminalError)
+
+        func currentPresentation() -> BrowserView.WorldwidePresentation {
+            BrowserView.worldwidePresentation(
+                input(
+                    hasActiveSession: viewModel.hasActiveSession,
+                    pairedMac: pair,
+                    mediaError: viewModel.lastError
+                )
+            )
+        }
+
+        var presentation = currentPresentation()
+        XCTAssertEqual(presentation.surface, .pairedIdle(pair))
+        XCTAssertEqual(presentation.status, .mediaError(terminalError))
+        XCTAssertEqual(presentation.accessibilityValue, "pairedIdle")
+
+        viewModel.handleAppBecameInactive()
+        viewModel.handleAppEnteredBackground()
+        viewModel.handleAppBecameActive()
+        presentation = currentPresentation()
+        XCTAssertEqual(presentation.status, .mediaError(terminalError))
+        XCTAssertEqual(presentation.accessibilityValue, "pairedIdle")
+
+        viewModel.beginFreshConnectionAttempt()
+        presentation = currentPresentation()
+        XCTAssertNil(viewModel.lastError)
+        XCTAssertEqual(presentation.surface, .pairedIdle(pair))
+        XCTAssertNil(presentation.status)
+        XCTAssertEqual(presentation.accessibilityValue, "pairedIdle")
     }
 
     func testRecoverablePairUsesFinishActionFromSamePresentation() {

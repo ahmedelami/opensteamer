@@ -68,10 +68,57 @@ public final class WebRTCIOSPlayoutRecoveryAuthorization: @unchecked Sendable {
 }
 
 #if DEBUG
+public struct WebRTCIOSPlayoutPublicationTestSnapshot: Equatable, Sendable {
+    public let callbackCount: UInt64
+    public let frameCount: UInt64
+    public let failureCount: UInt64
+    public let lastFrameCount: UInt32
+    public let lastStatus: Int32
+}
+
+public final class WebRTCIOSPlayoutPublicationTestHarness: @unchecked Sendable {
+    private let native = ASIOSStereoPlayoutPublicationTestHarness()
+
+    public init() {}
+
+    public var prePublicationSnapshot: WebRTCIOSPlayoutPublicationTestSnapshot {
+        makeSnapshot(native.prePublicationSnapshot)
+    }
+
+    public var snapshot: WebRTCIOSPlayoutPublicationTestSnapshot {
+        makeSnapshot(native.snapshot)
+    }
+
+    public func publishCallback(frameCount: UInt32, status: Int32) {
+        native.publishCallback(withFrameCount: frameCount, status: status)
+    }
+
+    public func markRecoveryBoundary() {
+        native.markRecoveryBoundary()
+    }
+
+    private func makeSnapshot(
+        _ value: ASIOSStereoPlayoutPublicationSnapshot
+    ) -> WebRTCIOSPlayoutPublicationTestSnapshot {
+        WebRTCIOSPlayoutPublicationTestSnapshot(
+            callbackCount: value.callbackCount,
+            frameCount: value.frameCount,
+            failureCount: value.failureCount,
+            lastFrameCount: value.lastFrameCount,
+            lastStatus: value.lastStatus
+        )
+    }
+}
+
 public struct WebRTCIOSPlayoutRecoveryTestDiagnostics: Equatable, Sendable {
     public let requestCount: UInt64
     public let authorizationRejectionCount: UInt64
     public let rebuildCount: UInt64
+    public let playoutCallbackCount: UInt64
+    public let playoutFrameCount: UInt64
+    public let playoutFailureCount: UInt64
+    public let lastPlayoutFrameCount: UInt32
+    public let lastPlayoutStatus: Int32
     public let sessionActive: Bool
     public let remoteIOCreated: Bool
 }
@@ -89,9 +136,18 @@ public final class WebRTCIOSPlayoutRecoveryTestHarness: @unchecked Sendable {
             requestCount: value.recoveryRequestCount,
             authorizationRejectionCount: value.recoveryAuthorizationRejectionCount,
             rebuildCount: value.recoveryRebuildCount,
+            playoutCallbackCount: value.playoutCallbackCount,
+            playoutFrameCount: value.playoutFrameCount,
+            playoutFailureCount: value.playoutFailureCount,
+            lastPlayoutFrameCount: value.lastPlayoutFrameCount,
+            lastPlayoutStatus: value.lastPlayoutStatus,
             sessionActive: value.sessionActive,
             remoteIOCreated: value.remoteIOCreated
         )
+    }
+
+    public func publishCallback(frameCount: UInt32, status: Int32) {
+        native.publishCallback(withFrameCount: frameCount, status: status)
     }
 
     public func queueRecovery(

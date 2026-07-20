@@ -6,6 +6,507 @@ import XCTest
 
 final class WorldwideRemoteInputLifecycleTests: XCTestCase {
     @MainActor
+    func testReplacementSessionStaleTeardownAndRawRequestIDCannotTouchCurrentLease() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peerA = try makeScreenPeer()
+        let peerB = try makeScreenPeer()
+        let generationA = UUID()
+        let generationB = UUID()
+        let reusedRequestID: UInt64 = 88
+        let fixtureA = viewModel.debugInstallActiveScreenPresentationForTests(
+            peer: peerA,
+            generation: generationA,
+            screenRequestID: reusedRequestID
+        )
+        let transport = ScreenVisibilityTransportProbe()
+        let stalePostSendGate = NonCooperativeAsyncGate()
+        let stalePostSendReached = MainActorCountGate()
+        let staleCompletion = MainActorCountGate()
+        var staleOperationID: UUID?
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+        viewModel.debugInstallScreenVisibilityPostSendHook { event in
+            guard event.request.lease == fixtureA.lease else { return }
+            staleOperationID = event.request.operationID
+            XCTAssertEqual(event.requestID, reusedRequestID)
+            stalePostSendReached.increment()
+            await stalePostSendGate.wait()
+        }
+
+        let staleClaimed = viewModel.beginPassiveScreenTeardown(for: fixtureA.lease) {
+            staleCompletion.increment()
+        }
+        XCTAssertTrue(staleClaimed)
+        guard staleClaimed else {
+            viewModel.disconnect()
+            await peerA.close()
+            await peerB.close()
+            return
+        }
+
+        await transport.waitForRequestCount(1)
+        XCTAssertEqual(transport.requests[0].lease, fixtureA.lease)
+        XCTAssertFalse(transport.requests[0].isVisible)
+        await transport.resolveRequest(at: 0, with: .success(reusedRequestID))
+        await stalePostSendReached.waitForCount(1)
+        guard let staleOperationID else {
+            XCTFail("The stale operation did not reach the post-send seam.")
+            await stalePostSendGate.open()
+            viewModel.disconnect()
+            await staleCompletion.waitForCount(1)
+            await peerA.close()
+            await peerB.close()
+            return
+        }
+
+        viewModel.debugInstallScreenSessionForTests(
+            peer: peerB,
+            generation: generationB,
+            visible: false
+        )
+        let leaseB: WorldwideScreenPresentationLease
+        do {
+            leaseB = try XCTUnwrap(viewModel.issueScreenPresentationLease())
+        } catch {
+            await stalePostSendGate.open()
+            viewModel.disconnect()
+            await staleCompletion.waitForCount(1)
+            await peerA.close()
+            await peerB.close()
+            return
+        }
+        let showB = Task { @MainActor in
+            await viewModel.setScreenVisible(true, for: leaseB)
+        }
+
+        await transport.waitForRequestCount(2)
+        XCTAssertEqual(transport.requests[1].lease, leaseB)
+        XCTAssertTrue(transport.requests[1].isVisible)
+        let keyB = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: generationB,
+            requestID: reusedRequestID
+        )
+        await transport.resolveRequest(at: 1, with: .success(reusedRequestID))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(keyB)
+        XCTAssertEqual(viewModel.debugScreenPresentationState.pendingRequestKey, keyB)
+
+        await stalePostSendGate.open()
+        await viewModel.debugWaitForScreenVisibilityPostSendProcessing(
+            operationID: staleOperationID
+        )
+
+        let afterStalePostSend = viewModel.debugScreenPresentationState
+        let staleCouldNotReplaceB = afterStalePostSend.pendingRequestKey == keyB
+            && afterStalePostSend.displacedPendingRequestCount == 0
+            && staleCompletion.count == 1
+        XCTAssertEqual(afterStalePostSend.pendingRequestKey, keyB)
+        XCTAssertEqual(afterStalePostSend.displacedPendingRequestCount, 0)
+        XCTAssertEqual(staleCompletion.count, 1)
+        guard staleCouldNotReplaceB else {
+            viewModel.disconnect()
+            _ = await showB.value
+            await staleCompletion.waitForCount(1)
+            await peerA.close()
+            await peerB.close()
+            return
+        }
+
+        _ = await viewModel.debugDeliverControlAcknowledgement(
+            key: WorldwideScreenVisibilityRequestKey(
+                sessionGeneration: generationA,
+                requestID: reusedRequestID
+            ),
+            state: .inactive,
+            sourcePeer: peerA
+        )
+        XCTAssertEqual(viewModel.debugScreenPresentationState.pendingRequestKey, keyB)
+        XCTAssertFalse(viewModel.screenPresentationIsVisible(leaseB))
+        XCTAssertFalse(viewModel.remoteInputIsAvailable(for: leaseB))
+        XCTAssertTrue(viewModel.debugScreenPeerIs(peerB))
+
+        let capabilityB = WebRTCInputCapability(
+            inputSessionID: UUID(),
+            screenRequestID: reusedRequestID,
+            supportsPrimaryDrag: true
+        )
+        let authorizationB = await viewModel.debugDeliverControlAcknowledgement(
+            key: keyB,
+            state: .active,
+            inputCapability: capabilityB,
+            sourcePeer: peerB
+        )
+        let afterBAcknowledgement = viewModel.debugScreenPresentationState
+        let bAcknowledgedImmediately = authorizationB?.isValid == true
+            && afterBAcknowledgement.pendingRequestKey == nil
+            && afterBAcknowledgement.currentLease == leaseB
+            && afterBAcknowledgement.activeLease == leaseB
+            && afterBAcknowledgement.isScreenVisible
+            && afterBAcknowledgement.inputAvailable
+        XCTAssertTrue(authorizationB?.isValid == true)
+        XCTAssertNil(afterBAcknowledgement.pendingRequestKey)
+        XCTAssertEqual(afterBAcknowledgement.currentLease, leaseB)
+        XCTAssertEqual(afterBAcknowledgement.activeLease, leaseB)
+        XCTAssertTrue(afterBAcknowledgement.isScreenVisible)
+        XCTAssertTrue(afterBAcknowledgement.inputAvailable)
+        guard bAcknowledgedImmediately else {
+            viewModel.disconnect()
+            _ = await showB.value
+            await peerA.close()
+            await peerB.close()
+            return
+        }
+
+        let didShowB = await showB.value
+        XCTAssertTrue(didShowB)
+        XCTAssertTrue(viewModel.screenPresentationIsVisible(leaseB))
+        XCTAssertTrue(viewModel.remoteInputIsAvailable(for: leaseB))
+        XCTAssertEqual(staleCompletion.count, 1)
+
+        viewModel.disconnect()
+        await peerA.close()
+        await peerB.close()
+    }
+
+    @MainActor
+    func testStaleHideFailureCannotCloseReplacementSession() async throws {
+        do {
+            let viewModel = WorldwideSessionViewModel()
+            let peerA = try makeScreenPeer()
+            let peerB = try makeScreenPeer()
+            let fixtureA = viewModel.debugInstallActiveScreenPresentationForTests(peer: peerA)
+            let fixtureB = viewModel.debugInstallActiveScreenPresentationForTests(peer: peerB)
+            let transport = ScreenVisibilityTransportProbe()
+            let completion = MainActorCountGate()
+            viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+
+            let staleClaim = viewModel.beginPassiveScreenTeardown(for: fixtureA.lease) {
+                completion.increment()
+            }
+            if staleClaim {
+                await transport.waitForRequestCount(1)
+                await transport.resolveRequest(at: 0, with: .failure(.sendFailed))
+                await completion.waitForCount(1)
+            }
+
+            XCTAssertFalse(staleClaim)
+            XCTAssertTrue(viewModel.debugScreenPeerIs(peerB))
+            XCTAssertTrue(viewModel.debugScreenPresentationState.hasActiveSession)
+            XCTAssertEqual(viewModel.debugScreenPresentationState.currentLease, fixtureB.lease)
+            XCTAssertEqual(viewModel.debugScreenPresentationState.activeLease, fixtureB.lease)
+            XCTAssertTrue(fixtureB.authorization.isValid)
+            XCTAssertTrue(viewModel.remoteInputIsAvailable(for: fixtureB.lease))
+
+            viewModel.disconnect()
+            await peerA.close()
+            await peerB.close()
+        }
+
+        do {
+            let viewModel = WorldwideSessionViewModel()
+            let peerA = try makeScreenPeer()
+            let peerB = try makeScreenPeer()
+            let fixtureA = viewModel.debugInstallActiveScreenPresentationForTests(peer: peerA)
+            let transport = ScreenVisibilityTransportProbe()
+            let completion = MainActorCountGate()
+            viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+
+            let staleClaim = viewModel.beginPassiveScreenTeardown(for: fixtureA.lease) {
+                completion.increment()
+            }
+            XCTAssertTrue(staleClaim)
+            guard staleClaim else {
+                viewModel.disconnect()
+                await peerA.close()
+                await peerB.close()
+                return
+            }
+
+            await transport.waitForRequestCount(1)
+            XCTAssertEqual(transport.requests[0].lease, fixtureA.lease)
+            XCTAssertFalse(transport.requests[0].isVisible)
+
+            let fixtureB = viewModel.debugInstallActiveScreenPresentationForTests(peer: peerB)
+            await transport.resolveRequest(at: 0, with: .failure(.sendFailed))
+            await completion.waitForCount(1)
+
+            XCTAssertEqual(completion.count, 1)
+            XCTAssertTrue(viewModel.debugScreenPeerIs(peerB))
+            XCTAssertTrue(viewModel.debugScreenPresentationState.hasActiveSession)
+            XCTAssertEqual(viewModel.debugScreenPresentationState.currentLease, fixtureB.lease)
+            XCTAssertEqual(viewModel.debugScreenPresentationState.activeLease, fixtureB.lease)
+            XCTAssertTrue(fixtureB.authorization.isValid)
+            XCTAssertTrue(viewModel.remoteInputIsAvailable(for: fixtureB.lease))
+
+            viewModel.disconnect()
+            await peerA.close()
+            await peerB.close()
+        }
+    }
+
+    @MainActor
+    func testSameSessionReplacementHidesABeforeShowingBAndWaitsForBActive() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let generation = UUID()
+        let fixtureA = viewModel.debugInstallActiveScreenPresentationForTests(
+            peer: peer,
+            generation: generation,
+            screenRequestID: 401
+        )
+        let transport = ScreenVisibilityTransportProbe()
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+
+        let leaseB = try XCTUnwrap(viewModel.issueScreenPresentationLease())
+        let immediatelyAfterIssue = viewModel.debugScreenPresentationState
+        XCTAssertEqual(immediatelyAfterIssue.currentLease, leaseB)
+        XCTAssertFalse(immediatelyAfterIssue.isScreenVisible)
+        XCTAssertFalse(immediatelyAfterIssue.inputAvailable)
+        XCTAssertFalse(fixtureA.authorization.isValid)
+
+        guard !immediatelyAfterIssue.isScreenVisible,
+              !immediatelyAfterIssue.inputAvailable,
+              !fixtureA.authorization.isValid else {
+            viewModel.disconnect()
+            await peer.close()
+            return
+        }
+
+        let showB = Task { @MainActor in
+            await viewModel.setScreenVisible(true, for: leaseB)
+        }
+
+        await transport.waitForRequestCount(1)
+        XCTAssertEqual(transport.requests[0].lease, fixtureA.lease)
+        XCTAssertFalse(transport.requests[0].isVisible)
+        let hideAKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: generation,
+            requestID: 501
+        )
+        await transport.resolveRequest(at: 0, with: .success(501))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(hideAKey)
+        await viewModel.debugDeliverControlAcknowledgement(
+            key: hideAKey,
+            state: .inactive,
+            sourcePeer: peer
+        )
+
+        await transport.waitForRequestCount(2)
+        XCTAssertEqual(transport.requests[1].lease, leaseB)
+        XCTAssertTrue(transport.requests[1].isVisible)
+        XCTAssertNotEqual(transport.requests[0].operationID, transport.requests[1].operationID)
+        let showBKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: generation,
+            requestID: 502
+        )
+        await transport.resolveRequest(at: 1, with: .success(502))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(showBKey)
+
+        let awaitingB = viewModel.debugScreenPresentationState
+        XCTAssertEqual(awaitingB.pendingRequestKey, showBKey)
+        XCTAssertFalse(awaitingB.isScreenVisible)
+        XCTAssertFalse(awaitingB.inputAvailable)
+
+        _ = await viewModel.debugDeliverControlAcknowledgement(
+            key: showBKey,
+            state: .active,
+            inputCapability: WebRTCInputCapability(
+                inputSessionID: UUID(),
+                screenRequestID: 502,
+                supportsPrimaryDrag: true
+            ),
+            sourcePeer: peer
+        )
+        let didShowReplacement = await showB.value
+        XCTAssertTrue(didShowReplacement)
+        XCTAssertTrue(viewModel.screenPresentationIsVisible(leaseB))
+        XCTAssertTrue(viewModel.remoteInputIsAvailable(for: leaseB))
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    @MainActor
+    func testDuplicateHideAndDisappearClaimSendsAndCompletesOnce() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        let transport = ScreenVisibilityTransportProbe()
+        let completion = MainActorCountGate()
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+
+        let firstClaim = viewModel.beginPassiveScreenTeardown(for: fixture.lease) {
+            completion.increment()
+        }
+        let duplicateClaim = viewModel.beginPassiveScreenTeardown(for: fixture.lease) {
+            completion.increment()
+        }
+
+        XCTAssertTrue(firstClaim)
+        XCTAssertFalse(duplicateClaim)
+        guard firstClaim, !duplicateClaim else {
+            viewModel.disconnect()
+            await peer.close()
+            return
+        }
+
+        await transport.waitForRequestCount(1)
+        XCTAssertEqual(transport.requests.count, 1)
+        XCTAssertFalse(transport.requests[0].isVisible)
+        let hideKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: fixture.lease.sessionGeneration,
+            requestID: 601
+        )
+        await transport.resolveRequest(at: 0, with: .success(601))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(hideKey)
+        await viewModel.debugDeliverControlAcknowledgement(
+            key: hideKey,
+            state: .inactive,
+            sourcePeer: peer
+        )
+        await completion.waitForCount(1)
+        XCTAssertEqual(completion.count, 1)
+        XCTAssertEqual(transport.requests.count, 1)
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    @MainActor
+    func testCurrentOwnerRevokesRenderAndInputBeforeAsyncHide() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        let transport = ScreenVisibilityTransportProbe()
+        let completion = MainActorCountGate()
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+
+        XCTAssertTrue(
+            viewModel.beginPassiveScreenTeardown(for: fixture.lease) {
+                completion.increment()
+            }
+        )
+
+        XCTAssertFalse(fixture.authorization.isValid)
+        XCTAssertFalse(viewModel.screenPresentationIsVisible(fixture.lease))
+        XCTAssertFalse(viewModel.remoteInputIsAvailable(for: fixture.lease))
+        XCTAssertFalse(viewModel.debugScreenPresentationState.isScreenVisible)
+        XCTAssertFalse(viewModel.debugScreenPresentationState.inputAvailable)
+
+        await transport.waitForRequestCount(1)
+        let hideKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: fixture.lease.sessionGeneration,
+            requestID: 701
+        )
+        await transport.resolveRequest(at: 0, with: .success(701))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(hideKey)
+        await viewModel.debugDeliverControlAcknowledgement(
+            key: hideKey,
+            state: .inactive,
+            sourcePeer: peer
+        )
+        await completion.waitForCount(1)
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    @MainActor
+    func testCurrentOwnerHideSendFailureClosesExactOwner() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        let transport = ScreenVisibilityTransportProbe()
+        let completion = MainActorCountGate()
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+
+        XCTAssertTrue(
+            viewModel.beginPassiveScreenTeardown(for: fixture.lease) {
+                completion.increment()
+            }
+        )
+        XCTAssertFalse(viewModel.screenPresentationIsVisible(fixture.lease))
+        XCTAssertFalse(viewModel.remoteInputIsAvailable(for: fixture.lease))
+        await transport.waitForRequestCount(1)
+        await transport.resolveRequest(at: 0, with: .failure(.sendFailed))
+        await completion.waitForCount(1)
+
+        assertScreenOwnerClosed(viewModel, formerPeer: peer)
+        XCTAssertFalse(fixture.authorization.isValid)
+        await peer.close()
+    }
+
+    @MainActor
+    func testCurrentOwnerHideTimeoutClosesExactOwner() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        let transport = ScreenVisibilityTransportProbe()
+        let completion = MainActorCountGate()
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+
+        XCTAssertTrue(
+            viewModel.beginPassiveScreenTeardown(for: fixture.lease) {
+                completion.increment()
+            }
+        )
+        XCTAssertFalse(viewModel.screenPresentationIsVisible(fixture.lease))
+        XCTAssertFalse(viewModel.remoteInputIsAvailable(for: fixture.lease))
+        await transport.waitForRequestCount(1)
+        await transport.resolveRequest(at: 0, with: .success(801))
+        let key = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: fixture.lease.sessionGeneration,
+            requestID: 801
+        )
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(key)
+        XCTAssertEqual(viewModel.debugScreenPresentationState.pendingRequestKey, key)
+        viewModel.debugTriggerScreenVisibilityTimeout(key: key)
+        await completion.waitForCount(1)
+
+        assertScreenOwnerClosed(viewModel, formerPeer: peer)
+        XCTAssertFalse(fixture.authorization.isValid)
+        await peer.close()
+    }
+
+    @MainActor
+    func testCurrentOwnerActiveForHideClosesExactOwner() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        let transport = ScreenVisibilityTransportProbe()
+        let completion = MainActorCountGate()
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+
+        XCTAssertTrue(
+            viewModel.beginPassiveScreenTeardown(for: fixture.lease) {
+                completion.increment()
+            }
+        )
+        XCTAssertFalse(viewModel.screenPresentationIsVisible(fixture.lease))
+        XCTAssertFalse(viewModel.remoteInputIsAvailable(for: fixture.lease))
+        await transport.waitForRequestCount(1)
+        let hideKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: fixture.lease.sessionGeneration,
+            requestID: 901
+        )
+        await transport.resolveRequest(at: 0, with: .success(901))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(hideKey)
+        let unexpectedAuthorization = await viewModel.debugDeliverControlAcknowledgement(
+            key: hideKey,
+            state: .active,
+            inputCapability: WebRTCInputCapability(
+                inputSessionID: UUID(),
+                screenRequestID: 901
+            ),
+            sourcePeer: peer
+        )
+        await completion.waitForCount(1)
+
+        assertScreenOwnerClosed(viewModel, formerPeer: peer)
+        XCTAssertFalse(unexpectedAuthorization?.isValid ?? true)
+        XCTAssertFalse(fixture.authorization.isValid)
+        await peer.close()
+    }
+
+    @MainActor
     func testPassiveTeardownRevokesQueuedReturnBeforeAsyncHideAndStaysRevokedOnFailure() async {
         let viewModel = WorldwideSessionViewModel()
         let oldAuthorization = viewModel.debugInstallQueuedReturnForPassiveTeardown()
@@ -13,6 +514,11 @@ final class WorldwideRemoteInputLifecycleTests: XCTestCase {
         let hideGate = AsyncGate()
         let hideFinished = expectation(description: "simulated failed Hide finished")
         let probe = LifecycleProbe()
+        let authenticatedNoOpSender: @MainActor (Bool) async throws -> UInt64 = { _ in
+            XCTFail("The late-acknowledgement cache test must not send a visibility request.")
+            return 74
+        }
+        viewModel.debugInstallScreenVisibilityRequestSender(authenticatedNoOpSender)
 
         XCTAssertTrue(oldAuthorization.isValid)
         XCTAssertTrue(before.inputAvailable)
@@ -76,6 +582,9 @@ final class WorldwideRemoteInputLifecycleTests: XCTestCase {
         XCTAssertFalse(afterFailure.acceptsActiveScreenAcknowledgement)
         XCTAssertTrue(afterFailure.remoteHideRequired)
         XCTAssertFalse(afterFailure.hideRequestWouldBeNoOp)
+
+        viewModel.disconnect()
+        XCTAssertFalse(lateAuthorization.isValid)
     }
 
     @MainActor
@@ -185,6 +694,29 @@ final class WorldwideRemoteInputLifecycleTests: XCTestCase {
         for _ in 0..<4 { await Task.yield() }
         XCTAssertFalse(viewModel.debugRemoteInputState.remoteHideRequired)
         XCTAssertFalse(viewModel.debugRemoteInputState.inputAvailable)
+    }
+
+    @MainActor
+    private func makeScreenPeer() throws -> WebRTCPeer {
+        try WebRTCPeer(
+            configuration: WebRTCTransportConfiguration(role: .viewer, iceServers: [])
+        )
+    }
+
+    @MainActor
+    private func assertScreenOwnerClosed(
+        _ viewModel: WorldwideSessionViewModel,
+        formerPeer: WebRTCPeer,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let state = viewModel.debugScreenPresentationState
+        XCTAssertFalse(state.hasActiveSession, file: file, line: line)
+        XCTAssertNil(state.currentLease, file: file, line: line)
+        XCTAssertNil(state.activeLease, file: file, line: line)
+        XCTAssertFalse(state.isScreenVisible, file: file, line: line)
+        XCTAssertFalse(state.inputAvailable, file: file, line: line)
+        XCTAssertFalse(viewModel.debugScreenPeerIs(formerPeer), file: file, line: line)
     }
 }
 
@@ -363,6 +895,99 @@ private actor NonCooperativeAsyncGate {
         waiters.removeAll(keepingCapacity: false)
         for waiter in pending {
             waiter.resume()
+        }
+    }
+}
+
+private enum ScreenVisibilityTestError: Error, Sendable {
+    case sendFailed
+}
+
+private actor ScreenVisibilityResponseSlot {
+    private var response: Result<UInt64, ScreenVisibilityTestError>?
+    private var waiter: CheckedContinuation<Result<UInt64, ScreenVisibilityTestError>, Never>?
+
+    func next() async throws -> UInt64 {
+        let result: Result<UInt64, ScreenVisibilityTestError>
+        if let response {
+            self.response = nil
+            result = response
+        } else {
+            result = await withCheckedContinuation { continuation in
+                precondition(waiter == nil)
+                waiter = continuation
+            }
+        }
+        return try result.get()
+    }
+
+    func resolve(_ response: Result<UInt64, ScreenVisibilityTestError>) {
+        precondition(self.response == nil)
+        if let waiter {
+            self.waiter = nil
+            waiter.resume(returning: response)
+        } else {
+            self.response = response
+        }
+    }
+}
+
+@MainActor
+private final class ScreenVisibilityTransportProbe {
+    private var responseSlots: [ScreenVisibilityResponseSlot] = []
+    private var requestCountWaiters: [
+        (count: Int, continuation: CheckedContinuation<Void, Never>)
+    ] = []
+    private(set) var requests: [WorldwideScreenVisibilityDebugRequest] = []
+
+    func send(_ request: WorldwideScreenVisibilityDebugRequest) async throws -> UInt64 {
+        let responseSlot = ScreenVisibilityResponseSlot()
+        requests.append(request)
+        responseSlots.append(responseSlot)
+        let ready = requestCountWaiters.filter { requests.count >= $0.count }
+        requestCountWaiters.removeAll { requests.count >= $0.count }
+        for waiter in ready {
+            waiter.continuation.resume()
+        }
+        return try await responseSlot.next()
+    }
+
+    func waitForRequestCount(_ count: Int) async {
+        guard requests.count < count else { return }
+        await withCheckedContinuation { continuation in
+            requestCountWaiters.append((count, continuation))
+        }
+    }
+
+    func resolveRequest(
+        at index: Int,
+        with response: Result<UInt64, ScreenVisibilityTestError>
+    ) async {
+        precondition(responseSlots.indices.contains(index))
+        await responseSlots[index].resolve(response)
+    }
+}
+
+@MainActor
+private final class MainActorCountGate {
+    private var waiters: [
+        (count: Int, continuation: CheckedContinuation<Void, Never>)
+    ] = []
+    private(set) var count = 0
+
+    func increment() {
+        count += 1
+        let ready = waiters.filter { count >= $0.count }
+        waiters.removeAll { count >= $0.count }
+        for waiter in ready {
+            waiter.continuation.resume()
+        }
+    }
+
+    func waitForCount(_ count: Int) async {
+        guard self.count < count else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append((count, continuation))
         }
     }
 }

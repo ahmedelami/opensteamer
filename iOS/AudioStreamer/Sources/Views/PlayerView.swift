@@ -4,7 +4,7 @@ struct PlayerView: View {
     @EnvironmentObject private var viewModel: StreamSessionViewModel
     @EnvironmentObject private var worldwideViewModel: WorldwideSessionViewModel
     @State private var showsMacScreen = false
-    @State private var showsWorldwideMacScreen = false
+    @State private var worldwideScreenLease: WorldwideScreenPresentationLease?
 
     var body: some View {
         List {
@@ -65,7 +65,7 @@ struct PlayerView: View {
                     }
 
                     Button {
-                        showsWorldwideMacScreen = true
+                        worldwideScreenLease = worldwideViewModel.issueScreenPresentationLease()
                     } label: {
                         Label("View Mac Screen", systemImage: "rectangle.connected.to.line.below")
                     }
@@ -79,7 +79,10 @@ struct PlayerView: View {
                     }
 
                     Button(role: .destructive) {
-                        showsWorldwideMacScreen = false
+                        if let lease = worldwideScreenLease {
+                            _ = worldwideViewModel.beginPassiveScreenTeardown(for: lease)
+                            dismissWorldwideScreen(lease)
+                        }
                         worldwideViewModel.disconnect()
                     } label: {
                         Label("Disconnect Remote Mac", systemImage: "stop.fill")
@@ -103,8 +106,11 @@ struct PlayerView: View {
                 ScreenViewerView(descriptor: descriptor)
             }
         }
-        .fullScreenCover(isPresented: $showsWorldwideMacScreen) {
-            WorldwideScreenViewerView()
+        .fullScreenCover(item: $worldwideScreenLease) { lease in
+            WorldwideScreenViewerView(
+                lease: lease,
+                dismissPresentation: dismissWorldwideScreen
+            )
                 .environmentObject(worldwideViewModel)
         }
         .onChange(of: viewModel.selectedServer) { _, selectedServer in
@@ -113,10 +119,16 @@ struct PlayerView: View {
             }
         }
         .onChange(of: worldwideViewModel.canViewScreen) { _, canViewScreen in
-            if !canViewScreen {
-                showsWorldwideMacScreen = false
+            if !canViewScreen, let lease = worldwideScreenLease {
+                dismissWorldwideScreen(lease)
             }
         }
+    }
+
+    private func dismissWorldwideScreen(_ lease: WorldwideScreenPresentationLease) {
+        guard worldwideScreenLease == lease else { return }
+        worldwideViewModel.retireScreenPresentationLease(lease)
+        worldwideScreenLease = nil
     }
 }
 

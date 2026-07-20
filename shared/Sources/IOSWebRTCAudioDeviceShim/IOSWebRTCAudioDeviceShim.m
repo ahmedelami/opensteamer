@@ -119,6 +119,92 @@ static void ASZeroAudioBufferList(AudioBufferList *bufferList) {
     }
 }
 
+static inline void ASInitializeRealtimeDiagnostics(
+    ASRealtimeDiagnostics *diagnostics
+) {
+    atomic_init(&diagnostics->callbackCount, 0);
+    atomic_init(&diagnostics->frameCount, 0);
+    atomic_init(&diagnostics->failureCount, 0);
+    atomic_init(&diagnostics->recordingRequestCount, 0);
+    atomic_init(&diagnostics->recoveryRequestCount, 0);
+    atomic_init(&diagnostics->recoveryAuthorizationRejectionCount, 0);
+    atomic_init(&diagnostics->recoveryRebuildCount, 0);
+    atomic_init(&diagnostics->lastFrameCount, 0);
+    atomic_init(&diagnostics->lastStatus, noErr);
+}
+
+static inline void ASCrossExplicitRecoveryBoundary(
+    ASRealtimeDiagnostics *diagnostics
+) {
+    // RemoteIO diagnostics are lifetime-cumulative across an explicit rebuild.
+    (void)diagnostics;
+}
+
+#if DEBUG
+typedef void (*ASPlayoutPublicationObserver)(
+    const ASRealtimeDiagnostics *diagnostics,
+    void *context
+);
+
+static inline ASIOSStereoPlayoutPublicationSnapshot ASLoadPlayoutPublicationSnapshot(
+    const ASRealtimeDiagnostics *diagnostics
+) {
+    ASIOSStereoPlayoutPublicationSnapshot snapshot = {0};
+    snapshot.callbackCount = atomic_load_explicit(
+        &diagnostics->callbackCount,
+        memory_order_acquire
+    );
+    snapshot.frameCount = atomic_load_explicit(
+        &diagnostics->frameCount,
+        memory_order_relaxed
+    );
+    snapshot.failureCount = atomic_load_explicit(
+        &diagnostics->failureCount,
+        memory_order_relaxed
+    );
+    snapshot.lastFrameCount = atomic_load_explicit(
+        &diagnostics->lastFrameCount,
+        memory_order_relaxed
+    );
+    snapshot.lastStatus = atomic_load_explicit(
+        &diagnostics->lastStatus,
+        memory_order_relaxed
+    );
+    return snapshot;
+}
+
+static void ASCapturePlayoutPrePublicationSnapshot(
+    const ASRealtimeDiagnostics *diagnostics,
+    void *context
+) {
+    ASIOSStereoPlayoutPublicationSnapshot *snapshot = context;
+    *snapshot = ASLoadPlayoutPublicationSnapshot(diagnostics);
+}
+#endif
+
+static inline void ASPublishPlayoutCallback(
+    ASRealtimeDiagnostics *diagnostics,
+    UInt32 frameCount,
+    OSStatus status
+    #if DEBUG
+    , ASPlayoutPublicationObserver observer,
+    void *observerContext
+    #endif
+) {
+    atomic_fetch_add_explicit(&diagnostics->frameCount, frameCount, memory_order_relaxed);
+    atomic_store_explicit(&diagnostics->lastFrameCount, frameCount, memory_order_relaxed);
+    atomic_store_explicit(&diagnostics->lastStatus, status, memory_order_relaxed);
+    if (status != noErr) {
+        atomic_fetch_add_explicit(&diagnostics->failureCount, 1, memory_order_relaxed);
+    }
+    #if DEBUG
+    if (observer != NULL) {
+        observer(diagnostics, observerContext);
+    }
+    #endif
+    atomic_fetch_add_explicit(&diagnostics->callbackCount, 1, memory_order_release);
+}
+
 @implementation ASIOSStereoPlayoutRecoveryAuthorization
 
 - (instancetype)init {
@@ -158,6 +244,49 @@ static void ASZeroAudioBufferList(AudioBufferList *bufferList) {
 @end
 
 #if DEBUG
+@interface ASIOSStereoPlayoutPublicationTestHarness () {
+    ASRealtimeDiagnostics _realtime;
+    ASIOSStereoPlayoutPublicationSnapshot _prePublicationSnapshot;
+}
+@end
+
+@implementation ASIOSStereoPlayoutPublicationTestHarness
+
+- (instancetype)init {
+    self = [super init];
+    if (self == nil) {
+        return nil;
+    }
+    ASInitializeRealtimeDiagnostics(&_realtime);
+    _prePublicationSnapshot = (ASIOSStereoPlayoutPublicationSnapshot){0};
+    return self;
+}
+
+- (void)publishCallbackWithFrameCount:(uint32_t)frameCount
+                                status:(int32_t)status {
+    ASPublishPlayoutCallback(
+        &_realtime,
+        frameCount,
+        status,
+        ASCapturePlayoutPrePublicationSnapshot,
+        &_prePublicationSnapshot
+    );
+}
+
+- (void)markRecoveryBoundary {
+    ASCrossExplicitRecoveryBoundary(&_realtime);
+}
+
+- (ASIOSStereoPlayoutPublicationSnapshot)prePublicationSnapshot {
+    return _prePublicationSnapshot;
+}
+
+- (ASIOSStereoPlayoutPublicationSnapshot)snapshot {
+    return ASLoadPlayoutPublicationSnapshot(&_realtime);
+}
+
+@end
+
 @interface ASIOSStereoPlayoutRecoveryHarnessDelegate : NSObject <LKRTCAudioDeviceDelegate>
 @property(nonatomic, strong) NSMutableArray<dispatch_block_t> *queuedOperations;
 - (nullable dispatch_block_t)takeNextOperation;
@@ -266,6 +395,17 @@ static void ASZeroAudioBufferList(AudioBufferList *bufferList) {
     }
 }
 
+- (void)publishCallbackWithFrameCount:(uint32_t)frameCount
+                                status:(int32_t)status {
+    ASPublishPlayoutCallback(
+        &self.device->_realtime,
+        frameCount,
+        status,
+        NULL,
+        NULL
+    );
+}
+
 - (void)queueRecoveryWithAuthorization:
     (ASIOSStereoPlayoutRecoveryAuthorization *)authorization {
     [self.device requestPlayoutRecoveryWithAuthorization:authorization];
@@ -308,8 +448,14 @@ static OSStatus ASRemoteIORender(
         if (actionFlags != NULL) {
             *actionFlags |= kAudioUnitRenderAction_OutputIsSilence;
         }
-        atomic_fetch_add_explicit(&device->_realtime.failureCount, 1, memory_order_relaxed);
-        atomic_store_explicit(&device->_realtime.lastStatus, kAudio_ParamError, memory_order_relaxed);
+        ASPublishPlayoutCallback(
+            &device->_realtime,
+            frameCount,
+            kAudio_ParamError
+            #if DEBUG
+            , NULL, NULL
+            #endif
+        );
         return kAudio_ParamError;
     }
 
@@ -322,17 +468,20 @@ static OSStatus ASRemoteIORender(
         frameCount,
         outputData
     );
-    atomic_fetch_add_explicit(&device->_realtime.callbackCount, 1, memory_order_relaxed);
-    atomic_fetch_add_explicit(&device->_realtime.frameCount, frameCount, memory_order_relaxed);
-    atomic_store_explicit(&device->_realtime.lastFrameCount, frameCount, memory_order_relaxed);
-    atomic_store_explicit(&device->_realtime.lastStatus, status, memory_order_relaxed);
     if (status != noErr) {
-        atomic_fetch_add_explicit(&device->_realtime.failureCount, 1, memory_order_relaxed);
         ASZeroAudioBufferList(outputData);
         if (actionFlags != NULL) {
             *actionFlags |= kAudioUnitRenderAction_OutputIsSilence;
         }
     }
+    ASPublishPlayoutCallback(
+        &device->_realtime,
+        frameCount,
+        status
+        #if DEBUG
+        , NULL, NULL
+        #endif
+    );
     return status;
 }
 
@@ -343,15 +492,7 @@ static OSStatus ASRemoteIORender(
     if (self == nil) {
         return nil;
     }
-    atomic_init(&_realtime.callbackCount, 0);
-    atomic_init(&_realtime.frameCount, 0);
-    atomic_init(&_realtime.failureCount, 0);
-    atomic_init(&_realtime.recordingRequestCount, 0);
-    atomic_init(&_realtime.recoveryRequestCount, 0);
-    atomic_init(&_realtime.recoveryAuthorizationRejectionCount, 0);
-    atomic_init(&_realtime.recoveryRebuildCount, 0);
-    atomic_init(&_realtime.lastFrameCount, 0);
-    atomic_init(&_realtime.lastStatus, noErr);
+    ASInitializeRealtimeDiagnostics(&_realtime);
     atomic_init(&_lifecycle.initialized, false);
     atomic_init(&_lifecycle.playoutInitialized, false);
     atomic_init(&_lifecycle.playing, false);
@@ -619,59 +760,94 @@ static OSStatus ASRemoteIORender(
         &_lifecycle.sessionActive,
         memory_order_relaxed
     ) && ownsSessionActivation;
-    return (ASIOSStereoPlayoutDiagnostics) {
-        .initialized = atomic_load_explicit(&_lifecycle.initialized, memory_order_relaxed),
-        .playoutInitialized = atomic_load_explicit(&_lifecycle.playoutInitialized, memory_order_relaxed),
-        .playing = atomic_load_explicit(&_lifecycle.playing, memory_order_relaxed),
-        .sessionActive = sessionActive,
-        .ownsSessionActivation = ownsSessionActivation,
-        .remoteIOCreated = atomic_load_explicit(&_lifecycle.remoteIOCreated, memory_order_relaxed),
-        .inputBusEnabled = atomic_load_explicit(&_lifecycle.inputBusEnabled, memory_order_relaxed),
-        .outputBusEnabled = atomic_load_explicit(&_lifecycle.outputBusEnabled, memory_order_relaxed),
-        .recoveryRequired = atomic_load_explicit(
-            &_lifecycle.recoveryRequired,
-            memory_order_relaxed
-        ),
-        .explicitResumeRequired = atomic_load_explicit(
-            &_lifecycle.explicitResumeRequired,
-            memory_order_relaxed
-        ),
-        .categoryIsMediaPlayback = [session.category isEqualToString:AVAudioSessionCategoryPlayback],
-        .modeIsDefault = [session.mode isEqualToString:AVAudioSessionModeDefault],
-        .sampleRate = session.sampleRate,
-        .outputIOBufferDuration = session.IOBufferDuration,
-        .outputChannelCount = session.outputNumberOfChannels,
-        .audioUnitSubType = (uint32_t)atomic_load_explicit(
-            &_lifecycle.audioUnitSubType,
-            memory_order_relaxed
-        ),
-        .failureCode = (ASIOSStereoPlayoutFailureCode)atomic_load_explicit(
-            &_lifecycle.failureCode,
-            memory_order_relaxed
-        ),
-        .lastLifecycleStatus = (int32_t)atomic_load_explicit(
-            &_lifecycle.lastLifecycleStatus,
-            memory_order_relaxed
-        ),
-        .playoutCallbackCount = atomic_load_explicit(&_realtime.callbackCount, memory_order_relaxed),
-        .playoutFrameCount = atomic_load_explicit(&_realtime.frameCount, memory_order_relaxed),
-        .playoutFailureCount = atomic_load_explicit(&_realtime.failureCount, memory_order_relaxed),
-        .unexpectedRecordingRequestCount = atomic_load_explicit(&_realtime.recordingRequestCount, memory_order_relaxed),
-        .recoveryRequestCount = atomic_load_explicit(
-            &_realtime.recoveryRequestCount,
-            memory_order_relaxed
-        ),
-        .recoveryAuthorizationRejectionCount = atomic_load_explicit(
-            &_realtime.recoveryAuthorizationRejectionCount,
-            memory_order_relaxed
-        ),
-        .recoveryRebuildCount = atomic_load_explicit(
-            &_realtime.recoveryRebuildCount,
-            memory_order_relaxed
-        ),
-        .lastPlayoutFrameCount = atomic_load_explicit(&_realtime.lastFrameCount, memory_order_relaxed),
-        .lastPlayoutStatus = atomic_load_explicit(&_realtime.lastStatus, memory_order_relaxed),
-    };
+    ASIOSStereoPlayoutDiagnostics diagnostics = {0};
+    diagnostics.initialized = atomic_load_explicit(
+        &_lifecycle.initialized,
+        memory_order_relaxed
+    );
+    diagnostics.playoutInitialized = atomic_load_explicit(
+        &_lifecycle.playoutInitialized,
+        memory_order_relaxed
+    );
+    diagnostics.playing = atomic_load_explicit(&_lifecycle.playing, memory_order_relaxed);
+    diagnostics.sessionActive = sessionActive;
+    diagnostics.ownsSessionActivation = ownsSessionActivation;
+    diagnostics.remoteIOCreated = atomic_load_explicit(
+        &_lifecycle.remoteIOCreated,
+        memory_order_relaxed
+    );
+    diagnostics.inputBusEnabled = atomic_load_explicit(
+        &_lifecycle.inputBusEnabled,
+        memory_order_relaxed
+    );
+    diagnostics.outputBusEnabled = atomic_load_explicit(
+        &_lifecycle.outputBusEnabled,
+        memory_order_relaxed
+    );
+    diagnostics.recoveryRequired = atomic_load_explicit(
+        &_lifecycle.recoveryRequired,
+        memory_order_relaxed
+    );
+    diagnostics.explicitResumeRequired = atomic_load_explicit(
+        &_lifecycle.explicitResumeRequired,
+        memory_order_relaxed
+    );
+    diagnostics.categoryIsMediaPlayback = [session.category
+        isEqualToString:AVAudioSessionCategoryPlayback];
+    diagnostics.modeIsDefault = [session.mode isEqualToString:AVAudioSessionModeDefault];
+    diagnostics.sampleRate = session.sampleRate;
+    diagnostics.outputIOBufferDuration = session.IOBufferDuration;
+    diagnostics.outputChannelCount = session.outputNumberOfChannels;
+    diagnostics.audioUnitSubType = (uint32_t)atomic_load_explicit(
+        &_lifecycle.audioUnitSubType,
+        memory_order_relaxed
+    );
+    diagnostics.failureCode = (ASIOSStereoPlayoutFailureCode)atomic_load_explicit(
+        &_lifecycle.failureCode,
+        memory_order_relaxed
+    );
+    diagnostics.lastLifecycleStatus = (int32_t)atomic_load_explicit(
+        &_lifecycle.lastLifecycleStatus,
+        memory_order_relaxed
+    );
+
+    diagnostics.playoutCallbackCount = atomic_load_explicit(
+        &_realtime.callbackCount,
+        memory_order_acquire
+    );
+    diagnostics.playoutFrameCount = atomic_load_explicit(
+        &_realtime.frameCount,
+        memory_order_relaxed
+    );
+    diagnostics.playoutFailureCount = atomic_load_explicit(
+        &_realtime.failureCount,
+        memory_order_relaxed
+    );
+    diagnostics.lastPlayoutFrameCount = atomic_load_explicit(
+        &_realtime.lastFrameCount,
+        memory_order_relaxed
+    );
+    diagnostics.lastPlayoutStatus = atomic_load_explicit(
+        &_realtime.lastStatus,
+        memory_order_relaxed
+    );
+    diagnostics.unexpectedRecordingRequestCount = atomic_load_explicit(
+        &_realtime.recordingRequestCount,
+        memory_order_relaxed
+    );
+    diagnostics.recoveryRequestCount = atomic_load_explicit(
+        &_realtime.recoveryRequestCount,
+        memory_order_relaxed
+    );
+    diagnostics.recoveryAuthorizationRejectionCount = atomic_load_explicit(
+        &_realtime.recoveryAuthorizationRejectionCount,
+        memory_order_relaxed
+    );
+    diagnostics.recoveryRebuildCount = atomic_load_explicit(
+        &_realtime.recoveryRebuildCount,
+        memory_order_relaxed
+    );
+    return diagnostics;
 }
 
 - (BOOL)configureSessionAndCreateRemoteIO {
@@ -1048,6 +1224,7 @@ static OSStatus ASRemoteIORender(
     if (_isRebuilding) {
         return;
     }
+    ASCrossExplicitRecoveryBoundary(&_realtime);
     _isRebuilding = YES;
     BOOL shouldResume = _wantsPlayout && !_interrupted;
     if (_audioUnit != NULL || _playing) {

@@ -4,6 +4,152 @@ import Foundation
 import RemoteSessionCore
 import WebRTCTransport
 
+struct WorldwideScreenPresentationLease: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let sessionGeneration: UUID
+
+    init(id: UUID = UUID(), sessionGeneration: UUID) {
+        self.id = id
+        self.sessionGeneration = sessionGeneration
+    }
+}
+
+struct WorldwideScreenVisibilityRequestKey: Hashable, Sendable {
+    let sessionGeneration: UUID
+    let requestID: UInt64
+}
+
+#if DEBUG
+struct WorldwideScreenVisibilityDebugRequest {
+    let lease: WorldwideScreenPresentationLease
+    let operationID: UUID
+    let isVisible: Bool
+    let expectedPeer: WebRTCPeer?
+}
+
+struct WorldwideScreenVisibilityPostSendDebugEvent {
+    let request: WorldwideScreenVisibilityDebugRequest
+    let requestID: UInt64
+}
+
+struct WorldwideScreenPresentationDebugState {
+    let sessionGeneration: UUID
+    let currentLease: WorldwideScreenPresentationLease?
+    let activeLease: WorldwideScreenPresentationLease?
+    let isScreenVisible: Bool
+    let inputAvailable: Bool
+    let remoteHideRequired: Bool
+    let pendingRequestKey: WorldwideScreenVisibilityRequestKey?
+    let displacedPendingRequestCount: Int
+    let hasActiveSession: Bool
+}
+
+struct WorldwideScreenPresentationDebugFixture {
+    let lease: WorldwideScreenPresentationLease
+    let authorization: WebRTCInputAuthorization
+}
+
+struct WorldwideIOSPlayoutProofDebugHandle: Equatable, Sendable {
+    let proofAttemptID: UUID
+    let counterWindowID: UUID
+    let sessionGeneration: UUID
+}
+
+enum WorldwideIOSPlayoutProofDebugSource: Sendable {
+    case polling
+    case statistics
+}
+
+enum WorldwideIOSPlayoutProofDebugStage: Equatable, Sendable {
+    case awaitingInitialFloor
+    case awaitingRecoveryAuthorization
+    case awaitingPostRecoveryFloor
+    case awaitingFreshEvidence
+}
+
+struct WorldwideIOSPlayoutProofDebugState: Equatable, Sendable {
+    let handle: WorldwideIOSPlayoutProofDebugHandle?
+    let stage: WorldwideIOSPlayoutProofDebugStage?
+    let callbackFloor: UInt64?
+    let frameFloor: UInt64?
+    let permittedFailureFloor: UInt64?
+    let lastCallbackCount: UInt64?
+    let lastFrameCount: UInt64?
+    let lastFailureCount: UInt64?
+    let recoveryAuthorizationIdentity: ObjectIdentifier?
+    let recoveryAuthorizationIsValid: Bool
+}
+#endif
+
+private enum IOSPlayoutProofStage {
+    case awaitingRecoveryBaseline
+    case awaitingInitialFloor
+    case awaitingRecoveryAuthorization
+    case awaitingPostRecoveryFloor
+    case awaitingFreshEvidence
+}
+
+private struct IOSPlayoutRecoveryBaseline {
+    let callbackCount: UInt64
+    let frameCount: UInt64
+    let failureCount: UInt64
+}
+
+private final class IOSPlayoutProofAttempt {
+    let proofAttemptID: UUID
+    let counterWindowID: UUID
+    let sessionGeneration: UUID
+    let expectedPeer: WebRTCPeer?
+    var stage: IOSPlayoutProofStage
+    var recoveryAuthorization: WebRTCIOSPlayoutRecoveryAuthorization?
+    /// Exact pre-request lifetime-cumulative snapshot; never post-request live observation.
+    private(set) var recoveryBaseline: IOSPlayoutRecoveryBaseline?
+    var callbackFloor: UInt64?
+    var frameFloor: UInt64?
+    var lastCallbackCount: UInt64?
+    var lastFrameCount: UInt64?
+    var lastFailureCount: UInt64?
+
+    var permittedFailureFloor: UInt64 {
+        recoveryBaseline?.failureCount ?? 0
+    }
+
+    init(
+        proofAttemptID: UUID = UUID(),
+        counterWindowID: UUID = UUID(),
+        sessionGeneration: UUID,
+        expectedPeer: WebRTCPeer?,
+        stage: IOSPlayoutProofStage
+    ) {
+        self.proofAttemptID = proofAttemptID
+        self.counterWindowID = counterWindowID
+        self.sessionGeneration = sessionGeneration
+        self.expectedPeer = expectedPeer
+        self.stage = stage
+    }
+
+    func captureRecoveryBaseline(
+        callbackCount: UInt64,
+        frameCount: UInt64,
+        failureCount: UInt64
+    ) {
+        precondition(stage == .awaitingRecoveryBaseline)
+        precondition(recoveryAuthorization == nil)
+        precondition(recoveryBaseline == nil)
+        precondition(callbackFloor == nil && frameFloor == nil)
+        precondition(
+            lastCallbackCount == nil
+                && lastFrameCount == nil
+                && lastFailureCount == nil
+        )
+        recoveryBaseline = IOSPlayoutRecoveryBaseline(
+            callbackCount: callbackCount,
+            frameCount: frameCount,
+            failureCount: failureCount
+        )
+    }
+}
+
 @MainActor
 final class WorldwideSessionViewModel: ObservableObject {
     @Published private(set) var stateText = "Not connected"
@@ -40,10 +186,20 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var sessionTask: Task<Void, Never>?
     private var peerEventTask: Task<Void, Never>?
     private var audioPlayoutProofTask: Task<Void, Never>?
+    private var audioPlayoutProofTimeoutTask: Task<Void, Never>?
     private var audioPlayoutRecoveryAuthorization: WebRTCIOSPlayoutRecoveryAuthorization?
+    private var iosPlayoutProofAttempt: IOSPlayoutProofAttempt?
     private var controlAcknowledgementTimeoutTask: Task<Void, Never>?
     private var pendingScreenVisibilityRequest: PendingScreenVisibilityRequest?
-    private var earlyControlAcknowledgements: [UInt64: ReceivedControlAcknowledgement] = [:]
+    private var earlyControlAcknowledgements: [
+        WorldwideScreenVisibilityRequestKey: ReceivedControlAcknowledgement
+    ] = [:]
+    private var retiredScreenVisibilityRequestKeys: Set<
+        WorldwideScreenVisibilityRequestKey
+    > = []
+    private var retiredScreenVisibilityRequestOrder: [
+        WorldwideScreenVisibilityRequestKey
+    ] = []
     private var sessionGeneration = UUID()
     private var hasHandledRemoteOffer = false
     private var recoveryProofEpoch: UInt64 = 0
@@ -58,11 +214,27 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var earlyRemoteInputFeedback: [UInt64: WebRTCInputFeedback] = [:]
     private var latestPointerIntentID: UInt64 = 0
     private var remoteInputAuthorization: WebRTCInputAuthorization?
+    private var currentScreenPresentationLease: WorldwideScreenPresentationLease?
+    private var activeScreenPresentationLease: WorldwideScreenPresentationLease?
+    private var remoteScreenOwnerLease: WorldwideScreenPresentationLease?
+    private var screenTeardownOperationByLeaseID: [UUID: UUID] = [:]
+    private var screenShowOperationByLeaseID: [UUID: UUID] = [:]
+    private var screenVisibilityQueue: [QueuedScreenVisibilityOperation] = []
+    private var screenVisibilityDrainTask: Task<Void, Never>?
+    private var screenVisibilityQueueGeneration = UUID()
     private var acceptsActiveScreenAcknowledgement = false
     private var remoteHideRequired = false
     private var screenVisibilityOperationGeneration = UUID()
     #if DEBUG
     private var debugScreenVisibilityRequestSender: (@MainActor (Bool) async throws -> UInt64)?
+    private var debugScreenVisibilityRequestSenderV2: (
+        @MainActor (WorldwideScreenVisibilityDebugRequest) async throws -> UInt64
+    )?
+    private var debugScreenVisibilityPostSendHook: (
+        @MainActor (WorldwideScreenVisibilityPostSendDebugEvent) async -> Void
+    )?
+    private var debugCurrentScreenPresentationLease: WorldwideScreenPresentationLease?
+    private var debugActiveScreenPresentationLease: WorldwideScreenPresentationLease?
     private var debugStatisticsStarter: (@MainActor (WebRTCPeer) async throws -> Void)?
     private var debugSessionRunner: (@MainActor () async -> Void)?
     private var debugIOSPlayoutDiagnosticsReader: (
@@ -72,6 +244,16 @@ final class WorldwideSessionViewModel: ObservableObject {
         @MainActor (WebRTCPeer, WebRTCIOSPlayoutRecoveryAuthorization) async -> Void
     )?
     private var debugIOSPlayoutRecoveryPendingObserver: (@MainActor () -> Void)?
+    private var debugPendingScreenVisibilityWaiters: [
+        WorldwideScreenVisibilityRequestKey: [CheckedContinuation<Void, Never>]
+    ] = [:]
+    private var debugProcessedScreenVisibilityPostSendOperationIDs: Set<UUID> = []
+    private var debugScreenVisibilityPostSendProcessingWaiters: [
+        UUID: [CheckedContinuation<Void, Never>]
+    ] = [:]
+    private var debugDisplacedPendingScreenVisibilityRequests: [
+        PendingScreenVisibilityRequest
+    ] = []
     private var debugRemoteInputSender: (
         @MainActor (
             WebRTCPeer,
@@ -238,40 +420,132 @@ final class WorldwideSessionViewModel: ObservableObject {
         audioLifecycle.resumePlayback()
     }
 
+    func issueScreenPresentationLease() -> WorldwideScreenPresentationLease? {
+        guard canViewScreen else { return nil }
+
+        let lease = WorldwideScreenPresentationLease(sessionGeneration: sessionGeneration)
+        let replacedLease = currentScreenPresentationLease
+        currentScreenPresentationLease = lease
+        #if DEBUG
+        debugCurrentScreenPresentationLease = lease
+        #endif
+
+        guard let replacedLease, replacedLease != lease else {
+            revokeScreenPresentationLocally(for: lease, clearActiveOwnership: false)
+            return lease
+        }
+
+        revokeScreenPresentationLocally(for: replacedLease, clearActiveOwnership: false)
+        let needsRemoteHide = replacedLease.sessionGeneration == sessionGeneration
+            && screenPresentationNeedsRemoteHide(replacedLease)
+        supersedeScreenShow(for: replacedLease)
+        if needsRemoteHide {
+            _ = claimScreenTeardown(
+                for: replacedLease,
+                allowSupersededSameSessionLease: true,
+                completion: nil
+            )
+        }
+        return lease
+    }
+
+    func screenPresentationIsCurrent(_ lease: WorldwideScreenPresentationLease) -> Bool {
+        lease.sessionGeneration == sessionGeneration
+            && currentScreenPresentationLease == lease
+    }
+
+    func screenPresentationIsVisible(_ lease: WorldwideScreenPresentationLease) -> Bool {
+        screenPresentationIsCurrent(lease)
+            && activeScreenPresentationLease == lease
+            && isScreenVisible
+    }
+
+    func remoteInputIsAvailable(for lease: WorldwideScreenPresentationLease) -> Bool {
+        screenPresentationIsVisible(lease) && isRemoteInputAvailable
+    }
+
+    func retireScreenPresentationLease(_ lease: WorldwideScreenPresentationLease) {
+        guard currentScreenPresentationLease == lease else { return }
+        revokeScreenPresentationLocally(for: lease, clearActiveOwnership: false)
+        currentScreenPresentationLease = nil
+        #if DEBUG
+        if debugCurrentScreenPresentationLease == lease {
+            debugCurrentScreenPresentationLease = nil
+        }
+        #endif
+    }
+
+    @discardableResult
+    func setScreenVisible(
+        _ visible: Bool,
+        for lease: WorldwideScreenPresentationLease
+    ) async -> Bool {
+        if visible {
+            guard screenPresentationIsCurrent(lease) else { return false }
+            if screenPresentationIsVisible(lease),
+               screenShowOperationByLeaseID[lease.id] == nil {
+                return true
+            }
+            let operationID = UUID()
+            screenShowOperationByLeaseID[lease.id] = operationID
+            return await withCheckedContinuation { continuation in
+                enqueueScreenVisibilityOperation(
+                    lease: lease,
+                    operationID: operationID,
+                    isVisible: true,
+                    completion: { continuation.resume(returning: $0) }
+                )
+            }
+        }
+
+        return await withCheckedContinuation { continuation in
+            let claimed = claimScreenTeardown(
+                for: lease,
+                allowSupersededSameSessionLease: false,
+                completion: { continuation.resume(returning: $0) }
+            )
+            if !claimed {
+                continuation.resume(returning: false)
+            }
+        }
+    }
+
+    @discardableResult
+    func beginPassiveScreenTeardown(
+        for lease: WorldwideScreenPresentationLease,
+        completion: @escaping @MainActor () -> Void = {}
+    ) -> Bool {
+        claimScreenTeardown(
+            for: lease,
+            allowSupersededSameSessionLease: false,
+            completion: { _ in completion() }
+        )
+    }
+
     /// Immediately closes the local input gate before UI code starts an asynchronous Hide.
-    /// `setScreenVisible(false)` repeats this revocation so non-view callers remain fail closed.
     func suspendRemoteInputPresentation() {
         invalidateRemoteInputState()
     }
 
-    /// Revokes local input synchronously, before passive UI/lifecycle teardown schedules Hide.
-    /// The injectable operation keeps the ordering boundary directly regression-testable.
     func beginPassiveScreenTeardown() {
-        beginPassiveScreenTeardown { [weak self] in
-            guard let self else { return }
-            await self.setScreenVisible(false)
+        guard let lease = currentScreenPresentationLease ?? legacyScreenPresentationLease() else {
+            suspendRemoteInputPresentation()
+            return
         }
+        _ = beginPassiveScreenTeardown(for: lease)
     }
 
+    /// Retained only as a deterministic ordering seam for the pre-existing lifecycle test.
     func beginPassiveScreenTeardown(
         hideOperation: @escaping @MainActor () async -> Void
     ) {
-        suspendRemoteInputPresentation()
-        remoteHideRequired = remoteHideRequired
-            || isScreenVisible
-            || pendingScreenVisibilityRequest?.isVisible == true
-            || acceptsActiveScreenAcknowledgement
-        acceptsActiveScreenAcknowledgement = false
-        // Invalidate any Show/Hide call currently suspended in an actor-reentrant peer send.
-        // The scheduled Hide below becomes the sole visibility operation allowed to install
-        // an acknowledgement continuation after it begins.
+        if let lease = currentScreenPresentationLease ?? legacyScreenPresentationLease() {
+            revokeScreenPresentationLocally(for: lease, clearActiveOwnership: false)
+        } else {
+            suspendRemoteInputPresentation()
+        }
         screenVisibilityOperationGeneration = UUID()
         completePendingScreenVisibilityRequest(success: false)
-        // Keep the confirmed visibility state until the scheduled Hide consumes it.
-        // `remoteHideRequired` also covers a Show already sent before local visibility became
-        // true, so cancelling that pending continuation cannot make false -> false take the
-        // ordinary no-op fast path.
-        clearEarlyControlAcknowledgements()
         Task { @MainActor in
             await hideOperation()
         }
@@ -279,88 +553,309 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     @discardableResult
     func setScreenVisible(_ visible: Bool) async -> Bool {
-        let operationGeneration = UUID()
-        screenVisibilityOperationGeneration = operationGeneration
         if visible {
-            acceptsActiveScreenAcknowledgement = true
-        } else {
+            guard let lease = currentScreenPresentationLease
+                ?? issueScreenPresentationLease() else {
+                return false
+            }
+            return await setScreenVisible(true, for: lease)
+        }
+        guard let lease = currentScreenPresentationLease ?? legacyScreenPresentationLease() else {
+            isScreenVisible = false
+            invalidateRemoteInputState()
+            return true
+        }
+        return await setScreenVisible(false, for: lease)
+    }
+
+    private func legacyScreenPresentationLease() -> WorldwideScreenPresentationLease? {
+        guard canViewScreen || remoteHideRequired || isScreenVisible else { return nil }
+        if let currentScreenPresentationLease {
+            return currentScreenPresentationLease
+        }
+        let lease = WorldwideScreenPresentationLease(sessionGeneration: sessionGeneration)
+        currentScreenPresentationLease = lease
+        if isScreenVisible {
+            activeScreenPresentationLease = lease
+            remoteScreenOwnerLease = lease
+        }
+        #if DEBUG
+        debugCurrentScreenPresentationLease = lease
+        if isScreenVisible {
+            debugActiveScreenPresentationLease = lease
+        }
+        #endif
+        return lease
+    }
+
+    private func supersedeScreenShow(
+        for lease: WorldwideScreenPresentationLease
+    ) {
+        guard lease.sessionGeneration == sessionGeneration else { return }
+        if let pending = pendingScreenVisibilityRequest,
+           pending.isVisible,
+           pending.lease == lease {
+            controlAcknowledgementTimeoutTask?.cancel()
+            controlAcknowledgementTimeoutTask = nil
+            pendingScreenVisibilityRequest = nil
+            retireScreenVisibilityRequestKey(pending.key)
+            pending.continuation.resume(returning: false)
+        }
+        screenShowOperationByLeaseID.removeValue(forKey: lease.id)
+    }
+
+    private func claimScreenTeardown(
+        for lease: WorldwideScreenPresentationLease,
+        allowSupersededSameSessionLease: Bool,
+        completion: (@MainActor (Bool) -> Void)?
+    ) -> Bool {
+        guard lease.sessionGeneration == sessionGeneration else { return false }
+        guard screenTeardownOperationByLeaseID[lease.id] == nil else { return false }
+        guard allowSupersededSameSessionLease || currentScreenPresentationLease == lease else {
+            return false
+        }
+
+        let operationID = UUID()
+        screenTeardownOperationByLeaseID[lease.id] = operationID
+        if currentScreenPresentationLease == lease {
+            revokeScreenPresentationLocally(for: lease, clearActiveOwnership: false)
+        }
+        enqueueScreenVisibilityOperation(
+            lease: lease,
+            operationID: operationID,
+            isVisible: false,
+            completion: completion
+        )
+        return true
+    }
+
+    private func revokeScreenPresentationLocally(
+        for lease: WorldwideScreenPresentationLease,
+        clearActiveOwnership: Bool
+    ) {
+        guard lease.sessionGeneration == sessionGeneration else { return }
+        if currentScreenPresentationLease == lease || activeScreenPresentationLease == lease {
+            isScreenVisible = false
             acceptsActiveScreenAcknowledgement = false
             invalidateRemoteInputState()
         }
-        let visibilityPeer = peer
-        guard screenVisibilityTransportIsAvailable(visibilityPeer) else {
-            if visible {
-                acceptsActiveScreenAcknowledgement = false
-                lastError = "The secure screen-control channel is not ready yet."
-            } else {
-                isScreenVisible = false
-                remoteHideRequired = false
+        if clearActiveOwnership, activeScreenPresentationLease == lease {
+            activeScreenPresentationLease = nil
+            #if DEBUG
+            if debugActiveScreenPresentationLease == lease {
+                debugActiveScreenPresentationLease = nil
+            }
+            #endif
+        }
+        remoteHideRequired = remoteScreenOwnerLease != nil
+    }
+
+    private func screenPresentationNeedsRemoteHide(
+        _ lease: WorldwideScreenPresentationLease
+    ) -> Bool {
+        remoteScreenOwnerLease == lease
+            || activeScreenPresentationLease == lease
+            || pendingScreenVisibilityRequest?.lease == lease
+            || screenShowOperationByLeaseID[lease.id] != nil
+    }
+
+    private func enqueueScreenVisibilityOperation(
+        lease: WorldwideScreenPresentationLease,
+        operationID: UUID,
+        isVisible: Bool,
+        completion: (@MainActor (Bool) -> Void)?
+    ) {
+        let operation = QueuedScreenVisibilityOperation(
+            lease: lease,
+            operationID: operationID,
+            isVisible: isVisible,
+            sessionGeneration: lease.sessionGeneration,
+            queueGeneration: screenVisibilityQueueGeneration,
+            expectedPeer: peer,
+            completion: completion
+        )
+        screenVisibilityQueue.append(operation)
+        startScreenVisibilityDrainIfNeeded()
+    }
+
+    private func startScreenVisibilityDrainIfNeeded() {
+        guard screenVisibilityDrainTask == nil else { return }
+        let queueGeneration = screenVisibilityQueueGeneration
+        screenVisibilityDrainTask = Task { [weak self] in
+            await self?.drainScreenVisibilityQueue(queueGeneration: queueGeneration)
+        }
+    }
+
+    private func drainScreenVisibilityQueue(queueGeneration: UUID) async {
+        while queueGeneration == screenVisibilityQueueGeneration,
+              !screenVisibilityQueue.isEmpty {
+            let operation = screenVisibilityQueue.removeFirst()
+            let reachedTarget = await performScreenVisibilityOperation(operation)
+            operation.completion?(reachedTarget)
+        }
+        guard queueGeneration == screenVisibilityQueueGeneration else { return }
+        screenVisibilityDrainTask = nil
+        if !screenVisibilityQueue.isEmpty {
+            startScreenVisibilityDrainIfNeeded()
+        }
+    }
+
+    private func performScreenVisibilityOperation(
+        _ operation: QueuedScreenVisibilityOperation
+    ) async -> Bool {
+        guard screenVisibilityOperationIsOwned(operation) else { return false }
+
+        if operation.isVisible {
+            guard currentScreenPresentationLease == operation.lease else {
+                retireScreenVisibilityOperation(operation)
+                return false
+            }
+            revokeScreenPresentationLocally(
+                for: operation.lease,
+                clearActiveOwnership: true
+            )
+        } else {
+            revokeScreenPresentationLocally(
+                for: operation.lease,
+                clearActiveOwnership: false
+            )
+            if !screenPresentationNeedsRemoteHide(operation.lease) {
+                retireScreenVisibilityOperation(operation)
                 return true
             }
-            return false
         }
-        // Passive lifecycle notifications are global and may arrive while a worldwide peer is
-        // merely negotiating. A locally hidden screen with no remembered remote Show is already
-        // at the safe target and must not tear down that unrelated connection.
-        if !visible, visibilityRequestCanReuseCurrentState(false) {
-            return true
-        }
-        guard canViewScreen else {
-            if visible {
-                acceptsActiveScreenAcknowledgement = false
-                lastError = "The secure screen-control channel is not ready yet."
-            } else {
-                isScreenVisible = false
-                failSession(
-                    "The Mac could not be told to stop screen sharing, so the session was closed for privacy.",
-                    generation: sessionGeneration
+
+        guard screenVisibilityTransportIsAvailable(operation.expectedPeer),
+              canViewScreen else {
+            let shouldFailClosed = !operation.isVisible
+                && screenPresentationNeedsRemoteHide(operation.lease)
+            if shouldFailClosed {
+                failScreenVisibilityOperation(
+                    operation,
+                    message: "The Mac could not be told to stop screen sharing, so the session was closed for privacy."
                 )
+            } else {
+                retireScreenVisibilityOperation(operation)
+                if operation.isVisible,
+                   screenVisibilityOperationIsSessionOwned(operation) {
+                    lastError = "The secure screen-control channel is not ready yet."
+                }
             }
             return false
         }
-        if visibilityRequestCanReuseCurrentState(visible) {
-            return true
-        }
 
-        // A later Hide must supersede an in-flight Show (and vice versa). The ordered channel
-        // preserves command order, while request IDs ensure a late acknowledgement cannot win.
-        completePendingScreenVisibilityRequest(success: false)
-        let generation = sessionGeneration
-        if visible {
+        screenVisibilityOperationGeneration = operation.operationID
+        if operation.isVisible {
+            acceptsActiveScreenAcknowledgement = true
+            remoteScreenOwnerLease = operation.lease
             remoteHideRequired = true
+        } else {
+            acceptsActiveScreenAcknowledgement = false
         }
 
         do {
+            guard screenVisibilityOperationIsOwned(operation) else { return false }
             let requestID = try await sendScreenVisibilityRequest(
-                visible,
-                expectedPeer: visibilityPeer
+                operation.isVisible,
+                lease: operation.lease,
+                operationID: operation.operationID,
+                expectedPeer: operation.expectedPeer
             )
-            guard generation == sessionGeneration,
-                  screenVisibilityTransportStillMatches(visibilityPeer),
-                  operationGeneration == screenVisibilityOperationGeneration,
-                  !visible || acceptsActiveScreenAcknowledgement else {
+            #if DEBUG
+            if let debugScreenVisibilityPostSendHook {
+                await debugScreenVisibilityPostSendHook(
+                    WorldwideScreenVisibilityPostSendDebugEvent(
+                        request: WorldwideScreenVisibilityDebugRequest(
+                            lease: operation.lease,
+                            operationID: operation.operationID,
+                            isVisible: operation.isVisible,
+                            expectedPeer: operation.expectedPeer
+                        ),
+                        requestID: requestID
+                    )
+                )
+            }
+            #endif
+            guard screenVisibilityOperationIsOwned(operation) else {
+                retireScreenVisibilityRequestKey(
+                    WorldwideScreenVisibilityRequestKey(
+                        sessionGeneration: operation.sessionGeneration,
+                        requestID: requestID
+                    )
+                )
+                #if DEBUG
+                notifyDebugScreenVisibilityPostSendProcessed(operation.operationID)
+                #endif
                 return false
             }
-            stateText = visible ? "Starting Mac screen" : "Stopping Mac screen"
+            #if DEBUG
+            notifyDebugScreenVisibilityPostSendProcessed(operation.operationID)
+            #endif
+
+            let key = WorldwideScreenVisibilityRequestKey(
+                sessionGeneration: operation.sessionGeneration,
+                requestID: requestID
+            )
+            stateText = operation.isVisible
+                ? "Starting Mac screen"
+                : "Stopping Mac screen"
 
             let reachedTarget = await withCheckedContinuation { continuation in
-                if let received = earlyControlAcknowledgements.removeValue(forKey: requestID) {
+                if let received = earlyControlAcknowledgements.removeValue(forKey: key) {
+                    guard screenAcknowledgementPeer(
+                        received.sourcePeer,
+                        matches: operation.expectedPeer
+                    ), screenVisibilityOperationIsOwned(operation) else {
+                        received.inputAuthorization?.revoke()
+                        retireScreenVisibilityRequestKey(key)
+                        continuation.resume(returning: false)
+                        return
+                    }
                     let reachedTarget = applyControlAcknowledgement(
                         received.acknowledgement,
                         inputAuthorization: received.inputAuthorization,
-                        requestedVisibility: visible
+                        pending: PendingScreenVisibilityRequest(
+                            key: key,
+                            isVisible: operation.isVisible,
+                            lease: operation.lease,
+                            operationID: operation.operationID,
+                            sessionGeneration: operation.sessionGeneration,
+                            queueGeneration: operation.queueGeneration,
+                            expectedPeer: operation.expectedPeer,
+                            continuation: continuation
+                        )
                     )
+                    retireScreenVisibilityRequestKey(key)
                     continuation.resume(returning: reachedTarget)
                     return
                 }
 
+                #if DEBUG
+                installPendingScreenVisibilityRequest(
+                    PendingScreenVisibilityRequest(
+                        key: key,
+                        isVisible: operation.isVisible,
+                        lease: operation.lease,
+                        operationID: operation.operationID,
+                        sessionGeneration: operation.sessionGeneration,
+                        queueGeneration: operation.queueGeneration,
+                        expectedPeer: operation.expectedPeer,
+                        continuation: continuation
+                    )
+                )
+                notifyDebugPendingScreenVisibilityWaiters(key)
+                #else
                 pendingScreenVisibilityRequest = PendingScreenVisibilityRequest(
-                    id: requestID,
-                    isVisible: visible,
-                    sessionGeneration: generation,
-                    operationGeneration: operationGeneration,
+                    key: key,
+                    isVisible: operation.isVisible,
+                    lease: operation.lease,
+                    operationID: operation.operationID,
+                    sessionGeneration: operation.sessionGeneration,
+                    queueGeneration: operation.queueGeneration,
+                    expectedPeer: operation.expectedPeer,
                     continuation: continuation
                 )
+                #endif
                 controlAcknowledgementTimeoutTask?.cancel()
                 controlAcknowledgementTimeoutTask = Task { [weak self] in
                     do {
@@ -369,69 +864,98 @@ final class WorldwideSessionViewModel: ObservableObject {
                         return
                     }
                     self?.controlAcknowledgementTimedOut(
-                        requestID: requestID,
-                        generation: generation,
-                        operationGeneration: operationGeneration
+                        key: key,
+                        lease: operation.lease,
+                        operationID: operation.operationID,
+                        expectedPeer: operation.expectedPeer,
+                        queueGeneration: operation.queueGeneration
                     )
                 }
             }
-            guard generation == sessionGeneration,
-                  screenVisibilityTransportStillMatches(visibilityPeer),
-                  operationGeneration == screenVisibilityOperationGeneration else {
+
+            guard screenVisibilityOperationIsOwned(operation) else { return false }
+            if !operation.isVisible, !reachedTarget {
+                failScreenVisibilityOperation(
+                    operation,
+                    message: "The Mac did not confirm that screen sharing stopped, so the session was closed for privacy."
+                )
                 return false
             }
-            if !visible, !reachedTarget {
-                failSession(
-                    "The Mac did not confirm that screen sharing stopped, so the session was closed for privacy.",
-                    generation: generation
-                )
-            }
+            retireScreenVisibilityOperation(operation)
             return reachedTarget
         } catch {
-            guard generation == sessionGeneration,
-                  screenVisibilityTransportStillMatches(visibilityPeer),
-                  operationGeneration == screenVisibilityOperationGeneration else {
-                return false
-            }
-            if !visible {
-                isScreenVisible = false
-                failSession(
-                    "The Mac could not be told to stop screen sharing, so the session was closed for privacy.",
-                    generation: generation
+            guard screenVisibilityOperationIsOwned(operation) else { return false }
+            if operation.isVisible {
+                failScreenVisibilityOperation(
+                    operation,
+                    message: "The Mac could not confirm whether screen sharing started, so the session was closed for privacy."
                 )
-                return false
             } else {
-                acceptsActiveScreenAcknowledgement = false
-                failSession(
-                    "The Mac could not confirm whether screen sharing started, so the session was closed for privacy.",
-                    generation: generation
+                failScreenVisibilityOperation(
+                    operation,
+                    message: "The Mac could not be told to stop screen sharing, so the session was closed for privacy."
                 )
-                return false
             }
+            return false
         }
     }
 
-    private func visibilityRequestCanReuseCurrentState(_ visible: Bool) -> Bool {
-        pendingScreenVisibilityRequest == nil
-            && visible == isScreenVisible
-            && (visible || !remoteHideRequired)
+    private func screenVisibilityOperationIsSessionOwned(
+        _ operation: QueuedScreenVisibilityOperation
+    ) -> Bool {
+        guard operation.sessionGeneration == sessionGeneration,
+              operation.queueGeneration == screenVisibilityQueueGeneration else {
+            return false
+        }
+        if let expectedPeer = operation.expectedPeer {
+            return peer === expectedPeer
+        }
+        #if DEBUG
+        return peer == nil
+            && (debugScreenVisibilityRequestSender != nil
+                || debugScreenVisibilityRequestSenderV2 != nil)
+        #else
+        return false
+        #endif
+    }
+
+    private func screenVisibilityOperationIsOwned(
+        _ operation: QueuedScreenVisibilityOperation
+    ) -> Bool {
+        guard screenVisibilityOperationIsSessionOwned(operation) else { return false }
+        if operation.isVisible {
+            return currentScreenPresentationLease == operation.lease
+                && screenShowOperationByLeaseID[operation.lease.id] == operation.operationID
+        }
+        return screenTeardownOperationByLeaseID[operation.lease.id] == operation.operationID
+    }
+
+    private func retireScreenVisibilityOperation(
+        _ operation: QueuedScreenVisibilityOperation
+    ) {
+        if operation.isVisible {
+            if screenShowOperationByLeaseID[operation.lease.id] == operation.operationID {
+                screenShowOperationByLeaseID.removeValue(forKey: operation.lease.id)
+            }
+        } else if screenTeardownOperationByLeaseID[operation.lease.id]
+            == operation.operationID {
+            screenTeardownOperationByLeaseID.removeValue(forKey: operation.lease.id)
+        }
+    }
+
+    private func failScreenVisibilityOperation(
+        _ operation: QueuedScreenVisibilityOperation,
+        message: String
+    ) {
+        guard screenVisibilityOperationIsOwned(operation) else { return }
+        failSession(message, generation: operation.sessionGeneration)
     }
 
     private func screenVisibilityTransportIsAvailable(_ expectedPeer: WebRTCPeer?) -> Bool {
         if expectedPeer != nil { return true }
         #if DEBUG
         return debugScreenVisibilityRequestSender != nil
-        #else
-        return false
-        #endif
-    }
-
-    private func screenVisibilityTransportStillMatches(_ expectedPeer: WebRTCPeer?) -> Bool {
-        if let expectedPeer {
-            return peer === expectedPeer
-        }
-        #if DEBUG
-        return peer == nil && debugScreenVisibilityRequestSender != nil
+            || debugScreenVisibilityRequestSenderV2 != nil
         #else
         return false
         #endif
@@ -439,9 +963,21 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func sendScreenVisibilityRequest(
         _ visible: Bool,
+        lease: WorldwideScreenPresentationLease,
+        operationID: UUID,
         expectedPeer: WebRTCPeer?
     ) async throws -> UInt64 {
         #if DEBUG
+        if let debugScreenVisibilityRequestSenderV2 {
+            return try await debugScreenVisibilityRequestSenderV2(
+                WorldwideScreenVisibilityDebugRequest(
+                    lease: lease,
+                    operationID: operationID,
+                    isVisible: visible,
+                    expectedPeer: expectedPeer
+                )
+            )
+        }
         if let debugScreenVisibilityRequestSender {
             return try await debugScreenVisibilityRequestSender(visible)
         }
@@ -451,6 +987,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
         return try await expectedPeer.setScreenVisible(visible)
     }
+
 
     func sendRemoteTap(normalizedPoint: CGPoint) {
         guard isRemoteInputAvailable,
@@ -818,6 +1355,7 @@ final class WorldwideSessionViewModel: ObservableObject {
                 guard !Task.isCancelled else { return }
                 await self?.handlePeerEvent(
                     event,
+                    peer: peer,
                     signaling: signaling,
                     generation: generation
                 )
@@ -838,10 +1376,12 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func handlePeerEvent(
         _ event: WebRTCTransportEvent,
+        peer sourcePeer: WebRTCPeer,
         signaling: RendezvousSignalingClient,
         generation: UUID
     ) async {
-        guard generation == sessionGeneration else { return }
+        guard generation == sessionGeneration,
+              peer === sourcePeer else { return }
 
         switch event {
         case .outboundSignal(let payload):
@@ -923,7 +1463,9 @@ final class WorldwideSessionViewModel: ObservableObject {
         case .controlAcknowledgementReceived(let acknowledgement, let inputAuthorization):
             await handleControlAcknowledgement(
                 acknowledgement,
-                inputAuthorization: inputAuthorization
+                inputAuthorization: inputAuthorization,
+                sourcePeer: sourcePeer,
+                sourceGeneration: generation
             )
 
         case .inputRequestReceived:
@@ -1028,14 +1570,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         retireIOSPlayoutRecoveryAttempt()
         audioLifecycle.stop()
         remoteAudioTrack = nil
-        acceptsActiveScreenAcknowledgement = false
-        remoteHideRequired = false
-        screenVisibilityOperationGeneration = UUID()
-        invalidateRemoteInputState()
-        completePendingScreenVisibilityRequest(success: false)
-        controlAcknowledgementTimeoutTask?.cancel()
-        controlAcknowledgementTimeoutTask = nil
-        clearEarlyControlAcknowledgements()
+        resetScreenPresentationState(
+            rotateQueueGeneration: true,
+            clearRequestHistory: true
+        )
         hasHandledRemoteOffer = false
         recoveryProofEpoch = 0
         recoveryProofRequired = false
@@ -1066,10 +1604,10 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     private func resetPublishedSessionState() {
-        acceptsActiveScreenAcknowledgement = false
-        remoteHideRequired = false
-        screenVisibilityOperationGeneration = UUID()
-        invalidateRemoteInputState()
+        resetScreenPresentationState(
+            rotateQueueGeneration: true,
+            clearRequestHistory: true
+        )
         lastError = nil
         lastDiagnostic = nil
         lastICECandidateError = nil
@@ -1094,8 +1632,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     /// A signaling/ICE success is not proof that iOS is actually rendering full-band stereo.
-    /// Poll the custom output-only RemoteIO long enough to observe its realtime callback, and
-    /// publish the native failure instead of claiming "Playing" on a call/HFP-style route.
+    /// Recovery owns an immutable pre-request regression baseline; its first post-authorization
+    /// snapshot establishes the new cumulative-counter floor.
     @discardableResult
     private func beginIOSPlayoutProof(
         requestRecovery: Bool
@@ -1103,116 +1641,150 @@ final class WorldwideSessionViewModel: ObservableObject {
         retireIOSPlayoutRecoveryAttempt()
         audioPlayoutProofTask?.cancel()
         guard let proofPeer = peer else { return nil }
-        let generation = sessionGeneration
-        let recoveryAuthorization: WebRTCIOSPlayoutRecoveryAuthorization?
-        if requestRecovery {
-            let authorization = WebRTCIOSPlayoutRecoveryAuthorization()
-            audioPlayoutRecoveryAuthorization = authorization
-            recoveryAuthorization = authorization
-        } else {
-            recoveryAuthorization = nil
+
+        audioLifecycle.updateRuntimePlayout(isReady: false)
+        let attempt = IOSPlayoutProofAttempt(
+            sessionGeneration: sessionGeneration,
+            expectedPeer: proofPeer,
+            stage: requestRecovery ? .awaitingRecoveryBaseline : .awaitingInitialFloor
+        )
+        iosPlayoutProofAttempt = attempt
+        audioPlayoutProofTimeoutTask?.cancel()
+        audioPlayoutProofTimeoutTask = Task { [weak self, weak attempt] in
+            do {
+                try await Task.sleep(for: .seconds(2))
+            } catch {
+                return
+            }
+            guard let self, let attempt else { return }
+            self.failIOSPlayoutProofTimeout(attempt)
         }
-        let proofTask = Task { [weak self] in
-            guard let self else { return }
-            if let recoveryAuthorization {
-                guard !Task.isCancelled,
-                      generation == sessionGeneration,
-                      peer === proofPeer,
-                      audioPlayoutRecoveryAuthorization === recoveryAuthorization else {
+
+        let proofTask = Task { [weak self, weak attempt] in
+            guard let self, let attempt else { return }
+            var remainingPolls = 40
+
+            if requestRecovery {
+                var capturedRecoveryBaseline = false
+                while remainingPolls > 0 {
+                    guard iosPlayoutProofAttemptIsOwned(attempt) else { return }
+                    if let diagnostics = await ownedIOSPlayoutDiagnostics(
+                        for: attempt,
+                        from: proofPeer
+                    ) {
+                        guard iosPlayoutProofAttemptIsOwned(attempt),
+                              attempt.stage == .awaitingRecoveryBaseline else { return }
+                        attempt.captureRecoveryBaseline(
+                            callbackCount: diagnostics.playoutCallbackCount,
+                            frameCount: diagnostics.playoutFrameCount,
+                            failureCount: diagnostics.playoutFailureCount
+                        )
+                        capturedRecoveryBaseline = true
+                        break
+                    }
+                    remainingPolls -= 1
+                    guard await waitForIOSPlayoutProofPoll(attempt) else { return }
+                }
+
+                guard capturedRecoveryBaseline, remainingPolls > 0,
+                      iosPlayoutProofAttemptIsOwned(attempt) else {
+                    failIOSPlayoutProofTimeout(attempt)
+                    return
+                }
+
+                let authorization = WebRTCIOSPlayoutRecoveryAuthorization()
+                attempt.recoveryAuthorization = authorization
+                attempt.stage = .awaitingRecoveryAuthorization
+                audioPlayoutRecoveryAuthorization = authorization
+
+                guard iosPlayoutProofAttemptIsOwned(attempt),
+                      attempt.recoveryAuthorization === authorization,
+                      audioPlayoutRecoveryAuthorization === authorization else {
+                    authorization.revoke()
                     return
                 }
                 await requestIOSPlayoutRecovery(
                     on: proofPeer,
-                    authorization: recoveryAuthorization
+                    authorization: authorization
                 )
+                guard iosPlayoutProofAttemptIsOwned(attempt),
+                      attempt.recoveryAuthorization === authorization,
+                      audioPlayoutRecoveryAuthorization === authorization else {
+                    authorization.revoke()
+                    return
+                }
             }
 
-            for _ in 0..<40 {
-                if let recoveryAuthorization {
-                    guard !Task.isCancelled,
-                          generation == sessionGeneration,
-                          peer === proofPeer,
-                          audioPlayoutRecoveryAuthorization === recoveryAuthorization else {
-                        return
-                    }
-                    // The native gate is consumed only after the queued ADM recovery block has
-                    // finished. Do not mistake its pre-recovery failure snapshot for the result
-                    // of the new attempt.
-                    if recoveryAuthorization.isValid {
-                        #if DEBUG
-                        debugIOSPlayoutRecoveryPendingObserver?()
-                        #endif
-                        do {
-                            try await Task.sleep(for: .milliseconds(50))
-                        } catch {
-                            return
-                        }
-                        continue
-                    }
+            while remainingPolls > 0 {
+                guard iosPlayoutProofAttemptIsOwned(attempt) else { return }
+                if attempt.recoveryAuthorization?.isValid == true {
+                    #if DEBUG
+                    debugIOSPlayoutRecoveryPendingObserver?()
+                    #endif
+                    remainingPolls -= 1
+                    guard await waitForIOSPlayoutProofPoll(attempt) else { return }
+                    continue
                 }
+
                 if let diagnostics = await ownedIOSPlayoutDiagnostics(
-                    from: proofPeer,
-                    sessionGeneration: generation
-                ),
-                   applyIOSPlayoutDiagnostics(diagnostics) {
+                    for: attempt,
+                    from: proofPeer
+                ), evaluateIOSPlayoutDiagnostics(diagnostics, for: attempt) {
                     return
                 }
-                do {
-                    try await Task.sleep(for: .milliseconds(50))
-                } catch {
-                    return
-                }
+                remainingPolls -= 1
+                guard await waitForIOSPlayoutProofPoll(attempt) else { return }
             }
 
-            guard !Task.isCancelled,
-                  generation == sessionGeneration,
-                  peer === proofPeer else { return }
-            audioLifecycle.updateRuntimePlayout(
-                isReady: false,
-                failureMessage: "The iPhone audio output did not start in full-quality stereo.",
-                diagnostic: "RemoteIO produced no verified playout callback within two seconds."
-            )
+            failIOSPlayoutProofTimeout(attempt)
         }
         audioPlayoutProofTask = proofTask
         return proofTask
     }
 
+    private func waitForIOSPlayoutProofPoll(
+        _ attempt: IOSPlayoutProofAttempt
+    ) async -> Bool {
+        guard iosPlayoutProofAttemptIsOwned(attempt) else { return false }
+        do {
+            try await Task.sleep(for: .milliseconds(50))
+        } catch {
+            return false
+        }
+        return iosPlayoutProofAttemptIsOwned(attempt)
+    }
+
     private func refreshIOSPlayoutProof() {
-        guard let proofPeer = peer else { return }
-        let generation = sessionGeneration
-        Task { [weak self] in
-            await self?.refreshIOSPlayoutProof(
-                from: proofPeer,
-                sessionGeneration: generation
-            )
+        guard let proofPeer = peer,
+              let attempt = iosPlayoutProofAttempt,
+              attempt.expectedPeer === proofPeer else { return }
+        Task { [weak self, weak attempt] in
+            guard let self, let attempt else { return }
+            await refreshIOSPlayoutProof(for: attempt, from: proofPeer)
         }
     }
 
     private func refreshIOSPlayoutProof(
-        from proofPeer: WebRTCPeer,
-        sessionGeneration generation: UUID
+        for attempt: IOSPlayoutProofAttempt,
+        from proofPeer: WebRTCPeer
     ) async {
-        let recoveryAuthorization = audioPlayoutRecoveryAuthorization
-        guard recoveryAuthorization?.isValid != true else { return }
+        guard iosPlayoutProofAttemptIsOwned(attempt),
+              attempt.stage != .awaitingRecoveryBaseline,
+              attempt.recoveryAuthorization?.isValid != true else { return }
         guard let diagnostics = await ownedIOSPlayoutDiagnostics(
-            from: proofPeer,
-            sessionGeneration: generation
+            for: attempt,
+            from: proofPeer
         ) else { return }
-        // Statistics can arrive while an explicit native rebuild is queued. Accept only a
-        // snapshot owned by the exact recovery state captured before the suspension; otherwise a
-        // pre-recovery failure could disable audio while the current attempt is still pending.
-        guard audioPlayoutRecoveryAuthorization === recoveryAuthorization,
-              recoveryAuthorization?.isValid != true else { return }
-        _ = applyIOSPlayoutDiagnostics(diagnostics)
+        _ = evaluateIOSPlayoutDiagnostics(diagnostics, for: attempt)
     }
 
     private func ownedIOSPlayoutDiagnostics(
-        from proofPeer: WebRTCPeer,
-        sessionGeneration generation: UUID
+        for attempt: IOSPlayoutProofAttempt,
+        from proofPeer: WebRTCPeer
     ) async -> WebRTCIOSPlayoutDiagnostics? {
         guard !Task.isCancelled,
-              generation == sessionGeneration,
-              peer === proofPeer else { return nil }
+              iosPlayoutProofAttemptIsOwned(attempt),
+              attempt.expectedPeer === proofPeer else { return nil }
 
         let diagnostics: WebRTCIOSPlayoutDiagnostics?
         #if DEBUG
@@ -1226,8 +1798,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         #endif
 
         guard !Task.isCancelled,
-              generation == sessionGeneration,
-              peer === proofPeer else { return nil }
+              iosPlayoutProofAttemptIsOwned(attempt),
+              attempt.expectedPeer === proofPeer else { return nil }
         return diagnostics
     }
 
@@ -1244,55 +1816,164 @@ final class WorldwideSessionViewModel: ObservableObject {
         await proofPeer.requestIOSPlayoutRecovery(authorization: authorization)
     }
 
-    private func retireIOSPlayoutRecoveryAttempt() {
-        let authorization = audioPlayoutRecoveryAuthorization
-        audioPlayoutRecoveryAuthorization = nil
+    private func iosPlayoutProofAttemptIsOwned(
+        _ attempt: IOSPlayoutProofAttempt
+    ) -> Bool {
+        guard iosPlayoutProofAttempt === attempt,
+              attempt.sessionGeneration == sessionGeneration else { return false }
+        if let expectedPeer = attempt.expectedPeer {
+            return peer === expectedPeer
+        }
+        return true
+    }
+
+    #if DEBUG
+    private func iosPlayoutProofAttempt(
+        matches handle: WorldwideIOSPlayoutProofDebugHandle
+    ) -> IOSPlayoutProofAttempt? {
+        guard let attempt = iosPlayoutProofAttempt,
+              attempt.proofAttemptID == handle.proofAttemptID,
+              attempt.counterWindowID == handle.counterWindowID,
+              attempt.sessionGeneration == handle.sessionGeneration,
+              iosPlayoutProofAttemptIsOwned(attempt) else { return nil }
+        return attempt
+    }
+    #endif
+
+    private func retireIOSPlayoutRecoveryAttempt(
+        _ expectedAttempt: IOSPlayoutProofAttempt? = nil
+    ) {
+        if let expectedAttempt, iosPlayoutProofAttempt !== expectedAttempt { return }
+        let attempt = iosPlayoutProofAttempt
+        let authorization = attempt?.recoveryAuthorization
+            ?? audioPlayoutRecoveryAuthorization
+        audioPlayoutProofTimeoutTask?.cancel()
+        audioPlayoutProofTimeoutTask = nil
+        iosPlayoutProofAttempt = nil
+        if audioPlayoutRecoveryAuthorization === authorization {
+            audioPlayoutRecoveryAuthorization = nil
+        }
+        attempt?.recoveryAuthorization = nil
         authorization?.revoke()
     }
 
-    /// Returns true once the snapshot is terminal for the current proof attempt: either verified
-    /// media playout or a concrete native failure. Incomplete startup snapshots keep polling.
+    private func failIOSPlayoutProofTimeout(_ attempt: IOSPlayoutProofAttempt) {
+        guard iosPlayoutProofAttemptIsOwned(attempt) else { return }
+        retireIOSPlayoutRecoveryAttempt(attempt)
+        audioLifecycle.updateRuntimePlayout(
+            isReady: false,
+            failureMessage: "The iPhone audio output did not start in full-quality stereo.",
+            diagnostic: "RemoteIO produced no verified playout callback within two seconds."
+        )
+    }
+
+    /// Returns true when this exact proof window reaches a terminal healthy or failed state.
     @discardableResult
-    private func applyIOSPlayoutDiagnostics(
-        _ diagnostics: WebRTCIOSPlayoutDiagnostics
+    private func evaluateIOSPlayoutDiagnostics(
+        _ diagnostics: WebRTCIOSPlayoutDiagnostics,
+        for attempt: IOSPlayoutProofAttempt
     ) -> Bool {
+        guard iosPlayoutProofAttemptIsOwned(attempt) else { return false }
+
+        if let authorization = attempt.recoveryAuthorization {
+            guard audioPlayoutRecoveryAuthorization === authorization else { return false }
+            if authorization.isValid { return false }
+            if attempt.stage == .awaitingRecoveryAuthorization {
+                attempt.stage = .awaitingPostRecoveryFloor
+            }
+        }
+
+        if let callbackRegressionFloor = attempt.lastCallbackCount
+            ?? attempt.recoveryBaseline?.callbackCount,
+           diagnostics.playoutCallbackCount < callbackRegressionFloor {
+            return failIOSPlayoutProof(
+                attempt,
+                diagnostics: diagnostics,
+                diagnosticOverride: "RemoteIO callback counter regressed from \(callbackRegressionFloor) to \(diagnostics.playoutCallbackCount)."
+            )
+        }
+        if let frameRegressionFloor = attempt.lastFrameCount
+            ?? attempt.recoveryBaseline?.frameCount,
+           diagnostics.playoutFrameCount < frameRegressionFloor {
+            return failIOSPlayoutProof(
+                attempt,
+                diagnostics: diagnostics,
+                diagnosticOverride: "RemoteIO frame counter regressed from \(frameRegressionFloor) to \(diagnostics.playoutFrameCount)."
+            )
+        }
+        if let failureRegressionFloor = attempt.lastFailureCount
+            ?? attempt.recoveryBaseline?.failureCount,
+           diagnostics.playoutFailureCount < failureRegressionFloor {
+            return failIOSPlayoutProof(
+                attempt,
+                diagnostics: diagnostics,
+                diagnosticOverride: "RemoteIO failure counter regressed from \(failureRegressionFloor) to \(diagnostics.playoutFailureCount)."
+            )
+        }
+
+        guard diagnostics.playoutFailureCount == attempt.permittedFailureFloor else {
+            return failIOSPlayoutProof(attempt, diagnostics: diagnostics)
+        }
+        guard diagnostics.failureCode == 0,
+              diagnostics.lastLifecycleStatus == noErr,
+              diagnostics.lastPlayoutStatus == noErr,
+              diagnostics.unexpectedRecordingRequestCount == 0,
+              !diagnostics.inputBusEnabled,
+              !diagnostics.recoveryRequired,
+              !diagnostics.explicitResumeRequired else {
+            return failIOSPlayoutProof(attempt, diagnostics: diagnostics)
+        }
+
+        attempt.lastCallbackCount = diagnostics.playoutCallbackCount
+        attempt.lastFrameCount = diagnostics.playoutFrameCount
+        attempt.lastFailureCount = diagnostics.playoutFailureCount
+
+        if attempt.stage == .awaitingInitialFloor
+            || attempt.stage == .awaitingPostRecoveryFloor {
+            attempt.callbackFloor = diagnostics.playoutCallbackCount
+            attempt.frameFloor = diagnostics.playoutFrameCount
+            attempt.stage = .awaitingFreshEvidence
+            audioLifecycle.updateRuntimePlayout(isReady: false)
+            return false
+        }
+
+        guard attempt.stage == .awaitingFreshEvidence,
+              let callbackFloor = attempt.callbackFloor,
+              let frameFloor = attempt.frameFloor else { return false }
+
         let usesRemoteIO = diagnostics.audioUnitSubType == kAudioUnitSubType_RemoteIO
-        let isHealthy = diagnostics.initialized
+        let fullQualityInvariantsHold = diagnostics.initialized
             && diagnostics.playoutInitialized
             && diagnostics.playing
             && diagnostics.sessionActive
             && diagnostics.ownsSessionActivation
             && diagnostics.remoteIOCreated
-            && !diagnostics.inputBusEnabled
             && diagnostics.outputBusEnabled
-            && !diagnostics.recoveryRequired
-            && !diagnostics.explicitResumeRequired
             && diagnostics.categoryIsMediaPlayback
             && diagnostics.modeIsDefault
             && abs(diagnostics.sampleRate - 48_000) < 1
             && diagnostics.outputChannelCount == 2
             && usesRemoteIO
-            && diagnostics.playoutCallbackCount > 0
-            && diagnostics.playoutFailureCount == 0
-            && diagnostics.unexpectedRecordingRequestCount == 0
-            && diagnostics.lastPlayoutStatus == noErr
+        let hasFreshCallbackAndFrames = diagnostics.playoutCallbackCount > callbackFloor
+            && diagnostics.playoutFrameCount > frameFloor
 
-        if isHealthy {
-            audioLifecycle.updateRuntimePlayout(isReady: true)
-            return true
-        }
-
-        let nativeFailure = diagnostics.failureCode != 0
-            || diagnostics.playoutFailureCount > 0
-            || diagnostics.unexpectedRecordingRequestCount > 0
-            || diagnostics.lastPlayoutStatus != noErr
-            || diagnostics.recoveryRequired
-            || diagnostics.explicitResumeRequired
-        guard nativeFailure else {
+        guard fullQualityInvariantsHold, hasFreshCallbackAndFrames else {
             audioLifecycle.updateRuntimePlayout(isReady: false)
             return false
         }
 
+        retireIOSPlayoutRecoveryAttempt(attempt)
+        audioLifecycle.updateRuntimePlayout(isReady: true)
+        return true
+    }
+
+    @discardableResult
+    private func failIOSPlayoutProof(
+        _ attempt: IOSPlayoutProofAttempt,
+        diagnostics: WebRTCIOSPlayoutDiagnostics,
+        diagnosticOverride: String? = nil
+    ) -> Bool {
+        guard iosPlayoutProofAttemptIsOwned(attempt) else { return false }
         let message: String
         if diagnostics.unexpectedRecordingRequestCount > 0 || diagnostics.inputBusEnabled {
             message = "The iPhone refused audio because the route tried to use a call-style input path."
@@ -1304,8 +1985,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         } else {
             message = "The iPhone full-quality stereo output could not start."
         }
-        let diagnostic = diagnostics.failureMessage
+        let diagnostic = diagnosticOverride
+            ?? diagnostics.failureMessage
             ?? "RemoteIO failure=\(diagnostics.failureCode), status=\(diagnostics.lastLifecycleStatus), renderStatus=\(diagnostics.lastPlayoutStatus), callbacks=\(diagnostics.playoutCallbackCount), failures=\(diagnostics.playoutFailureCount), recordRequests=\(diagnostics.unexpectedRecordingRequestCount)."
+        retireIOSPlayoutRecoveryAttempt(attempt)
         audioLifecycle.updateRuntimePlayout(
             isReady: false,
             failureMessage: message,
@@ -1316,25 +1999,29 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func handleControlAcknowledgement(
         _ acknowledgement: WebRTCControlAcknowledgement,
-        inputAuthorization: WebRTCInputAuthorization?
+        inputAuthorization: WebRTCInputAuthorization?,
+        sourcePeer: WebRTCPeer?,
+        sourceGeneration: UUID
     ) async {
-        // An Active acknowledgement without a currently accepted Show must never reinstall
-        // capability or focus. Keep processing the metadata with its authorization revoked:
-        // an Active-for-Hide acknowledgement must fail the Hide immediately rather than wait for
-        // its timeout, and an extremely early acknowledgement must remain correlatable by ID.
-        let safeInputAuthorization: WebRTCInputAuthorization?
-        if acknowledgement.state == .active,
-           !acceptsActiveScreenAcknowledgement {
-            remoteHideRequired = true
+        let key = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: sourceGeneration,
+            requestID: acknowledgement.id
+        )
+        guard sourceGeneration == sessionGeneration,
+              screenAcknowledgementPeerMatchesCurrent(sourcePeer) else {
             inputAuthorization?.revoke()
-            safeInputAuthorization = nil
-        } else {
-            safeInputAuthorization = inputAuthorization
+            return
         }
-        if pendingRecoveryProbe?.requestID == acknowledgement.id {
+        if retiredScreenVisibilityRequestKeys.contains(key) {
+            inputAuthorization?.revoke()
+            return
+        }
+        if pendingRecoveryProbe?.requestKey == key {
             await completeRecoveryProbe(
                 with: acknowledgement,
-                inputAuthorization: safeInputAuthorization
+                inputAuthorization: inputAuthorization,
+                sourcePeer: sourcePeer,
+                sourceGeneration: sourceGeneration
             )
             return
         }
@@ -1342,16 +2029,20 @@ final class WorldwideSessionViewModel: ObservableObject {
         guard let pending = pendingScreenVisibilityRequest else {
             cacheEarlyControlAcknowledgement(
                 acknowledgement,
-                inputAuthorization: safeInputAuthorization
+                key: key,
+                inputAuthorization: inputAuthorization,
+                sourcePeer: sourcePeer
             )
             return
         }
-        guard pending.sessionGeneration == sessionGeneration,
-              pending.operationGeneration == screenVisibilityOperationGeneration,
-              pending.id == acknowledgement.id else {
+        guard pending.key == key,
+              pendingScreenVisibilityRequestIsOwned(pending),
+              screenAcknowledgementPeer(sourcePeer, matches: pending.expectedPeer) else {
             cacheEarlyControlAcknowledgement(
                 acknowledgement,
-                inputAuthorization: safeInputAuthorization
+                key: key,
+                inputAuthorization: inputAuthorization,
+                sourcePeer: sourcePeer
             )
             return
         }
@@ -1361,32 +2052,171 @@ final class WorldwideSessionViewModel: ObservableObject {
         pendingScreenVisibilityRequest = nil
         let reachedTarget = applyControlAcknowledgement(
             acknowledgement,
-            inputAuthorization: safeInputAuthorization,
-            requestedVisibility: pending.isVisible
+            inputAuthorization: inputAuthorization,
+            pending: pending
         )
+        retireScreenVisibilityRequestKey(key)
         pending.continuation.resume(returning: reachedTarget)
+    }
+
+    private func screenAcknowledgementPeerMatchesCurrent(_ sourcePeer: WebRTCPeer?) -> Bool {
+        if let sourcePeer {
+            return peer === sourcePeer
+        }
+        #if DEBUG
+        return peer == nil
+            && (debugScreenVisibilityRequestSender != nil
+                || debugScreenVisibilityRequestSenderV2 != nil)
+        #else
+        return false
+        #endif
+    }
+
+    private func screenAcknowledgementPeer(
+        _ sourcePeer: WebRTCPeer?,
+        matches expectedPeer: WebRTCPeer?
+    ) -> Bool {
+        if let expectedPeer {
+            return sourcePeer === expectedPeer
+        }
+        return sourcePeer == nil
+    }
+
+    private func pendingScreenVisibilityRequestIsOwned(
+        _ pending: PendingScreenVisibilityRequest
+    ) -> Bool {
+        guard pending.sessionGeneration == sessionGeneration,
+              pending.queueGeneration == screenVisibilityQueueGeneration else {
+            return false
+        }
+        if pending.isVisible {
+            return currentScreenPresentationLease == pending.lease
+                && screenShowOperationByLeaseID[pending.lease.id] == pending.operationID
+        }
+        return screenTeardownOperationByLeaseID[pending.lease.id] == pending.operationID
     }
 
     private func cacheEarlyControlAcknowledgement(
         _ acknowledgement: WebRTCControlAcknowledgement,
-        inputAuthorization: WebRTCInputAuthorization?
+        key: WorldwideScreenVisibilityRequestKey,
+        inputAuthorization: WebRTCInputAuthorization?,
+        sourcePeer: WebRTCPeer?
     ) {
-        // A local actor hop can let an extremely fast acknowledgement arrive before the caller
-        // installs either its UI continuation or the exact recovery-probe ID.
+        guard !retiredScreenVisibilityRequestKeys.contains(key) else {
+            inputAuthorization?.revoke()
+            return
+        }
+        let retainedInputAuthorization: WebRTCInputAuthorization?
+        if acknowledgement.state == .active,
+           let currentLease = currentScreenPresentationLease,
+           screenShowOperationByLeaseID[currentLease.id] != nil,
+           remoteScreenOwnerLease == currentLease {
+            retainedInputAuthorization = inputAuthorization
+        } else {
+            inputAuthorization?.revoke()
+            retainedInputAuthorization = nil
+        }
         if let replaced = earlyControlAcknowledgements.updateValue(
             ReceivedControlAcknowledgement(
                 acknowledgement: acknowledgement,
-                inputAuthorization: inputAuthorization
+                inputAuthorization: retainedInputAuthorization,
+                sourcePeer: sourcePeer
             ),
-            forKey: acknowledgement.id
+            forKey: key
         ) {
             replaced.inputAuthorization?.revoke()
         }
-        if earlyControlAcknowledgements.count > 4,
-           let oldest = earlyControlAcknowledgements.keys.min() {
+        if earlyControlAcknowledgements.count > 8,
+           let oldest = earlyControlAcknowledgements.keys.first {
             earlyControlAcknowledgements.removeValue(forKey: oldest)?
                 .inputAuthorization?.revoke()
         }
+    }
+
+    @discardableResult
+    private func applyControlAcknowledgement(
+        _ acknowledgement: WebRTCControlAcknowledgement,
+        inputAuthorization: WebRTCInputAuthorization?,
+        pending: PendingScreenVisibilityRequest
+    ) -> Bool {
+        if pending.isVisible {
+            guard acknowledgement.state == .active,
+                  currentScreenPresentationLease == pending.lease,
+                  pendingScreenVisibilityRequestIsOwned(pending),
+                  canViewScreen else {
+                inputAuthorization?.revoke()
+                acceptsActiveScreenAcknowledgement = false
+                if acknowledgement.state == .inactive,
+                   remoteScreenOwnerLease == pending.lease {
+                    remoteScreenOwnerLease = nil
+                }
+                if activeScreenPresentationLease == pending.lease {
+                    activeScreenPresentationLease = nil
+                }
+                isScreenVisible = false
+                remoteHideRequired = remoteScreenOwnerLease != nil
+                invalidateRemoteInputState()
+                if isPeerConnected {
+                    stateText = "Connected"
+                }
+                lastError = "The Mac could not start screen capture. Check Screen Recording permission."
+                return false
+            }
+
+            let capability = acknowledgement.inputCapability.flatMap { capability in
+                capability.screenRequestID == pending.key.requestID ? capability : nil
+            }
+            if acknowledgement.inputCapability != nil, capability == nil {
+                inputAuthorization?.revoke()
+            }
+            activeScreenPresentationLease = pending.lease
+            remoteScreenOwnerLease = pending.lease
+            isScreenVisible = true
+            acceptsActiveScreenAcknowledgement = false
+            remoteHideRequired = true
+            installRemoteInputCapability(
+                capability,
+                authorization: capability == nil ? nil : inputAuthorization
+            )
+            #if DEBUG
+            debugActiveScreenPresentationLease = pending.lease
+            #endif
+            stateText = "Screen live"
+            return true
+        }
+
+        inputAuthorization?.revoke()
+        acceptsActiveScreenAcknowledgement = false
+        guard acknowledgement.state == .inactive else {
+            remoteScreenOwnerLease = pending.lease
+            remoteHideRequired = true
+            if currentScreenPresentationLease == pending.lease {
+                isScreenVisible = false
+                invalidateRemoteInputState()
+            }
+            return false
+        }
+
+        if remoteScreenOwnerLease == pending.lease {
+            remoteScreenOwnerLease = nil
+        }
+        if activeScreenPresentationLease == pending.lease {
+            activeScreenPresentationLease = nil
+        }
+        #if DEBUG
+        if debugActiveScreenPresentationLease == pending.lease {
+            debugActiveScreenPresentationLease = nil
+        }
+        #endif
+        if currentScreenPresentationLease == pending.lease {
+            isScreenVisible = false
+            invalidateRemoteInputState()
+        }
+        remoteHideRequired = remoteScreenOwnerLease != nil
+        if isPeerConnected {
+            stateText = "Connected"
+        }
+        return true
     }
 
     private func sendRecoveryProbe(
@@ -1404,7 +2234,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         pendingRecoveryProbe = PendingRecoveryProbe(
             sessionGeneration: generation,
             epoch: epoch,
-            requestID: nil
+            requestKey: nil,
+            expectedPeer: peer
         )
         do {
             let requestID = try await peer.setScreenVisible(false)
@@ -1419,14 +2250,22 @@ final class WorldwideSessionViewModel: ObservableObject {
             pendingRecoveryProbe = PendingRecoveryProbe(
                 sessionGeneration: generation,
                 epoch: epoch,
+                requestKey: WorldwideScreenVisibilityRequestKey(
+                    sessionGeneration: generation,
+                    requestID: requestID
+                ),
+                expectedPeer: peer
+            )
+            let key = WorldwideScreenVisibilityRequestKey(
+                sessionGeneration: generation,
                 requestID: requestID
             )
-            if let received = earlyControlAcknowledgements.removeValue(
-                forKey: requestID
-            ) {
+            if let received = earlyControlAcknowledgements.removeValue(forKey: key) {
                 await completeRecoveryProbe(
                     with: received.acknowledgement,
-                    inputAuthorization: received.inputAuthorization
+                    inputAuthorization: received.inputAuthorization,
+                    sourcePeer: received.sourcePeer,
+                    sourceGeneration: generation
                 )
             }
         } catch {
@@ -1441,20 +2280,26 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func completeRecoveryProbe(
         with acknowledgement: WebRTCControlAcknowledgement,
-        inputAuthorization: WebRTCInputAuthorization?
+        inputAuthorization: WebRTCInputAuthorization?,
+        sourcePeer: WebRTCPeer?,
+        sourceGeneration: UUID
     ) async {
         // A recovery proof is always Hide/Inactive and therefore must never retain input.
         inputAuthorization?.revoke()
         guard let probe = pendingRecoveryProbe,
-              let requestID = probe.requestID,
+              let requestKey = probe.requestKey,
               probe.sessionGeneration == sessionGeneration,
+              sourceGeneration == sessionGeneration,
               probe.epoch == recoveryProofEpoch,
-              requestID == acknowledgement.id,
+              requestKey.requestID == acknowledgement.id,
+              requestKey.sessionGeneration == sourceGeneration,
+              screenAcknowledgementPeer(sourcePeer, matches: probe.expectedPeer),
               acknowledgement.state == .inactive,
               recoveryProofRequired else {
             return
         }
 
+        retireScreenVisibilityRequestKey(requestKey)
         pendingRecoveryProbe = nil
         restartAnswerAwaitingSendEpoch = nil
         recoveryProofRequired = false
@@ -1462,56 +2307,12 @@ final class WorldwideSessionViewModel: ObservableObject {
         isPeerConnected = true
         isControlChannelReady = true
         isConnecting = false
-        isScreenVisible = false
-        remoteHideRequired = false
-        invalidateRemoteInputState()
+        resetScreenPresentationState(rotateQueueGeneration: true)
         stateText = "Connected"
         // The authenticated, current-generation inactive acknowledgement is the recovery proof
         // that permits remote audio to leave the fail-closed mute gate.
         audioLifecycle.transportBecameHealthy()
         await recoveryCoordinator?.iceStateChanged(.connected)
-    }
-
-    @discardableResult
-    private func applyControlAcknowledgement(
-        _ acknowledgement: WebRTCControlAcknowledgement,
-        inputAuthorization: WebRTCInputAuthorization?,
-        requestedVisibility: Bool
-    ) -> Bool {
-        let acknowledgedActive = acknowledgement.state == .active
-        let isActive = acknowledgedActive && canViewScreen
-        let mayAcceptActive = requestedVisibility && acceptsActiveScreenAcknowledgement
-        isScreenVisible = isActive && mayAcceptActive
-        if isActive && mayAcceptActive {
-            remoteHideRequired = true
-            installRemoteInputCapability(
-                acknowledgement.inputCapability,
-                authorization: inputAuthorization
-            )
-            stateText = "Screen live"
-        } else if isPeerConnected {
-            acceptsActiveScreenAcknowledgement = false
-            remoteHideRequired = acknowledgedActive
-            inputAuthorization?.revoke()
-            invalidateRemoteInputState()
-            stateText = "Connected"
-        } else {
-            acceptsActiveScreenAcknowledgement = false
-            remoteHideRequired = acknowledgedActive
-            inputAuthorization?.revoke()
-            invalidateRemoteInputState()
-        }
-
-        let reachedTarget = Self.acknowledgementReachedVisibilityTarget(
-            acknowledgement.state,
-            requestedVisibility: requestedVisibility,
-            mayAcceptActive: mayAcceptActive,
-            canViewScreen: canViewScreen
-        )
-        if !reachedTarget, requestedVisibility {
-            lastError = "The Mac could not start screen capture. Check Screen Recording permission."
-        }
-        return reachedTarget
     }
 
     static func acknowledgementReachedVisibilityTarget(
@@ -1695,15 +2496,117 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     func debugRefreshIOSPlayoutProofForRaceTests() async {
-        guard let proofPeer = peer else { return }
-        await refreshIOSPlayoutProof(
-            from: proofPeer,
-            sessionGeneration: sessionGeneration
-        )
+        guard let proofPeer = peer,
+              let attempt = iosPlayoutProofAttempt else { return }
+        await refreshIOSPlayoutProof(for: attempt, from: proofPeer)
     }
 
     var debugIOSPlayoutRecoveryIsAuthorized: Bool {
         audioPlayoutRecoveryAuthorization?.isValid == true
+    }
+
+    var debugIOSPlayoutRecoveryAuthorizationForTests:
+        WebRTCIOSPlayoutRecoveryAuthorization? {
+        audioPlayoutRecoveryAuthorization
+    }
+
+    func debugStartIOSPlayoutProofAttemptForTests(
+        requestRecovery: Bool,
+        preRecoveryDiagnostics: WebRTCIOSPlayoutDiagnostics? = nil,
+        expectedPeer: WebRTCPeer? = nil
+    ) -> WorldwideIOSPlayoutProofDebugHandle {
+        if let expectedPeer {
+            precondition(peer === expectedPeer)
+        }
+        retireIOSPlayoutRecoveryAttempt()
+        audioPlayoutProofTask?.cancel()
+        audioLifecycle.updateRuntimePlayout(isReady: false)
+
+        let authorization = requestRecovery
+            ? WebRTCIOSPlayoutRecoveryAuthorization()
+            : nil
+        let attempt = IOSPlayoutProofAttempt(
+            sessionGeneration: sessionGeneration,
+            expectedPeer: expectedPeer,
+            stage: requestRecovery
+                ? .awaitingRecoveryBaseline
+                : .awaitingInitialFloor
+        )
+        if requestRecovery {
+            attempt.captureRecoveryBaseline(
+                callbackCount: preRecoveryDiagnostics?.playoutCallbackCount ?? 0,
+                frameCount: preRecoveryDiagnostics?.playoutFrameCount ?? 0,
+                failureCount: preRecoveryDiagnostics?.playoutFailureCount ?? 0
+            )
+            attempt.recoveryAuthorization = authorization
+            attempt.stage = .awaitingRecoveryAuthorization
+        } else if let preRecoveryDiagnostics {
+            attempt.lastCallbackCount = preRecoveryDiagnostics.playoutCallbackCount
+            attempt.lastFrameCount = preRecoveryDiagnostics.playoutFrameCount
+            attempt.lastFailureCount = preRecoveryDiagnostics.playoutFailureCount
+        }
+        iosPlayoutProofAttempt = attempt
+        audioPlayoutRecoveryAuthorization = authorization
+        return WorldwideIOSPlayoutProofDebugHandle(
+            proofAttemptID: attempt.proofAttemptID,
+            counterWindowID: attempt.counterWindowID,
+            sessionGeneration: attempt.sessionGeneration
+        )
+    }
+
+    @discardableResult
+    func debugEvaluateIOSPlayoutDiagnosticsForTests(
+        _ diagnostics: WebRTCIOSPlayoutDiagnostics,
+        handle: WorldwideIOSPlayoutProofDebugHandle,
+        source: WorldwideIOSPlayoutProofDebugSource
+    ) -> Bool {
+        _ = source
+        guard let attempt = iosPlayoutProofAttempt(matches: handle) else { return false }
+        return evaluateIOSPlayoutDiagnostics(diagnostics, for: attempt)
+    }
+
+    func debugTimeoutIOSPlayoutProofForTests(
+        handle: WorldwideIOSPlayoutProofDebugHandle
+    ) {
+        guard let attempt = iosPlayoutProofAttempt(matches: handle) else { return }
+        failIOSPlayoutProofTimeout(attempt)
+    }
+
+    var debugIOSPlayoutProofState: WorldwideIOSPlayoutProofDebugState {
+        let attempt = iosPlayoutProofAttempt
+        let handle = attempt.map { attempt in
+            WorldwideIOSPlayoutProofDebugHandle(
+                proofAttemptID: attempt.proofAttemptID,
+                counterWindowID: attempt.counterWindowID,
+                sessionGeneration: attempt.sessionGeneration
+            )
+        }
+        let debugStage: WorldwideIOSPlayoutProofDebugStage?
+        switch attempt?.stage {
+        case .awaitingRecoveryBaseline, .awaitingInitialFloor:
+            debugStage = .awaitingInitialFloor
+        case .awaitingRecoveryAuthorization:
+            debugStage = .awaitingRecoveryAuthorization
+        case .awaitingPostRecoveryFloor:
+            debugStage = .awaitingPostRecoveryFloor
+        case .awaitingFreshEvidence:
+            debugStage = .awaitingFreshEvidence
+        case nil:
+            debugStage = nil
+        }
+        let authorization = attempt?.recoveryAuthorization
+        return WorldwideIOSPlayoutProofDebugState(
+            handle: handle,
+            stage: debugStage,
+            callbackFloor: attempt?.callbackFloor,
+            frameFloor: attempt?.frameFloor,
+            permittedFailureFloor: attempt?.permittedFailureFloor,
+            lastCallbackCount: attempt?.lastCallbackCount,
+            lastFrameCount: attempt?.lastFrameCount,
+            lastFailureCount: attempt?.lastFailureCount,
+            recoveryAuthorizationIdentity: authorization.map(ObjectIdentifier.init),
+            recoveryAuthorizationIsValid: authorization?.isValid == true
+        )
     }
 
     func debugDeliverReadyForRaceTests() async throws {
@@ -1760,6 +2663,15 @@ final class WorldwideSessionViewModel: ObservableObject {
         iceIsConnected = true
         isControlChannelReady = true
         isScreenVisible = true
+        let lease = WorldwideScreenPresentationLease(sessionGeneration: sessionGeneration)
+        currentScreenPresentationLease = lease
+        activeScreenPresentationLease = lease
+        remoteScreenOwnerLease = lease
+        remoteHideRequired = true
+        #if DEBUG
+        debugCurrentScreenPresentationLease = lease
+        debugActiveScreenPresentationLease = lease
+        #endif
         lastDiagnostic = diagnostic
         remoteInputQueue = [
             QueuedRemoteInput(
@@ -1805,6 +2717,13 @@ final class WorldwideSessionViewModel: ObservableObject {
         isScreenVisible = true
         acceptsActiveScreenAcknowledgement = true
         remoteHideRequired = true
+        let lease = currentScreenPresentationLease
+            ?? WorldwideScreenPresentationLease(sessionGeneration: sessionGeneration)
+        currentScreenPresentationLease = lease
+        activeScreenPresentationLease = lease
+        remoteScreenOwnerLease = lease
+        debugCurrentScreenPresentationLease = lease
+        debugActiveScreenPresentationLease = lease
         remoteInputQueue = [
             QueuedRemoteInput(
                 action: .returnKey(focusGeneration: focusGeneration),
@@ -1831,7 +2750,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             inputAvailable: isRemoteInputAvailable,
             acceptsActiveScreenAcknowledgement: acceptsActiveScreenAcknowledgement,
             remoteHideRequired: remoteHideRequired,
-            hideRequestWouldBeNoOp: visibilityRequestCanReuseCurrentState(false),
+            hideRequestWouldBeNoOp: currentScreenPresentationLease.map {
+                !screenPresentationNeedsRemoteHide($0)
+            } ?? !remoteHideRequired,
             screenVisibilityOperationGeneration: screenVisibilityOperationGeneration
         )
     }
@@ -1848,7 +2769,9 @@ final class WorldwideSessionViewModel: ObservableObject {
                     screenRequestID: 74
                 )
             ),
-            inputAuthorization: authorization
+            inputAuthorization: authorization,
+            sourcePeer: peer,
+            sourceGeneration: sessionGeneration
         )
         return authorization
     }
@@ -1857,11 +2780,187 @@ final class WorldwideSessionViewModel: ObservableObject {
         isScreenVisible = false
     }
 
+    func debugInstallScreenSessionForTests(
+        peer newPeer: WebRTCPeer,
+        generation: UUID = UUID(),
+        visible: Bool = false
+    ) {
+        resetScreenPresentationState(
+            rotateQueueGeneration: true,
+            clearRequestHistory: true
+        )
+        peer = newPeer
+        sessionGeneration = generation
+        isPeerConnected = true
+        iceIsConnected = true
+        isControlChannelReady = true
+        isScreenVisible = visible
+        acceptsActiveScreenAcknowledgement = visible
+        remoteHideRequired = visible
+    }
+
+    @discardableResult
+    func debugInstallActiveScreenPresentationForTests(
+        peer newPeer: WebRTCPeer,
+        generation: UUID = UUID(),
+        leaseID: UUID = UUID(),
+        screenRequestID: UInt64 = 1
+    ) -> WorldwideScreenPresentationDebugFixture {
+        debugInstallScreenSessionForTests(
+            peer: newPeer,
+            generation: generation,
+            visible: true
+        )
+        let lease = WorldwideScreenPresentationLease(
+            id: leaseID,
+            sessionGeneration: generation
+        )
+        let capability = WebRTCInputCapability(
+            inputSessionID: UUID(),
+            screenRequestID: screenRequestID,
+            supportsPrimaryDrag: true
+        )
+        let authorization = WebRTCInputAuthorization()
+        remoteInputCapability = capability
+        remoteInputAuthorization = authorization
+        focusedInputGeneration = screenRequestID
+        focusedInputIsSecure = false
+        currentScreenPresentationLease = lease
+        activeScreenPresentationLease = lease
+        remoteScreenOwnerLease = lease
+        remoteHideRequired = true
+        debugCurrentScreenPresentationLease = lease
+        debugActiveScreenPresentationLease = lease
+        return WorldwideScreenPresentationDebugFixture(
+            lease: lease,
+            authorization: authorization
+        )
+    }
+
+    func debugScreenPeerIs(_ expectedPeer: WebRTCPeer) -> Bool {
+        peer === expectedPeer
+    }
+
+    var debugScreenPresentationState: WorldwideScreenPresentationDebugState {
+        WorldwideScreenPresentationDebugState(
+            sessionGeneration: sessionGeneration,
+            currentLease: currentScreenPresentationLease,
+            activeLease: activeScreenPresentationLease,
+            isScreenVisible: isScreenVisible,
+            inputAvailable: isRemoteInputAvailable,
+            remoteHideRequired: remoteHideRequired,
+            pendingRequestKey: pendingScreenVisibilityRequest?.key,
+            displacedPendingRequestCount:
+                debugDisplacedPendingScreenVisibilityRequests.count,
+            hasActiveSession: hasActiveSession
+        )
+    }
+
     func debugInstallScreenVisibilityRequestSender(
         _ sender: @escaping @MainActor (Bool) async throws -> UInt64
     ) {
-        precondition(peer == nil)
         debugScreenVisibilityRequestSender = sender
+    }
+
+    func debugInstallScreenVisibilityRequestSender(
+        _ sender: @escaping @MainActor (
+            WorldwideScreenVisibilityDebugRequest
+        ) async throws -> UInt64
+    ) {
+        debugScreenVisibilityRequestSenderV2 = sender
+    }
+
+    func debugInstallScreenVisibilityPostSendHook(
+        _ hook: @escaping @MainActor (
+            WorldwideScreenVisibilityPostSendDebugEvent
+        ) async -> Void
+    ) {
+        debugScreenVisibilityPostSendHook = hook
+    }
+
+    func debugWaitForScreenVisibilityPostSendProcessing(
+        operationID: UUID
+    ) async {
+        if debugProcessedScreenVisibilityPostSendOperationIDs.remove(operationID) != nil {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            debugScreenVisibilityPostSendProcessingWaiters[
+                operationID,
+                default: []
+            ].append(continuation)
+        }
+    }
+
+    @discardableResult
+    func debugDeliverControlAcknowledgement(
+        key: WorldwideScreenVisibilityRequestKey,
+        state: WebRTCScreenState,
+        inputCapability: WebRTCInputCapability? = nil,
+        sourcePeer: WebRTCPeer? = nil
+    ) async -> WebRTCInputAuthorization? {
+        let authorization = inputCapability.map { _ in WebRTCInputAuthorization() }
+        await handleControlAcknowledgement(
+            WebRTCControlAcknowledgement(
+                id: key.requestID,
+                state: state,
+                inputCapability: inputCapability
+            ),
+            inputAuthorization: authorization,
+            sourcePeer: sourcePeer ?? peer,
+            sourceGeneration: key.sessionGeneration
+        )
+        return authorization
+    }
+
+    func debugWaitForPendingScreenVisibilityRequest(
+        _ key: WorldwideScreenVisibilityRequestKey
+    ) async {
+        if debugScreenPresentationState.pendingRequestKey == key {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            debugPendingScreenVisibilityWaiters[key, default: []].append(continuation)
+        }
+    }
+
+    private func notifyDebugPendingScreenVisibilityWaiters(
+        _ key: WorldwideScreenVisibilityRequestKey
+    ) {
+        let waiters = debugPendingScreenVisibilityWaiters.removeValue(forKey: key) ?? []
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    private func notifyDebugScreenVisibilityPostSendProcessed(_ operationID: UUID) {
+        guard debugScreenVisibilityPostSendHook != nil
+            || debugScreenVisibilityPostSendProcessingWaiters[operationID] != nil else {
+            return
+        }
+        let waiters = debugScreenVisibilityPostSendProcessingWaiters.removeValue(
+            forKey: operationID
+        ) ?? []
+        guard !waiters.isEmpty else {
+            debugProcessedScreenVisibilityPostSendOperationIDs.insert(operationID)
+            return
+        }
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    func debugTriggerScreenVisibilityTimeout(
+        key: WorldwideScreenVisibilityRequestKey
+    ) {
+        guard let pending = pendingScreenVisibilityRequest else { return }
+        controlAcknowledgementTimedOut(
+            key: key,
+            lease: pending.lease,
+            operationID: pending.operationID,
+            expectedPeer: pending.expectedPeer,
+            queueGeneration: pending.queueGeneration
+        )
     }
 
     func debugDeliverControlAcknowledgement(
@@ -1870,7 +2969,9 @@ final class WorldwideSessionViewModel: ObservableObject {
     ) async {
         await handleControlAcknowledgement(
             WebRTCControlAcknowledgement(id: id, state: state),
-            inputAuthorization: nil
+            inputAuthorization: nil,
+            sourcePeer: peer,
+            sourceGeneration: sessionGeneration
         )
     }
     #endif
@@ -1882,31 +2983,110 @@ final class WorldwideSessionViewModel: ObservableObject {
         earlyControlAcknowledgements.removeAll(keepingCapacity: false)
     }
 
+    private func retireScreenVisibilityRequestKey(
+        _ key: WorldwideScreenVisibilityRequestKey
+    ) {
+        earlyControlAcknowledgements.removeValue(forKey: key)?
+            .inputAuthorization?.revoke()
+        guard retiredScreenVisibilityRequestKeys.insert(key).inserted else { return }
+        retiredScreenVisibilityRequestOrder.append(key)
+        if retiredScreenVisibilityRequestOrder.count > 256 {
+            let retired = retiredScreenVisibilityRequestOrder.removeFirst()
+            retiredScreenVisibilityRequestKeys.remove(retired)
+        }
+    }
+
+    #if DEBUG
+    private func installPendingScreenVisibilityRequest(
+        _ pending: PendingScreenVisibilityRequest
+    ) {
+        if let displaced = pendingScreenVisibilityRequest {
+            debugDisplacedPendingScreenVisibilityRequests.append(displaced)
+        }
+        pendingScreenVisibilityRequest = pending
+    }
+    #endif
+
     private func completePendingScreenVisibilityRequest(success: Bool) {
         controlAcknowledgementTimeoutTask?.cancel()
         controlAcknowledgementTimeoutTask = nil
         guard let pending = pendingScreenVisibilityRequest else { return }
         pendingScreenVisibilityRequest = nil
+        retireScreenVisibilityRequestKey(pending.key)
         pending.continuation.resume(returning: success)
     }
 
     private func controlAcknowledgementTimedOut(
-        requestID: UInt64,
-        generation: UUID,
-        operationGeneration: UUID
+        key: WorldwideScreenVisibilityRequestKey,
+        lease: WorldwideScreenPresentationLease,
+        operationID: UUID,
+        expectedPeer: WebRTCPeer?,
+        queueGeneration: UUID
     ) {
-        guard generation == sessionGeneration,
-              operationGeneration == screenVisibilityOperationGeneration,
-              pendingScreenVisibilityRequest?.sessionGeneration == generation,
-              pendingScreenVisibilityRequest?.operationGeneration == operationGeneration,
-              pendingScreenVisibilityRequest?.id == requestID else {
+        guard let pending = pendingScreenVisibilityRequest,
+              pending.key == key,
+              pending.lease == lease,
+              pending.operationID == operationID,
+              pending.queueGeneration == queueGeneration,
+              screenAcknowledgementPeer(expectedPeer, matches: pending.expectedPeer),
+              pendingScreenVisibilityRequestIsOwned(pending) else {
             return
         }
         completePendingScreenVisibilityRequest(success: false)
-        failSession(
-            "The Mac did not confirm the screen state, so the session was closed for privacy.",
-            generation: generation
-        )
+    }
+
+    private func resetScreenPresentationState(
+        rotateQueueGeneration: Bool,
+        clearRequestHistory: Bool = false
+    ) {
+        controlAcknowledgementTimeoutTask?.cancel()
+        controlAcknowledgementTimeoutTask = nil
+        completePendingScreenVisibilityRequest(success: false)
+        #if DEBUG
+        let displacedPendingRequests = debugDisplacedPendingScreenVisibilityRequests
+        debugDisplacedPendingScreenVisibilityRequests.removeAll(keepingCapacity: false)
+        for pending in displacedPendingRequests {
+            pending.continuation.resume(returning: false)
+        }
+        let postSendProcessingWaiters = debugScreenVisibilityPostSendProcessingWaiters.values
+            .flatMap { $0 }
+        debugScreenVisibilityPostSendProcessingWaiters.removeAll(keepingCapacity: false)
+        debugProcessedScreenVisibilityPostSendOperationIDs.removeAll(keepingCapacity: false)
+        for waiter in postSendProcessingWaiters {
+            waiter.resume()
+        }
+        #endif
+
+        let queued = screenVisibilityQueue
+        screenVisibilityQueue.removeAll(keepingCapacity: false)
+        screenVisibilityDrainTask?.cancel()
+        screenVisibilityDrainTask = nil
+        if rotateQueueGeneration {
+            screenVisibilityQueueGeneration = UUID()
+        }
+        for operation in queued {
+            operation.completion?(false)
+        }
+
+        screenTeardownOperationByLeaseID.removeAll(keepingCapacity: false)
+        screenShowOperationByLeaseID.removeAll(keepingCapacity: false)
+        currentScreenPresentationLease = nil
+        activeScreenPresentationLease = nil
+        remoteScreenOwnerLease = nil
+        acceptsActiveScreenAcknowledgement = false
+        remoteHideRequired = false
+        screenVisibilityOperationGeneration = UUID()
+        isScreenVisible = false
+        invalidateRemoteInputState()
+        #if DEBUG
+        debugCurrentScreenPresentationLease = nil
+        debugActiveScreenPresentationLease = nil
+        #endif
+        clearEarlyControlAcknowledgements()
+        if clearRequestHistory {
+            retiredScreenVisibilityRequestKeys.removeAll(keepingCapacity: false)
+            retiredScreenVisibilityRequestOrder.removeAll(keepingCapacity: false)
+        }
     }
 
     private func markViewerTransportHealthyIfPossible(
@@ -1934,14 +3114,11 @@ final class WorldwideSessionViewModel: ObservableObject {
         requiresProof: Bool = false
     ) {
         audioLifecycle.transportBecameUncertain()
-        acceptsActiveScreenAcknowledgement = false
-        remoteHideRequired = false
-        screenVisibilityOperationGeneration = UUID()
-        invalidateRemoteInputState()
         let answerWasAwaitingSend = restartAnswerAwaitingSendEpoch != nil
-        if let requestID = pendingRecoveryProbe?.requestID {
-            earlyControlAcknowledgements.removeValue(forKey: requestID)?
+        if let requestKey = pendingRecoveryProbe?.requestKey {
+            earlyControlAcknowledgements.removeValue(forKey: requestKey)?
                 .inputAuthorization?.revoke()
+            retireScreenVisibilityRequestKey(requestKey)
         }
         recoveryProofEpoch &+= 1
         recoveryProofRequired = recoveryProofRequired || requiresProof
@@ -1949,21 +3126,21 @@ final class WorldwideSessionViewModel: ObservableObject {
         restartAnswerAwaitingSendEpoch = answerWasAwaitingSend
             ? recoveryProofEpoch
             : nil
-        completePendingScreenVisibilityRequest(success: false)
+        resetScreenPresentationState(rotateQueueGeneration: true)
         iceIsConnected = false
-        isScreenVisible = false
         stateText = state
     }
 
     private func hideScreenForPassiveLifecycleIfNeeded() {
-        let needsRemoteHide = isScreenVisible
-            || pendingScreenVisibilityRequest?.isVisible == true
-            || acceptsActiveScreenAcknowledgement
-        guard needsRemoteHide else {
+        guard let lease = currentScreenPresentationLease else {
             suspendRemoteInputPresentation()
             return
         }
-        beginPassiveScreenTeardown()
+        guard screenPresentationNeedsRemoteHide(lease) else {
+            revokeScreenPresentationLocally(for: lease, clearActiveOwnership: false)
+            return
+        }
+        _ = beginPassiveScreenTeardown(for: lease)
     }
 
     private func sendICERestartRequest(
@@ -2022,11 +3199,24 @@ final class WorldwideSessionViewModel: ObservableObject {
 }
 
 private struct PendingScreenVisibilityRequest {
-    let id: UInt64
+    let key: WorldwideScreenVisibilityRequestKey
+    let isVisible: Bool
+    let lease: WorldwideScreenPresentationLease
+    let operationID: UUID
+    let sessionGeneration: UUID
+    let queueGeneration: UUID
+    let expectedPeer: WebRTCPeer?
+    let continuation: CheckedContinuation<Bool, Never>
+}
+
+private struct QueuedScreenVisibilityOperation {
+    let lease: WorldwideScreenPresentationLease
+    let operationID: UUID
     let isVisible: Bool
     let sessionGeneration: UUID
-    let operationGeneration: UUID
-    let continuation: CheckedContinuation<Bool, Never>
+    let queueGeneration: UUID
+    let expectedPeer: WebRTCPeer?
+    let completion: (@MainActor (Bool) -> Void)?
 }
 
 #if DEBUG
@@ -2050,12 +3240,14 @@ struct WorldwideRemoteInputDebugState: Equatable {
 private struct ReceivedControlAcknowledgement {
     let acknowledgement: WebRTCControlAcknowledgement
     let inputAuthorization: WebRTCInputAuthorization?
+    let sourcePeer: WebRTCPeer?
 }
 
 private struct PendingRecoveryProbe {
     let sessionGeneration: UUID
     let epoch: UInt64
-    let requestID: UInt64?
+    let requestKey: WorldwideScreenVisibilityRequestKey?
+    let expectedPeer: WebRTCPeer
 }
 
 private struct QueuedRemoteInput {

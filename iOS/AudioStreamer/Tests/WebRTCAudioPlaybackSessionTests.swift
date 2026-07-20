@@ -87,6 +87,64 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         XCTAssertFalse(accepted.remoteIOCreated)
     }
 
+    func testNativeCountersRemainCumulativeAndCallbackPublishesLast() {
+        let harness = WebRTCIOSPlayoutPublicationTestHarness()
+
+        harness.publishCallback(frameCount: 480, status: noErr)
+        let firstPrePublication = harness.prePublicationSnapshot
+        XCTAssertEqual(firstPrePublication.callbackCount, 0)
+        XCTAssertEqual(firstPrePublication.frameCount, 480)
+        XCTAssertEqual(firstPrePublication.failureCount, 0)
+        XCTAssertEqual(firstPrePublication.lastFrameCount, 480)
+        XCTAssertEqual(firstPrePublication.lastStatus, noErr)
+
+        let firstPublished = harness.snapshot
+        XCTAssertEqual(firstPublished.callbackCount, 1)
+        XCTAssertEqual(firstPublished.frameCount, 480)
+        XCTAssertEqual(firstPublished.failureCount, 0)
+
+        harness.markRecoveryBoundary()
+        harness.publishCallback(frameCount: 240, status: -50)
+        let secondPrePublication = harness.prePublicationSnapshot
+        XCTAssertEqual(secondPrePublication.callbackCount, 1)
+        XCTAssertEqual(secondPrePublication.frameCount, 720)
+        XCTAssertEqual(secondPrePublication.failureCount, 1)
+        XCTAssertEqual(secondPrePublication.lastFrameCount, 240)
+        XCTAssertEqual(secondPrePublication.lastStatus, -50)
+
+        let secondPublished = harness.snapshot
+        XCTAssertEqual(secondPublished.callbackCount, 2)
+        XCTAssertEqual(secondPublished.frameCount, 720)
+        XCTAssertEqual(secondPublished.failureCount, 1)
+    }
+
+    func testProductionRecoveryPreservesNativeLifetimeCounters() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        harness.publishCallback(frameCount: 480, status: noErr)
+        harness.publishCallback(frameCount: 240, status: -50)
+
+        let beforeRecovery = harness.diagnostics
+        XCTAssertEqual(beforeRecovery.playoutCallbackCount, 2)
+        XCTAssertEqual(beforeRecovery.playoutFrameCount, 720)
+        XCTAssertEqual(beforeRecovery.playoutFailureCount, 1)
+        XCTAssertEqual(beforeRecovery.lastPlayoutFrameCount, 240)
+        XCTAssertEqual(beforeRecovery.lastPlayoutStatus, -50)
+
+        let authorization = WebRTCIOSPlayoutRecoveryAuthorization()
+        harness.queueRecovery(authorization: authorization)
+        XCTAssertEqual(harness.queuedOperationCount, 1)
+        XCTAssertTrue(harness.runNextQueuedOperation())
+        XCTAssertFalse(authorization.isValid)
+
+        let afterRecovery = harness.diagnostics
+        XCTAssertEqual(afterRecovery.rebuildCount, 1)
+        XCTAssertEqual(afterRecovery.playoutCallbackCount, 2)
+        XCTAssertEqual(afterRecovery.playoutFrameCount, 720)
+        XCTAssertEqual(afterRecovery.playoutFailureCount, 1)
+        XCTAssertEqual(afterRecovery.lastPlayoutFrameCount, 240)
+        XCTAssertEqual(afterRecovery.lastPlayoutStatus, -50)
+    }
+
     func testActivationOpensOnlyTheManualWebRTCGate() throws {
         let native = WebRTCAudioSessionStub()
         let playback = WebRTCAudioPlaybackSession(session: native)
