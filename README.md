@@ -153,6 +153,5 @@ permission. Screen viewing needs Screen Recording permission.
 - [TESTING_ORACLES.md](TESTING_ORACLES.md) — claims, independent evidence, and mutation gates.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — documentation, testing, and secret-hygiene standards.
 
-Third-party terms are reproduced in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). A project
-license will be added before this repository is made public; until then, no open-source license
-is implied.
+AudioStreamer is licensed under the [MIT License](LICENSE). Third-party components remain under
+their own terms, reproduced in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

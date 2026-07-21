@@ -6,7 +6,7 @@ passed the corresponding physical release gate.
 
 ## Publication
 
-- [ ] Select and add the project license.
+- [x] Select and add the MIT project license.
 - [x] Remove production endpoints, signing identities, personal metadata, and real capabilities
   from the publishable tree and reachable Git history.
 - [x] Add full-history Gitleaks and project-specific external-blocklist release gates.
