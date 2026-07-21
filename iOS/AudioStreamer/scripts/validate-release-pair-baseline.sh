@@ -1,11 +1,12 @@
 #!/bin/zsh
 
-# Usage: `validate-release-pair-baseline.sh <device-udid> [artifact-directory]`.
+# Usage: `validate-release-pair-baseline.sh <device-udid> <expected-installed-build>
+# [artifact-directory]`.
 #
-# Prerequisites: an unlocked, connected test iPhone on the pinned iOS version with production
-# AudioStreamer installed release already installed, plus Xcode command-line tools authorized for that
-# device. The selected UI test uses only accessibility identifiers shipped in installed release, so a
-# candidate build cannot manufacture the pre-update saved-pair evidence.
+# Prerequisites: an unlocked, connected test iPhone on the pinned iOS version with the requested
+# production AudioStreamer build already installed, plus Xcode command-line tools authorized for
+# that device. The selected UI test uses only stable accessibility identifiers, so a candidate
+# build cannot manufacture the pre-update saved-pair evidence.
 #
 # Optional environment: `AUDIOSTREAMER_BASELINE_UI_TEST_TIMEOUT_SECONDS`,
 # `AUDIOSTREAMER_DEVICE_COMMAND_TIMEOUT_SECONDS`, and `AUDIOSTREAMER_DEVICE_LOCK_POLL_SECONDS`
@@ -21,9 +22,9 @@ set -euo pipefail
 SCRIPT_DIR=${0:A:h}
 PROJECT_DIR=${SCRIPT_DIR:h}
 source "${SCRIPT_DIR}/physical-validation-helpers.zsh"
-DEVICE_UDID=${1:?usage: $0 device-udid [artifact-directory]}
-ARTIFACT_DIR=${2:-/private/tmp/AudioStreamer-device-InstalledRelease-Baseline}
-EXPECTED_BUILD="release"
+DEVICE_UDID=${1:?usage: $0 device-udid expected-installed-build [artifact-directory]}
+EXPECTED_BUILD=${2:?usage: $0 device-udid expected-installed-build [artifact-directory]}
+ARTIFACT_DIR=${3:-/private/tmp/AudioStreamer-device-InstalledRelease-Baseline}
 EXPECTED_MODEL="test iPhone"
 EXPECTED_OS="18.x"
 EXPECTED_PLATFORM="iOS"
@@ -44,7 +45,7 @@ APP_LIST_BEFORE="${ARTIFACT_DIR}/apps-before.json"
 APP_LIST_AFTER="${ARTIFACT_DIR}/apps-after.json"
 CANDIDATE_BEFORE="${ARTIFACT_DIR}/installed-release-before.json"
 CANDIDATE_AFTER="${ARTIFACT_DIR}/installed-release-after.json"
-RESULT_BUNDLE="${ARTIFACT_DIR}/installed-release-saved-pair-baseline.xcresult"
+RESULT_BUNDLE="${ARTIFACT_DIR}/installed-release-${EXPECTED_BUILD}-saved-pair-baseline.xcresult"
 DERIVED_DATA="${ARTIFACT_DIR}/DerivedData"
 TIMEOUT_MARKER="${ARTIFACT_DIR}/ui-test-timeout.txt"
 DEVICE_LOCKED_MARKER="${ARTIFACT_DIR}/device-locked-during-test.txt"

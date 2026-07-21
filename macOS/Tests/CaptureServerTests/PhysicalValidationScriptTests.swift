@@ -31,7 +31,9 @@ final class PhysicalValidationScriptTests: XCTestCase {
         [
             (
                 "iOS/AudioStreamer/scripts/validate-release-pair-baseline.sh",
-                { artifactDirectory in ["self-test-device", artifactDirectory.path] }
+                { artifactDirectory in
+                    ["self-test-device", "self-test-build", artifactDirectory.path]
+                }
             ),
             (
                 "iOS/AudioStreamer/scripts/validate-physical-update-keychain.sh",
@@ -39,7 +41,9 @@ final class PhysicalValidationScriptTests: XCTestCase {
             ),
             (
                 "iOS/AudioStreamer/scripts/validate-testflight-paired-reconnect.sh",
-                { artifactDirectory in ["self-test-device", "29", artifactDirectory.path] }
+                { artifactDirectory in
+                    ["self-test-device", "self-test-build", artifactDirectory.path]
+                }
             ),
         ]
     }
@@ -104,7 +108,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
         let staleEvidence = [
             "summary.json",
             "device-locked-during-test.txt",
-            "production-release-paired-reconnect.xcresult/stale.txt",
+            "production-build-self-test-build-paired-reconnect.xcresult/stale.txt",
             "DerivedData/stale.txt",
             "DerivedData/Build/Intermediates.noindex/XCBuildData/build.db",
         ]
@@ -119,7 +123,12 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = [script.path, "self-test-device", "29", artifactDirectory.path]
+        process.arguments = [
+            script.path,
+            "self-test-device",
+            "self-test-build",
+            artifactDirectory.path,
+        ]
         var environment = ProcessInfo.processInfo.environment
         environment["AUDIOSTREAMER_SCRIPT_SELF_TEST"] = "write-host-status"
         process.environment = environment
@@ -809,7 +818,12 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = [script.path, "self-test-device", "29", artifactDirectory.path]
+        process.arguments = [
+            script.path,
+            "self-test-device",
+            "self-test-build",
+            artifactDirectory.path,
+        ]
         var environment = ProcessInfo.processInfo.environment
         environment["AUDIOSTREAMER_SCRIPT_SELF_TEST"] = "cancel-stopped-churn"
         environment["AUDIOSTREAMER_HOST_CHURN_LOCK_ATTEMPTS"] = "5"
