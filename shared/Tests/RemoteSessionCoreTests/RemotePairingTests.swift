@@ -3,6 +3,8 @@ import Foundation
 import Testing
 @testable import RemoteSessionCore
 
+/// Validates the authenticated pairing transcript, persist-before-send commit phases, crash
+/// recovery, and fresh reconnect credentials using deterministic synthetic identities and keys.
 struct RemotePairingTests {
     private let invitationSecret = Data(0..<20)
     private let hostID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
@@ -502,7 +504,7 @@ struct RemotePairingTests {
         try RemoteDeviceIdentity(
             deviceID: role == .host ? hostID : viewerID,
             role: role,
-            displayName: role == .host ? "Mac mini" : "Test iPhone",
+            displayName: role == .host ? "Test Mac" : "Test iPhone",
             signingPrivateKeyRawRepresentation: Data(repeating: role == .host ? 0x11 : 0x22, count: 32)
         )
     }

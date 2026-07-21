@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import RemoteSessionCore
 
+/// Pins the signaling JSON union and legacy-compatible optional fields to their strict wire shape.
 struct RemoteSignalModelsTests {
     @Test func rolesAndICEServersRoundTripThroughCodable() throws {
         let roles = RemotePeerRole.allCases

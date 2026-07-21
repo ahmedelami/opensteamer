@@ -2,7 +2,17 @@ import Foundation
 import Testing
 @testable import RemoteSessionCore
 
+/// Exercises the bounded local telemetry journal and its privacy-preserving schema.
+///
+/// Fixtures use values generated entirely inside the test process. Never paste a
+/// production invitation, activation code, endpoint credential, or device identity
+/// into this suite: the repository itself is outside the runtime trust boundary.
 struct ConnectionTelemetryTests {
+    /// A deterministic canary with a deliberately invalid runtime-credential prefix.
+    private static let syntheticSecretCanary = "test-only:" + Data(
+        (0..<24).map { UInt8($0) }
+    ).base64EncodedString()
+
     @Test func boundedJournalPersistsNewestEventsAndSequenceAcrossRecreation() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -72,7 +82,7 @@ struct ConnectionTelemetryTests {
         for forbidden in [
             rawPairID.uuidString,
             rawAttemptID.uuidString,
-            "test-only:revoked-history-fixture",
+            Self.syntheticSecretCanary,
             "wss://audiostreamer.example",
             "203.0.113.9",
             "candidate:",
@@ -175,7 +185,9 @@ struct ConnectionTelemetryTests {
         #expect(repaired.persistenceHealthy)
         #expect(repaired.events.map(\.id) == [1])
 
-        let invalidFingerprintArchive = #"{"schemaVersion":1,"droppedEventCount":0,"events":[{"id":1,"timestamp":0,"monotonicNanoseconds":0,"role":"viewer","stage":"attemptStarted","attemptReference":"test-only:revoked-history-fixture"}]}"#
+        let invalidFingerprintArchive = """
+        {"schemaVersion":1,"droppedEventCount":0,"events":[{"id":1,"timestamp":0,"monotonicNanoseconds":0,"role":"viewer","stage":"attemptStarted","attemptReference":"\(Self.syntheticSecretCanary)"}]}
+        """
         try Data(invalidFingerprintArchive.utf8).write(to: fileURL, options: .atomic)
         let fingerprintJournal = LocalConnectionTelemetryJournal(fileURL: fileURL)
         #expect(!fingerprintJournal.snapshot().persistenceHealthy)
@@ -283,6 +295,7 @@ struct ConnectionTelemetryTests {
     }
 }
 
+/// Forces a deterministic inversion between two persistence enqueues to expose stale-write races.
 private final class PersistenceEnqueueGate: @unchecked Sendable {
     private let firstReached = DispatchSemaphore(value: 0)
     private let release = DispatchSemaphore(value: 0)
@@ -302,6 +315,7 @@ private final class PersistenceEnqueueGate: @unchecked Sendable {
     }
 }
 
+/// Proves existential `flush()` dispatches to the concrete protocol witness rather than defaulting.
 private final class FlushWitnessRecorder: ConnectionTelemetryRecording, @unchecked Sendable {
     private let lock = NSLock()
     private var flushObserved = false

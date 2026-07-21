@@ -1,0 +1,13 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Swift Crypto Curve25519 type declarations are code, not embedded key material"
+regexTarget = "line"
+paths = [
+  '''shared/Sources/RemoteSessionCore/RemoteDeviceIdentity\.swift''',
+  '''shared/Sources/RemoteSessionCore/RemotePairedDevice\.swift''',
+]
+regexes = [
+  '''Curve25519\.(?:Signing|KeyAgreement)\.(?:PrivateKey|PublicKey)''',
+]
