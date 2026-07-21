@@ -1,8 +1,21 @@
 #!/bin/zsh
 
-# Captures a strict pre-update baseline from the production AudioStreamer build currently
-# installed on the physical test iPhone. The selected UI test uses only accessibility identifiers
-# that shipped in installed release, so candidate-only test oracles cannot manufacture this evidence.
+# Usage: `validate-release-pair-baseline.sh <device-udid> [artifact-directory]`.
+#
+# Prerequisites: an unlocked, connected test iPhone on the pinned iOS version with production
+# AudioStreamer installed release already installed, plus Xcode command-line tools authorized for that
+# device. The selected UI test uses only accessibility identifiers shipped in installed release, so a
+# candidate build cannot manufacture the pre-update saved-pair evidence.
+#
+# Optional environment: `AUDIOSTREAMER_BASELINE_UI_TEST_TIMEOUT_SECONDS`,
+# `AUDIOSTREAMER_DEVICE_COMMAND_TIMEOUT_SECONDS`, and `AUDIOSTREAMER_DEVICE_LOCK_POLL_SECONDS`
+# adjust bounded waits; `AUDIOSTREAMER_SCRIPT_SELF_TEST` is reserved for shell regression tests.
+#
+# Side effects/artifacts: launches the installed production app through a UI-test runner and writes
+# app/device/lock snapshots, watchdog markers, logs, and the baseline `.xcresult` under the artifact
+# directory (default `/private/tmp/AudioStreamer-device-InstalledRelease-Baseline`). Any wrong build, lock,
+# disconnect, timeout, missing oracle, or test failure exits nonzero and leaves `run-status.txt` as
+# failed; success is recorded only after the result bundle proves the exact test passed.
 set -euo pipefail
 
 SCRIPT_DIR=${0:A:h}

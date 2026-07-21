@@ -2,8 +2,10 @@ import CaptureCore
 import Foundation
 import Utilities
 
+/// Entry point for bounded WAV capture and ScreenCaptureKit discovery commands.
 @main
 struct CaptureCLI {
+    /// Executes exactly one listing or capture operation; failures exit nonzero.
     static func main() async {
         do {
             let options = try CLIOptions.parse(CommandLine.arguments)

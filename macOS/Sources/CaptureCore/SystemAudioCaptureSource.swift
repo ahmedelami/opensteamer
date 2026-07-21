@@ -4,6 +4,7 @@ import CoreMedia
 import Foundation
 import ScreenCaptureKit
 
+/// Negotiated format of the standalone ScreenCaptureKit system-audio stream.
 public struct SystemAudioCaptureFormat: Sendable, Equatable {
     public static let requiredSampleRate = 48_000
     public static let requiredChannelCount = 2
@@ -12,6 +13,7 @@ public struct SystemAudioCaptureFormat: Sendable, Equatable {
     public let sampleRate: Int
     public let channelCount: Int
 
+    /// Creates the fixed format expected by the WebRTC audio pipeline.
     public init(displayID: UInt32) {
         self.displayID = displayID
         sampleRate = Self.requiredSampleRate
@@ -19,8 +21,11 @@ public struct SystemAudioCaptureFormat: Sendable, Equatable {
     }
 }
 
+/// Receives validated system-audio samples and terminal stream failures.
 public protocol SystemAudioSampleConsumer: AnyObject, Sendable {
+    /// Accepts one ready audio buffer on the source's sample queue.
     func consumeSystemAudioSample(_ sampleBuffer: CMSampleBuffer)
+    /// Reports a native stream stop that was not initiated by normal host shutdown.
     func systemAudioCaptureSource(
         _ source: SystemAudioCaptureSource,
         didStopWithErrorDescription errorDescription: String
@@ -28,6 +33,10 @@ public protocol SystemAudioSampleConsumer: AnyObject, Sendable {
 }
 
 /// Captures the Mac's mixed system output independently from screen-video visibility.
+///
+/// `stateLock` owns native stream identity and the start/stop state machine. It is
+/// never held across `await`; continuations let concurrent stop calls wait without
+/// blocking a ScreenCaptureKit callback or cooperative executor thread.
 public final class SystemAudioCaptureSource: @unchecked Sendable {
     private let displayID: UInt32?
     private let consumer: SystemAudioSampleConsumer
@@ -48,6 +57,10 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
         self?.handleUnexpectedStop(of: stream, errorDescription: message)
     }
 
+    /// Creates a source and begins observing iPhone Mirroring process changes.
+    ///
+    /// The observer keeps that application's audio excluded, preventing the remote
+    /// stream from recapturing its own iPhone playback and forming a feedback loop.
     public init(
         displayID: UInt32?,
         consumer: SystemAudioSampleConsumer,
@@ -66,6 +79,12 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
         }
     }
 
+    // MARK: - Capture lifecycle
+
+    /// Starts one system-audio stream and returns its fixed receiver format.
+    ///
+    /// Concurrent starts fail with `alreadyRunning`. A stop requested during any
+    /// suspension point wins and causes startup to fail with `startCancelled`.
     public func start() async throws -> SystemAudioCaptureFormat {
         guard stateLock.withLock({ () -> Bool in
             guard stream == nil, !isStarting, !isStopping else { return false }
@@ -176,6 +195,10 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
         }
     }
 
+    /// Stops the native stream exactly once and releases its output registration.
+    ///
+    /// Concurrent callers join the in-progress stop and observe completion rather
+    /// than issuing multiple `SCStream.stopCapture()` calls.
     public func stop() async throws {
         let ownsStop = stateLock.withLock { () -> Bool in
             cancellationRequested = true
@@ -212,6 +235,7 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
         try await stream.stopCapture()
     }
 
+    /// Suspends a stop caller until the current startup path reaches its defer.
     private func waitForStartToFinish() async {
         await withCheckedContinuation { continuation in
             let shouldResume = stateLock.withLock { () -> Bool in
@@ -225,6 +249,7 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
         }
     }
 
+    /// Clears start ownership and resumes every stop waiter outside the lock.
     private func finishStarting() {
         let waiters = stateLock.withLock { () -> [CheckedContinuation<Void, Never>] in
             guard isStarting else { return [] }
@@ -236,6 +261,7 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
         waiters.forEach { $0.resume() }
     }
 
+    /// Suspends a non-owning stop caller until the native stop completes.
     private func waitForStopToFinish() async {
         await withCheckedContinuation { continuation in
             let shouldResume = stateLock.withLock { () -> Bool in
@@ -249,6 +275,7 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
         }
     }
 
+    /// Clears stop ownership and resumes all callers waiting for idempotent shutdown.
     private func finishStopping() {
         let waiters = stateLock.withLock { () -> [CheckedContinuation<Void, Never>] in
             guard isStopping else { return [] }
@@ -260,12 +287,14 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
         waiters.forEach { $0.resume() }
     }
 
+    /// Checks the lock-protected cancellation latch after asynchronous startup work.
     private func ensureStartWasNotCancelled() throws {
         guard stateLock.withLock({ !cancellationRequested }) else {
             throw SystemAudioCaptureError.startCancelled
         }
     }
 
+    /// Detaches only the currently owned stream before reporting a native failure.
     private func handleUnexpectedStop(of stoppedStream: SCStream, errorDescription: String) {
         let shouldReport = stateLock.withLock { () -> Bool in
             guard !isStopping, stream === stoppedStream else { return false }
@@ -282,6 +311,7 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
         )
     }
 
+    /// Resolves an explicit display or prefers the current main display.
     private func selectDisplay(from displays: [SCDisplay]) throws -> SCDisplay {
         guard !displays.isEmpty else {
             throw SystemAudioCaptureError.noDisplays
@@ -297,6 +327,9 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
         return displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? displays[0]
     }
 
+    // MARK: - Feedback exclusion
+
+    /// Observes only launches and terminations that can change the exclusion filter.
     private func installWorkspaceObservers() {
         let notificationCenter = NSWorkspace.shared.notificationCenter
         workspaceNotificationTokens = [
@@ -320,6 +353,7 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
         }
     }
 
+    /// Starts a generation-tagged refresh when iPhone Mirroring changes lifecycle.
     private func applicationLifecycleChanged(bundleIdentifier: String?) {
         guard SystemAudioApplicationExclusionPolicy.requiresFilterRefresh(
             bundleIdentifier: bundleIdentifier
@@ -341,6 +375,10 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
         }
     }
 
+    /// Updates the live filter only if its stream and refresh generation remain current.
+    ///
+    /// A stale asynchronous refresh is discarded, preventing an older application
+    /// snapshot from overwriting a newer filter or touching a replacement stream.
     private func refreshFeedbackExclusion(
         for expectedStream: SCStream,
         displayID: UInt32,
@@ -400,9 +438,11 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
     }
 }
 
+/// Identifies applications whose playback must not be recaptured as system audio.
 enum SystemAudioApplicationExclusionPolicy {
     static let iPhoneMirroringBundleIdentifier = "com.apple.ScreenContinuity"
 
+    /// Filters generic shareable-application values by bundle identifier.
     static func excludedApplications<Application>(
         from applications: [Application],
         bundleIdentifier: (Application) -> String?
@@ -412,12 +452,15 @@ enum SystemAudioApplicationExclusionPolicy {
         }
     }
 
+    /// Determines whether an application lifecycle event affects the live filter.
     static func requiresFilterRefresh(bundleIdentifier: String?) -> Bool {
         bundleIdentifier == iPhoneMirroringBundleIdentifier
     }
 }
 
+/// Builds the fixed, audio-focused ScreenCaptureKit configuration.
 enum SystemAudioCaptureConfiguration {
+    /// Returns a fresh configuration suitable for 48 kHz stereo system audio.
     static func make() -> SCStreamConfiguration {
         let configuration = SCStreamConfiguration()
         configuration.capturesAudio = true
@@ -435,6 +478,7 @@ enum SystemAudioCaptureConfiguration {
     }
 }
 
+/// Bridges ScreenCaptureKit's delegate callback to a Sendable failure closure.
 private final class SystemAudioStreamDelegate: NSObject, SCStreamDelegate, @unchecked Sendable {
     private let didStop: @Sendable (SCStream, String) -> Void
 
@@ -447,6 +491,7 @@ private final class SystemAudioStreamDelegate: NSObject, SCStreamDelegate, @unch
     }
 }
 
+/// Validates audio callbacks before forwarding them to the session consumer.
 private final class SystemAudioStreamOutput: NSObject, SCStreamOutput, @unchecked Sendable {
     private let consumer: SystemAudioSampleConsumer
 
@@ -454,6 +499,7 @@ private final class SystemAudioStreamOutput: NSObject, SCStreamOutput, @unchecke
         self.consumer = consumer
     }
 
+    /// Drops non-audio, invalid, empty, or format-less buffers at the framework boundary.
     func stream(
         _ stream: SCStream,
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
@@ -470,12 +516,14 @@ private final class SystemAudioStreamOutput: NSObject, SCStreamOutput, @unchecke
     }
 }
 
+/// Lifecycle and display-selection failures specific to system-audio capture.
 public enum SystemAudioCaptureError: LocalizedError {
     case noDisplays
     case displayNotFound(UInt32)
     case alreadyRunning
     case startCancelled
 
+    /// A user-facing explanation suitable for host status and diagnostics.
     public var errorDescription: String? {
         switch self {
         case .noDisplays:

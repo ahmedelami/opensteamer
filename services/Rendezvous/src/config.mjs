@@ -1,3 +1,5 @@
+// Environment parsing is centralized here so the server never starts with ambiguous or partially
+// configured security settings.
 const integer = (env, name, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) => {
   const raw = env[name];
   if (raw === undefined || raw === "") return fallback;
@@ -26,6 +28,13 @@ const urls = (env, name, allowedSchemes) => {
   return Object.freeze(values);
 };
 
+/**
+ * Parses and validates rendezvous configuration without mutating the supplied environment.
+ * Secret values remain in memory only; callers must not log the returned object.
+ *
+ * @param {NodeJS.ProcessEnv | Record<string, string | undefined>} [env] Environment source.
+ * @returns {Readonly<object>} Validated server, rate-limit, signaling, and ICE settings.
+ */
 export function loadConfig(env = process.env) {
   const stunUrls = urls(env, "STUN_URLS", ["stun", "stuns"]);
   const turnUrls = urls(env, "TURN_URLS", ["turn", "turns"]);

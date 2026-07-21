@@ -2,6 +2,7 @@
 import Foundation
 import RemoteSessionCore
 
+/// Wire identifiers and resource limits for the ordered control data channel.
 enum WebRTCWireConstants {
     static let controlChannelLabel = "audiostreamer.control"
     static let controlProtocol = "audiostreamer.control.v2"
@@ -9,6 +10,7 @@ enum WebRTCWireConstants {
     static let maximumBufferedControlBytes: UInt64 = 256 * 1_024
 }
 
+/// Value-semantic events crossing from native WebRTC callbacks into the peer actor.
 enum NativePeerEvent: Sendable {
     case localCandidate(RemoteICECandidate)
     case peerState(WebRTCPeerState)
@@ -24,7 +26,10 @@ enum NativePeerEvent: Sendable {
     case failure(String)
 }
 
-// Native delegates arrive on WebRTC queues; only the channel reference needs explicit locking.
+/// Serializes the small amount of mutable state touched directly by native WebRTC callbacks.
+///
+/// Native delegates arrive on WebRTC queues; only channel ownership and synchronous authorization
+/// revocation live here. Higher-level protocol state is consumed by `WebRTCPeer`'s actor.
 final class WebRTCDelegateProxy: NSObject, @unchecked Sendable {
     let events: AsyncStream<NativePeerEvent>
 
@@ -463,6 +468,7 @@ extension WebRTCDelegateProxy: LKRTCDataChannelDelegate {
     }
 }
 
+/// Converts native ICE candidate metadata into privacy-reduced route diagnostics.
 enum WebRTCNativeDiagnostics {
     static func candidate(fromSDP sdp: String) -> WebRTCCandidateDiagnostics {
         let tokens = sdp.split(whereSeparator: \.isWhitespace).map(String.init)

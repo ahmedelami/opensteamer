@@ -14,6 +14,8 @@ import {
 import { createIceServerProvider } from "./ice-server-provider.mjs";
 import { FixedWindowLimiter } from "./rate-limiter.mjs";
 
+// The Node rendezvous implementation is a signaling coordinator, not a media relay: it forwards
+// end-to-end-encrypted envelopes and provisions ICE metadata while WebRTC carries audio/video.
 const closeReasons = Object.freeze({
   invalid: [4400, "invalid request"],
   unavailable: [4404, "invitation unavailable"],
@@ -54,6 +56,10 @@ const send = (socket, value) => {
 
 const admissionProofsMatch = (expected, received) => timingSafeEqual(expected, received);
 
+/**
+ * Resolves the rate-limit identity at the configured reverse-proxy trust depth.
+ * Only deployments that control every trusted hop should set `trustedHops` above zero.
+ */
 function clientIp(request, trustedHops) {
   const remote = request.socket.remoteAddress ?? "unknown";
   if (trustedHops === 0) return remote;
@@ -65,6 +71,15 @@ function clientIp(request, trustedHops) {
   return chain[Math.max(0, chain.length - 1 - trustedHops)] ?? remote;
 }
 
+/**
+ * Constructs an independently startable rendezvous server.
+ *
+ * Dependency injection keeps protocol, time, randomness, ICE provisioning, and logging testable
+ * without weakening the production defaults.
+ *
+ * @param {object} [options] Optional validated config and test dependencies.
+ * @returns {{server: import("node:http").Server, start: Function, stop: Function}}
+ */
 export function createRendezvousServer(options = {}) {
   const config = options.config ?? loadConfig();
   const now = options.now ?? Date.now;
@@ -193,6 +208,9 @@ export function createRendezvousServer(options = {}) {
     if (!host || !viewer) return;
     invitation.provisioningState = "pending";
 
+    // Credentials are provisioned per peer only after both authenticated roles are present. A
+    // failed or stale asynchronous transition retires the whole invitation rather than exposing
+    // a partially ready session.
     void Promise.all([
       Promise.resolve().then(() => iceServerProvider({ role: "host" })),
       Promise.resolve().then(() => iceServerProvider({ role: "viewer" })),
@@ -264,6 +282,7 @@ export function createRendezvousServer(options = {}) {
         return;
       }
       // The first admitted viewer permanently consumes this invitation, even if it disconnects.
+      // This makes the invitation a one-time capability rather than a reusable password.
       invitation.consumed = true;
     }
 

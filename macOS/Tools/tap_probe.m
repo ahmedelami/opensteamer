@@ -1,3 +1,15 @@
+/*
+ * Manual Core Audio process-tap diagnostic for proving system-audio capture independently of the
+ * Swift host. Build it as the `tap_probe` executable inside an app bundle that uses
+ * `tap_probe_info.plist`, sign the bundle, and grant the prompted system-audio capture permission.
+ * Run `tap_probe [duration-seconds]`; the default is 15 seconds.
+ *
+ * The probe creates a private process tap and aggregate audio device, prints the negotiated format
+ * and one RMS/peak line per second, and removes both Core Audio objects before a normal exit.
+ * SIGINT or SIGTERM requests the same cleanup path. Exit 0 means setup and sampling completed;
+ * setup failures return stage-specific codes 2 through 6 after destroying resources already made.
+ * It writes no files and sends no network traffic.
+ */
 #import <AudioToolbox/AudioToolbox.h>
 #import <CoreAudio/AudioHardware.h>
 #import <CoreAudio/AudioHardwareTapping.h>
@@ -13,12 +25,14 @@ static uint64_t gCallbacks = 0;
 static double gLastRMS = 0;
 static double gLastPeak = 0;
 
+// Signal handlers only flip this atomic flag; Core Audio teardown remains on the main control path.
 static void stopProbe(int signal) {
     (void)signal;
     gRunning = 0;
 }
 
 static void printStatus(OSStatus status, const char *operation) {
+    // Render the numeric OSStatus and its four-character code when the bytes are printable.
     char code[5] = {
         (char)((status >> 24) & 0xff),
         (char)((status >> 16) & 0xff),
@@ -30,6 +44,7 @@ static void printStatus(OSStatus status, const char *operation) {
 }
 
 static AudioObjectID defaultOutputDevice(void) {
+    // The aggregate device uses the current default output as its clocked main subdevice.
     AudioObjectID deviceID = kAudioObjectUnknown;
     UInt32 size = sizeof(deviceID);
     AudioObjectPropertyAddress address = {
@@ -74,6 +89,8 @@ static NSString *deviceUID(AudioObjectID deviceID) {
 }
 
 static void printTapFormat(AudioObjectID tap) {
+    // This line is the operator's oracle that the callback's Float32 interpretation matches the
+    // format Core Audio negotiated for the new tap.
     AudioStreamBasicDescription description;
     UInt32 size = sizeof(description);
     AudioObjectPropertyAddress address = {
@@ -114,6 +131,7 @@ static OSStatus probeIOProc(
     (void)inOutputTime;
     (void)inClientData;
 
+    // Keep callback work allocation-free: calculate only scalar metrics from the supplied buffers.
     double sumSquares = 0;
     double peak = 0;
     uint64_t samples = 0;
@@ -152,6 +170,8 @@ int main(int argc, const char *argv[]) {
     OSStatus status = noErr;
 
     @autoreleasepool {
+        // An empty exclusion list makes this a global tap. `private` keeps the temporary aggregate
+        // device out of normal user selection, and `CATapUnmuted` leaves local playback audible.
         NSArray<NSNumber *> *excludedProcesses = @[];
         CATapDescription *tapDescription = [[CATapDescription alloc] initStereoGlobalTapButExcludeProcesses:excludedProcesses];
         if (tapDescription == nil) {
@@ -185,6 +205,8 @@ int main(int argc, const char *argv[]) {
             @kAudioSubTapUIDKey: tapUID,
             @kAudioSubTapDriftCompensationKey: @YES
         };
+        // UUID-derived identity prevents a stale aggregate device from an interrupted earlier run
+        // from being mistaken for the object owned by this process.
         NSDictionary *aggregateDescription = @{
             @kAudioAggregateDeviceNameKey: @"AudioStreamerTapProbeAggregate",
             @kAudioAggregateDeviceUIDKey: [NSString stringWithFormat:@"org.example.AudioStreamer.TapProbe.Aggregate.%@", [NSUUID UUID].UUIDString],
@@ -227,6 +249,8 @@ int main(int argc, const char *argv[]) {
             return 6;
         }
 
+        // Status sampling is intentionally outside the real-time callback; stdout is flushed so a
+        // supervising terminal or test can observe progress before the duration ends.
         for (int elapsed = 0; gRunning && elapsed < durationSeconds; elapsed++) {
             sleep(1);
             double dbFS = gLastRMS > 0 ? 20.0 * log10(gLastRMS) : -INFINITY;
@@ -241,6 +265,7 @@ int main(int argc, const char *argv[]) {
             fflush(stdout);
         }
 
+        // Tear down in reverse ownership order so no IOProc references a destroyed device or tap.
         AudioDeviceStop(aggregateDevice, ioProcID);
         AudioDeviceDestroyIOProcID(aggregateDevice, ioProcID);
         AudioHardwareDestroyAggregateDevice(aggregateDevice);

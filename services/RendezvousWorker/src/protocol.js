@@ -1,3 +1,5 @@
+// Protocol validation is intentionally stricter than ordinary JSON decoding: exact fields,
+// canonical encodings, bounded sizes, and monotonic sequences define the relay trust boundary.
 export const HEADER = Object.freeze({
   channel: "X-AudioStreamer-Channel",
   role: "X-AudioStreamer-Role",
@@ -27,6 +29,7 @@ const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
 
+/** Returns the UTF-8 wire size used by all service-side message limits. */
 export const utf8Length = (value) => textEncoder.encode(value).byteLength;
 
 const exactKeys = (value, expected) => {
@@ -78,6 +81,10 @@ const validCanonicalCiphertext = (value) => {
   }
 };
 
+/**
+ * Validates WebSocket upgrade headers and selects invitation, pairing, or availability mode.
+ * Returned proof bytes are canonical 256-bit values suitable for constant-time comparison.
+ */
 export function validateJoinHeaders(headers, expectedMode = "invitation") {
   const channel = headers.get(HEADER.channel);
   const role = headers.get(HEADER.role);
@@ -142,6 +149,7 @@ export function validateJoinHeaders(headers, expectedMode = "invitation") {
   };
 }
 
+/** Compares canonical admission proofs without an early-exit timing signal. */
 export function admissionProofsMatch(expectedValue, receivedBytes) {
   const expectedBytes = decodeCanonicalBase64URL(expectedValue);
   if (expectedBytes?.byteLength !== 32 || receivedBytes?.byteLength !== 32) return false;
@@ -175,6 +183,11 @@ function validateSealedEnvelope(bytes, { channel, role, sequence }) {
   );
 }
 
+/**
+ * Validates an encrypted invitation/pairing signal without decrypting its ciphertext.
+ * The inner envelope repeats its channel, direction, and sequence so routing metadata is bound to
+ * the end-to-end-authenticated payload.
+ */
 export function validateSignal(raw, { channel, role, expectedSequence }) {
   if (typeof raw !== "string" || utf8Length(raw) > LIMITS.maximumWireMessageBytes) {
     return { error: "invalid_message" };
@@ -219,6 +232,7 @@ const validExchangeID = validCanonical128BitBase64URL;
 // Probe inspection is deliberately non-consuming for all other availability messages, which
 // continue through the encrypted-signal validator. Once the exact probe type is present, however,
 // its schema and 128-bit nonce must be canonical or the caller fails closed as invalid_message.
+/** Inspects the one unencrypted liveness-probe shape used to trigger a fresh encrypted exchange. */
 export function inspectAvailabilityProbe(raw) {
   if (typeof raw !== "string" || utf8Length(raw) > LIMITS.maximumWireMessageBytes) {
     return { matched: false };
@@ -278,6 +292,10 @@ function validateAvailabilityEnvelope(bytes, { channel, role, exchangeID, sequen
   );
 }
 
+/**
+ * Validates an encrypted paired-device availability signal and binds it to one exchange nonce.
+ * Exchange binding prevents a valid envelope from a previous availability probe being replayed.
+ */
 export function validateAvailabilitySignal(
   raw,
   { channel, role, exchangeID, expectedSequence },

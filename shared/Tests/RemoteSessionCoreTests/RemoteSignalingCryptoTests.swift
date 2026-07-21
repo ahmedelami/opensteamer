@@ -2,6 +2,8 @@ import Foundation
 import Testing
 @testable import RemoteSessionCore
 
+/// Proves direction and domain separation, AEAD tamper rejection, replay-window behavior, and
+/// canonical identifier validation without persisting any runtime credential.
 struct RemoteSignalingCryptoTests {
     private func invitation(byte: UInt8) throws -> RemoteInvitationCode {
         try RemoteInvitationCode(secret: Data(repeating: byte, count: 20))

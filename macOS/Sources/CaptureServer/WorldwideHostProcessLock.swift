@@ -1,6 +1,11 @@
 import Darwin
 import Foundation
 
+/// Per-user advisory lock that prevents concurrent worldwide host processes.
+///
+/// The runtime directory and lock file are constrained to the effective user, refuse
+/// symlinks, and use close-on-exec. The descriptor itself owns the advisory lock; the
+/// local `descriptorLock` makes explicit release and deinitialization idempotent.
 final class WorldwideHostProcessLock {
     private static let directoryName = "org.example.AudioStreamer.CaptureServer.runtime"
     private static let fileName = "worldwide-host.lock"
@@ -16,6 +21,7 @@ final class WorldwideHostProcessLock {
         release()
     }
 
+    /// Atomically creates/opens and exclusively locks the protected runtime file.
     static func acquire(lockDirectoryURL: URL? = nil) throws -> WorldwideHostProcessLock {
         let directoryURL = try lockDirectoryURL ?? defaultLockDirectoryURL()
         try prepareLockDirectory(directoryURL)
@@ -31,6 +37,7 @@ final class WorldwideHostProcessLock {
         }
     }
 
+    /// Closes the descriptor once, releasing the advisory lock to another process.
     func release() {
         descriptorLock.lock()
         guard let descriptor else {
@@ -43,6 +50,7 @@ final class WorldwideHostProcessLock {
         Darwin.close(descriptor)
     }
 
+    /// Resolves the current account's Application Support runtime directory.
     private static func defaultLockDirectoryURL() throws -> URL {
         guard let applicationSupportURL = FileManager.default.urls(
             for: .applicationSupportDirectory,
@@ -53,6 +61,7 @@ final class WorldwideHostProcessLock {
         return applicationSupportURL.appendingPathComponent(directoryName, isDirectory: true)
     }
 
+    /// Creates and verifies an owner-only, real directory before opening the lock.
     private static func prepareLockDirectory(_ directoryURL: URL) throws {
         guard directoryURL.isFileURL else {
             throw WorldwideHostProcessLockError.unsafeLockDirectory
@@ -86,6 +95,7 @@ final class WorldwideHostProcessLock {
         }
     }
 
+    /// Opens and locks a non-symlink file without a check-then-open race.
     private static func openLockFile(_ lockURL: URL) throws -> Int32 {
         // O_EXLOCK acquires the advisory lock atomically with open; O_NONBLOCK rejects duplicates.
         let flags = O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK | O_EXLOCK
@@ -102,6 +112,7 @@ final class WorldwideHostProcessLock {
         return descriptor
     }
 
+    /// Verifies the opened inode is a single-link regular file owned by this account.
     private static func validateAndRestrictLockFile(_ descriptor: Int32) throws {
         var metadata = stat()
         guard Darwin.fstat(descriptor, &metadata) == 0 else {
@@ -122,6 +133,7 @@ final class WorldwideHostProcessLock {
     }
 }
 
+/// Contention and filesystem-safety failures from the process lock boundary.
 enum WorldwideHostProcessLockError: LocalizedError, Equatable {
     case alreadyRunning
     case applicationSupportUnavailable

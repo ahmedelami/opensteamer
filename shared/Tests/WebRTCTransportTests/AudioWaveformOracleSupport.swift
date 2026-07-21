@@ -4,6 +4,7 @@ import CoreMedia
 import Foundation
 import XCTest
 
+/// A deterministic, broadband, channel-distinct challenge signal for decoded-audio tests.
 struct DeterministicStereoWaveform: Sendable {
     static let sampleRate = 48_000.0
 
@@ -111,6 +112,7 @@ struct DeterministicStereoWaveform: Sendable {
     }
 }
 
+/// A bounded unfiltered decoded-PCM capture on which corruption mutations and metrics operate.
 struct DecodedAudioWindow: Sendable {
     let sampleRate: Double
     let channelCount: Int
@@ -336,11 +338,13 @@ struct DecodedAudioWindow: Sendable {
     }
 }
 
+/// Names one deliberately corrupted window that the production-quality oracle must reject.
 struct AudioWaveformMutationCase: Sendable {
     let name: String
     let window: DecodedAudioWindow
 }
 
+/// Thread-safe decoded-PCM sink that aligns evidence using a unique synchronization preamble.
 final class UnfilteredDecodedAudioProbe: @unchecked Sendable {
     // The two-half, channel-swapping chirp is intentionally unlike every other probe. Native
     // Opus startup can attenuate its boundary, so recognition uses correlation rather than an
@@ -553,6 +557,7 @@ final class UnfilteredDecodedAudioProbe: @unchecked Sendable {
         return dot / max(0.000_000_001, sqrt(expectedEnergy * actualEnergy))
     }
 
+    /// One decoded callback projected into normalized left/right samples.
     private struct Batch {
         let left: [Double]
         let right: [Double]
@@ -608,6 +613,7 @@ final class UnfilteredDecodedAudioProbe: @unchecked Sendable {
     }
 }
 
+/// Independent failure dimensions reported by the waveform oracle.
 enum AudioWaveformViolation: String, Hashable, Sendable {
     case insufficientEvidence
     case invalidDecodedFormat
@@ -620,6 +626,7 @@ enum AudioWaveformViolation: String, Hashable, Sendable {
     case channelCorruption
 }
 
+/// Measurements, thresholds, and violations produced for one decoded evidence window.
 struct AudioWaveformOracleReport: CustomStringConvertible, Sendable {
     let violations: Set<AudioWaveformViolation>
     let alignmentOffsetFrames: Int
@@ -653,6 +660,10 @@ struct AudioWaveformOracleReport: CustomStringConvertible, Sendable {
     }
 }
 
+/// Evaluates continuity, fidelity, stereo separation, and clipping from actual decoded PCM.
+///
+/// Its mutation suite is a meta-oracle: every known dropout or distortion must independently
+/// cause a violation, preventing a permissive threshold change from making the main test vacuous.
 enum AudioWaveformOracle {
     // Alignment deliberately ignores the first and last 100 ms so ordinary Opus startup/tail
     // settling cannot move the entire waveform. Once that stable offset is known, however, every
@@ -883,6 +894,7 @@ enum AudioWaveformOracle {
         )
     }
 
+    /// Per-channel measurements used by the waveform thresholds and failure report.
     private struct ChannelStatistics {
         let correlation: Double
         let gain: Double
@@ -1115,6 +1127,7 @@ func makeStereoOracleSampleBuffer(
 }
 
 
+/// Construction failures for synthetic audio sample buffers used by the physical oracle.
 enum AudioWaveformSampleBufferTestError: Error {
     case blockBufferCreationFailed(OSStatus)
     case blockBufferCopyFailed(OSStatus)

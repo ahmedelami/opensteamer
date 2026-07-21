@@ -1,5 +1,6 @@
 import Foundation
 
+/// Parsed command-line configuration for file-backed ScreenCaptureKit capture.
 struct CLIOptions {
     var duration: TimeInterval = 10
     var outputURL: URL?
@@ -25,6 +26,7 @@ struct CLIOptions {
       --help                 Print this help.
     """
 
+    /// Parses `CommandLine.arguments`, treating element zero as the executable name.
     static func parse(_ arguments: [String]) throws -> CLIOptions {
         var options = CLIOptions()
         var index = 1
@@ -68,6 +70,7 @@ struct CLIOptions {
     }
 }
 
+/// User-correctable command-line syntax failures.
 enum CLIError: LocalizedError {
     case invalidArgument(String)
 

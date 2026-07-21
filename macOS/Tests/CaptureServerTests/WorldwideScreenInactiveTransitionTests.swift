@@ -1,6 +1,11 @@
 import XCTest
 @testable import CaptureServer
 
+/// Defines the ordering and failure boundary for acknowledging that remote screen video is hidden.
+///
+/// The host may report `.inactive` only after native capture has stopped. A native-stop failure
+/// closes the session because continued capture would contradict the acknowledgement; an ACK
+/// transport failure is reported but does not retroactively invalidate the completed local stop.
 @MainActor
 final class WorldwideScreenInactiveTransitionTests: XCTestCase {
     func testSuccessfulTransitionStopsNativeCaptureBeforeInactiveAcknowledgement() async {
@@ -90,6 +95,9 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
     }
 
     func testHideCommandUsesVerifiedNativeStopBoundaryBeforeInactiveAcknowledgement() throws {
+        // Behavioral tests cover the transition helper. This source-level integration oracle makes
+        // sure the production Hide branch still calls that helper instead of acknowledging the peer
+        // directly. The mutation check below proves the oracle detects the bypass it guards against.
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -155,6 +163,8 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
         after startMarker: String,
         before endMarker: String
     ) throws -> String {
+        // Markers intentionally name neighboring declarations/cases so extraction fails loudly if
+        // production control-flow structure changes and the integration contract needs review.
         let start = try XCTUnwrap(source.range(of: startMarker)?.upperBound)
         let end = try XCTUnwrap(
             source.range(of: endMarker, range: start..<source.endIndex)?.lowerBound
@@ -163,6 +173,8 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
     }
 
     private func hideContractViolations(in hideBranch: String) -> [String] {
+        // Return all violations to keep mutant failures diagnostic rather than stopping at the
+        // first missing argument or forbidden direct acknowledgement.
         var violations: [String] = []
         let verifiedCallCount = hideBranch.components(
             separatedBy: "acknowledgeInactiveAfterVerifiedScreenStop("
@@ -190,6 +202,7 @@ private enum InactiveAcknowledgementError: Error, Equatable {
     case injected
 }
 
+/// Failure-injection source that records whether native-stop was attempted exactly once.
 @MainActor
 private final class ThrowingScreenStopSource {
     enum StopError: Error, Equatable {
@@ -204,6 +217,7 @@ private final class ThrowingScreenStopSource {
     }
 }
 
+/// Main-actor event ledger used to assert externally observable ordering across async closures.
 @MainActor
 private final class InactiveTransitionProbe {
     var events: [String] = []

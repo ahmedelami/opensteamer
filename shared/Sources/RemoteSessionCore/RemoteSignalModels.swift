@@ -1,10 +1,12 @@
 import Foundation
 
+/// The two fixed roles in a host-to-viewer remote session.
 public enum RemotePeerRole: String, Codable, CaseIterable, Sendable {
     case host
     case viewer
 }
 
+/// A bounded WebRTC ICE server configuration received from rendezvous signaling.
 public struct RemoteICEServer: Codable, Equatable, Sendable {
     public let urls: [String]
     public let username: String?
@@ -17,6 +19,7 @@ public struct RemoteICEServer: Codable, Equatable, Sendable {
     }
 }
 
+/// A serializable WebRTC ICE candidate plus its negotiation-generation identifier.
 public struct RemoteICECandidate: Codable, Equatable, Sendable {
     public let sdp: String
     public let sdpMid: String?
@@ -41,12 +44,14 @@ public struct RemoteICECandidate: Codable, Equatable, Sendable {
     }
 }
 
+/// Session-level screen visibility and recovery commands.
 public enum RemoteControlCommand: String, Codable, CaseIterable, Sendable {
     case showScreen
     case hideScreen
     case requestKeyFrame
 }
 
+/// Closed reasons a peer may use to terminate a remote session.
 public enum RemoteSessionEndReason: String, Codable, CaseIterable, Sendable {
     case normal
     case hostStopped
@@ -55,6 +60,7 @@ public enum RemoteSessionEndReason: String, Codable, CaseIterable, Sendable {
     case protocolError
 }
 
+/// The public identity asserted by a peer inside authenticated signaling.
 public struct RemotePeerIdentity: Codable, Equatable, Sendable {
     public let deviceID: UUID
     public let role: RemotePeerRole

@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 
+/// A signed, invitation-authenticated introduction carrying one ephemeral agreement key.
 public struct RemotePairingHello: Codable, Equatable, Sendable {
     public static let currentProtocolVersion: UInt8 = 1
 
@@ -60,6 +61,7 @@ public struct RemotePairingHello: Codable, Equatable, Sendable {
     }
 }
 
+/// A signed proof that a peer derived the same pairing transcript and pair root.
 public struct RemotePairingConfirmation: Codable, Equatable, Sendable {
     public static let currentProtocolVersion: UInt8 = 1
 
@@ -95,6 +97,7 @@ public struct RemotePairingConfirmation: Codable, Equatable, Sendable {
     }
 }
 
+/// Persist-before-send phases that make the durable pairing commit recoverable after interruption.
 public enum RemotePairingCommitPhase: String, Codable, CaseIterable, Sendable {
     /// Host proposes committing after both transcript confirmations have verified.
     case proposal
@@ -106,6 +109,7 @@ public enum RemotePairingCommitPhase: String, Codable, CaseIterable, Sendable {
     case activationAcknowledgement
 }
 
+/// A signed, transcript-bound message advancing the durable pairing state machine.
 public struct RemotePairingCommit: Codable, Equatable, Sendable {
     public static let currentProtocolVersion: UInt8 = 1
 
@@ -231,6 +235,7 @@ public struct RemotePairingParticipant: Sendable, CustomStringConvertible,
     public var description: String { "<redacted remote pairing participant>" }
     public var debugDescription: String { description }
 
+    /// Verifies the peer hello and derives an agreement bound to both roles and identities.
     public func accept(_ peerHello: RemotePairingHello) throws -> RemotePairingAgreement {
         guard peerHello.protocolVersion == RemotePairingHello.currentProtocolVersion else {
             throw RemoteSessionCoreError.unsupportedPairingVersion
@@ -374,6 +379,7 @@ public struct RemotePairingAgreement: Sendable, CustomStringConvertible,
     public var description: String { "<redacted remote pairing agreement>" }
     public var debugDescription: String { description }
 
+    /// Creates this device's signed proof of the authenticated pairing transcript.
     public func makeConfirmation() throws -> RemotePairingConfirmation {
         let unsigned = RemotePairingConfirmationUnsigned(
             protocolVersion: RemotePairingConfirmation.currentProtocolVersion,
@@ -409,6 +415,7 @@ public struct RemotePairingAgreement: Sendable, CustomStringConvertible,
         )
     }
 
+    /// Verifies that the peer confirmation belongs to this exact agreement.
     public func verify(_ confirmation: RemotePairingConfirmation) throws {
         guard confirmation.protocolVersion == RemotePairingConfirmation.currentProtocolVersion else {
             throw RemoteSessionCoreError.unsupportedPairingVersion
@@ -443,6 +450,7 @@ public struct RemotePairingAgreement: Sendable, CustomStringConvertible,
         }
     }
 
+    /// Creates a role-valid signed commit for the requested persistence phase.
     public func makeCommit(phase: RemotePairingCommitPhase) throws -> RemotePairingCommit {
         try validateSender(role: localIdentity.role, phase: phase)
         let unsigned = RemotePairingCommitUnsigned(
@@ -483,6 +491,7 @@ public struct RemotePairingAgreement: Sendable, CustomStringConvertible,
         )
     }
 
+    /// Verifies a peer commit's identity, transcript, phase, tag, and signature.
     public func verify(
         _ commit: RemotePairingCommit,
         expectedPhase: RemotePairingCommitPhase
@@ -533,6 +542,7 @@ public struct RemotePairingAgreement: Sendable, CustomStringConvertible,
         return try makeRecord(createdAt: createdAt, state: .pending)
     }
 
+    /// Produces an active durable record after the role-specific final commit is authenticated.
     public func finalize(
         peerConfirmation: RemotePairingConfirmation,
         finalPeerCommit: RemotePairingCommit,
@@ -614,6 +624,7 @@ public struct RemotePairingAgreement: Sendable, CustomStringConvertible,
     }
 }
 
+/// Canonical hello fields covered by the device-identity signature.
 internal struct RemotePairingHelloUnsigned: Codable {
     let protocolVersion: UInt8
     let deviceID: UUID
@@ -624,6 +635,7 @@ internal struct RemotePairingHelloUnsigned: Codable {
     let nonce: Data
 }
 
+/// Canonical transcript-confirmation fields covered by the sender's signature.
 internal struct RemotePairingConfirmationUnsigned: Codable {
     let protocolVersion: UInt8
     let pairID: UUID
@@ -633,6 +645,7 @@ internal struct RemotePairingConfirmationUnsigned: Codable {
     let transcriptHash: Data
 }
 
+/// Canonical durable-commit fields covered by the sender's signature.
 internal struct RemotePairingCommitUnsigned: Codable {
     let protocolVersion: UInt8
     let pairID: UUID

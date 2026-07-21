@@ -1,6 +1,9 @@
 import CryptoKit
 import Foundation
 
+/// Authenticated control payloads permitted on the pair-scoped availability channel.
+///
+/// SDP, ICE candidates, and media are intentionally absent; they use a fresh session credential.
 public enum RemoteAvailabilityPayload: Codable, Equatable, Sendable {
     case pairingCommit(RemotePairingCommit)
     case reconnectRequest(RemoteReconnectRequest)
@@ -53,6 +56,7 @@ public enum RemoteAvailabilityPayload: Codable, Equatable, Sendable {
     }
 }
 
+/// Bounded events emitted while two durable peers discover and authenticate each other.
 public enum PairedAvailabilitySignalingEvent: Equatable, Sendable {
     case waiting
     case ready(role: RemotePeerRole, exchangeID: RemoteAvailabilityExchangeID)
@@ -61,6 +65,10 @@ public enum PairedAvailabilitySignalingEvent: Equatable, Sendable {
     case serverError(RendezvousServerError)
 }
 
+/// An exchange-bound AEAD envelope for durable-pair control messages.
+///
+/// Channel, exchange, direction, and sequence are authenticated as associated data so the server
+/// can route an envelope but cannot replay it into another context.
 public struct SealedAvailabilityEnvelope: Codable, Equatable, Sendable {
     public static let currentVersion: UInt8 = 1
 
@@ -100,6 +108,7 @@ public struct SealedAvailabilityEnvelope: Codable, Equatable, Sendable {
     }
 }
 
+/// Applies exchange, role, direction, and sequence binding to availability control payloads.
 internal struct RemoteAvailabilityCipher: Sendable {
     let credential: RemoteRendezvousCredential
     let exchangeID: RemoteAvailabilityExchangeID
@@ -302,6 +311,7 @@ public actor PairedAvailabilitySignalingClient {
         self.applicationProbeNonceGenerator = applicationProbeNonceGenerator
     }
 
+    /// Connects exactly once and starts the bounded availability event stream.
     public func connect() async throws -> EventStream {
         guard state == .idle else {
             throw RendezvousSignalingError.alreadyConnected
@@ -348,6 +358,7 @@ public actor PairedAvailabilitySignalingClient {
         return pair.stream
     }
 
+    /// Encrypts and sends one exchange-bound control payload with a monotonic sequence.
     public func send(_ payload: RemoteAvailabilityPayload) async throws {
         guard state == .connected,
               let exchangeID,
@@ -384,6 +395,7 @@ public actor PairedAvailabilitySignalingClient {
         }
     }
 
+    /// Idempotently closes the availability socket and event stream.
     public func close() async {
         await finish(throwing: nil)
     }

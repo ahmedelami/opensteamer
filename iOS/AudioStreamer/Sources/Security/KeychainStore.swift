@@ -1,13 +1,19 @@
 import Foundation
 import Security
 
+/// Persistence boundary for the legacy remote activation credential.
+/// Implementations distinguish explicit deletion from transient empty UI state.
 protocol RemoteTokenStoring {
     func loadRemoteToken() throws -> String?
     func saveRemoteToken(_ token: String) throws
     func deleteRemoteToken() throws
 }
 
+/// Thin generic-password Keychain adapter used by activation and pairing stores.
+/// Every new item is `AfterFirstUnlockThisDeviceOnly`: it is available to background playback
+/// after the first unlock, cannot migrate to another device, and survives ordinary app updates.
 struct KeychainStore: RemoteTokenStoring {
+    /// Stable Keychain namespace independent of application build or payload schema versions.
     struct Item: Equatable, Sendable {
         let service: String
         let account: String
@@ -97,6 +103,8 @@ struct KeychainStore: RemoteTokenStoring {
     }
 
     func saveData(_ data: Data) throws {
+        // Update first to preserve the accessibility class of a previously shipped item. Only a
+        // genuinely missing item is inserted with the current this-device-only policy.
         let updateAttributes = [kSecValueData as String: data]
         let updateStatus = SecItemUpdate(
             baseQuery as CFDictionary,
@@ -134,6 +142,7 @@ struct KeychainStore: RemoteTokenStoring {
     }
 }
 
+/// Failures returned by the generic-password storage boundary.
 enum KeychainStoreError: Error, Equatable {
     case invalidStoredValue
     case operationFailed(OSStatus)

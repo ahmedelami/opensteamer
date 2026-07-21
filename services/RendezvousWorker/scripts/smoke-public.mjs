@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
 import WebSocket from "ws";
 
+// This opt-in smoke test exercises the deployed public WSS boundary with freshly generated,
+// process-local capabilities. It never reads or prints a production invitation/access code.
 const origin = process.env.AUDIOSTREAMER_RENDEZVOUS_URL;
 if (!origin) {
   throw new Error("AUDIOSTREAMER_RENDEZVOUS_URL is required");
@@ -102,6 +104,8 @@ const sealedSignal = (role, sequence) => {
 };
 
 const queryURL = new URL(endpoint);
+// The assertions below are deployment oracles: strict upgrade routing, viewer-first rejection,
+// admission proof enforcement, peer readiness, opaque forwarding, and one-time consumption.
 queryURL.searchParams.set("channel", "forbidden");
 assert(
   (await unexpectedStatus(queryURL, headers("host"))) === 400,

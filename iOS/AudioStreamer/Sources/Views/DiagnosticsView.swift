@@ -2,6 +2,9 @@ import RemoteSessionCore
 import SwiftUI
 import WebRTCTransport
 
+/// Read-only diagnostics surface combining legacy renderer metrics with worldwide WebRTC state.
+/// Connection telemetry is explicitly local-only, and the view renders attempt references rather
+/// than credentials or durable pairing identifiers.
 struct DiagnosticsView: View {
     @EnvironmentObject private var viewModel: StreamSessionViewModel
     @EnvironmentObject private var worldwideViewModel: WorldwideSessionViewModel
@@ -208,6 +211,8 @@ struct DiagnosticsView: View {
     }
 
     private func connectionEventDetail(_ event: ConnectionTelemetryEvent) -> String {
+        // Keep the timeline useful for failure triage without displaying exchange credentials or
+        // a full durable pair identifier.
         var details: [String] = []
         if event.stage == .viewerWorkerWaitingForHost {
             details.append("Worker authenticated the iPhone; paired Mac was not present")

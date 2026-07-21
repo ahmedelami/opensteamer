@@ -1,6 +1,10 @@
 import Foundation
 import Streaming
 
+/// Reads the legacy PCM wire format carried in binary WebSocket messages.
+///
+/// WebSocket message boundaries need not match protocol packet boundaries, so received bytes are
+/// retained until the fixed-width header or declared frame length is complete.
 public final class WebSocketPacketReader: @unchecked Sendable {
     private let url: URL
     private let authToken: String?
@@ -8,6 +12,7 @@ public final class WebSocketPacketReader: @unchecked Sendable {
     private let task: URLSessionWebSocketTask
     private var bufferedData = Data()
 
+    /// Creates a reader for a WebSocket endpoint and optional legacy activation token.
     public init(url: URL, authToken: String? = nil) {
         self.url = url
         self.authToken = authToken?.nilIfEmpty
@@ -15,15 +20,18 @@ public final class WebSocketPacketReader: @unchecked Sendable {
         self.task = session.webSocketTask(with: url)
     }
 
+    /// Resumes the underlying WebSocket task.
     public func start() async throws {
         task.resume()
     }
 
+    /// Closes the task and invalidates its URL session.
     public func cancel() {
         task.cancel(with: .goingAway, reason: nil)
         session.invalidateAndCancel()
     }
 
+    /// Sends the JSON authentication message before binary stream data is consumed.
     public func authenticateIfNeeded() async throws {
         guard let authToken else { return }
         let auth = WebSocketAuthMessage(type: "auth", token: authToken)
@@ -32,11 +40,13 @@ public final class WebSocketPacketReader: @unchecked Sendable {
         try await send(.string(text))
     }
 
+    /// Reads and validates the fixed-width PCM stream header.
     public func readHeader() async throws -> PCMStreamHeader {
         let headerData = try await receiveExact(PCMStreamProtocol.headerByteCount)
         return try PacketParser.parseHeader(headerData)
     }
 
+    /// Reads one complete frame and validates its declared payload size against `header`.
     public func readFrame(header: PCMStreamHeader) async throws -> PCMFrame {
         let lengthData = try await receiveExact(4)
         let packetLength = try PacketParser.packetLength(lengthData)
@@ -109,6 +119,7 @@ public final class WebSocketPacketReader: @unchecked Sendable {
     }
 }
 
+/// Framing and server-message errors specific to the WebSocket transport.
 public enum WebSocketPacketReaderError: LocalizedError {
     case connectionClosed
     case serverMessage(String)

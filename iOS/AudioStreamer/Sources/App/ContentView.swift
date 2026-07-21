@@ -1,5 +1,10 @@
 import SwiftUI
 
+/// Top-level tab shell for discovery, playback, and diagnostics.
+///
+/// Scene transitions are forwarded to both the local-stream and worldwide-session owners because
+/// their media policies differ: local discovery may pause while worldwide audio can remain active
+/// under the Background Audio entitlement.
 struct ContentView: View {
     @EnvironmentObject private var viewModel: StreamSessionViewModel
     @EnvironmentObject private var worldwideViewModel: WorldwideSessionViewModel
@@ -29,6 +34,7 @@ struct ContentView: View {
             }
         }
         .task {
+            // Discovery is idempotent, so tying it to the view task also covers root recreation.
             viewModel.startBrowsing()
         }
         .onChange(of: scenePhase) { _, newPhase in

@@ -1,6 +1,9 @@
 import Foundation
 import Network
 
+/// A discoverable or manually entered Mac endpoint together with its advertised wire contract.
+/// The stable `id` represents the endpoint, while compatibility is derived from Bonjour TXT data
+/// and remains permissive when metadata has not arrived yet.
 struct ServerInfo: Identifiable, Hashable {
     let id: String
     let name: String
@@ -69,6 +72,9 @@ struct ServerInfo: Identifiable, Hashable {
     }
 }
 
+/// The endpoint's compatibility with the legacy PCM/TCP protocol.
+/// Missing TXT records are allowed so manually entered endpoints can still be attempted;
+/// explicit mismatches are rejected before opening a stream.
 enum ServerCompatibility: Hashable {
     case compatible
     case missingTXT
@@ -144,6 +150,8 @@ private extension NWEndpoint {
 
 private extension NWBrowser.Result.Metadata {
     var bonjourTXT: [String: String] {
+        // Network.framework exposes TXT data only for Bonjour results. Other metadata kinds are
+        // valid discovery results but contribute no compatibility fields.
         guard case .bonjour(let record) = self else {
             return [:]
         }

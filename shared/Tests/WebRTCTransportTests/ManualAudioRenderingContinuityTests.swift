@@ -3,6 +3,8 @@ import AVFoundation
 import XCTest
 
 #if os(macOS)
+/// Renders a deterministic jittered capture schedule offline; interior sample continuity—not just
+/// callback completion—is the oracle that the manual player timeline introduced no silence.
 final class ManualAudioRenderingContinuityTests: XCTestCase {
     func testMeasuredCaptureJitterExtendsManualPlayerTimelineWithoutInteriorSilence() throws {
         let engine = AVAudioEngine()
@@ -216,6 +218,7 @@ final class ManualAudioRenderingContinuityTests: XCTestCase {
     }
 }
 
+/// Thread-safe callback counter used only to wait for offline manual rendering completion.
 private final class RenderedCallbackCounter: @unchecked Sendable {
     private let condition = NSCondition()
     private var count = 0

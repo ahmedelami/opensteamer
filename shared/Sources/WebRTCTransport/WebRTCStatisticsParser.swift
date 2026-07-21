@@ -1,7 +1,9 @@
 @preconcurrency import LiveKitWebRTC
 import Foundation
 
+/// Reduces browser-style native WebRTC statistics into stable product diagnostics.
 enum WebRTCStatisticsParser {
+    /// Parses the native report without retaining Objective-C statistics objects.
     static func parse(_ report: LKRTCStatisticsReport) -> WebRTCStatisticsSnapshot {
         let records = report.statistics.values.map { statistic in
             WebRTCStatisticsRecord(
@@ -13,6 +15,7 @@ enum WebRTCStatisticsParser {
         return parse(records: records)
     }
 
+    /// Parses value records; this overload is the deterministic unit-test seam.
     static func parse(records: [WebRTCStatisticsRecord]) -> WebRTCStatisticsSnapshot {
 
         let selectedPair = selectedCandidatePair(in: records)
@@ -209,6 +212,7 @@ enum WebRTCStatisticsParser {
     }
 }
 
+/// A platform-neutral projection of one native statistics record.
 struct WebRTCStatisticsRecord {
     let id: String
     let type: String

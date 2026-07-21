@@ -1,9 +1,23 @@
 #!/bin/zsh
 
-# Proves that the real development app's Keychain-backed activation code, invitation code,
-# viewer identity, and active paired-Mac record survive an install-over-update on physical iOS.
-# Separate negative seed/verify processes also prove app startup cannot manufacture either
-# pairing credential before a read-only verifier observes a deliberately missing item.
+# Usage: `validate-physical-update-keychain.sh <device-udid> [artifact-directory]`.
+#
+# Prerequisites: an unlocked, connected test iPhone on the pinned iOS version; Xcode command-line
+# tools with signing access; and permission to install/uninstall the side-by-side `.dev` bundle.
+# The script proves that Keychain-backed activation/invitation state, viewer identity, and active
+# paired-Mac record survive install-over-update. Separate negative phases prove startup cannot
+# manufacture a deliberately missing identity or pairing record before read-only verification.
+#
+# Optional environment: `AUDIOSTREAMER_UPDATE_PHASE_TIMEOUT_SECONDS`,
+# `AUDIOSTREAMER_DEVICE_COMMAND_TIMEOUT_SECONDS`, and `AUDIOSTREAMER_DEVICE_LOCK_POLL_SECONDS`
+# adjust bounded waits. `AUDIOSTREAMER_SCRIPT_SELF_TEST` is reserved for deterministic shell tests;
+# phase-selector variables are set internally and should not be supplied by an operator.
+#
+# Side effects/artifacts: builds and installs validation variants, uninstalls the validation app,
+# and writes device/app/lock snapshots plus `.xcresult` bundles under the artifact directory
+# (default `/private/tmp/AudioStreamer-device-Keychain-Update`). `run-status.txt` ends in `status=passed`
+# only after every phase succeeds; any nonzero command, timeout, lock, metadata, or oracle failure
+# exits nonzero and cleanup records `status=failed`. No failure is treated as a skip.
 set -euo pipefail
 
 SCRIPT_DIR=${0:A:h}

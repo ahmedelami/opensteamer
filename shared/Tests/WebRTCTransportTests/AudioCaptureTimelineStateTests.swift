@@ -3,6 +3,8 @@ import CoreMedia
 import XCTest
 
 #if os(macOS)
+/// Verifies timestamp continuity in source-frame units, including the one-frame rounding tolerance
+/// and reset behavior that prevent false gap or overlap diagnostics.
 final class AudioCaptureTimelineStateTests: XCTestCase {
     func testTwentyMillisecondSourceTimelineRemainsContinuous() {
         var state = AudioCaptureTimelineState()

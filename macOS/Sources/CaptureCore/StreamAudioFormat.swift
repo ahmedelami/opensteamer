@@ -1,6 +1,7 @@
 import CoreMedia
 import Foundation
 
+/// Sendable snapshot of the Core Audio format attached to captured samples.
 public struct StreamAudioFormat: Sendable {
     public let sampleRate: Double
     public let channelCount: Int
@@ -10,6 +11,7 @@ public struct StreamAudioFormat: Sendable {
     public let isFloat: Bool
     public let isInterleaved: Bool
 
+    /// Copies an `AudioStreamBasicDescription` so it can safely cross queues.
     init(_ description: AudioStreamBasicDescription) {
         sampleRate = description.mSampleRate
         channelCount = Int(description.mChannelsPerFrame)

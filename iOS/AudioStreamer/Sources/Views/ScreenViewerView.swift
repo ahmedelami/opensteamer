@@ -1,5 +1,8 @@
 import SwiftUI
 
+/// Full-screen viewer for the legacy sample-buffer screen stream.
+/// The view owns its session model for exactly the presentation lifetime, starting transport when
+/// presented and stopping it on every dismissal path.
 struct ScreenViewerView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var viewModel: ScreenSessionViewModel

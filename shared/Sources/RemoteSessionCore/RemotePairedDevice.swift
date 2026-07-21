@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 
+/// Crash-recoverable durable states for the multi-message pairing commit.
 public enum RemotePairingPersistenceState: String, Codable, CaseIterable, Sendable {
     /// Pair root is persisted, but the three-way commit is not durably accepted yet.
     case pending
@@ -12,6 +13,7 @@ public enum RemotePairingPersistenceState: String, Codable, CaseIterable, Sendab
     case active
 }
 
+/// The next idempotent action implied by a persisted pairing state.
 public enum RemotePairingRecoveryAction: Equatable, Sendable {
     case awaitProposal
     case issueProposal
@@ -117,6 +119,7 @@ public struct RemotePairedDeviceRecord: Codable, Equatable, Sendable,
         )
     }
 
+    /// Derives the AEAD credential for one server-issued availability exchange.
     public func availabilityCredential(
         exchangeID: RemoteAvailabilityExchangeID
     ) throws -> RemoteRendezvousCredential {
@@ -126,6 +129,7 @@ public struct RemotePairedDeviceRecord: Codable, Equatable, Sendable,
     public var description: String { "<redacted paired remote device>" }
     public var debugDescription: String { description }
 
+    /// The safe resumption step for this record's persisted commit state.
     public var recoveryAction: RemotePairingRecoveryAction {
         switch pairingState {
         case .pending:
@@ -663,6 +667,7 @@ public struct RemotePairedDeviceRecord: Codable, Equatable, Sendable,
     }
 }
 
+/// A signed, monotonic request carrying the initiator's ephemeral key and replay nonce.
 public struct RemoteReconnectRequest: Codable, Equatable, Sendable {
     public static let currentProtocolVersion: UInt8 = 1
 
@@ -703,6 +708,7 @@ public struct RemoteReconnectRequest: Codable, Equatable, Sendable {
     }
 }
 
+/// A signed response bound to the exact reconnect request and responder ephemeral key.
 public struct RemoteReconnectResponse: Codable, Equatable, Sendable {
     public static let currentProtocolVersion: UInt8 = 1
 
@@ -746,6 +752,7 @@ public struct RemoteReconnectResponse: Codable, Equatable, Sendable {
     }
 }
 
+/// Ephemeral initiator state retained only until a reconnect response is verified.
 public struct RemoteReconnectInitiator: Sendable, CustomStringConvertible,
     CustomDebugStringConvertible {
     public let request: RemoteReconnectRequest
@@ -809,6 +816,7 @@ public struct RemoteReconnectInitiator: Sendable, CustomStringConvertible,
     public var description: String { "<redacted remote reconnect initiator>" }
     public var debugDescription: String { description }
 
+    /// Verifies the response and derives a fresh session-only rendezvous credential.
     public func complete(
         with response: RemoteReconnectResponse
     ) throws -> RemoteRendezvousCredential {
@@ -867,6 +875,7 @@ public struct RemoteReconnectInitiator: Sendable, CustomStringConvertible,
     }
 }
 
+/// A verified reconnect response paired with the fresh session-only credential it derives.
 public struct RemoteReconnectResponder: Sendable, CustomStringConvertible,
     CustomDebugStringConvertible {
     public let response: RemoteReconnectResponse
@@ -949,6 +958,7 @@ public struct RemoteReconnectResponder: Sendable, CustomStringConvertible,
     public var debugDescription: String { description }
 }
 
+/// Canonical request fields covered by the initiator's signature.
 internal struct RemoteReconnectRequestUnsigned: Codable {
     let protocolVersion: UInt8
     let pairID: UUID
@@ -960,6 +970,7 @@ internal struct RemoteReconnectRequestUnsigned: Codable {
     let nonce: Data
 }
 
+/// Canonical response fields covered by the responder's signature.
 internal struct RemoteReconnectResponseUnsigned: Codable {
     let protocolVersion: UInt8
     let pairID: UUID

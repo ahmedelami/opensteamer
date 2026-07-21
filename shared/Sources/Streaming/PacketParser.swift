@@ -1,5 +1,6 @@
 import Foundation
 
+/// Validation failures for the legacy PCM wire format.
 public enum PacketParserError: LocalizedError {
     case invalidHeader
     case unsupportedVersion(UInt16)
@@ -32,7 +33,9 @@ public enum PacketParserError: LocalizedError {
     }
 }
 
+/// Parses attacker-controlled PCM framing without trusting declared lengths or media parameters.
 public enum PacketParser {
+    /// Parses and validates the fixed-width stream header.
     public static func parseHeader(_ data: Data) throws -> PCMStreamHeader {
         guard data.count == PCMStreamProtocol.headerByteCount,
               String(decoding: data[0..<4], as: UTF8.self) == PCMStreamProtocol.magic else {
@@ -66,6 +69,7 @@ public enum PacketParser {
         return PCMStreamHeader(sampleRate: sampleRate, channels: channels, format: format, flags: flags)
     }
 
+    /// Parses presentation metadata after validating the packet's declared total length.
     public static func parsePacketHeader(_ data: Data) throws -> PCMPacketMetadata {
         guard data.count == PCMStreamProtocol.packetHeaderByteCount else {
             throw PacketParserError.invalidPacketLength(UInt32(data.count))
@@ -84,6 +88,7 @@ public enum PacketParser {
         )
     }
 
+    /// Decodes and bounds the four-byte total packet length prefix.
     public static func packetLength(_ data: Data) throws -> UInt32 {
         guard data.count == 4 else {
             throw PacketParserError.invalidPacketLength(UInt32(data.count))
@@ -96,6 +101,7 @@ public enum PacketParser {
         return packetLength
     }
 
+    /// Verifies that frame count, channel count, and PCM sample width imply the received payload.
     public static func validatePayloadByteCount(
         packetLength: UInt32,
         metadata: PCMPacketMetadata,

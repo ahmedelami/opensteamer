@@ -16,10 +16,12 @@ public final class WebRTCRemoteAudioTrack: @unchecked Sendable {
         trackID = nativeTrack.trackId as String
     }
 
+    /// Whether decoded samples from this track may reach native playout.
     public var isEnabled: Bool {
         nativeTrack.isEnabled
     }
 
+    /// Opens or closes the native track's playout gate.
     public func setEnabled(_ enabled: Bool) {
         nativeTrack.isEnabled = enabled
     }
@@ -962,6 +964,7 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
 }
 
 #if os(macOS)
+/// A point-in-time view of source continuity and the bounded native scheduling queue.
 public struct MacExternalAudioCapturerRuntimeDiagnostics: Sendable {
     public let phase: String
     public let generation: UInt64
@@ -980,6 +983,7 @@ public struct MacExternalAudioCapturerRuntimeDiagnostics: Sendable {
 #endif
 
 #if DEBUG && os(macOS)
+/// Detailed DEBUG-only evidence for the custom device, source timeline, and scheduling queue.
 struct MacExternalAudioCapturerDiagnostics: CustomStringConvertible, Sendable {
     let isEnabled: Bool
     let usesCustomStereoDevice: Bool
@@ -1182,6 +1186,7 @@ extension MacExternalAudioCapturer: LKRTCAudioDeviceModuleDelegate {
 #endif
 
 #if os(iOS)
+/// Test seam for the process-wide LiveKit audio-session singleton.
 @MainActor
 protocol WebRTCAudioSessionControlling: AnyObject {
     var isActive: Bool { get }
@@ -1239,6 +1244,7 @@ public enum WebRTCAudioPlaybackFailureStage: String, Sendable {
     case activation
 }
 
+/// Sanitized AVAudioSession failure evidence captured at the point of activation.
 public struct WebRTCAudioPlaybackSessionError: LocalizedError, Sendable {
     public let stage: WebRTCAudioPlaybackFailureStage
     public let underlyingDomain: String
@@ -1264,6 +1270,7 @@ public struct WebRTCAudioPlaybackSessionError: LocalizedError, Sendable {
     }
 }
 
+/// Owns the iOS process-wide WebRTC playback gate while the custom output device owns audio I/O.
 @MainActor
 public final class WebRTCAudioPlaybackSession {
     #if os(iOS)
@@ -1293,12 +1300,14 @@ public final class WebRTCAudioPlaybackSession {
     }
     #endif
 
+    /// Opens WebRTC's manual audio gate for the custom output-only device.
     public func activate() throws {
         #if os(iOS)
         try configureAndActivate()
         #endif
     }
 
+    /// Reapplies the same manual-audio policy after a route or media-services interruption.
     public func recover() throws {
         #if os(iOS)
         try configureAndActivate()
@@ -1316,6 +1325,7 @@ public final class WebRTCAudioPlaybackSession {
         #endif
     }
 
+    /// Closes the process-wide native audio gate without changing AVAudioSession policy.
     public func deactivate() {
         #if os(iOS)
         session.isAudioEnabled = false

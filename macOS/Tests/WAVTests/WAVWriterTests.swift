@@ -2,6 +2,10 @@ import Foundation
 import XCTest
 @testable import WAV
 
+/// Verifies the minimum interoperability contract of files emitted by `WAVWriter`.
+///
+/// The oracle checks container markers, payload sizing, and stereo frame accounting rather than
+/// merely reopening through the same implementation, so malformed RIFF layout remains visible.
 final class WAVWriterTests: XCTestCase {
     func testWAVWriterProducesPlayableHeaderAndDataSize() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -16,6 +20,7 @@ final class WAVWriterTests: XCTestCase {
         let summary = try writer.finish()
 
         let data = try Data(contentsOf: url)
+        // Canonical PCM WAV uses a 44-byte header; four Int16 samples contribute eight bytes.
         XCTAssertEqual(data.count, 44 + 8)
         XCTAssertEqual(String(decoding: data[0..<4], as: UTF8.self), "RIFF")
         XCTAssertEqual(String(decoding: data[8..<12], as: UTF8.self), "WAVE")

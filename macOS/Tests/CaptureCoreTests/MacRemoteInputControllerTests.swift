@@ -3,10 +3,20 @@ import Foundation
 import XCTest
 @testable import CaptureCore
 
+/// Specifies the security boundary between authenticated remote-control messages and macOS input.
+///
+/// The suite uses an in-memory accessibility/event backend so it can prove fail-closed behavior
+/// without requesting TCC access or posting real input. Its central oracle is that a command is
+/// injected only while permission, display, Show generation, input session, and exact nonsecure
+/// focus all remain valid. Rejected commands must not leave reusable keyboard authority behind.
 final class MacRemoteInputControllerTests: XCTestCase {
+    // Stable synthetic identifiers make generation/session mismatches explicit in each fixture;
+    // they are test values, not production device identifiers or credentials.
     private let displayID: UInt32 = 42
     private let showID: UInt64 = 73
     private let sessionID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+
+    // MARK: - Capability activation and coordinate validation
 
     func testControllerIsFailClosedUntilExplicitlyEnabledAndArmed() {
         let system = MockMacRemoteInputSystem()
@@ -115,6 +125,8 @@ final class MacRemoteInputControllerTests: XCTestCase {
         }
         XCTAssertTrue(system.postedMousePoints.isEmpty)
     }
+
+    // MARK: - Primary drag atomicity and authorization
 
     func testPrimaryDragMapsBothPointsAndPostsDownDragUpInOrder() {
         let system = MockMacRemoteInputSystem()
@@ -314,6 +326,8 @@ final class MacRemoteInputControllerTests: XCTestCase {
         )
         XCTAssertEqual(system.postedDragEvents.count, 8)
     }
+
+    // MARK: - Accessibility focus and keyboard capability
 
     func testSecureEditableAncestorNeverGrantsRemoteKeyboardFocus() {
         let system = MockMacRemoteInputSystem()
@@ -527,6 +541,8 @@ final class MacRemoteInputControllerTests: XCTestCase {
         XCTAssertEqual(system.postedMousePoints.count, 1)
     }
 
+    // MARK: - Text validation and abuse limits
+
     func testExplicitlyEditableNonstandardAXRoleCanReceiveText() {
         let system = MockMacRemoteInputSystem()
         let contentEditable = system.makeElement(
@@ -659,6 +675,8 @@ final class MacRemoteInputControllerTests: XCTestCase {
             .accepted(.editable(generation: 2, secure: false))
         )
     }
+
+    // MARK: - Focus timing, session renewal, and backend failure
 
     func testPostClickFocusPollingIsBoundedToFiftyMilliseconds() {
         let system = MockMacRemoteInputSystem()
@@ -800,6 +818,8 @@ final class MacRemoteInputControllerTests: XCTestCase {
     }
 }
 
+/// Deterministic monotonic clock for token refill and bounded focus-polling assertions.
+/// `sleep` advances virtual time immediately, keeping the suite fast and independent of load.
 private final class MockMacRemoteInputClock: @unchecked Sendable, MacRemoteInputClock {
     private(set) var time: TimeInterval = 100
     private(set) var totalSlept: TimeInterval = 0
@@ -820,7 +840,11 @@ private final class MockMacRemoteInputClock: @unchecked Sendable, MacRemoteInput
     }
 }
 
+/// In-memory model of the TCC, display, Accessibility, and CoreGraphics operations used by the
+/// controller. Posted events are recorded only after the corresponding injected backend succeeds,
+/// allowing the tests to distinguish validation failures from partial input delivery.
 private final class MockMacRemoteInputSystem: @unchecked Sendable, MacRemoteInputSystem {
+    /// The complete mouse gesture protocol expected by a primary drag.
     enum PostedDragEvent: Equatable {
         case down(CGPoint)
         case dragged(CGPoint)
@@ -828,6 +852,7 @@ private final class MockMacRemoteInputSystem: @unchecked Sendable, MacRemoteInpu
     }
 
     struct Node {
+        // Parent links model field editors and nested secure/editable accessibility containers.
         var parent: MacRemoteAccessibilityElement?
         var role: String?
         var subrole: String?

@@ -2,6 +2,10 @@ import CoreMedia
 import Foundation
 import ScreenCaptureKit
 
+/// Owns the ScreenCaptureKit stream used by file-backed system-audio capture.
+///
+/// Stream callbacks arrive on `sampleQueue`; the downstream consumer is
+/// responsible for draining its work before capture resources are released.
 final class ScreenCaptureAudioSource: NSObject {
     private let displayID: UInt32?
     private let logger: Logger
@@ -14,6 +18,7 @@ final class ScreenCaptureAudioSource: NSObject {
         self.logger = logger
     }
 
+    /// Selects a display, installs the audio output, and begins asynchronous capture.
     func start(consumer: SampleBufferConsumer) async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         let display = try selectDisplay(from: content.displays)
@@ -23,6 +28,7 @@ final class ScreenCaptureAudioSource: NSObject {
         let configuration = SCStreamConfiguration()
         configuration.capturesAudio = true
         configuration.excludesCurrentProcessAudio = false
+        // A minimal video surface satisfies SCStream while avoiding needless video work.
         configuration.width = 2
         configuration.height = 2
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
@@ -37,6 +43,7 @@ final class ScreenCaptureAudioSource: NSObject {
         try await stream.startCapture()
     }
 
+    /// Stops the active stream and releases objects that retain its callback consumer.
     func stop() async throws {
         guard let stream else { return }
         logger.info("Stopping ScreenCaptureKit capture")
@@ -45,6 +52,7 @@ final class ScreenCaptureAudioSource: NSObject {
         self.output = nil
     }
 
+    /// Applies explicit display selection and reports configuration errors early.
     private func selectDisplay(from displays: [SCDisplay]) throws -> SCDisplay {
         guard !displays.isEmpty else {
             throw CaptureError.noDisplays

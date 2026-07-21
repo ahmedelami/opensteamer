@@ -1,6 +1,8 @@
 @testable import WebRTCTransport
 import XCTest
 
+/// Locks the route classifier: a relay candidate dominates, complete known non-relay pairs are
+/// direct, and incomplete or unknown evidence remains unknown.
 final class WebRTCNativeDiagnosticsTests: XCTestCase {
     func testRouteIsUnknownWhenCandidatePairIsIncomplete() {
         XCTAssertEqual(route(local: nil, remote: nil), .unknown)

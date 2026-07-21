@@ -4,6 +4,7 @@ import CoreVideo
 import Foundation
 import ScreenCaptureKit
 
+/// Dimensions and cadence negotiated for one display capture.
 public struct ScreenVideoCaptureFormat: Sendable, Equatable {
     public let displayID: UInt32
     public let width: Int
@@ -11,14 +12,22 @@ public struct ScreenVideoCaptureFormat: Sendable, Equatable {
     public let framesPerSecond: Int
 }
 
+/// Receives complete display frames and unexpected native stream failures.
 public protocol ScreenVideoSampleConsumer: AnyObject, Sendable {
+    /// Accepts one complete, image-backed screen sample on the capture queue.
     func consumeScreenVideoSample(_ sampleBuffer: CMSampleBuffer)
+    /// Reports a stream stop that did not originate from normal session teardown.
     func screenVideoCaptureSource(
         _ source: ScreenVideoCaptureSource,
         didStopWithErrorDescription errorDescription: String
     )
 }
 
+/// Owns a video-only ScreenCaptureKit stream for the selected display.
+///
+/// `stateLock` protects stream identity and start/stop cancellation across Swift
+/// concurrency and ScreenCaptureKit delegate callbacks. It is never held across an
+/// `await`; framework samples are delivered on the dedicated `sampleQueue`.
 public final class ScreenVideoCaptureSource: @unchecked Sendable {
     private let displayID: UInt32?
     private let maximumWidth: Int
@@ -36,6 +45,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
         self?.handleUnexpectedStop(of: stream, errorDescription: message)
     }
 
+    /// Creates a source with an aspect-preserving width cap and target cadence.
     public init(
         displayID: UInt32?,
         maximumWidth: Int,
@@ -50,6 +60,12 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
         self.logger = logger
     }
 
+    // MARK: - Capture lifecycle
+
+    /// Resolves the display, installs a video output, and starts native capture.
+    ///
+    /// A concurrent `stop()` latches cancellation and prevents a partially started
+    /// stream from becoming visible to the rest of the session.
     public func start() async throws -> ScreenVideoCaptureFormat {
         guard stateLock.withLock({ () -> Bool in
             guard self.stream == nil, !isStarting else { return false }
@@ -82,6 +98,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
                 value: 1,
                 timescale: CMTimeScale(framesPerSecond)
             )
+            // A short native queue absorbs jitter without adding visible interaction lag.
             configuration.queueDepth = 3
             configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
             configuration.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
@@ -156,6 +173,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
         }
     }
 
+    /// Detaches and stops the currently owned stream; repeated calls are harmless.
     public func stop() async throws {
         let stopped = stateLock.withLock { () -> (SCStream, ScreenVideoStreamOutput?)? in
             cancellationRequested = true
@@ -176,12 +194,14 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
         try await stream.stopCapture()
     }
 
+    /// Checks the cancellation latch after asynchronous startup boundaries.
     private func ensureStartWasNotCancelled() throws {
         guard stateLock.withLock({ !cancellationRequested }) else {
             throw ScreenVideoCaptureError.startCancelled
         }
     }
 
+    /// Reports only a failure belonging to the current, non-stopping stream.
     private func handleUnexpectedStop(of stoppedStream: SCStream, errorDescription: String) {
         let shouldReport = stateLock.withLock { () -> Bool in
             guard !isStopping, stream === stoppedStream else { return false }
@@ -197,6 +217,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
         )
     }
 
+    /// Resolves an explicit display or prefers the current main display.
     private func selectDisplay(from displays: [SCDisplay]) throws -> SCDisplay {
         guard !displays.isEmpty else {
             throw ScreenVideoCaptureError.noDisplays
@@ -212,6 +233,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
         return displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? displays[0]
     }
 
+    /// Scales within the width cap and rounds both dimensions down for H.264 chroma planes.
     private func outputDimensions(for display: SCDisplay) -> (width: Int, height: Int) {
         let cappedWidth = min(display.width, maximumWidth)
         let width = max(2, cappedWidth - cappedWidth % 2)
@@ -223,6 +245,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
     }
 }
 
+/// Bridges ScreenCaptureKit's delegate callback to a Sendable error closure.
 private final class ScreenVideoStreamDelegate: NSObject, SCStreamDelegate, @unchecked Sendable {
     private let didStop: @Sendable (SCStream, String) -> Void
 
@@ -235,6 +258,7 @@ private final class ScreenVideoStreamDelegate: NSObject, SCStreamDelegate, @unch
     }
 }
 
+/// Rejects incomplete ScreenCaptureKit frames before invoking the session consumer.
 private final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
     private let consumer: ScreenVideoSampleConsumer
 
@@ -242,6 +266,7 @@ private final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
         self.consumer = consumer
     }
 
+    /// Forwards only ready screen samples whose frame status is `.complete`.
     func stream(
         _ stream: SCStream,
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
@@ -263,12 +288,14 @@ private final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
     }
 }
 
+/// Display-selection and lifecycle failures from screen capture.
 public enum ScreenVideoCaptureError: LocalizedError {
     case noDisplays
     case displayNotFound(UInt32)
     case alreadyRunning
     case startCancelled
 
+    /// A user-facing diagnostic for host status and logs.
     public var errorDescription: String? {
         switch self {
         case .noDisplays:

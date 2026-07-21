@@ -3,6 +3,7 @@ import CoreVideo
 import Foundation
 import VideoToolbox
 
+/// VideoToolbox callback trampoline; the encoder remains alive until `finish()` invalidates its session.
 private func screenVideoCompressionOutputCallback(
     outputCallbackRefCon: UnsafeMutableRawPointer?,
     sourceFrameRefCon: UnsafeMutableRawPointer?,
@@ -17,6 +18,11 @@ private func screenVideoCompressionOutputCallback(
     encoder.didEncode(status: status, infoFlags: infoFlags, sampleBuffer: sampleBuffer)
 }
 
+/// Low-latency, hardware-backed H.264 encoder for remote screen frames.
+///
+/// The lock owns session lifetime, timestamp ordering, and the single-frame
+/// backpressure gate. Keeping only one frame in flight favors fresh interactive
+/// content over building an unbounded queue when the encoder or network is slower.
 public final class H264ScreenVideoEncoder: @unchecked Sendable {
     private let lock = NSLock()
     private var session: VTCompressionSession?
@@ -25,6 +31,10 @@ public final class H264ScreenVideoEncoder: @unchecked Sendable {
     private var lastSubmittedTimestamp = CMTime.invalid
     private let callback: @Sendable (Result<EncodedScreenVideoFrame, Error>) -> Void
 
+    /// Creates and prepares a real-time H.264 session with a bounded data rate.
+    ///
+    /// - Parameter callback: Receives owned AVCC bytes or a terminal error for each
+    ///   accepted frame; VideoToolbox may invoke it on an internal thread.
     public init(
         width: Int32,
         height: Int32,
@@ -34,6 +44,7 @@ public final class H264ScreenVideoEncoder: @unchecked Sendable {
     ) throws {
         self.callback = callback
 
+        // Screen sharing requires hardware acceleration and real-time rate control.
         let encoderSpecification = [
             kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true,
             kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true
@@ -100,12 +111,16 @@ public final class H264ScreenVideoEncoder: @unchecked Sendable {
         finish()
     }
 
+    /// Marks the next accepted frame as a key frame for decoder resynchronization.
     public func requestKeyFrame() {
         lock.lock()
         forceNextKeyFrame = true
         lock.unlock()
     }
 
+    /// Submits a newer frame when no previous encode is outstanding.
+    ///
+    /// Returns `false` for unusable, stale, backpressured, or encoder-dropped frames.
     @discardableResult
     public func encodeIfAvailable(_ sampleBuffer: CMSampleBuffer) throws -> Bool {
         guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
@@ -156,6 +171,7 @@ public final class H264ScreenVideoEncoder: @unchecked Sendable {
         return true
     }
 
+    /// Atomically detaches, drains, and invalidates the compression session.
     public func finish() {
         lock.lock()
         guard let session else {
@@ -169,6 +185,7 @@ public final class H264ScreenVideoEncoder: @unchecked Sendable {
         VTCompressionSessionInvalidate(session)
     }
 
+    /// Copies one VideoToolbox result into transport-owned bytes and metadata.
     fileprivate func didEncode(
         status: OSStatus,
         infoFlags: VTEncodeInfoFlags,
@@ -206,6 +223,7 @@ public final class H264ScreenVideoEncoder: @unchecked Sendable {
             return
         }
 
+        // A missing NotSync attachment denotes an independently decodable key frame.
         let attachments = CMSampleBufferGetSampleAttachmentsArray(
             sampleBuffer,
             createIfNecessary: false
@@ -239,6 +257,7 @@ public final class H264ScreenVideoEncoder: @unchecked Sendable {
         )))
     }
 
+    /// Reads SPS/PPS from key-frame format metadata; delta frames need no repetition.
     private func parameterSets(
         from sampleBuffer: CMSampleBuffer,
         isKeyFrame: Bool
@@ -286,12 +305,14 @@ public final class H264ScreenVideoEncoder: @unchecked Sendable {
         return .success((parameterSets, Int(nalUnitHeaderLength)))
     }
 
+    /// Releases the backpressure gate after every callback or synchronous failure.
     private func clearInFlightFrame() {
         lock.lock()
         frameInFlight = false
         lock.unlock()
     }
 
+    /// Applies one VideoToolbox property while preserving the failing key and status.
     private static func set(
         _ session: VTCompressionSession,
         _ key: CFString,
@@ -304,6 +325,7 @@ public final class H264ScreenVideoEncoder: @unchecked Sendable {
     }
 }
 
+/// Configuration, submission, and output failures from the screen encoder.
 public enum H264ScreenVideoEncoderError: LocalizedError {
     case couldNotCreateSession(OSStatus)
     case couldNotSetProperty(String, OSStatus)
@@ -315,6 +337,7 @@ public enum H264ScreenVideoEncoderError: LocalizedError {
     case invalidPresentationTimestamp
     case encoderDroppedFrame
 
+    /// Operator-facing context that retains the relevant VideoToolbox status code.
     public var errorDescription: String? {
         switch self {
         case .couldNotCreateSession(let status):

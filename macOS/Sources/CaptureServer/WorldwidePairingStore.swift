@@ -2,12 +2,18 @@ import Foundation
 import RemoteSessionCore
 import Security
 
+/// Minimal persistence boundary for encoded worldwide identity and pairing records.
 protocol WorldwidePairingDataStore: Sendable {
     func data(for account: String) throws -> Data?
     func set(_ data: Data, for account: String) throws
     func removeData(for account: String) throws
 }
 
+/// Validates and persists the Mac identity and its single durable viewer binding.
+///
+/// Records are accepted only when role, local device identity, and local signing key
+/// match the host identity. This prevents a stale or substituted record from granting
+/// durable access to a different host key.
 struct WorldwidePairingStore: Sendable {
     static let identityAccount = "worldwide-host-identity-v1"
     static let pairedViewerAccount = "worldwide-paired-viewer-v1"
@@ -16,6 +22,7 @@ struct WorldwidePairingStore: Sendable {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
+    /// Creates a store with deterministic JSON and a Keychain-backed default boundary.
     init(dataStore: any WorldwidePairingDataStore = WorldwideKeychainDataStore()) {
         self.dataStore = dataStore
         let encoder = JSONEncoder()
@@ -24,6 +31,7 @@ struct WorldwidePairingStore: Sendable {
         decoder = JSONDecoder()
     }
 
+    /// Loads the durable host identity or generates and persists it once.
     func loadOrCreateHostIdentity(displayName: String?) throws -> RemoteDeviceIdentity {
         if let data = try dataStore.data(for: Self.identityAccount) {
             let identity = try decode(RemoteDeviceIdentity.self, from: data)
@@ -38,6 +46,7 @@ struct WorldwidePairingStore: Sendable {
         return identity
     }
 
+    /// Loads and validates the viewer record against the supplied host identity.
     func loadPairedViewer(
         for identity: RemoteDeviceIdentity
     ) throws -> RemotePairedDeviceRecord? {
@@ -47,6 +56,7 @@ struct WorldwidePairingStore: Sendable {
         return record
     }
 
+    /// Validates the cryptographic binding before replacing the stored viewer record.
     func savePairedViewer(
         _ record: RemotePairedDeviceRecord,
         for identity: RemoteDeviceIdentity
@@ -55,10 +65,12 @@ struct WorldwidePairingStore: Sendable {
         try dataStore.set(try encode(record), for: Self.pairedViewerAccount)
     }
 
+    /// Removes only the viewer binding; the long-lived host identity remains intact.
     func resetPairedViewer() throws {
         try dataStore.removeData(for: Self.pairedViewerAccount)
     }
 
+    /// Enforces role and local-key invariants at every persistence boundary.
     private func validate(
         _ record: RemotePairedDeviceRecord,
         for identity: RemoteDeviceIdentity
@@ -72,6 +84,7 @@ struct WorldwidePairingStore: Sendable {
         }
     }
 
+    /// Encodes a bounded record while collapsing serialization details into store errors.
     private func encode<Value: Encodable>(_ value: Value) throws -> Data {
         do {
             let data = try encoder.encode(value)
@@ -86,6 +99,7 @@ struct WorldwidePairingStore: Sendable {
         }
     }
 
+    /// Rejects empty, oversized, or malformed persisted data before use.
     private func decode<Value: Decodable>(_ type: Value.Type, from data: Data) throws -> Value {
         guard !data.isEmpty, data.count <= WorldwideKeychainDataStore.maximumItemBytes else {
             throw WorldwidePairingStoreError.invalidPersistedData
@@ -98,6 +112,10 @@ struct WorldwidePairingStore: Sendable {
     }
 }
 
+/// Keychain implementation scoped to this device and macOS account.
+///
+/// Items use `AfterFirstUnlockThisDeviceOnly`, never synchronize through iCloud, and
+/// are capped before Security.framework allocation or JSON decoding.
 struct WorldwideKeychainDataStore: WorldwidePairingDataStore {
     static let maximumItemBytes = 64 * 1_024
 
@@ -109,6 +127,7 @@ struct WorldwideKeychainDataStore: WorldwidePairingDataStore {
         self.service = service
     }
 
+    /// Reads one generic-password item's raw bytes, returning `nil` when absent.
     func data(for account: String) throws -> Data? {
         var query = baseQuery(account: account)
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -131,6 +150,7 @@ struct WorldwideKeychainDataStore: WorldwidePairingDataStore {
         }
     }
 
+    /// Upserts one bounded item and resolves a concurrent-create race by retrying update.
     func set(_ data: Data, for account: String) throws {
         guard !data.isEmpty, data.count <= Self.maximumItemBytes else {
             throw WorldwidePairingStoreError.invalidPersistedData
@@ -164,6 +184,7 @@ struct WorldwideKeychainDataStore: WorldwidePairingDataStore {
         }
     }
 
+    /// Deletes one account idempotently.
     func removeData(for account: String) throws {
         let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
@@ -171,6 +192,7 @@ struct WorldwideKeychainDataStore: WorldwidePairingDataStore {
         }
     }
 
+    /// Builds the non-synchronizing generic-password identity shared by all operations.
     private func baseQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
@@ -181,6 +203,7 @@ struct WorldwideKeychainDataStore: WorldwidePairingDataStore {
     }
 }
 
+/// Validation, encoding, and Keychain failures at the pairing persistence boundary.
 enum WorldwidePairingStoreError: LocalizedError, Equatable {
     case identityRoleMismatch
     case identityRecordMismatch

@@ -1,8 +1,27 @@
 #!/bin/zsh
 
-# Runs the non-skipping production-bundle UI gate only when the requested build is installed on
-# the attached test iPhone. `devicectl` cannot prove TestFlight receipt/install provenance, so that
-# separate distribution fact must come from App Store Connect/TestFlight rather than this script.
+# Usage: `validate-testflight-paired-reconnect.sh <device-udid> <expected-build>`
+# `[artifact-directory]`.
+#
+# Prerequisites: an unlocked, connected test iPhone on the pinned iOS version with the requested
+# production build installed; Xcode command-line tools; the signed Mac capture-host app and its
+# launch agent; a continuously readable host log; and working physical audio/video routes.
+# `devicectl` cannot prove TestFlight receipt provenance, so App Store Connect/TestFlight remains
+# the separate source of truth for distribution.
+#
+# Optional environment: `AUDIOSTREAMER_HOST_*` selects the launch agent, log, retry timing, and
+# churn budget; `AUDIOSTREAMER_EXPECTED_TEAM_ID` pins host signing; `AUDIOSTREAMER_UI_TEST_TIMEOUT_SECONDS`,
+# `AUDIOSTREAMER_AUDIO_ORACLE_DURATION_SECONDS`, and `AUDIOSTREAMER_DEVICE_*` tune bounded waits.
+# Variables prefixed `AUDIOSTREAMER_SELF_TEST_` and `AUDIOSTREAMER_SCRIPT_SELF_TEST` are reserved
+# for deterministic shell regression tests and must be unset for a release run.
+#
+# Side effects/artifacts: rebuilds/verifies and repeatedly restarts the Mac host, launches the
+# production iPhone UI test, plays a deterministic audio challenge, displays a noninteractive
+# video challenge, and writes authenticated host-log snapshots, watchdog markers, screenshots,
+# result bundles, and oracle evidence under the artifact directory (default
+# `/private/tmp/AudioStreamer-device-Paired-Reconnect`). Cleanup stops only processes owned by this run.
+# Every wrong build/signature, device lock/disconnect, host/log discontinuity, timeout, or oracle
+# rejection exits nonzero; `run-status.txt` becomes passed only after all exact proofs succeed.
 set -euo pipefail
 
 SCRIPT_DIR=${0:A:h}

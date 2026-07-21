@@ -2,6 +2,8 @@ import Foundation
 import Testing
 @testable import RemoteSessionCore
 
+/// Exercises durable signaling as a bounded protocol state machine. The oracles require exact
+/// modes, role-separated capabilities, exchange-bound encryption, liveness, and fail-closed races.
 struct DurableSignalingClientTests {
     private let endpoint = URL(string: "wss://rendezvous.example.test")!
 
@@ -893,14 +895,17 @@ struct DurableSignalingClientTests {
     }
 }
 
+/// Deterministic terminal error from the in-memory durable socket.
 private enum DurableFakeSocketError: Error { case closed }
 
+/// Scripted ping outcomes used to distinguish cancellation from ordinary liveness failure.
 private enum DurableFakePingFailure: Sendable {
     case none
     case closed
     case cancellation
 }
 
+/// Releases the first heartbeat immediately, then parks later intervals for deterministic tests.
 private actor FirstHeartbeatThenParkSleep {
     private var callCount = 0
     private var parked = false
@@ -915,6 +920,7 @@ private actor FirstHeartbeatThenParkSleep {
     func isParked() -> Bool { parked }
 }
 
+/// Actor-isolated socket double that records exact upgrade inputs and scripts connection races.
 private actor DurableFakeSocketTransport: RendezvousSocketTransport {
     private var url: URL?
     private var role: RemotePeerRole?

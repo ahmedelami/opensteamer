@@ -2,6 +2,8 @@ import Foundation
 import Testing
 @testable import Streaming
 
+/// Uses byte-exact round trips and malformed-input cases to lock the screen-video framing,
+/// incremental reassembly, H.264 configuration, and resource limits.
 struct ScreenVideoProtocolTests {
     @Test func preambleRoundTrips() throws {
         let data = ScreenVideoFraming.makePreamble()

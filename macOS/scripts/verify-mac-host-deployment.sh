@@ -1,4 +1,16 @@
 #!/bin/zsh
+# End-to-end, read-only deployment oracle for the installed and currently running Mac host.
+#
+# Required environment: AUDIOSTREAMER_EXPECTED_TEAM_ID. Optional overrides are
+# AUDIOSTREAMER_HOST_APP_PATH, AUDIOSTREAMER_HOST_BUILD_APP_PATH,
+# AUDIOSTREAMER_HOST_LAUNCH_AGENT_LABEL, AUDIOSTREAMER_HOST_LAUNCH_AGENT_TEMPLATE,
+# AUDIOSTREAMER_HOST_INSTALLED_LAUNCH_AGENT, and AUDIOSTREAMER_EXPECTED_HOST_PID. Run after building,
+# installing, and loading the signed host.
+#
+# The script verifies fresh-versus-installed CDHashes, snapshots `launchctl print` into a temporary
+# file, validates the loaded job, and binds its PID to the expected live executable/framework. The
+# snapshot is removed on every exit. Success prints a key=value deployment manifest; any missing
+# prerequisite or mismatch prints a diagnostic and exits nonzero without modifying launchd or apps.
 set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -39,6 +51,8 @@ function code_hash() {
 "$BUNDLE_VERIFIER" "$BUILD_APP_DIR" "$EXPECTED_TEAM_ID" >/dev/null
 "$BUNDLE_VERIFIER" "$APP_DIR" "$EXPECTED_TEAM_ID" >/dev/null
 
+# Matching all nested code objects prevents a copied outer bundle from masking a stale executable
+# or WebRTC framework in the installed application.
 build_app_hash=$(code_hash "$BUILD_APP_DIR")
 installed_app_hash=$(code_hash "$APP_DIR")
 build_executable_hash=$(code_hash "$BUILD_APP_DIR/Contents/MacOS/CaptureServer")
@@ -56,6 +70,7 @@ launch_state_file="$(/usr/bin/mktemp \
     "${TMPDIR:-/tmp}/audiostreamer-launch-state.XXXXXX")" \
     || fail "could not create a launch-state snapshot"
 trap 'rm -f "$launch_state_file"' EXIT
+# Capture one coherent launchd snapshot; downstream parsing never races multiple `launchctl` calls.
 if ! /bin/launchctl print "$SERVICE" > "$launch_state_file" 2>/dev/null; then
     fail "launch agent $SERVICE is not loaded"
 fi
@@ -93,6 +108,7 @@ live_framework_identity=$(print -r -- "$live_manifest" \
 [[ -n "$live_framework_identity" ]] \
     || fail "live-process verifier returned no framework identity"
 
+# Stable output fields are suitable for human review or collection by higher-level validation.
 print -r -- "label=$HOST_LABEL"
 print -r -- "pid=$pid"
 print -r -- "program=$program"

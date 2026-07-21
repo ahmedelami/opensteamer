@@ -1,5 +1,8 @@
 import Foundation
 
+/// Strict parser for versioned, pipe-delimited accessibility oracle payloads.
+/// Requiring the exact key set makes additions an intentional test-contract change and prevents a
+/// partially parsed or duplicated field from being accepted as physical evidence.
 private enum PhysicalOracleFields {
     static func parse(
         _ value: String,
@@ -18,6 +21,9 @@ private enum PhysicalOracleFields {
     }
 }
 
+/// Typed copy of the non-secret audio evidence exposed by the production app's accessibility tree.
+/// All counters are lifetime cumulative within `sessionGeneration`; evaluators compare snapshots
+/// instead of interpreting any single counter as proof of audible continuity.
 struct PhysicalAudioPlayoutSnapshot: Equatable {
     let sessionGeneration: UUID
     let callbackCount: UInt64
@@ -126,6 +132,7 @@ struct PhysicalAudioPlayoutSnapshot: Equatable {
     }
 }
 
+/// First failed invariant, or successful advancement, between two audio oracle snapshots.
 enum PhysicalAudioPlayoutDelta: Equatable {
     case advancing
     case invalidPCMStructure
@@ -150,6 +157,8 @@ enum PhysicalAudioPlayoutDelta: Equatable {
     case peakMissing
 }
 
+/// Deterministic structural, monotonicity, waveform, and real-time-coverage checks for physical
+/// audio evidence. These checks operate on text/counters and never require a subjective listener.
 enum PhysicalAudioPlayoutEvaluator {
     /// RemoteIO is configured for 10 ms callbacks. A 25 ms boundary tolerates one late callback
     /// while making two-or-more missed callback intervals machine-visible.
@@ -397,6 +406,7 @@ enum PhysicalAudioPlayoutEvaluator {
     }
 }
 
+/// Progress state returned by both audio and video continuity windows.
 enum PhysicalContinuityWindowResult: Equatable {
     case waiting
     case satisfied
@@ -508,6 +518,7 @@ struct PhysicalAudioContinuityTracker {
     }
 }
 
+/// Typed renderer evidence parsed from the production accessibility oracle.
 struct PhysicalVideoRenderSnapshot: Equatable {
     let rendererID: UUID
     let frameCount: UInt64
@@ -546,6 +557,7 @@ struct PhysicalVideoRenderSnapshot: Equatable {
     }
 }
 
+/// First failed invariant, or successful advancement, between two rendered-video snapshots.
 enum PhysicalVideoRenderDelta: Equatable {
     case advancing
     case rendererChanged
@@ -564,6 +576,7 @@ enum PhysicalVideoRenderDelta: Equatable {
     case contentUnchanged
 }
 
+/// Validates that decoded frames, timestamps, and sampled content all advance at plausible rates.
 enum PhysicalVideoRenderEvaluator {
     static func evaluate(
         previous: PhysicalVideoRenderSnapshot,
@@ -649,6 +662,8 @@ enum PhysicalVideoRenderEvaluator {
     }
 }
 
+/// Sequence-level video oracle that requires sustained decoded-content advancement.
+/// Static frames may advance transport counters but cannot satisfy the content-change window.
 struct PhysicalVideoContinuityTracker {
     let requiredDuration: TimeInterval
     let maximumProgressGap: TimeInterval
@@ -745,6 +760,7 @@ struct PhysicalVideoContinuityTracker {
     }
 }
 
+/// Typed proof that the active Mac session acknowledged a show or hide command.
 struct PhysicalScreenAcknowledgementSnapshot: Equatable {
     enum Command: String, Equatable {
         case show

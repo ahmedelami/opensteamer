@@ -2,6 +2,11 @@ import CoreMedia
 import Foundation
 import WAV
 
+/// Serializes captured audio buffers, measures them, and appends them to a WAV file.
+///
+/// ScreenCaptureKit may call `enqueue(_:)` concurrently. All mutable state belongs
+/// to `queue`; `completion` tracks accepted callbacks so `finish()` cannot close the
+/// writer while queued samples still reference their CoreMedia buffers.
 public final class AudioProcessor: @unchecked Sendable, SampleBufferConsumer {
     private let outputURL: URL
     private let logger: Logger
@@ -18,11 +23,13 @@ public final class AudioProcessor: @unchecked Sendable, SampleBufferConsumer {
     private var firstError: Error?
     private var sampleStorage: [Float] = []
 
+    /// Creates a processor whose writer is initialized from the first valid buffer.
     public init(outputURL: URL, logger: Logger) {
         self.outputURL = outputURL
         self.logger = logger
     }
 
+    /// Accepts a capture callback and transfers its processing to the private queue.
     public func enqueue(_ sampleBuffer: CMSampleBuffer) {
         completion.enter()
         let callbackTime = DispatchTime.now().uptimeNanoseconds
@@ -32,6 +39,9 @@ public final class AudioProcessor: @unchecked Sendable, SampleBufferConsumer {
         }
     }
 
+    /// Drains all accepted callbacks, finalizes the WAV header, and returns counters.
+    ///
+    /// The first processing failure wins and is rethrown after the queue has drained.
     public func finish() throws -> ProcessingSummary {
         completion.wait()
         var result: Result<ProcessingSummary, Error>!
@@ -63,6 +73,7 @@ public final class AudioProcessor: @unchecked Sendable, SampleBufferConsumer {
         return try result.get()
     }
 
+    /// Returns a queue-consistent progress snapshot for logging or diagnostics.
     public func latestSnapshot() -> MetricsSnapshot {
         queue.sync {
             MetricsSnapshot(
@@ -73,6 +84,7 @@ public final class AudioProcessor: @unchecked Sendable, SampleBufferConsumer {
         }
     }
 
+    /// Processes one buffer on `queue`; callers must not invoke it from other queues.
     private func process(_ sampleBuffer: CMSampleBuffer, callbackTime: UInt64) {
         guard firstError == nil else { return }
         guard sampleBuffer.isValid, CMSampleBufferDataIsReady(sampleBuffer) else {
@@ -111,6 +123,7 @@ public final class AudioProcessor: @unchecked Sendable, SampleBufferConsumer {
         }
     }
 
+    /// Calculates normalized RMS and peak levels across all interleaved samples.
     private static func computeMetrics(samples: [Float], frameCount: Int, channels: Int) -> AudioMetrics {
         guard !samples.isEmpty else {
             return AudioMetrics(rms: 0, peak: 0, frameCount: frameCount, channels: channels)
@@ -130,12 +143,14 @@ public final class AudioProcessor: @unchecked Sendable, SampleBufferConsumer {
     }
 }
 
+/// Immutable progress view of a running `AudioProcessor`.
 public struct MetricsSnapshot: Sendable {
     public let callbackStatistics: CallbackStatistics
     public let latestMetrics: AudioMetrics?
     public let framesWritten: Int64
 }
 
+/// Final state produced after an `AudioProcessor` has drained and closed its writer.
 public struct ProcessingSummary: Sendable {
     public let streamFormat: StreamAudioFormat?
     public let callbackStatistics: CallbackStatistics

@@ -1,5 +1,6 @@
 import Foundation
 
+/// Constants for the versioned screen-video framing protocol.
 public enum ScreenVideoProtocol {
     public static let magic = "MCVS"
     public static let version: UInt16 = 1
@@ -9,6 +10,7 @@ public enum ScreenVideoProtocol {
     public static let maximumPayloadByteCount: UInt32 = 8 * 1_024 * 1_024
 }
 
+/// The validated protocol version announced before screen-video packets.
 public struct ScreenVideoPreamble: Sendable, Equatable {
     public let version: UInt16
 
@@ -17,6 +19,7 @@ public struct ScreenVideoPreamble: Sendable, Equatable {
     }
 }
 
+/// Discriminators for media, lifecycle, and receiver-feedback packets.
 public enum ScreenVideoPacketType: UInt8, Sendable {
     case configuration = 1
     case frame = 2
@@ -25,6 +28,7 @@ public enum ScreenVideoPacketType: UInt8, Sendable {
     case keyFrameRequest = 0x81
 }
 
+/// Per-packet media flags used to resynchronize a decoder after loss or reconfiguration.
 public struct ScreenVideoPacketFlags: OptionSet, Sendable, Equatable {
     public let rawValue: UInt8
 
@@ -36,6 +40,7 @@ public struct ScreenVideoPacketFlags: OptionSet, Sendable, Equatable {
     }
 }
 
+/// A complete screen-video packet in host representation.
 public struct ScreenVideoPacket: Sendable, Equatable {
     public let type: ScreenVideoPacketType
     public let flags: ScreenVideoPacketFlags
@@ -61,6 +66,7 @@ public struct ScreenVideoPacket: Sendable, Equatable {
     }
 }
 
+/// Parsed fixed-width metadata used to bound and assemble a packet payload.
 public struct ScreenVideoPacketHeader: Sendable, Equatable {
     public let payloadByteCount: UInt32
     public let type: ScreenVideoPacketType
@@ -70,6 +76,7 @@ public struct ScreenVideoPacketHeader: Sendable, Equatable {
     public let presentationTimestampNanoseconds: UInt64
 }
 
+/// One H.264 parameter-set NAL unit and its wire type.
 public struct ScreenVideoParameterSet: Sendable, Equatable {
     public let nalUnitType: UInt8
     public let bytes: Data
@@ -80,6 +87,7 @@ public struct ScreenVideoParameterSet: Sendable, Equatable {
     }
 }
 
+/// Decoder configuration carried ahead of H.264 screen frames.
 public struct ScreenVideoConfiguration: Sendable, Equatable {
     public let width: UInt32
     public let height: UInt32
@@ -105,12 +113,15 @@ public struct ScreenVideoConfiguration: Sendable, Equatable {
     }
 }
 
+/// Incremental parser output: protocol readiness followed by complete packets.
 public enum ScreenVideoStreamEvent: Sendable, Equatable {
     case ready(ScreenVideoPreamble)
     case packet(ScreenVideoPacket)
 }
 
+/// Encodes and validates preambles, packet envelopes, and H.264 decoder configuration.
 public enum ScreenVideoFraming {
+    /// Creates the fixed-width stream preamble for the current protocol version.
     public static func makePreamble() -> Data {
         var data = Data(capacity: ScreenVideoProtocol.preambleByteCount)
         data.append(contentsOf: ScreenVideoProtocol.magic.utf8)
@@ -119,6 +130,7 @@ public enum ScreenVideoFraming {
         return data
     }
 
+    /// Validates a complete preamble before any packet bytes are accepted.
     public static func parsePreamble(_ data: Data) throws -> ScreenVideoPreamble {
         guard data.count == ScreenVideoProtocol.preambleByteCount else {
             throw ScreenVideoProtocolError.unexpectedByteCount(
@@ -142,6 +154,7 @@ public enum ScreenVideoFraming {
         return ScreenVideoPreamble(version: version)
     }
 
+    /// Encodes one bounded packet with an explicit payload length.
     public static func makePacket(_ packet: ScreenVideoPacket) throws -> Data {
         guard packet.payload.count <= Int(ScreenVideoProtocol.maximumPayloadByteCount) else {
             throw ScreenVideoProtocolError.payloadTooLarge(packet.payload.count)
@@ -159,6 +172,7 @@ public enum ScreenVideoFraming {
         return data
     }
 
+    /// Parses a fixed-width packet header and rejects unknown types or oversized payloads.
     public static func parsePacketHeader(_ data: Data) throws -> ScreenVideoPacketHeader {
         guard data.count == ScreenVideoProtocol.packetHeaderByteCount else {
             throw ScreenVideoProtocolError.unexpectedByteCount(
@@ -195,6 +209,7 @@ public enum ScreenVideoFraming {
         )
     }
 
+    /// Parses exactly one packet, rejecting both truncation and trailing bytes.
     public static func parsePacket(_ data: Data) throws -> ScreenVideoPacket {
         guard data.count >= ScreenVideoProtocol.packetHeaderByteCount else {
             throw ScreenVideoProtocolError.truncated
@@ -222,6 +237,7 @@ public enum ScreenVideoFraming {
         )
     }
 
+    /// Encodes validated H.264 dimensions, rate hints, and parameter sets.
     public static func makeConfiguration(_ configuration: ScreenVideoConfiguration) throws -> Data {
         guard configuration.width > 0,
               configuration.height > 0,
@@ -260,6 +276,7 @@ public enum ScreenVideoFraming {
         return data
     }
 
+    /// Parses a bounded configuration payload and requires the cursor to consume every byte.
     public static func parseConfiguration(_ data: Data) throws -> ScreenVideoConfiguration {
         guard data.count <= Int(ScreenVideoProtocol.maximumPayloadByteCount) else {
             throw ScreenVideoProtocolError.payloadTooLarge(data.count)
@@ -314,16 +331,22 @@ public enum ScreenVideoFraming {
     }
 }
 
+/// Reassembles a byte stream into a preamble and complete screen-video packets.
+///
+/// Callers must serialize access; `@unchecked Sendable` permits ownership by a session that does
+/// that serialization rather than making individual parser calls internally synchronized.
 public final class ScreenVideoStreamParser: @unchecked Sendable {
     private var buffer = Data()
     private var expectsPreamble = true
 
     public init() {}
 
+    /// Appends bytes without assuming transport reads align to packet boundaries.
     public func append(_ data: Data) {
         buffer.append(data)
     }
 
+    /// Returns the next complete event, or `nil` when more bytes are required.
     public func nextEvent() throws -> ScreenVideoStreamEvent? {
         if expectsPreamble {
             guard buffer.count >= ScreenVideoProtocol.preambleByteCount else { return nil }
@@ -345,12 +368,14 @@ public final class ScreenVideoStreamParser: @unchecked Sendable {
         return .packet(try ScreenVideoFraming.parsePacket(packetData))
     }
 
+    /// Discards buffered bytes and requires a fresh protocol preamble.
     public func reset() {
         buffer.removeAll(keepingCapacity: true)
         expectsPreamble = true
     }
 }
 
+/// Strict framing and configuration failures for screen video.
 public enum ScreenVideoProtocolError: LocalizedError, Equatable {
     case invalidMagic
     case unsupportedVersion(UInt16)

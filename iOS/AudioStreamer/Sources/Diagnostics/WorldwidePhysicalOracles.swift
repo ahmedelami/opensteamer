@@ -213,6 +213,8 @@ struct WorldwideAudioPlayoutOracleSnapshot: Equatable, Sendable {
     }
 }
 
+/// Accessibility-safe proof that the Mac acknowledged a specific show/hide request for the active
+/// session generation. It carries no screen pixels, device identity, or signaling material.
 struct WorldwideScreenAcknowledgementOracleSnapshot: Equatable, Sendable {
     enum Command: String, Equatable, Sendable {
         case show
@@ -241,6 +243,9 @@ struct WorldwideScreenAcknowledgementOracleSnapshot: Equatable, Sendable {
 
 }
 
+/// Monotonic evidence derived from frames that reached the iPhone renderer.
+/// The rolling digest/change counters let a physical UI test reject a static or frozen image
+/// without exporting the underlying pixels through accessibility.
 struct WorldwideVideoRenderOracleSnapshot: Equatable, Sendable {
     let rendererID: UUID
     let frameCount: UInt64

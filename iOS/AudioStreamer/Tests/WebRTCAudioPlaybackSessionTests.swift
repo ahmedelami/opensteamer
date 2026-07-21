@@ -4,6 +4,9 @@ import RemoteSessionCore
 import XCTest
 @testable import WebRTCTransport
 
+/// Verifies the native WebRTC audio-device contract and recovery authorization boundary.
+/// Cumulative diagnostics, RemoteIO topology, 48 kHz stereo playback configuration, and
+/// synchronous authorization revocation form the oracles for rejecting call-style audio paths.
 @MainActor
 final class WebRTCAudioPlaybackSessionTests: XCTestCase {
     func testRecoveryAuthorizationRejectsSideEffectsAfterRevocation() {
@@ -715,6 +718,8 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         #endif
     }
 
+    // MARK: - Native diagnostics fixtures
+
     private static func hasCompletedFailClosedRouteTransition(
         _ diagnostics: WebRTCIOSPlayoutDiagnostics?
     ) -> Bool {
@@ -744,6 +749,9 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
     }
 }
 
+// MARK: - Thread-safe test probes
+
+/// One-shot claim primitive used to assert native callback serialization under contention.
 private final class LockedOnce: @unchecked Sendable {
     private let lock = NSLock()
     private var wasClaimed = false

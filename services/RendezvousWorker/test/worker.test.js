@@ -7,6 +7,8 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { LIMITS } from "../src/protocol.js";
 
+// Durable Object integration oracles include hibernation, concurrent mutation serialization,
+// one-time invitation consumption, paired availability replacement, expiry, and rate limiting.
 const base64URL = (bytes) =>
   btoa(String.fromCharCode(...bytes))
     .replaceAll("+", "-")

@@ -1,6 +1,9 @@
 import Foundation
 import Streaming
 
+/// Presentation-scoped owner of the legacy screen transport and sample-buffer renderer.
+/// A UUID generation fences callbacks from superseded reconnect attempts so stale frames cannot
+/// update the current SwiftUI presentation or acknowledge data on a replacement connection.
 @MainActor
 final class ScreenSessionViewModel: ObservableObject {
     @Published private(set) var stateText = "Ready"
@@ -87,6 +90,8 @@ final class ScreenSessionViewModel: ObservableObject {
                             self.stateText = "Live"
                             self.lastError = nil
                         case .frame(let packet, let disposition):
+                            // Transport acknowledgement is deferred until the renderer accepts the
+                            // frame, so the Mac never advances its stream based on receipt alone.
                             renderer.enqueue(
                                 avccAccessUnit: packet.payload,
                                 presentationTimestampNanoseconds: packet.presentationTimestampNanoseconds,
@@ -116,6 +121,8 @@ final class ScreenSessionViewModel: ObservableObject {
                 attempt += 1
                 lastError = error.localizedDescription
                 stateText = "Reconnecting"
+                // Bound exponential retry avoids a hot loop while keeping local-network recovery
+                // responsive after short sleep or route changes.
                 let delay = min(0.25 * pow(2, Double(max(0, attempt - 1))), 5)
                 try? await Task.sleep(for: .seconds(delay))
             }

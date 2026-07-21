@@ -2,6 +2,10 @@ import Foundation
 import XCTest
 @testable import ClientCore
 
+/// Defines the bounded-latency behavior of the PCM playback jitter buffer.
+///
+/// Overflow intentionally discards the oldest complete frames so playback converges toward live
+/// audio instead of accumulating delay. Duration is measured in frames, independent of channels.
 final class PCMJitterBufferTests: XCTestCase {
     func testJitterBufferDropsOldestFramesWhenCapacityIsExceeded() {
         let buffer = PCMJitterBuffer(channels: 2, capacityFrames: 2)
@@ -25,6 +29,7 @@ final class PCMJitterBufferTests: XCTestCase {
 }
 
 private func pcm16Data(samples: [Int16]) -> Data {
+    // The network/player contract is interleaved signed PCM16 in little-endian byte order.
     var data = Data(capacity: samples.count * MemoryLayout<Int16>.size)
     for sample in samples {
         var little = sample.littleEndian

@@ -2,6 +2,8 @@ import Foundation
 import Testing
 @testable import WebRTCTransport
 
+/// Uses a controlled sleeper to make grace, timeout, retry, cancellation, and exhaustion ordering
+/// deterministic; call counts are the oracle for duplicate or stale recovery work.
 struct ICERecoveryCoordinatorTests {
     private let policy = ICERecoveryCoordinator.Policy(
         disconnectedGrace: .seconds(10),
@@ -160,10 +162,12 @@ struct ICERecoveryCoordinatorTests {
     }
 }
 
+/// Scripted restart failure consumed as one recovery attempt.
 private enum TestRecoveryError: Error, Sendable {
     case failed
 }
 
+/// Actor-isolated call counter used as a race-safe recovery oracle.
 private actor AsyncCounter {
     private(set) var value = 0
 
@@ -172,6 +176,7 @@ private actor AsyncCounter {
     }
 }
 
+/// Restart action that fails a configured number of attempts before succeeding.
 private actor ScriptedAction {
     private var failuresRemaining: Int
     private(set) var callCount = 0
@@ -189,6 +194,7 @@ private actor ScriptedAction {
     }
 }
 
+/// Restart action whose completion the test can release after a competing state transition.
 private actor SuspendedAction {
     private(set) var callCount = 0
     private var continuation: CheckedContinuation<Void, Never>?
@@ -204,7 +210,9 @@ private actor SuspendedAction {
     }
 }
 
+/// Captures requested delays and resumes them explicitly, eliminating wall-clock timing oracles.
 private final class ControlledSleeper: @unchecked Sendable {
+    /// One pending logical sleep and its cancellable continuation.
     private struct Waiter {
         let id: UInt64
         let duration: Duration

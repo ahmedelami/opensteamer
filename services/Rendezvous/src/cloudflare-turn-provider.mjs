@@ -1,3 +1,5 @@
+// Cloudflare TURN credentials are short-lived capabilities. This module keeps the bearer token
+// inside the provisioning request and exposes only a deliberately generic error to callers.
 const CLOUDFLARE_TURN_CREDENTIAL_ENDPOINT =
   "https://rtc.live.cloudflare.com/v1/turn/keys";
 const MAX_RESPONSE_BYTES = 65_536;
@@ -73,6 +75,7 @@ const normalizeUrls = (value) => {
   return { family, urls };
 };
 
+/** A non-sensitive, stable failure surfaced when managed TURN provisioning cannot be trusted. */
 export class TurnProvisioningError extends Error {
   constructor() {
     super("TURN credentials are temporarily unavailable");
@@ -80,6 +83,15 @@ export class TurnProvisioningError extends Error {
   }
 }
 
+/**
+ * Validates and freezes Cloudflare's ICE response before any value reaches a WebRTC client.
+ * Host allow-listing and exact object schemas prevent the credential response from becoming an
+ * arbitrary URL or metadata-forwarding channel.
+ *
+ * @param {unknown} payload Untrusted JSON returned by the Cloudflare API.
+ * @returns {ReadonlyArray<object>} Normalized STUN/TURN server descriptors.
+ * @throws {TurnProvisioningError} If the response is malformed or does not contain TURN.
+ */
 export function normalizeCloudflareIceServers(payload) {
   if (
     !isRecord(payload) ||
@@ -176,6 +188,17 @@ const readJson = async (response) => {
   }
 };
 
+/**
+ * Creates a provider that requests bounded, short-lived Cloudflare TURN credentials on demand.
+ *
+ * @param {object} options Provider configuration.
+ * @param {string} options.keyId Cloudflare TURN key identifier (not the API token).
+ * @param {string} options.apiToken Secret bearer token used only in the upstream request.
+ * @param {number} options.ttlSeconds Requested credential lifetime.
+ * @param {number} options.timeoutMs Maximum provisioning latency.
+ * @param {typeof fetch} [options.fetchImpl] Injectable fetch implementation for tests.
+ * @returns {() => Promise<ReadonlyArray<object>>} A per-session ICE credential provider.
+ */
 export function createCloudflareTurnProvider({
   keyId,
   apiToken,

@@ -3,6 +3,10 @@ import Foundation
 import Streaming
 import Utilities
 
+/// Owns the `AVAudioEngine` graph that pulls decoded PCM from a frame provider.
+///
+/// All graph mutations are serialized by an internal lock so interruption recovery can pause,
+/// rebuild, or stop the renderer from a different callback without racing the render lifecycle.
 public final class AudioRenderer {
     private var engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode
@@ -12,6 +16,7 @@ public final class AudioRenderer {
     private var attached = false
     private var running = false
 
+    /// Creates a renderer whose hardware-facing format matches the negotiated stream header.
     public init(header: PCMStreamHeader, provider: PCMFrameProvider) throws {
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -31,12 +36,14 @@ public final class AudioRenderer {
         self.sourceNode = AVAudioSourceNode(renderBlock: renderBlock)
     }
 
+    /// Attaches the graph if needed and starts pulling samples from the provider.
     public func start() throws {
         try lock.withLock {
             try startLocked()
         }
     }
 
+    /// Pauses playback while retaining the graph for a fast resume.
     public func pause() {
         lock.withLock {
             guard running else { return }
@@ -45,6 +52,7 @@ public final class AudioRenderer {
         }
     }
 
+    /// Rebuilds and starts the graph after a route or media-services interruption.
     public func restart() throws {
         try lock.withLock {
             guard attached else { return }
@@ -53,6 +61,7 @@ public final class AudioRenderer {
         }
     }
 
+    /// Stops playback and detaches the source node.
     public func stop() {
         lock.withLock {
             guard attached || running else { return }
@@ -67,12 +76,14 @@ public final class AudioRenderer {
 }
 
 public extension AudioRenderer {
+    /// Whether the audio engine is currently rendering.
     var isRunning: Bool {
         lock.withLock {
             running
         }
     }
 
+    /// A stable diagnostic description of the renderer lifecycle.
     var stateDescription: String {
         lock.withLock {
             if running {
@@ -121,6 +132,7 @@ private extension AudioRenderer {
     }
 }
 
+/// Failures encountered while constructing the audio output graph.
 public enum AudioRendererError: LocalizedError {
     case unsupportedFormat
 

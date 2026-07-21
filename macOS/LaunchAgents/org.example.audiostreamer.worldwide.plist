@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<!--
+  Per-user launchd template for the installed AudioStreamer Host bundle. It keeps worldwide
+  availability running indefinitely, explicitly enables remote control, writes operational
+  logs under /tmp/audiostreamer, and lets launchd restart failures after a ten-second throttle.
+  Installation and Accessibility/Screen Recording grants are handled outside this template.
+-->
 <dict>
 	<key>Label</key>
 	<string>org.example.audiostreamer.worldwide</string>

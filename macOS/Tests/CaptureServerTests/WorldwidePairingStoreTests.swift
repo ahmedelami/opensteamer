@@ -3,6 +3,12 @@ import RemoteSessionCore
 import XCTest
 @testable import CaptureServer
 
+/// Verifies durable host identity, paired-viewer recovery, and fail-closed persistence behavior.
+///
+/// A one-time invitation is only bootstrap material; reconnect authority comes from an
+/// authenticated durable record. Corrupt data must never cause silent identity rotation, and a
+/// host relaunched mid-commit must resend completion without accepting media until the viewer's
+/// activation acknowledgement has been authenticated.
 final class WorldwidePairingStoreTests: XCTestCase {
     func testPeerDepartureRestartsOnlyBeforeDurablePairingStateExists() {
         XCTAssertEqual(
@@ -16,6 +22,8 @@ final class WorldwidePairingStoreTests: XCTestCase {
     }
 
     func testRealKeychainBackendRoundTripsAcrossStoreRecreation() throws {
+        // A unique service isolates the real Keychain integration from production and parallel
+        // test runs. The deferred removal is part of the test's privacy boundary.
         let service = "org.example.AudioStreamer.CaptureServerTests.\(UUID().uuidString)"
         let account = "pairing-round-trip"
         let dataStore = WorldwideKeychainDataStore(service: service)
@@ -95,6 +103,8 @@ final class WorldwidePairingStoreTests: XCTestCase {
         let hostAgreement = try hostParticipant.accept(viewerParticipant.hello)
         let viewerAgreement = try viewerParticipant.accept(hostParticipant.hello)
 
+        // Persist at `acceptedReceived`, the exact crash window after completion is sent but before
+        // the viewer's final activation acknowledgement reaches the host.
         var hostRecord = try hostAgreement.makePendingRecord(
             peerConfirmation: viewerAgreement.makeConfirmation()
         )
@@ -181,6 +191,8 @@ final class WorldwidePairingStoreTests: XCTestCase {
         var signature = try XCTUnwrap(
             Data(base64Encoded: try XCTUnwrap(tamperedObject["signature"] as? String))
         )
+        // Flip one signature bit while preserving a structurally valid encoded commit. Rejection
+        // must therefore come from authentication, not JSON decoding or message shape.
         signature[0] ^= 1
         tamperedObject["signature"] = signature.base64EncodedString()
         let tampered = try JSONDecoder().decode(
@@ -209,6 +221,8 @@ final class WorldwidePairingStoreTests: XCTestCase {
     }
 }
 
+/// Thread-safe in-memory substitute for persistence-focused tests that do not need Keychain I/O.
+/// It intentionally stores the same opaque `Data` values as the production backend.
 private final class MemoryPairingDataStore: WorldwidePairingDataStore, @unchecked Sendable {
     private let lock = NSLock()
     private var values: [String: Data] = [:]

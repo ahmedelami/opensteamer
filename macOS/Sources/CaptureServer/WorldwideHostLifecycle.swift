@@ -1,6 +1,12 @@
 import Foundation
 
+/// Pure state machine for invitation, availability, and media exchange ownership.
+///
+/// Exchange identifiers are scoped independently: availability may reconnect while
+/// an already authorized media exchange finishes. Invalid ownership transitions fail
+/// closed rather than silently replacing an active peer.
 struct WorldwideHostLifecycle: Equatable, Sendable {
+    /// Durable high-level state of the worldwide host process.
     enum RunState: Equatable, Sendable {
         case idle
         case inviting
@@ -12,11 +18,13 @@ struct WorldwideHostLifecycle: Equatable, Sendable {
     private(set) var activeExchangeID: String?
     private(set) var mediaExchangeID: String?
 
+    /// Begins invitation or durable availability according to persisted pairing state.
     mutating func start(hasPairedViewer: Bool) throws {
         guard runState == .idle else { throw WorldwideHostLifecycleError.invalidTransition }
         runState = hasPairedViewer ? .pairedAvailable : .inviting
     }
 
+    /// Crosses from one-time invitation into reusable paired availability.
     mutating func durablePairingRecordAvailable() throws {
         guard runState == .inviting else {
             throw WorldwideHostLifecycleError.invalidTransition
@@ -24,6 +32,7 @@ struct WorldwideHostLifecycle: Equatable, Sendable {
         runState = .pairedAvailable
     }
 
+    /// Claims one bounded, nonempty Worker exchange as the active availability peer.
     mutating func availabilityReady(exchangeID: String) throws {
         guard runState == .pairedAvailable,
               activeExchangeID == nil,
@@ -34,6 +43,7 @@ struct WorldwideHostLifecycle: Equatable, Sendable {
         activeExchangeID = exchangeID
     }
 
+    /// Marks media active only for the exchange that currently owns availability.
     mutating func mediaStarted(exchangeID: String) throws {
         guard runState == .pairedAvailable,
               activeExchangeID == exchangeID,
@@ -43,16 +53,19 @@ struct WorldwideHostLifecycle: Equatable, Sendable {
         mediaExchangeID = exchangeID
     }
 
+    /// Releases availability only when the departing exchange still owns it.
     mutating func availabilityPeerLeft(exchangeID: String) {
         guard activeExchangeID == exchangeID else { return }
         activeExchangeID = nil
     }
 
+    /// Releases media only when the ending exchange still owns it.
     mutating func mediaEnded(exchangeID: String) {
         guard mediaExchangeID == exchangeID else { return }
         mediaExchangeID = nil
     }
 
+    /// Enters the terminal state and clears all ephemeral exchange ownership.
     mutating func stop() {
         runState = .stopped
         activeExchangeID = nil
@@ -60,6 +73,7 @@ struct WorldwideHostLifecycle: Equatable, Sendable {
     }
 }
 
+/// Bounded exponential backoff for the durable availability WebSocket.
 struct WorldwideAvailabilityRetryPolicy: Equatable, Sendable {
     private(set) var nextDelaySeconds = 1
     private(set) var hasValidatedConnection = false
@@ -74,6 +88,7 @@ struct WorldwideAvailabilityRetryPolicy: Equatable, Sendable {
         return becameValidated
     }
 
+    /// Returns the current retry delay, then doubles it up to thirty seconds.
     mutating func delayAfterFailure() -> Int {
         let delay = nextDelaySeconds
         nextDelaySeconds = min(nextDelaySeconds * 2, 30)
@@ -82,6 +97,7 @@ struct WorldwideAvailabilityRetryPolicy: Equatable, Sendable {
     }
 }
 
+/// Signals an attempted transition that violates worldwide-host ownership rules.
 enum WorldwideHostLifecycleError: LocalizedError, Equatable {
     case invalidTransition
 

@@ -2,6 +2,8 @@ import Foundation
 import Testing
 @testable import RemoteSessionCore
 
+/// Treats rendezvous responses as hostile input and verifies exact headers, schemas, bounds,
+/// sequencing, cancellation races, and event-buffer fail-closed behavior.
 struct RendezvousSignalingClientTests {
     private let endpoint = URL(string: "wss://rendezvous.example.test")!
 
@@ -729,10 +731,12 @@ struct RendezvousSignalingClientTests {
     }
 }
 
+/// Terminal error emitted by the in-memory rendezvous transport.
 private enum FakeSocketError: Error {
     case closed
 }
 
+/// Actor-isolated transport double for asserting exact headers, sends, and cancellation ordering.
 private actor FakeRendezvousSocketTransport: RendezvousSocketTransport {
     private var url: URL?
     private var channelID: RendezvousChannelID?

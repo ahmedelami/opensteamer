@@ -2,11 +2,16 @@ import Foundation
 import Network
 import Streaming
 
+/// Reads the legacy length-prefixed PCM stream from a TCP connection.
+///
+/// This transport is retained for trusted LAN and diagnostic use; worldwide sessions use the
+/// authenticated WebRTC path instead.
 public final class PacketReader: @unchecked Sendable {
     private let connection: NWConnection
     private let authToken: String?
     private let queue = DispatchQueue(label: "MacCaptureVerifier.ClientCore.PacketReader")
 
+    /// Creates a reader for a host and numeric TCP port.
     public init(host: String, port: UInt16, authToken: String? = nil) throws {
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             throw PacketReaderError.invalidPort(port)
@@ -15,11 +20,13 @@ public final class PacketReader: @unchecked Sendable {
         self.authToken = authToken?.nilIfEmpty
     }
 
+    /// Creates a reader for an already-discovered Network framework endpoint.
     public init(endpoint: NWEndpoint, authToken: String? = nil) {
         self.connection = NWConnection(to: endpoint, using: .tcp)
         self.authToken = authToken?.nilIfEmpty
     }
 
+    /// Starts the connection and returns once Network.framework reports it ready.
     public func start() async throws {
         try await withCheckedThrowingContinuation { continuation in
             let resumeOnce = ResumeOnce(continuation)
@@ -37,21 +44,25 @@ public final class PacketReader: @unchecked Sendable {
         }
     }
 
+    /// Cancels any pending network work.
     public func cancel() {
         connection.cancel()
     }
 
+    /// Sends the legacy pre-stream authentication request when a token was configured.
     public func authenticateIfNeeded() async throws {
         guard let authToken else { return }
         let request = try PCMAuthProtocol.makeRequest(token: authToken)
         try await send(request)
     }
 
+    /// Reads and validates the fixed-width stream header.
     public func readHeader() async throws -> PCMStreamHeader {
         let headerData = try await receiveExact(PCMStreamProtocol.headerByteCount)
         return try PacketParser.parseHeader(headerData)
     }
 
+    /// Reads one complete frame and validates its declared payload size against `header`.
     public func readFrame(header: PCMStreamHeader) async throws -> PCMFrame {
         let lengthData = try await receiveExact(4)
         let packetLength = try PacketParser.packetLength(lengthData)
@@ -123,6 +134,7 @@ public final class PacketReader: @unchecked Sendable {
     }
 }
 
+/// Framing and lifecycle errors specific to the TCP packet reader.
 public enum PacketReaderError: LocalizedError {
     case invalidPort(UInt16)
     case connectionClosed
@@ -143,6 +155,7 @@ private extension String {
     }
 }
 
+/// Makes the many-state Network.framework callback safe for a single Swift continuation.
 private final class ResumeOnce: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, any Error>?

@@ -1,6 +1,8 @@
 import Foundation
 
+/// Encodes legacy PCM stream headers and packets in the versioned little-endian wire format.
 public enum PacketFramer {
+    /// Encodes the fixed-width stream header, including its reserved field.
     public static func makeHeader(_ header: PCMStreamHeader) -> Data {
         var data = Data(capacity: PCMStreamProtocol.headerByteCount)
         data.appendASCII(PCMStreamProtocol.magic)
@@ -14,6 +16,7 @@ public enum PacketFramer {
         return data
     }
 
+    /// Prefixes PCM bytes with the declared packet length and presentation metadata.
     public static func makePacket(metadata: PCMPacketMetadata, pcmBytes: Data) -> Data {
         let packetLength = UInt32(PCMStreamProtocol.packetHeaderByteCount + pcmBytes.count)
         var data = Data(capacity: Int(packetLength))

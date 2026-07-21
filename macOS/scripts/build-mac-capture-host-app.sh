@@ -1,4 +1,18 @@
 #!/bin/zsh
+# Builds, assembles, signs, and verifies `AudioStreamer Host.app` from the repository root.
+#
+# Usage: run without arguments. SwiftPM, Xcode command-line tools, and macOS `codesign` tooling
+# must be available. The script deletes and recreates only the target app bundle beneath the output
+# directory, then prints its absolute path on stdout. Diagnostics and signing identity go to stderr.
+#
+# Environment:
+# - MAC_CAPTURE_APP_OUTPUT_DIR: destination parent (defaults to `<repo>/build`).
+# - MAC_CAPTURE_PREBUILT_BIN_DIR: reuse already-built SwiftPM products instead of invoking a build.
+# - MAC_CAPTURE_CODESIGN_IDENTITY: explicit identity; `-` selects ad-hoc signing.
+# - MAC_CAPTURE_EXPECTED_TEAM_ID: optional TeamIdentifier enforced by the final verifier.
+#
+# Any missing product, packaging, rpath, signing, or verification failure exits nonzero before the
+# final path is printed. A successful run leaves a complete signed app bundle at that path.
 set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -50,6 +64,8 @@ if [[ ! -d "$WEBRTC_FRAMEWORK_SOURCE" ]]; then
 fi
 
 rm -rf "$APP_DIR"
+# Bundle assembly is intentionally from a clean destination so removed frameworks or metadata
+# cannot survive from an earlier build and accidentally satisfy verification.
 mkdir -p "$MACOS_DIR" "$FRAMEWORKS_DIR"
 cp "$EXECUTABLE_SOURCE" "$EXECUTABLE"
 cp -R "$WEBRTC_FRAMEWORK_SOURCE" "$WEBRTC_FRAMEWORK"
@@ -60,6 +76,8 @@ if ! otool -l "$EXECUTABLE" | grep -Fq "path @executable_path/../Frameworks "; t
 fi
 
 codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$WEBRTC_FRAMEWORK"
+# Sign from the innermost code outward so the final app seal covers the signed framework and main
+# executable exactly as they will be installed.
 codesign --force --sign "$SIGNING_IDENTITY" \
     --identifier org.example.AudioStreamer.CaptureServer \
     --timestamp=none \

@@ -12,30 +12,36 @@ public struct MacRemoteNormalizedPoint: Equatable, Sendable {
     public let x: Double
     public let y: Double
 
+    /// Creates a point in the captured display's normalized coordinate space.
     public init(x: Double, y: Double) {
         self.x = x
         self.y = y
     }
 
+    /// Whether both finite coordinates fall inside the closed unit square.
     var isValid: Bool {
         x.isFinite && y.isFinite && (0...1).contains(x) && (0...1).contains(y)
     }
 }
 
+/// Snapshot of the macOS grants needed to synthesize and target remote input.
 public struct MacRemoteInputPermissionStatus: Equatable, Sendable {
     public let accessibilityTrusted: Bool
     public let postEventAllowed: Bool
 
+    /// Creates a permission snapshot from the two independent system checks.
     public init(accessibilityTrusted: Bool, postEventAllowed: Bool) {
         self.accessibilityTrusted = accessibilityTrusted
         self.postEventAllowed = postEventAllowed
     }
 
+    /// `true` only when Accessibility inspection and event posting are both allowed.
     public var isAuthorized: Bool {
         accessibilityTrusted && postEventAllowed
     }
 }
 
+/// Outcome of binding remote input to a specific screen-sharing session.
 public enum MacRemoteInputArmResult: Equatable, Sendable {
     case armed
     case disabled
@@ -43,16 +49,19 @@ public enum MacRemoteInputArmResult: Equatable, Sendable {
     case displayUnavailable
 }
 
+/// Keyboard-focus capability returned to the iPhone after a pointer action.
 public enum MacRemoteInputFocus: Equatable, Sendable {
     case none
     case editable(generation: UInt64, secure: Bool)
 }
 
+/// Small, explicitly allowed set of non-text keyboard commands.
 public enum MacRemoteInputKey: Equatable, Sendable {
     case backspace
     case returnKey
 }
 
+/// Stable rejection reasons safe to expose across the remote-control protocol.
 public enum MacRemoteInputRejection: Equatable, Sendable {
     case disabled
     case permissionRequired
@@ -66,6 +75,7 @@ public enum MacRemoteInputRejection: Equatable, Sendable {
     case injectionFailed
 }
 
+/// Result of one authorized remote input request.
 public enum MacRemoteInputResult: Equatable, Sendable {
     case accepted(MacRemoteInputFocus)
     case rejected(MacRemoteInputRejection)
@@ -77,6 +87,8 @@ public enum MacRemoteInputResult: Equatable, Sendable {
 /// match both the active Show request and its fresh input-session UUID. Keyboard
 /// authorization is narrower still: it is granted only after the same editable AX
 /// element that was hit-tested before a click becomes focused after that click.
+/// The controller lock owns session identity, focus grants, and all token buckets;
+/// no remote action can interleave between its final authorization check and posting.
 public final class MacRemoteInputController: @unchecked Sendable {
     private static let focusPollInterval: TimeInterval = 0.005
     private static let maximumFocusWait: TimeInterval = 0.050
@@ -95,6 +107,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
     private var keyBucket: TokenBucket
     private var textBucket: TokenBucket
 
+    /// Creates a controller backed by macOS Accessibility and Core Graphics APIs.
     public init(allowRemoteControl: Bool) {
         let clock = SystemMacRemoteInputClock()
         self.allowRemoteControl = allowRemoteControl
@@ -106,6 +119,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         self.textBucket = TokenBucket(capacity: 4_096, refillPerSecond: 2_048, now: now)
     }
 
+    /// Test-only dependency initializer for deterministic clocks and system behavior.
     init(
         allowRemoteControl: Bool,
         system: any MacRemoteInputSystem,
@@ -144,6 +158,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         }
     }
 
+    /// Revokes old state and establishes one session after permissions and display checks.
     private func armLocked(
         displayID: UInt32,
         screenRequestID: UInt64,
@@ -180,6 +195,9 @@ public final class MacRemoteInputController: @unchecked Sendable {
         }
     }
 
+    // MARK: - Pointer actions
+
+    /// Posts one primary click and optionally grants keyboard focus to its editable target.
     public func handleTap(
         screenRequestID: UInt64,
         inputSessionID: UUID,
@@ -194,6 +212,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         }
     }
 
+    /// Performs the complete tap authorization and injection transaction under `lock`.
     private func handleTapLocked(
         screenRequestID: UInt64,
         inputSessionID: UUID,
@@ -280,6 +299,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         }
     }
 
+    /// Performs an atomic drag transaction under the controller lock.
     private func handlePrimaryDragLocked(
         screenRequestID: UInt64,
         inputSessionID: UUID,
@@ -346,6 +366,9 @@ public final class MacRemoteInputController: @unchecked Sendable {
         return .accepted(.editable(generation: focus.generation, secure: false))
     }
 
+    // MARK: - Keyboard actions
+
+    /// Inserts bounded Unicode text into the exact focus generation granted by a tap.
     public func insertText(
         screenRequestID: UInt64,
         inputSessionID: UUID,
@@ -362,6 +385,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         }
     }
 
+    /// Revalidates session, permissions, focus, and rate limit before text injection.
     private func insertTextLocked(
         screenRequestID: UInt64,
         inputSessionID: UUID,
@@ -393,6 +417,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         return .accepted(.editable(generation: focus.generation, secure: false))
     }
 
+    /// Posts one allowed key into the exact focus generation granted by a tap.
     public func pressKey(
         screenRequestID: UInt64,
         inputSessionID: UUID,
@@ -409,6 +434,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         }
     }
 
+    /// Revalidates session, permissions, focus, and rate limit before key injection.
     private func pressKeyLocked(
         screenRequestID: UInt64,
         inputSessionID: UUID,
@@ -436,6 +462,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         return .accepted(.editable(generation: focus.generation, secure: false))
     }
 
+    /// Validates protocol text limits and rejects control/function-key scalars.
     static func validatedTextByteCount(_ text: String) -> Int? {
         guard !text.isEmpty else { return nil }
 
@@ -455,6 +482,9 @@ public final class MacRemoteInputController: @unchecked Sendable {
         return utf8Count
     }
 
+    // MARK: - Authorization helpers
+
+    /// Resolves the current focus grant after fail-closed session and TCC checks.
     private func authorizeKeyboardAction(
         screenRequestID: UInt64,
         inputSessionID: UUID,
@@ -479,11 +509,13 @@ public final class MacRemoteInputController: @unchecked Sendable {
         return (focus, nil)
     }
 
+    /// Invalidates keyboard authority on every rejection to require a fresh pointer grant.
     private func rejectKeyboardAction(_ reason: MacRemoteInputRejection) -> MacRemoteInputResult {
         authorizedFocus = nil
         return .rejected(reason)
     }
 
+    /// Matches both public request identity and the unguessable per-session UUID.
     private func matchingSession(
         screenRequestID: UInt64,
         inputSessionID: UUID
@@ -500,6 +532,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         system.permissionStatus(promptIfNeeded: false).isAuthorized
     }
 
+    /// Rejects inactive or geometrically unusable display bounds.
     private func validDisplayBounds(for displayID: UInt32) -> CGRect? {
         guard let bounds = system.displayBounds(for: displayID),
               !bounds.isNull,
@@ -515,6 +548,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         return bounds
     }
 
+    /// Walks a bounded, cycle-safe AX ancestry to find an allowed editable target.
     private func editableAncestor(from hitElement: MacRemoteAccessibilityElement) -> EditableElement? {
         var current: MacRemoteAccessibilityElement? = hitElement
         var visited: [MacRemoteAccessibilityElement] = []
@@ -541,6 +575,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         return nil
     }
 
+    /// Applies the role, enabled-state, and writable-value editability policy.
     private func editableElement(exactly element: MacRemoteAccessibilityElement) -> EditableElement? {
         // Some first-party controls (including TextEdit's AXTextArea) omit AXEnabled even though
         // AXValue is settable. Only an explicit false is a disabled-control signal; editability
@@ -557,6 +592,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         return EditableElement(element: element)
     }
 
+    /// Gives AppKit a bounded 50 ms window to move focus after pointer injection.
     private func waitForFocusedEditableElement(
         matching expected: MacRemoteAccessibilityElement
     ) -> EditableElement? {
@@ -579,6 +615,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         return nil
     }
 
+    /// Confirms the previously authorized AX object still owns editable focus.
     private func verifyFocusedElement(_ focus: AuthorizedFocus) -> Bool {
         guard let currentlyFocused = system.focusedElement(),
               let editable = editableAncestor(from: currentlyFocused),
@@ -594,6 +631,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         textBucket.reset(at: now)
     }
 
+    /// Clears all authority and refills buckets for the next explicitly armed session.
     private func revokeState() {
         activeSession = nil
         authorizedFocus = nil
@@ -601,6 +639,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         resetRateLimits(now: clock.now())
     }
 
+    /// Serializes a complete authorization-and-post transaction.
     private func withLock<T>(_ body: () throws -> T) rethrows -> T {
         lock.lock()
         defer { lock.unlock() }
@@ -614,22 +653,27 @@ public final class MacRemoteInputController: @unchecked Sendable {
     ]
 }
 
+/// Exact screen and input identities to which the controller is currently bound.
 private struct ActiveSession: Sendable {
     let displayID: UInt32
     let screenRequestID: UInt64
     let inputSessionID: UUID
 }
 
+/// AX element and monotonic generation authorized by the most recent pointer action.
 private struct AuthorizedFocus: Sendable {
     let element: MacRemoteAccessibilityElement
     let generation: UInt64
 }
 
+/// Validated accessibility element that may receive keyboard input.
 private struct EditableElement {
     let element: MacRemoteAccessibilityElement
 }
 
+/// Maps iPhone-relative coordinates into the selected Core Graphics display bounds.
 enum MacRemoteInputCoordinateMapper {
+    /// Converts a validated normalized point while keeping exact `1.0` inside the display.
     static func globalPoint(_ point: MacRemoteNormalizedPoint, in bounds: CGRect) -> CGPoint {
         CGPoint(
             x: min(bounds.maxX.nextDown, bounds.minX + (bounds.width * point.x)),
@@ -638,9 +682,11 @@ enum MacRemoteInputCoordinateMapper {
     }
 }
 
+/// Produces a short, deterministic interpolation path for atomic primary-button drags.
 enum MacRemoteInputDragPath {
     static let draggedEventCount = 6
 
+    /// Returns intermediate points including the requested end coordinate.
     static func points(from start: CGPoint, to end: CGPoint) -> [CGPoint] {
         (1...draggedEventCount).map { step in
             let progress = CGFloat(step) / CGFloat(draggedEventCount)
@@ -652,6 +698,7 @@ enum MacRemoteInputDragPath {
     }
 }
 
+/// Monotonic token bucket used to bound pointer, key, and text injection rates.
 private struct TokenBucket {
     let capacity: Double
     let refillPerSecond: Double
@@ -670,6 +717,7 @@ private struct TokenBucket {
         lastRefill = now
     }
 
+    /// Refills for elapsed uptime and atomically charges `cost` when capacity allows.
     mutating func consume(_ cost: Double, at now: TimeInterval) -> Bool {
         if now.isFinite, now > lastRefill {
             tokens = min(capacity, tokens + ((now - lastRefill) * refillPerSecond))
@@ -682,11 +730,13 @@ private struct TokenBucket {
     }
 }
 
+/// Injectable monotonic time and bounded sleeping used by focus polling and rate limits.
 protocol MacRemoteInputClock: Sendable {
     func now() -> TimeInterval
     func sleep(for interval: TimeInterval)
 }
 
+/// Production clock based on system uptime, which is unaffected by wall-clock changes.
 private struct SystemMacRemoteInputClock: MacRemoteInputClock {
     func now() -> TimeInterval {
         ProcessInfo.processInfo.systemUptime
@@ -698,6 +748,7 @@ private struct SystemMacRemoteInputClock: MacRemoteInputClock {
     }
 }
 
+/// Sendable identity wrapper around an immutable Accessibility object reference.
 final class MacRemoteAccessibilityElement: @unchecked Sendable {
     fileprivate let rawValue: AnyObject
 
@@ -706,6 +757,7 @@ final class MacRemoteAccessibilityElement: @unchecked Sendable {
     }
 }
 
+/// Narrow system boundary for permission, AX inspection, and synthetic event posting.
 protocol MacRemoteInputSystem: Sendable {
     func permissionStatus(promptIfNeeded: Bool) -> MacRemoteInputPermissionStatus
     func displayBounds(for displayID: UInt32) -> CGRect?
@@ -730,7 +782,9 @@ protocol MacRemoteInputSystem: Sendable {
     func postKey(_ key: MacRemoteInputKey) -> Bool
 }
 
+/// Production implementation backed by Accessibility and Core Graphics event APIs.
 private struct CoreGraphicsMacRemoteInputSystem: MacRemoteInputSystem {
+    /// Checks or requests only the permissions required by the implemented operations.
     func permissionStatus(promptIfNeeded: Bool) -> MacRemoteInputPermissionStatus {
         let accessibilityTrusted: Bool
         if promptIfNeeded {
@@ -821,6 +875,7 @@ private struct CoreGraphicsMacRemoteInputSystem: MacRemoteInputSystem {
         CFEqual(lhs.rawValue, rhs.rawValue)
     }
 
+    /// Constructs both halves before posting a balanced primary click.
     func postMouseClick(at point: CGPoint) -> Bool {
         guard let source = CGEventSource(stateID: .privateState),
               let down = CGEvent(
@@ -847,6 +902,7 @@ private struct CoreGraphicsMacRemoteInputSystem: MacRemoteInputSystem {
         return true
     }
 
+    /// Constructs the complete event sequence before posting a balanced drag.
     func postPrimaryDrag(from start: CGPoint, to end: CGPoint) -> Bool {
         // All fallible construction happens before the first irreversible post,
         // so a construction failure can never leave the primary button held.
@@ -897,6 +953,7 @@ private struct CoreGraphicsMacRemoteInputSystem: MacRemoteInputSystem {
         return true
     }
 
+    /// Posts prevalidated UTF-16 text as a balanced keyboard event pair.
     func postUnicodeText(_ text: String) -> Bool {
         guard let source = CGEventSource(stateID: .privateState),
               let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
@@ -923,6 +980,7 @@ private struct CoreGraphicsMacRemoteInputSystem: MacRemoteInputSystem {
         return true
     }
 
+    /// Maps the protocol's allowlisted keys to balanced virtual-key events.
     func postKey(_ key: MacRemoteInputKey) -> Bool {
         let virtualKey: CGKeyCode = switch key {
         case .backspace:
@@ -962,6 +1020,7 @@ private struct CoreGraphicsMacRemoteInputSystem: MacRemoteInputSystem {
         return MacRemoteAccessibilityElement(rawValue: value as AnyObject)
     }
 
+    /// Reads one AX attribute with a bounded messaging timeout to avoid host stalls.
     private func copyAttribute(
         _ attribute: CFString,
         from element: MacRemoteAccessibilityElement

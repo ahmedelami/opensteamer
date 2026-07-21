@@ -3,6 +3,10 @@ import Network
 import Streaming
 import Utilities
 
+/// Coordinates one legacy PCM connection, jitter buffer, and audio renderer.
+///
+/// State snapshots and renderer ownership use separate locks because the network receive loop and
+/// app lifecycle callbacks may access them from different executors.
 public final class StreamSession: @unchecked Sendable {
     private let snapshotLock = NSLock()
     private let rendererLock = NSLock()
@@ -14,22 +18,26 @@ public final class StreamSession: @unchecked Sendable {
 
     public init() {}
 
+    /// The most recently published connection or playback state.
     public var state: StreamState {
         snapshotLock.withLock {
             storedState
         }
     }
 
+    /// The most recently published stream metrics.
     public var metrics: StreamMetrics {
         snapshot()
     }
 
+    /// Returns a lock-consistent metrics snapshot.
     public func snapshot() -> StreamMetrics {
         snapshotLock.withLock {
             storedMetrics
         }
     }
 
+    /// Cancels the active packet reader, causing the receive loop to unwind.
     public func disconnect() {
         let reader = readerQueue.sync {
             let reader = currentReader
@@ -39,26 +47,31 @@ public final class StreamSession: @unchecked Sendable {
         reader?.cancel()
     }
 
+    /// Pauses audio output without terminating the network session.
     public func pauseRendering() {
         let renderer = rendererLock.withLock { currentRenderer }
         renderer?.pause()
     }
 
+    /// Resumes the existing output graph after a temporary interruption.
     public func resumeRendering() throws {
         let renderer = rendererLock.withLock { currentRenderer }
         try renderer?.start()
     }
 
+    /// Rebuilds the output graph after an audio route or media-services reset.
     public func restartRendering() throws {
         let renderer = rendererLock.withLock { currentRenderer }
         try renderer?.restart()
     }
 
+    /// A stable diagnostic description of the current renderer lifecycle.
     public var rendererStateDescription: String {
         let renderer = rendererLock.withLock { currentRenderer }
         return renderer?.stateDescription ?? "Unavailable"
     }
 
+    /// Runs a TCP stream until its duration or packet limit is reached.
     public func run(
         host: String,
         port: UInt16,
@@ -76,6 +89,7 @@ public final class StreamSession: @unchecked Sendable {
         )
     }
 
+    /// Runs a stream from an already-discovered Network framework endpoint.
     public func run(
         endpoint: NWEndpoint,
         authToken: String? = nil,
@@ -92,6 +106,7 @@ public final class StreamSession: @unchecked Sendable {
         )
     }
 
+    /// Runs a WebSocket-carried legacy PCM stream.
     public func run(
         webSocketURL: URL,
         authToken: String? = nil,
@@ -312,6 +327,7 @@ public final class StreamSession: @unchecked Sendable {
     }
 }
 
+/// The common packet-source contract used to keep session accounting transport-independent.
 private protocol StreamPacketReading: AnyObject, Sendable {
     func start() async throws
     func cancel()
@@ -323,6 +339,7 @@ private protocol StreamPacketReading: AnyObject, Sendable {
 extension PacketReader: StreamPacketReading {}
 extension WebSocketPacketReader: StreamPacketReading {}
 
+/// Immutable results from a completed legacy PCM validation session.
 public struct StreamSessionReport: Sendable {
     public let sampleRate: UInt32
     public let channels: UInt16
@@ -330,6 +347,7 @@ public struct StreamSessionReport: Sendable {
     public let rendererStarted: Bool
     public let metrics: StreamMetrics
 
+    /// Formats the report for command-line diagnostics.
     public func render() -> String {
         var lines: [String] = []
         lines.append("PCM player report")

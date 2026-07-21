@@ -1,6 +1,11 @@
 import CaptureCore
 import Foundation
 
+/// Parsed configuration for trusted-LAN and worldwide host modes.
+///
+/// Worldwide mode disables plaintext LAN listeners unless `--with-lan` is explicit.
+/// Authentication values may come from CLI or process environment, remain in memory,
+/// and are not persisted by this options layer.
 struct CaptureServerOptions {
     private static let productionRendezvousURL = URL(
         string: "wss://rendezvous.example.invalid"
@@ -65,6 +70,7 @@ struct CaptureServerOptions {
       --help                 Print this help.
     """
 
+    /// Parses command-line options, derives paired ports, and enforces safe mode combinations.
     static func parse(_ arguments: [String]) throws -> CaptureServerOptions {
         var options = CaptureServerOptions()
         var index = 1
@@ -252,6 +258,7 @@ private extension String {
     }
 }
 
+/// User-correctable configuration failures detected before host startup.
 enum CaptureServerOptionError: LocalizedError {
     case invalid(String)
 

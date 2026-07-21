@@ -4,6 +4,12 @@ import Security
 @testable import RemoteSessionCore
 @testable import AudioStreamer
 
+/// Validates credential durability, this-device-only accessibility, and install-over-update
+/// behavior at the real Security.framework boundary.
+///
+/// Ordinary tests use uniquely named Keychain items and delete them afterward. Physical-update
+/// phases deliberately use production-shaped state and external metadata so a missing credential,
+/// silently regenerated identity, or mismatched paired record is an observable failure.
 @MainActor
 final class KeychainStoreTests: XCTestCase {
     func testProductionStorageIdentityRemainsCompatibleWithEarlierBuilds() {
@@ -635,6 +641,9 @@ final class KeychainStoreTests: XCTestCase {
     #endif
 }
 
+// MARK: - Physical install-over-update fixture contract
+
+/// Driver-selected phase for seeding or verifying one side of an app replacement boundary.
 private enum PhysicalUpdateValidationPhase {
     case seed
     case verify

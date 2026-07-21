@@ -1,7 +1,13 @@
 import CoreAudio
 import Foundation
 
+/// Finds BlackHole, assigns it to all relevant macOS defaults, and monitors route drift.
+///
+/// Core Audio delivers property notifications on `listenerQueue`. Host lifecycle calls
+/// install and remove listeners; the unchecked conformance exists because Core Audio's
+/// listener blocks are not modeled as `Sendable` by the SDK.
 final class BlackHoleRouteManager: @unchecked Sendable {
+    /// Retains the exact address/block pair required by Core Audio for deregistration.
     private struct Listener {
         var address: AudioObjectPropertyAddress
         let block: AudioObjectPropertyListenerBlock
@@ -18,6 +24,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         self.logger = logger
     }
 
+    /// Resolves BlackHole and applies it as default output, system output, and input.
     func prepareRoute() throws -> AudioRoute {
         let route = try Self.findBlackHoleRoute()
         try applyDefaults(route: route, reason: "startup")
@@ -26,6 +33,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         return route
     }
 
+    /// Compares current defaults and the live capture queue with the prepared route.
     func health(captureDeviceUID: String?) throws -> BlackHoleRouteHealth {
         guard let expectedRoute else {
             throw CaptureError.audioRouteUnhealthy("No expected BlackHole route has been prepared")
@@ -33,6 +41,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         return try Self.health(expectedRoute: expectedRoute, captureDeviceUID: captureDeviceUID)
     }
 
+    /// Installs listeners that restore a prepared route after ordinary system changes.
     func startMonitoring(expectedRoute: AudioRoute) throws {
         stopMonitoring()
         self.expectedRoute = expectedRoute
@@ -42,6 +51,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         }
     }
 
+    /// Removes every installed listener using its original registration identity.
     func stopMonitoring() {
         for listener in listeners {
             var address = listener.address
@@ -55,6 +65,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         listeners.removeAll()
     }
 
+    /// Registers one system-object listener on the dedicated callback queue.
     private func addListener(selector: AudioObjectPropertySelector) throws {
         var address = Self.propertyAddress(selector: selector)
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
@@ -72,6 +83,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         listeners.append(Listener(address: address, block: block))
     }
 
+    /// Verifies a device-change notification and performs a bounded route repair.
     private func handleDefaultDeviceChanged() {
         guard let expectedRoute else { return }
         guard !isReassertingRoute else {
@@ -116,6 +128,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         }
     }
 
+    /// Rate-limits route writes to avoid fighting a user's repeated manual selection.
     private func shouldReassertRoute(now: Date = Date()) -> Bool {
         recentReassertions = recentReassertions.filter { now.timeIntervalSince($0) < 60 }
         guard recentReassertions.count < 3 else { return false }
@@ -123,6 +136,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         return true
     }
 
+    /// Returns operator-readable differences from the prepared default devices.
     private func defaultDeviceDrift(expectedRoute: AudioRoute) throws -> [String] {
         try Self.defaultDeviceSelectors.compactMap { selector in
             let currentDevice = try Self.defaultDevice(selector: selector)
@@ -132,11 +146,13 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         }
     }
 
+    /// Verifies an already configured BlackHole route without changing system state.
     static func verifyCurrentRoute() throws -> BlackHoleRouteHealth {
         let route = try findBlackHoleRoute()
         return try health(expectedRoute: route, captureDeviceUID: route.uid)
     }
 
+    /// Builds a complete route snapshot against an explicit expected device.
     private static func health(expectedRoute: AudioRoute, captureDeviceUID: String?) throws -> BlackHoleRouteHealth {
         // Verifies normal CoreAudio defaults, not apps that deliberately open a physical output directly.
         let expectedUID = expectedRoute.uid ?? ""
@@ -171,6 +187,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         )
     }
 
+    /// Reads one Core Audio default endpoint and compares its stable UID.
     private static func endpointHealth(
         label: String,
         selector: AudioObjectPropertySelector,
@@ -186,6 +203,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         )
     }
 
+    /// Locates the first installed route whose name or UID identifies BlackHole.
     private static func findBlackHoleRoute() throws -> AudioRoute {
         let routes = try Self.allDevices().map {
             AudioRoute(
@@ -203,6 +221,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         return route
     }
 
+    /// Writes all three defaults; partial failure is surfaced to the caller.
     private func applyDefaults(route: AudioRoute, reason: String) throws {
         for selector in Self.defaultDeviceSelectors {
             try Self.setDefaultDevice(
@@ -222,6 +241,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         ]
     }
 
+    /// Reads the variable-length Core Audio device list from the system object.
     private static func allDevices() throws -> [AudioDeviceID] {
         var address = propertyAddress(selector: kAudioHardwarePropertyDevices)
         var size: UInt32 = 0
@@ -254,6 +274,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         return devices.filter { $0 != kAudioObjectUnknown }
     }
 
+    /// Resolves one default-device selector to its current object identifier.
     private static func defaultDevice(selector: AudioObjectPropertySelector) throws -> AudioDeviceID {
         var deviceID = AudioDeviceID(kAudioObjectUnknown)
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
@@ -272,6 +293,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         return deviceID
     }
 
+    /// Assigns one default-device selector and preserves its OSStatus on failure.
     private static func setDefaultDevice(
         _ deviceID: AudioDeviceID,
         selector: AudioObjectPropertySelector,
@@ -300,6 +322,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID)
     }
 
+    /// Reads a Core Foundation string property from a Core Audio device.
     private static func stringProperty(_ deviceID: AudioDeviceID, selector: AudioObjectPropertySelector) -> String? {
         var value: CFString = "" as CFString
         var size = UInt32(MemoryLayout<CFString>.size)
@@ -337,23 +360,28 @@ final class BlackHoleRouteManager: @unchecked Sendable {
     }
 }
 
+/// Identity of a concrete Core Audio route selected for loopback capture.
 struct AudioRoute: Sendable {
     let deviceID: AudioDeviceID
     let name: String
     let uid: String?
 
+    /// Whether the human-readable name or stable UID identifies BlackHole.
     var isBlackHole: Bool {
         name.localizedCaseInsensitiveContains("BlackHole") ||
             (uid?.localizedCaseInsensitiveContains("BlackHole") ?? false)
     }
 }
 
+/// Read-only public entry point for diagnosing an existing BlackHole route.
 public enum BlackHoleRouteVerifier {
+    /// Returns current route health without reconfiguring macOS audio defaults.
     public static func verifyCurrentRoute() throws -> BlackHoleRouteHealth {
         try BlackHoleRouteManager.verifyCurrentRoute()
     }
 }
 
+/// Aggregate comparison of every endpoint required by BlackHole capture.
 public struct BlackHoleRouteHealth: Sendable, Equatable {
     public let expectedName: String
     public let expectedUID: String
@@ -362,6 +390,7 @@ public struct BlackHoleRouteHealth: Sendable, Equatable {
     public let defaultInput: BlackHoleRouteEndpointHealth
     public let captureDevice: BlackHoleRouteEndpointHealth
 
+    /// `true` only when defaults and the capture queue all use the expected UID.
     public var isHealthy: Bool {
         defaultOutput.matchesExpected &&
             defaultSystemOutput.matchesExpected &&
@@ -369,6 +398,7 @@ public struct BlackHoleRouteHealth: Sendable, Equatable {
             captureDevice.matchesExpected
     }
 
+    /// Renders an operator-oriented route diagnostic.
     public func render() -> String {
         [
             "BlackHole route health",
@@ -383,6 +413,7 @@ public struct BlackHoleRouteHealth: Sendable, Equatable {
     }
 }
 
+/// Health of one named Core Audio endpoint relative to the expected route.
 public struct BlackHoleRouteEndpointHealth: Sendable, Equatable {
     public let label: String
     public let name: String

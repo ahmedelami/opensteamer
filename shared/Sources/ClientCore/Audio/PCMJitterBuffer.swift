@@ -3,6 +3,10 @@ import AudioToolbox
 import Foundation
 import Utilities
 
+/// A bounded, thread-safe PCM ring buffer shared by network ingestion and real-time playback.
+///
+/// The buffer drops its oldest sample on overflow and renders silence on underrun. Those events
+/// are counted so callers can distinguish network starvation from an audio-device failure.
 public final class PCMJitterBuffer: @unchecked Sendable, PCMFrameProvider {
     private let channels: Int
     private let sampleRate: Double
@@ -17,6 +21,7 @@ public final class PCMJitterBuffer: @unchecked Sendable, PCMFrameProvider {
     private var lastRenderedRMS: Float = 0
     private var lastRenderedPeak: Float = 0
 
+    /// Creates storage for `capacityFrames` interleaved frames.
     public init(channels: Int, sampleRate: Double = 48_000, capacityFrames: Int) {
         self.channels = channels
         self.sampleRate = max(sampleRate, 1)
@@ -24,34 +29,40 @@ public final class PCMJitterBuffer: @unchecked Sendable, PCMFrameProvider {
         self.samples = Array(repeating: 0, count: self.capacitySamples)
     }
 
+    /// The number of complete frames ready for playback.
     public var bufferedFrames: Int {
         lock.withLock {
             availableSamples / channels
         }
     }
 
+    /// Approximate buffered playback time at the configured sample rate.
     public var bufferedDuration: TimeInterval {
         Double(bufferedFrames) / sampleRate
     }
 
+    /// Complete frames discarded because incoming audio exceeded capacity.
     public var droppedFrames: Int {
         lock.withLock {
             droppedSamples / channels
         }
     }
 
+    /// Complete frames for which silence was rendered because no audio was available.
     public var underrunFrames: Int {
         lock.withLock {
             underrunSamples / channels
         }
     }
 
+    /// RMS and peak levels measured during the most recent render callback.
     public var renderLevel: (rms: Float, peak: Float) {
         lock.withLock {
             (lastRenderedRMS, lastRenderedPeak)
         }
     }
 
+    /// Decodes little-endian signed 16-bit samples and returns the number of appended frames.
     public func appendPCM16LE(_ data: Data) -> Int {
         guard data.count >= MemoryLayout<Int16>.size else {
             return 0
@@ -74,6 +85,7 @@ public final class PCMJitterBuffer: @unchecked Sendable, PCMFrameProvider {
         }
     }
 
+    /// Supplies non-interleaved floating-point samples to an audio-device render callback.
     public func render(frameCount: Int, audioBufferList: UnsafeMutablePointer<AudioBufferList>) {
         let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
         guard buffers.count >= channels else {

@@ -1,5 +1,9 @@
 import Foundation
 
+/// Parsed endpoint, jitter target, and stopping conditions for `PCMPlayer`.
+///
+/// `MCAP_TOKEN` is read from the process environment only when no CLI value is given;
+/// this options layer does not log or persist credentials.
 struct PCMPlayerOptions {
     var host = "127.0.0.1"
     var port: UInt16 = 9000
@@ -23,6 +27,7 @@ struct PCMPlayerOptions {
       --help                 Print this help.
     """
 
+    /// Parses command-line overrides and enforces positive duration/buffer limits.
     static func parse(_ arguments: [String]) throws -> PCMPlayerOptions {
         var options = PCMPlayerOptions()
         var index = 1
@@ -84,6 +89,7 @@ private extension String {
     }
 }
 
+/// User-correctable `PCMPlayer` option failures.
 enum PCMPlayerOptionError: LocalizedError {
     case invalid(String)
 

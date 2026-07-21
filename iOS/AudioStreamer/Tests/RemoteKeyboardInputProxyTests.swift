@@ -3,6 +3,9 @@ import UIKit
 import XCTest
 @testable import AudioStreamer
 
+/// Exercises the UIKit responder bridge without involving SwiftUI presentation timing.
+/// The security-critical oracles are generation-bound callbacks, no mirrored remote text, secure
+/// focus remaining closed, and exactly one Return action for software or hardware keyboards.
 final class RemoteKeyboardInputProxyTests: XCTestCase {
     @MainActor
     func testSecureHostFocusIsNotEligibleForRemoteKeyboard() {
@@ -315,6 +318,9 @@ final class RemoteKeyboardInputProxyTests: XCTestCase {
         XCTAssertFalse(proxy.isSecureTextEntry)
     }
 
+    // MARK: - UIKit responder fixtures
+
+    /// Attaches the proxy to a real key-window hierarchy so first-responder behavior is genuine.
     @MainActor
     private func makeWindow(containing view: UIView) -> (UIWindow, UIWindow?) {
         let scene = UIApplication.shared.connectedScenes

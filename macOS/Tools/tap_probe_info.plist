@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<!--
+  Minimal diagnostic bundle identity for tap_probe. Its single TCC usage string covers the
+  temporary system-audio capture performed by the probe; the tool persists no captured PCM.
+-->
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>

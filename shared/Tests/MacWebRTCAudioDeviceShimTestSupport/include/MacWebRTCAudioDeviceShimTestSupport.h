@@ -6,6 +6,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+/// Scripted delegate behaviors that prove the production bridge fails closed when the native
+/// render contract is skipped, duplicated, or invoked with invalid storage.
 typedef NS_ENUM(NSInteger, ASMacStereoAudioDeviceHarnessDeliveryBehavior) {
     ASMacStereoAudioDeviceHarnessDeliveryBehaviorInvokeRenderOnce = 0,
     ASMacStereoAudioDeviceHarnessDeliveryBehaviorReturnSuccessWithoutRender = 1,
@@ -13,6 +15,7 @@ typedef NS_ENUM(NSInteger, ASMacStereoAudioDeviceHarnessDeliveryBehavior) {
     ASMacStereoAudioDeviceHarnessDeliveryBehaviorReturnSuccessAfterInvalidRender = 3,
 };
 
+/// Exact callback, sample-pattern, and timestamp evidence collected by the test-only delegate.
 typedef struct ASMacStereoAudioDeviceHarnessDiagnostics {
     uint64_t callbackCount;
     uint64_t frameCount;

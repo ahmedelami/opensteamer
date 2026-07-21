@@ -4,6 +4,9 @@ import XCTest
 @testable import AudioStreamer
 @testable import WebRTCTransport
 
+/// State-machine tests for worldwide background playback, interruptions, calls, and runtime proof.
+/// Every fixture records both native-device and per-track gates; playback is considered active only
+/// when transport health and fresh RemoteIO evidence satisfy the policy for the current generation.
 @MainActor
 final class WorldwideAudioLifecycleTests: XCTestCase {
     func testWorldwidePlaybackConfigurationUsesOnlyValidExplicitOptions() {
@@ -1821,6 +1824,8 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         )
     }
 
+    // MARK: - Audio lifecycle fixtures
+
     private func assertRetiredPollingProofCannotMutateReplacement(
         diagnostics: WebRTCIOSPlayoutDiagnostics,
         file: StaticString = #filePath,
@@ -1935,6 +1940,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
     }
 }
 
+// MARK: - Deterministic lifecycle doubles
+
+/// Minimal published state captured at policy boundaries instead of asserting transient call order.
 @MainActor
 private struct PublishedAudioState: Equatable {
     let stateText: String

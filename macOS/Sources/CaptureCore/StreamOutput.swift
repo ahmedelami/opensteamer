@@ -2,10 +2,15 @@ import CoreMedia
 import Foundation
 import ScreenCaptureKit
 
+/// Queue-bound consumer used to move ScreenCaptureKit samples into processing.
 protocol SampleBufferConsumer: AnyObject {
     func enqueue(_ sampleBuffer: CMSampleBuffer)
 }
 
+/// Filters an `SCStream` down to audio and forwards buffers to its owner.
+///
+/// ScreenCaptureKit owns the callback thread; the consumer must establish any
+/// stronger serialization or lifetime guarantees it needs.
 final class StreamOutput: NSObject, SCStreamOutput {
     private let consumer: SampleBufferConsumer
 

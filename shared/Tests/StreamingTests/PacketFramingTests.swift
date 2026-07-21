@@ -2,6 +2,8 @@ import Foundation
 import XCTest
 @testable import Streaming
 
+/// Pins the legacy PCM byte layout and proves malformed lengths, formats, and authentication
+/// prefixes are rejected before payload allocation or playback.
 final class PacketFramingTests: XCTestCase {
     func testStreamHeaderRoundTrips() throws {
         let header = PCMStreamHeader(sampleRate: 48_000, channels: 2)

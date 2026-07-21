@@ -4,6 +4,9 @@ import Foundation
 import RemoteSessionCore
 import WebRTCTransport
 
+/// Capability-like token that binds one screen presentation to one media-session generation.
+/// Views must present this exact lease on show, input, and teardown calls; a raw request ID is not
+/// sufficient because IDs may be reused by a replacement peer.
 struct WorldwideScreenPresentationLease: Identifiable, Equatable, Sendable {
     let id: UUID
     let sessionGeneration: UUID
@@ -14,12 +17,15 @@ struct WorldwideScreenPresentationLease: Identifiable, Equatable, Sendable {
     }
 }
 
+/// Composite identity for an in-flight show/hide request across reconnect generations.
 struct WorldwideScreenVisibilityRequestKey: Hashable, Sendable {
     let sessionGeneration: UUID
     let requestID: UInt64
 }
 
 #if DEBUG
+// Debug projections intentionally contain only synthetic ownership state and monotonic counters.
+// They expose race-test seams without weakening the production generation/authorization checks.
 struct WorldwideScreenVisibilityDebugRequest {
     let lease: WorldwideScreenPresentationLease
     let operationID: UUID
@@ -82,6 +88,7 @@ struct WorldwideIOSPlayoutProofDebugState: Equatable, Sendable {
 }
 #endif
 
+/// Ordered phases of one output-only RemoteIO recovery proof window.
 private enum IOSPlayoutProofStage {
     case awaitingRecoveryBaseline
     case awaitingInitialFloor
@@ -96,6 +103,9 @@ private struct IOSPlayoutRecoveryBaseline {
     let failureCount: UInt64
 }
 
+/// Mutable, attempt-scoped audio proof state confined to `WorldwideSessionViewModel`'s MainActor.
+/// UUID ownership and counter floors prevent delayed polling/statistics tasks from certifying a
+/// replacement peer or carrying pre-recovery callback progress into a new proof window.
 private final class IOSPlayoutProofAttempt {
     let proofAttemptID: UUID
     let counterWindowID: UUID
@@ -154,6 +164,12 @@ private final class IOSPlayoutProofAttempt {
     }
 }
 
+/// Process-wide owner of an authenticated worldwide WebRTC media session.
+///
+/// The model deliberately separates signaling/ICE, audio proof, screen presentation, and remote
+/// input ownership. Each subsystem carries its own generation or authorization fence so a delayed
+/// callback from a superseded task cannot mutate the active peer, reopen private screen state, or
+/// deliver an input action to the wrong Mac session.
 @MainActor
 final class WorldwideSessionViewModel: ObservableObject {
     @Published private(set) var stateText = "Not connected"
@@ -304,6 +320,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Published capabilities
+
     var hasActiveSession: Bool {
         signaling != nil || peer != nil || sessionTask != nil
     }
@@ -378,6 +396,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
     #endif
 
+    // MARK: - Media session lifecycle
+
     /// Starts ordinary WebRTC signaling only after bootstrap/availability produced a fresh,
     /// one-use session client. Pairing secrets never enter this media lifecycle.
     @discardableResult
@@ -443,6 +463,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     func resumeAudioPlayback() {
         audioLifecycle.resumePlayback()
     }
+
+    // MARK: - Screen presentation ownership
 
     func issueScreenPresentationLease() -> WorldwideScreenPresentationLease? {
         guard canViewScreen else { return nil }
@@ -1012,6 +1034,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         return try await expectedPeer.setScreenVisible(visible)
     }
 
+    // MARK: - Remote input serialization
 
     func sendRemoteTap(normalizedPoint: CGPoint) {
         guard isRemoteInputAvailable,
@@ -1236,6 +1259,8 @@ final class WorldwideSessionViewModel: ObservableObject {
             authorization: authorization
         )
     }
+
+    // MARK: - Signaling and peer events
 
     private func runSession(
         client: RendezvousSignalingClient,
@@ -1664,6 +1689,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         invitationExpiresAt = nil
         statistics = nil
     }
+
+    // MARK: - Runtime audio proof
 
     private func callActivityChanged(isActive: Bool) {
         guard isAudioBlockedByCall != isActive else { return }
@@ -2121,6 +2148,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         )
         return true
     }
+
+    // MARK: - Control acknowledgements and ICE recovery
 
     private func handleControlAcknowledgement(
         _ acknowledgement: WebRTCControlAcknowledgement,
@@ -2581,6 +2610,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     #if DEBUG
+    // MARK: - Deterministic race-test seams
+
     func debugInstallStatisticsStarter(
         _ starter: @escaping @MainActor (WebRTCPeer) async throws -> Void
     ) {
@@ -3129,6 +3160,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         )
     }
     #endif
+
+    // MARK: - Session teardown and transport health
 
     private func clearEarlyControlAcknowledgements() {
         for received in earlyControlAcknowledgements.values {

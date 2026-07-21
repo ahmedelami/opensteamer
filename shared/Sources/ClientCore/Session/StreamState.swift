@@ -1,5 +1,6 @@
 import Foundation
 
+/// User-visible lifecycle states for a legacy PCM streaming session.
 public enum StreamState: Sendable, Equatable {
     case idle
     case connecting

@@ -15,6 +15,9 @@ protocol WorldwideCallActivityObserving: AnyObject {
     func stopObserving()
 }
 
+/// Main-actor adapter around `CXCallObserver` that exposes only an aggregate active-call count.
+/// Delegate callbacks are treated as invalidation signals; each one rereads the observer so queued
+/// CallKit delivery cannot publish stale call details or reopen audio from an obsolete snapshot.
 @MainActor
 final class WorldwideCallActivityObserver: NSObject,
     WorldwideCallActivityObserving,

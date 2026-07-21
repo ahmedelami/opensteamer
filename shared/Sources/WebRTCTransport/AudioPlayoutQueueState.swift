@@ -1,16 +1,22 @@
 import Foundation
 
 #if os(macOS)
+/// Pure state machine for the bounded macOS audio scheduling queue.
+///
+/// Keeping scheduling decisions separate from AVFoundation makes underrun, overflow, lifecycle,
+/// and stale-completion behavior deterministic and regression-testable.
 struct AudioPlayoutQueueState: Sendable {
     static let prebufferFrames: Int64 = 2_880
     static let maximumQueuedFrames: Int64 = 5_760
 
+    /// Whether scheduling is disabled, accumulating its prebuffer, or actively playing.
     enum Phase: Equatable, Sendable {
         case disabled
         case buffering
         case playing
     }
 
+    /// Side effects the AVFoundation owner must apply after an enqueue attempt.
     struct EnqueueDecision: Equatable, Sendable {
         let accepted: Bool
         let scheduleStartFrame: Int64?
@@ -18,6 +24,7 @@ struct AudioPlayoutQueueState: Sendable {
         let shouldResetPlayer: Bool
     }
 
+    /// Whether a buffer completion proves the queue drained and must rebuffer.
     enum CompletionDecision: Equatable, Sendable {
         case none
         case rebuffer
@@ -39,6 +46,7 @@ struct AudioPlayoutQueueState: Sendable {
         max(0, scheduledEndFrame - renderedFrame)
     }
 
+    /// Opens or closes the scheduling generation at an explicit lifecycle boundary.
     mutating func setEnabled(
         _ enabled: Bool,
         renderedFrame observedRenderedFrame: Int64? = nil
@@ -53,12 +61,14 @@ struct AudioPlayoutQueueState: Sendable {
         }
     }
 
+    /// Discards queued frames while retaining whether playback is logically enabled.
     mutating func resetForLifecycle(renderedFrame observedRenderedFrame: Int64? = nil) {
         observeRenderedFrame(observedRenderedFrame)
         let nextPhase: Phase = phase == .disabled ? .disabled : .buffering
         resetTimeline(phase: nextPhase, countDiscardedFrames: true)
     }
 
+    /// Accepts a bounded buffer and returns the exact scheduling actions required.
     mutating func enqueue(
         frameCount: Int64,
         renderedFrame observedRenderedFrame: Int64?
@@ -110,6 +120,7 @@ struct AudioPlayoutQueueState: Sendable {
         )
     }
 
+    /// Applies a generation-bound completion and detects a true queue drain.
     mutating func completeBuffer(
         endingAt endFrame: Int64,
         generation callbackGeneration: UInt64

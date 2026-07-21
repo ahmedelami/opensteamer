@@ -3,6 +3,8 @@ import AVFoundation
 import XCTest
 
 #if os(macOS)
+/// Drives the pure playout state machine to prove bounded buffering, exact underrun recovery,
+/// lifecycle discard accounting, and stale-generation completion rejection.
 final class AudioPlayoutQueueStateTests: XCTestCase {
     func testProductionPolicyWaitsForSixtyMillisecondsBeforeStarting() {
         var state = AudioPlayoutQueueState()

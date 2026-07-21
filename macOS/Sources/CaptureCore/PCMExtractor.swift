@@ -1,7 +1,12 @@
 import CoreMedia
 import Foundation
 
+/// Converts CoreMedia audio buffers into owned, interleaved floating-point PCM.
 enum PCMExtractor {
+    /// Extracts one sample buffer, reusing caller-owned storage to limit callback churn.
+    ///
+    /// The returned `PCMBuffer` owns its Swift samples and therefore remains valid
+    /// after CoreMedia releases the source buffer.
     static func extract(_ sampleBuffer: CMSampleBuffer, reusing storage: inout [Float]) throws -> PCMBuffer {
         guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
               let asbdPointer = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription) else {
@@ -35,6 +40,7 @@ enum PCMExtractor {
             throw CaptureError.audioBufferListFailure(sizingStatus)
         }
 
+        // CoreMedia first reports the exact variable-length AudioBufferList size.
         let rawBufferList = UnsafeMutableRawPointer.allocate(
             byteCount: sizeNeeded,
             alignment: MemoryLayout<AudioBufferList>.alignment
@@ -76,6 +82,7 @@ enum PCMExtractor {
         throw CaptureError.unsupportedAudioFormat("unsupported non-float format with \(format.bitsPerChannel) bits/channel")
     }
 
+    /// Copies native float PCM, interleaving planar channels when necessary.
     private static func extractFloat(
         buffers: UnsafeMutableAudioBufferListPointer,
         format: StreamAudioFormat,
@@ -106,6 +113,7 @@ enum PCMExtractor {
         return PCMBuffer(samples: storage, frameCount: frameCount, channels: format.channelCount, format: format)
     }
 
+    /// Normalizes signed 16-bit PCM into the same float representation as other inputs.
     private static func extractInt16(
         buffers: UnsafeMutableAudioBufferListPointer,
         format: StreamAudioFormat,

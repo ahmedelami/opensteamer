@@ -1,5 +1,6 @@
 import { createRendezvousServer } from "./server.mjs";
 
+// The CLI owns process signals while the reusable server module owns sockets and cleanup.
 const rendezvous = createRendezvousServer();
 await rendezvous.start();
 

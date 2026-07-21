@@ -2,6 +2,8 @@ import Foundation
 @testable import WebRTCTransport
 import XCTest
 
+/// Pins high-fidelity Opus policy insertion, preservation of unmanaged fmtp parameters,
+/// idempotence, dynamic payload discovery, and compatibility with older mono offers.
 final class OpusStereoSDPTests: XCTestCase {
     func testPolicyFindsDynamicPayloadAndMergesOnlyManagedFormatParameters() {
         let input = [

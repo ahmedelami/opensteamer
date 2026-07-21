@@ -1,3 +1,8 @@
+/**
+ * In-memory fixed-window limiter used independently for actor and channel dimensions.
+ * This implementation is process-local; multi-instance deployments need an external/global
+ * limiter if they require a cluster-wide ceiling.
+ */
 export class FixedWindowLimiter {
   #entries = new Map();
 
@@ -6,6 +11,7 @@ export class FixedWindowLimiter {
     this.windowMs = windowMs;
   }
 
+  /** Consumes one attempt and returns a no-side-effect status snapshot for the caller. */
   take(key, now = Date.now()) {
     let entry = this.#entries.get(key);
     if (!entry || now >= entry.resetAt) {
@@ -20,6 +26,7 @@ export class FixedWindowLimiter {
     });
   }
 
+  /** Removes expired buckets so untrusted keys cannot accumulate indefinitely. */
   prune(now = Date.now()) {
     for (const [key, entry] of this.#entries) {
       if (now >= entry.resetAt) this.#entries.delete(key);

@@ -2,6 +2,8 @@ import Foundation
 import Testing
 @testable import RemoteSessionCore
 
+/// Locks the invitation's canonical encoding, checksum, entropy, normalization, and redaction
+/// contract so a presentation change cannot silently weaken capability validation.
 struct RemoteInvitationCodeTests {
     private let deterministicSecret = Data(0..<20)
     private let deterministicCanonicalCode = "040020G30G2GC1R81450P30D1R7H048J2EZG8AG3"
@@ -95,6 +97,7 @@ struct RemoteInvitationCodeTests {
     }
 }
 
+/// Proves expiry and consumption are boundary-exact and atomic for a one-use capability.
 struct OneTimeRemoteInvitationTests {
     private let now = Date(timeIntervalSince1970: 1_700_000_000)
 

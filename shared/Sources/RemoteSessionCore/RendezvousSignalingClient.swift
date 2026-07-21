@@ -1,5 +1,6 @@
 import Foundation
 
+/// Local transport, lifecycle, and validation failures for rendezvous signaling.
 public enum RendezvousSignalingError: Error, Equatable, LocalizedError, Sendable {
     case invalidEndpoint
     case alreadyConnected
@@ -32,6 +33,7 @@ public enum RendezvousSignalingError: Error, Equatable, LocalizedError, Sendable
     }
 }
 
+/// Closed error categories a rendezvous service may return without free-form server text.
 public enum RendezvousServerError: Equatable, Sendable {
     case peerUnavailable
     case rateLimited
@@ -41,6 +43,7 @@ public enum RendezvousServerError: Equatable, Sendable {
     case requestRejected
 }
 
+/// Bounded application events produced from validated rendezvous wire messages.
 public enum RendezvousSignalingEvent: Equatable, Sendable {
     case waiting(invitationExpiresAt: Date)
     case ready(
@@ -81,11 +84,13 @@ public enum RemoteRendezvousMode: String, Codable, CaseIterable, Sendable {
     }
 }
 
+/// Transport-neutral WebSocket message variants accepted by signaling clients.
 internal enum RendezvousSocketMessage: Equatable, Sendable {
     case text(String)
     case binary(Data)
 }
 
+/// Narrow socket seam that keeps URLSession callbacks outside protocol state machines and tests.
 internal protocol RendezvousSocketTransport: Sendable {
     func connect(
         to url: URL,
@@ -275,6 +280,7 @@ public actor RendezvousSignalingClient {
         return pair.stream
     }
 
+    /// Encrypts and sends one signaling payload with the next actor-owned sequence number.
     public func send(_ payload: RemoteSignalPayload) async throws {
         guard state == .connected else {
             throw RendezvousSignalingError.notConnected
@@ -307,6 +313,7 @@ public actor RendezvousSignalingClient {
         }
     }
 
+    /// Idempotently closes the socket and terminates the event stream.
     public func close() async {
         await finish(throwing: nil)
     }
@@ -765,6 +772,7 @@ public actor RendezvousSignalingClient {
     }
 }
 
+/// URLSession WebSocket transport with strict upgrade-header and subprotocol validation.
 internal actor URLSessionRendezvousSocketTransport: RendezvousSocketTransport {
     private enum Header {
         static let channel = "X-AudioStreamer-Channel"
@@ -989,6 +997,7 @@ private final class WebSocketPingResolver: @unchecked Sendable {
     }
 }
 
+/// Resolves the asynchronous WebSocket upgrade exactly once after validating server negotiation.
 internal final class RendezvousWebSocketDelegate: NSObject, URLSessionWebSocketDelegate,
     @unchecked Sendable {
     private let expectedSubprotocol: String?

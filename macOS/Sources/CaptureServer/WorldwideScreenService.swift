@@ -4,6 +4,7 @@ import Foundation
 import RemoteSessionCore
 import WebRTCTransport
 
+/// Identifies which half of the fail-closed Inactive transition failed.
 enum WorldwideScreenInactiveTransitionFailure {
     case nativeStop(any Error)
     case acknowledgement(any Error)
@@ -15,6 +16,7 @@ enum WorldwideScreenInactiveTransitionFailure {
 /// stop actually threw. The fail-closed callback therefore runs before this operation returns,
 /// and the acknowledgement closure is unreachable on that path.
 enum WorldwideScreenInactiveTransition {
+    /// Stops native capture before acknowledging Inactive, closing the session if stop fails.
     static func perform(
         isolation: isolated (any Actor)? = #isolation,
         stopNativeCapture: () async throws -> Void,
@@ -42,8 +44,10 @@ enum WorldwideScreenInactiveTransition {
 /// The invitation authenticates and encrypts signaling. Reachability still comes from
 /// ICE/STUN and, when a direct candidate pair is impossible, the configured TURN service.
 actor WorldwideScreenService {
+    /// Finishes once the consume-once media rendezvous has been fully torn down.
     nonisolated let completion: AsyncStream<Void>
 
+    /// Formats peer state with the host PID so duplicate-process diagnostics remain actionable.
     nonisolated static func peerStateLogMessage(
         state: String,
         processIdentifier: Int32
@@ -93,6 +97,7 @@ actor WorldwideScreenService {
     private var isStarted = false
     private var isStopped = false
 
+    /// Fail-closed aggregate gate required before exposing either media source.
     private var transportAllowsCapture: Bool {
         peerIsConnected
             && iceIsConnected
@@ -101,6 +106,7 @@ actor WorldwideScreenService {
             && !isStopped
     }
 
+    /// Creates a legacy consume-once session with a newly generated invitation capability.
     init(
         endpoint: URL,
         forceRelay: Bool,
@@ -132,6 +138,7 @@ actor WorldwideScreenService {
         self.logger = logger
     }
 
+    /// Creates a paired reconnect session from a fresh authenticated rendezvous credential.
     init(
         endpoint: URL,
         sessionCredential: RemoteRendezvousCredential,
@@ -183,6 +190,7 @@ actor WorldwideScreenService {
         logger.info("Worldwide screen host is waiting for the paired iPhone media session")
     }
 
+    /// Starts signaling once and supervises its event stream in a child task.
     private func startSignaling() async throws {
         guard !isStarted, !isStopped else {
             throw WorldwideScreenServiceError.invalidLifecycle
@@ -201,6 +209,10 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Revokes all capabilities before stopping native capture, WebRTC, and signaling.
+    ///
+    /// Teardown is idempotent. Authorization and forwarding gates close synchronously
+    /// before any `await`, so actor reentrancy cannot leak a late media or input callback.
     func stop() async {
         guard !isStopped else { return }
         isStopped = true
@@ -249,6 +261,9 @@ actor WorldwideScreenService {
         completionContinuation.finish()
     }
 
+    // MARK: - Rendezvous signaling
+
+    /// Serially consumes rendezvous events and closes the session on terminal failure.
     private func consumeSignalingEvents(
         _ events: RendezvousSignalingClient.EventStream
     ) async {
@@ -266,6 +281,7 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Applies invitation, ICE, and peer-lifecycle events in protocol order.
     private func handleSignalingEvent(_ event: RendezvousSignalingEvent) async throws {
         switch event {
         case .waiting(let invitationExpiresAt):
@@ -334,6 +350,9 @@ actor WorldwideScreenService {
         }
     }
 
+    // MARK: - WebRTC peer lifecycle
+
+    /// Creates a fresh WebRTC generation and its bounded ICE recovery supervisor.
     private func startPeer(iceServers: [RemoteICEServer]) async throws {
         let peer = try WebRTCPeer(
             configuration: WebRTCTransportConfiguration(
@@ -385,6 +404,7 @@ actor WorldwideScreenService {
         logger.info("Worldwide WebRTC negotiation started")
     }
 
+    /// Consumes native peer events until normal stop or an unexpected stream end.
     private func consumePeerEvents(_ events: AsyncStream<WebRTCTransportEvent>) async {
         for await event in events {
             guard !isStopped else { return }
@@ -403,6 +423,7 @@ actor WorldwideScreenService {
         await stop()
     }
 
+    /// Updates transport health, routes protocol requests, and emits sanitized diagnostics.
     private func handlePeerEvent(_ event: WebRTCTransportEvent) async throws {
         switch event {
         case .outboundSignal(let payload):
@@ -581,6 +602,12 @@ actor WorldwideScreenService {
         }
     }
 
+    // MARK: - Screen control protocol
+
+    /// Linearizes Show, Hide, and key-frame requests with native capture state.
+    ///
+    /// Active is acknowledged only after capture and transport health are proven. Inactive
+    /// is acknowledged only after native stop succeeds; every uncertainty path revokes media.
     private func handleControlRequest(_ request: WebRTCControlRequest) async {
         guard let peer else {
             _ = await stopScreenCaptureOrCloseSession(
@@ -746,6 +773,7 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Stops native screen capture before sending the matching Inactive acknowledgement.
     @discardableResult
     private func acknowledgeInactiveAfterVerifiedScreenStop(
         peer: WebRTCPeer,
@@ -786,6 +814,7 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Stops capture or closes the whole session if native shutdown cannot be proven.
     @discardableResult
     private func stopScreenCaptureOrCloseSession(context: String) async -> Bool {
         do {
@@ -801,6 +830,7 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Distinguishes native-stop uncertainty from ordinary Show startup failures.
     private func isNativeScreenStopFailure(_ error: any Error) -> Bool {
         guard let serviceError = error as? WorldwideScreenServiceError else {
             return false
@@ -811,6 +841,9 @@ actor WorldwideScreenService {
         return false
     }
 
+    // MARK: - Remote input
+
+    /// Binds an input capability to the active display and exact Show request.
     private func armRemoteInputIfAvailable(
         screenRequestID: UInt64
     ) -> ArmedRemoteInputSession? {
@@ -856,6 +889,7 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Injects one request under revocable gates, then returns payload-free feedback.
     private func handleRemoteInputRequest(
         _ request: WebRTCInputRequest,
         authorization: WebRTCInputAuthorization
@@ -896,6 +930,7 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Holds input then capture authorization across the irreversible OS event post.
     private func injectRemoteInputIfAuthorized(
         _ request: WebRTCInputRequest,
         authorization: WebRTCInputAuthorization
@@ -935,6 +970,7 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Maps validated wire actions onto the narrow macOS input controller surface.
     private func injectRemoteInput(_ request: WebRTCInputRequest) -> MacRemoteInputResult {
         switch request.action {
         case .tap(let point):
@@ -994,6 +1030,7 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Reduces controller results to non-sensitive operational descriptions.
     private func diagnosticName(for result: MacRemoteInputResult) -> String {
         switch result {
         case .accepted(.none):
@@ -1005,6 +1042,7 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Maps local outcomes to stable wire feedback and session-revocation policy.
     private func transportFeedback(
         for result: MacRemoteInputResult
     ) -> RemoteInputTransportFeedback {
@@ -1047,6 +1085,7 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Revokes the transport token and controller state synchronously.
     private func revokeRemoteInputAuthorization() {
         activeInputAuthorization?.revoke()
         activeInputAuthorization = nil
@@ -1054,6 +1093,9 @@ actor WorldwideScreenService {
         activeInputCapability = nil
     }
 
+    // MARK: - ICE recovery and proof
+
+    /// Stops visible capture when the authenticated transport route becomes uncertain.
     private func stopScreenCaptureForTransportUncertainty(_ reason: String) async {
         guard captureSource != nil else { return }
         // Privacy is fail-closed: a recovered peer must receive a fresh, acknowledged Show.
@@ -1063,6 +1105,7 @@ actor WorldwideScreenService {
         )
     }
 
+    /// Revokes both media gates before asynchronously stopping their native sources.
     private func stopCaptureForTransportUncertainty(_ reason: String) async {
         // Revoke both media gates before either asynchronous ScreenCaptureKit stop begins.
         revokeCaptureAuthorization()
@@ -1074,6 +1117,7 @@ actor WorldwideScreenService {
         await stopSystemAudioForTransportUncertainty(reason)
     }
 
+    /// Installs a new proof epoch, removes media, then requests native ICE restart.
     private func beginICERestart(
         peer: WebRTCPeer,
         peerGeneration generation: UInt64
@@ -1100,6 +1144,7 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Enters fail-closed recovery and invalidates any pre-uncertainty authorization.
     private func enterRecovery(reason: String) async {
         isRecovering = true
         revokeCaptureAuthorization()
@@ -1115,6 +1160,7 @@ actor WorldwideScreenService {
         await stopCaptureForTransportUncertainty(reason)
     }
 
+    /// Creates a fresh epoch that requires answer installation plus a Hide/Inactive proof.
     @discardableResult
     private func installRecoveryProofBoundary(awaitingAnswer: Bool) -> UInt64 {
         revokeCaptureAuthorization()
@@ -1132,6 +1178,7 @@ actor WorldwideScreenService {
         return epoch
     }
 
+    /// Completes recovery only when transport, restart answer, and proof request agree on epoch.
     private func completePendingRecoveryProofIfPossible(
         peer: WebRTCPeer,
         epoch: UInt64
@@ -1198,6 +1245,7 @@ actor WorldwideScreenService {
         await recoveryCoordinator?.iceStateChanged(.connected)
     }
 
+    /// Marks an initially healthy route usable and ensures system audio is live.
     @discardableResult
     private func markRecoveryHealthyIfPossible() async -> Bool {
         guard !recoveryProofRequired,
@@ -1216,6 +1264,7 @@ actor WorldwideScreenService {
         return true
     }
 
+    /// Converts unexplained audio-start failure on a healthy route into ICE recovery.
     private func recoverFromSystemAudioStartUncertainty(_ reason: String) async {
         guard !isStopped,
               !isRecovering,
@@ -1231,6 +1280,7 @@ actor WorldwideScreenService {
         await recoveryCoordinator?.iceStateChanged(.failed)
     }
 
+    /// Closes the current peer generation when bounded recovery cannot restore all gates.
     private func recoveryDidExhaust(peerGeneration generation: UInt64) async {
         guard generation == peerGeneration, !isStopped else {
             return
@@ -1252,6 +1302,12 @@ actor WorldwideScreenService {
         await stop()
     }
 
+    // MARK: - Native screen capture
+
+    /// Starts ScreenCaptureKit behind a revocable WebRTC control authorization.
+    ///
+    /// Forwarding begins only after both native startup and a post-await transport-health
+    /// check succeed. Any uncertain partial start is synchronously revoked and stopped.
     private func startScreenCapture() async throws -> WebRTCControlAuthorization {
         if captureSource != nil,
            let captureAuthorization,
@@ -1336,6 +1392,7 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Revokes visibility before awaiting native ScreenCaptureKit shutdown.
     private func stopScreenCapture() async throws {
         revokeCaptureAuthorization()
         let source = captureSource
@@ -1347,6 +1404,7 @@ actor WorldwideScreenService {
         try await source.stop()
     }
 
+    /// Handles a native stop only if its source and authorization still own capture.
     private func screenCaptureDidStop(
         source: ScreenVideoCaptureSource,
         authorization: WebRTCControlAuthorization,
@@ -1362,6 +1420,9 @@ actor WorldwideScreenService {
         logger.error("Worldwide screen capture stopped unexpectedly: \(message)")
     }
 
+    // MARK: - Native system audio
+
+    /// Starts audio for a healthy route and closes on non-recoverable startup failure.
     private func startSystemAudioOrStopSession() async -> Bool {
         guard !systemAudioStartInProgress else { return false }
         do {
@@ -1388,6 +1449,7 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Identifies expected audio-start cancellation caused by concurrent route revocation.
     private func isTransportAudioStartCancellation(_ error: Error) -> Bool {
         guard let transportError = error as? WebRTCTransportError else { return false }
         switch transportError {
@@ -1398,6 +1460,10 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Starts 48 kHz stereo system audio behind a revocable transport authorization.
+    ///
+    /// WebRTC audio is enabled and revalidated before the callback sink begins forwarding;
+    /// failure resets the external capturer so stale PCM cannot enter a later route.
     private func startSystemAudio() async throws {
         if systemAudioIsLive,
            audioSource != nil,
@@ -1482,12 +1548,14 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Logs the recovery boundary before stopping an installed audio source.
     private func stopSystemAudioForTransportUncertainty(_ reason: String) async {
         guard audioSource != nil || audioAuthorization != nil else { return }
         logger.info("Stopping worldwide system audio because \(reason)")
         await stopSystemAudio()
     }
 
+    /// Revokes forwarding, suspends the track, resets buffered PCM, and stops native capture.
     private func stopSystemAudio() async {
         revokeSystemAudioAuthorization()
         let source = audioSource
@@ -1505,6 +1573,7 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Fails the consume-once session when its current native audio source stops unexpectedly.
     private func systemAudioCaptureDidStop(
         source: SystemAudioCaptureSource,
         authorization: WebRTCAudioAuthorization,
@@ -1522,6 +1591,7 @@ actor WorldwideScreenService {
         await stop()
     }
 
+    /// Synchronously closes audio authorization and clears external capturer buffers.
     private func revokeSystemAudioAuthorization() {
         systemAudioIsLive = false
         audioAuthorization?.revoke()
@@ -1530,6 +1600,7 @@ actor WorldwideScreenService {
         peer?.externalAudioCapturer?.reset()
     }
 
+    /// Revokes remote input before the screen capability that authorized it.
     private func revokeCaptureAuthorization() {
         // Input revocation is first and synchronous: no queued tap or key may outlive the
         // screen authorization boundary that made the capability valid.
@@ -1540,6 +1611,7 @@ actor WorldwideScreenService {
     }
 }
 
+/// Wire feedback plus the local decision to revoke the current input capability.
 private struct RemoteInputTransportFeedback {
     let result: WebRTCInputFeedbackResult
     let rejectionReason: WebRTCInputRejectionReason?
@@ -1568,16 +1640,22 @@ private struct RemoteInputTransportFeedback {
     }
 }
 
+/// Hide request used as proof that a particular recovery epoch is media-inactive.
 private struct PendingRecoveryProofRequest: Equatable {
     let id: UInt64
     let epoch: UInt64
 }
 
+/// Transport capability and revocable authorization installed for one Show request.
 private struct ArmedRemoteInputSession {
     let capability: WebRTCInputCapability
     let authorization: WebRTCInputAuthorization
 }
 
+/// Thread-safe gate between ScreenCaptureKit callbacks and the WebRTC video capturer.
+///
+/// The lock closes forwarding synchronously on actor-driven revocation or native stop;
+/// samples arriving after either boundary are discarded before touching WebRTC.
 private final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sendable {
     private let capturer: MacExternalVideoCapturer
     private let didStop: @Sendable (ScreenVideoCaptureSource, String) -> Void
@@ -1592,14 +1670,17 @@ private final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unche
         self.didStop = didStop
     }
 
+    /// Opens the callback gate after capture and transport health are proven.
     func beginForwarding() {
         lock.withLock { isForwarding = true }
     }
 
+    /// Closes the callback gate synchronously.
     func stopForwarding() {
         lock.withLock { isForwarding = false }
     }
 
+    /// Forwards image-backed, timestamped samples only while the gate is open.
     func consumeScreenVideoSample(_ sampleBuffer: CMSampleBuffer) {
         guard lock.withLock({ isForwarding }),
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
@@ -1619,6 +1700,10 @@ private final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unche
     }
 }
 
+/// Thread-safe, doubly authorized bridge from system-audio callbacks into WebRTC.
+///
+/// Both the lock gate and revocable audio token must remain valid. This lets route
+/// uncertainty stop PCM synchronously even while native ScreenCaptureKit teardown awaits.
 private final class WorldwideSystemAudioSampleSink: SystemAudioSampleConsumer, @unchecked Sendable {
     private let capturer: MacExternalAudioCapturer
     private let authorization: WebRTCAudioAuthorization
@@ -1636,14 +1721,17 @@ private final class WorldwideSystemAudioSampleSink: SystemAudioSampleConsumer, @
         self.didStop = didStop
     }
 
+    /// Opens forwarding after WebRTC has enabled and revalidated its audio track.
     func beginForwarding() {
         lock.withLock { isForwarding = true }
     }
 
+    /// Closes forwarding synchronously at the transport boundary.
     func stopForwarding() {
         lock.withLock { isForwarding = false }
     }
 
+    /// Sends a buffer only while both authorization and forwarding remain active.
     func consumeSystemAudioSample(_ sampleBuffer: CMSampleBuffer) {
         do {
             try authorization.withValidAuthorization {
@@ -1666,6 +1754,7 @@ private final class WorldwideSystemAudioSampleSink: SystemAudioSampleConsumer, @
     }
 }
 
+/// Lifecycle, transport-health, and rendezvous failures for one media session.
 private enum WorldwideScreenServiceError: LocalizedError {
     case invalidLifecycle
     case signalBeforeReady
@@ -1697,6 +1786,7 @@ private enum WorldwideScreenServiceError: LocalizedError {
 }
 
 private extension NSLock {
+    /// Runs a synchronous critical section and always releases the lock.
     func withLock<T>(_ body: () throws -> T) rethrows -> T {
         lock()
         defer { unlock() }

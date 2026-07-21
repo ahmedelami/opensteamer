@@ -1,6 +1,10 @@
 import XCTest
 @testable import CaptureServer
 
+/// Documents the command-line capability boundary for the unattended Mac host.
+///
+/// Pairing reset and remote input are worldwide-only operations. Remote control must remain an
+/// explicit opt-in so adding worldwide connectivity cannot silently grant input injection.
 final class CaptureServerOptionsTests: XCTestCase {
     func testResetPairingRequiresWorldwideMode() {
         XCTAssertThrowsError(

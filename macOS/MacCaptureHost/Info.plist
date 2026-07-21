@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<!--
+  Bundle template consumed by build-mac-capture-host-app.sh. The UI-element app has no Dock
+  icon; the usage strings declare the system-audio and BlackHole capture boundaries whose TCC
+  grants belong to this stable bundle identity.
+-->
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>

@@ -2,6 +2,8 @@ import Dispatch
 import Foundation
 import RemoteSessionCore
 
+/// Injectable consume-once invitation transport used during authenticated pairing bootstrap.
+/// It carries pairing protocol payloads only; media offers and ICE candidates use a later client.
 protocol ViewerPairingBootstrapTransport: AnyObject, Sendable {
     func connect() async throws -> PairingBootstrapSignalingClient.EventStream
     func send(_ payload: RemotePairingPayload) async throws
@@ -10,6 +12,7 @@ protocol ViewerPairingBootstrapTransport: AnyObject, Sendable {
 
 extension PairingBootstrapSignalingClient: ViewerPairingBootstrapTransport {}
 
+/// Injectable pair-scoped availability transport used to mint a fresh media-session credential.
 protocol ViewerPairedAvailabilityTransport: AnyObject, Sendable {
     func connect() async throws -> PairedAvailabilitySignalingClient.EventStream
     func send(_ payload: RemoteAvailabilityPayload) async throws
@@ -18,6 +21,7 @@ protocol ViewerPairedAvailabilityTransport: AnyObject, Sendable {
 
 extension PairedAvailabilitySignalingClient: ViewerPairedAvailabilityTransport {}
 
+/// Stable identity for one retry budget against one durable pair.
 struct SavedPairAttemptContext: Equatable, Sendable {
     let attemptID: UUID
     let pairID: UUID
@@ -138,6 +142,8 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         connectionTelemetrySnapshot = connectionTelemetry.snapshot()
         self.pairingBackgroundTask = pairingBackgroundTask
     }
+
+    // MARK: - Public pairing and reconnect operations
 
     func pairAndPrepareMediaSession(
         invitationCode input: String,
@@ -477,6 +483,8 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         lastError = message
     }
 
+    // MARK: - Pairing bootstrap
+
     private func bootstrapPairing(
         invitation: RemoteInvitationCode,
         endpoint: URL,
@@ -793,6 +801,8 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
             }
         }
     }
+
+    // MARK: - Availability retry policy
 
     private func availabilityRetryBaseDelay(retryIndex: Int) -> UInt64 {
         switch retryIndex {
@@ -1319,6 +1329,8 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         return operationID
     }
 
+    // MARK: - Operation ownership and telemetry
+
     private func requireCurrentOperation(_ operationID: UUID) throws {
         guard activeOperationID == operationID else { throw CancellationError() }
     }
@@ -1517,6 +1529,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
     }
 }
 
+/// User-presentable failures from bootstrap, availability, or operation arbitration.
 enum WorldwideViewerConnectionError: Error, Equatable, LocalizedError {
     case alreadyConnecting
     case invalidViewerIdentity

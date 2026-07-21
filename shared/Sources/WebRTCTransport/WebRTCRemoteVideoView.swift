@@ -269,6 +269,7 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
         configureRenderer()
     }
 
+    /// Atomically detaches the previous renderer binding and attaches `track`.
     public func setTrack(_ track: WebRTCRemoteVideoTrack?) {
         guard currentTrack !== track else { return }
         bindingGeneration &+= 1
@@ -284,6 +285,7 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
         track?.addRenderer(observedRenderer)
     }
 
+    /// Removes the active track and clears the final rendered frame.
     public func detachTrack() {
         setTrack(nil)
         renderer.renderFrame(nil)

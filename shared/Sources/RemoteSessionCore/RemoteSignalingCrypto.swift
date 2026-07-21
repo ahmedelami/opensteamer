@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 
+/// A canonical, redacted routing identifier derived from session key material.
 public struct RendezvousChannelID: Codable, Equatable, Hashable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
     public let wireValue: String
 
@@ -42,6 +43,7 @@ public struct RendezvousChannelID: Codable, Equatable, Hashable, Sendable, Custo
     }
 }
 
+/// A redacted bearer proof that authorizes one role to join a derived rendezvous channel.
 internal struct RendezvousAdmissionProof: Equatable, Sendable, CustomStringConvertible,
     CustomDebugStringConvertible {
     let wireValue: String
@@ -58,6 +60,7 @@ internal struct RendezvousAdmissionProof: Equatable, Sendable, CustomStringConve
     var debugDescription: String { description }
 }
 
+/// Direction separation prevents one peer's ciphertext from being reflected back as valid input.
 public enum RemoteSignalDirection: String, Codable, CaseIterable, Sendable {
     case hostToViewer
     case viewerToHost
@@ -70,6 +73,7 @@ public enum RemoteSignalDirection: String, Codable, CaseIterable, Sendable {
     }
 }
 
+/// A sequence-numbered AEAD envelope whose routing metadata is authenticated but not encrypted.
 public struct SealedSignalingEnvelope: Codable, Equatable, Sendable {
     public static let currentVersion: UInt8 = 1
 
@@ -329,6 +333,7 @@ public struct RemoteAvailabilityExchangeID: Codable, Equatable, Hashable, Sendab
     }
 }
 
+/// Seals and opens signaling payloads with role- and direction-separated keys.
 public struct RemoteSignalingCipher: Sendable {
     public let channelID: RendezvousChannelID
     public let role: RemotePeerRole
@@ -365,6 +370,7 @@ public struct RemoteSignalingCipher: Sendable {
         role == .host ? .viewerToHost : .hostToViewer
     }
 
+    /// Encrypts one canonical payload; a sequence must never be reused with this sending key.
     public func seal(_ payload: RemoteSignalPayload, sequence: UInt64) throws -> SealedSignalingEnvelope {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -398,6 +404,7 @@ public struct RemoteSignalingCipher: Sendable {
         }
     }
 
+    /// Authenticates routing metadata and decrypts a payload from the opposite role.
     public func open(_ envelope: SealedSignalingEnvelope) throws -> RemoteSignalPayload {
         guard envelope.version == SealedSignalingEnvelope.currentVersion else {
             throw RemoteSessionCoreError.unsupportedEnvelopeVersion
@@ -429,6 +436,7 @@ public struct RemoteSignalingCipher: Sendable {
     }
 }
 
+/// A bounded sliding replay window that permits limited network reordering without storing IDs.
 public struct SignalingReplayGuard: Sendable {
     public static let windowSize: UInt64 = 64
 

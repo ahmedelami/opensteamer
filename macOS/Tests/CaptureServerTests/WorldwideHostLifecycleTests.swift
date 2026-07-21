@@ -1,6 +1,11 @@
 import XCTest
 @testable import CaptureServer
 
+/// Exercises the pure state machine that separates bootstrap pairing, availability, and media.
+///
+/// Exchange identifiers are treated as generation tokens. Late departure events must not clear
+/// a newer connection, and availability must not begin until the pairing record is durable. These
+/// are regression-critical because process restarts and network reordering exercise both cases.
 final class WorldwideHostLifecycleTests: XCTestCase {
     func testPeerStateLogBindsConnectedEventToExactHostProcess() {
         XCTAssertEqual(
@@ -46,6 +51,7 @@ final class WorldwideHostLifecycleTests: XCTestCase {
         try lifecycle.mediaStarted(exchangeID: "exchange-one")
 
         lifecycle.availabilityPeerLeft(exchangeID: "exchange-one")
+        // Signaling may leave while its already-established media peer is still shutting down.
         XCTAssertEqual(lifecycle.runState, .pairedAvailable)
         XCTAssertNil(lifecycle.activeExchangeID)
         XCTAssertEqual(lifecycle.mediaExchangeID, "exchange-one")

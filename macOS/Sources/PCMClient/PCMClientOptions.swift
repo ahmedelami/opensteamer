@@ -1,5 +1,8 @@
 import Foundation
 
+/// Parsed endpoint, authentication, and packet limit for `PCMClient`.
+///
+/// `MCAP_TOKEN` is a process-level fallback only; parsing never writes credentials.
 struct PCMClientOptions {
     var host = "127.0.0.1"
     var port: UInt16 = 9000
@@ -19,6 +22,7 @@ struct PCMClientOptions {
       --help             Print this help.
     """
 
+    /// Parses command-line overrides and validates numeric bounds.
     static func parse(_ arguments: [String]) throws -> PCMClientOptions {
         var options = PCMClientOptions()
         var index = 1
@@ -68,6 +72,7 @@ private extension String {
     }
 }
 
+/// User-correctable `PCMClient` option failures.
 enum PCMClientOptionError: LocalizedError {
     case invalid(String)
 

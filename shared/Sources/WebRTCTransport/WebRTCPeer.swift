@@ -23,17 +23,20 @@ struct WebRTCInputRequestBinding: Equatable, Sendable {
 }
 
 #if DEBUG
+/// Sender encoding limits observed after applying the product's high-fidelity Opus policy.
 struct WebRTCAudioSenderEncodingParameters: Equatable, Sendable {
     let maximumBitrateBps: Int?
     let minimumBitrateBps: Int?
 }
 
+/// Requested and native activation state for one audio-processing component.
 struct WebRTCAudioProcessingComponentSnapshot: Equatable, Sendable {
     let requestedEnabled: Bool?
     let softwareActive: Bool
     let platformActive: Bool
 }
 
+/// Proof that call-oriented processing remains disabled for system-audio transport.
 struct WebRTCAudioProcessingSnapshot: Equatable, Sendable {
     let hasAudioProcessingModule: Bool
     let echoCancellation: WebRTCAudioProcessingComponentSnapshot
@@ -68,6 +71,7 @@ public final class WebRTCIOSPlayoutRecoveryAuthorization: @unchecked Sendable {
 }
 
 #if DEBUG
+/// Lock-free callback and waveform evidence exposed by the test-only iOS publication harness.
 public struct WebRTCIOSPlayoutPublicationTestSnapshot: Equatable, Sendable {
     public let callbackCount: UInt64
     public let frameCount: UInt64
@@ -96,6 +100,7 @@ public struct WebRTCIOSPlayoutPublicationTestSnapshot: Equatable, Sendable {
     public let lastStatus: Int32
 }
 
+/// Invokes production iOS callback-observation primitives without creating audio hardware.
 public final class WebRTCIOSPlayoutPublicationTestHarness: @unchecked Sendable {
     private let native = ASIOSStereoPlayoutPublicationTestHarness()
 
@@ -163,6 +168,7 @@ public final class WebRTCIOSPlayoutPublicationTestHarness: @unchecked Sendable {
     }
 }
 
+/// Lifecycle counters exposed by the test-only queued-recovery harness.
 public struct WebRTCIOSPlayoutRecoveryTestDiagnostics: Equatable, Sendable {
     public let requestCount: UInt64
     public let authorizationRejectionCount: UInt64
@@ -176,6 +182,7 @@ public struct WebRTCIOSPlayoutRecoveryTestDiagnostics: Equatable, Sendable {
     public let remoteIOCreated: Bool
 }
 
+/// Drives the real native recovery gate deterministically without starting RemoteIO.
 public final class WebRTCIOSPlayoutRecoveryTestHarness: @unchecked Sendable {
     private let native = ASIOSStereoPlayoutRecoveryTestHarness()
 
@@ -381,6 +388,10 @@ public struct WebRTCIOSPlayoutDiagnostics: Sendable {
 }
 #endif
 
+/// Owns one role-specific native WebRTC connection and its ordered control/input state machines.
+///
+/// Actor isolation serializes signaling epochs, candidate generations, replay histories, and
+/// media authorization gates. Native callbacks cross through `WebRTCDelegateProxy` as values.
 public actor WebRTCPeer {
     private static let controlHistoryLimit = 256
     private static let inputHistoryLimit = 256
@@ -462,6 +473,7 @@ public actor WebRTCPeer {
     private var receivedInputRequestOrder: [UInt64] = []
     private var sentInputFeedback: [UInt64: WebRTCInputFeedback] = [:]
 
+    /// Builds the native factory, role-appropriate audio device, media tracks, and control lane.
     public init(configuration: WebRTCTransportConfiguration) throws {
         guard WebRTCRuntime.isInitialized else {
             throw WebRTCTransportError.nativeFailure("WebRTC SSL initialization failed.")
@@ -747,6 +759,7 @@ public actor WebRTCPeer {
         eventContinuation.finish()
     }
 
+    /// Starts event processing and, for the host role, emits the initial offer.
     public func start() async throws {
         try ensureOpen()
         guard role == .host else { throw WebRTCTransportError.invalidRole }
@@ -786,6 +799,7 @@ public actor WebRTCPeer {
         }
     }
 
+    /// Applies one already-authenticated rendezvous payload to the native connection.
     public func receive(_ payload: RemoteSignalPayload) async throws {
         try ensureOpen()
         ensureDelegateEventLoop()
@@ -917,6 +931,7 @@ public actor WebRTCPeer {
         try await receive(payload)
     }
 
+    /// Begins a fresh ICE generation while retaining the authenticated signaling session.
     public func restartICE() async throws {
         try ensureOpen()
         guard role == .host, hasStarted else { throw WebRTCTransportError.invalidRole }
@@ -1647,6 +1662,7 @@ public actor WebRTCPeer {
             || peerConnection.iceConnectionState == .completed
     }
 
+    /// Collects and privacy-reduces one native WebRTC statistics report.
     public func statisticsSnapshot() async -> WebRTCStatisticsSnapshot {
         let nativeSnapshot = await withCheckedContinuation {
             (continuation: CheckedContinuation<WebRTCStatisticsSnapshot, Never>) in
@@ -1673,6 +1689,7 @@ public actor WebRTCPeer {
         )
     }
 
+    /// Starts bounded periodic statistics events; only one sampler may run at a time.
     public func startStatistics(interval: Duration = .seconds(1)) throws {
         try ensureOpen()
         guard interval > .zero else {
@@ -1693,11 +1710,13 @@ public actor WebRTCPeer {
         }
     }
 
+    /// Cancels periodic statistics collection without closing transport.
     public func stopStatistics() {
         statisticsTask?.cancel()
         statisticsTask = nil
     }
 
+    /// Revokes every media/input gate and idempotently releases the native peer.
     public func close(reason: RemoteSessionEndReason = .normal) {
         guard !isClosed else { return }
         ensureDelegateEventLoop()
@@ -2683,6 +2702,7 @@ public actor WebRTCPeer {
     }
 }
 
+/// Strict versioned union carried by the ordered WebRTC control data channel.
 enum ControlChannelMessage: Codable, Equatable, Sendable {
     static let currentVersion = 2
 

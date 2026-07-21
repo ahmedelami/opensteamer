@@ -4,6 +4,8 @@ import MacWebRTCAudioDeviceShim
 import MacWebRTCAudioDeviceShimTestSupport
 import XCTest
 
+/// Proves the pinned Objective-C ABI preserves every stereo sample, rejects inactive delivery,
+/// and maintains a monotonic source clock across arbitrary callback sizes and restarts.
 final class MacWebRTCAudioDeviceShimTests: XCTestCase {
     private static let channelCount = 2
 

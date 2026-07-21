@@ -12,6 +12,8 @@ import {
   validateSignal,
 } from "./protocol.js";
 
+// Each channel maps to a Durable Object so invitation consumption, socket ownership, sequencing,
+// and hibernation recovery have one serialized source of truth. Media never traverses this Worker.
 const STORAGE_KEY = "invitation";
 const AVAILABILITY_STORAGE_KEY = "availability";
 const STATE_VERSION = 1;
@@ -168,6 +170,11 @@ const randomExchangeID = () => {
     .replace(/=+$/, "");
 };
 
+/**
+ * Owns one invitation/pairing channel or one durable paired-device availability channel.
+ * All state-changing entry points are serialized because WebSocket and alarm callbacks may arrive
+ * concurrently around Durable Object hibernation boundaries.
+ */
 export class RendezvousSession extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -203,6 +210,7 @@ export class RendezvousSession extends DurableObject {
     return this.serializeMutation(() => this.handleJoin(request));
   }
 
+  /** Appends a mutation to a queue that remains usable even when the previous operation rejects. */
   serializeMutation(operation) {
     const result = this.mutationQueue.then(operation);
     this.mutationQueue = result.then(
@@ -212,6 +220,7 @@ export class RendezvousSession extends DurableObject {
     return result;
   }
 
+  /** Validates and admits a WebSocket into the invitation or availability state machine. */
   async handleJoin(request) {
     await this.initialized;
     if (this.corruptState) return json({ error: "service_unavailable" }, 503);
@@ -1218,6 +1227,10 @@ export class RendezvousSession extends DurableObject {
 }
 
 export default {
+  /**
+   * Public Worker router: validates the outer request, rate-limits actor and channel dimensions,
+   * then forwards a minimal canonical request to the channel's Durable Object.
+   */
   async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/healthz" && url.search === "") {

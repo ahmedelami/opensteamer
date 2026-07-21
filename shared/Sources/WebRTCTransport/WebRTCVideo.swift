@@ -3,6 +3,7 @@ import CoreMedia
 import CoreVideo
 import Foundation
 
+/// Rotation metadata attached to an externally captured video frame.
 public enum WebRTCVideoRotation: Int, Sendable {
     case zero = 0
     case ninety = 90
@@ -10,7 +11,9 @@ public enum WebRTCVideoRotation: Int, Sendable {
     case twoSeventy = 270
 }
 
-// LiveKit's Obj-C track is thread-safe but has no Swift concurrency annotations.
+/// A sendable lifetime wrapper around LiveKit's thread-safe Objective-C video track.
+///
+/// LiveKit's track is thread-safe but has no Swift concurrency annotations.
 public final class WebRTCRemoteVideoTrack: @unchecked Sendable {
     private let nativeTrack: LKRTCVideoTrack
     public let trackID: String
@@ -32,7 +35,9 @@ public final class WebRTCRemoteVideoTrack: @unchecked Sendable {
     }
 }
 
-// ScreenCaptureKit delivers buffers off-actor; LiveKit synchronizes source ingestion internally.
+/// Bridges ScreenCaptureKit pixel buffers into LiveKit's synchronized external video source.
+///
+/// ScreenCaptureKit delivers buffers off-actor; LiveKit synchronizes source ingestion internally.
 public final class MacExternalVideoCapturer: @unchecked Sendable {
     private let source: LKRTCVideoSource
     private let capturer: LKRTCVideoCapturer
@@ -42,10 +47,12 @@ public final class MacExternalVideoCapturer: @unchecked Sendable {
         capturer = LKRTCVideoCapturer(delegate: source)
     }
 
+    /// Updates the native source's encoder-facing dimensions and frame-rate target.
     public func adaptOutput(width: Int32, height: Int32, framesPerSecond: Int32) {
         source.adaptOutputFormat(toWidth: width, height: height, fps: framesPerSecond)
     }
 
+    /// Captures a frame using a Core Media timestamp.
     public func capture(
         pixelBuffer: CVPixelBuffer,
         timestamp: CMTime,
@@ -59,6 +66,7 @@ public final class MacExternalVideoCapturer: @unchecked Sendable {
         )
     }
 
+    /// Captures a frame using an already-normalized monotonic nanosecond timestamp.
     public func capture(
         pixelBuffer: CVPixelBuffer,
         timestampNanoseconds: Int64,

@@ -1,4 +1,12 @@
 <!doctype html>
+<!--
+  Manual, deterministic browser audio source for validating AudioStreamer's system-audio path.
+  Open this file in a graphical browser and press Start tone; the click satisfies the browser's
+  user-gesture requirement and produces a 440 Hz oscillator at 25% gain. Stop closes its
+  AudioContext. The page performs no network requests and stores no data. `data-playing`, the
+  visible status, and the live AudioContext state are stable observation points for automation.
+  Reloading or closing the page lets the browser release any still-active audio resources.
+-->
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -23,6 +31,8 @@
   <p id="status">Stopped</p>
   <p id="context-state">AudioContext: none</p>
   <script>
+    // Expose handles deliberately so a manual or browser-automation probe can inspect playback
+    // state without inferring it from audible output alone.
     window.audioTest = {
       context: undefined,
       oscillator: undefined,
@@ -34,6 +44,7 @@
       await window.audioTest.context.resume();
       window.audioTest.oscillator = window.audioTest.context.createOscillator();
       window.audioTest.gain = window.audioTest.context.createGain();
+      // A fixed frequency and gain make repeated capture measurements comparable.
       window.audioTest.oscillator.frequency.value = 440;
       window.audioTest.gain.gain.value = 0.25;
       window.audioTest.oscillator.connect(window.audioTest.gain).connect(window.audioTest.context.destination);
@@ -62,6 +73,7 @@
       document.getElementById("context-state").textContent = `AudioContext: ${state}`;
     }
 
+    // Periodic state is diagnostic only and does not alter the audio graph.
     setInterval(updateState, 250);
   </script>
 </body>

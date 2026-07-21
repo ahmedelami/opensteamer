@@ -1,5 +1,8 @@
 import SwiftUI
 
+/// Playback status and screen-presentation launcher for the current local or worldwide session.
+/// Worldwide full-screen presentation is keyed by an ownership lease so replacement sessions and
+/// delayed dismissals cannot hide or control a newer screen.
 struct PlayerView: View {
     @EnvironmentObject private var viewModel: StreamSessionViewModel
     @EnvironmentObject private var worldwideViewModel: WorldwideSessionViewModel
@@ -136,6 +139,8 @@ struct PlayerView: View {
     }
 
     private func dismissWorldwideScreen(_ lease: WorldwideScreenPresentationLease) {
+        // Dismiss only the presentation represented by this callback; a new cover may already own
+        // a replacement lease by the time asynchronous remote Hide completes.
         guard worldwideScreenLease == lease else { return }
         worldwideViewModel.retireScreenPresentationLease(lease)
         worldwideScreenLease = nil

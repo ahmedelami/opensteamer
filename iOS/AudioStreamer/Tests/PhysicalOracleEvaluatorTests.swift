@@ -3,6 +3,9 @@ import XCTest
 @testable import AudioStreamer
 @testable import WebRTCTransport
 
+/// Locks down the machine-readable physical audio/video oracle semantics.
+/// Tests exercise malformed payload rejection, monotonic counter requirements, waveform-quality
+/// thresholds, and stable-duration windows so one late callback or static frame cannot pass.
 final class PhysicalOracleEvaluatorTests: XCTestCase {
     private let session = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
     private let renderer = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
@@ -1362,6 +1365,9 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
         )
     }
 
+    // MARK: - Valid snapshot fixtures
+
+    /// Produces a structurally valid baseline; individual tests override only the invariant under test.
     private func audio(
         session: UUID? = nil,
         callbacks: UInt64,
@@ -1438,6 +1444,7 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
         )!
     }
 
+    /// Produces internally consistent frame/content counters for video delta tests.
     private func video(
         renderer: UUID? = nil,
         frames: UInt64,

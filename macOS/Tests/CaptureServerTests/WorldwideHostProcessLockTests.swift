@@ -2,6 +2,11 @@ import Foundation
 import XCTest
 @testable import CaptureServer
 
+/// Verifies single-host ownership and filesystem privacy for the per-user worldwide-host lock.
+///
+/// The temporary directories isolate test runs, while the production permission contract remains
+/// 0700 for the directory and 0600 for the lock file. A second process must fail rather than run
+/// another availability loop against the same durable pairing state.
 final class WorldwideHostProcessLockTests: XCTestCase {
     func testSecondWorldwideHostCannotAcquireSamePerUserLock() throws {
         let lockDirectoryURL = makeLockDirectoryURL()
@@ -55,6 +60,7 @@ final class WorldwideHostProcessLockTests: XCTestCase {
     }
 
     private func makeLockDirectoryURL() -> URL {
+        // A UUID avoids cross-test contention while still exercising the real file-lock backend.
         FileManager.default.temporaryDirectory
             .appendingPathComponent("AudioStreamerLockTests-\(UUID().uuidString)", isDirectory: true)
     }

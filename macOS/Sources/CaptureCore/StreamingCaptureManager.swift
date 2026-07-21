@@ -1,5 +1,10 @@
 import Foundation
 
+/// Coordinates one live macOS audio source and a packet-oriented PCM sink.
+///
+/// A `nil` duration keeps the source alive until the enclosing task is cancelled.
+/// Source shutdown is cancellation-shielded so Core Audio and ScreenCaptureKit do
+/// not retain callbacks after the session supervisor moves on.
 public final class StreamingCaptureManager {
     private let duration: TimeInterval?
     private let displayID: UInt32?
@@ -7,6 +12,7 @@ public final class StreamingCaptureManager {
     private let sink: PCMFrameSink
     private let logger: Logger
 
+    /// Creates a capture run with an explicit backend and transport sink.
     public init(
         duration: TimeInterval?,
         displayID: UInt32?,
@@ -21,6 +27,7 @@ public final class StreamingCaptureManager {
         self.logger = logger
     }
 
+    /// Runs capture to completion and returns counters after queued audio has drained.
     public func run() async throws -> StreamingCaptureReport {
         logger.info("Streaming capture started with mode=\(captureMode.rawValue)")
         let processor = StreamingAudioProcessor(sink: sink, logger: logger)
@@ -90,6 +97,7 @@ public final class StreamingCaptureManager {
         try Task.checkCancellation()
     }
 
+    /// Waits for a fixed duration or cooperatively until task cancellation.
     private func waitForRequestedDuration() async throws {
         if let duration {
             try await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
@@ -100,6 +108,7 @@ public final class StreamingCaptureManager {
         }
     }
 
+    /// Logs queue-consistent progress without participating in capture control flow.
     private static func monitorProgress(processor: StreamingAudioProcessor, logger: Logger) async {
         while !Task.isCancelled {
             do {
@@ -130,15 +139,18 @@ private final class CancellationShieldedCleanup: @unchecked Sendable {
     private let lock = NSLock()
     private var operation: (() async throws -> Void)?
 
+    /// Takes ownership of the source-specific stop operation.
     init(_ operation: @escaping () async throws -> Void) {
         self.operation = operation
     }
 
+    /// Executes the stop operation at most once, regardless of competing cleanup paths.
     func run() async throws {
         guard let operation = takeOperation() else { return }
         try await operation()
     }
 
+    /// Atomically consumes the only reference to the cleanup operation.
     private func takeOperation() -> (() async throws -> Void)? {
         lock.lock()
         defer { lock.unlock() }

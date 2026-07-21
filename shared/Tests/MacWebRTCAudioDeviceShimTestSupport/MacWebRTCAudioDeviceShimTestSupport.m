@@ -3,6 +3,9 @@
 #import <AudioToolbox/AudioToolbox.h>
 #import <pthread.h>
 
+// Test-only delegate implementation for observing the production shim boundary without audio
+// hardware. Its deterministic marker sequence detects channel truncation, reordering, duplication,
+// and timestamp discontinuities rather than accepting callback counts as a proxy for correct PCM.
 NS_ASSUME_NONNULL_BEGIN
 
 typedef OSStatus (^LKRTCAudioDeviceGetPlayoutDataBlock)(

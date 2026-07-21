@@ -3,12 +3,17 @@ import Foundation
 import Network
 import Streaming
 
+/// Session and recovery events emitted by the screen-video transport.
 public protocol VideoTCPServerEventHandler: AnyObject, Sendable {
+    /// Reports a newly authenticated viewer and its unguessable local identity.
     func videoServerViewerConnected(_ sessionID: VideoViewerSessionID)
+    /// Reports that the matching authenticated viewer has closed.
     func videoServerViewerDisconnected(_ sessionID: VideoViewerSessionID)
+    /// Requests an encoder key frame after connection or transport recovery.
     func videoServerRequestedKeyFrame()
 }
 
+/// Opaque identity of one authenticated viewer lifetime.
 public struct VideoViewerSessionID: Equatable, Sendable {
     fileprivate let rawValue: UUID
 
@@ -17,12 +22,14 @@ public struct VideoViewerSessionID: Equatable, Sendable {
     }
 }
 
+/// Exclusive permission to encode one frame in the current transport generation.
 public struct ScreenVideoFrameReservation: Sendable {
     public let id: UInt64
     public let generation: UInt32
     public let forceKeyFrame: Bool
 }
 
+/// Queue-consistent operational counters for the screen-video server.
 public struct VideoTCPServerSnapshot: Sendable {
     public let connectedClients: Int
     public let reconnects: Int
@@ -32,6 +39,12 @@ public struct VideoTCPServerSnapshot: Sendable {
     public let framesAwaitingAcknowledgement: Int
 }
 
+/// Single-viewer, acknowledgement-paced TCP transport for encoded screen video.
+///
+/// The private queue owns listener/client lifecycle and the frame-flow state machine.
+/// Only one frame can be reserved or awaiting acknowledgement, deliberately bounding
+/// latency and memory when the viewer is slower than capture. TCP is unauthenticated
+/// unless `authToken` is supplied; cross-network production media uses WebRTC instead.
 public final class VideoTCPServer: @unchecked Sendable {
     private let host: NWEndpoint.Host
     private let port: NWEndpoint.Port
@@ -55,6 +68,7 @@ public final class VideoTCPServer: @unchecked Sendable {
     private var framesSent: Int64 = 0
     private var closedClientBytesSent: Int64 = 0
 
+    /// Creates a listener endpoint with optional Bonjour and token authentication.
     public init(
         host: String,
         port: UInt16,
@@ -72,13 +86,16 @@ public final class VideoTCPServer: @unchecked Sendable {
         self.logger = logger
     }
 
+    /// Replaces the weak event handler on the server's ownership queue.
     public func setEventHandler(_ eventHandler: VideoTCPServerEventHandler?) {
         queue.sync {
             self.eventHandler = eventHandler
         }
     }
 
+    /// Starts a low-latency TCP listener and waits up to five seconds for readiness.
     public func start() throws {
+        // Disable Nagle and use keepalives to surface dead interactive sessions promptly.
         let tcpOptions = NWProtocolTCP.Options()
         tcpOptions.noDelay = true
         tcpOptions.enableKeepalive = true
@@ -145,6 +162,7 @@ public final class VideoTCPServer: @unchecked Sendable {
         logger.info("Listening for screen viewers on \(host):\(port.rawValue)")
     }
 
+    /// Synchronously tears down listener, viewer, timeouts, and frame-flow state.
     public func stop() {
         queue.sync {
             acknowledgementTimeoutWorkItem?.cancel()
@@ -163,6 +181,7 @@ public final class VideoTCPServer: @unchecked Sendable {
         }
     }
 
+    /// Cancels only the still-current authenticated viewer identified by `expectedSessionID`.
     public func failActiveViewer(
         _ expectedSessionID: VideoViewerSessionID,
         reason: String
@@ -177,6 +196,7 @@ public final class VideoTCPServer: @unchecked Sendable {
         }
     }
 
+    /// Reserves the sole encoding slot when no frame or acknowledgement is outstanding.
     public func reserveFrameForEncoding() -> ScreenVideoFrameReservation? {
         queue.sync {
             guard let client,
@@ -198,6 +218,7 @@ public final class VideoTCPServer: @unchecked Sendable {
         }
     }
 
+    /// Releases a matching reservation and optionally enters key-frame recovery.
     public func cancelFrameReservation(
         _ reservation: ScreenVideoFrameReservation,
         requestKeyFrame: Bool
@@ -213,6 +234,7 @@ public final class VideoTCPServer: @unchecked Sendable {
         }
     }
 
+    /// Serializes a reserved frame, preceding changed key-frame metadata with configuration.
     public func sendEncodedFrame(
         _ frame: EncodedScreenVideoFrame,
         reservation: ScreenVideoFrameReservation,
@@ -289,6 +311,7 @@ public final class VideoTCPServer: @unchecked Sendable {
         }
     }
 
+    /// Returns a queue-consistent snapshot of connection and flow-control counters.
     public func snapshot() -> VideoTCPServerSnapshot {
         queue.sync {
             VideoTCPServerSnapshot(
@@ -302,6 +325,9 @@ public final class VideoTCPServer: @unchecked Sendable {
         }
     }
 
+    // MARK: - Viewer lifecycle
+
+    /// Accepts one connection only if it belongs to the current listener generation.
     private func accept(_ connection: NWConnection, from expectedListener: NWListener) {
         dispatchPrecondition(condition: .onQueue(queue))
         guard listener === expectedListener else {
@@ -333,6 +359,7 @@ public final class VideoTCPServer: @unchecked Sendable {
         client.start(on: queue)
     }
 
+    /// Clears startup state without disturbing a subsequently installed listener.
     private func clearListenerIfCurrent(_ expectedListener: NWListener) {
         queue.sync {
             if listener === expectedListener {
@@ -342,6 +369,7 @@ public final class VideoTCPServer: @unchecked Sendable {
         }
     }
 
+    /// Creates a fresh viewer session and resets encoding flow after authentication.
     private func handleAuthorized(_ authorizedClient: VideoClientConnection) {
         guard client === authorizedClient, activeViewerSessionID == nil else { return }
         let sessionID = VideoViewerSessionID()
@@ -354,6 +382,9 @@ public final class VideoTCPServer: @unchecked Sendable {
         eventHandler?.videoServerViewerConnected(sessionID)
     }
 
+    // MARK: - Frame flow control
+
+    /// Applies acknowledgements and key-frame requests for the active generation.
     private func handleControlPacket(
         _ packet: ScreenVideoPacket,
         from controlClient: VideoClientConnection
@@ -386,6 +417,7 @@ public final class VideoTCPServer: @unchecked Sendable {
         }
     }
 
+    /// Detaches the current client and reports its session's end exactly once.
     private func handleClosed(_ closedClient: VideoClientConnection) {
         guard client === closedClient else { return }
         let disconnectedSessionID = activeViewerSessionID
@@ -398,6 +430,7 @@ public final class VideoTCPServer: @unchecked Sendable {
         }
     }
 
+    /// Starts a new generation and requires configuration plus a key frame.
     private func forceRecovery() {
         generation &+= 1
         if generation == 0 {
@@ -407,6 +440,7 @@ public final class VideoTCPServer: @unchecked Sendable {
         eventHandler?.videoServerRequestedKeyFrame()
     }
 
+    /// Clears reservations, acknowledgements, and decoder configuration for a generation.
     private func resetFrameFlow() {
         acknowledgementTimeoutWorkItem?.cancel()
         acknowledgementTimeoutWorkItem = nil
@@ -417,6 +451,7 @@ public final class VideoTCPServer: @unchecked Sendable {
         lastSentConfiguration = nil
     }
 
+    /// Disconnects a viewer that does not acknowledge the one outstanding frame.
     private func scheduleAcknowledgementTimeout(
         sequence: UInt32,
         client timeoutClient: VideoClientConnection
@@ -436,6 +471,7 @@ public final class VideoTCPServer: @unchecked Sendable {
     }
 }
 
+/// Listener, configuration, and frame-serialization failures for video TCP.
 public enum VideoTCPServerError: LocalizedError {
     case invalidPort(UInt16)
     case missingParameterSets
@@ -459,17 +495,20 @@ public enum VideoTCPServerError: LocalizedError {
     }
 }
 
+/// Terminal outcomes used by the synchronous listener startup gate.
 private enum VideoListenerStartupResult {
     case ready
     case failed(Error)
     case timedOut
 }
 
+/// Resolves listener startup exactly once across Network.framework state callbacks.
 private final class VideoListenerStartupGate: @unchecked Sendable {
     private let lock = NSLock()
     private let semaphore = DispatchSemaphore(value: 0)
     private var result: VideoListenerStartupResult?
 
+    /// Records the first terminal state and releases the synchronous starter.
     func resolve(_ result: VideoListenerStartupResult) {
         let shouldSignal = lock.withLock { () -> Bool in
             guard self.result == nil else { return false }
@@ -481,6 +520,7 @@ private final class VideoListenerStartupGate: @unchecked Sendable {
         }
     }
 
+    /// Waits for readiness or failure, mapping a missed deadline to `.timedOut`.
     func wait(timeout: DispatchTime) -> VideoListenerStartupResult {
         guard semaphore.wait(timeout: timeout) == .success else { return .timedOut }
         return lock.withLock { result ?? .timedOut }

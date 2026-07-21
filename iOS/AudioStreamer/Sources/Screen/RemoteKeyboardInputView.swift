@@ -134,6 +134,8 @@ final class RemoteKeyboardInputProxy: UIView, UIKeyInput {
     }
 
     func requestFirstResponderIfEligible() {
+        // One bounded attempt series corresponds to the current focus generation. A later focus
+        // update invalidates its generation so delayed UIKit callbacks cannot reopen the keyboard.
         guard canBecomeFirstResponder,
               !isFirstResponder,
               !responderAttemptIsPending else {
@@ -151,6 +153,7 @@ final class RemoteKeyboardInputProxy: UIView, UIKeyInput {
     }
 
     func cancelPendingFirstResponderRequest() {
+        // Incrementing, rather than merely clearing the flag, fences already enqueued retries.
         responderAttemptGeneration &+= 1
         responderAttemptIsPending = false
     }

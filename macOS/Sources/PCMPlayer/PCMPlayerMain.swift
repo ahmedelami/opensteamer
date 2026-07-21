@@ -1,8 +1,10 @@
 import ClientCore
 import Foundation
 
+/// Entry point for receiving and audibly playing the framed PCM stream.
 @main
 struct PCMPlayerMain {
+    /// Runs one playback session; option or streaming failures exit nonzero.
     static func main() async {
         do {
             let options = try PCMPlayerOptions.parse(CommandLine.arguments)

@@ -1,11 +1,15 @@
 import Foundation
 
+/// Runs a bounded ScreenCaptureKit audio capture and writes its PCM to a WAV file.
 public final class CaptureManager {
     private let duration: TimeInterval
     private let outputURL: URL
     private let displayID: UInt32?
     private let logger: Logger
 
+    /// Creates a capture operation for one display and destination file.
+    ///
+    /// A `nil` display identifier selects the first display ScreenCaptureKit reports.
     public init(duration: TimeInterval, outputURL: URL, displayID: UInt32?, logger: Logger) {
         self.duration = duration
         self.outputURL = outputURL
@@ -13,6 +17,10 @@ public final class CaptureManager {
         self.logger = logger
     }
 
+    /// Starts capture, waits for the requested duration, and drains pending audio.
+    ///
+    /// Errors from startup, shutdown, or WAV finalization abort the operation rather
+    /// than returning a partial report.
     public func run() async throws -> CaptureReport {
         logger.info("Capture started")
         logger.info("Duration: \(String(format: "%.2f", duration)) s")
@@ -24,6 +32,7 @@ public final class CaptureManager {
 
         try await source.start(consumer: processor)
         let logger = logger
+        // Progress reporting is observational; cancellation follows capture shutdown.
         let monitor = Task {
             await CaptureManager.monitorProgress(processor: processor, logger: logger)
         }
@@ -47,6 +56,7 @@ public final class CaptureManager {
         )
     }
 
+    /// Periodically snapshots the processor without entering its serialization queue.
     private static func monitorProgress(processor: AudioProcessor, logger: Logger) async {
         while !Task.isCancelled {
             do {

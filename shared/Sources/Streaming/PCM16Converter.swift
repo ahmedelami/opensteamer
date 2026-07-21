@@ -1,10 +1,12 @@
 import Foundation
 
+/// Converts normalized interleaved floating-point samples to signed 16-bit little-endian PCM.
 public struct PCM16Converter {
     private var bytes = Data()
 
     public init() {}
 
+    /// Clips each sample to the representable range and reuses internal storage across calls.
     public mutating func convertInterleavedFloat(_ samples: [Float]) -> Data {
         bytes.removeAll(keepingCapacity: true)
         bytes.reserveCapacity(samples.count * MemoryLayout<Int16>.size)

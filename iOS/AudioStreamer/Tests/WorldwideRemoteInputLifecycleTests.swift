@@ -4,6 +4,9 @@ import WebRTCTransport
 import XCTest
 @testable import AudioStreamer
 
+/// Concurrency regression suite for screen leases, visibility acknowledgements, and remote input.
+/// Exact peer/generation/lease ownership is the oracle at every suspension point: delayed control
+/// feedback, timeout, or input completion must be unable to mutate a replacement session.
 final class WorldwideRemoteInputLifecycleTests: XCTestCase {
     @MainActor
     func testReplacementSessionStaleTeardownAndRawRequestIDCannotTouchCurrentLease() async throws {
@@ -696,6 +699,8 @@ final class WorldwideRemoteInputLifecycleTests: XCTestCase {
         XCTAssertFalse(viewModel.debugRemoteInputState.inputAvailable)
     }
 
+    // MARK: - Peer and ownership fixtures
+
     @MainActor
     private func makeScreenPeer() throws -> WebRTCPeer {
         try WebRTCPeer(
@@ -720,6 +725,7 @@ final class WorldwideRemoteInputLifecycleTests: XCTestCase {
     }
 }
 
+/// Focused tests for session-generation fences shared by statistics and signaling tasks.
 @MainActor
 final class WorldwideSessionGenerationFenceTests: XCTestCase {
     func testCancelledStatisticsStartupCannotPublishIntoReplacementSession() async throws {
@@ -846,6 +852,9 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
     }
 }
 
+// MARK: - Controllable concurrency probes
+
+/// Synchronous completion counter used where an actor hop would alter the ordering under test.
 @MainActor
 private final class LifecycleProbe {
     var hideStarted = false

@@ -1,4 +1,15 @@
 #!/bin/zsh
+# Performs read-only structural and signing verification of an AudioStreamer Host app bundle.
+#
+# Usage: `verify-mac-host-bundle.sh <AudioStreamer Host.app> [expected-team-id]`.
+# It requires standard macOS plist, Mach-O, and code-signing tools. The optional TeamIdentifier
+# enables the stronger Apple anchor/organizational-unit requirement; omitting it also permits a
+# correctly formed ad-hoc bundle for local tests.
+#
+# The verifier follows parent directories but rejects a symlink at the app boundary, validates
+# metadata, executable/framework layout, linkage, signatures, and designated requirements, and
+# never changes the bundle. Success emits a single diagnostic on stderr and exits 0; bad invocation
+# exits 64, while every malformed or mismatched artifact exits 1.
 set -eu
 
 readonly EXPECTED_APP_BASENAME="AudioStreamer Host.app"
@@ -48,6 +59,7 @@ FRAMEWORK_EXECUTABLE="$FRAMEWORK/LiveKitWebRTC"
 
 [[ -f "$INFO_PLIST" ]] || fail "Info.plist is missing: $INFO_PLIST"
 
+# Read required privacy-visible bundle identity directly from the packaged Info.plist.
 assert_plist_value() {
     local key="$1"
     local expected="$2"
@@ -86,6 +98,8 @@ RPATHS="$(/usr/bin/otool -l "$EXECUTABLE" | /usr/bin/awk '
     $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
     in_rpath && $1 == "path" { print $2; in_rpath = 0 }
 ')"
+# The executable must resolve the embedded WebRTC framework relative to its installed app, never
+# through a development build directory or ambient loader search path.
 if ! print -r -- "$RPATHS" | /usr/bin/grep -Fxq "$EXPECTED_FRAMEWORK_RPATH"; then
     fail "main executable is missing LC_RPATH '$EXPECTED_FRAMEWORK_RPATH'"
 fi
@@ -107,6 +121,8 @@ verify_signature "$FRAMEWORK" "LiveKitWebRTC.framework"
 verify_signature "$EXECUTABLE" "the main executable"
 verify_signature "$APP_PATH" "the app bundle"
 
+# `codesign --display` reports metadata on stderr by design. The helper normalizes the three fields
+# that participate in cross-component identity checks below.
 read_code_metadata() {
     local target="$1"
     local label="$2"

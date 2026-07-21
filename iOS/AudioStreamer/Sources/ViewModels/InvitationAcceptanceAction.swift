@@ -67,6 +67,7 @@ struct InvitationAcceptanceAction {
     }
 }
 
+/// Rejects persistence calls made before the pairing protocol reaches a crash-safe phase.
 enum InvitationAcceptanceError: Error, Equatable {
     case pairingIsNotRecoverable
     case pairingIsNotActive

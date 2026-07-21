@@ -2,12 +2,16 @@ import Foundation
 import Network
 import Streaming
 
+/// Ordered events emitted by the legacy screen transport after wire validation.
 enum ScreenVideoClientEvent: Sendable {
     case connected
     case configuration(ScreenVideoConfiguration, generation: UInt32)
     case frame(ScreenVideoPacket, disposition: ScreenVideoFrameDisposition)
 }
 
+/// One-shot acknowledgement handle for a decoded screen frame.
+/// The renderer resolves it only after accepting or rejecting the frame; the lock makes duplicate
+/// or cross-queue resolutions harmless and prevents multiple acknowledgements for one sequence.
 final class ScreenVideoFrameDisposition: @unchecked Sendable {
     private let lock = NSLock()
     private var handler: (@Sendable (Bool) -> Void)?
@@ -26,6 +30,11 @@ final class ScreenVideoFrameDisposition: @unchecked Sendable {
     }
 }
 
+/// TCP client for the legacy H.264 screen protocol.
+///
+/// The receive loop runs asynchronously while control packets are serialized on `sendQueue`.
+/// `stateLock` protects the generation/sequence fence shared by rendering acknowledgements,
+/// key-frame requests, and cancellation callbacks.
 final class ScreenVideoClient: @unchecked Sendable {
     private let connection: NWConnection
     private let authToken: String?
@@ -61,6 +70,8 @@ final class ScreenVideoClient: @unchecked Sendable {
 
         let preambleData = try await receiveExact(ScreenVideoProtocol.preambleByteCount)
         _ = try ScreenVideoFraming.parsePreamble(preambleData)
+        // Controls are held until authentication and the protocol preamble both succeed. A key
+        // frame requested during startup is coalesced and sent once that boundary is crossed.
         let shouldSendPendingKeyFrameRequest = stateLock.withLock {
             controlsEnabled = true
             let pending = pendingKeyFrameRequest
@@ -150,6 +161,9 @@ final class ScreenVideoClient: @unchecked Sendable {
             }
             onEvent(.configuration(configuration, generation: packet.generation))
         case .frame:
+            // Any discontinuity invalidates predictive frames until a key frame reestablishes the
+            // decoder chain. The sequence advances before handing the frame to the renderer, whose
+            // disposition either acknowledges acceptance or requests a fresh key frame.
             let canAccept = stateLock.withLock { () -> Bool in
                 guard configuredGeneration == packet.generation,
                       expectedSequence == packet.sequence,
@@ -192,6 +206,8 @@ final class ScreenVideoClient: @unchecked Sendable {
     }
 
     private func sendControl(_ packet: ScreenVideoPacket) {
+        // Control messages use a dedicated serial queue so renderer callbacks cannot reorder an
+        // acknowledgement and a recovery request on the Network.framework connection.
         guard stateLock.withLock({ controlsEnabled && !cancelled }) else { return }
         do {
             let data = try ScreenVideoFraming.makePacket(packet)
@@ -271,6 +287,7 @@ private enum ScreenVideoClientError: LocalizedError {
     }
 }
 
+/// Continuation gate for NWConnection state, where ready/failure/cancel callbacks can race.
 private final class ScreenVideoResumeOnce: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, any Error>?

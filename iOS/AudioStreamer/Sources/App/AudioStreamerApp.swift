@@ -1,6 +1,9 @@
 import RemoteSessionCore
 import SwiftUI
 
+/// Compile-time switch that replaces the production root with a deliberately inert host for
+/// install-over-update Keychain validation. Keeping the test host empty prevents normal startup
+/// hydration from changing the credentials that the validation target is about to inspect.
 enum AudioStreamerAppRootMode {
     #if AUDIOSTREAMER_UPDATE_VALIDATION_HOST
     static let isPhysicalUpdateValidationHost = true
@@ -9,6 +12,11 @@ enum AudioStreamerAppRootMode {
     #endif
 }
 
+/// Application composition root for the iPhone viewer.
+///
+/// The production path creates each long-lived session owner exactly once and injects those
+/// owners through SwiftUI's environment. The validation-host path intentionally skips all of
+/// that work so its test bundle can observe persisted state before the app touches it.
 @main
 struct AudioStreamerApp: App {
     #if AUDIOSTREAMER_UPDATE_VALIDATION_HOST

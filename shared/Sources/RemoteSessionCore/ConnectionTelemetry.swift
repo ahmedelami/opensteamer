@@ -5,6 +5,7 @@ import Foundation
 import OSLog
 #endif
 
+/// The endpoint perspective that emitted a connection event.
 public enum ConnectionTelemetryRole: String, Codable, Sendable {
     case viewer
     case host
@@ -35,6 +36,7 @@ public enum ConnectionTelemetryStage: String, Codable, Sendable {
     case hostStopped
 }
 
+/// Closed, non-sensitive failure categories suitable for persisted diagnostics.
 public enum ConnectionTelemetryFailure: String, Codable, Sendable {
     case connectionClosed
     case connectionFailed
@@ -50,12 +52,14 @@ public enum ConnectionTelemetryFailure: String, Codable, Sendable {
     case unknown
 }
 
+/// The terminal outcome of one connection attempt.
 public enum ConnectionTelemetryTerminal: String, Codable, Sendable {
     case success
     case cancelled
     case failed
 }
 
+/// Domain separators that prevent a digest from correlating unrelated identifier classes.
 public enum ConnectionTelemetryFingerprintDomain: String, Sendable {
     case pair
     case attempt
@@ -116,6 +120,7 @@ public struct ConnectionTelemetryFingerprint: RawRepresentable, Codable, Hashabl
     }
 }
 
+/// A privacy-reviewed event request before the journal assigns time and sequence metadata.
 public struct ConnectionTelemetryDraft: Equatable, Sendable {
     public let role: ConnectionTelemetryRole
     public let stage: ConnectionTelemetryStage
@@ -150,6 +155,7 @@ public struct ConnectionTelemetryDraft: Equatable, Sendable {
     }
 }
 
+/// A persisted, ordered connection event containing only closed-schema diagnostic fields.
 public struct ConnectionTelemetryEvent: Codable, Equatable, Identifiable, Sendable {
     public let id: UInt64
     public let timestamp: Date
@@ -193,6 +199,7 @@ public struct ConnectionTelemetryEvent: Codable, Equatable, Identifiable, Sendab
     }
 }
 
+/// An atomic view of retained telemetry and the health of its bounded persistence queue.
 public struct ConnectionTelemetrySnapshot: Equatable, Sendable {
     public let events: [ConnectionTelemetryEvent]
     public let droppedEventCount: UInt64
@@ -215,6 +222,7 @@ public struct ConnectionTelemetrySnapshot: Equatable, Sendable {
     }
 }
 
+/// Records connection lifecycle events without accepting arbitrary strings or secret material.
 public protocol ConnectionTelemetryRecording: Sendable {
     @discardableResult
     func record(_ draft: ConnectionTelemetryDraft) -> ConnectionTelemetrySnapshot
@@ -230,6 +238,7 @@ public extension ConnectionTelemetryRecording {
     }
 }
 
+/// A recorder for call sites that intentionally disable local connection telemetry.
 public struct NoopConnectionTelemetryRecorder: ConnectionTelemetryRecording {
     public init() {}
 
@@ -317,6 +326,7 @@ public final class LocalConnectionTelemetryJournal:
         state = Self.loadState(from: fileURL)
     }
 
+    /// Creates a bounded journal in the user's Application Support directory.
     public static func applicationSupport(
         component: String
     ) -> LocalConnectionTelemetryJournal {
@@ -332,6 +342,7 @@ public final class LocalConnectionTelemetryJournal:
         )
     }
 
+    /// Appends one event in memory and schedules serialized, best-effort persistence.
     @discardableResult
     public func record(_ draft: ConnectionTelemetryDraft) -> ConnectionTelemetrySnapshot {
         let recorded: (ConnectionTelemetryEvent, Envelope, UInt64) = lock.withLock {
@@ -375,6 +386,7 @@ public final class LocalConnectionTelemetryJournal:
         return snapshot()
     }
 
+    /// Returns a lock-consistent view without waiting for pending disk persistence.
     public func snapshot() -> ConnectionTelemetrySnapshot {
         lock.withLock {
             ConnectionTelemetrySnapshot(
@@ -385,6 +397,7 @@ public final class LocalConnectionTelemetryJournal:
         }
     }
 
+    /// Waits behind already-scheduled writes and returns their resulting health state.
     public func flush() async -> ConnectionTelemetrySnapshot {
         await withCheckedContinuation { continuation in
             persistenceQueue.async { [self] in

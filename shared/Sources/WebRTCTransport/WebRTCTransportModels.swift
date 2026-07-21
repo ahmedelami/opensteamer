@@ -1,6 +1,7 @@
 import Foundation
 import RemoteSessionCore
 
+/// Parses ICE username fragments at session, media-section, and candidate scope.
 enum ICEUsernameFragmentParser {
     private static let sessionDescriptionPrefix = "a=ice-ufrag:"
     private static let mediaDescriptionPrefix = "m="
@@ -18,6 +19,7 @@ enum ICEUsernameFragmentParser {
     }
 
     static func mapping(inSessionDescription sdp: String) -> ICEUsernameFragmentMap? {
+        /// Mutable parse state before session-level inheritance has been resolved.
         struct MutableMediaSection {
             let mLineIndex: Int32
             var mid: String?
@@ -113,7 +115,9 @@ enum ICEUsernameFragmentParser {
     }
 }
 
+/// Resolves each SDP media section to the ICE generation it accepts.
 struct ICEUsernameFragmentMap: Equatable, Sendable {
+    /// One SDP media section and the effective ICE generation after inheritance.
     struct MediaSection: Equatable, Sendable {
         let mLineIndex: Int32
         let mid: String?
@@ -162,6 +166,7 @@ struct ICEUsernameFragmentMap: Equatable, Sendable {
     }
 }
 
+/// Rejects candidates that are ambiguous or belong to a stale ICE generation.
 enum ICECandidateUsernameFragmentValidator {
     static func validatedCandidate(
         _ candidate: RemoteICECandidate,
@@ -200,6 +205,7 @@ enum ICECandidateUsernameFragmentValidator {
     }
 }
 
+/// Controls whether ICE may use direct candidates or must prove the TURN fallback.
 public enum WebRTCICEPolicy: String, Codable, Sendable {
     /// Lets ICE prefer a peer-to-peer candidate while retaining configured TURN as the standards-based reachability fallback.
     case directPreferred
@@ -207,6 +213,7 @@ public enum WebRTCICEPolicy: String, Codable, Sendable {
     case relayOnly
 }
 
+/// Immutable inputs used to construct one role-specific WebRTC peer.
 public struct WebRTCTransportConfiguration: Sendable {
     public let role: RemotePeerRole
     public let iceServers: [RemoteICEServer]
@@ -226,6 +233,7 @@ public struct WebRTCTransportConfiguration: Sendable {
     }
 }
 
+/// Stable projection of the native peer-connection lifecycle.
 public enum WebRTCPeerState: String, Codable, Sendable {
     case new
     case connecting
@@ -235,6 +243,7 @@ public enum WebRTCPeerState: String, Codable, Sendable {
     case closed
 }
 
+/// Stable projection of the native ICE connection lifecycle.
 public enum WebRTCICEState: String, Codable, Sendable {
     case new
     case checking
@@ -246,12 +255,14 @@ public enum WebRTCICEState: String, Codable, Sendable {
     case unknown
 }
 
+/// Stable projection of native candidate-gathering progress.
 public enum WebRTCICEGatheringState: String, Codable, Sendable {
     case new
     case gathering
     case complete
 }
 
+/// Stable projection of the ordered control data-channel lifecycle.
 public enum WebRTCDataChannelState: String, Codable, Sendable {
     case connecting
     case open
@@ -385,6 +396,7 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
     private static let zeroUUID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
 }
 
+/// A finite point in the inclusive unit square used for resolution-independent input.
 public struct WebRTCNormalizedPoint: Codable, Equatable, Sendable {
     public let x: Double
     public let y: Double
@@ -569,6 +581,7 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
     }
 }
 
+/// One monotonically identified input action bound to an active screen capability.
 public struct WebRTCInputRequest: Codable, Equatable, Sendable {
     public let id: UInt64
     public let screenRequestID: UInt64
@@ -640,6 +653,7 @@ public struct WebRTCInputRequest: Codable, Equatable, Sendable {
     }
 }
 
+/// Host-reported editability state; secure fields never authorize committed-text insertion.
 public enum WebRTCInputFocus: Codable, Equatable, Sendable {
     case none
     case editable(generation: UInt64, secure: Bool)
@@ -699,11 +713,13 @@ public enum WebRTCInputFocus: Codable, Equatable, Sendable {
     }
 }
 
+/// Whether the host accepted a remote input request for OS injection.
 public enum WebRTCInputFeedbackResult: String, Codable, Sendable {
     case accepted
     case rejected
 }
 
+/// Closed reasons for refusing input without exposing host UI or document contents.
 public enum WebRTCInputRejectionReason: String, Codable, CaseIterable, Sendable {
     case inputDisabled
     case staleSession
@@ -715,6 +731,7 @@ public enum WebRTCInputRejectionReason: String, Codable, CaseIterable, Sendable 
     case invalidRequest
 }
 
+/// Result and focus state bound to the exact input and screen-generation identifiers.
 public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
     public let id: UInt64
     public let screenRequestID: UInt64
@@ -905,6 +922,7 @@ public final class WebRTCInputAuthorization: @unchecked Sendable {
     }
 }
 
+/// Privacy-reduced ICE candidate classes used by diagnostics.
 public enum WebRTCCandidateType: String, Codable, Sendable {
     case host
     case serverReflexive
@@ -913,6 +931,7 @@ public enum WebRTCCandidateType: String, Codable, Sendable {
     case unknown
 }
 
+/// Non-address ICE candidate metadata sufficient to explain direct versus relayed routing.
 public struct WebRTCCandidateDiagnostics: Codable, Equatable, Sendable {
     public let type: WebRTCCandidateType
     public let transport: String?
@@ -932,12 +951,14 @@ public struct WebRTCCandidateDiagnostics: Codable, Equatable, Sendable {
     }
 }
 
+/// Whether the selected ICE pair is peer-to-peer, TURN-relayed, or not yet classified.
 public enum WebRTCICERouteKind: String, Codable, Sendable {
     case direct
     case relayed
     case unknown
 }
 
+/// The privacy-reduced local and remote candidates in the selected ICE route.
 public struct WebRTCICERouteDiagnostics: Codable, Equatable, Sendable {
     public let kind: WebRTCICERouteKind
     public let local: WebRTCCandidateDiagnostics?
@@ -954,6 +975,7 @@ public struct WebRTCICERouteDiagnostics: Codable, Equatable, Sendable {
     }
 }
 
+/// Stable outbound or inbound video counters extracted from a native statistics report.
 public struct WebRTCVideoStatistics: Codable, Equatable, Sendable {
     public let bytes: UInt64?
     public let packets: UInt64?
@@ -982,6 +1004,7 @@ public struct WebRTCVideoStatistics: Codable, Equatable, Sendable {
     }
 }
 
+/// Stable audio quality, concealment, jitter-buffer, and transport counters.
 public struct WebRTCAudioStatistics: Codable, Equatable, Sendable {
     public let bytes: UInt64?
     public let packets: UInt64?
@@ -1055,6 +1078,7 @@ public struct WebRTCAudioStatistics: Codable, Equatable, Sendable {
     }
 }
 
+/// A timestamped diagnostic snapshot across route, video, and audio statistics.
 public struct WebRTCStatisticsSnapshot: Codable, Equatable, Sendable {
     public let collectedAt: Date
     public let route: WebRTCICERouteDiagnostics?
@@ -1120,6 +1144,7 @@ public struct WebRTCIceCandidateError: Codable, Equatable, Sendable {
     }
 }
 
+/// Bounded events emitted by `WebRTCPeer` to its signaling and media owner.
 public enum WebRTCTransportEvent: Sendable {
     case outboundSignal(RemoteSignalPayload)
     case peerStateChanged(WebRTCPeerState)
@@ -1155,6 +1180,7 @@ public enum WebRTCTransportEvent: Sendable {
     case diagnosticFailure(String)
 }
 
+/// Construction, signaling, authorization, and data-channel failures for WebRTC transport.
 public enum WebRTCTransportError: Error, Equatable, LocalizedError, Sendable {
     case relayPolicyRequiresTURN
     case peerConnectionCreationFailed

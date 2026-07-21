@@ -1,6 +1,13 @@
 import Foundation
 import XCTest
 
+/// Locks the checked-in LaunchAgent, signed host process, and loaded launchd job into one
+/// deployment contract.
+///
+/// These tests deliberately inspect both files on disk and the code actually mapped into a live
+/// process. Mutation fixtures prove that a matching path is insufficient after an executable or
+/// framework has been replaced. The launchd fixtures likewise require semantic plist identity,
+/// exact arguments, reviewed job-scoped environment, and persistent restart behavior.
 final class MacHostDeploymentContractTests: XCTestCase {
     private struct ProcessResult {
         let status: Int32
@@ -141,6 +148,8 @@ final class MacHostDeploymentContractTests: XCTestCase {
             arguments: ["-f", replacement.path, executable.path]
         )
         XCTAssertEqual(replace.status, 0, replace.diagnostic)
+        // POSIX replacement gives the path a new inode while the running process retains its old
+        // mapping. This is the regression the live-image oracle must detect.
         XCTAssertTrue(
             process.isRunning,
             "The mutation must retain the old mapped process while replacing its on-disk path."
@@ -232,6 +241,8 @@ final class MacHostDeploymentContractTests: XCTestCase {
             arguments: ["-f", replacementFramework.path, framework.path]
         )
         XCTAssertEqual(replace.status, 0, replace.diagnostic)
+        // Keep the main executable byte-for-byte stable so rejection can only come from checking
+        // the already-mapped framework rather than revalidating the executable path.
         XCTAssertTrue(
             process.isRunning,
             "The framework mutant must leave the original process alive."
@@ -276,6 +287,9 @@ final class MacHostDeploymentContractTests: XCTestCase {
             "org.example.audiostreamer.worldwide.plist"
         )
         try FileManager.default.copyItem(at: template, to: installed)
+        // This is a representative `launchctl print gui/<uid>/<label>` rendering. The verifier
+        // parses it as an external wire format, so whitespace and section boundaries are part of
+        // the fixture even though plist formatting itself is intentionally semantic.
         let baseline = """
         gui/501/org.example.audiostreamer.worldwide = {
             path = \(installed.path)
@@ -550,6 +564,7 @@ final class MacHostDeploymentContractTests: XCTestCase {
             options: 0
         )
         try semanticallyIdenticalData.write(to: installed, options: .atomic)
+        // Re-encoding the plist changes bytes and formatting without changing its meaning.
         XCTAssertNotEqual(
             try Data(contentsOf: installed),
             try Data(contentsOf: template),
@@ -757,6 +772,8 @@ final class MacHostDeploymentContractTests: XCTestCase {
             file: StaticString = #filePath,
             line: UInt = #line
         ) throws {
+            // Each mutant changes only the installed copy; source and loaded-state fixtures stay
+            // fixed so a pass cannot be attributed to another launchd validation boundary.
             try writeInstalledMutation(key: key, value: value)
             XCTAssertNotEqual(
                 try Data(contentsOf: installed),
@@ -790,6 +807,8 @@ final class MacHostDeploymentContractTests: XCTestCase {
             file: StaticString = #filePath,
             line: UInt = #line
         ) throws {
+            // Mutate source and installed plists together to isolate the semantic persistence
+            // rule from the separate source-versus-installed drift check.
             var values = sourceValues
             values[key] = false
             let mutatedTemplate = temporaryRoot.appendingPathComponent(
@@ -950,6 +969,7 @@ final class MacHostDeploymentContractTests: XCTestCase {
             executable: URL(fileURLWithPath: "/usr/bin/codesign"),
             arguments: [
                 "--force",
+                // Ad-hoc signing exercises code-identity checks without requiring a private key.
                 "--sign",
                 "-",
                 "--identifier",
@@ -961,6 +981,7 @@ final class MacHostDeploymentContractTests: XCTestCase {
     }
 
     private func compileDynamicLibrary(at output: URL, returnValue: Int) throws {
+        // Distinct return constants force the two dylibs to have different signed code content.
         let source = output.deletingPathExtension().appendingPathExtension("c")
         try "int fixture_value(void) { return \(returnValue); }\n".write(
             to: source,
@@ -982,6 +1003,8 @@ final class MacHostDeploymentContractTests: XCTestCase {
     }
 
     private func compileFrameworkFixtureRunner(at output: URL, linkedTo framework: URL) throws {
+        // The runner loads the fixture before sleeping, ensuring the verifier observes a live
+        // mapping rather than a merely linked but unopened path.
         let source = output.appendingPathExtension("c")
         try """
         #include <unistd.h>
@@ -1025,6 +1048,8 @@ final class MacHostDeploymentContractTests: XCTestCase {
         arguments: [String],
         until predicate: (ProcessResult) -> Bool
     ) throws -> ProcessResult {
+        // dyld/code-signing metadata can become observable just after Process reports launch.
+        // Poll for at most two seconds instead of introducing an unconditional slow sleep.
         let deadline = Date().addingTimeInterval(2)
         var result = try run(executable: executable, arguments: arguments)
         while !predicate(result), Date() < deadline {
@@ -1062,6 +1087,7 @@ final class MacHostDeploymentContractTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: captureDirectory) }
         let standardOutputURL = captureDirectory.appendingPathComponent("stdout")
         let standardErrorURL = captureDirectory.appendingPathComponent("stderr")
+        // File-backed capture cannot fill a pipe while this synchronous helper waits for exit.
         XCTAssertTrue(FileManager.default.createFile(atPath: standardOutputURL.path, contents: nil))
         XCTAssertTrue(FileManager.default.createFile(atPath: standardErrorURL.path, contents: nil))
         let standardOutput = try FileHandle(forWritingTo: standardOutputURL)

@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 
+/// The only authenticated messages permitted during one-time pairing bootstrap.
 public enum RemotePairingPayload: Codable, Equatable, Sendable {
     case hello(RemotePairingHello)
     case confirmation(RemotePairingConfirmation)
@@ -49,6 +50,7 @@ public enum RemotePairingPayload: Codable, Equatable, Sendable {
     }
 }
 
+/// Bounded rendezvous events emitted during the pairing commit handshake.
 public enum PairingBootstrapSignalingEvent: Equatable, Sendable {
     case waiting(invitationExpiresAt: Date)
     case ready(role: RemotePeerRole, invitationExpiresAt: Date)
@@ -182,6 +184,7 @@ public actor PairingBootstrapSignalingClient {
         self.transport = transport
     }
 
+    /// Connects exactly once and starts the bounded pairing-bootstrap event stream.
     public func connect() async throws -> EventStream {
         guard state == .idle else { throw RendezvousSignalingError.alreadyConnected }
         do {
@@ -219,6 +222,7 @@ public actor PairingBootstrapSignalingClient {
         return pair.stream
     }
 
+    /// Encrypts and sends a role-valid bootstrap payload with a monotonic sequence.
     public func send(_ payload: RemotePairingPayload) async throws {
         guard state == .connected else { throw RendezvousSignalingError.notConnected }
         try Self.validate(payload: payload, senderRole: role)
@@ -249,6 +253,7 @@ public actor PairingBootstrapSignalingClient {
         }
     }
 
+    /// Idempotently closes the pairing socket and event stream.
     public func close() async { await finish(throwing: nil) }
 
     private func receiveLoop() async {

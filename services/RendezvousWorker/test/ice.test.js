@@ -5,6 +5,8 @@ import {
   normalizeCloudflareIceServers,
 } from "../src/ice.js";
 
+// Security oracle: Worker-side TURN provisioning never trusts upstream schema, URL hosts, body
+// size, or partial configuration, and never passes the API bearer token to a peer.
 const cloudflarePayload = {
   iceServers: [
     { urls: ["stun:stun.cloudflare.com:3478"] },

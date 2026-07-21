@@ -1,5 +1,6 @@
 import Foundation
 
+/// Failures that can prevent macOS audio or display capture from producing PCM.
 public enum CaptureError: LocalizedError {
     case noDisplays
     case displayNotFound(UInt32)
@@ -11,6 +12,7 @@ public enum CaptureError: LocalizedError {
     case audioRouteUnhealthy(String)
     case unsupportedAudioFormat(String)
 
+    /// A diagnostic suitable for CLI output and operational logs.
     public var errorDescription: String? {
         switch self {
         case .noDisplays:

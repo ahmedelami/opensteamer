@@ -2,6 +2,12 @@ import ScreenCaptureKit
 import XCTest
 @testable import CaptureCore
 
+/// Locks down the ScreenCaptureKit configuration and feedback-exclusion policy for system audio.
+///
+/// The published format must remain 48 kHz stereo because downstream framing and WebRTC audio
+/// assume that shape. Application exclusion is deliberately exact and case-sensitive: widening
+/// it could suppress unrelated audio, while narrowing it could recapture iPhone Mirroring audio
+/// and create a feedback loop.
 final class SystemAudioCaptureSourceTests: XCTestCase {
     func testProductionConfigurationRequestsFortyEightKilohertzStereoAudioOnly() {
         let configuration = SystemAudioCaptureConfiguration.make()
@@ -10,6 +16,8 @@ final class SystemAudioCaptureSourceTests: XCTestCase {
         XCTAssertTrue(configuration.excludesCurrentProcessAudio)
         XCTAssertEqual(configuration.sampleRate, 48_000)
         XCTAssertEqual(configuration.channelCount, 2)
+        // ScreenCaptureKit still requires nonzero video dimensions even though this source
+        // consumes only its audio output, so production uses the smallest practical surface.
         XCTAssertEqual(configuration.width, 2)
         XCTAssertEqual(configuration.height, 2)
     }

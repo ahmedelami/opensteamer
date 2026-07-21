@@ -1,6 +1,15 @@
 import AppKit
 import Foundation
 
+// Build/usage: `swiftc physical-screen-oracle-challenge.swift -o <binary>`, then run
+// `<binary> <heartbeat-path>` from an unlocked macOS GUI session. The paired-reconnect driver
+// performs both steps automatically.
+//
+// Side effects: opens one noninteractive floating challenge window per display and atomically
+// rewrites the heartbeat file roughly every 170 ms. The parent driver owns process termination and
+// artifact cleanup. Exit 64 means invalid arguments; exit 65 means no display was available. A
+// heartbeat write failure is printed to stderr and terminates the application.
+
 /// A nonsecret, driver-only visual challenge. The physical release driver launches this tiny
 /// accessory process so a static desktop cannot make a correct decoded-pixel freshness oracle
 /// fail. It never accepts input and is terminated by the driver cleanup trap.

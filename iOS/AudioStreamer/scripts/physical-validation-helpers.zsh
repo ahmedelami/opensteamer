@@ -1,7 +1,21 @@
 #!/bin/zsh
 
-# Shared runtime primitives for the physical-device release gates. Keep these functions free of
-# top-level side effects so both the production drivers and SwiftPM regression tests can source them.
+# Shared runtime primitives for the physical-device release gates.
+#
+# Usage: source this file from a strict-mode zsh driver; it is not a standalone command. Keep
+# functions free of top-level side effects so production drivers and shell regression tests can
+# safely share them. Callers need macOS system tools used by the selected helper (`python3`,
+# `xcrun devicectl`, `launchctl`, `shasum`, and process utilities) plus permission to inspect the
+# target device or host service.
+#
+# Test-only environment: `AUDIOSTREAMER_SCRIPT_SELF_TEST` unlocks deterministic seams. The
+# `AUDIOSTREAMER_LOG_SNAPSHOT_TEST_*` variables coordinate the log-snapshot race harness; ordinary
+# release runs must leave them unset. Selected functions export `AUDIOSTREAMER_LOG_SNAPSHOT_*`,
+# `AUDIOSTREAMER_FINAL_PROCESS_STATUS`, and audited connection counts for their caller.
+#
+# Side effects are function-specific and explicit: helpers may create caller-supplied artifact
+# files, signal owned process trees, or query an attached device. A nonzero return always means the
+# requested invariant was not established; helpers do not convert a failed proof into a skip.
 
 function audiostreamer_require_positive_integer() {
   local setting_name=$1

@@ -2,7 +2,13 @@
 @preconcurrency import CoreMedia
 import Foundation
 
+/// Serializes H.264 configuration, frame admission, and AVSampleBufferVideoRenderer ownership.
+///
+/// Although its UI attachment methods enter on the main actor, all mutable decoder state lives on
+/// a private queue. Attachment generations fence notifications and media callbacks from an old
+/// UIKit layer after SwiftUI has replaced or dismissed it.
 final class ScreenVideoRenderer: @unchecked Sendable {
+    /// Recovery or terminal information that the session owner must translate into transport work.
     enum Event: Sendable {
         case needsKeyFrame
         case failed(String)
@@ -110,6 +116,8 @@ final class ScreenVideoRenderer: @unchecked Sendable {
             }
 
             if self.pendingFrames.count >= 4 {
+                // A growing queue means the decoder is no longer keeping up. Drop the predictive
+                // chain rather than accumulating latency, then restart only from a key frame.
                 self.flushAndRequestKeyFrame(removeImage: false)
                 guard isKeyFrame else {
                     completion(false)
@@ -157,6 +165,8 @@ final class ScreenVideoRenderer: @unchecked Sendable {
         attachmentGeneration: UInt64? = nil
     ) {
         guard self.renderer === renderer,
+              // The optional generation is supplied by AVFoundation's long-lived readiness
+              // callback; direct drains already execute against the current renderer reference.
               attachmentGeneration == nil || self.attachmentGeneration == attachmentGeneration,
               let builder else { return }
 

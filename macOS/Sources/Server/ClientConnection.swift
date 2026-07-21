@@ -3,6 +3,11 @@ import Foundation
 import Network
 import Streaming
 
+/// Owns authentication and ordered PCM writes for one TCP client.
+///
+/// `start(on:)` binds Network.framework callbacks to the server queue; callers must
+/// invoke the remaining methods on that same queue. The token is compared in memory
+/// and is never sent in logs or persisted by this connection.
 final class ClientConnection: @unchecked Sendable {
     private let connection: NWConnection
     private let logger: Logger
@@ -22,6 +27,7 @@ final class ClientConnection: @unchecked Sendable {
         sendQueue.count
     }
 
+    /// Creates a connection that starts authorized only when authentication is disabled.
     init(
         connection: NWConnection,
         logger: Logger,
@@ -35,6 +41,7 @@ final class ClientConnection: @unchecked Sendable {
         self.onClose = onClose
     }
 
+    /// Starts network state delivery and, when required, a five-second auth handshake.
     func start(on queue: DispatchQueue) {
         logger.info("Client connected: \(connection.endpoint)")
         connection.stateUpdateHandler = { [weak self] state in
@@ -62,11 +69,13 @@ final class ClientConnection: @unchecked Sendable {
         }
     }
 
+    /// Records the stream header and sends it once authorization permits.
     func sendHeader(_ header: PCMStreamHeader) {
         pendingHeader = header
         sendPendingHeaderIfPossible()
     }
 
+    /// Frames and queues one PCM packet after the header has been sent.
     func sendPacket(metadata: PCMPacketMetadata, pcmBytes: Data) {
         guard isAuthorized else { return }
         sendPendingHeaderIfPossible()
@@ -74,6 +83,7 @@ final class ClientConnection: @unchecked Sendable {
         enqueue(PacketFramer.makePacket(metadata: metadata, pcmBytes: pcmBytes), countsAsPacket: true)
     }
 
+    /// Cancels pending authentication and closes the network connection.
     func cancel(reason: String) {
         logger.info("Closing client: \(reason)")
         authTimeoutWorkItem?.cancel()
@@ -81,6 +91,9 @@ final class ClientConnection: @unchecked Sendable {
         connection.cancel()
     }
 
+    // MARK: - Authentication
+
+    /// Reads the fixed authentication preface before allocating for the token body.
     private func receiveAuthHeader() {
         connection.receive(
             minimumIncompleteLength: PCMAuthProtocol.headerByteCount,
@@ -107,6 +120,7 @@ final class ClientConnection: @unchecked Sendable {
         }
     }
 
+    /// Reads and verifies the bounded token bytes described by the auth preface.
     private func receiveAuthToken(byteCount: Int) {
         connection.receive(minimumIncompleteLength: byteCount, maximumLength: byteCount) { [weak self] data, _, isComplete, error in
             guard let self else { return }
@@ -140,6 +154,7 @@ final class ClientConnection: @unchecked Sendable {
         }
     }
 
+    /// Emits the protocol header exactly once and only across the authorization boundary.
     private func sendPendingHeaderIfPossible() {
         guard isAuthorized, !headerSent, let pendingHeader else { return }
         headerSent = true
@@ -147,6 +162,7 @@ final class ClientConnection: @unchecked Sendable {
         enqueue(PacketFramer.makeHeader(pendingHeader), countsAsPacket: false)
     }
 
+    /// Compares equal-length token bytes without early exit on differing content.
     private static func constantTimeEquals(_ lhs: [UInt8], _ rhs: [UInt8]) -> Bool {
         guard lhs.count == rhs.count else { return false }
 
@@ -157,6 +173,9 @@ final class ClientConnection: @unchecked Sendable {
         return diff == 0
     }
 
+    // MARK: - Ordered sending
+
+    /// Applies bounded backpressure and appends one complete wire record.
     private func enqueue(_ data: Data, countsAsPacket: Bool) {
         if sendQueue.count >= maxQueuedPackets {
             cancel(reason: "client send queue exceeded \(maxQueuedPackets) packets")
@@ -170,6 +189,7 @@ final class ClientConnection: @unchecked Sendable {
         pump()
     }
 
+    /// Keeps exactly one asynchronous Network.framework send in flight.
     private func pump() {
         guard !isSending, !sendQueue.isEmpty else { return }
         isSending = true

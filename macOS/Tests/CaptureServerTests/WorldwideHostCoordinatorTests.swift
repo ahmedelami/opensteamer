@@ -4,6 +4,12 @@ import RemoteSessionCore
 import XCTest
 @testable import CaptureServer
 
+/// Specifies supervision of the long-lived worldwide availability loop.
+///
+/// The coordinator must distinguish a transport-shaped `CancellationError` from cancellation of
+/// its owning task, retry the former with telemetry, and fail its completion stream if a supervised
+/// child returns unexpectedly. Explicit shutdown is the sole path where child cancellation and a
+/// normal completion event are accepted.
 final class WorldwideHostCoordinatorTests: XCTestCase {
     func testTransportCancellationFromAvailabilityConnectRetriesWithoutCancellingHostLoop() async throws {
         let store = try makeActivePairingStore()
@@ -176,6 +182,8 @@ final class WorldwideHostCoordinatorTests: XCTestCase {
             NoopConnectionTelemetryRecorder()
     ) -> WorldwideHostCoordinator {
         WorldwideHostCoordinator(
+            // Reserved `.invalid` prevents accidental external I/O if a test reaches the default
+            // transport path instead of one of the injected stubs.
             endpoint: URL(string: "wss://example.invalid")!,
             forceRelay: false,
             displayID: nil,
@@ -194,6 +202,8 @@ final class WorldwideHostCoordinatorTests: XCTestCase {
     }
 
     private func makeActivePairingStore() throws -> WorldwidePairingStore {
+        // Build a genuinely active cryptographic record through the complete pairing transcript;
+        // hand-authored serialized state could bypass invariants used by coordinator startup.
         let dataStore = CoordinatorMemoryPairingDataStore()
         let store = WorldwidePairingStore(dataStore: dataStore)
         let hostIdentity = try store.loadOrCreateHostIdentity(displayName: "Test Mac")
@@ -238,6 +248,8 @@ final class WorldwideHostCoordinatorTests: XCTestCase {
         attempts: Int = 1_000,
         condition: @escaping @Sendable () -> Bool
     ) async -> Bool {
+        // One thousand one-millisecond yields bound asynchronous observation to roughly one second
+        // while allowing the coordinator and its child tasks to make progress under CI load.
         for _ in 0..<attempts {
             if condition() { return true }
             try? await Task.sleep(for: .milliseconds(1))
@@ -246,6 +258,8 @@ final class WorldwideHostCoordinatorTests: XCTestCase {
     }
 }
 
+/// Availability transport with two intentional behaviors: a transport-originated cancellation,
+/// or an open event stream that remains alive until `close`. Locking models cross-task callbacks.
 private final class HostAvailabilityClientStub:
     WorldwideHostAvailabilityTransport,
     @unchecked Sendable
@@ -295,6 +309,7 @@ private final class HostAvailabilityClientStub:
     }
 }
 
+/// Ordered, thread-safe client supplier used to prove that retry creates a fresh transport.
 private final class HostAvailabilityClientFactoryStub: @unchecked Sendable {
     private let lock = NSLock()
     private var clients: [HostAvailabilityClientStub]
@@ -396,6 +411,8 @@ private final class RecordingConnectionTelemetry:
     ConnectionTelemetryRecording,
     @unchecked Sendable
 {
+    // Fixed wall-clock and monotonic values keep assertions focused on event ordering and fields;
+    // timing behavior is exercised separately through the injected retry sleeper.
     private let lock = NSLock()
     private var events: [ConnectionTelemetryEvent] = []
 

@@ -1,3 +1,5 @@
+// The rendezvous service validates only routing metadata and opaque encrypted envelopes. It never
+// receives the plaintext SDP/ICE signaling content carried inside those envelopes.
 export const CHANNEL_PATTERN = /^[A-Za-z0-9_-]{22,128}$/;
 export const CHANNEL_HEADER = "x-audiostreamer-channel";
 export const ROLE_HEADER = "x-audiostreamer-role";
@@ -5,6 +7,7 @@ export const ADMISSION_PROOF_HEADER = "x-audiostreamer-admission";
 const ADMISSION_PROOF_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const ENVELOPE_PATTERN = /^[A-Za-z0-9_-]+$/;
 
+/** Decodes a canonical 256-bit base64url admission proof, or returns `undefined`. */
 export function decodeAdmissionProof(value) {
   if (typeof value !== "string" || !ADMISSION_PROOF_PATTERN.test(value)) return undefined;
   const decoded = Buffer.from(value, "base64url");
@@ -12,12 +15,17 @@ export function decodeAdmissionProof(value) {
   return decoded;
 }
 
+/** Validates the routing identity used during a WebSocket upgrade. */
 export function validateJoin(channel, role) {
   if (typeof channel !== "string" || !CHANNEL_PATTERN.test(channel)) return "invalid_channel";
   if (role !== "host" && role !== "viewer") return "invalid_role";
   return undefined;
 }
 
+/**
+ * Validates one sequenced, opaque signaling message before it is forwarded to the other peer.
+ * The exact schema and monotonic sequence prevent extension-field smuggling and replay.
+ */
 export function validateSignal(raw, { expectedSequence, maxSequence, maxEnvelopeBytes }) {
   let message;
   try {

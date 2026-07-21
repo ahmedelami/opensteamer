@@ -2,6 +2,9 @@
 
 import PackageDescription
 
+// The package keeps platform front ends thin: shared protocol/session/WebRTC targets are reused by
+// the iOS viewer and macOS host, while native audio-device shims are selected conditionally. The
+// executable products also serve as deterministic diagnostic tools for the same core libraries.
 let package = Package(
     name: "MacCaptureVerifier",
     platforms: [

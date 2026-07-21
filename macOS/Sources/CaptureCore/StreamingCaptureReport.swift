@@ -1,5 +1,6 @@
 import Foundation
 
+/// Final counters and timing measurements for a live PCM streaming session.
 public struct StreamingCaptureReport: Sendable {
     public let duration: TimeInterval
     public let streamFormat: StreamAudioFormat?
@@ -9,6 +10,7 @@ public struct StreamingCaptureReport: Sendable {
     public let bytesStreamed: Int64
     public let packetsStreamed: Int64
 
+    /// Renders a human-readable operational summary without serializing payload data.
     public func render() -> String {
         var lines: [String] = []
         lines.append("")

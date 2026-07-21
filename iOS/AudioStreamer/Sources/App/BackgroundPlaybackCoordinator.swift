@@ -1,6 +1,9 @@
 import MediaPlayer
 import UIKit
 
+/// Minimal interface for borrowing iOS background time while a lifecycle transition settles.
+/// Implementations must balance every successful begin with an end and must not treat the lease
+/// as permission for indefinite background execution.
 @MainActor
 protocol TransitionBackgroundTaskCoordinating: AnyObject {
     func beginTransitionTask()
@@ -39,6 +42,8 @@ final class AppTransitionBackgroundTaskCoordinator: TransitionBackgroundTaskCoor
     }
 }
 
+/// Publishes privacy-safe lock-screen playback state and owns transition-only background leases.
+/// Continuous background eligibility is provided by genuine audio playout, not by this object.
 @MainActor
 final class BackgroundPlaybackCoordinator {
     private let transitionTask = AppTransitionBackgroundTaskCoordinator(

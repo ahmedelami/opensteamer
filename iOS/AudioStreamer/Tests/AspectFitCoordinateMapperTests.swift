@@ -2,6 +2,9 @@ import CoreGraphics
 import XCTest
 @testable import AudioStreamer
 
+/// Regression coverage for translating iPhone gestures through aspect-fit letterboxing.
+/// The critical oracles are rejection outside visible video, finite normalized coordinates, and
+/// edge clamping only after an accepted drag has begun.
 final class AspectFitCoordinateMapperTests: XCTestCase {
     func testWideVideoMapsCenterAndRejectsTopLetterbox() throws {
         let container = CGSize(width: 390, height: 700)

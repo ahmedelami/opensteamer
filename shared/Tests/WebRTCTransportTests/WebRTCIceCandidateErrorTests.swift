@@ -2,6 +2,8 @@ import Foundation
 import Testing
 @testable import WebRTCTransport
 
+/// Ensures native ICE probe evidence survives model construction without being mistaken for a
+/// transport-wide failure or silently dropping its actionable fields.
 struct WebRTCIceCandidateErrorTests {
     @Test func preservesEveryNativeDiagnosticField() throws {
         let error = WebRTCIceCandidateError(

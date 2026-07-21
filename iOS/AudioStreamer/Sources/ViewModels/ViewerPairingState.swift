@@ -99,6 +99,7 @@ final class ViewerPairingState: ObservableObject {
     }
 }
 
+/// Invalid transitions exposed by the main-actor pairing projection.
 enum ViewerPairingStateError: Error, Equatable {
     case viewerIdentityUnavailable
     case pairingIsNotActive

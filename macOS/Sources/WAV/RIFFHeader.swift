@@ -1,6 +1,8 @@
 import Foundation
 
+/// Builds the canonical 44-byte RIFF/WAVE header for interleaved PCM16 data.
 enum WAVHeader {
+    /// Serializes chunk sizes and format fields in the little-endian RIFF layout.
     static func make(sampleRate: Double, channels: Int, dataSize: UInt32) -> Data {
         let bitsPerSample: UInt16 = 16
         let channelCount = UInt16(channels)
@@ -28,15 +30,18 @@ enum WAVHeader {
 }
 
 private extension Data {
+    /// Appends an ASCII RIFF chunk identifier without a terminator.
     mutating func appendASCII(_ text: String) {
         append(contentsOf: text.utf8)
     }
 
+    /// Appends a 16-bit integer in RIFF byte order.
     mutating func appendLE(_ value: UInt16) {
         var little = value.littleEndian
         Swift.withUnsafeBytes(of: &little) { append(contentsOf: $0) }
     }
 
+    /// Appends a 32-bit integer in RIFF byte order.
     mutating func appendLE(_ value: UInt32) {
         var little = value.littleEndian
         Swift.withUnsafeBytes(of: &little) { append(contentsOf: $0) }

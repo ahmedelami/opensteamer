@@ -5,6 +5,7 @@ import Foundation
 /// This coordinator deliberately does not reconnect signaling. A restart can succeed only while
 /// the authenticated rendezvous socket that carries its offer, answer, and candidates is alive.
 public actor ICERecoveryCoordinator {
+    /// Bounded timing and retry limits for one recovery workflow.
     public struct Policy: Equatable, Sendable {
         public let disconnectedGrace: Duration
         public let restartTimeout: Duration
@@ -79,6 +80,7 @@ public actor ICERecoveryCoordinator {
         self.sleeper = sleeper
     }
 
+    /// Advances or cancels recovery in response to the native ICE lifecycle.
     public func iceStateChanged(_ state: WebRTCICEState) {
         guard phase != .cancelled else { return }
 

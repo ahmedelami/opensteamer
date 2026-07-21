@@ -1,13 +1,16 @@
 import Foundation
 import ScreenCaptureKit
 
+/// Prints ScreenCaptureKit display and application identifiers for CLI selection.
 public struct ShareableContentLister {
     private let logger: Logger
 
+    /// Creates a lister that shares the caller's logging dependency.
     public init(logger: Logger) {
         self.logger = logger
     }
 
+    /// Prints every currently shareable display and its pixel dimensions.
     public func printDisplays() async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         if content.displays.isEmpty {
@@ -20,6 +23,7 @@ public struct ShareableContentLister {
         }
     }
 
+    /// Prints shareable applications in a deterministic, name-sorted order.
     public func printApplications() async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         if content.applications.isEmpty {

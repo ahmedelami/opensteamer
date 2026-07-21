@@ -2,6 +2,11 @@ import Foundation
 import XCTest
 @testable import CaptureCore
 
+/// Covers the small, stateful summaries emitted by the real-time audio callback.
+///
+/// The timestamps are synthetic monotonic nanoseconds, so these tests validate interval math
+/// deterministically without depending on scheduler timing. Metric fixtures cover ordering in
+/// both directions to ensure the summaries retain true extrema rather than the latest sample.
 final class CallbackStatisticsTests: XCTestCase {
     func testCallbackStatisticsTracksIntervals() {
         var stats = CallbackStatistics()

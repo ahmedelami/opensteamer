@@ -1,6 +1,11 @@
 import XCTest
 @testable import CaptureCore
 
+/// Verifies the aggregate route-health contract used before audio capture begins.
+///
+/// A route is healthy only when every participating Core Audio endpoint resolves to the
+/// configured BlackHole device. This protects against accepting a partially configured route
+/// that would either capture silence or send system audio to an unintended endpoint.
 final class BlackHoleRouteHealthTests: XCTestCase {
     func testRouteHealthRequiresEveryEndpointToMatchExpectedDevice() {
         let expected = "BlackHole2ch_UID"

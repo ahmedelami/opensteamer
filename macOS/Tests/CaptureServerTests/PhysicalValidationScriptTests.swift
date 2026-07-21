@@ -3,7 +3,15 @@ import Darwin
 import AVFoundation
 import XCTest
 
+/// Regression-tests the shell harness that turns physical iPhone runs into trustworthy evidence.
+///
+/// The suite invokes real zsh processes but selects script-owned self-test modes, so it validates
+/// artifact freshness, process provenance, bounded cleanup, and failure reporting without needing
+/// a connected phone. The oracles favor false negatives over stale or ambiguous passes: every
+/// required activity must belong to one run, every connection must map to the intended host PID,
+/// and every spawned process group must be reclaimable on success, failure, cancellation, or timeout.
 final class PhysicalValidationScriptTests: XCTestCase {
+    /// A physical driver and the positional arguments needed to enter its inert self-test mode.
     private typealias PhysicalDriver = (
         relativePath: String,
         arguments: (URL) -> [String]
@@ -18,6 +26,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
     }
 
     private var physicalDrivers: [PhysicalDriver] {
+        // Keep this inventory aligned with every script capable of publishing a physical-pass
+        // artifact; shared cleanup/failure tests iterate the complete set.
         [
             (
                 "iOS/AudioStreamer/scripts/validate-release-pair-baseline.sh",
@@ -158,6 +168,9 @@ final class PhysicalValidationScriptTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
+        // Each mutation invalidates one evidence property while leaving the rest of the synthetic
+        // xcresult graph coherent. This proves the validator rejects the intended fault rather
+        // than failing incidentally on an unrelated malformed fixture.
         enum FixtureMutation {
             case replacing(String)
             case relocatingAttachment(String)
@@ -175,6 +188,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
         }
         typealias AttachmentMapping = (parent: String, name: String)
 
+        // These strings are the exact activity/attachment names emitted by the physical UI test;
+        // they form a versioned protocol between the XCTest bundle and the validation script.
         let requiredStrings = [
             "Same-process host restart and reconnect 1",
             "Same-process host restart and reconnect 2",
@@ -535,6 +550,9 @@ final class PhysicalValidationScriptTests: XCTestCase {
         try audioFile.read(into: buffer)
         XCTAssertEqual(buffer.frameLength, 96_000)
         let channels = try XCTUnwrap(buffer.floatChannelData)
+        // Four half-second segments alternate low/high frequency and amplitude independently on
+        // each channel. Crossing rate verifies frequency; mean magnitude verifies gain without a
+        // perceptual or hardware-dependent audio assertion.
         let segmentFrames = 24_000
         func segmentMean(_ channel: Int, _ segment: Int) -> Double {
             let range = (segment * segmentFrames)..<((segment + 1) * segmentFrames)
@@ -652,6 +670,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
             )
         }
     }
+
+    // MARK: - Host-log provenance and incremental parsing
 
     func testReconnectRejectsBatchedMalformedConnectedLineInRealZsh() throws {
         try assertReconnectProvenanceSelfTestPasses("batched-malformed")
@@ -826,6 +846,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
         )
         XCTAssertEqual(runStatus, "status=self-test-passed\n", diagnostic)
     }
+
+    // MARK: - Process-tree and process-group cleanup
 
     func testPhysicalValidationHelperForceTerminatesTermIgnoringProcessTree() throws {
         let helper = repositoryRoot.appendingPathComponent(
@@ -1192,6 +1214,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
         XCTAssertEqual(errno, ESRCH)
     }
 
+    // MARK: - Shell parser and lifecycle primitives
+
     func testHostPIDParserAcceptsValidConnectedLogLineInRealZsh() throws {
         let result = try runPhysicalValidationHelperProbe(
             "audiostreamer_connected_host_pid_from_log_line \"$1\"",
@@ -1393,6 +1417,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
         )
     }
 
+    // MARK: - Cross-driver failure contracts
+
     func testEveryPhysicalDriverTreatsTerminationAsFailure() throws {
         try assertEveryPhysicalDriverFailsRuntimeSelfTest(
             mode: "self-signal",
@@ -1536,6 +1562,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
         mode: String,
         expectedStatus: Int32
     ) throws {
+        // All drivers must publish the same terminal status semantics even though their normal
+        // device workflows and artifact names differ.
         for driver in physicalDrivers {
             let artifactDirectory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("AudioStreamer-\(mode)-probe-\(UUID().uuidString)")
@@ -1602,6 +1630,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
     private func assertReconnectProvenanceSelfTestPasses(
         _ scenario: String
     ) throws {
+        // Scenario names select deterministic mutants implemented by the reconnect driver itself.
         let artifactDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AudioStreamer-host-provenance-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: artifactDirectory) }
@@ -1628,6 +1657,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
         timeout: TimeInterval,
         additionalEnvironment: [String: String] = [:]
     ) throws -> ZshProbeResult {
+        // Self-test is selected exclusively through the environment; the normal positional CLI
+        // remains intact so startup, traps, artifact initialization, and cleanup all execute.
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = [
@@ -1686,6 +1717,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
         _ command: String,
         arguments: [String]
     ) throws -> ZshProbeResult {
+        // `$1` is reserved for the sourced helper path; `shift` preserves the helper functions'
+        // production-style positional argument numbering for the supplied command fragment.
         let helper = repositoryRoot.appendingPathComponent(
             "iOS/AudioStreamer/scripts/physical-validation-helpers.zsh"
         )
@@ -1754,6 +1787,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
     }
 
     private func readAvailableData(from pipe: Pipe) -> Data {
+        // A child may keep the pipe inherited after the direct Process exits. Nonblocking reads
+        // collect currently available diagnostics without letting such a descendant hang XCTest.
         let descriptor = pipe.fileHandleForReading.fileDescriptor
         let originalFlags = fcntl(descriptor, F_GETFL)
         if originalFlags >= 0 {
@@ -1786,6 +1821,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
     }
 
     private func waitForExit(_ process: Process, timeout: TimeInterval) -> Bool {
+        // Twenty-millisecond polling keeps the deadlines bounded while tolerating scheduler jitter.
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning, Date() < deadline {
             usleep(20_000)
@@ -1805,6 +1841,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
     }
 
     private func waitForPIDToDisappear(_ pid: pid_t, timeout: TimeInterval) -> Bool {
+        // ESRCH, rather than a completed parent Process alone, proves the OS no longer exposes the
+        // descendant and guards against cleanup that silently reparents children.
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if kill(pid, 0) == -1, errno == ESRCH {

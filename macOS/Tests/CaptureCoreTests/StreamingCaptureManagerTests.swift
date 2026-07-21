@@ -1,6 +1,12 @@
 import XCTest
 @testable import CaptureCore
 
+/// Defines ownership and error precedence for a started capture source.
+///
+/// Once `start` succeeds, `stop` must run exactly once in an uncancelled cleanup context. The
+/// original wait failure or owner cancellation takes precedence over a secondary cleanup failure;
+/// a cleanup failure is surfaced only after a normal wait. These guarantees prevent leaked capture
+/// resources while preserving the reason the supervising task actually ended.
 final class StreamingCaptureManagerTests: XCTestCase {
     func testCancellationAfterStartStillStopsSourceExactlyOnce() async {
         let waitEntered = expectation(description: "capture wait entered")
@@ -10,6 +16,8 @@ final class StreamingCaptureManagerTests: XCTestCase {
                 start: { state.recordStart() },
                 wait: {
                     waitEntered.fulfill()
+                    // The long sleep is never expected to elapse; it creates a cancellable wait
+                    // whose entry is synchronized by the XCTest expectation above.
                     try await Task.sleep(for: .seconds(60))
                 },
                 stop: {
@@ -177,6 +185,10 @@ private enum CaptureLifecycleError: Error, Equatable {
     case cleanupFailed
 }
 
+/// One-shot async gate that deliberately ignores task cancellation.
+///
+/// It recreates dependencies that finish normally after their owner has been cancelled, allowing
+/// the tests to verify that cleanup still runs and cancellation is restored afterward.
 private actor CancellationInsensitiveGate {
     private var isOpen = false
     private var continuation: CheckedContinuation<Void, Never>?
@@ -197,6 +209,8 @@ private actor CancellationInsensitiveGate {
     }
 }
 
+/// Lock-protected call ledger shared by the capture task and the XCTest task.
+/// The explicit snapshot prevents assertions from racing the asynchronous lifecycle callbacks.
 private final class CaptureLifecycleState: @unchecked Sendable {
     struct Snapshot: Equatable {
         let starts: Int

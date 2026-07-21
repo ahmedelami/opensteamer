@@ -5,6 +5,8 @@ import WebSocket from "ws";
 import { loadConfig } from "../src/config.mjs";
 import { createRendezvousServer } from "../src/server.mjs";
 
+// Integration oracle: real loopback WebSockets exercise invitation admission, consumption,
+// forwarding, rate limits, expiry, and shutdown across the same event boundary used in production.
 class TestClient {
   constructor(socket) {
     this.socket = socket;

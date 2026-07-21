@@ -5,6 +5,7 @@ import Foundation
 /// Converts process termination signals into an async event while the worldwide host is active.
 /// The signal disposition is restored only after the coordinator has shut down its WebSockets.
 final class ProcessTerminationSignalMonitor: @unchecked Sendable {
+    /// Buffered stream of the most recent monitored Unix signal.
     let events: AsyncStream<Int32>
 
     private let lock = NSLock()
@@ -13,6 +14,7 @@ final class ProcessTerminationSignalMonitor: @unchecked Sendable {
     private var continuation: AsyncStream<Int32>.Continuation?
     private var isCancelled = false
 
+    /// Installs Dispatch signal sources after temporarily ignoring default dispositions.
     init(signalNumbers: [Int32] = [SIGINT, SIGTERM]) {
         let pair = AsyncStream<Int32>.makeStream(bufferingPolicy: .bufferingNewest(1))
         events = pair.stream
@@ -34,6 +36,7 @@ final class ProcessTerminationSignalMonitor: @unchecked Sendable {
         sources = configuredSources
     }
 
+    /// Idempotently tears down sources, finishes events, and restores default dispositions.
     func cancel() {
         let resources = lock.withLock { () -> (
             [DispatchSourceSignal],

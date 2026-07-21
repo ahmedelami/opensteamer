@@ -7,6 +7,8 @@ import {
   validateSignal,
 } from "../src/protocol.js";
 
+// Protocol oracle: accepted messages are canonical, size-bounded, direction/channel/sequence
+// bound, and replay-resistant while ciphertext remains opaque to the rendezvous service.
 const base64URL = (bytes) =>
   btoa(String.fromCharCode(...bytes))
     .replaceAll("+", "-")

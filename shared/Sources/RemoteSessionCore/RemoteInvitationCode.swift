@@ -85,6 +85,7 @@ public struct RemoteInvitationCode: Sendable, CustomStringConvertible, CustomDeb
     }
 }
 
+/// Canonical Crockford Base32 codec used for human-transferable capability strings.
 internal enum CrockfordBase32 {
     private static let alphabet = Array("0123456789ABCDEFGHJKMNPQRSTVWXYZ".utf8)
 

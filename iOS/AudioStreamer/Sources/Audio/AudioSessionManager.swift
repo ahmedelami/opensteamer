@@ -1,6 +1,9 @@
 import AVFoundation
 import Foundation
 
+/// Human-readable AVAudioSession state captured for the diagnostics surface.
+/// Strings are intentional: the snapshot crosses only UI/test boundaries and should remain stable
+/// even when Apple adds enum cases that older application code cannot model exhaustively.
 struct AudioSessionSnapshot: Equatable {
     let outputRoute: String
     let inputRoute: String
@@ -27,6 +30,9 @@ struct AudioSessionSnapshot: Equatable {
     )
 }
 
+/// Configures the legacy playback-only AVAudioSession and translates system notifications into
+/// lifecycle callbacks. All callbacks are delivered on the main actor so session owners can update
+/// SwiftUI state without establishing a second synchronization policy.
 @MainActor
 final class AudioSessionManager {
     var onInterruptionBegan: (() -> Void)?
@@ -86,6 +92,8 @@ final class AudioSessionManager {
     }
 
     func startObserving() {
+        // Re-registration replaces the prior token set instead of multiplying callbacks after an
+        // app foreground/background cycle.
         stopObserving()
 
         #if os(iOS)
@@ -185,6 +193,8 @@ final class AudioSessionManager {
     }
 
     #if os(iOS)
+    // MARK: - Notification translation
+
     private func emitSnapshot(event: String) {
         onSnapshotChanged?(Self.snapshot(for: AVAudioSession.sharedInstance(), event: event))
     }
@@ -221,6 +231,8 @@ final class AudioSessionManager {
         for session: AVAudioSession,
         event: String
     ) -> AudioSessionSnapshot {
+        // These helpers are nonisolated because AVAudioSession notification closures can describe
+        // immutable values before their MainActor delivery without touching manager state.
         AudioSessionSnapshot(
             outputRoute: routeDescription(session.currentRoute.outputs, emptyValue: "No output route"),
             inputRoute: routeDescription(session.currentRoute.inputs, emptyValue: "No input route"),

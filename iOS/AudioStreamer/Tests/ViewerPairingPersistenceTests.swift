@@ -4,6 +4,11 @@ import Security
 import XCTest
 @testable import AudioStreamer
 
+/// End-to-end unit coverage for crash-safe pairing persistence and paired reconnect arbitration.
+///
+/// In-memory transports model each distributed-commit interruption and availability race. The
+/// durable record, operation ID, pair ID, retry deadline, and telemetry terminal event are the
+/// authoritative oracles; UI text alone is never accepted as proof of a saved pair.
 @MainActor
 final class ViewerPairingPersistenceTests: XCTestCase {
     func testViewerIdentityAndPairedMacSurviveStateReconstruction() throws {
@@ -1955,6 +1960,9 @@ func makePairedMacRecord(
     }
 }
 
+// MARK: - Pairing fixtures and controllable transports
+
+/// Consistent viewer/host records used to model each durable distributed-commit phase.
 private struct PairingRecords {
     let hostIdentity: RemoteDeviceIdentity
     let viewerPending: RemotePairedDeviceRecord
@@ -2017,6 +2025,7 @@ private func makePairingRecords(
     )
 }
 
+/// Actor-backed bootstrap transport whose suspension points make cancellation races deterministic.
 private actor PairingBootstrapTransportStub: ViewerPairingBootstrapTransport {
     private let stream: PairingBootstrapSignalingClient.EventStream
     private let continuation: PairingBootstrapSignalingClient.EventStream.Continuation

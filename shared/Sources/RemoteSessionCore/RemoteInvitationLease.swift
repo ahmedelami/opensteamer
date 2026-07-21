@@ -1,5 +1,6 @@
 import Foundation
 
+/// Observable lifecycle states for a one-time pairing invitation.
 public enum RemoteInvitationStatus: Equatable, Sendable {
     case active
     case expired
@@ -29,6 +30,7 @@ public actor OneTimeRemoteInvitation {
         expirationDate = createdAt.addingTimeInterval(timeToLive)
     }
 
+    /// Generates both the cryptographically random invitation and its bounded lease.
     public static func generate(
         createdAt: Date = Date(),
         timeToLive: TimeInterval = defaultTimeToLive
@@ -45,10 +47,12 @@ public actor OneTimeRemoteInvitation {
         code.exportedCode
     }
 
+    /// The absolute deadline after which consumption must fail.
     public func expiresAt() -> Date {
         expirationDate
     }
 
+    /// Returns status at an injected time, allowing deterministic expiry checks in tests.
     public func status(at date: Date = Date()) -> RemoteInvitationStatus {
         if consumed { return .consumed }
         return date >= expirationDate ? .expired : .active

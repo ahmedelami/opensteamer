@@ -1,6 +1,11 @@
 import Foundation
 import XCTest
 
+/// Exercises the release host builder and bundle verifier as one artifact-identity contract.
+///
+/// The positive fixture is a freshly built, ad-hoc-signed app. Independent clones then mutate one
+/// identity boundary at a time—metadata, basename, signature seal, rpath, embedded framework, and
+/// path indirection—so the verifier must reject artifacts that merely resemble the approved host.
 final class MacHostBundleIdentityTests: XCTestCase {
     private struct ProcessResult {
         let status: Int32
@@ -31,6 +36,8 @@ final class MacHostBundleIdentityTests: XCTestCase {
 
         let outputDirectory = temporaryRoot.appendingPathComponent("build")
         var buildEnvironment = ProcessInfo.processInfo.environment
+        // `-` requests an ad-hoc signature. That keeps the test independent of developer
+        // credentials and intentionally produces no TeamIdentifier for the negative team check.
         buildEnvironment["MAC_CAPTURE_CODESIGN_IDENTITY"] = "-"
         buildEnvironment["MAC_CAPTURE_APP_OUTPUT_DIR"] = outputDirectory.path
         buildEnvironment["MAC_CAPTURE_PREBUILT_BIN_DIR"] = Bundle(
@@ -218,6 +225,7 @@ final class MacHostBundleIdentityTests: XCTestCase {
         )
 
         for disguisedSymlinkPath in [
+            // Lexical suffixes must not let URL normalization hide the symlink boundary.
             symlink.appendingPathComponent(".").path,
             symlink.appendingPathComponent("Contents/..").path,
         ] {
@@ -244,6 +252,7 @@ final class MacHostBundleIdentityTests: XCTestCase {
         named name: String,
         under parent: URL
     ) throws -> URL {
+        // Clone-on-write keeps each destructive mutation isolated without rebuilding the app.
         try FileManager.default.createDirectory(
             at: parent,
             withIntermediateDirectories: true
@@ -277,6 +286,8 @@ final class MacHostBundleIdentityTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: captureDirectory) }
         let standardOutputURL = captureDirectory.appendingPathComponent("stdout")
         let standardErrorURL = captureDirectory.appendingPathComponent("stderr")
+        // Files avoid the bounded-buffer deadlock that can occur when a verbose child writes to
+        // `Pipe` while this synchronous helper is blocked in `waitUntilExit`.
         XCTAssertTrue(
             FileManager.default.createFile(atPath: standardOutputURL.path, contents: nil)
         )

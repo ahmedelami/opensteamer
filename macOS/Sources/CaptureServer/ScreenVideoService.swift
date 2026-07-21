@@ -4,10 +4,17 @@ import Foundation
 import Server
 import Utilities
 
+/// Lazily runs trusted-LAN screen capture and H.264 encoding for one TCP viewer.
+///
+/// `lock` owns the cross-framework pipeline state. UUID generations invalidate stale
+/// async startup/teardown tasks, while `VideoTCPServer` reservations ensure at most one
+/// encoded frame is in flight or awaiting acknowledgement. Capture is stopped whenever
+/// its owning viewer session ends.
 final class ScreenVideoService: @unchecked Sendable,
     ScreenVideoSampleConsumer,
     VideoTCPServerEventHandler
 {
+    /// Lock-protected resources and identities for the current viewer pipeline.
     private struct PipelineState {
         var generation = UUID()
         var viewerConnected = false
@@ -29,6 +36,7 @@ final class ScreenVideoService: @unchecked Sendable,
     private let lock = NSLock()
     private var state = PipelineState()
 
+    /// Creates the server and capture configuration without starting either resource.
     init(
         host: String,
         port: UInt16,
@@ -55,10 +63,12 @@ final class ScreenVideoService: @unchecked Sendable,
         server.setEventHandler(self)
     }
 
+    /// Starts the TCP listener; capture remains lazy until a viewer authenticates.
     func start() throws {
         try server.start()
     }
 
+    /// Stops accepting viewers, cancels lifecycle work, and drains pipeline teardown.
     func stop() async {
         server.stop()
         let lifecycleTask = lock.withLock { () -> Task<Void, Never>? in
@@ -74,10 +84,14 @@ final class ScreenVideoService: @unchecked Sendable,
         await stopPipeline()
     }
 
+    /// Returns transport counters from the underlying server.
     func snapshot() -> VideoTCPServerSnapshot {
         server.snapshot()
     }
 
+    // MARK: - Video server events
+
+    /// Serializes a new viewer startup behind any previous lifecycle task.
     func videoServerViewerConnected(_ sessionID: VideoViewerSessionID) {
         let generation = UUID()
         let previousTask = lock.withLock { () -> Task<Void, Never>? in
@@ -100,10 +114,12 @@ final class ScreenVideoService: @unchecked Sendable,
         }
     }
 
+    /// Schedules teardown only for the viewer that still owns the pipeline.
     func videoServerViewerDisconnected(_ sessionID: VideoViewerSessionID) {
         schedulePipelineStop(for: sessionID)
     }
 
+    /// Forwards transport recovery to the encoder belonging to the active viewer.
     func videoServerRequestedKeyFrame() {
         let encoder = lock.withLock { () -> H264ScreenVideoEncoder? in
             guard state.viewerConnected,
@@ -115,6 +131,9 @@ final class ScreenVideoService: @unchecked Sendable,
         encoder?.requestKeyFrame()
     }
 
+    // MARK: - Capture callbacks
+
+    /// Reserves transport capacity before submitting a captured frame to the encoder.
     func consumeScreenVideoSample(_ sampleBuffer: CMSampleBuffer) {
         guard let reservation = server.reserveFrameForEncoding() else { return }
         let encoder = lock.withLock { () -> H264ScreenVideoEncoder? in
@@ -147,6 +166,7 @@ final class ScreenVideoService: @unchecked Sendable,
         }
     }
 
+    /// Fails the owning viewer when ScreenCaptureKit stops outside normal teardown.
     func screenVideoCaptureSource(
         _ source: ScreenVideoCaptureSource,
         didStopWithErrorDescription errorDescription: String
@@ -167,6 +187,9 @@ final class ScreenVideoService: @unchecked Sendable,
         )
     }
 
+    // MARK: - Pipeline lifecycle
+
+    /// Starts capture then installs an encoder only if the viewer generation remains current.
     private func startPipeline(
         generation: UUID,
         sessionID: VideoViewerSessionID
@@ -259,6 +282,7 @@ final class ScreenVideoService: @unchecked Sendable,
         }
     }
 
+    /// Invalidates startup and sequences teardown after preceding lifecycle work.
     private func schedulePipelineStop(for sessionID: VideoViewerSessionID) {
         let generation = UUID()
         let transition = lock.withLock { () -> (
@@ -288,6 +312,7 @@ final class ScreenVideoService: @unchecked Sendable,
         }
     }
 
+    /// Atomically detaches resources before invoking asynchronous native shutdown.
     private func stopPipeline() async {
         let stopped = lock.withLock { () -> (
             ScreenVideoCaptureSource?,
@@ -311,6 +336,7 @@ final class ScreenVideoService: @unchecked Sendable,
         stopped.1?.finish()
     }
 
+    /// Performs best-effort ScreenCaptureKit cleanup while retaining diagnostic context.
     private func stopSource(_ source: ScreenVideoCaptureSource, context: String) async {
         do {
             try await source.stop()
@@ -321,6 +347,7 @@ final class ScreenVideoService: @unchecked Sendable,
         }
     }
 
+    /// Resolves the sole pending reservation with an encoded frame or recovery request.
     private func didEncode(_ result: Result<EncodedScreenVideoFrame, Error>) {
         let pending = lock.withLock { () -> (
             ScreenVideoFrameReservation?,
@@ -350,6 +377,7 @@ final class ScreenVideoService: @unchecked Sendable,
         }
     }
 
+    /// Releases matching local/server reservation state after rejected submission.
     private func clearReservation(
         _ reservation: ScreenVideoFrameReservation,
         requestKeyFrame: Bool

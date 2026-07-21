@@ -1,4 +1,13 @@
 #!/bin/zsh
+# Read-only validator for a captured `launchctl print` record and its LaunchAgent manifests.
+#
+# Usage: provide the launch-state snapshot, expected executable, source-controlled plist, and
+# installed plist. The snapshot must use macOS `launchctl print` text format; plist inputs may be
+# XML or binary. Standard macOS `plutil` and PlistBuddy are required.
+#
+# The script checks semantic manifest equality, persistence flags, exact program arguments, and the
+# complete job-scoped environment before returning `pid` and `program` as key=value lines. It does
+# not load or alter a job. Argument-count errors exit 64; invalid inputs or state exit 1 on stderr.
 set -eu
 
 fail() {
@@ -63,6 +72,8 @@ SOURCE_LABEL="$(/usr/libexec/PlistBuddy \
     "source-controlled LaunchAgent requires a Label"
 
 LAUNCH_STATE="$(<"$LAUNCH_STATE_FILE")"
+# Parsing deliberately anchors complete `launchctl print` fields instead of accepting substrings;
+# loose matching could mistake inherited/default environment or diagnostic text for job state.
 LOADED_PATH="$(print -r -- "$LAUNCH_STATE" \
     | /usr/bin/awk '$1 == "path" && $2 == "=" { sub(/^[^=]*= /, ""); print; exit }')"
 [[ "$LOADED_PATH" == "$INSTALLED_LAUNCH_AGENT" ]] || fail \
@@ -103,6 +114,7 @@ ACTUAL_ARGUMENTS="$(print -r -- "$LAUNCH_STATE" | /usr/bin/awk '
 ')"
 
 EXPECTED_ARGUMENTS=()
+# PlistBuddy reports a missing array index by failing, which provides the array termination signal.
 argument_index=0
 while argument="$(/usr/libexec/PlistBuddy \
     -c "Print :ProgramArguments:$argument_index" \
@@ -188,5 +200,6 @@ PID="$(print -r -- "$LAUNCH_STATE" \
     | /usr/bin/awk '$1 == "pid" && $2 == "=" && $3 ~ /^[0-9]+$/ { print $3; exit }')"
 [[ -n "$PID" ]] || fail "launch agent has no running PID"
 
+# Keep stdout machine-readable for `verify-mac-host-deployment.sh`.
 print -r -- "pid=$PID"
 print -r -- "program=$PROGRAM"

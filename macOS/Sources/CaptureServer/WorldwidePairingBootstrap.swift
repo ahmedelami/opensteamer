@@ -2,7 +2,13 @@ import CaptureCore
 import Foundation
 import RemoteSessionCore
 
+/// Runs the one-time authenticated pairing handshake and persists every recovery checkpoint.
+///
+/// Actor isolation owns signaling state and transcript progression. The exported
+/// invitation is a short-lived bootstrap capability; durable reconnects use the
+/// cryptographic viewer record emitted through `completion` after both peers commit.
 actor WorldwidePairingBootstrap {
+    /// Emits the single active pairing record or the terminal bootstrap failure.
     nonisolated let completion: AsyncThrowingStream<RemotePairedDeviceRecord, Error>
 
     private let identity: RemoteDeviceIdentity
@@ -21,6 +27,7 @@ actor WorldwidePairingBootstrap {
     private var isStarted = false
     private var isFinished = false
 
+    /// Generates a fresh invitation and constructs its host-side signaling participant.
     init(
         endpoint: URL,
         identity: RemoteDeviceIdentity,
@@ -45,6 +52,7 @@ actor WorldwidePairingBootstrap {
         self.logger = logger
     }
 
+    /// Connects signaling and returns the exportable one-time invitation code.
     func start() async throws -> String {
         guard !isStarted, !isFinished else {
             throw WorldwidePairingBootstrapError.invalidLifecycle
@@ -63,6 +71,7 @@ actor WorldwidePairingBootstrap {
         }
     }
 
+    /// Cancels signaling, closes the socket, and finishes completion idempotently.
     func stop() async {
         guard !isFinished else { return }
         signalingTask?.cancel()
@@ -71,6 +80,7 @@ actor WorldwidePairingBootstrap {
         finish(throwing: nil)
     }
 
+    /// Serially consumes signaling events until commit, cancellation, or failure.
     private func consume(
         _ events: PairingBootstrapSignalingClient.EventStream
     ) async {
@@ -91,6 +101,7 @@ actor WorldwidePairingBootstrap {
         }
     }
 
+    /// Advances the authenticated handshake and rejects out-of-order protocol messages.
     private func handle(_ event: PairingBootstrapSignalingEvent) async throws {
         switch event {
         case .waiting(let invitationExpiresAt):
@@ -163,6 +174,10 @@ actor WorldwidePairingBootstrap {
         }
     }
 
+    /// Authenticates the viewer acknowledgement and persists before every outbound phase.
+    ///
+    /// These repeated writes are deliberate crash-recovery boundaries: no message is sent
+    /// unless the local record can later explain and safely resume that protocol state.
     private func acceptAcknowledgementAndSendCompletion(
         _ acknowledgement: RemotePairingCommit
     ) async throws {
@@ -186,6 +201,7 @@ actor WorldwidePairingBootstrap {
         self.record = record
     }
 
+    /// Activates the durable record only after authenticating the final viewer acknowledgement.
     private func acceptActivationAcknowledgement(
         _ acknowledgement: RemotePairingCommit
     ) async throws {
@@ -204,6 +220,7 @@ actor WorldwidePairingBootstrap {
         await signaling.close()
     }
 
+    /// Completes the public stream exactly once and cancels the consumer task.
     private func finish(throwing error: (any Error)?) {
         guard !isFinished else { return }
         isFinished = true
@@ -217,11 +234,13 @@ actor WorldwidePairingBootstrap {
     }
 }
 
+/// Recovery choice when the invitation peer disconnects mid-handshake.
 enum WorldwidePairingPeerDepartureAction: Equatable {
     case restartBootstrap
     case recoverOnAvailability
 }
 
+/// Keeps a durable checkpoint for availability recovery; otherwise restarts ephemeral state.
 func worldwidePairingPeerDepartureAction(
     hasDurableRecord: Bool
 ) -> WorldwidePairingPeerDepartureAction {
@@ -243,6 +262,7 @@ func validateAndAcceptWorldwidePairingAcknowledgement(
     }
 }
 
+/// Lifecycle, transcript, transport, and rendezvous failures during one-time pairing.
 enum WorldwidePairingBootstrapError: LocalizedError {
     case invalidLifecycle
     case unexpectedMessage

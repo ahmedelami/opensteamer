@@ -2,6 +2,10 @@ import ClientCore
 import Foundation
 import Network
 
+/// Coordinates the legacy local/relay PCM stream, AVAudioSession, discovery, and diagnostics UI.
+///
+/// A connection generation invalidates every prior retry loop. Credentials remain in memory only
+/// for the selected session and are never included in errors, metrics, or Now Playing metadata.
 @MainActor
 final class StreamSessionViewModel: ObservableObject {
     @Published private(set) var servers: [ServerInfo] = []
@@ -26,6 +30,8 @@ final class StreamSessionViewModel: ObservableObject {
     private var selectedRelayURL: URL?
 
     var screenVideoConnectionDescriptor: ScreenVideoConnectionDescriptor? {
+        // The legacy screen side channel exists only beside a direct TCP audio endpoint. Relay
+        // sessions do not imply a reachable adjacent port and therefore expose no descriptor.
         guard selectedRelayURL == nil, let selectedServer else { return nil }
 
         let screenEndpoint: NWEndpoint
@@ -170,6 +176,8 @@ final class StreamSessionViewModel: ObservableObject {
     }
 
     func disconnect() {
+        // Rotate the generation before cancellation so an already-enqueued callback is stale even
+        // if its underlying task or transport does not observe cancellation immediately.
         connectionGeneration = UUID()
         connectTask?.cancel()
         metricsTask?.cancel()
@@ -260,6 +268,8 @@ final class StreamSessionViewModel: ObservableObject {
         var attempt = 0
 
         while !Task.isCancelled, generation == connectionGeneration {
+            // A StreamSession is single-use. Reconnects create a fresh renderer/transport rather
+            // than attempting to revive state that may have failed inside AudioToolbox.
             let session = StreamSession()
             streamSession = session
             startMetricsPolling(session: session)
@@ -323,6 +333,8 @@ final class StreamSessionViewModel: ObservableObject {
     }
 
     private func startMetricsPolling(session: StreamSession) {
+        // Polling reads the thread-safe core snapshot off actor, then publishes one coherent group
+        // of values on MainActor for SwiftUI.
         metricsTask?.cancel()
         metricsTask = Task { [weak self] in
             while !Task.isCancelled {

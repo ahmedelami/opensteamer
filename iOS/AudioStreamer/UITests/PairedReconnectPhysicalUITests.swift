@@ -7,16 +7,19 @@ import XCTest
 /// a failure, never a skip.
 @MainActor
 final class PairedReconnectPhysicalUITests: XCTestCase {
+    /// Internal sentinel used when an accessibility oracle rejects otherwise reachable UI.
     private enum PhysicalValidationError: Error {
         case oracleRejected
     }
 
+    /// Screen evidence retained across a stability interval for final cross-checks and attachments.
     private struct LiveScreenEvidence {
         let showAcknowledgement: PhysicalScreenAcknowledgementSnapshot
         let initialVideoSnapshot: PhysicalVideoRenderSnapshot
         let finalVideoSnapshot: PhysicalVideoRenderSnapshot
     }
 
+    /// Route and final monotonic audio snapshot from one verified playback window.
     private struct LivePlaybackEvidence {
         let route: String
         let finalAudioSnapshot: PhysicalAudioPlayoutSnapshot
@@ -206,6 +209,9 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
         app.terminate()
     }
 
+    // MARK: - Production app lifecycle and connection assertions
+
+    /// Terminates and relaunches the production bundle without replacing its Keychain container.
     private func hardLaunch() {
         app.terminate()
         app.launch()

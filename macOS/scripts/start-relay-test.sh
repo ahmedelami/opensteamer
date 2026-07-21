@@ -1,4 +1,17 @@
 #!/bin/zsh
+# Starts the legacy relay diagnostic stack in detached `screen` sessions.
+#
+# Prerequisites: SwiftPM, GNU screen, installed RelayBridge npm dependencies, and optionally
+# `cloudflared`. Set MCAP_TOKEN (preferred) or RELAY_TOKEN before running. The launcher embeds the
+# value in short-lived detached shell commands before exporting it, so privileged local process
+# inspection may observe it during startup even though the scripts do not deliberately log it.
+#
+# The script replaces any existing sessions named `audiostreamer-capture`,
+# `audiostreamer-bridge`, and `audiostreamer-tunnel`, truncates their logs under
+# `/tmp/audiostreamer`, then starts CaptureServer and the localhost WebSocket bridge. When available,
+# cloudflared exposes the bridge through a temporary public tunnel. Detached sessions continue after
+# this launcher exits and must be stopped separately. Missing authentication is fatal; missing
+# cloudflared emits a warning but does not make the attempt to start the local two-process stack fail.
 set -eu
 
 TOKEN="${MCAP_TOKEN:-${RELAY_TOKEN:-}}"
@@ -17,6 +30,7 @@ screen -S audiostreamer-capture -X quit >/dev/null 2>&1 || true
 screen -S audiostreamer-bridge -X quit >/dev/null 2>&1 || true
 screen -S audiostreamer-tunnel -X quit >/dev/null 2>&1 || true
 
+# Logs are per-machine diagnostics, not durable validation artifacts; each launch starts them empty.
 : > "$LOG_DIR/capture-server.log"
 : > "$LOG_DIR/relay-bridge.log"
 : > "$LOG_DIR/cloudflared.log"
@@ -28,6 +42,7 @@ screen -dmS audiostreamer-bridge /bin/zsh -lc "cd '$ROOT/macOS/RelayBridge' && e
 sleep 2
 
 if command -v cloudflared >/dev/null 2>&1; then
+  # Quick Tunnel assignment and its public URL are emitted asynchronously into cloudflared.log.
   screen -dmS audiostreamer-tunnel /bin/zsh -lc "exec cloudflared tunnel --url http://127.0.0.1:8787 >> '$LOG_DIR/cloudflared.log' 2>&1"
 else
   echo "cloudflared is not installed. Install it with: brew install cloudflared" >&2

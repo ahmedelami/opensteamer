@@ -2,6 +2,12 @@ import CoreMedia
 import Foundation
 import Streaming
 
+/// Converts captured audio callbacks into the project's framed PCM wire format.
+///
+/// Both capture backends feed this type from framework-owned threads. The private
+/// queue owns all mutable counters, converter state, and sink ordering; `completion`
+/// prevents `finish()` from racing accepted work. The unchecked conformance is
+/// therefore limited to that explicit queue boundary.
 final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
     private let sink: PCMFrameSink
     private let logger: Logger
@@ -21,11 +27,13 @@ final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
     private var firstError: Error?
     private var diagnosticBuffersLogged = 0
 
+    /// Creates a processor for one sink; processors are not reused across streams.
     init(sink: PCMFrameSink, logger: Logger) {
         self.sink = sink
         self.logger = logger
     }
 
+    /// Enqueues a ScreenCaptureKit `CMSampleBuffer` for serialized extraction.
     func enqueue(_ sampleBuffer: CMSampleBuffer) {
         completion.enter()
         let callbackTime = DispatchTime.now().uptimeNanoseconds
@@ -35,6 +43,7 @@ final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
         }
     }
 
+    /// Enqueues already-decoded PCM from the Core Audio input backend.
     func enqueue(_ pcm: PCMBuffer, presentationTimestampNanoseconds: UInt64?) {
         completion.enter()
         let callbackTime = DispatchTime.now().uptimeNanoseconds
@@ -44,6 +53,7 @@ final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
         }
     }
 
+    /// Drains accepted callbacks and either returns final counters or the first error.
     func finish() throws -> StreamingProcessingSummary {
         completion.wait()
         var result: Result<StreamingProcessingSummary, Error>!
@@ -67,6 +77,7 @@ final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
         return try result.get()
     }
 
+    /// Returns an immutable progress snapshot taken on the ownership queue.
     func latestSnapshot() -> StreamingMetricsSnapshot {
         queue.sync {
             StreamingMetricsSnapshot(
@@ -79,6 +90,7 @@ final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
         }
     }
 
+    /// Extracts one CoreMedia buffer; must run only on the processor queue.
     private func process(_ sampleBuffer: CMSampleBuffer, callbackTime: UInt64) {
         guard firstError == nil else { return }
         guard sampleBuffer.isValid, CMSampleBufferDataIsReady(sampleBuffer) else {
@@ -96,6 +108,7 @@ final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
         }
     }
 
+    /// Frames decoded PCM and sends it in sequence order to the transport sink.
     private func process(_ pcm: PCMBuffer, callbackTime: UInt64, presentationTimestampNanoseconds: UInt64?) {
         callbackStatistics.recordCallback(
             uptimeNanoseconds: callbackTime,
@@ -123,6 +136,7 @@ final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
         logDiagnosticsIfNeeded(pcm: pcm, metrics: metrics)
 
         let pcmBytes = converter.convertInterleavedFloat(pcm.samples)
+        // Sequence and source time are transport metadata; PCM stays signed 16-bit LE.
         let metadata = PCMPacketMetadata(
             sequence: sequence,
             presentationTimestampNanoseconds: presentationTimestampNanoseconds ?? 0,
@@ -135,6 +149,7 @@ final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
         bytesStreamed += Int64(pcmBytes.count)
     }
 
+    /// Computes levels before quantization so diagnostics reflect the captured signal.
     private func computeMetrics(samples: [Float], frameCount: Int, channels: Int) -> AudioMetrics {
         guard !samples.isEmpty else {
             return AudioMetrics(rms: 0, peak: 0, frameCount: frameCount, channels: channels)
@@ -152,6 +167,7 @@ final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
         return AudioMetrics(rms: sqrt(sumSquares / Float(samples.count)), peak: peak, frameCount: frameCount, channels: channels)
     }
 
+    /// Logs only a bounded startup sample to diagnose format/routing failures safely.
     private func logDiagnosticsIfNeeded(pcm: PCMBuffer, metrics: AudioMetrics) {
         guard diagnosticBuffersLogged < 5 else { return }
         diagnosticBuffersLogged += 1
@@ -174,6 +190,7 @@ final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
 }
 
 private extension CMTime {
+    /// Converts a valid, nonnegative media time without overflowing nanoseconds.
     var nonNegativeNanoseconds: UInt64? {
         guard isValid, !isIndefinite, timescale > 0, value >= 0 else {
             return nil
@@ -193,6 +210,7 @@ private extension CMTime {
     }
 }
 
+/// Immutable progress counters for a running streaming processor.
 struct StreamingMetricsSnapshot: Sendable {
     let callbackStatistics: CallbackStatistics
     let latestMetrics: AudioMetrics?
@@ -201,6 +219,7 @@ struct StreamingMetricsSnapshot: Sendable {
     let packetsStreamed: Int64
 }
 
+/// Final streaming counters returned after the processing queue drains.
 struct StreamingProcessingSummary: Sendable {
     let streamFormat: StreamAudioFormat?
     let callbackStatistics: CallbackStatistics

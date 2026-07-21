@@ -1,6 +1,8 @@
 import Testing
 @testable import WebRTCTransport
 
+/// Pins SDP scope inheritance and candidate-to-media matching so delayed candidates cannot cross
+/// an ICE generation or exploit ambiguous MID/m-line locators.
 struct ICEUsernameFragmentParserTests {
     @Test func sessionDescriptionCollectsEveryICEUsernameFragment() {
         let sdp = """

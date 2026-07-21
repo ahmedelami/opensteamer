@@ -1,6 +1,9 @@
 import Foundation
 import Network
 
+/// Discovers legacy `_mcap._tcp` publishers on the local network and publishes sorted snapshots.
+/// Network.framework callbacks stay on a private queue; consumers are responsible for hopping to
+/// their required actor when updating UI state.
 final class BonjourBrowser {
     private let queue = DispatchQueue(label: "AudioStreamer.BonjourBrowser")
     private var browser: NWBrowser?
@@ -9,6 +12,7 @@ final class BonjourBrowser {
     var onError: @Sendable (String) -> Void = { _ in }
 
     func start() {
+        // A single NWBrowser owns one discovery lifetime. Repeated SwiftUI task starts are safe.
         guard browser == nil else { return }
 
         let parameters = NWParameters.tcp
@@ -39,6 +43,7 @@ final class BonjourBrowser {
     }
 
     func stop() {
+        // NWBrowser instances cannot be restarted after cancellation; clear it for the next start.
         browser?.cancel()
         browser = nil
     }

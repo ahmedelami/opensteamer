@@ -1,6 +1,11 @@
 import Combine
 import Foundation
 
+/// Main-actor bridge between an editable credential field and durable Keychain storage.
+///
+/// Non-empty edits persist eagerly. Empty values are ignored unless the user invokes the explicit
+/// clear action, preventing SwiftUI reconstruction, protected-data transitions, and app updates
+/// from accidentally deleting the last usable credential.
 @MainActor
 final class RemoteTokenState: ObservableObject {
     @Published var token = "" {
@@ -37,6 +42,7 @@ final class RemoteTokenState: ObservableObject {
     }
 
     func loadIfNeeded() {
+        // A local edit always wins over a late retry of failed Keychain hydration.
         guard loadState != .loaded, !hasUnpersistedUserEdit else { return }
         loadState = .loading
 
@@ -60,6 +66,7 @@ final class RemoteTokenState: ObservableObject {
         persistUserEditIfSafe()
     }
 
+    /// Deletes the durable credential and only clears the binding after deletion succeeds.
     @discardableResult
     func clearSavedCode() -> Bool {
         do {

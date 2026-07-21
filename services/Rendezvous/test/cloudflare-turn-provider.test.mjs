@@ -6,6 +6,8 @@ import {
   normalizeCloudflareIceServers,
 } from "../src/cloudflare-turn-provider.mjs";
 
+// Security oracle: only strict Cloudflare-hosted ICE responses are accepted, bounded reads cannot
+// exhaust memory, and every upstream failure becomes a non-secret-bearing public error.
 const validPayload = () => ({
   iceServers: [
     { urls: ["stun:stun.cloudflare.com:3478", "stun:stun.cloudflare.com:53"] },

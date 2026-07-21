@@ -1,5 +1,6 @@
 import Foundation
 
+/// Final measurements and output location for a file-backed capture session.
 public struct CaptureReport: Sendable {
     public var duration: TimeInterval
     public var outputURL: URL
@@ -9,6 +10,7 @@ public struct CaptureReport: Sendable {
     public var framesWritten: Int64
     public var bytesWritten: Int64
 
+    /// Renders a stable, human-readable summary for command-line diagnostics.
     public func render() -> String {
         var lines: [String] = []
         lines.append("")

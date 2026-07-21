@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import WebRTCTransport
 
+/// Abstracts the process-wide WebRTC audio device for deterministic lifecycle tests.
 @MainActor
 protocol WorldwideAudioPlaybackManaging: AnyObject {
     var requiresRuntimePlayoutProof: Bool { get }
@@ -12,6 +13,7 @@ protocol WorldwideAudioPlaybackManaging: AnyObject {
     func deactivate()
 }
 
+/// Now Playing and bounded transition-task operations required by worldwide playback.
 @MainActor
 protocol BackgroundPlaybackCoordinating: AnyObject {
     func beginTransitionTask()
@@ -20,6 +22,7 @@ protocol BackgroundPlaybackCoordinating: AnyObject {
     func clear()
 }
 
+/// AVAudioSession event source consumed by the worldwide audio policy.
 @MainActor
 protocol AudioSessionEventMonitoring: AnyObject {
     var onInterruptionBegan: (() -> Void)? { get set }
@@ -32,6 +35,7 @@ protocol AudioSessionEventMonitoring: AnyObject {
     func stopObserving()
 }
 
+/// Per-track audio gate. It is intentionally separate from WebRTC's process-wide native gate.
 @MainActor
 protocol WorldwideRemoteAudioControlling: AnyObject {
     func setEnabled(_ enabled: Bool)
@@ -44,6 +48,7 @@ extension BackgroundPlaybackCoordinator: BackgroundPlaybackCoordinating {}
 extension AudioSessionManager: AudioSessionEventMonitoring {}
 extension WebRTCRemoteAudioTrack: WorldwideRemoteAudioControlling {}
 
+/// UI-facing projection of the worldwide audio policy's independently tracked readiness gates.
 struct WorldwideAudioLifecycleSnapshot: Equatable {
     let stateText: String
     let isRemoteAudioAvailable: Bool
@@ -144,6 +149,8 @@ final class WorldwideAudioLifecycleController {
             diagnosticText: playbackDiagnosticText
         )
     }
+
+    // MARK: - Session and application lifecycle
 
     func prepare(serverName: String) {
         guard !isPrepared else {
@@ -325,6 +332,8 @@ final class WorldwideAudioLifecycleController {
         }
     }
 
+    // MARK: - System event handling
+
     private func callActivityChanged(isActive: Bool) {
         guard isPrepared, isActive != isBlockedByCall else { return }
         isBlockedByCall = isActive
@@ -457,6 +466,8 @@ final class WorldwideAudioLifecycleController {
         }
         return isBlockedByCall
     }
+
+    // MARK: - Derived policy state
 
     private var isPlaying: Bool {
         shouldEnableRemoteAudio && runtimePlayoutIsReady

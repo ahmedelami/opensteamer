@@ -2,6 +2,11 @@ import CryptoKit
 import RemoteSessionCore
 import SwiftUI
 
+/// Discovery and connection surface for both legacy streams and authenticated worldwide sessions.
+///
+/// The view keeps editable form state local, while durable credentials live in Keychain-backed
+/// state objects and active media lives in environment-owned models. `WorldwidePresentation`
+/// reduces those independent sources to one mutually exclusive UI surface before rendering.
 struct BrowserView: View {
     /// Commits a prepared signaling client to the process-wide media owner without allowing a
     /// superseded preparation task to cross an asynchronous boundary and mutate current UI state.
@@ -28,6 +33,7 @@ struct BrowserView: View {
         }
     }
 
+    /// Immutable inputs to the worldwide presentation reducer.
     struct WorldwidePresentationInput: Equatable {
         let hasActiveSession: Bool
         let activeStateText: String
@@ -46,6 +52,9 @@ struct BrowserView: View {
         let invitationExpiresAt: Date?
     }
 
+    /// Complete, deterministic description of the single worldwide card shown to the user.
+    /// Modeling this separately from SwiftUI prevents simultaneous bootstrap, reconnect, and
+    /// active-session actions when asynchronous owners change in the same render pass.
     struct WorldwidePresentation: Equatable {
         struct ActiveSession: Equatable {
             let stateText: String
@@ -182,6 +191,8 @@ struct BrowserView: View {
     @AppStorage("debugWorldwideRendezvousEndpoint")
     private var debugWorldwideRendezvousEndpoint = "ws://127.0.0.1:8788"
     #endif
+
+    // MARK: - View composition
 
     var body: some View {
         let presentation = worldwidePresentation
@@ -654,6 +665,8 @@ struct BrowserView: View {
         )
     }
 
+    // MARK: - Presentation reduction
+
     /// Selects exactly one Connect-from-Anywhere surface. Status and invitation metadata are
     /// reduced with the same precedence and explicit fresh-attempt retirement boundary.
     static func worldwidePresentation(
@@ -811,6 +824,8 @@ struct BrowserView: View {
             invitationExpiresAt: nil
         )
     }
+
+    // MARK: - Connection actions
 
     private func connectRemote() {
         // The legacy PCM renderer and worldwide WebRTC renderer both own the process-wide
@@ -1010,6 +1025,7 @@ struct BrowserView: View {
     }
 }
 
+/// Compact local-discovery row that keeps compatibility detail visible before connection.
 private struct ServerRow: View {
     let server: ServerInfo
 

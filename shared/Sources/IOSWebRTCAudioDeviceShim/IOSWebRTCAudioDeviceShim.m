@@ -6,6 +6,9 @@
 #import <os/lock.h>
 #import <stdatomic.h>
 
+// The custom iOS device owns a single output-only RemoteIO path. Native lifecycle work stays on
+// WebRTC's ADM queue; the realtime callback performs bounded PCM analysis using lock-free atomics
+// and never opens the microphone, allocates, or dispatches application work.
 static const double ASSampleRate = 48000.0;
 static const NSTimeInterval ASIOBufferDuration = 0.010;
 static const UInt32 ASOutputChannelCount = 2;

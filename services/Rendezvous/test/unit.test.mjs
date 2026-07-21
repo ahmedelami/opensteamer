@@ -6,6 +6,8 @@ import { decodeAdmissionProof, validateJoin, validateSignal } from "../src/proto
 import { FixedWindowLimiter } from "../src/rate-limiter.mjs";
 import { buildIceServers, createTurnCredential } from "../src/turn-credentials.mjs";
 
+// Unit oracles cover configuration fail-closed behavior, canonical wire formats, bounded counters,
+// and deterministic TURN credential generation without using any deployable secrets.
 test("configuration validates TURN authentication and URL schemes", () => {
   assert.throws(
     () => loadConfig({ TURN_URLS: "turn:turn.example.com:3478" }),

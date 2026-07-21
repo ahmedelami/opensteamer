@@ -2,6 +2,8 @@ import Foundation
 @testable import WebRTCTransport
 import XCTest
 
+/// Uses platform-neutral records to verify extraction of route, concealment, jitter-buffer,
+/// sender, and remote-inbound evidence without requiring a live connection.
 final class WebRTCStatisticsParserTests: XCTestCase {
     func testParsesInboundAudioConcealmentAndJitterBufferEvidence() throws {
         let snapshot = WebRTCStatisticsParser.parse(records: [

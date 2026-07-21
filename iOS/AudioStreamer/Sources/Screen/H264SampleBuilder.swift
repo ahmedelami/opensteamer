@@ -1,6 +1,7 @@
 @preconcurrency import CoreMedia
 import Foundation
 
+/// Failures while converting validated H.264 wire data into Core Media objects.
 enum H264SampleBuilderError: LocalizedError {
     case missingParameterSet
     case invalidNALUnitHeaderLength(Int)
@@ -27,6 +28,9 @@ enum H264SampleBuilderError: LocalizedError {
     }
 }
 
+/// Builds display-ready Core Media samples from AVCC-formatted H.264 access units.
+/// The format description owns copied SPS/PPS metadata, while each generated block buffer owns a
+/// copy of its frame bytes so transport storage may be released immediately after this call.
 struct H264SampleBuilder {
     let formatDescription: CMVideoFormatDescription
 
@@ -115,6 +119,9 @@ struct H264SampleBuilder {
             sampleBuffer,
             createIfNecessary: true
         ) {
+            // The stream carries its own presentation clock. Display immediately avoids the sample
+            // layer buffering against an unrelated local host clock; NotSync preserves key-frame
+            // semantics for decoder recovery.
             let rawDictionary = CFArrayGetValueAtIndex(attachments, 0)
             let dictionary = Unmanaged<CFMutableDictionary>
                 .fromOpaque(rawDictionary!)
@@ -137,6 +144,9 @@ struct H264SampleBuilder {
 }
 
 private extension Array where Element == Data {
+    /// Keeps every Data backing store alive while Core Media reads the full pointer table.
+    /// Recursive nesting is required because a pointer obtained from one `withUnsafeBytes` call
+    /// is valid only for that closure's dynamic extent.
     func withUnsafeH264ParameterSetPointers<R>(
         _ body: (
             UnsafeBufferPointer<UnsafePointer<UInt8>>,

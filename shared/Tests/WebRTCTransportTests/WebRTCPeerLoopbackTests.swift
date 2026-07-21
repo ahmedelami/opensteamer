@@ -7,6 +7,8 @@ import RemoteSessionCore
 @testable import WebRTCTransport
 import XCTest
 
+/// Exercises two real in-process native peers. Milestones, exact signaling counts, decoded PCM
+/// waveform evidence, media frames, and authorization revocation form the end-to-end oracles.
 final class WebRTCPeerLoopbackTests: XCTestCase {
 #if DEBUG
     func testFailedVisibilitySendStillRevokesViewerInputSynchronously() async throws {
@@ -968,6 +970,7 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
     }
 }
 
+/// Suspends the second answer so restart-generation ordering can be asserted deterministically.
 private actor SecondAnswerDeliveryGate {
     private var isReleased = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -990,11 +993,13 @@ private actor SecondAnswerDeliveryGate {
     }
 }
 
+/// Identifies which in-process peer emitted a recorded event.
 private enum LoopbackSide: Sendable {
     case host
     case viewer
 }
 
+/// Semantic outcomes required before the end-to-end loopback oracle may pass.
 private enum LoopbackMilestone: Hashable, Sendable {
     case hostConnected
     case viewerConnected
@@ -1019,6 +1024,7 @@ private enum LoopbackMilestone: Hashable, Sendable {
     case postRestartShowAcknowledged
 }
 
+/// Per-kind signaling counts used to detect duplicates, omissions, or restart leakage.
 private struct SignalCounts: Equatable, Sendable {
     var offers = 0
     var answers = 0
@@ -1041,6 +1047,7 @@ private struct SignalCounts: Equatable, Sendable {
     }
 }
 
+/// Signaling counts split by host and viewer direction.
 private struct DirectionalSignalCounts: Equatable, Sendable {
     var host = SignalCounts()
     var viewer = SignalCounts()
@@ -1053,6 +1060,7 @@ private struct DirectionalSignalCounts: Equatable, Sendable {
     }
 }
 
+/// Lock-consistent observation of milestones, signaling, routes, and failures.
 private struct LoopbackSnapshot: Sendable {
     let milestones: Set<LoopbackMilestone>
     let emitted: DirectionalSignalCounts
@@ -1082,6 +1090,7 @@ private struct LoopbackSnapshot: Sendable {
 
 }
 
+/// Serializes cross-peer events and exposes deterministic milestone snapshots to the test.
 private actor LoopbackRecorder {
     private var milestones: Set<LoopbackMilestone> = []
     private var emitted = DirectionalSignalCounts()
@@ -1247,6 +1256,7 @@ private actor LoopbackRecorder {
     }
 }
 
+/// XCTest expectations corresponding to externally observable loopback milestones.
 private final class LoopbackExpectations: @unchecked Sendable {
     let hostConnected = XCTestExpectation(description: "host connected")
     let viewerConnected = XCTestExpectation(description: "viewer connected")
@@ -1363,6 +1373,7 @@ private func assertHighFidelityOpusPolicy(
     )
 }
 
+/// Minimal decoded-PCM measurement used by focused stereo loopback assertions.
 private struct DecodedAudioMeasurement: Sendable {
     let channelCount: Int
     let frameCount: Int
@@ -1383,7 +1394,9 @@ private struct DecodedAudioMeasurement: Sendable {
     )
 }
 
+/// Thread-safe PCM sink that recognizes deterministic channel-specific loopback challenges.
 private final class DecodedAudioProbe: @unchecked Sendable {
+    /// The channel relationship encoded by the active challenge.
     enum Mode: Sendable {
         case rightOnly
         case antiPhase
@@ -1393,6 +1406,7 @@ private final class DecodedAudioProbe: @unchecked Sendable {
         description: "viewer decoded qualifying two-channel PCM from the host"
     )
 
+    /// One decoded callback converted to channel metrics.
     private struct Batch {
         let channelCount: Int
         let frameCount: Int
@@ -1772,6 +1786,7 @@ private func makeStereoFloatToneSampleBuffer(
     return sampleBuffer
 }
 
+/// Construction failures for synthetic host audio buffers.
 private enum AudioSampleBufferTestError: Error {
     case blockBufferCreationFailed(OSStatus)
     case blockBufferCopyFailed(OSStatus)
@@ -1779,6 +1794,7 @@ private enum AudioSampleBufferTestError: Error {
     case sampleBufferCreationFailed(OSStatus)
 }
 
+/// Construction failures for synthetic host video buffers.
 private enum PixelBufferTestError: Error {
     case creationFailed(CVReturn)
 }

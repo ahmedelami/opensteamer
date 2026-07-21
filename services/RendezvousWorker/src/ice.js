@@ -1,3 +1,5 @@
+// ICE provisioning runs inside the Worker so TURN API credentials never reach either media peer.
+// Every upstream value is treated as untrusted and normalized before it enters a ready message.
 const TURN_ENDPOINT = "https://rtc.live.cloudflare.com/v1/turn/keys";
 // Cloudflare's port 53 is only an alternate STUN endpoint and is blocked on some
 // networks. Advertising it alongside the reachable primary endpoint causes native
@@ -24,6 +26,7 @@ const validOpaque = (value) =>
   utf8Length(value) <= MAX_CREDENTIAL_BYTES &&
   !/\s|[\u0000-\u001f\u007f]/.test(value);
 
+/** Stable, intentionally non-diagnostic error for all TURN provisioning failures. */
 export class TurnProvisioningError extends Error {
   constructor() {
     super("TURN credentials are temporarily unavailable");
@@ -107,6 +110,7 @@ const normalizeUrls = (
   return { family, urls };
 };
 
+/** Returns the validated public STUN configuration advertised when managed TURN is absent. */
 export function configuredStunServers(env) {
   const raw = typeof env.STUN_URLS === "string" ? env.STUN_URLS : DEFAULT_STUN_URLS;
   const candidates = raw
@@ -118,6 +122,12 @@ export function configuredStunServers(env) {
   return [{ urls }];
 }
 
+/**
+ * Validates Cloudflare's managed TURN response using exact schemas and an ICE host allow-list.
+ *
+ * @param {unknown} payload Untrusted upstream JSON.
+ * @returns {Array<object>} Sanitized WebRTC ICE server descriptors.
+ */
 export function normalizeCloudflareIceServers(payload) {
   if (
     !exactKeys(payload, ["iceServers"]) ||
@@ -206,6 +216,12 @@ async function readBoundedJSON(response) {
   }
 }
 
+/**
+ * Fetches bounded, short-lived TURN credentials without surfacing request metadata on failure.
+ *
+ * @param {Record<string, string | undefined>} env Worker bindings and configuration.
+ * @param {typeof fetch} [fetchImpl] Injectable fetch implementation for unit tests.
+ */
 export async function fetchCloudflareIceServers(env, fetchImpl = fetch) {
   const keyId = typeof env.CLOUDFLARE_TURN_KEY_ID === "string"
     ? env.CLOUDFLARE_TURN_KEY_ID.trim()
@@ -243,12 +259,18 @@ export async function fetchCloudflareIceServers(env, fetchImpl = fetch) {
     if (response.status !== 201) throw new TurnProvisioningError();
     return normalizeCloudflareIceServers(await readBoundedJSON(response));
   } catch {
+    // Fetch implementations can include request headers or URLs in thrown errors. Collapse every
+    // failure to a fixed message so a bearer token cannot leak through logs or client responses.
     throw new TurnProvisioningError();
   } finally {
     clearTimeout(timeout);
   }
 }
 
+/**
+ * Produces the ICE list for one authenticated join, preferring managed TURN when configured.
+ * A half-configured key/token pair fails closed instead of silently degrading to STUN-only.
+ */
 export async function iceServersForJoin(env, fetchImpl = fetch) {
   const hasKey = typeof env.CLOUDFLARE_TURN_KEY_ID === "string" &&
     env.CLOUDFLARE_TURN_KEY_ID.trim().length > 0;

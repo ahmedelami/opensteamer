@@ -1,6 +1,11 @@
 import SwiftUI
 import WebRTCTransport
 
+/// Privacy-bounded full-screen WebRTC renderer and remote-input surface.
+///
+/// Rendering and input are allowed only while this exact presentation lease remains current and
+/// the scene is active. UIKit is used only by the nested WebRTC renderer and keyboard responder
+/// bridges; SwiftUI retains ownership of presentation, gestures, and lifecycle state.
 struct WorldwideScreenViewerView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var viewModel: WorldwideSessionViewModel
@@ -36,6 +41,9 @@ struct WorldwideScreenViewerView: View {
                                 }
                         )
                         .simultaneousGesture(
+                            // Long press distinguishes intentional selection/drag from an ordinary
+                            // tap. Capturing the input-session ID and geometry at recognition time
+                            // fences a gesture that outlives focus, peer, or orientation changes.
                             LongPressGesture(minimumDuration: 0.35, maximumDistance: 12)
                                 .sequenced(
                                     before: DragGesture(
@@ -118,6 +126,8 @@ struct WorldwideScreenViewerView: View {
                 onDeleteBackward: viewModel.sendRemoteBackspace,
                 onReturn: viewModel.sendRemoteReturn
             )
+            // The proxy participates in UIKit's responder chain but must never become a visible or
+            // hittable second input surface over the remote video.
             .frame(width: 1, height: 1)
             .opacity(0.01)
             .allowsHitTesting(false)
@@ -225,6 +235,8 @@ struct WorldwideScreenViewerView: View {
     }
 
     private func hideAndDismiss() {
+        // Close the local input gate synchronously, then dismiss after the owned remote Hide is
+        // acknowledged. If this lease already lost ownership, dismissal is safe immediately.
         allowsRemoteInputPresentation = false
         let claimed = viewModel.beginPassiveScreenTeardown(for: lease) {
             dismissPresentation(lease)
@@ -317,6 +329,7 @@ struct WorldwideScreenViewerView: View {
     }
 }
 
+/// Snapshot of gesture ownership that must remain unchanged until a primary drag completes.
 private struct PrimaryDragContext: Equatable {
     let inputSessionID: UUID
     let containerSize: CGSize

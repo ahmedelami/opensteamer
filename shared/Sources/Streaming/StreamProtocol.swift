@@ -1,5 +1,6 @@
 import Foundation
 
+/// Constants for the legacy length-prefixed PCM stream protocol.
 public enum PCMStreamProtocol {
     public static let magic = "MCAP"
     public static let version: UInt16 = 1
@@ -10,6 +11,7 @@ public enum PCMStreamProtocol {
     public static let maximumPacketByteCount: UInt32 = 1_048_576
 }
 
+/// Audio format negotiated once at the start of a legacy PCM stream.
 public struct PCMStreamHeader: Sendable {
     public let sampleRate: UInt32
     public let channels: UInt16
@@ -29,6 +31,7 @@ public struct PCMStreamHeader: Sendable {
     }
 }
 
+/// Sequence and presentation metadata carried before each PCM payload.
 public struct PCMPacketMetadata: Sendable {
     public let sequence: UInt32
     public let presentationTimestampNanoseconds: UInt64

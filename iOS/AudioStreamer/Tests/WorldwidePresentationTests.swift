@@ -1,6 +1,9 @@
 import XCTest
 @testable import AudioStreamer
 
+/// Verifies the pure worldwide-card reducer and prepared-session handoff ownership.
+/// These tests ensure one UI surface wins at a time and a superseded asynchronous close cannot
+/// publish an error or connect a client after a replacement preparation owns the generation.
 @MainActor
 final class WorldwidePresentationTests: XCTestCase {
     func testSupersededPreparedSessionCannotConnectAtHandoffEntry() async {
@@ -369,6 +372,8 @@ final class WorldwidePresentationTests: XCTestCase {
         XCTAssertEqual(presentation.accessibilityValue, "bootstrap")
     }
 
+    // MARK: - Pure presentation fixtures
+
     private func pairedMac(
         isPairingActive: Bool = true
     ) -> BrowserView.WorldwidePresentation.PairedMac {
@@ -409,6 +414,7 @@ final class WorldwidePresentationTests: XCTestCase {
     }
 }
 
+/// Simulates a close operation that ignores cancellation until the test explicitly releases it.
 private actor NonCooperativePreparedSessionCloseGate {
     private var continuation: CheckedContinuation<Void, Never>?
     private var isSuspended = false

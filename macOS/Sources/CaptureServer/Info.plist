@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<!--
+  SwiftPM executable metadata for local CaptureServer runs. Distribution uses the canonical
+  MacCaptureHost template, while these usage descriptions keep development capture prompts
+  explicit and attributable to the same bundle identifier.
+-->
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>

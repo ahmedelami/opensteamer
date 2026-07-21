@@ -3,8 +3,13 @@ import Foundation
 import RemoteSessionCore
 import Server
 
+/// Process entry point that composes trusted-LAN capture and the secure worldwide host.
+///
+/// Startup proceeds from exclusive process ownership through listeners and coordinators;
+/// teardown runs in reverse so no capture callback or WebSocket outlives its dependency.
 @main
 struct CaptureServerMain {
+    /// Parses configuration, starts enabled services, and exits nonzero on any fatal failure.
     static func main() async {
         do {
             let options = try CaptureServerOptions.parse(CommandLine.arguments)
@@ -28,6 +33,7 @@ struct CaptureServerMain {
                 return
             }
 
+            // Worldwide signaling is singleton state for this account and durable pairing record.
             let worldwideHostProcessLock: WorldwideHostProcessLock?
             if options.worldwideEnabled {
                 worldwideHostProcessLock = try WorldwideHostProcessLock.acquire()
@@ -225,6 +231,7 @@ struct CaptureServerMain {
         }
     }
 
+    /// Converts Unix termination into orderly worldwide cleanup before re-raising the signal.
     private static func makeCoexistenceTerminationTask(
         coordinator: WorldwideHostCoordinator?,
         terminationSignals: ProcessTerminationSignalMonitor?
@@ -268,6 +275,7 @@ struct CaptureServerMain {
         }
     }
 
+    /// Races coordinator failure, process termination, and an optional bounded duration.
     private static func waitForWorldwideHost(
         _ coordinator: WorldwideHostCoordinator,
         duration: TimeInterval?,
@@ -304,6 +312,7 @@ struct CaptureServerMain {
         }
     }
 
+    /// Emits periodic transport snapshots until the enclosing server task is cancelled.
     private static func monitorServer(
         server: TCPServer,
         screenService: ScreenVideoService?,
@@ -337,17 +346,20 @@ struct CaptureServerMain {
     }
 }
 
+/// First terminal condition observed while running worldwide-only mode.
 private enum WorldwideHostWaitOutcome: Equatable {
     case coordinatorEnded
     case durationElapsed
     case terminationSignal
 }
 
+/// Competing result when trusted-LAN and worldwide modes share a process.
 private enum CoexistenceOutcome: Sendable {
     case lanFinished(StreamingCaptureReport)
     case worldwideEnded
 }
 
+/// Fatal service-composition failures handled by the process entry point.
 private enum CaptureServerMainError: LocalizedError {
     case noEnabledService
     case worldwideHostEndedDuringLAN

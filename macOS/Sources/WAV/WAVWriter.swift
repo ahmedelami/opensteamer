@@ -1,5 +1,10 @@
 import Foundation
 
+/// Thread-safe writer for interleaved float samples stored as PCM16 RIFF/WAVE.
+///
+/// The lock owns the file handle, reusable conversion buffer, and counters. `start`,
+/// append calls, and `finish` therefore form one serialized file lifecycle even if a
+/// capture callback and teardown arrive on different queues.
 public final class WAVWriter: @unchecked Sendable {
     private let url: URL
     private let sampleRate: Double
@@ -10,12 +15,14 @@ public final class WAVWriter: @unchecked Sendable {
     private var framesWritten: Int64 = 0
     private var conversionBuffer = Data()
 
+    /// Creates a writer configuration without touching the destination file.
     public init(url: URL, sampleRate: Double, channels: Int) {
         self.url = url
         self.sampleRate = sampleRate
         self.channels = channels
     }
 
+    /// Creates/truncates the destination and writes a placeholder RIFF header.
     public func start() throws {
         lock.lock()
         defer { lock.unlock() }
@@ -26,6 +33,7 @@ public final class WAVWriter: @unchecked Sendable {
         try handle.write(contentsOf: WAVHeader.make(sampleRate: sampleRate, channels: channels, dataSize: 0))
     }
 
+    /// Clips normalized float samples, converts them to little-endian PCM16, and appends.
     public func appendInterleavedFloat(_ samples: [Float]) throws {
         lock.lock()
         defer { lock.unlock() }
@@ -54,6 +62,7 @@ public final class WAVWriter: @unchecked Sendable {
         }
     }
 
+    /// Rewrites final chunk sizes, closes the file, and returns output counters.
     public func finish() throws -> WAVSummary {
         lock.lock()
         defer { lock.unlock() }
@@ -75,12 +84,14 @@ public final class WAVWriter: @unchecked Sendable {
     }
 }
 
+/// Final location and payload counts of a completed WAV file.
 public struct WAVSummary: Sendable {
     public let url: URL
     public let framesWritten: Int64
     public let bytesWritten: Int64
 }
 
+/// Invalid writer lifecycle and RIFF size-limit failures.
 public enum WAVWriterError: LocalizedError {
     case notStarted
     case fileTooLargeForPCM16WAV

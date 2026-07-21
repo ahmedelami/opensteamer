@@ -2,11 +2,13 @@ import CaptureCore
 import Foundation
 import RemoteSessionCore
 
+/// Startup outcome presented by the host process.
 enum WorldwideHostStartResult: Equatable {
     case invitation(String)
     case paired(remoteDisplayName: String?)
 }
 
+/// Injectable paired-availability signaling boundary used by the coordinator.
 protocol WorldwideHostAvailabilityTransport: AnyObject, Sendable {
     func connect() async throws -> PairedAvailabilitySignalingClient.EventStream
     func send(_ payload: RemoteAvailabilityPayload) async throws
@@ -15,7 +17,13 @@ protocol WorldwideHostAvailabilityTransport: AnyObject, Sendable {
 
 extension PairedAvailabilitySignalingClient: WorldwideHostAvailabilityTransport {}
 
+/// Supervises durable pairing, availability signaling, and one active media session.
+///
+/// Actor isolation is the ownership boundary for lifecycle state, cryptographic records,
+/// signaling clients, and child tasks. The rendezvous endpoint carries authenticated
+/// signaling only; `WorldwideScreenService` negotiates end-to-end WebRTC media separately.
 actor WorldwideHostCoordinator {
+    /// Finishes when the host shuts down normally or with a fatal supervision error.
     nonisolated let completion: AsyncThrowingStream<Void, Error>
 
     private let endpoint: URL
@@ -50,6 +58,7 @@ actor WorldwideHostCoordinator {
     private var isStarted = false
     private var isStopped = false
 
+    /// Creates a coordinator with injectable availability and timing dependencies for tests.
     init(
         endpoint: URL,
         forceRelay: Bool,
@@ -99,6 +108,12 @@ actor WorldwideHostCoordinator {
         self.logger = logger
     }
 
+    // MARK: - Host lifecycle
+
+    /// Loads durable identity state, then begins pairing or paired-device availability.
+    ///
+    /// Resetting removes only the viewer binding; the stable Mac identity remains so
+    /// operators do not unexpectedly rotate the host's cryptographic identity.
     func start(resetPairing: Bool) async throws -> WorldwideHostStartResult {
         guard !isStarted, !isStopped else {
             throw WorldwideHostCoordinatorError.invalidLifecycle
@@ -163,10 +178,14 @@ actor WorldwideHostCoordinator {
         }
     }
 
+    /// Performs idempotent, ordered shutdown of every child service and completion stream.
     func stop() async {
         await shutdown(throwing: nil)
     }
 
+    // MARK: - Pairing completion
+
+    /// Promotes an active bootstrap record into durable availability.
     private func pairingDidCommit(
         _ record: RemotePairedDeviceRecord,
         bootstrap: WorldwidePairingBootstrap
@@ -188,6 +207,7 @@ actor WorldwideHostCoordinator {
         startAvailabilityLoop()
     }
 
+    /// Recovers a bootstrap disconnect when a durable commit checkpoint already exists.
     private func pairingBootstrapDidEnd(
         error: any Error,
         bootstrap: WorldwidePairingBootstrap
@@ -216,6 +236,9 @@ actor WorldwideHostCoordinator {
         }
     }
 
+    // MARK: - Availability supervision
+
+    /// Starts exactly one generation-tagged availability supervisor task.
     private func startAvailabilityLoop() {
         guard availabilityTask == nil, !isStopped else { return }
         let generation = UUID()
@@ -236,6 +259,7 @@ actor WorldwideHostCoordinator {
         }
     }
 
+    /// Converts an unsanctioned current-loop exit into a fatal host failure.
     private func availabilityLoopDidEnd(generation: UUID) async {
         guard availabilityGeneration == generation else { return }
         availabilityGeneration = nil
@@ -252,6 +276,10 @@ actor WorldwideHostCoordinator {
         )
     }
 
+    /// Maintains paired availability indefinitely with validated-state exponential backoff.
+    ///
+    /// A WebSocket upgrade alone does not reset backoff: the Worker must first send a
+    /// protocol state proving that this socket owns the host availability role.
     private func runAvailabilityLoop() async {
         var retryPolicy = WorldwideAvailabilityRetryPolicy()
         var retryOrdinal: UInt16 = 0
@@ -324,6 +352,7 @@ actor WorldwideHostCoordinator {
         }
     }
 
+    /// Uses object identity to reject callbacks from a replaced signaling connection.
     private func isCurrentAvailabilityClient(
         _ client: any WorldwideHostAvailabilityTransport
     ) -> Bool {
@@ -331,6 +360,7 @@ actor WorldwideHostCoordinator {
         return ObjectIdentifier(availabilityClient) == ObjectIdentifier(client)
     }
 
+    /// Applies one authenticated availability event to exchange and media ownership.
     private func handleAvailabilityEvent(
         _ event: PairedAvailabilitySignalingEvent,
         client: any WorldwideHostAvailabilityTransport
@@ -382,6 +412,9 @@ actor WorldwideHostCoordinator {
         }
     }
 
+    // MARK: - Pairing recovery
+
+    /// Sends the next crash-recoverable pairing commit required by the stored record.
     private func sendPairingRecoveryIfNeeded(
         client: any WorldwideHostAvailabilityTransport
     ) async throws {
@@ -415,6 +448,7 @@ actor WorldwideHostCoordinator {
         }
     }
 
+    /// Authenticates and persists inbound recovery phases before responding.
     private func handlePairingRecoveryCommit(
         _ commit: RemotePairingCommit,
         client: any WorldwideHostAvailabilityTransport
@@ -448,6 +482,12 @@ actor WorldwideHostCoordinator {
         }
     }
 
+    // MARK: - Media sessions
+
+    /// Authenticates a reconnect request and prepares one fresh WebRTC media rendezvous.
+    ///
+    /// The replay high-water mark is persisted before the response leaves the Mac, so a
+    /// crash can never make the same signed reconnect request valid again.
     private func beginMediaSession(
         request: RemoteReconnectRequest,
         exchangeID: String,
@@ -519,6 +559,7 @@ actor WorldwideHostCoordinator {
         }
     }
 
+    /// Releases only the media service that still owns the active exchange.
     private func mediaDidEnd(
         service: WorldwideScreenService,
         exchangeID: String
@@ -530,6 +571,7 @@ actor WorldwideHostCoordinator {
         logger.info("Worldwide media ended; the Mac remains available for the paired iPhone")
     }
 
+    /// Detaches actor state before awaiting media teardown and clears lifecycle ownership.
     private func stopActiveMediaSession() async {
         mediaCompletionTask?.cancel()
         mediaCompletionTask = nil
@@ -542,6 +584,7 @@ actor WorldwideHostCoordinator {
         }
     }
 
+    /// Escalates a current bootstrap failure into full coordinator shutdown.
     private func fail(
         _ error: any Error,
         bootstrap: WorldwidePairingBootstrap
@@ -551,6 +594,7 @@ actor WorldwideHostCoordinator {
         await shutdown(throwing: error)
     }
 
+    /// Cancels child tasks, closes transports in dependency order, then flushes telemetry.
     private func shutdown(throwing error: (any Error)?) async {
         guard !isStopped else { return }
         isStopped = true
@@ -587,6 +631,9 @@ actor WorldwideHostCoordinator {
         }
     }
 
+    // MARK: - Privacy-preserving telemetry
+
+    /// Records connection state using one-way references instead of raw pair/exchange IDs.
     private func recordConnectionTelemetry(
         _ stage: ConnectionTelemetryStage,
         generation: UUID? = nil,
@@ -624,6 +671,7 @@ actor WorldwideHostCoordinator {
         )
     }
 
+    /// Maps rich local errors into the bounded, non-sensitive telemetry vocabulary.
     private func connectionTelemetryFailure(
         for error: any Error
     ) -> ConnectionTelemetryFailure {
@@ -665,6 +713,7 @@ actor WorldwideHostCoordinator {
     }
 }
 
+/// Fatal lifecycle, authentication-flow, and availability protocol failures.
 enum WorldwideHostCoordinatorError: LocalizedError {
     case invalidLifecycle
     case pairingEndedBeforeCommit
@@ -705,6 +754,7 @@ enum WorldwideHostCoordinatorError: LocalizedError {
 }
 
 private extension PairedAvailabilitySignalingEvent {
+    /// Whether this event proves the current socket has a valid host role at the Worker.
     var validatesHostAvailability: Bool {
         switch self {
         case .waiting, .ready:

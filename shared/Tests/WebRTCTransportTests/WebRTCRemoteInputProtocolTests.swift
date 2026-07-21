@@ -3,6 +3,8 @@ import Dispatch
 @testable import WebRTCTransport
 import XCTest
 
+/// Proves strict remote-input wire shapes, capability and focus binding, secret-text non-retention,
+/// and synchronous authorization revocation at native and actor boundaries.
 final class WebRTCRemoteInputProtocolTests: XCTestCase {
     private let sessionID = UUID(uuidString: "8D18B56A-302A-4EC2-A3DA-1070491D7814")!
 

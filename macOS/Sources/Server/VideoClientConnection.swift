@@ -3,7 +3,13 @@ import Foundation
 import Network
 import Streaming
 
+/// Owns authentication, bidirectional control framing, and ordered writes for one viewer.
+///
+/// All mutable state is confined to the `VideoTCPServer` queue supplied to `start`.
+/// Authentication must finish before the video preamble or any encoded packet is sent;
+/// configured tokens are compared in memory and never logged or persisted.
 final class VideoClientConnection: @unchecked Sendable {
+    /// One complete serialized write plus whether it contributes to packet counters.
     private struct PendingSend {
         let data: Data
         let countsAsPacket: Bool
@@ -27,6 +33,7 @@ final class VideoClientConnection: @unchecked Sendable {
         sendQueue.filter(\.countsAsPacket).count
     }
 
+    /// Creates one unauthenticated or implicitly authorized viewer connection.
     init(
         connection: NWConnection,
         logger: Logger,
@@ -44,6 +51,7 @@ final class VideoClientConnection: @unchecked Sendable {
         self.onClose = onClose
     }
 
+    /// Starts network callbacks, authentication timeout, and inbound control parsing.
     func start(on queue: DispatchQueue) {
         logger.info("Screen viewer connected: \(connection.endpoint)")
         connection.stateUpdateHandler = { [weak self] state in
@@ -80,11 +88,13 @@ final class VideoClientConnection: @unchecked Sendable {
         }
     }
 
+    /// Serializes and queues one outbound packet after authorization.
     func sendPacket(_ packet: ScreenVideoPacket) throws {
         guard isAuthorized else { return }
         enqueue(try ScreenVideoFraming.makePacket(packet), countsAsPacket: true)
     }
 
+    /// Cancels authentication work and closes the viewer connection.
     func cancel(reason: String) {
         logger.info("Closing screen viewer: \(reason)")
         authTimeoutWorkItem?.cancel()
@@ -92,6 +102,9 @@ final class VideoClientConnection: @unchecked Sendable {
         connection.cancel()
     }
 
+    // MARK: - Authentication
+
+    /// Crosses the auth boundary once, sends the preamble, and starts control reads.
     private func authorize() {
         guard !isAuthorized || authToken == nil else { return }
         isAuthorized = true
@@ -103,6 +116,7 @@ final class VideoClientConnection: @unchecked Sendable {
         receiveControlPacketHeader()
     }
 
+    /// Validates the fixed auth header before reading its bounded token body.
     private func handleAuthHeader(_ result: Result<Data, Error>) {
         do {
             let header = try result.get()
@@ -116,6 +130,7 @@ final class VideoClientConnection: @unchecked Sendable {
         }
     }
 
+    /// Parses and constant-time compares the received token.
     private func handleAuthToken(_ result: Result<Data, Error>) {
         do {
             let token = try PCMAuthProtocol.parseToken(result.get())
@@ -131,6 +146,9 @@ final class VideoClientConnection: @unchecked Sendable {
         }
     }
 
+    // MARK: - Inbound control packets
+
+    /// Reads one fixed packet header and allowlists viewer-to-host packet types.
     private func receiveControlPacketHeader() {
         receiveExact(byteCount: ScreenVideoProtocol.packetHeaderByteCount) { [weak self] result in
             guard let self else { return }
@@ -155,6 +173,7 @@ final class VideoClientConnection: @unchecked Sendable {
         }
     }
 
+    /// Completes and parses a control packet before scheduling the next header read.
     private func receiveControlPacketPayload(
         header: ScreenVideoPacketHeader,
         headerData: Data
@@ -187,6 +206,7 @@ final class VideoClientConnection: @unchecked Sendable {
         }
     }
 
+    /// Reassembles a protocol field across arbitrary TCP receive boundaries.
     private func receiveExact(
         byteCount: Int,
         accumulated: Data = Data(),
@@ -220,6 +240,9 @@ final class VideoClientConnection: @unchecked Sendable {
         }
     }
 
+    // MARK: - Outbound packets
+
+    /// Applies bounded write backpressure before appending one complete record.
     private func enqueue(_ data: Data, countsAsPacket: Bool) {
         let maximumQueuedWrites = 4
         guard sendQueue.count < maximumQueuedWrites else {
@@ -231,6 +254,7 @@ final class VideoClientConnection: @unchecked Sendable {
         pump()
     }
 
+    /// Keeps one ordered Network.framework send in flight at a time.
     private func pump() {
         guard !isSending, !sendQueue.isEmpty else { return }
         isSending = true
@@ -251,6 +275,7 @@ final class VideoClientConnection: @unchecked Sendable {
         })
     }
 
+    /// Reports terminal connection state exactly once across all callback paths.
     private func reportCloseOnce() {
         guard !didReportClose else { return }
         didReportClose = true
@@ -289,6 +314,7 @@ final class VideoClientConnection: @unchecked Sendable {
         }
     }
 
+    /// Compares equal-length token bytes without content-dependent early exit.
     private static func constantTimeEquals(_ lhs: [UInt8], _ rhs: [UInt8]) -> Bool {
         guard lhs.count == rhs.count else { return false }
         var difference: UInt8 = 0
@@ -299,6 +325,7 @@ final class VideoClientConnection: @unchecked Sendable {
     }
 }
 
+/// Invalid or terminal viewer protocol conditions.
 private enum VideoClientConnectionError: LocalizedError {
     case connectionClosed
     case invalidControlPacket(ScreenVideoPacketType)

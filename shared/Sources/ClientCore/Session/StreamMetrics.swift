@@ -1,5 +1,6 @@
 import Foundation
 
+/// A point-in-time diagnostic snapshot for the legacy PCM receive and playback pipeline.
 public struct StreamMetrics: Sendable, Equatable {
     public let packetsReceived: UInt64
     public let sequenceErrors: UInt64
@@ -16,6 +17,7 @@ public struct StreamMetrics: Sendable, Equatable {
     public let playbackRMS: Float
     public let playbackPeak: Float
 
+    /// Creates a snapshot; defaults describe an idle pipeline with no observed traffic.
     public init(
         packetsReceived: UInt64 = 0,
         sequenceErrors: UInt64 = 0,

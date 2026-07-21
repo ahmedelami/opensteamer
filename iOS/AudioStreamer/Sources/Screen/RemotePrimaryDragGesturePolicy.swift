@@ -1,10 +1,14 @@
 import CoreGraphics
 
+/// Normalized endpoints for a single primary-button drag on the remote display.
 struct RemotePrimaryDragEndpoints: Equatable {
     let start: CGPoint
     let end: CGPoint
 }
 
+/// Validates an iPhone drag and translates it into aspect-fit Mac display coordinates.
+/// The gesture must start inside visible video, but its end is clamped to the video edge so an
+/// already-started remote drag can complete naturally after the finger crosses letterboxing.
 enum RemotePrimaryDragGesturePolicy {
     static let minimumMovement: CGFloat = 3
 

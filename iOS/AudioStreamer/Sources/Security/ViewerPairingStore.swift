@@ -2,6 +2,8 @@ import CryptoKit
 import Foundation
 import RemoteSessionCore
 
+/// Durable viewer-side identity and authenticated pairing record operations.
+/// Loading an existing pair must validate that it is bound to the supplied local identity.
 protocol ViewerPairingStoring {
     func loadOrCreateViewerIdentity() throws -> RemoteDeviceIdentity
     func loadPairedMac(for identity: RemoteDeviceIdentity) throws -> RemotePairedDeviceRecord?
@@ -12,6 +14,9 @@ protocol ViewerPairingStoring {
     func deletePairedMac() throws
 }
 
+/// Stores proof that a one-time invitation crossed the rendezvous admission boundary.
+/// The proof is separate from the durable paired-device record because a crash may occur between
+/// those two persistence phases.
 protocol WorldwideInvitationAdmissionStoring {
     func loadAdmittedInvitationDigest() throws -> Data?
     func saveAdmittedInvitationDigest(_ digest: Data) throws
@@ -92,6 +97,8 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring {
         }
 
         let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        // Identity generation is not considered complete until the private material is durable;
+        // silently returning an ephemeral replacement would permanently orphan an existing pair.
         do {
             try identityStore.saveData(try encoder.encode(identity))
         } catch let error as ViewerPairingStoreError {
@@ -170,6 +177,7 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring {
         _ record: RemotePairedDeviceRecord,
         for identity: RemoteDeviceIdentity
     ) throws {
+        // Public-key and device identifiers must agree before interpreting the recovery phase.
         guard record.version == RemotePairedDeviceRecord.currentVersion,
               record.localRole == .viewer,
               record.remoteRole == .host,
@@ -228,6 +236,7 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring {
 
 }
 
+/// Validation and persistence failures at the durable pairing boundary.
 enum ViewerPairingStoreError: Error, Equatable {
     case invalidViewerIdentity
     case invalidPairedMacRecord
@@ -236,6 +245,7 @@ enum ViewerPairingStoreError: Error, Equatable {
     case pairedMacDeletionFailed
 }
 
+/// Corruption of the fixed-width admission digest stored in Keychain.
 enum WorldwideInvitationAdmissionStoreError: Error, Equatable {
     case invalidStoredDigest
 }
