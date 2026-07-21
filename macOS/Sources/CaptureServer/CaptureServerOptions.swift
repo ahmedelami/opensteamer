@@ -7,10 +7,6 @@ import Foundation
 /// Authentication values may come from CLI or process environment, remain in memory,
 /// and are not persisted by this options layer.
 struct CaptureServerOptions {
-    private static let productionRendezvousURL = URL(
-        string: "wss://rendezvous.example.invalid"
-    )!
-
     var host = "0.0.0.0"
     var port: UInt16 = 9000
     var screenPort: UInt16 = 9001
@@ -22,9 +18,7 @@ struct CaptureServerOptions {
     var worldwideEnabled = false
     var resetWorldwidePairing = false
     var allowRemoteControl = false
-    var rendezvousURL: URL? = ProcessInfo.processInfo.environment["AUDIOSTREAMER_RENDEZVOUS_URL"]
-        .flatMap(URL.init(string:))
-        ?? CaptureServerOptions.productionRendezvousURL
+    var rendezvousURL: URL?
     var forceRelay = false
     var duration: TimeInterval? = 30
     var displayID: UInt32?
@@ -49,7 +43,7 @@ struct CaptureServerOptions {
       --screen-max-width <n> Maximum encoded screen width. Defaults to 1920.
       --screen-bitrate <bps> H.264 target bitrate. Defaults to 12000000.
       --no-screen            Disable the screen video service.
-      --worldwide            Enable one-code WebRTC screen access using the bundled public endpoint.
+      --worldwide            Enable one-code WebRTC access using the explicitly configured endpoint.
       --reset-worldwide-pairing
                              Forget the paired iPhone before starting worldwide mode.
       --allow-remote-control Allow pointer and keyboard input for the active worldwide screen session.
@@ -71,8 +65,13 @@ struct CaptureServerOptions {
     """
 
     /// Parses command-line options, derives paired ports, and enforces safe mode combinations.
-    static func parse(_ arguments: [String]) throws -> CaptureServerOptions {
+    static func parse(
+        _ arguments: [String],
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> CaptureServerOptions {
         var options = CaptureServerOptions()
+        options.rendezvousURL = environment["AUDIOSTREAMER_RENDEZVOUS_URL"]
+            .flatMap(URL.init(string:))
         var index = 1
         var screenPortWasExplicit = false
         var lanModeWasExplicit = false

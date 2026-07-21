@@ -31,8 +31,6 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>AudioStreamer finds the Mac capture server on your local Wi-Fi network.</string>
-	<key>NSCameraUsageDescription</key>
-	<string>AudioStreamer may use the camera for real-time video features that you explicitly start.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

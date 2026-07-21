@@ -10,6 +10,7 @@
 		047D0294CA4AA108507C3AC5 /* WebRTCAudioPlaybackSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB6518D8E380A2F0521A61D7 /* WebRTCAudioPlaybackSessionTests.swift */; };
 		04BF01101F3B3FDD934DADD9 /* AudioStreamerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20A3613FEC27B88241AD9976 /* AudioStreamerApp.swift */; };
 		05F7EA0E62FD674AE6815CA8 /* ClientCore in Frameworks */ = {isa = PBXBuildFile; productRef = 96319EFAADA421A0FAA0B9E5 /* ClientCore */; };
+		067E705E9760EAD3803F5A9A /* THIRD_PARTY_NOTICES.md in Resources */ = {isa = PBXBuildFile; fileRef = 868493062917FFAA0A397B5B /* THIRD_PARTY_NOTICES.md */; };
 		094D019223302B438117BED2 /* Streaming in Frameworks */ = {isa = PBXBuildFile; productRef = 8C7BF5F135CF54EE1D52A7DE /* Streaming */; };
 		0A6149139BCE5D762F1F43B9 /* ScreenVideoConnectionDescriptor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C515FF2D22852D646E2F3532 /* ScreenVideoConnectionDescriptor.swift */; };
 		0B8EB3C3045577600008F387 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 050B9D5850CB92EC28FFF2F8 /* DiagnosticsView.swift */; };
@@ -92,7 +93,6 @@
 		2F84611866708D4807A2667C /* ScreenVideoClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVideoClient.swift; sourceTree = "<group>"; };
 		3185D19EF5D285A55015E1C2 /* WorldwideScreenViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideScreenViewerView.swift; sourceTree = "<group>"; };
 		364EA1FAF3C148688BAE1DFC /* WorldwideViewerConnectionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideViewerConnectionCoordinator.swift; sourceTree = "<group>"; };
-		54F6692646CAE04770E7B892 /* do-you-see-the-gpt-extended */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "do-you-see-the-gpt-extended"; path = ../..; sourceTree = SOURCE_ROOT; };
 		5F8017428FCB78A9203C0796 /* H264SampleBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = H264SampleBuilder.swift; sourceTree = "<group>"; };
 		61DD1147B47CCE7221BD4398 /* AspectFitCoordinateMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AspectFitCoordinateMapperTests.swift; sourceTree = "<group>"; };
 		62FAFA716A0461C6C237AC01 /* RemoteKeyboardInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteKeyboardInputView.swift; sourceTree = "<group>"; };
@@ -102,6 +102,7 @@
 		74366C19E45DDC6E1480B455 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		7FBC749C0D5798F82623433A /* RemoteTokenState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTokenState.swift; sourceTree = "<group>"; };
 		8658B98B47BDCAA170BB2DD5 /* ViewerPairingPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerPairingPersistenceTests.swift; sourceTree = "<group>"; };
+		868493062917FFAA0A397B5B /* THIRD_PARTY_NOTICES.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = THIRD_PARTY_NOTICES.md; sourceTree = "<group>"; };
 		89437364114329E1CF3C6274 /* InvitationAcceptanceAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InvitationAcceptanceAction.swift; sourceTree = "<group>"; };
 		9A2275430238D768A3B4A26A /* BackgroundPlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundPlaybackCoordinator.swift; sourceTree = "<group>"; };
 		A091098B7ED8D7FAF3929EE8 /* PhysicalOracleEvaluatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalOracleEvaluatorTests.swift; sourceTree = "<group>"; };
@@ -129,6 +130,7 @@
 		EBE9EB5455D4F39B9DD93CCC /* MetricRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricRow.swift; sourceTree = "<group>"; };
 		F606D00D506FB74DC9DC7A11 /* AspectFitCoordinateMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AspectFitCoordinateMapper.swift; sourceTree = "<group>"; };
 		F8A081AC46F228CB0FF856AE /* BonjourBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BonjourBrowser.swift; sourceTree = "<group>"; };
+		FD93171E755E94544A35B138 /* AudioStreamer */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AudioStreamer; path = ../..; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -146,6 +148,15 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		0886F66E9C354B965DEAAA49 /* AudioStreamer */ = {
+			isa = PBXGroup;
+			children = (
+				868493062917FFAA0A397B5B /* THIRD_PARTY_NOTICES.md */,
+			);
+			name = AudioStreamer;
+			path = ../..;
+			sourceTree = "<group>";
+		};
 		0C56E21E0B24B0EB32CE67AD /* Security */ = {
 			isa = PBXGroup;
 			children = (
@@ -158,6 +169,7 @@
 		150E754A6848282C5E56552A = {
 			isa = PBXGroup;
 			children = (
+				0886F66E9C354B965DEAAA49 /* AudioStreamer */,
 				80E8C953F8D42D86A150B38F /* OracleTestSupport */,
 				177201D2B90247ACE27C17B4 /* Packages */,
 				15CCA89F445DF06910B9271E /* Sources */,
@@ -188,7 +200,7 @@
 		177201D2B90247ACE27C17B4 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				54F6692646CAE04770E7B892 /* do-you-see-the-gpt-extended */,
+				FD93171E755E94544A35B138 /* AudioStreamer */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -403,16 +415,13 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					176A875FD6AE2E086BBE5211 = {
-						DevelopmentTeam = A1B2C3D4E5;
 						ProvisioningStyle = Automatic;
 						TestTargetID = CC38CACB178347405D099BDA;
 					};
 					36F2C6746142D7AF483406D3 = {
-						DevelopmentTeam = A1B2C3D4E5;
 						ProvisioningStyle = Automatic;
 					};
 					CC38CACB178347405D099BDA = {
-						DevelopmentTeam = A1B2C3D4E5;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -447,6 +456,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				DF32005742310D00187CD390 /* Assets.xcassets in Resources */,
+				067E705E9760EAD3803F5A9A /* THIRD_PARTY_NOTICES.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -541,7 +551,6 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = A1B2C3D4E5;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -561,7 +570,6 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = A1B2C3D4E5;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -581,7 +589,6 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = A1B2C3D4E5;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -600,11 +607,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				AUDIOSTREAMER_RENDEZVOUS_URL = "wss://rendezvous.example.invalid";
+				AUDIOSTREAMER_RENDEZVOUS_URL = "";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = A1B2C3D4E5;
 				INFOPLIST_FILE = Sources/Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -623,7 +629,6 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = A1B2C3D4E5;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -761,11 +766,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				AUDIOSTREAMER_RENDEZVOUS_URL = "wss://rendezvous.example.invalid";
+				AUDIOSTREAMER_RENDEZVOUS_URL = "";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = A1B2C3D4E5;
 				INFOPLIST_FILE = Sources/Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

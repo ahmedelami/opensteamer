@@ -47,7 +47,6 @@ final class MacHostDeploymentContractTests: XCTestCase {
             [
                 "/Applications/AudioStreamer Host.app/Contents/MacOS/CaptureServer",
                 "--worldwide",
-                "--allow-remote-control",
                 "--duration",
                 "0",
                 "--verbose",

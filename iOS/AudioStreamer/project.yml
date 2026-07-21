@@ -12,6 +12,8 @@ targets:
     platform: iOS
     sources:
       - Sources
+      - path: ../../THIRD_PARTY_NOTICES.md
+        buildPhase: resources
     dependencies:
       - package: MacCaptureVerifier
         product: ClientCore
@@ -24,18 +26,18 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer
-        DEVELOPMENT_TEAM: A1B2C3D4E5
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_FILE: Sources/Support/Info.plist
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 1
         TARGETED_DEVICE_FAMILY: 1
         SWIFT_VERSION: 6.0
-        AUDIOSTREAMER_RENDEZVOUS_URL: "wss://rendezvous.example.invalid"
+        # Public source does not embed a maintainer endpoint. Supply this build setting locally.
+        AUDIOSTREAMER_RENDEZVOUS_URL: ""
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:
         Debug:
-          # Keep XCTest/development installs beside the TestFlight app instead of
+          # Keep XCTest/development installs beside a distribution build instead of
           # replacing its container during physical-device validation.
           PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev
     scheme:
@@ -52,7 +54,6 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamerTests
-        DEVELOPMENT_TEAM: A1B2C3D4E5
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: 6.0
@@ -67,7 +68,6 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamerUITests
-        DEVELOPMENT_TEAM: A1B2C3D4E5
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: 6.0

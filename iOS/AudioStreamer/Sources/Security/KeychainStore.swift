@@ -19,8 +19,8 @@ struct KeychainStore: RemoteTokenStoring {
         let account: String
     }
 
-    // These identifiers shipped in the first TestFlight build with secure token storage.
-    // Keeping them version-independent lets the same Keychain item survive app updates.
+    // These identifiers are the persistence boundary for already-installed builds. Choose the
+    // final reverse-DNS namespace before distribution, then keep it stable across app updates.
     static let remoteTokenItem = Item(
         service: "org.example.AudioStreamer",
         account: "remote-token"

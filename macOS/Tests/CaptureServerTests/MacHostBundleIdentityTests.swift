@@ -83,12 +83,12 @@ final class MacHostBundleIdentityTests: XCTestCase {
 
         let teamRejection = try run(
             executable: verifier,
-            arguments: [builtApp.path, "A1B2C3D4E5"]
+            arguments: [builtApp.path, "TESTTEAM01"]
         )
         XCTAssertNotEqual(teamRejection.status, 0, teamRejection.diagnostic)
         XCTAssertTrue(
             teamRejection.standardError.contains(
-                "TeamIdentifier: expected 'A1B2C3D4E5', found 'not set'"
+                "TeamIdentifier: expected 'TESTTEAM01', found 'not set'"
             ),
             teamRejection.diagnostic
         )

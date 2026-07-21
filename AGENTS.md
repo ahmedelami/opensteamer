@@ -184,11 +184,11 @@ manual IP addresses, router configuration, or public TCP ports.
 The honest operating assumptions are that the Mac is powered on and awake, its
 host service is running, Screen Recording permission is granted, and both devices
 have working Internet access. Do not promise arbitrary Internet wake-up.
-The current worktree and deployment prove public WSS/STUN coordination plus a
-local rendezvous/Simulator media-and-input slice. Do not claim remote input is
-physically validated until an interactive physical-device pass succeeds, and do not
-claim "works anywhere" until TURN is active and unrelated-network plus forced-TURN
-physical-device tests pass.
+The implementation and automated tests cover WSS/STUN coordination plus a local
+rendezvous/Simulator media-and-input slice. Do not claim a public deployment or remote
+input is physically validated until the matching live-service and interactive-device
+passes succeed, and do not claim "works anywhere" until TURN is active and
+unrelated-network plus forced-TURN physical-device tests pass.
 
 ## Commits
 

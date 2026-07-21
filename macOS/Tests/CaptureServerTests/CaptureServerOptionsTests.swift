@@ -16,8 +16,10 @@ final class CaptureServerOptionsTests: XCTestCase {
         let options = try CaptureServerOptions.parse([
             "CaptureServer",
             "--worldwide",
+            "--rendezvous-url",
+            "wss://rendezvous.example.invalid",
             "--reset-worldwide-pairing",
-        ])
+        ], environment: [:])
 
         XCTAssertTrue(options.worldwideEnabled)
         XCTAssertTrue(options.resetWorldwidePairing)
@@ -26,7 +28,12 @@ final class CaptureServerOptionsTests: XCTestCase {
     }
 
     func testRemoteControlIsOffByDefaultInWorldwideMode() throws {
-        let options = try CaptureServerOptions.parse(["CaptureServer", "--worldwide"])
+        let options = try CaptureServerOptions.parse([
+            "CaptureServer",
+            "--worldwide",
+            "--rendezvous-url",
+            "wss://rendezvous.example.invalid",
+        ], environment: [:])
 
         XCTAssertTrue(options.worldwideEnabled)
         XCTAssertFalse(options.allowRemoteControl)
@@ -42,11 +49,42 @@ final class CaptureServerOptionsTests: XCTestCase {
         let options = try CaptureServerOptions.parse([
             "CaptureServer",
             "--worldwide",
+            "--rendezvous-url",
+            "wss://rendezvous.example.invalid",
             "--allow-remote-control",
-        ])
+        ], environment: [:])
 
         XCTAssertTrue(options.worldwideEnabled)
         XCTAssertTrue(options.allowRemoteControl)
+        XCTAssertFalse(options.lanEnabled)
+    }
+
+    func testWorldwideModeRequiresExplicitRendezvousConfiguration() {
+        XCTAssertThrowsError(
+            try CaptureServerOptions.parse(
+                ["CaptureServer", "--worldwide"],
+                environment: [:]
+            )
+        ) { error in
+            XCTAssertEqual(
+                error.localizedDescription,
+                "--worldwide requires --rendezvous-url or AUDIOSTREAMER_RENDEZVOUS_URL"
+            )
+        }
+    }
+
+    func testWorldwideModeAcceptsRendezvousConfigurationFromEnvironment() throws {
+        let options = try CaptureServerOptions.parse(
+            ["CaptureServer", "--worldwide"],
+            environment: [
+                "AUDIOSTREAMER_RENDEZVOUS_URL": "wss://rendezvous.example.invalid",
+            ]
+        )
+
+        XCTAssertEqual(
+            options.rendezvousURL?.absoluteString,
+            "wss://rendezvous.example.invalid"
+        )
         XCTAssertFalse(options.lanEnabled)
     }
 }

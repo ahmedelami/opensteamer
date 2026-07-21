@@ -2,8 +2,8 @@
  * Local WebSocket-to-TCP adapter for the legacy AudioStreamer relay diagnostic path.
  *
  * Run `npm install` once, then provide `RELAY_TOKEN` (or `MCAP_TOKEN`) and use `npm start`.
- * The HTTP/WebSocket listener is bound to 127.0.0.1; a separate tunnel such as cloudflared may
- * expose it. `/health` reports process readiness, while `/stream` requires a JSON text frame of
+ * The HTTP/WebSocket listener is bound to 127.0.0.1 and is intentionally limited to trusted-local
+ * diagnostics. `/health` reports process readiness, while `/stream` requires a JSON text frame of
  * `{ "type": "auth", "token": "..." }` within five seconds before any capture connection opens.
  *
  * Environment variables:

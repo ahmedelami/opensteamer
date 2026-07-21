@@ -21,6 +21,7 @@ APP_DIR="$APP_OUTPUT_DIR/AudioStreamer Host.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
+RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
 # Keychain item access is bound to the executable's designated requirement. An
 # ad-hoc signature is only a changing CDHash, so rebuilding the host would make
@@ -66,10 +67,11 @@ fi
 rm -rf "$APP_DIR"
 # Bundle assembly is intentionally from a clean destination so removed frameworks or metadata
 # cannot survive from an earlier build and accidentally satisfy verification.
-mkdir -p "$MACOS_DIR" "$FRAMEWORKS_DIR"
+mkdir -p "$MACOS_DIR" "$FRAMEWORKS_DIR" "$RESOURCES_DIR"
 cp "$EXECUTABLE_SOURCE" "$EXECUTABLE"
 cp -R "$WEBRTC_FRAMEWORK_SOURCE" "$WEBRTC_FRAMEWORK"
 cp "macOS/MacCaptureHost/Info.plist" "$CONTENTS_DIR/Info.plist"
+cp "THIRD_PARTY_NOTICES.md" "$RESOURCES_DIR/ThirdPartyNotices.md"
 
 if ! otool -l "$EXECUTABLE" | grep -Fq "path @executable_path/../Frameworks "; then
     install_name_tool -add_rpath "@executable_path/../Frameworks" "$EXECUTABLE"

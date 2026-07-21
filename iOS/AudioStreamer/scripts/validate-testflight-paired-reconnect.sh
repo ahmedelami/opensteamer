@@ -53,7 +53,7 @@ EXPECTED_TEST_URL="test://com.apple.xcode/AudioStreamer/AudioStreamerUITests/Pai
 HOST_LABEL=${AUDIOSTREAMER_HOST_LAUNCH_AGENT_LABEL:-org.example.audiostreamer.worldwide}
 HOST_SERVICE="gui/${UID}/${HOST_LABEL}"
 HOST_LOG=${AUDIOSTREAMER_HOST_LOG:-/tmp/audiostreamer/worldwide-host.log}
-EXPECTED_MAC_HOST_TEAM_ID=${AUDIOSTREAMER_EXPECTED_TEAM_ID:-A1B2C3D4E5}
+EXPECTED_MAC_HOST_TEAM_ID=${AUDIOSTREAMER_EXPECTED_TEAM_ID:-TESTTEAM01}
 MAC_HOST_BUILD_SCRIPT="${REPOSITORY_ROOT}/macOS/scripts/build-mac-capture-host-app.sh"
 MAC_HOST_DEPLOYMENT_VERIFIER="${REPOSITORY_ROOT}/macOS/scripts/verify-mac-host-deployment.sh"
 HOST_RESTART_DELAY_SECONDS=${AUDIOSTREAMER_HOST_RESTART_DELAY_SECONDS:-8}
@@ -1406,6 +1406,12 @@ if [[ "${AUDIOSTREAMER_SCRIPT_SELF_TEST:-}" == host-provenance-* ]]; then
   run_host_provenance_self_test
   exit 0
 fi
+
+if [[ -z "${AUDIOSTREAMER_EXPECTED_TEAM_ID:-}" ]]; then
+  echo "AUDIOSTREAMER_EXPECTED_TEAM_ID is required for a physical release run." >&2
+  exit 2
+fi
+EXPECTED_MAC_HOST_TEAM_ID=${AUDIOSTREAMER_EXPECTED_TEAM_ID}
 
 capture_and_validate_device "${DEVICE_BEFORE}"
 capture_and_require_unlocked "${LOCK_STATE_BEFORE}"
