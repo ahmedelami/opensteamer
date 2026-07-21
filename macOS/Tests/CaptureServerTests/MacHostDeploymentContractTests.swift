@@ -297,7 +297,6 @@ final class MacHostDeploymentContractTests: XCTestCase {
             arguments = {
                 \(executable)
                 --worldwide
-                --allow-remote-control
                 --duration
                 0
                 --verbose

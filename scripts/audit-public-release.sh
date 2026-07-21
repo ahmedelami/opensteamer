@@ -37,6 +37,7 @@ UNEXPECTED_REFS=$(git for-each-ref --format='%(refname)' \
 
 SENSITIVE_TRACKED_FILES=$(git ls-files | grep -Ei \
     '(^|/)(\.env($|\.)|\.dev\.vars($|\.)|\.npmrc$|\.netrc$|credentials\.json$|secrets\.(json|ya?ml)$|id_(rsa|ed25519)($|\.)|[^/]*Secrets\.xcconfig$|[^/]*\.xcconfig\.local$)|\.(p8|p12|pfx|pem|key|cer|crt|der|csr|jks|keystore|mobileprovision|provisionprofile|xcarchive)(/|$)' \
+    | grep -Ev '(^|/)(\.env|\.dev\.vars|\.npmrc)\.example$' \
     || true)
 [[ -z "$SENSITIVE_TRACKED_FILES" ]] || fail "credential or signing-artifact filenames are tracked"
 
@@ -76,7 +77,8 @@ fi
 
 # Search commit patches as well as the current tree for local home paths. `-G` catches a value that
 # was introduced and later removed, which a tip-only scanner cannot see.
-if git log --all -G '/Users/[^/[:space:]]+' --format='%H' -- . | grep -q .; then
+if git log --all -G '/Users/[^/[:space:]]+' --format='%H' \
+    -- . ':!scripts/audit-public-release.sh' | grep -q .; then
     fail "an absolute macOS home path remains in reachable history"
 fi
 
