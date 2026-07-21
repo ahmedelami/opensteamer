@@ -10,7 +10,7 @@ final class PCMClient {
     private let host: NWEndpoint.Host
     private let port: NWEndpoint.Port
     private let authToken: String?
-    private let queue = DispatchQueue(label: "MacCaptureVerifier.PCMClient")
+    private let queue = DispatchQueue(label: "opensteamer.PCMClient")
 
     /// Creates a client for one endpoint and optional pre-stream authentication token.
     init(host: String, port: UInt16, authToken: String? = nil) throws {

@@ -11,7 +11,7 @@ import Streaming
 final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
     private let sink: PCMFrameSink
     private let logger: Logger
-    private let queue = DispatchQueue(label: "MacCaptureVerifier.StreamingAudioProcessor")
+    private let queue = DispatchQueue(label: "opensteamer.StreamingAudioProcessor")
     private let completion = DispatchGroup()
 
     private var sampleStorage: [Float] = []

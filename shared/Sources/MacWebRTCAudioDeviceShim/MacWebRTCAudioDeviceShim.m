@@ -11,7 +11,7 @@
 // This file is the intentionally narrow ABI bridge between source-clock stereo PCM and the
 // exact-pinned native WebRTC audio device. Lifecycle locks never enter WebRTC's render callback;
 // diagnostics use a separate lock so observation cannot change audio admission semantics.
-NSErrorDomain const ASMacWebRTCAudioDeviceErrorDomain = @"AudioStreamer.MacWebRTCAudioDevice";
+NSErrorDomain const ASMacWebRTCAudioDeviceErrorDomain = @"opensteamer.MacWebRTCAudioDevice";
 
 static const double ASAudioSampleRate = 48000.0;
 static const NSTimeInterval ASAudioIOBufferDuration = 0.010;

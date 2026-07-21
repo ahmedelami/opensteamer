@@ -12,7 +12,7 @@ public final class StreamSession: @unchecked Sendable {
     private let rendererLock = NSLock()
     private var storedState: StreamState = .idle
     private var storedMetrics = StreamMetrics()
-    private let readerQueue = DispatchQueue(label: "MacCaptureVerifier.ClientCore.StreamSession.reader")
+    private let readerQueue = DispatchQueue(label: "opensteamer.ClientCore.StreamSession.reader")
     private var currentReader: (any StreamPacketReading)?
     private var currentRenderer: AudioRenderer?
 

@@ -6,7 +6,7 @@ import PackageDescription
 // the iOS viewer and macOS host, while native audio-device shims are selected conditionally. The
 // executable products also serve as deterministic diagnostic tools for the same core libraries.
 let package = Package(
-    name: "MacCaptureVerifier",
+    name: "opensteamer",
     platforms: [
         .macOS(.v14),
         .iOS(.v17)

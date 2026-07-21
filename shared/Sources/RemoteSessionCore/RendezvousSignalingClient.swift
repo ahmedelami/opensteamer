@@ -72,6 +72,7 @@ public enum RemoteRendezvousMode: String, Codable, CaseIterable, Sendable {
     }
 
     internal var webSocketSubprotocol: String? {
+        // Compatibility ABI: these are deployed v1 protocol tokens, not user-facing branding.
         switch self {
         case .pairing: "audiostreamer.pairing.v1"
         case .availability: "audiostreamer.availability.v1"
@@ -775,6 +776,7 @@ public actor RendezvousSignalingClient {
 /// URLSession WebSocket transport with strict upgrade-header and subprotocol validation.
 internal actor URLSessionRendezvousSocketTransport: RendezvousSocketTransport {
     private enum Header {
+        // Compatibility ABI: the deployed Worker and existing clients require these exact names.
         static let channel = "X-AudioStreamer-Channel"
         static let role = "X-AudioStreamer-Role"
         static let admission = "X-AudioStreamer-Admission"

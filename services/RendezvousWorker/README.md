@@ -1,6 +1,6 @@
-# AudioStreamer Cloudflare rendezvous
+# opensteamer Cloudflare rendezvous
 
-This Worker is the public signaling control plane for AudioStreamer's direct WebRTC path. It deploys to a stable `workers.dev` hostname and routes each unguessable channel to one SQLite-backed Durable Object. The Worker and Durable Object never relay media or decrypt signaling envelopes.
+This Worker is the public signaling control plane for opensteamer's direct WebRTC path. It deploys to a stable `workers.dev` hostname and routes each unguessable channel to one SQLite-backed Durable Object. The Worker and Durable Object never relay media or decrypt signaling envelopes.
 
 The public surface is deliberately small:
 
@@ -8,6 +8,10 @@ The public surface is deliberately small:
 - `WSS /v1/rendezvous` carries one-use invitation bootstrap and fresh one-use media-session signaling. New durable-pairing bootstrap clients must negotiate `audiostreamer.pairing.v1`; their Durable Object key uses a `pairing:` namespace disjoint from legacy v1 rendezvous.
 - `WSS /v2/availability` carries only persistent paired-device availability. The distinct path makes new clients fail closed against an old Worker instead of being interpreted as invitation traffic.
 - Channel, role, and the joining role's proof are accepted only in bounded `X-AudioStreamer-Channel`, `X-AudioStreamer-Role`, and `X-AudioStreamer-Admission` upgrade headers. Availability hosts additionally register the independently derived viewer capability in `X-AudioStreamer-Viewer-Admission`, send exact mode `availability`, and require the Worker to echo `Sec-WebSocket-Protocol: audiostreamer.availability.v1`; viewers never send the registration header. Pairing clients require an exact `audiostreamer.pairing.v1` echo. Query strings, missing/unknown required subprotocols, role-swapped proofs, availability headers on v1, and alternate paths are rejected.
+
+The `X-AudioStreamer-*`, `audiostreamer.pairing.v1`, and
+`audiostreamer.availability.v1` spellings are deployed v1 compatibility ABI. They intentionally
+retain the former product name so opensteamer clients remain compatible with existing releases.
 
 Invitation Durable Objects store the first host's admission proof, expiration, consumed bit, and a bounded tombstone. They compare the viewer's 32-byte proof before checking viewer occupancy, consuming the invitation, or provisioning TURN. Availability Durable Objects use a separate `availability:<channel>` namespace and retain distinct host and viewer capabilities so one host can coordinate a sequence of viewer reconnections without either proof claiming the opposite role. Hibernating WebSocket attachments retain mode, role, generation, active exchange ID, next sequence, last activity, and rate-window state. No source path logs channels, proofs, payloads, TURN identifiers, tokens, or credentials.
 
@@ -71,10 +75,18 @@ npm run deploy
 Wrangler creates the `RendezvousSession` class with the `new_sqlite_classes` migration, which is compatible with Workers Free Durable Objects. With the default name, the stable endpoint is:
 
 ```text
-wss://audiostreamer-rendezvous.<workers-subdomain>.workers.dev
+wss://opensteamer-rendezvous.<workers-subdomain>.workers.dev
 ```
 
 Configure the Mac and iOS clients with that origin only; their shared Swift clients append `/v1/rendezvous` for invitation/media sessions and `/v2/availability` for durable paired reconnect coordination. Do not put a channel, role, proof, or pairing code in the URL. Deploy this Worker contract before the matching Mac and iOS clients. The media path prefers direct WebRTC ICE and uses TURN only when direct connectivity fails.
+
+For an existing installation, a Worker-name change is an infrastructure migration, not a wire
+protocol migration. During a staggered client rollout, deploy the updated contract at the existing
+stable origin whenever possible. If both old and new origins must run temporarily, switch each
+paired Mac and iPhone to the same origin as one coordinated rollout and keep both Workers available
+until every deployed endpoint has moved. The legacy environment-variable fallback only reads an
+origin; it does not discover or retry a second origin. Retiring the existing Worker too early makes
+otherwise compatible old and new clients unable to rendezvous.
 
 The included `JOIN_RATE_LIMITER` binding limits syntactically valid upgrades per edge-observed actor and per channel before a Durable Object is invoked. Its numeric namespace must remain unique within the Cloudflare account; change `namespace_id` before deployment if `1001001` is already used. Cloudflare's binding is intentionally local and eventually consistent, so account-level WAF/bot rules remain useful defense in depth. Per-connection message limits are enforced inside each Durable Object, while the one-object-per-channel design serializes role occupancy and consume-once state.
 

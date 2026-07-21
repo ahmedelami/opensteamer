@@ -68,7 +68,7 @@ final class CaptureServerOptionsTests: XCTestCase {
         ) { error in
             XCTAssertEqual(
                 error.localizedDescription,
-                "--worldwide requires --rendezvous-url or AUDIOSTREAMER_RENDEZVOUS_URL"
+                "--worldwide requires --rendezvous-url or OPENSTEAMER_RENDEZVOUS_URL"
             )
         }
     }
@@ -77,13 +77,44 @@ final class CaptureServerOptionsTests: XCTestCase {
         let options = try CaptureServerOptions.parse(
             ["CaptureServer", "--worldwide"],
             environment: [
-                "AUDIOSTREAMER_RENDEZVOUS_URL": "wss://rendezvous.example.invalid",
+                "OPENSTEAMER_RENDEZVOUS_URL": "wss://rendezvous.example.invalid",
             ]
         )
 
         XCTAssertEqual(
             options.rendezvousURL?.absoluteString,
             "wss://rendezvous.example.invalid"
+        )
+        XCTAssertFalse(options.lanEnabled)
+    }
+
+    func testWorldwideModeAcceptsLegacyRendezvousEnvironmentForOneRelease() throws {
+        let options = try CaptureServerOptions.parse(
+            ["CaptureServer", "--worldwide"],
+            environment: [
+                "AUDIOSTREAMER_RENDEZVOUS_URL": "wss://legacy-rendezvous.example.invalid",
+            ]
+        )
+
+        XCTAssertEqual(
+            options.rendezvousURL?.absoluteString,
+            "wss://legacy-rendezvous.example.invalid"
+        )
+        XCTAssertFalse(options.lanEnabled)
+    }
+
+    func testOpensteamerRendezvousEnvironmentTakesPrecedenceOverLegacyAlias() throws {
+        let options = try CaptureServerOptions.parse(
+            ["CaptureServer", "--worldwide"],
+            environment: [
+                "OPENSTEAMER_RENDEZVOUS_URL": "wss://opensteamer.example.invalid",
+                "AUDIOSTREAMER_RENDEZVOUS_URL": "wss://legacy.example.invalid",
+            ]
+        )
+
+        XCTAssertEqual(
+            options.rendezvousURL?.absoluteString,
+            "wss://opensteamer.example.invalid"
         )
         XCTAssertFalse(options.lanEnabled)
     }

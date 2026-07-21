@@ -3,7 +3,7 @@
 <plist version="1.0">
 <!--
   SwiftPM executable metadata for local CaptureServer runs. Distribution uses the canonical
-  MacCaptureHost template, while these usage descriptions keep development capture prompts
+  OpensteamerHost template, while these usage descriptions keep development capture prompts
   explicit and attributable to the same bundle identifier.
 -->
 <dict>
@@ -12,11 +12,12 @@
 	<key>CFBundleExecutable</key>
 	<string>CaptureServer</string>
 	<key>CFBundleIdentifier</key>
+	<!-- Match the shipped host identity so local runs share the established privacy boundary. -->
 	<string>org.example.AudioStreamer.CaptureServer</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>AudioStreamer Capture Server</string>
+	<string>opensteamer Capture Server</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -24,8 +25,8 @@
 	<key>CFBundleVersion</key>
 	<string>4</string>
 	<key>NSAudioCaptureUsageDescription</key>
-	<string>AudioStreamer captures system audio from this Mac so it can stream playback to your iPhone.</string>
+	<string>opensteamer captures system audio from this Mac so it can stream playback to your iPhone.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>AudioStreamer records the BlackHole virtual input so it can stream this Mac's routed audio to your iPhone.</string>
+	<string>opensteamer records the BlackHole virtual input so it can stream this Mac's routed audio to your iPhone.</string>
 </dict>
 </plist>

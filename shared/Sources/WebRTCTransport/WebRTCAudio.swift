@@ -69,7 +69,7 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
 
     private let audioDeviceModule: LKRTCAudioDeviceModule?
     private let stereoAudioDevice: ASMacStereoAudioDevice?
-    private let queue = DispatchQueue(label: "AudioStreamer.WebRTC.ExternalAudio")
+    private let queue = DispatchQueue(label: "opensteamer.WebRTC.ExternalAudio")
     private let queueKey = DispatchSpecificKey<Void>()
     private let captureEpochLock = NSLock()
     private var captureEpoch: UInt64 = 0

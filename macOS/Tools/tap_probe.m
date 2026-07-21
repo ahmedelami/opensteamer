@@ -179,7 +179,7 @@ int main(int argc, const char *argv[]) {
             return 2;
         }
 
-        tapDescription.name = @"AudioStreamerTapProbe";
+        tapDescription.name = @"opensteamerTapProbe";
         tapDescription.UUID = [NSUUID UUID];
         tapDescription.private = YES;
         tapDescription.exclusive = YES;
@@ -208,8 +208,8 @@ int main(int argc, const char *argv[]) {
         // UUID-derived identity prevents a stale aggregate device from an interrupted earlier run
         // from being mistaken for the object owned by this process.
         NSDictionary *aggregateDescription = @{
-            @kAudioAggregateDeviceNameKey: @"AudioStreamerTapProbeAggregate",
-            @kAudioAggregateDeviceUIDKey: [NSString stringWithFormat:@"org.example.AudioStreamer.TapProbe.Aggregate.%@", [NSUUID UUID].UUIDString],
+            @kAudioAggregateDeviceNameKey: @"opensteamerTapProbeAggregate",
+            @kAudioAggregateDeviceUIDKey: [NSString stringWithFormat:@"org.example.opensteamer.TapProbe.Aggregate.%@", [NSUUID UUID].UUIDString],
             @kAudioAggregateDeviceMainSubDeviceKey: outputUID,
             @kAudioAggregateDeviceSubDeviceListKey: @[
                 @{

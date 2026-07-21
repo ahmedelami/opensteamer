@@ -14,7 +14,9 @@
 set -eu
 
 REPOSITORY=${1:-.}
-ALLOWED_EMAIL_REGEX=${PUBLIC_RELEASE_ALLOWED_EMAIL_REGEX:-'^(audiostreamer@users\.noreply\.github\.com|[0-9]+\+[A-Za-z0-9-]+@users\.noreply\.github\.com)$'}
+# Keep the former project noreply address accepted because it is part of the already-published,
+# sanitized commit metadata; new fixtures and commits use the opensteamer identity.
+ALLOWED_EMAIL_REGEX=${PUBLIC_RELEASE_ALLOWED_EMAIL_REGEX:-'^(opensteamer@users\.noreply\.github\.com|audiostreamer@users\.noreply\.github\.com|[0-9]+\+[A-Za-z0-9-]+@users\.noreply\.github\.com)$'}
 GITLEAKS=${GITLEAKS_BIN:-$(command -v gitleaks || true)}
 
 cd "$REPOSITORY"
@@ -28,18 +30,56 @@ fail() {
 
 [[ -z $(git status --porcelain) ]] || fail "the candidate worktree is not clean"
 [[ -n "$GITLEAKS" && -x "$GITLEAKS" ]] || fail "Gitleaks is required for the release gate"
+[[ -x scripts/check-product-branding.sh ]] || fail "the product-branding audit is missing"
+[[ -x scripts/check-product-identity.sh ]] || fail "the product-identity audit is missing"
+scripts/check-product-branding.sh "$ROOT" \
+    || fail "former product branding remains outside the compatibility allowlist"
+scripts/check-product-identity.sh "$ROOT" \
+    || fail "the exact opensteamer product identity is inconsistent"
 
-# Public history must contain only intentional branch/tag refs. In particular, Jujutsu keep refs
-# can retain archives and device-validation artifacts that are unrelated to the release history.
-UNEXPECTED_REFS=$(git for-each-ref --format='%(refname)' \
-    | grep -Ev '^refs/(heads|tags)/' || true)
+# Public history must contain only intentional branch/tag refs. A fresh clone also has a
+# remote-tracking mirror of its checked-out branch (and sometimes a symbolic origin/HEAD); those
+# point at already-audited branch history and are not extra roots. Jujutsu keep refs, backup refs,
+# and additional remote branches can retain unrelated archives, so reject every other namespace.
+CURRENT_BRANCH=$(git symbolic-ref --quiet --short HEAD || true)
+ORIGIN_HEAD_TARGET=$(git symbolic-ref --quiet refs/remotes/origin/HEAD || true)
+UNEXPECTED_REFS=""
+while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    if [[ "$ref" == refs/heads/* || "$ref" == refs/tags/* ]]; then
+        continue
+    fi
+    if [[ -n "$CURRENT_BRANCH" \
+        && "$ref" == "refs/remotes/origin/$CURRENT_BRANCH" ]]; then
+        continue
+    fi
+    if [[ -n "$CURRENT_BRANCH" \
+        && "$ref" == "refs/remotes/origin/HEAD" \
+        && "$ORIGIN_HEAD_TARGET" == "refs/remotes/origin/$CURRENT_BRANCH" ]]; then
+        continue
+    fi
+    UNEXPECTED_REFS+="$ref"$'\n'
+done < <(git for-each-ref --format='%(refname)')
 [[ -z "$UNEXPECTED_REFS" ]] || fail "unexpected refs are reachable"
 
-SENSITIVE_TRACKED_FILES=$(git ls-files | grep -Ei \
-    '(^|/)(\.env($|\.)|\.dev\.vars($|\.)|\.npmrc$|\.netrc$|credentials\.json$|secrets\.(json|ya?ml)$|id_(rsa|ed25519)($|\.)|[^/]*Secrets\.xcconfig$|[^/]*\.xcconfig\.local$)|\.(p8|p12|pfx|pem|key|cer|crt|der|csr|jks|keystore|mobileprovision|provisionprofile|xcarchive)(/|$)' \
-    | grep -Ev '(^|/)(\.env|\.dev\.vars|\.npmrc)\.example$' \
+SENSITIVE_FILENAME_PATTERN='(^|/)(\.env($|\.)|\.dev\.vars($|\.)|\.npmrc$|\.netrc$|credentials\.json$|secrets\.(json|ya?ml)$|id_(rsa|ed25519)($|\.)|[^/]*Secrets\.xcconfig$|[^/]*\.xcconfig\.local$)|\.(p8|p12|pfx|pem|key|cer|crt|der|csr|jks|keystore|mobileprovision|provisionprofile|xcarchive)(/|$)'
+SAFE_EXAMPLE_FILENAME_PATTERN='(^|/)(\.env|\.dev\.vars|\.npmrc)\.example$'
+SENSITIVE_TRACKED_FILES=$(git ls-files | grep -Ei "$SENSITIVE_FILENAME_PATTERN" \
+    | grep -Ev "$SAFE_EXAMPLE_FILENAME_PATTERN" \
     || true)
 [[ -z "$SENSITIVE_TRACKED_FILES" ]] || fail "credential or signing-artifact filenames are tracked"
+
+# A deleted credential artifact is still downloadable from public history. Scan every path named
+# by every reachable commit in addition to the final index; Gitleaks content matching is a second,
+# independent gate and is not expected to recognize every binary/provisioning file format.
+SENSITIVE_HISTORY_FILES=$(git log --all --name-only --format= \
+    | sed '/^$/d' \
+    | LC_ALL=C sort -u \
+    | grep -Ei "$SENSITIVE_FILENAME_PATTERN" \
+    | grep -Ev "$SAFE_EXAMPLE_FILENAME_PATTERN" \
+    || true)
+[[ -z "$SENSITIVE_HISTORY_FILES" ]] \
+    || fail "credential or signing-artifact filenames remain in reachable history"
 
 LARGE_BLOBS=$(git rev-list --objects --all \
     | git cat-file --batch-check='%(objectname) %(objecttype) %(objectsize) %(rest)' \
@@ -49,7 +89,7 @@ LARGE_BLOBS=$(git rev-list --objects --all \
 UNEXPECTED_BINARIES=$(git ls-files -z \
     | xargs -0 file --mime-type \
     | grep -E ': (application/octet-stream|application/x-mach-binary|application/zip)$' \
-    | grep -Ev 'iOS/AudioStreamer/Sources/Assets\.xcassets/.+\.png:' || true)
+    | grep -Ev 'iOS/opensteamer/Sources/Assets\.xcassets/.+\.png:' || true)
 [[ -z "$UNEXPECTED_BINARIES" ]] || fail "an unexpected binary artifact is tracked"
 
 # Absolute home paths disclose local account names and usually make scripts non-portable.

@@ -278,10 +278,10 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         )
 
         let connectedSnapshot = await recorder.snapshot()
-        if ProcessInfo.processInfo.environment["AUDIOSTREAMER_AUDIO_TEST_DIAGNOSTICS"] == "1",
+        if ProcessInfo.processInfo.environment["OPENSTEAMER_AUDIO_TEST_DIAGNOSTICS"] == "1",
            !connectedSnapshot.hasAllConnectionMilestones {
             print(
-                "AUDIOSTREAMER_CONNECTION_FAILURE milestones=\(connectedSnapshot.milestones) "
+                "OPENSTEAMER_CONNECTION_FAILURE milestones=\(connectedSnapshot.milestones) "
                     + "emitted=\(connectedSnapshot.emitted) "
                     + "delivered=\(connectedSnapshot.delivered) "
                     + "forwardingErrors=\(connectedSnapshot.forwardingErrors)"
@@ -454,14 +454,14 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         let antiPhaseMeasurement = antiPhaseProbe.measurement
         let antiPhaseFailureContext = "\(audioCapturer.diagnosticsForTesting()); "
             + antiPhaseProbe.diagnosticSummary
-        if ProcessInfo.processInfo.environment["AUDIOSTREAMER_AUDIO_TEST_DIAGNOSTICS"] == "1" {
-            print("AUDIOSTREAMER_AUDIO_RIGHT_ONLY \(rightOnlyFailureContext)")
-            print("AUDIOSTREAMER_AUDIO_ANTI_PHASE \(antiPhaseFailureContext)")
+        if ProcessInfo.processInfo.environment["OPENSTEAMER_AUDIO_TEST_DIAGNOSTICS"] == "1" {
+            print("OPENSTEAMER_AUDIO_RIGHT_ONLY \(rightOnlyFailureContext)")
+            print("OPENSTEAMER_AUDIO_ANTI_PHASE \(antiPhaseFailureContext)")
             let hostStatistics = await host.statisticsSnapshot()
             let viewerStatistics = await viewer.statisticsSnapshot()
-            print("AUDIOSTREAMER_AUDIO_SDP \(audioSection.replacingOccurrences(of: "\r\n", with: " | "))")
-            print("AUDIOSTREAMER_AUDIO_HOST_STATS \(hostStatistics)")
-            print("AUDIOSTREAMER_AUDIO_VIEWER_STATS \(viewerStatistics)")
+            print("OPENSTEAMER_AUDIO_SDP \(audioSection.replacingOccurrences(of: "\r\n", with: " | "))")
+            print("OPENSTEAMER_AUDIO_HOST_STATS \(hostStatistics)")
+            print("OPENSTEAMER_AUDIO_VIEWER_STATS \(viewerStatistics)")
         }
         XCTAssertEqual(antiPhaseMeasurement.channelCount, 2, antiPhaseFailureContext)
         XCTAssertGreaterThan(antiPhaseMeasurement.leftRMS, 0.10, antiPhaseFailureContext)
@@ -556,9 +556,9 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             expected: oracleWaveform,
             decoded: decodedWindow
         )
-        if ProcessInfo.processInfo.environment["AUDIOSTREAMER_AUDIO_TEST_DIAGNOSTICS"] == "1" {
+        if ProcessInfo.processInfo.environment["OPENSTEAMER_AUDIO_TEST_DIAGNOSTICS"] == "1" {
             print(
-                "AUDIOSTREAMER_AUDIO_UNFILTERED \(unfilteredProbe.diagnosticSummary); "
+                "OPENSTEAMER_AUDIO_UNFILTERED \(unfilteredProbe.diagnosticSummary); "
                     + "\(genuineWaveformReport)"
             )
         }
@@ -606,8 +606,8 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
                 expected: oracleWaveform,
                 decoded: mutation.window
             )
-            if ProcessInfo.processInfo.environment["AUDIOSTREAMER_AUDIO_TEST_DIAGNOSTICS"] == "1" {
-                print("AUDIOSTREAMER_AUDIO_MUTATION \(mutation.name): \(report)")
+            if ProcessInfo.processInfo.environment["OPENSTEAMER_AUDIO_TEST_DIAGNOSTICS"] == "1" {
+                print("OPENSTEAMER_AUDIO_MUTATION \(mutation.name): \(report)")
             }
             XCTAssertTrue(
                 report.violations.contains(requiredViolation),

@@ -1,6 +1,9 @@
 import CryptoKit
 import Foundation
 
+// Compatibility ABI: the pre-rebrand `AudioStreamer.*` labels below authenticate the v1 pairing
+// transcript. Their exact bytes must remain stable for already-issued invitations and paired apps.
+
 /// A signed, invitation-authenticated introduction carrying one ephemeral agreement key.
 public struct RemotePairingHello: Codable, Equatable, Sendable {
     public static let currentProtocolVersion: UInt8 = 1

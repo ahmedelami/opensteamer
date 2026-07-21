@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Read-only verifier for the exact signed code mapped by a running AudioStreamer host process.
+# Read-only verifier for the exact signed code mapped by a running opensteamer host process.
 #
 # Usage is printed when six positional arguments are not supplied. The caller provides the PID,
 # verified executable path and CDHash, signing identifier/team, and embedded framework executable.
@@ -61,7 +61,7 @@ if [[ "$(print -r -- "$LIVE_TEXT_FILES" \
     fail "PID $PID is not executing the expected path: $EXPECTED_EXECUTABLE"
 fi
 if print -r -- "$LIVE_TEXT_FILES" \
-    | /usr/bin/grep -Eq '/MacCaptureHost\.app/|/\.build/.*/CaptureServer$'; then
+    | /usr/bin/grep -Eq '/OpensteamerHost\.app/|/\.build/.*/CaptureServer$'; then
     fail "PID $PID has a legacy or naked CaptureServer executable mapped"
 fi
 

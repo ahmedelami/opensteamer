@@ -41,7 +41,7 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
     private let displayID: UInt32?
     private let consumer: SystemAudioSampleConsumer
     private let logger: Logger
-    private let sampleQueue = DispatchQueue(label: "MacCaptureVerifier.SystemAudioCapture")
+    private let sampleQueue = DispatchQueue(label: "opensteamer.SystemAudioCapture")
     private let stateLock = NSLock()
     private var stream: SCStream?
     private var output: SystemAudioStreamOutput?

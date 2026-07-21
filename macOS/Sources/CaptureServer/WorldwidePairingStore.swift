@@ -119,11 +119,13 @@ struct WorldwidePairingStore: Sendable {
 struct WorldwideKeychainDataStore: WorldwidePairingDataStore {
     static let maximumItemBytes = 64 * 1_024
 
-    private static let defaultService =
+    // Existing installations already own pairing secrets in this service. Keeping the legacy
+    // value is what makes the opensteamer host an in-place upgrade instead of a newly paired Mac.
+    static let legacyPairingService =
         "org.example.AudioStreamer.CaptureServer.WorldwidePairing.v1"
     private let service: String
 
-    init(service: String = Self.defaultService) {
+    init(service: String = Self.legacyPairingService) {
         self.service = service
     }
 

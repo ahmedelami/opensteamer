@@ -21,7 +21,7 @@ final class ProcessTerminationSignalMonitor: @unchecked Sendable {
         continuation = pair.continuation
         self.signalNumbers = signalNumbers
 
-        let queue = DispatchQueue(label: "org.example.audiostreamer.termination-signals")
+        let queue = DispatchQueue(label: "org.example.opensteamer.termination-signals")
         var configuredSources: [DispatchSourceSignal] = []
         configuredSources.reserveCapacity(signalNumbers.count)
         for signalNumber in signalNumbers {

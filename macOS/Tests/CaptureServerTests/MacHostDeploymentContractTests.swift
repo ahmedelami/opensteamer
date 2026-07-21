@@ -29,7 +29,7 @@ final class MacHostDeploymentContractTests: XCTestCase {
 
     func testLaunchAgentTemplateRunsTheSignedHostWithExplicitCapabilities() throws {
         let template = repositoryRoot.appendingPathComponent(
-            "macOS/LaunchAgents/org.example.audiostreamer.worldwide.plist"
+            "macOS/LaunchAgents/org.example.opensteamer.worldwide.plist"
         )
         let propertyList = try PropertyListSerialization.propertyList(
             from: Data(contentsOf: template),
@@ -41,11 +41,11 @@ final class MacHostDeploymentContractTests: XCTestCase {
             values["EnvironmentVariables"] as? [String: Any]
         )
 
-        XCTAssertEqual(values["Label"] as? String, "org.example.audiostreamer.worldwide")
+        XCTAssertEqual(values["Label"] as? String, "org.example.opensteamer.worldwide")
         XCTAssertEqual(
             arguments,
             [
-                "/Applications/AudioStreamer Host.app/Contents/MacOS/CaptureServer",
+                "/Applications/opensteamer Host.app/Contents/MacOS/CaptureServer",
                 "--worldwide",
                 "--duration",
                 "0",
@@ -58,21 +58,21 @@ final class MacHostDeploymentContractTests: XCTestCase {
         XCTAssertEqual(environment["OSLogRateLimit"] as? String, "64")
         XCTAssertFalse(
             arguments.contains { argument in
-                argument.contains("MacCaptureHost.app") || argument.contains("/.build/")
+                argument.contains("OpensteamerHost.app") || argument.contains("/.build/")
             }
         )
     }
 
     func testLiveProcessOracleRejectsWrongHashAndSamePathReplacement() throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-live-code-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-live-code-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: temporaryRoot) }
         try FileManager.default.createDirectory(
             at: temporaryRoot,
             withIntermediateDirectories: true
         )
 
-        let identifier = "org.example.AudioStreamer.ProcessOracleFixture"
+        let identifier = "org.example.opensteamer.ProcessOracleFixture"
         let executable = temporaryRoot.appendingPathComponent("runner")
         try copyAndSign(
             source: URL(fileURLWithPath: "/bin/sleep"),
@@ -180,7 +180,7 @@ final class MacHostDeploymentContractTests: XCTestCase {
 
     func testLiveProcessOracleRejectsStaleFrameworkWithUnchangedMainExecutable() throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-live-framework-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-live-framework-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: temporaryRoot) }
         try FileManager.default.createDirectory(
             at: temporaryRoot,
@@ -196,11 +196,11 @@ final class MacHostDeploymentContractTests: XCTestCase {
         try compileDynamicLibrary(at: replacementFramework, returnValue: 11)
         try compileFrameworkFixtureRunner(at: executable, linkedTo: framework)
 
-        let identifier = "org.example.AudioStreamer.FrameworkProcessOracleFixture"
-        try sign(executable: framework, identifier: "org.example.AudioStreamer.Fixture")
+        let identifier = "org.example.opensteamer.FrameworkProcessOracleFixture"
+        try sign(executable: framework, identifier: "org.example.opensteamer.Fixture")
         try sign(
             executable: replacementFramework,
-            identifier: "org.example.AudioStreamer.Fixture"
+            identifier: "org.example.opensteamer.Fixture"
         )
         try sign(executable: executable, identifier: identifier)
         let originalExecutableHash = try codeHash(of: executable)
@@ -269,28 +269,28 @@ final class MacHostDeploymentContractTests: XCTestCase {
 
     func testLaunchStateOracleRejectsDriftedConfigurationAndLoadedPersistence() throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-launch-state-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-launch-state-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: temporaryRoot) }
         try FileManager.default.createDirectory(
             at: temporaryRoot,
             withIntermediateDirectories: true
         )
-        let executable = "/Applications/AudioStreamer Host.app/Contents/MacOS/CaptureServer"
+        let executable = "/Applications/opensteamer Host.app/Contents/MacOS/CaptureServer"
         let template = repositoryRoot.appendingPathComponent(
-            "macOS/LaunchAgents/org.example.audiostreamer.worldwide.plist"
+            "macOS/LaunchAgents/org.example.opensteamer.worldwide.plist"
         )
         let verifier = repositoryRoot.appendingPathComponent(
             "macOS/scripts/verify-mac-host-launch-state.sh"
         )
         let installed = temporaryRoot.appendingPathComponent(
-            "org.example.audiostreamer.worldwide.plist"
+            "org.example.opensteamer.worldwide.plist"
         )
         try FileManager.default.copyItem(at: template, to: installed)
         // This is a representative `launchctl print gui/<uid>/<label>` rendering. The verifier
         // parses it as an external wire format, so whitespace and section boundaries are part of
         // the fixture even though plist formatting itself is intentionally semantic.
         let baseline = """
-        gui/501/org.example.audiostreamer.worldwide = {
+        gui/501/org.example.opensteamer.worldwide = {
             path = \(installed.path)
             type = LaunchAgent
             program = \(executable)
@@ -309,7 +309,7 @@ final class MacHostDeploymentContractTests: XCTestCase {
             }
             environment = {
                 OSLogRateLimit => 64
-                XPC_SERVICE_NAME => org.example.audiostreamer.worldwide
+                XPC_SERVICE_NAME => org.example.opensteamer.worldwide
             }
             pid = 4242
             properties = keepalive | runatload | inferred program
@@ -329,6 +329,64 @@ final class MacHostDeploymentContractTests: XCTestCase {
             arguments: baselineArguments
         )
         XCTAssertEqual(positive.status, 0, positive.diagnostic)
+
+        // A public template cannot contain a maintainer endpoint. A local reviewed template may
+        // add the non-secret WSS origin as exact arguments; the live-state oracle must compare that
+        // configured template to the installed plist without accepting an environment override.
+        let configuredTemplate = temporaryRoot.appendingPathComponent(
+            "configured-template.plist"
+        )
+        let configuredInstalled = temporaryRoot.appendingPathComponent(
+            "configured-installed.plist"
+        )
+        var configuredValues = try XCTUnwrap(
+            PropertyListSerialization.propertyList(
+                from: Data(contentsOf: template),
+                format: nil
+            ) as? [String: Any]
+        )
+        var configuredArguments = try XCTUnwrap(
+            configuredValues["ProgramArguments"] as? [String]
+        )
+        configuredArguments.append(contentsOf: [
+            "--rendezvous-url",
+            "wss://opensteamer.example.invalid",
+        ])
+        configuredValues["ProgramArguments"] = configuredArguments
+        let configuredData = try PropertyListSerialization.data(
+            fromPropertyList: configuredValues,
+            format: .xml,
+            options: 0
+        )
+        try configuredData.write(to: configuredTemplate, options: .atomic)
+        try configuredData.write(to: configuredInstalled, options: .atomic)
+        let configuredState = baseline
+            .replacingOccurrences(of: installed.path, with: configuredInstalled.path)
+            .replacingOccurrences(
+                of: "        --verbose\n",
+                with: "        --verbose\n" +
+                    "        --rendezvous-url\n" +
+                    "        wss://opensteamer.example.invalid\n"
+            )
+        XCTAssertNotEqual(configuredState, baseline)
+        let configuredStateURL = temporaryRoot.appendingPathComponent(
+            "configured-state.txt"
+        )
+        try configuredState.write(
+            to: configuredStateURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let configuredPositive = try run(
+            executable: verifier,
+            arguments: [
+                configuredStateURL.path,
+                executable,
+                configuredTemplate.path,
+                configuredInstalled.path,
+            ]
+        )
+        XCTAssertEqual(configuredPositive.status, 0, configuredPositive.diagnostic)
 
         // macOS 26 can repeat the same job-scoped value in `launchctl print`.
         // Repetition is harmless only when every reported value agrees with the
@@ -363,9 +421,9 @@ final class MacHostDeploymentContractTests: XCTestCase {
         )
 
         let repeatedIdenticalXPCServiceName = baseline.replacingOccurrences(
-            of: "XPC_SERVICE_NAME => org.example.audiostreamer.worldwide",
-            with: "XPC_SERVICE_NAME => org.example.audiostreamer.worldwide\n" +
-                "        XPC_SERVICE_NAME => org.example.audiostreamer.worldwide"
+            of: "XPC_SERVICE_NAME => org.example.opensteamer.worldwide",
+            with: "XPC_SERVICE_NAME => org.example.opensteamer.worldwide\n" +
+                "        XPC_SERVICE_NAME => org.example.opensteamer.worldwide"
         )
         XCTAssertNotEqual(repeatedIdenticalXPCServiceName, baseline)
         let repeatedIdenticalXPCServiceNameURL = temporaryRoot.appendingPathComponent(
@@ -395,7 +453,7 @@ final class MacHostDeploymentContractTests: XCTestCase {
         // release manifest. Validate it when present without depending on a
         // particular macOS `launchctl print` rendering.
         let absentXPCServiceName = baseline.replacingOccurrences(
-            of: "        XPC_SERVICE_NAME => org.example.audiostreamer.worldwide\n",
+            of: "        XPC_SERVICE_NAME => org.example.opensteamer.worldwide\n",
             with: ""
         )
         XCTAssertNotEqual(absentXPCServiceName, baseline)
@@ -454,8 +512,8 @@ final class MacHostDeploymentContractTests: XCTestCase {
         )
 
         let conflictingRepeatedXPCServiceName = baseline.replacingOccurrences(
-            of: "XPC_SERVICE_NAME => org.example.audiostreamer.worldwide",
-            with: "XPC_SERVICE_NAME => org.example.audiostreamer.worldwide\n" +
+            of: "XPC_SERVICE_NAME => org.example.opensteamer.worldwide",
+            with: "XPC_SERVICE_NAME => org.example.opensteamer.worldwide\n" +
                 "        XPC_SERVICE_NAME => com.example.wrong"
         )
         XCTAssertNotEqual(conflictingRepeatedXPCServiceName, baseline)
@@ -517,8 +575,8 @@ final class MacHostDeploymentContractTests: XCTestCase {
         )
 
         let unknownJobEnvironment = baseline.replacingOccurrences(
-            of: "XPC_SERVICE_NAME => org.example.audiostreamer.worldwide",
-            with: "XPC_SERVICE_NAME => org.example.audiostreamer.worldwide\n" +
+            of: "XPC_SERVICE_NAME => org.example.opensteamer.worldwide",
+            with: "XPC_SERVICE_NAME => org.example.opensteamer.worldwide\n" +
                 "        UNREVIEWED_MODE => enabled"
         )
         XCTAssertNotEqual(unknownJobEnvironment, baseline)
@@ -608,7 +666,7 @@ final class MacHostDeploymentContractTests: XCTestCase {
         let overriddenEnvironment = baseline.replacingOccurrences(
             of: "OSLogRateLimit => 64",
             with: "OSLogRateLimit => 64\n" +
-                "        AUDIOSTREAMER_RENDEZVOUS_URL => wss://wrong.example"
+                "        OPENSTEAMER_RENDEZVOUS_URL => wss://wrong.example"
         )
         XCTAssertNotEqual(overriddenEnvironment, baseline)
         let overriddenEnvironmentURL = temporaryRoot.appendingPathComponent(
@@ -631,9 +689,47 @@ final class MacHostDeploymentContractTests: XCTestCase {
         XCTAssertNotEqual(environmentRejection.status, 0, environmentRejection.diagnostic)
         XCTAssertTrue(
             environmentRejection.standardError.contains(
-                "behavior-overriding environment: AUDIOSTREAMER_RENDEZVOUS_URL"
+                "behavior-overriding environment: OPENSTEAMER_RENDEZVOUS_URL"
             ),
             environmentRejection.diagnostic
+        )
+
+        // The host accepts the pre-rebrand key for one migration release. It is just as capable
+        // of overriding the authenticated rendezvous endpoint, so inherited/default launchd
+        // sections must reject it even though the job-scoped environment allowlist is exact.
+        let legacyOverriddenEnvironment = baseline.replacingOccurrences(
+            of: "OSLogRateLimit => 64",
+            with: "OSLogRateLimit => 64\n" +
+                "        AUDIOSTREAMER_RENDEZVOUS_URL => wss://wrong.example"
+        )
+        XCTAssertNotEqual(legacyOverriddenEnvironment, baseline)
+        let legacyOverriddenEnvironmentURL = temporaryRoot.appendingPathComponent(
+            "legacy-overridden-environment.txt"
+        )
+        try legacyOverriddenEnvironment.write(
+            to: legacyOverriddenEnvironmentURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let legacyEnvironmentRejection = try run(
+            executable: verifier,
+            arguments: [
+                legacyOverriddenEnvironmentURL.path,
+                executable,
+                template.path,
+                installed.path,
+            ]
+        )
+        XCTAssertNotEqual(
+            legacyEnvironmentRejection.status,
+            0,
+            legacyEnvironmentRejection.diagnostic
+        )
+        XCTAssertTrue(
+            legacyEnvironmentRejection.standardError.contains(
+                "behavior-overriding environment: AUDIOSTREAMER_RENDEZVOUS_URL"
+            ),
+            legacyEnvironmentRejection.diagnostic
         )
 
         let missingOSLogRateLimit = baseline.replacingOccurrences(
@@ -673,13 +769,13 @@ final class MacHostDeploymentContractTests: XCTestCase {
         let inheritedOnlyOSLogRateLimit = baseline.replacingOccurrences(
             of: "    environment = {\n" +
                 "        OSLogRateLimit => 64\n" +
-                "        XPC_SERVICE_NAME => org.example.audiostreamer.worldwide\n" +
+                "        XPC_SERVICE_NAME => org.example.opensteamer.worldwide\n" +
                 "    }",
             with: "    inherited environment = {\n" +
                 "        OSLogRateLimit => 64\n" +
                 "    }\n" +
                 "    environment = {\n" +
-                "        XPC_SERVICE_NAME => org.example.audiostreamer.worldwide\n" +
+                "        XPC_SERVICE_NAME => org.example.opensteamer.worldwide\n" +
                 "    }"
         )
         XCTAssertNotEqual(inheritedOnlyOSLogRateLimit, baseline)
@@ -1077,7 +1173,7 @@ final class MacHostDeploymentContractTests: XCTestCase {
         process.currentDirectoryURL = repositoryRoot
 
         let captureDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-process-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-process-\(UUID().uuidString)")
         try FileManager.default.createDirectory(
             at: captureDirectory,
             withIntermediateDirectories: true

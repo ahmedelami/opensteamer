@@ -9,7 +9,7 @@ import Streaming
 public final class PacketReader: @unchecked Sendable {
     private let connection: NWConnection
     private let authToken: String?
-    private let queue = DispatchQueue(label: "MacCaptureVerifier.ClientCore.PacketReader")
+    private let queue = DispatchQueue(label: "opensteamer.ClientCore.PacketReader")
 
     /// Creates a reader for a host and numeric TCP port.
     public init(host: String, port: UInt16, authToken: String? = nil) throws {

@@ -4,6 +4,7 @@ import RemoteSessionCore
 
 /// Wire identifiers and resource limits for the ordered control data channel.
 enum WebRTCWireConstants {
+    // Compatibility ABI: existing host/viewer builds negotiate these deployed v2 tokens.
     static let controlChannelLabel = "audiostreamer.control"
     static let controlProtocol = "audiostreamer.control.v2"
     static let maximumControlMessageBytes = WebRTCInputCapability.maximumMessageBytes

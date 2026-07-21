@@ -1,8 +1,8 @@
 {
-  "name": "@audiostream/rendezvous",
+  "name": "@opensteamer/rendezvous",
   "version": "0.1.0",
   "private": true,
-  "description": "Opaque WebRTC signaling rendezvous for AudioStreamer",
+  "description": "Opaque WebRTC signaling rendezvous for opensteamer",
   "type": "module",
   "engines": {
     "node": ">=20.0.0"

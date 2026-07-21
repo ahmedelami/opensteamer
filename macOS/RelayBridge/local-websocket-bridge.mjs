@@ -1,5 +1,5 @@
 /**
- * Local WebSocket-to-TCP adapter for the legacy AudioStreamer relay diagnostic path.
+ * Local WebSocket-to-TCP adapter for the legacy opensteamer relay diagnostic path.
  *
  * Run `npm install` once, then provide `RELAY_TOKEN` (or `MCAP_TOKEN`) and use `npm start`.
  * The HTTP/WebSocket listener is bound to 127.0.0.1 and is intentionally limited to trusted-local
@@ -43,7 +43,7 @@ const server = http.createServer((request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({
       ok: true,
-      service: "audio-streamer-relay-bridge",
+      service: "opensteamer-relay-bridge",
       stream: "/stream"
     }));
     return;

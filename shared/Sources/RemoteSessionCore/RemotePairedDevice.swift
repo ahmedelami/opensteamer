@@ -1,6 +1,9 @@
 import CryptoKit
 import Foundation
 
+// Compatibility ABI: pre-rebrand `AudioStreamer.*` labels are signed/MACed v1 transcript bytes.
+// They intentionally remain unchanged so saved pairs can reconnect across the product rename.
+
 /// Crash-recoverable durable states for the multi-message pairing commit.
 public enum RemotePairingPersistenceState: String, Codable, CaseIterable, Sendable {
     /// Pair root is persisted, but the three-way commit is not durably accepted yet.

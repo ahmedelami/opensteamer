@@ -134,7 +134,8 @@ EXPECTED_ARGUMENT_LINES="$(printf '%s\n' "${EXPECTED_ARGUMENTS[@]}")"
 # or permit dynamic-loader injection. They may appear in any launchctl
 # environment section, so inspect the loaded job rather than only the plist.
 OVERRIDING_ENVIRONMENT_KEYS="$(print -r -- "$LAUNCH_STATE" | /usr/bin/awk '
-    $2 == "=>" && ($1 == "AUDIOSTREAMER_RENDEZVOUS_URL" ||
+    $2 == "=>" && ($1 == "OPENSTEAMER_RENDEZVOUS_URL" ||
+                    $1 == "AUDIOSTREAMER_RENDEZVOUS_URL" ||
                     $1 == "MCAP_TOKEN" ||
                     $1 ~ /^DYLD_/) { print $1 }
 ')"

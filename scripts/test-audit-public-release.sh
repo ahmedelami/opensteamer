@@ -13,17 +13,62 @@ GITLEAKS=${GITLEAKS_BIN:-$(command -v gitleaks || true)}
   exit 2
 }
 
-TEMPORARY_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/audiostreamer-public-audit-tests.XXXXXX")
+TEMPORARY_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/opensteamer-public-audit-tests.XXXXXX")
 trap 'rm -rf "$TEMPORARY_ROOT"' EXIT
 
 function initialize_fixture_repository() {
   local repository=$1
-  mkdir -p "$repository/scripts" "$repository/services/Worker"
+  mkdir -p \
+    "$repository/scripts" \
+    "$repository/services/Worker" \
+    "$repository/iOS/opensteamer/Sources/App" \
+    "$repository/iOS/opensteamer/Sources/Support" \
+    "$repository/iOS/opensteamer/Sources/Views" \
+    "$repository/macOS/OpensteamerHost" \
+    "$repository/macOS/Sources/CaptureServer" \
+    "$repository/macOS/RelayBridge" \
+    "$repository/services/Rendezvous" \
+    "$repository/services/RendezvousWorker"
   cp "$ROOT_DIR/scripts/audit-public-release.sh" "$repository/scripts/"
+  cp "$ROOT_DIR/scripts/check-product-branding.sh" "$repository/scripts/"
+  cp "$ROOT_DIR/scripts/check-product-identity.sh" "$repository/scripts/"
   cp "$ROOT_DIR/.gitleaks.toml" "$repository/"
+  cp "$ROOT_DIR/Package.swift" "$ROOT_DIR/README.md" "$repository/"
+  cp "$ROOT_DIR/iOS/opensteamer/project.yml" "$repository/iOS/opensteamer/"
+  cp -R \
+    "$ROOT_DIR/iOS/opensteamer/opensteamer.xcodeproj" \
+    "$repository/iOS/opensteamer/"
+  cp \
+    "$ROOT_DIR/iOS/opensteamer/Sources/App/BackgroundPlaybackCoordinator.swift" \
+    "$repository/iOS/opensteamer/Sources/App/"
+  cp \
+    "$ROOT_DIR/iOS/opensteamer/Sources/Support/Info.plist" \
+    "$repository/iOS/opensteamer/Sources/Support/"
+  cp \
+    "$ROOT_DIR/iOS/opensteamer/Sources/Views/BrowserView.swift" \
+    "$repository/iOS/opensteamer/Sources/Views/"
+  cp "$ROOT_DIR/macOS/OpensteamerHost/Info.plist" "$repository/macOS/OpensteamerHost/"
+  cp \
+    "$ROOT_DIR/macOS/Sources/CaptureServer/Info.plist" \
+    "$repository/macOS/Sources/CaptureServer/"
+  cp -R "$ROOT_DIR/macOS/LaunchAgents" "$repository/macOS/"
+  cp \
+    "$ROOT_DIR/macOS/RelayBridge/package.json" \
+    "$ROOT_DIR/macOS/RelayBridge/package-lock.json" \
+    "$repository/macOS/RelayBridge/"
+  cp \
+    "$ROOT_DIR/services/Rendezvous/package.json" \
+    "$ROOT_DIR/services/Rendezvous/package-lock.json" \
+    "$repository/services/Rendezvous/"
+  cp \
+    "$ROOT_DIR/services/RendezvousWorker/package.json" \
+    "$ROOT_DIR/services/RendezvousWorker/package-lock.json" \
+    "$ROOT_DIR/services/RendezvousWorker/wrangler.toml" \
+    "$ROOT_DIR/services/RendezvousWorker/wrangler.test.toml" \
+    "$repository/services/RendezvousWorker/"
   git -C "$repository" init -q -b main
-  git -C "$repository" config user.name "AudioStreamer Contributors"
-  git -C "$repository" config user.email "audiostreamer@users.noreply.github.com"
+  git -C "$repository" config user.name "opensteamer contributors"
+  git -C "$repository" config user.email "opensteamer@users.noreply.github.com"
 }
 
 function commit_fixture() {
@@ -49,12 +94,73 @@ function require_rejection() {
 
 SAFE_REPOSITORY="$TEMPORARY_ROOT/safe"
 initialize_fixture_repository "$SAFE_REPOSITORY"
+mkdir -p \
+  "$SAFE_REPOSITORY/services/Rendezvous/src" \
+  "$SAFE_REPOSITORY/iOS/opensteamer/Sources/Security" \
+  "$SAFE_REPOSITORY/iOS/opensteamer/Sources/Support" \
+  "$SAFE_REPOSITORY/macOS/Sources/CaptureServer" \
+  "$SAFE_REPOSITORY/shared/Sources/RemoteSessionCore"
+# Exact compatibility literals remain valid only in their established protocol/persistence paths.
+print -r -- 'export const CHANNEL_HEADER = "x-audiostreamer-channel";' \
+  >"$SAFE_REPOSITORY/services/Rendezvous/src/protocol.mjs"
+print -r -- 'let service = "org.example.AudioStreamer"' \
+  >"$SAFE_REPOSITORY/iOS/opensteamer/Sources/Security/KeychainStore.swift"
+print -r -- 'let legacy = environment["AUDIOSTREAMER_RENDEZVOUS_URL"]' \
+  >"$SAFE_REPOSITORY/macOS/Sources/CaptureServer/CaptureServerOptions.swift"
+print -r -- 'let salt = "AudioStreamer.RemoteSession.HKDF-SHA256.v1"' \
+  >"$SAFE_REPOSITORY/shared/Sources/RemoteSessionCore/RemoteSignalingCrypto.swift"
 print -r -- "HOST=127.0.0.1" >"$SAFE_REPOSITORY/.env.example"
 print -r -- "PLACEHOLDER=replace-me" >"$SAFE_REPOSITORY/services/Worker/.dev.vars.example"
 print -r -- "registry=https://registry.npmjs.org/" >"$SAFE_REPOSITORY/.npmrc.example"
 commit_fixture "$SAFE_REPOSITORY" "Add safe example configuration"
+# A normal fresh clone carries a remote-tracking mirror of its checked-out branch and may carry a
+# symbolic origin/HEAD. Neither creates additional reachable history, so both must pass the gate.
+git -C "$SAFE_REPOSITORY" update-ref \
+  refs/remotes/origin/main "$(git -C "$SAFE_REPOSITORY" rev-parse HEAD)"
+git -C "$SAFE_REPOSITORY" symbolic-ref \
+  refs/remotes/origin/HEAD refs/remotes/origin/main
 GITLEAKS_BIN="$GITLEAKS" \
   "$SAFE_REPOSITORY/scripts/audit-public-release.sh" "$SAFE_REPOSITORY" >/dev/null
+
+# An extra remote/backup root is different: it can retain artifacts outside the release branch.
+git -C "$SAFE_REPOSITORY" update-ref \
+  refs/remotes/archive/backup "$(git -C "$SAFE_REPOSITORY" rev-parse HEAD)"
+require_rejection \
+  "unexpected refs are reachable" \
+  env GITLEAKS_BIN="$GITLEAKS" \
+  "$SAFE_REPOSITORY/scripts/audit-public-release.sh" "$SAFE_REPOSITORY"
+git -C "$SAFE_REPOSITORY" update-ref -d refs/remotes/archive/backup
+
+DELETED_SENSITIVE_REPOSITORY="$TEMPORARY_ROOT/deleted-sensitive-filename"
+initialize_fixture_repository "$DELETED_SENSITIVE_REPOSITORY"
+print -r -- '{"fixture":"synthetic and non-authorizing"}' \
+  >"$DELETED_SENSITIVE_REPOSITORY/credentials.json"
+commit_fixture "$DELETED_SENSITIVE_REPOSITORY" "Add synthetic sensitive-filename fixture"
+rm "$DELETED_SENSITIVE_REPOSITORY/credentials.json"
+commit_fixture "$DELETED_SENSITIVE_REPOSITORY" "Remove synthetic sensitive-filename fixture"
+require_rejection \
+  "credential or signing-artifact filenames remain in reachable history" \
+  env GITLEAKS_BIN="$GITLEAKS" \
+  "$DELETED_SENSITIVE_REPOSITORY/scripts/audit-public-release.sh" \
+  "$DELETED_SENSITIVE_REPOSITORY"
+
+BRANDING_REPOSITORY="$TEMPORARY_ROOT/branding"
+initialize_fixture_repository "$BRANDING_REPOSITORY"
+print -r -- "# AudioStreamer" >"$BRANDING_REPOSITORY/README.md"
+commit_fixture "$BRANDING_REPOSITORY" "Add stale product branding fixture"
+require_rejection \
+  "former product branding remains outside the compatibility allowlist" \
+  env GITLEAKS_BIN="$GITLEAKS" \
+  "$BRANDING_REPOSITORY/scripts/audit-public-release.sh" "$BRANDING_REPOSITORY"
+
+PATH_REPOSITORY="$TEMPORARY_ROOT/branding-path"
+initialize_fixture_repository "$PATH_REPOSITORY"
+print -r -- "stale path fixture" >"$PATH_REPOSITORY/AudioStreamer-notes.md"
+commit_fixture "$PATH_REPOSITORY" "Add stale branded path fixture"
+require_rejection \
+  "former product branding remains outside the compatibility allowlist" \
+  env GITLEAKS_BIN="$GITLEAKS" \
+  "$PATH_REPOSITORY/scripts/audit-public-release.sh" "$PATH_REPOSITORY"
 
 print -r -- "RUNTIME_VALUE=must-not-be-tracked" >"$SAFE_REPOSITORY/.env"
 commit_fixture "$SAFE_REPOSITORY" "Add forbidden runtime environment"

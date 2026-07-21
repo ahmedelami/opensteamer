@@ -1,8 +1,8 @@
 # Agent Guidelines
 
-## AudioStreamer Product Contract
+## opensteamer Product Contract
 
-AudioStreamer's production remote path must connect a Mac and iPhone on unrelated
+opensteamer's production remote path must connect a Mac and iPhone on unrelated
 Internet-connected Wi-Fi networks from anywhere in the world. The intended user
 experience is to enter one secure pairing code on the iPhone; it must not require
 manual IP addresses, router configuration, or public TCP ports.
@@ -40,6 +40,10 @@ manual IP addresses, router configuration, or public TCP ports.
   namespace disjoint from legacy invitation/media rendezvous. Reject missing or
   unknown subprotocols where required, redirects, query-based joins, role-swapped
   proofs, and availability headers on the v1 route.
+- Treat the `X-AudioStreamer-*`, `audiostreamer.pairing.v1`, and
+  `audiostreamer.availability.v1` spellings above as the deployed v1 compatibility ABI.
+  They intentionally retain the former product name; a visible-product rebrand must not
+  silently change them or strand already deployed clients.
 - Treat HTTP 101 and WebSocket ping/pong as transport evidence, not proof that the
   availability Durable Object still routes application messages. After the first
   valid waiting/ready state, the Mac host must send bounded host-only nonce probes.
@@ -55,9 +59,11 @@ manual IP addresses, router configuration, or public TCP ports.
 - Debug/XCTest iOS builds must use a bundle identifier distinct from the production
   TestFlight app so physical validation cannot replace the user's release container
   or masquerade as a TestFlight-to-TestFlight update.
-- Run the persistent Mac service from the signed `AudioStreamer Host.app` bundle with
-  identifier `org.example.AudioStreamer.CaptureServer`. Keep that privacy-visible name
-  unique and stable: an older `MacCaptureHost.app` or a naked executable can bind
+- Run the persistent Mac service from the signed `opensteamer Host.app` bundle with
+  the intentionally preserved identifier `org.example.AudioStreamer.CaptureServer`.
+  That pre-rebrand identifier is compatibility data: changing it would detach existing
+  Screen Recording, Accessibility, and Keychain grants. Keep the signed identity stable;
+  an obsolete host bundle or a naked executable can bind
   Screen Recording or Accessibility permission to the wrong macOS code identity.
 - Worldwide Mac system audio is an independent, send-only Opus track on the same
   peer connection. The production fidelity contract is 48 kHz interleaved Int16

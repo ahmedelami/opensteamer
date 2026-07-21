@@ -1,6 +1,10 @@
 import CryptoKit
 import Foundation
 
+// Compatibility ABI: the pre-rebrand `AudioStreamer.*` strings in this file are cryptographic
+// domain-separation bytes, not display branding. Existing pairings and mixed-version peers depend
+// on their exact values; a future spelling requires a negotiated protocol version and migration.
+
 /// A canonical, redacted routing identifier derived from session key material.
 public struct RendezvousChannelID: Codable, Equatable, Hashable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
     public let wireValue: String

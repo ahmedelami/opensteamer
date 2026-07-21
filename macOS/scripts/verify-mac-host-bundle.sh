@@ -1,7 +1,7 @@
 #!/bin/zsh
-# Performs read-only structural and signing verification of an AudioStreamer Host app bundle.
+# Performs read-only structural and signing verification of an opensteamer Host app bundle.
 #
-# Usage: `verify-mac-host-bundle.sh <AudioStreamer Host.app> [expected-team-id]`.
+# Usage: `verify-mac-host-bundle.sh <opensteamer Host.app> [expected-team-id]`.
 # It requires standard macOS plist, Mach-O, and code-signing tools. The optional TeamIdentifier
 # enables the stronger Apple anchor/organizational-unit requirement; omitting it also permits a
 # correctly formed ad-hoc bundle for local tests.
@@ -12,7 +12,8 @@
 # exits 64, while every malformed or mismatched artifact exits 1.
 set -eu
 
-readonly EXPECTED_APP_BASENAME="AudioStreamer Host.app"
+readonly EXPECTED_APP_BASENAME="opensteamer Host.app"
+# The visible bundle name changed, but the shipped code identity is an upgrade compatibility ABI.
 readonly EXPECTED_BUNDLE_IDENTIFIER="org.example.AudioStreamer.CaptureServer"
 readonly EXPECTED_EXECUTABLE_NAME="CaptureServer"
 readonly EXPECTED_FRAMEWORK_IDENTIFIER="io.livekit.LiveKitWebRTC"
@@ -25,7 +26,7 @@ fail() {
 }
 
 if (( $# < 1 || $# > 2 )); then
-    print -u2 -- "usage: $0 <AudioStreamer Host.app> [expected-team-id]"
+    print -u2 -- "usage: $0 <opensteamer Host.app> [expected-team-id]"
     exit 64
 fi
 
@@ -76,8 +77,8 @@ assert_plist_value() {
 # resource-seal failure.
 assert_plist_value CFBundleIdentifier "$EXPECTED_BUNDLE_IDENTIFIER"
 assert_plist_value CFBundleExecutable "$EXPECTED_EXECUTABLE_NAME"
-assert_plist_value CFBundleName "AudioStreamer Host"
-assert_plist_value CFBundleDisplayName "AudioStreamer Host"
+assert_plist_value CFBundleName "opensteamer Host"
+assert_plist_value CFBundleDisplayName "opensteamer Host"
 assert_plist_value CFBundlePackageType "APPL"
 
 [[ -f "$EXECUTABLE" ]] || fail "main executable is missing: $EXECUTABLE"
@@ -213,4 +214,4 @@ if [[ -n "$EXPECTED_TEAM_ID" ]]; then
         "$FRAMEWORK" "LiveKitWebRTC.framework" "$EXPECTED_FRAMEWORK_IDENTIFIER"
 fi
 
-print -u2 -- "Verified AudioStreamer Host bundle: $APP_PATH"
+print -u2 -- "Verified opensteamer Host bundle: $APP_PATH"

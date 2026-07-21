@@ -27,7 +27,7 @@ final class MacHostBundleIdentityTests: XCTestCase {
 
     func testBuiltHostArtifactAndVerifierRejectIdentityMutations() throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-host-identity-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-host-identity-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: temporaryRoot) }
         try FileManager.default.createDirectory(
             at: temporaryRoot,
@@ -38,22 +38,22 @@ final class MacHostBundleIdentityTests: XCTestCase {
         var buildEnvironment = ProcessInfo.processInfo.environment
         // `-` requests an ad-hoc signature. That keeps the test independent of developer
         // credentials and intentionally produces no TeamIdentifier for the negative team check.
-        buildEnvironment["MAC_CAPTURE_CODESIGN_IDENTITY"] = "-"
-        buildEnvironment["MAC_CAPTURE_APP_OUTPUT_DIR"] = outputDirectory.path
-        buildEnvironment["MAC_CAPTURE_PREBUILT_BIN_DIR"] = Bundle(
+        buildEnvironment["OPENSTEAMER_HOST_CODESIGN_IDENTITY"] = "-"
+        buildEnvironment["OPENSTEAMER_HOST_APP_OUTPUT_DIR"] = outputDirectory.path
+        buildEnvironment["OPENSTEAMER_HOST_PREBUILT_BIN_DIR"] = Bundle(
             for: MacHostBundleIdentityTests.self
         ).bundleURL.deletingLastPathComponent().path
-        buildEnvironment.removeValue(forKey: "MAC_CAPTURE_EXPECTED_TEAM_ID")
+        buildEnvironment.removeValue(forKey: "OPENSTEAMER_EXPECTED_TEAM_ID")
 
         let build = try run(
             executable: repositoryRoot.appendingPathComponent(
-                "macOS/scripts/build-mac-capture-host-app.sh"
+                "macOS/scripts/build-opensteamer-host-app.sh"
             ),
             environment: buildEnvironment
         )
         XCTAssertEqual(build.status, 0, build.diagnostic)
 
-        let builtApp = outputDirectory.appendingPathComponent("AudioStreamer Host.app")
+        let builtApp = outputDirectory.appendingPathComponent("opensteamer Host.app")
         var isDirectory: ObjCBool = false
         XCTAssertTrue(
             FileManager.default.fileExists(
@@ -63,6 +63,22 @@ final class MacHostBundleIdentityTests: XCTestCase {
             build.diagnostic
         )
         XCTAssertTrue(isDirectory.boolValue, build.diagnostic)
+        let builtInfoData = try Data(
+            contentsOf: builtApp.appendingPathComponent("Contents/Info.plist")
+        )
+        let builtInfo = try XCTUnwrap(
+            PropertyListSerialization.propertyList(
+                from: builtInfoData,
+                format: nil
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(builtInfo["CFBundleName"] as? String, "opensteamer Host")
+        XCTAssertEqual(builtInfo["CFBundleDisplayName"] as? String, "opensteamer Host")
+        // The visible name changes, but this shipped identity retains privacy and Keychain grants.
+        XCTAssertEqual(
+            builtInfo["CFBundleIdentifier"] as? String,
+            "org.example.AudioStreamer.CaptureServer"
+        )
         XCTAssertEqual(
             build.standardOutput
                 .split(whereSeparator: \.isNewline)
@@ -95,7 +111,7 @@ final class MacHostBundleIdentityTests: XCTestCase {
 
         let displayNameMutation = try makeAPFSClone(
             of: builtApp,
-            named: "AudioStreamer Host.app",
+            named: "opensteamer Host.app",
             under: temporaryRoot.appendingPathComponent("wrong-display-name")
         )
         let plistMutation = try run(
@@ -114,14 +130,41 @@ final class MacHostBundleIdentityTests: XCTestCase {
         XCTAssertNotEqual(displayNameRejection.status, 0, displayNameRejection.diagnostic)
         XCTAssertTrue(
             displayNameRejection.standardError.contains(
-                "CFBundleDisplayName: expected 'AudioStreamer Host', found 'Wrong Host'"
+                "CFBundleDisplayName: expected 'opensteamer Host', found 'Wrong Host'"
             ),
             displayNameRejection.diagnostic
         )
 
+        let identifierMutation = try makeAPFSClone(
+            of: builtApp,
+            named: "opensteamer Host.app",
+            under: temporaryRoot.appendingPathComponent("wrong-bundle-identifier")
+        )
+        let identifierPlistMutation = try run(
+            executable: URL(fileURLWithPath: "/usr/libexec/PlistBuddy"),
+            arguments: [
+                "-c",
+                "Set :CFBundleIdentifier org.example.opensteamer.CaptureServer",
+                identifierMutation.appendingPathComponent("Contents/Info.plist").path,
+            ]
+        )
+        XCTAssertEqual(identifierPlistMutation.status, 0, identifierPlistMutation.diagnostic)
+        let identifierRejection = try run(
+            executable: verifier,
+            arguments: [identifierMutation.path]
+        )
+        XCTAssertNotEqual(identifierRejection.status, 0, identifierRejection.diagnostic)
+        XCTAssertTrue(
+            identifierRejection.standardError.contains(
+                "CFBundleIdentifier: expected 'org.example.AudioStreamer.CaptureServer', " +
+                    "found 'org.example.opensteamer.CaptureServer'"
+            ),
+            identifierRejection.diagnostic
+        )
+
         let basenameMutation = try makeAPFSClone(
             of: builtApp,
-            named: "MacCaptureHost.app",
+            named: "OpensteamerHost.app",
             under: temporaryRoot.appendingPathComponent("wrong-basename")
         )
         let basenameRejection = try run(
@@ -131,14 +174,14 @@ final class MacHostBundleIdentityTests: XCTestCase {
         XCTAssertNotEqual(basenameRejection.status, 0, basenameRejection.diagnostic)
         XCTAssertTrue(
             basenameRejection.standardError.contains(
-                "bundle basename: expected 'AudioStreamer Host.app', found 'MacCaptureHost.app'"
+                "bundle basename: expected 'opensteamer Host.app', found 'OpensteamerHost.app'"
             ),
             basenameRejection.diagnostic
         )
 
         let signatureMutation = try makeAPFSClone(
             of: builtApp,
-            named: "AudioStreamer Host.app",
+            named: "opensteamer Host.app",
             under: temporaryRoot.appendingPathComponent("invalid-signature")
         )
         let sealMutation = try run(
@@ -164,7 +207,7 @@ final class MacHostBundleIdentityTests: XCTestCase {
 
         let rpathMutation = try makeAPFSClone(
             of: builtApp,
-            named: "AudioStreamer Host.app",
+            named: "opensteamer Host.app",
             under: temporaryRoot.appendingPathComponent("missing-rpath")
         )
         let rpathEdit = try run(
@@ -190,7 +233,7 @@ final class MacHostBundleIdentityTests: XCTestCase {
 
         let missingFrameworkMutation = try makeAPFSClone(
             of: builtApp,
-            named: "AudioStreamer Host.app",
+            named: "opensteamer Host.app",
             under: temporaryRoot.appendingPathComponent("missing-framework")
         )
         try FileManager.default.removeItem(
@@ -213,7 +256,7 @@ final class MacHostBundleIdentityTests: XCTestCase {
             at: symlinkParent,
             withIntermediateDirectories: true
         )
-        let symlink = symlinkParent.appendingPathComponent("AudioStreamer Host.app")
+        let symlink = symlinkParent.appendingPathComponent("opensteamer Host.app")
         try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: builtApp)
         let symlinkRejection = try run(executable: verifier, arguments: [symlink.path])
         XCTAssertNotEqual(symlinkRejection.status, 0, symlinkRejection.diagnostic)
@@ -278,7 +321,7 @@ final class MacHostBundleIdentityTests: XCTestCase {
         process.environment = environment ?? ProcessInfo.processInfo.environment
 
         let captureDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-process-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-process-\(UUID().uuidString)")
         try FileManager.default.createDirectory(
             at: captureDirectory,
             withIntermediateDirectories: true

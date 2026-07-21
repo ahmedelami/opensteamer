@@ -1,6 +1,8 @@
 // The rendezvous service validates only routing metadata and opaque encrypted envelopes. It never
 // receives the plaintext SDP/ICE signaling content carried inside those envelopes.
 export const CHANNEL_PATTERN = /^[A-Za-z0-9_-]{22,128}$/;
+// These former-brand header names are the deployed v1 compatibility ABI. Renaming the product
+// must not change them without a separately versioned protocol migration.
 export const CHANNEL_HEADER = "x-audiostreamer-channel";
 export const ROLE_HEADER = "x-audiostreamer-role";
 export const ADMISSION_PROOF_HEADER = "x-audiostreamer-admission";

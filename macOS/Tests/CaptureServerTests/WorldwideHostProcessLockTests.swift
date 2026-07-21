@@ -8,6 +8,13 @@ import XCTest
 /// 0700 for the directory and 0600 for the lock file. A second process must fail rather than run
 /// another availability loop against the same durable pairing state.
 final class WorldwideHostProcessLockTests: XCTestCase {
+    func testVisibleRebrandPreservesCrossVersionRuntimeNamespace() {
+        XCTAssertEqual(
+            WorldwideHostProcessLock.legacyRuntimeDirectoryName,
+            "org.example.AudioStreamer.CaptureServer.runtime"
+        )
+    }
+
     func testSecondWorldwideHostCannotAcquireSamePerUserLock() throws {
         let lockDirectoryURL = makeLockDirectoryURL()
         defer { try? FileManager.default.removeItem(at: lockDirectoryURL) }
@@ -62,6 +69,6 @@ final class WorldwideHostProcessLockTests: XCTestCase {
     private func makeLockDirectoryURL() -> URL {
         // A UUID avoids cross-test contention while still exercising the real file-lock backend.
         FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamerLockTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("opensteamerLockTests-\(UUID().uuidString)", isDirectory: true)
     }
 }

@@ -13,7 +13,7 @@ public final class TCPServer: @unchecked Sendable, PCMFrameSink {
     private let bonjourName: String?
     private let authToken: String?
     private let logger: Logger
-    private let queue = DispatchQueue(label: "MacCaptureVerifier.TCPServer")
+    private let queue = DispatchQueue(label: "opensteamer.TCPServer")
 
     private var listener: NWListener?
     private var client: ClientConnection?

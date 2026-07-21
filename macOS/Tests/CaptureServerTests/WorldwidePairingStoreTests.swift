@@ -10,6 +10,13 @@ import XCTest
 /// host relaunched mid-commit must resend completion without accepting media until the viewer's
 /// activation acknowledgement has been authenticated.
 final class WorldwidePairingStoreTests: XCTestCase {
+    func testVisibleRebrandPreservesExistingKeychainService() {
+        XCTAssertEqual(
+            WorldwideKeychainDataStore.legacyPairingService,
+            "org.example.AudioStreamer.CaptureServer.WorldwidePairing.v1"
+        )
+    }
+
     func testPeerDepartureRestartsOnlyBeforeDurablePairingStateExists() {
         XCTAssertEqual(
             worldwidePairingPeerDepartureAction(hasDurableRecord: false),
@@ -24,7 +31,7 @@ final class WorldwidePairingStoreTests: XCTestCase {
     func testRealKeychainBackendRoundTripsAcrossStoreRecreation() throws {
         // A unique service isolates the real Keychain integration from production and parallel
         // test runs. The deferred removal is part of the test's privacy boundary.
-        let service = "org.example.AudioStreamer.CaptureServerTests.\(UUID().uuidString)"
+        let service = "org.example.opensteamer.CaptureServerTests.\(UUID().uuidString)"
         let account = "pairing-round-trip"
         let dataStore = WorldwideKeychainDataStore(service: service)
         defer { try? dataStore.removeData(for: account) }

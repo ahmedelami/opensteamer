@@ -1,10 +1,10 @@
 #!/bin/zsh
 # End-to-end, read-only deployment oracle for the installed and currently running Mac host.
 #
-# Required environment: AUDIOSTREAMER_EXPECTED_TEAM_ID. Optional overrides are
-# AUDIOSTREAMER_HOST_APP_PATH, AUDIOSTREAMER_HOST_BUILD_APP_PATH,
-# AUDIOSTREAMER_HOST_LAUNCH_AGENT_LABEL, AUDIOSTREAMER_HOST_LAUNCH_AGENT_TEMPLATE,
-# AUDIOSTREAMER_HOST_INSTALLED_LAUNCH_AGENT, and AUDIOSTREAMER_EXPECTED_HOST_PID. Run after building,
+# Required environment: OPENSTEAMER_EXPECTED_TEAM_ID. Optional overrides are
+# OPENSTEAMER_HOST_APP_PATH, OPENSTEAMER_HOST_BUILD_APP_PATH,
+# OPENSTEAMER_HOST_LAUNCH_AGENT_LABEL, OPENSTEAMER_HOST_LAUNCH_AGENT_TEMPLATE,
+# OPENSTEAMER_HOST_INSTALLED_LAUNCH_AGENT, and OPENSTEAMER_EXPECTED_HOST_PID. Run after building,
 # installing, and loading the signed host.
 #
 # The script verifies fresh-versus-installed CDHashes, snapshots `launchctl print` into a temporary
@@ -14,10 +14,10 @@
 set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-APP_DIR=${AUDIOSTREAMER_HOST_APP_PATH:-/Applications/AudioStreamer Host.app}
-BUILD_APP_DIR=${AUDIOSTREAMER_HOST_BUILD_APP_PATH:-$ROOT_DIR/build/AudioStreamer Host.app}
-HOST_LABEL=${AUDIOSTREAMER_HOST_LAUNCH_AGENT_LABEL:-org.example.audiostreamer.worldwide}
-EXPECTED_TEAM_ID=${AUDIOSTREAMER_EXPECTED_TEAM_ID:?AUDIOSTREAMER_EXPECTED_TEAM_ID is required}
+APP_DIR=${OPENSTEAMER_HOST_APP_PATH:-/Applications/opensteamer Host.app}
+BUILD_APP_DIR=${OPENSTEAMER_HOST_BUILD_APP_PATH:-$ROOT_DIR/build/opensteamer Host.app}
+HOST_LABEL=${OPENSTEAMER_HOST_LAUNCH_AGENT_LABEL:-org.example.opensteamer.worldwide}
+EXPECTED_TEAM_ID=${OPENSTEAMER_EXPECTED_TEAM_ID:?OPENSTEAMER_EXPECTED_TEAM_ID is required}
 EXPECTED_EXECUTABLE="$APP_DIR/Contents/MacOS/CaptureServer"
 EXPECTED_FRAMEWORK="$APP_DIR/Contents/Frameworks/LiveKitWebRTC.framework"
 EXPECTED_FRAMEWORK_EXECUTABLE="$EXPECTED_FRAMEWORK/LiveKitWebRTC"
@@ -26,11 +26,11 @@ SERVICE="gui/${UID}/${HOST_LABEL}"
 BUNDLE_VERIFIER="$ROOT_DIR/macOS/scripts/verify-mac-host-bundle.sh"
 LIVE_PROCESS_VERIFIER="$ROOT_DIR/macOS/scripts/verify-live-mac-host-process.sh"
 LAUNCH_STATE_VERIFIER="$ROOT_DIR/macOS/scripts/verify-mac-host-launch-state.sh"
-LAUNCH_AGENT_TEMPLATE=${AUDIOSTREAMER_HOST_LAUNCH_AGENT_TEMPLATE:-$ROOT_DIR/macOS/LaunchAgents/org.example.audiostreamer.worldwide.plist}
-INSTALLED_LAUNCH_AGENT=${AUDIOSTREAMER_HOST_INSTALLED_LAUNCH_AGENT:-$HOME/Library/LaunchAgents/$HOST_LABEL.plist}
+LAUNCH_AGENT_TEMPLATE=${OPENSTEAMER_HOST_LAUNCH_AGENT_TEMPLATE:-$ROOT_DIR/macOS/LaunchAgents/org.example.opensteamer.worldwide.plist}
+INSTALLED_LAUNCH_AGENT=${OPENSTEAMER_HOST_INSTALLED_LAUNCH_AGENT:-$HOME/Library/LaunchAgents/$HOST_LABEL.plist}
 
 function fail() {
-    print -u2 -- "AudioStreamer host deployment verification failed: $1"
+    print -u2 -- "opensteamer host deployment verification failed: $1"
     exit 1
 }
 
@@ -67,7 +67,7 @@ installed_framework_hash=$(code_hash "$EXPECTED_FRAMEWORK")
     || fail "installed framework CDHash does not match the freshly built host"
 
 launch_state_file="$(/usr/bin/mktemp \
-    "${TMPDIR:-/tmp}/audiostreamer-launch-state.XXXXXX")" \
+    "${TMPDIR:-/tmp}/opensteamer-launch-state.XXXXXX")" \
     || fail "could not create a launch-state snapshot"
 trap 'rm -f "$launch_state_file"' EXIT
 # Capture one coherent launchd snapshot; downstream parsing never races multiple `launchctl` calls.
@@ -80,17 +80,18 @@ launch_manifest=$(
         "$EXPECTED_EXECUTABLE" \
         "$LAUNCH_AGENT_TEMPLATE" \
         "$INSTALLED_LAUNCH_AGENT"
-) || fail "loaded launch agent does not match the source-controlled configuration"
+) || fail "loaded launch agent does not match the reviewed template configuration"
 program=$(print -r -- "$launch_manifest" \
     | /usr/bin/awk -F= '$1 == "program" { print substr($0, index($0, "=") + 1); exit }')
 pid=$(print -r -- "$launch_manifest" \
     | /usr/bin/awk -F= '$1 == "pid" { print $2; exit }')
-if [[ -n "${AUDIOSTREAMER_EXPECTED_HOST_PID:-}" \
-    && "$pid" != "$AUDIOSTREAMER_EXPECTED_HOST_PID" ]]; then
-    fail "launch agent PID is '$pid', expected '$AUDIOSTREAMER_EXPECTED_HOST_PID'"
+if [[ -n "${OPENSTEAMER_EXPECTED_HOST_PID:-}" \
+    && "$pid" != "$OPENSTEAMER_EXPECTED_HOST_PID" ]]; then
+    fail "launch agent PID is '$pid', expected '$OPENSTEAMER_EXPECTED_HOST_PID'"
 fi
 kill -0 "$pid" 2>/dev/null || fail "launch agent PID $pid is not alive"
 
+# The live host must retain the shipped designated requirement after the visible rename.
 live_manifest=$(
     "$LIVE_PROCESS_VERIFIER" \
         "$pid" \

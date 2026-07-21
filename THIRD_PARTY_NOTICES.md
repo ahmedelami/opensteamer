@@ -1,7 +1,7 @@
 # Third-party notices
 
-AudioStreamer uses the following directly distributed runtime components. Their terms remain
-independent of the AudioStreamer project license. Keep this file with source and binary
+opensteamer uses the following directly distributed runtime components. Their terms remain
+independent of the opensteamer project license. Keep this file with source and binary
 distributions that contain the corresponding component.
 
 ## LiveKit WebRTC XCFramework wrapper

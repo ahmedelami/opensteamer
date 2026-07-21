@@ -10,7 +10,7 @@ import WAV
 public final class AudioProcessor: @unchecked Sendable, SampleBufferConsumer {
     private let outputURL: URL
     private let logger: Logger
-    private let queue = DispatchQueue(label: "MacCaptureVerifier.AudioProcessor")
+    private let queue = DispatchQueue(label: "opensteamer.AudioProcessor")
     private let completion = DispatchGroup()
 
     private var writer: WAVWriter?

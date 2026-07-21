@@ -23,7 +23,7 @@ struct CaptureServerOptions {
     var duration: TimeInterval? = 30
     var displayID: UInt32?
     var captureMode: AudioCaptureMode = .blackHoleInput
-    var bonjourName: String? = Host.current().localizedName ?? "MacCapture"
+    var bonjourName: String? = Host.current().localizedName ?? "opensteamer"
     var authToken = ProcessInfo.processInfo.environment["MCAP_TOKEN"]?.nilIfEmpty
     var verbose = false
     var listDisplays = false
@@ -70,8 +70,11 @@ struct CaptureServerOptions {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> CaptureServerOptions {
         var options = CaptureServerOptions()
-        options.rendezvousURL = environment["AUDIOSTREAMER_RENDEZVOUS_URL"]
-            .flatMap(URL.init(string:))
+        // Accept the former variable for one release so an installed LaunchAgent can be upgraded
+        // independently. The opensteamer spelling wins whenever both contain a value.
+        let rendezvousURLText = environment["OPENSTEAMER_RENDEZVOUS_URL"]?.nilIfEmpty
+            ?? environment["AUDIOSTREAMER_RENDEZVOUS_URL"]?.nilIfEmpty
+        options.rendezvousURL = rendezvousURLText.flatMap(URL.init(string:))
         var index = 1
         var screenPortWasExplicit = false
         var lanModeWasExplicit = false
@@ -230,7 +233,7 @@ struct CaptureServerOptions {
             }
             guard options.rendezvousURL != nil else {
                 throw CaptureServerOptionError.invalid(
-                    "--worldwide requires --rendezvous-url or AUDIOSTREAMER_RENDEZVOUS_URL"
+                    "--worldwide requires --rendezvous-url or OPENSTEAMER_RENDEZVOUS_URL"
                 )
             }
         } else if options.resetWorldwidePairing {

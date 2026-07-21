@@ -13,6 +13,8 @@ public struct RemoteInvitationCode: Sendable, CustomStringConvertible, CustomDeb
 
     private static let checksumByteCount = 4
     private static let encodedByteCount = 1 + secretByteCount + checksumByteCount
+    // Compatibility ABI: this pre-rebrand v1 domain is part of every existing invitation code.
+    // Changing its bytes would make already-issued codes fail checksum validation.
     private static let checksumDomain = Data("AudioStreamer.RemoteInvitation.Checksum.v1\0".utf8)
 
     private let secret: Data

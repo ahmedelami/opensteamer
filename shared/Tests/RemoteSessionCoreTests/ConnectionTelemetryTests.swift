@@ -83,7 +83,7 @@ struct ConnectionTelemetryTests {
             rawPairID.uuidString,
             rawAttemptID.uuidString,
             Self.syntheticSecretCanary,
-            "wss://audiostreamer.example",
+            "wss://opensteamer.example",
             "203.0.113.9",
             "candidate:",
             "v=0\\r\\n",
@@ -285,7 +285,7 @@ struct ConnectionTelemetryTests {
 
     private func temporaryDirectory() -> URL {
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamerTelemetryTests")
+            .appendingPathComponent("opensteamerTelemetryTests")
             .appendingPathComponent(UUID().uuidString)
         try? FileManager.default.createDirectory(
             at: directory,

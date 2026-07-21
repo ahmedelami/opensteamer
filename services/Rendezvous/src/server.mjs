@@ -234,7 +234,7 @@ export function createRendezvousServer(options = {}) {
       .catch(() => {
         if (invitations.get(channel) !== invitation) return;
         invitation.provisioningState = "failed";
-        logger.error?.("AudioStreamer ICE credential provisioning failed");
+        logger.error?.("opensteamer ICE credential provisioning failed");
         for (const peer of [invitation.host, invitation.viewer]) {
           if (peer) send(peer.socket, { type: "error", error: "ice_server_unavailable" });
         }
@@ -385,7 +385,7 @@ export function createRendezvousServer(options = {}) {
       server.listen(config.port, config.host, () => {
         server.off("error", onError);
         const address = server.address();
-        logger.info?.("AudioStreamer rendezvous listening", {
+        logger.info?.("opensteamer rendezvous listening", {
           host: typeof address === "object" ? address.address : config.host,
           port: typeof address === "object" ? address.port : config.port,
         });

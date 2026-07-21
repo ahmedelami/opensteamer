@@ -30,17 +30,17 @@ final class PhysicalValidationScriptTests: XCTestCase {
         // artifact; shared cleanup/failure tests iterate the complete set.
         [
             (
-                "iOS/AudioStreamer/scripts/validate-release-pair-baseline.sh",
+                "iOS/opensteamer/scripts/validate-release-pair-baseline.sh",
                 { artifactDirectory in
                     ["self-test-device", "self-test-build", artifactDirectory.path]
                 }
             ),
             (
-                "iOS/AudioStreamer/scripts/validate-physical-update-keychain.sh",
+                "iOS/opensteamer/scripts/validate-physical-update-keychain.sh",
                 { artifactDirectory in ["self-test-device", artifactDirectory.path] }
             ),
             (
-                "iOS/AudioStreamer/scripts/validate-testflight-paired-reconnect.sh",
+                "iOS/opensteamer/scripts/validate-testflight-paired-reconnect.sh",
                 { artifactDirectory in
                     ["self-test-device", "self-test-build", artifactDirectory.path]
                 }
@@ -51,13 +51,13 @@ final class PhysicalValidationScriptTests: XCTestCase {
     func testUpdateDriverRunsMissingCredentialCasesWithInertApplicationHost() throws {
         let script = try String(
             contentsOf: repositoryRoot.appendingPathComponent(
-                "iOS/AudioStreamer/scripts/validate-physical-update-keychain.sh"
+                "iOS/opensteamer/scripts/validate-physical-update-keychain.sh"
             ),
             encoding: .utf8
         )
         let applicationRoot = try String(
             contentsOf: repositoryRoot.appendingPathComponent(
-                "iOS/AudioStreamer/Sources/App/AudioStreamerApp.swift"
+                "iOS/opensteamer/Sources/App/OpensteamerApp.swift"
             ),
             encoding: .utf8
         )
@@ -65,7 +65,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
         XCTAssertTrue(
             script.contains(
                 "SWIFT_ACTIVE_COMPILATION_CONDITIONS=DEBUG " +
-                    "AUDIOSTREAMER_UPDATE_VALIDATION_HOST ${condition}"
+                    "OPENSTEAMER_UPDATE_VALIDATION_HOST ${condition}"
             )
         )
         XCTAssertTrue(
@@ -88,7 +88,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             remainingScript = remainingScript[range.upperBound...]
         }
 
-        XCTAssertTrue(applicationRoot.contains("#if AUDIOSTREAMER_UPDATE_VALIDATION_HOST"))
+        XCTAssertTrue(applicationRoot.contains("#if OPENSTEAMER_UPDATE_VALIDATION_HOST"))
         XCTAssertTrue(applicationRoot.contains("isPhysicalUpdateValidationHost = true"))
         XCTAssertTrue(applicationRoot.contains("EmptyView()"))
         XCTAssertTrue(applicationRoot.contains("#else\n    @StateObject"))
@@ -96,10 +96,10 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testReconnectDriverWritesHostStatusInRealZshProcess() throws {
         let script = repositoryRoot.appendingPathComponent(
-            "iOS/AudioStreamer/scripts/validate-testflight-paired-reconnect.sh"
+            "iOS/opensteamer/scripts/validate-testflight-paired-reconnect.sh"
         )
         let artifactDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-script-probe-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-script-probe-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: artifactDirectory) }
         try FileManager.default.createDirectory(
             at: artifactDirectory,
@@ -130,7 +130,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             artifactDirectory.path,
         ]
         var environment = ProcessInfo.processInfo.environment
-        environment["AUDIOSTREAMER_SCRIPT_SELF_TEST"] = "write-host-status"
+        environment["OPENSTEAMER_SCRIPT_SELF_TEST"] = "write-host-status"
         process.environment = environment
 
         let standardError = Pipe()
@@ -173,7 +173,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testReconnectDriverRequiresEveryCriticalPhysicalActivityArtifact() throws {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-activity-oracle-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-activity-oracle-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
@@ -406,7 +406,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
                     "PairedReconnectPhysicalUITests/" +
                     "testThreeSameProcessHostRestartsThenColdRelaunchPreservePairing()",
                 "testIdentifierURL":
-                    "test://com.apple.xcode/AudioStreamer/AudioStreamerUITests/" +
+                    "test://com.apple.xcode/opensteamer/opensteamerUITests/" +
                     "PairedReconnectPhysicalUITests/" +
                     "testThreeSameProcessHostRestartsThenColdRelaunchPreservePairing",
                 "testName":
@@ -426,7 +426,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 artifactDirectory: mutantArtifact,
                 timeout: 5,
                 additionalEnvironment: [
-                    "AUDIOSTREAMER_SELF_TEST_ACTIVITIES_JSON":
+                    "OPENSTEAMER_SELF_TEST_ACTIVITIES_JSON":
                         try fixture(mutation: mutation).path,
                 ]
             )
@@ -441,7 +441,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             artifactDirectory: validArtifact,
             timeout: 5,
             additionalEnvironment: [
-                "AUDIOSTREAMER_SELF_TEST_ACTIVITIES_JSON": try fixture().path,
+                "OPENSTEAMER_SELF_TEST_ACTIVITIES_JSON": try fixture().path,
             ]
         )
         XCTAssertTrue(valid.exitedWithinDeadline, valid.diagnostic)
@@ -454,7 +454,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             artifactDirectory: turnArtifact,
             timeout: 5,
             additionalEnvironment: [
-                "AUDIOSTREAMER_SELF_TEST_ACTIVITIES_JSON":
+                "OPENSTEAMER_SELF_TEST_ACTIVITIES_JSON":
                     try fixture(useTURNRelay: true).path,
             ]
         )
@@ -529,7 +529,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testReconnectDriverStartsOneLongLivedDeterministicToneProcess() throws {
         let artifactDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-tone-oracle-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-tone-oracle-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: artifactDirectory) }
         let result = try runPhysicalDriverSelfTest(
             physicalDrivers[2],
@@ -537,7 +537,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             artifactDirectory: artifactDirectory,
             timeout: 8,
             additionalEnvironment: [
-                "AUDIOSTREAMER_AUDIO_ORACLE_DURATION_SECONDS": "2",
+                "OPENSTEAMER_AUDIO_ORACLE_DURATION_SECONDS": "2",
             ]
         )
         XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
@@ -607,7 +607,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testReconnectDriverStartsAndCleansUpChangingScreenChallenge() throws {
         let artifactDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-screen-oracle-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-screen-oracle-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: artifactDirectory) }
         let result = try runPhysicalDriverSelfTest(
             physicalDrivers[2],
@@ -646,7 +646,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
         let drivers: [PhysicalDriver] = [physicalDrivers[0], physicalDrivers[2]]
         for driver in drivers {
             let artifactDirectory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("AudioStreamer-stale-derived-data-\(UUID().uuidString)")
+                .appendingPathComponent("opensteamer-stale-derived-data-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: artifactDirectory) }
             let staleURLs = [
                 artifactDirectory.appendingPathComponent("DerivedData/stale.txt"),
@@ -710,7 +710,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testCoherentLogSnapshotRejectsRewriteDuringOpenedDescriptorRead() throws {
         let artifactDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-log-snapshot-race-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-log-snapshot-race-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: artifactDirectory) }
         try FileManager.default.createDirectory(
             at: artifactDirectory,
@@ -725,14 +725,14 @@ final class PhysicalValidationScriptTests: XCTestCase {
             .write(to: log)
 
         let result = try runPhysicalValidationHelperProbe(
-            "empty=$(audiostreamer_empty_sha256); " +
-                "audiostreamer_capture_log_snapshot \"$1\" \"\" 0 \"$empty\" \"$2\"; " +
-                "identity=$AUDIOSTREAMER_LOG_SNAPSHOT_ID; " +
-                "offset=$AUDIOSTREAMER_LOG_SNAPSHOT_OFFSET; " +
-                "digest=$AUDIOSTREAMER_LOG_SNAPSHOT_DIGEST; " +
-                "export AUDIOSTREAMER_LOG_SNAPSHOT_TEST_READY=\"$4\"; " +
-                "export AUDIOSTREAMER_LOG_SNAPSHOT_TEST_PROCEED=\"$5\"; " +
-                "audiostreamer_capture_log_snapshot \"$1\" \"$identity\" " +
+            "empty=$(opensteamer_empty_sha256); " +
+                "opensteamer_capture_log_snapshot \"$1\" \"\" 0 \"$empty\" \"$2\"; " +
+                "identity=$OPENSTEAMER_LOG_SNAPSHOT_ID; " +
+                "offset=$OPENSTEAMER_LOG_SNAPSHOT_OFFSET; " +
+                "digest=$OPENSTEAMER_LOG_SNAPSHOT_DIGEST; " +
+                "export OPENSTEAMER_LOG_SNAPSHOT_TEST_READY=\"$4\"; " +
+                "export OPENSTEAMER_LOG_SNAPSHOT_TEST_PROCEED=\"$5\"; " +
+                "opensteamer_capture_log_snapshot \"$1\" \"$identity\" " +
                 "\"$offset\" \"$digest\" \"$3\" & snapshot=$!; " +
                 "for poll in {1..200}; do [[ -f \"$4\" ]] && break; sleep 0.01; done; " +
                 "[[ -f \"$4\" ]]; " +
@@ -761,7 +761,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testConnectedLineAuditorBuffersIncompleteTrailingLineInRealZsh() throws {
         let artifactDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-partial-log-line-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-partial-log-line-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: artifactDirectory) }
         try FileManager.default.createDirectory(
             at: artifactDirectory,
@@ -775,11 +775,11 @@ final class PhysicalValidationScriptTests: XCTestCase {
         try Data("100\n".utf8).write(to: second)
 
         let result = try runPhysicalValidationHelperProbe(
-            "audiostreamer_split_completed_log_lines \"$1\" \"$3\" \"$4\"; " +
+            "opensteamer_split_completed_log_lines \"$1\" \"$3\" \"$4\"; " +
                 "[[ ! -s \"$4\" ]]; " +
-                "audiostreamer_split_completed_log_lines \"$2\" \"$3\" \"$4\"; " +
-                "audiostreamer_audit_connected_log_lines \"$4\" 100 100; " +
-                "print -r -- \"$AUDIOSTREAMER_AUDITED_CONNECTION_COUNT\"",
+                "opensteamer_split_completed_log_lines \"$2\" \"$3\" \"$4\"; " +
+                "opensteamer_audit_connected_log_lines \"$4\" 100 100; " +
+                "print -r -- \"$OPENSTEAMER_AUDITED_CONNECTION_COUNT\"",
             arguments: [first.path, second.path, partial.path, completed.path]
         )
 
@@ -790,7 +790,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testConnectedLineAuditorRejectsMultipleMarkersOnOneLineInRealZsh() throws {
         let completed = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-multiple-markers-\(UUID().uuidString).txt")
+            .appendingPathComponent("opensteamer-multiple-markers-\(UUID().uuidString).txt")
         defer { try? FileManager.default.removeItem(at: completed) }
         try Data(
             (
@@ -800,7 +800,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
         ).write(to: completed)
 
         let result = try runPhysicalValidationHelperProbe(
-            "audiostreamer_audit_connected_log_lines \"$1\" 100 100",
+            "opensteamer_audit_connected_log_lines \"$1\" 100 100",
             arguments: [completed.path]
         )
 
@@ -810,10 +810,10 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testReconnectCancellationKillsStoppedWatcherBeforeValidationGroup() throws {
         let script = repositoryRoot.appendingPathComponent(
-            "iOS/AudioStreamer/scripts/validate-testflight-paired-reconnect.sh"
+            "iOS/opensteamer/scripts/validate-testflight-paired-reconnect.sh"
         )
         let artifactDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-cancel-churn-probe-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-cancel-churn-probe-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: artifactDirectory) }
 
         let process = Process()
@@ -825,8 +825,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
             artifactDirectory.path,
         ]
         var environment = ProcessInfo.processInfo.environment
-        environment["AUDIOSTREAMER_SCRIPT_SELF_TEST"] = "cancel-stopped-churn"
-        environment["AUDIOSTREAMER_HOST_CHURN_LOCK_ATTEMPTS"] = "5"
+        environment["OPENSTEAMER_SCRIPT_SELF_TEST"] = "cancel-stopped-churn"
+        environment["OPENSTEAMER_HOST_CHURN_LOCK_ATTEMPTS"] = "5"
         process.environment = environment
         let standardError = Pipe()
         process.standardError = standardError
@@ -865,14 +865,14 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testPhysicalValidationHelperForceTerminatesTermIgnoringProcessTree() throws {
         let helper = repositoryRoot.appendingPathComponent(
-            "iOS/AudioStreamer/scripts/physical-validation-helpers.zsh"
+            "iOS/opensteamer/scripts/physical-validation-helpers.zsh"
         )
         let stubbornProcess = Process()
         let childPIDFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-child-pid-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-child-pid-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: childPIDFile) }
         let leafPIDFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-leaf-pids-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-leaf-pids-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: leafPIDFile) }
         stubbornProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
         stubbornProcess.arguments = [
@@ -917,7 +917,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
         terminator.executableURL = URL(fileURLWithPath: "/bin/zsh")
         terminator.arguments = [
             "-c",
-            "source \"$1\"; audiostreamer_terminate_process_tree \"$2\" 1",
+            "source \"$1\"; opensteamer_terminate_process_tree \"$2\" 1",
             "physical-validation-helper-test",
             helper.path,
             String(stubbornProcess.processIdentifier),
@@ -967,10 +967,10 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testPhysicalValidationHelperKillsReparentedChildrenAfterRootExits() throws {
         let helper = repositoryRoot.appendingPathComponent(
-            "iOS/AudioStreamer/scripts/physical-validation-helpers.zsh"
+            "iOS/opensteamer/scripts/physical-validation-helpers.zsh"
         )
         let artifactDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-reparent-probe-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-reparent-probe-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: artifactDirectory) }
         try FileManager.default.createDirectory(
             at: artifactDirectory,
@@ -1018,7 +1018,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
         terminator.executableURL = URL(fileURLWithPath: "/bin/zsh")
         terminator.arguments = [
             "-c",
-            "source \"$1\"; audiostreamer_terminate_process_tree \"$2\" 1",
+            "source \"$1\"; opensteamer_terminate_process_tree \"$2\" 1",
             "physical-validation-reparent-test",
             helper.path,
             String(rootProcess.processIdentifier),
@@ -1061,10 +1061,10 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testIsolatedProcessGroupKillsChildSpawnedByTermHandler() throws {
         let helper = repositoryRoot.appendingPathComponent(
-            "iOS/AudioStreamer/scripts/physical-validation-helpers.zsh"
+            "iOS/opensteamer/scripts/physical-validation-helpers.zsh"
         )
         let artifactDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-group-handler-probe-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-group-handler-probe-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: artifactDirectory) }
         try FileManager.default.createDirectory(
             at: artifactDirectory,
@@ -1088,7 +1088,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
         leader.executableURL = URL(fileURLWithPath: "/bin/zsh")
         leader.arguments = [
             "-c",
-            "source \"$1\"; audiostreamer_exec_in_isolated_process_group " +
+            "source \"$1\"; opensteamer_exec_in_isolated_process_group " +
                 "/bin/zsh -c \"$2\" group-handler \"$3\" \"$4\"",
             "isolated-group-launcher",
             helper.path,
@@ -1115,8 +1115,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
         terminator.executableURL = URL(fileURLWithPath: "/bin/zsh")
         terminator.arguments = [
             "-c",
-            "source \"$1\"; audiostreamer_require_isolated_process_group \"$2\" 3; " +
-                "audiostreamer_terminate_isolated_process_group \"$2\" 1",
+            "source \"$1\"; opensteamer_require_isolated_process_group \"$2\" 3; " +
+                "opensteamer_terminate_isolated_process_group \"$2\" 1",
             "isolated-group-terminator",
             helper.path,
             String(leaderPID),
@@ -1151,10 +1151,10 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testIsolatedProcessGroupRemainsTerminableAfterFastLeaderExit() throws {
         let helper = repositoryRoot.appendingPathComponent(
-            "iOS/AudioStreamer/scripts/physical-validation-helpers.zsh"
+            "iOS/opensteamer/scripts/physical-validation-helpers.zsh"
         )
         let childPIDFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-fast-leader-child-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-fast-leader-child-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: childPIDFile) }
         let harness = """
         /usr/bin/python3 -c 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.signal(signal.SIGHUP, signal.SIG_IGN); time.sleep(30)' &
@@ -1165,7 +1165,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
         leader.executableURL = URL(fileURLWithPath: "/bin/zsh")
         leader.arguments = [
             "-c",
-            "source \"$1\"; audiostreamer_exec_in_isolated_process_group " +
+            "source \"$1\"; opensteamer_exec_in_isolated_process_group " +
                 "/bin/zsh -c \"$2\" fast-leader \"$3\"",
             "isolated-fast-launcher",
             helper.path,
@@ -1207,7 +1207,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
         terminator.executableURL = URL(fileURLWithPath: "/bin/zsh")
         terminator.arguments = [
             "-c",
-            "source \"$1\"; audiostreamer_terminate_isolated_process_group \"$2\" 1",
+            "source \"$1\"; opensteamer_terminate_isolated_process_group \"$2\" 1",
             "isolated-fast-terminator",
             helper.path,
             String(leaderPID),
@@ -1232,7 +1232,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testHostPIDParserAcceptsValidConnectedLogLineInRealZsh() throws {
         let result = try runPhysicalValidationHelperProbe(
-            "audiostreamer_connected_host_pid_from_log_line \"$1\"",
+            "opensteamer_connected_host_pid_from_log_line \"$1\"",
             arguments: [
                 "2026-07-18T10:00:00Z Worldwide WebRTC peer state: connected pid=4242",
             ]
@@ -1254,7 +1254,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
         for logLine in invalidLogLines {
             let result = try runPhysicalValidationHelperProbe(
-                "audiostreamer_connected_host_pid_from_log_line \"$1\"",
+                "opensteamer_connected_host_pid_from_log_line \"$1\"",
                 arguments: [logLine]
             )
             XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
@@ -1265,7 +1265,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testSameHostProcessRejectsPIDMismatchAndMalformedPIDInRealZsh() throws {
         let valid = try runPhysicalValidationHelperProbe(
-            "audiostreamer_require_same_host_process \"$1\" \"$2\" \"$3\"",
+            "opensteamer_require_same_host_process \"$1\" \"$2\" \"$3\"",
             arguments: ["4242", "4242", "4242"]
         )
         XCTAssertTrue(valid.exitedWithinDeadline, valid.diagnostic)
@@ -1277,7 +1277,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             ["", "4242", "4242"],
         ] {
             let result = try runPhysicalValidationHelperProbe(
-                "audiostreamer_require_same_host_process \"$1\" \"$2\" \"$3\"",
+                "opensteamer_require_same_host_process \"$1\" \"$2\" \"$3\"",
                 arguments: arguments
             )
             XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
@@ -1287,21 +1287,21 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testContinuousLogRejectsIdentityChangeAndTruncationInRealZsh() throws {
         let valid = try runPhysicalValidationHelperProbe(
-            "audiostreamer_require_continuous_log \"$1\" \"$2\" \"$3\" \"$4\"",
+            "opensteamer_require_continuous_log \"$1\" \"$2\" \"$3\" \"$4\"",
             arguments: ["16777234:9988", "16777234:9988", "10", "11"]
         )
         XCTAssertTrue(valid.exitedWithinDeadline, valid.diagnostic)
         XCTAssertEqual(valid.terminationStatus, 0, valid.diagnostic)
 
         let identityMismatch = try runPhysicalValidationHelperProbe(
-            "audiostreamer_require_continuous_log \"$1\" \"$2\" \"$3\" \"$4\"",
+            "opensteamer_require_continuous_log \"$1\" \"$2\" \"$3\" \"$4\"",
             arguments: ["16777234:9988", "16777234:9989", "10", "11"]
         )
         XCTAssertTrue(identityMismatch.exitedWithinDeadline, identityMismatch.diagnostic)
         XCTAssertNotEqual(identityMismatch.terminationStatus, 0, identityMismatch.diagnostic)
 
         let truncated = try runPhysicalValidationHelperProbe(
-            "audiostreamer_require_continuous_log \"$1\" \"$2\" \"$3\" \"$4\"",
+            "opensteamer_require_continuous_log \"$1\" \"$2\" \"$3\" \"$4\"",
             arguments: ["16777234:9988", "16777234:9988", "11", "10"]
         )
         XCTAssertTrue(truncated.exitedWithinDeadline, truncated.diagnostic)
@@ -1310,17 +1310,17 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testIsolatedValidationGroupCanBeProvenStoppedThenResumed() throws {
         let helper = repositoryRoot.appendingPathComponent(
-            "iOS/AudioStreamer/scripts/physical-validation-helpers.zsh"
+            "iOS/opensteamer/scripts/physical-validation-helpers.zsh"
         )
         let readyFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-suspend-ready-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-suspend-ready-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: readyFile) }
 
         let leader = Process()
         leader.executableURL = URL(fileURLWithPath: "/bin/zsh")
         leader.arguments = [
             "-c",
-            "source \"$1\"; audiostreamer_exec_in_isolated_process_group " +
+            "source \"$1\"; opensteamer_exec_in_isolated_process_group " +
                 "/bin/zsh -c 'print -r -- ready > \"$1\"; " +
                 "trap \"exit 0\" TERM; while true; do sleep 30; done' " +
                 "suspend-harness \"$2\"",
@@ -1339,10 +1339,10 @@ final class PhysicalValidationScriptTests: XCTestCase {
         XCTAssertTrue(waitForFileToExist(readyFile, timeout: 3))
 
         let result = try runPhysicalValidationHelperProbe(
-            "audiostreamer_suspend_isolated_process_group \"$1\" 3; " +
+            "opensteamer_suspend_isolated_process_group \"$1\" 3; " +
                 "state=$(ps -o state= -p \"$1\" | tr -d '[:space:]'); " +
                 "[[ \"$state\" == T* ]]; " +
-                "audiostreamer_resume_process_group \"$1\"",
+                "opensteamer_resume_process_group \"$1\"",
             arguments: [String(leaderPID)]
         )
 
@@ -1359,9 +1359,9 @@ final class PhysicalValidationScriptTests: XCTestCase {
                     "child=$!; " +
                     "(sleep 0.05; kill -STOP \"$child\"; sleep 0.05; " +
                     "kill -CONT \"$child\") & transition=$!; " +
-                    "audiostreamer_wait_for_final_process_status \"$child\"; " +
+                    "opensteamer_wait_for_final_process_status \"$child\"; " +
                     "wait \"$transition\" 2>/dev/null || true; " +
-                    "print -r -- \"$AUDIOSTREAMER_FINAL_PROCESS_STATUS\"",
+                    "print -r -- \"$OPENSTEAMER_FINAL_PROCESS_STATUS\"",
                 arguments: [String(expectedStatus)]
             )
 
@@ -1380,9 +1380,9 @@ final class PhysicalValidationScriptTests: XCTestCase {
             "/bin/zsh -c 'sleep 5' wait-child & child=$!; " +
                 "(sleep 0.05; kill -STOP \"$child\"; sleep 0.05; " +
                 "kill -CONT \"$child\"; sleep 0.05; kill -TERM \"$child\") & transition=$!; " +
-                "audiostreamer_wait_for_final_process_status \"$child\"; " +
+                "opensteamer_wait_for_final_process_status \"$child\"; " +
                 "wait \"$transition\" 2>/dev/null || true; " +
-                "print -r -- \"$AUDIOSTREAMER_FINAL_PROCESS_STATUS\"",
+                "print -r -- \"$OPENSTEAMER_FINAL_PROCESS_STATUS\"",
             arguments: []
         )
 
@@ -1393,7 +1393,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testBoundedCriticalCommandTimesOut() throws {
         let descendantPIDFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-timeout-descendant-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-timeout-descendant-\(UUID().uuidString)")
         defer {
             if let text = try? String(contentsOf: descendantPIDFile, encoding: .utf8),
                let descendantPID = pid_t(
@@ -1406,7 +1406,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
         }
         let started = Date()
         let result = try runPhysicalValidationHelperProbe(
-            "audiostreamer_run_with_timeout 0.1 /bin/zsh -c " +
+            "opensteamer_run_with_timeout 0.1 /bin/zsh -c " +
                 "'trap \"exit 0\" TERM; " +
                 "/usr/bin/python3 -c \"import signal,time; " +
                 "signal.signal(signal.SIGTERM, signal.SIG_IGN); " +
@@ -1450,7 +1450,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
     func testEveryPhysicalDriverOverwritesStalePassBeforeCleanupFailure() throws {
         for driver in physicalDrivers {
             let artifactDirectory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("AudioStreamer-startup-failure-\(UUID().uuidString)")
+                .appendingPathComponent("opensteamer-startup-failure-\(UUID().uuidString)")
             try FileManager.default.createDirectory(
                 at: artifactDirectory,
                 withIntermediateDirectories: true
@@ -1506,7 +1506,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
     func testEveryPhysicalDriverCleansFastExitedIsolatedGroup() throws {
         for driver in physicalDrivers {
             let artifactDirectory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("AudioStreamer-driver-fast-group-\(UUID().uuidString)")
+                .appendingPathComponent("opensteamer-driver-fast-group-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: artifactDirectory) }
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -1514,7 +1514,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 repositoryRoot.appendingPathComponent(driver.relativePath).path,
             ] + driver.arguments(artifactDirectory)
             var environment = ProcessInfo.processInfo.environment
-            environment["AUDIOSTREAMER_SCRIPT_SELF_TEST"] = "fast-group-failure"
+            environment["OPENSTEAMER_SCRIPT_SELF_TEST"] = "fast-group-failure"
             process.environment = environment
             let standardError = Pipe()
             process.standardError = standardError
@@ -1580,7 +1580,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
         // device workflows and artifact names differ.
         for driver in physicalDrivers {
             let artifactDirectory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("AudioStreamer-\(mode)-probe-\(UUID().uuidString)")
+                .appendingPathComponent("opensteamer-\(mode)-probe-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: artifactDirectory) }
             var staleEvidenceURLs: [URL] = []
             if mode == "fail-command", driver.relativePath.contains("update-keychain") {
@@ -1604,7 +1604,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 repositoryRoot.appendingPathComponent(driver.relativePath).path,
             ] + driver.arguments(artifactDirectory)
             var environment = ProcessInfo.processInfo.environment
-            environment["AUDIOSTREAMER_SCRIPT_SELF_TEST"] = mode
+            environment["OPENSTEAMER_SCRIPT_SELF_TEST"] = mode
             process.environment = environment
             let standardError = Pipe()
             process.standardError = standardError
@@ -1646,7 +1646,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
     ) throws {
         // Scenario names select deterministic mutants implemented by the reconnect driver itself.
         let artifactDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AudioStreamer-host-provenance-\(UUID().uuidString)")
+            .appendingPathComponent("opensteamer-host-provenance-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: artifactDirectory) }
         let result = try runPhysicalDriverSelfTest(
             physicalDrivers[2],
@@ -1679,7 +1679,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             repositoryRoot.appendingPathComponent(driver.relativePath).path,
         ] + driver.arguments(artifactDirectory)
         var environment = ProcessInfo.processInfo.environment
-        environment["AUDIOSTREAMER_SCRIPT_SELF_TEST"] = mode
+        environment["OPENSTEAMER_SCRIPT_SELF_TEST"] = mode
         environment.merge(additionalEnvironment) { _, replacement in replacement }
         process.environment = environment
         let standardOutput = Pipe()
@@ -1734,7 +1734,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
         // `$1` is reserved for the sourced helper path; `shift` preserves the helper functions'
         // production-style positional argument numbering for the supplied command fragment.
         let helper = repositoryRoot.appendingPathComponent(
-            "iOS/AudioStreamer/scripts/physical-validation-helpers.zsh"
+            "iOS/opensteamer/scripts/physical-validation-helpers.zsh"
         )
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")

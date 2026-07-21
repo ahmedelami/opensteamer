@@ -10,6 +10,10 @@ TURN relays DTLS-SRTP ciphertext when a direct path cannot cross the networks. L
 The Mac must be awake and already running the host. A pairing code authenticates a short-lived
 invitation; it cannot traverse NAT or replace rendezvous, STUN, or TURN infrastructure.
 
+The `audiostreamer.pairing.v1` and `audiostreamer.availability.v1` subprotocol names below are
+deployed v1 compatibility ABI. They intentionally retain the former product name so renamed
+clients continue to interoperate with existing hosts and Workers.
+
 ## Trust boundaries
 
 - The rendezvous Worker sees connection timing, roles, bounded routing capabilities, and opaque

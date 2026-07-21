@@ -1,6 +1,9 @@
 import CryptoKit
 import Foundation
 
+// Compatibility ABI: v1 availability AAD and rendezvous names retain their pre-rebrand wire
+// spelling so a renamed client can reconnect to an already-paired host during a staggered update.
+
 /// Authenticated control payloads permitted on the pair-scoped availability channel.
 ///
 /// SDP, ICE candidates, and media are intentionally absent; they use a fresh session credential.

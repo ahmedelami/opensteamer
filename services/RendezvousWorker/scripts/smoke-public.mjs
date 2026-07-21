@@ -3,9 +3,14 @@ import WebSocket from "ws";
 
 // This opt-in smoke test exercises the deployed public WSS boundary with freshly generated,
 // process-local capabilities. It never reads or prints a production invitation/access code.
-const origin = process.env.AUDIOSTREAMER_RENDEZVOUS_URL;
+// Prefer the rebranded setting while accepting the deployed name during a rolling migration.
+const origin = process.env.OPENSTEAMER_RENDEZVOUS_URL ??
+  process.env.AUDIOSTREAMER_RENDEZVOUS_URL;
 if (!origin) {
-  throw new Error("AUDIOSTREAMER_RENDEZVOUS_URL is required");
+  throw new Error(
+    "OPENSTEAMER_RENDEZVOUS_URL is required " +
+    "(legacy AUDIOSTREAMER_RENDEZVOUS_URL is also accepted)"
+  );
 }
 
 const endpoint = new URL("/v1/rendezvous", origin);

@@ -11,7 +11,7 @@ final class ScreenCaptureAudioSource: NSObject {
     private let logger: Logger
     private var stream: SCStream?
     private var output: StreamOutput?
-    private let sampleQueue = DispatchQueue(label: "MacCaptureVerifier.ScreenCaptureKit")
+    private let sampleQueue = DispatchQueue(label: "opensteamer.ScreenCaptureKit")
 
     init(displayID: UInt32?, logger: Logger) {
         self.displayID = displayID

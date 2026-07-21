@@ -7,7 +7,9 @@ import Foundation
 /// symlinks, and use close-on-exec. The descriptor itself owns the advisory lock; the
 /// local `descriptorLock` makes explicit release and deinitialization idempotent.
 final class WorldwideHostProcessLock {
-    private static let directoryName = "org.example.AudioStreamer.CaptureServer.runtime"
+    // This shipped namespace is a cross-version exclusion boundary. Renaming it would let an
+    // older host and a rebranded host acquire different locks and capture concurrently.
+    static let legacyRuntimeDirectoryName = "org.example.AudioStreamer.CaptureServer.runtime"
     private static let fileName = "worldwide-host.lock"
 
     private let descriptorLock = NSLock()
@@ -58,7 +60,10 @@ final class WorldwideHostProcessLock {
         ).first else {
             throw WorldwideHostProcessLockError.applicationSupportUnavailable
         }
-        return applicationSupportURL.appendingPathComponent(directoryName, isDirectory: true)
+        return applicationSupportURL.appendingPathComponent(
+            legacyRuntimeDirectoryName,
+            isDirectory: true
+        )
     }
 
     /// Creates and verifies an owner-only, real directory before opening the lock.
@@ -144,15 +149,15 @@ enum WorldwideHostProcessLockError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .alreadyRunning:
-            "Another AudioStreamer worldwide host is already running for this macOS account."
+            "Another opensteamer worldwide host is already running for this macOS account."
         case .applicationSupportUnavailable:
-            "AudioStreamer could not locate this macOS account's Application Support directory."
+            "opensteamer could not locate this macOS account's Application Support directory."
         case .unsafeLockDirectory:
-            "AudioStreamer's worldwide-host runtime directory is not safely owned by this account."
+            "opensteamer's worldwide-host runtime directory is not safely owned by this account."
         case .unsafeLockFile:
-            "AudioStreamer's worldwide-host process lock is not a safe regular file."
+            "opensteamer's worldwide-host process lock is not a safe regular file."
         case .systemCall(let operation, let code):
-            "AudioStreamer could not \(operation) (errno \(code))."
+            "opensteamer could not \(operation) (errno \(code))."
         }
     }
 }

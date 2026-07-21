@@ -34,7 +34,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
     private let framesPerSecond: Int
     private let consumer: ScreenVideoSampleConsumer
     private let logger: Logger
-    private let sampleQueue = DispatchQueue(label: "MacCaptureVerifier.ScreenVideoCapture")
+    private let sampleQueue = DispatchQueue(label: "opensteamer.ScreenVideoCapture")
     private let stateLock = NSLock()
     private var stream: SCStream?
     private var output: ScreenVideoStreamOutput?

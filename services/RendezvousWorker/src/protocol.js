@@ -1,5 +1,7 @@
 // Protocol validation is intentionally stricter than ordinary JSON decoding: exact fields,
 // canonical encodings, bounded sizes, and monotonic sequences define the relay trust boundary.
+// The former-brand headers and WebSocket subprotocols are the deployed v1 compatibility ABI.
+// Keep them stable across the opensteamer product rename unless a new protocol is versioned.
 export const HEADER = Object.freeze({
   channel: "X-AudioStreamer-Channel",
   role: "X-AudioStreamer-Role",

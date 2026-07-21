@@ -1,0 +1,855 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0A6518B4EB4B3E68DC6BD363 /* RemoteKeyboardInputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B740987453823FD64F7C0982 /* RemoteKeyboardInputView.swift */; };
+		103C41100893D8012C60ADE6 /* ViewerPairingPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6958FC2CA2AB682B2500A8CA /* ViewerPairingPersistenceTests.swift */; };
+		1E220F17ECE4F06A1552C770 /* PhysicalOracleEvaluatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA37DD740FBC007D8FFBCA52 /* PhysicalOracleEvaluatorTests.swift */; };
+		2A22F44ECDB811632D6B3812 /* ScreenVideoRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCF50C685C4CBFD9F3AC8546 /* ScreenVideoRenderer.swift */; };
+		2AB8172E29C70E7D96DA0A8A /* KeychainStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05F997BDA71C2DC04DB754E9 /* KeychainStoreTests.swift */; };
+		2BD739A3E11428C6AD380B49 /* WorldwideSessionViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 726474C0ACC95EEE5055A4CC /* WorldwideSessionViewModel.swift */; };
+		2CD1512385952F27F099DE9E /* AudioSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F69F3128B9567DC5D72F1F2 /* AudioSessionManager.swift */; };
+		303BED46E3673163FCA92B36 /* WebRTCAudioPlaybackSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECB116DB67832023573C8889 /* WebRTCAudioPlaybackSessionTests.swift */; };
+		36CBD1F0C6AD6F23F693C3C2 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90600912C0AAEC02C723EDA9 /* ContentView.swift */; };
+		40AFC270DF77FF0D0BAB3BB3 /* WebRTCRemoteScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB6E5C0C5FD82651759A73F3 /* WebRTCRemoteScreenView.swift */; };
+		4D7160E2C12B45C36CA6F0B5 /* WorldwideCallActivityObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE7AAEDB7B667B93413D7D8E /* WorldwideCallActivityObserver.swift */; };
+		627187065AADC178DAECE8BE /* ScreenViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A452CD7D5104C509DB5D168E /* ScreenViewerView.swift */; };
+		6550CFB51C42A93D157E803F /* WebRTCTransport in Frameworks */ = {isa = PBXBuildFile; productRef = 525D57D5DCA36B6B514B1F0A /* WebRTCTransport */; };
+		683C25329BC8E20088E6116B /* RemoteTokenState.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC26144551DD1E27BA28F74 /* RemoteTokenState.swift */; };
+		688161A555027B4D83A84E0D /* ViewerPairingState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64465AAC8CF00A21486FD95A /* ViewerPairingState.swift */; };
+		6FABEE1730A7A0908FD6FFB9 /* InvitationAcceptanceAction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CAA833D0E3961518CB2AF39 /* InvitationAcceptanceAction.swift */; };
+		70C2F5089C84108917111CF0 /* ScreenSessionViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6219C964B51CAC699E64A54 /* ScreenSessionViewModel.swift */; };
+		70D49162C0A5742D3966087D /* OpensteamerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76F2CC18DCFD9E1ACAC69A25 /* OpensteamerApp.swift */; };
+		751245F68F1D541B9E1102AB /* WorldwidePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67AE668289636F568C11BDFA /* WorldwidePresentationTests.swift */; };
+		7A896917C5694180149B0C64 /* WorldwideAudioLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF58ACCC60E0F1CDD3B085F1 /* WorldwideAudioLifecycleTests.swift */; };
+		802BDF19BBE720E4EA99CC24 /* THIRD_PARTY_NOTICES.md in Resources */ = {isa = PBXBuildFile; fileRef = CE709A348BA23148805A49B5 /* THIRD_PARTY_NOTICES.md */; };
+		82252C5C7C19C8D8D08E1FAE /* StreamSessionViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F4D135483CC5D23B56ADE12 /* StreamSessionViewModel.swift */; };
+		8553B3C7A16926908E26AFE9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DF002ECF8773045115B13E3F /* Assets.xcassets */; };
+		8CEE8A4F3BF37A783F2E66B9 /* ScreenVideoConnectionDescriptor.swift in Sources */ = {isa = PBXBuildFile; fileRef = F524855347D7B066F88321D0 /* ScreenVideoConnectionDescriptor.swift */; };
+		8CFD309C5EAD23E3B7142DB9 /* WorldwidePhysicalOracles.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD7C32B18437F49BE65ED68D /* WorldwidePhysicalOracles.swift */; };
+		99CFD2E50E0881AC366C4738 /* BrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89673B77A859E243F7FD3131 /* BrowserView.swift */; };
+		9AAA1E27A24734789A6CBEA1 /* AspectFitCoordinateMapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EAE7108773997E7E6897AE1 /* AspectFitCoordinateMapperTests.swift */; };
+		9C18CDE0C00CAB07EAF8907F /* Streaming in Frameworks */ = {isa = PBXBuildFile; productRef = BE5A0B5ED61F4349F875531E /* Streaming */; };
+		9CA8D23DE85C9FC0A77536B6 /* PairedReconnectPhysicalUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70D0F6A95821E569AE4C4C88 /* PairedReconnectPhysicalUITests.swift */; };
+		9D6CA655E54E17D37AC4035E /* PlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 235E2095A9F021D79D1278C5 /* PlayerView.swift */; };
+		A4CDE0CB75B4AB53BFE7622C /* ClientCore in Frameworks */ = {isa = PBXBuildFile; productRef = 07305BD89BF6759BE344884B /* ClientCore */; };
+		AB264D96599E5BE958D377C3 /* SampleBufferScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE5308EFBD1542023CA23117 /* SampleBufferScreenView.swift */; };
+		AB6196D04E1C6B5D11B5771D /* RemoteKeyboardInputProxyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B08A0C97FDDE54F9FD2A8EE /* RemoteKeyboardInputProxyTests.swift */; };
+		ABC5C7651BF2B2AE0A766856 /* AspectFitCoordinateMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F7ADE624FB3E8EF2976F099 /* AspectFitCoordinateMapper.swift */; };
+		B360334715EDEAA9E9E527C3 /* ViewerPairingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F3847AFDCAAE82502B598F0 /* ViewerPairingStore.swift */; };
+		B688FA73D8FD020CC64DF502 /* WorldwideViewerConnectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F36373D0CB1979AF2ABF3A1F /* WorldwideViewerConnectionCoordinator.swift */; };
+		BBADB8147D541A4D9973FD50 /* RemotePrimaryDragGesturePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89D2E46B6C68480FE21BE89A /* RemotePrimaryDragGesturePolicy.swift */; };
+		BBCF4C3DE1A3016C7790E01D /* H264SampleBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3509D44693CBE35F3D3D8633 /* H264SampleBuilder.swift */; };
+		C27325B4E2559EA2F8AEE99C /* AppArtifactContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62EE29F300BD14D456C513EA /* AppArtifactContractTests.swift */; };
+		C70D90B1D6A781720B3E38F6 /* PhysicalOracleEvaluator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77E21C152BA0763A029B6EA5 /* PhysicalOracleEvaluator.swift */; };
+		C8262450EBF279627543D271 /* ServerInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 132D234332E7CDAD5F0F3213 /* ServerInfo.swift */; };
+		C9E6069A49A4706FF9BF6058 /* MetricRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DBE9263C82F3F738B8AA3DF /* MetricRow.swift */; };
+		D1336366C939E9D02ECF6925 /* WorldwideScreenViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22BA2C0E3FA5E56CBEFF2B54 /* WorldwideScreenViewerView.swift */; };
+		D2FB014BB9E23EC04BBBE548 /* ScreenVideoClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BDB3748CE96A0E684F2EF76 /* ScreenVideoClient.swift */; };
+		D4EAE6BA0BBBC5807F6B32F6 /* WorldwideRemoteInputLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11FA42392B5E334511C469E /* WorldwideRemoteInputLifecycleTests.swift */; };
+		D89D6AFCD4145A0A6EF255D9 /* PhysicalOracleEvaluator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77E21C152BA0763A029B6EA5 /* PhysicalOracleEvaluator.swift */; };
+		DB46B27CD3BB1CC0812D07A0 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B627D77889C9E574BD3AF2F5 /* KeychainStore.swift */; };
+		DCC8E31D0010C395981E59BC /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CA340C807653853951DB090 /* DiagnosticsView.swift */; };
+		DFD966915181FF541A343040 /* BonjourBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65CCD3F1ABD9D4172744A0F4 /* BonjourBrowser.swift */; };
+		E0CFAFCA3B3074DC9A70FEC2 /* BackgroundPlaybackCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 093577922497DF95FEAFD8EF /* BackgroundPlaybackCoordinator.swift */; };
+		E70EEBCEDCB6197A7AF99513 /* RemoteSessionCore in Frameworks */ = {isa = PBXBuildFile; productRef = C90C3F3FA906FF223BDF865B /* RemoteSessionCore */; };
+		F5EC00BDA63D36E530D77711 /* WorldwideAudioLifecycleController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D8B7D553630E727E5BA02A0 /* WorldwideAudioLifecycleController.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		554E3629CCA98C9120D2BEE0 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9F017CEE8E2F4B8836690F9C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D2AF3999BADD967EBD466D86;
+			remoteInfo = opensteamer;
+		};
+		72A0726E5CACD66914B3057E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9F017CEE8E2F4B8836690F9C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D2AF3999BADD967EBD466D86;
+			remoteInfo = opensteamer;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		05F997BDA71C2DC04DB754E9 /* KeychainStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStoreTests.swift; sourceTree = "<group>"; };
+		093577922497DF95FEAFD8EF /* BackgroundPlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundPlaybackCoordinator.swift; sourceTree = "<group>"; };
+		0B08A0C97FDDE54F9FD2A8EE /* RemoteKeyboardInputProxyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteKeyboardInputProxyTests.swift; sourceTree = "<group>"; };
+		132D234332E7CDAD5F0F3213 /* ServerInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerInfo.swift; sourceTree = "<group>"; };
+		1D8B7D553630E727E5BA02A0 /* WorldwideAudioLifecycleController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideAudioLifecycleController.swift; sourceTree = "<group>"; };
+		22BA2C0E3FA5E56CBEFF2B54 /* WorldwideScreenViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideScreenViewerView.swift; sourceTree = "<group>"; };
+		235E2095A9F021D79D1278C5 /* PlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerView.swift; sourceTree = "<group>"; };
+		2ADDF37DFF4BF8165F226443 /* opensteamerUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = opensteamerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		2F3847AFDCAAE82502B598F0 /* ViewerPairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerPairingStore.swift; sourceTree = "<group>"; };
+		33F120C227DF28ABE6BBF84F /* opensteamer */ = {isa = PBXFileReference; lastKnownFileType = folder; name = opensteamer; path = ../..; sourceTree = SOURCE_ROOT; };
+		3509D44693CBE35F3D3D8633 /* H264SampleBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = H264SampleBuilder.swift; sourceTree = "<group>"; };
+		3F4D135483CC5D23B56ADE12 /* StreamSessionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamSessionViewModel.swift; sourceTree = "<group>"; };
+		4CA340C807653853951DB090 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
+		5C6B4041518106AC0A4A5151 /* opensteamer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = opensteamer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		5EAE7108773997E7E6897AE1 /* AspectFitCoordinateMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AspectFitCoordinateMapperTests.swift; sourceTree = "<group>"; };
+		62EE29F300BD14D456C513EA /* AppArtifactContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppArtifactContractTests.swift; sourceTree = "<group>"; };
+		64465AAC8CF00A21486FD95A /* ViewerPairingState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerPairingState.swift; sourceTree = "<group>"; };
+		65CCD3F1ABD9D4172744A0F4 /* BonjourBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BonjourBrowser.swift; sourceTree = "<group>"; };
+		67AE668289636F568C11BDFA /* WorldwidePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwidePresentationTests.swift; sourceTree = "<group>"; };
+		6958FC2CA2AB682B2500A8CA /* ViewerPairingPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerPairingPersistenceTests.swift; sourceTree = "<group>"; };
+		6A3C452F1E5A4A1C68F1D1E2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		6DBE9263C82F3F738B8AA3DF /* MetricRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricRow.swift; sourceTree = "<group>"; };
+		6F69F3128B9567DC5D72F1F2 /* AudioSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSessionManager.swift; sourceTree = "<group>"; };
+		6F7ADE624FB3E8EF2976F099 /* AspectFitCoordinateMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AspectFitCoordinateMapper.swift; sourceTree = "<group>"; };
+		70D0F6A95821E569AE4C4C88 /* PairedReconnectPhysicalUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairedReconnectPhysicalUITests.swift; sourceTree = "<group>"; };
+		726474C0ACC95EEE5055A4CC /* WorldwideSessionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideSessionViewModel.swift; sourceTree = "<group>"; };
+		76F2CC18DCFD9E1ACAC69A25 /* OpensteamerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpensteamerApp.swift; sourceTree = "<group>"; };
+		77E21C152BA0763A029B6EA5 /* PhysicalOracleEvaluator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalOracleEvaluator.swift; sourceTree = "<group>"; };
+		89673B77A859E243F7FD3131 /* BrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserView.swift; sourceTree = "<group>"; };
+		89D2E46B6C68480FE21BE89A /* RemotePrimaryDragGesturePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotePrimaryDragGesturePolicy.swift; sourceTree = "<group>"; };
+		8BDB3748CE96A0E684F2EF76 /* ScreenVideoClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVideoClient.swift; sourceTree = "<group>"; };
+		8CAA833D0E3961518CB2AF39 /* InvitationAcceptanceAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InvitationAcceptanceAction.swift; sourceTree = "<group>"; };
+		90600912C0AAEC02C723EDA9 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A452CD7D5104C509DB5D168E /* ScreenViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenViewerView.swift; sourceTree = "<group>"; };
+		B627D77889C9E574BD3AF2F5 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		B740987453823FD64F7C0982 /* RemoteKeyboardInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteKeyboardInputView.swift; sourceTree = "<group>"; };
+		C9E111D70F8EAA03A7EE07F2 /* opensteamerTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = opensteamerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		CCF50C685C4CBFD9F3AC8546 /* ScreenVideoRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVideoRenderer.swift; sourceTree = "<group>"; };
+		CE709A348BA23148805A49B5 /* THIRD_PARTY_NOTICES.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; name = THIRD_PARTY_NOTICES.md; path = ../../THIRD_PARTY_NOTICES.md; sourceTree = "<group>"; };
+		D11FA42392B5E334511C469E /* WorldwideRemoteInputLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideRemoteInputLifecycleTests.swift; sourceTree = "<group>"; };
+		D6219C964B51CAC699E64A54 /* ScreenSessionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenSessionViewModel.swift; sourceTree = "<group>"; };
+		DA37DD740FBC007D8FFBCA52 /* PhysicalOracleEvaluatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalOracleEvaluatorTests.swift; sourceTree = "<group>"; };
+		DD7C32B18437F49BE65ED68D /* WorldwidePhysicalOracles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwidePhysicalOracles.swift; sourceTree = "<group>"; };
+		DEC26144551DD1E27BA28F74 /* RemoteTokenState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTokenState.swift; sourceTree = "<group>"; };
+		DF002ECF8773045115B13E3F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		ECB116DB67832023573C8889 /* WebRTCAudioPlaybackSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebRTCAudioPlaybackSessionTests.swift; sourceTree = "<group>"; };
+		EE7AAEDB7B667B93413D7D8E /* WorldwideCallActivityObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideCallActivityObserver.swift; sourceTree = "<group>"; };
+		EF58ACCC60E0F1CDD3B085F1 /* WorldwideAudioLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideAudioLifecycleTests.swift; sourceTree = "<group>"; };
+		F36373D0CB1979AF2ABF3A1F /* WorldwideViewerConnectionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideViewerConnectionCoordinator.swift; sourceTree = "<group>"; };
+		F524855347D7B066F88321D0 /* ScreenVideoConnectionDescriptor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVideoConnectionDescriptor.swift; sourceTree = "<group>"; };
+		FB6E5C0C5FD82651759A73F3 /* WebRTCRemoteScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebRTCRemoteScreenView.swift; sourceTree = "<group>"; };
+		FE5308EFBD1542023CA23117 /* SampleBufferScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleBufferScreenView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		29BF1DF7E756BC8FD8239121 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A4CDE0CB75B4AB53BFE7622C /* ClientCore in Frameworks */,
+				E70EEBCEDCB6197A7AF99513 /* RemoteSessionCore in Frameworks */,
+				9C18CDE0C00CAB07EAF8907F /* Streaming in Frameworks */,
+				6550CFB51C42A93D157E803F /* WebRTCTransport in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0A7CD826F8D7DD7210668700 /* Audio */ = {
+			isa = PBXGroup;
+			children = (
+				6F69F3128B9567DC5D72F1F2 /* AudioSessionManager.swift */,
+				1D8B7D553630E727E5BA02A0 /* WorldwideAudioLifecycleController.swift */,
+				EE7AAEDB7B667B93413D7D8E /* WorldwideCallActivityObserver.swift */,
+			);
+			path = Audio;
+			sourceTree = "<group>";
+		};
+		3D2B066187D4D3BCB3E3B95D /* opensteamer */ = {
+			isa = PBXGroup;
+			children = (
+				CE709A348BA23148805A49B5 /* THIRD_PARTY_NOTICES.md */,
+			);
+			name = opensteamer;
+			sourceTree = "<group>";
+		};
+		44D22CBAADBECA7DF6A0FA30 /* Diagnostics */ = {
+			isa = PBXGroup;
+			children = (
+				DD7C32B18437F49BE65ED68D /* WorldwidePhysicalOracles.swift */,
+			);
+			path = Diagnostics;
+			sourceTree = "<group>";
+		};
+		45EE504DB5D2A420EFAE46CC /* UITests */ = {
+			isa = PBXGroup;
+			children = (
+				70D0F6A95821E569AE4C4C88 /* PairedReconnectPhysicalUITests.swift */,
+			);
+			path = UITests;
+			sourceTree = "<group>";
+		};
+		52132DC3CDB4E2A2146DEC47 /* Screen */ = {
+			isa = PBXGroup;
+			children = (
+				6F7ADE624FB3E8EF2976F099 /* AspectFitCoordinateMapper.swift */,
+				3509D44693CBE35F3D3D8633 /* H264SampleBuilder.swift */,
+				B740987453823FD64F7C0982 /* RemoteKeyboardInputView.swift */,
+				89D2E46B6C68480FE21BE89A /* RemotePrimaryDragGesturePolicy.swift */,
+				FE5308EFBD1542023CA23117 /* SampleBufferScreenView.swift */,
+				CCF50C685C4CBFD9F3AC8546 /* ScreenVideoRenderer.swift */,
+				FB6E5C0C5FD82651759A73F3 /* WebRTCRemoteScreenView.swift */,
+			);
+			path = Screen;
+			sourceTree = "<group>";
+		};
+		580CDB9440C297800157201A /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				89673B77A859E243F7FD3131 /* BrowserView.swift */,
+				4CA340C807653853951DB090 /* DiagnosticsView.swift */,
+				6DBE9263C82F3F738B8AA3DF /* MetricRow.swift */,
+				235E2095A9F021D79D1278C5 /* PlayerView.swift */,
+				A452CD7D5104C509DB5D168E /* ScreenViewerView.swift */,
+				22BA2C0E3FA5E56CBEFF2B54 /* WorldwideScreenViewerView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		68C091102587D24D387EEFB8 /* OracleTestSupport */ = {
+			isa = PBXGroup;
+			children = (
+				77E21C152BA0763A029B6EA5 /* PhysicalOracleEvaluator.swift */,
+			);
+			path = OracleTestSupport;
+			sourceTree = "<group>";
+		};
+		7AD6D58A25AEBA79A708D039 /* Security */ = {
+			isa = PBXGroup;
+			children = (
+				B627D77889C9E574BD3AF2F5 /* KeychainStore.swift */,
+				2F3847AFDCAAE82502B598F0 /* ViewerPairingStore.swift */,
+			);
+			path = Security;
+			sourceTree = "<group>";
+		};
+		7C1A18666092A0B3B698F9DD /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				DF002ECF8773045115B13E3F /* Assets.xcassets */,
+				C38738A0E3C850B5D0A3611B /* App */,
+				0A7CD826F8D7DD7210668700 /* Audio */,
+				44D22CBAADBECA7DF6A0FA30 /* Diagnostics */,
+				A0654F1A364935968B6AD288 /* Models */,
+				91FB8C9E0DA5A7B14C9DA9D7 /* Networking */,
+				52132DC3CDB4E2A2146DEC47 /* Screen */,
+				7AD6D58A25AEBA79A708D039 /* Security */,
+				7CB6453CEA9187AC77168E8C /* Support */,
+				C682210127A030519E604DE6 /* ViewModels */,
+				580CDB9440C297800157201A /* Views */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		7CB6453CEA9187AC77168E8C /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				6A3C452F1E5A4A1C68F1D1E2 /* Info.plist */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		91FB8C9E0DA5A7B14C9DA9D7 /* Networking */ = {
+			isa = PBXGroup;
+			children = (
+				65CCD3F1ABD9D4172744A0F4 /* BonjourBrowser.swift */,
+				8BDB3748CE96A0E684F2EF76 /* ScreenVideoClient.swift */,
+			);
+			path = Networking;
+			sourceTree = "<group>";
+		};
+		A0654F1A364935968B6AD288 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				F524855347D7B066F88321D0 /* ScreenVideoConnectionDescriptor.swift */,
+				132D234332E7CDAD5F0F3213 /* ServerInfo.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		A806F24DF793A2BDE535BBB9 = {
+			isa = PBXGroup;
+			children = (
+				3D2B066187D4D3BCB3E3B95D /* opensteamer */,
+				68C091102587D24D387EEFB8 /* OracleTestSupport */,
+				C9FF2FEC5B71276CD94BF158 /* Packages */,
+				7C1A18666092A0B3B698F9DD /* Sources */,
+				D778C9C1DBDB3D46C8D10FAB /* Tests */,
+				45EE504DB5D2A420EFAE46CC /* UITests */,
+				D6D71F515168A280ADD05F7E /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		C38738A0E3C850B5D0A3611B /* App */ = {
+			isa = PBXGroup;
+			children = (
+				093577922497DF95FEAFD8EF /* BackgroundPlaybackCoordinator.swift */,
+				90600912C0AAEC02C723EDA9 /* ContentView.swift */,
+				76F2CC18DCFD9E1ACAC69A25 /* OpensteamerApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		C682210127A030519E604DE6 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				8CAA833D0E3961518CB2AF39 /* InvitationAcceptanceAction.swift */,
+				DEC26144551DD1E27BA28F74 /* RemoteTokenState.swift */,
+				D6219C964B51CAC699E64A54 /* ScreenSessionViewModel.swift */,
+				3F4D135483CC5D23B56ADE12 /* StreamSessionViewModel.swift */,
+				64465AAC8CF00A21486FD95A /* ViewerPairingState.swift */,
+				726474C0ACC95EEE5055A4CC /* WorldwideSessionViewModel.swift */,
+				F36373D0CB1979AF2ABF3A1F /* WorldwideViewerConnectionCoordinator.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		C9FF2FEC5B71276CD94BF158 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				33F120C227DF28ABE6BBF84F /* opensteamer */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		D6D71F515168A280ADD05F7E /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				5C6B4041518106AC0A4A5151 /* opensteamer.app */,
+				C9E111D70F8EAA03A7EE07F2 /* opensteamerTests.xctest */,
+				2ADDF37DFF4BF8165F226443 /* opensteamerUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		D778C9C1DBDB3D46C8D10FAB /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				62EE29F300BD14D456C513EA /* AppArtifactContractTests.swift */,
+				5EAE7108773997E7E6897AE1 /* AspectFitCoordinateMapperTests.swift */,
+				05F997BDA71C2DC04DB754E9 /* KeychainStoreTests.swift */,
+				DA37DD740FBC007D8FFBCA52 /* PhysicalOracleEvaluatorTests.swift */,
+				0B08A0C97FDDE54F9FD2A8EE /* RemoteKeyboardInputProxyTests.swift */,
+				6958FC2CA2AB682B2500A8CA /* ViewerPairingPersistenceTests.swift */,
+				ECB116DB67832023573C8889 /* WebRTCAudioPlaybackSessionTests.swift */,
+				EF58ACCC60E0F1CDD3B085F1 /* WorldwideAudioLifecycleTests.swift */,
+				67AE668289636F568C11BDFA /* WorldwidePresentationTests.swift */,
+				D11FA42392B5E334511C469E /* WorldwideRemoteInputLifecycleTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		30B0D4F0C6423EEA06B4E4FD /* opensteamerTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D44789BFF116530AA0B193E6 /* Build configuration list for PBXNativeTarget "opensteamerTests" */;
+			buildPhases = (
+				F6FB035BA1AFEAA7D76F3362 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				77A3C978DF31627720C615CD /* PBXTargetDependency */,
+			);
+			name = opensteamerTests;
+			packageProductDependencies = (
+			);
+			productName = opensteamerTests;
+			productReference = C9E111D70F8EAA03A7EE07F2 /* opensteamerTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		D2AF3999BADD967EBD466D86 /* opensteamer */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A04D32C51BB95BF34FD7BFD0 /* Build configuration list for PBXNativeTarget "opensteamer" */;
+			buildPhases = (
+				76FC838EA95DFA525898BE39 /* Sources */,
+				A33AD656BD317C51295FAC74 /* Resources */,
+				29BF1DF7E756BC8FD8239121 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = opensteamer;
+			packageProductDependencies = (
+				07305BD89BF6759BE344884B /* ClientCore */,
+				C90C3F3FA906FF223BDF865B /* RemoteSessionCore */,
+				BE5A0B5ED61F4349F875531E /* Streaming */,
+				525D57D5DCA36B6B514B1F0A /* WebRTCTransport */,
+			);
+			productName = opensteamer;
+			productReference = 5C6B4041518106AC0A4A5151 /* opensteamer.app */;
+			productType = "com.apple.product-type.application";
+		};
+		D4974D879526F71B318F85EA /* opensteamerUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2C56C7769C9D15A20BF66F4B /* Build configuration list for PBXNativeTarget "opensteamerUITests" */;
+			buildPhases = (
+				13BE02B184957ED628FD754C /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				585C901D40919F82A7F8FA09 /* PBXTargetDependency */,
+			);
+			name = opensteamerUITests;
+			packageProductDependencies = (
+			);
+			productName = opensteamerUITests;
+			productReference = 2ADDF37DFF4BF8165F226443 /* opensteamerUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		9F017CEE8E2F4B8836690F9C /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					30B0D4F0C6423EEA06B4E4FD = {
+						ProvisioningStyle = Automatic;
+					};
+					D2AF3999BADD967EBD466D86 = {
+						ProvisioningStyle = Automatic;
+					};
+					D4974D879526F71B318F85EA = {
+						ProvisioningStyle = Automatic;
+						TestTargetID = D2AF3999BADD967EBD466D86;
+					};
+				};
+			};
+			buildConfigurationList = 932299CC136EBB00AC132C54 /* Build configuration list for PBXProject "opensteamer" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = A806F24DF793A2BDE535BBB9;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				383A67E2D492DED74E48CA2C /* XCLocalSwiftPackageReference "../.." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = D6D71F515168A280ADD05F7E /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				D2AF3999BADD967EBD466D86 /* opensteamer */,
+				30B0D4F0C6423EEA06B4E4FD /* opensteamerTests */,
+				D4974D879526F71B318F85EA /* opensteamerUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A33AD656BD317C51295FAC74 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8553B3C7A16926908E26AFE9 /* Assets.xcassets in Resources */,
+				802BDF19BBE720E4EA99CC24 /* THIRD_PARTY_NOTICES.md in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		13BE02B184957ED628FD754C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9CA8D23DE85C9FC0A77536B6 /* PairedReconnectPhysicalUITests.swift in Sources */,
+				C70D90B1D6A781720B3E38F6 /* PhysicalOracleEvaluator.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		76FC838EA95DFA525898BE39 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				ABC5C7651BF2B2AE0A766856 /* AspectFitCoordinateMapper.swift in Sources */,
+				2CD1512385952F27F099DE9E /* AudioSessionManager.swift in Sources */,
+				E0CFAFCA3B3074DC9A70FEC2 /* BackgroundPlaybackCoordinator.swift in Sources */,
+				DFD966915181FF541A343040 /* BonjourBrowser.swift in Sources */,
+				99CFD2E50E0881AC366C4738 /* BrowserView.swift in Sources */,
+				36CBD1F0C6AD6F23F693C3C2 /* ContentView.swift in Sources */,
+				DCC8E31D0010C395981E59BC /* DiagnosticsView.swift in Sources */,
+				BBCF4C3DE1A3016C7790E01D /* H264SampleBuilder.swift in Sources */,
+				6FABEE1730A7A0908FD6FFB9 /* InvitationAcceptanceAction.swift in Sources */,
+				DB46B27CD3BB1CC0812D07A0 /* KeychainStore.swift in Sources */,
+				C9E6069A49A4706FF9BF6058 /* MetricRow.swift in Sources */,
+				70D49162C0A5742D3966087D /* OpensteamerApp.swift in Sources */,
+				9D6CA655E54E17D37AC4035E /* PlayerView.swift in Sources */,
+				0A6518B4EB4B3E68DC6BD363 /* RemoteKeyboardInputView.swift in Sources */,
+				BBADB8147D541A4D9973FD50 /* RemotePrimaryDragGesturePolicy.swift in Sources */,
+				683C25329BC8E20088E6116B /* RemoteTokenState.swift in Sources */,
+				AB264D96599E5BE958D377C3 /* SampleBufferScreenView.swift in Sources */,
+				70C2F5089C84108917111CF0 /* ScreenSessionViewModel.swift in Sources */,
+				D2FB014BB9E23EC04BBBE548 /* ScreenVideoClient.swift in Sources */,
+				8CEE8A4F3BF37A783F2E66B9 /* ScreenVideoConnectionDescriptor.swift in Sources */,
+				2A22F44ECDB811632D6B3812 /* ScreenVideoRenderer.swift in Sources */,
+				627187065AADC178DAECE8BE /* ScreenViewerView.swift in Sources */,
+				C8262450EBF279627543D271 /* ServerInfo.swift in Sources */,
+				82252C5C7C19C8D8D08E1FAE /* StreamSessionViewModel.swift in Sources */,
+				688161A555027B4D83A84E0D /* ViewerPairingState.swift in Sources */,
+				B360334715EDEAA9E9E527C3 /* ViewerPairingStore.swift in Sources */,
+				40AFC270DF77FF0D0BAB3BB3 /* WebRTCRemoteScreenView.swift in Sources */,
+				F5EC00BDA63D36E530D77711 /* WorldwideAudioLifecycleController.swift in Sources */,
+				4D7160E2C12B45C36CA6F0B5 /* WorldwideCallActivityObserver.swift in Sources */,
+				8CFD309C5EAD23E3B7142DB9 /* WorldwidePhysicalOracles.swift in Sources */,
+				D1336366C939E9D02ECF6925 /* WorldwideScreenViewerView.swift in Sources */,
+				2BD739A3E11428C6AD380B49 /* WorldwideSessionViewModel.swift in Sources */,
+				B688FA73D8FD020CC64DF502 /* WorldwideViewerConnectionCoordinator.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F6FB035BA1AFEAA7D76F3362 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C27325B4E2559EA2F8AEE99C /* AppArtifactContractTests.swift in Sources */,
+				9AAA1E27A24734789A6CBEA1 /* AspectFitCoordinateMapperTests.swift in Sources */,
+				2AB8172E29C70E7D96DA0A8A /* KeychainStoreTests.swift in Sources */,
+				D89D6AFCD4145A0A6EF255D9 /* PhysicalOracleEvaluator.swift in Sources */,
+				1E220F17ECE4F06A1552C770 /* PhysicalOracleEvaluatorTests.swift in Sources */,
+				AB6196D04E1C6B5D11B5771D /* RemoteKeyboardInputProxyTests.swift in Sources */,
+				103C41100893D8012C60ADE6 /* ViewerPairingPersistenceTests.swift in Sources */,
+				303BED46E3673163FCA92B36 /* WebRTCAudioPlaybackSessionTests.swift in Sources */,
+				7A896917C5694180149B0C64 /* WorldwideAudioLifecycleTests.swift in Sources */,
+				751245F68F1D541B9E1102AB /* WorldwidePresentationTests.swift in Sources */,
+				D4EAE6BA0BBBC5807F6B32F6 /* WorldwideRemoteInputLifecycleTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		585C901D40919F82A7F8FA09 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D2AF3999BADD967EBD466D86 /* opensteamer */;
+			targetProxy = 554E3629CCA98C9120D2BEE0 /* PBXContainerItemProxy */;
+		};
+		77A3C978DF31627720C615CD /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D2AF3999BADD967EBD466D86 /* opensteamer */;
+			targetProxy = 72A0726E5CACD66914B3057E /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		0240299FE56B5D6503940318 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				AUDIOSTREAMER_RENDEZVOUS_URL = "";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				INFOPLIST_FILE = Sources/Support/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				OPENSTEAMER_RENDEZVOUS_URL = "";
+				PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer.dev;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		12938D4F3BA68E20610C394B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		5ADF15167753B5B287DCA772 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				AUDIOSTREAMER_RENDEZVOUS_URL = "";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				INFOPLIST_FILE = Sources/Support/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				OPENSTEAMER_RENDEZVOUS_URL = "";
+				PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		949E34BDEAD61B12862376D8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamerUITests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = opensteamer;
+			};
+			name = Release;
+		};
+		98A70899B331332839B96612 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamerTests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/opensteamer.app/opensteamer";
+			};
+			name = Release;
+		};
+		9AFC531A3C90462D79201F2F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamerUITests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = opensteamer;
+			};
+			name = Debug;
+		};
+		C9B934C71625F269A0D9928E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamerTests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/opensteamer.app/opensteamer";
+			};
+			name = Debug;
+		};
+		F1EB07C7D797ED73D772C5CB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		2C56C7769C9D15A20BF66F4B /* Build configuration list for PBXNativeTarget "opensteamerUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9AFC531A3C90462D79201F2F /* Debug */,
+				949E34BDEAD61B12862376D8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		932299CC136EBB00AC132C54 /* Build configuration list for PBXProject "opensteamer" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				12938D4F3BA68E20610C394B /* Debug */,
+				F1EB07C7D797ED73D772C5CB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A04D32C51BB95BF34FD7BFD0 /* Build configuration list for PBXNativeTarget "opensteamer" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0240299FE56B5D6503940318 /* Debug */,
+				5ADF15167753B5B287DCA772 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		D44789BFF116530AA0B193E6 /* Build configuration list for PBXNativeTarget "opensteamerTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C9B934C71625F269A0D9928E /* Debug */,
+				98A70899B331332839B96612 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		383A67E2D492DED74E48CA2C /* XCLocalSwiftPackageReference "../.." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../..;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		07305BD89BF6759BE344884B /* ClientCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ClientCore;
+		};
+		525D57D5DCA36B6B514B1F0A /* WebRTCTransport */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WebRTCTransport;
+		};
+		BE5A0B5ED61F4349F875531E /* Streaming */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = Streaming;
+		};
+		C90C3F3FA906FF223BDF865B /* RemoteSessionCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = RemoteSessionCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 9F017CEE8E2F4B8836690F9C /* Project object */;
+}

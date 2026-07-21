@@ -14,7 +14,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
     }
 
     private let logger: Logger
-    private let listenerQueue = DispatchQueue(label: "MacCaptureVerifier.BlackHoleRouteManager")
+    private let listenerQueue = DispatchQueue(label: "opensteamer.BlackHoleRouteManager")
     private var listeners: [Listener] = []
     private var expectedRoute: AudioRoute?
     private var isReassertingRoute = false

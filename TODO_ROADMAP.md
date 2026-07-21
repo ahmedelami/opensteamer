@@ -1,4 +1,4 @@
-# AudioStreamer roadmap
+# opensteamer roadmap
 
 This roadmap records current work, not private deployment history. Completed items describe code
 foundations; they are not claims that every network, device, route, or distribution artifact has

@@ -51,7 +51,7 @@ public final class VideoTCPServer: @unchecked Sendable {
     private let bonjourName: String?
     private let authToken: String?
     private let logger: Logger
-    private let queue = DispatchQueue(label: "MacCaptureVerifier.VideoTCPServer")
+    private let queue = DispatchQueue(label: "opensteamer.VideoTCPServer")
     private weak var eventHandler: VideoTCPServerEventHandler?
     private var listener: NWListener?
     private var client: VideoClientConnection?

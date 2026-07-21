@@ -85,7 +85,7 @@ public struct ConnectionTelemetryFingerprint: RawRepresentable, Codable, Hashabl
         domain: ConnectionTelemetryFingerprintDomain,
         bytes: Data
     ) -> Self {
-        var material = Data("AudioStreamer.ConnectionTelemetry.v1.".utf8)
+        var material = Data("opensteamer.ConnectionTelemetry.v1.".utf8)
         material.append(contentsOf: domain.rawValue.utf8)
         material.append(0)
         material.append(bytes)
@@ -277,7 +277,7 @@ public final class LocalConnectionTelemetryJournal:
 
     private let lock = NSLock()
     private let persistenceQueue = DispatchQueue(
-        label: "org.example.AudioStreamer.ConnectionTelemetryPersistence",
+        label: "org.example.opensteamer.ConnectionTelemetryPersistence",
         qos: .utility
     )
     private let fileURL: URL
@@ -336,7 +336,7 @@ public final class LocalConnectionTelemetryJournal:
         ).first ?? FileManager.default.temporaryDirectory
         return LocalConnectionTelemetryJournal(
             fileURL: base
-                .appendingPathComponent("AudioStreamer", isDirectory: true)
+                .appendingPathComponent("opensteamer", isDirectory: true)
                 .appendingPathComponent("ConnectionTelemetry", isDirectory: true)
                 .appendingPathComponent(component + ".json", isDirectory: false)
         )
@@ -542,7 +542,7 @@ public final class LocalConnectionTelemetryJournal:
     private static func logToSystem(_ event: ConnectionTelemetryEvent) {
         #if canImport(OSLog)
         let logger = Logger(
-            subsystem: "org.example.AudioStreamer",
+            subsystem: "org.example.opensteamer",
             category: "ConnectionTelemetry"
         )
         let retry = event.retryOrdinal.map(String.init) ?? "none"

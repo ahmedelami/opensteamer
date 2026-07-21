@@ -1,4 +1,4 @@
-# AudioStreamer rendezvous
+# opensteamer rendezvous
 
 This service connects one Mac host and one iPhone viewer long enough to negotiate a WebRTC session. It relays no media and receives no pairing secret. Both clients join `wss://…/v1/rendezvous` with the same unguessable channel ID and a `host` or `viewer` role, then exchange end-to-end-encrypted signaling envelopes that the service treats as opaque Base64URL strings. Session routing values are bounded WebSocket upgrade headers, not URL query parameters, so routine proxy access logs cannot retain them.
 
@@ -24,6 +24,10 @@ X-AudioStreamer-Admission: <43-char Base64URL proof>
 client -> {"type":"signal","seq":0,"envelope":"<sealed Base64URL>"}
 server -> {"type":"signal","from":"host","seq":0,"envelope":"<unchanged sealed Base64URL>"}
 ```
+
+The `X-AudioStreamer-*` headers and `AudioStreamer.RemoteSession.HKDF-SHA256.v1\0`
+domain below are deployed v1 compatibility ABI. Their former-brand spelling is intentional and
+must remain stable so opensteamer clients interoperate with already deployed hosts and services.
 
 The admission value is the unpadded Base64URL encoding of a separate 32-byte HKDF-SHA256 output derived from the invitation secret with salt `AudioStreamer.RemoteSession.HKDF-SHA256.v1\0` and info label `rendezvous-admission-proof`. The invitation secret itself is never transmitted. The service binds the host's proof to the invitation and uses a constant-time comparison before accepting a viewer, consuming the invitation, or issuing ICE credentials.
 
