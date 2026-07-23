@@ -200,6 +200,7 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <key>CFBundleName</key><string>opensteamer</string>
 <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
 <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+<key>NSCameraUsageDescription</key><string>opensteamer may request camera access through its real-time communication framework only when you explicitly start a camera-capable sharing feature. Ordinary audio and screen streaming do not access the camera.</string>
 <key>NSLocalNetworkUsageDescription</key><string>opensteamer finds the Mac capture server on your local Wi-Fi network.</string>
 </dict></plist>' >"$BASELINE/iOS/opensteamer/Sources/Support/Info.plist"
 print -r -- 'struct BrowserViewFixture {
@@ -293,6 +294,12 @@ replace_once "$CASE/iOS/opensteamer/Sources/Support/Info.plist" \
   '<key>CFBundleDisplayName</key><string>opensteamer</string>' \
   '<key>CFBundleDisplayName</key><string>Opensteamer</string>'
 require_rejection "$CASE" 'iOS CFBundleDisplayName lowercase identity'
+
+CASE=$(new_case camera-usage-description)
+replace_once "$CASE/iOS/opensteamer/Sources/Support/Info.plist" \
+  '<key>NSCameraUsageDescription</key><string>opensteamer may request camera access through its real-time communication framework only when you explicitly start a camera-capable sharing feature. Ordinary audio and screen streaming do not access the camera.</string>' \
+  '<key>NSCameraUsageDescription</key><string>opensteamer uses the camera during ordinary audio streaming.</string>'
+require_rejection "$CASE" 'iOS camera usage description'
 
 CASE=$(new_case project-target)
 replace_once "$CASE/iOS/opensteamer/project.yml" \

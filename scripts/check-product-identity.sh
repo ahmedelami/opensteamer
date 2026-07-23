@@ -536,6 +536,10 @@ assert_plist_value iOS/opensteamer/Sources/Support/Info.plist \
   NSLocalNetworkUsageDescription \
   'opensteamer finds the Mac capture server on your local Wi-Fi network.' \
   'iOS local-network description lowercase identity'
+assert_plist_value iOS/opensteamer/Sources/Support/Info.plist \
+  NSCameraUsageDescription \
+  'opensteamer may request camera access through its real-time communication framework only when you explicitly start a camera-capable sharing feature. Ordinary audio and screen streaming do not access the camera.' \
+  'iOS camera usage description'
 assert_literal_count iOS/opensteamer/Sources/Views/BrowserView.swift \
   '.navigationTitle("opensteamer")' 1 'iOS navigation-title lowercase identity'
 assert_literal_count iOS/opensteamer/Sources/App/BackgroundPlaybackCoordinator.swift \

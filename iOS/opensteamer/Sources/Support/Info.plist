@@ -34,6 +34,8 @@
 		<string>_mcap._tcp</string>
 		<string>_mcap-screen._tcp</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>opensteamer may request camera access through its real-time communication framework only when you explicitly start a camera-capable sharing feature. Ordinary audio and screen streaming do not access the camera.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>opensteamer finds the Mac capture server on your local Wi-Fi network.</string>
 	<key>NSMicrophoneUsageDescription</key>

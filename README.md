@@ -95,7 +95,7 @@ The authoritative values for the maintainer build are:
 | --- | --- |
 | Production bundle | <code>com.elamin.AudioStreamer</code> |
 | Development team | `MSMG8CJLB3` |
-| Marketing version / build | `0.1.0` / `32` |
+| Marketing version / build | `0.1.0` / `33` |
 | Release rendezvous | Both `OPENSTEAMER_RENDEZVOUS_URL` and compatibility `AUDIOSTREAMER_RENDEZVOUS_URL` use the production WSS Worker origin declared in [`project.yml`](iOS/opensteamer/project.yml) |
 | Debug bundle | <code>org.example.AudioStreamer.dev</code> |
 | Debug rendezvous | Both endpoint settings are empty unless explicitly overridden locally |

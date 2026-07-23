@@ -21,6 +21,10 @@ final class AppArtifactContractTests: XCTestCase {
             info?["NSLocalNetworkUsageDescription"] as? String,
             "opensteamer finds the Mac capture server on your local Wi-Fi network."
         )
+        XCTAssertEqual(
+            info?["NSCameraUsageDescription"] as? String,
+            "opensteamer may request camera access through its real-time communication framework only when you explicitly start a camera-capable sharing feature. Ordinary audio and screen streaming do not access the camera."
+        )
     }
 
     func testBuiltApplicationDeclaresOnlyBackgroundAudio() throws {
