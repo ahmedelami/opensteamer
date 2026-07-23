@@ -161,6 +161,13 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         try await host.start()
         let emittedOffer = await offerTask.value
         let productOffer = try XCTUnwrap(emittedOffer)
+        let offerAudioSections = mediaSections(kind: "audio", in: productOffer)
+        XCTAssertEqual(offerAudioSections.count, 2)
+        assertHighFidelityOpusPolicy(in: offerAudioSections[0])
+        XCTAssertTrue(offerAudioSections[0].contains("a=sendonly"))
+        assertIPhoneMicrophoneOpusPolicy(in: offerAudioSections[1])
+        XCTAssertTrue(offerAudioSections[1].contains("a=recvonly"))
+
         let oldOffer = productOffer.replacingOccurrences(
             of: ";stereo=1;sprop-stereo=1;maxaveragebitrate=192000",
             with: ""
@@ -178,11 +185,17 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         try await viewer.handle(.offer(sdp: oldOffer))
         let emittedAnswer = await answerTask.value
         let answer = try XCTUnwrap(emittedAnswer)
-        let audioSection = try XCTUnwrap(mediaSection(kind: "audio", in: answer))
+        let audioSections = mediaSections(kind: "audio", in: answer)
 
-        XCTAssertFalse(audioSection.lowercased().contains("stereo=1"))
-        XCTAssertFalse(audioSection.lowercased().contains("sprop-stereo=1"))
-        XCTAssertFalse(audioSection.lowercased().contains("maxaveragebitrate="))
+        XCTAssertEqual(audioSections.count, 2)
+        XCTAssertFalse(audioSections[0].lowercased().contains("stereo=1"))
+        XCTAssertFalse(audioSections[0].lowercased().contains("sprop-stereo=1"))
+        XCTAssertFalse(audioSections[0].lowercased().contains("maxaveragebitrate="))
+        assertIPhoneMicrophoneOpusPolicy(in: audioSections[1])
+        XCTAssertTrue(
+            audioSections[1].contains("a=sendonly")
+                || audioSections[1].contains("a=inactive")
+        )
     }
 
     func testHostViewerLoopbackNegotiatesControlsVideoAndCloses() async throws {
@@ -192,6 +205,16 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         let viewer = try WebRTCPeer.makeHeadlessViewerForTesting(
             configuration: WebRTCTransportConfiguration(role: .viewer, iceServers: [])
         )
+        let constructedReceiverIDValue =
+            await host.iPhoneMicrophoneReceiverIDForTesting
+        let constructedReceiverID = try XCTUnwrap(constructedReceiverIDValue)
+        XCTAssertFalse(constructedReceiverID.isEmpty)
+        XCTAssertNotEqual(
+            constructedReceiverID,
+            WebRTCRemoteAudioLane.iPhoneMicrophone.rawValue,
+            "The logical microphone label must not replace the host-owned native receiver ID."
+        )
+
         let recorder = LoopbackRecorder()
         let expectations = LoopbackExpectations()
         let secondAnswerDeliveryGate = SecondAnswerDeliveryGate()
@@ -269,8 +292,10 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             of: [
                 expectations.hostConnected,
                 expectations.viewerConnected,
+                expectations.hostDataChannelOpen,
                 expectations.viewerDataChannelOpen,
                 expectations.directRoute,
+                expectations.hostIPhoneMicrophoneTrack,
                 expectations.remoteAudioTrack,
                 expectations.remoteVideoTrack
             ],
@@ -299,22 +324,121 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             return
         }
 
+        let receivedHostIPhoneMicrophoneTrack =
+            await recorder.hostIPhoneMicrophoneTrack()
+        let hostIPhoneMicrophoneTrack = try XCTUnwrap(
+            receivedHostIPhoneMicrophoneTrack
+        )
+        XCTAssertEqual(
+            hostIPhoneMicrophoneTrack.receiverID,
+            constructedReceiverID
+        )
+        XCTAssertEqual(
+            hostIPhoneMicrophoneTrack.logicalLane,
+            .iPhoneMicrophone
+        )
+        XCTAssertFalse(hostIPhoneMicrophoneTrack.nativeTrackID.isEmpty)
+        XCTAssertNotEqual(
+            hostIPhoneMicrophoneTrack.nativeTrackID,
+            hostIPhoneMicrophoneTrack.logicalLane.rawValue,
+            "The logical lane label must remain distinct from the native track token."
+        )
+        XCTAssertFalse(
+            hostIPhoneMicrophoneTrack.isEnabled,
+            "The incoming iPhone microphone must remain disabled until peer-owned admission."
+        )
+
+        let initialMicrophonePublicationCount =
+            await recorder.hostIPhoneMicrophoneTrackPublicationCount()
+        XCTAssertEqual(initialMicrophonePublicationCount, 1)
+
+        let consumedUnexpectedReceiver =
+            await host.consumeIPhoneMicrophoneReceiverCallbackForTesting(
+                receiverID: constructedReceiverID + "-unexpected"
+            )
+        XCTAssertTrue(consumedUnexpectedReceiver)
+        XCTAssertFalse(
+            hostIPhoneMicrophoneTrack.isEnabled,
+            "A nonmatching host receiver must be rejected and remain muted."
+        )
+
+        let consumedDuplicateReceiver =
+            await host.consumeIPhoneMicrophoneReceiverCallbackForTesting(
+                receiverID: constructedReceiverID
+            )
+        XCTAssertTrue(consumedDuplicateReceiver)
+        let proxyRepublishedDuplicate =
+            await host.replayIPhoneMicrophoneReceiverCallbackForTesting()
+        XCTAssertFalse(
+            proxyRepublishedDuplicate,
+            "The modern delegate proxy must emit one event per receiver ID."
+        )
+        let deduplicatedMicrophonePublicationCount =
+            await recorder.hostIPhoneMicrophoneTrackPublicationCount()
+        XCTAssertEqual(deduplicatedMicrophonePublicationCount, 1)
+        XCTAssertFalse(hostIPhoneMicrophoneTrack.isEnabled)
+
+        let staleTrackValue =
+            await host.makeStaleIPhoneMicrophoneTrackForTesting()
+        let staleIPhoneMicrophoneTrack = try XCTUnwrap(staleTrackValue)
+        XCTAssertFalse(
+            staleIPhoneMicrophoneTrack === hostIPhoneMicrophoneTrack
+        )
+        XCTAssertEqual(
+            staleIPhoneMicrophoneTrack.receiverID,
+            constructedReceiverID
+        )
+        XCTAssertEqual(
+            staleIPhoneMicrophoneTrack.logicalLane,
+            .iPhoneMicrophone
+        )
+        do {
+            try await host.enableRemoteIPhoneMicrophonePlaybackIfTransportHealthy(
+                staleIPhoneMicrophoneTrack
+            )
+            XCTFail("A non-current wrapper for the receiver must remain rejected.")
+        } catch let error as WebRTCTransportError {
+            XCTAssertEqual(error, .transportNotHealthy)
+        }
+        XCTAssertFalse(staleIPhoneMicrophoneTrack.isEnabled)
+        XCTAssertFalse(hostIPhoneMicrophoneTrack.isEnabled)
+
+        try await host.enableRemoteIPhoneMicrophonePlaybackIfTransportHealthy(
+            hostIPhoneMicrophoneTrack
+        )
+        XCTAssertTrue(hostIPhoneMicrophoneTrack.isEnabled)
+
         let initialOffer = try XCTUnwrap(connectedSnapshot.hostOffers.first)
-        let audioSection = try XCTUnwrap(mediaSection(kind: "audio", in: initialOffer))
-        XCTAssertTrue(audioSection.contains("a=sendonly"))
+        let initialOfferAudioSections = mediaSections(
+            kind: "audio",
+            in: initialOffer
+        )
+        XCTAssertEqual(initialOfferAudioSections.count, 2)
+        XCTAssertTrue(initialOfferAudioSections[0].contains("a=sendonly"))
         XCTAssertNotNil(
-            audioSection.range(
+            initialOfferAudioSections[0].range(
                 of: #"a=rtpmap:\d+ opus/48000/2"#,
                 options: [.regularExpression, .caseInsensitive]
             ),
             "The send-only system-audio section must negotiate 48 kHz Opus."
         )
-        assertHighFidelityOpusPolicy(in: audioSection)
+        assertHighFidelityOpusPolicy(in: initialOfferAudioSections[0])
+        XCTAssertTrue(initialOfferAudioSections[1].contains("a=recvonly"))
+        assertIPhoneMicrophoneOpusPolicy(in: initialOfferAudioSections[1])
+
         let initialAnswer = try XCTUnwrap(connectedSnapshot.viewerAnswers.first)
-        let answerAudioSection = try XCTUnwrap(
-            mediaSection(kind: "audio", in: initialAnswer)
+        let initialAnswerAudioSections = mediaSections(
+            kind: "audio",
+            in: initialAnswer
         )
-        assertHighFidelityOpusPolicy(in: answerAudioSection)
+        XCTAssertEqual(initialAnswerAudioSections.count, 2)
+        XCTAssertTrue(initialAnswerAudioSections[0].contains("a=recvonly"))
+        assertHighFidelityOpusPolicy(in: initialAnswerAudioSections[0])
+        XCTAssertTrue(
+            initialAnswerAudioSections[1].contains("a=sendonly")
+                || initialAnswerAudioSections[1].contains("a=inactive")
+        )
+        assertIPhoneMicrophoneOpusPolicy(in: initialAnswerAudioSections[1])
 
         let senderEncodings = await host.audioSenderEncodingParametersForTesting()
         XCTAssertFalse(senderEncodings.isEmpty)
@@ -337,6 +461,12 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
 
         let receivedAudioTrack = await recorder.remoteAudioTrack()
         let remoteAudioTrack = try XCTUnwrap(receivedAudioTrack)
+        XCTAssertEqual(remoteAudioTrack.logicalLane, .systemAudio)
+        XCTAssertEqual(
+            remoteAudioTrack.nativeTrackID,
+            WebRTCAudioTrackIdentifiers.systemAudio
+        )
+        XCTAssertFalse(remoteAudioTrack.receiverID.isEmpty)
         XCTAssertFalse(
             remoteAudioTrack.isEnabled,
             "A newly received native audio track must remain muted until lifecycle health passes."
@@ -459,7 +589,11 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             print("OPENSTEAMER_AUDIO_ANTI_PHASE \(antiPhaseFailureContext)")
             let hostStatistics = await host.statisticsSnapshot()
             let viewerStatistics = await viewer.statisticsSnapshot()
-            print("OPENSTEAMER_AUDIO_SDP \(audioSection.replacingOccurrences(of: "\r\n", with: " | "))")
+            print(
+                "OPENSTEAMER_AUDIO_SDP "
+                    + initialOfferAudioSections[0]
+                        .replacingOccurrences(of: "\r\n", with: " | ")
+            )
             print("OPENSTEAMER_AUDIO_HOST_STATS \(hostStatistics)")
             print("OPENSTEAMER_AUDIO_VIEWER_STATS \(viewerStatistics)")
         }
@@ -828,6 +962,10 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
 
         try await host.restartICE()
         XCTAssertFalse(
+            hostIPhoneMicrophoneTrack.isEnabled,
+            "ICE restart must fail-close host-side iPhone microphone playout."
+        )
+        XCTAssertFalse(
             audioAuthorization.isValid,
             "ICE uncertainty must synchronously revoke system-audio capture."
         )
@@ -840,6 +978,18 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             ],
             timeout: 10
         )
+
+        do {
+            try await host.enableRemoteIPhoneMicrophonePlaybackIfTransportHealthy(
+                hostIPhoneMicrophoneTrack
+            )
+            XCTFail(
+                "The incoming iPhone microphone must not be admitted before the restart answer is applied."
+            )
+        } catch let error as WebRTCTransportError {
+            XCTAssertEqual(error, .transportNotHealthy)
+        }
+        XCTAssertFalse(hostIPhoneMicrophoneTrack.isEnabled)
 
         // The data channel can cross the WSS answer path. Prove that a privacy-monotone Hide
         // received before the second answer is applied cannot be acknowledged as recovered.
@@ -859,15 +1009,29 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
 
         await secondAnswerDeliveryGate.release()
         await fulfillment(of: [expectations.secondAnswerDelivered], timeout: 10)
+        let restartMicrophonePublicationCount =
+            await recorder.hostIPhoneMicrophoneTrackPublicationCount()
+        XCTAssertEqual(
+            restartMicrophonePublicationCount,
+            1,
+            "ICE renegotiation must not republish the unchanged microphone receiver."
+        )
+        XCTAssertFalse(
+            hostIPhoneMicrophoneTrack.isEnabled,
+            "Answer installation must not implicitly reopen microphone playout."
+        )
 
         let restartSnapshot = await recorder.snapshot()
         XCTAssertEqual(restartSnapshot.hostOffers.count, 2)
         XCTAssertEqual(restartSnapshot.viewerAnswers.count, 2)
         for description in restartSnapshot.hostOffers + restartSnapshot.viewerAnswers {
-            let restartAudioSection = try XCTUnwrap(
-                mediaSection(kind: "audio", in: description)
+            let restartAudioSections = mediaSections(
+                kind: "audio",
+                in: description
             )
-            assertHighFidelityOpusPolicy(in: restartAudioSection)
+            XCTAssertEqual(restartAudioSections.count, 2)
+            assertHighFidelityOpusPolicy(in: restartAudioSections[0])
+            assertIPhoneMicrophoneOpusPolicy(in: restartAudioSections[1])
         }
         let firstOfferFragments = ICEUsernameFragmentParser.fragments(
             inSessionDescription: restartSnapshot.hostOffers[0]
@@ -913,6 +1077,33 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             authorization: WebRTCControlAuthorization()
         )
         await fulfillment(of: [expectations.recoveryProbeAcknowledged], timeout: 3)
+
+        XCTAssertFalse(hostIPhoneMicrophoneTrack.isEnabled)
+        try await host.enableRemoteIPhoneMicrophonePlaybackIfTransportHealthy(
+            hostIPhoneMicrophoneTrack
+        )
+        XCTAssertTrue(hostIPhoneMicrophoneTrack.isEnabled)
+
+        let consumedRecoveredDuplicate =
+            await host.consumeIPhoneMicrophoneReceiverCallbackForTesting(
+                receiverID: constructedReceiverID
+            )
+        XCTAssertTrue(consumedRecoveredDuplicate)
+        XCTAssertTrue(
+            hostIPhoneMicrophoneTrack.isEnabled,
+            "Peer-level receiver-ID dedupe must preserve the admitted current gate."
+        )
+
+        let proxyRepublishedRecoveredDuplicate =
+            await host.replayIPhoneMicrophoneReceiverCallbackForTesting()
+        XCTAssertFalse(proxyRepublishedRecoveredDuplicate)
+        XCTAssertTrue(
+            hostIPhoneMicrophoneTrack.isEnabled,
+            "A duplicate native callback must not disable an admitted receiver."
+        )
+        let recoveredMicrophonePublicationCount =
+            await recorder.hostIPhoneMicrophoneTrackPublicationCount()
+        XCTAssertEqual(recoveredMicrophonePublicationCount, 1)
 
         let recoveredAudioAuthorization = WebRTCAudioAuthorization()
         try await host.enableSystemAudioIfTransportHealthy(
@@ -961,6 +1152,7 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             remoteAudioTrack.isEnabled,
             "Closing the transport must synchronously stop remote audio rendering."
         )
+        XCTAssertFalse(hostIPhoneMicrophoneTrack.isEnabled)
         XCTAssertFalse(recoveredAudioAuthorization.isValid)
 
         let finalSnapshot = await recorder.snapshot()
@@ -1003,8 +1195,10 @@ private enum LoopbackSide: Sendable {
 private enum LoopbackMilestone: Hashable, Sendable {
     case hostConnected
     case viewerConnected
+    case hostDataChannelOpen
     case viewerDataChannelOpen
     case directRoute
+    case hostIPhoneMicrophoneTrack
     case remoteAudioTrack
     case remoteTrack
     case inputRequestReceived
@@ -1081,8 +1275,10 @@ private struct LoopbackSnapshot: Sendable {
         milestones.isSuperset(of: [
             .hostConnected,
             .viewerConnected,
+            .hostDataChannelOpen,
             .viewerDataChannelOpen,
             .directRoute,
+            .hostIPhoneMicrophoneTrack,
             .remoteAudioTrack,
             .remoteTrack
         ])
@@ -1096,6 +1292,8 @@ private actor LoopbackRecorder {
     private var emitted = DirectionalSignalCounts()
     private var delivered = DirectionalSignalCounts()
     private var forwardingErrors: [String] = []
+    private var retainedHostIPhoneMicrophoneTrack: WebRTCRemoteAudioTrack?
+    private var hostIPhoneMicrophoneTrackPublicationCountStorage = 0
     private var retainedRemoteAudioTrack: WebRTCRemoteAudioTrack?
     private var retainedRemoteTrack: WebRTCRemoteVideoTrack?
     private var controlRequests: [WebRTCControlRequest] = []
@@ -1118,13 +1316,23 @@ private actor LoopbackRecorder {
         switch event {
         case .peerStateChanged(.connected):
             observed.append(side == .host ? .hostConnected : .viewerConnected)
-        case .dataChannelStateChanged(.open) where side == .viewer:
-            observed.append(.viewerDataChannelOpen)
+        case .dataChannelStateChanged(.open):
+            observed.append(
+                side == .host
+                    ? .hostDataChannelOpen
+                    : .viewerDataChannelOpen
+            )
         case .routeChanged(let route) where route.kind == .direct:
             observed.append(.directRoute)
-        case .remoteAudioTrack(let track) where side == .viewer:
-            retainedRemoteAudioTrack = track
-            observed.append(.remoteAudioTrack)
+        case .remoteAudioTrack(let track):
+            if side == .host {
+                hostIPhoneMicrophoneTrackPublicationCountStorage += 1
+                retainedHostIPhoneMicrophoneTrack = track
+                observed.append(.hostIPhoneMicrophoneTrack)
+            } else {
+                retainedRemoteAudioTrack = track
+                observed.append(.remoteAudioTrack)
+            }
         case .remoteVideoTrack(let track) where side == .viewer:
             retainedRemoteTrack = track
             observed.append(.remoteTrack)
@@ -1232,6 +1440,14 @@ private actor LoopbackRecorder {
         forwardingErrors.append(String(describing: error))
     }
 
+    func hostIPhoneMicrophoneTrack() -> WebRTCRemoteAudioTrack? {
+        retainedHostIPhoneMicrophoneTrack
+    }
+
+    func hostIPhoneMicrophoneTrackPublicationCount() -> Int {
+        hostIPhoneMicrophoneTrackPublicationCountStorage
+    }
+
     func remoteAudioTrack() -> WebRTCRemoteAudioTrack? {
         retainedRemoteAudioTrack
     }
@@ -1260,8 +1476,14 @@ private actor LoopbackRecorder {
 private final class LoopbackExpectations: @unchecked Sendable {
     let hostConnected = XCTestExpectation(description: "host connected")
     let viewerConnected = XCTestExpectation(description: "viewer connected")
+    let hostDataChannelOpen = XCTestExpectation(
+        description: "host data channel opened"
+    )
     let viewerDataChannelOpen = XCTestExpectation(description: "viewer data channel opened")
     let directRoute = XCTestExpectation(description: "ICE selected a direct route")
+    let hostIPhoneMicrophoneTrack = XCTestExpectation(
+        description: "host received the iPhone microphone track"
+    )
     let remoteAudioTrack = XCTestExpectation(description: "viewer received the remote audio track")
     let remoteVideoTrack = XCTestExpectation(description: "viewer received the remote video track")
     let inputRequestReceived = XCTestExpectation(description: "host received remote input")
@@ -1296,8 +1518,10 @@ private final class LoopbackExpectations: @unchecked Sendable {
         switch milestone {
         case .hostConnected: hostConnected.fulfill()
         case .viewerConnected: viewerConnected.fulfill()
+        case .hostDataChannelOpen: hostDataChannelOpen.fulfill()
         case .viewerDataChannelOpen: viewerDataChannelOpen.fulfill()
         case .directRoute: directRoute.fulfill()
+        case .hostIPhoneMicrophoneTrack: hostIPhoneMicrophoneTrack.fulfill()
         case .remoteAudioTrack: remoteAudioTrack.fulfill()
         case .remoteTrack: remoteVideoTrack.fulfill()
         case .inputRequestReceived: inputRequestReceived.fulfill()
@@ -1358,6 +1582,18 @@ private func mediaSection(kind: String, in sdp: String) -> String? {
     return lines[start..<end].joined(separator: "\n")
 }
 
+private func mediaSections(kind: String, in sdp: String) -> [String] {
+    let lines = sdp
+        .replacingOccurrences(of: "\r\n", with: "\n")
+        .split(separator: "\n", omittingEmptySubsequences: false)
+        .map(String.init)
+    let starts = lines.indices.filter { lines[$0].hasPrefix("m=\(kind) ") }
+    return starts.enumerated().map { index, start in
+        let end = index + 1 < starts.count ? starts[index + 1] : lines.endIndex
+        return lines[start..<end].joined(separator: "\n")
+    }
+}
+
 private func assertHighFidelityOpusPolicy(
     in audioSection: String,
     file: StaticString = #filePath,
@@ -1368,6 +1604,30 @@ private func assertHighFidelityOpusPolicy(
             "stereo=1;sprop-stereo=1;maxaveragebitrate=192000"
         ),
         "The negotiated Opus fmtp must carry the complete high-fidelity policy.\n\(audioSection)",
+        file: file,
+        line: line
+    )
+}
+
+private func assertIPhoneMicrophoneOpusPolicy(
+    in audioSection: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    let lowercased = audioSection.lowercased()
+    XCTAssertTrue(
+        lowercased.contains("stereo=0"),
+        "The iPhone microphone must negotiate mono Opus.\n\(audioSection)",
+        file: file,
+        line: line
+    )
+    XCTAssertTrue(
+        lowercased.contains("sprop-stereo=0"),
+        file: file,
+        line: line
+    )
+    XCTAssertFalse(
+        lowercased.contains("maxaveragebitrate=192000"),
         file: file,
         line: line
     )

@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Verifies that every build and deployment surface agrees on the exact opensteamer product
-# identity. Legacy bundle identifiers are intentionally asserted here: changing them would make
-# upgrades lose their existing app containers, Keychain items, and macOS privacy grants.
+# identity. The iOS Release app uses its App Store identity; Debug, test, Keychain, protocol, and
+# macOS compatibility identifiers remain separately asserted so no configuration can drift.
 set -uo pipefail
 
 REPOSITORY=${1:-.}
@@ -268,7 +268,9 @@ if require_file "$PROJECT_YML"; then
       next
     }
     in_targets && /^      base:[[:space:]]*$/ { scope = "base"; next }
+    in_targets && /^      configs:[[:space:]]*$/ { scope = ""; next }
     in_targets && /^        Debug:[[:space:]]*$/ { scope = "Debug"; next }
+    in_targets && /^        Release:[[:space:]]*$/ { scope = "Release"; next }
     in_targets && /PRODUCT_BUNDLE_IDENTIFIER:[[:space:]]*/ {
       value = $0
       sub(/^.*PRODUCT_BUNDLE_IDENTIFIER:[[:space:]]*/, "", value)
@@ -277,7 +279,7 @@ if require_file "$PROJECT_YML"; then
   ' "$ROOT/$PROJECT_YML" | LC_ALL=C sort)
   EXPECTED_XCODEGEN_BUNDLE_ID_MAPPINGS=$(printf '%s\n' \
     'opensteamer|Debug|org.example.AudioStreamer.dev' \
-    'opensteamer|base|org.example.AudioStreamer' \
+    'opensteamer|Release|com.elamin.AudioStreamer' \
     'opensteamerTests|base|org.example.AudioStreamerTests' \
     'opensteamerUITests|base|org.example.AudioStreamerUITests' \
     | LC_ALL=C sort)
@@ -426,7 +428,7 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
       | sed -n '/^build|/p' | LC_ALL=C sort)
     EXPECTED_PBX_BUILD_CONTRACTS=$(printf '%s\n' \
       'build|opensteamer|Debug|org.example.AudioStreamer.dev' \
-      'build|opensteamer|Release|org.example.AudioStreamer' \
+      'build|opensteamer|Release|com.elamin.AudioStreamer' \
       'build|opensteamerTests|Debug|org.example.AudioStreamerTests' \
       'build|opensteamerTests|Release|org.example.AudioStreamerTests' \
       'build|opensteamerUITests|Debug|org.example.AudioStreamerUITests' \

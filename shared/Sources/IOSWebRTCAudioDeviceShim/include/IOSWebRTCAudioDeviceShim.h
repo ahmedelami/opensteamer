@@ -32,6 +32,10 @@ typedef NS_ENUM(NSInteger, ASIOSStereoPlayoutFailureCode) {
     ASIOSStereoPlayoutFailureRouteRequiresExplicitResume = 19,
     ASIOSStereoPlayoutFailureUnexpectedCategoryChange = 20,
     ASIOSStereoPlayoutFailureMediaServicesReset = 21,
+    ASIOSStereoPlayoutFailureMicrophoneStreamFormat = 22,
+    ASIOSStereoPlayoutFailureMicrophoneInputCallback = 23,
+    ASIOSStereoPlayoutFailureMicrophoneBufferAllocation = 24,
+    ASIOSStereoPlayoutFailureMicrophoneDelivery = 25,
 };
 
 /// A lock-free snapshot of counters written by the RemoteIO render callback plus atomically
@@ -48,6 +52,7 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
     bool recoveryRequired;
     bool explicitResumeRequired;
     bool categoryIsMediaPlayback;
+    bool categoryIsMediaPlayAndRecord;
     bool modeIsDefault;
     double sampleRate;
     double outputIOBufferDuration;
@@ -87,6 +92,23 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
     bool categoryOptionsAreEmpty;
     bool routeSharingPolicyIsDefault;
 } ASIOSStereoPlayoutDiagnostics;
+
+/// Persistent, synchronously revocable ownership for one user-authorized
+/// iPhone microphone generation.
+@interface ASIOSMicrophoneAuthorization : NSObject
+
+@property(nonatomic, readonly, getter=isValid) BOOL valid;
+
+- (void)revoke;
+
+#if DEBUG
+- (BOOL)debugBeginRealtimeAdmissionForTesting;
+- (void)debugEndRealtimeAdmissionForTesting;
+- (void)waitForRealtimeGateClosureForTesting;
+- (BOOL)performIfValidForTesting:(NS_NOESCAPE dispatch_block_t)operation;
+#endif
+
+@end
 
 /// A synchronously revocable, one-shot gate for one explicit playout-recovery attempt.
 ///
@@ -157,8 +179,16 @@ typedef struct ASIOSStereoPlayoutPublicationSnapshot {
 @property(nonatomic, readonly) ASIOSStereoPlayoutDiagnostics diagnostics;
 @property(nonatomic, readonly) NSUInteger queuedOperationCount;
 
+- (void)debugInstallMicrophoneAuthorizationForTesting:
+    (ASIOSMicrophoneAuthorization *_Nullable)authorization;
+- (BOOL)debugPublishCurrentMicrophoneAuthorizationForTesting;
+- (BOOL)debugBeginRealtimeAdmissionForTesting;
+- (void)debugEndRealtimeAdmissionForTesting;
+- (void)debugCloseAndFenceRealtimeGateForTesting;
+- (void)waitForRealtimeGateClosureForTesting;
+- (BOOL)debugTerminateForTesting;
 - (void)publishCallbackWithFrameCount:(uint32_t)frameCount
-                                status:(int32_t)status;
+                                 status:(int32_t)status;
 - (void)queueRecoveryWithAuthorization:
     (ASIOSStereoPlayoutRecoveryAuthorization *)authorization
     NS_SWIFT_NAME(queueRecovery(authorization:));
@@ -167,12 +197,10 @@ typedef struct ASIOSStereoPlayoutPublicationSnapshot {
 @end
 #endif
 
-/// Output-only WebRTC audio device for iPhone/iPad viewers.
+/// Conditional-duplex WebRTC audio device for iPhone/iPad viewers.
 ///
-/// The device owns one `kAudioUnitSubType_RemoteIO` instance. Its input bus is always disabled,
-/// so it cannot open the microphone. RemoteIO's realtime render callback passes its buffer list
-/// directly to WebRTC's cached `getPlayoutData` block exactly once. There is no intermediate
-/// player node, PCM copy, second audio-device output, or application ring buffer.
+/// It remains output-only until the app supplies a current microphone
+/// authorization. Both directions use the same RemoteIO instance.
 @interface ASIOSStereoPlayoutAudioDevice : NSObject <LKRTCAudioDevice>
 
 @property(nonatomic, readonly) ASIOSStereoPlayoutDiagnostics diagnostics;
@@ -186,6 +214,24 @@ typedef struct ASIOSStereoPlayoutPublicationSnapshot {
 - (void)requestPlayoutRecoveryWithAuthorization:
     (ASIOSStereoPlayoutRecoveryAuthorization *)authorization
     NS_SWIFT_NAME(requestPlayoutRecovery(authorization:));
+
+/// Synchronously applies or revokes the current microphone generation on
+/// WebRTC's ADM queue. Enabling deliberately rebuilds RemoteIO as
+/// playAndRecord/default; disabling restores playback/default.
+- (BOOL)setMicrophoneAuthorization:
+    (ASIOSMicrophoneAuthorization *_Nullable)authorization
+    NS_SWIFT_NAME(setMicrophoneAuthorization(_:));
+
+#if DEBUG
+- (void)debugInstallMicrophoneAuthorizationForTesting:
+    (ASIOSMicrophoneAuthorization *_Nullable)authorization;
+- (BOOL)debugPublishCurrentMicrophoneAuthorizationForTesting;
+- (BOOL)debugBeginRealtimeAdmissionForTesting;
+- (void)debugEndRealtimeAdmissionForTesting;
+- (void)debugCloseAndFenceRealtimeGateForTesting;
+- (void)waitForRealtimeGateClosureForTesting;
+- (BOOL)debugTerminateForTesting;
+#endif
 
 @end
 

@@ -16,6 +16,16 @@ enum OpusStereoSDP {
     ]
 
     static func applyingHighFidelityPolicy(to sessionDescription: String) -> String {
+        applyingHighFidelityPolicy(
+            to: sessionDescription,
+            mediaMID: nil
+        )
+    }
+
+    static func applyingHighFidelityPolicy(
+        to sessionDescription: String,
+        mediaMID: String?
+    ) -> String {
         let separator = sessionDescription.contains("\r\n") ? "\r\n" : "\n"
         var lines = sessionDescription.components(separatedBy: separator)
         var mediaStart = 0
@@ -30,7 +40,9 @@ enum OpusStereoSDP {
                 $0.hasPrefix("m=")
             }) ?? lines.endIndex
             var section = Array(lines[mediaStart..<mediaEnd])
-            applyPolicy(toAudioSection: &section)
+            if mediaMID == nil || sectionMID(in: section) == mediaMID {
+                applyPolicy(toAudioSection: &section)
+            }
             lines.replaceSubrange(mediaStart..<mediaEnd, with: section)
             mediaStart += section.count
         }
@@ -45,10 +57,66 @@ enum OpusStereoSDP {
         to sessionDescription: String,
         remoteOffer: String
     ) -> String {
-        guard advertisesCompleteHighFidelityPolicy(remoteOffer) else {
-            return sessionDescription
+        applyingHighFidelityAnswerPolicy(
+            to: sessionDescription,
+            remoteOffer: remoteOffer,
+            mediaMID: nil
+        )
+    }
+
+    static func applyingHighFidelityAnswerPolicy(
+        to sessionDescription: String,
+        remoteOffer: String,
+        mediaMID: String?
+    ) -> String {
+        let separator = sessionDescription.contains("\r\n") ? "\r\n" : "\n"
+        var lines = sessionDescription.components(separatedBy: separator)
+        let remoteAudioSections = audioSections(in: remoteOffer)
+        var mediaStart = 0
+        var audioOrdinal = 0
+
+        while mediaStart < lines.endIndex {
+            guard lines[mediaStart].lowercased().hasPrefix("m=audio ") else {
+                mediaStart += 1
+                continue
+            }
+
+            let mediaEnd = lines[(mediaStart + 1)...].firstIndex(where: {
+                $0.hasPrefix("m=")
+            }) ?? lines.endIndex
+            var section = Array(lines[mediaStart..<mediaEnd])
+            let answerMID = sectionMID(in: section)
+            let shouldApply = mediaMID.map { answerMID == $0 } ?? true
+
+            let matchingRemoteSection: [String]?
+            if let mediaMID {
+                matchingRemoteSection = remoteAudioSections.first {
+                    sectionMID(in: $0) == mediaMID
+                }
+            } else if let answerMID {
+                matchingRemoteSection = remoteAudioSections.first {
+                    sectionMID(in: $0) == answerMID
+                }
+            } else if audioOrdinal < remoteAudioSections.count {
+                matchingRemoteSection = remoteAudioSections[audioOrdinal]
+            } else {
+                matchingRemoteSection = nil
+            }
+
+            if shouldApply,
+               let matchingRemoteSection,
+               advertisesCompleteHighFidelityPolicy(
+                   inAudioSection: matchingRemoteSection
+               ) {
+                applyPolicy(toAudioSection: &section)
+            }
+
+            lines.replaceSubrange(mediaStart..<mediaEnd, with: section)
+            mediaStart += section.count
+            audioOrdinal += 1
         }
-        return applyingHighFidelityPolicy(to: sessionDescription)
+
+        return lines.joined(separator: separator)
     }
 
     private static func applyPolicy(toAudioSection lines: inout [String]) {
@@ -139,13 +207,13 @@ enum OpusStereoSDP {
         return "a=fmtp:\(payload) \((retainedParameters + policyParameters).joined(separator: ";"))"
     }
 
-    private static func advertisesCompleteHighFidelityPolicy(
-        _ sessionDescription: String
-    ) -> Bool {
+    private static func audioSections(
+        in sessionDescription: String
+    ) -> [[String]] {
         let separator = sessionDescription.contains("\r\n") ? "\r\n" : "\n"
         let lines = sessionDescription.components(separatedBy: separator)
+        var sections: [[String]] = []
         var mediaStart = 0
-        var foundOpus = false
 
         while mediaStart < lines.endIndex {
             guard lines[mediaStart].lowercased().hasPrefix("m=audio ") else {
@@ -155,21 +223,34 @@ enum OpusStereoSDP {
             let mediaEnd = lines[(mediaStart + 1)...].firstIndex(where: {
                 $0.hasPrefix("m=")
             }) ?? lines.endIndex
-            let section = Array(lines[mediaStart..<mediaEnd])
-            let payloads = section.compactMap(opusPayloadType(fromRtpMap:))
-
-            for payload in payloads {
-                foundOpus = true
-                guard let fmtp = section.first(where: {
-                    fmtpPayloadType(from: $0) == payload
-                }), containsCompletePolicy(fmtp) else {
-                    return false
-                }
-            }
+            sections.append(Array(lines[mediaStart..<mediaEnd]))
             mediaStart = mediaEnd
         }
 
-        return foundOpus
+        return sections
+    }
+
+    private static func sectionMID(in lines: [String]) -> String? {
+        guard let line = lines.first(where: {
+            $0.lowercased().hasPrefix("a=mid:")
+        }) else {
+            return nil
+        }
+        let value = line.dropFirst("a=mid:".count)
+            .trimmingCharacters(in: .whitespaces)
+        return value.isEmpty ? nil : value
+    }
+
+    private static func advertisesCompleteHighFidelityPolicy(
+        inAudioSection section: [String]
+    ) -> Bool {
+        let payloads = section.compactMap(opusPayloadType(fromRtpMap:))
+        guard !payloads.isEmpty else { return false }
+        return payloads.allSatisfy { payload in
+            section.first(where: {
+                fmtpPayloadType(from: $0) == payload
+            }).map(containsCompletePolicy) == true
+        }
     }
 
     private static func containsCompletePolicy(_ formatParametersLine: String) -> Bool {

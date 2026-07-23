@@ -61,13 +61,26 @@ is terminal for that media connection until the reviewed reconnect protocol crea
 
 The Mac captures system audio with ScreenCaptureKit, converts complete source callbacks to 48 kHz
 interleaved Int16 stereo, and feeds a custom input-only WebRTC device. Opus is negotiated for stereo
-with a 192 kbps sender ceiling. iOS pulls decoded stereo directly from one output-only RemoteIO
-device using an `AVAudioSession` playback/default configuration. It does not open the microphone,
-use VoiceProcessingIO, or select a call-oriented mode.
+with a 192 kbps sender ceiling.
 
-Backgrounding hides video and revokes input while retaining healthy audio. Calls, interruptions,
-private-route loss, and transport uncertainty close the native audio gates. Recovery requires new
-advancing output evidence; it never claims crisp media audio during an active iPhone call.
+iOS pulls decoded stereo directly from one custom RemoteIO device. The default
+policy is output-only `AVAudioSession` playback/default. An explicit UI action,
+granted microphone permission, current session authorization, and healthy
+peer/ICE/control state can rebuild the same device as playAndRecord/default,
+enable input bus 1, and send a separate 48 kHz mono Opus track with stable ID
+`iphone-microphone`. VoiceProcessingIO and voice/chat modes are not used.
+
+The Mac offers that second audio transceiver as recvOnly and accepts only the
+`iphone-microphone` track. Its decoded PCM is written to an explicitly selected
+BlackHole 2ch device by stable UID, allowing ordinary Mac dictation or recording
+software to select BlackHole as an input. opensteamer does not mutate any global
+input, output, or system-output default.
+
+Backgrounding hides video and revokes remote input while retaining healthy
+audio. A bare CallKit transition revokes microphone capture but does not
+deliberately mute incoming Mac audio. An actual interruption, private-route
+loss, native failure, or transport uncertainty still closes the affected native
+gates and requires fresh recovery evidence.
 
 ### Video
 

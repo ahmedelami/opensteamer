@@ -1,4 +1,5 @@
 import AudioToolbox
+import AVFoundation
 import CoreGraphics
 import Foundation
 import RemoteSessionCore
@@ -190,6 +191,10 @@ final class WorldwideSessionViewModel: ObservableObject {
     @Published private(set) var audioRequiresExplicitResume = false
     @Published private(set) var audioError: String?
     @Published private(set) var audioDiagnostic: String?
+    @Published private(set) var microphoneStateText = "Off"
+    @Published private(set) var microphoneError: String?
+    @Published private(set) var microphoneIntentEnabled = false
+    @Published private(set) var isMicrophoneSending = false
     @Published private(set) var routeText = "Unknown"
     @Published private(set) var iceStateText = "Inactive"
     @Published private(set) var remoteDisplayName = "Mac mini"
@@ -212,15 +217,19 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var audioPlayoutProofTimeoutTask: Task<Void, Never>?
     private var audioPlayoutRecoveryAuthorization: WebRTCIOSPlayoutRecoveryAuthorization?
     private var iosPlayoutProofAttempt: IOSPlayoutProofAttempt?
-    /// Session identity intentionally survives an audio-only call conflict. This separate token
-    /// rotates at both call boundaries so a suspended pre-call read cannot publish after the call
-    /// starts and ends on the same peer.
+    /// Rotates at native interruption, recovery, and RemoteIO topology boundaries.
     private var audioPolicyGeneration = UUID()
     private var verifiedAudioPolicyGeneration: UUID?
-    private var isAudioBlockedByCall = false
     /// Remains armed until a native recovery establishes a new floor and then observes strictly
-    /// advancing callbacks and frames. It covers call, interruption, and private-route closure.
+    /// advancing callbacks and frames.
     private var audioPolicyRequiresFreshRecovery = false
+    private var microphoneAuthorization: WebRTCIOSMicrophoneAuthorization?
+    private var microphoneOutputOnlyToken:
+        WebRTCIOSOutputOnlyMicrophoneToken?
+    private var microphoneTask: Task<Void, Never>?
+    private var microphoneOperationGeneration = UUID()
+    private var microphonePermissionGranted = false
+    private var microphoneIsBlockedByCall = false
     private var controlAcknowledgementTimeoutTask: Task<Void, Never>?
     private var pendingScreenVisibilityRequest: PendingScreenVisibilityRequest?
     private var earlyControlAcknowledgements: [
@@ -306,14 +315,25 @@ final class WorldwideSessionViewModel: ObservableObject {
             audioRequiresExplicitResume = snapshot.requiresExplicitResume
             audioError = snapshot.errorText
             audioDiagnostic = snapshot.diagnosticText
+            reconcileIPhoneMicrophone(for: snapshot)
         }
         audioLifecycle.onPlaybackRecoveryRequested = { [weak self] in
             self?.beginIOSPlayoutProof(requestRecovery: true)
+        }
+        audioLifecycle.onPlayoutProofRefreshRequested = { [weak self] in
+            guard let self else { return }
+            invalidateAudioPolicyProof(requiresFreshRecovery: false)
+            beginIOSPlayoutProof(requestRecovery: false)
         }
         audioLifecycle.onCallActivityChanged = { [weak self] isActive in
             self?.callActivityChanged(isActive: isActive)
         }
         audioLifecycle.onAudioProofInvalidated = { [weak self] requiresFreshRecovery in
+            self?.suspendIPhoneMicrophone(
+                stateText: "Paused — audio recovery required",
+                preserveIntent: true,
+                reprovePlayout: false
+            )
             self?.invalidateAudioPolicyProof(
                 requiresFreshRecovery: requiresFreshRecovery
             )
@@ -348,6 +368,16 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     var audioRecoveryButtonTitle: String {
         audioStateText == "Playback unavailable" ? "Retry Audio" : "Resume Audio"
+    }
+
+    var canToggleIPhoneMicrophone: Bool {
+        hasActiveSession && peer != nil
+    }
+
+    var iPhoneMicrophoneButtonTitle: String {
+        microphoneIntentEnabled
+            ? "Turn Off iPhone Microphone"
+            : "Use iPhone Microphone"
     }
 
     #if DEBUG
@@ -429,6 +459,23 @@ final class WorldwideSessionViewModel: ObservableObject {
         return true
     }
 
+    private func iOSPlayoutInputPolicyMatches(
+        _ diagnostics: WebRTCIOSPlayoutDiagnostics
+    ) -> Bool {
+        let expectsMicrophone =
+            microphoneIntentEnabled
+                && microphoneAuthorization?.isValid == true
+                && !microphoneIsBlockedByCall
+        return diagnostics.inputBusEnabled == expectsMicrophone
+    }
+
+    private func iOSPlayoutRouteInvariantsHold(
+        _ diagnostics: WebRTCIOSPlayoutDiagnostics
+    ) -> Bool {
+        iOSPlayoutInputPolicyMatches(diagnostics)
+            && WorldwideAudioPlayoutOracleSnapshot.routeInvariantsHold(diagnostics)
+    }
+
     func disconnect() {
         tearDown(reason: .viewerDisconnected)
         resetPublishedSessionState()
@@ -462,6 +509,300 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     func resumeAudioPlayback() {
         audioLifecycle.resumePlayback()
+    }
+
+    func toggleIPhoneMicrophone() {
+        if microphoneIntentEnabled {
+            microphoneIntentEnabled = false
+            microphoneError = nil
+            suspendIPhoneMicrophone(
+                stateText: "Off",
+                preserveIntent: false,
+                reprovePlayout: true
+            )
+            return
+        }
+
+        microphoneIntentEnabled = true
+        microphoneError = nil
+        microphoneStateText = "Requesting permission"
+        let operationGeneration = UUID()
+        microphoneOperationGeneration = operationGeneration
+        microphoneTask?.cancel()
+        microphoneTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let granted = await requestIPhoneMicrophonePermission()
+            guard !Task.isCancelled,
+                  microphoneOperationGeneration == operationGeneration,
+                  microphoneIntentEnabled else {
+                return
+            }
+            guard granted else {
+                microphoneIntentEnabled = false
+                microphonePermissionGranted = false
+                microphoneStateText = "Permission denied"
+                microphoneError =
+                    "Allow microphone access in Settings before enabling the iPhone microphone."
+                return
+            }
+            microphonePermissionGranted = true
+            microphoneStateText = "Starting"
+            reconcileIPhoneMicrophone()
+        }
+    }
+
+    private func requestIPhoneMicrophonePermission() async -> Bool {
+        let session = AVAudioSession.sharedInstance()
+        switch session.recordPermission {
+        case .granted:
+            return true
+        case .denied:
+            return false
+        case .undetermined:
+            return await withCheckedContinuation { continuation in
+                session.requestRecordPermission { granted in
+                    continuation.resume(returning: granted)
+                }
+            }
+        @unknown default:
+            return false
+        }
+    }
+
+    private func reconcileIPhoneMicrophone(
+        for audioSnapshot: WorldwideAudioLifecycleSnapshot? = nil
+    ) {
+        if let audioSnapshot,
+           audioSnapshot.errorText != nil,
+           microphoneAuthorization != nil {
+            suspendIPhoneMicrophone(
+                stateText: "Paused — audio unavailable",
+                preserveIntent: true,
+                reprovePlayout: false
+            )
+            return
+        }
+
+        guard microphoneIntentEnabled else {
+            if microphoneAuthorization == nil {
+                microphoneStateText = "Off"
+            }
+            return
+        }
+        guard microphonePermissionGranted else { return }
+        guard !microphoneIsBlockedByCall,
+              audioLifecycle.microphoneActivationIsAllowed() else {
+            microphoneStateText = "Muted — iPhone call active"
+            return
+        }
+        if microphoneAuthorization?.isValid == true {
+            if !isMicrophoneSending {
+                microphoneStateText = "Starting"
+            }
+            return
+        }
+        guard isRemoteAudioPlaying,
+              canViewScreen,
+              let expectedPeer = peer else {
+            microphoneStateText = "Paused — waiting for healthy audio"
+            return
+        }
+
+        let operationGeneration = UUID()
+        let expectedSessionGeneration = sessionGeneration
+        let authorization = WebRTCIOSMicrophoneAuthorization()
+        if let outputOnlyToken = microphoneOutputOnlyToken {
+            audioLifecycle.revokeIPhoneMicrophoneOutputOnlyTransition(
+                outputOnlyToken
+            )
+            if outputOnlyToken.state != .executing {
+                microphoneOutputOnlyToken = nil
+            }
+        }
+        microphoneOperationGeneration = operationGeneration
+        microphoneAuthorization?.revoke()
+        microphoneAuthorization = authorization
+        isMicrophoneSending = false
+        microphoneStateText = "Starting"
+        guard audioLifecycle.beginMicrophoneTopologyTransition(
+            isEnabled: true
+        ) != 0 else {
+            authorization.revoke()
+            microphoneAuthorization = nil
+            microphoneTask?.cancel()
+            microphoneTask = nil
+            microphoneStateText =
+                "Paused — waiting for audio policy"
+            return
+        }
+        invalidateAudioPolicyProof(requiresFreshRecovery: false)
+
+        microphoneTask?.cancel()
+        microphoneTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await expectedPeer.enableIPhoneMicrophone(
+                    authorization: authorization
+                )
+            } catch {
+                authorization.revoke()
+                guard microphoneOperationGeneration == operationGeneration,
+                      sessionGeneration == expectedSessionGeneration,
+                      peer === expectedPeer,
+                      microphoneAuthorization === authorization else {
+                    _ = await expectedPeer.disableIPhoneMicrophone(
+                        authorization: authorization
+                    )
+                    return
+                }
+                let outputOnlyToken =
+                    armIPhoneMicrophoneOutputOnlyToken(
+                        ownerEpoch: expectedSessionGeneration
+                    )
+                microphoneAuthorization = nil
+                isMicrophoneSending = false
+                microphoneStateText = "Unavailable"
+                microphoneError = error.localizedDescription
+                _ = await expectedPeer.disableIPhoneMicrophone(
+                    authorization: authorization,
+                    outputOnlyToken: outputOnlyToken
+                )
+                clearIPhoneMicrophoneOutputOnlyToken(
+                    outputOnlyToken
+                )
+                guard microphoneOperationGeneration == operationGeneration,
+                      sessionGeneration == expectedSessionGeneration,
+                      peer === expectedPeer,
+                      microphoneAuthorization == nil else {
+                    return
+                }
+                beginIOSPlayoutProof(requestRecovery: false)
+                return
+            }
+
+            guard microphoneOperationGeneration == operationGeneration,
+                  sessionGeneration == expectedSessionGeneration,
+                  peer === expectedPeer,
+                  microphoneAuthorization === authorization else {
+                authorization.revoke()
+                _ = await expectedPeer.disableIPhoneMicrophone(
+                    authorization: authorization
+                )
+                return
+            }
+            guard authorization.isValid,
+                  audioLifecycle.microphoneActivationIsAllowed(),
+                  microphoneIntentEnabled,
+                  !microphoneIsBlockedByCall else {
+                let outputOnlyToken =
+                    armIPhoneMicrophoneOutputOnlyToken(
+                        ownerEpoch: expectedSessionGeneration
+                    )
+                authorization.revoke()
+                _ = await expectedPeer.disableIPhoneMicrophone(
+                    authorization: authorization,
+                    outputOnlyToken: outputOnlyToken
+                )
+                clearIPhoneMicrophoneOutputOnlyToken(
+                    outputOnlyToken
+                )
+                return
+            }
+            isMicrophoneSending = true
+            microphoneStateText = "On"
+            microphoneError = nil
+            beginIOSPlayoutProof(requestRecovery: false)
+        }
+    }
+
+    private func suspendIPhoneMicrophone(
+        stateText: String,
+        preserveIntent: Bool,
+        reprovePlayout: Bool,
+        performNativeTeardown: Bool = true
+    ) {
+        if !preserveIntent {
+            microphoneIntentEnabled = false
+        }
+        let authorization = microphoneAuthorization
+        let expectedPeer = peer
+        let expectedSessionGeneration = sessionGeneration
+        let topologyMayChange = authorization != nil || isMicrophoneSending
+        let outputOnlyToken: WebRTCIOSOutputOnlyMicrophoneToken?
+        if topologyMayChange, performNativeTeardown {
+            outputOnlyToken = armIPhoneMicrophoneOutputOnlyToken(
+                ownerEpoch: expectedSessionGeneration
+            )
+        } else {
+            outputOnlyToken = nil
+            if !performNativeTeardown,
+               let queuedToken = microphoneOutputOnlyToken {
+                audioLifecycle
+                    .revokeIPhoneMicrophoneOutputOnlyTransition(
+                        queuedToken
+                    )
+                if queuedToken.state == .revoked {
+                    microphoneOutputOnlyToken = nil
+                }
+            }
+        }
+        authorization?.revoke()
+        microphoneAuthorization = nil
+        microphoneOperationGeneration = UUID()
+        microphoneTask?.cancel()
+        microphoneTask = nil
+        isMicrophoneSending = false
+        microphoneStateText = stateText
+
+        guard topologyMayChange, let expectedPeer else { return }
+        invalidateAudioPolicyProof(requiresFreshRecovery: false)
+        guard performNativeTeardown else { return }
+        microphoneTask = Task { @MainActor [weak self] in
+            _ = await expectedPeer.disableIPhoneMicrophone(
+                authorization: authorization,
+                outputOnlyToken: outputOnlyToken
+            )
+            guard let self else { return }
+            clearIPhoneMicrophoneOutputOnlyToken(outputOnlyToken)
+            guard
+                  sessionGeneration == expectedSessionGeneration,
+                  peer === expectedPeer else {
+                return
+            }
+            if reprovePlayout {
+                beginIOSPlayoutProof(requestRecovery: false)
+            }
+        }
+    }
+
+    private func armIPhoneMicrophoneOutputOnlyToken(
+        ownerEpoch: UUID
+    ) -> WebRTCIOSOutputOnlyMicrophoneToken? {
+        if let existingToken = microphoneOutputOnlyToken {
+            audioLifecycle.revokeIPhoneMicrophoneOutputOnlyTransition(
+                existingToken
+            )
+            guard existingToken.state != .executing else {
+                return nil
+            }
+            microphoneOutputOnlyToken = nil
+        }
+        let token =
+            audioLifecycle.beginIPhoneMicrophoneOutputOnlyTransition(
+                ownerEpoch: ownerEpoch
+            )
+        microphoneOutputOnlyToken = token
+        return token
+    }
+
+    private func clearIPhoneMicrophoneOutputOnlyToken(
+        _ token: WebRTCIOSOutputOnlyMicrophoneToken?
+    ) {
+        guard let token,
+              microphoneOutputOnlyToken === token else {
+            return
+        }
+        microphoneOutputOnlyToken = nil
     }
 
     // MARK: - Screen presentation ownership
@@ -1337,6 +1678,16 @@ final class WorldwideSessionViewModel: ObservableObject {
                 }
             )
             peer = newPeer
+            let newPeerIdentity = ObjectIdentifier(newPeer)
+            await newPeer.installIPhoneMicrophoneTransportSuspensionHandler {
+                [weak self] retirementContext in
+                guard let self else { return nil }
+                return prepareIPhoneMicrophoneForTransportSuspension(
+                    retirementContext: retirementContext,
+                    expectedPeerIdentity: newPeerIdentity,
+                    expectedSessionGeneration: generation
+                )
+            }
             recoveryCoordinator = coordinator
             startPeerEventLoop(peer: newPeer, signaling: client, generation: generation)
             try await startStatistics(for: newPeer)
@@ -1621,10 +1972,25 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func tearDown(reason: RemoteSessionEndReason) {
         retireIOSPlayoutRecoveryAttempt()
+        if let microphoneOutputOnlyToken {
+            audioLifecycle.revokeIPhoneMicrophoneOutputOnlyTransition(
+                microphoneOutputOnlyToken
+            )
+            self.microphoneOutputOnlyToken = nil
+        }
+        microphoneAuthorization?.revoke()
+        microphoneAuthorization = nil
+        microphoneTask?.cancel()
+        microphoneTask = nil
+        microphoneOperationGeneration = UUID()
+        microphoneIntentEnabled = false
+        isMicrophoneSending = false
+        microphoneStateText = "Off"
+        microphoneError = nil
+        microphoneOutputOnlyToken = nil
         audioLifecycle.stop()
         audioPolicyGeneration = UUID()
         verifiedAudioPolicyGeneration = nil
-        isAudioBlockedByCall = false
         audioPolicyRequiresFreshRecovery = false
         remoteAudioTrack = nil
         resetScreenPresentationState(
@@ -1683,6 +2049,11 @@ final class WorldwideSessionViewModel: ObservableObject {
         audioRequiresExplicitResume = false
         audioError = nil
         audioDiagnostic = nil
+        microphoneStateText = "Off"
+        microphoneError = nil
+        microphoneIntentEnabled = false
+        isMicrophoneSending = false
+        microphoneOutputOnlyToken = nil
         routeText = "Unknown"
         iceStateText = "Inactive"
         remoteDisplayName = "Mac mini"
@@ -1693,9 +2064,19 @@ final class WorldwideSessionViewModel: ObservableObject {
     // MARK: - Runtime audio proof
 
     private func callActivityChanged(isActive: Bool) {
-        guard isAudioBlockedByCall != isActive else { return }
-        isAudioBlockedByCall = isActive
-        invalidateAudioPolicyProof(requiresFreshRecovery: isActive)
+        guard microphoneIsBlockedByCall != isActive else { return }
+        microphoneIsBlockedByCall = isActive
+        guard microphoneIntentEnabled else { return }
+        if isActive {
+            suspendIPhoneMicrophone(
+                stateText: "Muted — iPhone call active",
+                preserveIntent: true,
+                reprovePlayout: true
+            )
+        } else {
+            microphoneStateText = "Paused — restoring microphone"
+            reconcileIPhoneMicrophone()
+        }
     }
 
     private func invalidateAudioPolicyProof(requiresFreshRecovery: Bool) {
@@ -1721,7 +2102,6 @@ final class WorldwideSessionViewModel: ObservableObject {
     private func beginIOSPlayoutProof(
         requestRecovery: Bool
     ) -> Task<Void, Never>? {
-        guard !isAudioBlockedByCall else { return nil }
         retireIOSPlayoutRecoveryAttempt()
         audioPlayoutProofTask?.cancel()
         audioPlayoutProofTask = nil
@@ -1909,14 +2289,12 @@ final class WorldwideSessionViewModel: ObservableObject {
         let expectedPolicyGeneration = audioPolicyGeneration
         guard generation == sessionGeneration,
               peer === sourcePeer,
-              !isAudioBlockedByCall,
               verifiedAudioPolicyGeneration == expectedPolicyGeneration else { return }
         guard let diagnostics = await readIOSPlayoutDiagnostics(from: sourcePeer) else {
             return
         }
         guard generation == sessionGeneration,
               peer === sourcePeer,
-              !isAudioBlockedByCall,
               audioPolicyGeneration == expectedPolicyGeneration,
               verifiedAudioPolicyGeneration == expectedPolicyGeneration else { return }
         publishIOSPlayoutOracle(
@@ -1935,7 +2313,6 @@ final class WorldwideSessionViewModel: ObservableObject {
     ) {
         guard generation == sessionGeneration,
               peer === sourcePeer,
-              !isAudioBlockedByCall,
               policyGeneration == audioPolicyGeneration,
               verifiedAudioPolicyGeneration == policyGeneration else { return }
         if let current = audioPlayoutOracle,
@@ -1969,8 +2346,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     ) -> Bool {
         guard iosPlayoutProofAttempt === attempt,
               attempt.sessionGeneration == sessionGeneration,
-              attempt.audioPolicyGeneration == audioPolicyGeneration,
-              !isAudioBlockedByCall else { return false }
+              attempt.audioPolicyGeneration == audioPolicyGeneration else { return false }
         if let expectedPeer = attempt.expectedPeer {
             return peer === expectedPeer
         }
@@ -2068,8 +2444,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         guard diagnostics.failureCode == 0,
               diagnostics.lastLifecycleStatus == noErr,
               diagnostics.lastPlayoutStatus == noErr,
-              diagnostics.unexpectedRecordingRequestCount == 0,
-              !diagnostics.inputBusEnabled,
+              iOSPlayoutInputPolicyMatches(diagnostics),
               !diagnostics.recoveryRequired,
               !diagnostics.explicitResumeRequired else {
             return failIOSPlayoutProof(attempt, diagnostics: diagnostics)
@@ -2092,8 +2467,9 @@ final class WorldwideSessionViewModel: ObservableObject {
               let callbackFloor = attempt.callbackFloor,
               let frameFloor = attempt.frameFloor else { return false }
 
-        let renderInputInvariantsHold =
-            WorldwideAudioPlayoutOracleSnapshot.routeInvariantsHold(diagnostics)
+        let renderInputInvariantsHold = iOSPlayoutRouteInvariantsHold(
+            diagnostics
+        )
         let hasFreshCallbackAndFrames = diagnostics.playoutCallbackCount > callbackFloor
             && diagnostics.playoutFrameCount > frameFloor
 
@@ -2119,6 +2495,49 @@ final class WorldwideSessionViewModel: ObservableObject {
         return true
     }
 
+    private static func iOSPlayoutFailureMessage(
+        inputPolicyMatches: Bool,
+        diagnostics: WebRTCIOSPlayoutDiagnostics
+    ) -> String {
+        guard inputPolicyMatches else {
+            return
+                "The iPhone audio input state no longer matches the current microphone authorization."
+        }
+
+        let categoryMatchesInputPolicy: Bool
+        if diagnostics.inputBusEnabled {
+            categoryMatchesInputPolicy =
+                !diagnostics.categoryIsMediaPlayback
+                && diagnostics.categoryIsMediaPlayAndRecord
+        } else {
+            categoryMatchesInputPolicy =
+                diagnostics.categoryIsMediaPlayback
+                && !diagnostics.categoryIsMediaPlayAndRecord
+        }
+
+        guard categoryMatchesInputPolicy,
+              diagnostics.modeIsDefault,
+              diagnostics.outputChannelCount == 2,
+              abs(diagnostics.sampleRate - 48_000) < 1 else {
+            return
+                "The iPhone route no longer provides the required 48 kHz stereo playback path."
+        }
+
+        return "The iPhone 48 kHz stereo render path could not start."
+    }
+
+    #if DEBUG
+    static func debugIOSPlayoutFailureMessage(
+        inputPolicyMatches: Bool,
+        diagnostics: WebRTCIOSPlayoutDiagnostics
+    ) -> String {
+        iOSPlayoutFailureMessage(
+            inputPolicyMatches: inputPolicyMatches,
+            diagnostics: diagnostics
+        )
+    }
+    #endif
+
     @discardableResult
     private func failIOSPlayoutProof(
         _ attempt: IOSPlayoutProofAttempt,
@@ -2126,17 +2545,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         diagnosticOverride: String? = nil
     ) -> Bool {
         guard iosPlayoutProofAttemptIsOwned(attempt) else { return false }
-        let message: String
-        if diagnostics.unexpectedRecordingRequestCount > 0 || diagnostics.inputBusEnabled {
-            message = "The iPhone refused audio because the route tried to use a call-style input path."
-        } else if !diagnostics.categoryIsMediaPlayback
-            || !diagnostics.modeIsDefault
-            || diagnostics.outputChannelCount != 2
-            || abs(diagnostics.sampleRate - 48_000) >= 1 {
-            message = "The iPhone refused a degraded call-quality audio route. End the phone or FaceTime call, then retry audio."
-        } else {
-            message = "The iPhone 48 kHz stereo render path could not start."
-        }
+        let message = Self.iOSPlayoutFailureMessage(
+            inputPolicyMatches: iOSPlayoutInputPolicyMatches(diagnostics),
+            diagnostics: diagnostics
+        )
         let diagnostic = diagnosticOverride
             ?? diagnostics.failureMessage
             ?? "RemoteIO failure=\(diagnostics.failureCode), status=\(diagnostics.lastLifecycleStatus), renderStatus=\(diagnostics.lastPlayoutStatus), callbacks=\(diagnostics.playoutCallbackCount), failures=\(diagnostics.playoutFailureCount), recordRequests=\(diagnostics.unexpectedRecordingRequestCount)."
@@ -3301,6 +3713,11 @@ final class WorldwideSessionViewModel: ObservableObject {
         requiresProof: Bool = false
     ) {
         audioLifecycle.transportBecameUncertain()
+        suspendIPhoneMicrophone(
+            stateText: "Paused — reconnecting",
+            preserveIntent: true,
+            reprovePlayout: false
+        )
         let answerWasAwaitingSend = restartAnswerAwaitingSendEpoch != nil
         if let requestKey = pendingRecoveryProbe?.requestKey {
             earlyControlAcknowledgements.removeValue(forKey: requestKey)?
@@ -3317,6 +3734,128 @@ final class WorldwideSessionViewModel: ObservableObject {
         iceIsConnected = false
         stateText = state
     }
+
+    /// Runs on MainActor while the peer's ordered native-event boundary is suspended. It retires
+    /// stale category ownership and arms playback/default before the peer performs native teardown.
+    private func prepareIPhoneMicrophoneForTransportSuspension(
+        retirementContext: WebRTCIOSMicrophoneRetirementContext,
+        expectedPeerIdentity: ObjectIdentifier,
+        expectedSessionGeneration: UUID
+    ) -> WebRTCIOSOutputOnlyMicrophoneToken? {
+        guard expectedSessionGeneration == sessionGeneration,
+              let peer,
+              ObjectIdentifier(peer) == expectedPeerIdentity else {
+            return nil
+        }
+
+        audioLifecycle.transportBecameUncertain()
+        suspendIPhoneMicrophone(
+            stateText: "Paused — reconnecting",
+            preserveIntent: true,
+            reprovePlayout: false,
+            performNativeTeardown: false
+        )
+
+        var replacementToken:
+            WebRTCIOSOutputOnlyMicrophoneToken?
+        while true {
+            if let executingToken = retirementContext.executingToken {
+                if let replacementToken,
+                   replacementToken !== executingToken {
+                    audioLifecycle
+                        .revokeIPhoneMicrophoneOutputOnlyTransition(
+                            replacementToken
+                        )
+                }
+                guard audioLifecycle
+                    .reuseIPhoneMicrophoneOutputOnlyTransition(
+                        executingToken,
+                        ownerEpoch: expectedSessionGeneration
+                    ) else {
+                    return nil
+                }
+                microphoneOutputOnlyToken = executingToken
+                return executingToken
+            }
+
+            if let selectedToken = retirementContext.selectedToken {
+                switch selectedToken.state {
+                case .executing, .succeeded, .failed:
+                    if let replacementToken,
+                       replacementToken !== selectedToken {
+                        audioLifecycle
+                            .revokeIPhoneMicrophoneOutputOnlyTransition(
+                                replacementToken
+                            )
+                    }
+                    guard audioLifecycle
+                        .reuseIPhoneMicrophoneOutputOnlyTransition(
+                            selectedToken,
+                            ownerEpoch: expectedSessionGeneration
+                        ) else {
+                        return nil
+                    }
+                    microphoneOutputOnlyToken = selectedToken
+                    return selectedToken
+
+                case .armed:
+                    audioLifecycle
+                        .revokeIPhoneMicrophoneOutputOnlyTransition(
+                            selectedToken
+                        )
+                    if selectedToken.state == .executing {
+                        continue
+                    }
+                    _ = retirementContext
+                        .clearSelectedTokenIfRevoked(
+                            selectedToken
+                        )
+                    continue
+
+                case .revoked:
+                    _ = retirementContext
+                        .clearSelectedTokenIfRevoked(
+                            selectedToken
+                        )
+                    continue
+                }
+            }
+
+            if replacementToken == nil {
+                replacementToken =
+                    audioLifecycle
+                        .beginIPhoneMicrophoneOutputOnlyTransition(
+                            ownerEpoch: expectedSessionGeneration
+                        )
+            }
+            guard let candidate = replacementToken else {
+                return nil
+            }
+            let selectedToken =
+                retirementContext.selectToken(candidate)
+            if selectedToken === candidate {
+                microphoneOutputOnlyToken = candidate
+                return candidate
+            }
+        }
+    }
+
+    #if DEBUG
+    func debugPrepareIPhoneMicrophoneForTransportSuspensionForTests(
+        peer expectedPeer: WebRTCPeer
+    ) -> WebRTCIOSOutputOnlyMicrophoneToken? {
+        let retirementContext =
+            WebRTCIOSMicrophoneRetirementContext(
+                startSequence: 0,
+                retiringAuthorizationIdentity: nil
+            )
+        return prepareIPhoneMicrophoneForTransportSuspension(
+            retirementContext: retirementContext,
+            expectedPeerIdentity: ObjectIdentifier(expectedPeer),
+            expectedSessionGeneration: sessionGeneration
+        )
+    }
+    #endif
 
     private func hideScreenForPassiveLifecycleIfNeeded() {
         guard let lease = currentScreenPresentationLease else {

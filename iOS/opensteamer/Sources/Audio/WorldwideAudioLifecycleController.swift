@@ -2,6 +2,22 @@ import AVFoundation
 import Foundation
 import WebRTCTransport
 
+struct AudioSessionCategoryChange: Equatable, Sendable {
+    let category: String
+    let mode: String
+    let operationID: UUID?
+
+    init(
+        category: String,
+        mode: String,
+        operationID: UUID? = nil
+    ) {
+        self.category = category
+        self.mode = mode
+        self.operationID = operationID
+    }
+}
+
 /// Abstracts the process-wide WebRTC audio device for deterministic lifecycle tests.
 @MainActor
 protocol WorldwideAudioPlaybackManaging: AnyObject {
@@ -28,11 +44,18 @@ protocol AudioSessionEventMonitoring: AnyObject {
     var onInterruptionBegan: (() -> Void)? { get set }
     var onInterruptionEnded: ((Bool) -> Void)? { get set }
     var onRouteChanged: ((String) -> Void)? { get set }
+    var onCategoryChanged: ((AudioSessionCategoryChange) -> Void)? { get set }
     var onEngineConfigurationChanged: (() -> Void)? { get set }
     var onMediaServicesReset: (() -> Void)? { get set }
 
     func startObserving()
     func stopObserving()
+    func armCategoryChangeOperation(
+        _ operationID: UUID,
+        category: String,
+        mode: String
+    )
+    func cancelCategoryChangeOperation(_ operationID: UUID)
 }
 
 /// Per-track audio gate. It is intentionally separate from WebRTC's process-wide native gate.
@@ -68,9 +91,11 @@ final class WorldwideAudioLifecycleController {
     /// policy call this only after reopening WebRTC's manual audio gate so the active peer can
     /// authorize a device rebuild on its ADM thread.
     var onPlaybackRecoveryRequested: (() -> Void)?
-    /// A synchronous audio-policy boundary. The view model uses it to retire proof tasks and
-    /// revoke the exact native recovery authorization before this controller changes WebRTC's
-    /// process-wide manual audio gate. It never tears down signaling, video, screen, or control.
+    /// Expected playback/playAndRecord topology changes require a fresh
+    /// RemoteIO output proof but must not revoke the current microphone.
+    var onPlayoutProofRefreshRequested: (() -> Void)?
+    /// CallKit is a synchronous microphone-ownership boundary only. A bare call
+    /// transition does not close incoming playout gates.
     var onCallActivityChanged: ((Bool) -> Void)?
     /// Interruptions can precede their matching CallKit transition. This independent callback
     /// retires proof ownership before an interruption closes the native audio gate, without
@@ -87,12 +112,31 @@ final class WorldwideAudioLifecycleController {
     private var hasRemoteAudio = false
     private var transportIsHealthy = false
     private var isInterrupted = false
-    private var isBlockedByCall = false
+    private var isCallActive = false
     private var requiresExplicitResume = false
     private var playbackErrorText: String?
     private var playbackDiagnosticText: String?
     private var serverName = "Mac mini"
     private var remoteAudioControl: (any WorldwideRemoteAudioControlling)?
+    private var microphoneTopologyGeneration: UInt64 = 0
+    private var microphoneTopologyIsEnabled = false
+    private var expectedAudioCategoryTransition:
+        ExpectedAudioCategoryTransition?
+
+    private enum ExpectedAudioCategoryTransitionPurpose: Equatable {
+        case topology
+        case outputOnlyMicrophone
+        case recovery
+    }
+
+    private struct ExpectedAudioCategoryTransition {
+        let generation: UInt64
+        let operationID: UUID
+        let category: String
+        let mode: String
+        let purpose: ExpectedAudioCategoryTransitionPurpose
+        let outputOnlyToken: WebRTCIOSOutputOnlyMicrophoneToken?
+    }
 
     init(
         playback: any WorldwideAudioPlaybackManaging,
@@ -114,6 +158,9 @@ final class WorldwideAudioLifecycleController {
         }
         events.onRouteChanged = { [weak self] message in
             self?.routeChanged(message)
+        }
+        events.onCategoryChanged = { [weak self] change in
+            self?.categoryChanged(change)
         }
         events.onEngineConfigurationChanged = { [weak self] in
             self?.recoverPlayback(
@@ -165,37 +212,37 @@ final class WorldwideAudioLifecycleController {
         hasRemoteAudio = false
         transportIsHealthy = false
         isInterrupted = false
-        isBlockedByCall = false
+        isCallActive = false
         requiresExplicitResume = false
         playbackErrorText = nil
         playbackDiagnosticText = nil
+        microphoneTopologyGeneration = 0
+        microphoneTopologyIsEnabled = false
+        expectedAudioCategoryTransition = nil
 
-        // Install and synchronously sample CallKit before any path can open WebRTC's global
-        // native audio gate. An already-active iPhone call must never observe a transient
-        // activation or AVAudioSession reconfiguration from opensteamer.
+        // Sample the privacy-minimal aggregate before microphone policy can open.
+        // Playback is attempted independently and remains subject to real
+        // AVAudioSession interruption and native-route failure.
         callActivity.startObserving()
         events.startObserving()
-        isBlockedByCall = callActivity.liveNonEndedCallCount > 0
+        isCallActive = callActivity.liveNonEndedCallCount > 0
 
-        if isBlockedByCall {
-            runtimePlayoutIsReady = false
-            playback.prepareManualAudioDisabled()
-            recordActiveCallBlock()
+        // Arm the app-owned initial playback/default transition before native activation can
+        // publish its category-change notification.
+        beginMicrophoneTopologyTransition(isEnabled: false)
+        do {
+            try playback.activate()
+            playbackIsReady = true
+        } catch {
+            cancelExpectedAudioCategoryTransition()
+            playback.deactivate()
+            recordPlaybackFailure(
+                context: "Initial background audio preparation failed",
+                error: error
+            )
+        }
+        if isCallActive {
             onCallActivityChanged?(true)
-        } else {
-            do {
-                try playback.activate()
-                playbackIsReady = true
-            } catch {
-                // Activation can partially configure the singleton audio session before
-                // throwing. Balance it, but keep this lifecycle prepared so screen/signaling
-                // can connect and a later explicit audio recovery can retry independently.
-                playback.deactivate()
-                recordPlaybackFailure(
-                    context: "Initial background audio preparation failed",
-                    error: error
-                )
-            }
         }
 
         publishSnapshot()
@@ -215,13 +262,6 @@ final class WorldwideAudioLifecycleController {
         }
         remoteAudioControl = track
         hasRemoteAudio = true
-        if synchronizeLiveCallBlockIfNeeded() {
-            // A replacement WebRTC track can arrive already enabled while the cached call block
-            // is active. Publishing synchronously applies the fail-closed per-track state; the
-            // native global gate alone is not the two-gate invariant promised by the policy.
-            publishSnapshot()
-            return
-        }
         publishSnapshot()
         if isPlaying {
             // Once real playout is running, it—not a finite background task—provides the
@@ -246,6 +286,7 @@ final class WorldwideAudioLifecycleController {
             publishSnapshot()
             return
         }
+        cancelExpectedAudioCategoryTransition()
         transportIsHealthy = false
         publishSnapshot()
     }
@@ -271,7 +312,8 @@ final class WorldwideAudioLifecycleController {
     func stop() {
         guard isPrepared else { return }
 
-        let wasBlockedByCall = isBlockedByCall
+        let hadActiveCall = isCallActive
+        cancelExpectedAudioCategoryTransition(terminalCleanup: true)
         remoteAudioControl?.setEnabled(false)
         remoteAudioControl = nil
         callActivity.stopObserving()
@@ -284,11 +326,13 @@ final class WorldwideAudioLifecycleController {
         hasRemoteAudio = false
         transportIsHealthy = false
         isInterrupted = false
-        isBlockedByCall = false
+        isCallActive = false
         requiresExplicitResume = false
         playbackErrorText = nil
         playbackDiagnosticText = nil
-        if wasBlockedByCall {
+        microphoneTopologyGeneration = 0
+        microphoneTopologyIsEnabled = false
+        if hadActiveCall {
             onCallActivityChanged?(false)
         }
         publishSnapshot()
@@ -302,6 +346,205 @@ final class WorldwideAudioLifecycleController {
         recoverPlayback(context: "Audio resume failed")
     }
 
+    @discardableResult
+    func beginMicrophoneTopologyTransition(isEnabled: Bool) -> UInt64 {
+        guard isPrepared else { return 0 }
+        guard cancelExpectedAudioCategoryTransition() else { return 0 }
+        microphoneTopologyGeneration &+= 1
+        if microphoneTopologyGeneration == 0 {
+            microphoneTopologyGeneration = 1
+        }
+        microphoneTopologyIsEnabled = isEnabled
+        _ = installExpectedAudioCategoryTransition(
+            operationID: UUID(),
+            category: isEnabled
+                ? AVAudioSession.Category.playAndRecord.rawValue
+                : AVAudioSession.Category.playback.rawValue,
+            mode: AVAudioSession.Mode.default.rawValue,
+            purpose: .topology,
+            outputOnlyToken: nil
+        )
+        return microphoneTopologyGeneration
+    }
+
+    /// Arms the only lifecycle operation that may authorize a native nil microphone write.
+    func beginIPhoneMicrophoneOutputOnlyTransition(
+        ownerEpoch: UUID
+    ) -> WebRTCIOSOutputOnlyMicrophoneToken? {
+        guard isPrepared,
+              cancelExpectedAudioCategoryTransition() else {
+            return nil
+        }
+
+        microphoneTopologyGeneration &+= 1
+        if microphoneTopologyGeneration == 0 {
+            microphoneTopologyGeneration = 1
+        }
+        microphoneTopologyIsEnabled = false
+
+        let target = WebRTCIOSOutputOnlyMicrophoneTarget(
+            category: AVAudioSession.Category.playback.rawValue,
+            mode: AVAudioSession.Mode.default.rawValue
+        )
+        let token = WebRTCIOSOutputOnlyMicrophoneToken(
+            ownerEpoch: ownerEpoch,
+            lifecycleGeneration: microphoneTopologyGeneration,
+            target: target
+        )
+        _ = installExpectedAudioCategoryTransition(
+            operationID: token.operationID,
+            category: target.category,
+            mode: target.mode,
+            purpose: .outputOnlyMicrophone,
+            outputOnlyToken: token
+        )
+        return token
+    }
+
+    /// Reuses a public disable that already entered its exact native claim.
+    func reuseIPhoneMicrophoneOutputOnlyTransition(
+        _ token: WebRTCIOSOutputOnlyMicrophoneToken,
+        ownerEpoch: UUID
+    ) -> Bool {
+        let playbackCategory =
+            AVAudioSession.Category.playback.rawValue
+        let defaultMode = AVAudioSession.Mode.default.rawValue
+        guard isPrepared,
+              token.ownerEpoch == ownerEpoch,
+              token.lifecycleGeneration
+                == microphoneTopologyGeneration,
+              token.target.category == playbackCategory,
+              token.target.mode == defaultMode else {
+            return false
+        }
+
+        if let expectedAudioCategoryTransition {
+            return expectedAudioCategoryTransition.generation
+                    == token.lifecycleGeneration
+                && expectedAudioCategoryTransition.operationID
+                    == token.operationID
+                && expectedAudioCategoryTransition.category
+                    == token.target.category
+                && expectedAudioCategoryTransition.mode
+                    == token.target.mode
+                && expectedAudioCategoryTransition.purpose
+                    == .outputOnlyMicrophone
+                && expectedAudioCategoryTransition.outputOnlyToken.map {
+                    $0 === token
+                } == true
+        }
+
+        switch token.state {
+        case .executing:
+            microphoneTopologyIsEnabled = false
+            _ = installExpectedAudioCategoryTransition(
+                operationID: token.operationID,
+                category: token.target.category,
+                mode: token.target.mode,
+                purpose: .outputOnlyMicrophone,
+                outputOnlyToken: token
+            )
+            return true
+        case .succeeded, .failed:
+            // An absent marker after native completion means its synchronous callback or terminal
+            // cleanup already consumed the one-shot ownership.
+            return true
+        case .armed, .revoked:
+            return false
+        }
+    }
+
+    /// Revocation is effective only before the token enters its native claim.
+    func revokeIPhoneMicrophoneOutputOnlyTransition(
+        _ token: WebRTCIOSOutputOnlyMicrophoneToken
+    ) {
+        token.revoke()
+        guard token.state == .revoked else { return }
+        _ = cancelExpectedAudioCategoryTransition(
+            operationID: token.operationID,
+            purpose: .outputOnlyMicrophone,
+            terminalCleanup: true
+        )
+    }
+
+    @discardableResult
+    private func armExpectedAudioCategoryTransition(
+        category: String,
+        mode: String,
+        purpose: ExpectedAudioCategoryTransitionPurpose
+    ) -> UUID? {
+        guard cancelExpectedAudioCategoryTransition() else {
+            return nil
+        }
+        let operationID = UUID()
+        return installExpectedAudioCategoryTransition(
+            operationID: operationID,
+            category: category,
+            mode: mode,
+            purpose: purpose,
+            outputOnlyToken: nil
+        )
+    }
+
+    @discardableResult
+    private func installExpectedAudioCategoryTransition(
+        operationID: UUID,
+        category: String,
+        mode: String,
+        purpose: ExpectedAudioCategoryTransitionPurpose,
+        outputOnlyToken: WebRTCIOSOutputOnlyMicrophoneToken?
+    ) -> UUID {
+        precondition(expectedAudioCategoryTransition == nil)
+        expectedAudioCategoryTransition = ExpectedAudioCategoryTransition(
+            generation: microphoneTopologyGeneration,
+            operationID: operationID,
+            category: category,
+            mode: mode,
+            purpose: purpose,
+            outputOnlyToken: outputOnlyToken
+        )
+        events.armCategoryChangeOperation(
+            operationID,
+            category: category,
+            mode: mode
+        )
+        return operationID
+    }
+
+    @discardableResult
+    private func cancelExpectedAudioCategoryTransition(
+        operationID: UUID? = nil,
+        purpose: ExpectedAudioCategoryTransitionPurpose? = nil,
+        terminalCleanup: Bool = false
+    ) -> Bool {
+        guard let expectedAudioCategoryTransition else { return true }
+        if let operationID,
+           expectedAudioCategoryTransition.operationID != operationID {
+            return false
+        }
+        if let purpose,
+           expectedAudioCategoryTransition.purpose != purpose {
+            return false
+        }
+
+        if let token = expectedAudioCategoryTransition.outputOnlyToken {
+            switch token.state {
+            case .armed:
+                token.revoke()
+            case .executing, .succeeded, .failed:
+                guard terminalCleanup else { return false }
+            case .revoked:
+                break
+            }
+        }
+
+        events.cancelCategoryChangeOperation(
+            expectedAudioCategoryTransition.operationID
+        )
+        self.expectedAudioCategoryTransition = nil
+        return true
+    }
+
     /// Accepts proof from the output-only RemoteIO render-input boundary. Signaling, a decoded
     /// track, and WebRTC's global audio gate are insufficient even for that boundary, and healthy
     /// callback PCM is not evidence of the later iOS mixer/route/DAC/speaker output.
@@ -311,9 +554,7 @@ final class WorldwideAudioLifecycleController {
         diagnostic: String? = nil
     ) {
         guard isPrepared,
-              !synchronizeLiveCallBlockIfNeeded(),
               !isInterrupted,
-              !isBlockedByCall,
               !requiresExplicitResume,
               playback.requiresRuntimePlayoutProof else { return }
         runtimePlayoutIsReady = isReady
@@ -326,6 +567,11 @@ final class WorldwideAudioLifecycleController {
             playbackErrorText = nil
             playbackDiagnosticText = nil
         }
+        if isReady || failureMessage != nil {
+            cancelExpectedAudioCategoryTransition(
+                terminalCleanup: true
+            )
+        }
         publishSnapshot()
         if isPlaying {
             backgroundPlayback.endTransitionTask()
@@ -335,39 +581,15 @@ final class WorldwideAudioLifecycleController {
     // MARK: - System event handling
 
     private func callActivityChanged(isActive: Bool) {
-        guard isPrepared, isActive != isBlockedByCall else { return }
-        isBlockedByCall = isActive
-        runtimePlayoutIsReady = false
-
-        if isActive {
-            // Close the decoded-track gate before allowing any asynchronous cleanup. The view
-            // model callback then retires proof ownership and revokes the exact queued native
-            // rebuild authorization; only afterward do we close WebRTC's process-wide gate.
-            remoteAudioControl?.setEnabled(false)
-            playbackIsReady = false
-            onCallActivityChanged?(true)
-            playback.prepareManualAudioDisabled()
-            recordActiveCallBlock()
-            publishSnapshot()
-            return
-        }
-
-        // Rotate/fence view-model proof ownership before opening a fresh native media path.
-        onCallActivityChanged?(false)
-        playbackErrorText = nil
-        playbackDiagnosticText = nil
-        guard !isInterrupted, !requiresExplicitResume, transportIsHealthy else {
-            publishSnapshot()
-            return
-        }
-        recoverPlayback(
-            context: "Post-call audio recovery failed",
-            proofAlreadyInvalidated: true
-        )
+        guard isPrepared, isActive != isCallActive else { return }
+        isCallActive = isActive
+        onCallActivityChanged?(isActive)
+        publishSnapshot()
     }
 
     private func interruptionBegan() {
         guard isPrepared else { return }
+        cancelExpectedAudioCategoryTransition()
         isInterrupted = true
         runtimePlayoutIsReady = false
         remoteAudioControl?.setEnabled(false)
@@ -399,6 +621,7 @@ final class WorldwideAudioLifecycleController {
         if message == "Audio route changed: device unavailable" {
             // Do not leak a loud stream to speakers when headphones disappear. The user can
             // explicitly resume after choosing the intended route.
+            cancelExpectedAudioCategoryTransition()
             requiresExplicitResume = true
             runtimePlayoutIsReady = false
             remoteAudioControl?.setEnabled(false)
@@ -411,15 +634,93 @@ final class WorldwideAudioLifecycleController {
         recoverPlayback(context: "Audio route recovery failed")
     }
 
+    private func categoryChanged(_ change: AudioSessionCategoryChange) {
+        guard isPrepared else { return }
+        let currentCategory = microphoneTopologyIsEnabled
+            ? AVAudioSession.Category.playAndRecord.rawValue
+            : AVAudioSession.Category.playback.rawValue
+        let currentMode = AVAudioSession.Mode.default.rawValue
+
+        guard change.category == currentCategory,
+              change.mode == currentMode else {
+            failClosedForUnexpectedCategoryChange(change)
+            return
+        }
+
+        guard let expectedAudioCategoryTransition,
+              expectedAudioCategoryTransition.generation
+                == microphoneTopologyGeneration,
+              change.operationID
+                == expectedAudioCategoryTransition.operationID,
+              expectedAudioCategoryTransition.category == change.category,
+              expectedAudioCategoryTransition.mode == change.mode else {
+            failClosedForUnexpectedCategoryChange(change)
+            return
+        }
+
+        if expectedAudioCategoryTransition.purpose
+            == .outputOnlyMicrophone {
+            guard let token =
+                    expectedAudioCategoryTransition.outputOnlyToken,
+                  token.lifecycleGeneration
+                    == expectedAudioCategoryTransition.generation,
+                  token.operationID
+                    == expectedAudioCategoryTransition.operationID,
+                  token.target.category
+                    == expectedAudioCategoryTransition.category,
+                  token.target.mode
+                    == expectedAudioCategoryTransition.mode,
+                  token.state == .executing
+                    || token.state == .succeeded else {
+                failClosedForUnexpectedCategoryChange(change)
+                return
+            }
+        }
+
+        let purpose = expectedAudioCategoryTransition.purpose
+        self.expectedAudioCategoryTransition = nil
+        events.cancelCategoryChangeOperation(
+            expectedAudioCategoryTransition.operationID
+        )
+        playbackErrorText = nil
+        playbackDiagnosticText = nil
+        runtimePlayoutIsReady = !playback.requiresRuntimePlayoutProof
+        if playback.requiresRuntimePlayoutProof {
+            switch purpose {
+            case .topology, .outputOnlyMicrophone:
+                onPlayoutProofRefreshRequested?()
+            case .recovery:
+                break
+            }
+        }
+        publishSnapshot()
+    }
+
+    private func failClosedForUnexpectedCategoryChange(
+        _ change: AudioSessionCategoryChange
+    ) {
+        cancelExpectedAudioCategoryTransition(
+            terminalCleanup: true
+        )
+        runtimePlayoutIsReady = false
+        playbackIsReady = false
+        remoteAudioControl?.setEnabled(false)
+        playbackErrorText =
+            "The iPhone audio route changed outside opensteamer’s authorized microphone policy."
+        playbackDiagnosticText =
+            "Unexpected AVAudioSession category=\(change.category), mode=\(change.mode)."
+        onAudioProofInvalidated?(true)
+        playback.prepareManualAudioDisabled()
+        publishSnapshot()
+    }
+
     private func recoverPlayback(
         context: String,
         proofAlreadyInvalidated: Bool = false
     ) {
         guard isPrepared else { return }
-        guard !synchronizeLiveCallBlockIfNeeded(),
-              !isInterrupted,
-              !isBlockedByCall,
-              !requiresExplicitResume else {
+        synchronizeLiveCallStateIfNeeded()
+        guard !isInterrupted, !requiresExplicitResume else {
             publishSnapshot()
             return
         }
@@ -427,18 +728,37 @@ final class WorldwideAudioLifecycleController {
         if !proofAlreadyInvalidated {
             onAudioProofInvalidated?(false)
         }
+        guard let recoveryOperationID =
+            armExpectedAudioCategoryTransition(
+            category: microphoneTopologyIsEnabled
+                ? AVAudioSession.Category.playAndRecord.rawValue
+                : AVAudioSession.Category.playback.rawValue,
+            mode: AVAudioSession.Mode.default.rawValue,
+            purpose: .recovery
+            ) else {
+            publishSnapshot()
+            return
+        }
         do {
             try playback.recover()
             playbackIsReady = true
             runtimePlayoutIsReady = !playback.requiresRuntimePlayoutProof
             playbackErrorText = nil
             playbackDiagnosticText = nil
+            if !playback.requiresRuntimePlayoutProof {
+                cancelExpectedAudioCategoryTransition(
+                    operationID: recoveryOperationID
+                )
+            }
             onPlaybackRecoveryRequested?()
             publishSnapshot()
             if isPlaying {
                 backgroundPlayback.endTransitionTask()
             }
         } catch {
+            cancelExpectedAudioCategoryTransition(
+                operationID: recoveryOperationID
+            )
             playbackIsReady = false
             recordPlaybackFailure(context: context, error: error)
             publishSnapshot()
@@ -446,25 +766,25 @@ final class WorldwideAudioLifecycleController {
     }
 
     private func recordPlaybackFailure(context: String, error: Error) {
-        playbackErrorText = "Screen and control are still available. A FaceTime or phone call, or another app, may be using iPhone audio. End it, then tap Retry Audio. Calls running on the Mac remain supported."
+        playbackErrorText = "Screen and control are still available. iOS interrupted or rejected the current audio route. Restore the intended route, then tap Retry Audio."
         playbackDiagnosticText = "\(context): \(error.localizedDescription)"
     }
 
-    private func recordActiveCallBlock() {
-        playbackErrorText = "opensteamer paused iPhone audio because a phone, FaceTime, or CallKit call owns the final system route. Screen and control stay connected. End the iPhone call and audio will retry automatically. Calls running on the Mac remain supported."
-        playbackDiagnosticText = "CallKit reports active call ownership; the remote track and WebRTC native audio gate are closed."
+    /// Re-reads CallKit synchronously at every microphone-opening boundary.
+    func microphoneActivationIsAllowed() -> Bool {
+        guard isPrepared else { return false }
+        synchronizeLiveCallStateIfNeeded()
+        return !isCallActive
+            && !isInterrupted
+            && !requiresExplicitResume
     }
 
-    /// CallKit delegate delivery is asynchronous. Re-read the privacy-minimal live aggregate at
-    /// every gate-opening boundary so a queued callback cannot let recovery run first. A cached
-    /// blocked state remains fail-closed until the matching final-call callback is processed.
-    @discardableResult
-    private func synchronizeLiveCallBlockIfNeeded() -> Bool {
-        guard isPrepared else { return false }
-        if callActivity.liveNonEndedCallCount > 0, !isBlockedByCall {
-            callActivityChanged(isActive: true)
+    private func synchronizeLiveCallStateIfNeeded() {
+        guard isPrepared else { return }
+        let liveState = callActivity.liveNonEndedCallCount > 0
+        if liveState != isCallActive {
+            callActivityChanged(isActive: liveState)
         }
-        return isBlockedByCall
     }
 
     // MARK: - Derived policy state
@@ -481,20 +801,18 @@ final class WorldwideAudioLifecycleController {
             && hasRemoteAudio
             && transportIsHealthy
             && !isInterrupted
-            && !isBlockedByCall
-            && callActivity.liveNonEndedCallCount == 0
             && !requiresExplicitResume
     }
 
     private var stateText: String {
         guard isPrepared else { return "Inactive" }
-        if isBlockedByCall { return "Audio paused — iPhone call active" }
         if isInterrupted { return "Interrupted" }
         if requiresExplicitResume { return "Paused — resume audio" }
         if !playbackIsReady { return "Playback unavailable" }
         if !hasRemoteAudio { return "Waiting for Mac audio" }
         if !transportIsHealthy { return "Reconnecting audio" }
         if !runtimePlayoutIsReady { return "Starting playback" }
+        if isCallActive { return "Playing — iPhone call may reduce quality" }
         return "Playing"
     }
 

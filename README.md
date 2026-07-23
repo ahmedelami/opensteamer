@@ -1,14 +1,18 @@
 # opensteamer
 
-opensteamer pairs an iPhone with an awake Mac and streams Mac system audio, optional
-screen video, and narrowly scoped remote input over WebRTC. It prefers a direct ICE route
-and can fall back to TURN. An outbound WSS rendezvous service coordinates pairing and
+opensteamer pairs an iPhone with an awake Mac and streams Mac system audio,
+optional screen video, narrowly scoped remote input, and an explicitly enabled
+iPhone-microphone uplink over WebRTC. It prefers a direct ICE route and can fall
+back to TURN. An outbound WSS rendezvous service coordinates pairing and
 end-to-end-encrypted signaling; it does not carry plaintext media.
 
-This repository is an advanced prototype, not a hosted service. It contains no maintainer
-endpoint, cloud credential, Apple signing team, or production bundle identifier. Configure
-and deploy your own infrastructure before using worldwide mode. Do not claim that a build
-"works anywhere" until it passes the unrelated-network and forced-TURN gates described in
+This repository is an advanced prototype, not a hosted service. Its checked-in iOS Release
+configuration records the maintainer's App Store/TestFlight identity and production rendezvous
+origin so release metadata is reproducible. It contains no Apple account credentials, signing
+private keys, provisioning profiles, Worker or TURN secrets, invitation codes, or other deployable
+credentials. Forks and independent deployments must supply their own stable identities and
+infrastructure before using worldwide mode. Do not claim that a build "works anywhere" until it
+passes the unrelated-network and forced-TURN gates described in
 [TESTING_ORACLES.md](TESTING_ORACLES.md).
 
 ## Capabilities
@@ -18,7 +22,10 @@ and deploy your own infrastructure before using worldwide mode. Do not claim tha
 - Optional, explicitly enabled tap, atomic drag, committed text, Backspace, and Return input.
 - One-use invitation bootstrap followed by durable, Keychain-backed device pairing.
 - Fresh signaling and WebRTC keys for every paired-device media connection.
-- Output-only iOS audio with background-audio support; no microphone or call-oriented mode.
+- Output-only iOS playback by default, with an explicitly authorized 48 kHz mono
+  microphone uplink that uses the same conditional-duplex RemoteIO device.
+- BlackHole 2ch output for the first selectable Mac microphone MVP; global macOS
+  audio defaults are not changed.
 - Legacy Bonjour/TCP/PCM tools retained only for trusted-LAN diagnostics.
 
 ```text
@@ -53,27 +60,79 @@ telephone-quality processing; an authenticated screen/control session may remain
 
 ## Configure before building
 
-1. Deploy your own backend from `services/RendezvousWorker` and configure TURN as described
-   in its [deployment guide](services/RendezvousWorker/README.md). Use the WSS origin only;
-   clients append `/v1/rendezvous` and `/v2/availability` themselves. Existing deployments must
-   follow the guide's same-origin/staggered-rollout rule before changing a Worker name.
-2. Replace the `org.example.*` identifiers with unique reverse-DNS values before first
-   distribution. This includes iOS bundle IDs, Keychain service IDs, the macOS host bundle ID,
-   LaunchAgent label, telemetry subsystem, and process-lock namespace. Keep them stable after
-   release or existing Keychain and macOS privacy grants may no longer belong to the app.
-3. Supply an Apple development team locally in Xcode or on the `xcodebuild` command line.
-   Signing teams, provisioning profiles, and export credentials are intentionally untracked.
-4. Supply `OPENSTEAMER_RENDEZVOUS_URL=wss://your-origin.example` to the Mac host. For iOS,
-   override the Xcode build setting of the same name. An empty setting makes worldwide mode
-   unavailable rather than contacting someone else's infrastructure. During migration, the Mac
-   host also accepts legacy `AUDIOSTREAMER_RENDEZVOUS_URL`; when both are set, the opensteamer
-   setting wins.
-5. Never commit Worker/TURN credentials, invitation or activation codes, provisioning files,
-   device identifiers, or captured signaling/media. See [SECURITY.md](SECURITY.md).
+1. For a fork or self-hosted deployment, deploy the backend from `services/RendezvousWorker` and
+   configure TURN as described in its [deployment guide](services/RendezvousWorker/README.md).
+   Use the WSS origin only; clients append `/v1/rendezvous` and `/v2/availability`. Existing
+   deployments must follow the guide's same-origin/staggered-rollout rule before renaming a Worker.
+2. The maintainer Release configuration is intentionally checked in. Forks must replace its
+   production bundle identifier, Apple team, and rendezvous origin, plus the `org.example.*`
+   development and compatibility identifiers, before first distribution. Keep identities stable
+   after release or existing Keychain state, app containers, and macOS privacy grants may no
+   longer belong to the app.
+3. Keep iOS Release signing automatic. Change the team in `project.yml` for a fork, then let
+   XcodeGen regenerate the project. Do not add a pinned provisioning profile,
+   `PROVISIONING_PROFILE_SPECIFIER`, `CODE_SIGN_IDENTITY`, or an ExportOptions profile map.
+   Apple account sessions, certificate private keys, and provisioning profiles remain local to
+   the signing machine.
+4. The maintainer iOS Release target already has both rendezvous build settings populated; the
+   Debug target leaves both empty. For a fork, replace both Release values with the same WSS
+   origin. The Mac host still receives `OPENSTEAMER_RENDEZVOUS_URL=wss://your-origin.example`
+   locally. During migration it also accepts legacy `AUDIOSTREAMER_RENDEZVOUS_URL`; when both
+   are set, the opensteamer setting wins.
+5. Never commit Worker/TURN credentials, Apple signing credentials, invitation or activation
+   codes, provisioning files, device identifiers, or captured signaling/media. See
+   [SECURITY.md](SECURITY.md).
 
 Production worldwide mode requires `wss://`. Plaintext `ws://` is accepted only for loopback
 testing. The checked-in Node rendezvous implements the one-use `/v1` protocol, but not durable
 `/v2/availability`; use the Worker for the complete current client contract.
+
+### Checked-in iOS configuration
+
+The authoritative values for the maintainer build are:
+
+| Configuration field | Checked-in value |
+| --- | --- |
+| Production bundle | <code>com.elamin.AudioStreamer</code> |
+| Development team | `MSMG8CJLB3` |
+| Marketing version / build | `0.1.0` / `32` |
+| Release rendezvous | Both `OPENSTEAMER_RENDEZVOUS_URL` and compatibility `AUDIOSTREAMER_RENDEZVOUS_URL` use the production WSS Worker origin declared in [`project.yml`](iOS/opensteamer/project.yml) |
+| Debug bundle | <code>org.example.AudioStreamer.dev</code> |
+| Debug rendezvous | Both endpoint settings are empty unless explicitly overridden locally |
+
+Clients append `/v1/rendezvous` and `/v2/availability` to the configured origin.
+
+`iOS/opensteamer/project.yml` is authoritative, and the generated
+`opensteamer.xcodeproj/project.pbxproj` must remain XcodeGen-equivalent. The Release target
+declares `ProvisioningStyle = Automatic` and `CODE_SIGN_STYLE = Automatic`. The authoritative
+project file does not pin `CODE_SIGN_IDENTITY` or `PROVISIONING_PROFILE_SPECIFIER`.
+`ExportOptions.plist` likewise uses automatic signing and contains no provisioning-profile map
+or signing-certificate selector. It keeps upload destination, team `MSMG8CJLB3`, build-number
+management disabled, and internal-only TestFlight export enabled.
+
+A validated archive completed without `-allowProvisioningUpdates`. Xcode development-signed the
+archive, and the automatic App Store export selected the current distribution assets and re-signed
+the IPA with Apple Distribution. That two-stage signing is expected. Do not copy the observed
+profile UUID or name into the repository.
+
+From `iOS/opensteamer`, the operator flow is:
+
+```sh
+xcodegen generate
+xcodebuild -project opensteamer.xcodeproj \
+  -scheme opensteamer \
+  -configuration Release \
+  -destination 'generic/platform=iOS' \
+  -archivePath "$PWD/build/opensteamer.xcarchive" \
+  archive
+xcodebuild -exportArchive \
+  -archivePath "$PWD/build/opensteamer.xcarchive" \
+  -exportPath "$PWD/build/export" \
+  -exportOptionsPlist ExportOptions.plist
+```
+
+The signing machine must already have access to the maintainer's Apple account and local signing
+assets. None of those credentials are stored in the repository.
 
 ## Build and test
 
@@ -91,9 +150,9 @@ xcodegen generate
 open opensteamer.xcodeproj
 ```
 
-`project.yml` is authoritative. Choose your local signing team and set
-`OPENSTEAMER_RENDEZVOUS_URL` before a device or distribution build. Debug and distribution
-bundle IDs are deliberately distinct so physical tests cannot replace a release container.
+Regeneration should leave the checked-in project unchanged. The endpoint-free Debug bundle is for
+development and physical tests; it cannot replace the production app container. Use the Release
+flow above, and do not override its automatic signing contract with manual signing flags.
 
 Build the signed Mac host from the repository root:
 

@@ -27,10 +27,18 @@ final class WorldwideCallActivityObserver: NSObject,
     private let observer: CXCallObserver
     private(set) var nonEndedCallCount = 0
     var liveNonEndedCallCount: Int {
-        observer.calls.lazy.filter { !$0.hasEnded }.count
+        #if DEBUG
+        if let debugLiveNonEndedCallCount {
+            return debugLiveNonEndedCallCount
+        }
+        #endif
+        return observer.calls.lazy.filter { !$0.hasEnded }.count
     }
     var onNonEndedCallCountChanged: ((Int) -> Void)?
     private var isObserving = false
+    #if DEBUG
+    private var debugLiveNonEndedCallCount: Int?
+    #endif
 
     override init() {
         observer = CXCallObserver()
@@ -61,15 +69,30 @@ final class WorldwideCallActivityObserver: NSObject,
         _ callObserver: CXCallObserver,
         callChanged call: CXCall
     ) {
-        // Do not capture either CallKit object across the concurrency boundary. Late callbacks
-        // after stop/restart are safe because the MainActor rereads the retained observer's
-        // current aggregate and verifies that observation is still active.
+        // The delegate is registered on the main queue. Enter the MainActor
+        // synchronously so microphone revocation completes before this callback
+        // returns, while still discarding all call-specific data.
         _ = callObserver
         _ = call
-        Task { @MainActor [weak self] in
-            self?.refreshCurrentAggregate()
+        refreshSynchronouslyOnRegisteredMainQueue()
+    }
+
+    nonisolated private func refreshSynchronouslyOnRegisteredMainQueue() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        MainActor.assumeIsolated {
+            refreshCurrentAggregate()
         }
     }
+
+    #if DEBUG
+    func debugSetLiveNonEndedCallCountForTests(_ count: Int?) {
+        debugLiveNonEndedCallCount = count.map { max(0, $0) }
+    }
+
+    nonisolated func debugDeliverDelegateInvalidationSynchronouslyForTests() {
+        refreshSynchronouslyOnRegisteredMainQueue()
+    }
+    #endif
 
     private func refreshCurrentAggregate(notify: Bool = true) {
         guard isObserving else { return }

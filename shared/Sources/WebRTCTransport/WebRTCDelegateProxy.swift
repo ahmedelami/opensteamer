@@ -19,7 +19,7 @@ enum NativePeerEvent: Sendable {
     case gatheringState(WebRTCICEGatheringState)
     case dataChannelState(WebRTCDataChannelState)
     case dataChannelMessage(Data)
-    case remoteAudioTrack(WebRTCRemoteAudioTrack)
+    case remoteAudioTrack(WebRTCNativeRemoteAudioReceiverTrack)
     case remoteVideoTrack(WebRTCRemoteVideoTrack)
     case route(WebRTCICERouteDiagnostics)
     case iceCandidateError(WebRTCIceCandidateError)
@@ -41,6 +41,7 @@ final class WebRTCDelegateProxy: NSObject, @unchecked Sendable {
     private var peerState: WebRTCPeerState = .new
     private var iceState: WebRTCICEState = .new
     private var dataChannelState: WebRTCDataChannelState = .connecting
+    private var emittedRemoteAudioReceiverIDs: Set<String> = []
     private var eventDeliveryFailed = false
     private var isClosed = false
 
@@ -173,6 +174,14 @@ final class WebRTCDelegateProxy: NSObject, @unchecked Sendable {
         failInputAuthorizationSynchronously()
         emit(.failure("Invalid control-channel message rejected."))
     }
+
+    @discardableResult
+    func receiveRemoteAudioTrackForTesting(
+        _ track: LKRTCAudioTrack,
+        receiverID: String
+    ) -> Bool {
+        receiveRemoteAudioTrack(track, receiverID: receiverID)
+    }
 #endif
 
     func sendControlData(_ data: Data) throws {
@@ -223,6 +232,39 @@ final class WebRTCDelegateProxy: NSObject, @unchecked Sendable {
         @unknown default:
             failClosedForEventDeliveryLoss()
         }
+    }
+
+    /// Publishes each modern remote-audio receiver once and mutes its first wrapper synchronously.
+    ///
+    /// A duplicate callback must be discarded before touching `isEnabled`: a later getter may
+    /// return a fresh wrapper for the same already-admitted receiver.
+    @discardableResult
+    private func receiveRemoteAudioTrack(
+        _ track: LKRTCAudioTrack,
+        receiverID: String
+    ) -> Bool {
+        guard !receiverID.isEmpty else {
+            track.isEnabled = false
+            emit(.failure("Remote audio receiver did not expose a nonempty identity."))
+            return false
+        }
+
+        let isFirstCallback = channelLock.withLock {
+            guard !isClosed, !eventDeliveryFailed else { return false }
+            return emittedRemoteAudioReceiverIDs.insert(receiverID).inserted
+        }
+        guard isFirstCallback else { return false }
+
+        track.isEnabled = false
+        emit(
+            .remoteAudioTrack(
+                WebRTCNativeRemoteAudioReceiverTrack(
+                    track,
+                    receiverID: receiverID
+                )
+            )
+        )
+        return true
     }
 
     private func failClosedForEventDeliveryLoss() {
@@ -327,9 +369,8 @@ extension WebRTCDelegateProxy: LKRTCPeerConnectionDelegate {
         _ peerConnection: LKRTCPeerConnection,
         didAdd stream: LKRTCMediaStream
     ) {
-        for track in stream.audioTracks {
-            emit(.remoteAudioTrack(WebRTCRemoteAudioTrack(track)))
-        }
+        // Audio is always Unified Plan here. Only the receiver callback below carries the stable
+        // receiver ID, so legacy stream audio must not compete with or duplicate that event.
         for track in stream.videoTracks {
             emit(.remoteVideoTrack(WebRTCRemoteVideoTrack(track)))
         }
@@ -401,7 +442,10 @@ extension WebRTCDelegateProxy: LKRTCPeerConnectionDelegate {
     ) {
         switch rtpReceiver.track {
         case let audioTrack as LKRTCAudioTrack:
-            emit(.remoteAudioTrack(WebRTCRemoteAudioTrack(audioTrack)))
+            _ = receiveRemoteAudioTrack(
+                audioTrack,
+                receiverID: rtpReceiver.receiverId as String
+            )
         case let videoTrack as LKRTCVideoTrack:
             emit(.remoteVideoTrack(WebRTCRemoteVideoTrack(videoTrack)))
         default:

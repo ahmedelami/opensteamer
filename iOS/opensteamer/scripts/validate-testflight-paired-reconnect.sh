@@ -517,9 +517,9 @@ function capture_production_candidate() {
     --timeout "${DEVICE_COMMAND_TIMEOUT_SECONDS}" \
     --json-output "${app_list}" >/dev/null
 
-  # TestFlight continuity depends on retaining the legacy application identifier.
+  # Address the installed App Store/TestFlight production application identifier.
   jq -e \
-    --arg bundle "org.example.AudioStreamer" \
+    --arg bundle "com.elamin.AudioStreamer" \
     --arg build "${EXPECTED_BUILD}" '
     [.result.apps[] | select(.bundleIdentifier == $bundle)] as $matches
     | (($matches | length) == 1) and
@@ -531,7 +531,7 @@ function capture_production_candidate() {
   ' "${app_list}" >/dev/null
 
   jq -S \
-    --arg bundle "org.example.AudioStreamer" '
+    --arg bundle "com.elamin.AudioStreamer" '
     [.result.apps[] | select(.bundleIdentifier == $bundle)][0]
   ' "${app_list}" > "${candidate}"
 }

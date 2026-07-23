@@ -25,8 +25,9 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
         let finalAudioSnapshot: PhysicalAudioPlayoutSnapshot
     }
 
-    // The visible product is opensteamer, but TestFlight updates retain the shipped bundle identity.
-    private let app = XCUIApplication(bundleIdentifier: "org.example.AudioStreamer")
+    // The visible product is opensteamer, and physical release validation targets the immutable
+    // App Store/TestFlight production bundle so it observes the installed app's Keychain state.
+    private let app = XCUIApplication(bundleIdentifier: "com.elamin.AudioStreamer")
     // Audio diagnostics are published by the one-second WebRTC statistics task, so 1.5 seconds
     // permits one ordinary publication interval without allowing a late burst to launder a stall.
     private let maximumAudioOracleProgressGap: TimeInterval = 1.5

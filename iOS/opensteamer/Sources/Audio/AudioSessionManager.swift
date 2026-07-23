@@ -38,11 +38,18 @@ final class AudioSessionManager {
     var onInterruptionBegan: (() -> Void)?
     var onInterruptionEnded: ((Bool) -> Void)?
     var onRouteChanged: ((String) -> Void)?
+    var onCategoryChanged: ((AudioSessionCategoryChange) -> Void)?
     var onEngineConfigurationChanged: (() -> Void)?
     var onMediaServicesReset: (() -> Void)?
     var onSnapshotChanged: ((AudioSessionSnapshot) -> Void)?
 
     private var notificationTokens: [NSObjectProtocol] = []
+    private struct CategoryChangeOperation {
+        let operationID: UUID
+        let category: String
+        let mode: String
+    }
+    private var categoryChangeOperations: [CategoryChangeOperation] = []
 
     #if os(iOS)
     static let playbackCategory: AVAudioSession.Category = .playback
@@ -91,6 +98,37 @@ final class AudioSessionManager {
         #endif
     }
 
+    func armCategoryChangeOperation(
+        _ operationID: UUID,
+        category: String,
+        mode: String
+    ) {
+        categoryChangeOperations.removeAll {
+            $0.operationID == operationID
+        }
+        categoryChangeOperations.append(
+            CategoryChangeOperation(
+                operationID: operationID,
+                category: category,
+                mode: mode
+            )
+        )
+    }
+
+    func armCategoryChangeOperation(_ operationID: UUID) {
+        armCategoryChangeOperation(
+            operationID,
+            category: "*",
+            mode: "*"
+        )
+    }
+
+    func cancelCategoryChangeOperation(_ operationID: UUID) {
+        categoryChangeOperations.removeAll {
+            $0.operationID == operationID
+        }
+    }
+
     func startObserving() {
         // Re-registration replaces the prior token set instead of multiplying callbacks after an
         // app foreground/background cycle.
@@ -120,9 +158,28 @@ final class AudioSessionManager {
             ) { [weak self] notification in
                 let reasonValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
                 let message = Self.routeChangeDescription(reasonValue: reasonValue)
-                Task { @MainActor in
-                    self?.onRouteChanged?(message)
-                    self?.emitSnapshot(event: message)
+                let categoryChange: AudioSessionCategoryChange?
+                if reasonValue
+                    == AVAudioSession.RouteChangeReason.categoryChange.rawValue {
+                    let session = AVAudioSession.sharedInstance()
+                    categoryChange = AudioSessionCategoryChange(
+                        category: session.category.rawValue,
+                        mode: session.mode.rawValue
+                    )
+                } else {
+                    categoryChange = nil
+                }
+                if let categoryChange {
+                    _ = self?
+                        .deliverCategoryChangeSynchronouslyOnRegisteredMainQueue(
+                            categoryChange,
+                            message: message
+                        )
+                } else {
+                    Task { @MainActor in
+                        self?.onRouteChanged?(message)
+                        self?.emitSnapshot(event: message)
+                    }
                 }
             }
         )
@@ -190,13 +247,66 @@ final class AudioSessionManager {
         }
         #endif
         notificationTokens.removeAll()
+        categoryChangeOperations.removeAll(keepingCapacity: false)
     }
 
     #if os(iOS)
     // MARK: - Notification translation
 
+    @discardableResult
+    nonisolated private func
+        deliverCategoryChangeSynchronouslyOnRegisteredMainQueue(
+            _ categoryChange: AudioSessionCategoryChange,
+            message: String
+        ) -> UUID? {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return MainActor.assumeIsolated {
+            let operationID =
+                self.consumeCategoryChangeOperation(
+                    category: categoryChange.category,
+                    mode: categoryChange.mode
+                )
+            self.onCategoryChanged?(
+                AudioSessionCategoryChange(
+                    category: categoryChange.category,
+                    mode: categoryChange.mode,
+                    operationID: operationID
+                )
+            )
+            self.emitSnapshot(event: message)
+            return operationID
+        }
+    }
+
+    #if DEBUG
+    @discardableResult
+    nonisolated func
+        debugDeliverCategoryChangeSynchronouslyForTests(
+            _ categoryChange: AudioSessionCategoryChange,
+            message: String = "Audio route changed: category"
+        ) -> UUID? {
+        deliverCategoryChangeSynchronouslyOnRegisteredMainQueue(
+            categoryChange,
+            message: message
+        )
+    }
+    #endif
+
     private func emitSnapshot(event: String) {
         onSnapshotChanged?(Self.snapshot(for: AVAudioSession.sharedInstance(), event: event))
+    }
+
+    private func consumeCategoryChangeOperation(
+        category: String,
+        mode: String
+    ) -> UUID? {
+        guard let index = categoryChangeOperations.lastIndex(where: {
+            ($0.category == category && $0.mode == mode)
+                || ($0.category == "*" && $0.mode == "*")
+        }) else {
+            return nil
+        }
+        return categoryChangeOperations.remove(at: index).operationID
     }
 
     private func handleInterruption(typeValue: UInt?, optionsValue: UInt?) {

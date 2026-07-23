@@ -5,6 +5,7 @@
 #import <mach/mach_time.h>
 #import <objc/runtime.h>
 #import <pthread.h>
+#import <sched.h>
 #import <stdatomic.h>
 #import <string.h>
 
@@ -16,6 +17,236 @@ NSErrorDomain const ASMacWebRTCAudioDeviceErrorDomain = @"opensteamer.MacWebRTCA
 static const double ASAudioSampleRate = 48000.0;
 static const NSTimeInterval ASAudioIOBufferDuration = 0.010;
 enum { ASAudioChannelCount = 2 };
+static const uint_fast64_t ASMacPlayoutPullClosedBit =
+    ((uint_fast64_t)1 << 63);
+static const uint_fast64_t ASMacPlayoutPullCountMask =
+    ASMacPlayoutPullClosedBit - 1;
+
+_Static_assert(
+    ATOMIC_LONG_LOCK_FREE == 2,
+    "Mac realtime lifetime atomics must be lock-free"
+);
+
+static const uint_fast64_t ASMacAudioQueueCallbackClosedBit =
+    ((uint_fast64_t)1 << 63);
+static const uint_fast64_t ASMacAudioQueueCallbackCountMask =
+    ASMacAudioQueueCallbackClosedBit - 1;
+
+typedef struct ASMacAudioQueueCallbackLifetimeStorage {
+    atomic_uint_fast64_t state;
+} ASMacAudioQueueCallbackLifetimeStorage;
+
+ASMacAudioQueueCallbackLifetimeRef
+ASMacAudioQueueCallbackLifetimeCreate(void) {
+    ASMacAudioQueueCallbackLifetimeStorage *storage =
+        calloc(1, sizeof(ASMacAudioQueueCallbackLifetimeStorage));
+    if (storage == NULL) {
+        return NULL;
+    }
+
+    atomic_init(&storage->state, 0);
+    return storage;
+}
+
+void ASMacAudioQueueCallbackLifetimeDestroy(
+    ASMacAudioQueueCallbackLifetimeRef lifetime
+) {
+    if (lifetime == NULL) {
+        return;
+    }
+
+    free((ASMacAudioQueueCallbackLifetimeStorage *)lifetime);
+}
+
+bool ASMacAudioQueueCallbackLifetimeTryEnter(
+    ASMacAudioQueueCallbackLifetimeRef lifetime
+) {
+    if (lifetime == NULL) {
+        return false;
+    }
+
+    ASMacAudioQueueCallbackLifetimeStorage *storage =
+        (ASMacAudioQueueCallbackLifetimeStorage *)lifetime;
+    uint_fast64_t observed = atomic_load_explicit(
+        &storage->state,
+        memory_order_acquire
+    );
+
+    for (;;) {
+        if ((observed & ASMacAudioQueueCallbackClosedBit) != 0
+            || (observed & ASMacAudioQueueCallbackCountMask)
+                == ASMacAudioQueueCallbackCountMask) {
+            return false;
+        }
+
+        if (atomic_compare_exchange_weak_explicit(
+                &storage->state,
+                &observed,
+                observed + 1,
+                memory_order_acq_rel,
+                memory_order_acquire
+            )) {
+            return true;
+        }
+    }
+}
+
+void ASMacAudioQueueCallbackLifetimeLeave(
+    ASMacAudioQueueCallbackLifetimeRef lifetime
+) {
+    if (lifetime == NULL) {
+        return;
+    }
+
+    ASMacAudioQueueCallbackLifetimeStorage *storage =
+        (ASMacAudioQueueCallbackLifetimeStorage *)lifetime;
+    atomic_fetch_sub_explicit(
+        &storage->state,
+        1,
+        memory_order_release
+    );
+}
+
+void ASMacAudioQueueCallbackLifetimeClose(
+    ASMacAudioQueueCallbackLifetimeRef lifetime
+) {
+    if (lifetime == NULL) {
+        return;
+    }
+
+    ASMacAudioQueueCallbackLifetimeStorage *storage =
+        (ASMacAudioQueueCallbackLifetimeStorage *)lifetime;
+    atomic_fetch_or_explicit(
+        &storage->state,
+        ASMacAudioQueueCallbackClosedBit,
+        memory_order_acq_rel
+    );
+}
+
+void ASMacAudioQueueCallbackLifetimeWaitForCallbacks(
+    ASMacAudioQueueCallbackLifetimeRef lifetime
+) {
+    if (lifetime == NULL) {
+        return;
+    }
+
+    ASMacAudioQueueCallbackLifetimeStorage *storage =
+        (ASMacAudioQueueCallbackLifetimeStorage *)lifetime;
+    while ((atomic_load_explicit(
+                &storage->state,
+                memory_order_acquire
+            ) & ASMacAudioQueueCallbackCountMask) != 0) {
+        sched_yield();
+    }
+}
+
+static const uint_fast64_t ASMacAudioQueueFailurePresentBit =
+    ((uint_fast64_t)1 << 63);
+static const uint_fast64_t ASMacAudioQueueFailureReportedBit =
+    ((uint_fast64_t)1 << 62);
+static const uint_fast64_t ASMacAudioQueueFailureStatusMask =
+    UINT32_MAX;
+
+typedef struct ASMacAudioQueueRuntimeFailureLatchStorage {
+    atomic_uint_fast64_t state;
+} ASMacAudioQueueRuntimeFailureLatchStorage;
+
+ASMacAudioQueueRuntimeFailureLatchRef
+ASMacAudioQueueRuntimeFailureLatchCreate(void) {
+    ASMacAudioQueueRuntimeFailureLatchStorage *storage =
+        calloc(1, sizeof(ASMacAudioQueueRuntimeFailureLatchStorage));
+    if (storage == NULL) {
+        return NULL;
+    }
+
+    atomic_init(&storage->state, 0);
+    return storage;
+}
+
+void ASMacAudioQueueRuntimeFailureLatchDestroy(
+    ASMacAudioQueueRuntimeFailureLatchRef latch
+) {
+    if (latch == NULL) {
+        return;
+    }
+
+    free((ASMacAudioQueueRuntimeFailureLatchStorage *)latch);
+}
+
+void ASMacAudioQueueRuntimeFailureLatchReset(
+    ASMacAudioQueueRuntimeFailureLatchRef latch
+) {
+    if (latch == NULL) {
+        return;
+    }
+
+    ASMacAudioQueueRuntimeFailureLatchStorage *storage =
+        (ASMacAudioQueueRuntimeFailureLatchStorage *)latch;
+    atomic_store_explicit(&storage->state, 0, memory_order_release);
+}
+
+void ASMacAudioQueueRuntimeFailureLatchPublish(
+    ASMacAudioQueueRuntimeFailureLatchRef latch,
+    int32_t status
+) {
+    if (latch == NULL || status == noErr) {
+        return;
+    }
+
+    uint32_t statusBits = 0;
+    memcpy(&statusBits, &status, sizeof(statusBits));
+
+    ASMacAudioQueueRuntimeFailureLatchStorage *storage =
+        (ASMacAudioQueueRuntimeFailureLatchStorage *)latch;
+    uint_fast64_t expected = 0;
+    const uint_fast64_t desired =
+        ASMacAudioQueueFailurePresentBit | statusBits;
+    (void)atomic_compare_exchange_strong_explicit(
+        &storage->state,
+        &expected,
+        desired,
+        memory_order_release,
+        memory_order_relaxed
+    );
+}
+
+bool ASMacAudioQueueRuntimeFailureLatchTake(
+    ASMacAudioQueueRuntimeFailureLatchRef latch,
+    int32_t *status
+) {
+    if (latch == NULL || status == NULL) {
+        return false;
+    }
+
+    ASMacAudioQueueRuntimeFailureLatchStorage *storage =
+        (ASMacAudioQueueRuntimeFailureLatchStorage *)latch;
+    uint_fast64_t observed = atomic_load_explicit(
+        &storage->state,
+        memory_order_acquire
+    );
+
+    for (;;) {
+        if ((observed & ASMacAudioQueueFailurePresentBit) == 0
+            || (observed & ASMacAudioQueueFailureReportedBit) != 0) {
+            return false;
+        }
+
+        const uint_fast64_t desired =
+            observed | ASMacAudioQueueFailureReportedBit;
+        if (atomic_compare_exchange_weak_explicit(
+                &storage->state,
+                &observed,
+                desired,
+                memory_order_acq_rel,
+                memory_order_acquire
+            )) {
+            const uint32_t statusBits =
+                (uint32_t)(observed & ASMacAudioQueueFailureStatusMask);
+            memcpy(status, &statusBits, sizeof(*status));
+            return true;
+        }
+    }
+}
 
 typedef struct ASMacStereoRenderContext {
     const int16_t *samples;
@@ -77,6 +308,12 @@ typedef struct ASMacStereoAudioDeviceState {
     atomic_bool recording;
     atomic_bool playoutInitialized;
     atomic_bool playing;
+    atomic_uint_fast64_t playoutPullState;
+    atomic_uint_fast64_t playoutFenceWaitCount;
+    #if DEBUG
+    atomic_bool holdPlayoutPullsForTesting;
+    atomic_bool playoutPullIsHeldForTesting;
+    #endif
 
     pthread_t deliveryThread;
     BOOL deliveryThreadIsValid;
@@ -85,8 +322,8 @@ typedef struct ASMacStereoAudioDeviceState {
 
     Float64 nextDeliverySampleTime;
     uint64_t lastDeliveryHostTime;
-    Float64 nextPlayoutSampleTime;
-    uint64_t lastPlayoutHostTime;
+    atomic_uint_fast64_t nextPlayoutFrame;
+    atomic_uint_fast64_t lastPlayoutHostTime;
 
     uint64_t receivedFrameCount;
     uint64_t deliveredFrameCount;
@@ -109,9 +346,9 @@ typedef struct ASMacStereoAudioDeviceState {
     uint64_t deliveryThreadChangeCount;
     uint32_t lastDeliveryFrameCount;
     Float64 lastDeliverySampleTime;
-    uint64_t playoutCallbackCount;
-    uint64_t playoutFrameCount;
-    uint64_t playoutFailureCount;
+    atomic_uint_fast64_t playoutCallbackCount;
+    atomic_uint_fast64_t playoutFrameCount;
+    atomic_uint_fast64_t playoutFailureCount;
 } ASMacStereoAudioDeviceState;
 
 static NSError *ASPreflightError(
@@ -137,6 +374,77 @@ static uint64_t ASStrictlyIncreasingHostTime(uint64_t previous) {
     return now > previous ? now : previous + 1;
 }
 
+static uint64_t ASNextAtomicHostTime(atomic_uint_fast64_t *storage) {
+    uint_fast64_t observed = atomic_load_explicit(storage, memory_order_relaxed);
+    for (;;) {
+        const uint64_t now = mach_absolute_time();
+        uint_fast64_t candidate = now > observed ? now : observed + 1;
+        if (atomic_compare_exchange_weak_explicit(
+                storage,
+                &observed,
+                candidate,
+                memory_order_relaxed,
+                memory_order_relaxed
+            )) {
+            return candidate;
+        }
+    }
+}
+
+static BOOL ASBeginMacPlayoutPull(ASMacStereoAudioDeviceState *state) {
+    uint_fast64_t observed = atomic_load_explicit(
+        &state->playoutPullState,
+        memory_order_acquire
+    );
+    for (;;) {
+        if ((observed & ASMacPlayoutPullClosedBit) != 0
+            || (observed & ASMacPlayoutPullCountMask)
+                == ASMacPlayoutPullCountMask) {
+            return NO;
+        }
+        if (atomic_compare_exchange_weak_explicit(
+                &state->playoutPullState,
+                &observed,
+                observed + 1,
+                memory_order_acq_rel,
+                memory_order_acquire
+            )) {
+            return YES;
+        }
+    }
+}
+
+static void ASEndMacPlayoutPull(ASMacStereoAudioDeviceState *state) {
+    atomic_fetch_sub_explicit(
+        &state->playoutPullState,
+        1,
+        memory_order_release
+    );
+}
+
+static void ASCloseAndFenceMacPlayoutPulls(
+    ASMacStereoAudioDeviceState *state
+) {
+    const uint_fast64_t previous = atomic_fetch_or_explicit(
+        &state->playoutPullState,
+        ASMacPlayoutPullClosedBit,
+        memory_order_acq_rel
+    );
+    if ((previous & ASMacPlayoutPullCountMask) != 0) {
+        atomic_fetch_add_explicit(
+            &state->playoutFenceWaitCount,
+            1,
+            memory_order_relaxed
+        );
+    }
+    while ((atomic_load_explicit(
+                &state->playoutPullState,
+                memory_order_acquire
+            ) & ASMacPlayoutPullCountMask) != 0) {
+        sched_yield();
+    }
+}
+
 static void ASNotifyInputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
     [delegate dispatchSync:^{
         [delegate notifyAudioInputInterrupted];
@@ -151,6 +459,8 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
 
 @interface ASMacStereoAudioDevice () <LKRTCAudioDevice> {
     ASMacStereoAudioDeviceState *_state;
+    LKRTCAudioDeviceGetPlayoutDataBlock _playoutBlock;
+    id<LKRTCAudioDeviceDelegate> _playoutDelegateOwner;
 }
 @property(atomic, strong, nullable) id<LKRTCAudioDeviceDelegate> delegate;
 @end
@@ -183,11 +493,27 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
     atomic_init(&_state->recording, false);
     atomic_init(&_state->playoutInitialized, false);
     atomic_init(&_state->playing, false);
+    atomic_init(
+        &_state->playoutPullState,
+        ASMacPlayoutPullClosedBit
+    );
+    atomic_init(&_state->playoutFenceWaitCount, 0);
+    #if DEBUG
+    atomic_init(&_state->holdPlayoutPullsForTesting, false);
+    atomic_init(&_state->playoutPullIsHeldForTesting, false);
+    #endif
+    atomic_init(&_state->nextPlayoutFrame, 0);
+    atomic_init(&_state->lastPlayoutHostTime, 0);
+    atomic_init(&_state->playoutCallbackCount, 0);
+    atomic_init(&_state->playoutFrameCount, 0);
+    atomic_init(&_state->playoutFailureCount, 0);
     return self;
 }
 
 - (void)dealloc {
     [self terminateDevice];
+    _playoutBlock = nil;
+    _playoutDelegateOwner = nil;
     if (_state != NULL) {
         pthread_mutex_destroy(&_state->stateMutex);
         pthread_mutex_destroy(&_state->lifecycleMutex);
@@ -359,62 +685,80 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
     pthread_mutex_unlock(&_state->lifecycleMutex);
 }
 
-- (BOOL)pullHeadlessPlayoutFrames:(NSUInteger)frameCount {
+- (BOOL)renderPlayoutInterleavedStereoInt16:(int16_t *)samples
+                                  frameCount:(NSUInteger)frameCount {
     if (_state == NULL
+        || samples == NULL
         || frameCount == 0
         || frameCount > UINT32_MAX
         || frameCount > UINT32_MAX / (ASAudioChannelCount * sizeof(int16_t))) {
         return NO;
     }
 
-    pthread_mutex_lock(&_state->lifecycleMutex);
-    id<LKRTCAudioDeviceDelegate> delegate = self.delegate;
-    const BOOL canPull = delegate != nil
+    const size_t sampleCount = frameCount * ASAudioChannelCount;
+    const UInt32 byteCount = (UInt32)(sampleCount * sizeof(int16_t));
+    memset(samples, 0, byteCount);
+
+    if (!ASBeginMacPlayoutPull(_state)) {
+        return NO;
+    }
+
+    #if DEBUG
+    if (atomic_load_explicit(
+            &_state->holdPlayoutPullsForTesting,
+            memory_order_acquire
+        )) {
+        atomic_store_explicit(
+            &_state->playoutPullIsHeldForTesting,
+            true,
+            memory_order_release
+        );
+        while (atomic_load_explicit(
+            &_state->holdPlayoutPullsForTesting,
+            memory_order_acquire
+        )) {
+            sched_yield();
+        }
+        atomic_store_explicit(
+            &_state->playoutPullIsHeldForTesting,
+            false,
+            memory_order_release
+        );
+    }
+    #endif
+
+    LKRTCAudioDeviceGetPlayoutDataBlock __unsafe_unretained
+        getPlayoutData = _playoutBlock;
+    const BOOL canPull = getPlayoutData != nil
         && atomic_load_explicit(&_state->initialized, memory_order_acquire)
         && atomic_load_explicit(&_state->playoutInitialized, memory_order_acquire)
         && atomic_load_explicit(&_state->playing, memory_order_acquire);
     if (!canPull) {
-        pthread_mutex_unlock(&_state->lifecycleMutex);
+        ASEndMacPlayoutPull(_state);
         return NO;
     }
 
-    const pthread_t currentThread = pthread_self();
-    BOOL threadChanged = NO;
-    pthread_mutex_lock(&_state->stateMutex);
-    if (_state->playoutThreadIsValid
-        && !pthread_equal(_state->playoutThread, currentThread)) {
-        threadChanged = YES;
-    }
-    _state->playoutThread = currentThread;
-    _state->playoutThreadIsValid = YES;
-    const Float64 sampleTime = _state->nextPlayoutSampleTime;
-    const uint64_t hostTime = ASStrictlyIncreasingHostTime(_state->lastPlayoutHostTime);
-    _state->nextPlayoutSampleTime += (Float64)frameCount;
-    _state->lastPlayoutHostTime = hostTime;
-    pthread_mutex_unlock(&_state->stateMutex);
-    if (threadChanged) {
-        ASNotifyOutputInterrupted(delegate);
-    }
+    const uint64_t firstFrame = atomic_fetch_add_explicit(
+        &_state->nextPlayoutFrame,
+        frameCount,
+        memory_order_relaxed
+    );
+    const uint64_t hostTime = ASNextAtomicHostTime(
+        &_state->lastPlayoutHostTime
+    );
 
-    const size_t sampleCount = frameCount * ASAudioChannelCount;
-    int16_t *samples = calloc(sampleCount, sizeof(int16_t));
-    if (samples == NULL) {
-        pthread_mutex_unlock(&_state->lifecycleMutex);
-        return NO;
-    }
     AudioBufferList audioBufferList = {0};
     audioBufferList.mNumberBuffers = 1;
-    audioBufferList.mBuffers[0].mNumberChannels = (UInt32)ASAudioChannelCount;
-    audioBufferList.mBuffers[0].mDataByteSize = (UInt32)(sampleCount * sizeof(int16_t));
+    audioBufferList.mBuffers[0].mNumberChannels = ASAudioChannelCount;
+    audioBufferList.mBuffers[0].mDataByteSize = byteCount;
     audioBufferList.mBuffers[0].mData = samples;
 
     AudioUnitRenderActionFlags actionFlags = 0;
     AudioTimeStamp timestamp = {0};
-    timestamp.mSampleTime = sampleTime;
+    timestamp.mSampleTime = (Float64)firstFrame;
     timestamp.mHostTime = hostTime;
-    timestamp.mFlags = kAudioTimeStampSampleTimeValid | kAudioTimeStampHostTimeValid;
-    const LKRTCAudioDeviceGetPlayoutDataBlock getPlayoutData =
-        [delegate.getPlayoutData copy];
+    timestamp.mFlags =
+        kAudioTimeStampSampleTimeValid | kAudioTimeStampHostTimeValid;
     const OSStatus status = getPlayoutData(
         &actionFlags,
         &timestamp,
@@ -422,18 +766,47 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
         (UInt32)frameCount,
         &audioBufferList
     );
-    free(samples);
 
-    pthread_mutex_lock(&_state->stateMutex);
-    _state->playoutCallbackCount += 1;
+    atomic_fetch_add_explicit(
+        &_state->playoutCallbackCount,
+        1,
+        memory_order_relaxed
+    );
     if (status == noErr) {
-        _state->playoutFrameCount += frameCount;
-    } else {
-        _state->playoutFailureCount += 1;
+        atomic_fetch_add_explicit(
+            &_state->playoutFrameCount,
+            frameCount,
+            memory_order_relaxed
+        );
+        ASEndMacPlayoutPull(_state);
+        return YES;
     }
-    pthread_mutex_unlock(&_state->stateMutex);
-    pthread_mutex_unlock(&_state->lifecycleMutex);
-    return status == noErr;
+    memset(samples, 0, byteCount);
+    atomic_fetch_add_explicit(
+        &_state->playoutFailureCount,
+        1,
+        memory_order_relaxed
+    );
+    ASEndMacPlayoutPull(_state);
+    return NO;
+}
+
+- (BOOL)pullHeadlessPlayoutFrames:(NSUInteger)frameCount {
+    if (_state == NULL
+        || frameCount == 0
+        || frameCount > UINT32_MAX
+        || frameCount > UINT32_MAX / (ASAudioChannelCount * sizeof(int16_t))) {
+        return NO;
+    }
+    const size_t sampleCount = frameCount * ASAudioChannelCount;
+    int16_t *samples = calloc(sampleCount, sizeof(int16_t));
+    if (samples == NULL) {
+        return NO;
+    }
+    const BOOL rendered = [self renderPlayoutInterleavedStereoInt16:samples
+                                                         frameCount:frameCount];
+    free(samples);
+    return rendered;
 }
 
 - (ASMacStereoAudioDeviceDiagnostics)diagnostics {
@@ -476,10 +849,29 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
     diagnostics.lastDeliveryFrameCount = _state->lastDeliveryFrameCount;
     diagnostics.lastDeliverySampleTime = _state->lastDeliverySampleTime;
     diagnostics.lastDeliveryHostTime = _state->lastDeliveryHostTime;
-    diagnostics.playoutCallbackCount = _state->playoutCallbackCount;
-    diagnostics.playoutFrameCount = _state->playoutFrameCount;
-    diagnostics.playoutFailureCount = _state->playoutFailureCount;
     pthread_mutex_unlock(&_state->stateMutex);
+    diagnostics.playoutCallbackCount = atomic_load_explicit(
+        &_state->playoutCallbackCount,
+        memory_order_relaxed
+    );
+    diagnostics.playoutFrameCount = atomic_load_explicit(
+        &_state->playoutFrameCount,
+        memory_order_relaxed
+    );
+    diagnostics.playoutFailureCount = atomic_load_explicit(
+        &_state->playoutFailureCount,
+        memory_order_relaxed
+    );
+    const uint_fast64_t pullState = atomic_load_explicit(
+        &_state->playoutPullState,
+        memory_order_acquire
+    );
+    diagnostics.playoutPullsInFlight =
+        pullState & ASMacPlayoutPullCountMask;
+    diagnostics.playoutFenceWaitCount = atomic_load_explicit(
+        &_state->playoutFenceWaitCount,
+        memory_order_relaxed
+    );
     return diagnostics;
 }
 
@@ -505,6 +897,19 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
     }
     if (self.isInitialized) {
         return self.delegate == delegate;
+    }
+    if (_playoutDelegateOwner != nil
+        && _playoutDelegateOwner != delegate) {
+        return NO;
+    }
+    if (_playoutBlock == nil) {
+        LKRTCAudioDeviceGetPlayoutDataBlock playoutBlock =
+            [delegate.getPlayoutData copy];
+        if (playoutBlock == nil) {
+            return NO;
+        }
+        _playoutBlock = playoutBlock;
+        _playoutDelegateOwner = delegate;
     }
     self.delegate = delegate;
     atomic_store_explicit(&_state->initialized, true, memory_order_release);
@@ -556,12 +961,14 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
         pthread_mutex_unlock(&_state->lifecycleMutex);
         return YES;
     }
-    pthread_mutex_lock(&_state->stateMutex);
-    _state->nextPlayoutSampleTime = 0;
-    _state->lastPlayoutHostTime = 0;
-    _state->playoutThreadIsValid = NO;
-    pthread_mutex_unlock(&_state->stateMutex);
+    atomic_store_explicit(&_state->nextPlayoutFrame, 0, memory_order_relaxed);
+    atomic_store_explicit(&_state->lastPlayoutHostTime, 0, memory_order_relaxed);
     atomic_store_explicit(&_state->playing, true, memory_order_release);
+    atomic_store_explicit(
+        &_state->playoutPullState,
+        0,
+        memory_order_release
+    );
     pthread_mutex_unlock(&_state->lifecycleMutex);
     return YES;
 }
@@ -576,16 +983,50 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
         false,
         memory_order_acq_rel
     );
+    ASCloseAndFenceMacPlayoutPulls(_state);
     id<LKRTCAudioDeviceDelegate> delegate = self.delegate;
     if (wasPlaying && delegate != nil) {
         ASNotifyOutputInterrupted(delegate);
     }
-    pthread_mutex_lock(&_state->stateMutex);
-    _state->playoutThreadIsValid = NO;
-    pthread_mutex_unlock(&_state->stateMutex);
     pthread_mutex_unlock(&_state->lifecycleMutex);
     return YES;
 }
+
+#if DEBUG
+- (void)holdPlayoutPullsForTesting {
+    if (_state == NULL) {
+        return;
+    }
+    atomic_store_explicit(
+        &_state->holdPlayoutPullsForTesting,
+        true,
+        memory_order_release
+    );
+}
+
+- (void)releasePlayoutPullsForTesting {
+    if (_state == NULL) {
+        return;
+    }
+    atomic_store_explicit(
+        &_state->holdPlayoutPullsForTesting,
+        false,
+        memory_order_release
+    );
+}
+
+- (BOOL)playoutPullIsHeldForTesting {
+    return _state != NULL
+        && atomic_load_explicit(
+            &_state->playoutPullIsHeldForTesting,
+            memory_order_acquire
+        );
+}
+
+- (BOOL)stopPlayoutAndFenceForTesting {
+    return [self stopPlayout];
+}
+#endif
 
 - (BOOL)isRecordingInitialized {
     return _state != NULL

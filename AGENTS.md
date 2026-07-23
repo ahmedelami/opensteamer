@@ -75,9 +75,10 @@ manual IP addresses, router configuration, or public TCP ports.
   its internal 10 ms accumulation/splitting. Keep PCM blocked until the sender track
   is active and the live factory state proves AEC, NS, AGC, HPF, and platform voice
   processing are all off; bind that approval to the exact native StartRecording
-  generation so a later restart fails closed. Synchronously mute both sender and
-  receiver at every transport uncertainty boundary. A fresh current-generation
-  peer/ICE/control proof is required before either side re-enables audio. Show/Hide
+  generation so a later restart fails closed. Synchronously stop the system-audio
+  sender and the `iphone-microphone` receiver/sink at every transport uncertainty
+  boundary. A fresh current-generation peer/ICE/control proof is required before
+  either side re-enables audio. Show/Hide
   affects video and remote input only. Keep source-PTS and RTP concealment diagnostics
   observable, and exclude iPhone Mirroring audio dynamically so a process relaunch
   cannot create a capture/playback feedback loop.
@@ -91,19 +92,29 @@ manual IP addresses, router configuration, or public TCP ports.
   invoking the block: accept a callback only after exactly one validated render copy of
   `frameCount * 2` elements. A serial dispatch queue may change pthreads, so synchronously
   notify the delegate of input interruption before delivering on a different thread.
-- The iPhone must use one custom output-only RemoteIO device, a `.playback` audio
-  session in `.default` mode with no category options, and the Background Audio capability so a
-  user-started stream can continue across Home/lock. Do not synthesize silent audio
-  as a keepalive, open a microphone input bus, instantiate VoiceProcessingIO, use a
-  call-oriented audio-session category/mode, or add a second renderer/ring. Pull
-  decoded stereo directly from WebRTC in the RemoteIO render callback. Do not use
-  `.moviePlayback`: Apple documents route-dependent output enhancement for that mode,
-  which violates the general Mac-audio fidelity contract. Backgrounding
-  hides video and revokes input but retains healthy
-  audio; interruption, private-route loss, uncertainty, and disconnect mute the
-  native remote track itself. Never auto-resume when iOS omits `shouldResume`, and
-  never promise playback after the user force-quits the app.
-- Physical audio release validation must observe the output-only RemoteIO render-input PCM, not
+- The iPhone must use one custom RemoteIO device. With microphone intent off, it is
+  output-only and owns a `.playback` / `.default` audio session with no category
+  options. After an explicit user action, granted microphone permission, current
+  session authorization, and healthy transport proof, deliberately rebuild that same
+  RemoteIO as `.playAndRecord` / `.default`, enable input bus 1, and deliver 48 kHz
+  mono Int16 PCM synchronously to WebRTC as the `iphone-microphone` track. Turning
+  the microphone off, beginning an iPhone call, losing transport health, or tearing
+  down the session must synchronously revoke authorization, stop input delivery, and
+  restore the output-only policy. Do not instantiate VoiceProcessingIO, synthesize
+  silent keepalive audio, add a second renderer/ring, or request a voice/chat mode.
+  Pull decoded Mac stereo directly from WebRTC in the RemoteIO render callback. Do
+  not use `.moviePlayback`: route-dependent enhancement violates the general
+  Mac-audio fidelity contract. Backgrounding hides video and revokes remote input but
+  retains healthy audio; an actual interruption, private-route loss, uncertainty, or
+  disconnect still mutes the native remote track. Never auto-resume when iOS omits
+  `shouldResume`, and never promise playback after force-quit.
+- The Mac microphone uplink MVP must target an already-installed BlackHole 2ch
+  device by its stable Core Audio UID. Feed decoded `iphone-microphone` playout to
+  BlackHole's output side without changing the default input, default output, or
+  system-output device. The output-device callback must pull into caller-owned memory
+  without allocation, logging, sleeping, network work, or a contended mutex; missing
+  PCM becomes silence. Missing BlackHole disables only microphone forwarding.
+- Physical audio release validation must observe the RemoteIO render-input PCM, not
   merely RTP statistics or callback clocks. This is the last app-observable pre-system-output
   boundary; it does not prove what the later iOS mixer, route processing, DAC, or speaker emits.
   A claim about final acoustic output requires independent wired or external capture. Drive a
@@ -116,18 +127,19 @@ manual IP addresses, router configuration, or public TCP ports.
   flattened/square PCM, and repeated 10 ms phase-reset mutants so call-quality or audible-click
   regressions cannot pass as full fidelity.
 - An iPhone audio-session conflict must degrade audio without aborting worldwide
-  signaling, screen viewing, or remote control. Gate manual WebRTC playback before
-  signaling; never fall back from `.playback` / `.default` / no options to a movie,
-  chat, record, mixing, or call-oriented configuration. Observe only CallKit's aggregate
-  non-ended-call count—never call identities or handles. If an iPhone call already exists at
-  startup or begins later, synchronously close both the decoded-track gate and WebRTC's native
-  audio gate while leaving the peer, screen, and control alive. Rotate a dedicated audio-policy
-  generation at both call boundaries so cancelled or non-cooperative pre-call reads cannot
-  publish stale proof after a fast start/end transition. After the final call ends, rebuild audio
-  and require a new advancing RemoteIO proof window before claiming playback; never claim crisp
-  media audio during an active iPhone call. Calls running on the Mac remain supported. Own at
-  most one balanced native activation lease, recover only from explicit lifecycle/route events
-  or user action, and keep audio diagnostics separate from terminal session errors.
+  signaling, screen viewing, or remote control. Observe only CallKit's aggregate
+  non-ended-call count—never call identities or handles. A bare CallKit transition
+  must synchronously revoke the iPhone-microphone authorization and prevent RemoteIO
+  input from opening, but must not close the decoded Mac-audio track or WebRTC's
+  process-wide audio gate. If iOS leaves the current playback route uninterrupted,
+  continue incoming Mac audio best-effort and report that fidelity may be degraded.
+  An actual AVAudioSession interruption, private-route loss, transport uncertainty,
+  or native failure remains a fail-closed playout boundary and requires the existing
+  safe recovery proof or explicit user action. Never claim that the app can use the
+  iPhone microphone while a system call owns it, and never promise crisp stereo or
+  full-band output during a call. Calls running on the Mac remain supported. Own at
+  most one balanced native activation lease and keep audio diagnostics separate from
+  terminal session errors.
 - Worldwide Show/Hide must use monotonic request IDs and host acknowledgements.
   The iPhone must not claim the screen is live until Mac capture actually starts.
   Screen capture must fail closed on peer/control uncertainty and require a fresh

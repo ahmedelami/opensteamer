@@ -634,18 +634,19 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				AUDIOSTREAMER_RENDEZVOUS_URL = "";
+				AUDIOSTREAMER_RENDEZVOUS_URL = "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 32;
+				DEVELOPMENT_TEAM = MSMG8CJLB3;
 				INFOPLIST_FILE = Sources/Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 0.1.0;
-				OPENSTEAMER_RENDEZVOUS_URL = "";
-				PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer;
+				OPENSTEAMER_RENDEZVOUS_URL = "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev";
+				PRODUCT_BUNDLE_IDENTIFIER = com.elamin.AudioStreamer;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;

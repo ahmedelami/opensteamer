@@ -42,10 +42,12 @@ targets:
     type: application
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer
+        SWIFT_VERSION: 6.0
       configs:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev
+        Release:
+          PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer
   opensteamerTests:
     type: bundle.unit-test
     settings:
@@ -106,7 +108,7 @@ print -r -- '// !$*UTF8*$!
     B2 /* Release */ = {
       isa = XCBuildConfiguration;
       buildSettings = {
-        PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer;
+        PRODUCT_BUNDLE_IDENTIFIER = com.elamin.AudioStreamer;
       };
       name = Release;
     };
@@ -304,20 +306,56 @@ require_rejection "$CASE" 'project.yml target/product-type mapping'
 
 CASE=$(new_case project-product-name-override)
 replace_once "$CASE/iOS/opensteamer/project.yml" \
-  $'PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer\n      configs:' \
-  $'PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer\n        PRODUCT_NAME: Opensteamer\n      configs:'
+  'PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev' \
+  $'PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev\n          PRODUCT_NAME: Opensteamer'
 require_rejection "$CASE" 'project.yml product-name override count'
 
-CASE=$(new_case compatibility-bundle-id)
+CASE=$(new_case project-debug-bundle-id)
 replace_once "$CASE/iOS/opensteamer/project.yml" \
   'PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev' \
   'PRODUCT_BUNDLE_IDENTIFIER: org.example.opensteamer.dev'
 require_rejection "$CASE" 'project.yml target/configuration bundle-ID mapping'
 
-CASE=$(new_case generated-project-bundle-id)
+CASE=$(new_case project-release-bundle-id)
+replace_once "$CASE/iOS/opensteamer/project.yml" \
+  'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer' \
+  'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer'
+require_rejection "$CASE" 'project.yml target/configuration bundle-ID mapping'
+
+CASE=$(new_case project-unit-test-bundle-id)
+replace_once "$CASE/iOS/opensteamer/project.yml" \
+  'PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamerTests' \
+  'PRODUCT_BUNDLE_IDENTIFIER: org.example.opensteamerTests'
+require_rejection "$CASE" 'project.yml target/configuration bundle-ID mapping'
+
+CASE=$(new_case project-ui-test-bundle-id)
+replace_once "$CASE/iOS/opensteamer/project.yml" \
+  'PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamerUITests' \
+  'PRODUCT_BUNDLE_IDENTIFIER: org.example.opensteamerUITests'
+require_rejection "$CASE" 'project.yml target/configuration bundle-ID mapping'
+
+CASE=$(new_case generated-project-debug-bundle-id)
 replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
   'PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer.dev;' \
   'PRODUCT_BUNDLE_IDENTIFIER = org.example.opensteamer.dev;'
+require_rejection "$CASE" 'generated Xcode target/configuration bundle-ID mapping'
+
+CASE=$(new_case generated-project-release-bundle-id)
+replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
+  'PRODUCT_BUNDLE_IDENTIFIER = com.elamin.AudioStreamer;' \
+  'PRODUCT_BUNDLE_IDENTIFIER = com.elamin.opensteamer;'
+require_rejection "$CASE" 'generated Xcode target/configuration bundle-ID mapping'
+
+CASE=$(new_case generated-project-unit-test-bundle-id)
+replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
+  $'PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamerTests;\n      };\n      name = Debug;' \
+  $'PRODUCT_BUNDLE_IDENTIFIER = org.example.opensteamerTests;\n      };\n      name = Debug;'
+require_rejection "$CASE" 'generated Xcode target/configuration bundle-ID mapping'
+
+CASE=$(new_case generated-project-ui-test-bundle-id)
+replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
+  $'PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamerUITests;\n      };\n      name = Release;' \
+  $'PRODUCT_BUNDLE_IDENTIFIER = org.example.opensteamerUITests;\n      };\n      name = Release;'
 require_rejection "$CASE" 'generated Xcode target/configuration bundle-ID mapping'
 
 CASE=$(new_case generated-project-target-product)
@@ -333,8 +371,8 @@ require_rejection "$CASE" 'generated Xcode target/product mapping'
 
 CASE=$(new_case generated-product-name-override)
 replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
-  'PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer;' \
-  $'PRODUCT_NAME = Opensteamer;\n        PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer;'
+  'PRODUCT_BUNDLE_IDENTIFIER = com.elamin.AudioStreamer;' \
+  $'PRODUCT_NAME = Opensteamer;\n        PRODUCT_BUNDLE_IDENTIFIER = com.elamin.AudioStreamer;'
 require_rejection "$CASE" 'generated Xcode product-name setting count'
 
 CASE=$(new_case generated-project-product-reference)

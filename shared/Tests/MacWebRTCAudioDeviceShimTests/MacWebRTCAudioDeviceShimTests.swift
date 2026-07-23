@@ -1,8 +1,17 @@
 #if os(macOS)
+import Foundation
 import LiveKitWebRTC
 import MacWebRTCAudioDeviceShim
 import MacWebRTCAudioDeviceShimTestSupport
 import XCTest
+
+private final class SendableMacAudioDeviceBox: @unchecked Sendable {
+    let device: ASMacStereoAudioDevice
+
+    init(_ device: ASMacStereoAudioDevice) {
+        self.device = device
+    }
+}
 
 /// Proves the pinned Objective-C ABI preserves every stereo sample, rejects inactive delivery,
 /// and maintains a monotonic source clock across arbitrary callback sizes and restarts.
@@ -23,6 +32,54 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         XCTAssertFalse(diagnostics.playing)
         XCTAssertEqual(diagnostics.receivedFrameCount, 0)
         XCTAssertEqual(diagnostics.deliveredFrameCount, 0)
+    }
+
+    func testAudioQueueRuntimeFailureLatchPublishesFirstStatusAndConsumesOnce() throws {
+        let latch = try XCTUnwrap(
+            ASMacAudioQueueRuntimeFailureLatchCreate()
+        )
+        defer {
+            ASMacAudioQueueRuntimeFailureLatchDestroy(latch)
+        }
+
+        let firstStatus = Int32(-66_101)
+        let repeatedStatus = Int32(-66_102)
+        ASMacAudioQueueRuntimeFailureLatchPublish(
+            latch,
+            firstStatus
+        )
+        ASMacAudioQueueRuntimeFailureLatchPublish(
+            latch,
+            repeatedStatus
+        )
+
+        var observedStatus: Int32 = 0
+        XCTAssertTrue(
+            ASMacAudioQueueRuntimeFailureLatchTake(
+                latch,
+                &observedStatus
+            )
+        )
+        XCTAssertEqual(observedStatus, firstStatus)
+        XCTAssertFalse(
+            ASMacAudioQueueRuntimeFailureLatchTake(
+                latch,
+                &observedStatus
+            )
+        )
+
+        ASMacAudioQueueRuntimeFailureLatchReset(latch)
+        ASMacAudioQueueRuntimeFailureLatchPublish(
+            latch,
+            repeatedStatus
+        )
+        XCTAssertTrue(
+            ASMacAudioQueueRuntimeFailureLatchTake(
+                latch,
+                &observedStatus
+            )
+        )
+        XCTAssertEqual(observedStatus, repeatedStatus)
     }
 
     func testInactiveDirectDeliveryFailsClosedAndCountsRejectedPCM() throws {
@@ -233,6 +290,98 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         XCTAssertEqual(harnessDiagnostics.playoutHostTimeDiscontinuityCount, 0)
         XCTAssertEqual(harnessDiagnostics.samplePatternMismatchCount, 0)
     }
+
+    func testCallerOwnedPlayoutPullWritesExactFrameCountWithoutFailure() throws {
+        let device = try XCTUnwrap(ASMacStereoAudioDevice())
+        let harness = ASMacStereoAudioDeviceTestHarness(device: device)
+        XCTAssertTrue(harness.startPlayout())
+
+        var samples = Array(repeating: Int16.max, count: 480 * 2)
+        let rendered = samples.withUnsafeMutableBufferPointer { buffer in
+            device.renderPlayoutInterleavedStereoInt16(
+                buffer.baseAddress!,
+                frameCount: 480
+            )
+        }
+
+        XCTAssertTrue(rendered)
+        XCTAssertTrue(samples.allSatisfy { $0 == 0 })
+        let native = device.diagnostics
+        let delegate = harness.diagnostics
+        XCTAssertEqual(native.playoutCallbackCount, 1)
+        XCTAssertEqual(native.playoutFrameCount, 480)
+        XCTAssertEqual(native.playoutFailureCount, 0)
+        XCTAssertEqual(delegate.playoutCallbackCount, 1)
+        XCTAssertEqual(delegate.lastPlayoutFrameCount, 480)
+        XCTAssertEqual(
+            delegate.playoutSampleTimeDiscontinuityCount,
+            0
+        )
+        XCTAssertEqual(
+            delegate.playoutHostTimeDiscontinuityCount,
+            0
+        )
+    }
+
+    #if DEBUG
+    func testStopPlayoutFencesHeldInFlightPullBeforeReturning() throws {
+        let device = try XCTUnwrap(ASMacStereoAudioDevice())
+        let harness = ASMacStereoAudioDeviceTestHarness(device: device)
+        XCTAssertTrue(harness.startPlayout())
+        let box = SendableMacAudioDeviceBox(device)
+        let pullReturned = DispatchSemaphore(value: 0)
+        let stopReturned = DispatchSemaphore(value: 0)
+
+        device.holdPlayoutPullsForTesting()
+        DispatchQueue.global(qos: .userInitiated).async {
+            var samples = Array(repeating: Int16.max, count: 480 * 2)
+            _ = samples.withUnsafeMutableBufferPointer { buffer in
+                box.device.renderPlayoutInterleavedStereoInt16(
+                    buffer.baseAddress!,
+                    frameCount: 480
+                )
+            }
+            pullReturned.signal()
+        }
+
+        let heldDeadline = Date().addingTimeInterval(1)
+        while !device.playoutPullIsHeldForTesting,
+              Date() < heldDeadline {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        XCTAssertTrue(device.playoutPullIsHeldForTesting)
+        XCTAssertEqual(device.diagnostics.playoutPullsInFlight, 1)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = box.device.stopPlayoutAndFenceForTesting()
+            stopReturned.signal()
+        }
+
+        let fenceDeadline = Date().addingTimeInterval(1)
+        while device.diagnostics.playoutFenceWaitCount == 0,
+              Date() < fenceDeadline {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        XCTAssertEqual(device.diagnostics.playoutFenceWaitCount, 1)
+        XCTAssertEqual(device.diagnostics.playoutPullsInFlight, 1)
+        XCTAssertEqual(
+            stopReturned.wait(timeout: .now() + .milliseconds(20)),
+            .timedOut
+        )
+
+        device.releasePlayoutPullsForTesting()
+        XCTAssertEqual(
+            pullReturned.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+        XCTAssertEqual(
+            stopReturned.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+        XCTAssertEqual(device.diagnostics.playoutPullsInFlight, 0)
+        XCTAssertFalse(device.diagnostics.playing)
+    }
+    #endif
 
     func testRestartRequiresFreshGenerationApprovalAndResetsTimestampsExactlyOnce() throws {
         let device = try XCTUnwrap(ASMacStereoAudioDevice())

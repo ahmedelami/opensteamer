@@ -18,6 +18,64 @@ typedef NS_ERROR_ENUM(ASMacWebRTCAudioDeviceErrorDomain, ASMacWebRTCAudioDeviceE
     ASMacWebRTCAudioDeviceErrorFactoryCreationFailed = 7,
 };
 
+/// Opaque lock-free gate for one AudioQueue callback-context lifecycle.
+///
+/// Callback entry increments an in-flight count only while the gate is open.
+/// Teardown closes the gate, waits for admitted callbacks, disposes the queue,
+/// and only then releases the callback context retained for that queue.
+typedef void *ASMacAudioQueueCallbackLifetimeRef;
+
+FOUNDATION_EXPORT ASMacAudioQueueCallbackLifetimeRef _Nullable
+ASMacAudioQueueCallbackLifetimeCreate(void);
+
+FOUNDATION_EXPORT void ASMacAudioQueueCallbackLifetimeDestroy(
+    ASMacAudioQueueCallbackLifetimeRef lifetime
+);
+
+FOUNDATION_EXPORT bool ASMacAudioQueueCallbackLifetimeTryEnter(
+    ASMacAudioQueueCallbackLifetimeRef lifetime
+);
+
+FOUNDATION_EXPORT void ASMacAudioQueueCallbackLifetimeLeave(
+    ASMacAudioQueueCallbackLifetimeRef lifetime
+);
+
+FOUNDATION_EXPORT void ASMacAudioQueueCallbackLifetimeClose(
+    ASMacAudioQueueCallbackLifetimeRef lifetime
+);
+
+FOUNDATION_EXPORT void ASMacAudioQueueCallbackLifetimeWaitForCallbacks(
+    ASMacAudioQueueCallbackLifetimeRef lifetime
+);
+
+/// Opaque lock-free boundary for one AudioQueue runtime-failure lifecycle.
+///
+/// The realtime producer publishes only the first nonzero status. A non-realtime
+/// consumer can take that status exactly once. Reset is valid only while no
+/// callback from the previous lifecycle can still publish.
+typedef void *ASMacAudioQueueRuntimeFailureLatchRef;
+
+FOUNDATION_EXPORT ASMacAudioQueueRuntimeFailureLatchRef _Nullable
+ASMacAudioQueueRuntimeFailureLatchCreate(void);
+
+FOUNDATION_EXPORT void ASMacAudioQueueRuntimeFailureLatchDestroy(
+    ASMacAudioQueueRuntimeFailureLatchRef latch
+);
+
+FOUNDATION_EXPORT void ASMacAudioQueueRuntimeFailureLatchReset(
+    ASMacAudioQueueRuntimeFailureLatchRef latch
+);
+
+FOUNDATION_EXPORT void ASMacAudioQueueRuntimeFailureLatchPublish(
+    ASMacAudioQueueRuntimeFailureLatchRef latch,
+    int32_t status
+);
+
+FOUNDATION_EXPORT bool ASMacAudioQueueRuntimeFailureLatchTake(
+    ASMacAudioQueueRuntimeFailureLatchRef latch,
+    int32_t *status
+);
+
 /// A lock-consistent cumulative snapshot of the source-clock custom device.
 ///
 /// Every successful input callback is captured Mac PCM. There is no recording timer, ring,
@@ -55,13 +113,15 @@ typedef struct ASMacStereoAudioDeviceDiagnostics {
     uint64_t playoutCallbackCount;
     uint64_t playoutFrameCount;
     uint64_t playoutFailureCount;
+    uint64_t playoutPullsInFlight;
+    uint64_t playoutFenceWaitCount;
 } ASMacStereoAudioDeviceDiagnostics;
 
-/// Source-clock input-only WebRTC device used by the Mac host.
+/// Source-clock WebRTC device used by the Mac host.
 ///
 /// ScreenCaptureKit PCM is converted on one serial application queue and passed straight through
 /// this object to WebRTC. The native adapter's FineAudioBuffer performs any 10 ms accumulation or
-/// splitting internally. This object never opens or reads a physical microphone.
+/// splitting internally. Decoded remote playout can also be pulled into caller-owned memory.
 @interface ASMacStereoAudioDevice : NSObject
 
 /// Synchronously delivers one complete source callback. `samples` contains exactly
@@ -76,9 +136,25 @@ typedef struct ASMacStereoAudioDeviceDiagnostics {
 - (BOOL)approveCurrentRecordingGeneration;
 - (void)revokeRecordingAdmission;
 
+/// Pulls decoded stereo PCM directly into caller-owned output-device memory.
+/// The method performs no allocation, logging, sleeping, network work, or
+/// contended locking. Failure leaves the destination as silence.
+- (BOOL)renderPlayoutInterleavedStereoInt16:(int16_t *)samples
+                                  frameCount:(NSUInteger)frameCount
+    NS_SWIFT_NAME(renderPlayoutInterleavedStereoInt16(_:frameCount:));
+
 /// Pulls one arbitrary-size playout block without opening hardware. Production Mac hosts are
 /// send-only; this explicit pull exists for embedders and deterministic headless codec tests.
 - (BOOL)pullHeadlessPlayoutFrames:(NSUInteger)frameCount;
+
+#if DEBUG
+/// Holds a caller-owned playout pull after it has entered the production
+/// lifetime gate, allowing tests to prove StopPlayout waits for that pull.
+- (void)holdPlayoutPullsForTesting;
+- (void)releasePlayoutPullsForTesting;
+@property(nonatomic, readonly) BOOL playoutPullIsHeldForTesting;
+- (BOOL)stopPlayoutAndFenceForTesting;
+#endif
 
 @property(nonatomic, readonly) ASMacStereoAudioDeviceDiagnostics diagnostics;
 

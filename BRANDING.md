@@ -3,11 +3,12 @@
 The product, repository, app display name, Xcode project, build products, host bundle name,
 packages, services, scripts, and documentation use the lowercase name **opensteamer**.
 
+The production iOS bundle identifier is `com.elamin.AudioStreamer`. App Store and TestFlight
+release builds must keep that identity so they update the installed app and retain its container and
+default Keychain access group.
+
 Some pre-rebrand identifiers are intentionally immutable compatibility data rather than branding:
 
-- The production iOS bundle identifier stays `org.example.AudioStreamer` so an App Store or
-  TestFlight release remains an update to the installed app and retains its container and default
-  Keychain access group.
 - The iOS Keychain service stays `org.example.AudioStreamer`, and the macOS host keeps its shipped
   bundle and Keychain identifiers, so activation state, durable pairings, and macOS privacy grants
   survive the rename.

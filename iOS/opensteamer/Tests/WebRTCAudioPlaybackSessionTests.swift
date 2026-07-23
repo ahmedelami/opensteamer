@@ -24,6 +24,164 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         XCTAssertFalse(authorization.isValid)
     }
 
+    func testMicrophoneAuthorizationRejectsSideEffectsAfterRevocation() {
+        let authorization = WebRTCIOSMicrophoneAuthorization()
+        let counter = LockedInteger()
+
+        authorization.revoke()
+
+        XCTAssertFalse(
+            authorization.performIfValidForTesting {
+                counter.increment()
+            }
+        )
+        XCTAssertEqual(counter.value, 0)
+    }
+
+    func testMicrophoneRealtimeGateRevocationDrainsExactAdmission() {
+        let authorization = WebRTCIOSMicrophoneAuthorization()
+        let revokeFinished = DispatchSemaphore(value: 0)
+
+        XCTAssertTrue(authorization.debugBeginRealtimeAdmissionForTesting())
+        DispatchQueue.global(qos: .userInitiated).async {
+            authorization.revoke()
+            revokeFinished.signal()
+        }
+
+        authorization.waitForRealtimeGateClosureForTesting()
+        XCTAssertEqual(revokeFinished.wait(timeout: .now()), .timedOut)
+
+        authorization.debugEndRealtimeAdmissionForTesting()
+        XCTAssertEqual(revokeFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertFalse(authorization.isValid)
+    }
+
+    func testMicrophoneRealtimeGateRejectsAdmissionAfterRevokeReturns() {
+        let authorization = WebRTCIOSMicrophoneAuthorization()
+
+        authorization.revoke()
+
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertFalse(authorization.debugBeginRealtimeAdmissionForTesting())
+    }
+
+    func testDeviceRealtimeGateClosureDrainsExactAdmissionBeforeReset() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        let authorization = WebRTCIOSMicrophoneAuthorization()
+        let closeFinished = DispatchSemaphore(value: 0)
+        defer { _ = harness.debugTerminateForTesting() }
+
+        harness.debugInstallMicrophoneAuthorizationForTesting(authorization)
+        XCTAssertTrue(harness.debugPublishCurrentMicrophoneAuthorizationForTesting())
+        XCTAssertTrue(harness.debugBeginRealtimeAdmissionForTesting())
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            harness.debugCloseAndFenceRealtimeGateForTesting()
+            closeFinished.signal()
+        }
+
+        harness.waitForRealtimeGateClosureForTesting()
+        XCTAssertEqual(closeFinished.wait(timeout: .now()), .timedOut)
+        XCTAssertTrue(authorization.isValid)
+
+        harness.debugEndRealtimeAdmissionForTesting()
+        XCTAssertEqual(closeFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertFalse(harness.debugBeginRealtimeAdmissionForTesting())
+    }
+
+    func testInvalidMicrophoneAuthorizationCannotOpenDeviceGate() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        let authorization = WebRTCIOSMicrophoneAuthorization()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        authorization.revoke()
+        harness.debugInstallMicrophoneAuthorizationForTesting(authorization)
+
+        XCTAssertFalse(harness.debugPublishCurrentMicrophoneAuthorizationForTesting())
+        XCTAssertFalse(harness.debugBeginRealtimeAdmissionForTesting())
+    }
+
+    func testReplacingAuthorizationPreservesExactAdmittedGateIdentity() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        let first = WebRTCIOSMicrophoneAuthorization()
+        let second = WebRTCIOSMicrophoneAuthorization()
+        let replacementFinished = DispatchSemaphore(value: 0)
+        defer { _ = harness.debugTerminateForTesting() }
+
+        harness.debugInstallMicrophoneAuthorizationForTesting(first)
+        XCTAssertTrue(harness.debugPublishCurrentMicrophoneAuthorizationForTesting())
+        XCTAssertTrue(harness.debugBeginRealtimeAdmissionForTesting())
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            harness.debugInstallMicrophoneAuthorizationForTesting(second)
+            replacementFinished.signal()
+        }
+
+        harness.waitForRealtimeGateClosureForTesting()
+        XCTAssertEqual(replacementFinished.wait(timeout: .now()), .timedOut)
+        XCTAssertTrue(first.isValid)
+        XCTAssertTrue(second.isValid)
+
+        harness.debugEndRealtimeAdmissionForTesting()
+        XCTAssertEqual(replacementFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertFalse(first.isValid)
+        XCTAssertTrue(second.isValid)
+
+        XCTAssertTrue(harness.debugPublishCurrentMicrophoneAuthorizationForTesting())
+        XCTAssertTrue(harness.debugBeginRealtimeAdmissionForTesting())
+        harness.debugEndRealtimeAdmissionForTesting()
+    }
+
+    func testTerminalDebugTeardownFencesAdmissionThenRevokesAuthorization() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        let authorization = WebRTCIOSMicrophoneAuthorization()
+        let terminateFinished = DispatchSemaphore(value: 0)
+
+        harness.debugInstallMicrophoneAuthorizationForTesting(authorization)
+        XCTAssertTrue(harness.debugPublishCurrentMicrophoneAuthorizationForTesting())
+        XCTAssertTrue(harness.debugBeginRealtimeAdmissionForTesting())
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = harness.debugTerminateForTesting()
+            terminateFinished.signal()
+        }
+
+        harness.waitForRealtimeGateClosureForTesting()
+        XCTAssertEqual(terminateFinished.wait(timeout: .now()), .timedOut)
+        XCTAssertTrue(authorization.isValid)
+
+        harness.debugEndRealtimeAdmissionForTesting()
+        XCTAssertEqual(terminateFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertFalse(harness.debugPublishCurrentMicrophoneAuthorizationForTesting())
+        XCTAssertFalse(harness.debugBeginRealtimeAdmissionForTesting())
+        XCTAssertTrue(harness.debugTerminateForTesting())
+    }
+
+    func testDevicePublicationStartsClosedAndOpensOnlyCurrentAuthorization() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        let first = WebRTCIOSMicrophoneAuthorization()
+        let second = WebRTCIOSMicrophoneAuthorization()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertFalse(harness.debugBeginRealtimeAdmissionForTesting())
+
+        harness.debugInstallMicrophoneAuthorizationForTesting(first)
+        XCTAssertFalse(harness.debugBeginRealtimeAdmissionForTesting())
+        XCTAssertTrue(harness.debugPublishCurrentMicrophoneAuthorizationForTesting())
+        XCTAssertTrue(harness.debugBeginRealtimeAdmissionForTesting())
+        harness.debugEndRealtimeAdmissionForTesting()
+
+        harness.debugInstallMicrophoneAuthorizationForTesting(second)
+        XCTAssertFalse(first.isValid)
+        XCTAssertTrue(second.isValid)
+        XCTAssertFalse(harness.debugBeginRealtimeAdmissionForTesting())
+
+        XCTAssertTrue(harness.debugPublishCurrentMicrophoneAuthorizationForTesting())
+        XCTAssertTrue(harness.debugBeginRealtimeAdmissionForTesting())
+        harness.debugEndRealtimeAdmissionForTesting()
+    }
+
     func testRecoveryAuthorizationRevocationWaitsForAuthorizedNativeBoundary() {
         let authorization = WebRTCIOSPlayoutRecoveryAuthorization()
         let operationStarted = DispatchSemaphore(value: 0)

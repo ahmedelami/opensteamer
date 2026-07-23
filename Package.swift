@@ -37,6 +37,10 @@ let package = Package(
             name: "CaptureServer",
             dependencies: [
                 "CaptureCore",
+                .target(
+                    name: "MacWebRTCAudioDeviceShim",
+                    condition: .when(platforms: [.macOS])
+                ),
                 "RemoteSessionCore",
                 "Server",
                 "Streaming",
@@ -219,7 +223,13 @@ let package = Package(
                     condition: .when(platforms: [.macOS])
                 )
             ],
-            path: "shared/Tests/MacWebRTCAudioDeviceShimTests"
+            path: "shared/Tests/MacWebRTCAudioDeviceShimTests",
+            swiftSettings: [
+                .unsafeFlags(
+                    ["-Xcc", "-DDEBUG=1"],
+                    .when(configuration: .debug)
+                )
+            ]
         )
     ]
 )

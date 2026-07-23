@@ -389,6 +389,30 @@ struct BrowserView: View {
             .accessibilityValue(activeSession.audioStateText)
             .accessibilityIdentifier("worldwideAudioState")
 
+        LabeledContent(
+            "iPhone Microphone",
+            value: worldwideViewModel.microphoneStateText
+        )
+        .accessibilityIdentifier("worldwideMicrophoneState")
+
+        Button {
+            worldwideViewModel.toggleIPhoneMicrophone()
+        } label: {
+            Label(
+                worldwideViewModel.iPhoneMicrophoneButtonTitle,
+                systemImage: worldwideViewModel.microphoneIntentEnabled
+                    ? "mic.slash.fill"
+                    : "mic.fill"
+            )
+        }
+        .disabled(!worldwideViewModel.canToggleIPhoneMicrophone)
+        .accessibilityIdentifier("toggleWorldwideIPhoneMicrophone")
+
+        if let microphoneError = worldwideViewModel.microphoneError {
+            Label(microphoneError, systemImage: "mic.slash")
+                .foregroundStyle(.orange)
+        }
+
         if let oracle = worldwideViewModel.audioPlayoutOracle {
             Color.clear
             .frame(width: 1, height: 1)

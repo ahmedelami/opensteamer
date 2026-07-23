@@ -1,19 +1,127 @@
 @preconcurrency import LiveKitWebRTC
 #if os(macOS)
+import AudioToolbox
 import MacWebRTCAudioDeviceShim
 #endif
 import AVFoundation
 import CoreMedia
 import Foundation
 
-/// A remote WebRTC audio track with an explicit lifetime, mute gate, and decoded-PCM sink API.
+#if os(macOS)
+/// Caller-owned, allocation-free pull boundary for decoded WebRTC playout.
+///
+/// The Core Audio output-device clock supplies the destination memory. Native
+/// WebRTC writes directly into it; an inactive or unavailable source returns
+/// silence without an application ring or timer.
+public final class WebRTCMacDecodedAudioSource: @unchecked Sendable {
+    private let device: ASMacStereoAudioDevice
+
+    init(device: ASMacStereoAudioDevice) {
+        self.device = device
+    }
+
+    public func renderInterleavedStereoInt16(
+        into samples: UnsafeMutablePointer<Int16>,
+        frameCount: Int
+    ) -> Bool {
+        guard frameCount > 0 else { return false }
+        return device.renderPlayoutInterleavedStereoInt16(
+            samples,
+            frameCount: UInt(frameCount)
+        )
+    }
+}
+
+/// Lock-free publication boundary between a realtime AudioQueue callback and
+/// its non-realtime lifecycle owner.
+public final class WebRTCMacAudioQueueRuntimeFailureLatch: @unchecked Sendable {
+    @usableFromInline
+    let native: UnsafeMutableRawPointer
+
+    public init?() {
+        guard let native = ASMacAudioQueueRuntimeFailureLatchCreate() else {
+            return nil
+        }
+        self.native = native
+    }
+
+    deinit {
+        ASMacAudioQueueRuntimeFailureLatchDestroy(native)
+    }
+
+    /// Begins a fresh lifecycle while no callback from the prior lifecycle is active.
+    @inlinable
+    @inline(__always)
+    public func reset() {
+        ASMacAudioQueueRuntimeFailureLatchReset(native)
+    }
+
+    /// Publishes the first nonzero status using one lock-free C11 atomic operation.
+    @inlinable
+    @inline(__always)
+    public func publish(_ status: OSStatus) {
+        ASMacAudioQueueRuntimeFailureLatchPublish(native, status)
+    }
+
+    /// Returns the first published status to exactly one non-realtime consumer.
+    public func take() -> OSStatus? {
+        var status: Int32 = noErr
+        guard ASMacAudioQueueRuntimeFailureLatchTake(native, &status) else {
+            return nil
+        }
+        return status
+    }
+}
+#endif
+
+/// One modern Unified Plan callback's audio track and its authoritative native receiver identity.
+///
+/// `RTCRtpReceiver.track` may return a fresh native wrapper on every read, so this value never
+/// uses Swift or Objective-C object identity for receiver classification or deduplication.
+struct WebRTCNativeRemoteAudioReceiverTrack: @unchecked Sendable {
+    fileprivate let nativeTrack: LKRTCAudioTrack
+    let receiverID: String
+    let nativeTrackID: String
+
+    init(_ nativeTrack: LKRTCAudioTrack, receiverID: String) {
+        self.nativeTrack = nativeTrack
+        self.receiverID = receiverID
+        nativeTrackID = nativeTrack.trackId as String
+    }
+
+    var isEnabled: Bool {
+        nativeTrack.isEnabled
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        nativeTrack.isEnabled = enabled
+    }
+}
+
+/// A peer-classified remote WebRTC audio lane with an explicit lifetime and native mute gate.
 public final class WebRTCRemoteAudioTrack: @unchecked Sendable {
     private let nativeTrack: LKRTCAudioTrack
-    public let trackID: String
 
-    init(_ nativeTrack: LKRTCAudioTrack) {
-        self.nativeTrack = nativeTrack
-        trackID = nativeTrack.trackId as String
+    /// The stable native RTP receiver identity used by the owning peer for classification.
+    public let receiverID: String
+
+    /// The native media-track token. It is diagnostic metadata, not a lane/security identity.
+    public let nativeTrackID: String
+
+    /// Product-owned classification assigned only after the peer validates the native receiver.
+    public let logicalLane: WebRTCRemoteAudioLane
+
+    /// Compatibility spelling for the native track token.
+    public var trackID: String { nativeTrackID }
+
+    init(
+        _ receiverTrack: WebRTCNativeRemoteAudioReceiverTrack,
+        logicalLane: WebRTCRemoteAudioLane
+    ) {
+        nativeTrack = receiverTrack.nativeTrack
+        receiverID = receiverTrack.receiverID
+        nativeTrackID = receiverTrack.nativeTrackID
+        self.logicalLane = logicalLane
     }
 
     /// Whether decoded samples from this track may reach native playout.
@@ -24,10 +132,6 @@ public final class WebRTCRemoteAudioTrack: @unchecked Sendable {
     /// Opens or closes the native track's playout gate.
     public func setEnabled(_ enabled: Bool) {
         nativeTrack.isEnabled = enabled
-    }
-
-    func wrapsSameNativeTrack(as other: WebRTCRemoteAudioTrack) -> Bool {
-        nativeTrack === other.nativeTrack
     }
 
     #if DEBUG
@@ -1237,8 +1341,8 @@ private final class LiveKitWebRTCAudioSessionController: WebRTCAudioSessionContr
 }
 #endif
 
-/// Controls only WebRTC's manual global audio gate on iOS. The injected output-only audio device
-/// is the sole owner of AVAudioSession configuration/activation and of the RemoteIO instance.
+/// Controls only WebRTC's manual global audio gate on iOS. The injected conditional-duplex
+/// device is the sole owner of AVAudioSession configuration/activation and RemoteIO.
 public enum WebRTCAudioPlaybackFailureStage: String, Sendable {
     case configuration
     case activation
@@ -1270,7 +1374,7 @@ public struct WebRTCAudioPlaybackSessionError: LocalizedError, Sendable {
     }
 }
 
-/// Owns the iOS process-wide WebRTC playback gate while the custom output device owns audio I/O.
+/// Owns the process-wide WebRTC gate while the custom RemoteIO device owns audio I/O.
 @MainActor
 public final class WebRTCAudioPlaybackSession {
     #if os(iOS)
@@ -1300,7 +1404,7 @@ public final class WebRTCAudioPlaybackSession {
     }
     #endif
 
-    /// Opens WebRTC's manual audio gate for the custom output-only device.
+    /// Opens WebRTC's manual audio gate for the custom RemoteIO device.
     public func activate() throws {
         #if os(iOS)
         try configureAndActivate()
@@ -1315,9 +1419,7 @@ public final class WebRTCAudioPlaybackSession {
     }
 
     /// Places WebRTC in manual-audio mode while keeping its process-wide native audio gate
-    /// closed. This is the only safe startup state while an iPhone cellular, FaceTime, or other
-    /// CallKit call owns the final system route: do not activate or reconfigure AVAudioSession,
-    /// and do not allow a queued RemoteIO rebuild to recreate call-quality playout.
+    /// closed. Actual interruptions and route-loss policy use this fail-closed boundary.
     public func prepareManualAudioDisabled() {
         #if os(iOS)
         session.prepareForManualAudio()

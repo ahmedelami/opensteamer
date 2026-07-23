@@ -177,9 +177,9 @@ function capture_production_installedRelease() {
     --timeout "${DEVICE_COMMAND_TIMEOUT_SECONDS}" \
     --json-output "${app_list}" >/dev/null
 
-  # Preserve the shipped bundle identity while validating the renamed visible product.
+  # Select the App Store/TestFlight production bundle while validating the visible product.
   jq -e \
-    --arg bundle "org.example.AudioStreamer" \
+    --arg bundle "com.elamin.AudioStreamer" \
     --arg build "${EXPECTED_BUILD}" '
     [.result.apps[] | select(.bundleIdentifier == $bundle)] as $matches
     | (($matches | length) == 1) and
@@ -191,7 +191,7 @@ function capture_production_installedRelease() {
   ' "${app_list}" >/dev/null
 
   jq -S \
-    --arg bundle "org.example.AudioStreamer" '
+    --arg bundle "com.elamin.AudioStreamer" '
     [.result.apps[] | select(.bundleIdentifier == $bundle)][0]
   ' "${app_list}" > "${candidate}"
 }

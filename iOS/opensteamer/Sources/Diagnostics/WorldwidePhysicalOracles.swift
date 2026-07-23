@@ -186,17 +186,27 @@ struct WorldwideAudioPlayoutOracleSnapshot: Equatable, Sendable {
     static func routeInvariantsHold(
         _ diagnostics: WebRTCIOSPlayoutDiagnostics
     ) -> Bool {
-        diagnostics.initialized
+        let categoryMatchesInputPolicy: Bool
+        if diagnostics.inputBusEnabled {
+            categoryMatchesInputPolicy =
+                !diagnostics.categoryIsMediaPlayback
+                && diagnostics.categoryIsMediaPlayAndRecord
+        } else {
+            categoryMatchesInputPolicy =
+                diagnostics.categoryIsMediaPlayback
+                && !diagnostics.categoryIsMediaPlayAndRecord
+        }
+
+        return diagnostics.initialized
             && diagnostics.playoutInitialized
             && diagnostics.playing
             && diagnostics.sessionActive
             && diagnostics.ownsSessionActivation
             && diagnostics.remoteIOCreated
-            && !diagnostics.inputBusEnabled
             && diagnostics.outputBusEnabled
             && !diagnostics.recoveryRequired
             && !diagnostics.explicitResumeRequired
-            && diagnostics.categoryIsMediaPlayback
+            && categoryMatchesInputPolicy
             && diagnostics.modeIsDefault
             && diagnostics.categoryOptionsAreEmpty
             && diagnostics.routeSharingPolicyIsDefault

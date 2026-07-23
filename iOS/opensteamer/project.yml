@@ -25,29 +25,37 @@ targets:
         product: Streaming
       - package: opensteamer
         product: WebRTCTransport
+    attributes:
+      ProvisioningStyle: Automatic
     settings:
       base:
-        # The shipped identity intentionally keeps its legacy spelling. Changing it would create a
-        # different App Store app/container and revoke access to the existing default Keychain group.
-        PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer
-        CODE_SIGN_STYLE: Automatic
         INFOPLIST_FILE: Sources/Support/Info.plist
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 1
         TARGETED_DEVICE_FAMILY: 1
         SWIFT_VERSION: 6.0
-        # Public source does not embed a maintainer endpoint. Supply this build setting locally.
+        # Development builds remain endpoint-free unless explicitly overridden.
         OPENSTEAMER_RENDEZVOUS_URL: ""
-        # One-release build-pipeline fallback. Keep the old input readable while deployments move
-        # to OPENSTEAMER_RENDEZVOUS_URL; it is not user-visible branding or a persistence key.
+        # Keep the pre-rebrand Info.plist input available in development without changing its
+        # compatibility role; Release supplies the same production origin to both inputs.
         AUDIOSTREAMER_RENDEZVOUS_URL: ""
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:
         Debug:
+          CODE_SIGN_STYLE: Automatic
           # Keep XCTest/development installs beside a distribution build instead of
           # replacing its container during physical-device validation. This identifier is also
           # stable because the install-over-update oracle addresses the same development container.
           PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev
+        Release:
+          # App Store Connect/TestFlight production identity. Legacy Keychain service and
+          # protocol literals remain org.example.AudioStreamer compatibility data.
+          PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer
+          DEVELOPMENT_TEAM: MSMG8CJLB3
+          CURRENT_PROJECT_VERSION: 32
+          CODE_SIGN_STYLE: Automatic
+          OPENSTEAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
+          AUDIOSTREAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
     scheme:
       testTargets:
         - opensteamerTests

@@ -146,4 +146,88 @@ final class OpusStereoSDPTests: XCTestCase {
             "a=fmtp:109 useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=192000"
         ))
     }
+
+    func testTwoAudioSectionOfferAndAnswerKeepIndependentOpusPolicies() throws {
+        let nativeOffer = [
+            "v=0",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 109",
+            "a=mid:system",
+            "a=rtpmap:109 opus/48000/2",
+            "a=fmtp:109 useinbandfec=1",
+            "a=sendonly",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 120",
+            "a=mid:microphone",
+            "a=rtpmap:120 opus/48000/2",
+            "a=fmtp:120 useinbandfec=1",
+            "a=recvonly"
+        ].joined(separator: "\r\n")
+
+        let stereoOffer = OpusStereoSDP.applyingHighFidelityPolicy(
+            to: nativeOffer,
+            mediaMID: "system"
+        )
+        let productOffer = IPhoneMicrophoneSDP.applyingMonoPolicy(
+            to: stereoOffer,
+            microphoneMID: "microphone"
+        )
+        let offerSections = audioSections(in: productOffer)
+        XCTAssertEqual(offerSections.count, 2)
+        XCTAssertTrue(
+            offerSections[0].contains(
+                "stereo=1;sprop-stereo=1;maxaveragebitrate=192000"
+            )
+        )
+        XCTAssertTrue(offerSections[1].contains("stereo=0;sprop-stereo=0"))
+        XCTAssertFalse(
+            offerSections[1].contains("maxaveragebitrate=192000")
+        )
+
+        let nativeAnswer = [
+            "v=0",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 109",
+            "a=mid:system",
+            "a=rtpmap:109 opus/48000/2",
+            "a=fmtp:109 useinbandfec=1",
+            "a=recvonly",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 120",
+            "a=mid:microphone",
+            "a=rtpmap:120 opus/48000/2",
+            "a=fmtp:120 useinbandfec=1",
+            "a=sendonly"
+        ].joined(separator: "\r\n")
+        let stereoAnswer = OpusStereoSDP.applyingHighFidelityAnswerPolicy(
+            to: nativeAnswer,
+            remoteOffer: productOffer,
+            mediaMID: "system"
+        )
+        let productAnswer = IPhoneMicrophoneSDP.applyingMonoPolicy(
+            to: stereoAnswer,
+            microphoneMID: "microphone"
+        )
+        let answerSections = audioSections(in: productAnswer)
+        XCTAssertEqual(answerSections.count, 2)
+        XCTAssertTrue(
+            answerSections[0].contains(
+                "stereo=1;sprop-stereo=1;maxaveragebitrate=192000"
+            )
+        )
+        XCTAssertTrue(answerSections[1].contains("stereo=0;sprop-stereo=0"))
+        XCTAssertFalse(
+            answerSections[1].contains("maxaveragebitrate=192000")
+        )
+    }
+}
+
+private func audioSections(in sdp: String) -> [String] {
+    let lines = sdp
+        .replacingOccurrences(of: "\r\n", with: "\n")
+        .split(separator: "\n", omittingEmptySubsequences: false)
+        .map(String.init)
+    let starts = lines.indices.filter { lines[$0].hasPrefix("m=audio ") }
+    return starts.enumerated().map { index, start in
+        let end = index + 1 < starts.count
+            ? starts[index + 1]
+            : lines.endIndex
+        return lines[start..<end].joined(separator: "\n")
+    }
 }
