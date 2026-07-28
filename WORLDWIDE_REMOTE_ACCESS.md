@@ -64,10 +64,14 @@ interleaved Int16 stereo, and feeds a custom input-only WebRTC device. Opus is n
 with a 192 kbps sender ceiling.
 
 iOS pulls decoded stereo directly from one custom RemoteIO device. The default
-policy is output-only `AVAudioSession` playback/default. An explicit UI action,
-granted microphone permission, current session authorization, and healthy
-peer/ICE/control state can rebuild the same device as playAndRecord/default,
-enable input bus 1, and send a separate 48 kHz mono Opus track with stable ID
+policy is output-only `AVAudioSession` playback/default. For production sessions
+handed off by authenticated pairing or reconnect, the first current-generation
+healthy peer/ICE/control boundary automatically establishes microphone intent and,
+while the app is active, requests permission once for that media session. The manual
+toggle remains an override; denial or a manual turn-off does not loop or auto-resume
+in that session. Granted permission, current session authorization, and healthy
+peer/ICE/control state can rebuild the same device as playAndRecord/default, enable
+input bus 1, and send a separate 48 kHz mono Opus track with stable ID
 `iphone-microphone`. VoiceProcessingIO and voice/chat modes are not used.
 
 The Mac offers that second audio transceiver as recvOnly and accepts only the
@@ -75,6 +79,26 @@ The Mac offers that second audio transceiver as recvOnly and accepts only the
 BlackHole 2ch device by stable UID, allowing ordinary Mac dictation or recording
 software to select BlackHole as an input. opensteamer does not mutate any global
 input, output, or system-output default.
+
+BlackHole discovery is read-only. The host registers a Core Audio device-list
+listener before its initial inventory read and publishes an epoch plus a monotonic
+device generation. Each output attempt is bound to that exact monitor snapshot,
+peer generation, transport-authorization epoch, and remote-track generation. Device
+removal, transport uncertainty, or a runtime AudioQueue failure synchronously mutes
+the exact current track and retires only its owning output. A later device or
+transport generation can retry once without allowing stale completions to affect a
+replacement.
+
+AudioQueue startup alone is not considered ready. A forwarding snapshot reports the
+policy, phase, device and transport generations, exact admission state, and lock-free
+post-start callback progress. Readiness requires a successful decoded pull; continuing
+health requires two bounded observations with advancing callback and successful-frame
+counts. These counters prove forwarding activity, not nonzero acoustic content.
+
+When trusted-LAN services coexist with worldwide mode, iPhone-microphone forwarding
+is suppressed for both BlackHole-input and ScreenCaptureKit LAN capture. This prevents
+a local capture/forwarding loop without stopping worldwide signaling, system audio,
+screen viewing, control, remote input, or either LAN listener.
 
 Backgrounding hides video and revokes remote input while retaining healthy
 audio. A bare CallKit transition revokes microphone capture but does not
@@ -138,6 +162,13 @@ dependencies.
 | Remote-input native target mutation | Physical target-state oracle still required |
 | Final speaker/headphone fidelity | External source-correlated acoustic capture still required |
 | Cryptographic screen-source/GPU presentation proof | Still required |
+
+Worldwide-only BlackHole acceptance must record the default input, default output,
+and system-output UIDs before and after forwarding and require them to remain
+unchanged. It must also open BlackHole's input side by the stable UID, drive a known
+time-varying remote microphone challenge, and independently require advancing frames
+and pattern recognition. A forwarding snapshot or successful AudioQueue start is not
+host-visible PCM proof.
 
 App-observable RemoteIO PCM is the final boundary the app can inspect, not proof of the later iOS
 mixer, route processing, DAC, speaker, or headphones. See [TESTING_ORACLES.md](TESTING_ORACLES.md)

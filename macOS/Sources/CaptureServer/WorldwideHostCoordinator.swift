@@ -33,6 +33,8 @@ actor WorldwideHostCoordinator {
     private let framesPerSecond: Int
     private let maximumVideoBitrate: Int
     private let remoteInputController: MacRemoteInputController
+    private let iPhoneMicrophoneForwardingPolicy:
+        WorldwideIPhoneMicrophoneForwardingPolicy
     private let store: WorldwidePairingStore
     private let logger: Logger
     private let hostDisplayName: String?
@@ -67,6 +69,8 @@ actor WorldwideHostCoordinator {
         framesPerSecond: Int,
         maximumVideoBitrate: Int,
         remoteInputController: MacRemoteInputController,
+        iPhoneMicrophoneForwardingPolicy:
+            WorldwideIPhoneMicrophoneForwardingPolicy = .enabled,
         store: WorldwidePairingStore = WorldwidePairingStore(),
         hostDisplayName: String? = Host.current().localizedName,
         availabilityClientFactory: @escaping @Sendable (
@@ -99,6 +103,8 @@ actor WorldwideHostCoordinator {
         self.framesPerSecond = framesPerSecond
         self.maximumVideoBitrate = maximumVideoBitrate
         self.remoteInputController = remoteInputController
+        self.iPhoneMicrophoneForwardingPolicy =
+            iPhoneMicrophoneForwardingPolicy
         self.store = store
         self.hostDisplayName = hostDisplayName
         makeAvailabilityClient = availabilityClientFactory
@@ -181,6 +187,17 @@ actor WorldwideHostCoordinator {
     /// Performs idempotent, ordered shutdown of every child service and completion stream.
     func stop() async {
         await shutdown(throwing: nil)
+    }
+
+    /// Returns the current forwarding boundary without treating absence as failure.
+    func iPhoneMicrophoneForwardingSnapshot() async
+        -> WorldwideIPhoneMicrophoneForwardingHostSnapshot {
+        guard let mediaService else {
+            return .inactive(
+                policy: iPhoneMicrophoneForwardingPolicy
+            )
+        }
+        return await mediaService.iPhoneMicrophoneForwardingSnapshot()
     }
 
     // MARK: - Pairing completion
@@ -521,6 +538,8 @@ actor WorldwideHostCoordinator {
             framesPerSecond: framesPerSecond,
             maximumVideoBitrate: maximumVideoBitrate,
             remoteInputController: remoteInputController,
+            iPhoneMicrophoneForwardingPolicy:
+                iPhoneMicrophoneForwardingPolicy,
             logger: logger
         )
         try lifecycle.mediaStarted(exchangeID: exchangeID)

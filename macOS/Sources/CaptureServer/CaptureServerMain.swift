@@ -107,6 +107,8 @@ struct CaptureServerMain {
                     framesPerSecond: options.screenFramesPerSecond,
                     maximumVideoBitrate: Int(options.screenBitrate),
                     remoteInputController: remoteInputController,
+                    iPhoneMicrophoneForwardingPolicy:
+                        options.iPhoneMicrophoneForwardingPolicy,
                     connectionTelemetry: LocalConnectionTelemetryJournal.applicationSupport(
                         component: "mac-host"
                     ),

@@ -76,6 +76,53 @@ FOUNDATION_EXPORT bool ASMacAudioQueueRuntimeFailureLatchTake(
     int32_t *status
 );
 
+/// Opaque lock-free post-start progress for one AudioQueue lifecycle.
+///
+/// Priming is deliberately excluded. The owner resets before startup, marks the
+/// queue running only after AudioQueueStart succeeds, and publishes only from
+/// admitted realtime callbacks.
+typedef void *ASMacAudioQueueProgressRef;
+
+typedef struct ASMacAudioQueueProgressSnapshot {
+    bool queueRunning;
+    uint64_t postStartCallbackCount;
+    uint64_t requestedFrameCount;
+    uint64_t successfulPullCount;
+    uint64_t successfulFrameCount;
+    uint64_t silenceFallbackCount;
+    uint64_t silenceFrameCount;
+    uint64_t enqueueFailureCount;
+    int32_t lastEnqueueStatus;
+} ASMacAudioQueueProgressSnapshot;
+
+FOUNDATION_EXPORT ASMacAudioQueueProgressRef _Nullable
+ASMacAudioQueueProgressCreate(void);
+
+FOUNDATION_EXPORT void ASMacAudioQueueProgressDestroy(
+    ASMacAudioQueueProgressRef progress
+);
+
+FOUNDATION_EXPORT void ASMacAudioQueueProgressReset(
+    ASMacAudioQueueProgressRef progress
+);
+
+FOUNDATION_EXPORT void ASMacAudioQueueProgressSetQueueRunning(
+    ASMacAudioQueueProgressRef progress,
+    bool queueRunning
+);
+
+FOUNDATION_EXPORT void ASMacAudioQueueProgressPublish(
+    ASMacAudioQueueProgressRef progress,
+    uint64_t requestedFrameCount,
+    bool pullSucceeded,
+    int32_t enqueueStatus
+);
+
+FOUNDATION_EXPORT ASMacAudioQueueProgressSnapshot
+ASMacAudioQueueProgressRead(
+    ASMacAudioQueueProgressRef progress
+);
+
 /// A lock-consistent cumulative snapshot of the source-clock custom device.
 ///
 /// Every successful input callback is captured Mac PCM. There is no recording timer, ring,
@@ -134,6 +181,12 @@ typedef struct ASMacStereoAudioDeviceDiagnostics {
 /// restart increments the generation and therefore fails closed until the peer re-verifies its
 /// raw APM state and approves again.
 - (BOOL)approveCurrentRecordingGeneration;
+
+/// Admits source PCM only if `recordingGeneration` is the exact current
+/// nonzero StartRecording generation.
+- (BOOL)approveRecordingGeneration:(uint64_t)recordingGeneration
+    NS_SWIFT_NAME(approveRecordingGeneration(_:));
+
 - (void)revokeRecordingAdmission;
 
 /// Pulls decoded stereo PCM directly into caller-owned output-device memory.

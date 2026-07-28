@@ -3,9 +3,174 @@ import AVFoundation
 import CoreMedia
 import CoreVideo
 import Foundation
+@preconcurrency import LiveKitWebRTC
 import RemoteSessionCore
 @testable import WebRTCTransport
 import XCTest
+
+private final class SenderStatisticsIdentity {}
+
+private final class SemanticNativeWrapper: NSObject {
+    let stableIdentity: String
+
+    init(stableIdentity: String) {
+        self.stableIdentity = stableIdentity
+        super.init()
+    }
+
+    override func isEqual(_ object: Any?) -> Bool {
+        (object as? SemanticNativeWrapper)?.stableIdentity
+            == stableIdentity
+    }
+
+    override var hash: Int { stableIdentity.hashValue }
+}
+
+private func admittedIPhoneMicrophoneSenderDiagnostics(
+    peerEpoch: UUID = UUID(
+        uuidString: "10000000-0000-0000-0000-000000000001"
+    )!,
+    bindingGeneration: UInt64 = 3,
+    negotiationEpoch: UInt64 = 5,
+    trackGeneration: UInt64 = 7,
+    microphonePolicyGeneration: UInt64 = 11,
+    recordingGeneration: UInt64 = 13,
+    realtimeAdmissionCount: UInt64 = 100,
+    deliveryCallbackCount: UInt64 = 100,
+    deliveredFrameCount: UInt64 = 48_000,
+    transportIsHealthy: Bool = true,
+    trackIsEnabled: Bool = true,
+    rawProcessingIsLive: Bool = true,
+    transceiverIsStopped: Bool = false,
+    preferredDirectionIncludesSending: Bool = true,
+    currentDirectionIncludesSending: Bool = true
+) -> WebRTCIPhoneMicrophoneSenderDiagnostics {
+    WebRTCIPhoneMicrophoneSenderDiagnostics(
+        peerEpoch: peerEpoch,
+        bindingGeneration: bindingGeneration,
+        negotiationEpoch: negotiationEpoch,
+        trackGeneration: trackGeneration,
+        microphonePolicyGeneration:
+            microphonePolicyGeneration,
+        senderOwnsMID: true,
+        senderOwnsLocalTrack: true,
+        transceiverIsStopped: transceiverIsStopped,
+        preferredDirectionIncludesSending:
+            preferredDirectionIncludesSending,
+        currentDirectionIncludesSending:
+            currentDirectionIncludesSending,
+        trackIsEnabled: trackIsEnabled,
+        rawProcessingIsLive: rawProcessingIsLive,
+        transportIsHealthy: transportIsHealthy,
+        authorizationIsCurrent: true,
+        authorizationIsValid: true,
+        senderIsAdmitted:
+            !transceiverIsStopped
+                && preferredDirectionIncludesSending
+                && currentDirectionIncludesSending
+                && transportIsHealthy
+                && trackIsEnabled
+                && rawProcessingIsLive,
+        nativeDeviceIsOpen: true,
+        nativeDeviceGateIsOpen: true,
+        nativeAuthorizationGateIsOpen: true,
+        categoryIsPlayAndRecord: true,
+        modeIsDefault: true,
+        usesRemoteIO: true,
+        inputBusEnabled: true,
+        outputBusEnabled: true,
+        categoryOptionsAreEmpty: true,
+        routeSharingPolicyIsDefault: true,
+        hasOutputRoute: true,
+        sampleRateIs48k: true,
+        ioBufferDurationIsBounded: true,
+        outputChannelCountIsStereo: true,
+        recoveryRequired: false,
+        explicitResumeRequired: false,
+        hostedCallMode: false,
+        failureCode: 0,
+        lastLifecycleStatus: 0,
+        recordingGeneration: recordingGeneration,
+        approvedRecordingGeneration: recordingGeneration,
+        realtimeAdmissionCount: realtimeAdmissionCount,
+        deliveryCallbackCount: deliveryCallbackCount,
+        deliveredFrameCount: deliveredFrameCount
+    )
+}
+
+private func senderStatisticsValidation(
+    peerEpoch: UUID = UUID(
+        uuidString: "10000000-0000-0000-0000-000000000001"
+    )!,
+    bindingGeneration: UInt64 = 3,
+    negotiationEpoch: UInt64 = 5,
+    trackGeneration: UInt64 = 7,
+    microphonePolicyGeneration: UInt64 = 11,
+    recordingGeneration: UInt64 = 13,
+    authorizationIdentity: ObjectIdentifier,
+    senderID: String = "exact-microphone-sender",
+    localTrackID: String = "iphone-microphone",
+    mid: String = "mic-mid"
+) -> WebRTCIPhoneMicrophoneSenderStatisticsValidation {
+    WebRTCIPhoneMicrophoneSenderStatisticsValidation(
+        peerEpoch: peerEpoch,
+        bindingGeneration: bindingGeneration,
+        negotiationEpoch: negotiationEpoch,
+        trackGeneration: trackGeneration,
+        microphonePolicyGeneration:
+            microphonePolicyGeneration,
+        recordingGeneration: recordingGeneration,
+        approvedRecordingGeneration: recordingGeneration,
+        authorizationIdentity: authorizationIdentity,
+        senderID: senderID,
+        localTrackID: localTrackID,
+        mid: mid
+    )
+}
+
+private func senderOutboundStatistics(
+    reportDate: Date,
+    outboundRTPRecordIDs: [String] = ["exact-outbound"],
+    packetsSent: UInt64 = 50,
+    bytesSent: UInt64 = 8_000,
+    totalAudioEnergy: Double? = 0.25,
+    totalSamplesDuration: Double? = 1,
+    sourceReportWasLinked: Bool = true
+) -> WebRTCIPhoneMicrophoneOutboundStatistics {
+    WebRTCIPhoneMicrophoneOutboundStatistics(
+        reportTimestampMicroseconds:
+            reportDate.timeIntervalSince1970 * 1_000_000,
+        outboundRTPRecordIDs: outboundRTPRecordIDs,
+        packetsSent: packetsSent,
+        bytesSent: bytesSent,
+        totalAudioEnergy: totalAudioEnergy,
+        totalSamplesDuration: totalSamplesDuration,
+        sourceReportWasLinked: sourceReportWasLinked
+    )
+}
+
+private func sampleIPhoneMicrophoneSenderStatistics(
+    parsed: WebRTCIPhoneMicrophoneOutboundStatistics?,
+    captured: WebRTCIPhoneMicrophoneSenderStatisticsValidation,
+    current: WebRTCIPhoneMicrophoneSenderStatisticsValidation?,
+    diagnostics: WebRTCIPhoneMicrophoneSenderDiagnostics?,
+    callbackCompletedAt: Date,
+    currentTime: Date,
+    previousBaseline:
+        WebRTCIPhoneMicrophoneSenderStatisticsBaseline? = nil,
+    requiresAdvancingEvidence: Bool = false
+) -> WebRTCIPhoneMicrophoneSenderStatisticsSamplingResult? {
+    WebRTCIPhoneMicrophoneSenderStatisticsSampler.evaluate(
+        parsed: parsed,
+        captured: captured,
+        current: current,
+        diagnostics: diagnostics,
+        callbackCompletedAt: callbackCompletedAt,
+        currentTime: currentTime,
+        previousBaseline: previousBaseline,
+        requiresAdvancingEvidence: requiresAdvancingEvidence
+    )
+}
 
 /// Exercises two real in-process native peers. Milestones, exact signaling counts, decoded PCM
 /// waveform evidence, media frames, and authorization revocation form the end-to-end oracles.
@@ -92,6 +257,992 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         }
     }
 #endif
+
+    func testIPhoneMicrophoneNativeOwnershipAcceptsRefreshedWrappersAndRejectsDifferentIdentity() {
+        let bindingTransceiver =
+            SemanticNativeWrapper(stableIdentity: "transceiver")
+        let refreshedTransceiver =
+            SemanticNativeWrapper(stableIdentity: "transceiver")
+        let bindingSender =
+            SemanticNativeWrapper(stableIdentity: "sender")
+        let refreshedSender =
+            SemanticNativeWrapper(stableIdentity: "sender")
+        let bindingTrack =
+            SemanticNativeWrapper(stableIdentity: "track")
+        let refreshedTrack =
+            SemanticNativeWrapper(stableIdentity: "track")
+
+        XCTAssertFalse(bindingTransceiver === refreshedTransceiver)
+        XCTAssertFalse(bindingSender === refreshedSender)
+        XCTAssertFalse(bindingTrack === refreshedTrack)
+
+        let isCurrent: (
+            SemanticNativeWrapper,
+            SemanticNativeWrapper,
+            SemanticNativeWrapper,
+            String
+        ) -> Bool = {
+            currentTransceiver,
+            currentSender,
+            currentTrack,
+            senderID in
+            WebRTCIPhoneMicrophoneNativeOwnership.isCurrent(
+                bindingTransceiver: bindingTransceiver,
+                currentTransceiver: currentTransceiver,
+                bindingSender: bindingSender,
+                currentSender: currentSender,
+                bindingTrack: bindingTrack,
+                currentTrack: currentTrack,
+                bindingMID: "mic-mid",
+                currentMID: "mic-mid",
+                bindingSenderID: "microphone-sender",
+                currentSenderID: senderID,
+                bindingTrackID: "iphone-microphone",
+                currentTrackID: "iphone-microphone"
+            )
+        }
+
+        XCTAssertTrue(
+            isCurrent(
+                refreshedTransceiver,
+                refreshedSender,
+                refreshedTrack,
+                "microphone-sender"
+            )
+        )
+        XCTAssertFalse(
+            isCurrent(
+                refreshedTransceiver,
+                refreshedSender,
+                refreshedTrack,
+                "different-sender"
+            )
+        )
+        XCTAssertFalse(
+            isCurrent(
+                SemanticNativeWrapper(
+                    stableIdentity: "different-transceiver"
+                ),
+                refreshedSender,
+                refreshedTrack,
+                "microphone-sender"
+            )
+        )
+    }
+
+    func testIPhoneMicrophoneTransceiverAdmissionRejectsStoppedInactiveAndRecvOnly() {
+        XCTAssertTrue(
+            WebRTCIPhoneMicrophoneTransceiverAdmission
+                .permitsNegotiatedSending(
+                    isStopped: false,
+                    preferredDirection: .sendOnly,
+                    currentDirection: .sendOnly
+                )
+        )
+        XCTAssertTrue(
+            WebRTCIPhoneMicrophoneTransceiverAdmission
+                .permitsNegotiatedSending(
+                    isStopped: false,
+                    preferredDirection: .sendRecv,
+                    currentDirection: .sendRecv
+                )
+        )
+        XCTAssertFalse(
+            WebRTCIPhoneMicrophoneTransceiverAdmission
+                .permitsNegotiatedSending(
+                    isStopped: true,
+                    preferredDirection: .sendOnly,
+                    currentDirection: .sendOnly
+                )
+        )
+        XCTAssertFalse(
+            WebRTCIPhoneMicrophoneTransceiverAdmission
+                .permitsNegotiatedSending(
+                    isStopped: false,
+                    preferredDirection: .sendOnly,
+                    currentDirection: nil
+                )
+        )
+
+        let nonSendingDirections: [LKRTCRtpTransceiverDirection] = [
+            .inactive,
+            .recvOnly,
+            .stopped,
+        ]
+        for direction in nonSendingDirections {
+            XCTAssertFalse(
+                WebRTCIPhoneMicrophoneTransceiverAdmission
+                    .permitsNegotiatedSending(
+                        isStopped: false,
+                        preferredDirection: direction,
+                        currentDirection: .sendOnly
+                    )
+            )
+            XCTAssertFalse(
+                WebRTCIPhoneMicrophoneTransceiverAdmission
+                    .permitsNegotiatedSending(
+                        isStopped: false,
+                        preferredDirection: .sendOnly,
+                        currentDirection: direction
+                    )
+            )
+        }
+    }
+
+    func testExactIPhoneMicrophoneSenderStatisticsSelectsOnlyItsOutboundRTPAndLinkedSource() throws {
+        func records(
+            exactPackets: UInt64,
+            exactBytes: UInt64,
+            otherPackets: UInt64,
+            otherBytes: UInt64
+        ) -> [WebRTCStatisticsRecord] {
+            [
+                WebRTCStatisticsRecord(
+                    id: "other-outbound",
+                    type: "outbound-rtp",
+                    values: [
+                        "kind": "audio",
+                        "senderId": "other-sender",
+                        "mid": "other-mid",
+                        "trackIdentifier": "other-track",
+                        "mediaSourceId": "other-source",
+                        "packetsSent": NSNumber(value: otherPackets),
+                        "bytesSent": NSNumber(value: otherBytes),
+                    ]
+                ),
+                WebRTCStatisticsRecord(
+                    id: "exact-outbound",
+                    type: "outbound-rtp",
+                    values: [
+                        "kind": "audio",
+                        "senderId": "exact-microphone-sender",
+                        "mid": "mic-mid",
+                        "trackIdentifier": "iphone-microphone",
+                        "mediaSourceId": "exact-source",
+                        "packetsSent": NSNumber(value: exactPackets),
+                        "bytesSent": NSNumber(value: exactBytes),
+                    ]
+                ),
+                WebRTCStatisticsRecord(
+                    id: "other-source",
+                    type: "media-source",
+                    values: [
+                        "kind": "audio",
+                        "trackIdentifier": "other-track",
+                        "totalAudioEnergy": NSNumber(value: 500.0),
+                        "totalSamplesDuration": NSNumber(value: 500.0),
+                    ]
+                ),
+                WebRTCStatisticsRecord(
+                    id: "exact-source",
+                    type: "media-source",
+                    values: [
+                        "kind": "audio",
+                        "trackIdentifier": "iphone-microphone",
+                        "totalAudioEnergy": NSNumber(value: 0.25),
+                        "totalSamplesDuration": NSNumber(value: 1.0),
+                    ]
+                ),
+            ]
+        }
+
+        let first = try XCTUnwrap(
+            WebRTCStatisticsParser.parseIPhoneMicrophoneSender(
+                records: records(
+                    exactPackets: 50,
+                    exactBytes: 8_000,
+                    otherPackets: 100,
+                    otherBytes: 16_000
+                ),
+                reportTimestampMicroseconds: 1_000_000,
+                expectedSenderID: "exact-microphone-sender",
+                expectedTrackID: "iphone-microphone",
+                expectedMID: "mic-mid"
+            )
+        )
+        XCTAssertEqual(first.packetsSent, 50)
+        XCTAssertEqual(first.bytesSent, 8_000)
+        XCTAssertEqual(first.reportTimestampMicroseconds, 1_000_000)
+        XCTAssertEqual(first.totalAudioEnergy, 0.25)
+        XCTAssertEqual(first.totalSamplesDuration, 1.0)
+        XCTAssertTrue(first.sourceReportWasLinked)
+
+        let otherSenderOnlyAdvanced = try XCTUnwrap(
+            WebRTCStatisticsParser.parseIPhoneMicrophoneSender(
+                records: records(
+                    exactPackets: 50,
+                    exactBytes: 8_000,
+                    otherPackets: 300,
+                    otherBytes: 64_000
+                ),
+                reportTimestampMicroseconds: 2_000_000,
+                expectedSenderID: "exact-microphone-sender",
+                expectedTrackID: "iphone-microphone",
+                expectedMID: "mic-mid"
+            )
+        )
+        XCTAssertEqual(
+            otherSenderOnlyAdvanced.packetsSent,
+            first.packetsSent
+        )
+        XCTAssertEqual(
+            otherSenderOnlyAdvanced.bytesSent,
+            first.bytesSent
+        )
+        XCTAssertEqual(
+            otherSenderOnlyAdvanced.totalAudioEnergy,
+            first.totalAudioEnergy
+        )
+    }
+
+    func testExactIPhoneMicrophoneSenderStatisticsAggregatesMultipleExactEncodingsSafely() throws {
+        func outbound(
+            id: String,
+            packets: UInt64,
+            bytes: UInt64,
+            energy: Double?,
+            duration: Double?,
+            includesIdentity: Bool = true,
+            mediaSourceID: String? = "exact-source"
+        ) -> WebRTCStatisticsRecord {
+            var values: [String: Any] = [
+                "kind": "audio",
+                "packetsSent": NSNumber(value: packets),
+                "bytesSent": NSNumber(value: bytes),
+            ]
+            if includesIdentity {
+                values["senderId"] = "exact-microphone-sender"
+                values["mid"] = "mic-mid"
+                values["trackIdentifier"] = "iphone-microphone"
+                if let mediaSourceID {
+                    values["mediaSourceId"] = mediaSourceID
+                }
+            }
+            if let energy, let duration {
+                values["totalAudioEnergy"] = NSNumber(value: energy)
+                values["totalSamplesDuration"] =
+                    NSNumber(value: duration)
+            }
+            return WebRTCStatisticsRecord(
+                id: id,
+                type: "outbound-rtp",
+                values: values
+            )
+        }
+
+        let source = WebRTCStatisticsRecord(
+            id: "exact-source",
+            type: "media-source",
+            values: [
+                "kind": "audio",
+                "trackIdentifier": "iphone-microphone",
+                "totalAudioEnergy": NSNumber(value: 0.3),
+                "totalSamplesDuration": NSNumber(value: 1.0),
+            ]
+        )
+        let exactRecords = [
+            outbound(
+                id: "exact-one",
+                packets: 10,
+                bytes: 1_000,
+                energy: 0.1,
+                duration: 0.4
+            ),
+            outbound(
+                id: "exact-two",
+                packets: 20,
+                bytes: 2_000,
+                energy: 0.2,
+                duration: 0.6
+            ),
+            source,
+        ]
+
+        let aggregated = try XCTUnwrap(
+            WebRTCStatisticsParser.parseIPhoneMicrophoneSender(
+                records: exactRecords,
+                reportTimestampMicroseconds: 3_000_000,
+                expectedSenderID: "exact-microphone-sender",
+                expectedTrackID: "iphone-microphone",
+                expectedMID: "mic-mid"
+            )
+        )
+        XCTAssertEqual(
+            aggregated.outboundRTPRecordIDs,
+            ["exact-one", "exact-two"]
+        )
+        XCTAssertEqual(aggregated.packetsSent, 30)
+        XCTAssertEqual(aggregated.bytesSent, 3_000)
+        XCTAssertEqual(
+            try XCTUnwrap(aggregated.totalAudioEnergy),
+            0.3,
+            accuracy: 0.000_000_001
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(aggregated.totalSamplesDuration),
+            1,
+            accuracy: 0.000_000_001
+        )
+        XCTAssertTrue(aggregated.sourceReportWasLinked)
+
+        let identifierFree = try XCTUnwrap(
+            WebRTCStatisticsParser.parseIPhoneMicrophoneSender(
+                records: [
+                    outbound(
+                        id: "generic-one",
+                        packets: 1,
+                        bytes: 100,
+                        energy: nil,
+                        duration: nil,
+                        includesIdentity: false,
+                        mediaSourceID: nil
+                    ),
+                    outbound(
+                        id: "generic-two",
+                        packets: 2,
+                        bytes: 200,
+                        energy: nil,
+                        duration: nil,
+                        includesIdentity: false,
+                        mediaSourceID: nil
+                    ),
+                ],
+                reportTimestampMicroseconds: 4_000_000,
+                expectedSenderID: "exact-microphone-sender",
+                expectedTrackID: "iphone-microphone",
+                expectedMID: "mic-mid"
+            )
+        )
+        XCTAssertEqual(
+            identifierFree.outboundRTPRecordIDs,
+            ["generic-one", "generic-two"]
+        )
+        XCTAssertEqual(identifierFree.packetsSent, 3)
+        XCTAssertEqual(identifierFree.bytesSent, 300)
+        XCTAssertFalse(identifierFree.sourceReportWasLinked)
+
+        let genericCollision = exactRecords + [
+            outbound(
+                id: "generic-collision",
+                packets: 500,
+                bytes: 50_000,
+                energy: nil,
+                duration: nil,
+                includesIdentity: false,
+                mediaSourceID: nil
+            ),
+        ]
+        XCTAssertNil(
+            WebRTCStatisticsParser.parseIPhoneMicrophoneSender(
+                records: genericCollision,
+                reportTimestampMicroseconds: 5_000_000,
+                expectedSenderID: "exact-microphone-sender",
+                expectedTrackID: "iphone-microphone",
+                expectedMID: "mic-mid"
+            )
+        )
+
+        let overflowRecords = [
+            outbound(
+                id: "overflow-one",
+                packets: 1,
+                bytes: UInt64(Int64.max),
+                energy: nil,
+                duration: nil,
+                mediaSourceID: nil
+            ),
+            outbound(
+                id: "overflow-two",
+                packets: 1,
+                bytes: 1,
+                energy: nil,
+                duration: nil,
+                mediaSourceID: nil
+            ),
+        ]
+        XCTAssertNil(
+            WebRTCStatisticsParser.parseIPhoneMicrophoneSender(
+                records: overflowRecords,
+                reportTimestampMicroseconds: 6_000_000,
+                expectedSenderID: "exact-microphone-sender",
+                expectedTrackID: "iphone-microphone",
+                expectedMID: "mic-mid"
+            )
+        )
+    }
+
+    func testExactIPhoneMicrophoneSenderStatisticsRejectsWrongAmbiguousAndMalformedReports() {
+        let validOutbound = WebRTCStatisticsRecord(
+            id: "exact-outbound",
+            type: "outbound-rtp",
+            values: [
+                "kind": "audio",
+                "senderId": "exact-microphone-sender",
+                "mid": "mic-mid",
+                "trackIdentifier": "iphone-microphone",
+                "packetsSent": NSNumber(value: 10),
+                "bytesSent": NSNumber(value: 1_000),
+            ]
+        )
+
+        let malformed: [(String, [WebRTCStatisticsRecord])] = [
+            (
+                "wrong sender",
+                [
+                    WebRTCStatisticsRecord(
+                        id: "wrong",
+                        type: "outbound-rtp",
+                        values: [
+                            "kind": "audio",
+                            "senderId": "other-sender",
+                            "mid": "other-mid",
+                            "trackIdentifier": "other-track",
+                            "packetsSent": NSNumber(value: 10),
+                            "bytesSent": NSNumber(value: 1_000),
+                        ]
+                    ),
+                ]
+            ),
+            (
+                "wrong kind",
+                [
+                    WebRTCStatisticsRecord(
+                        id: "video",
+                        type: "outbound-rtp",
+                        values: [
+                            "kind": "video",
+                            "senderId": "exact-microphone-sender",
+                            "mid": "mic-mid",
+                            "trackIdentifier": "iphone-microphone",
+                            "packetsSent": NSNumber(value: 10),
+                            "bytesSent": NSNumber(value: 1_000),
+                        ]
+                    ),
+                ]
+            ),
+            (
+                "missing packets",
+                [
+                    WebRTCStatisticsRecord(
+                        id: "missing-packets",
+                        type: "outbound-rtp",
+                        values: [
+                            "kind": "audio",
+                            "senderId": "exact-microphone-sender",
+                            "mid": "mic-mid",
+                            "trackIdentifier": "iphone-microphone",
+                            "bytesSent": NSNumber(value: 1_000),
+                        ]
+                    ),
+                ]
+            ),
+            (
+                "negative packets",
+                [
+                    WebRTCStatisticsRecord(
+                        id: "negative",
+                        type: "outbound-rtp",
+                        values: [
+                            "kind": "audio",
+                            "senderId": "exact-microphone-sender",
+                            "mid": "mic-mid",
+                            "trackIdentifier": "iphone-microphone",
+                            "packetsSent": NSNumber(value: -1),
+                            "bytesSent": NSNumber(value: 1_000),
+                        ]
+                    ),
+                ]
+            ),
+            (
+                "non-finite packets",
+                [
+                    WebRTCStatisticsRecord(
+                        id: "nan",
+                        type: "outbound-rtp",
+                        values: [
+                            "kind": "audio",
+                            "senderId": "exact-microphone-sender",
+                            "mid": "mic-mid",
+                            "trackIdentifier": "iphone-microphone",
+                            "packetsSent": NSNumber(value: Double.nan),
+                            "bytesSent": NSNumber(value: 1_000),
+                        ]
+                    ),
+                ]
+            ),
+            (
+                "overflowing bytes",
+                [
+                    WebRTCStatisticsRecord(
+                        id: "overflow",
+                        type: "outbound-rtp",
+                        values: [
+                            "kind": "audio",
+                            "senderId": "exact-microphone-sender",
+                            "mid": "mic-mid",
+                            "trackIdentifier": "iphone-microphone",
+                            "packetsSent": NSNumber(value: 10),
+                            "bytesSent": NSNumber(value: UInt64.max),
+                        ]
+                    ),
+                ]
+            ),
+            (
+                "duplicate report identifier",
+                [validOutbound, validOutbound]
+            ),
+            (
+                "generic outbound mixed with exact identity",
+                [
+                    validOutbound,
+                    WebRTCStatisticsRecord(
+                        id: "generic",
+                        type: "outbound-rtp",
+                        values: [
+                            "kind": "audio",
+                            "packetsSent": NSNumber(value: 500),
+                            "bytesSent": NSNumber(value: 50_000),
+                        ]
+                    ),
+                ]
+            ),
+            (
+                "missing exact linked source",
+                [
+                    WebRTCStatisticsRecord(
+                        id: "missing-source",
+                        type: "outbound-rtp",
+                        values: [
+                            "kind": "audio",
+                            "senderId": "exact-microphone-sender",
+                            "mid": "mic-mid",
+                            "trackIdentifier": "iphone-microphone",
+                            "mediaSourceId": "absent",
+                            "packetsSent": NSNumber(value: 10),
+                            "bytesSent": NSNumber(value: 1_000),
+                        ]
+                    ),
+                ]
+            ),
+            (
+                "linked source without exact track identity",
+                [
+                    WebRTCStatisticsRecord(
+                        id: "unbound-source-outbound",
+                        type: "outbound-rtp",
+                        values: [
+                            "kind": "audio",
+                            "senderId": "exact-microphone-sender",
+                            "mid": "mic-mid",
+                            "trackIdentifier": "iphone-microphone",
+                            "mediaSourceId": "unbound-source",
+                            "packetsSent": NSNumber(value: 10),
+                            "bytesSent": NSNumber(value: 1_000),
+                        ]
+                    ),
+                    WebRTCStatisticsRecord(
+                        id: "unbound-source",
+                        type: "media-source",
+                        values: [
+                            "kind": "audio",
+                            "totalAudioEnergy": NSNumber(value: 0.25),
+                            "totalSamplesDuration":
+                                NSNumber(value: 1.0),
+                        ]
+                    ),
+                ]
+            ),
+            (
+                "partial source totals",
+                [
+                    WebRTCStatisticsRecord(
+                        id: "partial-outbound",
+                        type: "outbound-rtp",
+                        values: [
+                            "kind": "audio",
+                            "senderId": "exact-microphone-sender",
+                            "mid": "mic-mid",
+                            "trackIdentifier": "iphone-microphone",
+                            "mediaSourceId": "partial-source",
+                            "packetsSent": NSNumber(value: 10),
+                            "bytesSent": NSNumber(value: 1_000),
+                        ]
+                    ),
+                    WebRTCStatisticsRecord(
+                        id: "partial-source",
+                        type: "media-source",
+                        values: [
+                            "kind": "audio",
+                            "trackIdentifier": "iphone-microphone",
+                            "totalAudioEnergy": NSNumber(value: 0.25),
+                        ]
+                    ),
+                ]
+            ),
+        ]
+
+        for (name, records) in malformed {
+            XCTAssertNil(
+                WebRTCStatisticsParser.parseIPhoneMicrophoneSender(
+                    records: records,
+                    reportTimestampMicroseconds: 7_000_000,
+                    expectedSenderID: "exact-microphone-sender",
+                    expectedTrackID: "iphone-microphone",
+                    expectedMID: "mic-mid"
+                ),
+                name
+            )
+        }
+    }
+
+    func testExactIPhoneMicrophoneSenderStatisticsRejectsEveryStaleAsyncStableIdentityAndReplacement() throws {
+        let authorization = SenderStatisticsIdentity()
+        let replacementAuthorization = SenderStatisticsIdentity()
+        let authorizationIdentity = ObjectIdentifier(authorization)
+        let captured = senderStatisticsValidation(
+            authorizationIdentity: authorizationIdentity
+        )
+        let diagnostics = admittedIPhoneMicrophoneSenderDiagnostics()
+        let initial = try XCTUnwrap(
+            sampleIPhoneMicrophoneSenderStatistics(
+                parsed: senderOutboundStatistics(
+                    reportDate: Date(timeIntervalSince1970: 1_000)
+                ),
+                captured: captured,
+                current: captured,
+                diagnostics: diagnostics,
+                callbackCompletedAt:
+                    Date(timeIntervalSince1970: 1_000.1),
+                currentTime:
+                    Date(timeIntervalSince1970: 1_000.2)
+            )
+        )
+        XCTAssertNotNil(initial.statistics)
+
+        let nextParsed = senderOutboundStatistics(
+            reportDate: Date(timeIntervalSince1970: 1_001),
+            packetsSent: 51,
+            bytesSent: 8_100,
+            totalAudioEnergy: 0.26,
+            totalSamplesDuration: 1.1
+        )
+        let stale: [(
+            String,
+            WebRTCIPhoneMicrophoneSenderStatisticsValidation?
+        )] = [
+            ("missing current capture", nil),
+            (
+                "peer epoch",
+                senderStatisticsValidation(
+                    peerEpoch: UUID(),
+                    authorizationIdentity: authorizationIdentity
+                )
+            ),
+            (
+                "binding generation",
+                senderStatisticsValidation(
+                    bindingGeneration: 4,
+                    authorizationIdentity: authorizationIdentity
+                )
+            ),
+            (
+                "negotiation epoch",
+                senderStatisticsValidation(
+                    negotiationEpoch: 6,
+                    authorizationIdentity: authorizationIdentity
+                )
+            ),
+            (
+                "track generation",
+                senderStatisticsValidation(
+                    trackGeneration: 8,
+                    authorizationIdentity: authorizationIdentity
+                )
+            ),
+            (
+                "microphone policy generation",
+                senderStatisticsValidation(
+                    microphonePolicyGeneration: 12,
+                    authorizationIdentity: authorizationIdentity
+                )
+            ),
+            (
+                "native recording generation",
+                senderStatisticsValidation(
+                    recordingGeneration: 14,
+                    authorizationIdentity: authorizationIdentity
+                )
+            ),
+            (
+                "sender stable identity",
+                senderStatisticsValidation(
+                    authorizationIdentity: authorizationIdentity,
+                    senderID: "replacement-sender"
+                )
+            ),
+            (
+                "local track stable identity",
+                senderStatisticsValidation(
+                    authorizationIdentity: authorizationIdentity,
+                    localTrackID: "replacement-track"
+                )
+            ),
+            (
+                "MID stable identity",
+                senderStatisticsValidation(
+                    authorizationIdentity: authorizationIdentity,
+                    mid: "replacement-mid"
+                )
+            ),
+            (
+                "authorization identity",
+                senderStatisticsValidation(
+                    authorizationIdentity:
+                        ObjectIdentifier(replacementAuthorization)
+                )
+            ),
+        ]
+
+        for (name, current) in stale {
+            XCTAssertNil(
+                sampleIPhoneMicrophoneSenderStatistics(
+                    parsed: nextParsed,
+                    captured: captured,
+                    current: current,
+                    diagnostics: diagnostics,
+                    callbackCompletedAt:
+                        Date(timeIntervalSince1970: 1_001.1),
+                    currentTime:
+                        Date(timeIntervalSince1970: 1_001.2),
+                    previousBaseline: initial.baseline
+                ),
+                name
+            )
+        }
+
+        XCTAssertNil(
+            sampleIPhoneMicrophoneSenderStatistics(
+                parsed: nextParsed,
+                captured: captured,
+                current: captured,
+                diagnostics:
+                    admittedIPhoneMicrophoneSenderDiagnostics(
+                        transportIsHealthy: false
+                    ),
+                callbackCompletedAt:
+                    Date(timeIntervalSince1970: 1_001.1),
+                currentTime:
+                    Date(timeIntervalSince1970: 1_001.2),
+                previousBaseline: initial.baseline
+            )
+        )
+    }
+
+    func testExactIPhoneMicrophoneSenderStatisticsRejectsInvalidStaleAndFutureReportTimestamps() throws {
+        let authorization = SenderStatisticsIdentity()
+        let captured = senderStatisticsValidation(
+            authorizationIdentity: ObjectIdentifier(authorization)
+        )
+        let callbackCompletedAt =
+            Date(timeIntervalSince1970: 1_000)
+        let currentTime = Date(timeIntervalSince1970: 1_000.1)
+        let reportDate = Date(timeIntervalSince1970: 999.75)
+        let freshParsed = senderOutboundStatistics(
+            reportDate: reportDate
+        )
+        let fresh = try XCTUnwrap(
+            sampleIPhoneMicrophoneSenderStatistics(
+                parsed: freshParsed,
+                captured: captured,
+                current: captured,
+                diagnostics:
+                    admittedIPhoneMicrophoneSenderDiagnostics(),
+                callbackCompletedAt: callbackCompletedAt,
+                currentTime: currentTime
+            )
+        )
+        let freshStatistics = try XCTUnwrap(fresh.statistics)
+        XCTAssertEqual(
+            freshStatistics.collectedAt.timeIntervalSince1970,
+            reportDate.timeIntervalSince1970,
+            accuracy: 0.000_001
+        )
+        XCTAssertTrue(freshStatistics.sourceReportWasLinked)
+
+        let invalidTimestamps = [
+            Double.nan,
+            Double.infinity,
+            0,
+            -1,
+        ]
+        for timestamp in invalidTimestamps {
+            let invalid = WebRTCIPhoneMicrophoneOutboundStatistics(
+                reportTimestampMicroseconds: timestamp,
+                outboundRTPRecordIDs: ["exact-outbound"],
+                packetsSent: 50,
+                bytesSent: 8_000,
+                totalAudioEnergy: 0.25,
+                totalSamplesDuration: 1,
+                sourceReportWasLinked: true
+            )
+            XCTAssertNil(
+                sampleIPhoneMicrophoneSenderStatistics(
+                    parsed: invalid,
+                    captured: captured,
+                    current: captured,
+                    diagnostics:
+                        admittedIPhoneMicrophoneSenderDiagnostics(),
+                    callbackCompletedAt: callbackCompletedAt,
+                    currentTime: currentTime
+                )
+            )
+        }
+
+        XCTAssertNil(
+            sampleIPhoneMicrophoneSenderStatistics(
+                parsed: senderOutboundStatistics(
+                    reportDate:
+                        Date(timeIntervalSince1970: 994.8)
+                ),
+                captured: captured,
+                current: captured,
+                diagnostics:
+                    admittedIPhoneMicrophoneSenderDiagnostics(),
+                callbackCompletedAt: callbackCompletedAt,
+                currentTime: currentTime
+            )
+        )
+        XCTAssertNil(
+            sampleIPhoneMicrophoneSenderStatistics(
+                parsed: senderOutboundStatistics(
+                    reportDate:
+                        Date(timeIntervalSince1970: 1_000.5)
+                ),
+                captured: captured,
+                current: captured,
+                diagnostics:
+                    admittedIPhoneMicrophoneSenderDiagnostics(),
+                callbackCompletedAt: callbackCompletedAt,
+                currentTime: currentTime
+            )
+        )
+        XCTAssertNil(
+            sampleIPhoneMicrophoneSenderStatistics(
+                parsed: freshParsed,
+                captured: captured,
+                current: captured,
+                diagnostics:
+                    admittedIPhoneMicrophoneSenderDiagnostics(),
+                callbackCompletedAt: callbackCompletedAt,
+                currentTime:
+                    Date(timeIntervalSince1970: 1_005.1)
+            )
+        )
+    }
+
+    func testExactIPhoneMicrophoneSenderStatisticsRebaselinesCounterResetBeforePublishingAdvancement() throws {
+        let authorization = SenderStatisticsIdentity()
+        let captured = senderStatisticsValidation(
+            authorizationIdentity: ObjectIdentifier(authorization)
+        )
+        let diagnostics = admittedIPhoneMicrophoneSenderDiagnostics()
+        let initial = try XCTUnwrap(
+            sampleIPhoneMicrophoneSenderStatistics(
+                parsed: senderOutboundStatistics(
+                    reportDate: Date(timeIntervalSince1970: 1_000),
+                    outboundRTPRecordIDs: ["old-outbound"],
+                    packetsSent: 100,
+                    bytesSent: 10_000,
+                    totalAudioEnergy: 1,
+                    totalSamplesDuration: 2
+                ),
+                captured: captured,
+                current: captured,
+                diagnostics: diagnostics,
+                callbackCompletedAt:
+                    Date(timeIntervalSince1970: 1_000.1),
+                currentTime:
+                    Date(timeIntervalSince1970: 1_000.2)
+            )
+        )
+        XCTAssertNotNil(initial.statistics)
+
+        let reset = try XCTUnwrap(
+            sampleIPhoneMicrophoneSenderStatistics(
+                parsed: senderOutboundStatistics(
+                    reportDate: Date(timeIntervalSince1970: 1_001),
+                    outboundRTPRecordIDs: ["replacement-outbound"],
+                    packetsSent: 1,
+                    bytesSent: 100,
+                    totalAudioEnergy: 0.01,
+                    totalSamplesDuration: 0.02
+                ),
+                captured: captured,
+                current: captured,
+                diagnostics: diagnostics,
+                callbackCompletedAt:
+                    Date(timeIntervalSince1970: 1_001.1),
+                currentTime:
+                    Date(timeIntervalSince1970: 1_001.2),
+                previousBaseline: initial.baseline
+            )
+        )
+        XCTAssertNil(reset.statistics)
+        XCTAssertTrue(reset.requiresAdvancingEvidence)
+        XCTAssertEqual(reset.baseline.statistics.packetsSent, 1)
+
+        let stagnant = try XCTUnwrap(
+            sampleIPhoneMicrophoneSenderStatistics(
+                parsed: senderOutboundStatistics(
+                    reportDate: Date(timeIntervalSince1970: 1_002),
+                    outboundRTPRecordIDs: ["replacement-outbound"],
+                    packetsSent: 1,
+                    bytesSent: 100,
+                    totalAudioEnergy: 0.01,
+                    totalSamplesDuration: 0.02
+                ),
+                captured: captured,
+                current: captured,
+                diagnostics: diagnostics,
+                callbackCompletedAt:
+                    Date(timeIntervalSince1970: 1_002.1),
+                currentTime:
+                    Date(timeIntervalSince1970: 1_002.2),
+                previousBaseline: reset.baseline,
+                requiresAdvancingEvidence:
+                    reset.requiresAdvancingEvidence
+            )
+        )
+        XCTAssertNil(stagnant.statistics)
+        XCTAssertTrue(stagnant.requiresAdvancingEvidence)
+
+        let advanced = try XCTUnwrap(
+            sampleIPhoneMicrophoneSenderStatistics(
+                parsed: senderOutboundStatistics(
+                    reportDate: Date(timeIntervalSince1970: 1_003),
+                    outboundRTPRecordIDs: ["replacement-outbound"],
+                    packetsSent: 2,
+                    bytesSent: 200,
+                    totalAudioEnergy: 0.02,
+                    totalSamplesDuration: 0.04
+                ),
+                captured: captured,
+                current: captured,
+                diagnostics: diagnostics,
+                callbackCompletedAt:
+                    Date(timeIntervalSince1970: 1_003.1),
+                currentTime:
+                    Date(timeIntervalSince1970: 1_003.2),
+                previousBaseline: stagnant.baseline,
+                requiresAdvancingEvidence:
+                    stagnant.requiresAdvancingEvidence
+            )
+        )
+        let advancedStatistics = try XCTUnwrap(advanced.statistics)
+        XCTAssertEqual(advancedStatistics.packetsSent, 2)
+        XCTAssertEqual(advancedStatistics.bytesSent, 200)
+        XCTAssertFalse(advanced.requiresAdvancingEvidence)
+    }
 
     func testPreDescriptionCandidateQueueFailsClosedAtItsBound() async throws {
         let viewer = try WebRTCPeer(
@@ -439,6 +1590,113 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
                 || initialAnswerAudioSections[1].contains("a=inactive")
         )
         assertIPhoneMicrophoneOpusPolicy(in: initialAnswerAudioSections[1])
+
+        let initialMicrophoneSenderState =
+            await viewer.iPhoneMicrophoneSenderStateForTesting()
+        XCTAssertEqual(
+            initialMicrophoneSenderState.bindingNegotiationEpoch,
+            initialMicrophoneSenderState.currentNegotiationEpoch
+        )
+        XCTAssertTrue(initialMicrophoneSenderState.senderOwnsLocalTrack)
+        XCTAssertGreaterThanOrEqual(
+            initialMicrophoneSenderState.rawProcessingStoredResultCount,
+            2
+        )
+        XCTAssertEqual(
+            initialMicrophoneSenderState.rawProcessingAppliedResultCount,
+            0
+        )
+        XCTAssertEqual(
+            initialMicrophoneSenderState.lastRawProcessingResultCodeRawValue,
+            1,
+            "A disabled negotiated sender must retain raw options as Stored."
+        )
+        XCTAssertEqual(
+            initialMicrophoneSenderState.nativeApprovedRecordingGeneration,
+            0
+        )
+        XCTAssertGreaterThanOrEqual(
+            initialMicrophoneSenderState.rawProcessingRequestCount,
+            2
+        )
+        XCTAssertFalse(
+            initialMicrophoneSenderState
+                .rawProcessingWasEverRequestedWithoutCurrentSender,
+            "Raw processing must only be requested after the offer-selected sender owns the track."
+        )
+
+        let admittedMicrophoneProcessingState =
+            try await viewer.debugEnableIPhoneMicrophoneTrackAfterRawProcessingForTesting()
+        let viewerMicrophoneTrackEnabled =
+            await viewer.isLocalIPhoneMicrophoneTrackEnabledForTesting
+        XCTAssertTrue(viewerMicrophoneTrackEnabled)
+
+        let admittedMicrophoneSenderState =
+            await viewer.iPhoneMicrophoneSenderStateForTesting()
+        XCTAssertGreaterThan(
+            admittedMicrophoneSenderState.rawProcessingRequestCount,
+            initialMicrophoneSenderState.rawProcessingRequestCount,
+            "The active exact sender must issue an additional raw processing request after activation."
+        )
+        XCTAssertGreaterThan(
+            admittedMicrophoneSenderState.rawProcessingStoredResultCount,
+            initialMicrophoneSenderState.rawProcessingStoredResultCount,
+            "The active exact sender's post-activation raw processing request must be accepted and stored."
+        )
+        XCTAssertEqual(
+            admittedMicrophoneSenderState.lastRawProcessingResultCodeRawValue,
+            1
+        )
+        let admittedRecordingGeneration = try XCTUnwrap(
+            admittedMicrophoneSenderState.nativeRecordingGeneration
+        )
+        XCTAssertGreaterThan(admittedRecordingGeneration, 0)
+        XCTAssertEqual(
+            admittedMicrophoneSenderState.nativeApprovedRecordingGeneration,
+            admittedRecordingGeneration
+        )
+        XCTAssertEqual(
+            admittedMicrophoneSenderState.nativeDeliveryCallbackCount,
+            initialMicrophoneSenderState.nativeDeliveryCallbackCount,
+            "The headless sender activation/raw-proof phase must deliver no source callbacks."
+        )
+        XCTAssertEqual(
+            admittedMicrophoneSenderState.nativeDeliveredFrameCount,
+            initialMicrophoneSenderState.nativeDeliveredFrameCount,
+            "The headless sender activation/raw-proof phase must deliver no source PCM."
+        )
+
+        for (name, component) in [
+            ("AEC", admittedMicrophoneProcessingState.echoCancellation),
+            ("NS", admittedMicrophoneProcessingState.noiseSuppression),
+            ("AGC", admittedMicrophoneProcessingState.autoGainControl),
+            ("HPF", admittedMicrophoneProcessingState.highPassFilter)
+        ] {
+            XCTAssertEqual(
+                component.requestedEnabled,
+                false,
+                "\(name) must be explicitly disabled before microphone admission."
+            )
+            XCTAssertFalse(
+                component.softwareActive,
+                "\(name) software processing must be inactive before microphone admission."
+            )
+            XCTAssertFalse(
+                component.platformActive,
+                "\(name) platform processing must be inactive before microphone admission."
+            )
+        }
+
+        await viewer.debugDisableIPhoneMicrophoneTrackForTesting()
+        let viewerMicrophoneTrackDisabled =
+            await viewer.isLocalIPhoneMicrophoneTrackEnabledForTesting
+        XCTAssertFalse(viewerMicrophoneTrackDisabled)
+        let disabledMicrophoneSenderState =
+            await viewer.iPhoneMicrophoneSenderStateForTesting()
+        XCTAssertEqual(
+            disabledMicrophoneSenderState.nativeApprovedRecordingGeneration,
+            0
+        )
 
         let senderEncodings = await host.audioSenderEncodingParametersForTesting()
         XCTAssertFalse(senderEncodings.isEmpty)
@@ -960,6 +2218,89 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         try await host.acknowledgeControlRequest(id: keyFrameID, state: .inactive)
         await fulfillment(of: [expectations.keyFrameAcknowledged], timeout: 3)
 
+        let inactiveProcessingComponent = WebRTCAudioProcessingComponentSnapshot(
+            requestedEnabled: false,
+            softwareActive: false,
+            platformActive: false
+        )
+        await viewer.debugSetIPhoneMicrophoneAudioProcessingStateForTesting(
+            WebRTCAudioProcessingSnapshot(
+                hasAudioProcessingModule: true,
+                echoCancellation: WebRTCAudioProcessingComponentSnapshot(
+                    requestedEnabled: false,
+                    softwareActive: true,
+                    platformActive: false
+                ),
+                noiseSuppression: inactiveProcessingComponent,
+                autoGainControl: inactiveProcessingComponent,
+                highPassFilter: inactiveProcessingComponent
+            )
+        )
+        do {
+            _ = try await viewer.debugEnableIPhoneMicrophoneTrackAfterRawProcessingForTesting(
+                maximumAttempts: 0
+            )
+            XCTFail("Active processing must fail-close iPhone microphone admission.")
+        } catch let error as WebRTCTransportError {
+            switch error {
+            case .nativeFailure:
+                break
+            default:
+                XCTFail("Unexpected processing-admission error: \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected processing-admission error: \(error)")
+        }
+        let processingFailureLeftTrackEnabled =
+            await viewer.isLocalIPhoneMicrophoneTrackEnabledForTesting
+        XCTAssertFalse(processingFailureLeftTrackEnabled)
+        await viewer.debugSetIPhoneMicrophoneAudioProcessingStateForTesting(
+            nil
+        )
+
+        let preRestartMicrophoneSenderState =
+            await viewer.iPhoneMicrophoneSenderStateForTesting()
+        let rawProcessingRequestsBeforeRestart =
+            preRestartMicrophoneSenderState.rawProcessingRequestCount
+        let storedRawProcessingResultsBeforeRestart =
+            preRestartMicrophoneSenderState.rawProcessingStoredResultCount
+
+        await viewer.debugMakeIPhoneMicrophoneSenderBindingStaleForTesting()
+        let staleBindingState =
+            await viewer.iPhoneMicrophoneSenderStateForTesting()
+        XCTAssertNotEqual(
+            staleBindingState.bindingNegotiationEpoch,
+            staleBindingState.currentNegotiationEpoch
+        )
+        do {
+            _ = try await viewer.debugEnableIPhoneMicrophoneTrackAfterRawProcessingForTesting(
+                maximumAttempts: 0
+            )
+            XCTFail("A stale negotiated microphone sender must be rejected.")
+        } catch let error as WebRTCTransportError {
+            XCTAssertEqual(error, .transportNotHealthy)
+        } catch {
+            XCTFail("Unexpected stale-sender error: \(error)")
+        }
+        let staleSenderLeftTrackEnabled =
+            await viewer.isLocalIPhoneMicrophoneTrackEnabledForTesting
+        XCTAssertFalse(staleSenderLeftTrackEnabled)
+
+        await viewer.debugClearIPhoneMicrophoneSenderBindingForTesting()
+        do {
+            _ = try await viewer.debugEnableIPhoneMicrophoneTrackAfterRawProcessingForTesting(
+                maximumAttempts: 0
+            )
+            XCTFail("A missing negotiated microphone sender must be rejected.")
+        } catch let error as WebRTCTransportError {
+            XCTAssertEqual(error, .transportNotHealthy)
+        } catch {
+            XCTFail("Unexpected missing-sender error: \(error)")
+        }
+        let missingSenderLeftTrackEnabled =
+            await viewer.isLocalIPhoneMicrophoneTrackEnabledForTesting
+        XCTAssertFalse(missingSenderLeftTrackEnabled)
+
         try await host.restartICE()
         XCTAssertFalse(
             hostIPhoneMicrophoneTrack.isEnabled,
@@ -1009,6 +2350,36 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
 
         await secondAnswerDeliveryGate.release()
         await fulfillment(of: [expectations.secondAnswerDelivered], timeout: 10)
+        let recoveredMicrophoneSenderState =
+            await viewer.iPhoneMicrophoneSenderStateForTesting()
+        XCTAssertEqual(
+            recoveredMicrophoneSenderState.bindingNegotiationEpoch,
+            recoveredMicrophoneSenderState.currentNegotiationEpoch
+        )
+        XCTAssertTrue(recoveredMicrophoneSenderState.senderOwnsLocalTrack)
+        XCTAssertNotEqual(
+            recoveredMicrophoneSenderState.bindingNegotiationEpoch,
+            initialMicrophoneSenderState.bindingNegotiationEpoch
+        )
+        XCTAssertGreaterThanOrEqual(
+            recoveredMicrophoneSenderState.rawProcessingRequestCount,
+            rawProcessingRequestsBeforeRestart + 2
+        )
+        XCTAssertGreaterThanOrEqual(
+            recoveredMicrophoneSenderState.rawProcessingStoredResultCount,
+            storedRawProcessingResultsBeforeRestart + 2
+        )
+        XCTAssertEqual(
+            recoveredMicrophoneSenderState.lastRawProcessingResultCodeRawValue,
+            1,
+            "The replacement disabled sender must again retain pre-admission raw requests as Stored."
+        )
+        XCTAssertFalse(
+            recoveredMicrophoneSenderState
+                .rawProcessingWasEverRequestedWithoutCurrentSender,
+            "ICE renegotiation must reapply raw processing only after sender attachment."
+        )
+
         let restartMicrophonePublicationCount =
             await recorder.hostIPhoneMicrophoneTrackPublicationCount()
         XCTAssertEqual(

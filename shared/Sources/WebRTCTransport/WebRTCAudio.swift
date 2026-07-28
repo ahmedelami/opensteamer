@@ -1418,12 +1418,31 @@ public final class WebRTCAudioPlaybackSession {
         #endif
     }
 
+    /// Reasserts manual-audio policy for an exact hosted-capable interruption without changing
+    /// the current process-wide WebRTC gate. An already-open gate therefore preserves the same
+    /// initialized custom device, while a previously closed gate remains fail-closed.
+    public func prepareForHostedCallInterruption() {
+        #if os(iOS)
+        session.prepareForManualAudio()
+        #endif
+    }
+
     /// Places WebRTC in manual-audio mode while keeping its process-wide native audio gate
     /// closed. Actual interruptions and route-loss policy use this fail-closed boundary.
     public func prepareManualAudioDisabled() {
         #if os(iOS)
         session.prepareForManualAudio()
         session.isAudioEnabled = false
+        #endif
+    }
+
+    /// Opens only WebRTC's manual process-wide gate after the native startup-connected-call policy
+    /// has been synchronously armed. This deliberately performs no AVAudioSession configuration or
+    /// activation; first StartPlayout builds directly under the consumed hosted authorization.
+    public func activateArmedHostedCallPlayout() {
+        #if os(iOS)
+        session.prepareForManualAudio()
+        session.isAudioEnabled = true
         #endif
     }
 

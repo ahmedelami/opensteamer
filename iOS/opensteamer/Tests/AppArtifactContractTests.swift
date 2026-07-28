@@ -25,6 +25,11 @@ final class AppArtifactContractTests: XCTestCase {
             info?["NSCameraUsageDescription"] as? String,
             "opensteamer may request camera access through its real-time communication framework only when you explicitly start a camera-capable sharing feature. Ordinary audio and screen streaming do not access the camera."
         )
+
+        XCTAssertEqual(
+            info?["NSMicrophoneUsageDescription"] as? String,
+            "opensteamer may automatically activate the iPhone microphone for your authenticated paired Mac after the secure connection becomes healthy. You can turn it off at any time."
+        )
     }
 
     func testBuiltApplicationDeclaresOnlyBackgroundAudio() throws {

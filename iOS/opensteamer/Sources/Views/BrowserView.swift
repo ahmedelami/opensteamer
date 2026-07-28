@@ -169,6 +169,19 @@ struct BrowserView: View {
     static let savedPairUnavailableMessage =
         "opensteamer couldn’t reach the saved paired Mac. The pairing remains saved securely on this iPhone. The Mac may be asleep, offline, or temporarily unavailable."
 
+    static func rawMicrophoneOracleAccessibilityValue(
+        _ oracle: WorldwideRawMicrophoneOracleSnapshot?
+    ) -> String? {
+        guard let value = oracle?.accessibilityValue,
+              !value.isEmpty,
+              value.utf8.count
+                <= WorldwideRawMicrophoneOracleSnapshot
+                    .maximumAccessibilityValueBytes else {
+            return nil
+        }
+        return value
+    }
+
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var viewModel: StreamSessionViewModel
     @EnvironmentObject private var worldwideViewModel: WorldwideSessionViewModel
@@ -413,6 +426,18 @@ struct BrowserView: View {
                 .foregroundStyle(.orange)
         }
 
+        if let value =
+            Self.rawMicrophoneOracleAccessibilityValue(
+                worldwideViewModel.worldwideRawMicrophoneOracle
+            ) {
+            Color.clear
+            .frame(width: 1, height: 1)
+            .accessibilityElement()
+            .accessibilityLabel("Exact raw iPhone microphone sender proof")
+            .accessibilityValue(value)
+            .accessibilityIdentifier("worldwideRawMicrophoneOracle")
+        }
+
         if let oracle = worldwideViewModel.audioPlayoutOracle {
             Color.clear
             .frame(width: 1, height: 1)
@@ -420,6 +445,15 @@ struct BrowserView: View {
             .accessibilityLabel("RemoteIO render-input proof")
             .accessibilityValue(oracle.accessibilityValue)
             .accessibilityIdentifier("worldwideAudioPlayoutOracle")
+        }
+
+        if let oracle = worldwideViewModel.worldwideHostedCallPlayoutOracle {
+            Color.clear
+            .frame(width: 1, height: 1)
+            .accessibilityElement()
+            .accessibilityLabel("Hosted-call pre-mixer RemoteIO playout proof")
+            .accessibilityValue(oracle.accessibilityValue)
+            .accessibilityIdentifier("worldwideHostedCallPlayoutOracle")
         }
 
         if activeSession.canResumeAudioPlayback {
@@ -976,6 +1010,7 @@ struct BrowserView: View {
             connect: {
                 worldwideViewModel.connect(
                     signalingClient: client,
+                    provenance: .authenticatedPairedCoordinatorHandoff,
                     beforeAudioActivation: {
                         if viewModel.selectedServer != nil {
                             viewModel.disconnect()

@@ -27,6 +27,15 @@ _Static_assert(
     "Mac realtime lifetime atomics must be lock-free"
 );
 
+_Static_assert(
+    ATOMIC_BOOL_LOCK_FREE == 2,
+    "Mac realtime progress booleans must be lock-free"
+);
+_Static_assert(
+    ATOMIC_INT_LOCK_FREE == 2,
+    "Mac realtime progress status atomics must be lock-free"
+);
+
 static const uint_fast64_t ASMacAudioQueueCallbackClosedBit =
     ((uint_fast64_t)1 << 63);
 static const uint_fast64_t ASMacAudioQueueCallbackCountMask =
@@ -246,6 +255,239 @@ bool ASMacAudioQueueRuntimeFailureLatchTake(
             return true;
         }
     }
+}
+
+typedef struct ASMacAudioQueueProgressStorage {
+    atomic_bool queueRunning;
+    atomic_uint_fast64_t postStartCallbackCount;
+    atomic_uint_fast64_t requestedFrameCount;
+    atomic_uint_fast64_t successfulPullCount;
+    atomic_uint_fast64_t successfulFrameCount;
+    atomic_uint_fast64_t silenceFallbackCount;
+    atomic_uint_fast64_t silenceFrameCount;
+    atomic_uint_fast64_t enqueueFailureCount;
+    atomic_int_least32_t lastEnqueueStatus;
+} ASMacAudioQueueProgressStorage;
+
+ASMacAudioQueueProgressRef
+ASMacAudioQueueProgressCreate(void) {
+    ASMacAudioQueueProgressStorage *storage =
+        calloc(1, sizeof(ASMacAudioQueueProgressStorage));
+    if (storage == NULL) {
+        return NULL;
+    }
+
+    atomic_init(&storage->queueRunning, false);
+    atomic_init(&storage->postStartCallbackCount, 0);
+    atomic_init(&storage->requestedFrameCount, 0);
+    atomic_init(&storage->successfulPullCount, 0);
+    atomic_init(&storage->successfulFrameCount, 0);
+    atomic_init(&storage->silenceFallbackCount, 0);
+    atomic_init(&storage->silenceFrameCount, 0);
+    atomic_init(&storage->enqueueFailureCount, 0);
+    atomic_init(&storage->lastEnqueueStatus, noErr);
+    return storage;
+}
+
+void ASMacAudioQueueProgressDestroy(
+    ASMacAudioQueueProgressRef progress
+) {
+    if (progress == NULL) {
+        return;
+    }
+
+    free((ASMacAudioQueueProgressStorage *)progress);
+}
+
+void ASMacAudioQueueProgressReset(
+    ASMacAudioQueueProgressRef progress
+) {
+    if (progress == NULL) {
+        return;
+    }
+
+    ASMacAudioQueueProgressStorage *storage =
+        (ASMacAudioQueueProgressStorage *)progress;
+    atomic_store_explicit(
+        &storage->queueRunning,
+        false,
+        memory_order_seq_cst
+    );
+    atomic_store_explicit(
+        &storage->postStartCallbackCount,
+        0,
+        memory_order_seq_cst
+    );
+    atomic_store_explicit(
+        &storage->requestedFrameCount,
+        0,
+        memory_order_seq_cst
+    );
+    atomic_store_explicit(
+        &storage->successfulPullCount,
+        0,
+        memory_order_seq_cst
+    );
+    atomic_store_explicit(
+        &storage->successfulFrameCount,
+        0,
+        memory_order_seq_cst
+    );
+    atomic_store_explicit(
+        &storage->silenceFallbackCount,
+        0,
+        memory_order_seq_cst
+    );
+    atomic_store_explicit(
+        &storage->silenceFrameCount,
+        0,
+        memory_order_seq_cst
+    );
+    atomic_store_explicit(
+        &storage->enqueueFailureCount,
+        0,
+        memory_order_seq_cst
+    );
+    atomic_store_explicit(
+        &storage->lastEnqueueStatus,
+        noErr,
+        memory_order_seq_cst
+    );
+}
+
+void ASMacAudioQueueProgressSetQueueRunning(
+    ASMacAudioQueueProgressRef progress,
+    bool queueRunning
+) {
+    if (progress == NULL) {
+        return;
+    }
+
+    ASMacAudioQueueProgressStorage *storage =
+        (ASMacAudioQueueProgressStorage *)progress;
+    atomic_store_explicit(
+        &storage->queueRunning,
+        queueRunning,
+        memory_order_seq_cst
+    );
+}
+
+void ASMacAudioQueueProgressPublish(
+    ASMacAudioQueueProgressRef progress,
+    uint64_t requestedFrameCount,
+    bool pullSucceeded,
+    int32_t enqueueStatus
+) {
+    if (progress == NULL) {
+        return;
+    }
+
+    ASMacAudioQueueProgressStorage *storage =
+        (ASMacAudioQueueProgressStorage *)progress;
+    if (!atomic_load_explicit(
+            &storage->queueRunning,
+            memory_order_seq_cst
+        )) {
+        return;
+    }
+
+    atomic_fetch_add_explicit(
+        &storage->postStartCallbackCount,
+        1,
+        memory_order_seq_cst
+    );
+    atomic_fetch_add_explicit(
+        &storage->requestedFrameCount,
+        requestedFrameCount,
+        memory_order_seq_cst
+    );
+
+    if (pullSucceeded) {
+        atomic_fetch_add_explicit(
+            &storage->successfulPullCount,
+            1,
+            memory_order_seq_cst
+        );
+        atomic_fetch_add_explicit(
+            &storage->successfulFrameCount,
+            requestedFrameCount,
+            memory_order_seq_cst
+        );
+    } else {
+        atomic_fetch_add_explicit(
+            &storage->silenceFallbackCount,
+            1,
+            memory_order_seq_cst
+        );
+        atomic_fetch_add_explicit(
+            &storage->silenceFrameCount,
+            requestedFrameCount,
+            memory_order_seq_cst
+        );
+    }
+
+    atomic_store_explicit(
+        &storage->lastEnqueueStatus,
+        enqueueStatus,
+        memory_order_seq_cst
+    );
+    if (enqueueStatus != noErr) {
+        atomic_fetch_add_explicit(
+            &storage->enqueueFailureCount,
+            1,
+            memory_order_seq_cst
+        );
+    }
+}
+
+ASMacAudioQueueProgressSnapshot
+ASMacAudioQueueProgressRead(
+    ASMacAudioQueueProgressRef progress
+) {
+    ASMacAudioQueueProgressSnapshot snapshot = {0};
+    if (progress == NULL) {
+        return snapshot;
+    }
+
+    ASMacAudioQueueProgressStorage *storage =
+        (ASMacAudioQueueProgressStorage *)progress;
+    snapshot.queueRunning = atomic_load_explicit(
+        &storage->queueRunning,
+        memory_order_seq_cst
+    );
+    snapshot.postStartCallbackCount = atomic_load_explicit(
+        &storage->postStartCallbackCount,
+        memory_order_seq_cst
+    );
+    snapshot.requestedFrameCount = atomic_load_explicit(
+        &storage->requestedFrameCount,
+        memory_order_seq_cst
+    );
+    snapshot.successfulPullCount = atomic_load_explicit(
+        &storage->successfulPullCount,
+        memory_order_seq_cst
+    );
+    snapshot.successfulFrameCount = atomic_load_explicit(
+        &storage->successfulFrameCount,
+        memory_order_seq_cst
+    );
+    snapshot.silenceFallbackCount = atomic_load_explicit(
+        &storage->silenceFallbackCount,
+        memory_order_seq_cst
+    );
+    snapshot.silenceFrameCount = atomic_load_explicit(
+        &storage->silenceFrameCount,
+        memory_order_seq_cst
+    );
+    snapshot.enqueueFailureCount = atomic_load_explicit(
+        &storage->enqueueFailureCount,
+        memory_order_seq_cst
+    );
+    snapshot.lastEnqueueStatus = atomic_load_explicit(
+        &storage->lastEnqueueStatus,
+        memory_order_seq_cst
+    );
+    return snapshot;
 }
 
 typedef struct ASMacStereoRenderContext {
@@ -669,6 +911,31 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
     }
     const BOOL approved = recording
         && _state->approvedRecordingGeneration == _state->recordingGeneration;
+    pthread_mutex_unlock(&_state->stateMutex);
+    pthread_mutex_unlock(&_state->lifecycleMutex);
+    return approved;
+}
+
+- (BOOL)approveRecordingGeneration:(uint64_t)recordingGeneration {
+    if (_state == NULL || recordingGeneration == 0) {
+        return NO;
+    }
+
+    pthread_mutex_lock(&_state->lifecycleMutex);
+    const BOOL recording = atomic_load_explicit(
+        &_state->recording,
+        memory_order_acquire
+    );
+
+    pthread_mutex_lock(&_state->stateMutex);
+    const BOOL exactGeneration = recording
+        && _state->recordingGeneration == recordingGeneration;
+    if (exactGeneration) {
+        _state->approvedRecordingGeneration = recordingGeneration;
+    }
+    const BOOL approved = exactGeneration
+        && _state->approvedRecordingGeneration
+            == _state->recordingGeneration;
     pthread_mutex_unlock(&_state->stateMutex);
     pthread_mutex_unlock(&_state->lifecycleMutex);
     return approved;

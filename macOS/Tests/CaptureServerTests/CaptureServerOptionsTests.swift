@@ -1,3 +1,4 @@
+import CaptureCore
 import XCTest
 @testable import CaptureServer
 
@@ -117,5 +118,70 @@ final class CaptureServerOptionsTests: XCTestCase {
             "wss://opensteamer.example.invalid"
         )
         XCTAssertFalse(options.lanEnabled)
+    }
+
+    func testLANCoexistenceSuppressesIPhoneMicrophoneForBothCaptureModesAndArgumentOrders()
+        throws {
+        let cases: [([String], AudioCaptureMode)] = [
+            (
+                [
+                    "CaptureServer",
+                    "--worldwide",
+                    "--rendezvous-url",
+                    "wss://rendezvous.example.invalid",
+                    "--with-lan",
+                ],
+                .blackHoleInput
+            ),
+            (
+                [
+                    "CaptureServer",
+                    "--with-lan",
+                    "--capture-mode",
+                    "screen",
+                    "--worldwide",
+                    "--rendezvous-url",
+                    "wss://rendezvous.example.invalid",
+                ],
+                .screen
+            ),
+        ]
+
+        for (arguments, expectedCaptureMode) in cases {
+            let options = try CaptureServerOptions.parse(
+                arguments,
+                environment: [:]
+            )
+            XCTAssertTrue(options.worldwideEnabled)
+            XCTAssertTrue(options.lanEnabled)
+            XCTAssertTrue(options.screenEnabled)
+            XCTAssertEqual(
+                options.captureMode,
+                expectedCaptureMode
+            )
+            XCTAssertEqual(
+                options.iPhoneMicrophoneForwardingPolicy,
+                .suppressedForLANCoexistence
+            )
+        }
+    }
+
+    func testWorldwideOnlyKeepsIPhoneMicrophoneForwardingEnabled()
+        throws {
+        let options = try CaptureServerOptions.parse(
+            [
+                "CaptureServer",
+                "--worldwide",
+                "--rendezvous-url",
+                "wss://rendezvous.example.invalid",
+            ],
+            environment: [:]
+        )
+
+        XCTAssertFalse(options.lanEnabled)
+        XCTAssertEqual(
+            options.iPhoneMicrophoneForwardingPolicy,
+            .enabled
+        )
     }
 }

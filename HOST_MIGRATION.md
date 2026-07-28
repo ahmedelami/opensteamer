@@ -1,5 +1,15 @@
 # Migrate an existing Mac host
 
+> **USER-DIRECTED HOLD — DO NOT EXECUTE THIS MIGRATION.**
+>
+> As of 2026-07-25, the user explicitly requires
+> `/Applications/AudioStreamer Host.app` and
+> `com.elamin.audiostreamer.worldwide` to remain installed and usable while
+> opensteamer is developed separately. Do not stop, move, replace, or delete that
+> app/job, and do not install the new host, unless the user later authorizes the
+> migration. See [USER_PROTECTED_LEGACY_RUNTIME.md](USER_PROTECTED_LEGACY_RUNTIME.md).
+> This hold overrides the removal steps below.
+
 The rebrand changes the LaunchAgent label and installed app path, but deliberately keeps the
 signed bundle identifier and Keychain service. That preserves pairing secrets and macOS privacy
 grants while preventing the old and new persistent jobs from competing for the same runtime lock.

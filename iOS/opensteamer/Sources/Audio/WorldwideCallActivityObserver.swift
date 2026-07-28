@@ -1,21 +1,51 @@
 @preconcurrency import CallKit
 import Foundation
 
-/// Privacy-minimal CallKit evidence for the worldwide audio policy. Only the aggregate number of
-/// calls whose `hasEnded` flag is false crosses this boundary; identifiers, handles, contacts, and
-/// transaction metadata are never retained or published.
+/// Privacy-minimal CallKit evidence for the worldwide audio policy. Only aggregate lifecycle
+/// counts cross this boundary; identifiers, handles, contacts, and transaction metadata are never
+/// retained or published.
+struct WorldwideCallActivitySnapshot: Equatable, Sendable {
+    let nonEndedCallCount: Int
+    let connectedNonEndedCallCount: Int
+
+    init(
+        nonEndedCallCount: Int,
+        connectedNonEndedCallCount: Int
+    ) {
+        let normalizedNonEndedCount = max(0, nonEndedCallCount)
+        self.nonEndedCallCount = normalizedNonEndedCount
+        self.connectedNonEndedCallCount = min(
+            normalizedNonEndedCount,
+            max(0, connectedNonEndedCallCount)
+        )
+    }
+
+    static let inactive = WorldwideCallActivitySnapshot(
+        nonEndedCallCount: 0,
+        connectedNonEndedCallCount: 0
+    )
+
+    var hasNonEndedCall: Bool {
+        nonEndedCallCount > 0
+    }
+
+    var hasConnectedNonEndedCall: Bool {
+        connectedNonEndedCallCount > 0
+    }
+}
+
 @MainActor
 protocol WorldwideCallActivityObserving: AnyObject {
-    var nonEndedCallCount: Int { get }
+    var snapshot: WorldwideCallActivitySnapshot { get }
     /// A synchronous, uncached aggregate used immediately before either audio gate can open.
-    var liveNonEndedCallCount: Int { get }
-    var onNonEndedCallCountChanged: ((Int) -> Void)? { get set }
+    var liveSnapshot: WorldwideCallActivitySnapshot { get }
+    var onSnapshotChanged: ((WorldwideCallActivitySnapshot) -> Void)? { get set }
 
     func startObserving()
     func stopObserving()
 }
 
-/// Main-actor adapter around `CXCallObserver` that exposes only an aggregate active-call count.
+/// Main-actor adapter around `CXCallObserver` that exposes only aggregate call lifecycle state.
 /// Delegate callbacks are treated as invalidation signals; each one rereads the observer so queued
 /// CallKit delivery cannot publish stale call details or reopen audio from an obsolete snapshot.
 @MainActor
@@ -25,19 +55,31 @@ final class WorldwideCallActivityObserver: NSObject,
     @unchecked Sendable
 {
     private let observer: CXCallObserver
-    private(set) var nonEndedCallCount = 0
-    var liveNonEndedCallCount: Int {
+    private(set) var snapshot = WorldwideCallActivitySnapshot.inactive
+    var liveSnapshot: WorldwideCallActivitySnapshot {
         #if DEBUG
-        if let debugLiveNonEndedCallCount {
-            return debugLiveNonEndedCallCount
+        if let debugLiveSnapshot {
+            return debugLiveSnapshot
         }
         #endif
-        return observer.calls.lazy.filter { !$0.hasEnded }.count
+
+        var nonEndedCallCount = 0
+        var connectedNonEndedCallCount = 0
+        for call in observer.calls where !call.hasEnded {
+            nonEndedCallCount += 1
+            if call.hasConnected {
+                connectedNonEndedCallCount += 1
+            }
+        }
+        return WorldwideCallActivitySnapshot(
+            nonEndedCallCount: nonEndedCallCount,
+            connectedNonEndedCallCount: connectedNonEndedCallCount
+        )
     }
-    var onNonEndedCallCountChanged: ((Int) -> Void)?
+    var onSnapshotChanged: ((WorldwideCallActivitySnapshot) -> Void)?
     private var isObserving = false
     #if DEBUG
-    private var debugLiveNonEndedCallCount: Int?
+    private var debugLiveSnapshot: WorldwideCallActivitySnapshot?
     #endif
 
     override init() {
@@ -62,7 +104,7 @@ final class WorldwideCallActivityObserver: NSObject,
         guard isObserving else { return }
         isObserving = false
         observer.setDelegate(nil, queue: nil)
-        nonEndedCallCount = 0
+        snapshot = .inactive
     }
 
     nonisolated func callObserver(
@@ -85,8 +127,10 @@ final class WorldwideCallActivityObserver: NSObject,
     }
 
     #if DEBUG
-    func debugSetLiveNonEndedCallCountForTests(_ count: Int?) {
-        debugLiveNonEndedCallCount = count.map { max(0, $0) }
+    func debugSetLiveSnapshotForTests(
+        _ snapshot: WorldwideCallActivitySnapshot?
+    ) {
+        debugLiveSnapshot = snapshot
     }
 
     nonisolated func debugDeliverDelegateInvalidationSynchronouslyForTests() {
@@ -97,17 +141,19 @@ final class WorldwideCallActivityObserver: NSObject,
     private func refreshCurrentAggregate(notify: Bool = true) {
         guard isObserving else { return }
         publish(
-            liveNonEndedCallCount,
+            liveSnapshot,
             notify: notify
         )
     }
 
-    private func publish(_ count: Int, notify: Bool) {
-        let normalized = max(0, count)
-        guard normalized != nonEndedCallCount else { return }
-        nonEndedCallCount = normalized
+    private func publish(
+        _ snapshot: WorldwideCallActivitySnapshot,
+        notify: Bool
+    ) {
+        guard snapshot != self.snapshot else { return }
+        self.snapshot = snapshot
         if notify {
-            onNonEndedCallCountChanged?(normalized)
+            onSnapshotChanged?(snapshot)
         }
     }
 }

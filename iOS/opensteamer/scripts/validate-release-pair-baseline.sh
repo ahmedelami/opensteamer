@@ -1,7 +1,7 @@
 #!/bin/zsh
 
-# Usage: `validate-release-pair-baseline.sh <device-udid> <expected-installed-build>
-# [artifact-directory]`.
+# Usage: `validate-release-pair-baseline.sh <coredevice-identifier> <hardware-udid>
+# <expected-production-build> [artifact-directory]`.
 #
 # Prerequisites: an unlocked, connected test iPhone on the pinned iOS version with the requested
 # production opensteamer build already installed, plus Xcode command-line tools authorized for
@@ -22,11 +22,20 @@ set -euo pipefail
 SCRIPT_DIR=${0:A:h}
 PROJECT_DIR=${SCRIPT_DIR:h}
 source "${SCRIPT_DIR}/physical-validation-helpers.zsh"
-DEVICE_UDID=${1:?usage: $0 device-udid expected-installed-build [artifact-directory]}
-EXPECTED_BUILD=${2:?usage: $0 device-udid expected-installed-build [artifact-directory]}
-ARTIFACT_DIR=${3:-/private/tmp/opensteamer-device-InstalledRelease-Baseline}
-EXPECTED_MODEL="test iPhone"
-EXPECTED_OS="18.x"
+if (( $# < 3 || $# > 4 )) \
+    || [[ -z "${1:-}" || -z "${2:-}" || -z "${3:-}" ]]; then
+  echo \
+    "usage: $0 coredevice-identifier hardware-udid expected-production-build [artifact-directory]" \
+    >&2
+  exit 2
+fi
+COREDEVICE_IDENTIFIER=$1
+HARDWARE_UDID=$2
+EXPECTED_BUILD=$3
+shift 3
+ARTIFACT_DIR=${1:-/private/tmp/opensteamer-device-InstalledRelease-Baseline}
+EXPECTED_MODEL="iPhone XR"
+EXPECTED_OS="18.7.9"
 EXPECTED_PLATFORM="iOS"
 EXPECTED_TEST_NAME="testLegacyInstalledReleaseProductionBaselineHasSavedPair"
 EXPECTED_TEST_NODE="PairedReconnectPhysicalUITests/${EXPECTED_TEST_NAME}()"
@@ -143,27 +152,19 @@ rm -rf \
 function capture_and_validate_device() {
   local output=$1
   xcrun devicectl device info details \
-    --device "${DEVICE_UDID}" \
+    --device "${COREDEVICE_IDENTIFIER}" \
     --timeout "${DEVICE_COMMAND_TIMEOUT_SECONDS}" \
     --json-output "${output}" >/dev/null
-  jq -e \
-    --arg udid "${DEVICE_UDID}" \
-    --arg model "${EXPECTED_MODEL}" \
-    --arg os "${EXPECTED_OS}" '
-    (.info.outcome == "success") and
-    (.result.hardwareProperties.udid == $udid) and
-    (.result.hardwareProperties.marketingName == $model) and
-    (.result.hardwareProperties.platform == "iOS") and
-    (.result.hardwareProperties.reality == "physical") and
-    (.result.deviceProperties.osVersionNumber == $os) and
-    (.result.deviceProperties.bootState == "booted")
-  ' "${output}" >/dev/null
+  opensteamer_require_physical_iphone_xr_details \
+    "${output}" \
+    "${COREDEVICE_IDENTIFIER}" \
+    "${HARDWARE_UDID}"
 }
 
 function capture_and_require_unlocked() {
   local output=$1
   opensteamer_require_device_unlocked \
-    "${DEVICE_UDID}" \
+    "${COREDEVICE_IDENTIFIER}" \
     "${DEVICE_COMMAND_TIMEOUT_SECONDS}" \
     "${output}" \
     "device baseline validation"
@@ -173,7 +174,7 @@ function capture_production_installedRelease() {
   local app_list=$1
   local candidate=$2
   xcrun devicectl device info apps \
-    --device "${DEVICE_UDID}" \
+    --device "${COREDEVICE_IDENTIFIER}" \
     --timeout "${DEVICE_COMMAND_TIMEOUT_SECONDS}" \
     --json-output "${app_list}" >/dev/null
 
@@ -215,7 +216,7 @@ function validate_xcresult() {
   print -r -- "${build_results}" > "${ARTIFACT_DIR}/build-results.json"
 
   jq -e \
-    --arg udid "${DEVICE_UDID}" \
+    --arg hardware_udid "${HARDWARE_UDID}" \
     --arg model "${EXPECTED_MODEL}" \
     --arg os "${EXPECTED_OS}" \
     --arg platform "${EXPECTED_PLATFORM}" '
@@ -231,21 +232,21 @@ function validate_xcresult() {
     (.devicesAndConfigurations[0].failedTests == 0) and
     (.devicesAndConfigurations[0].skippedTests == 0) and
     (.devicesAndConfigurations[0].expectedFailures == 0) and
-    (.devicesAndConfigurations[0].device.deviceId == $udid) and
+    (.devicesAndConfigurations[0].device.deviceId == $hardware_udid) and
     (.devicesAndConfigurations[0].device.modelName == $model) and
     (.devicesAndConfigurations[0].device.osVersion == $os) and
     (.devicesAndConfigurations[0].device.platform == $platform)
   ' <<<"${summary}" >/dev/null
 
   jq -e \
-    --arg udid "${DEVICE_UDID}" \
+    --arg hardware_udid "${HARDWARE_UDID}" \
     --arg model "${EXPECTED_MODEL}" \
     --arg os "${EXPECTED_OS}" \
     --arg platform "${EXPECTED_PLATFORM}" \
     --arg node "${EXPECTED_TEST_NODE}" \
     --arg url "${EXPECTED_TEST_URL}" '
     ((.devices | length) == 1) and
-    (.devices[0].deviceId == $udid) and
+    (.devices[0].deviceId == $hardware_udid) and
     (.devices[0].modelName == $model) and
     (.devices[0].osVersion == $os) and
     (.devices[0].platform == $platform) and
@@ -256,7 +257,7 @@ function validate_xcresult() {
   ' <<<"${tests}" >/dev/null
 
   jq -e \
-    --arg udid "${DEVICE_UDID}" \
+    --arg hardware_udid "${HARDWARE_UDID}" \
     --arg model "${EXPECTED_MODEL}" \
     --arg os "${EXPECTED_OS}" \
     --arg platform "${EXPECTED_PLATFORM}" '
@@ -266,7 +267,7 @@ function validate_xcresult() {
     ((.warnings | length) == 0) and
     ((.analyzerWarnings | length) == 0) and
     (.actionTitle == "Testing project opensteamer with scheme opensteamerUITests") and
-    (.destination.deviceId == $udid) and
+    (.destination.deviceId == $hardware_udid) and
     (.destination.modelName == $model) and
     (.destination.osVersion == $os) and
     (.destination.platform == $platform)
@@ -308,7 +309,7 @@ opensteamer_start_isolated_validation_process xcodebuild test \
   -project "${PROJECT_DIR}/opensteamer.xcodeproj" \
   -scheme opensteamerUITests \
   -configuration Debug \
-  -destination "platform=iOS,id=${DEVICE_UDID}" \
+  -destination "platform=iOS,id=${HARDWARE_UDID}" \
   -derivedDataPath "${DERIVED_DATA}" \
   -parallel-testing-enabled NO \
   -maximum-parallel-testing-workers 1 \
@@ -336,7 +337,7 @@ opensteamer_start_isolated_validation_process xcodebuild test \
     if (( SECONDS - lock_poll_started >= DEVICE_LOCK_POLL_SECONDS )); then
       lock_poll_started=${SECONDS}
       if opensteamer_device_is_unlocked \
-          "${DEVICE_UDID}" \
+          "${COREDEVICE_IDENTIFIER}" \
           "${DEVICE_COMMAND_TIMEOUT_SECONDS}" \
           "${LOCK_STATE_DURING_TEST}"; then
         lock_query_failures=0

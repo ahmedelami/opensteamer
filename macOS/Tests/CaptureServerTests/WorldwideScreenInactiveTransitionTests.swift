@@ -159,7 +159,7 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
         )
     }
 
-    func testIPhoneMicrophoneInstallationUsesPeerClassifiedLaneAndExactCurrentObject() throws {
+    func testIPhoneMicrophoneInstallationDelegatesClassifiedTrackToGenerationDriver() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -176,17 +176,22 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
         let installation = try sourceSlice(
             in: serviceSource,
             after: "    private func installIPhoneMicrophoneTrack(",
-            before: "    private func startIPhoneMicrophoneForwardingIfPossible() async {"
+            before: "    /// Converts unexplained audio-start failure on a healthy route into ICE recovery."
         )
         let laneCheck = try XCTUnwrap(
             installation.range(
                 of: "track.logicalLane == .iPhoneMicrophone"
             )
         )
-        let installationAssignment = try XCTUnwrap(
-            installation.range(of: "iPhoneMicrophoneTrack = track")
+        let driverInstallation = try XCTUnwrap(
+            installation.range(
+                of: "await iPhoneMicrophoneForwarding.installTrack(track)"
+            )
         )
-        XCTAssertLessThan(laneCheck.lowerBound, installationAssignment.lowerBound)
+        XCTAssertLessThan(
+            laneCheck.lowerBound,
+            driverInstallation.lowerBound
+        )
         XCTAssertFalse(installation.contains(".trackID"))
         XCTAssertFalse(
             installation.contains(
@@ -194,14 +199,29 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
             )
         )
 
-        let forwarding = try sourceSlice(
-            in: serviceSource,
-            after: "    private func startIPhoneMicrophoneForwardingIfPossible() async {",
-            before: "    private func stopIPhoneMicrophoneForwarding(clearTrack: Bool) {"
+        let driverSourceURL = repositoryRoot.appendingPathComponent(
+            "macOS/Sources/CaptureServer/" +
+                "WorldwideIPhoneMicrophoneForwardingDriver.swift"
+        )
+        let driverSource = try String(
+            contentsOf: driverSourceURL,
+            encoding: .utf8
         )
         XCTAssertTrue(
-            forwarding.contains("iPhoneMicrophoneTrack === track"),
-            "Post-admission service state must still belong to the exact installed object."
+            driverSource.contains(
+                "candidate.peer === attempt.peer"
+            )
+        )
+        XCTAssertTrue(
+            driverSource.contains(
+                "candidate.track === attempt.track"
+            )
+        )
+        XCTAssertTrue(
+            driverSource.contains(
+                "candidate.key == attempt.key"
+            ),
+            "Every post-await continuation must retain the complete generation key."
         )
         XCTAssertTrue(
             serviceSource.contains(

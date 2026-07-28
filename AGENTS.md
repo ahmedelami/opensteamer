@@ -1,3 +1,13 @@
+# USER-DIRECTED LEGACY RUNTIME PRESERVATION — 2026-07-25
+
+The user explicitly requires the working legacy AudioStreamer Mac host and iPhone
+client to remain usable while opensteamer development continues. Before any host
+install, migration, cleanup, pairing reset, TestFlight/Release install, or process
+launch, read [USER_PROTECTED_LEGACY_RUNTIME.md](USER_PROTECTED_LEGACY_RUNTIME.md).
+That preservation instruction overrides conflicting cleanup/migration guidance.
+Do not delete, replace, move, or concurrently run against the protected legacy
+runtime without the user's explicit approval.
+
 # Agent Guidelines
 
 ## opensteamer Product Contract
@@ -94,10 +104,15 @@ manual IP addresses, router configuration, or public TCP ports.
   notify the delegate of input interruption before delivering on a different thread.
 - The iPhone must use one custom RemoteIO device. With microphone intent off, it is
   output-only and owns a `.playback` / `.default` audio session with no category
-  options. After an explicit user action, granted microphone permission, current
-  session authorization, and healthy transport proof, deliberately rebuild that same
-  RemoteIO as `.playAndRecord` / `.default`, enable input bus 1, and deliver 48 kHz
-  mono Int16 PCM synchronously to WebRTC as the `iphone-microphone` track. Turning
+  options. For a production session handed off by authenticated pairing or reconnect,
+  the first current-generation peer/ICE/control healthy boundary automatically
+  establishes microphone intent and, while the app is active, requests permission
+  once for that media session. The manual toggle remains an override; denial or a
+  manual turn-off must not loop or auto-resume in the same session. Granted microphone
+  permission, current session authorization, and healthy transport proof deliberately
+  rebuild that same RemoteIO as `.playAndRecord` / `.default`, enable input bus 1, and
+  deliver 48 kHz mono Int16 PCM synchronously to WebRTC as the `iphone-microphone`
+  track. Turning
   the microphone off, beginning an iPhone call, losing transport health, or tearing
   down the session must synchronously revoke authorization, stop input delivery, and
   restore the output-only policy. Do not instantiate VoiceProcessingIO, synthesize
@@ -114,6 +129,25 @@ manual IP addresses, router configuration, or public TCP ports.
   system-output device. The output-device callback must pull into caller-owned memory
   without allocation, logging, sleeping, network work, or a contended mutex; missing
   PCM becomes silence. Missing BlackHole disables only microphone forwarding.
+- Discover BlackHole 2ch through a read-only Core Audio device-list monitor. Register
+  the exact global/main `kAudioHardwarePropertyDevices` listener before the initial
+  inventory read, bind every forwarding attempt to the monitor epoch and device
+  generation, and select the monitored stable UID directly on the output AudioQueue.
+  Worldwide microphone forwarding must never call the legacy route-preparation or
+  default-device mutation path.
+- Suppress iPhone-microphone forwarding whenever worldwide mode coexists with either
+  legacy LAN capture mode. This suppression affects only that decoded microphone lane;
+  worldwide signaling, system audio, screen video, control, remote input, and both LAN
+  services remain supervised normally.
+- An AudioQueue start is not forwarding-readiness evidence. Readiness requires the
+  exact current peer, transport-authorization epoch, track generation, device
+  generation, admitted track, a running queue, and successful post-start decoded pulls.
+  Continuing health requires two bounded lock-free progress snapshots whose callback
+  and successful-frame counts both advance.
+- Worldwide-only release evidence must show that the default input, default output,
+  and system-output UIDs remain unchanged. Unit progress counters do not prove that
+  host applications can read the forwarded microphone; use a separate physical probe
+  that opens BlackHole input by stable UID and recognizes a known remote challenge.
 - Physical audio release validation must observe the RemoteIO render-input PCM, not
   merely RTP statistics or callback clocks. This is the last app-observable pre-system-output
   boundary; it does not prove what the later iOS mixer, route processing, DAC, or speaker emits.

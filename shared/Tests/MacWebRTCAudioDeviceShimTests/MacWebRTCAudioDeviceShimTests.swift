@@ -82,6 +82,78 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         XCTAssertEqual(observedStatus, repeatedStatus)
     }
 
+    func testAudioQueueProgressExcludesPrimingAndPublishesPostStartOutcomes()
+        throws {
+        let progress = try XCTUnwrap(
+            ASMacAudioQueueProgressCreate()
+        )
+        defer {
+            ASMacAudioQueueProgressDestroy(progress)
+        }
+
+        ASMacAudioQueueProgressReset(progress)
+        ASMacAudioQueueProgressPublish(
+            progress,
+            480,
+            true,
+            noErr
+        )
+        var snapshot = ASMacAudioQueueProgressRead(progress)
+        XCTAssertFalse(snapshot.queueRunning)
+        XCTAssertEqual(snapshot.postStartCallbackCount, 0)
+        XCTAssertEqual(snapshot.successfulFrameCount, 0)
+
+        ASMacAudioQueueProgressSetQueueRunning(
+            progress,
+            true
+        )
+        ASMacAudioQueueProgressPublish(
+            progress,
+            480,
+            true,
+            noErr
+        )
+        ASMacAudioQueueProgressPublish(
+            progress,
+            480,
+            false,
+            noErr
+        )
+        let failure = Int32(-66_103)
+        ASMacAudioQueueProgressPublish(
+            progress,
+            480,
+            false,
+            failure
+        )
+
+        snapshot = ASMacAudioQueueProgressRead(progress)
+        XCTAssertTrue(snapshot.queueRunning)
+        XCTAssertEqual(snapshot.postStartCallbackCount, 3)
+        XCTAssertEqual(snapshot.requestedFrameCount, 1_440)
+        XCTAssertEqual(snapshot.successfulPullCount, 1)
+        XCTAssertEqual(snapshot.successfulFrameCount, 480)
+        XCTAssertEqual(snapshot.silenceFallbackCount, 2)
+        XCTAssertEqual(snapshot.silenceFrameCount, 960)
+        XCTAssertEqual(snapshot.enqueueFailureCount, 1)
+        XCTAssertEqual(snapshot.lastEnqueueStatus, failure)
+
+        ASMacAudioQueueProgressSetQueueRunning(
+            progress,
+            false
+        )
+        ASMacAudioQueueProgressPublish(
+            progress,
+            480,
+            true,
+            noErr
+        )
+        let stopped = ASMacAudioQueueProgressRead(progress)
+        XCTAssertFalse(stopped.queueRunning)
+        XCTAssertEqual(stopped.postStartCallbackCount, 3)
+        XCTAssertEqual(stopped.successfulFrameCount, 480)
+    }
+
     func testInactiveDirectDeliveryFailsClosedAndCountsRejectedPCM() throws {
         let device = try XCTUnwrap(ASMacStereoAudioDevice())
         let samples = Self.stereoSequence(frameRange: 0..<480)

@@ -222,6 +222,63 @@ typedef NS_ENUM(NSUInteger, ASSystemAudioEvent) {
     ASSystemAudioEventMediaServicesReset,
 };
 
+typedef NS_ENUM(NSUInteger, ASHostedCallRecoveryReadiness) {
+    ASHostedCallRecoveryReadinessReady,
+    ASHostedCallRecoveryReadinessAwaitingFailClose,
+    ASHostedCallRecoveryReadinessCoalesced,
+    ASHostedCallRecoveryReadinessRejected,
+};
+
+/// Inputs shared by the real AVAudioSession/RemoteIO configuration path and the deterministic
+/// harness boundary. Recording this value proves which production choices were submitted; it is
+/// deliberately not evidence that Simulator created a hardware AudioUnit.
+typedef struct ASAudioPolicyConfiguration {
+    AVAudioSessionCategoryOptions categoryOptions;
+    AVAudioSessionRouteSharingPolicy routeSharingPolicy;
+    BOOL inputBusEnabled;
+    BOOL outputBusEnabled;
+    AudioStreamBasicDescription outputStreamFormat;
+} ASAudioPolicyConfiguration;
+
+static ASAudioPolicyConfiguration ASMakeAudioPolicyConfiguration(
+    BOOL hostedCallMode,
+    BOOL microphoneEnabled,
+    AudioStreamBasicDescription outputStreamFormat
+) {
+    return (ASAudioPolicyConfiguration) {
+        .categoryOptions = hostedCallMode
+            ? AVAudioSessionCategoryOptionMixWithOthers
+            : 0,
+        .routeSharingPolicy = AVAudioSessionRouteSharingPolicyDefault,
+        .inputBusEnabled = microphoneEnabled,
+        .outputBusEnabled = YES,
+        .outputStreamFormat = outputStreamFormat,
+    };
+}
+
+static AVAudioSessionCategory ASCategoryForAudioPolicyConfiguration(
+    ASAudioPolicyConfiguration configuration
+) {
+    return configuration.inputBusEnabled
+        ? AVAudioSessionCategoryPlayAndRecord
+        : AVAudioSessionCategoryPlayback;
+}
+
+static BOOL ASAudioStreamBasicDescriptionsEqual(
+    AudioStreamBasicDescription lhs,
+    AudioStreamBasicDescription rhs
+) {
+    return lhs.mSampleRate == rhs.mSampleRate
+        && lhs.mFormatID == rhs.mFormatID
+        && lhs.mFormatFlags == rhs.mFormatFlags
+        && lhs.mBytesPerPacket == rhs.mBytesPerPacket
+        && lhs.mFramesPerPacket == rhs.mFramesPerPacket
+        && lhs.mBytesPerFrame == rhs.mBytesPerFrame
+        && lhs.mChannelsPerFrame == rhs.mChannelsPerFrame
+        && lhs.mBitsPerChannel == rhs.mBitsPerChannel
+        && lhs.mReserved == rhs.mReserved;
+}
+
 typedef struct ASRealtimeDiagnostics {
     uint32_t hostTimebaseNumerator;
     uint32_t hostTimebaseDenominator;
@@ -258,6 +315,9 @@ typedef struct ASRealtimeDiagnostics {
     atomic_bool hasPCMCallbackBoundary;
     atomic_int_fast32_t lastPCMLeftSample;
     atomic_int_fast32_t lastPCMRightSample;
+    atomic_uint_fast64_t microphoneRealtimeAdmissionCount;
+    atomic_uint_fast64_t microphoneDeliveryCallbackCount;
+    atomic_uint_fast64_t microphoneDeliveredFrameCount;
     atomic_uint_fast64_t recordingRequestCount;
     atomic_uint_fast64_t recoveryRequestCount;
     atomic_uint_fast64_t recoveryAuthorizationRejectionCount;
@@ -279,6 +339,11 @@ typedef struct ASLifecycleDiagnostics {
     atomic_bool outputBusEnabled;
     atomic_bool recoveryRequired;
     atomic_bool explicitResumeRequired;
+    atomic_bool hostedCallMode;
+    atomic_bool hostedCallAuthorizationValid;
+    atomic_bool hostedCallRecoveryPending;
+    atomic_int_fast32_t hostedCallOrigin;
+    atomic_uint_fast64_t hostedCallAuthorizationGeneration;
     atomic_uint_fast32_t audioUnitSubType;
     atomic_int_fast32_t failureCode;
     atomic_int_fast32_t lastLifecycleStatus;
@@ -287,6 +352,7 @@ typedef struct ASLifecycleDiagnostics {
 @interface ASIOSMicrophoneAuthorization () {
 @public
     ASRealtimeGate _realtimeGate;
+    atomic_uint_fast64_t _microphoneRecordingGeneration;
 @private
     os_unfair_lock _lock;
 #if DEBUG
@@ -295,12 +361,33 @@ typedef struct ASLifecycleDiagnostics {
 #endif
 }
 - (BOOL)performWhileValid:(NS_NOESCAPE dispatch_block_t)operation;
+- (void)clearMicrophoneRecordingGeneration;
+- (BOOL)bindMicrophoneRecordingGeneration:(uint64_t)recordingGeneration;
 @end
 
 @interface ASIOSStereoPlayoutRecoveryAuthorization () {
     os_unfair_lock _lock;
     atomic_bool _valid;
 }
+@end
+
+@interface ASIOSHostedCallPlayoutAuthorization () {
+    NSUUID *_policyIdentifier;
+    ASIOSHostedCallPlayoutOrigin _origin;
+    os_unfair_lock _lock;
+    atomic_bool _valid;
+    atomic_bool _recoveryPending;
+    atomic_uint_fast64_t _systemAudioGeneration;
+    dispatch_block_t _revocationHandler;
+}
+- (BOOL)performRecoveryIfValid:(NS_NOESCAPE dispatch_block_t)operation;
+- (BOOL)performRecoveryIfValid:(NS_NOESCAPE dispatch_block_t)operation
+          consumeRecoveryClaim:(BOOL *)consumeRecoveryClaim;
+- (BOOL)performWhileValid:(NS_NOESCAPE dispatch_block_t)operation;
+- (BOOL)installRevocationHandlerWhilePerforming:(dispatch_block_t)handler
+                          systemAudioGeneration:(uint64_t)generation;
+- (void)invalidateWhilePerforming;
+- (void)clearRevocationHandler;
 @end
 
 @interface ASIOSStereoPlayoutAudioDevice () {
@@ -310,12 +397,15 @@ typedef struct ASLifecycleDiagnostics {
     ASRealtimeDiagnostics _realtime;
     ASRealtimeGate _realtimeMicrophoneDeviceGate;
     atomic_ulong _realtimeMicrophoneAuthorizationGate;
+    atomic_uint_fast64_t _realtimeMicrophoneRecordingGeneration;
+    atomic_uint_fast64_t _realtimeApprovedMicrophoneRecordingGeneration;
     AudioComponentInstance _audioUnit;
     int16_t *_recordingSamples;
     UInt32 _recordingSampleCapacity;
     BOOL _recording;
 @private
     ASLifecycleDiagnostics _lifecycle;
+    atomic_uint_fast64_t _systemAudioGeneration;
     AudioStreamBasicDescription _streamFormat;
     AudioStreamBasicDescription _inputStreamFormat;
     BOOL _initialized;
@@ -334,18 +424,49 @@ typedef struct ASLifecycleDiagnostics {
     uint64_t _sessionOwnershipToken;
     NSArray<id> *_notificationTokens;
     ASIOSMicrophoneAuthorization *_microphoneAuthorization;
+    uint64_t _microphoneRecordingGenerationCounter;
+    atomic_uint_fast64_t _microphoneApprovalConsumedGeneration;
+    uint64_t _hostedCallAuthorizationGeneration;
+    NSUUID *_hostedCallPolicyIdentifier;
+    ASIOSHostedCallPlayoutAuthorization *_hostedCallAuthorization;
+    ASIOSHostedCallPlayoutAuthorization *_hostedCallRecoveryInProgressAuthorization;
 #if DEBUG
     os_unfair_lock _debugRealtimeAdmissionLock;
     ASRealtimeGate *_debugAdmittedDeviceGate;
     ASRealtimeGate *_debugAdmittedAuthorizationGate;
     dispatch_semaphore_t _debugDeviceGateClosureSemaphore;
     atomic_bool _debugDeviceGateClosureSignaled;
+    BOOL _debugRecoveryHarnessMode;
+    BOOL _debugHealthyPlayoutForTesting;
+    BOOL _debugHasOutputRouteOverride;
+    BOOL _debugHasOutputRoute;
+    BOOL _debugFailNextHostedCallActivation;
+    BOOL _debugOwnsSessionActivation;
+    NSUInteger _debugConfigurationOperationCount;
+    BOOL _debugHasRecordedAudioPolicyConfiguration;
+    NSString *_debugLastConfiguredCategory;
+    NSString *_debugLastConfiguredMode;
+    AVAudioSessionRouteSharingPolicy _debugLastConfiguredRouteSharingPolicy;
+    AVAudioSessionCategoryOptions _debugLastConfiguredCategoryOptions;
+    BOOL _debugLastConfiguredInputBusEnabled;
+    BOOL _debugLastConfiguredOutputBusEnabled;
+    AudioStreamBasicDescription _debugLastConfiguredOutputStreamFormat;
 #endif
 }
 @property(atomic, strong, nullable) id<LKRTCAudioDeviceDelegate> delegate;
 @property(atomic, copy, readwrite, nullable) NSString *lastLifecycleFailureMessage;
 - (void)closeAndFenceRealtimeMicrophoneResources;
+- (void)clearCurrentMicrophoneRecordingGeneration;
+- (uint64_t)installNextMicrophoneRecordingGeneration;
+- (BOOL)microphoneTopologyIsStagedAllowingDebugOverride:
+    (BOOL)debugTopologyOverride;
+- (BOOL)initializePlayoutForCurrentPolicy;
+- (BOOL)startPlayoutForCurrentPolicy;
 - (BOOL)configureSessionAndCreateRemoteIO;
+- (BOOL)applyAudioPolicyConfiguration:
+    (ASAudioPolicyConfiguration)configuration
+                              toSession:(AVAudioSession *_Nullable)session
+                                  error:(NSError *_Nullable *_Nullable)error;
 - (BOOL)publishFinalLiveMicrophoneResourcesWithAuthorization:
     (ASIOSMicrophoneAuthorization *_Nullable)authorization
                                       debugTopologyOverride:(BOOL)debugTopologyOverride;
@@ -361,9 +482,53 @@ typedef struct ASLifecycleDiagnostics {
                      status:(int32_t)status
                     message:(NSString *)message;
 - (void)clearLifecycleFailure;
-- (void)rebuildAfterExplicitRecovery;
+- (BOOL)rebuildAfterExplicitRecovery;
 - (BOOL)rebuildForCurrentPolicy;
 - (BOOL)microphoneShouldBeActive;
+- (AVAudioSession *_Nullable)currentAudioSession;
+- (uint64_t)advanceSystemAudioGeneration;
+- (BOOL)hasOutputRouteForSession:(AVAudioSession *_Nullable)session;
+- (BOOL)hostedCallModeIsAuthorized;
+- (BOOL)hostedCallOwnershipMatchesAuthorization:
+    (ASIOSHostedCallPlayoutAuthorization *)authorization
+                                 policyIdentifier:(NSUUID *)policyIdentifier
+                                        generation:(uint64_t)generation;
+- (BOOL)hostedCallOriginIsAdmissible:
+    (ASIOSHostedCallPlayoutOrigin)origin;
+- (void)publishHostedCallLifecycleState;
+- (void)retireMicrophoneAuthorizationForHostedCall;
+- (void)revokeHostedCallAuthorization;
+- (void)hostedCallAuthorizationDidRevoke:
+    (ASIOSHostedCallPlayoutAuthorization *)authorization
+                             policyIdentifier:(NSUUID *)policyIdentifier
+                                    generation:(uint64_t)generation;
+- (BOOL)sessionMatchesCurrentPolicy:(AVAudioSession *_Nullable)session;
+- (ASHostedCallRecoveryReadiness)hostedCallRecoveryReadinessForAuthorization:
+    (ASIOSHostedCallPlayoutAuthorization *)authorization
+                                    expectedSystemAudioGeneration:(uint64_t)generation;
+- (void)remainQuiescentAfterHostedCallOwnershipLossWithMessage:
+    (NSString *)message;
+#if DEBUG
+- (void)debugRecordAudioPolicyConfiguration:
+    (ASAudioPolicyConfiguration)configuration;
+- (NSUInteger)debugConfigurationOperationCountForTesting;
+- (NSString *_Nullable)debugLastConfiguredCategoryForTesting;
+- (NSString *_Nullable)debugLastConfiguredModeForTesting;
+- (NSInteger)debugLastConfiguredRouteSharingPolicyForTesting;
+- (NSUInteger)debugLastConfiguredCategoryOptionsForTesting;
+- (BOOL)debugLastConfiguredInputBusEnabledForTesting;
+- (BOOL)debugLastConfiguredOutputBusEnabledForTesting;
+- (AudioStreamBasicDescription)debugLastConfiguredOutputStreamFormatForTesting;
+- (void)debugEnableRecoveryHarnessModeForTesting;
+- (NSUUID *_Nullable)debugHostedCallPolicyIdentifierForTesting;
+- (void)debugMarkInterruptedFailClosedForTesting;
+- (void)debugMarkInterruptionEndedFailClosedForTesting;
+- (void)debugMarkHealthyPlayoutForTesting;
+- (void)debugMarkRouteLossForTesting;
+- (void)debugAdvanceSystemAudioGenerationForTesting;
+- (void)debugSetOutputRouteAvailableForTesting:(BOOL)available;
+- (void)debugFailNextHostedCallActivationForTesting;
+#endif
 - (void)scheduleSystemEvent:(ASSystemAudioEvent)event
                 routeReason:(AVAudioSessionRouteChangeReason)routeReason;
 - (void)handleSystemEvent:(ASSystemAudioEvent)event
@@ -398,6 +563,7 @@ static BOOL ASMicrophoneAuthorizationIsValid(
     if (self != nil) {
         _lock = OS_UNFAIR_LOCK_INIT;
         ASInitializeRealtimeGateOpen(&_realtimeGate);
+        atomic_init(&_microphoneRecordingGeneration, 0);
 #if DEBUG
         _debugAuthorizationGateClosureSemaphore = dispatch_semaphore_create(0);
         atomic_init(&_debugAuthorizationGateClosureSignaled, false);
@@ -408,6 +574,13 @@ static BOOL ASMicrophoneAuthorizationIsValid(
 
 - (BOOL)isValid {
     return !ASRealtimeGateIsClosed(&_realtimeGate);
+}
+
+- (uint64_t)microphoneRecordingGeneration {
+    return atomic_load_explicit(
+        &_microphoneRecordingGeneration,
+        memory_order_acquire
+    );
 }
 
 - (void)revoke {
@@ -427,8 +600,57 @@ static BOOL ASMicrophoneAuthorizationIsValid(
     (void)didClose;
 #endif
     ASDrainRealtimeGate(&_realtimeGate);
+    atomic_store_explicit(
+        &_microphoneRecordingGeneration,
+        0,
+        memory_order_release
+    );
     os_unfair_lock_unlock(&_lock);
 }
+
+- (void)clearMicrophoneRecordingGeneration {
+    os_unfair_lock_lock(&_lock);
+    atomic_store_explicit(
+        &_microphoneRecordingGeneration,
+        0,
+        memory_order_release
+    );
+    os_unfair_lock_unlock(&_lock);
+}
+
+- (BOOL)bindMicrophoneRecordingGeneration:(uint64_t)recordingGeneration {
+    if (recordingGeneration == 0) {
+        return NO;
+    }
+
+    os_unfair_lock_lock(&_lock);
+    if (ASRealtimeGateIsClosed(&_realtimeGate)) {
+        os_unfair_lock_unlock(&_lock);
+        return NO;
+    }
+    atomic_store_explicit(
+        &_microphoneRecordingGeneration,
+        recordingGeneration,
+        memory_order_release
+    );
+    os_unfair_lock_unlock(&_lock);
+    return YES;
+}
+
+#if DEBUG
+- (void)debugSetMicrophoneRecordingGenerationForTesting:
+    (uint64_t)recordingGeneration {
+    os_unfair_lock_lock(&_lock);
+    if (!ASRealtimeGateIsClosed(&_realtimeGate)) {
+        atomic_store_explicit(
+            &_microphoneRecordingGeneration,
+            recordingGeneration,
+            memory_order_release
+        );
+    }
+    os_unfair_lock_unlock(&_lock);
+}
+#endif
 
 - (BOOL)performWhileValid:(NS_NOESCAPE dispatch_block_t)operation {
     os_unfair_lock_lock(&_lock);
@@ -1246,6 +1468,166 @@ static inline void ASPublishPlayoutCallback(
 
 @end
 
+@implementation ASIOSHostedCallPlayoutAuthorization
+
+- (instancetype)initWithPolicyIdentifier:(NSUUID *)policyIdentifier
+                                  origin:(ASIOSHostedCallPlayoutOrigin)origin {
+    self = [super init];
+    if (self == nil || policyIdentifier == nil) {
+        return nil;
+    }
+
+    _policyIdentifier = [policyIdentifier copy];
+    _origin = origin;
+    _lock = OS_UNFAIR_LOCK_INIT;
+    atomic_init(&_valid, true);
+    atomic_init(&_recoveryPending, true);
+    atomic_init(&_systemAudioGeneration, 0);
+    return self;
+}
+
+- (NSUUID *)policyIdentifier {
+    return _policyIdentifier;
+}
+
+- (ASIOSHostedCallPlayoutOrigin)origin {
+    return _origin;
+}
+
+- (BOOL)isValid {
+    return atomic_load_explicit(&_valid, memory_order_acquire);
+}
+
+- (BOOL)isRecoveryPending {
+    return atomic_load_explicit(&_recoveryPending, memory_order_acquire);
+}
+
+- (uint64_t)systemAudioGeneration {
+    return atomic_load_explicit(&_systemAudioGeneration, memory_order_acquire);
+}
+
+- (void)revoke {
+    dispatch_block_t handler = nil;
+    os_unfair_lock_lock(&_lock);
+    BOOL wasValid = atomic_load_explicit(&_valid, memory_order_acquire);
+    atomic_store_explicit(&_valid, false, memory_order_release);
+    atomic_store_explicit(&_recoveryPending, false, memory_order_release);
+    if (wasValid) {
+        handler = _revocationHandler;
+    }
+    _revocationHandler = nil;
+    os_unfair_lock_unlock(&_lock);
+
+    if (handler != nil) {
+        handler();
+    }
+}
+
+- (BOOL)performRecoveryIfValid:(NS_NOESCAPE dispatch_block_t)operation
+          consumeRecoveryClaim:(BOOL *)consumeRecoveryClaim {
+    os_unfair_lock_lock(&_lock);
+    if (!atomic_load_explicit(&_valid, memory_order_acquire)
+        || !atomic_load_explicit(&_recoveryPending, memory_order_acquire)) {
+        os_unfair_lock_unlock(&_lock);
+        return NO;
+    }
+
+    operation();
+    BOOL didConsumeRecoveryClaim = *consumeRecoveryClaim;
+    if (didConsumeRecoveryClaim) {
+        atomic_store_explicit(&_recoveryPending, false, memory_order_release);
+    }
+    os_unfair_lock_unlock(&_lock);
+    return didConsumeRecoveryClaim;
+}
+
+- (BOOL)performRecoveryIfValid:(NS_NOESCAPE dispatch_block_t)operation {
+    BOOL consumeRecoveryClaim = YES;
+    return [self performRecoveryIfValid:operation
+                   consumeRecoveryClaim:&consumeRecoveryClaim];
+}
+
+- (BOOL)performWhileValid:(NS_NOESCAPE dispatch_block_t)operation {
+    os_unfair_lock_lock(&_lock);
+    if (!atomic_load_explicit(&_valid, memory_order_acquire)
+        || operation == nil) {
+        os_unfair_lock_unlock(&_lock);
+        return NO;
+    }
+
+    operation();
+    os_unfair_lock_unlock(&_lock);
+    return YES;
+}
+
+- (BOOL)installRevocationHandlerWhilePerforming:(dispatch_block_t)handler
+                          systemAudioGeneration:(uint64_t)generation {
+    if (generation == 0
+        || !atomic_load_explicit(&_valid, memory_order_acquire)
+        || !atomic_load_explicit(&_recoveryPending, memory_order_acquire)) {
+        return NO;
+    }
+
+    uint64_t existingGeneration = atomic_load_explicit(
+        &_systemAudioGeneration,
+        memory_order_acquire
+    );
+    if (existingGeneration != 0 && existingGeneration != generation) {
+        return NO;
+    }
+
+    atomic_store_explicit(
+        &_systemAudioGeneration,
+        generation,
+        memory_order_release
+    );
+    _revocationHandler = [handler copy];
+    return YES;
+}
+
+- (void)invalidateWhilePerforming {
+    atomic_store_explicit(&_valid, false, memory_order_release);
+    atomic_store_explicit(&_recoveryPending, false, memory_order_release);
+    _revocationHandler = nil;
+}
+
+- (void)clearRevocationHandler {
+    os_unfair_lock_lock(&_lock);
+    _revocationHandler = nil;
+    os_unfair_lock_unlock(&_lock);
+}
+
+#if DEBUG
+- (BOOL)performRecoveryIfValidForTesting:(NS_NOESCAPE dispatch_block_t)operation {
+    return [self performRecoveryIfValid:operation];
+}
+
+- (BOOL)performRecoveryIfValidForTestingWithSystemAudioGeneration:(uint64_t)systemAudioGeneration
+                                                revocationHandler:(dispatch_block_t)revocationHandler
+                                                         operation:(NS_NOESCAPE dispatch_block_t)operation {
+    if (systemAudioGeneration == 0
+        || revocationHandler == nil
+        || operation == nil) {
+        return NO;
+    }
+
+    __block BOOL generationInstalled = NO;
+    return [self performRecoveryIfValid:^{
+        generationInstalled = [self
+            installRevocationHandlerWhilePerforming:revocationHandler
+                              systemAudioGeneration:systemAudioGeneration];
+        if (!generationInstalled) {
+            return;
+        }
+
+        operation();
+    }
+                   consumeRecoveryClaim:&generationInstalled];
+}
+#endif
+
+@end
+
 #if DEBUG
 @interface ASIOSStereoPlayoutPublicationTestHarness () {
     ASRealtimeDiagnostics _realtime;
@@ -1401,6 +1783,7 @@ static inline void ASPublishPlayoutCallback(
     }
     _device = [[ASIOSStereoPlayoutAudioDevice alloc] init];
     _delegate = [[ASIOSStereoPlayoutRecoveryHarnessDelegate alloc] init];
+    [_device debugEnableRecoveryHarnessModeForTesting];
     if (![_device initializeWithDelegate:_delegate]) {
         return nil;
     }
@@ -1421,6 +1804,42 @@ static inline void ASPublishPlayoutCallback(
     }
 }
 
+- (NSUInteger)configurationOperationCount {
+    return [self.device debugConfigurationOperationCountForTesting];
+}
+
+- (NSString *)lastConfiguredCategory {
+    return [self.device debugLastConfiguredCategoryForTesting];
+}
+
+- (NSString *)lastConfiguredMode {
+    return [self.device debugLastConfiguredModeForTesting];
+}
+
+- (NSInteger)lastConfiguredRouteSharingPolicy {
+    return [self.device debugLastConfiguredRouteSharingPolicyForTesting];
+}
+
+- (NSUInteger)lastConfiguredCategoryOptions {
+    return [self.device debugLastConfiguredCategoryOptionsForTesting];
+}
+
+- (BOOL)lastConfiguredInputBusEnabled {
+    return [self.device debugLastConfiguredInputBusEnabledForTesting];
+}
+
+- (BOOL)lastConfiguredOutputBusEnabled {
+    return [self.device debugLastConfiguredOutputBusEnabledForTesting];
+}
+
+- (AudioStreamBasicDescription)lastConfiguredOutputStreamFormat {
+    return [self.device debugLastConfiguredOutputStreamFormatForTesting];
+}
+
+- (NSUUID *)hostedCallPolicyIdentifier {
+    return [self.device debugHostedCallPolicyIdentifierForTesting];
+}
+
 - (void)publishCallbackWithFrameCount:(uint32_t)frameCount
                                 status:(int32_t)status {
     ASPublishPlayoutCallback(
@@ -1437,6 +1856,49 @@ static inline void ASPublishPlayoutCallback(
     [self.device requestPlayoutRecoveryWithAuthorization:authorization];
 }
 
+- (void)queueHostedCallRecoveryWithAuthorization:
+    (ASIOSHostedCallPlayoutAuthorization *)authorization {
+    [self.device requestHostedCallPlayoutRecoveryWithAuthorization:authorization];
+}
+
+- (BOOL)armStartupConnectedCallPlayoutWithAuthorization:
+    (ASIOSHostedCallPlayoutAuthorization *)authorization {
+    return [self.device
+        armStartupConnectedCallPlayoutWithAuthorization:authorization];
+}
+
+- (BOOL)debugStartPlayoutForTesting {
+    return [self.device startPlayout];
+}
+
+- (void)debugMarkInterruptedFailClosedForTesting {
+    [self.device debugMarkInterruptedFailClosedForTesting];
+}
+
+- (void)debugMarkInterruptionEndedFailClosedForTesting {
+    [self.device debugMarkInterruptionEndedFailClosedForTesting];
+}
+
+- (void)debugMarkHealthyPlayoutForTesting {
+    [self.device debugMarkHealthyPlayoutForTesting];
+}
+
+- (void)debugMarkRouteLossForTesting {
+    [self.device debugMarkRouteLossForTesting];
+}
+
+- (void)debugAdvanceSystemAudioGenerationForTesting {
+    [self.device debugAdvanceSystemAudioGenerationForTesting];
+}
+
+- (void)debugSetOutputRouteAvailableForTesting:(BOOL)available {
+    [self.device debugSetOutputRouteAvailableForTesting:available];
+}
+
+- (void)debugFailNextHostedCallActivationForTesting {
+    [self.device debugFailNextHostedCallActivationForTesting];
+}
+
 - (BOOL)runNextQueuedOperation {
     dispatch_block_t operation = [self.delegate takeNextOperation];
     if (operation == nil) {
@@ -1449,6 +1911,11 @@ static inline void ASPublishPlayoutCallback(
 - (void)debugInstallMicrophoneAuthorizationForTesting:
     (ASIOSMicrophoneAuthorization *)authorization {
     [self.device debugInstallMicrophoneAuthorizationForTesting:authorization];
+}
+
+- (BOOL)setMicrophoneAuthorizationForTesting:
+    (ASIOSMicrophoneAuthorization *)authorization {
+    return [self.device setMicrophoneAuthorization:authorization];
 }
 
 - (BOOL)debugPublishCurrentMicrophoneAuthorizationForTesting {
@@ -1605,6 +2072,27 @@ static OSStatus ASRemoteIOInput(
         return noErr;
     }
 
+    uint64_t recordingGeneration = atomic_load_explicit(
+        &device->_realtimeMicrophoneRecordingGeneration,
+        memory_order_acquire
+    );
+    uint64_t approvedRecordingGeneration = atomic_load_explicit(
+        &device->_realtimeApprovedMicrophoneRecordingGeneration,
+        memory_order_acquire
+    );
+    if (recordingGeneration == 0
+        || approvedRecordingGeneration != recordingGeneration) {
+        ASEndAuthorizationRealtimeAdmission(authorizationGate);
+        ASEndDeviceRealtimeAdmission(deviceGate);
+        return noErr;
+    }
+
+    atomic_fetch_add_explicit(
+        &device->_realtime.microphoneRealtimeAdmissionCount,
+        1,
+        memory_order_relaxed
+    );
+
     BOOL recording = device->_recording;
     AudioComponentInstance audioUnit = device->_audioUnit;
     LKRTCAudioDeviceDeliverRecordedDataBlock __unsafe_unretained recordedDataBlock =
@@ -1635,6 +2123,16 @@ static OSStatus ASRemoteIOInput(
             &inputData
         );
         if (status == noErr) {
+            atomic_fetch_add_explicit(
+                &device->_realtime.microphoneDeliveryCallbackCount,
+                1,
+                memory_order_relaxed
+            );
+            atomic_fetch_add_explicit(
+                &device->_realtime.microphoneDeliveredFrameCount,
+                frameCount,
+                memory_order_relaxed
+            );
             status = recordedDataBlock(
                 actionFlags,
                 timestamp,
@@ -1662,12 +2160,32 @@ static OSStatus ASRemoteIOInput(
     ASInitializeRealtimeDiagnostics(&_realtime);
     ASInitializeRealtimeGateClosed(&_realtimeMicrophoneDeviceGate);
     atomic_init(&_realtimeMicrophoneAuthorizationGate, 0);
+    atomic_init(&_realtimeMicrophoneRecordingGeneration, 0);
+    atomic_init(&_realtimeApprovedMicrophoneRecordingGeneration, 0);
+    atomic_init(&_microphoneApprovalConsumedGeneration, 0);
+    atomic_init(&_systemAudioGeneration, 0);
+    _microphoneRecordingGenerationCounter = 0;
 #if DEBUG
     _debugRealtimeAdmissionLock = OS_UNFAIR_LOCK_INIT;
     _debugAdmittedDeviceGate = NULL;
     _debugAdmittedAuthorizationGate = NULL;
     _debugDeviceGateClosureSemaphore = dispatch_semaphore_create(0);
     atomic_init(&_debugDeviceGateClosureSignaled, false);
+    _debugRecoveryHarnessMode = NO;
+    _debugHealthyPlayoutForTesting = NO;
+    _debugHasOutputRouteOverride = NO;
+    _debugHasOutputRoute = NO;
+    _debugFailNextHostedCallActivation = NO;
+    _debugOwnsSessionActivation = NO;
+    _debugConfigurationOperationCount = 0;
+    _debugHasRecordedAudioPolicyConfiguration = NO;
+    _debugLastConfiguredCategory = nil;
+    _debugLastConfiguredMode = nil;
+    _debugLastConfiguredRouteSharingPolicy = AVAudioSessionRouteSharingPolicyDefault;
+    _debugLastConfiguredCategoryOptions = 0;
+    _debugLastConfiguredInputBusEnabled = NO;
+    _debugLastConfiguredOutputBusEnabled = NO;
+    _debugLastConfiguredOutputStreamFormat = (AudioStreamBasicDescription){0};
 #endif
     atomic_init(&_lifecycle.initialized, false);
     atomic_init(&_lifecycle.playoutInitialized, false);
@@ -1678,6 +2196,14 @@ static OSStatus ASRemoteIOInput(
     atomic_init(&_lifecycle.outputBusEnabled, false);
     atomic_init(&_lifecycle.recoveryRequired, false);
     atomic_init(&_lifecycle.explicitResumeRequired, false);
+    atomic_init(&_lifecycle.hostedCallMode, false);
+    atomic_init(&_lifecycle.hostedCallAuthorizationValid, false);
+    atomic_init(&_lifecycle.hostedCallRecoveryPending, false);
+    atomic_init(
+        &_lifecycle.hostedCallOrigin,
+        ASIOSHostedCallPlayoutOriginUnspecified
+    );
+    atomic_init(&_lifecycle.hostedCallAuthorizationGeneration, 0);
     atomic_init(&_lifecycle.audioUnitSubType, 0);
     atomic_init(&_lifecycle.failureCode, ASIOSStereoPlayoutFailureNone);
     atomic_init(&_lifecycle.lastLifecycleStatus, noErr);
@@ -1717,7 +2243,7 @@ static OSStatus ASRemoteIOInput(
     // A preferred duration is not a hardware guarantee. Once this device owns an active session,
     // report the actual route value required by LKRTCAudioDevice/FineAudioBuffer.
     if (_sessionActive && [self ownsCurrentSessionActivation]) {
-        NSTimeInterval duration = AVAudioSession.sharedInstance.IOBufferDuration;
+        NSTimeInterval duration = [self currentAudioSession].IOBufferDuration;
         if (duration > 0) {
             return duration;
         }
@@ -1726,7 +2252,7 @@ static OSStatus ASRemoteIOInput(
 }
 - (NSInteger)outputNumberOfChannels { return ASOutputChannelCount; }
 - (NSTimeInterval)outputLatency {
-    return AVAudioSession.sharedInstance.outputLatency;
+    return [self currentAudioSession].outputLatency;
 }
 - (BOOL)isInitialized { return _initialized; }
 - (BOOL)isPlayoutInitialized { return _playoutInitialized; }
@@ -1744,6 +2270,8 @@ static OSStatus ASRemoteIOInput(
         _microphoneAuthorization;
     _microphoneAuthorization = nil;
     [retiringAuthorization revoke];
+    [self advanceSystemAudioGeneration];
+    [self revokeHostedCallAuthorization];
 
     self.delegate = delegate;
     _playoutBlock = [delegate.getPlayoutData copy];
@@ -1761,18 +2289,30 @@ static OSStatus ASRemoteIOInput(
     _recoveryRequired = NO;
     _explicitResumeRequired = NO;
     _isRebuilding = NO;
+#if DEBUG
+    _debugHealthyPlayoutForTesting = NO;
+    _debugOwnsSessionActivation = NO;
+#endif
     atomic_store_explicit(&_lifecycle.recoveryRequired, false, memory_order_relaxed);
     atomic_store_explicit(&_lifecycle.explicitResumeRequired, false, memory_order_relaxed);
     [self clearLifecycleFailure];
     _initialized = YES;
     atomic_store_explicit(&_lifecycle.initialized, true, memory_order_relaxed);
+#if DEBUG
+    if (!_debugRecoveryHarnessMode) {
+        [self subscribeToSystemAudioNotifications];
+    }
+#else
     [self subscribeToSystemAudioNotifications];
+#endif
     return YES;
 }
 
 - (BOOL)terminateDevice {
     _wantsPlayout = NO;
     _wantsRecording = NO;
+    [self advanceSystemAudioGeneration];
+    [self revokeHostedCallAuthorization];
     [self unsubscribeFromSystemAudioNotifications];
     OSStatus teardownStatus = [self stopAndDisposeAudioUnit];
 
@@ -1817,18 +2357,211 @@ static OSStatus ASRemoteIOInput(
 }
 
 - (BOOL)initializePlayout {
-    if (!_initialized || _interrupted || _recoveryRequired || _explicitResumeRequired) {
+    ASIOSHostedCallPlayoutAuthorization *authorization =
+        _hostedCallAuthorization;
+    BOOL protectsStartupPolicy = authorization != nil
+        && authorization.origin
+            == ASIOSHostedCallPlayoutOriginStartupConnectedCall;
+    if (!protectsStartupPolicy) {
+        return [self initializePlayoutForCurrentPolicy];
+    }
+
+    __block BOOL initialized = NO;
+    ASIOSHostedCallPlayoutAuthorization *previousInProgress =
+        _hostedCallRecoveryInProgressAuthorization;
+    _hostedCallRecoveryInProgressAuthorization = authorization;
+    BOOL authorized = [authorization performWhileValid:^{
+        uint64_t currentGeneration = atomic_load_explicit(
+            &self->_systemAudioGeneration,
+            memory_order_acquire
+        );
+        BOOL exactStartupPolicy =
+            !authorization.isRecoveryPending
+            && currentGeneration != 0
+            && self->_hostedCallAuthorization == authorization
+            && self->_hostedCallPolicyIdentifier != nil
+            && [self->_hostedCallPolicyIdentifier
+                isEqual:authorization.policyIdentifier]
+            && self->_hostedCallAuthorizationGeneration == currentGeneration
+            && authorization.systemAudioGeneration == currentGeneration
+            && [self hostedCallModeIsAuthorized];
+        if (exactStartupPolicy) {
+            initialized = [self initializePlayoutForCurrentPolicy];
+        }
+    }];
+    _hostedCallRecoveryInProgressAuthorization = previousInProgress;
+    if (!authorized || !initialized) {
+        _recoveryRequired = YES;
+        atomic_store_explicit(
+            &_lifecycle.recoveryRequired,
+            true,
+            memory_order_relaxed
+        );
+    }
+    return authorized && initialized;
+}
+
+- (BOOL)initializePlayoutForCurrentPolicy {
+    BOOL hostedCallMode = [self hostedCallModeIsAuthorized];
+    BOOL hasHostedCallOwnership =
+        _hostedCallAuthorization != nil
+        || _hostedCallPolicyIdentifier != nil
+        || _hostedCallAuthorizationGeneration != 0;
+    if (!_initialized
+        || (hasHostedCallOwnership && !hostedCallMode)
+        || (_interrupted && !hostedCallMode)
+        || _recoveryRequired
+        || _explicitResumeRequired) {
         return NO;
     }
-    if (_playoutInitialized && _audioUnit != NULL) {
+    if (_playoutInitialized && (_audioUnit != NULL
+#if DEBUG
+        || (_debugRecoveryHarnessMode
+            && _sessionActive
+            && _debugOwnsSessionActivation
+            && _outputBusEnabled)
+#endif
+    )) {
         return YES;
     }
-    return [self configureSessionAndCreateRemoteIO];
+
+    BOOL configured = [self configureSessionAndCreateRemoteIO];
+#if DEBUG
+    if (configured && _debugRecoveryHarnessMode) {
+        BOOL microphoneEnabled = [self microphoneShouldBeActive];
+        ASAudioPolicyConfiguration configuration =
+            ASMakeAudioPolicyConfiguration(
+                hostedCallMode,
+                microphoneEnabled,
+                _streamFormat
+            );
+        if (![self sessionMatchesCurrentPolicy:nil]
+            || (hostedCallMode && ![self hasOutputRouteForSession:nil])) {
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureSessionConfiguration
+                                   status:kAudio_ParamError
+                                  message:@"The deterministic first playout initialization no longer matches the selected production policy."];
+            return NO;
+        }
+
+        _debugHealthyPlayoutForTesting = !hostedCallMode;
+        _debugOwnsSessionActivation = YES;
+        _sessionActive = YES;
+        _playoutInitialized = YES;
+        _playing = NO;
+        _inputBusEnabled = configuration.inputBusEnabled;
+        _outputBusEnabled = configuration.outputBusEnabled;
+        _recording = configuration.inputBusEnabled;
+        _audioUnitSubType = 0;
+        _recoveryRequired = NO;
+        _explicitResumeRequired = NO;
+        atomic_store_explicit(
+            &_lifecycle.sessionActive,
+            true,
+            memory_order_relaxed
+        );
+        atomic_store_explicit(
+            &_lifecycle.playoutInitialized,
+            true,
+            memory_order_relaxed
+        );
+        atomic_store_explicit(
+            &_lifecycle.playing,
+            false,
+            memory_order_relaxed
+        );
+        atomic_store_explicit(
+            &_lifecycle.remoteIOCreated,
+            false,
+            memory_order_relaxed
+        );
+        atomic_store_explicit(
+            &_lifecycle.inputBusEnabled,
+            configuration.inputBusEnabled,
+            memory_order_relaxed
+        );
+        atomic_store_explicit(
+            &_lifecycle.outputBusEnabled,
+            configuration.outputBusEnabled,
+            memory_order_relaxed
+        );
+        atomic_store_explicit(
+            &_lifecycle.audioUnitSubType,
+            0,
+            memory_order_relaxed
+        );
+        atomic_store_explicit(
+            &_lifecycle.recoveryRequired,
+            false,
+            memory_order_relaxed
+        );
+        atomic_store_explicit(
+            &_lifecycle.explicitResumeRequired,
+            false,
+            memory_order_relaxed
+        );
+        [self clearLifecycleFailure];
+    }
+#endif
+    return configured;
 }
 
 - (BOOL)startPlayout {
+    ASIOSHostedCallPlayoutAuthorization *authorization =
+        _hostedCallAuthorization;
+    BOOL protectsStartupPolicy = authorization != nil
+        && authorization.origin
+            == ASIOSHostedCallPlayoutOriginStartupConnectedCall;
+    if (!protectsStartupPolicy) {
+        return [self startPlayoutForCurrentPolicy];
+    }
+
+    __block BOOL started = NO;
+    ASIOSHostedCallPlayoutAuthorization *previousInProgress =
+        _hostedCallRecoveryInProgressAuthorization;
+    _hostedCallRecoveryInProgressAuthorization = authorization;
+    BOOL authorized = [authorization performWhileValid:^{
+        uint64_t currentGeneration = atomic_load_explicit(
+            &self->_systemAudioGeneration,
+            memory_order_acquire
+        );
+        BOOL exactStartupPolicy =
+            !authorization.isRecoveryPending
+            && currentGeneration != 0
+            && self->_hostedCallAuthorization == authorization
+            && self->_hostedCallPolicyIdentifier != nil
+            && [self->_hostedCallPolicyIdentifier
+                isEqual:authorization.policyIdentifier]
+            && self->_hostedCallAuthorizationGeneration == currentGeneration
+            && authorization.systemAudioGeneration == currentGeneration
+            && [self hostedCallModeIsAuthorized];
+        if (exactStartupPolicy) {
+            started = [self startPlayoutForCurrentPolicy];
+        }
+    }];
+    _hostedCallRecoveryInProgressAuthorization = previousInProgress;
+    if (!authorized || !started) {
+        _recoveryRequired = YES;
+        atomic_store_explicit(
+            &_lifecycle.recoveryRequired,
+            true,
+            memory_order_relaxed
+        );
+    }
+    return authorized && started;
+}
+
+- (BOOL)startPlayoutForCurrentPolicy {
     _wantsPlayout = YES;
-    if (_interrupted || _recoveryRequired || _explicitResumeRequired) {
+    BOOL hostedCallMode = [self hostedCallModeIsAuthorized];
+    BOOL hasHostedCallOwnership =
+        _hostedCallAuthorization != nil
+        || _hostedCallPolicyIdentifier != nil
+        || _hostedCallAuthorizationGeneration != 0;
+    if ((hasHostedCallOwnership && !hostedCallMode)
+        || (_interrupted && !hostedCallMode)
+        || _recoveryRequired
+        || _explicitResumeRequired) {
         if (atomic_load_explicit(&_lifecycle.failureCode, memory_order_relaxed)
             == ASIOSStereoPlayoutFailureNone) {
             [self publishFailureCode:ASIOSStereoPlayoutFailureRouteChangeRecoveryRequired
@@ -1837,21 +2570,47 @@ static OSStatus ASRemoteIOInput(
         }
         return NO;
     }
-    if (![self initializePlayout] || _audioUnit == NULL) {
+    if (![self initializePlayoutForCurrentPolicy]) {
+        return NO;
+    }
+#if DEBUG
+    if (_debugRecoveryHarnessMode && _audioUnit == NULL) {
+        if (!_playoutInitialized
+            || !_sessionActive
+            || !_debugOwnsSessionActivation
+            || !_outputBusEnabled
+            || ![self sessionMatchesCurrentPolicy:nil]
+            || (hostedCallMode && ![self hasOutputRouteForSession:nil])) {
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureSessionConfiguration
+                                   status:kAudio_ParamError
+                                  message:@"The deterministic first StartPlayout boundary did not retain the selected production policy."];
+            return NO;
+        }
+        _playing = YES;
+        atomic_store_explicit(
+            &_lifecycle.playing,
+            true,
+            memory_order_relaxed
+        );
+        return YES;
+    }
+#endif
+    if (_audioUnit == NULL) {
         return NO;
     }
     if (_playing) {
-        BOOL published = [self
-            publishFinalLiveMicrophoneResourcesWithAuthorization:
-                _microphoneAuthorization
-                                      debugTopologyOverride:NO];
-        if (published) {
-            return YES;
+        AVAudioSession *session = [self currentAudioSession];
+        if (![self sessionMatchesCurrentPolicy:session]
+            || (hostedCallMode && ![self hasOutputRouteForSession:session])) {
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureUnexpectedCategoryChange
+                                   status:kAudio_ParamError
+                                  message:@"The active audio session no longer matches the current playout policy."];
+            return NO;
         }
-        [self failAndRollbackWithCode:ASIOSStereoPlayoutFailureMicrophoneDelivery
-                               status:kAudio_ParamError
-                              message:@"Microphone authorization could not be republished for live RemoteIO."];
-        return NO;
+
+        return YES;
     }
     OSStatus status = AudioOutputUnitStart(_audioUnit);
     if (status != noErr) {
@@ -1864,22 +2623,13 @@ static OSStatus ASRemoteIOInput(
     }
     _playing = YES;
     atomic_store_explicit(&_lifecycle.playing, true, memory_order_relaxed);
-    BOOL published = [self
-        publishFinalLiveMicrophoneResourcesWithAuthorization:
-            _microphoneAuthorization
-                                  debugTopologyOverride:NO];
-    if (published) {
-        return YES;
-    }
-
-    [self failAndRollbackWithCode:ASIOSStereoPlayoutFailureMicrophoneDelivery
-                           status:kAudio_ParamError
-                          message:@"Microphone authorization expired before final RemoteIO publication."];
-    return NO;
+    return YES;
 }
 
 - (BOOL)stopPlayout {
     _wantsPlayout = NO;
+    [self advanceSystemAudioGeneration];
+    [self revokeHostedCallAuthorization];
     OSStatus teardownStatus = [self stopAndDisposeAudioUnit];
     NSError *deactivationError = nil;
     BOOL deactivated = [self deactivateOwnedSessionWithError:&deactivationError];
@@ -1910,6 +2660,23 @@ static OSStatus ASRemoteIOInput(
     if (!_initialized) {
         return NO;
     }
+
+    if ([self hostedCallModeIsAuthorized]) {
+        atomic_fetch_add_explicit(
+            &_realtime.recordingRequestCount,
+            1,
+            memory_order_relaxed
+        );
+        [self retireMicrophoneAuthorizationForHostedCall];
+        if (_inputBusEnabled) {
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureMicrophoneBusDisable
+                                   status:kAudio_ParamError
+                                  message:@"Hosted-call playout rejected an active microphone bus."];
+        }
+        return NO;
+    }
+
     _wantsRecording = YES;
     ASIOSMicrophoneAuthorization *authorization = _microphoneAuthorization;
     BOOL authorizationValid = ASMicrophoneAuthorizationIsValid(authorization);
@@ -1923,9 +2690,7 @@ static OSStatus ASRemoteIOInput(
     }
 
     if (authorizationValid && _inputBusEnabled && _playing) {
-        return [self
-            publishFinalLiveMicrophoneResourcesWithAuthorization:authorization
-                                          debugTopologyOverride:NO];
+        return YES;
     }
 
     return YES;
@@ -1937,6 +2702,7 @@ static OSStatus ASRemoteIOInput(
     ASIOSMicrophoneAuthorization *authorization = _microphoneAuthorization;
     _microphoneAuthorization = nil;
     [authorization revoke];
+    [self clearCurrentMicrophoneRecordingGeneration];
     [self closeAndFenceRealtimeMicrophoneResources];
     if (_inputBusEnabled) {
         return [self rebuildForCurrentPolicy];
@@ -1945,8 +2711,135 @@ static OSStatus ASRemoteIOInput(
     return YES;
 }
 
+- (uint64_t)stageMicrophoneAuthorization:
+    (ASIOSMicrophoneAuthorization *)authorization {
+    if (authorization == nil) {
+        return 0;
+    }
+
+    id<LKRTCAudioDeviceDelegate> delegate = self.delegate;
+    if (delegate == nil) {
+        [authorization revoke];
+        return 0;
+    }
+
+    __block uint64_t stagedGeneration = 0;
+    [delegate dispatchSync:^{
+        if (!self->_initialized || !authorization.isValid) {
+            [authorization revoke];
+            return;
+        }
+
+        if ([self hostedCallModeIsAuthorized]) {
+            atomic_fetch_add_explicit(
+                &self->_realtime.recordingRequestCount,
+                1,
+                memory_order_relaxed
+            );
+            [authorization revoke];
+            [self retireMicrophoneAuthorizationForHostedCall];
+            if (self->_inputBusEnabled) {
+                [self failAndRollbackWithCode:
+                    ASIOSStereoPlayoutFailureMicrophoneBusDisable
+                                       status:kAudio_ParamError
+                                      message:@"Hosted-call playout rejected a staged microphone-enable request."];
+            }
+            return;
+        }
+
+        [self closeAndFenceRealtimeMicrophoneResources];
+        [self clearCurrentMicrophoneRecordingGeneration];
+        [authorization clearMicrophoneRecordingGeneration];
+
+        __block ASIOSMicrophoneAuthorization *displacedAuthorization = nil;
+        BOOL installed = [authorization performWhileValid:^{
+            displacedAuthorization = self->_microphoneAuthorization;
+            self->_microphoneAuthorization = authorization;
+            self->_wantsRecording = YES;
+        }];
+        if (!installed) {
+            [authorization revoke];
+            return;
+        }
+
+        __attribute__((objc_precise_lifetime))
+        ASIOSMicrophoneAuthorization *retiringAuthorization =
+            displacedAuthorization;
+        if (retiringAuthorization != authorization) {
+            [retiringAuthorization revoke];
+        }
+
+        BOOL allowDebugTopology = NO;
+#if DEBUG
+        allowDebugTopology = self->_debugRecoveryHarnessMode;
+#endif
+        BOOL topologyStaged =
+            [self microphoneTopologyIsStagedAllowingDebugOverride:
+                allowDebugTopology];
+        if (!topologyStaged
+            && self->_wantsPlayout
+            && !self->_interrupted
+            && !self->_recoveryRequired
+            && !self->_explicitResumeRequired) {
+            topologyStaged = [self rebuildForCurrentPolicy]
+                && [self microphoneTopologyIsStagedAllowingDebugOverride:
+                    allowDebugTopology];
+        }
+
+        if (topologyStaged
+            && self->_microphoneAuthorization == authorization
+            && authorization.isValid) {
+            uint64_t generation =
+                [self installNextMicrophoneRecordingGeneration];
+            if ([authorization
+                    bindMicrophoneRecordingGeneration:generation]) {
+                stagedGeneration = generation;
+            }
+        }
+
+        if (stagedGeneration == 0
+            && self->_microphoneAuthorization == authorization) {
+            [self closeAndFenceRealtimeMicrophoneResources];
+            [self clearCurrentMicrophoneRecordingGeneration];
+            self->_microphoneAuthorization = nil;
+            self->_wantsRecording = NO;
+            self->_recording = NO;
+            [authorization revoke];
+        }
+    }];
+    return stagedGeneration;
+}
+
+- (BOOL)approveStagedMicrophoneAuthorization:
+            (ASIOSMicrophoneAuthorization *)authorization
+                           recordingGeneration:(uint64_t)recordingGeneration {
+    id<LKRTCAudioDeviceDelegate> delegate = self.delegate;
+    if (delegate == nil) {
+        return NO;
+    }
+
+    __block BOOL approved = NO;
+    [delegate dispatchSync:^{
+        if (authorization == nil
+            || recordingGeneration == 0
+            || authorization.microphoneRecordingGeneration
+                != recordingGeneration) {
+            [self closeAndFenceRealtimeMicrophoneResources];
+            return;
+        }
+        approved = [self
+            publishFinalLiveMicrophoneResourcesWithAuthorization:authorization
+                                          debugTopologyOverride:NO];
+    }];
+    return approved;
+}
+
 - (BOOL)setMicrophoneAuthorization:
     (ASIOSMicrophoneAuthorization *)authorization {
+    if (authorization != nil) {
+        return [self stageMicrophoneAuthorization:authorization] != 0;
+    }
+
     id<LKRTCAudioDeviceDelegate> delegate = self.delegate;
     if (delegate == nil) {
         [authorization revoke];
@@ -1959,6 +2852,23 @@ static OSStatus ASRemoteIOInput(
             [authorization revoke];
             return;
         }
+        if (authorization != nil && [self hostedCallModeIsAuthorized]) {
+            atomic_fetch_add_explicit(
+                &self->_realtime.recordingRequestCount,
+                1,
+                memory_order_relaxed
+            );
+            [authorization revoke];
+            [self retireMicrophoneAuthorizationForHostedCall];
+            if (self->_inputBusEnabled) {
+                [self failAndRollbackWithCode:
+                    ASIOSStereoPlayoutFailureMicrophoneBusDisable
+                                       status:kAudio_ParamError
+                                      message:@"Hosted-call playout rejected a microphone-enable request."];
+            }
+            return;
+        }
+
         if (authorization == nil || !authorization.isValid) {
             [authorization revoke];
             __attribute__((objc_precise_lifetime))
@@ -1970,6 +2880,7 @@ static OSStatus ASRemoteIOInput(
                 [retiringAuthorization revoke];
             }
             [self closeAndFenceRealtimeMicrophoneResources];
+            [self clearCurrentMicrophoneRecordingGeneration];
 
             BOOL mayRestorePlayback =
                 self->_wantsPlayout
@@ -2060,15 +2971,46 @@ static OSStatus ASRemoteIOInput(
 #if DEBUG
 - (void)debugInstallMicrophoneAuthorizationForTesting:
     (ASIOSMicrophoneAuthorization *)authorization {
+    [self closeAndFenceRealtimeMicrophoneResources];
+    [self clearCurrentMicrophoneRecordingGeneration];
+    if (authorization != nil && [self hostedCallModeIsAuthorized]) {
+        atomic_fetch_add_explicit(
+            &_realtime.recordingRequestCount,
+            1,
+            memory_order_relaxed
+        );
+        [authorization revoke];
+        [self retireMicrophoneAuthorizationForHostedCall];
+        if (_inputBusEnabled) {
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureMicrophoneBusDisable
+                                   status:kAudio_ParamError
+                                  message:@"Hosted-call playout rejected a DEBUG microphone-enable request."];
+        }
+        return;
+    }
+
     __attribute__((objc_precise_lifetime))
     ASIOSMicrophoneAuthorization *retiringAuthorization =
         _microphoneAuthorization;
+    [authorization clearMicrophoneRecordingGeneration];
     _microphoneAuthorization = authorization;
     _wantsRecording = authorization != nil;
 
-    [self closeAndFenceRealtimeMicrophoneResources];
     if (retiringAuthorization != authorization) {
         [retiringAuthorization revoke];
+    }
+
+    if (authorization != nil && authorization.isValid) {
+        uint64_t generation =
+            [self installNextMicrophoneRecordingGeneration];
+        if (![authorization
+                bindMicrophoneRecordingGeneration:generation]) {
+            [self clearCurrentMicrophoneRecordingGeneration];
+            _microphoneAuthorization = nil;
+            _wantsRecording = NO;
+            [authorization revoke];
+        }
     }
 }
 
@@ -2114,6 +3056,28 @@ static OSStatus ASRemoteIOInput(
         return NO;
     }
 
+    uint64_t recordingGeneration = atomic_load_explicit(
+        &_realtimeMicrophoneRecordingGeneration,
+        memory_order_acquire
+    );
+    uint64_t approvedRecordingGeneration = atomic_load_explicit(
+        &_realtimeApprovedMicrophoneRecordingGeneration,
+        memory_order_acquire
+    );
+    if (recordingGeneration == 0
+        || approvedRecordingGeneration != recordingGeneration) {
+        ASEndAuthorizationRealtimeAdmission(authorizationGate);
+        ASEndDeviceRealtimeAdmission(deviceGate);
+        os_unfair_lock_unlock(&_debugRealtimeAdmissionLock);
+        return NO;
+    }
+
+    atomic_fetch_add_explicit(
+        &_realtime.microphoneRealtimeAdmissionCount,
+        1,
+        memory_order_relaxed
+    );
+
     _debugAdmittedDeviceGate = deviceGate;
     _debugAdmittedAuthorizationGate = authorizationGate;
     os_unfair_lock_unlock(&_debugRealtimeAdmissionLock);
@@ -2147,6 +3111,176 @@ static OSStatus ASRemoteIOInput(
 - (BOOL)debugTerminateForTesting {
     return [self terminateDevice];
 }
+
+- (void)debugEnableRecoveryHarnessModeForTesting {
+    _debugRecoveryHarnessMode = YES;
+    _debugHasOutputRouteOverride = YES;
+    _debugHasOutputRoute = YES;
+    _debugOwnsSessionActivation = NO;
+}
+
+- (void)debugRecordAudioPolicyConfiguration:
+    (ASAudioPolicyConfiguration)configuration {
+    _debugConfigurationOperationCount += 1;
+    _debugHasRecordedAudioPolicyConfiguration = YES;
+    _debugLastConfiguredCategory =
+        [ASCategoryForAudioPolicyConfiguration(configuration) copy];
+    _debugLastConfiguredMode = [AVAudioSessionModeDefault copy];
+    _debugLastConfiguredRouteSharingPolicy = configuration.routeSharingPolicy;
+    _debugLastConfiguredCategoryOptions = configuration.categoryOptions;
+    _debugLastConfiguredInputBusEnabled = configuration.inputBusEnabled;
+    _debugLastConfiguredOutputBusEnabled = configuration.outputBusEnabled;
+    _debugLastConfiguredOutputStreamFormat = configuration.outputStreamFormat;
+}
+
+- (NSUInteger)debugConfigurationOperationCountForTesting {
+    return _debugConfigurationOperationCount;
+}
+
+- (NSString *)debugLastConfiguredCategoryForTesting {
+    return _debugHasRecordedAudioPolicyConfiguration
+        ? [_debugLastConfiguredCategory copy]
+        : nil;
+}
+
+- (NSString *)debugLastConfiguredModeForTesting {
+    return _debugHasRecordedAudioPolicyConfiguration
+        ? [_debugLastConfiguredMode copy]
+        : nil;
+}
+
+- (NSInteger)debugLastConfiguredRouteSharingPolicyForTesting {
+    return _debugHasRecordedAudioPolicyConfiguration
+        ? _debugLastConfiguredRouteSharingPolicy
+        : NSNotFound;
+}
+
+- (NSUInteger)debugLastConfiguredCategoryOptionsForTesting {
+    return _debugHasRecordedAudioPolicyConfiguration
+        ? _debugLastConfiguredCategoryOptions
+        : 0;
+}
+
+- (BOOL)debugLastConfiguredInputBusEnabledForTesting {
+    return _debugHasRecordedAudioPolicyConfiguration
+        && _debugLastConfiguredInputBusEnabled;
+}
+
+- (BOOL)debugLastConfiguredOutputBusEnabledForTesting {
+    return _debugHasRecordedAudioPolicyConfiguration
+        && _debugLastConfiguredOutputBusEnabled;
+}
+
+- (AudioStreamBasicDescription)debugLastConfiguredOutputStreamFormatForTesting {
+    return _debugHasRecordedAudioPolicyConfiguration
+        ? _debugLastConfiguredOutputStreamFormat
+        : (AudioStreamBasicDescription){0};
+}
+
+- (NSUUID *)debugHostedCallPolicyIdentifierForTesting {
+    return [_hostedCallPolicyIdentifier copy];
+}
+
+- (void)debugMarkInterruptedFailClosedForTesting {
+    [self advanceSystemAudioGeneration];
+    [self revokeHostedCallAuthorization];
+    [self closeAndFenceRealtimeMicrophoneResources];
+    (void)[self stopAndDisposeAudioUnit];
+    (void)[self deactivateOwnedSessionWithError:nil];
+
+    _debugHealthyPlayoutForTesting = NO;
+    _debugHasOutputRouteOverride = YES;
+    _debugHasOutputRoute = YES;
+    _debugOwnsSessionActivation = NO;
+    _wantsPlayout = YES;
+    _interrupted = YES;
+    _recoveryRequired = YES;
+    _explicitResumeRequired = NO;
+    atomic_store_explicit(&_lifecycle.recoveryRequired, true, memory_order_relaxed);
+    atomic_store_explicit(
+        &_lifecycle.explicitResumeRequired,
+        false,
+        memory_order_relaxed
+    );
+    [self publishFailureCode:ASIOSStereoPlayoutFailureInterruption
+                     status:noErr
+                    message:@"Audio interruption began; playout is fail-closed."];
+}
+
+- (void)debugMarkInterruptionEndedFailClosedForTesting {
+    [self handleSystemEvent:ASSystemAudioEventInterruptionEnded
+                routeReason:AVAudioSessionRouteChangeReasonUnknown];
+}
+
+- (void)debugMarkHealthyPlayoutForTesting {
+    [self advanceSystemAudioGeneration];
+    [self revokeHostedCallAuthorization];
+    [self closeAndFenceRealtimeMicrophoneResources];
+    (void)[self stopAndDisposeAudioUnit];
+    (void)[self deactivateOwnedSessionWithError:nil];
+
+    _debugHealthyPlayoutForTesting = NO;
+    _debugHasOutputRouteOverride = YES;
+    _debugHasOutputRoute = YES;
+    _debugOwnsSessionActivation = NO;
+    _wantsPlayout = YES;
+    _interrupted = NO;
+    _recoveryRequired = NO;
+    _explicitResumeRequired = NO;
+    atomic_store_explicit(&_lifecycle.recoveryRequired, false, memory_order_relaxed);
+    atomic_store_explicit(
+        &_lifecycle.explicitResumeRequired,
+        false,
+        memory_order_relaxed
+    );
+    (void)[self rebuildForCurrentPolicy];
+}
+
+- (void)debugMarkRouteLossForTesting {
+    [self advanceSystemAudioGeneration];
+    [self revokeHostedCallAuthorization];
+    [self closeAndFenceRealtimeMicrophoneResources];
+    (void)[self stopAndDisposeAudioUnit];
+    (void)[self deactivateOwnedSessionWithError:nil];
+
+    _debugHealthyPlayoutForTesting = NO;
+    _debugHasOutputRouteOverride = YES;
+    _debugHasOutputRoute = NO;
+    _debugOwnsSessionActivation = NO;
+    _wantsPlayout = YES;
+    _interrupted = NO;
+    _recoveryRequired = YES;
+    _explicitResumeRequired = YES;
+    atomic_store_explicit(&_lifecycle.recoveryRequired, true, memory_order_relaxed);
+    atomic_store_explicit(
+        &_lifecycle.explicitResumeRequired,
+        true,
+        memory_order_relaxed
+    );
+    [self publishFailureCode:
+        ASIOSStereoPlayoutFailureRouteRequiresExplicitResume
+                     status:noErr
+                    message:@"The prior output device became unavailable; explicit resume is required before speaker playout."];
+}
+
+- (void)debugAdvanceSystemAudioGenerationForTesting {
+    BOOL hadHostedCallPolicy = _hostedCallAuthorization != nil;
+    [self advanceSystemAudioGeneration];
+    [self revokeHostedCallAuthorization];
+    if (hadHostedCallPolicy) {
+        [self remainQuiescentAfterHostedCallOwnershipLossWithMessage:
+            @"Hosted-call system-audio generation advanced; native audio remains quiescent until fresh application recovery."];
+    }
+}
+
+- (void)debugSetOutputRouteAvailableForTesting:(BOOL)available {
+    _debugHasOutputRouteOverride = YES;
+    _debugHasOutputRoute = available;
+}
+
+- (void)debugFailNextHostedCallActivationForTesting {
+    _debugFailNextHostedCallActivation = YES;
+}
 #endif
 
 - (void)requestPlayoutRecoveryWithAuthorization:
@@ -2162,25 +3296,73 @@ static OSStatus ASRemoteIOInput(
         return;
     }
     if (delegate == nil) {
+        atomic_fetch_add_explicit(
+            &_realtime.recoveryAuthorizationRejectionCount,
+            1,
+            memory_order_relaxed
+        );
+        [authorization revoke];
         return;
     }
     __weak ASIOSStereoPlayoutAudioDevice *weakSelf = self;
     [delegate dispatchAsync:^{
         ASIOSStereoPlayoutAudioDevice *self = weakSelf;
-        if (self == nil || !self->_initialized) {
+        if (self == nil) {
+            [authorization revoke];
             return;
         }
+        if (!self->_initialized) {
+            atomic_fetch_add_explicit(
+                &self->_realtime.recoveryAuthorizationRejectionCount,
+                1,
+                memory_order_relaxed
+            );
+            [authorization revoke];
+            return;
+        }
+
+        __block BOOL accepted = NO;
         BOOL authorized = [authorization performIfValid:^{
+            if ([self hostedCallModeIsAuthorized]) {
+                [self publishFailureCode:ASIOSStereoPlayoutFailureInterruption
+                                 status:noErr
+                                message:@"Ordinary recovery cannot replace a live hosted-call policy."];
+                return;
+            }
+
             // App lifecycle signals may request recovery while healthy playout is already running.
             // Treat those signals as idempotent: rebuilding RemoteIO would introduce an audible gap
             // and briefly relinquish an otherwise valid media-playback audio session.
-            if (!self->_recoveryRequired
+            AVAudioSession *session = [self currentAudioSession];
+            BOOL healthyPlayout = !self->_recoveryRequired
                 && !self->_explicitResumeRequired
                 && self->_playing
                 && self->_playoutInitialized
                 && self->_audioUnit != NULL
-                && [self ownsCurrentSessionActivation]) {
-                [self startPlayout];
+                && [self ownsCurrentSessionActivation]
+                && [self sessionMatchesCurrentPolicy:session]
+                && [self hasOutputRouteForSession:session];
+#if DEBUG
+            if (self->_debugRecoveryHarnessMode
+                && self->_debugHealthyPlayoutForTesting
+                && self->_sessionActive
+                && self->_playing
+                && self->_playoutInitialized
+                && self->_outputBusEnabled
+                && [self ownsCurrentSessionActivation]
+                && [self sessionMatchesCurrentPolicy:session]
+                && [self hasOutputRouteForSession:session]) {
+                healthyPlayout = YES;
+            }
+#endif
+            if (healthyPlayout) {
+#if DEBUG
+                if (self->_debugRecoveryHarnessMode) {
+                    accepted = YES;
+                    return;
+                }
+#endif
+                accepted = [self startPlayout];
                 return;
             }
             if (self->_interrupted) {
@@ -2202,9 +3384,9 @@ static OSStatus ASRemoteIOInput(
                 1,
                 memory_order_relaxed
             );
-            [self rebuildAfterExplicitRecovery];
+            accepted = [self rebuildAfterExplicitRecovery];
         }];
-        if (!authorized) {
+        if (!authorized || !accepted) {
             atomic_fetch_add_explicit(
                 &self->_realtime.recoveryAuthorizationRejectionCount,
                 1,
@@ -2214,14 +3396,447 @@ static OSStatus ASRemoteIOInput(
     }];
 }
 
+- (BOOL)armStartupConnectedCallPlayoutWithAuthorization:
+    (ASIOSHostedCallPlayoutAuthorization *)authorization {
+    atomic_fetch_add_explicit(
+        &_realtime.recoveryRequestCount,
+        1,
+        memory_order_relaxed
+    );
+    id<LKRTCAudioDeviceDelegate> delegate = self.delegate;
+    if (authorization == nil
+        || !authorization.isValid
+        || authorization.origin
+            != ASIOSHostedCallPlayoutOriginStartupConnectedCall
+        || authorization.policyIdentifier == nil
+        || delegate == nil) {
+        atomic_fetch_add_explicit(
+            &_realtime.recoveryAuthorizationRejectionCount,
+            1,
+            memory_order_relaxed
+        );
+        if (authorization.isValid) {
+            [authorization revoke];
+        }
+        return NO;
+    }
+
+    NSUUID *policyIdentifier = [authorization.policyIdentifier copy];
+    __block BOOL accepted = NO;
+    __block BOOL duplicate = NO;
+    __weak ASIOSStereoPlayoutAudioDevice *weakSelf = self;
+    [delegate dispatchSync:^{
+        ASIOSStereoPlayoutAudioDevice *self = weakSelf;
+        if (self == nil) {
+            return;
+        }
+
+        uint64_t currentGeneration = atomic_load_explicit(
+            &self->_systemAudioGeneration,
+            memory_order_acquire
+        );
+        BOOL exactInstalledPolicy = currentGeneration != 0
+            && authorization.isValid
+            && !authorization.isRecoveryPending
+            && authorization.origin
+                == ASIOSHostedCallPlayoutOriginStartupConnectedCall
+            && self->_hostedCallAuthorization == authorization
+            && self->_hostedCallPolicyIdentifier != nil
+            && [self->_hostedCallPolicyIdentifier
+                isEqual:policyIdentifier]
+            && self->_hostedCallAuthorizationGeneration == currentGeneration
+            && authorization.systemAudioGeneration == currentGeneration
+            && [self hostedCallModeIsAuthorized];
+        if (exactInstalledPolicy) {
+            duplicate = YES;
+            accepted = YES;
+            return;
+        }
+
+        BOOL ownsSessionActivation = [self ownsCurrentSessionActivation];
+        BOOL microphoneGateIsClosed =
+            ASRealtimeGateIsClosedAndDrained(
+                &self->_realtimeMicrophoneDeviceGate
+            )
+            && atomic_load_explicit(
+                &self->_realtimeMicrophoneAuthorizationGate,
+                memory_order_acquire
+            ) == 0;
+        BOOL microphoneGenerationsAreRetired =
+            atomic_load_explicit(
+                &self->_realtimeMicrophoneRecordingGeneration,
+                memory_order_acquire
+            ) == 0
+            && atomic_load_explicit(
+                &self->_realtimeApprovedMicrophoneRecordingGeneration,
+                memory_order_acquire
+            ) == 0;
+        BOOL quiescent = self->_initialized
+            && currentGeneration != 0
+            && !self->_interrupted
+            && !self->_wantsPlayout
+            && !self->_wantsRecording
+            && !self->_recording
+            && !self->_recoveryRequired
+            && !self->_explicitResumeRequired
+            && !self->_isRebuilding
+            && !self->_playoutInitialized
+            && !self->_playing
+            && !self->_sessionActive
+            && !ownsSessionActivation
+            && self->_audioUnit == NULL
+            && !self->_inputBusEnabled
+            && !self->_outputBusEnabled
+            && self->_recordingSamples == NULL
+            && self->_recordingSampleCapacity == 0
+            && self->_microphoneAuthorization == nil
+            && microphoneGateIsClosed
+            && microphoneGenerationsAreRetired
+            && self->_hostedCallAuthorization == nil
+            && self->_hostedCallRecoveryInProgressAuthorization == nil
+            && self->_hostedCallPolicyIdentifier == nil
+            && self->_hostedCallAuthorizationGeneration == 0
+            && authorization.isRecoveryPending
+            && authorization.systemAudioGeneration == 0;
+#if DEBUG
+        if (self->_debugFailNextHostedCallActivation) {
+            self->_debugFailNextHostedCallActivation = NO;
+            quiescent = NO;
+        }
+#endif
+        if (!quiescent) {
+            return;
+        }
+
+        __block BOOL consumeRecoveryClaim = NO;
+        BOOL didConsume = [authorization performRecoveryIfValid:^{
+            uint64_t exactGeneration = atomic_load_explicit(
+                &self->_systemAudioGeneration,
+                memory_order_acquire
+            );
+            BOOL stillQuiescent = exactGeneration == currentGeneration
+                && self->_initialized
+                && !self->_interrupted
+                && !self->_wantsPlayout
+                && !self->_wantsRecording
+                && !self->_recording
+                && !self->_recoveryRequired
+                && !self->_explicitResumeRequired
+                && !self->_isRebuilding
+                && !self->_playoutInitialized
+                && !self->_playing
+                && !self->_sessionActive
+                && ![self ownsCurrentSessionActivation]
+                && self->_audioUnit == NULL
+                && !self->_inputBusEnabled
+                && !self->_outputBusEnabled
+                && self->_recordingSamples == NULL
+                && self->_recordingSampleCapacity == 0
+                && self->_microphoneAuthorization == nil
+                && ASRealtimeGateIsClosedAndDrained(
+                    &self->_realtimeMicrophoneDeviceGate
+                )
+                && atomic_load_explicit(
+                    &self->_realtimeMicrophoneAuthorizationGate,
+                    memory_order_acquire
+                ) == 0
+                && atomic_load_explicit(
+                    &self->_realtimeMicrophoneRecordingGeneration,
+                    memory_order_acquire
+                ) == 0
+                && atomic_load_explicit(
+                    &self->_realtimeApprovedMicrophoneRecordingGeneration,
+                    memory_order_acquire
+                ) == 0
+                && self->_hostedCallAuthorization == nil
+                && self->_hostedCallRecoveryInProgressAuthorization == nil
+                && self->_hostedCallPolicyIdentifier == nil
+                && self->_hostedCallAuthorizationGeneration == 0;
+            if (!stillQuiescent) {
+                return;
+            }
+
+            __weak ASIOSStereoPlayoutAudioDevice *weakDevice = self;
+            __weak ASIOSHostedCallPlayoutAuthorization *weakAuthorization =
+                authorization;
+            BOOL handlerInstalled = [authorization
+                installRevocationHandlerWhilePerforming:^{
+                    ASIOSStereoPlayoutAudioDevice *device = weakDevice;
+                    ASIOSHostedCallPlayoutAuthorization *liveAuthorization =
+                        weakAuthorization;
+                    if (device == nil || liveAuthorization == nil) {
+                        return;
+                    }
+                    [device hostedCallAuthorizationDidRevoke:liveAuthorization
+                                             policyIdentifier:policyIdentifier
+                                                    generation:currentGeneration];
+                }
+                              systemAudioGeneration:currentGeneration];
+            if (!handlerInstalled) {
+                return;
+            }
+
+            self->_hostedCallAuthorization = authorization;
+            self->_hostedCallPolicyIdentifier = [policyIdentifier copy];
+            self->_hostedCallAuthorizationGeneration = currentGeneration;
+            [self publishHostedCallLifecycleState];
+            consumeRecoveryClaim =
+                self->_hostedCallAuthorization == authorization
+                && self->_hostedCallPolicyIdentifier != nil
+                && [self->_hostedCallPolicyIdentifier
+                    isEqual:policyIdentifier]
+                && self->_hostedCallAuthorizationGeneration
+                    == currentGeneration
+                && [self hostedCallModeIsAuthorized]
+                && !self->_sessionActive
+                && !self->_playoutInitialized
+                && !self->_playing
+                && self->_audioUnit == NULL
+                && !self->_inputBusEnabled
+                && !self->_outputBusEnabled;
+        }
+                   consumeRecoveryClaim:&consumeRecoveryClaim];
+        accepted = didConsume && consumeRecoveryClaim;
+        [self publishHostedCallLifecycleState];
+    }];
+
+    if (!accepted) {
+        atomic_fetch_add_explicit(
+            &_realtime.recoveryAuthorizationRejectionCount,
+            1,
+            memory_order_relaxed
+        );
+        if (authorization.isValid) {
+            [authorization revoke];
+        }
+    } else if (!duplicate) {
+        [self clearLifecycleFailure];
+    }
+    return accepted;
+}
+
+- (void)requestHostedCallPlayoutRecoveryWithAuthorization:
+    (ASIOSHostedCallPlayoutAuthorization *)authorization {
+    atomic_fetch_add_explicit(
+        &_realtime.recoveryRequestCount,
+        1,
+        memory_order_relaxed
+    );
+    id<LKRTCAudioDeviceDelegate> delegate = self.delegate;
+    if (!authorization.isValid
+        || !authorization.isRecoveryPending
+        || authorization.origin
+            != ASIOSHostedCallPlayoutOriginInterruption) {
+        atomic_fetch_add_explicit(
+            &_realtime.recoveryAuthorizationRejectionCount,
+            1,
+            memory_order_relaxed
+        );
+        return;
+    }
+    if (delegate == nil) {
+        atomic_fetch_add_explicit(
+            &_realtime.recoveryAuthorizationRejectionCount,
+            1,
+            memory_order_relaxed
+        );
+        [authorization revoke];
+        return;
+    }
+
+    uint64_t expectedSystemAudioGeneration = atomic_load_explicit(
+        &_systemAudioGeneration,
+        memory_order_acquire
+    );
+    NSUUID *policyIdentifier = [authorization.policyIdentifier copy];
+    __weak ASIOSStereoPlayoutAudioDevice *weakSelf = self;
+    [delegate dispatchAsync:^{
+        ASIOSStereoPlayoutAudioDevice *self = weakSelf;
+        if (self == nil) {
+            [authorization revoke];
+            return;
+        }
+        if (!self->_initialized) {
+            atomic_fetch_add_explicit(
+                &self->_realtime.recoveryAuthorizationRejectionCount,
+                1,
+                memory_order_relaxed
+            );
+            [authorization revoke];
+            return;
+        }
+
+        ASHostedCallRecoveryReadiness readiness = [self
+            hostedCallRecoveryReadinessForAuthorization:authorization
+                            expectedSystemAudioGeneration:
+                                expectedSystemAudioGeneration];
+        if (readiness == ASHostedCallRecoveryReadinessAwaitingFailClose) {
+            return;
+        }
+        if (readiness == ASHostedCallRecoveryReadinessCoalesced) {
+            // The exact authorization/policy/generation already owns the live policy. This queued
+            // stale duplicate is an idempotent no-op: do not consume, reject, revoke, or rebuild.
+            return;
+        }
+        if (readiness == ASHostedCallRecoveryReadinessRejected) {
+            atomic_fetch_add_explicit(
+                &self->_realtime.recoveryAuthorizationRejectionCount,
+                1,
+                memory_order_relaxed
+            );
+            [authorization revoke];
+            return;
+        }
+
+        __block BOOL attempted = NO;
+        __block BOOL accepted = NO;
+        BOOL authorized = [authorization performRecoveryIfValid:^{
+            if (atomic_load_explicit(
+                    &self->_systemAudioGeneration,
+                    memory_order_acquire
+                ) != expectedSystemAudioGeneration
+                || [self
+                    hostedCallRecoveryReadinessForAuthorization:authorization
+                                    expectedSystemAudioGeneration:
+                                        expectedSystemAudioGeneration]
+                    != ASHostedCallRecoveryReadinessReady) {
+                return;
+            }
+
+            attempted = YES;
+            [self retireMicrophoneAuthorizationForHostedCall];
+
+            __weak ASIOSStereoPlayoutAudioDevice *weakDevice = self;
+            __weak ASIOSHostedCallPlayoutAuthorization *weakAuthorization =
+                authorization;
+            BOOL handlerInstalled = [authorization
+                installRevocationHandlerWhilePerforming:^{
+                    ASIOSStereoPlayoutAudioDevice *device = weakDevice;
+                    ASIOSHostedCallPlayoutAuthorization *liveAuthorization =
+                        weakAuthorization;
+                    if (device == nil || liveAuthorization == nil) {
+                        return;
+                    }
+                    [device hostedCallAuthorizationDidRevoke:liveAuthorization
+                                             policyIdentifier:policyIdentifier
+                                                    generation:
+                                                        expectedSystemAudioGeneration];
+                }
+                              systemAudioGeneration:
+                                  expectedSystemAudioGeneration];
+            if (!handlerInstalled) {
+                return;
+            }
+
+            self->_hostedCallRecoveryInProgressAuthorization = authorization;
+            self->_hostedCallAuthorization = authorization;
+            self->_hostedCallPolicyIdentifier = [policyIdentifier copy];
+            self->_hostedCallAuthorizationGeneration =
+                expectedSystemAudioGeneration;
+            [self publishHostedCallLifecycleState];
+
+            self->_recoveryRequired = NO;
+            self->_explicitResumeRequired = NO;
+            atomic_store_explicit(
+                &self->_lifecycle.recoveryRequired,
+                false,
+                memory_order_relaxed
+            );
+            atomic_store_explicit(
+                &self->_lifecycle.explicitResumeRequired,
+                false,
+                memory_order_relaxed
+            );
+            atomic_fetch_add_explicit(
+                &self->_realtime.recoveryRebuildCount,
+                1,
+                memory_order_relaxed
+            );
+
+            BOOL rebuilt = [self rebuildAfterExplicitRecovery];
+            AVAudioSession *session = [self currentAudioSession];
+            BOOL microphoneGateClosed = ASRealtimeGateIsClosedAndDrained(
+                    &self->_realtimeMicrophoneDeviceGate
+                )
+                && atomic_load_explicit(
+                    &self->_realtimeMicrophoneAuthorizationGate,
+                    memory_order_acquire
+                ) == 0;
+            BOOL topologyIsLive = self->_playing
+                && self->_playoutInitialized
+                && self->_audioUnit != NULL
+                && !self->_inputBusEnabled
+                && self->_outputBusEnabled
+                && !self->_recording
+                && !self->_wantsRecording
+                && self->_microphoneAuthorization == nil
+                && microphoneGateClosed
+                && self->_sessionActive
+                && [self ownsCurrentSessionActivation]
+                && [self sessionMatchesCurrentPolicy:session]
+                && [self hasOutputRouteForSession:session];
+#if DEBUG
+            if (self->_debugRecoveryHarnessMode) {
+                topologyIsLive = self->_playing
+                    && self->_playoutInitialized
+                    && !self->_inputBusEnabled
+                    && self->_outputBusEnabled
+                    && !self->_recording
+                    && !self->_wantsRecording
+                    && self->_microphoneAuthorization == nil
+                    && microphoneGateClosed
+                    && self->_sessionActive
+                    && self->_debugOwnsSessionActivation
+                    && [self sessionMatchesCurrentPolicy:nil]
+                    && [self hasOutputRouteForSession:nil];
+            }
+#endif
+            accepted = rebuilt
+                && [self hostedCallModeIsAuthorized]
+                && topologyIsLive;
+            if (rebuilt && !accepted) {
+                [self failAndRollbackWithCode:
+                    ASIOSStereoPlayoutFailureMediaRouteInvariant
+                                       status:kAudio_ParamError
+                                      message:@"The hosted-call rebuild did not publish a live output-only topology."];
+            }
+            if (!accepted) {
+                self->_recoveryRequired = self->_wantsPlayout;
+                atomic_store_explicit(
+                    &self->_lifecycle.recoveryRequired,
+                    self->_recoveryRequired,
+                    memory_order_relaxed
+                );
+                [self revokeHostedCallAuthorization];
+            }
+            self->_hostedCallRecoveryInProgressAuthorization = nil;
+        }];
+        [self publishHostedCallLifecycleState];
+        if (!authorized || !attempted || !accepted) {
+            atomic_fetch_add_explicit(
+                &self->_realtime.recoveryAuthorizationRejectionCount,
+                1,
+                memory_order_relaxed
+            );
+            if (authorization.isValid) {
+                [authorization revoke];
+            }
+        }
+    }];
+}
+
 - (ASIOSStereoPlayoutDiagnostics)diagnostics {
-    AVAudioSession *session = AVAudioSession.sharedInstance;
+    AVAudioSession *session = [self currentAudioSession];
     BOOL ownsSessionActivation = [self ownsCurrentSessionActivation];
     BOOL sessionActive = atomic_load_explicit(
         &_lifecycle.sessionActive,
         memory_order_relaxed
     ) && ownsSessionActivation;
     ASIOSStereoPlayoutDiagnostics diagnostics = {0};
+    BOOL hostedCallModeSnapshot = atomic_load_explicit(
+        &_lifecycle.hostedCallMode,
+        memory_order_relaxed
+    );
     diagnostics.initialized = atomic_load_explicit(
         &_lifecycle.initialized,
         memory_order_relaxed
@@ -2253,14 +3868,41 @@ static OSStatus ASRemoteIOInput(
         &_lifecycle.explicitResumeRequired,
         memory_order_relaxed
     );
-    diagnostics.categoryIsMediaPlayback =
-        [session.category isEqualToString:AVAudioSessionCategoryPlayback];
-    diagnostics.categoryIsMediaPlayAndRecord =
-        [session.category isEqualToString:AVAudioSessionCategoryPlayAndRecord];
-    diagnostics.modeIsDefault = [session.mode isEqualToString:AVAudioSessionModeDefault];
-    diagnostics.sampleRate = session.sampleRate;
-    diagnostics.outputIOBufferDuration = session.IOBufferDuration;
-    diagnostics.outputChannelCount = session.outputNumberOfChannels;
+#if DEBUG
+    if (_debugRecoveryHarnessMode) {
+        BOOL hasActiveRecordedConfiguration =
+            _debugHasRecordedAudioPolicyConfiguration && _sessionActive;
+        diagnostics.categoryIsMediaPlayback =
+            hasActiveRecordedConfiguration
+            && [_debugLastConfiguredCategory
+                isEqualToString:AVAudioSessionCategoryPlayback];
+        diagnostics.categoryIsMediaPlayAndRecord =
+            hasActiveRecordedConfiguration
+            && [_debugLastConfiguredCategory
+                isEqualToString:AVAudioSessionCategoryPlayAndRecord];
+        diagnostics.modeIsDefault =
+            hasActiveRecordedConfiguration
+            && [_debugLastConfiguredMode
+                isEqualToString:AVAudioSessionModeDefault];
+        // These fields represent hardware route values in production. The deterministic harness
+        // exposes the 48-kHz stereo client ASBD separately and therefore leaves them unset.
+        diagnostics.sampleRate = 0;
+        diagnostics.outputIOBufferDuration = 0;
+        diagnostics.outputChannelCount = 0;
+    } else {
+#endif
+        diagnostics.categoryIsMediaPlayback =
+            [session.category isEqualToString:AVAudioSessionCategoryPlayback];
+        diagnostics.categoryIsMediaPlayAndRecord =
+            [session.category isEqualToString:AVAudioSessionCategoryPlayAndRecord];
+        diagnostics.modeIsDefault =
+            [session.mode isEqualToString:AVAudioSessionModeDefault];
+        diagnostics.sampleRate = session.sampleRate;
+        diagnostics.outputIOBufferDuration = session.IOBufferDuration;
+        diagnostics.outputChannelCount = session.outputNumberOfChannels;
+#if DEBUG
+    }
+#endif
     diagnostics.audioUnitSubType = (uint32_t)atomic_load_explicit(
         &_lifecycle.audioUnitSubType,
         memory_order_relaxed
@@ -2384,6 +4026,41 @@ static OSStatus ASRemoteIOInput(
         &_realtime.lastStatus,
         memory_order_relaxed
     );
+    diagnostics.microphoneDeviceGateClosedAndDrained =
+        ASRealtimeGateIsClosedAndDrained(
+            &_realtimeMicrophoneDeviceGate
+        );
+    diagnostics.microphoneAuthorizationGatePublished =
+        atomic_load_explicit(
+            &_realtimeMicrophoneAuthorizationGate,
+            memory_order_acquire
+        ) != 0;
+    diagnostics.microphoneRecordingGeneration =
+        atomic_load_explicit(
+            &_realtimeMicrophoneRecordingGeneration,
+            memory_order_acquire
+        );
+    diagnostics.approvedMicrophoneRecordingGeneration =
+        atomic_load_explicit(
+            &_realtimeApprovedMicrophoneRecordingGeneration,
+            memory_order_acquire
+        );
+    diagnostics.microphoneRealtimeAdmissionCount =
+        atomic_load_explicit(
+            &_realtime.microphoneRealtimeAdmissionCount,
+            memory_order_relaxed
+        );
+    diagnostics.microphoneDeliveryCallbackCount =
+        atomic_load_explicit(
+            &_realtime.microphoneDeliveryCallbackCount,
+            memory_order_relaxed
+        );
+    diagnostics.microphoneDeliveredFrameCount =
+        atomic_load_explicit(
+            &_realtime.microphoneDeliveredFrameCount,
+            memory_order_relaxed
+        );
+
         uint_fast64_t sequenceAfter = atomic_load_explicit(
             &_realtime.publicationSequence,
             memory_order_acquire
@@ -2408,10 +4085,127 @@ static OSStatus ASRemoteIOInput(
         &_realtime.recoveryRebuildCount,
         memory_order_relaxed
     );
-    diagnostics.categoryOptionsAreEmpty = session.categoryOptions == 0;
-    diagnostics.routeSharingPolicyIsDefault =
-        session.routeSharingPolicy == AVAudioSessionRouteSharingPolicyDefault;
+ #if DEBUG
+    if (_debugRecoveryHarnessMode) {
+        BOOL hasActiveRecordedConfiguration =
+            _debugHasRecordedAudioPolicyConfiguration && _sessionActive;
+        diagnostics.categoryOptionsAreEmpty =
+            hasActiveRecordedConfiguration
+            && _debugLastConfiguredCategoryOptions == 0;
+        diagnostics.routeSharingPolicyIsDefault =
+            hasActiveRecordedConfiguration
+            && _debugLastConfiguredRouteSharingPolicy
+                == AVAudioSessionRouteSharingPolicyDefault;
+        diagnostics.categoryOptionsAreMixWithOthers =
+            hasActiveRecordedConfiguration
+            && _debugLastConfiguredCategoryOptions
+                == AVAudioSessionCategoryOptionMixWithOthers;
+    } else {
+ #endif
+        diagnostics.categoryOptionsAreEmpty = session.categoryOptions == 0;
+        diagnostics.routeSharingPolicyIsDefault =
+            session.routeSharingPolicy == AVAudioSessionRouteSharingPolicyDefault;
+        diagnostics.categoryOptionsAreMixWithOthers =
+            session.categoryOptions == AVAudioSessionCategoryOptionMixWithOthers;
+ #if DEBUG
+    }
+ #endif
+    diagnostics.hasOutputRoute = [self hasOutputRouteForSession:session];
+    diagnostics.hostedCallMode = hostedCallModeSnapshot;
+    diagnostics.hostedCallAuthorizationValid = atomic_load_explicit(
+        &_lifecycle.hostedCallAuthorizationValid,
+        memory_order_relaxed
+    );
+    diagnostics.hostedCallRecoveryPending = atomic_load_explicit(
+        &_lifecycle.hostedCallRecoveryPending,
+        memory_order_relaxed
+    );
+    diagnostics.hostedCallOrigin =
+        (ASIOSHostedCallPlayoutOrigin)atomic_load_explicit(
+            &_lifecycle.hostedCallOrigin,
+            memory_order_relaxed
+        );
+    diagnostics.systemAudioGeneration = atomic_load_explicit(
+        &_systemAudioGeneration,
+        memory_order_acquire
+    );
+    diagnostics.hostedCallAuthorizationGeneration = atomic_load_explicit(
+        &_lifecycle.hostedCallAuthorizationGeneration,
+        memory_order_relaxed
+    );
     return diagnostics;
+}
+
+- (void)clearCurrentMicrophoneRecordingGeneration {
+    atomic_store_explicit(
+        &_realtimeApprovedMicrophoneRecordingGeneration,
+        0,
+        memory_order_release
+    );
+    atomic_store_explicit(
+        &_realtimeMicrophoneRecordingGeneration,
+        0,
+        memory_order_release
+    );
+    atomic_store_explicit(
+        &_microphoneApprovalConsumedGeneration,
+        0,
+        memory_order_release
+    );
+}
+
+- (uint64_t)installNextMicrophoneRecordingGeneration {
+    _microphoneRecordingGenerationCounter += 1;
+    if (_microphoneRecordingGenerationCounter == 0) {
+        _microphoneRecordingGenerationCounter = 1;
+    }
+
+    uint64_t recordingGeneration =
+        _microphoneRecordingGenerationCounter;
+    atomic_store_explicit(
+        &_realtimeApprovedMicrophoneRecordingGeneration,
+        0,
+        memory_order_release
+    );
+    atomic_store_explicit(
+        &_microphoneApprovalConsumedGeneration,
+        0,
+        memory_order_release
+    );
+    atomic_store_explicit(
+        &_realtimeMicrophoneRecordingGeneration,
+        recordingGeneration,
+        memory_order_release
+    );
+    return recordingGeneration;
+}
+
+- (BOOL)microphoneTopologyIsStagedAllowingDebugOverride:
+    (BOOL)debugTopologyOverride {
+    BOOL commonTopology =
+        _initialized
+        && _playing
+        && _playoutInitialized
+        && _inputBusEnabled
+        && _outputBusEnabled
+        && _recording
+        && _wantsPlayout
+        && _wantsRecording
+        && !_interrupted
+        && !_recoveryRequired
+        && !_explicitResumeRequired
+        && _sessionActive
+        && _microphoneAuthorization != nil
+        && ASMicrophoneAuthorizationIsValid(_microphoneAuthorization);
+    if (debugTopologyOverride) {
+        return commonTopology;
+    }
+    return commonTopology
+        && _audioUnit != NULL
+        && [self ownsCurrentSessionActivation]
+        && _recordingSamples != NULL
+        && _recordingSampleCapacity > 0
+        && _recordedDataBlock != nil;
 }
 
 - (void)closeAndFenceRealtimeMicrophoneResources {
@@ -2435,11 +4229,39 @@ static OSStatus ASRemoteIOInput(
         0,
         memory_order_release
     );
+    atomic_store_explicit(
+        &_realtimeApprovedMicrophoneRecordingGeneration,
+        0,
+        memory_order_release
+    );
 }
 
 - (BOOL)publishFinalLiveMicrophoneResourcesWithAuthorization:
     (ASIOSMicrophoneAuthorization *)authorization
                                       debugTopologyOverride:(BOOL)debugTopologyOverride {
+    uint64_t recordingGeneration =
+        authorization.microphoneRecordingGeneration;
+    uint64_t currentRecordingGeneration = atomic_load_explicit(
+        &_realtimeMicrophoneRecordingGeneration,
+        memory_order_acquire
+    );
+    uint64_t approvedRecordingGeneration = atomic_load_explicit(
+        &_realtimeApprovedMicrophoneRecordingGeneration,
+        memory_order_acquire
+    );
+    uint64_t consumedRecordingGeneration = atomic_load_explicit(
+        &_microphoneApprovalConsumedGeneration,
+        memory_order_acquire
+    );
+    if (authorization == nil
+        || recordingGeneration == 0
+        || currentRecordingGeneration != recordingGeneration
+        || approvedRecordingGeneration != 0
+        || consumedRecordingGeneration != 0) {
+        [self closeAndFenceRealtimeMicrophoneResources];
+        return NO;
+    }
+
     [self closeAndFenceRealtimeMicrophoneResources];
 
     BOOL allowDebugTopology = NO;
@@ -2493,6 +4315,18 @@ static OSStatus ASRemoteIOInput(
 
     __block BOOL published = NO;
     BOOL remainedValid = [authorization performWhileValid:^{
+        uint64_t currentGeneration = atomic_load_explicit(
+            &self->_realtimeMicrophoneRecordingGeneration,
+            memory_order_acquire
+        );
+        uint64_t approvedGeneration = atomic_load_explicit(
+            &self->_realtimeApprovedMicrophoneRecordingGeneration,
+            memory_order_acquire
+        );
+        uint64_t consumedGeneration = atomic_load_explicit(
+            &self->_microphoneApprovalConsumedGeneration,
+            memory_order_acquire
+        );
         BOOL topologyStillEligible =
             allowDebugTopology
             || (self->_initialized
@@ -2512,7 +4346,12 @@ static OSStatus ASRemoteIOInput(
                 && self->_recordingSamples != NULL
                 && self->_recordingSampleCapacity > 0
                 && self->_recordedDataBlock != nil);
-        if (self->_microphoneAuthorization != authorization
+        if (authorization.microphoneRecordingGeneration
+                != recordingGeneration
+            || currentGeneration != recordingGeneration
+            || approvedGeneration != 0
+            || consumedGeneration != 0
+            || self->_microphoneAuthorization != authorization
             || !topologyStillEligible) {
             return;
         }
@@ -2532,24 +4371,504 @@ static OSStatus ASRemoteIOInput(
             (unsigned long)(uintptr_t)&authorization->_realtimeGate,
             memory_order_release
         );
+        atomic_store_explicit(
+            &self->_realtimeApprovedMicrophoneRecordingGeneration,
+            recordingGeneration,
+            memory_order_release
+        );
+        atomic_store_explicit(
+            &self->_microphoneApprovalConsumedGeneration,
+            recordingGeneration,
+            memory_order_release
+        );
         ASResetClosedRealtimeGate(&self->_realtimeMicrophoneDeviceGate);
         published = YES;
     }];
-    return remainedValid && published;
+    BOOL approved = remainedValid && published;
+    if (!approved) {
+        [self closeAndFenceRealtimeMicrophoneResources];
+    }
+    return approved;
+}
+
+- (AVAudioSession *)currentAudioSession {
+#if DEBUG
+    if (_debugRecoveryHarnessMode) {
+        return nil;
+    }
+#endif
+    return AVAudioSession.sharedInstance;
+}
+
+- (uint64_t)advanceSystemAudioGeneration {
+    uint64_t generation = atomic_fetch_add_explicit(
+        &_systemAudioGeneration,
+        1,
+        memory_order_acq_rel
+    ) + 1;
+    if (generation == 0) {
+        generation = atomic_fetch_add_explicit(
+            &_systemAudioGeneration,
+            1,
+            memory_order_acq_rel
+        ) + 1;
+    }
+    return generation;
+}
+
+- (BOOL)hasOutputRouteForSession:(AVAudioSession *)session {
+#if DEBUG
+    if (_debugRecoveryHarnessMode) {
+        return _debugHasOutputRouteOverride && _debugHasOutputRoute;
+    }
+    if (_debugHasOutputRouteOverride) {
+        return _debugHasOutputRoute;
+    }
+#endif
+    return session != nil
+        && session.currentRoute.outputs.count > 0
+        && session.outputNumberOfChannels > 0;
+}
+
+- (BOOL)hostedCallOriginIsAdmissible:
+    (ASIOSHostedCallPlayoutOrigin)origin {
+    switch (origin) {
+        case ASIOSHostedCallPlayoutOriginInterruption:
+            return !_interrupted;
+        case ASIOSHostedCallPlayoutOriginStartupConnectedCall:
+            return !_interrupted;
+        case ASIOSHostedCallPlayoutOriginUnspecified:
+            return NO;
+    }
+    return NO;
+}
+
+- (BOOL)hostedCallOwnershipMatchesAuthorization:
+    (ASIOSHostedCallPlayoutAuthorization *)authorization
+                                 policyIdentifier:(NSUUID *)policyIdentifier
+                                        generation:(uint64_t)generation {
+    uint64_t currentGeneration = atomic_load_explicit(
+        &_systemAudioGeneration,
+        memory_order_acquire
+    );
+    return authorization != nil
+        && policyIdentifier != nil
+        && generation != 0
+        && currentGeneration == generation
+        && _hostedCallAuthorization == authorization
+        && _hostedCallPolicyIdentifier != nil
+        && [_hostedCallPolicyIdentifier isEqual:policyIdentifier]
+        && _hostedCallAuthorizationGeneration == generation
+        && [authorization.policyIdentifier isEqual:policyIdentifier]
+        && authorization.systemAudioGeneration == generation
+        && [self hostedCallModeIsAuthorized];
+}
+
+- (BOOL)hostedCallModeIsAuthorized {
+    ASIOSHostedCallPlayoutAuthorization *authorization =
+        _hostedCallAuthorization;
+    uint64_t currentGeneration = atomic_load_explicit(
+        &_systemAudioGeneration,
+        memory_order_acquire
+    );
+    return currentGeneration != 0
+        && authorization != nil
+        && authorization.isValid
+        && authorization.origin != ASIOSHostedCallPlayoutOriginUnspecified
+        && [self hostedCallOriginIsAdmissible:authorization.origin]
+        && _hostedCallPolicyIdentifier != nil
+        && [_hostedCallPolicyIdentifier isEqual:authorization.policyIdentifier]
+        && _hostedCallAuthorizationGeneration == currentGeneration
+        && authorization.systemAudioGeneration == currentGeneration;
+}
+
+- (void)publishHostedCallLifecycleState {
+    ASIOSHostedCallPlayoutAuthorization *authorization =
+        _hostedCallAuthorization;
+    uint64_t currentGeneration = atomic_load_explicit(
+        &_systemAudioGeneration,
+        memory_order_acquire
+    );
+    BOOL authorizationOwnsCurrentPolicy = currentGeneration != 0
+        && authorization != nil
+        && authorization.isValid
+        && authorization.origin != ASIOSHostedCallPlayoutOriginUnspecified
+        && [self hostedCallOriginIsAdmissible:authorization.origin]
+        && _hostedCallPolicyIdentifier != nil
+        && [_hostedCallPolicyIdentifier isEqual:authorization.policyIdentifier]
+        && _hostedCallAuthorizationGeneration == currentGeneration
+        && authorization.systemAudioGeneration == currentGeneration;
+    BOOL recoveryPending = authorizationOwnsCurrentPolicy
+        && authorization.isRecoveryPending;
+    atomic_store_explicit(
+        &_lifecycle.hostedCallMode,
+        authorizationOwnsCurrentPolicy,
+        memory_order_relaxed
+    );
+    atomic_store_explicit(
+        &_lifecycle.hostedCallAuthorizationValid,
+        authorizationOwnsCurrentPolicy,
+        memory_order_relaxed
+    );
+    atomic_store_explicit(
+        &_lifecycle.hostedCallRecoveryPending,
+        recoveryPending,
+        memory_order_relaxed
+    );
+    atomic_store_explicit(
+        &_lifecycle.hostedCallOrigin,
+        authorizationOwnsCurrentPolicy
+            ? authorization.origin
+            : ASIOSHostedCallPlayoutOriginUnspecified,
+        memory_order_relaxed
+    );
+    atomic_store_explicit(
+        &_lifecycle.hostedCallAuthorizationGeneration,
+        authorizationOwnsCurrentPolicy ? _hostedCallAuthorizationGeneration : 0,
+        memory_order_relaxed
+    );
+}
+
+- (void)retireMicrophoneAuthorizationForHostedCall {
+    [self closeAndFenceRealtimeMicrophoneResources];
+    __attribute__((objc_precise_lifetime))
+    ASIOSMicrophoneAuthorization *retiringAuthorization =
+        _microphoneAuthorization;
+    _microphoneAuthorization = nil;
+    _wantsRecording = NO;
+    _recording = NO;
+    [retiringAuthorization revoke];
+}
+
+- (void)revokeHostedCallAuthorization {
+    __attribute__((objc_precise_lifetime))
+    ASIOSHostedCallPlayoutAuthorization *authorization =
+        _hostedCallAuthorization;
+    _hostedCallAuthorization = nil;
+    _hostedCallPolicyIdentifier = nil;
+    _hostedCallAuthorizationGeneration = 0;
+    [self publishHostedCallLifecycleState];
+    if (authorization == nil) {
+        return;
+    }
+
+    if (_hostedCallRecoveryInProgressAuthorization == authorization) {
+        [authorization invalidateWhilePerforming];
+        return;
+    }
+
+    [authorization clearRevocationHandler];
+    [authorization revoke];
+}
+
+- (void)remainQuiescentAfterHostedCallOwnershipLossWithMessage:
+    (NSString *)message {
+    [self retireMicrophoneAuthorizationForHostedCall];
+    if (_inputBusEnabled) {
+        [self.delegate notifyAudioInputInterrupted];
+    }
+    if (_audioUnit != NULL || _playing) {
+        [self.delegate notifyAudioOutputInterrupted];
+    }
+
+    OSStatus teardownStatus = [self stopAndDisposeAudioUnit];
+    NSError *deactivationError = nil;
+    BOOL deactivated = [self deactivateOwnedSessionWithError:&deactivationError];
+    _recoveryRequired = YES;
+    atomic_store_explicit(
+        &_lifecycle.recoveryRequired,
+        true,
+        memory_order_relaxed
+    );
+
+    NSMutableString *detail = [message mutableCopy];
+    if (teardownStatus != noErr) {
+        [detail appendFormat:@" RemoteIO teardown also failed (%d).", (int)teardownStatus];
+    }
+    if (!deactivated) {
+        [detail appendFormat:
+            @" Audio-session deactivation also failed: %@.",
+            deactivationError.localizedDescription ?: @"unknown error"];
+    }
+    if (_wantsPlayout || teardownStatus != noErr || !deactivated) {
+        [self publishFailureCode:ASIOSStereoPlayoutFailureInterruption
+                         status:(teardownStatus != noErr
+                             ? (int32_t)teardownStatus
+                             : (int32_t)deactivationError.code)
+                        message:detail];
+    }
+}
+
+- (void)hostedCallAuthorizationDidRevoke:
+    (ASIOSHostedCallPlayoutAuthorization *)authorization
+                             policyIdentifier:(NSUUID *)policyIdentifier
+                                    generation:(uint64_t)generation {
+    id<LKRTCAudioDeviceDelegate> delegate = self.delegate;
+    if (delegate == nil) {
+        return;
+    }
+
+    __weak ASIOSStereoPlayoutAudioDevice *weakSelf = self;
+    [delegate dispatchSync:^{
+        ASIOSStereoPlayoutAudioDevice *self = weakSelf;
+        if (self == nil
+            || !self->_initialized
+            || self->_hostedCallAuthorization != authorization
+            || self->_hostedCallAuthorizationGeneration != generation
+            || self->_hostedCallPolicyIdentifier == nil
+            || ![self->_hostedCallPolicyIdentifier
+                isEqual:policyIdentifier]) {
+            return;
+        }
+
+        [self advanceSystemAudioGeneration];
+        [self revokeHostedCallAuthorization];
+        [self remainQuiescentAfterHostedCallOwnershipLossWithMessage:
+            @"Hosted-call policy was synchronously revoked; native audio remains quiescent until fresh application recovery."];
+    }];
+}
+
+- (BOOL)applyAudioPolicyConfiguration:
+    (ASAudioPolicyConfiguration)configuration
+                              toSession:(AVAudioSession *)session
+                                  error:(NSError **)error {
+    AVAudioSessionCategory category =
+        ASCategoryForAudioPolicyConfiguration(configuration);
+#if DEBUG
+    [self debugRecordAudioPolicyConfiguration:configuration];
+    if (_debugRecoveryHarnessMode) {
+        if (error != NULL) {
+            *error = nil;
+        }
+        return YES;
+    }
+#endif
+    if (session == nil) {
+        return NO;
+    }
+    return [session setCategory:category
+                          mode:AVAudioSessionModeDefault
+            routeSharingPolicy:configuration.routeSharingPolicy
+                       options:configuration.categoryOptions
+                         error:error];
+}
+
+- (BOOL)sessionMatchesCurrentPolicy:(AVAudioSession *)session {
+    BOOL hostedCallMode = [self hostedCallModeIsAuthorized];
+    BOOL microphoneEnabled = [self microphoneShouldBeActive];
+    if (hostedCallMode && microphoneEnabled) {
+        return NO;
+    }
+
+    ASAudioPolicyConfiguration configuration =
+        ASMakeAudioPolicyConfiguration(
+            hostedCallMode,
+            microphoneEnabled,
+            _streamFormat
+        );
+    AVAudioSessionCategory category =
+        ASCategoryForAudioPolicyConfiguration(configuration);
+
+#if DEBUG
+    if (_debugRecoveryHarnessMode) {
+        return _debugHasRecordedAudioPolicyConfiguration
+            && [_debugLastConfiguredCategory isEqualToString:category]
+            && [_debugLastConfiguredMode
+                isEqualToString:AVAudioSessionModeDefault]
+            && _debugLastConfiguredRouteSharingPolicy
+                == configuration.routeSharingPolicy
+            && _debugLastConfiguredCategoryOptions
+                == configuration.categoryOptions
+            && _debugLastConfiguredInputBusEnabled
+                == configuration.inputBusEnabled
+            && _debugLastConfiguredOutputBusEnabled
+                == configuration.outputBusEnabled
+            && ASAudioStreamBasicDescriptionsEqual(
+                _debugLastConfiguredOutputStreamFormat,
+                configuration.outputStreamFormat
+            );
+    }
+#endif
+    if (session == nil) {
+        return NO;
+    }
+
+    return [session.category isEqualToString:category]
+        && [session.mode isEqualToString:AVAudioSessionModeDefault]
+        && session.categoryOptions == configuration.categoryOptions
+        && session.routeSharingPolicy == configuration.routeSharingPolicy;
+}
+
+- (ASHostedCallRecoveryReadiness)
+    hostedCallRecoveryReadinessForAuthorization:
+        (ASIOSHostedCallPlayoutAuthorization *)authorization
+                    expectedSystemAudioGeneration:(uint64_t)expectedGeneration {
+    uint64_t currentGeneration = atomic_load_explicit(
+        &_systemAudioGeneration,
+        memory_order_acquire
+    );
+    uint64_t authorizationGeneration = authorization.systemAudioGeneration;
+    BOOL exactInstalledPolicy = expectedGeneration != 0
+        && expectedGeneration == currentGeneration
+        && authorization.isValid
+        && authorization.origin
+            == ASIOSHostedCallPlayoutOriginInterruption
+        && !authorization.isRecoveryPending
+        && _hostedCallAuthorization == authorization
+        && _hostedCallPolicyIdentifier != nil
+        && [_hostedCallPolicyIdentifier
+            isEqual:authorization.policyIdentifier]
+        && _hostedCallAuthorizationGeneration == currentGeneration
+        && authorizationGeneration == currentGeneration
+        && [self hostedCallModeIsAuthorized];
+    if (exactInstalledPolicy) {
+        return ASHostedCallRecoveryReadinessCoalesced;
+    }
+
+    if (!authorization.isValid
+        || !authorization.isRecoveryPending
+        || authorization.origin
+            != ASIOSHostedCallPlayoutOriginInterruption
+        || expectedGeneration == 0
+        || expectedGeneration != currentGeneration
+        || (authorizationGeneration != 0
+            && authorizationGeneration != expectedGeneration)
+        || authorization.policyIdentifier == nil
+        || !_initialized
+        || _isRebuilding
+        || _explicitResumeRequired
+        || _hostedCallAuthorization != nil) {
+        return ASHostedCallRecoveryReadinessRejected;
+    }
+
+    AVAudioSession *session = [self currentAudioSession];
+    BOOL ownsSessionActivation = [self ownsCurrentSessionActivation];
+    BOOL healthyPlayout = !_interrupted
+        && !_recoveryRequired
+        && !_explicitResumeRequired
+        && _playing
+        && _playoutInitialized
+        && _audioUnit != NULL
+        && _outputBusEnabled
+        && _sessionActive
+        && ownsSessionActivation
+        && [self sessionMatchesCurrentPolicy:session]
+        && [self hasOutputRouteForSession:session];
+#if DEBUG
+    if (_debugRecoveryHarnessMode
+        && _debugHealthyPlayoutForTesting
+        && _sessionActive
+        && _playing
+        && _playoutInitialized
+        && _outputBusEnabled
+        && [self ownsCurrentSessionActivation]
+        && [self sessionMatchesCurrentPolicy:session]
+        && [self hasOutputRouteForSession:session]) {
+        healthyPlayout = YES;
+    }
+#endif
+    if (healthyPlayout) {
+        return ASHostedCallRecoveryReadinessAwaitingFailClose;
+    }
+
+    BOOL microphoneGateIsClosed =
+        ASRealtimeGateIsClosedAndDrained(&_realtimeMicrophoneDeviceGate)
+        && atomic_load_explicit(
+            &_realtimeMicrophoneAuthorizationGate,
+            memory_order_acquire
+        ) == 0;
+    BOOL quiescent = !_sessionActive
+        && !_playing
+        && !_playoutInitialized
+        && _audioUnit == NULL
+        && !_recording
+        && !_inputBusEnabled
+        && !_outputBusEnabled
+        && _recordingSamples == NULL
+        && _recordingSampleCapacity == 0
+        && !ownsSessionActivation
+        && microphoneGateIsClosed;
+    if (!quiescent) {
+        return ASHostedCallRecoveryReadinessRejected;
+    }
+    if (_interrupted) {
+        return ASHostedCallRecoveryReadinessAwaitingFailClose;
+    }
+    if (!_wantsPlayout) {
+        return ASHostedCallRecoveryReadinessRejected;
+    }
+    if (!_recoveryRequired) {
+        return ASHostedCallRecoveryReadinessRejected;
+    }
+    return ASHostedCallRecoveryReadinessReady;
 }
 
 - (BOOL)configureSessionAndCreateRemoteIO {
     [self closeAndFenceRealtimeMicrophoneResources];
+    [self clearCurrentMicrophoneRecordingGeneration];
     NSError *error = nil;
-    AVAudioSession *session = AVAudioSession.sharedInstance;
+    AVAudioSession *session = [self currentAudioSession];
+#if DEBUG
+    BOOL usesDeterministicConfigurationBoundary = _debugRecoveryHarnessMode;
+#else
+    BOOL usesDeterministicConfigurationBoundary = NO;
+#endif
+    if (session == nil && !usesDeterministicConfigurationBoundary) {
+        [self failAndRollbackWithCode:
+            ASIOSStereoPlayoutFailureSessionConfiguration
+                               status:kAudio_ParamError
+                              message:@"No native audio session is available for RemoteIO configuration."];
+        return NO;
+    }
+
+    ASIOSHostedCallPlayoutAuthorization *expectedHostedAuthorization =
+        _hostedCallAuthorization;
+    NSUUID *expectedHostedPolicyIdentifier =
+        [_hostedCallPolicyIdentifier copy];
+    uint64_t expectedHostedGeneration =
+        _hostedCallAuthorizationGeneration;
+    BOOL hasHostedCallOwnership =
+        expectedHostedAuthorization != nil
+        || expectedHostedPolicyIdentifier != nil
+        || expectedHostedGeneration != 0;
+    BOOL hostedCallMode = [self hostedCallModeIsAuthorized];
+    if (hasHostedCallOwnership && !hostedCallMode) {
+        _recoveryRequired = YES;
+        atomic_store_explicit(
+            &_lifecycle.recoveryRequired,
+            true,
+            memory_order_relaxed
+        );
+        [self publishFailureCode:ASIOSStereoPlayoutFailureInterruption
+                         status:noErr
+                        message:@"A revoked or inadmissible hosted-call policy cannot configure ordinary native audio."];
+        return NO;
+    }
+
+    BOOL microphoneAuthorizationIsLive =
+        ASMicrophoneAuthorizationIsValid(_microphoneAuthorization);
+    if (hostedCallMode
+        && (microphoneAuthorizationIsLive
+            || _wantsRecording
+            || _recording
+            || _inputBusEnabled)) {
+        [self failAndRollbackWithCode:
+            ASIOSStereoPlayoutFailureSessionConfiguration
+                               status:kAudio_ParamError
+                              message:@"Hosted-call playout must remain output-only."];
+        return NO;
+    }
+
     BOOL microphoneEnabled = [self microphoneShouldBeActive];
-    AVAudioSessionCategory category = microphoneEnabled
-        ? AVAudioSessionCategoryPlayAndRecord
-        : AVAudioSessionCategoryPlayback;
-    if (![session setCategory:category
-                         mode:AVAudioSessionModeDefault
-                      options:0
-                        error:&error]) {
+    ASAudioPolicyConfiguration configuration =
+        ASMakeAudioPolicyConfiguration(
+            hostedCallMode,
+            microphoneEnabled,
+            _streamFormat
+        );
+    if (![self applyAudioPolicyConfiguration:configuration
+                                   toSession:session
+                                       error:&error]) {
         [self failAndRollbackWithCode:ASIOSStereoPlayoutFailureSessionConfiguration
                                status:(int32_t)error.code
                               message:[NSString stringWithFormat:
@@ -2557,18 +4876,73 @@ static OSStatus ASRemoteIOInput(
                                   error.localizedDescription ?: @"unknown error"]];
         return NO;
     }
-    if (![session setPreferredSampleRate:ASSampleRate error:&error]
-        || ![session setPreferredIOBufferDuration:ASIOBufferDuration error:&error]
-        || ![session setPreferredOutputNumberOfChannels:ASOutputChannelCount error:&error]
-        || (microphoneEnabled
-            && ![session setPreferredInputNumberOfChannels:ASInputChannelCount
-                                                      error:&error])) {
-        [self failAndRollbackWithCode:ASIOSStereoPlayoutFailureSessionPreference
-                               status:(int32_t)error.code
-                              message:[NSString stringWithFormat:
-                                  @"Media playback hardware preference failed: %@",
-                                  error.localizedDescription ?: @"unknown error"]];
+    if (hostedCallMode
+        && ![self
+            hostedCallOwnershipMatchesAuthorization:
+                expectedHostedAuthorization
+            policyIdentifier:expectedHostedPolicyIdentifier
+            generation:expectedHostedGeneration]) {
+        [self failAndRollbackWithCode:
+            ASIOSStereoPlayoutFailureSessionConfiguration
+                               status:kAudio_ParamError
+                              message:@"Hosted-call ownership changed during audio-session configuration."];
         return NO;
+    }
+
+#if DEBUG
+    if (_debugRecoveryHarnessMode) {
+        if (![self sessionMatchesCurrentPolicy:nil]) {
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureSessionConfiguration
+                                   status:kAudio_ParamError
+                                  message:@"The deterministic boundary did not retain the production audio-policy inputs."];
+            return NO;
+        }
+        if (hostedCallMode && _debugFailNextHostedCallActivation) {
+            _debugFailNextHostedCallActivation = NO;
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureSessionActivation
+                                   status:kAudio_ParamError
+                                  message:@"Deterministic hosted-call activation failure."];
+            return NO;
+        }
+        if (![self hasOutputRouteForSession:nil]) {
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureMediaRouteInvariant
+                                   status:kAudio_ParamError
+                                  message:@"The deterministic configuration boundary has no output route."];
+            return NO;
+        }
+        return YES;
+    }
+#endif
+
+    if (hostedCallMode) {
+        (void)[session setPreferredSampleRate:ASSampleRate error:nil];
+        (void)[session setPreferredIOBufferDuration:ASIOBufferDuration error:nil];
+        (void)[session
+            setPreferredOutputNumberOfChannels:ASOutputChannelCount
+                                         error:nil];
+    } else {
+        if (![session setPreferredSampleRate:ASSampleRate error:&error]
+            || ![session
+                setPreferredIOBufferDuration:ASIOBufferDuration
+                                       error:&error]
+            || ![session
+                setPreferredOutputNumberOfChannels:ASOutputChannelCount
+                                             error:&error]
+            || (microphoneEnabled
+                && ![session
+                    setPreferredInputNumberOfChannels:ASInputChannelCount
+                                                error:&error])) {
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureSessionPreference
+                                   status:(int32_t)error.code
+                                  message:[NSString stringWithFormat:
+                                      @"Media playback hardware preference failed: %@",
+                                      error.localizedDescription ?: @"unknown error"]];
+            return NO;
+        }
     }
     if (![self activateOwnedSession:session error:&error]) {
         [self failAndRollbackWithCode:ASIOSStereoPlayoutFailureSessionActivation
@@ -2578,26 +4952,45 @@ static OSStatus ASRemoteIOInput(
                                   error.localizedDescription ?: @"unknown error"]];
         return NO;
     }
+    if (hostedCallMode
+        && ![self
+            hostedCallOwnershipMatchesAuthorization:
+                expectedHostedAuthorization
+            policyIdentifier:expectedHostedPolicyIdentifier
+            generation:expectedHostedGeneration]) {
+        [self failAndRollbackWithCode:
+            ASIOSStereoPlayoutFailureSessionActivation
+                               status:kAudio_ParamError
+                              message:@"Hosted-call ownership changed during audio-session activation."];
+        return NO;
+    }
 
-    if (![session.category isEqualToString:category]
-        || ![session.mode isEqualToString:AVAudioSessionModeDefault]
-        || fabs(session.sampleRate - ASSampleRate) >= 0.5
-        || session.IOBufferDuration <= 0
-        || session.outputNumberOfChannels < ASOutputChannelCount
-        || (microphoneEnabled
-            && session.inputNumberOfChannels < ASInputChannelCount)) {
+    BOOL hasOutputRoute = [self hasOutputRouteForSession:session];
+    BOOL hardwareRouteIsAcceptable = hostedCallMode
+        ? (session.sampleRate > 0
+            && session.IOBufferDuration > 0
+            && hasOutputRoute)
+        : (fabs(session.sampleRate - ASSampleRate) < 0.5
+            && session.IOBufferDuration > 0
+            && session.outputNumberOfChannels >= ASOutputChannelCount
+            && (!microphoneEnabled
+                || session.inputNumberOfChannels >= ASInputChannelCount));
+    if (![self sessionMatchesCurrentPolicy:session]
+        || !hardwareRouteIsAcceptable) {
         [self failAndRollbackWithCode:ASIOSStereoPlayoutFailureMediaRouteInvariant
                                status:kAudio_ParamError
                               message:[NSString stringWithFormat:
-                                  @"The active route cannot preserve 48 kHz stereo output "
-                                   @"with the requested microphone policy "
-                                   @"(category=%@, mode=%@, rate=%.1f, duration=%.6f, output=%ld, input=%ld).",
+                                  @"The active route cannot satisfy the %@ output policy "
+                                   @"(category=%@, mode=%@, options=%lu, rate=%.1f, duration=%.6f, output=%ld, input=%ld, route=%@).",
+                                  hostedCallMode ? @"hosted-call" : @"48 kHz stereo",
                                   session.category,
                                   session.mode,
+                                  (unsigned long)session.categoryOptions,
                                   session.sampleRate,
                                   session.IOBufferDuration,
                                   (long)session.outputNumberOfChannels,
-                                  (long)session.inputNumberOfChannels]];
+                                  (long)session.inputNumberOfChannels,
+                                  hasOutputRoute ? @"present" : @"missing"]];
         return NO;
     }
 
@@ -2910,6 +5303,23 @@ static OSStatus ASRemoteIOInput(
 }
 
 - (BOOL)deactivateOwnedSessionWithError:(NSError **)error {
+#if DEBUG
+    if (_debugRecoveryHarnessMode) {
+        _debugOwnsSessionActivation = NO;
+        _sessionOwnershipToken = 0;
+        _sessionActive = NO;
+        atomic_store_explicit(
+            &_lifecycle.sessionActive,
+            false,
+            memory_order_relaxed
+        );
+        if (error != NULL) {
+            *error = nil;
+        }
+        return YES;
+    }
+#endif
+
     NSError *deactivationError = nil;
     BOOL deactivated = YES;
     os_unfair_lock_lock(&ASSessionOwnershipLock);
@@ -2935,6 +5345,12 @@ static OSStatus ASRemoteIOInput(
 }
 
 - (BOOL)ownsCurrentSessionActivation {
+#if DEBUG
+    if (_debugRecoveryHarnessMode) {
+        return _debugOwnsSessionActivation;
+    }
+#endif
+
     os_unfair_lock_lock(&ASSessionOwnershipLock);
     BOOL owns = _sessionOwnershipToken != 0
         && ASCurrentSessionOwnershipToken == _sessionOwnershipToken;
@@ -2945,6 +5361,18 @@ static OSStatus ASRemoteIOInput(
 - (void)failAndRollbackWithCode:(ASIOSStereoPlayoutFailureCode)code
                          status:(int32_t)status
                         message:(NSString *)message {
+    BOOL retiringHostedCallPolicy = _hostedCallAuthorization != nil;
+    [self advanceSystemAudioGeneration];
+    [self revokeHostedCallAuthorization];
+    if (retiringHostedCallPolicy && _wantsPlayout) {
+        _recoveryRequired = YES;
+        atomic_store_explicit(
+            &_lifecycle.recoveryRequired,
+            true,
+            memory_order_relaxed
+        );
+    }
+
     OSStatus teardownStatus = [self stopAndDisposeAudioUnit];
     NSError *deactivationError = nil;
     BOOL deactivated = [self deactivateOwnedSessionWithError:&deactivationError];
@@ -2980,6 +5408,7 @@ static OSStatus ASRemoteIOInput(
 
 - (OSStatus)stopAndDisposeAudioUnit {
     [self closeAndFenceRealtimeMicrophoneResources];
+    [self clearCurrentMicrophoneRecordingGeneration];
     OSStatus firstFailure = noErr;
     if (_audioUnit != NULL) {
         if (_playing) {
@@ -3007,6 +5436,11 @@ static OSStatus ASRemoteIOInput(
     _inputBusEnabled = NO;
     _outputBusEnabled = NO;
     _audioUnitSubType = 0;
+#if DEBUG
+    if (_debugRecoveryHarnessMode) {
+        _debugHealthyPlayoutForTesting = NO;
+    }
+#endif
     atomic_store_explicit(&_lifecycle.playing, false, memory_order_relaxed);
     atomic_store_explicit(&_lifecycle.playoutInitialized, false, memory_order_relaxed);
     atomic_store_explicit(&_lifecycle.remoteIOCreated, false, memory_order_relaxed);
@@ -3017,7 +5451,8 @@ static OSStatus ASRemoteIOInput(
 }
 
 - (BOOL)microphoneShouldBeActive {
-    return _wantsRecording
+    return ![self hostedCallModeIsAuthorized]
+        && _wantsRecording
         && ASMicrophoneAuthorizationIsValid(_microphoneAuthorization);
 }
 
@@ -3025,8 +5460,30 @@ static OSStatus ASRemoteIOInput(
     if (_isRebuilding) {
         return NO;
     }
+
+    ASIOSHostedCallPlayoutAuthorization *expectedHostedAuthorization =
+        _hostedCallAuthorization;
+    NSUUID *expectedHostedPolicyIdentifier =
+        [_hostedCallPolicyIdentifier copy];
+    uint64_t expectedHostedGeneration =
+        _hostedCallAuthorizationGeneration;
+    BOOL hadHostedCallOwnership =
+        expectedHostedAuthorization != nil
+        || expectedHostedPolicyIdentifier != nil
+        || expectedHostedGeneration != 0;
+    BOOL hostedCallMode = [self hostedCallModeIsAuthorized];
+    if (hadHostedCallOwnership && !hostedCallMode) {
+        [self advanceSystemAudioGeneration];
+        [self revokeHostedCallAuthorization];
+        [self remainQuiescentAfterHostedCallOwnershipLossWithMessage:
+            @"A revoked or inadmissible hosted-call policy cannot cross into an ordinary native rebuild."];
+        return NO;
+    }
+
     _isRebuilding = YES;
-    BOOL shouldResume = _wantsPlayout && !_interrupted;
+    BOOL shouldResume = _wantsPlayout
+        && (!_interrupted || hostedCallMode)
+        && !_explicitResumeRequired;
     if (_inputBusEnabled) {
         [self.delegate notifyAudioInputInterrupted];
     }
@@ -3037,6 +5494,16 @@ static OSStatus ASRemoteIOInput(
     NSError *deactivationError = nil;
     BOOL deactivated = [self deactivateOwnedSessionWithError:&deactivationError];
     if (teardownStatus != noErr) {
+        if (hostedCallMode) {
+            [self advanceSystemAudioGeneration];
+            [self revokeHostedCallAuthorization];
+            _recoveryRequired = YES;
+            atomic_store_explicit(
+                &_lifecycle.recoveryRequired,
+                true,
+                memory_order_relaxed
+            );
+        }
         [self publishFailureCode:ASIOSStereoPlayoutFailureAudioUnitStop
                          status:(int32_t)teardownStatus
                         message:[NSString stringWithFormat:
@@ -3046,6 +5513,16 @@ static OSStatus ASRemoteIOInput(
         return NO;
     }
     if (!deactivated) {
+        if (hostedCallMode) {
+            [self advanceSystemAudioGeneration];
+            [self revokeHostedCallAuthorization];
+            _recoveryRequired = YES;
+            atomic_store_explicit(
+                &_lifecycle.recoveryRequired,
+                true,
+                memory_order_relaxed
+            );
+        }
         [self publishFailureCode:ASIOSStereoPlayoutFailureSessionDeactivation
                          status:(int32_t)deactivationError.code
                         message:[NSString stringWithFormat:
@@ -3054,26 +5531,193 @@ static OSStatus ASRemoteIOInput(
         _isRebuilding = NO;
         return NO;
     }
+
+    if (hostedCallMode
+        && ![self
+            hostedCallOwnershipMatchesAuthorization:
+                expectedHostedAuthorization
+            policyIdentifier:expectedHostedPolicyIdentifier
+            generation:expectedHostedGeneration]) {
+        [self advanceSystemAudioGeneration];
+        [self revokeHostedCallAuthorization];
+        _isRebuilding = NO;
+        [self remainQuiescentAfterHostedCallOwnershipLossWithMessage:
+            @"Hosted-call ownership changed during teardown; ordinary audio was not rebuilt."];
+        return NO;
+    }
+
     if (!shouldResume) {
+        if (!_interrupted && !_recoveryRequired && !_explicitResumeRequired) {
+            [self clearLifecycleFailure];
+        }
+        _isRebuilding = NO;
+        return YES;
+    }
+
+#if DEBUG
+    if (_debugRecoveryHarnessMode) {
+        if (![self configureSessionAndCreateRemoteIO]) {
+            if (hostedCallMode) {
+                [self advanceSystemAudioGeneration];
+                [self revokeHostedCallAuthorization];
+                _recoveryRequired = YES;
+                atomic_store_explicit(
+                    &_lifecycle.recoveryRequired,
+                    true,
+                    memory_order_relaxed
+                );
+            }
+            _isRebuilding = NO;
+            return NO;
+        }
+
+        if (hostedCallMode
+            && ![self
+                hostedCallOwnershipMatchesAuthorization:
+                    expectedHostedAuthorization
+                policyIdentifier:expectedHostedPolicyIdentifier
+                generation:expectedHostedGeneration]) {
+            [self advanceSystemAudioGeneration];
+            [self revokeHostedCallAuthorization];
+            _isRebuilding = NO;
+            [self remainQuiescentAfterHostedCallOwnershipLossWithMessage:
+                @"Hosted-call ownership changed during deterministic configuration; ordinary audio was not published."];
+            return NO;
+        }
+
+        BOOL microphoneEnabled = [self microphoneShouldBeActive];
+        ASAudioPolicyConfiguration configuration =
+            ASMakeAudioPolicyConfiguration(
+                hostedCallMode,
+                microphoneEnabled,
+                _streamFormat
+            );
+        if (![self sessionMatchesCurrentPolicy:nil]) {
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureSessionConfiguration
+                                   status:kAudio_ParamError
+                                  message:@"The deterministic rebuild no longer matches the selected production policy."];
+            _recoveryRequired = YES;
+            atomic_store_explicit(
+                &_lifecycle.recoveryRequired,
+                true,
+                memory_order_relaxed
+            );
+            _isRebuilding = NO;
+            return NO;
+        }
+
+        _debugHealthyPlayoutForTesting = !hostedCallMode;
+        _debugOwnsSessionActivation = YES;
+        _sessionActive = YES;
+        _playoutInitialized = YES;
+        _playing = YES;
+        _inputBusEnabled = configuration.inputBusEnabled;
+        _outputBusEnabled = configuration.outputBusEnabled;
+        _recording = configuration.inputBusEnabled;
+        // The harness drives policy/revocation state after the real configuration-selection
+        // boundary, but deliberately leaves the hardware-creation diagnostics false.
+        _audioUnitSubType = 0;
+        _recoveryRequired = NO;
+        _explicitResumeRequired = NO;
+        atomic_store_explicit(&_lifecycle.sessionActive, true, memory_order_relaxed);
+        atomic_store_explicit(
+            &_lifecycle.playoutInitialized,
+            true,
+            memory_order_relaxed
+        );
+        atomic_store_explicit(&_lifecycle.playing, true, memory_order_relaxed);
+        atomic_store_explicit(
+            &_lifecycle.remoteIOCreated,
+            false,
+            memory_order_relaxed
+        );
+        atomic_store_explicit(
+            &_lifecycle.inputBusEnabled,
+            configuration.inputBusEnabled,
+            memory_order_relaxed
+        );
+        atomic_store_explicit(
+            &_lifecycle.outputBusEnabled,
+            configuration.outputBusEnabled,
+            memory_order_relaxed
+        );
+        atomic_store_explicit(
+            &_lifecycle.audioUnitSubType,
+            0,
+            memory_order_relaxed
+        );
+        atomic_store_explicit(
+            &_lifecycle.recoveryRequired,
+            false,
+            memory_order_relaxed
+        );
+        atomic_store_explicit(
+            &_lifecycle.explicitResumeRequired,
+            false,
+            memory_order_relaxed
+        );
+
+        if (hostedCallMode
+            && ![self
+                hostedCallOwnershipMatchesAuthorization:
+                    expectedHostedAuthorization
+                policyIdentifier:expectedHostedPolicyIdentifier
+                generation:expectedHostedGeneration]) {
+            [self advanceSystemAudioGeneration];
+            [self revokeHostedCallAuthorization];
+            _isRebuilding = NO;
+            [self remainQuiescentAfterHostedCallOwnershipLossWithMessage:
+                @"Hosted-call ownership changed before deterministic topology publication."];
+            return NO;
+        }
+
+        [self.delegate notifyAudioOutputParametersChange];
+        if (configuration.inputBusEnabled) {
+            [self.delegate notifyAudioInputParametersChange];
+        }
+
         [self clearLifecycleFailure];
         _isRebuilding = NO;
         return YES;
     }
+#endif
+
     BOOL rebuilt = NO;
     if ([self configureSessionAndCreateRemoteIO]) {
-        [self.delegate notifyAudioOutputParametersChange];
-        if (_inputBusEnabled) {
-            [self.delegate notifyAudioInputParametersChange];
+        BOOL exactHostedPolicy = !hostedCallMode
+            || [self
+                hostedCallOwnershipMatchesAuthorization:
+                    expectedHostedAuthorization
+                policyIdentifier:expectedHostedPolicyIdentifier
+                generation:expectedHostedGeneration];
+        if (exactHostedPolicy) {
+            [self.delegate notifyAudioOutputParametersChange];
+            if (_inputBusEnabled) {
+                [self.delegate notifyAudioInputParametersChange];
+            }
+            rebuilt = [self startPlayoutForCurrentPolicy];
         }
-        rebuilt = [self startPlayout];
+    }
+    if (!rebuilt && hostedCallMode) {
+        [self advanceSystemAudioGeneration];
+        [self revokeHostedCallAuthorization];
+        _recoveryRequired = YES;
+        atomic_store_explicit(
+            &_lifecycle.recoveryRequired,
+            true,
+            memory_order_relaxed
+        );
+        (void)[self stopAndDisposeAudioUnit];
+        (void)[self deactivateOwnedSessionWithError:nil];
     }
     _isRebuilding = NO;
     return rebuilt;
 }
 
-- (void)rebuildAfterExplicitRecovery {
+- (BOOL)rebuildAfterExplicitRecovery {
     ASCrossExplicitRecoveryBoundary(&_realtime);
-    [self rebuildForCurrentPolicy];
+    return [self rebuildForCurrentPolicy];
 }
 
 - (void)scheduleSystemEvent:(ASSystemAudioEvent)event
@@ -3105,6 +5749,9 @@ static OSStatus ASRemoteIOInput(
 
         case ASSystemAudioEventInterruptionEnded:
             _interrupted = NO;
+            // Retire any stale installed policy before the application decides whether the
+            // connected call may receive a fresh interruption-origin recovery authorization.
+            [self revokeHostedCallAuthorization];
             _recoveryRequired = YES;
             atomic_store_explicit(&_lifecycle.recoveryRequired, true, memory_order_relaxed);
             [self failClosedForSystemEventWithCode:
@@ -3113,14 +5760,12 @@ static OSStatus ASRemoteIOInput(
             return;
 
         case ASSystemAudioEventRouteChanged: {
-            AVAudioSession *session = AVAudioSession.sharedInstance;
+            AVAudioSession *session = [self currentAudioSession];
             if (routeReason == AVAudioSessionRouteChangeReasonCategoryChange) {
-                BOOL expectsInput = [self microphoneShouldBeActive];
-                AVAudioSessionCategory expectedCategory = expectsInput
-                    ? AVAudioSessionCategoryPlayAndRecord
-                    : AVAudioSessionCategoryPlayback;
-                BOOL expected = [session.category isEqualToString:expectedCategory]
-                    && [session.mode isEqualToString:AVAudioSessionModeDefault];
+                BOOL hostedCallMode = [self hostedCallModeIsAuthorized];
+                BOOL expected = [self sessionMatchesCurrentPolicy:session]
+                    && (!hostedCallMode
+                        || [self hasOutputRouteForSession:session]);
                 if (expected) {
                     return;
                 }
@@ -3129,9 +5774,10 @@ static OSStatus ASRemoteIOInput(
                 [self failClosedForSystemEventWithCode:
                     ASIOSStereoPlayoutFailureUnexpectedCategoryChange
                                                message:[NSString stringWithFormat:
-                                                   @"Unexpected audio category/mode change (%@/%@); playout is fail-closed.",
+                                                   @"Unexpected audio category/mode/options change (%@/%@/%lu); playout is fail-closed.",
                                                    session.category,
-                                                   session.mode]];
+                                                   session.mode,
+                                                   (unsigned long)session.categoryOptions]];
                 return;
             }
 
@@ -3169,6 +5815,7 @@ static OSStatus ASRemoteIOInput(
 
 - (void)failClosedForSystemEventWithCode:(ASIOSStereoPlayoutFailureCode)code
                                   message:(NSString *)message {
+    [self closeAndFenceRealtimeMicrophoneResources];
     if (_inputBusEnabled) {
         [self.delegate notifyAudioInputInterrupted];
     }

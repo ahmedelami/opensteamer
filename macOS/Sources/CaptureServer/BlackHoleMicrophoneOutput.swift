@@ -6,6 +6,90 @@ import Foundation
 import MacWebRTCAudioDeviceShim
 import WebRTCTransport
 
+struct BlackHoleMicrophoneOutputProgressSnapshot:
+    Equatable,
+    Sendable
+{
+    let queueRunning: Bool
+    let postStartCallbackCount: UInt64
+    let requestedFrameCount: UInt64
+    let successfulPullCount: UInt64
+    let successfulFrameCount: UInt64
+    let silenceFallbackCount: UInt64
+    let silenceFrameCount: UInt64
+    let enqueueFailureCount: UInt64
+    let lastEnqueueStatus: OSStatus
+
+    static let zero = Self(
+        queueRunning: false,
+        postStartCallbackCount: 0,
+        requestedFrameCount: 0,
+        successfulPullCount: 0,
+        successfulFrameCount: 0,
+        silenceFallbackCount: 0,
+        silenceFrameCount: 0,
+        enqueueFailureCount: 0,
+        lastEnqueueStatus: noErr
+    )
+}
+
+private final class BlackHoleMicrophoneOutputProgressStorage:
+    @unchecked Sendable
+{
+    let reference: ASMacAudioQueueProgressRef
+
+    init?() {
+        guard let reference = ASMacAudioQueueProgressCreate() else {
+            return nil
+        }
+        self.reference = reference
+    }
+
+    deinit {
+        ASMacAudioQueueProgressDestroy(reference)
+    }
+
+    func reset() {
+        ASMacAudioQueueProgressReset(reference)
+    }
+
+    func setQueueRunning(_ queueRunning: Bool) {
+        ASMacAudioQueueProgressSetQueueRunning(
+            reference,
+            queueRunning
+        )
+    }
+
+    func publish(
+        requestedFrameCount: UInt64,
+        pullSucceeded: Bool,
+        enqueueStatus: OSStatus
+    ) {
+        ASMacAudioQueueProgressPublish(
+            reference,
+            requestedFrameCount,
+            pullSucceeded,
+            enqueueStatus
+        )
+    }
+
+    var snapshot: BlackHoleMicrophoneOutputProgressSnapshot {
+        let native = ASMacAudioQueueProgressRead(reference)
+        return BlackHoleMicrophoneOutputProgressSnapshot(
+            queueRunning: native.queueRunning,
+            postStartCallbackCount:
+                native.postStartCallbackCount,
+            requestedFrameCount: native.requestedFrameCount,
+            successfulPullCount: native.successfulPullCount,
+            successfulFrameCount: native.successfulFrameCount,
+            silenceFallbackCount: native.silenceFallbackCount,
+            silenceFrameCount: native.silenceFrameCount,
+            enqueueFailureCount: native.enqueueFailureCount,
+            lastEnqueueStatus: native.lastEnqueueStatus
+        )
+    }
+}
+
 /// Output-device-clock sink for the decoded `iphone-microphone` track.
 ///
 /// Core Audio owns the fixed buffers. The realtime callback performs one
@@ -37,7 +121,9 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
     )
 
     private let source: WebRTCMacDecodedAudioSource?
+    private let deviceUID: String
     private let runtimeFailureLatch: WebRTCMacAudioQueueRuntimeFailureLatch
+    private let progressStorage: BlackHoleMicrophoneOutputProgressStorage
     private let runtimeFailureHandler: RuntimeFailureHandler
     private let automaticallyReportsRuntimeFailures: Bool
     private var audioQueue: AudioQueueRef?
@@ -58,15 +144,25 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
 
     init?(
         source: WebRTCMacDecodedAudioSource,
+        deviceUID: String,
         runtimeFailureHandler: @escaping RuntimeFailureHandler
     ) {
+        guard !deviceUID.isEmpty else {
+            return nil
+        }
         guard let runtimeFailureLatch =
                 WebRTCMacAudioQueueRuntimeFailureLatch() else {
             return nil
         }
+        guard let progressStorage =
+                BlackHoleMicrophoneOutputProgressStorage() else {
+            return nil
+        }
 
         self.source = source
+        self.deviceUID = deviceUID
         self.runtimeFailureLatch = runtimeFailureLatch
+        self.progressStorage = progressStorage
         self.runtimeFailureHandler = runtimeFailureHandler
         automaticallyReportsRuntimeFailures = true
         #if DEBUG
@@ -80,6 +176,7 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
     init?(
         testingAudioQueueOperations:
             any BlackHoleMicrophoneOutputAudioQueueOperations,
+        deviceUID: String = "BlackHole2ch_UID",
         automaticallyReportsRuntimeFailures: Bool = false,
         renderForTesting: @escaping (
             UnsafeMutablePointer<Int16>,
@@ -88,13 +185,22 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         deinitForTesting: (@Sendable () -> Void)? = nil,
         runtimeFailureHandler: @escaping RuntimeFailureHandler
     ) {
+        guard !deviceUID.isEmpty else {
+            return nil
+        }
         guard let runtimeFailureLatch =
                 WebRTCMacAudioQueueRuntimeFailureLatch() else {
             return nil
         }
+        guard let progressStorage =
+                BlackHoleMicrophoneOutputProgressStorage() else {
+            return nil
+        }
 
         source = nil
+        self.deviceUID = deviceUID
         self.runtimeFailureLatch = runtimeFailureLatch
+        self.progressStorage = progressStorage
         self.runtimeFailureHandler = runtimeFailureHandler
         self.automaticallyReportsRuntimeFailures =
             automaticallyReportsRuntimeFailures
@@ -111,11 +217,16 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         #endif
     }
 
+    var forwardingProgressSnapshot:
+        BlackHoleMicrophoneOutputProgressSnapshot {
+        progressStorage.snapshot
+    }
+
     func start() throws {
         guard audioQueue == nil else { return }
 
         runtimeFailureLatch.reset()
-        let deviceUID = try resolveBlackHole2ChannelDeviceUID()
+        progressStorage.reset()
         var format = AudioStreamBasicDescription(
             mSampleRate: 48_000,
             mFormatID: kAudioFormatLinearPCM,
@@ -144,6 +255,7 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
             source: source,
             runtimeFailureLatch: runtimeFailureLatch,
             channelCount: channelCount,
+            progressStorage: progressStorage,
             testingAudioQueueOperations: testingAudioQueueOperations,
             renderForTesting: renderForTesting
         )
@@ -152,7 +264,8 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
             callbackLifetime: callbackLifetime,
             source: source,
             runtimeFailureLatch: runtimeFailureLatch,
-            channelCount: channelCount
+            channelCount: channelCount,
+            progressStorage: progressStorage
         )
         #endif
         let callbackContextPointer = Unmanaged
@@ -235,14 +348,14 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
             }
 
             createdBuffers.append(buffer)
-            let enqueueStatus = callbackContext.fillAndEnqueue(
+            let primingResult = callbackContext.fillAndEnqueue(
                 queue: queue,
                 buffer: buffer
             )
-            guard enqueueStatus == noErr else {
+            guard primingResult.enqueueStatus == noErr else {
                 throw BlackHoleMicrophoneOutputError.operation(
                     Self.primeBufferOperation,
-                    enqueueStatus
+                    primingResult.enqueueStatus
                 )
             }
         }
@@ -260,6 +373,7 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         self.callbackContext = callbackContext
         self.callbackContextPointer = callbackContextPointer
         buffers = createdBuffers
+        progressStorage.setQueueRunning(true)
         startupCommitted = true
         if automaticallyReportsRuntimeFailures {
             startRuntimeFailureMonitoring()
@@ -267,6 +381,7 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
     }
 
     func stop() {
+        progressStorage.setQueueRunning(false)
         stopRuntimeFailureMonitoring()
         guard let queue = audioQueue,
               let callbackContext,
@@ -354,16 +469,6 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
             self,
             .operation(Self.runtimeEnqueueOperation, status)
         )
-    }
-
-    private func resolveBlackHole2ChannelDeviceUID() throws -> String {
-        #if DEBUG
-        if let testingAudioQueueOperations {
-            return try testingAudioQueueOperations
-                .resolveBlackHole2ChannelDeviceUID()
-        }
-        #endif
-        return try BlackHoleRouteVerifier.blackHole2ChannelDeviceUID()
     }
 
     private func createOutputQueue(
@@ -539,6 +644,12 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
     #endif
 }
 
+private struct BlackHoleMicrophoneOutputCallbackResult {
+    let requestedFrameCount: UInt64
+    let pullSucceeded: Bool
+    let enqueueStatus: OSStatus
+}
+
 #if DEBUG
 /// DEBUG-only AudioQueue replacement used by deterministic tests.
 ///
@@ -548,8 +659,6 @@ protocol BlackHoleMicrophoneOutputAudioQueueOperations:
     AnyObject,
     Sendable
 {
-    func resolveBlackHole2ChannelDeviceUID() throws -> String
-
     func createOutputQueue() -> (
         status: OSStatus,
         queue: AudioQueueRef?
@@ -599,6 +708,7 @@ private final class BlackHoleMicrophoneOutputCallbackContext:
     private let source: WebRTCMacDecodedAudioSource?
     private let runtimeFailureLatch: WebRTCMacAudioQueueRuntimeFailureLatch
     private let channelCount: UInt32
+    private let progressStorage: BlackHoleMicrophoneOutputProgressStorage
 
     #if DEBUG
     private var testingAudioQueueOperations:
@@ -611,12 +721,14 @@ private final class BlackHoleMicrophoneOutputCallbackContext:
         callbackLifetime: UnsafeMutableRawPointer,
         source: WebRTCMacDecodedAudioSource?,
         runtimeFailureLatch: WebRTCMacAudioQueueRuntimeFailureLatch,
-        channelCount: UInt32
+        channelCount: UInt32,
+        progressStorage: BlackHoleMicrophoneOutputProgressStorage
     ) {
         self.callbackLifetime = callbackLifetime
         self.source = source
         self.runtimeFailureLatch = runtimeFailureLatch
         self.channelCount = channelCount
+        self.progressStorage = progressStorage
         #if DEBUG
         testingAudioQueueOperations = nil
         renderForTesting = nil
@@ -629,6 +741,7 @@ private final class BlackHoleMicrophoneOutputCallbackContext:
         source: WebRTCMacDecodedAudioSource?,
         runtimeFailureLatch: WebRTCMacAudioQueueRuntimeFailureLatch,
         channelCount: UInt32,
+        progressStorage: BlackHoleMicrophoneOutputProgressStorage,
         testingAudioQueueOperations:
             (any BlackHoleMicrophoneOutputAudioQueueOperations)?,
         renderForTesting:
@@ -638,7 +751,8 @@ private final class BlackHoleMicrophoneOutputCallbackContext:
             callbackLifetime: callbackLifetime,
             source: source,
             runtimeFailureLatch: runtimeFailureLatch,
-            channelCount: channelCount
+            channelCount: channelCount,
+            progressStorage: progressStorage
         )
         self.testingAudioQueueOperations = testingAudioQueueOperations
         self.renderForTesting = renderForTesting
@@ -673,39 +787,72 @@ private final class BlackHoleMicrophoneOutputCallbackContext:
     fileprivate func fillAndEnqueue(
         queue: AudioQueueRef,
         buffer: AudioQueueBufferRef
-    ) -> OSStatus {
+    ) -> BlackHoleMicrophoneOutputCallbackResult {
         let frameBytes = Int(channelCount) * MemoryLayout<Int16>.size
         let capacity = Int(buffer.pointee.mAudioDataBytesCapacity)
         let frameCount = capacity / frameBytes
         guard frameCount > 0 else {
             buffer.pointee.mAudioDataByteSize = 0
-            return enqueueBuffer(buffer, on: queue)
+            return BlackHoleMicrophoneOutputCallbackResult(
+                requestedFrameCount: 0,
+                pullSucceeded: false,
+                enqueueStatus: enqueueBuffer(
+                    buffer,
+                    on: queue
+                )
+            )
         }
 
         let rawData = buffer.pointee.mAudioData
         memset(rawData, 0, capacity)
         let samples = rawData.assumingMemoryBound(to: Int16.self)
+        let pullSucceeded: Bool
         #if DEBUG
         if let renderForTesting {
-            _ = renderForTesting(samples, frameCount)
+            pullSucceeded = renderForTesting(samples, frameCount)
         } else if let source {
-            _ = source.renderInterleavedStereoInt16(
+            pullSucceeded = source.renderInterleavedStereoInt16(
                 into: samples,
                 frameCount: frameCount
             )
+        } else {
+            pullSucceeded = false
         }
         #else
         if let source {
-            _ = source.renderInterleavedStereoInt16(
+            pullSucceeded = source.renderInterleavedStereoInt16(
                 into: samples,
                 frameCount: frameCount
             )
+        } else {
+            pullSucceeded = false
         }
         #endif
 
+        if !pullSucceeded {
+            // A failed native renderer may have partially dirtied caller-owned
+            // memory. Re-zero the full capacity before publishing silence.
+            memset(rawData, 0, capacity)
+        }
+
         buffer.pointee.mAudioDataByteSize =
             UInt32(frameCount * frameBytes)
-        return enqueueBuffer(buffer, on: queue)
+        return BlackHoleMicrophoneOutputCallbackResult(
+            requestedFrameCount: UInt64(frameCount),
+            pullSucceeded: pullSucceeded,
+            enqueueStatus: enqueueBuffer(buffer, on: queue)
+        )
+    }
+
+    @inline(__always)
+    fileprivate func publishProgress(
+        _ result: BlackHoleMicrophoneOutputCallbackResult
+    ) {
+        progressStorage.publish(
+            requestedFrameCount: result.requestedFrameCount,
+            pullSucceeded: result.pullSucceeded,
+            enqueueStatus: result.enqueueStatus
+        )
     }
 
     @inline(__always)
@@ -743,16 +890,17 @@ private func blackHoleMicrophoneOutputCallback(
     guard callbackContext.tryEnterCallback() else { return }
     defer { callbackContext.leaveCallback() }
 
-    let status = callbackContext.fillAndEnqueue(
+    let result = callbackContext.fillAndEnqueue(
         queue: queue,
         buffer: buffer
     )
-    guard status != noErr else { return }
+    callbackContext.publishProgress(result)
+    guard result.enqueueStatus != noErr else { return }
 
     // This is the callback's sole failure action: one lock-free status
     // publication. Reporting, logging, stopping, freeing, and disposal remain
     // exclusively outside the realtime callback.
-    callbackContext.publishRuntimeEnqueueFailure(status)
+    callbackContext.publishRuntimeEnqueueFailure(result.enqueueStatus)
 }
 
 enum BlackHoleMicrophoneOutputError:

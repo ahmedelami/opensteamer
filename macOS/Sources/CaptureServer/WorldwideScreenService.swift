@@ -43,6 +43,15 @@ enum WorldwideScreenInactiveTransition {
 protocol WorldwideIPhoneMicrophoneOutput: AnyObject, Sendable {
     func start() throws
     func stop()
+    var forwardingProgressSnapshot:
+        BlackHoleMicrophoneOutputProgressSnapshot { get }
+}
+
+extension WorldwideIPhoneMicrophoneOutput {
+    var forwardingProgressSnapshot:
+        BlackHoleMicrophoneOutputProgressSnapshot {
+        .zero
+    }
 }
 
 extension BlackHoleMicrophoneOutput: WorldwideIPhoneMicrophoneOutput {}
@@ -296,6 +305,10 @@ actor WorldwideScreenService {
     private let framesPerSecond: Int
     private let maximumVideoBitrate: Int
     private let remoteInputController: MacRemoteInputController
+    private let iPhoneMicrophoneForwardingPolicy:
+        WorldwideIPhoneMicrophoneForwardingPolicy
+    private let blackHoleDeviceAvailabilityMonitor =
+        BlackHoleDeviceAvailabilityMonitor()
     private let logger: Logger
     private let completionContinuation: AsyncStream<Void>.Continuation
 
@@ -325,19 +338,21 @@ actor WorldwideScreenService {
     private var audioAuthorization: WebRTCAudioAuthorization?
     private var systemAudioStartInProgress = false
     private var systemAudioIsLive = false
-    private var iPhoneMicrophoneTrack: WebRTCRemoteAudioTrack?
+    private var blackHoleDeviceMonitorEpoch: UUID?
     private lazy var iPhoneMicrophoneForwarding =
-        WorldwideIPhoneMicrophoneForwardingCoordinator<
+        WorldwideIPhoneMicrophoneForwardingDriver<
             WebRTCPeer,
             WebRTCRemoteAudioTrack
         >(
-            makeOutput: { [weak self] peer in
+            policy: iPhoneMicrophoneForwardingPolicy,
+            makeOutput: { [weak self] peer, deviceUID in
                 guard let self,
                       let source = peer.macDecodedAudioSource else {
                     return nil
                 }
                 return BlackHoleMicrophoneOutput(
                     source: source,
+                    deviceUID: deviceUID,
                     runtimeFailureHandler: { [weak self] output, error in
                         Task { [weak self] in
                             await self?.iPhoneMicrophoneOutputDidFail(
@@ -347,6 +362,9 @@ actor WorldwideScreenService {
                         }
                     }
                 )
+            },
+            startOutput: { output in
+                try output.start()
             },
             admit: { peer, track in
                 try await peer.enableRemoteIPhoneMicrophonePlaybackIfTransportHealthy(
@@ -380,6 +398,8 @@ actor WorldwideScreenService {
         framesPerSecond: Int,
         maximumVideoBitrate: Int,
         remoteInputController: MacRemoteInputController,
+        iPhoneMicrophoneForwardingPolicy:
+            WorldwideIPhoneMicrophoneForwardingPolicy = .enabled,
         logger: Logger
     ) throws {
         let completionPair = AsyncStream<Void>.makeStream(
@@ -400,6 +420,8 @@ actor WorldwideScreenService {
         self.framesPerSecond = framesPerSecond
         self.maximumVideoBitrate = maximumVideoBitrate
         self.remoteInputController = remoteInputController
+        self.iPhoneMicrophoneForwardingPolicy =
+            iPhoneMicrophoneForwardingPolicy
         self.logger = logger
     }
 
@@ -413,6 +435,8 @@ actor WorldwideScreenService {
         framesPerSecond: Int,
         maximumVideoBitrate: Int,
         remoteInputController: MacRemoteInputController,
+        iPhoneMicrophoneForwardingPolicy:
+            WorldwideIPhoneMicrophoneForwardingPolicy = .enabled,
         logger: Logger
     ) throws {
         let completionPair = AsyncStream<Void>.makeStream(
@@ -432,6 +456,8 @@ actor WorldwideScreenService {
         self.framesPerSecond = framesPerSecond
         self.maximumVideoBitrate = maximumVideoBitrate
         self.remoteInputController = remoteInputController
+        self.iPhoneMicrophoneForwardingPolicy =
+            iPhoneMicrophoneForwardingPolicy
         self.logger = logger
     }
 
@@ -462,6 +488,7 @@ actor WorldwideScreenService {
         }
         isStarted = true
 
+        startIPhoneMicrophoneDeviceMonitoringIfNeeded()
         do {
             let events = try await signaling.connect()
             signalingTask = Task { [weak self] in
@@ -469,6 +496,9 @@ actor WorldwideScreenService {
             }
         } catch {
             isStopped = true
+            blackHoleDeviceMonitorEpoch = nil
+            blackHoleDeviceAvailabilityMonitor.stop()
+            iPhoneMicrophoneForwarding.shutdown()
             completionContinuation.finish()
             throw error
         }
@@ -482,6 +512,9 @@ actor WorldwideScreenService {
         guard !isStopped else { return }
         isStopped = true
 
+        blackHoleDeviceMonitorEpoch = nil
+        blackHoleDeviceAvailabilityMonitor.stop()
+        iPhoneMicrophoneForwarding.shutdown()
         signalingTask?.cancel()
         signalingTask = nil
         peerEventTask?.cancel()
@@ -503,7 +536,6 @@ actor WorldwideScreenService {
         recoveryProofAuthorization = nil
         revokeCaptureAuthorization()
         revokeSystemAudioAuthorization()
-        stopIPhoneMicrophoneForwarding(clearTrack: true)
         captureSink?.stopForwarding()
         audioSink?.stopForwarding()
         await coordinator?.cancel()
@@ -645,7 +677,7 @@ actor WorldwideScreenService {
         recoveryProofAuthorization = nil
         revokeCaptureAuthorization()
         revokeSystemAudioAuthorization()
-        stopIPhoneMicrophoneForwarding(clearTrack: true)
+        iPhoneMicrophoneForwarding.clearPeer()
         await stopSystemAudio()
 
         let coordinator = ICERecoveryCoordinator(
@@ -661,6 +693,10 @@ actor WorldwideScreenService {
             }
         )
         self.peer = peer
+        iPhoneMicrophoneForwarding.replacePeer(
+            peer: peer,
+            peerGeneration: generation
+        )
         recoveryCoordinator = coordinator
         let events = peer.events
         peerEventTask = Task { [weak self] in
@@ -1382,7 +1418,7 @@ actor WorldwideScreenService {
         revokeSystemAudioAuthorization()
         captureSink?.stopForwarding()
         audioSink?.stopForwarding()
-        stopIPhoneMicrophoneForwarding(clearTrack: false)
+        iPhoneMicrophoneForwarding.invalidateTransport()
         await peer?.suspendSystemAudioForTransportUncertainty()
         await stopScreenCaptureForTransportUncertainty(reason)
         await stopSystemAudioForTransportUncertainty(reason)
@@ -1420,6 +1456,7 @@ actor WorldwideScreenService {
         isRecovering = true
         revokeCaptureAuthorization()
         revokeSystemAudioAuthorization()
+        iPhoneMicrophoneForwarding.invalidateTransport()
         if recoveryProofRequired {
             // Invalidate a pre-uncertainty Hide/ACK without severing the current offer→answer
             // epoch. Native disconnected events are expected during an in-flight restart.
@@ -1436,6 +1473,7 @@ actor WorldwideScreenService {
     private func installRecoveryProofBoundary(awaitingAnswer: Bool) -> UInt64 {
         revokeCaptureAuthorization()
         revokeSystemAudioAuthorization()
+        iPhoneMicrophoneForwarding.invalidateTransport()
         recoveryProofAuthorization?.revoke()
         recoveryProofEpoch &+= 1
         let epoch = recoveryProofEpoch
@@ -1513,7 +1551,7 @@ actor WorldwideScreenService {
             )
             return
         }
-        await startIPhoneMicrophoneForwardingIfPossible()
+        await authorizeIPhoneMicrophoneForwardingIfPossible()
         await recoveryCoordinator?.iceStateChanged(.connected)
     }
 
@@ -1533,11 +1571,69 @@ actor WorldwideScreenService {
             )
             return false
         }
-        await startIPhoneMicrophoneForwardingIfPossible()
+        await authorizeIPhoneMicrophoneForwardingIfPossible()
         return true
     }
 
     // MARK: - iPhone microphone to BlackHole
+
+    private func startIPhoneMicrophoneDeviceMonitoringIfNeeded() {
+        guard iPhoneMicrophoneForwardingPolicy == .enabled else {
+            return
+        }
+
+        do {
+            let epoch = try blackHoleDeviceAvailabilityMonitor.start {
+                [weak self] snapshot in
+                Task { [weak self] in
+                    await self?.blackHoleDeviceAvailabilityDidChange(
+                        snapshot
+                    )
+                }
+            }
+            blackHoleDeviceMonitorEpoch = epoch
+            iPhoneMicrophoneForwarding.beginMonitoring(
+                epoch: epoch
+            )
+        } catch {
+            blackHoleDeviceMonitorEpoch = nil
+            iPhoneMicrophoneForwarding.monitoringDidFail()
+            logger.error(
+                "BlackHole device monitoring is unavailable; " +
+                    "iPhone microphone forwarding remains disabled: " +
+                    error.localizedDescription
+            )
+        }
+    }
+
+    private func blackHoleDeviceAvailabilityDidChange(
+        _ snapshot: BlackHoleDeviceAvailabilitySnapshot
+    ) async {
+        guard !isStopped,
+              snapshot.monitorEpoch == blackHoleDeviceMonitorEpoch else {
+            return
+        }
+        await iPhoneMicrophoneForwarding.updateDeviceSnapshot(
+            snapshot
+        )
+    }
+
+    func iPhoneMicrophoneForwardingSnapshot()
+        -> WorldwideIPhoneMicrophoneForwardingHostSnapshot {
+        iPhoneMicrophoneForwarding.snapshot()
+    }
+
+    private func authorizeIPhoneMicrophoneForwardingIfPossible()
+        async {
+        guard transportAllowsCapture,
+              let peer else {
+            return
+        }
+        await iPhoneMicrophoneForwarding.authorizeTransport(
+            peer: peer,
+            peerGeneration: peerGeneration
+        )
+    }
 
     private func iPhoneMicrophoneOutputDidFail(
         output: BlackHoleMicrophoneOutput,
@@ -1559,6 +1655,7 @@ actor WorldwideScreenService {
         _ track: WebRTCRemoteAudioTrack
     ) async {
         guard track.logicalLane == .iPhoneMicrophone else {
+            iPhoneMicrophoneForwarding.clearTrack()
             track.setEnabled(false)
             logger.error(
                 "Rejected unexpected worldwide remote audio lane "
@@ -1566,52 +1663,7 @@ actor WorldwideScreenService {
             )
             return
         }
-        stopIPhoneMicrophoneForwarding(clearTrack: true)
-        iPhoneMicrophoneTrack = track
-        await startIPhoneMicrophoneForwardingIfPossible()
-    }
-
-    private func startIPhoneMicrophoneForwardingIfPossible() async {
-        guard transportAllowsCapture,
-              let peer,
-              let track = iPhoneMicrophoneTrack else {
-            return
-        }
-
-        do {
-            let result = try await iPhoneMicrophoneForwarding.start(
-                peer: peer,
-                track: track
-            )
-            guard result == .started else { return }
-        } catch {
-            logger.error(
-                "iPhone microphone forwarding is unavailable: "
-                    + error.localizedDescription
-            )
-            return
-        }
-
-        guard transportAllowsCapture,
-              self.peer === peer,
-              iPhoneMicrophoneTrack === track else {
-            iPhoneMicrophoneForwarding.stopIfCurrent(
-                peer: peer,
-                track: track
-            )
-            return
-        }
-        logger.info(
-            "Forwarding the authorized iPhone microphone to BlackHole 2ch"
-        )
-    }
-
-    private func stopIPhoneMicrophoneForwarding(clearTrack: Bool) {
-        iPhoneMicrophoneForwarding.stopCurrent()
-        iPhoneMicrophoneTrack?.setEnabled(false)
-        if clearTrack {
-            iPhoneMicrophoneTrack = nil
-        }
+        await iPhoneMicrophoneForwarding.installTrack(track)
     }
 
     /// Converts unexplained audio-start failure on a healthy route into ICE recovery.

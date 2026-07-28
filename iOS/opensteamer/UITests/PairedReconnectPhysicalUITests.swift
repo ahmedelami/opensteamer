@@ -19,10 +19,41 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
         let finalVideoSnapshot: PhysicalVideoRenderSnapshot
     }
 
+    /// Exact iPhone production raw-sender evidence. This intentionally makes no claim about later
+    /// Mac forwarding, BlackHole delivery, host application consumption, or acoustic audibility.
+    private struct LiveRawMicrophoneEvidence {
+        let initialSnapshot: PhysicalRawMicrophoneSnapshot
+        let finalSnapshot: PhysicalRawMicrophoneSnapshot
+        let elapsed: TimeInterval
+        let advancementObservations: Int
+        let continuityDurationNs: UInt64
+        let applicationProcessIDAtStart: Int32
+        let applicationProcessIDAtEnd: Int32
+        let sampleLog: String
+    }
+
     /// Route and final monotonic audio snapshot from one verified playback window.
     private struct LivePlaybackEvidence {
         let route: String
         let finalAudioSnapshot: PhysicalAudioPlayoutSnapshot
+    }
+
+    private struct LiveHostedCallEvidence {
+        let route: String
+        let initialSnapshot: PhysicalHostedCallPlayoutSnapshot
+        let finalSnapshot: PhysicalHostedCallPlayoutSnapshot
+        let elapsed: TimeInterval
+        let sampleLog: String
+    }
+
+    private struct LivePostCallPlaybackEvidence {
+        let route: String
+        let excludedHostedAudioPolicyGenerations: Set<UUID>
+        let ordinaryAudioPolicyGeneration: UUID
+        let postCallBaseline: PhysicalAudioPlayoutSnapshot
+        let finalAudioSnapshot: PhysicalAudioPlayoutSnapshot
+        let elapsed: TimeInterval
+        let sampleLog: String
     }
 
     // The visible product is opensteamer, and physical release validation targets the immutable
@@ -31,9 +62,14 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
     // Audio diagnostics are published by the one-second WebRTC statistics task, so 1.5 seconds
     // permits one ordinary publication interval without allowing a late burst to launder a stall.
     private let maximumAudioOracleProgressGap: TimeInterval = 1.5
+    private let maximumRawMicrophoneOracleProgressGap: TimeInterval = 1.5
     // At a 60 fps source, a 750 ms decoded-frame stall is already user-visible.
     private let maximumVideoOracleProgressGap: TimeInterval = 0.75
     private let backgroundEvidenceDuration: TimeInterval = 35
+    // A separate physical driver proves the real connected iPhone call is already connected before
+    // this production app cold-launches, then ends it later while the same process remains live.
+    // Missing either boundary is an acceptance failure, never a skip.
+    private let physicalCallTransitionTimeout: TimeInterval = 120
 
     override func setUp() {
         super.setUp()
@@ -67,6 +103,360 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
         attachment.name = "Installed release saved-pair baseline"
         attachment.lifetime = .keepAlways
         add(attachment)
+        app.terminate()
+    }
+
+    func testProductionRawIPhoneMicrophoneOracleSustainsRollingContinuity() throws {
+        let runtimeNonce = try XCTUnwrap(
+            ProcessInfo.processInfo.environment[
+                "OPENSTEAMER_RAW_CONTINUITY_PROOF_NONCE"
+            ]?.trimmingCharacters(in: .whitespacesAndNewlines),
+            "The raw overlap nonce was not propagated into XCTest."
+        )
+        guard runtimeNonce.range(
+            of: #"^[A-Za-z0-9-]{16,128}$"#,
+            options: .regularExpression
+        ) != nil else {
+            XCTFail("The raw overlap nonce was malformed.")
+            return
+        }
+
+        hardLaunch()
+        let expectedPairFingerprint = try currentPairFingerprint()
+        assertSavedPairIsIdleWithoutHistoricalError(
+            expectedPairFingerprint: expectedPairFingerprint
+        )
+
+        let playback = try connectAndRequireStablePlayback(
+            phase: "raw iPhone microphone production oracle"
+        )
+        XCTAssertTrue(
+            element("toggleWorldwideIPhoneMicrophone")
+                .waitForExistence(timeout: 10),
+            "The production session exposed no iPhone microphone control."
+        )
+
+        let evidence = try XCTUnwrap(
+            waitForStableRawIPhoneMicrophone(
+                timeout: 65,
+                stableFor: 30,
+                expectedSessionGeneration:
+                    playback.finalAudioSnapshot.sessionGeneration
+            ),
+            "The production iPhone oracle did not sustain density-checked raw sender progress. Last observation: \(liveRawMicrophoneObservation)"
+        )
+
+        XCTAssertGreaterThanOrEqual(
+            evidence.advancementObservations,
+            2
+        )
+        XCTAssertEqual(
+            evidence.initialSnapshot.sessionGeneration,
+            evidence.finalSnapshot.sessionGeneration
+        )
+        XCTAssertEqual(
+            evidence.initialSnapshot.windowGeneration,
+            evidence.finalSnapshot.windowGeneration
+        )
+        XCTAssertGreaterThanOrEqual(
+            evidence.continuityDurationNs,
+            30_000_000_000
+        )
+        XCTAssertGreaterThan(
+            evidence.applicationProcessIDAtStart,
+            0
+        )
+        XCTAssertEqual(
+            evidence.applicationProcessIDAtStart,
+            evidence.applicationProcessIDAtEnd
+        )
+
+
+        let attachment = XCTAttachment(
+            string:
+                "schema=opensteamer.raw-ui-continuity.v1\n"
+                    + "nonce=\(runtimeNonce)\n"
+                    + "scope=iPhone production raw microphone sender oracle only; downstream Mac BlackHole consumption is not claimed\n"
+                    + evidence.sampleLog
+        )
+        attachment.name =
+            "Production raw iPhone microphone rolling continuity evidence"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        let runtimeAttachment = XCTAttachment(
+            string:
+                "schema=opensteamer.raw-ui-runtime.v1\n"
+                    + "nonce=\(runtimeNonce)\n"
+                    + "continuityDurationNs=\(evidence.continuityDurationNs)\n"
+                    + "appPIDAtStart=\(evidence.applicationProcessIDAtStart)\n"
+                    + "appPIDAtEnd=\(evidence.applicationProcessIDAtEnd)\n"
+        )
+        runtimeAttachment.name =
+            "Production raw iPhone microphone runtime overlap evidence"
+        runtimeAttachment.lifetime = .keepAlways
+        add(runtimeAttachment)
+
+        app.buttons["disconnectWorldwide"].tap()
+        XCTAssertTrue(
+            waitForHostFailureToReturnToSavedPair(timeout: 45)
+        )
+        assertSavedPairIsIdleWithoutHistoricalError(
+            expectedPairFingerprint: expectedPairFingerprint
+        )
+        app.terminate()
+    }
+
+    func testRealConnectedCallRecoveryRotatesOrdinaryAudioPolicyAndRequiresFreshProof() throws {
+        hardLaunch()
+        let expectedPairFingerprint = try currentPairFingerprint()
+        assertSavedPairIsIdleWithoutHistoricalError(
+            expectedPairFingerprint: expectedPairFingerprint
+        )
+
+        let connect = app.buttons["connectPairedWorldwide"]
+        XCTAssertTrue(
+            connect.exists,
+            "The production session exposed no saved-pair connect action during the driver-proven connected call."
+        )
+        XCTAssertEqual(connect.label, "Connect to Paired Mac")
+        connect.tap()
+
+        let startup = try XCTUnwrap(
+            waitForStableHostedCallPlayout(
+                timeout: physicalCallTransitionTimeout,
+                stableFor: 2,
+                expectedOrigin: .startupConnectedCall,
+                expectedSessionGeneration: nil
+            ),
+            "The cold-launched production app did not establish a sustained startup-connected-call hosted playout window with advancing incoming Mac audio. Last observation: \(livePlaybackObservation)"
+        )
+        XCTAssertEqual(
+            startup.initialSnapshot.origin,
+            .startupConnectedCall
+        )
+        XCTAssertEqual(
+            startup.finalSnapshot.origin,
+            .startupConnectedCall
+        )
+        XCTAssertEqual(
+            startup.initialSnapshot.sessionGeneration,
+            startup.finalSnapshot.sessionGeneration
+        )
+        XCTAssertEqual(
+            startup.initialSnapshot.policyID,
+            startup.finalSnapshot.policyID
+        )
+        XCTAssertEqual(
+            startup.initialSnapshot.audioPolicyGeneration,
+            startup.finalSnapshot.audioPolicyGeneration
+        )
+        XCTAssertEqual(
+            startup.initialSnapshot.authorizationGeneration,
+            startup.finalSnapshot.authorizationGeneration
+        )
+        XCTAssertTrue(
+            acceptedRouteValues.contains(startup.route),
+            "Startup connected-call playout did not retain a Direct or TURN relay route."
+        )
+        assertActivePresentation(route: startup.route)
+        XCTAssertEqual(
+            element("worldwideMicrophoneState").value as? String,
+            "Muted — iPhone call active",
+            "Startup connected-call playout must keep the iPhone microphone unavailable."
+        )
+        XCTAssertFalse(
+            element("worldwideRawMicrophoneOracle").exists,
+            "Startup connected-call playout must not expose a raw iPhone microphone oracle."
+        )
+
+        let startupAttachment = XCTAttachment(
+            string:
+                "scope=startup-connected-call incoming Mac playout before the final iOS mixer/route/DAC/speaker\n"
+                    + "route=\(startup.route)\n"
+                    + startup.sampleLog
+        )
+        startupAttachment.name =
+            "Startup connected-call incoming Mac playout continuity evidence"
+        startupAttachment.lifetime = .keepAlways
+        add(startupAttachment)
+
+        let interruption = try XCTUnwrap(
+            waitForStableHostedCallPlayout(
+                timeout: physicalCallTransitionTimeout,
+                stableFor: 2,
+                expectedOrigin: .interruption,
+                expectedSessionGeneration:
+                    startup.finalSnapshot.sessionGeneration
+            ),
+            "The connected call did not produce a second sustained hosted playout window from a genuine AVAudioSession interruption. Last observation: \(livePlaybackObservation)"
+        )
+        XCTAssertEqual(
+            interruption.initialSnapshot.origin,
+            .interruption
+        )
+        XCTAssertEqual(
+            interruption.finalSnapshot.origin,
+            .interruption
+        )
+        XCTAssertEqual(
+            interruption.initialSnapshot.sessionGeneration,
+            interruption.finalSnapshot.sessionGeneration
+        )
+        XCTAssertEqual(
+            interruption.finalSnapshot.sessionGeneration,
+            startup.finalSnapshot.sessionGeneration
+        )
+        XCTAssertEqual(
+            interruption.initialSnapshot.policyID,
+            interruption.finalSnapshot.policyID
+        )
+        XCTAssertEqual(
+            interruption.initialSnapshot.audioPolicyGeneration,
+            interruption.finalSnapshot.audioPolicyGeneration
+        )
+        XCTAssertEqual(
+            interruption.initialSnapshot.authorizationGeneration,
+            interruption.finalSnapshot.authorizationGeneration
+        )
+        XCTAssertTrue(
+            acceptedRouteValues.contains(interruption.route),
+            "Interruption-origin hosted playout did not retain a Direct or TURN relay route."
+        )
+        assertActivePresentation(route: interruption.route)
+        XCTAssertEqual(
+            element("worldwideMicrophoneState").value as? String,
+            "Muted — iPhone call active",
+            "Interruption-origin hosted playout must keep the iPhone microphone unavailable."
+        )
+        XCTAssertFalse(
+            element("worldwideRawMicrophoneOracle").exists,
+            "Interruption-origin hosted playout must not expose a raw iPhone microphone oracle."
+        )
+
+        let interruptionAttachment = XCTAttachment(
+            string:
+                "scope=interruption-origin incoming Mac playout before the final iOS mixer/route/DAC/speaker\n"
+                    + "route=\(interruption.route)\n"
+                    + interruption.sampleLog
+        )
+        interruptionAttachment.name =
+            "Interruption-origin incoming Mac playout continuity evidence"
+        interruptionAttachment.lifetime = .keepAlways
+        add(interruptionAttachment)
+
+        XCTAssertNotEqual(
+            startup.finalSnapshot.policyID,
+            interruption.finalSnapshot.policyID,
+            "A genuine interruption must replace the startup-connected-call hosted policy."
+        )
+
+        let excludedHostedAudioPolicyGenerations: Set<UUID> = [
+            startup.finalSnapshot.audioPolicyGeneration,
+            interruption.finalSnapshot.audioPolicyGeneration,
+        ]
+        XCTAssertEqual(
+            excludedHostedAudioPolicyGenerations.count,
+            2,
+            "Startup and interruption hosted windows must use distinct audio-policy generations."
+        )
+
+        let recovered = try XCTUnwrap(
+            waitForFreshPostCallOrdinaryPlayback(
+                expectedSessionGeneration:
+                    startup.finalSnapshot.sessionGeneration,
+                excludedHostedAudioPolicyGenerations:
+                    excludedHostedAudioPolicyGenerations,
+                timeout: physicalCallTransitionTimeout,
+                stableFor: 2
+            ),
+            "Final call recovery did not establish and advance fresh ordinary Playing evidence under the original media session. Last observation: \(livePlaybackObservation)"
+        )
+
+        XCTAssertEqual(
+            recovered.postCallBaseline.sessionGeneration,
+            startup.finalSnapshot.sessionGeneration
+        )
+        XCTAssertEqual(
+            recovered.finalAudioSnapshot.sessionGeneration,
+            startup.finalSnapshot.sessionGeneration
+        )
+        XCTAssertEqual(
+            recovered.postCallBaseline.audioPolicyGeneration,
+            recovered.ordinaryAudioPolicyGeneration
+        )
+        XCTAssertEqual(
+            recovered.finalAudioSnapshot.audioPolicyGeneration,
+            recovered.ordinaryAudioPolicyGeneration
+        )
+        XCTAssertEqual(
+            recovered.excludedHostedAudioPolicyGenerations,
+            excludedHostedAudioPolicyGenerations
+        )
+        XCTAssertFalse(
+            excludedHostedAudioPolicyGenerations.contains(
+                recovered.finalAudioSnapshot.audioPolicyGeneration
+            ),
+            "Ordinary recovery reused a hosted-call audio-policy generation."
+        )
+        XCTAssertEqual(
+            element("worldwideAudioState").value as? String,
+            "Playing",
+            "Final recovery did not remain in ordinary Playing state."
+        )
+        XCTAssertFalse(
+            element("worldwideHostedCallPlayoutOracle").exists,
+            "Final ordinary recovery retained a hosted-call oracle after the call ended."
+        )
+        assertActivePresentation(route: recovered.route)
+
+        let finalSessionGenerations: Set<UUID> = [
+            startup.finalSnapshot.sessionGeneration,
+            interruption.finalSnapshot.sessionGeneration,
+            recovered.finalAudioSnapshot.sessionGeneration,
+        ]
+        XCTAssertEqual(
+            finalSessionGenerations.count,
+            1,
+            "Startup, interruption, and ordinary recovery must remain in one media-session generation."
+        )
+
+        let finalAudioPolicyGenerations: Set<UUID> = [
+            startup.finalSnapshot.audioPolicyGeneration,
+            interruption.finalSnapshot.audioPolicyGeneration,
+            recovered.finalAudioSnapshot.audioPolicyGeneration,
+        ]
+        XCTAssertEqual(
+            finalAudioPolicyGenerations.count,
+            3,
+            "Startup, interruption, and ordinary recovery audio-policy generations must be pairwise distinct."
+        )
+
+        let excludedHostedPolicyText =
+            recovered.excludedHostedAudioPolicyGenerations
+                .map { $0.uuidString.lowercased() }
+                .sorted()
+                .joined(separator: ",")
+        let recoveredAttachment = XCTAttachment(
+            string:
+                "startupOrigin=\(startup.finalSnapshot.origin.rawValue) startupSession=\(startup.finalSnapshot.sessionGeneration) startupPolicyID=\(startup.finalSnapshot.policyID) startupAudioPolicyGeneration=\(startup.finalSnapshot.audioPolicyGeneration) startupAuthorizationGeneration=\(startup.finalSnapshot.authorizationGeneration)\n"
+                    + "interruptionOrigin=\(interruption.finalSnapshot.origin.rawValue) interruptionSession=\(interruption.finalSnapshot.sessionGeneration) interruptionPolicyID=\(interruption.finalSnapshot.policyID) interruptionAudioPolicyGeneration=\(interruption.finalSnapshot.audioPolicyGeneration) interruptionAuthorizationGeneration=\(interruption.finalSnapshot.authorizationGeneration)\n"
+                    + "excludedHostedAudioPolicyGenerations=\(excludedHostedPolicyText)\n"
+                    + "ordinaryOrigin=ordinary ordinarySession=\(recovered.finalAudioSnapshot.sessionGeneration) ordinaryPolicyID=none ordinaryAudioPolicyGeneration=\(recovered.ordinaryAudioPolicyGeneration) ordinaryAuthorizationGeneration=none route=\(recovered.route)\n"
+                    + recovered.sampleLog
+        )
+        recoveredAttachment.name =
+            "Fresh ordinary audio proof after final call recovery"
+        recoveredAttachment.lifetime = .keepAlways
+        add(recoveredAttachment)
+
+        app.buttons["disconnectWorldwide"].tap()
+        XCTAssertTrue(
+            waitForHostFailureToReturnToSavedPair(timeout: 45)
+        )
+        assertSavedPairIsIdleWithoutHistoricalError(
+            expectedPairFingerprint: expectedPairFingerprint
+        )
         app.terminate()
     }
 
@@ -307,14 +697,17 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
     private func waitForStableLivePlaybackWithoutError(
         timeout: TimeInterval,
         stableFor stableDuration: TimeInterval,
-        expectedSessionGeneration: UUID? = nil
+        expectedSessionGeneration: UUID? = nil,
+        expectedAudioPolicyGeneration: UUID? = nil
     ) -> LivePlaybackEvidence? {
         let deadline = Date().addingTimeInterval(timeout)
         var stableRoute: String?
         var tracker = PhysicalAudioContinuityTracker(
             requiredDuration: stableDuration,
             maximumProgressGap: maximumAudioOracleProgressGap,
-            expectedSessionGeneration: expectedSessionGeneration
+            expectedSessionGeneration: expectedSessionGeneration,
+            expectedAudioPolicyGeneration:
+                expectedAudioPolicyGeneration
         )
         while Date() < deadline {
             if app.state != .runningForeground || hasConnectionError {
@@ -344,7 +737,9 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
                     tracker = PhysicalAudioContinuityTracker(
                         requiredDuration: stableDuration,
                         maximumProgressGap: maximumAudioOracleProgressGap,
-                        expectedSessionGeneration: expectedSessionGeneration
+                        expectedSessionGeneration: expectedSessionGeneration,
+                        expectedAudioPolicyGeneration:
+                            expectedAudioPolicyGeneration
                     )
                 }
                 switch tracker.observe(currentOracle, at: now) {
@@ -363,7 +758,9 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
                 tracker = PhysicalAudioContinuityTracker(
                     requiredDuration: stableDuration,
                     maximumProgressGap: maximumAudioOracleProgressGap,
-                    expectedSessionGeneration: expectedSessionGeneration
+                    expectedSessionGeneration: expectedSessionGeneration,
+                    expectedAudioPolicyGeneration:
+                        expectedAudioPolicyGeneration
                 )
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
@@ -418,9 +815,11 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
                 continue
             }
             guard current.sessionGeneration == before.sessionGeneration,
+                  current.audioPolicyGeneration
+                    == before.audioPolicyGeneration,
                   current.failureCount == 0,
                   current.fullQualityInvariantsHold else {
-                XCTFail("\(phase) replaced or degraded the media session while backgrounded")
+                XCTFail("\(phase) replaced the media/audio-policy window or degraded playback while backgrounded")
                 throw PhysicalValidationError.oracleRejected
             }
             let elapsed = ProcessInfo.processInfo.systemUptime - backgroundStartedAt
@@ -540,11 +939,18 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
                 timeout: 20,
                 stableFor: 2,
                 expectedSessionGeneration:
-                    playback.finalAudioSnapshot.sessionGeneration
+                    playback.finalAudioSnapshot.sessionGeneration,
+                expectedAudioPolicyGeneration:
+                    playback.finalAudioSnapshot.audioPolicyGeneration
             ),
             "\(phase) lost its Connected session, native audio playback, or live WebRTC route after Hide Screen. Last observation: \(livePlaybackObservation)"
         )
         let elapsed = ProcessInfo.processInfo.systemUptime - audioContinuityStartedAt
+        guard finalPlayback.finalAudioSnapshot.audioPolicyGeneration
+                == playback.finalAudioSnapshot.audioPolicyGeneration else {
+            XCTFail("\(phase) rotated ordinary audio policy across screen Show-Hide")
+            throw PhysicalValidationError.oracleRejected
+        }
         guard PhysicalAudioPlayoutEvaluator.coversElapsedInterval(
             previous: playback.finalAudioSnapshot,
             current: finalPlayback.finalAudioSnapshot,
@@ -563,6 +969,673 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
         audioAttachment.lifetime = .keepAlways
         activity.add(audioAttachment)
         return finalPlayback
+    }
+
+    private func waitForStableRawIPhoneMicrophone(
+        timeout: TimeInterval,
+        stableFor stableDuration: TimeInterval,
+        expectedSessionGeneration: UUID
+    ) -> LiveRawMicrophoneEvidence? {
+        let deadline = Date().addingTimeInterval(timeout)
+        var tracker: PhysicalRawMicrophoneContinuityTracker?
+        var initialSnapshot: PhysicalRawMicrophoneSnapshot?
+        var latestSnapshot: PhysicalRawMicrophoneSnapshot?
+        var initialObservedAt: TimeInterval?
+        var latestObservedAt: TimeInterval?
+        var applicationProcessIDAtStart: Int32?
+        var sampleLines: [String] = []
+
+        while Date() < deadline {
+            if app.state != .runningForeground || hasConnectionError {
+                return nil
+            }
+
+            let now = ProcessInfo.processInfo.systemUptime
+            let oracleElement = element("worldwideRawMicrophoneOracle")
+            guard presentationValue == "active",
+                  element("worldwideSessionState").value as? String
+                    == "Connected",
+                  element("worldwideMicrophoneState").value as? String
+                    == "On",
+                  oracleElement.exists,
+                  let encoded = oracleElement.value as? String,
+                  let current = PhysicalRawMicrophoneSnapshot(
+                    accessibilityValue: encoded
+                  ),
+                  current.sessionGeneration
+                    == expectedSessionGeneration else {
+                if let latestObservedAt,
+                   now - latestObservedAt
+                    > maximumRawMicrophoneOracleProgressGap {
+                    return nil
+                }
+                RunLoop.current.run(
+                    until: Date().addingTimeInterval(0.1)
+                )
+                continue
+            }
+
+            if current == latestSnapshot {
+                if let latestObservedAt,
+                   now - latestObservedAt
+                    > maximumRawMicrophoneOracleProgressGap {
+                    return nil
+                }
+                RunLoop.current.run(
+                    until: Date().addingTimeInterval(0.1)
+                )
+                continue
+            }
+
+            if tracker == nil {
+                let processIdentifier = current.applicationProcessIdentifier
+                guard processIdentifier > 0 else {
+                    return nil
+                }
+
+                var newTracker =
+                    PhysicalRawMicrophoneContinuityTracker(
+                        requiredDuration: stableDuration,
+                        maximumProgressGap:
+                            maximumRawMicrophoneOracleProgressGap,
+                        expectedSessionGeneration:
+                            expectedSessionGeneration,
+                        expectedWindowGeneration:
+                            current.windowGeneration,
+                        minimumAdvancementObservations: 2
+                    )
+                guard newTracker.observe(current, at: now)
+                        == .waiting else {
+                    return nil
+                }
+                tracker = newTracker
+                initialSnapshot = current
+                latestSnapshot = current
+                initialObservedAt = now
+                latestObservedAt = now
+                applicationProcessIDAtStart = processIdentifier
+                var baselineLine = "t=0 baseline"
+                baselineLine += " session=\(current.sessionGeneration)"
+                baselineLine += " window=\(current.windowGeneration)"
+                baselineLine += " transport=\(current.transportAuthorizationGeneration)"
+                baselineLine += " audioPolicy=\(current.audioPolicyGeneration)"
+                baselineLine += " negotiation=\(current.negotiationEpoch)"
+                baselineLine += " binding=\(current.bindingGeneration)"
+                baselineLine += " track=\(current.trackGeneration)"
+                baselineLine += " micPolicy=\(current.microphonePolicyGeneration)"
+                baselineLine += " recording=\(current.recordingGeneration)"
+                baselineLine += " admissions=\(current.realtimeAdmissionCount)"
+                baselineLine += " callbacks=\(current.deliveryCallbackCount)"
+                baselineLine += " frames=\(current.deliveredFrameCount)"
+                baselineLine += " packets=\(current.packetsSent)"
+                baselineLine += " bytes=\(current.bytesSent)"
+                let duration: String
+                if let totalSamplesDuration = current.totalSamplesDuration {
+                    duration = String(totalSamplesDuration)
+                } else {
+                    duration = "missing"
+                }
+                baselineLine += " duration=\(duration)"
+                sampleLines.append(baselineLine)
+                continue
+            }
+
+            guard let previous = latestSnapshot,
+                  let initialSnapshot,
+                  let initialObservedAt,
+                  let applicationProcessIDAtStart,
+                  current.applicationProcessIdentifier
+                    == applicationProcessIDAtStart,
+                  current.windowGeneration
+                    == initialSnapshot.windowGeneration,
+                  var activeTracker = tracker else {
+                return nil
+            }
+
+            let result = activeTracker.observe(current, at: now)
+            tracker = activeTracker
+            guard result != .rejected else { return nil }
+
+            let elapsed: TimeInterval = now - initialObservedAt
+            let gap: TimeInterval =
+                now - (latestObservedAt ?? initialObservedAt)
+            var progressLine = "t=\(elapsed)"
+            progressLine += " gap=\(gap)"
+            progressLine += " session=\(current.sessionGeneration)"
+            progressLine += " window=\(current.windowGeneration)"
+            progressLine += " transport=\(current.transportAuthorizationGeneration)"
+            progressLine += " audioPolicy=\(current.audioPolicyGeneration)"
+            progressLine += " negotiation=\(current.negotiationEpoch)"
+            progressLine += " binding=\(current.bindingGeneration)"
+            progressLine += " track=\(current.trackGeneration)"
+            progressLine += " micPolicy=\(current.microphonePolicyGeneration)"
+            progressLine += " recording=\(current.recordingGeneration)"
+            progressLine += " admissionsDelta=\(current.realtimeAdmissionCount - previous.realtimeAdmissionCount)"
+            progressLine += " callbacksDelta=\(current.deliveryCallbackCount - previous.deliveryCallbackCount)"
+            progressLine += " framesDelta=\(current.deliveredFrameCount - previous.deliveredFrameCount)"
+            progressLine += " packetsDelta=\(current.packetsSent - previous.packetsSent)"
+            progressLine += " bytesDelta=\(current.bytesSent - previous.bytesSent)"
+            let durationDelta: String
+            if let currentDuration = current.totalSamplesDuration,
+               let previousDuration = previous.totalSamplesDuration {
+                durationDelta = String(currentDuration - previousDuration)
+            } else {
+                durationDelta = "missing"
+            }
+            progressLine += " durationDelta=\(durationDelta)"
+            sampleLines.append(progressLine)
+            latestSnapshot = current
+            latestObservedAt = now
+
+            if result == .satisfied {
+                let applicationProcessIDAtEnd = current.applicationProcessIdentifier
+                let validDuration = activeTracker.accumulatedValidDuration
+                guard applicationProcessIDAtStart > 0,
+                      applicationProcessIDAtEnd == applicationProcessIDAtStart,
+                      validDuration.isFinite,
+                      validDuration >= stableDuration,
+                      validDuration <= Double(UInt64.max) / 1_000_000_000 else {
+                    return nil
+                }
+                let continuityDurationNs = UInt64(
+                    (validDuration * 1_000_000_000).rounded(.down)
+                )
+                return LiveRawMicrophoneEvidence(
+                    initialSnapshot: initialSnapshot,
+                    finalSnapshot: current,
+                    elapsed: validDuration,
+                    advancementObservations: activeTracker
+                        .advancementObservationCount,
+                    continuityDurationNs: continuityDurationNs,
+                    applicationProcessIDAtStart: applicationProcessIDAtStart,
+                    applicationProcessIDAtEnd: applicationProcessIDAtEnd,
+                    sampleLog: sampleLines.joined(separator: "\n")
+                )
+            }
+
+            RunLoop.current.run(
+                until: Date().addingTimeInterval(0.1)
+            )
+        }
+
+        return nil
+    }
+
+    private func waitForStableHostedCallPlayout(
+        timeout: TimeInterval,
+        stableFor stableDuration: TimeInterval,
+        expectedOrigin: PhysicalHostedCallPlayoutOrigin,
+        expectedSessionGeneration: UUID? = nil
+    ) -> LiveHostedCallEvidence? {
+        let deadline = Date().addingTimeInterval(timeout)
+        var tracker:
+            PhysicalHostedCallPlayoutContinuityTracker?
+        var boundSessionGeneration = expectedSessionGeneration
+        var stableRoute: String?
+        var initialSnapshot:
+            PhysicalHostedCallPlayoutSnapshot?
+        var latestSnapshot:
+            PhysicalHostedCallPlayoutSnapshot?
+        var initialObservedAt: TimeInterval?
+        var latestObservedAt: TimeInterval?
+        var sampleLines: [String] = []
+
+        while Date() < deadline {
+            if app.state != .runningForeground || hasConnectionError {
+                return nil
+            }
+
+            let now = ProcessInfo.processInfo.systemUptime
+            let hostedElement =
+                element("worldwideHostedCallPlayoutOracle")
+            guard presentationValue == "active",
+                  element("worldwideSessionState").value as? String
+                    == "Connected",
+                  element("worldwideAudioState").value as? String
+                    == "Playing — iPhone call may reduce quality",
+                  hostedElement.exists,
+                  let encoded = hostedElement.value as? String,
+                  let current =
+                    PhysicalHostedCallPlayoutSnapshot(
+                        accessibilityValue: encoded
+                    ) else {
+                if let latestObservedAt,
+                   now - latestObservedAt
+                    > maximumAudioOracleProgressGap {
+                    return nil
+                }
+                RunLoop.current.run(
+                    until: Date().addingTimeInterval(0.1)
+                )
+                continue
+            }
+
+            let microphoneState =
+                element("worldwideMicrophoneState").value
+                    as? String
+            let microphoneValue = microphoneState ?? "missing"
+            let rawMicrophoneElement =
+                element("worldwideRawMicrophoneOracle")
+            let rawMicrophoneValue =
+                rawMicrophoneElement.value as? String
+                    ?? "missing"
+            if microphoneState != "Muted — iPhone call active"
+                || rawMicrophoneElement.exists {
+                XCTFail(
+                    "Hosted-call candidate violated microphone isolation: origin=\(current.origin.rawValue) session=\(current.sessionGeneration) microphone=\(microphoneValue) rawOracleExists=\(rawMicrophoneElement.exists) rawOracle=\(rawMicrophoneValue)"
+                )
+                return nil
+            }
+
+            guard current.origin == expectedOrigin else {
+                if let latestObservedAt,
+                   now - latestObservedAt
+                    > maximumAudioOracleProgressGap {
+                    return nil
+                }
+                RunLoop.current.run(
+                    until: Date().addingTimeInterval(0.1)
+                )
+                continue
+            }
+
+            let routeElement = element("worldwideSessionRoute")
+            guard routeElement.exists,
+                  let route = routeElement.value as? String,
+                  acceptedRouteValues.contains(route) else {
+                if let latestObservedAt,
+                   now - latestObservedAt
+                    > maximumAudioOracleProgressGap {
+                    return nil
+                }
+                RunLoop.current.run(
+                    until: Date().addingTimeInterval(0.1)
+                )
+                continue
+            }
+
+            let trackerSessionGeneration: UUID
+            if let boundSessionGeneration {
+                guard current.sessionGeneration
+                        == boundSessionGeneration else {
+                    XCTFail(
+                        "Hosted-call media session changed after binding: expected=\(boundSessionGeneration) actual=\(current.sessionGeneration) origin=\(current.origin.rawValue)"
+                    )
+                    return nil
+                }
+                trackerSessionGeneration =
+                    boundSessionGeneration
+            } else {
+                trackerSessionGeneration =
+                    current.sessionGeneration
+            }
+
+            if let stableRoute, route != stableRoute {
+                XCTFail(
+                    "Hosted-call route changed during the accepted \(expectedOrigin.rawValue) window: expected=\(stableRoute) actual=\(route)"
+                )
+                return nil
+            }
+
+            if current == latestSnapshot {
+                if let latestObservedAt,
+                   now - latestObservedAt
+                    > maximumAudioOracleProgressGap {
+                    return nil
+                }
+                RunLoop.current.run(
+                    until: Date().addingTimeInterval(0.1)
+                )
+                continue
+            }
+
+            if tracker == nil {
+                var newTracker =
+                    PhysicalHostedCallPlayoutContinuityTracker(
+                        requiredDuration: stableDuration,
+                        maximumProgressGap:
+                            maximumAudioOracleProgressGap,
+                        expectedSessionGeneration:
+                            trackerSessionGeneration,
+                        expectedPolicyID: current.policyID,
+                        expectedOrigin: expectedOrigin,
+                        expectedAudioPolicyGeneration:
+                            current.audioPolicyGeneration,
+                        expectedAuthorizationGeneration:
+                            current.authorizationGeneration,
+                        minimumAdvancementObservations: 3
+                    )
+                guard newTracker.observe(current, at: now)
+                        == .waiting else {
+                    XCTFail(
+                        "Hosted-call baseline failed deterministic invariants for origin=\(current.origin.rawValue) session=\(current.sessionGeneration) route=\(route)."
+                    )
+                    return nil
+                }
+                tracker = newTracker
+                boundSessionGeneration =
+                    trackerSessionGeneration
+                stableRoute = route
+                initialSnapshot = current
+                latestSnapshot = current
+                initialObservedAt = now
+                latestObservedAt = now
+                var baselineLine = "t=0 baseline"
+                baselineLine += " route=\(route)"
+                baselineLine += " origin=\(current.origin.rawValue)"
+                baselineLine += " session=\(current.sessionGeneration)"
+                baselineLine += " policyID=\(current.policyID)"
+                baselineLine += " audioPolicyGeneration=\(current.audioPolicyGeneration)"
+                baselineLine += " systemAudioGeneration=\(current.systemAudioGeneration)"
+                baselineLine += " authorizationGeneration=\(current.authorizationGeneration)"
+                baselineLine += " nativeAuthorizationGeneration=\(current.nativeAuthorizationGeneration)"
+                baselineLine += " nativeInputEnabled=\(current.inputBusEnabled)"
+                baselineLine += " recordingRequests=\(current.unexpectedRecordingRequestCount)"
+                baselineLine += " nativeCallbacks=\(current.callbackCount)"
+                baselineLine += " nativeFrames=\(current.frameCount)"
+                baselineLine += " nativePCMNonzero=\(current.pcmNonzeroSampleCount)"
+                baselineLine += " nativePCMAbsolute=\(current.pcmAbsoluteSampleSum)"
+                baselineLine += " inboundBytes=\(current.inboundBytes)"
+                baselineLine += " inboundPackets=\(current.inboundPackets)"
+                baselineLine += " inboundJitterEmitted=\(current.inboundJitterBufferEmittedCount)"
+                baselineLine += " inboundSamples=\(current.inboundTotalSamplesReceived)"
+                baselineLine += " inboundEnergy=\(current.inboundAudioEnergy)"
+                baselineLine += " inboundDuration=\(current.inboundSamplesDuration)"
+                sampleLines.append(baselineLine)
+                continue
+            }
+
+            guard let previous = latestSnapshot,
+                  let initialSnapshot,
+                  let initialObservedAt,
+                  let stableRoute,
+                  route == stableRoute,
+                  var activeTracker = tracker else {
+                return nil
+            }
+            let result = activeTracker.observe(current, at: now)
+            tracker = activeTracker
+            if result == .rejected {
+                XCTFail(
+                    "Hosted-call continuity tracker rejected origin=\(current.origin.rawValue) session=\(current.sessionGeneration) route=\(route)."
+                )
+                return nil
+            }
+
+            var progressLine =
+                "t=\(now - initialObservedAt)"
+            progressLine +=
+                " gap=\(now - (latestObservedAt ?? initialObservedAt))"
+            progressLine += " route=\(route)"
+            progressLine += " origin=\(current.origin.rawValue)"
+            progressLine += " session=\(current.sessionGeneration)"
+            progressLine += " policyID=\(current.policyID)"
+            progressLine += " audioPolicyGeneration=\(current.audioPolicyGeneration)"
+            progressLine += " systemAudioGeneration=\(current.systemAudioGeneration)"
+            progressLine += " authorizationGeneration=\(current.authorizationGeneration)"
+            progressLine += " nativeAuthorizationGeneration=\(current.nativeAuthorizationGeneration)"
+            progressLine += " nativeInputEnabled=\(current.inputBusEnabled)"
+            progressLine += " recordingRequests=\(current.unexpectedRecordingRequestCount)"
+            progressLine += " nativeCallbacksDelta=\(current.callbackCount - previous.callbackCount)"
+            progressLine += " nativeFramesDelta=\(current.frameCount - previous.frameCount)"
+            progressLine += " nativePCMNonzeroDelta=\(current.pcmNonzeroSampleCount - previous.pcmNonzeroSampleCount)"
+            progressLine += " nativePCMAbsoluteDelta=\(current.pcmAbsoluteSampleSum - previous.pcmAbsoluteSampleSum)"
+            progressLine += " inboundBytesDelta=\(current.inboundBytes - previous.inboundBytes)"
+            progressLine += " inboundPacketsDelta=\(current.inboundPackets - previous.inboundPackets)"
+            progressLine += " inboundJitterEmittedDelta=\(current.inboundJitterBufferEmittedCount - previous.inboundJitterBufferEmittedCount)"
+            progressLine += " inboundSamplesDelta=\(current.inboundTotalSamplesReceived - previous.inboundTotalSamplesReceived)"
+            progressLine += " inboundEnergyDelta=\(current.inboundAudioEnergy - previous.inboundAudioEnergy)"
+            progressLine += " inboundDurationDelta=\(current.inboundSamplesDuration - previous.inboundSamplesDuration)"
+            sampleLines.append(progressLine)
+            latestSnapshot = current
+            latestObservedAt = now
+
+            if result == .satisfied {
+                return LiveHostedCallEvidence(
+                    route: stableRoute,
+                    initialSnapshot: initialSnapshot,
+                    finalSnapshot: current,
+                    elapsed: now - initialObservedAt,
+                    sampleLog: sampleLines.joined(separator: "\n")
+                )
+            }
+
+            RunLoop.current.run(
+                until: Date().addingTimeInterval(0.1)
+            )
+        }
+
+        return nil
+    }
+
+    private func waitForFreshPostCallOrdinaryPlayback(
+        expectedSessionGeneration: UUID,
+        excludedHostedAudioPolicyGenerations: Set<UUID>,
+        timeout: TimeInterval,
+        stableFor stableDuration: TimeInterval
+    ) -> LivePostCallPlaybackEvidence? {
+        guard excludedHostedAudioPolicyGenerations.count == 2 else {
+            XCTFail(
+                "Ordinary recovery requires exactly the startup and interruption hosted audio-policy generations to be excluded."
+            )
+            return nil
+        }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        var tracker: PhysicalAudioContinuityTracker?
+        var postCallBaseline: PhysicalAudioPlayoutSnapshot?
+        var latestSnapshot: PhysicalAudioPlayoutSnapshot?
+        var initialObservedAt: TimeInterval?
+        var latestObservedAt: TimeInterval?
+        var stableRoute: String?
+        var sampleLines: [String] = []
+        let excludedHostedPolicyText =
+            excludedHostedAudioPolicyGenerations
+                .map { $0.uuidString.lowercased() }
+                .sorted()
+                .joined(separator: ",")
+
+        while Date() < deadline {
+            if app.state != .runningForeground || hasConnectionError {
+                return nil
+            }
+
+            let now = ProcessInfo.processInfo.systemUptime
+            let ordinaryElement =
+                element("worldwideAudioPlayoutOracle")
+            let hostedElement =
+                element("worldwideHostedCallPlayoutOracle")
+            if tracker != nil, hostedElement.exists {
+                XCTFail(
+                    "A hosted-call oracle reappeared after the fresh ordinary recovery baseline was accepted."
+                )
+                return nil
+            }
+
+            guard presentationValue == "active",
+                  element("worldwideSessionState").value as? String
+                    == "Connected",
+                  element("worldwideAudioState").value as? String
+                    == "Playing",
+                  !hostedElement.exists,
+                  ordinaryElement.exists,
+                  let encoded = ordinaryElement.value as? String,
+                  let current = PhysicalAudioPlayoutSnapshot(
+                      accessibilityValue: encoded
+                  ) else {
+                if let latestObservedAt,
+                   now - latestObservedAt
+                    > maximumAudioOracleProgressGap {
+                    return nil
+                }
+                RunLoop.current.run(
+                    until: Date().addingTimeInterval(0.1)
+                )
+                continue
+            }
+
+            guard current.sessionGeneration
+                    == expectedSessionGeneration else {
+                XCTFail(
+                    "Ordinary recovery replaced the media session: expected=\(expectedSessionGeneration) actual=\(current.sessionGeneration)."
+                )
+                return nil
+            }
+
+            let routeElement = element("worldwideSessionRoute")
+            guard routeElement.exists,
+                  let route = routeElement.value as? String,
+                  acceptedRouteValues.contains(route) else {
+                if let latestObservedAt,
+                   now - latestObservedAt
+                    > maximumAudioOracleProgressGap {
+                    return nil
+                }
+                RunLoop.current.run(
+                    until: Date().addingTimeInterval(0.1)
+                )
+                continue
+            }
+
+            if tracker == nil,
+               excludedHostedAudioPolicyGenerations.contains(
+                   current.audioPolicyGeneration
+               ) {
+                RunLoop.current.run(
+                    until: Date().addingTimeInterval(0.1)
+                )
+                continue
+            }
+
+            if let stableRoute, route != stableRoute {
+                XCTFail(
+                    "Ordinary recovery route changed during the accepted proof window: expected=\(stableRoute) actual=\(route)."
+                )
+                return nil
+            }
+            if let postCallBaseline,
+               current.audioPolicyGeneration
+                != postCallBaseline.audioPolicyGeneration {
+                XCTFail(
+                    "Ordinary recovery audio-policy generation changed after its fresh baseline: expected=\(postCallBaseline.audioPolicyGeneration) actual=\(current.audioPolicyGeneration)."
+                )
+                return nil
+            }
+
+            if current == latestSnapshot {
+                if let latestObservedAt,
+                   now - latestObservedAt
+                    > maximumAudioOracleProgressGap {
+                    return nil
+                }
+                RunLoop.current.run(
+                    until: Date().addingTimeInterval(0.1)
+                )
+                continue
+            }
+
+            if tracker == nil {
+                var newTracker = PhysicalAudioContinuityTracker(
+                    requiredDuration: stableDuration,
+                    maximumProgressGap:
+                        maximumAudioOracleProgressGap,
+                    expectedSessionGeneration:
+                        expectedSessionGeneration,
+                    expectedAudioPolicyGeneration:
+                        current.audioPolicyGeneration
+                )
+                guard newTracker.observe(current, at: now)
+                        == .waiting else {
+                    XCTFail(
+                        "Fresh ordinary recovery baseline failed deterministic native-audio invariants."
+                    )
+                    return nil
+                }
+                tracker = newTracker
+                postCallBaseline = current
+                latestSnapshot = current
+                initialObservedAt = now
+                latestObservedAt = now
+                stableRoute = route
+                var baselineLine = "t=0 newBaseline"
+                baselineLine += " origin=ordinary"
+                baselineLine += " route=\(route)"
+                baselineLine += " session=\(current.sessionGeneration)"
+                baselineLine += " policyID=none"
+                baselineLine += " audioPolicyGeneration=\(current.audioPolicyGeneration)"
+                baselineLine += " authorizationGeneration=none"
+                baselineLine += " excludedHostedAudioPolicyGenerations=\(excludedHostedPolicyText)"
+                baselineLine += " nativeCallbacks=\(current.callbackCount)"
+                baselineLine += " nativeFrames=\(current.frameCount)"
+                baselineLine += " nativePCMSamples=\(current.pcmSampleCount)"
+                baselineLine += " nativePCMNonzero=\(current.pcmNonzeroSampleCount)"
+                baselineLine += " nativePCMAbsolute=\(current.pcmAbsoluteSampleSum)"
+                baselineLine += " inboundEnergy=\(current.inboundAudioEnergy)"
+                baselineLine += " inboundDuration=\(current.inboundSamplesDuration)"
+                sampleLines.append(baselineLine)
+                continue
+            }
+
+            guard route == stableRoute,
+                  let previous = latestSnapshot,
+                  let postCallBaseline,
+                  let initialObservedAt,
+                  current.audioPolicyGeneration
+                    == postCallBaseline.audioPolicyGeneration,
+                  var activeTracker = tracker else {
+                return nil
+            }
+
+            let result = activeTracker.observe(current, at: now)
+            tracker = activeTracker
+            if result == .rejected {
+                XCTFail(
+                    "Fresh ordinary recovery continuity tracker rejected session=\(current.sessionGeneration) audioPolicy=\(current.audioPolicyGeneration) route=\(route)."
+                )
+                return nil
+            }
+
+            var progressLine =
+                "t=\(now - initialObservedAt)"
+            progressLine +=
+                " gap=\(now - (latestObservedAt ?? initialObservedAt))"
+            progressLine += " origin=ordinary"
+            progressLine += " route=\(route)"
+            progressLine += " session=\(current.sessionGeneration)"
+            progressLine += " policyID=none"
+            progressLine += " audioPolicyGeneration=\(current.audioPolicyGeneration)"
+            progressLine += " authorizationGeneration=none"
+            progressLine += " nativeCallbacksDelta=\(current.callbackCount - previous.callbackCount)"
+            progressLine += " nativeFramesDelta=\(current.frameCount - previous.frameCount)"
+            progressLine += " nativePCMSamplesDelta=\(current.pcmSampleCount - previous.pcmSampleCount)"
+            progressLine += " nativePCMNonzeroDelta=\(current.pcmNonzeroSampleCount - previous.pcmNonzeroSampleCount)"
+            progressLine += " nativePCMAbsoluteDelta=\(current.pcmAbsoluteSampleSum - previous.pcmAbsoluteSampleSum)"
+            progressLine += " inboundEnergyDelta=\(current.inboundAudioEnergy - previous.inboundAudioEnergy)"
+            progressLine += " inboundDurationDelta=\(current.inboundSamplesDuration - previous.inboundSamplesDuration)"
+            sampleLines.append(progressLine)
+            latestSnapshot = current
+            latestObservedAt = now
+
+            if result == .satisfied {
+                return LivePostCallPlaybackEvidence(
+                    route: route,
+                    excludedHostedAudioPolicyGenerations:
+                        excludedHostedAudioPolicyGenerations,
+                    ordinaryAudioPolicyGeneration:
+                        postCallBaseline.audioPolicyGeneration,
+                    postCallBaseline: postCallBaseline,
+                    finalAudioSnapshot: current,
+                    elapsed: now - initialObservedAt,
+                    sampleLog: sampleLines.joined(separator: "\n")
+                )
+            }
+
+            RunLoop.current.run(
+                until: Date().addingTimeInterval(0.1)
+            )
+        }
+
+        return nil
     }
 
     private func waitForEnabled(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
@@ -691,7 +1764,26 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
         let audio = element("worldwideAudioState").value as? String ?? "missing"
         let route = element("worldwideSessionRoute").value as? String ?? "missing"
         let oracle = element("worldwideAudioPlayoutOracle").value as? String ?? "missing"
-        return "presentation=\(presentation), session=\(session), audio=\(audio), route=\(route), nativeOracle=\(oracle), appState=\(app.state.rawValue), connectionError=\(hasConnectionError)"
+        let hosted = element("worldwideHostedCallPlayoutOracle").value as? String ?? "missing"
+        let microphone =
+            element("worldwideMicrophoneState").value as? String
+                ?? "missing"
+        let rawMicrophoneElement =
+            element("worldwideRawMicrophoneOracle")
+        let rawMicrophone =
+            rawMicrophoneElement.value as? String
+                ?? "missing"
+        return "presentation=\(presentation), session=\(session), audio=\(audio), route=\(route), worldwideMicrophoneState=\(microphone), worldwideRawMicrophoneOracleExists=\(rawMicrophoneElement.exists), worldwideRawMicrophoneOracle=\(rawMicrophone), nativeOracle=\(oracle), hostedOracle=\(hosted), appState=\(app.state.rawValue), connectionError=\(hasConnectionError)"
+    }
+
+    private var liveRawMicrophoneObservation: String {
+        let microphone =
+            element("worldwideMicrophoneState").value as? String
+                ?? "missing"
+        let oracle =
+            element("worldwideRawMicrophoneOracle").value as? String
+                ?? "missing"
+        return "microphone=\(microphone), rawOracle=\(oracle), appState=\(app.state.rawValue), connectionError=\(hasConnectionError)"
     }
 
     private var liveScreenObservation: String {

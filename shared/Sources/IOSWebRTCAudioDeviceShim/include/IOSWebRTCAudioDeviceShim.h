@@ -1,3 +1,4 @@
+#import <AudioToolbox/AudioToolbox.h>
 #import <Foundation/Foundation.h>
 #import <LiveKitWebRTC/RTCAudioDevice.h>
 
@@ -36,6 +37,13 @@ typedef NS_ENUM(NSInteger, ASIOSStereoPlayoutFailureCode) {
     ASIOSStereoPlayoutFailureMicrophoneInputCallback = 23,
     ASIOSStereoPlayoutFailureMicrophoneBufferAllocation = 24,
     ASIOSStereoPlayoutFailureMicrophoneDelivery = 25,
+};
+
+/// Exact source of one hosted-call output-only policy. Unspecified is never admissible.
+typedef NS_ENUM(NSInteger, ASIOSHostedCallPlayoutOrigin) {
+    ASIOSHostedCallPlayoutOriginUnspecified = 0,
+    ASIOSHostedCallPlayoutOriginInterruption = 1,
+    ASIOSHostedCallPlayoutOriginStartupConnectedCall = 2,
 };
 
 /// A lock-free snapshot of counters written by the RemoteIO render callback plus atomically
@@ -89,8 +97,23 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
     uint32_t lastPlayoutFrameCount;
     uint32_t lastPlayoutPeakMagnitude;
     int32_t lastPlayoutStatus;
+    bool microphoneDeviceGateClosedAndDrained;
+    bool microphoneAuthorizationGatePublished;
+    uint64_t microphoneRecordingGeneration;
+    uint64_t approvedMicrophoneRecordingGeneration;
+    uint64_t microphoneRealtimeAdmissionCount;
+    uint64_t microphoneDeliveryCallbackCount;
+    uint64_t microphoneDeliveredFrameCount;
     bool categoryOptionsAreEmpty;
     bool routeSharingPolicyIsDefault;
+    bool categoryOptionsAreMixWithOthers;
+    bool hasOutputRoute;
+    bool hostedCallMode;
+    bool hostedCallAuthorizationValid;
+    bool hostedCallRecoveryPending;
+    ASIOSHostedCallPlayoutOrigin hostedCallOrigin;
+    uint64_t systemAudioGeneration;
+    uint64_t hostedCallAuthorizationGeneration;
 } ASIOSStereoPlayoutDiagnostics;
 
 /// Persistent, synchronously revocable ownership for one user-authorized
@@ -98,6 +121,7 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
 @interface ASIOSMicrophoneAuthorization : NSObject
 
 @property(nonatomic, readonly, getter=isValid) BOOL valid;
+@property(nonatomic, readonly) uint64_t microphoneRecordingGeneration;
 
 - (void)revoke;
 
@@ -105,6 +129,9 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
 - (BOOL)debugBeginRealtimeAdmissionForTesting;
 - (void)debugEndRealtimeAdmissionForTesting;
 - (void)waitForRealtimeGateClosureForTesting;
+- (void)debugSetMicrophoneRecordingGenerationForTesting:
+    (uint64_t)recordingGeneration
+    NS_SWIFT_NAME(debugSetMicrophoneRecordingGenerationForTesting(_:));
 - (BOOL)performIfValidForTesting:(NS_NOESCAPE dispatch_block_t)operation;
 #endif
 
@@ -125,6 +152,42 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
 /// lock remains held until the operation returns, making a concurrent `revoke` a synchronous
 /// barrier. Native recovery code uses this immediately around its final side effects.
 - (BOOL)performIfValid:(NS_NOESCAPE dispatch_block_t)operation;
+
+@end
+
+/// Persistent policy ownership plus one recovery claim for a connected hosted CallKit call.
+///
+/// `valid` remains true after the recovery claim is consumed so the rebuilt RemoteIO can continue
+/// to prove that its exact hosted-call policy is live. Revocation shares the native operation lock,
+/// then synchronously retires any installed native policy before returning.
+@interface ASIOSHostedCallPlayoutAuthorization : NSObject
+
+@property(nonatomic, readonly) NSUUID *policyIdentifier;
+@property(nonatomic, readonly, getter=isValid) BOOL valid;
+@property(nonatomic, readonly, getter=isRecoveryPending) BOOL recoveryPending;
+@property(nonatomic, readonly) ASIOSHostedCallPlayoutOrigin origin;
+@property(nonatomic, readonly) uint64_t systemAudioGeneration;
+
+- (instancetype)initWithPolicyIdentifier:(NSUUID *)policyIdentifier
+                                  origin:(ASIOSHostedCallPlayoutOrigin)origin
+    NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+
+/// Synchronously invalidates the policy and fences any authorized native recovery operation.
+- (void)revoke;
+
+#if DEBUG
+/// Consumes the one-shot recovery claim and runs `operation` only while the policy remains valid.
+- (BOOL)performRecoveryIfValidForTesting:(NS_NOESCAPE dispatch_block_t)operation;
+
+/// Consumes the one-shot claim only after atomically installing the caller-provided revocation
+/// handler and nonzero system-audio generation while the native recovery-operation lock is held.
+/// Invalid, revoked, already-consumed, zero-generation, and duplicate installation attempts fail.
+- (BOOL)performRecoveryIfValidForTestingWithSystemAudioGeneration:(uint64_t)systemAudioGeneration
+                                                revocationHandler:(dispatch_block_t)revocationHandler
+                                                         operation:(NS_NOESCAPE dispatch_block_t)operation
+    NS_SWIFT_NAME(performRecoveryIfValidForTesting(systemAudioGeneration:revocationHandler:operation:));
+#endif
 
 @end
 
@@ -178,9 +241,23 @@ typedef struct ASIOSStereoPlayoutPublicationSnapshot {
 
 @property(nonatomic, readonly) ASIOSStereoPlayoutDiagnostics diagnostics;
 @property(nonatomic, readonly) NSUInteger queuedOperationCount;
+/// Number of invocations of the production audio-policy configuration boundary. The deterministic
+/// harness records the exact inputs to that operation but does not create a hardware AudioUnit.
+@property(nonatomic, readonly) NSUInteger configurationOperationCount;
+@property(nonatomic, readonly, nullable) NSString *lastConfiguredCategory;
+@property(nonatomic, readonly, nullable) NSString *lastConfiguredMode;
+@property(nonatomic, readonly) NSInteger lastConfiguredRouteSharingPolicy;
+@property(nonatomic, readonly) NSUInteger lastConfiguredCategoryOptions;
+@property(nonatomic, readonly) BOOL lastConfiguredInputBusEnabled;
+@property(nonatomic, readonly) BOOL lastConfiguredOutputBusEnabled;
+@property(nonatomic, readonly) AudioStreamBasicDescription lastConfiguredOutputStreamFormat;
+@property(nonatomic, readonly, nullable) NSUUID *hostedCallPolicyIdentifier;
 
 - (void)debugInstallMicrophoneAuthorizationForTesting:
     (ASIOSMicrophoneAuthorization *_Nullable)authorization;
+- (BOOL)setMicrophoneAuthorizationForTesting:
+    (ASIOSMicrophoneAuthorization *_Nullable)authorization
+    NS_SWIFT_NAME(setMicrophoneAuthorizationForTesting(_:));
 - (BOOL)debugPublishCurrentMicrophoneAuthorizationForTesting;
 - (BOOL)debugBeginRealtimeAdmissionForTesting;
 - (void)debugEndRealtimeAdmissionForTesting;
@@ -192,6 +269,20 @@ typedef struct ASIOSStereoPlayoutPublicationSnapshot {
 - (void)queueRecoveryWithAuthorization:
     (ASIOSStereoPlayoutRecoveryAuthorization *)authorization
     NS_SWIFT_NAME(queueRecovery(authorization:));
+- (void)queueHostedCallRecoveryWithAuthorization:
+    (ASIOSHostedCallPlayoutAuthorization *)authorization
+    NS_SWIFT_NAME(queueHostedCallRecovery(authorization:));
+- (BOOL)armStartupConnectedCallPlayoutWithAuthorization:
+    (ASIOSHostedCallPlayoutAuthorization *)authorization
+    NS_SWIFT_NAME(armStartupConnectedCallPlayout(authorization:));
+- (BOOL)debugStartPlayoutForTesting;
+- (void)debugMarkInterruptedFailClosedForTesting;
+- (void)debugMarkInterruptionEndedFailClosedForTesting;
+- (void)debugMarkHealthyPlayoutForTesting;
+- (void)debugMarkRouteLossForTesting;
+- (void)debugAdvanceSystemAudioGenerationForTesting;
+- (void)debugSetOutputRouteAvailableForTesting:(BOOL)available;
+- (void)debugFailNextHostedCallActivationForTesting;
 - (BOOL)runNextQueuedOperation;
 
 @end
@@ -215,12 +306,44 @@ typedef struct ASIOSStereoPlayoutPublicationSnapshot {
     (ASIOSStereoPlayoutRecoveryAuthorization *)authorization
     NS_SWIFT_NAME(requestPlayoutRecovery(authorization:));
 
+/// Authorizes exactly one output-only rebuild for an interruption-origin hosted-call policy.
+/// Active interruptions remain fail-closed; the app may submit this only after interruption-ended
+/// and observed native quiescence.
+- (void)requestHostedCallPlayoutRecoveryWithAuthorization:
+    (ASIOSHostedCallPlayoutAuthorization *)authorization
+    NS_SWIFT_NAME(requestHostedCallPlayoutRecovery(authorization:));
+
+/// Synchronously arms startup-connected-call ownership while the WebRTC manual audio gate remains
+/// closed. The operation performs no AVAudioSession configuration or activation and creates no
+/// RemoteIO. First StartPlayout builds under the consumed exact hosted policy.
+- (BOOL)armStartupConnectedCallPlayoutWithAuthorization:
+    (ASIOSHostedCallPlayoutAuthorization *)authorization
+    NS_SWIFT_NAME(armStartupConnectedCallPlayout(authorization:));
+
 /// Synchronously applies or revokes the current microphone generation on
-/// WebRTC's ADM queue. Enabling deliberately rebuilds RemoteIO as
-/// playAndRecord/default; disabling restores playback/default.
+/// WebRTC's ADM queue. A nonnull authorization stages and starts the complete
+/// playAndRecord/default RemoteIO topology, but leaves both realtime
+/// publication gates closed. A nil authorization synchronously retires any
+/// staged or approved generation and restores playback/default.
 - (BOOL)setMicrophoneAuthorization:
     (ASIOSMicrophoneAuthorization *_Nullable)authorization
     NS_SWIFT_NAME(setMicrophoneAuthorization(_:));
+
+/// Builds and starts the complete authorized duplex topology while leaving
+/// microphone PCM publication closed. Returns the exact nonzero staged
+/// recording generation, or zero after a fail-closed rejection.
+- (uint64_t)stageMicrophoneAuthorization:
+    (ASIOSMicrophoneAuthorization *)authorization
+    NS_SWIFT_NAME(stageMicrophoneAuthorization(_:));
+
+/// Opens realtime microphone publication only when `authorization` still owns
+/// the exact current, unapproved staged generation. Approval is synchronous and
+/// one-shot for that generation. Zero, stale, wrong, revoked, and duplicate
+/// generations fail closed.
+- (BOOL)approveStagedMicrophoneAuthorization:
+            (ASIOSMicrophoneAuthorization *)authorization
+                           recordingGeneration:(uint64_t)recordingGeneration
+    NS_SWIFT_NAME(approveStagedMicrophoneAuthorization(_:recordingGeneration:));
 
 #if DEBUG
 - (void)debugInstallMicrophoneAuthorizationForTesting:

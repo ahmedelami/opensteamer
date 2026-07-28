@@ -39,7 +39,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>opensteamer finds the Mac capture server on your local Wi-Fi network.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>opensteamer uses the microphone only when you explicitly enable the iPhone microphone for your connected Mac.</string>
+	<string>opensteamer may automatically activate the iPhone microphone for your authenticated paired Mac after the secure connection becomes healthy. You can turn it off at any time.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

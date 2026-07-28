@@ -124,6 +124,13 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
 
         try output.start()
         try output.start()
+        let primedProgress = output.forwardingProgressSnapshot
+        XCTAssertTrue(primedProgress.queueRunning)
+        XCTAssertEqual(
+            primedProgress.postStartCallbackCount,
+            0,
+            "Three priming fills must never appear as post-start progress."
+        )
         XCTAssertEqual(
             operations.startCallCount,
             1,
@@ -180,6 +187,19 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
             "AudioQueueDispose must never run inside the realtime callback."
         )
 
+        let callbackProgress = output.forwardingProgressSnapshot
+        XCTAssertEqual(callbackProgress.postStartCallbackCount, 2)
+        XCTAssertEqual(callbackProgress.requestedFrameCount, 480)
+        XCTAssertEqual(callbackProgress.successfulPullCount, 0)
+        XCTAssertEqual(callbackProgress.successfulFrameCount, 0)
+        XCTAssertEqual(callbackProgress.silenceFallbackCount, 2)
+        XCTAssertEqual(callbackProgress.silenceFrameCount, 480)
+        XCTAssertEqual(callbackProgress.enqueueFailureCount, 2)
+        XCTAssertEqual(
+            callbackProgress.lastEnqueueStatus,
+            Self.repeatedRuntimeFailure
+        )
+
         output.debugReportLatchedRuntimeFailureForTesting()
         XCTAssertEqual(
             failureProbe.errors,
@@ -206,6 +226,128 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
         )
         XCTAssertEqual(operations.freeBufferCallCount, 0)
         XCTAssertEqual(operations.disposeCallCount, 1)
+    }
+
+    func testFailedDecodedPullRezerosFullCapacityAndEnqueuesFullSilence()
+        throws {
+        let operations = FakeBlackHoleAudioQueueOperations()
+        let output = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: operations,
+                renderForTesting: { samples, frameCount in
+                    for index in 0..<(frameCount * 2) {
+                        samples[index] = Int16((index % 2_000) + 1)
+                    }
+                    return false
+                },
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+
+        try output.start()
+        XCTAssertEqual(
+            output.forwardingProgressSnapshot
+                .postStartCallbackCount,
+            0
+        )
+
+        let buffer = try XCTUnwrap(
+            operations.allocatedBuffers.first
+        )
+        let enqueueCount = operations.enqueueCallCount
+        output.debugInvokeRealtimeCallbackForTesting(
+            queue: operations.queue,
+            buffer: buffer
+        )
+
+        XCTAssertEqual(
+            operations.enqueueCallCount,
+            enqueueCount + 1
+        )
+        XCTAssertEqual(
+            buffer.pointee.mAudioDataByteSize,
+            buffer.pointee.mAudioDataBytesCapacity
+        )
+        let sampleCount =
+            Int(buffer.pointee.mAudioDataByteSize)
+            / MemoryLayout<Int16>.size
+        let samples = UnsafeBufferPointer(
+            start: buffer.pointee.mAudioData
+                .assumingMemoryBound(to: Int16.self),
+            count: sampleCount
+        )
+        XCTAssertTrue(samples.allSatisfy { $0 == 0 })
+
+        let progress = output.forwardingProgressSnapshot
+        XCTAssertEqual(progress.postStartCallbackCount, 1)
+        XCTAssertEqual(progress.requestedFrameCount, 480)
+        XCTAssertEqual(progress.successfulPullCount, 0)
+        XCTAssertEqual(progress.successfulFrameCount, 0)
+        XCTAssertEqual(progress.silenceFallbackCount, 1)
+        XCTAssertEqual(progress.silenceFrameCount, 480)
+        XCTAssertEqual(progress.enqueueFailureCount, 0)
+        output.stop()
+    }
+
+    func testSuccessfulDecodedPullPreservesPatternAndAdvancesExactFrames()
+        throws {
+        let operations = FakeBlackHoleAudioQueueOperations()
+        let output = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: operations,
+                renderForTesting: { samples, frameCount in
+                    for frame in 0..<frameCount {
+                        let marker = Int16(frame + 1)
+                        samples[frame * 2] = marker
+                        samples[frame * 2 + 1] = -marker
+                    }
+                    return true
+                },
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+
+        try output.start()
+        XCTAssertEqual(
+            output.forwardingProgressSnapshot
+                .postStartCallbackCount,
+            0
+        )
+
+        let buffer = try XCTUnwrap(
+            operations.allocatedBuffers.first
+        )
+        output.debugInvokeRealtimeCallbackForTesting(
+            queue: operations.queue,
+            buffer: buffer
+        )
+        var progress = output.forwardingProgressSnapshot
+        XCTAssertEqual(progress.postStartCallbackCount, 1)
+        XCTAssertEqual(progress.successfulPullCount, 1)
+        XCTAssertEqual(progress.successfulFrameCount, 480)
+        XCTAssertEqual(progress.silenceFallbackCount, 0)
+
+        let samples = buffer.pointee.mAudioData
+            .assumingMemoryBound(to: Int16.self)
+        XCTAssertEqual(samples[0], 1)
+        XCTAssertEqual(samples[1], -1)
+        XCTAssertEqual(samples[958], 480)
+        XCTAssertEqual(samples[959], -480)
+
+        output.debugInvokeRealtimeCallbackForTesting(
+            queue: operations.queue,
+            buffer: buffer
+        )
+        progress = output.forwardingProgressSnapshot
+        XCTAssertEqual(progress.postStartCallbackCount, 2)
+        XCTAssertEqual(progress.requestedFrameCount, 960)
+        XCTAssertEqual(progress.successfulPullCount, 2)
+        XCTAssertEqual(progress.successfulFrameCount, 960)
+        XCTAssertEqual(progress.enqueueFailureCount, 0)
+        output.stop()
+        XCTAssertFalse(
+            output.forwardingProgressSnapshot.queueRunning
+        )
     }
 
     func testStopFailureAndDeinitFenceHeldCallbackBeforeDispose() throws {
@@ -417,10 +559,6 @@ private final class FakeBlackHoleAudioQueueOperations:
         withLock {
             allocations.filter { !$0.isFreed }.count
         }
-    }
-
-    func resolveBlackHole2ChannelDeviceUID() throws -> String {
-        deviceUID
     }
 
     func createOutputQueue() -> (

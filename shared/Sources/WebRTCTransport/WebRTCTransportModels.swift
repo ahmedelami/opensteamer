@@ -1004,6 +1004,66 @@ public struct WebRTCVideoStatistics: Codable, Equatable, Sendable {
     }
 }
 
+/// Release-safe ownership, processing, topology, and native-delivery state for the exact current
+/// iPhone microphone sender. Native sender/track identifiers and object identities remain private
+/// to `WebRTCPeer`; this projection carries only ephemeral generations and bounded state.
+public struct WebRTCIPhoneMicrophoneSenderDiagnostics: Equatable, Sendable {
+    public let peerEpoch: UUID
+    public let bindingGeneration: UInt64
+    public let negotiationEpoch: UInt64
+    public let trackGeneration: UInt64
+    public let microphonePolicyGeneration: UInt64
+    public let senderOwnsMID: Bool
+    public let senderOwnsLocalTrack: Bool
+    public let transceiverIsStopped: Bool
+    public let preferredDirectionIncludesSending: Bool
+    public let currentDirectionIncludesSending: Bool
+    public let trackIsEnabled: Bool
+    public let rawProcessingIsLive: Bool
+    public let transportIsHealthy: Bool
+    public let authorizationIsCurrent: Bool
+    public let authorizationIsValid: Bool
+    public let senderIsAdmitted: Bool
+    public let nativeDeviceIsOpen: Bool
+    public let nativeDeviceGateIsOpen: Bool
+    public let nativeAuthorizationGateIsOpen: Bool
+    public let categoryIsPlayAndRecord: Bool
+    public let modeIsDefault: Bool
+    public let usesRemoteIO: Bool
+    public let inputBusEnabled: Bool
+    public let outputBusEnabled: Bool
+    public let categoryOptionsAreEmpty: Bool
+    public let routeSharingPolicyIsDefault: Bool
+    public let hasOutputRoute: Bool
+    public let sampleRateIs48k: Bool
+    public let ioBufferDurationIsBounded: Bool
+    public let outputChannelCountIsStereo: Bool
+    public let recoveryRequired: Bool
+    public let explicitResumeRequired: Bool
+    public let hostedCallMode: Bool
+    public let failureCode: Int
+    public let lastLifecycleStatus: Int32
+    public let recordingGeneration: UInt64
+    public let approvedRecordingGeneration: UInt64
+    public let realtimeAdmissionCount: UInt64
+    public let deliveryCallbackCount: UInt64
+    public let deliveredFrameCount: UInt64
+}
+
+/// Exact sender-scoped outbound evidence for the current admitted iPhone microphone sender.
+///
+/// This proves only that current native microphone delivery and that exact sender's outbound RTP
+/// advanced coherently. It does not claim that BlackHole or another Mac application consumed it.
+public struct WebRTCIPhoneMicrophoneSenderStatistics: Equatable, Sendable {
+    public let collectedAt: Date
+    public let sender: WebRTCIPhoneMicrophoneSenderDiagnostics
+    public let packetsSent: UInt64
+    public let bytesSent: UInt64
+    public let totalAudioEnergy: Double?
+    public let totalSamplesDuration: Double?
+    public let sourceReportWasLinked: Bool
+}
+
 /// Stable audio quality, concealment, jitter-buffer, and transport counters.
 public struct WebRTCAudioStatistics: Codable, Equatable, Sendable {
     public let bytes: UInt64?

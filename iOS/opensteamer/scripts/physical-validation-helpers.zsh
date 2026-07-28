@@ -522,16 +522,41 @@ function opensteamer_terminate_isolated_process_group() {
   fi
 }
 
+# Require the exact public iPhone XR release tuple while keeping the CoreDevice selector and the
+# hardware UDID in their distinct namespaces. This helper only validates a caller-owned snapshot.
+function opensteamer_require_physical_iphone_xr_details() {
+  local output=$1
+  local coredevice_identifier=$2
+  local hardware_udid=$3
+
+  jq -e \
+    --arg coredevice_identifier "${coredevice_identifier}" \
+    --arg hardware_udid "${hardware_udid}" '
+    (.info.outcome == "success") and
+    (.result.identifier == $coredevice_identifier) and
+    (.result.hardwareProperties.udid == $hardware_udid) and
+    (.result.hardwareProperties.marketingName == "iPhone XR") and
+    (.result.hardwareProperties.productType == "iPhone11,8") and
+    (.result.hardwareProperties.hardwareModel == "N841AP") and
+    (.result.hardwareProperties.platform == "iOS") and
+    (.result.hardwareProperties.reality == "physical") and
+    (.result.deviceProperties.osVersionNumber == "18.7.9") and
+    (.result.deviceProperties.osBuildUpdate == "22H355") and
+    (.result.deviceProperties.bootState == "booted") and
+    (.result.connectionProperties.pairingState == "paired")
+  ' "${output}" >/dev/null
+}
+
 # Returns 0 only for a successful, explicitly unlocked response; 5 means the device is locked,
 # and 6 means its state could not be established within the bounded devicectl call.
 function opensteamer_device_is_unlocked() {
-  local device_udid=$1
+  local coredevice_identifier=$1
   local command_timeout_seconds=$2
   local output=$3
 
   rm -f "${output}"
   if ! xcrun devicectl device info lockState \
-      --device "${device_udid}" \
+      --device "${coredevice_identifier}" \
       --timeout "${command_timeout_seconds}" \
       --json-output "${output}" >/dev/null 2>&1; then
     return 6
@@ -552,14 +577,14 @@ function opensteamer_device_is_unlocked() {
 }
 
 function opensteamer_require_device_unlocked() {
-  local device_udid=$1
+  local coredevice_identifier=$1
   local command_timeout_seconds=$2
   local output=$3
   local gate_name=$4
   local lock_result
 
   if opensteamer_device_is_unlocked \
-      "${device_udid}" "${command_timeout_seconds}" "${output}"; then
+      "${coredevice_identifier}" "${command_timeout_seconds}" "${output}"; then
     return 0
   else
     lock_result=$?

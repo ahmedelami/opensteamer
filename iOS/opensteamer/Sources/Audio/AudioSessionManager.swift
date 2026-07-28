@@ -1,6 +1,12 @@
 import AVFoundation
 import Foundation
 
+enum AudioSessionInterruptionBeganReason: Equatable, Sendable {
+    case `default`
+    case other(rawValue: UInt)
+    case unavailable
+}
+
 /// Human-readable AVAudioSession state captured for the diagnostics surface.
 /// Strings are intentional: the snapshot crosses only UI/test boundaries and should remain stable
 /// even when Apple adds enum cases that older application code cannot model exhaustively.
@@ -35,19 +41,34 @@ struct AudioSessionSnapshot: Equatable {
 /// SwiftUI state without establishing a second synchronization policy.
 @MainActor
 final class AudioSessionManager {
-    var onInterruptionBegan: (() -> Void)?
+    var onInterruptionBegan: ((AudioSessionInterruptionBeganReason) -> Void)?
     var onInterruptionEnded: ((Bool) -> Void)?
     var onRouteChanged: ((String) -> Void)?
     var onCategoryChanged: ((AudioSessionCategoryChange) -> Void)?
     var onEngineConfigurationChanged: (() -> Void)?
+    var onMediaServicesLost: (() -> Void)?
     var onMediaServicesReset: (() -> Void)?
     var onSnapshotChanged: ((AudioSessionSnapshot) -> Void)?
 
     private var notificationTokens: [NSObjectProtocol] = []
+    private enum CategoryChangeOperationState: Equatable {
+        case armed
+        case delivered
+        case cancelled
+    }
+
+    private enum CategoryChangeOperationMatch {
+        case none
+        case exact(UUID)
+        case ambiguous
+    }
+
     private struct CategoryChangeOperation {
         let operationID: UUID
         let category: String
         let mode: String
+        let categoryOptionsRawValue: UInt
+        var state: CategoryChangeOperationState
     }
     private var categoryChangeOperations: [CategoryChangeOperation] = []
 
@@ -57,6 +78,18 @@ final class AudioSessionManager {
     static let playbackRouteSharingPolicy: AVAudioSession.RouteSharingPolicy = .longFormAudio
     static let playbackCategoryOptions: AVAudioSession.CategoryOptions = []
     #endif
+
+    nonisolated static func interruptionBeganReason(
+        rawValue: UInt?
+    ) -> AudioSessionInterruptionBeganReason {
+        guard let rawValue else {
+            return .unavailable
+        }
+        if rawValue == 0 {
+            return .default
+        }
+        return .other(rawValue: rawValue)
+    }
 
     var currentRouteDescription: String {
         #if os(iOS)
@@ -101,7 +134,8 @@ final class AudioSessionManager {
     func armCategoryChangeOperation(
         _ operationID: UUID,
         category: String,
-        mode: String
+        mode: String,
+        categoryOptionsRawValue: UInt = 0
     ) {
         categoryChangeOperations.removeAll {
             $0.operationID == operationID
@@ -110,7 +144,9 @@ final class AudioSessionManager {
             CategoryChangeOperation(
                 operationID: operationID,
                 category: category,
-                mode: mode
+                mode: mode,
+                categoryOptionsRawValue: categoryOptionsRawValue,
+                state: .armed
             )
         )
     }
@@ -119,13 +155,26 @@ final class AudioSessionManager {
         armCategoryChangeOperation(
             operationID,
             category: "*",
-            mode: "*"
+            mode: "*",
+            categoryOptionsRawValue: UInt.max
         )
     }
 
     func cancelCategoryChangeOperation(_ operationID: UUID) {
-        categoryChangeOperations.removeAll {
+        guard let index = categoryChangeOperations.firstIndex(where: {
             $0.operationID == operationID
+        }) else {
+            return
+        }
+
+        switch categoryChangeOperations[index].state {
+        case .armed:
+            // Preserve a tombstone. AVAudioSession does not attach an app operation ID, so a
+            // notification already queued for this operation must be absorbed instead of being
+            // attributed to a newer same-target operation.
+            categoryChangeOperations[index].state = .cancelled
+        case .delivered, .cancelled:
+            break
         }
     }
 
@@ -142,11 +191,29 @@ final class AudioSessionManager {
                 object: AVAudioSession.sharedInstance(),
                 queue: .main
             ) { [weak self] notification in
-                let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
-                let optionsValue = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
-                Task { @MainActor in
-                    self?.handleInterruption(typeValue: typeValue, optionsValue: optionsValue)
+                let userInfo = notification.userInfo
+                let typeValue = Self.unsignedIntegerValue(
+                    userInfo?[AVAudioSessionInterruptionTypeKey]
+                )
+                let optionsValue = Self.unsignedIntegerValue(
+                    userInfo?[AVAudioSessionInterruptionOptionKey]
+                )
+                let reasonValue: UInt?
+                if typeValue
+                    == AVAudioSession.InterruptionType.began.rawValue,
+                   #available(iOS 14.5, *) {
+                    reasonValue = Self.unsignedIntegerValue(
+                        userInfo?[AVAudioSessionInterruptionReasonKey]
+                    )
+                } else {
+                    reasonValue = nil
                 }
+                _ = self?
+                    .deliverInterruptionSynchronouslyOnRegisteredMainQueue(
+                        typeValue: typeValue,
+                        optionsValue: optionsValue,
+                        reasonValue: reasonValue
+                    )
             }
         )
 
@@ -164,7 +231,9 @@ final class AudioSessionManager {
                     let session = AVAudioSession.sharedInstance()
                     categoryChange = AudioSessionCategoryChange(
                         category: session.category.rawValue,
-                        mode: session.mode.rawValue
+                        mode: session.mode.rawValue,
+                        categoryOptionsRawValue:
+                            session.categoryOptions.rawValue
                     )
                 } else {
                     categoryChange = nil
@@ -176,10 +245,10 @@ final class AudioSessionManager {
                             message: message
                         )
                 } else {
-                    Task { @MainActor in
-                        self?.onRouteChanged?(message)
-                        self?.emitSnapshot(event: message)
-                    }
+                    self?
+                        .deliverRouteChangeSynchronouslyOnRegisteredMainQueue(
+                            message
+                        )
                 }
             }
         )
@@ -204,9 +273,8 @@ final class AudioSessionManager {
                 object: AVAudioSession.sharedInstance(),
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.emitSnapshot(event: "Media services lost")
-                }
+                self?
+                    .deliverMediaServicesLostSynchronouslyOnRegisteredMainQueue()
             }
         )
 
@@ -216,10 +284,8 @@ final class AudioSessionManager {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.emitSnapshot(event: "Audio engine configuration changed")
-                    self?.onEngineConfigurationChanged?()
-                }
+                self?
+                    .deliverEngineConfigurationChangeSynchronouslyOnRegisteredMainQueue()
             }
         )
 
@@ -229,10 +295,8 @@ final class AudioSessionManager {
                 object: AVAudioSession.sharedInstance(),
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.emitSnapshot(event: "Media services reset")
-                    self?.onMediaServicesReset?()
-                }
+                self?
+                    .deliverMediaServicesResetSynchronouslyOnRegisteredMainQueue()
             }
         )
         emitSnapshot(event: "Observing audio session")
@@ -255,22 +319,59 @@ final class AudioSessionManager {
 
     @discardableResult
     nonisolated private func
+        deliverInterruptionSynchronouslyOnRegisteredMainQueue(
+            typeValue: UInt?,
+            optionsValue: UInt?,
+            reasonValue: UInt?
+        ) -> AudioSessionInterruptionBeganReason? {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return MainActor.assumeIsolated {
+            self.handleInterruption(
+                typeValue: typeValue,
+                optionsValue: optionsValue,
+                reasonValue: reasonValue
+            )
+        }
+    }
+
+    @discardableResult
+    nonisolated private func
         deliverCategoryChangeSynchronouslyOnRegisteredMainQueue(
             _ categoryChange: AudioSessionCategoryChange,
             message: String
         ) -> UUID? {
         dispatchPrecondition(condition: .onQueue(.main))
         return MainActor.assumeIsolated {
-            let operationID =
+            let operationMatch =
                 self.consumeCategoryChangeOperation(
                     category: categoryChange.category,
-                    mode: categoryChange.mode
+                    mode: categoryChange.mode,
+                    categoryOptionsRawValue:
+                        categoryChange.categoryOptionsRawValue
                 )
+            let operationID: UUID?
+            let operationIDIsAmbiguous: Bool
+            switch operationMatch {
+            case .none:
+                operationID = nil
+                operationIDIsAmbiguous = false
+            case let .exact(exactOperationID):
+                operationID = exactOperationID
+                operationIDIsAmbiguous = false
+            case .ambiguous:
+                // Do not invent a causal operation ID for an OS notification.
+                operationID = nil
+                operationIDIsAmbiguous = true
+            }
             self.onCategoryChanged?(
                 AudioSessionCategoryChange(
                     category: categoryChange.category,
                     mode: categoryChange.mode,
-                    operationID: operationID
+                    categoryOptionsRawValue:
+                        categoryChange.categoryOptionsRawValue,
+                    operationID: operationID,
+                    operationIDIsAmbiguous:
+                        operationIDIsAmbiguous
                 )
             )
             self.emitSnapshot(event: message)
@@ -278,7 +379,62 @@ final class AudioSessionManager {
         }
     }
 
+    nonisolated private func
+        deliverRouteChangeSynchronouslyOnRegisteredMainQueue(
+            _ message: String
+        ) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        MainActor.assumeIsolated {
+            self.onRouteChanged?(message)
+            self.emitSnapshot(event: message)
+        }
+    }
+
+    nonisolated private func
+        deliverEngineConfigurationChangeSynchronouslyOnRegisteredMainQueue() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        MainActor.assumeIsolated {
+            self.emitSnapshot(
+                event: "Audio engine configuration changed"
+            )
+            self.onEngineConfigurationChanged?()
+        }
+    }
+
+    nonisolated private func
+        deliverMediaServicesLostSynchronouslyOnRegisteredMainQueue() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        MainActor.assumeIsolated {
+            // Revoke ownership before diagnostics observers can perform unrelated work.
+            self.onMediaServicesLost?()
+            self.emitSnapshot(event: "Media services lost")
+        }
+    }
+
+    nonisolated private func
+        deliverMediaServicesResetSynchronouslyOnRegisteredMainQueue() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        MainActor.assumeIsolated {
+            self.emitSnapshot(event: "Media services reset")
+            self.onMediaServicesReset?()
+        }
+    }
+
     #if DEBUG
+    @discardableResult
+    nonisolated func
+        debugDeliverInterruptionSynchronouslyForTests(
+            typeValue: UInt,
+            optionsValue: UInt? = nil,
+            reasonValue: UInt? = nil
+        ) -> AudioSessionInterruptionBeganReason? {
+        deliverInterruptionSynchronouslyOnRegisteredMainQueue(
+            typeValue: typeValue,
+            optionsValue: optionsValue,
+            reasonValue: reasonValue
+        )
+    }
+
     @discardableResult
     nonisolated func
         debugDeliverCategoryChangeSynchronouslyForTests(
@@ -290,6 +446,11 @@ final class AudioSessionManager {
             message: message
         )
     }
+
+    nonisolated func
+        debugDeliverMediaServicesLostSynchronouslyForTests() {
+        deliverMediaServicesLostSynchronouslyOnRegisteredMainQueue()
+    }
     #endif
 
     private func emitSnapshot(event: String) {
@@ -298,29 +459,87 @@ final class AudioSessionManager {
 
     private func consumeCategoryChangeOperation(
         category: String,
-        mode: String
-    ) -> UUID? {
-        guard let index = categoryChangeOperations.lastIndex(where: {
-            ($0.category == category && $0.mode == mode)
-                || ($0.category == "*" && $0.mode == "*")
-        }) else {
-            return nil
+        mode: String,
+        categoryOptionsRawValue: UInt
+    ) -> CategoryChangeOperationMatch {
+        let matchingIndices = categoryChangeOperations.indices.filter {
+            categoryChangeOperation(
+                categoryChangeOperations[$0],
+                matchesCategory: category,
+                mode: mode,
+                categoryOptionsRawValue:
+                    categoryOptionsRawValue
+            )
         }
-        return categoryChangeOperations.remove(at: index).operationID
+        guard let firstIndex = matchingIndices.first else {
+            return .none
+        }
+
+        switch categoryChangeOperations[firstIndex].state {
+        case .armed:
+            let anotherArmedOperationMatches =
+                matchingIndices.dropFirst().contains {
+                    categoryChangeOperations[$0].state == .armed
+                }
+            guard !anotherArmedOperationMatches else {
+                return .ambiguous
+            }
+
+            let operationID =
+                categoryChangeOperations[firstIndex].operationID
+            // Retain one delivered tombstone. A duplicate delivery must be rejected before a
+            // subsequently armed same-target operation can be considered.
+            categoryChangeOperations[firstIndex].state = .delivered
+            return .exact(operationID)
+
+        case .delivered, .cancelled:
+            // This delivery may be a duplicate or a queued notification from a retired operation.
+            // Consume only the tombstone; never consume the newer matching operation behind it.
+            categoryChangeOperations.remove(at: firstIndex)
+            return .ambiguous
+        }
     }
 
-    private func handleInterruption(typeValue: UInt?, optionsValue: UInt?) {
+    private func categoryChangeOperation(
+        _ operation: CategoryChangeOperation,
+        matchesCategory category: String,
+        mode: String,
+        categoryOptionsRawValue: UInt
+    ) -> Bool {
+        (
+            operation.category == category
+                && operation.mode == mode
+                && operation.categoryOptionsRawValue
+                    == categoryOptionsRawValue
+        )
+            || (
+                operation.category == "*"
+                    && operation.mode == "*"
+                    && operation.categoryOptionsRawValue == UInt.max
+            )
+    }
+
+    @discardableResult
+    private func handleInterruption(
+        typeValue: UInt?,
+        optionsValue: UInt?,
+        reasonValue: UInt?
+    ) -> AudioSessionInterruptionBeganReason? {
         guard
             let typeValue,
             let type = AVAudioSession.InterruptionType(rawValue: typeValue)
         else {
-            return
+            return nil
         }
 
         switch type {
         case .began:
+            let reason = Self.interruptionBeganReason(
+                rawValue: reasonValue
+            )
             emitSnapshot(event: "Audio interruption began")
-            onInterruptionBegan?()
+            onInterruptionBegan?(reason)
+            return reason
         case .ended:
             let shouldResume: Bool
             if let optionsValue {
@@ -332,8 +551,24 @@ final class AudioSessionManager {
             }
             emitSnapshot(event: shouldResume ? "Audio interruption ended" : "Audio interruption ended without resume flag")
             onInterruptionEnded?(shouldResume)
+            return nil
         @unknown default:
-            break
+            return nil
+        }
+    }
+
+    nonisolated private static func unsignedIntegerValue(
+        _ value: Any?
+    ) -> UInt? {
+        switch value {
+        case let value as UInt:
+            return value
+        case let value as NSNumber:
+            return value.uintValue
+        case let value as Int where value >= 0:
+            return UInt(value)
+        default:
+            return nil
         }
     }
 

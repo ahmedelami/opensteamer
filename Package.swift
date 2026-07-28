@@ -54,7 +54,7 @@ let package = Package(
                     "-Xlinker", "-sectcreate",
                     "-Xlinker", "__TEXT",
                     "-Xlinker", "__info_plist",
-                    "-Xlinker", "macOS/Sources/CaptureServer/Info.plist"
+                    "-Xlinker", "\(Context.packageDirectory)/macOS/Sources/CaptureServer/Info.plist"
                 ])
             ]
         ),
