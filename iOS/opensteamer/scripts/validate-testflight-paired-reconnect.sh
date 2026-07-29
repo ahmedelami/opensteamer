@@ -210,6 +210,10 @@ RAW_BLACKHOLE_PROBE_COMPILE_STDERR="${RAW_PHASE_DIR}/physical-blackhole-micropho
 RAW_BLACKHOLE_PROBE_CLEANUP_PROOF="${RAW_PHASE_DIR}/physical-blackhole-microphone-cleanup.txt"
 RAW_BLACKHOLE_PROBE_DIAGNOSTICS="${RAW_PHASE_DIR}/physical-blackhole-microphone-diagnostics.txt"
 RAW_BLACKHOLE_PROBE_COMPLETION="${RAW_PHASE_DIR}/physical-blackhole-microphone-completion.txt"
+RAW_DEFAULT_INPUT_BEFORE="${RAW_PHASE_DIR}/default-input-before.json"
+RAW_DEFAULT_INPUT_HEALTHY="${RAW_PHASE_DIR}/default-input-healthy.json"
+RAW_DEFAULT_INPUT_AFTER="${RAW_PHASE_DIR}/default-input-after.json"
+RAW_APP_DISCONNECT_EVIDENCE="${RAW_PHASE_DIR}/production-app-disconnect.txt"
 AUDIO_ORACLE_TONE="${RECONNECT_PHASE_DIR}/physical-audio-oracle-tone.wav"
 AUDIO_ORACLE_TONE_LOG="${RECONNECT_PHASE_DIR}/physical-audio-oracle-tone.log"
 AUDIO_ORACLE_TONE_FAILURE_MARKER="${RECONNECT_PHASE_DIR}/physical-audio-oracle-tone-failed.txt"
@@ -1951,6 +1955,112 @@ function compile_blackhole_probe() {
   fi
 }
 
+function capture_default_input_snapshot() {
+  local output=$1
+  local role=$2
+
+  rm -f "${output}" || return $?
+  if [[ -n "${OPENSTEAMER_SELF_TEST_RAW_READINESS:-}" ]]; then
+    local observed
+    local input_hash
+    local is_blackhole=false
+    observed=$(current_monotonic_time_ns) || return $?
+    case "${role}" in
+      before|after)
+        input_hash=$(printf 'a%.0s' {1..64})
+        ;;
+      healthy)
+        input_hash=$(printf 'b%.0s' {1..64})
+        is_blackhole=true
+        ;;
+      *)
+        return 3
+        ;;
+    esac
+    cat > "${output}" <<EOF
+{
+  "inputIsCanonicalBlackHole": ${is_blackhole},
+  "inputUIDFingerprint": "${input_hash}",
+  "observedAtMonotonicNs": ${observed},
+  "outputUIDFingerprint": "$(printf 'c%.0s' {1..64})",
+  "role": "${role}",
+  "schema": "opensteamer.default-input-snapshot.v1",
+  "systemOutputUIDFingerprint": "$(printf 'd%.0s' {1..64})"
+}
+EOF
+    return $?
+  fi
+
+  "${RAW_BLACKHOLE_PROBE_BINARY}" \
+    snapshot-default-uids \
+    --role "${role}" \
+    --result "${output}"
+}
+
+function validate_default_input_lifecycle_json() {
+  local before=$1
+  local healthy=$2
+  local after=$3
+  local probe_start=$4
+
+  jq -e -s \
+    --argjson probe_start "${probe_start}" '
+    def exact_keys:
+      keys == ([
+        "inputIsCanonicalBlackHole",
+        "inputUIDFingerprint",
+        "observedAtMonotonicNs",
+        "outputUIDFingerprint",
+        "role",
+        "schema",
+        "systemOutputUIDFingerprint"
+      ] | sort);
+    def fingerprint:
+      type == "string"
+      and test("^[0-9a-f]{64}$");
+    length == 3
+    and (all(.[]; exact_keys))
+    and (all(.[]; .schema == "opensteamer.default-input-snapshot.v1"))
+    and (all(.[];
+      (.inputUIDFingerprint | fingerprint)
+      and (.outputUIDFingerprint | fingerprint)
+      and (.systemOutputUIDFingerprint | fingerprint)
+      and (.observedAtMonotonicNs | type == "number" and . > 0 and floor == .)
+    ))
+    and (.[0].role == "before")
+    and (.[1].role == "healthy")
+    and (.[2].role == "after")
+    and (.[0].inputIsCanonicalBlackHole == false)
+    and (.[1].inputIsCanonicalBlackHole == true)
+    and (.[2].inputIsCanonicalBlackHole == false)
+    and (.[0].observedAtMonotonicNs < .[1].observedAtMonotonicNs)
+    and (.[1].observedAtMonotonicNs < $probe_start)
+    and ($probe_start < .[2].observedAtMonotonicNs)
+    and (.[0].inputUIDFingerprint == .[2].inputUIDFingerprint)
+    and (.[0].inputUIDFingerprint != .[1].inputUIDFingerprint)
+    and (.[0].outputUIDFingerprint == .[1].outputUIDFingerprint)
+    and (.[1].outputUIDFingerprint == .[2].outputUIDFingerprint)
+    and (.[0].systemOutputUIDFingerprint == .[1].systemOutputUIDFingerprint)
+    and (.[1].systemOutputUIDFingerprint == .[2].systemOutputUIDFingerprint)
+  ' "${before}" "${healthy}" "${after}" >/dev/null
+}
+
+function wait_for_default_input_restoration() {
+  local started=${SECONDS}
+
+  while (( SECONDS - started < 5 )); do
+    capture_default_input_snapshot \
+      "${RAW_DEFAULT_INPUT_AFTER}" after || return $?
+    if jq -e \
+        '.inputIsCanonicalBlackHole == false' \
+        "${RAW_DEFAULT_INPUT_AFTER}" >/dev/null; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  return 1
+}
+
 function start_bounded_blackhole_probe_process() {
   local group_status
   local write_status
@@ -3283,6 +3393,8 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
   local current_process_id
   local production_process_id
   local new_connections
+  local authenticated_connections=0
+  local healthy_boundary_observed=0
   local ready_at_ns
   local probe_started_at_ns
   local evidence_temporary="${RAW_READY_EVIDENCE}.tmp.$$"
@@ -3324,9 +3436,25 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
       }
 
     new_connections=${OPENSTEAMER_AUDITED_CONNECTION_COUNT}
+    authenticated_connections=$(( authenticated_connections
+        + new_connections
+    ))
+    if [[ -n "${OPENSTEAMER_SELF_TEST_RAW_READINESS:-}" && "${new_connections}" -gt 0 ]] || grep -Eq \
+        "Worldwide authenticated media route selected BlackHole default input peerGeneration=[1-9][0-9]* pid=${current_process_id}" \
+        "${RAW_HOST_LOG_COMPLETED_LINES}"; then
+      healthy_boundary_observed=1
+      if [[ ! -s "${RAW_DEFAULT_INPUT_HEALTHY}" ]]; then
+        capture_default_input_snapshot \
+          "${RAW_DEFAULT_INPUT_HEALTHY}" healthy || return $?
+        jq -e \
+          '.inputIsCanonicalBlackHole == true' \
+          "${RAW_DEFAULT_INPUT_HEALTHY}" >/dev/null || return 3
+      fi
+    fi
     RAW_HOST_LOG_START_OFFSET=${OPENSTEAMER_LOG_SNAPSHOT_OFFSET}
     RAW_HOST_LOG_START_DIGEST=${OPENSTEAMER_LOG_SNAPSHOT_DIGEST}
-    if (( new_connections > 0 )); then
+    if (( authenticated_connections > 0
+        && healthy_boundary_observed != 0 )); then
       if [[ -z "${OPENSTEAMER_SELF_TEST_RAW_READINESS:-}" ]]; then
         verify_host_deployment_snapshot \
           "${EXPECTED_INITIAL_HOST_PID}" "raw-session-readiness" || return $?
@@ -3379,7 +3507,7 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
         print -r -- "probeStartedAtMonotonicNs=${probe_started_at_ns}"
         print -r -- "productionPID=${RAW_PROBE_BOUND_PID}"
         print -r -- "hostPID=${current_process_id}"
-        print -r -- "authenticatedConnectionCount=${new_connections}"
+        print -r -- "authenticatedConnectionCount=${authenticated_connections}"
         print -r -- "cursorOffset=${RAW_HOST_LOG_START_OFFSET}"
         print -r -- "cursorDigest=${RAW_HOST_LOG_START_DIGEST}"
       } > "${evidence_temporary}" || {
@@ -3704,6 +3832,18 @@ function run_raw_microphone_blackhole_phase() {
     fail_phase "${RAW_PHASE_STATUS}" || true
     return "${critical_status}"
   fi
+
+  run_command_capturing_status \
+    capture_default_input_snapshot \
+    "${RAW_DEFAULT_INPUT_BEFORE}" before
+  critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+  if (( critical_status != 0 )) \
+      || ! jq -e '.inputIsCanonicalBlackHole == false' \
+          "${RAW_DEFAULT_INPUT_BEFORE}" >/dev/null; then
+    fail_phase "${RAW_PHASE_STATUS}" || true
+    return 3
+  fi
+
   print -r -- "phase=1 event=production-app-terminated" \
     >> "${PHASE_EVENTS}" || {
       critical_status=$?
@@ -3862,6 +4002,39 @@ function run_raw_microphone_blackhole_phase() {
   critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
   if (( critical_status != 0 )); then
     echo "The nonce-bound causal raw UI and BlackHole overlap proof failed." >&2
+    fail_phase "${RAW_PHASE_STATUS}" || true
+    return "${critical_status}"
+  fi
+
+  run_command_capturing_status \
+    terminate_production_app_for_phase \
+    "${RAW_PHASE_DIR}" \
+    "${RAW_APP_DISCONNECT_EVIDENCE}" \
+    "after raw microphone validation"
+  critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+  if (( critical_status != 0 )); then
+    fail_phase "${RAW_PHASE_STATUS}" || true
+    return "${critical_status}"
+  fi
+
+  run_command_capturing_status \
+    wait_for_default_input_restoration
+  critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+  if (( critical_status != 0 )); then
+    echo "The original default input was not restored after disconnect." >&2
+    fail_phase "${RAW_PHASE_STATUS}" || true
+    return "${critical_status}"
+  fi
+
+  run_command_capturing_status \
+    validate_default_input_lifecycle_json \
+    "${RAW_DEFAULT_INPUT_BEFORE}" \
+    "${RAW_DEFAULT_INPUT_HEALTHY}" \
+    "${RAW_DEFAULT_INPUT_AFTER}" \
+    "${RAW_PROBE_STARTED_NS}"
+  critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+  if (( critical_status != 0 )); then
+    echo "The default-input lifecycle evidence was rejected." >&2
     fail_phase "${RAW_PHASE_STATUS}" || true
     return "${critical_status}"
   fi
@@ -4788,6 +4961,8 @@ function run_raw_completion_self_test() {
     [[ -s "${RAW_READY_RESUMED_MARKER}" ]] || exit 101
     print -r -- "Worldwide WebRTC peer state: connected pid=5100" \
       >> "${HOST_LOG}"
+    print -r -- "Worldwide authenticated media route selected BlackHole default input peerGeneration=1 pid=5100" \
+      >> "${HOST_LOG}"
   ) &
   writer_pid=$!
 
@@ -5010,6 +5185,16 @@ if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "validate-blackhole-probe-json" ]];
     "${OPENSTEAMER_SELF_TEST_PROBE_JSON:?missing probe JSON fixture}" \
     "${OPENSTEAMER_SELF_TEST_PROBE_NONCE:?missing probe nonce}" \
     "${PHYSICAL_OUTPUT_UID}"
+  opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "validate-default-input-lifecycle" ]]; then
+  validate_default_input_lifecycle_json \
+    "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_BEFORE:?missing before fixture}" \
+    "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_HEALTHY:?missing healthy fixture}" \
+    "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_AFTER:?missing after fixture}" \
+    "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_PROBE_START:?missing probe start}"
   opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
   RUN_SUCCEEDED=1
   exit 0

@@ -231,6 +231,88 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
         )
     }
 
+    func testDefaultInputSelectionPrecedesSystemAudioAndHasNoTrackDependency()
+        throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let serviceSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "macOS/Sources/CaptureServer/WorldwideScreenService.swift"
+            ),
+            encoding: .utf8
+        )
+
+        for (startMarker, endMarker) in [
+            (
+                "    private func completePendingRecoveryProofIfPossible(",
+                "    /// Marks an initially healthy route usable and ensures system audio is live."
+            ),
+            (
+                "    private func markRecoveryHealthyIfPossible() async -> Bool {",
+                "    // MARK: - iPhone microphone to BlackHole"
+            ),
+        ] {
+            let function = try sourceSlice(
+                in: serviceSource,
+                after: startMarker,
+                before: endMarker
+            )
+            let snapshotConsumption = try XCTUnwrap(
+                function.range(
+                    of: "consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()"
+                )
+            )
+            let selection = try XCTUnwrap(
+                function.range(
+                    of: "blackHoleDefaultInput\n" +
+                        "                .transportDidBecomeHealthy("
+                )
+            )
+            let systemAudio = try XCTUnwrap(
+                function.range(
+                    of: "guard await startSystemAudioOrStopSession()"
+                )
+            )
+            XCTAssertLessThan(
+                snapshotConsumption.lowerBound,
+                selection.lowerBound
+            )
+            XCTAssertLessThan(
+                selection.lowerBound,
+                systemAudio.lowerBound,
+                "Default-input acquisition must complete before the first system-audio await."
+            )
+        }
+
+        XCTAssertTrue(
+            serviceSource.contains(
+                "blackHoleDeviceAvailabilityMonitor.currentSnapshot()"
+            ),
+            "The healthy boundary must consume an already-published monitor generation synchronously."
+        )
+
+        let coordinatorSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "macOS/Sources/CaptureServer/" +
+                    "WorldwideIPhoneMicrophoneForwardingDriver.swift"
+            ),
+            encoding: .utf8
+        )
+        let coordinator = try sourceSlice(
+            in: coordinatorSource,
+            after: "final class WorldwideBlackHoleDefaultInputCoordinator {",
+            before: "\n}"
+        )
+        XCTAssertFalse(coordinator.contains("Track"))
+        XCTAssertFalse(coordinator.contains("successfulPull"))
+        XCTAssertFalse(coordinator.contains("successfulFrame"))
+        XCTAssertFalse(coordinator.contains("forwardingProgress"))
+        XCTAssertFalse(coordinator.contains("installTrack"))
+    }
+
     func testIPhoneMicrophoneForwardingRevalidatesAfterBlockingOutputStart() async {
         let eventLog = MicrophoneForwardingEventLog()
         let startEntered = MicrophoneTestExpectation(

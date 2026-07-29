@@ -276,6 +276,14 @@ is_allowed_legacy_token() {
         || "$token" == "$FORMER_LOWER.worldwide" \
         || "$token" == "$FORMER_LOWER.worldwide.plist" ]]
       ;;
+    USER_PROTECTED_LEGACY_RUNTIME.md)
+      [[ "$token" == "$FORMER_CAMEL" \
+        || "$token" == "$FORMER_LOWER-" \
+        || "$token" == "$FORMER_LOWER-failed-20260720-102747-44276" ]] || \
+        is_identity_token "$token" || \
+        [[ "$token" == "$FORMER_LOWER.worldwide" \
+          || "$token" == "$FORMER_LOWER.worldwide.plist" ]]
+      ;;
     services/Rendezvous/src/protocol.mjs|services/Rendezvous/test/server.test.mjs|\
       services/RendezvousWorker/src/protocol.js|services/RendezvousWorker/test/protocol.test.js|\
       services/RendezvousWorker/test/worker.test.js|\
@@ -328,6 +336,9 @@ is_allowed_legacy_token() {
       ;;
     macOS/Tests/CaptureServerTests/MacHostDeploymentContractTests.swift)
       is_identity_token "$token" || is_rendezvous_fallback_token "$token"
+      ;;
+    macOS/Tests/CaptureServerTests/PhysicalValidationScriptTests.swift)
+      [[ "$token" == "$FORMER_CAMEL" ]]
       ;;
     README.md|macOS/Sources/CaptureServer/CaptureServerOptions.swift|\
       macOS/scripts/verify-mac-host-launch-state.sh|\

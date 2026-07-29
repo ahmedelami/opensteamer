@@ -893,3 +893,288 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         return next == 0 ? 1 : next
     }
 }
+
+protocol WorldwideBlackHoleDefaultInputLeasing:
+    AnyObject,
+    Sendable
+{
+    func acquire(
+        generation: UInt64,
+        targetUID: String
+    ) -> Bool
+    func release(generation: UInt64)
+    func shutdown()
+}
+
+extension BlackHoleDefaultInputLease:
+    WorldwideBlackHoleDefaultInputLeasing
+{}
+
+struct WorldwideBlackHoleDefaultInputKey:
+    Equatable,
+    Sendable
+{
+    let monitorEpoch: UUID
+    let deviceGeneration: UInt64
+    let peerGeneration: UInt64
+    let connectionGeneration: UInt64
+    let leaseGeneration: UInt64
+}
+
+enum WorldwideBlackHoleDefaultInputOutcome:
+    Equatable,
+    Sendable
+{
+    case noChange
+    case waitingForMonitor
+    case waitingForDevice
+    case selected(WorldwideBlackHoleDefaultInputKey)
+    case released
+    case degraded
+    case suppressed
+}
+
+/// Connection-level default-input ownership, deliberately independent of remote
+/// track arrival, decoded PCM, and forwarding readiness.
+final class WorldwideBlackHoleDefaultInputCoordinator {
+    private struct CandidateIdentity: Equatable {
+        let monitorEpoch: UUID
+        let deviceGeneration: UInt64
+        let peerGeneration: UInt64
+        let connectionGeneration: UInt64
+        let deviceUID: String
+    }
+
+    private let policy:
+        WorldwideIPhoneMicrophoneForwardingPolicy
+    private let lease:
+        any WorldwideBlackHoleDefaultInputLeasing
+
+    private var activeMonitorEpoch: UUID?
+    private var monitorSnapshot: BlackHoleDeviceAvailabilitySnapshot?
+    private var healthyPeerGeneration: UInt64?
+    private var connectionGeneration: UInt64 = 0
+    private var activeKey: WorldwideBlackHoleDefaultInputKey?
+    private var activeSelectionConfirmed = false
+    private var lastAttemptedIdentity: CandidateIdentity?
+    private var isStopped = false
+
+    init(
+        policy:
+            WorldwideIPhoneMicrophoneForwardingPolicy,
+        lease:
+            any WorldwideBlackHoleDefaultInputLeasing
+    ) {
+        self.policy = policy
+        self.lease = lease
+    }
+
+    func beginMonitoring(
+        epoch: UUID
+    ) -> WorldwideBlackHoleDefaultInputOutcome {
+        guard !isStopped else {
+            return .noChange
+        }
+        guard policy == .enabled else {
+            return .suppressed
+        }
+        guard activeMonitorEpoch != epoch else {
+            return .noChange
+        }
+
+        let released = releaseActive()
+        activeMonitorEpoch = epoch
+        monitorSnapshot = nil
+        lastAttemptedIdentity = nil
+        return released ? .released : .waitingForMonitor
+    }
+
+    func monitoringDidFail()
+        -> WorldwideBlackHoleDefaultInputOutcome {
+        guard !isStopped else {
+            return .noChange
+        }
+        guard policy == .enabled else {
+            return .suppressed
+        }
+        _ = releaseActive()
+        activeMonitorEpoch = nil
+        monitorSnapshot = nil
+        lastAttemptedIdentity = nil
+        return .degraded
+    }
+
+    func updateDeviceSnapshot(
+        _ snapshot:
+            BlackHoleDeviceAvailabilitySnapshot
+    ) -> WorldwideBlackHoleDefaultInputOutcome {
+        guard !isStopped else {
+            return .noChange
+        }
+        guard policy == .enabled else {
+            return .suppressed
+        }
+        guard snapshot.monitorEpoch
+                == activeMonitorEpoch else {
+            return .noChange
+        }
+        if let monitorSnapshot {
+            guard snapshot.deviceGeneration
+                    > monitorSnapshot.deviceGeneration else {
+                return .noChange
+            }
+        }
+
+        monitorSnapshot = snapshot
+        if !snapshot.isAvailable
+            || snapshot.deviceUID == nil {
+            lastAttemptedIdentity = nil
+            return releaseActive()
+                ? .released
+                : .waitingForDevice
+        }
+        return drive()
+    }
+
+    func transportDidBecomeHealthy(
+        peerGeneration: UInt64
+    ) -> WorldwideBlackHoleDefaultInputOutcome {
+        guard !isStopped, peerGeneration > 0 else {
+            return .noChange
+        }
+        guard policy == .enabled else {
+            return .suppressed
+        }
+
+        if healthyPeerGeneration == peerGeneration {
+            return drive()
+        }
+
+        _ = releaseActive()
+        healthyPeerGeneration = peerGeneration
+        connectionGeneration = Self.nextNonzero(
+            connectionGeneration
+        )
+        lastAttemptedIdentity = nil
+        return drive()
+    }
+
+    func transportDidBecomeUnhealthy(
+        peerGeneration: UInt64
+    ) -> WorldwideBlackHoleDefaultInputOutcome {
+        guard !isStopped,
+              healthyPeerGeneration == peerGeneration else {
+            return .noChange
+        }
+        healthyPeerGeneration = nil
+        lastAttemptedIdentity = nil
+        return releaseActive()
+            ? .released
+            : .noChange
+    }
+
+    func invalidateCurrentConnection()
+        -> WorldwideBlackHoleDefaultInputOutcome {
+        guard !isStopped else {
+            return .noChange
+        }
+        healthyPeerGeneration = nil
+        lastAttemptedIdentity = nil
+        return releaseActive()
+            ? .released
+            : .noChange
+    }
+
+    func shutdown() {
+        guard !isStopped else {
+            return
+        }
+        isStopped = true
+        healthyPeerGeneration = nil
+        lastAttemptedIdentity = nil
+        _ = releaseActive()
+        lease.shutdown()
+    }
+
+    private func drive()
+        -> WorldwideBlackHoleDefaultInputOutcome {
+        guard let activeMonitorEpoch,
+              let monitorSnapshot else {
+            return .waitingForMonitor
+        }
+        guard monitorSnapshot.isAvailable,
+              let deviceUID = monitorSnapshot.deviceUID,
+              !deviceUID.isEmpty else {
+            return .waitingForDevice
+        }
+        guard let healthyPeerGeneration else {
+            return .noChange
+        }
+
+        let identity = CandidateIdentity(
+            monitorEpoch: activeMonitorEpoch,
+            deviceGeneration:
+                monitorSnapshot.deviceGeneration,
+            peerGeneration: healthyPeerGeneration,
+            connectionGeneration:
+                connectionGeneration,
+            deviceUID: deviceUID
+        )
+        if activeSelectionConfirmed,
+           let activeKey,
+           activeKey.monitorEpoch
+                == identity.monitorEpoch,
+           activeKey.peerGeneration
+                == identity.peerGeneration,
+           activeKey.connectionGeneration
+                == identity.connectionGeneration {
+            return .noChange
+        }
+        guard lastAttemptedIdentity != identity else {
+            return .noChange
+        }
+
+        _ = releaseActive()
+        lastAttemptedIdentity = identity
+        let key = WorldwideBlackHoleDefaultInputKey(
+            monitorEpoch: identity.monitorEpoch,
+            deviceGeneration:
+                identity.deviceGeneration,
+            peerGeneration: identity.peerGeneration,
+            connectionGeneration:
+                identity.connectionGeneration,
+            leaseGeneration: connectionGeneration
+        )
+
+        activeKey = key
+        activeSelectionConfirmed = false
+        guard lease.acquire(
+            generation: key.leaseGeneration,
+            targetUID: deviceUID
+        ) else {
+            return .degraded
+        }
+        activeSelectionConfirmed = true
+        return .selected(key)
+    }
+
+    @discardableResult
+    private func releaseActive() -> Bool {
+        guard let activeKey else {
+            return false
+        }
+        self.activeKey = nil
+        activeSelectionConfirmed = false
+        lease.release(
+            generation: activeKey.leaseGeneration
+        )
+        return true
+    }
+
+    private static func nextNonzero(
+        _ value: UInt64
+    ) -> UInt64 {
+        let next = value &+ 1
+        return next == 0 ? 1 : next
+    }
+}

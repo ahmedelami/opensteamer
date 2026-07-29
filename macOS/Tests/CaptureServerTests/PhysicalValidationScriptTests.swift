@@ -269,6 +269,155 @@ final class PhysicalValidationScriptTests: XCTestCase {
         }
     }
 
+    func testDefaultInputLifecycleValidatorRejectsDelayedMissingWrongAndGlobalMutations()
+        throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "opensteamer-default-input-lifecycle-\(UUID().uuidString)"
+            )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+
+        enum Mutation {
+            case delayedUntilAudio
+            case noRestore
+            case wrongRestore
+            case outputChanged
+            case systemOutputChanged
+        }
+
+        let prior = String(repeating: "a", count: 64)
+        let blackHole = String(repeating: "b", count: 64)
+        let output = String(repeating: "c", count: 64)
+        let systemOutput = String(repeating: "d", count: 64)
+        let probeStart = 3_000
+
+        func write(
+            role: String,
+            time: Int,
+            input: String,
+            isBlackHole: Bool,
+            outputFingerprint: String = output,
+            systemFingerprint: String = systemOutput
+        ) throws -> URL {
+            let url = root.appendingPathComponent(
+                "\(role)-\(UUID().uuidString).json"
+            )
+            try JSONSerialization.data(
+                withJSONObject: [
+                    "schema":
+                        "opensteamer.default-input-snapshot.v1",
+                    "role": role,
+                    "observedAtMonotonicNs": time,
+                    "inputUIDFingerprint": input,
+                    "outputUIDFingerprint":
+                        outputFingerprint,
+                    "systemOutputUIDFingerprint":
+                        systemFingerprint,
+                    "inputIsCanonicalBlackHole":
+                        isBlackHole,
+                ],
+                options: [.sortedKeys]
+            ).write(to: url)
+            return url
+        }
+
+        func fixtures(
+            mutation: Mutation? = nil
+        ) throws -> (URL, URL, URL) {
+            let before = try write(
+                role: "before",
+                time: 1_000,
+                input: prior,
+                isBlackHole: false
+            )
+            let healthy = try write(
+                role: "healthy",
+                time: mutation == .delayedUntilAudio
+                    ? 3_100
+                    : 2_000,
+                input: blackHole,
+                isBlackHole: true,
+                outputFingerprint:
+                    mutation == .outputChanged
+                        ? String(repeating: "e", count: 64)
+                        : output,
+                systemFingerprint:
+                    mutation == .systemOutputChanged
+                        ? String(repeating: "f", count: 64)
+                        : systemOutput
+            )
+            let after = try write(
+                role: "after",
+                time: 4_000,
+                input: mutation == .noRestore
+                    ? blackHole
+                    : mutation == .wrongRestore
+                        ? String(repeating: "9", count: 64)
+                        : prior,
+                isBlackHole:
+                    mutation == .noRestore
+            )
+            return (before, healthy, after)
+        }
+
+        func run(
+            mutation: Mutation? = nil
+        ) throws -> ZshProbeResult {
+            let fixture = try fixtures(
+                mutation: mutation
+            )
+            return try runPhysicalDriverSelfTest(
+                physicalDrivers[2],
+                mode: "validate-default-input-lifecycle",
+                artifactDirectory: root.appendingPathComponent(
+                    "artifact-\(UUID().uuidString)"
+                ),
+                timeout: 5,
+                additionalEnvironment: [
+                    "OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_BEFORE":
+                        fixture.0.path,
+                    "OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_HEALTHY":
+                        fixture.1.path,
+                    "OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_AFTER":
+                        fixture.2.path,
+                    "OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_PROBE_START":
+                        String(probeStart),
+                ]
+            )
+        }
+
+        let valid = try run()
+        XCTAssertTrue(valid.exitedWithinDeadline, valid.diagnostic)
+        XCTAssertEqual(
+            valid.terminationStatus,
+            0,
+            valid.diagnostic
+        )
+
+        for mutation in [
+            Mutation.delayedUntilAudio,
+            .noRestore,
+            .wrongRestore,
+            .outputChanged,
+            .systemOutputChanged,
+        ] {
+            let rejected = try run(mutation: mutation)
+            XCTAssertTrue(
+                rejected.exitedWithinDeadline,
+                rejected.diagnostic
+            )
+            XCTAssertNotEqual(
+                rejected.terminationStatus,
+                0,
+                "Validator accepted \(mutation)"
+            )
+        }
+    }
+
     func testReconnectDriverRequiresFiveArgumentProductionCLI() throws {
         let script = repositoryRoot.appendingPathComponent(
             "iOS/opensteamer/scripts/validate-testflight-paired-reconnect.sh"
@@ -2746,6 +2895,26 @@ final class PhysicalValidationScriptTests: XCTestCase {
         XCTAssertTrue(rawFunction.contains("\"test-without-building\""))
         XCTAssertTrue(
             rawFunction.contains("arm_raw_session_readiness_and_start_probe")
+        )
+        XCTAssertTrue(
+            rawFunction.contains(
+                "capture_default_input_snapshot"
+            )
+        )
+        XCTAssertTrue(
+            rawFunction.contains(
+                "validate_default_input_lifecycle_json"
+            )
+        )
+        XCTAssertTrue(
+            driver.contains(
+                "Worldwide authenticated media route selected BlackHole default input"
+            )
+        )
+        XCTAssertTrue(
+            driver.contains(
+                "RAW_DEFAULT_INPUT_HEALTHY"
+            )
         )
         XCTAssertFalse(
             rawFunction[

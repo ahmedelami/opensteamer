@@ -52,7 +52,7 @@ targets:
           # protocol literals remain org.example.AudioStreamer compatibility data.
           PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer
           DEVELOPMENT_TEAM: MSMG8CJLB3
-          CURRENT_PROJECT_VERSION: 33
+          CURRENT_PROJECT_VERSION: 34
           CODE_SIGN_STYLE: Automatic
           OPENSTEAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
           AUDIOSTREAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"

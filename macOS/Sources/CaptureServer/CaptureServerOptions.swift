@@ -30,7 +30,7 @@ struct CaptureServerOptions {
     var verifyRouting = false
     var showHelp = false
 
-    /// LAN coexistence suppresses only decoded iPhone-microphone forwarding.
+    /// LAN coexistence suppresses decoded forwarding and automatic input selection.
     var iPhoneMicrophoneForwardingPolicy:
         WorldwideIPhoneMicrophoneForwardingPolicy {
         lanEnabled
@@ -59,7 +59,7 @@ struct CaptureServerOptions {
       --rendezvous-url <url> Enable worldwide access with this wss:// endpoint (ws:// loopback for tests).
       --force-relay          Require TURN for a worldwide acceptance test instead of preferring direct ICE.
       --with-lan             Also start legacy plaintext LAN listeners; trusted networks only.
-                             Suppresses worldwide iPhone-microphone forwarding.
+                             Suppresses microphone forwarding and automatic default-input selection.
       --no-lan               Disable legacy TCP audio/screen listeners and capture.
       --duration <seconds>   Run duration. Defaults to 30 for LAN-only and indefinite for worldwide. Use 0 for indefinite.
       --capture-mode <mode>  blackhole-input or screen. Defaults to blackhole-input.

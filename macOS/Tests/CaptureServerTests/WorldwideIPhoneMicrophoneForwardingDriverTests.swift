@@ -743,6 +743,205 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
     }
 }
 
+final class WorldwideBlackHoleDefaultInputCoordinatorTests:
+    XCTestCase
+{
+    func testDeviceBeforeConnectionSelectsAtHealthyBoundaryWithoutTrack() {
+        let lease = DefaultInputCoordinatorLeaseFake()
+        let coordinator =
+            WorldwideBlackHoleDefaultInputCoordinator(
+                policy: .enabled,
+                lease: lease
+            )
+        let epoch = UUID()
+
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        XCTAssertEqual(
+            coordinator.updateDeviceSnapshot(
+                snapshot(epoch: epoch, generation: 1)
+            ),
+            .noChange
+        )
+        let result =
+            coordinator.transportDidBecomeHealthy(
+                peerGeneration: 7
+            )
+
+        guard case .selected(let key) = result else {
+            return XCTFail("Expected connection-level selection")
+        }
+        XCTAssertEqual(key.peerGeneration, 7)
+        XCTAssertEqual(key.deviceGeneration, 1)
+        XCTAssertEqual(lease.acquisitions.count, 1)
+    }
+
+    func testConnectionBeforeDeviceSelectsFirstCurrentAvailableGeneration() {
+        let lease = DefaultInputCoordinatorLeaseFake()
+        let coordinator =
+            WorldwideBlackHoleDefaultInputCoordinator(
+                policy: .enabled,
+                lease: lease
+            )
+        let epoch = UUID()
+
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        XCTAssertEqual(
+            coordinator.transportDidBecomeHealthy(
+                peerGeneration: 3
+            ),
+            .waitingForMonitor
+        )
+        XCTAssertEqual(lease.acquisitions.count, 0)
+
+        let result = coordinator.updateDeviceSnapshot(
+            snapshot(epoch: epoch, generation: 1)
+        )
+        guard case .selected = result else {
+            return XCTFail("Expected selection on device appearance")
+        }
+        XCTAssertEqual(lease.acquisitions.count, 1)
+    }
+
+    func testRemovalRestoresAndReinstallReusesConnectionLeaseGeneration() {
+        let lease = DefaultInputCoordinatorLeaseFake()
+        let coordinator =
+            WorldwideBlackHoleDefaultInputCoordinator(
+                policy: .enabled,
+                lease: lease
+            )
+        let epoch = UUID()
+
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.transportDidBecomeHealthy(
+            peerGeneration: 1
+        )
+        _ = coordinator.updateDeviceSnapshot(
+            snapshot(epoch: epoch, generation: 1)
+        )
+        let firstGeneration =
+            lease.acquisitions[0].generation
+
+        _ = coordinator.updateDeviceSnapshot(
+            BlackHoleDeviceAvailabilitySnapshot(
+                monitorEpoch: epoch,
+                deviceGeneration: 2,
+                isAvailable: false,
+                deviceUID: nil
+            )
+        )
+        XCTAssertEqual(lease.releases, [firstGeneration])
+
+        _ = coordinator.updateDeviceSnapshot(
+            snapshot(epoch: epoch, generation: 3)
+        )
+        XCTAssertEqual(lease.acquisitions.count, 2)
+        XCTAssertEqual(
+            lease.acquisitions[1].generation,
+            firstGeneration
+        )
+    }
+
+    func testStalePeerCannotReleaseReplacementConnection() {
+        let lease = DefaultInputCoordinatorLeaseFake()
+        let coordinator =
+            WorldwideBlackHoleDefaultInputCoordinator(
+                policy: .enabled,
+                lease: lease
+            )
+        let epoch = UUID()
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(
+            snapshot(epoch: epoch, generation: 1)
+        )
+        _ = coordinator.transportDidBecomeHealthy(
+            peerGeneration: 1
+        )
+        _ = coordinator.invalidateCurrentConnection()
+        _ = coordinator.transportDidBecomeHealthy(
+            peerGeneration: 2
+        )
+        let replacementGeneration =
+            lease.acquisitions.last!.generation
+        let releaseCount = lease.releases.count
+
+        _ = coordinator.transportDidBecomeUnhealthy(
+            peerGeneration: 1
+        )
+
+        XCTAssertEqual(lease.releases.count, releaseCount)
+        XCTAssertNotEqual(
+            lease.releases.last,
+            replacementGeneration
+        )
+    }
+
+    func testLANCoexistenceSuppressesDefaultInputLease() {
+        let lease = DefaultInputCoordinatorLeaseFake()
+        let coordinator =
+            WorldwideBlackHoleDefaultInputCoordinator(
+                policy: .suppressedForLANCoexistence,
+                lease: lease
+            )
+        let epoch = UUID()
+
+        XCTAssertEqual(
+            coordinator.beginMonitoring(epoch: epoch),
+            .suppressed
+        )
+        XCTAssertEqual(
+            coordinator.transportDidBecomeHealthy(
+                peerGeneration: 1
+            ),
+            .suppressed
+        )
+        XCTAssertEqual(lease.acquisitions.count, 0)
+    }
+
+    private func snapshot(
+        epoch: UUID,
+        generation: UInt64
+    ) -> BlackHoleDeviceAvailabilitySnapshot {
+        BlackHoleDeviceAvailabilitySnapshot(
+            monitorEpoch: epoch,
+            deviceGeneration: generation,
+            isAvailable: true,
+            deviceUID: "BlackHole2ch_UID"
+        )
+    }
+}
+
+private final class DefaultInputCoordinatorLeaseFake:
+    WorldwideBlackHoleDefaultInputLeasing,
+    @unchecked Sendable
+{
+    struct Acquisition {
+        let generation: UInt64
+        let targetUID: String
+    }
+
+    private(set) var acquisitions: [Acquisition] = []
+    private(set) var releases: [UInt64] = []
+
+    func acquire(
+        generation: UInt64,
+        targetUID: String
+    ) -> Bool {
+        acquisitions.append(
+            Acquisition(
+                generation: generation,
+                targetUID: targetUID
+            )
+        )
+        return true
+    }
+
+    func release(generation: UInt64) {
+        releases.append(generation)
+    }
+
+    func shutdown() {}
+}
+
 private actor DriverTestHarness {
     private let driver:
         WorldwideIPhoneMicrophoneForwardingDriver<

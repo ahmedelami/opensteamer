@@ -46,9 +46,11 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
                 ),
             ]
         )
+        XCTAssertEqual(monitor.currentSnapshot(), ledger.snapshots.last)
         XCTAssertEqual(operations.defaultDeviceWriteCount, 0)
 
         monitor.stop()
+        XCTAssertNil(monitor.currentSnapshot())
         XCTAssertTrue(operations.removedExactRegistration)
         XCTAssertEqual(
             operations.events,
@@ -198,6 +200,249 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         XCTAssertTrue(ledger.snapshots.last?.isAvailable == true)
         monitor.stop()
     }
+}
+
+final class BlackHoleDefaultInputLeaseTests:
+    XCTestCase
+{
+    func testListenerPrecedesOwnedWriteAndReleaseRestoresPriorUID() {
+        let operations = DefaultInputLeaseOperationsFake()
+        let lease = makeLease(operations)
+
+        XCTAssertTrue(lease.acquire(generation: 1))
+        XCTAssertEqual(
+            operations.currentUID,
+            BlackHoleDefaultInputLease.canonicalDeviceUID
+        )
+        XCTAssertEqual(
+            Array(operations.events.prefix(4)),
+            ["register", "read", "resolve:BlackHole2ch_UID", "write:2"]
+        )
+
+        lease.release(generation: 1)
+        XCTAssertEqual(operations.currentUID, "BuiltInMic_UID")
+        XCTAssertEqual(operations.writtenDeviceIDs, [2, 1])
+        XCTAssertTrue(operations.removedExactRegistration)
+        XCTAssertTrue(operations.registeredExactInputAddress)
+    }
+
+    func testNoErrWithoutNotificationProofDegradesAndRestoresBestEffort() {
+        let operations = DefaultInputLeaseOperationsFake()
+        operations.emitsNotifications = false
+        let lease = makeLease(
+            operations,
+            proofTimeout: 0.01
+        )
+
+        XCTAssertFalse(lease.acquire(generation: 1))
+        XCTAssertEqual(operations.currentUID, "BuiltInMic_UID")
+        lease.release(generation: 1)
+        XCTAssertTrue(operations.removedExactRegistration)
+    }
+
+    func testExternalChoiceIsNotOverwrittenOrRestored() {
+        let operations = DefaultInputLeaseOperationsFake()
+        let lease = makeLease(operations)
+        XCTAssertTrue(lease.acquire(generation: 1))
+
+        operations.externalSelect(deviceID: 3)
+        lease.drainForTesting()
+        XCTAssertEqual(
+            operations.currentUID,
+            "USBMic_UID"
+        )
+
+        lease.release(generation: 1)
+        XCTAssertEqual(operations.currentUID, "USBMic_UID")
+        XCTAssertFalse(lease.acquire(generation: 1))
+        XCTAssertEqual(operations.currentUID, "USBMic_UID")
+    }
+
+    func testStaleGenerationCannotRestoreOverReplacement() {
+        let operations = DefaultInputLeaseOperationsFake()
+        let lease = makeLease(operations)
+        XCTAssertTrue(lease.acquire(generation: 1))
+        XCTAssertTrue(lease.acquire(generation: 2))
+
+        lease.release(generation: 1)
+        XCTAssertEqual(
+            operations.currentUID,
+            BlackHoleDefaultInputLease.canonicalDeviceUID
+        )
+
+        lease.release(generation: 2)
+        XCTAssertEqual(operations.currentUID, "BuiltInMic_UID")
+    }
+
+    private func makeLease(
+        _ operations: DefaultInputLeaseOperationsFake,
+        proofTimeout: TimeInterval = 0.1
+    ) -> BlackHoleDefaultInputLease {
+        BlackHoleDefaultInputLease(
+            operations: operations,
+            operationQueue: DispatchQueue(
+                label: "test.BlackHoleDefaultInputLease.operations"
+            ),
+            listenerQueue: DispatchQueue(
+                label: "test.BlackHoleDefaultInputLease.listener"
+            ),
+            proofTimeout: proofTimeout
+        )
+    }
+}
+
+private final class DefaultInputLeaseOperationsFake:
+    BlackHoleDefaultInputLeaseOperations,
+    @unchecked Sendable
+{
+    private struct Listener {
+        var address: AudioObjectPropertyAddress
+        let queue: DispatchQueue
+        let block: AudioObjectPropertyListenerBlock
+        let identity: UnsafeMutableRawPointer
+    }
+
+    private let lock = NSLock()
+    private let uids: [AudioDeviceID: String] = [
+        1: "BuiltInMic_UID",
+        2: "BlackHole2ch_UID",
+        3: "USBMic_UID",
+    ]
+    private var currentDeviceID: AudioDeviceID = 1
+    private var listener: Listener?
+    private var eventStorage: [String] = []
+    private var writes: [AudioDeviceID] = []
+    private var exactInputAddress = false
+    private var exactRemoval = false
+    var emitsNotifications = true
+
+    var currentUID: String {
+        lock.withLock { uids[currentDeviceID]! }
+    }
+
+    var events: [String] {
+        lock.withLock { eventStorage }
+    }
+
+    var writtenDeviceIDs: [AudioDeviceID] {
+        lock.withLock { writes }
+    }
+
+    var registeredExactInputAddress: Bool {
+        lock.withLock { exactInputAddress }
+    }
+
+    var removedExactRegistration: Bool {
+        lock.withLock { exactRemoval }
+    }
+
+    func addDefaultInputListener(
+        address: inout AudioObjectPropertyAddress,
+        queue: DispatchQueue,
+        block: @escaping AudioObjectPropertyListenerBlock
+    ) -> OSStatus {
+        lock.withLock {
+            eventStorage.append("register")
+            exactInputAddress =
+                address.mSelector
+                    == kAudioHardwarePropertyDefaultInputDevice
+                && address.mScope
+                    == kAudioObjectPropertyScopeGlobal
+                && address.mElement
+                    == kAudioObjectPropertyElementMain
+            listener = Listener(
+                address: address,
+                queue: queue,
+                block: block,
+                identity: blockPointer(block)
+            )
+        }
+        return noErr
+    }
+
+    func removeDefaultInputListener(
+        address: inout AudioObjectPropertyAddress,
+        queue: DispatchQueue,
+        block: @escaping AudioObjectPropertyListenerBlock
+    ) -> OSStatus {
+        lock.withLock {
+            eventStorage.append("remove")
+            guard let listener else { return }
+            exactRemoval =
+                listener.address.mSelector == address.mSelector
+                && listener.address.mScope == address.mScope
+                && listener.address.mElement == address.mElement
+                && listener.queue === queue
+                && listener.identity == blockPointer(block)
+            self.listener = nil
+        }
+        return noErr
+    }
+
+    func currentDefaultInputUID() throws -> String {
+        lock.withLock {
+            eventStorage.append("read")
+            return uids[currentDeviceID]!
+        }
+    }
+
+    func resolveDeviceID(uid: String) throws -> AudioDeviceID {
+        try lock.withLock {
+            eventStorage.append("resolve:\(uid)")
+            guard let entry = uids.first(where: {
+                $0.value == uid
+            }) else {
+                throw BlackHoleDefaultInputFakeError.missingUID
+            }
+            return entry.key
+        }
+    }
+
+    func setDefaultInputDevice(
+        _ deviceID: AudioDeviceID
+    ) -> OSStatus {
+        let callback: Listener? = lock.withLock {
+            eventStorage.append("write:\(deviceID)")
+            guard uids[deviceID] != nil else {
+                return nil
+            }
+            currentDeviceID = deviceID
+            writes.append(deviceID)
+            return emitsNotifications ? listener : nil
+        }
+        emit(callback)
+        return noErr
+    }
+
+    func externalSelect(deviceID: AudioDeviceID) {
+        let callback: Listener? = lock.withLock {
+            currentDeviceID = deviceID
+            return listener
+        }
+        emit(callback)
+    }
+
+    private func emit(_ listener: Listener?) {
+        guard let listener else { return }
+        listener.queue.sync {
+            var address = listener.address
+            withUnsafePointer(to: &address) {
+                listener.block(1, $0)
+            }
+        }
+    }
+
+    private func blockPointer(
+        _ block: AudioObjectPropertyListenerBlock
+    ) -> UnsafeMutableRawPointer {
+        Unmanaged.passUnretained(
+            block as AnyObject
+        ).toOpaque()
+    }
+}
+
+private enum BlackHoleDefaultInputFakeError: Error {
+    case missingUID
 }
 
 private final class BlackHoleMonitorOperationsFake:

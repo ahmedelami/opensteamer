@@ -24,9 +24,15 @@ passes the unrelated-network and forced-TURN gates described in
 - Fresh signaling and WebRTC keys for every paired-device media connection.
 - Output-only iOS playback by default, with an explicitly authorized 48 kHz mono
   microphone uplink that uses the same conditional-duplex RemoteIO device.
-- BlackHole 2ch output for the first selectable Mac microphone MVP; global macOS
-  audio defaults are not changed.
+- BlackHole 2ch output for the first Mac microphone MVP. When the authenticated
+  WebRTC peer, ICE route, and control channel are all healthy, opensteamer
+  automatically selects BlackHole 2ch as the Mac default input before starting
+  system audio. It conditionally restores the prior input after disconnect while
+  leaving the default output and system-output devices unchanged.
 - Legacy Bonjour/TCP/PCM tools retained only for trusted-LAN diagnostics.
+
+Automatic input restoration is an in-memory graceful-lifecycle guarantee; a crash,
+`SIGKILL`, or power loss can prevent restoration.
 
 ```text
 Mac Host ── outbound authenticated WSS ──┐
@@ -95,7 +101,7 @@ The authoritative values for the maintainer build are:
 | --- | --- |
 | Production bundle | <code>com.elamin.AudioStreamer</code> |
 | Development team | `MSMG8CJLB3` |
-| Marketing version / build | `0.1.0` / `33` |
+| Marketing version / build | `0.1.0` / `34` |
 | Release rendezvous | Both `OPENSTEAMER_RENDEZVOUS_URL` and compatibility `AUDIOSTREAMER_RENDEZVOUS_URL` use the production WSS Worker origin declared in [`project.yml`](iOS/opensteamer/project.yml) |
 | Debug bundle | <code>org.example.AudioStreamer.dev</code> |
 | Debug rendezvous | Both endpoint settings are empty unless explicitly overridden locally |

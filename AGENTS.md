@@ -125,28 +125,51 @@ manual IP addresses, router configuration, or public TCP ports.
   `shouldResume`, and never promise playback after force-quit.
 - The Mac microphone uplink MVP must target an already-installed BlackHole 2ch
   device by its stable Core Audio UID. Feed decoded `iphone-microphone` playout to
-  BlackHole's output side without changing the default input, default output, or
-  system-output device. The output-device callback must pull into caller-owned memory
-  without allocation, logging, sleeping, network work, or a contended mutex; missing
-  PCM becomes silence. Missing BlackHole disables only microphone forwarding.
+  BlackHole's output side. At the first current-generation authenticated
+  peer/ICE/control healthy boundary, before awaiting system-audio startup, select
+  that same canonical BlackHole endpoint as the macOS default input. This
+  connection-level selection must not wait for the remote microphone track, RTP,
+  decoded PCM, successful pulls, forwarding readiness, iOS microphone permission,
+  manual microphone state, or call state. Never change the default output or
+  system-output device. The output-device callback must pull into caller-owned
+  memory without allocation, logging, sleeping, network work, or a contended mutex;
+  missing PCM becomes silence. Missing BlackHole degrades only automatic default
+  input selection and microphone forwarding.
 - Discover BlackHole 2ch through a read-only Core Audio device-list monitor. Register
   the exact global/main `kAudioHardwarePropertyDevices` listener before the initial
   inventory read, bind every forwarding attempt to the monitor epoch and device
   generation, and select the monitored stable UID directly on the output AudioQueue.
-  Worldwide microphone forwarding must never call the legacy route-preparation or
-  default-device mutation path.
+  A separate generation-keyed default-input lease may consume that monitor snapshot.
+  It must register the exact default-input listener before writing, resolve devices
+  by stable UID, save the prior default-input UID before its first owned write, and
+  require bounded listener plus readback proof rather than treating `noErr` as
+  success. Worldwide microphone forwarding and default-input selection must never
+  call the legacy route-preparation, all-default mutation, or all-default monitoring
+  path.
+- Keep BlackHole selected for the healthy media connection. On transport
+  uncertainty, disconnect, peer replacement, BlackHole removal, service startup
+  failure, or graceful shutdown, synchronously initiate conditional restoration of
+  the saved input UID. Resolve that UID fresh and restore only while the exact
+  current generation still owns the lease and the current input is still its
+  BlackHole target; never overwrite a newer user or application choice. An
+  in-memory lease cannot guarantee restoration after `SIGKILL`, a crash, or power
+  loss.
 - Suppress iPhone-microphone forwarding whenever worldwide mode coexists with either
-  legacy LAN capture mode. This suppression affects only that decoded microphone lane;
-  worldwide signaling, system audio, screen video, control, remote input, and both LAN
-  services remain supervised normally.
+  legacy LAN capture mode. Suppress the associated automatic default-input lease as
+  well, while worldwide signaling, system audio, screen video, control, remote input,
+  and both LAN services remain supervised normally.
 - An AudioQueue start is not forwarding-readiness evidence. Readiness requires the
   exact current peer, transport-authorization epoch, track generation, device
   generation, admitted track, a running queue, and successful post-start decoded pulls.
   Continuing health requires two bounded lock-free progress snapshots whose callback
   and successful-frame counts both advance.
-- Worldwide-only release evidence must show that the default input, default output,
-  and system-output UIDs remain unchanged. Unit progress counters do not prove that
-  host applications can read the forwarded microphone; use a separate physical probe
+- Worldwide-only release evidence must record the original default-input UID, prove
+  BlackHole is the default input at the authenticated peer/ICE/control boundary
+  before track or PCM proof, prove default output and system output never change,
+  and prove the original input is restored after disconnect. Expected input
+  transition notifications are evidence, not failures; output or system-output
+  mutation remains a failure. Unit progress counters do not prove that host
+  applications can read the forwarded microphone; use a separate physical probe
   that opens BlackHole input by stable UID and recognizes a known remote challenge.
 - Physical audio release validation must observe the RemoteIO render-input PCM, not
   merely RTP statistics or callback clocks. This is the last app-observable pre-system-output

@@ -17,6 +17,17 @@ final class WorldwideHostLifecycleTests: XCTestCase {
         )
     }
 
+    func testDefaultInputLogBindsHealthyBoundaryToPeerAndHostProcess() {
+        XCTAssertEqual(
+            WorldwideScreenService.defaultInputSelectionLogMessage(
+                peerGeneration: 9,
+                processIdentifier: 42_071
+            ),
+            "Worldwide authenticated media route selected BlackHole " +
+                "default input peerGeneration=9 pid=42071"
+        )
+    }
+
     func testAvailabilityBackoffDoesNotResetForUpgradeFollowedByServerError() {
         var policy = WorldwideAvailabilityRetryPolicy()
 

@@ -297,6 +297,15 @@ actor WorldwideScreenService {
         "Worldwide WebRTC peer state: \(state) pid=\(processIdentifier)"
     }
 
+    /// Binds the physical default-input boundary to the exact host process and peer.
+    nonisolated static func defaultInputSelectionLogMessage(
+        peerGeneration: UInt64,
+        processIdentifier: Int32
+    ) -> String {
+        "Worldwide authenticated media route selected BlackHole default input " +
+            "peerGeneration=\(peerGeneration) pid=\(processIdentifier)"
+    }
+
     private let invitation: RemoteInvitationCode?
     private let signaling: RendezvousSignalingClient
     private let icePolicy: WebRTCICEPolicy
@@ -309,6 +318,8 @@ actor WorldwideScreenService {
         WorldwideIPhoneMicrophoneForwardingPolicy
     private let blackHoleDeviceAvailabilityMonitor =
         BlackHoleDeviceAvailabilityMonitor()
+    private let blackHoleDefaultInputLease =
+        BlackHoleDefaultInputLease()
     private let logger: Logger
     private let completionContinuation: AsyncStream<Void>.Continuation
 
@@ -339,6 +350,11 @@ actor WorldwideScreenService {
     private var systemAudioStartInProgress = false
     private var systemAudioIsLive = false
     private var blackHoleDeviceMonitorEpoch: UUID?
+    private lazy var blackHoleDefaultInput =
+        WorldwideBlackHoleDefaultInputCoordinator(
+            policy: iPhoneMicrophoneForwardingPolicy,
+            lease: blackHoleDefaultInputLease
+        )
     private lazy var iPhoneMicrophoneForwarding =
         WorldwideIPhoneMicrophoneForwardingDriver<
             WebRTCPeer,
@@ -496,6 +512,7 @@ actor WorldwideScreenService {
             }
         } catch {
             isStopped = true
+            blackHoleDefaultInput.shutdown()
             blackHoleDeviceMonitorEpoch = nil
             blackHoleDeviceAvailabilityMonitor.stop()
             iPhoneMicrophoneForwarding.shutdown()
@@ -512,6 +529,7 @@ actor WorldwideScreenService {
         guard !isStopped else { return }
         isStopped = true
 
+        blackHoleDefaultInput.shutdown()
         blackHoleDeviceMonitorEpoch = nil
         blackHoleDeviceAvailabilityMonitor.stop()
         iPhoneMicrophoneForwarding.shutdown()
@@ -660,6 +678,7 @@ actor WorldwideScreenService {
                 maximumVideoBitrate: maximumVideoBitrate
             )
         )
+        _ = blackHoleDefaultInput.invalidateCurrentConnection()
         peerGeneration &+= 1
         let generation = peerGeneration
         highestRestartRequestID = nil
@@ -1418,6 +1437,10 @@ actor WorldwideScreenService {
         revokeSystemAudioAuthorization()
         captureSink?.stopForwarding()
         audioSink?.stopForwarding()
+        _ = blackHoleDefaultInput
+            .transportDidBecomeUnhealthy(
+                peerGeneration: peerGeneration
+            )
         iPhoneMicrophoneForwarding.invalidateTransport()
         await peer?.suspendSystemAudioForTransportUncertainty()
         await stopScreenCaptureForTransportUncertainty(reason)
@@ -1456,6 +1479,10 @@ actor WorldwideScreenService {
         isRecovering = true
         revokeCaptureAuthorization()
         revokeSystemAudioAuthorization()
+        _ = blackHoleDefaultInput
+            .transportDidBecomeUnhealthy(
+                peerGeneration: peerGeneration
+            )
         iPhoneMicrophoneForwarding.invalidateTransport()
         if recoveryProofRequired {
             // Invalidate a pre-uncertainty Hide/ACK without severing the current offer→answer
@@ -1473,6 +1500,10 @@ actor WorldwideScreenService {
     private func installRecoveryProofBoundary(awaitingAnswer: Bool) -> UInt64 {
         revokeCaptureAuthorization()
         revokeSystemAudioAuthorization()
+        _ = blackHoleDefaultInput
+            .transportDidBecomeUnhealthy(
+                peerGeneration: peerGeneration
+            )
         iPhoneMicrophoneForwarding.invalidateTransport()
         recoveryProofAuthorization?.revoke()
         recoveryProofEpoch &+= 1
@@ -1545,6 +1576,13 @@ actor WorldwideScreenService {
         restartAnswerAppliedEpoch = nil
         recoveryProofRequired = false
         isRecovering = false
+        consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
+        recordBlackHoleDefaultInputOutcome(
+            blackHoleDefaultInput
+                .transportDidBecomeHealthy(
+                    peerGeneration: peerGeneration
+                )
+        )
         guard await startSystemAudioOrStopSession() else {
             await recoverFromSystemAudioStartUncertainty(
                 "system audio could not be enabled after route proof"
@@ -1565,6 +1603,13 @@ actor WorldwideScreenService {
             return false
         }
         isRecovering = false
+        consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
+        recordBlackHoleDefaultInputOutcome(
+            blackHoleDefaultInput
+                .transportDidBecomeHealthy(
+                    peerGeneration: peerGeneration
+                )
+        )
         guard await startSystemAudioOrStopSession() else {
             await recoverFromSystemAudioStartUncertainty(
                 "system audio could not be enabled on the healthy route"
@@ -1592,11 +1637,18 @@ actor WorldwideScreenService {
                 }
             }
             blackHoleDeviceMonitorEpoch = epoch
+            _ = blackHoleDefaultInput.beginMonitoring(
+                epoch: epoch
+            )
+            consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
             iPhoneMicrophoneForwarding.beginMonitoring(
                 epoch: epoch
             )
         } catch {
             blackHoleDeviceMonitorEpoch = nil
+            recordBlackHoleDefaultInputOutcome(
+                blackHoleDefaultInput.monitoringDidFail()
+            )
             iPhoneMicrophoneForwarding.monitoringDidFail()
             logger.error(
                 "BlackHole device monitoring is unavailable; " +
@@ -1606,6 +1658,19 @@ actor WorldwideScreenService {
         }
     }
 
+    private func consumeCurrentBlackHoleDeviceSnapshotForDefaultInput() {
+        guard !isStopped,
+              let snapshot =
+                blackHoleDeviceAvailabilityMonitor.currentSnapshot(),
+              snapshot.monitorEpoch == blackHoleDeviceMonitorEpoch else {
+            return
+        }
+        recordBlackHoleDefaultInputOutcome(
+            blackHoleDefaultInput
+                .updateDeviceSnapshot(snapshot)
+        )
+    }
+
     private func blackHoleDeviceAvailabilityDidChange(
         _ snapshot: BlackHoleDeviceAvailabilitySnapshot
     ) async {
@@ -1613,6 +1678,10 @@ actor WorldwideScreenService {
               snapshot.monitorEpoch == blackHoleDeviceMonitorEpoch else {
             return
         }
+        recordBlackHoleDefaultInputOutcome(
+            blackHoleDefaultInput
+                .updateDeviceSnapshot(snapshot)
+        )
         await iPhoneMicrophoneForwarding.updateDeviceSnapshot(
             snapshot
         )
@@ -1633,6 +1702,31 @@ actor WorldwideScreenService {
             peer: peer,
             peerGeneration: peerGeneration
         )
+    }
+
+    private func recordBlackHoleDefaultInputOutcome(
+        _ outcome:
+            WorldwideBlackHoleDefaultInputOutcome
+    ) {
+        switch outcome {
+        case .selected(let key):
+            logger.info(
+                Self.defaultInputSelectionLogMessage(
+                    peerGeneration: key.peerGeneration,
+                    processIdentifier:
+                        ProcessInfo.processInfo
+                            .processIdentifier
+                )
+            )
+        case .degraded:
+            logger.error(
+                "Automatic BlackHole default-input selection is unavailable; " +
+                    "the worldwide media session remains active"
+            )
+        case .noChange, .waitingForMonitor, .waitingForDevice,
+             .released, .suppressed:
+            break
+        }
     }
 
     private func iPhoneMicrophoneOutputDidFail(

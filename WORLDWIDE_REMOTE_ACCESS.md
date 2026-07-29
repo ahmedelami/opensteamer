@@ -76,18 +76,40 @@ input bus 1, and send a separate 48 kHz mono Opus track with stable ID
 
 The Mac offers that second audio transceiver as recvOnly and accepts only the
 `iphone-microphone` track. Its decoded PCM is written to an explicitly selected
-BlackHole 2ch device by stable UID, allowing ordinary Mac dictation or recording
-software to select BlackHole as an input. opensteamer does not mutate any global
-input, output, or system-output default.
+BlackHole 2ch device by stable UID.
+
+Independently of remote-track arrival, the first current-generation authenticated
+peer/ICE/control healthy boundary acquires a connection-level default-input lease.
+Before `WorldwideScreenService` awaits system-audio startup, that lease selects the
+canonical installed `BlackHole2ch_UID` endpoint as the macOS default input. It does
+not wait for an `iphone-microphone` callback, RTP, decoded PCM, successful pulls,
+forwarding readiness, iOS microphone permission, the manual microphone switch, or
+iPhone call state. The default output and system-output devices are never changed.
 
 BlackHole discovery is read-only. The host registers a Core Audio device-list
 listener before its initial inventory read and publishes an epoch plus a monotonic
-device generation. Each output attempt is bound to that exact monitor snapshot,
-peer generation, transport-authorization epoch, and remote-track generation. Device
-removal, transport uncertainty, or a runtime AudioQueue failure synchronously mutes
-the exact current track and retires only its owning output. A later device or
-transport generation can retry once without allowing stale completions to affect a
-replacement.
+device generation. The connection-level input coordinator supports both orderings:
+an available snapshot may precede connection health, or the healthy connection may
+wait for the first current snapshot that makes BlackHole available. Each output
+attempt remains separately bound to its exact monitor snapshot, peer generation,
+transport-authorization epoch, and remote-track generation.
+
+Before its first owned input write, the lease saves the prior default-input stable
+UID. It installs the exact default-input listener before writing and requires
+bounded notification plus stable-UID readback proof. On transport uncertainty,
+disconnect, peer replacement, device removal, startup failure, or graceful
+shutdown, restoration is initiated synchronously. The prior UID is resolved fresh
+and restored only if the same generation still owns the lease and the current
+input remains BlackHole; a newer user or application choice is not overwritten.
+Stale generations cannot restore over a replacement connection. A missing device,
+failed write, or failed proof degrades this convenience without ending worldwide
+signaling, system audio, screen video, or control. Because the lease is in memory,
+restoration cannot be guaranteed after a crash, `SIGKILL`, or power loss.
+
+Device removal, transport uncertainty, or a runtime AudioQueue failure still
+synchronously mutes the exact current remote track and retires only its owning
+output. A later device or transport generation can retry once without allowing
+stale completions to affect a replacement.
 
 AudioQueue startup alone is not considered ready. A forwarding snapshot reports the
 policy, phase, device and transport generations, exact admission state, and lock-free
@@ -96,9 +118,10 @@ health requires two bounded observations with advancing callback and successful-
 counts. These counters prove forwarding activity, not nonzero acoustic content.
 
 When trusted-LAN services coexist with worldwide mode, iPhone-microphone forwarding
-is suppressed for both BlackHole-input and ScreenCaptureKit LAN capture. This prevents
-a local capture/forwarding loop without stopping worldwide signaling, system audio,
-screen viewing, control, remote input, or either LAN listener.
+and its automatic default-input lease are suppressed for both BlackHole-input and
+ScreenCaptureKit LAN capture. This prevents a local capture/forwarding loop without
+stopping worldwide signaling, system audio, screen viewing, control, remote input,
+or either LAN listener.
 
 Backgrounding hides video and revokes remote input while retaining healthy
 audio. A bare CallKit transition revokes microphone capture but does not
@@ -163,12 +186,15 @@ dependencies.
 | Final speaker/headphone fidelity | External source-correlated acoustic capture still required |
 | Cryptographic screen-source/GPU presentation proof | Still required |
 
-Worldwide-only BlackHole acceptance must record the default input, default output,
-and system-output UIDs before and after forwarding and require them to remain
-unchanged. It must also open BlackHole's input side by the stable UID, drive a known
-time-varying remote microphone challenge, and independently require advancing frames
-and pattern recognition. A forwarding snapshot or successful AudioQueue start is not
-host-visible PCM proof.
+Worldwide-only BlackHole acceptance must record the original default input before
+connection, prove BlackHole is the default input at the authenticated
+peer/ICE/control boundary before remote-track or PCM proof, prove the default output
+and system-output UIDs remain unchanged, and prove the original input is restored
+after disconnect. Expected default-input notifications around selection and
+restoration must not fail the oracle. It must also open BlackHole's input side by
+stable UID, drive a known time-varying remote microphone challenge, and independently
+require advancing frames and pattern recognition. A forwarding snapshot or successful
+AudioQueue start is not host-visible PCM proof.
 
 App-observable RemoteIO PCM is the final boundary the app can inspect, not proof of the later iOS
 mixer, route processing, DAC, speaker, or headphones. See [TESTING_ORACLES.md](TESTING_ORACLES.md)
