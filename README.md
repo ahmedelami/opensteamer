@@ -230,5 +230,6 @@ bootout prevents two KeepAlive jobs from competing while preserving pairing and 
 - [HOST_MIGRATION.md](HOST_MIGRATION.md) — one-time upgrade for an existing persistent Mac host.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — documentation, testing, and secret-hygiene standards.
 
-opensteamer is licensed under the [MIT License](LICENSE). Third-party components remain under
-their own terms, reproduced in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+opensteamer is licensed under the [GNU General Public License v2.0 only](LICENSE)
+(`GPL-2.0-only`). Third-party components remain under their own terms, reproduced in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
