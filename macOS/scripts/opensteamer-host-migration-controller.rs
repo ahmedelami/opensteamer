@@ -24,10 +24,10 @@ const USER_HOME: &str = "/Users/ahmed";
 const USER_ID: u32 = 501;
 const MIGRATIONS_ROOT: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations";
 const PRIVATE_ROOT: &str = "/Users/ahmed/Library/Application Support/opensteamer";
-const ACTIVE_TRANSACTION_NAME: &str = "active-migration-v15";
-const ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v15.pending";
-const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v15.finalizing";
-const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = ".active-migration-v15.linearized";
+const ACTIVE_TRANSACTION_NAME: &str = "active-migration-v16";
+const ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v16.pending";
+const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v16.finalizing";
+const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = ".active-migration-v16.linearized";
 const PRIOR_V10_ACTIVE_TRANSACTION_NAME: &str = "active-migration-v10";
 const PRIOR_V10_ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v10.pending";
 const PRIOR_V10_ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v10.finalizing";
@@ -63,7 +63,7 @@ const CODE_IDENTIFIER: &str = "com.elamin.AudioStreamer.CaptureServer";
 const ONLINE_LOG: &str = "/var/tmp/opensteamer-worldwide-host.log";
 const ERROR_LOG: &str = "/var/tmp/opensteamer-worldwide-host.err.log";
 const ONLINE_MARKER: &str = "Worldwide paired-device availability is online";
-const JOURNAL_VERSION: &str = "OPENSTEAMER_MIGRATION_JOURNAL_V15";
+const JOURNAL_VERSION: &str = "OPENSTEAMER_MIGRATION_JOURNAL_V16";
 const PRIOR_PRESTOP_JOURNAL: &[u8] = b"OPENSTEAMER_MIGRATION_JOURNAL_V9\nSTATE BEGUN\nSTATE ROLLBACK_STARTED legacy_disable_was_journaled=false rollback_mode=BeforeLegacyStop\nSTATE LEGACY_REENABLED\nSTATE LEGACY_RECOVERED\nSTATE ROLLED_BACK\n";
 const PRIOR_PRESTOP_RESULT: &[u8] = b"result=rolled-back-before-stop\nlegacy_launchd_disabled=false\nphysical_iphone_e2e=unavailable-not-claimed\n";
 const PRIOR_JOURNAL_SHA256: &str =
@@ -432,7 +432,69 @@ const PRIOR_V14_STAGED_APP_XATTRS_SHA256: &str =
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const PRIOR_V14_FAILED_APP_XATTRS_SHA256: &str =
     "b3803dc3d49417c1f401ee004179d08fed3de6471fee88d51ca743c910fffa56";
-const V15_EVIDENCE_PATH: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v15-after-v14-1785637636-18044";
+const PRIOR_V15_ACTIVE_TRANSACTION_NAME: &str = "active-migration-v15";
+const PRIOR_V15_ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v15.pending";
+const PRIOR_V15_ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v15.finalizing";
+const PRIOR_V15_ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = ".active-migration-v15.linearized";
+const PRIOR_V15_EVIDENCE_PATH: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v15-after-v14-1785637636-18044";
+const PRIOR_V15_ACTIVE_RECORD: &[u8] = b"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v15-after-v14-1785637636-18044\n";
+const PRIOR_V15_ACTIVE_SHA256: &str =
+    "a1aa94936aa8d5f994597525a08569eb487ed2931487f3741e4d5421a3058513";
+const PRIOR_V15_SOURCE_COMMIT: &str = "26869215b5c8c69037652c8feb2db0371ef13648";
+const PRIOR_V15_SOURCE_TREE: &str = "2ff47b6b082d78108447c0ea0a7bf2e213e06310";
+const PRIOR_V15_FINAL_JOURNAL_SIZE: usize = 5_412;
+const PRIOR_V15_FINAL_JOURNAL_LINES: usize = 20;
+const PRIOR_V15_FINAL_JOURNAL_SHA256: &str =
+    "a812bca76e799ad4b2727b6c6d8c20d84875c787541bea8c1a9a343b5ad07dcc";
+const PRIOR_V15_PRECUTOVER_JOURNAL_LINE: &[u8] = b"STATE PRECUTOVER_VERIFIED applications_device=16777230 applications_inode=4982341 launch_agents_device=16777230 launch_agents_inode=474668 precutover_available_bytes=3092496384 rollback_reserve_device=16777230 rollback_reserve_inode=20973550 rollback_reserve_bytes=8388608\n";
+const PRIOR_V15_GENERATION_JOURNAL_LINE: &[u8] = b"STATE NEW_PID_OBSERVED log_offset=1364 log_device=16777230 log_inode=20570513 pid=5692 runs=1 process_start=Sun%20Aug%20%202%2002%3A55%3A33%202026 nonce=9f297b53abe1b9bab9e2403c61cc4c980cabeb71ba4f6883a1dd21e949ae0f9d lock_device=16777230 lock_inode=10835208\n";
+const PRIOR_V15_ROLLBACK_JOURNAL_TAIL: &[u8] = b"STATE ROLLBACK_STARTED legacy_disable_was_journaled=true rollback_mode=FullRestore\nSTATE NEW_STOPPED\nSTATE NEW_DESTINATIONS_CLEARED\nSTATE LEGACY_REENABLED\nSTATE LEGACY_BOOTSTRAPPED\nSTATE LEGACY_RECOVERED\nSTATE ROLLED_BACK\n";
+const PRIOR_V15_FINAL_RESULT: &[u8] = b"result=rolled-back\nlegacy_launchd_disabled=false\nphysical_iphone_e2e=unavailable-not-claimed\n";
+const PRIOR_V15_FINAL_RESULT_SHA256: &str =
+    "434dea611969ea91d8b873bffe42e4a149f329641fe5111e898b86d66fc3d301";
+const PRIOR_V15_SOURCE_ARCHIVE_SIZE: u64 = 6_563_840;
+const PRIOR_V15_SOURCE_ARCHIVE_SHA256: &str =
+    "9794a0894ea873e257fc3c6198ea6321ee1790f5ae5de80a4a698202c3e3883a";
+const PRIOR_V15_PROVENANCE_SHA256: &str =
+    "d16716934018f9ff0b9d1206d6ed43e4596e0596dd3e226a99fac7df9c208261";
+const PRIOR_V15_PROVENANCE: &[u8] = br#"commit=26869215b5c8c69037652c8feb2db0371ef13648
+tree=2ff47b6b082d78108447c0ea0a7bf2e213e06310
+remote=https://github.com/ahmedelami/opensteamer.git
+upstream=origin/agent/auto-select-iphone-microphone
+source_archive_sha256=9794a0894ea873e257fc3c6198ea6321ee1790f5ae5de80a4a698202c3e3883a
+package_resolved_sha256=161213e9507513e41f0acba0d7439fcf633b9d03d78c22b1e4b15fa9f83a01d9
+"#;
+const PRIOR_V15_LEGACY_MANIFEST_SHA256: &str =
+    "2bdaddf99c5101a8f994d3916b44a66f6c8fcbd3c0cda1b3ae44694263d6971f";
+const PRIOR_V15_LEGACY_XATTRS_SHA256: &str =
+    "cc69a330ffd8dcb92e45bfa1b2f7163f749b2c1875bc2ead51f9ed50dd252ea8";
+const PRIOR_V15_STAGED_HASHES_SHA256: &str =
+    "19ed36c5ebe84e60073ed2131878c1b29df8d13a96672780d988a7b86d176db5";
+const PRIOR_V15_SOURCE_EXPORT_MANIFEST_SHA256: &str =
+    "223bd97483d6e099b32944c9ef6852ccc7d8d728a88e0d309527fb5dcc03a423";
+const PRIOR_V15_BUILD_STDOUT_SHA256: &str =
+    "0aec7683266cfdb610b252b1b2f99a42081adcfc4c0cc3d4f01b6326a187f001";
+const PRIOR_V15_BUILD_STDOUT_SIZE: usize = 884;
+const PRIOR_V15_BUILD_STDERR_SHA256: &str =
+    "8992a64260fba0c4f0da055fcd10d142f94b50fbef81bb82287ff896e3b8efda";
+const PRIOR_V15_BUILD_STDERR_SIZE: usize = 3_557;
+const PRIOR_V15_ROLLBACK_RESERVE_SHA256: &str =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const PRIOR_V15_ROLLBACK_RESERVE_DEVICE: u64 = 16_777_230;
+const PRIOR_V15_ROLLBACK_RESERVE_INODE: u64 = 20_973_550;
+const PRIOR_V15_STAGED_EXECUTABLE_SHA256: &str =
+    "8bee73df6693c7ca31ebcdec1f1cf9bb3b30e60e1577da0b4f8a6dbc2a64730f";
+const PRIOR_V15_STAGED_PLIST_SHA256: &str =
+    "7cdcf2d1517dc9ec1ae49b6fbbaf293c77afd958f697878d44f3b3c8e9c7e550";
+const PRIOR_V15_STAGED_APP_MANIFEST_SHA256: &str =
+    "1db07ebbc53b1f2bc6a7bfbb1be9fcd258f008e10ab4147c8b72bafdfd983494";
+const PRIOR_V15_SYMLINK_TARGET_MANIFEST_SHA256: &str =
+    "ab17b5de2703ca8b990a315bb816165d6d6bdb898e2b7b6d8c9d59147cbd8fec";
+const PRIOR_V15_STAGED_APP_XATTRS_SHA256: &str =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const PRIOR_V15_FAILED_APP_XATTRS_SHA256: &str =
+    "760fdf730af579fa4b0b89a349babb39743944bf9e10b88cc513a263d23cb8b3";
+const V16_EVIDENCE_PATH: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v16-after-v15-1785637636-18044";
 const CHFLAGS_SHA256: &str = "a67367c7fda2e962b72db6cc730173e82115f3709bf4a208d1d2ed1a6787a211";
 const DITTO_SHA256: &str = "31a07d70d9ebea58b083e47d4fa380c1d5b8f7fe58ac3fefa9ce2714ca898ca6";
 const EMBEDDED_BUILD_SCRIPT: &[u8] = include_bytes!("build-opensteamer-host-app.sh");
@@ -1843,7 +1905,7 @@ impl Layout {
 
     fn create(repo: PathBuf) -> Result<Self> {
         ensure_private_directory(Path::new(MIGRATIONS_ROOT), 0o700)?;
-        let evidence = PathBuf::from(V15_EVIDENCE_PATH);
+        let evidence = PathBuf::from(V16_EVIDENCE_PATH);
         fs::create_dir(&evidence).map_err(|error| {
             ControllerError(format!("cannot create evidence directory: {error}"))
         })?;
@@ -1984,6 +2046,7 @@ fn require_before_deadline(deadline: Instant, label: &str) -> Result<()> {
 const F_GETFL_VALUE: i32 = 3;
 const F_SETFL_VALUE: i32 = 4;
 const MAX_COMMAND_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_DRAIN_BYTES_PER_POLL: usize = 64 * 1024;
 const COMMAND_TERMINATION_RESERVE_MAX: Duration = Duration::from_millis(250);
 
 fn fixed_child_environment() -> BTreeMap<String, String> {
@@ -2019,16 +2082,16 @@ fn set_pipe_nonblocking(fd: RawFd, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn drain_nonblocking<R: Read>(
-    reader: &mut R,
-    output: &mut Vec<u8>,
-    label: &str,
-    deadline: Instant,
-) -> Result<bool> {
+fn drain_nonblocking<R: Read>(reader: &mut R, output: &mut Vec<u8>, label: &str) -> Result<bool> {
     let mut buffer = [0u8; 8192];
+    let mut drained = 0usize;
     loop {
-        require_before_deadline(deadline, label)?;
-        match reader.read(&mut buffer) {
+        let remaining = MAX_DRAIN_BYTES_PER_POLL.saturating_sub(drained);
+        if remaining == 0 {
+            return Ok(false);
+        }
+        let read_length = remaining.min(buffer.len());
+        match reader.read(&mut buffer[..read_length]) {
             Ok(0) => return Ok(true),
             Ok(count) => {
                 let next_length = output
@@ -2042,6 +2105,7 @@ fn drain_nonblocking<R: Read>(
                     )));
                 }
                 output.extend_from_slice(&buffer[..count]);
+                drained += count;
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
@@ -2139,6 +2203,29 @@ fn command_kill_at(started: Instant, deadline: Instant) -> Instant {
     deadline.checked_sub(reserve).unwrap_or(started)
 }
 
+fn canonical_command_timeout_error(
+    program: &Path,
+    reap_result: Option<&Result<ExitStatus>>,
+    stdout_bytes: &[u8],
+    stderr_bytes: &[u8],
+    stdout_drain_error: Option<&str>,
+    stderr_drain_error: Option<&str>,
+) -> ControllerError {
+    let termination = match reap_result {
+        None => "not-started".to_owned(),
+        Some(Ok(status)) => format!("process-group-terminated,reaped={:?}", status.code()),
+        Some(Err(error)) => format!("process-group-termination-attempted,reap_error={}", error),
+    };
+    ControllerError(format!(
+        "command '{}' exceeded its monotonic deadline budget ({termination}, stdout_bytes={}, stderr={}, post-timeout-stdout-drain={:?}, post-timeout-stderr-drain={:?})",
+        program.display(),
+        stdout_bytes.len(),
+        String::from_utf8_lossy(stderr_bytes).trim(),
+        stdout_drain_error,
+        stderr_drain_error,
+    ))
+}
+
 fn run_spawned_command(
     mut command: Command,
     program: &Path,
@@ -2146,10 +2233,14 @@ fn run_spawned_command(
 ) -> Result<CommandOutput> {
     let started = Instant::now();
     if started >= deadline {
-        return Err(ControllerError(format!(
-            "command '{}' was not started because its monotonic deadline expired",
-            program.display()
-        )));
+        return Err(canonical_command_timeout_error(
+            program,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+        ));
     }
     command
         .stdin(Stdio::null())
@@ -2178,10 +2269,8 @@ fn run_spawned_command(
     let kill_at = command_kill_at(started, deadline);
 
     loop {
-        if let Err(error) =
-            drain_nonblocking(&mut stdout, &mut stdout_bytes, "child stdout", deadline).and_then(
-                |_| drain_nonblocking(&mut stderr, &mut stderr_bytes, "child stderr", deadline),
-            )
+        if let Err(error) = drain_nonblocking(&mut stdout, &mut stdout_bytes, "child stdout")
+            .and_then(|_| drain_nonblocking(&mut stderr, &mut stderr_bytes, "child stderr"))
         {
             let _ = terminate_process_group_and_reap(&mut child, program, deadline);
             return Err(error);
@@ -2195,8 +2284,8 @@ fn run_spawned_command(
             // A descendant may retain an inherited pipe after the direct child exits. Both pipes
             // are nonblocking, so collect only the bytes already available and close them rather
             // than waiting for an untrusted descendant to produce EOF.
-            let _ = drain_nonblocking(&mut stdout, &mut stdout_bytes, "child stdout", deadline)?;
-            let _ = drain_nonblocking(&mut stderr, &mut stderr_bytes, "child stderr", deadline)?;
+            let _ = drain_nonblocking(&mut stdout, &mut stdout_bytes, "child stdout")?;
+            let _ = drain_nonblocking(&mut stderr, &mut stderr_bytes, "child stderr")?;
             return Ok(CommandOutput {
                 status,
                 stdout: String::from_utf8(stdout_bytes).map_err(|_| {
@@ -2210,32 +2299,23 @@ fn run_spawned_command(
 
         let now = Instant::now();
         if now >= kill_at {
-            let reaped = terminate_process_group_and_reap(&mut child, program, deadline)?;
-            let stdout_drain_error = drain_nonblocking(
-                &mut stdout,
-                &mut stdout_bytes,
-                "timed-out child stdout",
-                deadline,
-            )
-            .err()
-            .map(|error| error.to_string());
-            let stderr_drain_error = drain_nonblocking(
-                &mut stderr,
-                &mut stderr_bytes,
-                "timed-out child stderr",
-                deadline,
-            )
-            .err()
-            .map(|error| error.to_string());
-            return Err(ControllerError(format!(
-                "command '{}' exceeded its monotonic deadline budget (process-group-terminated, reaped={:?}, stdout_bytes={}, stderr={}, post-timeout-stdout-drain={:?}, post-timeout-stderr-drain={:?})",
-                program.display(),
-                reaped.code(),
-                stdout_bytes.len(),
-                String::from_utf8_lossy(&stderr_bytes).trim(),
-                stdout_drain_error,
-                stderr_drain_error,
-            )));
+            let reap_result = terminate_process_group_and_reap(&mut child, program, deadline);
+            let stdout_drain_error =
+                drain_nonblocking(&mut stdout, &mut stdout_bytes, "timed-out child stdout")
+                    .err()
+                    .map(|error| error.to_string());
+            let stderr_drain_error =
+                drain_nonblocking(&mut stderr, &mut stderr_bytes, "timed-out child stderr")
+                    .err()
+                    .map(|error| error.to_string());
+            return Err(canonical_command_timeout_error(
+                program,
+                Some(&reap_result),
+                &stdout_bytes,
+                &stderr_bytes,
+                stdout_drain_error.as_deref(),
+                stderr_drain_error.as_deref(),
+            ));
         }
         thread::sleep(
             kill_at
@@ -2252,10 +2332,14 @@ fn run_command_until(
     deadline: Instant,
 ) -> Result<CommandOutput> {
     if Instant::now() >= deadline {
-        return Err(ControllerError(format!(
-            "command '{}' was not started because its monotonic deadline expired",
-            program.display()
-        )));
+        return Err(canonical_command_timeout_error(
+            program,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+        ));
     }
     let mut command = Command::new(program);
     command
@@ -2289,10 +2373,14 @@ fn run_command_owned_until(
     deadline: Instant,
 ) -> Result<CommandOutput> {
     if Instant::now() >= deadline {
-        return Err(ControllerError(format!(
-            "command '{}' was not started because its monotonic deadline expired",
-            program.display()
-        )));
+        return Err(canonical_command_timeout_error(
+            program,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+        ));
     }
     let mut command = Command::new(program);
     command.args(arguments);
@@ -2314,10 +2402,14 @@ fn run_pinned_script_until(
 ) -> Result<CommandOutput> {
     verifiers.revalidate()?;
     if Instant::now() >= deadline {
-        return Err(ControllerError(format!(
-            "pinned script '{}' was not started because its monotonic deadline expired",
-            script.logical_path.display()
-        )));
+        return Err(canonical_command_timeout_error(
+            &script.logical_path,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+        ));
     }
     let mut command = Command::new("/bin/zsh");
     command
@@ -2332,6 +2424,17 @@ fn run_pinned_script_until(
     }
     let output = run_spawned_command(command, &script.logical_path, deadline)?;
     verifiers.revalidate()?;
+    if Instant::now() >= deadline {
+        let reaped = Ok(output.status);
+        return Err(canonical_command_timeout_error(
+            &script.logical_path,
+            Some(&reaped),
+            output.stdout.as_bytes(),
+            output.stderr.as_bytes(),
+            None,
+            None,
+        ));
+    }
     Ok(output)
 }
 
@@ -2361,10 +2464,14 @@ fn run_command_with_stdout_file(
 ) -> Result<(ExitStatus, String)> {
     let started = Instant::now();
     if started >= deadline {
-        return Err(ControllerError(format!(
-            "command '{}' was not started because its monotonic deadline expired",
-            program.display()
-        )));
+        return Err(canonical_command_timeout_error(
+            program,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+        ));
     }
     let mut command = Command::new(program);
     command
@@ -2397,9 +2504,7 @@ fn run_command_with_stdout_file(
     let mut stderr_bytes = Vec::new();
     let kill_at = command_kill_at(started, deadline);
     loop {
-        if let Err(error) =
-            drain_nonblocking(&mut stderr, &mut stderr_bytes, "child stderr", deadline)
-        {
+        if let Err(error) = drain_nonblocking(&mut stderr, &mut stderr_bytes, "child stderr") {
             let _ = terminate_process_group_and_reap(&mut child, program, deadline);
             return Err(error);
         }
@@ -2409,7 +2514,7 @@ fn run_command_with_stdout_file(
                 program.display()
             ))
         })? {
-            let _ = drain_nonblocking(&mut stderr, &mut stderr_bytes, "child stderr", deadline)?;
+            let _ = drain_nonblocking(&mut stderr, &mut stderr_bytes, "child stderr")?;
             let stderr_text = String::from_utf8(stderr_bytes).map_err(|_| {
                 ControllerError(format!("{} stderr is not UTF-8", program.display()))
             })?;
@@ -2417,19 +2522,19 @@ fn run_command_with_stdout_file(
         }
         let now = Instant::now();
         if now >= kill_at {
-            let reaped = terminate_process_group_and_reap(&mut child, program, deadline)?;
-            let _ = drain_nonblocking(
-                &mut stderr,
-                &mut stderr_bytes,
-                "timed-out child stderr",
-                deadline,
-            )?;
-            return Err(ControllerError(format!(
-                "command '{}' exceeded its monotonic deadline budget (process-group-terminated, reaped={:?}, stderr={})",
-                program.display(),
-                reaped.code(),
-                String::from_utf8_lossy(&stderr_bytes).trim()
-            )));
+            let reap_result = terminate_process_group_and_reap(&mut child, program, deadline);
+            let stderr_drain_error =
+                drain_nonblocking(&mut stderr, &mut stderr_bytes, "timed-out child stderr")
+                    .err()
+                    .map(|error| error.to_string());
+            return Err(canonical_command_timeout_error(
+                program,
+                Some(&reap_result),
+                &[],
+                &stderr_bytes,
+                None,
+                stderr_drain_error.as_deref(),
+            ));
         }
         thread::sleep(
             kill_at
@@ -2487,7 +2592,7 @@ fn verify_prior_retry_state_cli() -> Result<()> {
         ActivePointerRecovery::None => {}
         ActivePointerRecovery::Active => {
             return Err(ControllerError(
-                "a version-15 active transaction already exists".to_owned(),
+                "a version-16 active transaction already exists".to_owned(),
             ))
         }
     }
@@ -2499,20 +2604,22 @@ fn verify_prior_retry_state_cli() -> Result<()> {
     let prior_v12 = validate_prior_v12_rolledback_retry(private_root)?;
     let prior_v13 = validate_prior_v13_rolledback_retry(private_root)?;
     let prior_v14 = validate_prior_v14_rolledback_retry(private_root)?;
+    let prior_v15 = validate_prior_v15_rolledback_retry(private_root)?;
     prior_v9.revalidate(private_root)?;
     prior_v10.revalidate(private_root)?;
     prior_v11.revalidate(private_root)?;
     prior_v12.revalidate(private_root)?;
     prior_v13.revalidate(private_root)?;
     prior_v14.revalidate(private_root)?;
+    prior_v15.revalidate(private_root)?;
     require_all_prior_retry_residues_absent(private_root)?;
     require_fresh_retry_disk_headroom()?;
-    if entry_exists(Path::new(V15_EVIDENCE_PATH))? {
+    if entry_exists(Path::new(V16_EVIDENCE_PATH))? {
         return Err(ControllerError(
-            "the deterministic version-15 evidence path is already occupied".to_owned(),
+            "the deterministic version-16 evidence path is already occupied".to_owned(),
         ));
     }
-    println!("PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14 legacy=sole-ready v15=absent");
+    println!("PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15 legacy=sole-ready v16=absent");
     Ok(())
 }
 
@@ -2541,6 +2648,7 @@ fn execute(root: &Path) -> Result<()> {
             let prior_v12 = validate_prior_v12_rolledback_retry(private_root)?;
             let prior_v13 = validate_prior_v13_rolledback_retry(private_root)?;
             let prior_v14 = validate_prior_v14_rolledback_retry(private_root)?;
+            let prior_v15 = validate_prior_v15_rolledback_retry(private_root)?;
             start_new(
                 repo,
                 private_root,
@@ -2550,6 +2658,7 @@ fn execute(root: &Path) -> Result<()> {
                 prior_v12,
                 prior_v13,
                 prior_v14,
+                prior_v15,
             )
         }
         ActivePointerRecovery::Active => recover_active(repo, private_root),
@@ -2799,6 +2908,14 @@ fn require_all_prior_retry_residues_absent(private_root: &PinnedDirectory) -> Re
         PRIOR_V14_ACTIVE_TRANSACTION_LINEARIZED_NAME,
         "v14",
         Path::new(PRIOR_V14_EVIDENCE_PATH),
+    )?;
+    require_prior_retry_residues_absent(
+        private_root,
+        PRIOR_V15_ACTIVE_TRANSACTION_PENDING_NAME,
+        PRIOR_V15_ACTIVE_TRANSACTION_FINALIZING_NAME,
+        PRIOR_V15_ACTIVE_TRANSACTION_LINEARIZED_NAME,
+        "v15",
+        Path::new(PRIOR_V15_EVIDENCE_PATH),
     )
 }
 
@@ -6140,6 +6257,794 @@ fn validate_prior_v14_rolledback_retry(
     Ok(guard)
 }
 
+fn validate_prior_v15_rolledback_records(
+    evidence: &Path,
+    journal: &[u8],
+    result: &[u8],
+    provenance: &[u8],
+) -> Result<()> {
+    if evidence != Path::new(PRIOR_V15_EVIDENCE_PATH) {
+        return Err(ControllerError(
+            "prior v15 pointer does not name the exact reviewed evidence".to_owned(),
+        ));
+    }
+    if journal.len() != PRIOR_V15_FINAL_JOURNAL_SIZE
+        || journal.iter().filter(|byte| **byte == b'\n').count() != PRIOR_V15_FINAL_JOURNAL_LINES
+        || sha256_bytes(journal)? != PRIOR_V15_FINAL_JOURNAL_SHA256
+        || !journal.starts_with(b"OPENSTEAMER_MIGRATION_JOURNAL_V15\n")
+        || !journal
+            .windows(PRIOR_V15_PRECUTOVER_JOURNAL_LINE.len())
+            .any(|window| window == PRIOR_V15_PRECUTOVER_JOURNAL_LINE)
+        || !journal
+            .windows(PRIOR_V15_GENERATION_JOURNAL_LINE.len())
+            .any(|window| window == PRIOR_V15_GENERATION_JOURNAL_LINE)
+        || !journal.ends_with(PRIOR_V15_ROLLBACK_JOURNAL_TAIL)
+    {
+        return Err(ControllerError(
+            "prior v15 journal is not the exact reviewed readiness-race rollback".to_owned(),
+        ));
+    }
+    if result != PRIOR_V15_FINAL_RESULT || sha256_bytes(result)? != PRIOR_V15_FINAL_RESULT_SHA256 {
+        return Err(ControllerError(
+            "prior v15 result is not the exact reviewed rolled-back outcome".to_owned(),
+        ));
+    }
+    if provenance != PRIOR_V15_PROVENANCE
+        || sha256_bytes(provenance)? != PRIOR_V15_PROVENANCE_SHA256
+    {
+        return Err(ControllerError(
+            "prior v15 provenance is not the exact reviewed record".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn require_prior_v15_deployment_records_absent(records: &PinnedDirectory) -> Result<()> {
+    for name in ["deployment.stdout", "deployment.stderr"] {
+        if records.open_existing_regular(name, false)?.is_some() {
+            return Err(ControllerError(format!(
+                "prior v15 must not contain a deployment-verifier record: {name}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+struct PriorV15RetryGuard {
+    pointer: File,
+    evidence: PinnedDirectory,
+    records: PinnedDirectory,
+    legacy_snapshot: PinnedDirectory,
+    failed_new: PinnedDirectory,
+    failed_app: PinnedDirectory,
+    staged: PinnedDirectory,
+    staged_app: PinnedDirectory,
+    source_export: PinnedDirectory,
+    scratch: PinnedDirectory,
+    journal: File,
+    result: File,
+    provenance: File,
+    legacy_manifest: File,
+    legacy_xattrs: File,
+    staged_hashes: File,
+    source_export_manifest: File,
+    build_stdout: File,
+    build_stderr: File,
+    rollback_reserve: File,
+    staged_plist: File,
+    failed_plist: File,
+    source_archive: File,
+    snapshot_executable: File,
+    snapshot_plist: File,
+}
+
+impl PriorV15RetryGuard {
+    fn journal_fields(&self) -> Vec<(&'static str, String)> {
+        vec![
+            (
+                "prior_v15_active_sha256",
+                PRIOR_V15_ACTIVE_SHA256.to_owned(),
+            ),
+            (
+                "prior_v15_journal_sha256",
+                PRIOR_V15_FINAL_JOURNAL_SHA256.to_owned(),
+            ),
+            (
+                "prior_v15_result_sha256",
+                PRIOR_V15_FINAL_RESULT_SHA256.to_owned(),
+            ),
+            (
+                "prior_v15_source_archive_sha256",
+                PRIOR_V15_SOURCE_ARCHIVE_SHA256.to_owned(),
+            ),
+            (
+                "prior_v15_source_commit",
+                PRIOR_V15_SOURCE_COMMIT.to_owned(),
+            ),
+            ("prior_v15_source_tree", PRIOR_V15_SOURCE_TREE.to_owned()),
+            (
+                "prior_v15_provenance_sha256",
+                PRIOR_V15_PROVENANCE_SHA256.to_owned(),
+            ),
+            (
+                "prior_v15_legacy_executable_sha256",
+                LEGACY_EXECUTABLE_SHA256.to_owned(),
+            ),
+            (
+                "prior_v15_legacy_plist_sha256",
+                LEGACY_PLIST_SHA256.to_owned(),
+            ),
+        ]
+    }
+
+    fn revalidate(&self, private_root: &PinnedDirectory) -> Result<()> {
+        require_prior_retry_residues_absent(
+            private_root,
+            PRIOR_V15_ACTIVE_TRANSACTION_PENDING_NAME,
+            PRIOR_V15_ACTIVE_TRANSACTION_FINALIZING_NAME,
+            PRIOR_V15_ACTIVE_TRANSACTION_LINEARIZED_NAME,
+            "v15",
+            &self.evidence.path,
+        )?;
+        private_root.ensure_file_at_name(PRIOR_V15_ACTIVE_TRANSACTION_NAME, &self.pointer)?;
+        let pointer_path = private_root.path.join(PRIOR_V15_ACTIVE_TRANSACTION_NAME);
+        let pointer = read_opened_regular(&self.pointer, &pointer_path, 0o600)?;
+        if pointer != PRIOR_V15_ACTIVE_RECORD || sha256_bytes(&pointer)? != PRIOR_V15_ACTIVE_SHA256
+        {
+            return Err(ControllerError(
+                "prior v15 active pointer changed during retry proof".to_owned(),
+            ));
+        }
+        private_root.ensure_file_at_name(PRIOR_V15_ACTIVE_TRANSACTION_NAME, &self.pointer)?;
+
+        for directory in [
+            &self.evidence,
+            &self.records,
+            &self.legacy_snapshot,
+            &self.failed_new,
+            &self.failed_app,
+            &self.staged,
+            &self.staged_app,
+            &self.source_export,
+            &self.scratch,
+        ] {
+            directory.revalidate()?;
+        }
+        require_exact_directory_entries(
+            &self.evidence,
+            &[
+                "failed-new",
+                "journal.log",
+                "legacy-snapshot",
+                "records",
+                "source-export",
+                "source.tar",
+                "staged",
+                "swiftpm-scratch",
+            ],
+        )?;
+        require_exact_directory_entries(
+            &self.records,
+            &[
+                "build.stderr",
+                "build.stdout",
+                "legacy-app-tree-manifest.txt",
+                "legacy-app-xattrs.txt",
+                "provenance.txt",
+                "result.txt",
+                "rollback-reserve.bin",
+                "source-export-manifest.txt",
+                "staged-hashes.txt",
+            ],
+        )?;
+        self.evidence
+            .ensure_file_at_name("journal.log", &self.journal)?;
+        self.records
+            .ensure_file_at_name("result.txt", &self.result)?;
+        self.records
+            .ensure_file_at_name("provenance.txt", &self.provenance)?;
+        self.records
+            .ensure_file_at_name("legacy-app-tree-manifest.txt", &self.legacy_manifest)?;
+        self.records
+            .ensure_file_at_name("legacy-app-xattrs.txt", &self.legacy_xattrs)?;
+        self.records
+            .ensure_file_at_name("staged-hashes.txt", &self.staged_hashes)?;
+        self.records
+            .ensure_file_at_name("source-export-manifest.txt", &self.source_export_manifest)?;
+        self.records
+            .ensure_file_at_name("build.stdout", &self.build_stdout)?;
+        self.records
+            .ensure_file_at_name("build.stderr", &self.build_stderr)?;
+        self.records
+            .ensure_file_at_name("rollback-reserve.bin", &self.rollback_reserve)?;
+        self.staged.ensure_file_at_name(
+            "org.example.opensteamer.worldwide.plist",
+            &self.staged_plist,
+        )?;
+        self.failed_new.ensure_file_at_name(
+            "org.example.opensteamer.worldwide.plist",
+            &self.failed_plist,
+        )?;
+        self.evidence
+            .ensure_file_at_name("source.tar", &self.source_archive)?;
+        self.legacy_snapshot
+            .ensure_file_at_name("CaptureServer", &self.snapshot_executable)?;
+        self.legacy_snapshot.ensure_file_at_name(
+            "com.elamin.audiostreamer.worldwide.plist",
+            &self.snapshot_plist,
+        )?;
+        require_exact_directory_entries(
+            &self.evidence,
+            &[
+                "failed-new",
+                "journal.log",
+                "legacy-snapshot",
+                "records",
+                "source-export",
+                "source.tar",
+                "staged",
+                "swiftpm-scratch",
+            ],
+        )?;
+        require_exact_directory_entries(
+            &self.records,
+            &[
+                "build.stderr",
+                "build.stdout",
+                "legacy-app-tree-manifest.txt",
+                "legacy-app-xattrs.txt",
+                "provenance.txt",
+                "result.txt",
+                "rollback-reserve.bin",
+                "source-export-manifest.txt",
+                "staged-hashes.txt",
+            ],
+        )?;
+        require_exact_directory_entries(
+            &self.legacy_snapshot,
+            &["CaptureServer", "com.elamin.audiostreamer.worldwide.plist"],
+        )?;
+        require_exact_directory_entries(
+            &self.failed_new,
+            &[
+                "opensteamer Host.app",
+                "org.example.opensteamer.worldwide.plist",
+            ],
+        )?;
+        require_exact_directory_entries(
+            &self.staged,
+            &[
+                "opensteamer Host.app",
+                "org.example.opensteamer.worldwide.plist",
+            ],
+        )?;
+        require_prior_v15_deployment_records_absent(&self.records)?;
+        require_exact_directory_entries(
+            &self.legacy_snapshot,
+            &["CaptureServer", "com.elamin.audiostreamer.worldwide.plist"],
+        )?;
+        require_exact_directory_entries(
+            &self.failed_new,
+            &[
+                "opensteamer Host.app",
+                "org.example.opensteamer.worldwide.plist",
+            ],
+        )?;
+        require_exact_directory_entries(
+            &self.staged,
+            &[
+                "opensteamer Host.app",
+                "org.example.opensteamer.worldwide.plist",
+            ],
+        )?;
+
+        self.evidence
+            .ensure_file_at_name("journal.log", &self.journal)?;
+        self.records
+            .ensure_file_at_name("result.txt", &self.result)?;
+        self.records
+            .ensure_file_at_name("provenance.txt", &self.provenance)?;
+        self.records
+            .ensure_file_at_name("legacy-app-tree-manifest.txt", &self.legacy_manifest)?;
+        self.records
+            .ensure_file_at_name("legacy-app-xattrs.txt", &self.legacy_xattrs)?;
+        self.records
+            .ensure_file_at_name("staged-hashes.txt", &self.staged_hashes)?;
+        self.records
+            .ensure_file_at_name("source-export-manifest.txt", &self.source_export_manifest)?;
+        self.records
+            .ensure_file_at_name("build.stdout", &self.build_stdout)?;
+        self.records
+            .ensure_file_at_name("build.stderr", &self.build_stderr)?;
+        self.records
+            .ensure_file_at_name("rollback-reserve.bin", &self.rollback_reserve)?;
+        self.staged.ensure_file_at_name(
+            "org.example.opensteamer.worldwide.plist",
+            &self.staged_plist,
+        )?;
+        self.failed_new.ensure_file_at_name(
+            "org.example.opensteamer.worldwide.plist",
+            &self.failed_plist,
+        )?;
+        self.evidence
+            .ensure_file_at_name("source.tar", &self.source_archive)?;
+        self.legacy_snapshot
+            .ensure_file_at_name("CaptureServer", &self.snapshot_executable)?;
+        self.legacy_snapshot.ensure_file_at_name(
+            "com.elamin.audiostreamer.worldwide.plist",
+            &self.snapshot_plist,
+        )?;
+
+        let journal = read_opened_regular(
+            &self.journal,
+            &self.evidence.path.join("journal.log"),
+            0o600,
+        )?;
+        let result =
+            read_opened_regular(&self.result, &self.records.path.join("result.txt"), 0o600)?;
+        let provenance = read_opened_regular(
+            &self.provenance,
+            &self.records.path.join("provenance.txt"),
+            0o600,
+        )?;
+        let legacy_manifest = read_opened_regular(
+            &self.legacy_manifest,
+            &self.records.path.join("legacy-app-tree-manifest.txt"),
+            0o600,
+        )?;
+        let legacy_xattrs = read_opened_regular(
+            &self.legacy_xattrs,
+            &self.records.path.join("legacy-app-xattrs.txt"),
+            0o600,
+        )?;
+        let staged_hashes = read_opened_regular(
+            &self.staged_hashes,
+            &self.records.path.join("staged-hashes.txt"),
+            0o600,
+        )?;
+        let source_export_manifest = read_opened_regular(
+            &self.source_export_manifest,
+            &self.records.path.join("source-export-manifest.txt"),
+            0o600,
+        )?;
+        let build_stdout = read_opened_regular(
+            &self.build_stdout,
+            &self.records.path.join("build.stdout"),
+            0o600,
+        )?;
+        let build_stderr = read_opened_regular(
+            &self.build_stderr,
+            &self.records.path.join("build.stderr"),
+            0o600,
+        )?;
+        if build_stdout.len() != PRIOR_V15_BUILD_STDOUT_SIZE
+            || build_stderr.len() != PRIOR_V15_BUILD_STDERR_SIZE
+        {
+            return Err(ControllerError(
+                "prior v15 build record sizes changed".to_owned(),
+            ));
+        }
+        let rollback_reserve = read_opened_regular(
+            &self.rollback_reserve,
+            &self.records.path.join("rollback-reserve.bin"),
+            0o600,
+        )?;
+        validate_prior_v15_rolledback_records(&self.evidence.path, &journal, &result, &provenance)?;
+        if tree_manifest(&self.source_export.path)?.as_bytes() != source_export_manifest {
+            return Err(ControllerError(
+                "prior v15 source export differs from its exact reviewed manifest".to_owned(),
+            ));
+        }
+        if tree_manifest(Path::new(LEGACY_APP))?.as_bytes() != legacy_manifest {
+            return Err(ControllerError(
+                "live legacy app differs from the exact prior v15 snapshot manifest".to_owned(),
+            ));
+        }
+        if capture_legacy_xattrs()?.as_bytes() != legacy_xattrs {
+            return Err(ControllerError(
+                "live legacy app xattrs differ from the exact prior v15 snapshot".to_owned(),
+            ));
+        }
+        for (path, bytes, expected) in [
+            (
+                self.records.path.join("legacy-app-tree-manifest.txt"),
+                legacy_manifest.as_slice(),
+                PRIOR_V15_LEGACY_MANIFEST_SHA256,
+            ),
+            (
+                self.records.path.join("legacy-app-xattrs.txt"),
+                legacy_xattrs.as_slice(),
+                PRIOR_V15_LEGACY_XATTRS_SHA256,
+            ),
+            (
+                self.records.path.join("staged-hashes.txt"),
+                staged_hashes.as_slice(),
+                PRIOR_V15_STAGED_HASHES_SHA256,
+            ),
+            (
+                self.records.path.join("source-export-manifest.txt"),
+                source_export_manifest.as_slice(),
+                PRIOR_V15_SOURCE_EXPORT_MANIFEST_SHA256,
+            ),
+            (
+                self.records.path.join("build.stdout"),
+                build_stdout.as_slice(),
+                PRIOR_V15_BUILD_STDOUT_SHA256,
+            ),
+            (
+                self.records.path.join("build.stderr"),
+                build_stderr.as_slice(),
+                PRIOR_V15_BUILD_STDERR_SHA256,
+            ),
+            (
+                self.records.path.join("rollback-reserve.bin"),
+                rollback_reserve.as_slice(),
+                PRIOR_V15_ROLLBACK_RESERVE_SHA256,
+            ),
+        ] {
+            if sha256_bytes(bytes)? != expected {
+                return Err(ControllerError(format!(
+                    "prior v15 anchored record changed: {}",
+                    path.display()
+                )));
+            }
+        }
+        if !rollback_reserve.is_empty() {
+            return Err(ControllerError(
+                "prior v15 rollback reserve was not durably released".to_owned(),
+            ));
+        }
+        let rollback_reserve_metadata = self.rollback_reserve.metadata()?;
+        if rollback_reserve_metadata.dev() != PRIOR_V15_ROLLBACK_RESERVE_DEVICE
+            || rollback_reserve_metadata.ino() != PRIOR_V15_ROLLBACK_RESERVE_INODE
+        {
+            return Err(ControllerError(
+                "prior v15 rollback reserve inode changed".to_owned(),
+            ));
+        }
+
+        let archive_metadata = self.source_archive.metadata()?;
+        validate_owned_regular(
+            &self.evidence.path.join("source.tar"),
+            &archive_metadata,
+            0o600,
+        )?;
+        let source_archive = read_opened_regular(
+            &self.source_archive,
+            &self.evidence.path.join("source.tar"),
+            0o600,
+        )?;
+        if archive_metadata.len() != PRIOR_V15_SOURCE_ARCHIVE_SIZE
+            || sha256_bytes(&source_archive)? != PRIOR_V15_SOURCE_ARCHIVE_SHA256
+        {
+            return Err(ControllerError(
+                "prior v15 source archive differs from the reviewed rolled-back attempt".to_owned(),
+            ));
+        }
+        let snapshot_executable = read_opened_regular(
+            &self.snapshot_executable,
+            &self.legacy_snapshot.path.join("CaptureServer"),
+            0o500,
+        )?;
+        let snapshot_plist = read_opened_regular(
+            &self.snapshot_plist,
+            &self
+                .legacy_snapshot
+                .path
+                .join("com.elamin.audiostreamer.worldwide.plist"),
+            0o400,
+        )?;
+        if sha256_bytes(&snapshot_executable)? != LEGACY_EXECUTABLE_SHA256
+            || sha256_bytes(&snapshot_plist)? != LEGACY_PLIST_SHA256
+        {
+            return Err(ControllerError(
+                "prior v15 offline legacy snapshot changed".to_owned(),
+            ));
+        }
+        let staged_plist = read_opened_regular(
+            &self.staged_plist,
+            &self
+                .staged
+                .path
+                .join("org.example.opensteamer.worldwide.plist"),
+            0o600,
+        )?;
+        let failed_plist = read_opened_regular(
+            &self.failed_plist,
+            &self
+                .failed_new
+                .path
+                .join("org.example.opensteamer.worldwide.plist"),
+            0o600,
+        )?;
+        if sha256_file(&self.staged_app.path.join("Contents/MacOS/CaptureServer"))?
+            != PRIOR_V15_STAGED_EXECUTABLE_SHA256
+            || sha256_file(&self.failed_app.path.join("Contents/MacOS/CaptureServer"))?
+                != PRIOR_V15_STAGED_EXECUTABLE_SHA256
+            || sha256_bytes(&staged_plist)? != PRIOR_V15_STAGED_PLIST_SHA256
+            || sha256_bytes(&failed_plist)? != PRIOR_V15_STAGED_PLIST_SHA256
+        {
+            return Err(ControllerError(
+                "prior v15 staged or archived artifact hash changed".to_owned(),
+            ));
+        }
+        let staged_app_manifest = directory_manifest(&self.staged_app.path)?;
+        let failed_app_manifest = directory_manifest(&self.failed_app.path)?;
+        if sha256_bytes(staged_app_manifest.as_bytes())? != PRIOR_V15_STAGED_APP_MANIFEST_SHA256
+            || failed_app_manifest != staged_app_manifest
+        {
+            return Err(ControllerError(
+                "prior v15 staged or archived full app manifest changed".to_owned(),
+            ));
+        }
+        let staged_symlinks = symlink_target_manifest(&self.staged_app.path)?;
+        let failed_symlinks = symlink_target_manifest(&self.failed_app.path)?;
+        if sha256_bytes(staged_symlinks.as_bytes())? != PRIOR_V15_SYMLINK_TARGET_MANIFEST_SHA256
+            || failed_symlinks != staged_symlinks
+        {
+            return Err(ControllerError(
+                "prior v15 staged or archived symlink target changed".to_owned(),
+            ));
+        }
+        let staged_xattrs = capture_tree_xattrs_until(
+            &self.staged_app.path,
+            deadline_after(DEFAULT_COMMAND_TIMEOUT)?,
+        )?;
+        let failed_xattrs = capture_tree_xattrs_until(
+            &self.failed_app.path,
+            deadline_after(DEFAULT_COMMAND_TIMEOUT)?,
+        )?;
+        if sha256_bytes(staged_xattrs.as_bytes())? != PRIOR_V15_STAGED_APP_XATTRS_SHA256
+            || sha256_bytes(failed_xattrs.as_bytes())? != PRIOR_V15_FAILED_APP_XATTRS_SHA256
+        {
+            return Err(ControllerError(
+                "prior v15 staged or archived app xattrs changed".to_owned(),
+            ));
+        }
+        if staged_plist != failed_plist {
+            return Err(ControllerError(
+                "prior v15 archived plist differs from its staged artifact".to_owned(),
+            ));
+        }
+
+        self.evidence
+            .ensure_file_at_name("journal.log", &self.journal)?;
+        self.records
+            .ensure_file_at_name("result.txt", &self.result)?;
+        self.records
+            .ensure_file_at_name("provenance.txt", &self.provenance)?;
+        self.records
+            .ensure_file_at_name("legacy-app-tree-manifest.txt", &self.legacy_manifest)?;
+        self.records
+            .ensure_file_at_name("legacy-app-xattrs.txt", &self.legacy_xattrs)?;
+        self.records
+            .ensure_file_at_name("staged-hashes.txt", &self.staged_hashes)?;
+        self.records
+            .ensure_file_at_name("source-export-manifest.txt", &self.source_export_manifest)?;
+        self.records
+            .ensure_file_at_name("build.stdout", &self.build_stdout)?;
+        self.records
+            .ensure_file_at_name("build.stderr", &self.build_stderr)?;
+        self.records
+            .ensure_file_at_name("rollback-reserve.bin", &self.rollback_reserve)?;
+        self.staged.ensure_file_at_name(
+            "org.example.opensteamer.worldwide.plist",
+            &self.staged_plist,
+        )?;
+        self.failed_new.ensure_file_at_name(
+            "org.example.opensteamer.worldwide.plist",
+            &self.failed_plist,
+        )?;
+        self.evidence
+            .ensure_file_at_name("source.tar", &self.source_archive)?;
+        self.legacy_snapshot
+            .ensure_file_at_name("CaptureServer", &self.snapshot_executable)?;
+        self.legacy_snapshot.ensure_file_at_name(
+            "com.elamin.audiostreamer.worldwide.plist",
+            &self.snapshot_plist,
+        )?;
+        require_exact_directory_entries(
+            &self.evidence,
+            &[
+                "failed-new",
+                "journal.log",
+                "legacy-snapshot",
+                "records",
+                "source-export",
+                "source.tar",
+                "staged",
+                "swiftpm-scratch",
+            ],
+        )?;
+        require_exact_directory_entries(
+            &self.records,
+            &[
+                "build.stderr",
+                "build.stdout",
+                "legacy-app-tree-manifest.txt",
+                "legacy-app-xattrs.txt",
+                "provenance.txt",
+                "result.txt",
+                "rollback-reserve.bin",
+                "source-export-manifest.txt",
+                "staged-hashes.txt",
+            ],
+        )?;
+        require_exact_directory_entries(
+            &self.legacy_snapshot,
+            &["CaptureServer", "com.elamin.audiostreamer.worldwide.plist"],
+        )?;
+        require_exact_directory_entries(
+            &self.failed_new,
+            &[
+                "opensteamer Host.app",
+                "org.example.opensteamer.worldwide.plist",
+            ],
+        )?;
+        require_exact_directory_entries(
+            &self.staged,
+            &[
+                "opensteamer Host.app",
+                "org.example.opensteamer.worldwide.plist",
+            ],
+        )?;
+        require_prior_v15_deployment_records_absent(&self.records)?;
+        for directory in [
+            &self.evidence,
+            &self.records,
+            &self.legacy_snapshot,
+            &self.failed_new,
+            &self.failed_app,
+            &self.staged,
+            &self.staged_app,
+            &self.source_export,
+            &self.scratch,
+        ] {
+            directory.revalidate()?;
+        }
+        private_root.ensure_file_at_name(PRIOR_V15_ACTIVE_TRANSACTION_NAME, &self.pointer)?;
+        require_prior_retry_residues_absent(
+            private_root,
+            PRIOR_V15_ACTIVE_TRANSACTION_PENDING_NAME,
+            PRIOR_V15_ACTIVE_TRANSACTION_FINALIZING_NAME,
+            PRIOR_V15_ACTIVE_TRANSACTION_LINEARIZED_NAME,
+            "v15",
+            &self.evidence.path,
+        )
+    }
+}
+
+fn validate_prior_v15_rolledback_retry(
+    private_root: &PinnedDirectory,
+) -> Result<PriorV15RetryGuard> {
+    for residue in [
+        PRIOR_V15_ACTIVE_TRANSACTION_PENDING_NAME,
+        PRIOR_V15_ACTIVE_TRANSACTION_FINALIZING_NAME,
+        PRIOR_V15_ACTIVE_TRANSACTION_LINEARIZED_NAME,
+    ] {
+        if private_root
+            .open_existing_regular(residue, false)?
+            .is_some()
+        {
+            return Err(ControllerError(format!(
+                "prior v15 active-pointer residue requires manual recovery: {residue}"
+            )));
+        }
+    }
+    let pointer =
+        open_required_pinned_regular(private_root, PRIOR_V15_ACTIVE_TRANSACTION_NAME, 0o600)?;
+    let pointer_bytes = read_opened_regular(
+        &pointer,
+        &private_root.path.join(PRIOR_V15_ACTIVE_TRANSACTION_NAME),
+        0o600,
+    )?;
+    if pointer_bytes != PRIOR_V15_ACTIVE_RECORD {
+        return Err(ControllerError(
+            "prior v15 active pointer is not the exact reviewed record".to_owned(),
+        ));
+    }
+    let evidence_path = parse_active_record(&pointer_bytes)?;
+    if evidence_path != Path::new(PRIOR_V15_EVIDENCE_PATH) {
+        return Err(ControllerError(
+            "prior v15 active pointer resolved to unexpected evidence".to_owned(),
+        ));
+    }
+
+    let evidence = PinnedDirectory::open(&evidence_path, Some(effective_uid()), Some(0o700))?;
+    let records = evidence
+        .try_open_directory_child("records", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| ControllerError("prior v15 evidence lacks records".to_owned()))?;
+    let legacy_snapshot = evidence
+        .try_open_directory_child("legacy-snapshot", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| ControllerError("prior v15 evidence lacks legacy snapshot".to_owned()))?;
+    let failed_new = evidence
+        .try_open_directory_child("failed-new", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| ControllerError("prior v15 evidence lacks failed-new".to_owned()))?;
+    let failed_app = failed_new
+        .try_open_directory_child("opensteamer Host.app", Some(effective_uid()), None)?
+        .ok_or_else(|| ControllerError("prior v15 evidence lacks archived app".to_owned()))?;
+    let staged = evidence
+        .try_open_directory_child("staged", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| ControllerError("prior v15 evidence lacks staged directory".to_owned()))?;
+    let staged_app = staged
+        .try_open_directory_child("opensteamer Host.app", Some(effective_uid()), None)?
+        .ok_or_else(|| ControllerError("prior v15 evidence lacks staged app".to_owned()))?;
+    let source_export = evidence
+        .try_open_directory_child("source-export", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| {
+            ControllerError("prior v15 evidence lacks source export directory".to_owned())
+        })?;
+    let scratch = evidence
+        .try_open_directory_child("swiftpm-scratch", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| {
+            ControllerError("prior v15 evidence lacks SwiftPM scratch directory".to_owned())
+        })?;
+    let journal = open_required_pinned_regular(&evidence, "journal.log", 0o600)?;
+    let result = open_required_pinned_regular(&records, "result.txt", 0o600)?;
+    let provenance = open_required_pinned_regular(&records, "provenance.txt", 0o600)?;
+    let legacy_manifest =
+        open_required_pinned_regular(&records, "legacy-app-tree-manifest.txt", 0o600)?;
+    let legacy_xattrs = open_required_pinned_regular(&records, "legacy-app-xattrs.txt", 0o600)?;
+    let staged_hashes = open_required_pinned_regular(&records, "staged-hashes.txt", 0o600)?;
+    let source_export_manifest =
+        open_required_pinned_regular(&records, "source-export-manifest.txt", 0o600)?;
+    let build_stdout = open_required_pinned_regular(&records, "build.stdout", 0o600)?;
+    let build_stderr = open_required_pinned_regular(&records, "build.stderr", 0o600)?;
+    require_prior_v15_deployment_records_absent(&records)?;
+    let rollback_reserve = open_required_pinned_regular(&records, "rollback-reserve.bin", 0o600)?;
+    let staged_plist =
+        open_required_pinned_regular(&staged, "org.example.opensteamer.worldwide.plist", 0o600)?;
+    let failed_plist = open_required_pinned_regular(
+        &failed_new,
+        "org.example.opensteamer.worldwide.plist",
+        0o600,
+    )?;
+    let source_archive = open_required_pinned_regular(&evidence, "source.tar", 0o600)?;
+    let snapshot_executable =
+        open_required_pinned_regular(&legacy_snapshot, "CaptureServer", 0o500)?;
+    let snapshot_plist = open_required_pinned_regular(
+        &legacy_snapshot,
+        "com.elamin.audiostreamer.worldwide.plist",
+        0o400,
+    )?;
+    let guard = PriorV15RetryGuard {
+        pointer,
+        evidence,
+        records,
+        legacy_snapshot,
+        failed_new,
+        failed_app,
+        staged,
+        staged_app,
+        source_export,
+        scratch,
+        journal,
+        result,
+        provenance,
+        legacy_manifest,
+        legacy_xattrs,
+        staged_hashes,
+        source_export_manifest,
+        build_stdout,
+        build_stderr,
+        rollback_reserve,
+        staged_plist,
+        failed_plist,
+        source_archive,
+        snapshot_executable,
+        snapshot_plist,
+    };
+    guard.revalidate(private_root)?;
+
+    let deadline = deadline_after(LEGACY_READINESS_TIMEOUT)?;
+    require_new_absent()?;
+    verify_legacy_static_until(deadline)?;
+    verify_legacy_disabled_until(false, deadline)?;
+    wait_for_exact_legacy_readiness_until(deadline)?;
+    guard.revalidate(private_root)?;
+    Ok(guard)
+}
+
 fn start_new(
     repo: PathBuf,
     private_root: &PinnedDirectory,
@@ -6149,6 +7054,7 @@ fn start_new(
     prior_v12: PriorV12RetryGuard,
     prior_v13: PriorV13RetryGuard,
     prior_v14: PriorV14RetryGuard,
+    prior_v15: PriorV15RetryGuard,
 ) -> Result<()> {
     require_fresh_retry_disk_headroom()?;
     let layout = Layout::create(repo)?;
@@ -6159,6 +7065,7 @@ fn start_new(
     prior_fields.extend(prior_v12.journal_fields());
     prior_fields.extend(prior_v13.journal_fields());
     prior_fields.extend(prior_v14.journal_fields());
+    prior_fields.extend(prior_v15.journal_fields());
     journal.transition(State::Begun, &prior_fields)?;
     let operation = (|| {
         prior_v9.revalidate(private_root)?;
@@ -6167,6 +7074,7 @@ fn start_new(
         prior_v12.revalidate(private_root)?;
         prior_v13.revalidate(private_root)?;
         prior_v14.revalidate(private_root)?;
+        prior_v15.revalidate(private_root)?;
         require_all_prior_retry_residues_absent(private_root)?;
         write_active(private_root, &layout.evidence)?;
         prior_v9.revalidate(private_root)?;
@@ -6175,6 +7083,7 @@ fn start_new(
         prior_v12.revalidate(private_root)?;
         prior_v13.revalidate(private_root)?;
         prior_v14.revalidate(private_root)?;
+        prior_v15.revalidate(private_root)?;
         require_all_prior_retry_residues_absent(private_root)?;
         run_transaction(
             &layout,
@@ -6186,6 +7095,7 @@ fn start_new(
             &prior_v12,
             &prior_v13,
             &prior_v14,
+            &prior_v15,
         )
     })();
     match operation {
@@ -6252,7 +7162,7 @@ fn recover_active(repo: PathBuf, private_root: &PinnedDirectory) -> Result<()> {
             )))
         }
         State::CriticalFailure => Err(ControllerError(format!(
-            "active v15 transaction is in CRITICAL_FAILURE; keep Mac offline; evidence={}",
+            "active v16 transaction is in CRITICAL_FAILURE; keep Mac offline; evidence={}",
             layout.evidence.display()
         ))),
         _ => {
@@ -6507,6 +7417,7 @@ struct RealForwardBackend<'a> {
     prior_v12: &'a PriorV12RetryGuard,
     prior_v13: &'a PriorV13RetryGuard,
     prior_v14: &'a PriorV14RetryGuard,
+    prior_v15: &'a PriorV15RetryGuard,
     provenance: Option<Provenance>,
     verifiers: Option<PinnedVerifierSet>,
     cutover: Option<CutoverPreflight>,
@@ -6524,6 +7435,7 @@ impl<'a> RealForwardBackend<'a> {
         prior_v12: &'a PriorV12RetryGuard,
         prior_v13: &'a PriorV13RetryGuard,
         prior_v14: &'a PriorV14RetryGuard,
+        prior_v15: &'a PriorV15RetryGuard,
     ) -> Self {
         Self {
             layout,
@@ -6534,6 +7446,7 @@ impl<'a> RealForwardBackend<'a> {
             prior_v12,
             prior_v13,
             prior_v14,
+            prior_v15,
             provenance: None,
             verifiers: None,
             cutover: None,
@@ -6601,6 +7514,7 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
                 self.prior_v12.revalidate(self.private_root)?;
                 self.prior_v13.revalidate(self.private_root)?;
                 self.prior_v14.revalidate(self.private_root)?;
+                self.prior_v15.revalidate(self.private_root)?;
                 require_all_prior_retry_residues_absent(self.private_root)?;
                 self.verifiers
                     .as_ref()
@@ -6626,6 +7540,7 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
                 self.prior_v12.revalidate(self.private_root)?;
                 self.prior_v13.revalidate(self.private_root)?;
                 self.prior_v14.revalidate(self.private_root)?;
+                self.prior_v15.revalidate(self.private_root)?;
                 require_all_prior_retry_residues_absent(self.private_root)?;
                 self.verifiers
                     .as_ref()
@@ -6712,6 +7627,7 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
                 require_no_capture_server_processes()?;
                 prove_lock_acquirable()?;
                 require_new_runtime_absent()?;
+                self.checkpoint = Some(checkpoint_prelaunch_log()?);
                 bootstrap_exact_plist(Path::new(NEW_PLIST))
             }
             ForwardEffect::ObserveNewPid => {
@@ -6726,8 +7642,11 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
                 let generation = self.generation.as_ref().ok_or_else(|| {
                     ControllerError("forward engine lacks a launch generation".to_owned())
                 })?;
-                self.checkpoint = Some(checkpoint_log_for_generation(generation)?);
-                Ok(())
+                let checkpoint = self.checkpoint.ok_or_else(|| {
+                    ControllerError("forward engine lacks a prelaunch log checkpoint".to_owned())
+                })?;
+                verify_launch_generation(NEW_LABEL, NEW_EXECUTABLE, generation)?;
+                revalidate_log_checkpoint(Path::new(ONLINE_LOG), &checkpoint)
             }
             ForwardEffect::ObserveFreshMarker => {
                 let checkpoint = self.checkpoint.ok_or_else(|| {
@@ -6865,6 +7784,7 @@ fn run_transaction(
     prior_v12: &PriorV12RetryGuard,
     prior_v13: &PriorV13RetryGuard,
     prior_v14: &PriorV14RetryGuard,
+    prior_v15: &PriorV15RetryGuard,
 ) -> Result<()> {
     let mut backend = RealForwardBackend::new(
         layout,
@@ -6875,6 +7795,7 @@ fn run_transaction(
         prior_v12,
         prior_v13,
         prior_v14,
+        prior_v15,
     );
     let fields = drive_forward(&mut backend, journal, |_, _, _, _, _| Ok(()))?;
     release_rollback_reserve(layout, journal)?;
@@ -7774,12 +8695,32 @@ fn verify_deployment_with_prefix(
     log_checkpoint: &LogCheckpoint,
     record_prefix: &str,
 ) -> Result<()> {
-    verify_launch_generation(NEW_LABEL, NEW_EXECUTABLE, generation)?;
-    require_marker_after_checkpoint(Path::new(ONLINE_LOG), log_checkpoint)?;
+    let deadline = deadline_after(DEPLOYMENT_VERIFIER_TIMEOUT)?;
+    verify_deployment_with_prefix_until(
+        layout,
+        verifiers,
+        generation,
+        log_checkpoint,
+        record_prefix,
+        deadline,
+    )
+}
+
+fn verify_deployment_with_prefix_until(
+    layout: &Layout,
+    verifiers: &PinnedVerifierSet,
+    generation: &LaunchGeneration,
+    log_checkpoint: &LogCheckpoint,
+    record_prefix: &str,
+    deadline: Instant,
+) -> Result<()> {
+    verify_launch_generation_until(NEW_LABEL, NEW_EXECUTABLE, generation, deadline)?;
+    require_marker_after_checkpoint_until(Path::new(ONLINE_LOG), log_checkpoint, deadline)?;
     let controller_binary = env::var_os("OPENSTEAMER_MIGRATION_CONTROLLER_BINARY")
         .map(PathBuf::from)
         .unwrap_or(env::current_exe()?);
     validate_real_file(&controller_binary, None)?;
+    require_before_deadline(deadline, "deployment verifier setup")?;
     let log_offset = log_checkpoint.offset.to_string();
     let log_device = log_checkpoint.device.to_string();
     let log_inode = log_checkpoint.inode.to_string();
@@ -7807,19 +8748,21 @@ fn verify_deployment_with_prefix(
         controller_binary.display().to_string(),
     );
     verifiers.add_helper_environment(&mut environment);
+    require_before_deadline(deadline, "deployment verifier setup")?;
     let output = run_pinned_script_until(
         verifiers,
         &verifiers.deployment,
         &arguments,
         Some(&layout.source_export),
         &environment,
-        deadline_after(DEPLOYMENT_VERIFIER_TIMEOUT)?,
+        deadline,
     )?;
     let CommandOutput {
         status,
         stdout,
         stderr,
     } = output;
+    require_before_deadline(deadline, "deployment verifier record publication")?;
     let unique_prefix = if record_prefix == "deployment" {
         record_prefix.to_owned()
     } else {
@@ -7835,14 +8778,15 @@ fn verify_deployment_with_prefix(
         stderr.as_bytes(),
         0o600,
     )?;
+    require_before_deadline(deadline, "deployment verifier record publication")?;
     if !status.success() {
         return Err(ControllerError(format!(
             "stable deployment oracle failed with {:?}",
             status.code()
         )));
     }
-    verify_launch_generation(NEW_LABEL, NEW_EXECUTABLE, generation)?;
-    require_marker_after_checkpoint(Path::new(ONLINE_LOG), log_checkpoint)
+    verify_launch_generation_until(NEW_LABEL, NEW_EXECUTABLE, generation, deadline)?;
+    require_marker_after_checkpoint_until(Path::new(ONLINE_LOG), log_checkpoint, deadline)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -8010,7 +8954,6 @@ impl CommittedRecoveryBackend for RealCommittedRecoveryBackend<'_> {
                 Ok(Vec::new())
             }
             CommittedRecoveryOperation::BootstrapNew => {
-                prepare_logs()?;
                 self.verifiers.revalidate()?;
                 verify_committed_destinations(self.layout, &self.verifiers)?;
                 verify_legacy_disabled(true)?;
@@ -8026,6 +8969,7 @@ impl CommittedRecoveryBackend for RealCommittedRecoveryBackend<'_> {
                 require_no_capture_server_processes()?;
                 prove_lock_acquirable()?;
                 require_new_runtime_absent()?;
+                self.checkpoint = Some(checkpoint_prelaunch_log()?);
                 bootstrap_exact_plist(Path::new(NEW_PLIST))?;
                 Ok(Vec::new())
             }
@@ -8052,7 +8996,13 @@ impl CommittedRecoveryBackend for RealCommittedRecoveryBackend<'_> {
                         "committed recovery checkpoint lacks a launch generation".to_owned(),
                     )
                 })?;
-                self.checkpoint = Some(checkpoint_log_for_generation(generation)?);
+                let checkpoint = self.checkpoint.ok_or_else(|| {
+                    ControllerError(
+                        "committed recovery lacks a prelaunch log checkpoint".to_owned(),
+                    )
+                })?;
+                verify_launch_generation(NEW_LABEL, NEW_EXECUTABLE, generation)?;
+                revalidate_log_checkpoint(Path::new(ONLINE_LOG), &checkpoint)?;
                 self.recovery_fields()
             }
             CommittedRecoveryOperation::ObserveFreshMarker => {
@@ -8522,9 +9472,9 @@ fn release_rollback_reserve_at(
 fn rollback_hidden_paths(layout: &Layout) -> Result<(PathBuf, PathBuf, PathBuf, PathBuf)> {
     let tag = layout.transaction_tag()?;
     Ok((
-        Path::new(APPLICATIONS_DIRECTORY).join(format!(".opensteamer-disabled-v15-{tag}")),
+        Path::new(APPLICATIONS_DIRECTORY).join(format!(".opensteamer-disabled-v16-{tag}")),
         Path::new("/Users/ahmed/Library/LaunchAgents").join(format!(
-            ".org.example.opensteamer.worldwide.plist.disabled-v15-{tag}"
+            ".org.example.opensteamer.worldwide.plist.disabled-v16-{tag}"
         )),
         layout.install_app_hold()?,
         layout.install_plist_hold()?,
@@ -9648,13 +10598,6 @@ fn verify_launch_generation(
     )
 }
 
-fn checkpoint_log_for_generation(generation: &LaunchGeneration) -> Result<LogCheckpoint> {
-    verify_launch_generation(NEW_LABEL, NEW_EXECUTABLE, generation)?;
-    let checkpoint = safe_log_size(Path::new(ONLINE_LOG))?;
-    verify_launch_generation(NEW_LABEL, NEW_EXECUTABLE, generation)?;
-    Ok(checkpoint)
-}
-
 fn process_snapshot_until(deadline: Instant) -> Result<String> {
     run_command_until(
         Path::new("/bin/ps"),
@@ -9971,6 +10914,10 @@ fn prepare_logs() -> Result<()> {
     Ok(())
 }
 
+fn checkpoint_prelaunch_log() -> Result<LogCheckpoint> {
+    safe_log_size(Path::new(ONLINE_LOG))
+}
+
 #[derive(Clone, Copy, Debug)]
 struct LogCheckpoint {
     offset: u64,
@@ -10004,7 +10951,33 @@ fn safe_log_size(path: &Path) -> Result<LogCheckpoint> {
     })
 }
 
+fn revalidate_log_checkpoint(path: &Path, checkpoint: &LogCheckpoint) -> Result<()> {
+    let current = safe_log_size(path)?;
+    if current.device != checkpoint.device
+        || current.inode != checkpoint.inode
+        || current.offset < checkpoint.offset
+    {
+        return Err(ControllerError(
+            "online log was replaced or truncated after the prelaunch checkpoint".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn require_marker_after_checkpoint(path: &Path, checkpoint: &LogCheckpoint) -> Result<()> {
+    require_marker_after_checkpoint_until(
+        path,
+        checkpoint,
+        deadline_after(DEFAULT_COMMAND_TIMEOUT)?,
+    )
+}
+
+fn require_marker_after_checkpoint_until(
+    path: &Path,
+    checkpoint: &LogCheckpoint,
+    deadline: Instant,
+) -> Result<()> {
+    require_before_deadline(deadline, "generation-bound marker validation")?;
     let before = fs::symlink_metadata(path)?;
     validate_owned_regular(path, &before, 0o600)?;
     if before.dev() != checkpoint.device || before.ino() != checkpoint.inode {
@@ -10024,8 +10997,15 @@ fn require_marker_after_checkpoint(path: &Path, checkpoint: &LogCheckpoint) -> R
     }
     file.seek(SeekFrom::Start(checkpoint.offset))?;
     let mut suffix = String::new();
-    file.read_to_string(&mut suffix)
+    file.take((MAX_COMMAND_OUTPUT_BYTES + 1) as u64)
+        .read_to_string(&mut suffix)
         .map_err(|_| ControllerError("online log suffix is not UTF-8".to_owned()))?;
+    if suffix.len() > MAX_COMMAND_OUTPUT_BYTES {
+        return Err(ControllerError(
+            "online log suffix exceeds its bounded readiness-evidence limit".to_owned(),
+        ));
+    }
+    require_before_deadline(deadline, "generation-bound marker validation")?;
     let after = fs::symlink_metadata(path)?;
     if !same_inode(&opened, &after) {
         return Err(ControllerError(
@@ -10037,6 +11017,7 @@ fn require_marker_after_checkpoint(path: &Path, checkpoint: &LogCheckpoint) -> R
             "generation-bound online marker disappeared before commit".to_owned(),
         ));
     }
+    require_before_deadline(deadline, "generation-bound marker validation")?;
     Ok(())
 }
 
@@ -10048,6 +11029,12 @@ fn wait_for_online_marker_for_generation(
 ) -> Result<()> {
     let deadline = deadline_after(timeout)?;
     loop {
+        if Instant::now() >= deadline {
+            return Err(ControllerError(
+                "fresh online marker was not observed after the current generation was identified"
+                    .to_owned(),
+            ));
+        }
         verify_launch_generation_until(NEW_LABEL, NEW_EXECUTABLE, generation, deadline)?;
         let before = fs::symlink_metadata(path)?;
         validate_owned_regular(path, &before, 0o600)?;
@@ -10234,7 +11221,7 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
     if linearized_exists {
         let linearized_bytes =
             read_pinned_regular(parent, ACTIVE_TRANSACTION_LINEARIZED_NAME, 0o600)?;
-        let _ = parse_v15_active_record(&linearized_bytes)?;
+        let _ = parse_v16_active_record(&linearized_bytes)?;
         if finalizing_exists {
             let finalizing_bytes =
                 read_pinned_regular(parent, ACTIVE_TRANSACTION_FINALIZING_NAME, 0o600)?;
@@ -10258,7 +11245,7 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
         }
         let finalizing_bytes =
             read_pinned_regular(parent, ACTIVE_TRANSACTION_FINALIZING_NAME, 0o600)?;
-        let _ = parse_v15_active_record(&finalizing_bytes)?;
+        let _ = parse_v16_active_record(&finalizing_bytes)?;
         if active_exists {
             let active_bytes = read_pinned_regular(parent, ACTIVE_TRANSACTION_NAME, 0o600)?;
             if active_bytes != finalizing_bytes {
@@ -10283,7 +11270,7 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
     match (active_exists, pending_exists) {
         (false, false) => Ok(ActivePointerRecovery::None),
         (true, false) => {
-            let _ = parse_v15_active_record(&read_pinned_regular(
+            let _ = parse_v16_active_record(&read_pinned_regular(
                 parent,
                 ACTIVE_TRANSACTION_NAME,
                 0o600,
@@ -10299,14 +11286,14 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
                     "active and pending transaction records disagree".to_owned(),
                 ));
             }
-            let _ = parse_v15_active_record(&active_bytes)?;
+            let _ = parse_v16_active_record(&active_bytes)?;
             // An identical pending record is harmless retained evidence. It is intentionally not
             // unlinked because validation and pathname deletion cannot be made atomic on macOS.
             Ok(ActivePointerRecovery::Active)
         }
         (false, true) => {
             let bytes = read_pinned_regular(parent, ACTIVE_TRANSACTION_PENDING_NAME, 0o600)?;
-            let _ = parse_v15_active_record(&bytes).map_err(|error| {
+            let _ = parse_v16_active_record(&bytes).map_err(|error| {
                 ControllerError(format!(
                     "malformed pending active pointer was retained without mutation: {error}"
                 ))
@@ -10425,18 +11412,18 @@ fn write_active(parent: &PinnedDirectory, evidence: &Path) -> Result<()> {
 }
 
 fn read_active(parent: &PinnedDirectory) -> Result<PathBuf> {
-    parse_v15_active_record(&read_pinned_regular(
+    parse_v16_active_record(&read_pinned_regular(
         parent,
         ACTIVE_TRANSACTION_NAME,
         0o600,
     )?)
 }
 
-fn parse_v15_active_record(bytes: &[u8]) -> Result<PathBuf> {
+fn parse_v16_active_record(bytes: &[u8]) -> Result<PathBuf> {
     let evidence = parse_active_record(bytes)?;
-    if evidence != Path::new(V15_EVIDENCE_PATH) {
+    if evidence != Path::new(V16_EVIDENCE_PATH) {
         return Err(ControllerError(format!(
-            "v15 active pointer selects unreviewed evidence: {}",
+            "v16 active pointer selects unreviewed evidence: {}",
             evidence.display()
         )));
     }
@@ -11512,11 +12499,14 @@ impl ForwardEffectBackend for FakeBackend {
                         "fake bootstrap rejected unsafe state".to_owned(),
                     ));
                 }
+                self.world.checkpoint_generation = Some(self.world.generation + 1);
+                self.world.marker_generation = None;
+                self.world.stable_generation = None;
                 self.world.generation += 1;
                 self.world.current_pid = Some(4_200 + self.world.generation as u32);
                 self.world.new_running = true;
                 self.world.lock_owner = Some(FakeLockOwner::New);
-                self.world.marker_generation = None;
+                self.world.marker_generation = Some(self.world.generation);
                 self.world.stable_generation = None;
             }
             ForwardEffect::ObserveNewPid => {
@@ -11533,9 +12523,12 @@ impl ForwardEffectBackend for FakeBackend {
                         "fake generation checkpoint lacks the observed process".to_owned(),
                     ));
                 }
-                self.world.checkpoint_generation = Some(self.world.generation);
-                self.world.marker_generation = None;
-                self.world.stable_generation = None;
+                if self.world.checkpoint_generation != Some(self.world.generation) {
+                    return Err(ControllerError(
+                        "fake prelaunch checkpoint does not precede the observed process"
+                            .to_owned(),
+                    ));
+                }
             }
             ForwardEffect::ObserveFreshMarker => {
                 if self.reject_marker {
@@ -11546,13 +12539,13 @@ impl ForwardEffectBackend for FakeBackend {
                     ));
                 }
                 if self.world.checkpoint_generation != Some(self.world.generation)
+                    || self.world.marker_generation != Some(self.world.generation)
                     || !self.world.new_running
                 {
                     return Err(ControllerError(
                         "fake marker is not tied to the checkpointed generation".to_owned(),
                     ));
                 }
-                self.world.marker_generation = Some(self.world.generation);
             }
             ForwardEffect::VerifyStableDeployment => {
                 if self.world.marker_generation != Some(self.world.generation)
@@ -11807,10 +12800,14 @@ impl CommittedRecoveryBackend for FakeBackend {
                         "fake committed bootstrap preceded exact stop/lock handoff".to_owned(),
                     ));
                 }
+                self.world.checkpoint_generation = Some(self.world.generation + 1);
+                self.world.marker_generation = None;
+                self.world.stable_generation = None;
                 self.world.generation += 1;
                 self.world.current_pid = Some(5_200 + self.world.generation as u32);
                 self.world.new_running = true;
                 self.world.lock_owner = Some(FakeLockOwner::New);
+                self.world.marker_generation = Some(self.world.generation);
                 Vec::new()
             }
             CommittedRecoveryOperation::ObserveCurrentGeneration => {
@@ -11837,7 +12834,12 @@ impl CommittedRecoveryBackend for FakeBackend {
                             .to_owned(),
                     ));
                 }
-                self.world.checkpoint_generation = Some(self.world.generation);
+                if self.world.checkpoint_generation != Some(self.world.generation) {
+                    return Err(ControllerError(
+                        "fake committed prelaunch checkpoint does not precede the observed generation"
+                            .to_owned(),
+                    ));
+                }
                 let mut values = self.recovery_fields()?;
                 values.push(("historical_pid".to_owned(), self.historical_pid.clone()));
                 values
@@ -11851,6 +12853,7 @@ impl CommittedRecoveryBackend for FakeBackend {
                     ));
                 }
                 if self.world.checkpoint_generation != Some(self.world.generation)
+                    || self.world.marker_generation != Some(self.world.generation)
                     || self.observed_pid != self.world.current_pid
                 {
                     return Err(ControllerError(
@@ -11858,7 +12861,6 @@ impl CommittedRecoveryBackend for FakeBackend {
                             .to_owned(),
                     ));
                 }
-                self.world.marker_generation = Some(self.world.generation);
                 Vec::new()
             }
             CommittedRecoveryOperation::VerifyStableCurrentGeneration => {
@@ -11917,7 +12919,7 @@ impl Drop for TemporaryDirectory {
     }
 }
 
-const FAKE_JOURNAL_VERSION: &str = "OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V15";
+const FAKE_JOURNAL_VERSION: &str = "OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V16";
 
 struct FakeJournal {
     path: PathBuf,
@@ -12860,6 +13862,22 @@ fn self_test_command_deadlines() -> Result<()> {
         )));
     }
 
+    let expired_deadline = Instant::now()
+        .checked_sub(Duration::from_millis(1))
+        .ok_or_else(|| {
+            ControllerError("deadline-edge could not construct an expired deadline".to_owned())
+        })?;
+    let deadline_edge = run_command_until(Path::new("/bin/true"), &[], None, expired_deadline)
+        .expect_err("deadline-edge unexpectedly started a child")
+        .to_string();
+    if !deadline_edge.contains("exceeded its monotonic deadline budget")
+        || !deadline_edge.contains("not-started")
+    {
+        return Err(ControllerError(format!(
+            "deadline-edge did not return the canonical timeout diagnostic: {deadline_edge}"
+        )));
+    }
+
     let hanging_script = "trap '' TERM\n( trap '' TERM; while :; do /bin/sleep 1; done ) &\nwhile :; do /bin/sleep 1; done\n";
     for label in [
         "forward-launchctl",
@@ -12898,6 +13916,33 @@ fn self_test_command_deadlines() -> Result<()> {
                 "{label} termination, nonblocking output collection, and reap exceeded the end-to-end bound"
             )));
         }
+    }
+
+    let output_flood_script = r#"
+trap '' TERM
+while :; do
+  printf 'stdout-flood-0123456789\n'
+  printf 'stderr-flood-0123456789\n' >&2
+  /bin/sleep 0.01
+done
+"#;
+    let output_flood = run_command_until(
+        Path::new("/bin/sh"),
+        &[OsStr::new("-c"), OsStr::new(output_flood_script)],
+        None,
+        deadline_after(Duration::from_millis(350))?,
+    )
+    .expect_err("output-flood unexpectedly completed")
+    .to_string();
+    if !output_flood.contains("exceeded its monotonic deadline budget")
+        || !output_flood.contains("stdout_bytes=")
+        || !output_flood.contains("stderr-flood")
+        || output_flood.contains("child stdout exceeded its shared monotonic deadline")
+        || output_flood.contains("child stderr exceeded its shared monotonic deadline")
+    {
+        return Err(ControllerError(format!(
+            "output-flood did not preserve fair drains and canonical timeout classification: {output_flood}"
+        )));
     }
 
     if DEFAULT_COMMAND_TIMEOUT != Duration::from_secs(60)
@@ -12975,7 +14020,30 @@ fn self_test_command_deadlines() -> Result<()> {
         || retained_pipe_started.elapsed() > Duration::from_secs(1)
     {
         return Err(ControllerError(
-            "nonblocking command output collection waited for an inherited-pipe descendant"
+            "inherited-pipe nonblocking output collection waited for a descendant".to_owned(),
+        ));
+    }
+
+    let total_deployment_started = Instant::now();
+    let total_deployment_deadline = deadline_after(Duration::from_millis(350))?;
+    run_command_until(
+        Path::new("/bin/sh"),
+        &[OsStr::new("-c"), OsStr::new("/bin/sleep 0.20")],
+        None,
+        total_deployment_deadline,
+    )?
+    .require_success("total-deployment-deadline first phase")?;
+    let total_deployment_second = run_command_until(
+        Path::new("/bin/sh"),
+        &[OsStr::new("-c"), OsStr::new("/bin/sleep 0.20")],
+        None,
+        total_deployment_deadline,
+    );
+    if total_deployment_second.is_ok()
+        || total_deployment_started.elapsed() > Duration::from_secs(2)
+    {
+        return Err(ControllerError(
+            "total-deployment-deadline allowed sequential phases to manufacture fresh budgets"
                 .to_owned(),
         ));
     }
@@ -13478,6 +14546,20 @@ fn self_test_rollback() -> Result<()> {
 }
 
 fn self_test_readiness() -> Result<()> {
+    let fast_directory = TemporaryDirectory::create("fast-marker")?;
+    let fast_path = fast_directory.path.join("journal.log");
+    let mut fast_journal = FakeJournal::create(&fast_path)?;
+    let mut fast_backend = FakeBackend::baseline();
+    drive_forward(&mut fast_backend, &mut fast_journal, |_, _, _, _, _| Ok(()))?;
+    if fast_backend.world.checkpoint_generation != Some(fast_backend.world.generation)
+        || fast_backend.world.marker_generation != Some(fast_backend.world.generation)
+        || fast_backend.world.stable_generation != Some(fast_backend.world.generation)
+    {
+        return Err(ControllerError(
+            "fast-marker was lost or overwritten after synchronous bootstrap logging".to_owned(),
+        ));
+    }
+
     let directory = TemporaryDirectory::create("readiness")?;
     let path = directory.path.join("journal.log");
     let mut journal = FakeJournal::create(&path)?;

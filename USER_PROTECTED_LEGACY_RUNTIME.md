@@ -1,14 +1,16 @@
 # User-protected legacy AudioStreamer runtime
 
-Status: **VERSION 14 FULLY ROLLED BACK; VERSION 15 MAC-ONLY RETRY AUTHORIZED; LEGACY AND IPHONE REMAIN PROTECTED**\
+Status: **VERSION 15 FULLY ROLLED BACK; VERSION 16 REVIEW/PREFLIGHT ONLY; LEGACY AND IPHONE REMAIN PROTECTED**\
 Original preservation direction: **2026-07-25**\
 Mac-only migration authorization recorded: **2026-07-30/31**\
 Version-15 retry authorization recorded: **2026-08-02**
 
 The user authorized one guarded Mac-only cutover from the running legacy host to
-the validated opensteamer host. Version 14 fully rolled back to the untouched
+the validated opensteamer host. Version 15 fully rolled back to the untouched
 legacy host. The user explicitly authorized one guarded version-15 Mac-only
-retry on August 2, 2026. The authorization does **not** permit moving, renaming,
+retry on August 2, 2026; that authorization was consumed. Version 16 is a review
+and read-only-preflight design only. A second cutover attempt has not been
+authorized. The authorization does **not** permit moving, renaming,
 deleting, replacing, modifying, re-signing, quarantining, or installing over the
 legacy Mac app or plist. It also does not authorize any physical-iPhone operation.
 
@@ -170,7 +172,7 @@ holder, released the reserve, recorded `ROLLED_BACK`, and retained
 `active-migration-v14` plus all evidence. Every version-9 through version-14
 evidence tree and pointer remains immutable and retained indefinitely.
 
-Controller version 15 is designed to permit exactly one deterministic fresh
+Controller version 15 permitted exactly one deterministic fresh
 transaction only after byte-validating the complete version-14 full rollback in
 addition to every version-9 through version-13 tombstone. Its exact guard covers
 the v14 active pointer, journal, result, provenance, source/export and build
@@ -184,8 +186,47 @@ Version 15 preserves the 2 GiB pre-attempt gate, 1 GiB post-build gate, 8 MiB
 reserve, and 180-second deployment deadline. A cold deep-signature verification
 on this Mac was measured at 20.35 seconds, so every legacy-readiness path now
 uses the bounded 60-second ordinary-command budget rather than the insufficient
-15-second budget. Version 15 is authorized to execute once and has not crossed
-the cutover boundary.
+15-second budget.
+
+Version 15 crossed the cutover boundary, installed and bootstrapped the new host,
+and reached `NEW_PID_OBSERVED`. The app emitted the online readiness marker
+before the controller captured the post-launch log checkpoint at byte
+offset `1364`. The post-checkpoint suffix was therefore empty even though the
+current generation had already produced the marker. The bounded marker wait
+expired, and a deadline-edge output drain surfaced the generic console error
+`child stdout exceeded its shared monotonic deadline`. The deployment verifier
+never ran, so neither `records/deployment.stdout` nor
+`records/deployment.stderr` exists in the v15 evidence tree.
+
+The version-15 transaction then performed the exact full rollback. Its journal
+records `ROLLBACK_STARTED`, `NEW_STOPPED`, `NEW_DESTINATIONS_CLEARED`,
+`LEGACY_REENABLED`, `LEGACY_BOOTSTRAPPED`, `LEGACY_RECOVERED`, and
+`ROLLED_BACK`. The controller stopped and archived the new host, removed both
+new live destinations, re-enabled and bootstrapped the untouched legacy service,
+proved legacy was again the sole process and canonical kernel-lock holder,
+released the exact rollback reserve, and retained `active-migration-v15` plus
+all evidence. Every version-9 through version-15 evidence tree and pointer is
+immutable and retained indefinitely.
+
+Controller version 16 is designed to permit exactly one deterministic fresh
+transaction only after byte-validating that complete v15 rollback in addition
+to every version-9 through version-14 tombstone. Its exact v15 guard covers the
+active pointer, journal, result, provenance, source/export and build records,
+legacy snapshot, rollback-reserve identity, staged and failed app/plist
+manifests, symlink targets, separately anchored xattrs, and the required absence
+of both deployment-output records. It captures the log checkpoint immediately
+before bootstrap while the new runtime is still proved absent, after all final
+verifier/destination/absence/lock checks and with no intervening hook or external
+command, preventing a fast valid marker from preceding the checkpoint. The child-command runner
+drains stdout and stderr fairly in bounded batches, only the outer runner
+classifies deadline expiry, and all command-runner expiry paths use one canonical
+diagnostic.
+The first generation check, complete deployment verifier, output collection,
+and final generation/marker checks share one absolute 180-second monotonic
+deadline rather than receiving resettable per-step budgets. Version 16
+preserves the 2 GiB pre-attempt gate, 1 GiB post-build gate, and 8 MiB reserve.
+Version 16 is review and read-only-preflight only; a second cutover is not
+authorized.
 
 ## Protected iPhone client
 

@@ -1,12 +1,12 @@
 # Guarded side-by-side Mac host migration
 
 The user authorized this **Mac-only** migration on July 30/31, 2026 and
-explicitly authorized the guarded version-15 retry on August 2, 2026. The legacy
-app and legacy LaunchAgent plist remain byte-for-byte at their existing paths as
-rollback sources. The authorization does not extend to a physical iPhone,
-TestFlight, pairing reset, or cleanup of recovery/evidence artifacts. Version 14
-fully rolled back. Version 15 is authorized but has not yet crossed the cutover
-boundary.
+explicitly authorized one guarded version-15 retry on August 2, 2026. That retry
+fully rolled back. The legacy app and legacy LaunchAgent plist remain
+byte-for-byte at their existing paths as rollback sources. The authorization
+does not extend to a physical iPhone, TestFlight, pairing reset, or cleanup of
+recovery/evidence artifacts. Version 16 is a reviewed, read-only-preflight
+design; a second cutover attempt has not been authorized.
 
 ## Transaction model
 
@@ -24,9 +24,9 @@ persistent legacy disable, legacy shutdown, lock handoff, side-by-side
 installation, bootstrap, readiness proof, commit, rollback, and crash recovery. Exactly one top-level controller decides process exit;
 rollback-reachable helpers return errors.
 
-The current controller owns the version-15 active-pointer and journal namespace.
-The retained version-9 through version-14 pointers are never moved, replaced, or
-deleted. If separately authorized, version 15 can proceed only when version 9 is
+The current controller owns the version-16 active-pointer and journal namespace.
+The retained version-9 through version-15 pointers are never moved, replaced, or
+deleted. If separately authorized, version 16 can proceed only when version 9 is
 byte-for-byte the reviewed `rolled-back-before-stop` outcome from the August 1
 `/bin/chflags` path failure,
 version 10 is byte-for-byte the reviewed full-restore rollback described below,
@@ -34,6 +34,7 @@ version 11 is byte-for-byte the reviewed post-readiness-timeout full rollback,
 version 12 is byte-for-byte the reviewed pre-stop disk-headroom rollback, version
 13 is byte-for-byte the reviewed deployment-verifier rollback described below,
 14 is byte-for-byte the reviewed tool-path-verifier rollback described below,
+version 15 is byte-for-byte the reviewed fast-marker-checkpoint rollback below,
 all older pointer residues and hidden cutover paths are absent, and the exact
 untouched legacy service is re-proved live. The corrected controller invokes the
 existing system tools at their actual absolute paths, including
@@ -57,7 +58,7 @@ the pinned directory across every reopen and rename. Recovery from
 path, active-pointer bytes/hash, journal hash and history, provenance
 commit/tree, failure text, hidden-install layout, untouched legacy snapshot,
 disabled/absent legacy service, absent new service/destinations/processes, and
-acquirable shared lock. Version 15 treats any new `CRITICAL_FAILURE` as
+acquirable shared lock. Version 16 treats any new `CRITICAL_FAILURE` as
 fail-closed rather than reusing that historical recovery exception.
 
 Version 11 built, signed, installed, and bootstrapped the new host, then reached
@@ -103,18 +104,50 @@ that legacy was again the sole host and canonical lock holder, released the
 reserve, and recorded `ROLLED_BACK`. All version-9 through version-14 pointers
 and evidence remain retained.
 
-The version-15 design accepts only the exact complete version-14 active pointer,
+The version-15 design accepted only the exact complete version-14 active pointer,
 journal, result, provenance, build and deployment output records, source/export
 records, legacy snapshot, rollback-reserve record, staged and failed app/plist
 manifests, symlink targets, and separately anchored xattrs, together with the
 unchanged version-9 through version-13 tombstones and a fresh proof of the exact
 sole live legacy host. It replaces the two invalid verifier paths with
 `/usr/bin/cmp` and `/bin/dd` and makes the isolated command-path self-test part
-of the pre-stop verifier gate. This describes a guarded retry contract only;
-version 15 has been authorized but has not crossed the cutover boundary. A cold
-deep-signature verification on this Mac was measured at 20.35 seconds, so all
-legacy-readiness paths use the controller's bounded 60-second ordinary-command
-budget instead of the inadequate 15-second budget.
+of the pre-stop verifier gate. That guarded retry crossed the cutover boundary,
+installed and bootstrapped the new host, and reached `NEW_PID_OBSERVED`. The host
+emitted its online marker quickly, before the controller captured its generation
+log checkpoint at byte offset `1364`. The checkpoint therefore excluded the
+already-valid marker and the post-checkpoint suffix remained empty. The bounded
+marker wait expired; a deadline-edge output-drain diagnostic surfaced as `child
+stdout exceeded its shared monotonic deadline`. The deployment verifier was
+never started, so `records/deployment.stdout` and
+`records/deployment.stderr` are absent rather than empty files.
+
+Version 15 then completed the exact full rollback: `ROLLBACK_STARTED`,
+`NEW_STOPPED`, `NEW_DESTINATIONS_CLEARED`, `LEGACY_REENABLED`,
+`LEGACY_BOOTSTRAPPED`, `LEGACY_RECOVERED`, and `ROLLED_BACK`. It stopped and
+archived the new host, cleared the new live destinations, re-enabled and
+bootstrapped the untouched legacy service, proved legacy was again the sole host
+and canonical lock holder, released the exact rollback reserve, and retained
+`active-migration-v15` plus every evidence artifact. Every version-9 through
+version-15 evidence tree and pointer is immutable and retained indefinitely.
+
+The version-16 design adds an exact seventh historical guard for that complete
+version-15 outcome, including the exact active pointer, journal, result,
+provenance, source/export and build records, legacy snapshot, rollback-reserve
+identity, staged and failed app/plist manifests, symlink targets, separately
+anchored xattrs, and the required absence of both deployment-output records. It
+captures the readiness log checkpoint while the new runtime is still proved
+absent, after every final verifier/destination/absence/lock check and immediately
+adjacent to bootstrap with no hook or external command between, so a fast marker
+from the new generation cannot precede the checkpoint. Its command runner drains stdout and stderr
+fairly in bounded batches, leaves deadline classification to the outer runner,
+and emits one canonical timeout diagnostic. The entire deployment proof—from
+its first generation check through the pinned verifier and final generation and
+marker checks—shares one absolute 180-second monotonic deadline; no nested step
+can reset or extend it. This is a guarded review and read-only-preflight contract
+only. A second cutover attempt is not authorized. A cold deep-signature
+verification on this Mac was measured at 20.35 seconds, so all legacy-readiness
+paths use the controller's bounded 60-second ordinary-command budget instead of
+the inadequate 15-second budget.
 
 Every durable state transition is appended to and fsynced in a per-attempt
 journal. A fixed fsynced active-transaction record points to the attempt. A
@@ -123,11 +156,11 @@ post-commit verification or rolls back an uncommitted attempt. It never treats a
 stale lock file, journal, staged app, or partially installed destination as a
 reason to abandon recovery.
 
-The pinned launcher also exposes a read-only v15 preflight that compiles and
+The pinned launcher also exposes a read-only v16 preflight that compiles and
 attests the exact reviewed controller, acquires the migration lock, verifies all
-six historical tombstones and the sole live legacy host, validates the embedded
+seven historical tombstones and the sole live legacy host, validates the embedded
 deployment verifier's absolute command-path set, and proves the deterministic
-v15 evidence path is absent:
+v16 evidence path is absent:
 
 ```sh
 macOS/scripts/migrate-opensteamer-host.sh --verify-reviewed-prior-retry-state /absolute/path/to/opensteamer
@@ -212,11 +245,14 @@ Nested resource and jetsam coalitions may repeat fields such as `type`, `state`,
 `pid`, `program`, and `arguments`; those nested values never participate in the
 job proof.
 
-After bootstrap, the controller first observes one launchd generation, then
-binds a fresh log checkpoint to the tuple `(PID, process start identity, launchd
-runs, random per-process lock nonce, lock device, lock inode)`. A marker written
-before that checkpoint or by another KeepAlive generation cannot satisfy
-readiness. Commit requires the legacy label to remain durably disabled and,
+Immediately before bootstrap, while the new service and process are still
+proved absent, the controller captures a fresh log checkpoint. After bootstrap,
+it observes one launchd generation and binds readiness to the tuple `(PID,
+process start identity, launchd runs, random per-process lock nonce, lock device,
+lock inode)`. Only a marker after the prelaunch checkpoint can satisfy readiness,
+and every marker check is bracketed by exact generation revalidation. A marker
+written by an earlier KeepAlive generation cannot satisfy readiness. Commit
+requires the legacy label to remain durably disabled and,
 across more than the ten-second launchd throttle interval:
 
 - unchanged generation tuple, including PID, start identity, launch count,
@@ -225,7 +261,7 @@ across more than the ten-second launchd throttle interval:
 - sole ownership of the canonical shared advisory lock, with an independent
   nonblocking lock attempt proving contention;
 - legacy job/process absence and no other `CaptureServer` process; and
-- a fresh log record after the generation-bound checkpoint containing
+- a fresh log record after the prelaunch checkpoint containing
   `Worldwide paired-device availability is online`.
 
 The exact same tuple and marker proof is revalidated immediately before the
@@ -263,16 +299,17 @@ generation-bound readiness proof, and then revalidates the same exact tombstone
 without removing it. A generation change after that proof is an ordinary
 committed lifecycle event. Pre-journal, failed, and rolled-back tombstones are
 also retained, and automatic reruns fail closed for manual inspection. The sole
-fresh-attempt exception is the narrowly encoded version-15 retry gate for the
-exact reviewed version-9 through version-14 failures described above. If
-separately authorized, it can create one deterministic version-15 evidence path
+fresh-attempt exception is the narrowly encoded version-16 retry gate for the
+exact reviewed version-9 through version-15 failures described above. If
+separately authorized, it can create one deterministic version-16 evidence path
 and never reuses or mutates any historical transaction.
 
-Before legacy can be disabled, version 15 physically preallocates and fsyncs an
+Before legacy can be disabled, version 16 physically preallocates and fsyncs an
 8 MiB owner-only rollback reserve, records its device/inode, and revalidates a
 minimum 1 GiB of free space after requiring at least 2 GiB before creating the
-fresh evidence tree. The deployment oracle retains its bounded 180-second
-monotonic deadline. Rollback releases that exact reserve inode before its first
+fresh evidence tree. One absolute 180-second monotonic deadline bounds the whole
+deployment proof, including its initial/final generation checks and output
+collection. Rollback releases that exact reserve inode before its first
 journal append, including after a crash, so an out-of-space failure cannot
 prevent restoration from starting. The reserve is truncated only after rollback
 or after a durable commit and retained-pointer proof.
@@ -294,19 +331,14 @@ Controller self-tests retain the deterministic fake backend and additionally
 exercise the production journal, pinned-directory, app/plist hold, exclusive
 publication, log-checkpoint, command-classification, rollback, and committed
 recovery primitives through a guarded disposable real-filesystem adapter. The
+regression matrix includes `fast-marker`, `deadline-edge`, `output-flood`,
+`inherited-pipe`, and `total-deployment-deadline` models. The
 adapter rejects `/`, `/Applications`, live LaunchAgents, the live migration
 state, and the production lock namespace before it can run any test command.
 
 ## Invocation
 
-The execution form below is authorized for the single guarded version-15 retry
-recorded above:
-
-```sh
-/bin/sh macOS/scripts/migrate-opensteamer-host.sh \
-  --execute-authorized-mac-only-migration \
-  "$(pwd -P)"
-```
-
-Do not copy individual cutover commands out of the controller or substitute a
-shared staged app. The script performs no iPhone operation.
+No version-16 execution is authorized. Only the read-only preflight form above
+may be used during review. Do not pass the live execution flag, copy individual
+cutover commands out of the controller, or substitute a shared staged app. The
+script performs no iPhone operation.
