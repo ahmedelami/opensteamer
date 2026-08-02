@@ -83,6 +83,18 @@ after byte-validating that exact pre-stop outcome and independently reproving
 the live legacy hashes, launch state, process set, and shared lock. It preserves
 the version-9 pointer and evidence permanently.
 
+The first version-10 attempt later stopped the exact legacy service but failed
+before publishing the new app because the controller rejected the canonical
+`root:admin` mode-`0775` `/Applications` directory. Its initial rollback hit the
+same guard, so both hosts were deliberately left offline under the retained
+`active-migration-v10` tombstone. Recovery may resume only when that pointer,
+critical journal hash and history, provenance, offline snapshot, legacy/new
+service topology, shared lock, and hidden install hold exactly match the
+reviewed failed attempt. The directory exception is limited to canonical
+`/Applications` with UID `0`, GID `80`, and mode `0775`, and is preserved across
+pinned-directory revalidation. Recovery restores and proves the untouched
+legacy service before archiving the unlaunched new-app hold.
+
 ## Protected iPhone client
 
 The production iOS app and the development Release target both use bundle

@@ -31,6 +31,19 @@ legacy service is re-proved live. The corrected controller invokes the existing
 system tool only at `/usr/bin/chflags`. Any different version-9 state fails
 closed for manual inspection.
 
+The first version-10 cutover reached the legacy-stop boundary and then rejected
+this Mac's standard `/Applications` directory because it is `root:admin` mode
+`0775`. The new app was not published or launched, but the same validation also
+prevented rollback from clearing destinations, leaving both hosts offline. The
+controller permits group write only for the exact canonical `/Applications`
+path with UID `0`, GID `80`, and mode `0775`; that policy remains attached to
+the pinned directory across every reopen and rename. Recovery from
+`CRITICAL_FAILURE` is enabled only for the exact retained version-10 evidence
+path, active-pointer bytes/hash, journal hash and history, provenance
+commit/tree, failure text, hidden-install layout, untouched legacy snapshot,
+disabled/absent legacy service, absent new service/destinations/processes, and
+acquirable shared lock. Any mismatch remains fail-closed.
+
 Every durable state transition is appended to and fsynced in a per-attempt
 journal. A fixed fsynced active-transaction record points to the attempt. A
 later invocation holding the transaction lock deterministically resumes

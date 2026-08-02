@@ -31,14 +31,16 @@ const PRIOR_ACTIVE_TRANSACTION_NAME: &str = "active-migration-v9";
 const PRIOR_ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v9.pending";
 const PRIOR_ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v9.finalizing";
 const PRIOR_ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = ".active-migration-v9.linearized";
-const PRIOR_EVIDENCE_PATH: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v9-1785629833-85682";
+const PRIOR_EVIDENCE_PATH: &str =
+    "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v9-1785629833-85682";
 const PRIOR_ACTIVE_RECORD: &[u8] = b"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v9-1785629833-85682\n";
 const PRIOR_ACTIVE_SHA256: &str =
     "55c5936e520d65c2096811546357853e05064eca41553603793bea5843518559";
 const LEGACY_APP: &str = "/Applications/AudioStreamer Host.app";
 const LEGACY_EXECUTABLE: &str = "/Applications/AudioStreamer Host.app/Contents/MacOS/CaptureServer";
 const LEGACY_LABEL: &str = "com.elamin.audiostreamer.worldwide";
-const LEGACY_PLIST: &str = "/Users/ahmed/Library/LaunchAgents/com.elamin.audiostreamer.worldwide.plist";
+const LEGACY_PLIST: &str =
+    "/Users/ahmed/Library/LaunchAgents/com.elamin.audiostreamer.worldwide.plist";
 const LEGACY_EXECUTABLE_SHA256: &str =
     "1bd5bbe685522f995ee01f52650198753d11344857f883898e29ee7a3f4c80bc";
 const LEGACY_PLIST_SHA256: &str =
@@ -67,8 +69,22 @@ const PRIOR_SOURCE_ARCHIVE_SIZE: u64 = 6_266_880;
 const PRIOR_SOURCE_ARCHIVE_SHA256: &str =
     "0d0022af455d2d7a2d49c43025760ece421b9cdd0b33451fad55f338f9746202";
 const PRIOR_SOURCE_COMMIT: &str = "2ef1c9cbb972c0c138ae36bbe996eacda214113d";
-const CHFLAGS_SHA256: &str =
-    "a67367c7fda2e962b72db6cc730173e82115f3709bf4a208d1d2ed1a6787a211";
+const APPLICATIONS_DIRECTORY: &str = "/Applications";
+const APPLICATIONS_UID: u32 = 0;
+const APPLICATIONS_GID: u32 = 80;
+const APPLICATIONS_MODE: u32 = 0o775;
+const V10_CRITICAL_RECOVERY_EVIDENCE: &str =
+    "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v10-1785631164-7724";
+const V10_CRITICAL_ACTIVE_RECORD: &[u8] = b"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v10-1785631164-7724\n";
+const V10_CRITICAL_ACTIVE_SHA256: &str =
+    "af917e5ca70f533d1e78b62cf7bda66a682d2fd61dc2d1e337615f52e44ac02a";
+const V10_CRITICAL_JOURNAL_SHA256: &str =
+    "bc03af50f511a5def82b2d5ae4f6699edf87d1898a02337c576f3b22750ee7fa";
+const V10_CRITICAL_RECOVERY_COMMIT: &str = "a0a25f7010a1170330ad7ebd48d0e85839219af4";
+const V10_CRITICAL_RECOVERY_TREE: &str = "98c0c0d230aa89f56121916f0ef158cf8c0563b1";
+const V10_APPLICATIONS_MODE_ERROR: &str =
+    "directory '/Applications' is group/world writable with mode 0775";
+const CHFLAGS_SHA256: &str = "a67367c7fda2e962b72db6cc730173e82115f3709bf4a208d1d2ed1a6787a211";
 const REVIEWED_RUSTC_SHA256: &str =
     "d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd";
 const REVIEWED_RUSTC_CDHASH_FULL: &str =
@@ -190,14 +206,62 @@ struct PinnedDirectory {
     file: File,
     device: u64,
     inode: u64,
+    expected_uid: Option<u32>,
+    expected_gid: Option<u32>,
+    expected_mode: Option<u32>,
+}
+
+fn directory_write_policy_allows(
+    path: &Path,
+    actual_uid: u32,
+    actual_gid: u32,
+    actual_mode: u32,
+    expected_uid: Option<u32>,
+    expected_gid: Option<u32>,
+    expected_mode: Option<u32>,
+) -> bool {
+    if actual_mode & 0o002 != 0 {
+        return false;
+    }
+    if actual_mode & 0o020 == 0 {
+        return true;
+    }
+    path == Path::new(APPLICATIONS_DIRECTORY)
+        && actual_uid == APPLICATIONS_UID
+        && actual_gid == APPLICATIONS_GID
+        && actual_mode == APPLICATIONS_MODE
+        && expected_uid == Some(APPLICATIONS_UID)
+        && expected_gid == Some(APPLICATIONS_GID)
+        && expected_mode == Some(APPLICATIONS_MODE)
 }
 
 impl PinnedDirectory {
     fn open(path: &Path, expected_uid: Option<u32>, expected_mode: Option<u32>) -> Result<Self> {
+        Self::open_with_policy(path, expected_uid, None, expected_mode)
+    }
+
+    fn open_applications() -> Result<Self> {
+        Self::open_with_policy(
+            Path::new(APPLICATIONS_DIRECTORY),
+            Some(APPLICATIONS_UID),
+            Some(APPLICATIONS_GID),
+            Some(APPLICATIONS_MODE),
+        )
+    }
+
+    fn open_with_policy(
+        path: &Path,
+        expected_uid: Option<u32>,
+        expected_gid: Option<u32>,
+        expected_mode: Option<u32>,
+    ) -> Result<Self> {
         let before = fs::symlink_metadata(path).map_err(|error| {
-            ControllerError(format!("cannot inspect directory '{}': {error}", path.display()))
+            ControllerError(format!(
+                "cannot inspect directory '{}': {error}",
+                path.display()
+            ))
         })?;
-        Self::validate_metadata(path, &before, expected_uid, expected_mode)?;
+        Self::validate_metadata(path, &before, expected_uid, expected_gid, expected_mode)?;
         let name = path_cstring(path)?;
         // SAFETY: `name` is a valid NUL-terminated path and flags request a directory without
         // following a final-component symbolic link.
@@ -218,7 +282,7 @@ impl PinnedDirectory {
         // SAFETY: `descriptor` was returned by openat and ownership transfers to `File`.
         let file = unsafe { File::from_raw_fd(descriptor) };
         let opened = file.metadata()?;
-        Self::validate_metadata(path, &opened, expected_uid, expected_mode)?;
+        Self::validate_metadata(path, &opened, expected_uid, expected_gid, expected_mode)?;
         if !same_inode(&before, &opened) {
             return Err(ControllerError(format!(
                 "directory changed while opening: {}",
@@ -237,6 +301,9 @@ impl PinnedDirectory {
             file,
             device: opened.dev(),
             inode: opened.ino(),
+            expected_uid,
+            expected_gid,
+            expected_mode,
         })
     }
 
@@ -250,7 +317,8 @@ impl PinnedDirectory {
         }
         let child_name = CString::new("opensteamer").expect("literal has no NUL");
         // SAFETY: the parent descriptor is pinned and the child name is a valid C string.
-        let result = unsafe { mkdirat(parent.as_raw_fd(), child_name.as_ptr(), 0o700 as ModeValue) };
+        let result =
+            unsafe { mkdirat(parent.as_raw_fd(), child_name.as_ptr(), 0o700 as ModeValue) };
         if result != 0 {
             let creation_error = io::Error::last_os_error();
             if creation_error.kind() != io::ErrorKind::AlreadyExists {
@@ -299,9 +367,9 @@ impl PinnedDirectory {
         let file = unsafe { File::from_raw_fd(descriptor) };
         let metadata = file.metadata()?;
         let child_path = self.path.join(name);
-        Self::validate_metadata(&child_path, &metadata, expected_uid, expected_mode)?;
+        Self::validate_metadata(&child_path, &metadata, expected_uid, None, expected_mode)?;
         let current = fs::symlink_metadata(&child_path)?;
-        Self::validate_metadata(&child_path, &current, expected_uid, expected_mode)?;
+        Self::validate_metadata(&child_path, &current, expected_uid, None, expected_mode)?;
         if !same_inode(&metadata, &current) {
             return Err(ControllerError(format!(
                 "child directory changed while opening: {}",
@@ -313,6 +381,9 @@ impl PinnedDirectory {
             device: metadata.dev(),
             inode: metadata.ino(),
             file,
+            expected_uid,
+            expected_gid: None,
+            expected_mode,
         }))
     }
 
@@ -320,6 +391,7 @@ impl PinnedDirectory {
         path: &Path,
         metadata: &Metadata,
         expected_uid: Option<u32>,
+        expected_gid: Option<u32>,
         expected_mode: Option<u32>,
     ) -> Result<()> {
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -337,8 +409,25 @@ impl PinnedDirectory {
                 )));
             }
         }
+        if let Some(gid) = expected_gid {
+            if metadata.gid() != gid {
+                return Err(ControllerError(format!(
+                    "directory '{}' is owned by gid {}, expected {gid}",
+                    path.display(),
+                    metadata.gid()
+                )));
+            }
+        }
         let actual_mode = metadata.permissions().mode() & 0o7777;
-        if actual_mode & 0o022 != 0 {
+        if !directory_write_policy_allows(
+            path,
+            metadata.uid(),
+            metadata.gid(),
+            actual_mode,
+            expected_uid,
+            expected_gid,
+            expected_mode,
+        ) {
             return Err(ControllerError(format!(
                 "directory '{}' is group/world writable with mode {:04o}",
                 path.display(),
@@ -360,14 +449,25 @@ impl PinnedDirectory {
 
     fn revalidate(&self) -> Result<()> {
         let current = fs::symlink_metadata(&self.path)?;
-        Self::validate_metadata(&self.path, &current, None, None)?;
+        Self::validate_metadata(
+            &self.path,
+            &current,
+            self.expected_uid,
+            self.expected_gid,
+            self.expected_mode,
+        )?;
         if current.dev() != self.device || current.ino() != self.inode {
             return Err(ControllerError(format!(
                 "pinned directory path was replaced: {}",
                 self.path.display()
             )));
         }
-        let reopened = Self::open(&self.path, None, None)?;
+        let reopened = Self::open_with_policy(
+            &self.path,
+            self.expected_uid,
+            self.expected_gid,
+            self.expected_mode,
+        )?;
         if reopened.device != self.device || reopened.inode != self.inode {
             return Err(ControllerError(format!(
                 "pinned directory identity changed: {}",
@@ -418,7 +518,11 @@ impl PinnedDirectory {
         self.revalidate()?;
         let name_c = CString::new(name)
             .map_err(|_| ControllerError("file name contains a NUL byte".to_owned()))?;
-        let access = if writable { O_RDWR_VALUE } else { O_RDONLY_VALUE };
+        let access = if writable {
+            O_RDWR_VALUE
+        } else {
+            O_RDONLY_VALUE
+        };
         // SAFETY: parent descriptor and C string are valid.
         let descriptor = unsafe {
             openat(
@@ -454,11 +558,7 @@ impl PinnedDirectory {
             openat(
                 self.as_raw_fd(),
                 name_c.as_ptr(),
-                O_RDWR_VALUE
-                    | O_CREAT_VALUE
-                    | O_EXCL_VALUE
-                    | O_CLOEXEC_VALUE
-                    | libc_o_nofollow(),
+                O_RDWR_VALUE | O_CREAT_VALUE | O_EXCL_VALUE | O_CLOEXEC_VALUE | libc_o_nofollow(),
                 mode,
             )
         };
@@ -526,7 +626,6 @@ impl PinnedDirectory {
         self.file.sync_all()?;
         self.revalidate()
     }
-
 }
 
 fn validate_regular_metadata(path: &Path, metadata: &Metadata) -> Result<()> {
@@ -647,11 +746,9 @@ impl State {
     }
 
     fn requires_rollback(self) -> bool {
-        !self.is_committed_family()
-            && !matches!(self, Self::RolledBack | Self::CriticalFailure)
+        !self.is_committed_family() && !matches!(self, Self::RolledBack | Self::CriticalFailure)
     }
 }
-
 
 struct TransactionLock {
     file: File,
@@ -720,8 +817,6 @@ impl TransactionLock {
     fn parent(&self) -> &PinnedDirectory {
         &self.parent
     }
-
-
 }
 
 impl Drop for TransactionLock {
@@ -929,9 +1024,9 @@ impl Journal {
                 | State::NewPidObserved
                 | State::ReadyVerified
                 | State::Committed
-                        | State::CommittedRecoveryStarted
-                        | State::CommittedRecoveryBootstrapped
-                        | State::CommittedRecoveryReady
+                | State::CommittedRecoveryStarted
+                | State::CommittedRecoveryBootstrapped
+                | State::CommittedRecoveryReady
                 | State::RollbackStarted
                 | State::NewStopped
                 | State::NewDestinationsCleared
@@ -951,9 +1046,9 @@ impl Journal {
                 | State::NewPidObserved
                 | State::ReadyVerified
                 | State::Committed
-                        | State::CommittedRecoveryStarted
-                        | State::CommittedRecoveryBootstrapped
-                        | State::CommittedRecoveryReady
+                | State::CommittedRecoveryStarted
+                | State::CommittedRecoveryBootstrapped
+                | State::CommittedRecoveryReady
                 | State::RollbackStarted
                 | State::NewStopped
                 | State::NewDestinationsCleared
@@ -1025,12 +1120,11 @@ impl Layout {
             .duration_since(UNIX_EPOCH)
             .map_err(|_| ControllerError("system clock is before epoch".to_owned()))?
             .as_secs();
-        let evidence = Path::new(MIGRATIONS_ROOT).join(format!(
-            "migration-v10-{now}-{}",
-            process::id()
-        ));
-        fs::create_dir(&evidence)
-            .map_err(|error| ControllerError(format!("cannot create evidence directory: {error}")))?;
+        let evidence =
+            Path::new(MIGRATIONS_ROOT).join(format!("migration-v10-{now}-{}", process::id()));
+        fs::create_dir(&evidence).map_err(|error| {
+            ControllerError(format!("cannot create evidence directory: {error}"))
+        })?;
         fs::set_permissions(&evidence, Permissions::from_mode(0o700))?;
         sync_parent(&evidence)?;
         let records = evidence.join("records");
@@ -1056,7 +1150,8 @@ impl Layout {
         let staged_app = staged.join("opensteamer Host.app");
         let staged_plist = staged.join("org.example.opensteamer.worldwide.plist");
         let legacy_snapshot_executable = legacy_snapshot.join("CaptureServer");
-        let legacy_snapshot_plist = legacy_snapshot.join("com.elamin.audiostreamer.worldwide.plist");
+        let legacy_snapshot_plist =
+            legacy_snapshot.join("com.elamin.audiostreamer.worldwide.plist");
         Ok(Self {
             repo,
             evidence,
@@ -1194,9 +1289,10 @@ fn drain_nonblocking<R: Read>(
         match reader.read(&mut buffer) {
             Ok(0) => return Ok(true),
             Ok(count) => {
-                let next_length = output.len().checked_add(count).ok_or_else(|| {
-                    ControllerError(format!("{label} output length overflowed"))
-                })?;
+                let next_length = output
+                    .len()
+                    .checked_add(count)
+                    .ok_or_else(|| ControllerError(format!("{label} output length overflowed")))?;
                 if next_length > MAX_COMMAND_OUTPUT_BYTES {
                     return Err(ControllerError(format!(
                         "{label} exceeded the bounded {}-byte output limit",
@@ -1292,7 +1388,6 @@ fn terminate_process_group_and_reap(
     }
 }
 
-
 fn command_kill_at(started: Instant, deadline: Instant) -> Instant {
     let remaining = deadline.saturating_duration_since(started);
     let reserve = remaining
@@ -1341,8 +1436,10 @@ fn run_spawned_command(
     let kill_at = command_kill_at(started, deadline);
 
     loop {
-        if let Err(error) = drain_nonblocking(&mut stdout, &mut stdout_bytes, "child stdout", deadline)
-            .and_then(|_| drain_nonblocking(&mut stderr, &mut stderr_bytes, "child stderr", deadline))
+        if let Err(error) =
+            drain_nonblocking(&mut stdout, &mut stdout_bytes, "child stdout", deadline).and_then(
+                |_| drain_nonblocking(&mut stderr, &mut stderr_bytes, "child stderr", deadline),
+            )
         {
             let _ = terminate_process_group_and_reap(&mut child, program, deadline);
             return Err(error);
@@ -1372,8 +1469,18 @@ fn run_spawned_command(
         let now = Instant::now();
         if now >= kill_at {
             let reaped = terminate_process_group_and_reap(&mut child, program, deadline)?;
-            let _ = drain_nonblocking(&mut stdout, &mut stdout_bytes, "timed-out child stdout", deadline)?;
-            let _ = drain_nonblocking(&mut stderr, &mut stderr_bytes, "timed-out child stderr", deadline)?;
+            let _ = drain_nonblocking(
+                &mut stdout,
+                &mut stdout_bytes,
+                "timed-out child stdout",
+                deadline,
+            )?;
+            let _ = drain_nonblocking(
+                &mut stderr,
+                &mut stderr_bytes,
+                "timed-out child stderr",
+                deadline,
+            )?;
             return Err(ControllerError(format!(
                 "command '{}' exceeded its monotonic deadline budget (process-group-terminated, reaped={:?}, stdout_bytes={}, stderr={})",
                 program.display(),
@@ -1457,7 +1564,6 @@ fn run_command_owned(
     )
 }
 
-
 fn run_command_with_stdout_file(
     program: &Path,
     arguments: &[&OsStr],
@@ -1496,7 +1602,9 @@ fn run_command_with_stdout_file(
     let mut stderr_bytes = Vec::new();
     let kill_at = command_kill_at(started, deadline);
     loop {
-        if let Err(error) = drain_nonblocking(&mut stderr, &mut stderr_bytes, "child stderr", deadline) {
+        if let Err(error) =
+            drain_nonblocking(&mut stderr, &mut stderr_bytes, "child stderr", deadline)
+        {
             let _ = terminate_process_group_and_reap(&mut child, program, deadline);
             return Err(error);
         }
@@ -1515,7 +1623,12 @@ fn run_command_with_stdout_file(
         let now = Instant::now();
         if now >= kill_at {
             let reaped = terminate_process_group_and_reap(&mut child, program, deadline)?;
-            let _ = drain_nonblocking(&mut stderr, &mut stderr_bytes, "timed-out child stderr", deadline)?;
+            let _ = drain_nonblocking(
+                &mut stderr,
+                &mut stderr_bytes,
+                "timed-out child stderr",
+                deadline,
+            )?;
             return Err(ControllerError(format!(
                 "command '{}' exceeded its monotonic deadline budget (process-group-terminated, reaped={:?}, stderr={})",
                 program.display(),
@@ -1530,7 +1643,6 @@ fn run_command_with_stdout_file(
         );
     }
 }
-
 
 fn main() {
     let code = match controller_main() {
@@ -1586,10 +1698,12 @@ fn execute(root: &Path) -> Result<()> {
     }
 }
 
-
 fn require_lower_hex_hash(variable: &str) -> Result<String> {
-    let value = env::var(variable)
-        .map_err(|_| ControllerError(format!("required launcher attestation is missing: {variable}")))?;
+    let value = env::var(variable).map_err(|_| {
+        ControllerError(format!(
+            "required launcher attestation is missing: {variable}"
+        ))
+    })?;
     if value.len() != 64
         || !value
             .bytes()
@@ -1603,8 +1717,10 @@ fn require_lower_hex_hash(variable: &str) -> Result<String> {
 }
 
 fn verify_launcher_attestation(repo: &Path) -> Result<()> {
-    let expected_binary_path = env::var_os("OPENSTEAMER_MIGRATION_CONTROLLER_BINARY")
-        .ok_or_else(|| ControllerError("launcher did not identify the controller binary".to_owned()))?;
+    let expected_binary_path =
+        env::var_os("OPENSTEAMER_MIGRATION_CONTROLLER_BINARY").ok_or_else(|| {
+            ControllerError("launcher did not identify the controller binary".to_owned())
+        })?;
     let expected_binary = fs::canonicalize(Path::new(&expected_binary_path))?;
     let current_binary = fs::canonicalize(env::current_exe()?)?;
     if current_binary != expected_binary {
@@ -1641,8 +1757,7 @@ fn verify_launcher_attestation(repo: &Path) -> Result<()> {
             "launcher compiler SHA-256 differs from the reviewed trust anchor".to_owned(),
         ));
     }
-    let compiler_cdhash =
-        require_lower_hex_hash("OPENSTEAMER_MIGRATION_RUSTC_CDHASH_FULL")?;
+    let compiler_cdhash = require_lower_hex_hash("OPENSTEAMER_MIGRATION_RUSTC_CDHASH_FULL")?;
     if compiler_cdhash != REVIEWED_RUSTC_CDHASH_FULL {
         return Err(ControllerError(
             "launcher compiler full CDHash differs from the reviewed trust anchor".to_owned(),
@@ -1665,8 +1780,7 @@ fn validate_prior_v9_prestop_records(evidence: &Path, journal: &[u8], result: &[
     }
     if result != PRIOR_PRESTOP_RESULT {
         return Err(ControllerError(
-            "prior v9 result is not the exact reviewed rolled-back-before-stop outcome"
-                .to_owned(),
+            "prior v9 result is not the exact reviewed rolled-back-before-stop outcome".to_owned(),
         ));
     }
     Ok(())
@@ -1694,11 +1808,7 @@ fn verify_chflags_tool() -> Result<()> {
     Ok(())
 }
 
-fn open_required_pinned_regular(
-    parent: &PinnedDirectory,
-    name: &str,
-    mode: u32,
-) -> Result<File> {
+fn open_required_pinned_regular(parent: &PinnedDirectory, name: &str, mode: u32) -> Result<File> {
     let file = parent
         .open_existing_regular(name, false)?
         .ok_or_else(|| ControllerError(format!("required private record is missing: {name}")))?;
@@ -1716,10 +1826,7 @@ fn read_opened_regular(file: &File, path: &Path, mode: u32) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn require_exact_directory_entries(
-    directory: &PinnedDirectory,
-    expected: &[&str],
-) -> Result<()> {
+fn require_exact_directory_entries(directory: &PinnedDirectory, expected: &[&str]) -> Result<()> {
     directory.revalidate()?;
     let mut actual = BTreeSet::new();
     for entry in fs::read_dir(&directory.path)? {
@@ -1803,8 +1910,10 @@ impl PriorV9RetryGuard {
             require_exact_directory_entries(directory, &[])?;
         }
 
-        self.evidence.ensure_file_at_name("journal.log", &self.journal)?;
-        self.records.ensure_file_at_name("result.txt", &self.result)?;
+        self.evidence
+            .ensure_file_at_name("journal.log", &self.journal)?;
+        self.records
+            .ensure_file_at_name("result.txt", &self.result)?;
         self.evidence
             .ensure_file_at_name("source.tar", &self.source_archive)?;
         let journal = read_opened_regular(
@@ -1812,11 +1921,8 @@ impl PriorV9RetryGuard {
             &self.evidence.path.join("journal.log"),
             0o600,
         )?;
-        let result = read_opened_regular(
-            &self.result,
-            &self.records.path.join("result.txt"),
-            0o600,
-        )?;
+        let result =
+            read_opened_regular(&self.result, &self.records.path.join("result.txt"), 0o600)?;
         validate_prior_v9_prestop_records(&self.evidence.path, &journal, &result)?;
         if sha256_file(&self.evidence.path.join("journal.log"))? != PRIOR_JOURNAL_SHA256
             || sha256_file(&self.records.path.join("result.txt"))? != PRIOR_RESULT_SHA256
@@ -1832,15 +1938,16 @@ impl PriorV9RetryGuard {
             0o600,
         )?;
         if archive_metadata.len() != PRIOR_SOURCE_ARCHIVE_SIZE
-            || sha256_file(&self.evidence.path.join("source.tar"))?
-                != PRIOR_SOURCE_ARCHIVE_SHA256
+            || sha256_file(&self.evidence.path.join("source.tar"))? != PRIOR_SOURCE_ARCHIVE_SHA256
         {
             return Err(ControllerError(
                 "prior v9 source archive differs from the reviewed failed attempt".to_owned(),
             ));
         }
-        self.evidence.ensure_file_at_name("journal.log", &self.journal)?;
-        self.records.ensure_file_at_name("result.txt", &self.result)?;
+        self.evidence
+            .ensure_file_at_name("journal.log", &self.journal)?;
+        self.records
+            .ensure_file_at_name("result.txt", &self.result)?;
         self.evidence
             .ensure_file_at_name("source.tar", &self.source_archive)?;
         Ok(())
@@ -1857,17 +1964,16 @@ fn validate_prior_v9_prestop_retry(private_root: &PinnedDirectory) -> Result<Pri
         PRIOR_ACTIVE_TRANSACTION_FINALIZING_NAME,
         PRIOR_ACTIVE_TRANSACTION_LINEARIZED_NAME,
     ] {
-        if private_root.open_existing_regular(residue, false)?.is_some() {
+        if private_root
+            .open_existing_regular(residue, false)?
+            .is_some()
+        {
             return Err(ControllerError(format!(
                 "prior v9 active-pointer residue requires manual recovery: {residue}"
             )));
         }
     }
-    let pointer = open_required_pinned_regular(
-        private_root,
-        PRIOR_ACTIVE_TRANSACTION_NAME,
-        0o600,
-    )?;
+    let pointer = open_required_pinned_regular(private_root, PRIOR_ACTIVE_TRANSACTION_NAME, 0o600)?;
     let pointer_bytes = read_opened_regular(
         &pointer,
         &private_root.path.join(PRIOR_ACTIVE_TRANSACTION_NAME),
@@ -1884,11 +1990,7 @@ fn validate_prior_v9_prestop_retry(private_root: &PinnedDirectory) -> Result<Pri
             "prior v9 active pointer resolved to unexpected evidence".to_owned(),
         ));
     }
-    let evidence_directory = PinnedDirectory::open(
-        &evidence,
-        Some(effective_uid()),
-        Some(0o700),
-    )?;
+    let evidence_directory = PinnedDirectory::open(&evidence, Some(effective_uid()), Some(0o700))?;
     let mut empty_directories = Vec::new();
     for child in [
         "source-export",
@@ -1898,27 +2000,20 @@ fn validate_prior_v9_prestop_retry(private_root: &PinnedDirectory) -> Result<Pri
         "failed-new",
     ] {
         let directory = evidence_directory
-            .try_open_directory_child(
-                child,
-                Some(effective_uid()),
-                Some(0o700),
-            )?
-            .ok_or_else(|| ControllerError(format!(
-                "prior v9 evidence lacks private directory '{child}'"
-            )))?;
+            .try_open_directory_child(child, Some(effective_uid()), Some(0o700))?
+            .ok_or_else(|| {
+                ControllerError(format!(
+                    "prior v9 evidence lacks private directory '{child}'"
+                ))
+            })?;
         empty_directories.push(directory);
     }
     let records = evidence_directory
-        .try_open_directory_child(
-            "records",
-            Some(effective_uid()),
-            Some(0o700),
-        )?
+        .try_open_directory_child("records", Some(effective_uid()), Some(0o700))?
         .ok_or_else(|| ControllerError("prior v9 evidence lacks records directory".to_owned()))?;
     let journal = open_required_pinned_regular(&evidence_directory, "journal.log", 0o600)?;
     let result = open_required_pinned_regular(&records, "result.txt", 0o600)?;
-    let source_archive =
-        open_required_pinned_regular(&evidence_directory, "source.tar", 0o600)?;
+    let source_archive = open_required_pinned_regular(&evidence_directory, "source.tar", 0o600)?;
     let guard = PriorV9RetryGuard {
         pointer,
         evidence: evidence_directory,
@@ -1939,10 +2034,12 @@ fn validate_prior_v9_prestop_retry(private_root: &PinnedDirectory) -> Result<Pri
     for residue in [
         Path::new("/Applications").join(format!(".opensteamer-disabled-v9-{tag}")),
         Path::new("/Applications").join(format!(".opensteamer-install-hold-{tag}")),
-        Path::new("/Users/ahmed/Library/LaunchAgents")
-            .join(format!(".org.example.opensteamer.worldwide.plist.disabled-v9-{tag}")),
-        Path::new("/Users/ahmed/Library/LaunchAgents")
-            .join(format!(".org.example.opensteamer.worldwide.plist.install-{tag}")),
+        Path::new("/Users/ahmed/Library/LaunchAgents").join(format!(
+            ".org.example.opensteamer.worldwide.plist.disabled-v9-{tag}"
+        )),
+        Path::new("/Users/ahmed/Library/LaunchAgents").join(format!(
+            ".org.example.opensteamer.worldwide.plist.install-{tag}"
+        )),
     ] {
         if entry_exists(&residue)? {
             return Err(ControllerError(format!(
@@ -1960,7 +2057,6 @@ fn validate_prior_v9_prestop_retry(private_root: &PinnedDirectory) -> Result<Pri
     guard.revalidate(private_root)?;
     Ok(guard)
 }
-
 
 fn start_new(
     repo: PathBuf,
@@ -2008,6 +2104,92 @@ fn start_new(
     }
 }
 
+fn is_exact_v10_applications_critical_record(
+    evidence: &Path,
+    state: State,
+    saw_legacy_disabled: bool,
+    saw_legacy_stopped: bool,
+    fields: &BTreeMap<String, String>,
+) -> bool {
+    evidence == Path::new(V10_CRITICAL_RECOVERY_EVIDENCE)
+        && state == State::CriticalFailure
+        && saw_legacy_disabled
+        && saw_legacy_stopped
+        && fields.get("commit").map(String::as_str) == Some(V10_CRITICAL_RECOVERY_COMMIT)
+        && fields.get("tree").map(String::as_str) == Some(V10_CRITICAL_RECOVERY_TREE)
+        && fields.get("primary").map(String::as_str) == Some(V10_APPLICATIONS_MODE_ERROR)
+        && fields.get("rollback").map(String::as_str) == Some(V10_APPLICATIONS_MODE_ERROR)
+}
+
+fn validate_exact_v10_applications_critical_recovery(
+    layout: &Layout,
+    journal: &Journal,
+    private_root: &PinnedDirectory,
+) -> Result<()> {
+    if !is_exact_v10_applications_critical_record(
+        &layout.evidence,
+        journal.state,
+        journal.saw_legacy_disabled,
+        journal.saw_legacy_stopped,
+        &journal.fields,
+    ) {
+        return Err(ControllerError(
+            "CRITICAL_FAILURE is not the exact reviewed v10 /Applications-mode failure".to_owned(),
+        ));
+    }
+    if sha256_file(&layout.journal)? != V10_CRITICAL_JOURNAL_SHA256 {
+        return Err(ControllerError(
+            "critical v10 journal differs from the exact reviewed failure sequence".to_owned(),
+        ));
+    }
+
+    let active = open_required_pinned_regular(private_root, ACTIVE_TRANSACTION_NAME, 0o600)?;
+    let active_path = private_root.path.join(ACTIVE_TRANSACTION_NAME);
+    if read_opened_regular(&active, &active_path, 0o600)? != V10_CRITICAL_ACTIVE_RECORD
+        || sha256_file(&active_path)? != V10_CRITICAL_ACTIVE_SHA256
+    {
+        return Err(ControllerError(
+            "active v10 pointer differs from the exact reviewed critical record".to_owned(),
+        ));
+    }
+    private_root.ensure_file_at_name(ACTIVE_TRANSACTION_NAME, &active)?;
+
+    require_new_absent()?;
+    if service_state(LEGACY_LABEL)? != ServiceState::Absent {
+        return Err(ControllerError(
+            "exact v10 critical recovery requires the legacy service to remain absent".to_owned(),
+        ));
+    }
+    require_no_capture_server_processes()?;
+    verify_legacy_disabled(true)?;
+    verify_legacy_static_against_snapshot(layout)?;
+    prove_lock_acquirable()?;
+
+    let (disabled_app, disabled_plist, install_app_hold, install_plist_hold) =
+        rollback_hidden_paths(layout)?;
+    if entry_exists(&disabled_app)?
+        || entry_exists(&disabled_plist)?
+        || entry_exists(&install_plist_hold)?
+        || !entry_exists(&install_app_hold)?
+    {
+        return Err(ControllerError(
+            "v10 critical hidden-install state differs from the reviewed failure".to_owned(),
+        ));
+    }
+    validate_real_directory(&install_app_hold)?;
+    if directory_manifest(&install_app_hold)? != directory_manifest(&layout.staged_app)? {
+        return Err(ControllerError(
+            "v10 critical app install hold differs from the staged app".to_owned(),
+        ));
+    }
+    if entry_exists(&layout.records.join("result.txt"))? {
+        return Err(ControllerError(
+            "v10 critical transaction unexpectedly has a terminal result record".to_owned(),
+        ));
+    }
+    private_root.ensure_file_at_name(ACTIVE_TRANSACTION_NAME, &active)
+}
+
 fn recover_active(repo: PathBuf, private_root: &PinnedDirectory) -> Result<()> {
     let evidence = read_active(private_root)?;
     let layout = Layout::open(repo, evidence)?;
@@ -2026,7 +2208,10 @@ fn recover_active(repo: PathBuf, private_root: &PinnedDirectory) -> Result<()> {
     match journal.state {
         state if state.is_committed_family() => {
             verify_committed_runtime(&layout, &mut journal, private_root)?;
-            println!("MIGRATION_RECOVERY_COMMITTED evidence={}", layout.evidence.display());
+            println!(
+                "MIGRATION_RECOVERY_COMMITTED evidence={}",
+                layout.evidence.display()
+            );
             Ok(())
         }
         State::RolledBack => {
@@ -2036,10 +2221,14 @@ fn recover_active(repo: PathBuf, private_root: &PinnedDirectory) -> Result<()> {
                 layout.evidence.display()
             )))
         }
-        State::CriticalFailure => Err(ControllerError(format!(
-            "active transaction is in CRITICAL_FAILURE; keep Mac offline; evidence={}",
-            layout.evidence.display()
-        ))),
+        State::CriticalFailure => {
+            validate_exact_v10_applications_critical_recovery(&layout, &journal, private_root)?;
+            rollback(&layout, &mut journal)?;
+            Err(ControllerError(format!(
+                "exact reviewed v10 /Applications-mode failure was rolled back; protected legacy service was recovered and the active tombstone was retained; evidence={}",
+                layout.evidence.display()
+            )))
+        }
         _ => {
             rollback(&layout, &mut journal)?;
             Err(ControllerError(format!(
@@ -2049,7 +2238,6 @@ fn recover_active(repo: PathBuf, private_root: &PinnedDirectory) -> Result<()> {
         }
     }
 }
-
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ForwardOperation {
@@ -2068,10 +2256,16 @@ enum ForwardOperation {
 }
 
 const FORWARD_PLAN: &[(ForwardOperation, State)] = &[
-    (ForwardOperation::VerifyProvenance, State::ProvenanceVerified),
+    (
+        ForwardOperation::VerifyProvenance,
+        State::ProvenanceVerified,
+    ),
     (ForwardOperation::SnapshotLegacy, State::LegacySnapshotted),
     (ForwardOperation::BuildAndStage, State::NewStaged),
-    (ForwardOperation::VerifyPrecutover, State::PrecutoverVerified),
+    (
+        ForwardOperation::VerifyPrecutover,
+        State::PrecutoverVerified,
+    ),
     (ForwardOperation::DisableLegacy, State::LegacyDisabled),
     (ForwardOperation::StopLegacy, State::LegacyStopped),
     (ForwardOperation::VerifyLockHandoff, State::LockHandedOff),
@@ -2111,10 +2305,7 @@ enum ForwardEffect {
 
 trait ForwardEffectBackend {
     fn perform_effect(&mut self, effect: ForwardEffect) -> Result<()>;
-    fn operation_fields(
-        &mut self,
-        operation: ForwardOperation,
-    ) -> Result<Vec<(String, String)>>;
+    fn operation_fields(&mut self, operation: ForwardOperation) -> Result<Vec<(String, String)>>;
     fn revalidate_commit_fields(&mut self, fields: &[(String, String)]) -> Result<()>;
     fn after_commit_revalidation_before_durable_write(&mut self) -> Result<()>;
     fn committed_recorded(&mut self, fields: &[(String, String)]) -> Result<()>;
@@ -2140,18 +2331,10 @@ impl JournalSink for Journal {
 
 fn forward_effects(operation: ForwardOperation) -> &'static [ForwardEffect] {
     match operation {
-        ForwardOperation::VerifyProvenance => &[
-            ForwardEffect::VerifyProvenance,
-        ],
-        ForwardOperation::SnapshotLegacy => &[
-            ForwardEffect::SnapshotLegacy,
-        ],
-        ForwardOperation::BuildAndStage => &[
-            ForwardEffect::BuildAndStage,
-        ],
-        ForwardOperation::VerifyPrecutover => &[
-            ForwardEffect::VerifyPrecutover,
-        ],
+        ForwardOperation::VerifyProvenance => &[ForwardEffect::VerifyProvenance],
+        ForwardOperation::SnapshotLegacy => &[ForwardEffect::SnapshotLegacy],
+        ForwardOperation::BuildAndStage => &[ForwardEffect::BuildAndStage],
+        ForwardOperation::VerifyPrecutover => &[ForwardEffect::VerifyPrecutover],
         ForwardOperation::DisableLegacy => &[
             ForwardEffect::DisableLegacy,
             ForwardEffect::VerifyLegacyDisabled,
@@ -2162,9 +2345,7 @@ fn forward_effects(operation: ForwardOperation) -> &'static [ForwardEffect] {
             ForwardEffect::WaitLegacyProcessAbsent,
             ForwardEffect::VerifyNoCaptureServers,
         ],
-        ForwardOperation::VerifyLockHandoff => &[
-            ForwardEffect::VerifyLockHandoff,
-        ],
+        ForwardOperation::VerifyLockHandoff => &[ForwardEffect::VerifyLockHandoff],
         ForwardOperation::InstallNew => &[
             ForwardEffect::PrepareLogs,
             ForwardEffect::CopyAppInstallHold,
@@ -2173,9 +2354,7 @@ fn forward_effects(operation: ForwardOperation) -> &'static [ForwardEffect] {
             ForwardEffect::PublishPlist,
             ForwardEffect::VerifyInstalledDestinations,
         ],
-        ForwardOperation::BootstrapNew => &[
-            ForwardEffect::BootstrapNew,
-        ],
+        ForwardOperation::BootstrapNew => &[ForwardEffect::BootstrapNew],
         ForwardOperation::ObserveNewPid => &[
             ForwardEffect::ObserveNewPid,
             ForwardEffect::CheckpointGenerationLog,
@@ -2184,9 +2363,7 @@ fn forward_effects(operation: ForwardOperation) -> &'static [ForwardEffect] {
             ForwardEffect::ObserveFreshMarker,
             ForwardEffect::VerifyStableDeployment,
         ],
-        ForwardOperation::Commit => &[
-            ForwardEffect::VerifyCommitState,
-        ],
+        ForwardOperation::Commit => &[ForwardEffect::VerifyCommitState],
     }
 }
 
@@ -2198,18 +2375,10 @@ fn drive_forward<B, J, H>(
 where
     B: ForwardEffectBackend,
     J: JournalSink,
-    H: FnMut(
-        usize,
-        usize,
-        ForwardOperation,
-        ForwardEffect,
-        EffectPhase,
-    ) -> Result<()>,
+    H: FnMut(usize, usize, ForwardOperation, ForwardEffect, EffectPhase) -> Result<()>,
 {
     let mut committed_fields: Option<Vec<(String, String)>> = None;
-    for (operation_index, (operation, state)) in
-        FORWARD_PLAN.iter().copied().enumerate()
-    {
+    for (operation_index, (operation, state)) in FORWARD_PLAN.iter().copied().enumerate() {
         let effects = forward_effects(operation);
         for (effect_index, effect) in effects.iter().copied().enumerate() {
             hook(
@@ -2228,9 +2397,9 @@ where
                 EffectPhase::AfterSideEffect,
             )?;
         }
-        let last_effect = *effects.last().ok_or_else(|| {
-            ControllerError("forward operation has no effects".to_owned())
-        })?;
+        let last_effect = *effects
+            .last()
+            .ok_or_else(|| ControllerError("forward operation has no effects".to_owned()))?;
         hook(
             operation_index,
             effects.len(),
@@ -2303,7 +2472,6 @@ where
     Ok(fields.to_vec())
 }
 
-
 struct RealForwardBackend<'a> {
     layout: &'a Layout,
     provenance: Option<Provenance>,
@@ -2359,58 +2527,34 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
             ForwardEffect::SnapshotLegacy => snapshot_legacy(self.layout),
             ForwardEffect::BuildAndStage => {
                 let provenance = self.provenance.as_ref().ok_or_else(|| {
-                    ControllerError(
-                        "forward engine lacks verified provenance".to_owned(),
-                    )
+                    ControllerError("forward engine lacks verified provenance".to_owned())
                 })?;
                 build_and_stage(self.layout, provenance)
             }
             ForwardEffect::VerifyPrecutover => verify_precutover(self.layout),
             ForwardEffect::DisableLegacy => set_legacy_disabled(true),
-            ForwardEffect::VerifyLegacyDisabled => {
-                verify_legacy_disabled(true)
-            }
-            ForwardEffect::BootoutLegacy => {
-                bootout_exact_service(LEGACY_LABEL)
-            }
+            ForwardEffect::VerifyLegacyDisabled => verify_legacy_disabled(true),
+            ForwardEffect::BootoutLegacy => bootout_exact_service(LEGACY_LABEL),
             ForwardEffect::WaitLegacyServiceAbsent => {
-                wait_service_absent(
-                    LEGACY_LABEL,
-                    Duration::from_secs(10),
-                )
+                wait_service_absent(LEGACY_LABEL, Duration::from_secs(10))
             }
             ForwardEffect::WaitLegacyProcessAbsent => {
-                wait_exact_process_absent(
-                    LEGACY_EXECUTABLE,
-                    Duration::from_secs(10),
-                )
+                wait_exact_process_absent(LEGACY_EXECUTABLE, Duration::from_secs(10))
             }
-            ForwardEffect::VerifyNoCaptureServers => {
-                require_no_capture_server_processes()
-            }
+            ForwardEffect::VerifyNoCaptureServers => require_no_capture_server_processes(),
             ForwardEffect::VerifyLockHandoff => prove_lock_acquirable(),
             ForwardEffect::PrepareLogs => {
                 require_new_absent()?;
                 prepare_logs()
             }
-            ForwardEffect::CopyAppInstallHold => {
-                copy_new_app_to_install_hold(self.layout)
-            }
-            ForwardEffect::PublishApp => {
-                publish_new_app_from_install_hold(self.layout)
-            }
-            ForwardEffect::CopyPlistInstallHold => {
-                copy_new_plist_to_install_hold(self.layout)
-            }
-            ForwardEffect::PublishPlist => {
-                publish_new_plist_from_install_hold(self.layout)
-            }
+            ForwardEffect::CopyAppInstallHold => copy_new_app_to_install_hold(self.layout),
+            ForwardEffect::PublishApp => publish_new_app_from_install_hold(self.layout),
+            ForwardEffect::CopyPlistInstallHold => copy_new_plist_to_install_hold(self.layout),
+            ForwardEffect::PublishPlist => publish_new_plist_from_install_hold(self.layout),
             ForwardEffect::VerifyInstalledDestinations => {
                 verify_committed_destinations(self.layout)
             }
-            ForwardEffect::BootstrapNew => {
-                bootstrap_exact_plist(Path::new(NEW_PLIST))
-            }
+            ForwardEffect::BootstrapNew => bootstrap_exact_plist(Path::new(NEW_PLIST)),
             ForwardEffect::ObserveNewPid => {
                 self.generation = Some(observe_launch_generation(
                     NEW_LABEL,
@@ -2428,9 +2572,7 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
             }
             ForwardEffect::ObserveFreshMarker => {
                 let checkpoint = self.checkpoint.ok_or_else(|| {
-                    ControllerError(
-                        "forward engine lacks readiness checkpoint".to_owned(),
-                    )
+                    ControllerError("forward engine lacks readiness checkpoint".to_owned())
                 })?;
                 let generation = self.generation.as_ref().ok_or_else(|| {
                     ControllerError("forward engine lacks a launch generation".to_owned())
@@ -2444,9 +2586,7 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
             }
             ForwardEffect::VerifyStableDeployment => {
                 let checkpoint = self.checkpoint.ok_or_else(|| {
-                    ControllerError(
-                        "forward engine lacks readiness checkpoint".to_owned(),
-                    )
+                    ControllerError("forward engine lacks readiness checkpoint".to_owned())
                 })?;
                 let generation = self.generation.as_ref().ok_or_else(|| {
                     ControllerError("forward engine lacks a launch generation".to_owned())
@@ -2456,12 +2596,13 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
                 verify_legacy_disabled(true)
             }
             ForwardEffect::VerifyCommitState => {
-                let generation = self.generation.as_ref().ok_or_else(|| {
-                    ControllerError("commit has no generation proof".to_owned())
-                })?;
-                let checkpoint = self.checkpoint.ok_or_else(|| {
-                    ControllerError("commit has no marker checkpoint".to_owned())
-                })?;
+                let generation = self
+                    .generation
+                    .as_ref()
+                    .ok_or_else(|| ControllerError("commit has no generation proof".to_owned()))?;
+                let checkpoint = self
+                    .checkpoint
+                    .ok_or_else(|| ControllerError("commit has no marker checkpoint".to_owned()))?;
                 verify_launch_generation(NEW_LABEL, NEW_EXECUTABLE, generation)?;
                 require_marker_after_checkpoint(Path::new(ONLINE_LOG), &checkpoint)?;
                 verify_legacy_disabled(true)?;
@@ -2477,17 +2618,11 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
         }
     }
 
-    fn operation_fields(
-        &mut self,
-        operation: ForwardOperation,
-    ) -> Result<Vec<(String, String)>> {
+    fn operation_fields(&mut self, operation: ForwardOperation) -> Result<Vec<(String, String)>> {
         match operation {
             ForwardOperation::VerifyProvenance => {
                 let provenance = self.provenance.as_ref().ok_or_else(|| {
-                    ControllerError(
-                        "forward engine lacks verified provenance fields"
-                            .to_owned(),
-                    )
+                    ControllerError("forward engine lacks verified provenance fields".to_owned())
                 })?;
                 Ok(vec![
                     ("commit".to_owned(), provenance.commit.clone()),
@@ -2497,8 +2632,7 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
             ForwardOperation::ObserveNewPid
             | ForwardOperation::VerifyReadiness
             | ForwardOperation::Commit => self.checkpoint_fields(),
-            ForwardOperation::InstallNew
-            | ForwardOperation::BootstrapNew => Ok(Vec::new()),
+            ForwardOperation::InstallNew | ForwardOperation::BootstrapNew => Ok(Vec::new()),
             ForwardOperation::SnapshotLegacy
             | ForwardOperation::BuildAndStage
             | ForwardOperation::VerifyPrecutover
@@ -2553,7 +2687,6 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
     }
 }
 
-
 fn run_transaction(
     layout: &Layout,
     journal: &mut Journal,
@@ -2582,8 +2715,12 @@ struct Provenance {
 
 fn verify_provenance(layout: &Layout) -> Result<Provenance> {
     let git = Path::new("/usr/bin/git");
-    let status = run_command(git, &[OsStr::new("status"), OsStr::new("--porcelain=v1")], Some(&layout.repo))?
-        .require_success("git status")?;
+    let status = run_command(
+        git,
+        &[OsStr::new("status"), OsStr::new("--porcelain=v1")],
+        Some(&layout.repo),
+    )?
+    .require_success("git status")?;
     if !status.is_empty() {
         return Err(ControllerError(
             "repository must be clean before migration".to_owned(),
@@ -2597,7 +2734,8 @@ fn verify_provenance(layout: &Layout) -> Result<Provenance> {
         &layout.repo,
         "git upstream",
     )?;
-    let upstream_commit = command_line(git, &["rev-parse", "@{u}"], &layout.repo, "upstream commit")?;
+    let upstream_commit =
+        command_line(git, &["rev-parse", "@{u}"], &layout.repo, "upstream commit")?;
     if upstream_commit != commit {
         return Err(ControllerError(
             "local HEAD does not equal its upstream commit".to_owned(),
@@ -2645,7 +2783,11 @@ fn verify_provenance(layout: &Layout) -> Result<Provenance> {
     let archive_clone = archive_file.try_clone()?;
     let (archive_status, archive_stderr) = run_command_with_stdout_file(
         git,
-        &[OsStr::new("archive"), OsStr::new("--format=tar"), OsStr::new("HEAD")],
+        &[
+            OsStr::new("archive"),
+            OsStr::new("--format=tar"),
+            OsStr::new("HEAD"),
+        ],
         Some(&layout.repo),
         archive_clone,
         deadline_after(DEFAULT_COMMAND_TIMEOUT)?,
@@ -2696,7 +2838,11 @@ fn verify_provenance(layout: &Layout) -> Result<Provenance> {
     )?;
     run_command(
         Path::new("/usr/bin/chflags"),
-        &[OsStr::new("-R"), OsStr::new("uchg"), layout.source_export.as_os_str()],
+        &[
+            OsStr::new("-R"),
+            OsStr::new("uchg"),
+            layout.source_export.as_os_str(),
+        ],
         None,
     )?
     .require_success("make source export immutable")?;
@@ -2738,9 +2884,7 @@ fn locate_package_resolved(root: &Path) -> Result<PathBuf> {
     for candidate in candidates {
         match fs::symlink_metadata(&candidate) {
             Ok(metadata) => {
-                if metadata.file_type().is_symlink()
-                    || !metadata.is_file()
-                    || metadata.nlink() != 1
+                if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.nlink() != 1
                 {
                     return Err(ControllerError(format!(
                         "Package.resolved candidate is unsafe: {}",
@@ -2774,7 +2918,11 @@ fn snapshot_legacy(layout: &Layout) -> Result<()> {
         &layout.legacy_snapshot_executable,
         0o500,
     )?;
-    copy_exact_file(Path::new(LEGACY_PLIST), &layout.legacy_snapshot_plist, 0o400)?;
+    copy_exact_file(
+        Path::new(LEGACY_PLIST),
+        &layout.legacy_snapshot_plist,
+        0o400,
+    )?;
     if sha256_file(&layout.legacy_snapshot_executable)? != LEGACY_EXECUTABLE_SHA256
         || sha256_file(&layout.legacy_snapshot_plist)? != LEGACY_PLIST_SHA256
     {
@@ -2814,7 +2962,10 @@ fn build_and_stage(layout: &Layout, provenance: &Provenance) -> Result<()> {
         }
     }
     let mut environment = BTreeMap::new();
-    environment.insert("PATH".to_owned(), "/usr/bin:/bin:/usr/sbin:/sbin".to_owned());
+    environment.insert(
+        "PATH".to_owned(),
+        "/usr/bin:/bin:/usr/sbin:/sbin".to_owned(),
+    );
     environment.insert("HOME".to_owned(), USER_HOME.to_owned());
     environment.insert("TMPDIR".to_owned(), "/var/tmp".to_owned());
     environment.insert("LANG".to_owned(), "C".to_owned());
@@ -2836,14 +2987,26 @@ fn build_and_stage(layout: &Layout, provenance: &Provenance) -> Result<()> {
         "OPENSTEAMER_EXPECTED_SIGNING_IDENTITY_SHA1".to_owned(),
         SIGNING_IDENTITY_SHA1.to_owned(),
     );
-    environment.insert("OPENSTEAMER_EXPECTED_TEAM_ID".to_owned(), TEAM_ID.to_owned());
+    environment.insert(
+        "OPENSTEAMER_EXPECTED_TEAM_ID".to_owned(),
+        TEAM_ID.to_owned(),
+    );
     environment.insert(
         "OPENSTEAMER_HOST_DESIGNATED_REQUIREMENT_REFERENCE".to_owned(),
         layout.legacy_snapshot_executable.display().to_string(),
     );
-    environment.insert("OPENSTEAMER_REQUIRE_FRESH_RELEASE".to_owned(), "1".to_owned());
-    environment.insert("SWIFT_TREAT_WARNINGS_AS_ERRORS".to_owned(), "YES".to_owned());
-    environment.insert("OTHER_SWIFT_FLAGS".to_owned(), "-warnings-as-errors".to_owned());
+    environment.insert(
+        "OPENSTEAMER_REQUIRE_FRESH_RELEASE".to_owned(),
+        "1".to_owned(),
+    );
+    environment.insert(
+        "SWIFT_TREAT_WARNINGS_AS_ERRORS".to_owned(),
+        "YES".to_owned(),
+    );
+    environment.insert(
+        "OTHER_SWIFT_FLAGS".to_owned(),
+        "-warnings-as-errors".to_owned(),
+    );
     environment.insert("OTHER_CFLAGS".to_owned(), "-Werror".to_owned());
     environment.insert("OTHER_CPLUSPLUSFLAGS".to_owned(), "-Werror".to_owned());
     let build = run_command_owned(
@@ -2866,9 +3029,8 @@ fn build_and_stage(layout: &Layout, provenance: &Provenance) -> Result<()> {
         return Err(ControllerError("fresh Release build failed".to_owned()));
     }
     let exported_manifest = tree_manifest(&layout.source_export)?;
-    let recorded_export_manifest = fs::read_to_string(
-        layout.records.join("source-export-manifest.txt"),
-    )?;
+    let recorded_export_manifest =
+        fs::read_to_string(layout.records.join("source-export-manifest.txt"))?;
     if exported_manifest != recorded_export_manifest {
         return Err(ControllerError(
             "immutable source export changed during the Release build".to_owned(),
@@ -2919,6 +3081,8 @@ fn build_and_stage(layout: &Layout, provenance: &Provenance) -> Result<()> {
 }
 
 fn verify_precutover(layout: &Layout) -> Result<()> {
+    let applications = PinnedDirectory::open_applications()?;
+    applications.revalidate()?;
     verify_legacy_static()?;
     verify_legacy_disabled(false)?;
     verify_legacy_running()?;
@@ -2998,15 +3162,12 @@ fn publish_regular_file_hold(
 }
 
 fn publish_new_app_from_install_hold(layout: &Layout) -> Result<()> {
-    let applications =
-        PinnedDirectory::open(Path::new("/Applications"), None, None)?;
+    let applications = PinnedDirectory::open_applications()?;
     let install_hold = layout.install_app_hold()?;
     let app_hold_name = install_hold
         .file_name()
         .and_then(OsStr::to_str)
-        .ok_or_else(|| {
-            ControllerError("install app hold name is not UTF-8".to_owned())
-        })?;
+        .ok_or_else(|| ControllerError("install app hold name is not UTF-8".to_owned()))?;
     publish_directory_hold(&applications, app_hold_name, "opensteamer Host.app")
 }
 
@@ -3031,9 +3192,7 @@ fn publish_new_plist_from_install_hold(layout: &Layout) -> Result<()> {
     let plist_hold_name = plist_hold
         .file_name()
         .and_then(OsStr::to_str)
-        .ok_or_else(|| {
-            ControllerError("install plist hold name is not UTF-8".to_owned())
-        })?;
+        .ok_or_else(|| ControllerError("install plist hold name is not UTF-8".to_owned()))?;
     publish_regular_file_hold(
         &launch_agents,
         plist_hold_name,
@@ -3041,7 +3200,6 @@ fn publish_new_plist_from_install_hold(layout: &Layout) -> Result<()> {
         0o600,
     )
 }
-
 
 fn verify_committed_destinations(layout: &Layout) -> Result<()> {
     verify_legacy_static_against_snapshot(layout)?;
@@ -3134,12 +3292,11 @@ fn verify_deployment_with_prefix(
     command
         .args(arguments)
         .current_dir(&layout.source_export)
-        .env("OPENSTEAMER_MIGRATION_CONTROLLER_BINARY", &controller_binary);
-    let output = run_spawned_command(
-        command,
-        &verifier,
-        deadline_after(DEFAULT_COMMAND_TIMEOUT)?,
-    )?;
+        .env(
+            "OPENSTEAMER_MIGRATION_CONTROLLER_BINARY",
+            &controller_binary,
+        );
+    let output = run_spawned_command(command, &verifier, deadline_after(DEFAULT_COMMAND_TIMEOUT)?)?;
     let CommandOutput {
         status,
         stdout,
@@ -3194,10 +3351,7 @@ enum CommittedRecoveryOperation {
 }
 
 trait CommittedRecoveryBackend {
-    fn perform(
-        &mut self,
-        operation: CommittedRecoveryOperation,
-    ) -> Result<Vec<(String, String)>>;
+    fn perform(&mut self, operation: CommittedRecoveryOperation) -> Result<Vec<(String, String)>>;
 }
 
 fn committed_recovery_state(operation: CommittedRecoveryOperation) -> Option<State> {
@@ -3216,11 +3370,7 @@ fn committed_recovery_state(operation: CommittedRecoveryOperation) -> Option<Sta
     }
 }
 
-fn drive_committed_recovery<B, J, H>(
-    backend: &mut B,
-    journal: &mut J,
-    mut hook: H,
-) -> Result<()>
+fn drive_committed_recovery<B, J, H>(backend: &mut B, journal: &mut J, mut hook: H) -> Result<()>
 where
     B: CommittedRecoveryBackend,
     J: JournalSink,
@@ -3258,9 +3408,7 @@ struct RealCommittedRecoveryBackend<'a> {
 impl RealCommittedRecoveryBackend<'_> {
     fn recovery_fields(&self) -> Result<Vec<(String, String)>> {
         let generation = self.current_generation.as_ref().ok_or_else(|| {
-            ControllerError(
-                "committed recovery has no current launch generation".to_owned(),
-            )
+            ControllerError("committed recovery has no current launch generation".to_owned())
         })?;
         let mut fields = generation_fields("recovery_", generation);
         if let Some(checkpoint) = self.checkpoint {
@@ -3318,10 +3466,7 @@ impl RealCommittedRecoveryBackend<'_> {
 }
 
 impl CommittedRecoveryBackend for RealCommittedRecoveryBackend<'_> {
-    fn perform(
-        &mut self,
-        operation: CommittedRecoveryOperation,
-    ) -> Result<Vec<(String, String)>> {
+    fn perform(&mut self, operation: CommittedRecoveryOperation) -> Result<Vec<(String, String)>> {
         match operation {
             CommittedRecoveryOperation::VerifyCommittedDestinations => {
                 verify_committed_destinations(self.layout)?;
@@ -3351,11 +3496,8 @@ impl CommittedRecoveryBackend for RealCommittedRecoveryBackend<'_> {
                 Ok(Vec::new())
             }
             CommittedRecoveryOperation::ObserveCurrentGeneration => {
-                let generation = observe_launch_generation(
-                    NEW_LABEL,
-                    NEW_EXECUTABLE,
-                    Duration::from_secs(10),
-                )?;
+                let generation =
+                    observe_launch_generation(NEW_LABEL, NEW_EXECUTABLE, Duration::from_secs(10))?;
                 if generation.pid == self.historical_pid {
                     return Err(ControllerError(
                         "committed recovery reused the historical PID; refusing a PID-reuse ambiguity"
@@ -3381,14 +3523,10 @@ impl CommittedRecoveryBackend for RealCommittedRecoveryBackend<'_> {
             }
             CommittedRecoveryOperation::ObserveFreshMarker => {
                 let checkpoint = self.checkpoint.ok_or_else(|| {
-                    ControllerError(
-                        "committed recovery marker check lacks a checkpoint".to_owned(),
-                    )
+                    ControllerError("committed recovery marker check lacks a checkpoint".to_owned())
                 })?;
                 let generation = self.current_generation.as_ref().ok_or_else(|| {
-                    ControllerError(
-                        "committed recovery marker check lacks a generation".to_owned(),
-                    )
+                    ControllerError("committed recovery marker check lacks a generation".to_owned())
                 })?;
                 wait_for_online_marker_for_generation(
                     Path::new(ONLINE_LOG),
@@ -3443,11 +3581,9 @@ fn verify_committed_runtime(
         .ok_or_else(|| ControllerError("COMMIT journal has no historical PID".to_owned()))?
         .parse::<u32>()
         .map_err(|_| ControllerError("COMMIT historical PID is malformed".to_owned()))?;
-    let historical_nonce = journal
-        .fields
-        .get("nonce")
-        .cloned()
-        .ok_or_else(|| ControllerError("COMMIT journal has no historical generation nonce".to_owned()))?;
+    let historical_nonce = journal.fields.get("nonce").cloned().ok_or_else(|| {
+        ControllerError("COMMIT journal has no historical generation nonce".to_owned())
+    })?;
     let mut backend = RealCommittedRecoveryBackend {
         layout,
         historical_pid,
@@ -3472,7 +3608,6 @@ fn verify_committed_runtime(
         |_| Ok(()),
     )
 }
-
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RollbackMode {
@@ -3555,12 +3690,7 @@ where
     if !crossed_legacy_stop_boundary {
         let mode = RollbackMode::BeforeLegacyStop;
         run(backend, journal, mode, RollbackOperation::Begin)?;
-        run(
-            backend,
-            journal,
-            mode,
-            RollbackOperation::VerifyBeforeStop,
-        )?;
+        run(backend, journal, mode, RollbackOperation::VerifyBeforeStop)?;
         run(backend, journal, mode, RollbackOperation::EnableLegacy)?;
         run(backend, journal, mode, RollbackOperation::VerifyLegacy)?;
         run(backend, journal, mode, RollbackOperation::ArchiveEvidence)?;
@@ -3572,12 +3702,7 @@ where
     // actually crossed its stop boundary. This covers interruption after disable/stop intent but
     // before the legacy bootout side effect.
     let provisional_mode = RollbackMode::FullRestore;
-    run(
-        backend,
-        journal,
-        provisional_mode,
-        RollbackOperation::Begin,
-    )?;
+    run(backend, journal, provisional_mode, RollbackOperation::Begin)?;
     run(
         backend,
         journal,
@@ -3600,12 +3725,7 @@ where
     }
     run(backend, journal, mode, RollbackOperation::EnableLegacy)?;
     if mode == RollbackMode::FullRestore {
-        run(
-            backend,
-            journal,
-            mode,
-            RollbackOperation::BootstrapLegacy,
-        )?;
+        run(backend, journal, mode, RollbackOperation::BootstrapLegacy)?;
     }
     run(backend, journal, mode, RollbackOperation::VerifyLegacy)?;
     run(backend, journal, mode, RollbackOperation::ArchiveEvidence)?;
@@ -3693,8 +3813,8 @@ impl RollbackBackend for RealRollbackBackend<'_> {
 
 fn rollback(layout: &Layout, journal: &mut Journal) -> Result<()> {
     let legacy_service_before_rollback = service_state(LEGACY_LABEL)?;
-    let crossed_legacy_stop_boundary = journal.saw_legacy_stopped
-        || legacy_service_before_rollback == ServiceState::Absent;
+    let crossed_legacy_stop_boundary =
+        journal.saw_legacy_stopped || legacy_service_before_rollback == ServiceState::Absent;
     let legacy_disable_was_journaled = journal.saw_legacy_disabled;
     let mut backend = RealRollbackBackend { layout };
     let _mode = drive_rollback(
@@ -3706,7 +3826,6 @@ fn rollback(layout: &Layout, journal: &mut Journal) -> Result<()> {
     )?;
     Ok(())
 }
-
 
 fn rollback_hidden_paths(layout: &Layout) -> Result<(PathBuf, PathBuf, PathBuf, PathBuf)> {
     let tag = layout.transaction_tag()?;
@@ -3722,7 +3841,7 @@ fn rollback_hidden_paths(layout: &Layout) -> Result<(PathBuf, PathBuf, PathBuf, 
 
 fn clear_new_live_destinations(layout: &Layout) -> Result<()> {
     let (disabled_app, disabled_plist, _, _) = rollback_hidden_paths(layout)?;
-    let applications = PinnedDirectory::open(Path::new("/Applications"), None, None)?;
+    let applications = PinnedDirectory::open_applications()?;
     let launch_agents = PinnedDirectory::open(
         Path::new("/Users/ahmed/Library/LaunchAgents"),
         Some(effective_uid()),
@@ -3755,10 +3874,7 @@ fn clear_new_live_destinations(layout: &Layout) -> Result<()> {
             .file_name()
             .and_then(OsStr::to_str)
             .ok_or_else(|| ControllerError("disabled plist hold name is not UTF-8".to_owned()))?;
-        launch_agents.rename_exclusive(
-            "org.example.opensteamer.worldwide.plist",
-            disabled_name,
-        )?;
+        launch_agents.rename_exclusive("org.example.opensteamer.worldwide.plist", disabled_name)?;
     }
     if entry_exists(Path::new(NEW_APP))? || entry_exists(Path::new(NEW_PLIST))? {
         return Err(ControllerError(
@@ -3772,7 +3888,11 @@ fn archive_failed_new_best_effort(layout: &Layout) {
     let Ok((disabled_app, disabled_plist, install_app_hold, install_plist_hold)) =
         rollback_hidden_paths(layout)
     else {
-        record_secondary_warning(layout, "hidden-paths", "could not derive hidden evidence paths");
+        record_secondary_warning(
+            layout,
+            "hidden-paths",
+            "could not derive hidden evidence paths",
+        );
         return;
     };
     preserve_hidden_app_best_effort(
@@ -3803,12 +3923,7 @@ fn archive_failed_new_best_effort(layout: &Layout) {
     );
 }
 
-fn preserve_hidden_app_best_effort(
-    layout: &Layout,
-    hidden: &Path,
-    evidence: &Path,
-    label: &str,
-) {
+fn preserve_hidden_app_best_effort(layout: &Layout, hidden: &Path, evidence: &Path, label: &str) {
     let operation = (|| -> Result<()> {
         if !entry_exists(hidden)? {
             return Ok(());
@@ -3842,12 +3957,7 @@ fn preserve_hidden_app_best_effort(
     }
 }
 
-fn preserve_hidden_plist_best_effort(
-    layout: &Layout,
-    hidden: &Path,
-    evidence: &Path,
-    label: &str,
-) {
+fn preserve_hidden_plist_best_effort(layout: &Layout, hidden: &Path, evidence: &Path, label: &str) {
     let operation = (|| -> Result<()> {
         if !entry_exists(hidden)? {
             return Ok(());
@@ -3879,11 +3989,17 @@ fn preserve_hidden_plist_best_effort(
 
 fn record_secondary_warning(layout: &Layout, label: &str, message: &str) {
     eprintln!("opensteamer migration controller: secondary evidence warning [{label}]: {message}");
-    let path = layout.records.join(format!("secondary-warning-{label}.txt"));
+    let path = layout
+        .records
+        .join(format!("secondary-warning-{label}.txt"));
     if matches!(entry_exists(&path), Ok(false)) {
         let _ = write_record(
             &path,
-            format!("label={label}\nmessage={}\n", percent_encode(message.as_bytes())).as_bytes(),
+            format!(
+                "label={label}\nmessage={}\n",
+                percent_encode(message.as_bytes())
+            )
+            .as_bytes(),
             0o600,
         );
     }
@@ -3907,16 +4023,14 @@ fn verify_recovered_legacy(layout: &Layout) -> Result<()> {
     wait_for_exact_legacy_readiness_until(deadline)
 }
 
-fn verify_legacy_static_against_snapshot_until(
-    layout: &Layout,
-    deadline: Instant,
-) -> Result<()> {
+fn verify_legacy_static_against_snapshot_until(layout: &Layout, deadline: Instant) -> Result<()> {
     verify_legacy_static_until(deadline)?;
-    if sha256_file_until(&layout.legacy_snapshot_executable, deadline)?
-        != LEGACY_EXECUTABLE_SHA256
+    if sha256_file_until(&layout.legacy_snapshot_executable, deadline)? != LEGACY_EXECUTABLE_SHA256
         || sha256_file_until(&layout.legacy_snapshot_plist, deadline)? != LEGACY_PLIST_SHA256
     {
-        return Err(ControllerError("offline legacy snapshot changed".to_owned()));
+        return Err(ControllerError(
+            "offline legacy snapshot changed".to_owned(),
+        ));
     }
     require_before_deadline(deadline, "legacy tree-manifest verification")?;
     let current = tree_manifest_until(Path::new(LEGACY_APP), deadline)?;
@@ -3939,12 +4053,8 @@ fn verify_legacy_static_against_snapshot_until(
 }
 
 fn verify_legacy_static_against_snapshot(layout: &Layout) -> Result<()> {
-    verify_legacy_static_against_snapshot_until(
-        layout,
-        deadline_after(DEFAULT_COMMAND_TIMEOUT)?,
-    )
+    verify_legacy_static_against_snapshot_until(layout, deadline_after(DEFAULT_COMMAND_TIMEOUT)?)
 }
-
 
 fn verify_legacy_bundle_signatures_until(deadline: Instant) -> Result<()> {
     run_command_until(
@@ -3978,10 +4088,10 @@ fn verify_legacy_static_until(deadline: Instant) -> Result<()> {
     validate_real_directory(Path::new(LEGACY_APP))?;
     validate_real_file(Path::new(LEGACY_EXECUTABLE), None)?;
     validate_real_file(Path::new(LEGACY_PLIST), None)?;
-    if sha256_file_until(Path::new(LEGACY_EXECUTABLE), deadline)?
-        != LEGACY_EXECUTABLE_SHA256
-    {
-        return Err(ControllerError("legacy executable hash mismatch".to_owned()));
+    if sha256_file_until(Path::new(LEGACY_EXECUTABLE), deadline)? != LEGACY_EXECUTABLE_SHA256 {
+        return Err(ControllerError(
+            "legacy executable hash mismatch".to_owned(),
+        ));
     }
     if sha256_file_until(Path::new(LEGACY_PLIST), deadline)? != LEGACY_PLIST_SHA256 {
         return Err(ControllerError("legacy plist hash mismatch".to_owned()));
@@ -4008,7 +4118,6 @@ fn verify_legacy_static_until(deadline: Instant) -> Result<()> {
 fn verify_legacy_static() -> Result<()> {
     verify_legacy_static_until(deadline_after(DEFAULT_COMMAND_TIMEOUT)?)
 }
-
 
 fn prove_new_host_absent_during_rollback_until(deadline: Instant) -> Result<()> {
     if service_state_until(NEW_LABEL, deadline)? != ServiceState::Absent {
@@ -4063,10 +4172,7 @@ fn legacy_readiness_probe_until(deadline: Instant) -> Result<bool> {
     if captures.is_empty() {
         return Ok(false);
     }
-    if captures.len() != 1
-        || captures[0].0 != parsed.pid
-        || captures[0].1 != LEGACY_EXECUTABLE
-    {
+    if captures.len() != 1 || captures[0].0 != parsed.pid || captures[0].1 != LEGACY_EXECUTABLE {
         return Err(ControllerError(
             "a wrong or concurrent CaptureServer appeared during rollback".to_owned(),
         ));
@@ -4119,7 +4225,6 @@ fn wait_for_exact_legacy_readiness(timeout: Duration) -> Result<()> {
     wait_for_exact_legacy_readiness_until(deadline)
 }
 
-
 fn verify_legacy_running_until(deadline: Instant) -> Result<()> {
     let snapshot = launch_snapshot_until(LEGACY_LABEL, deadline)?;
     let parsed = parse_launch_snapshot(&snapshot, LEGACY_LABEL)?;
@@ -4156,7 +4261,6 @@ fn verify_legacy_running() -> Result<()> {
     verify_legacy_running_until(deadline_after(DEFAULT_COMMAND_TIMEOUT)?)
 }
 
-
 fn require_new_absent() -> Result<()> {
     if entry_exists(Path::new(NEW_APP))? || entry_exists(Path::new(NEW_PLIST))? {
         return Err(ControllerError(
@@ -4167,7 +4271,9 @@ fn require_new_absent() -> Result<()> {
         return Err(ControllerError("new service is already loaded".to_owned()));
     }
     if !exact_process_pids(NEW_EXECUTABLE)?.is_empty() {
-        return Err(ControllerError("new executable is already running".to_owned()));
+        return Err(ControllerError(
+            "new executable is already running".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -4271,7 +4377,10 @@ fn parse_disabled_override(text: &str, label: &str) -> Result<Option<bool>> {
 fn verify_legacy_disabled_until(expected: bool, deadline: Instant) -> Result<()> {
     let output = run_command_until(
         Path::new("/bin/launchctl"),
-        &[OsStr::new("print-disabled"), OsStr::new(&format!("gui/{USER_ID}"))],
+        &[
+            OsStr::new("print-disabled"),
+            OsStr::new(&format!("gui/{USER_ID}")),
+        ],
         None,
         deadline,
     )?
@@ -4290,11 +4399,13 @@ fn verify_legacy_disabled(expected: bool) -> Result<()> {
     verify_legacy_disabled_until(expected, deadline_after(DEFAULT_COMMAND_TIMEOUT)?)
 }
 
-
 fn service_state_until(label: &str, deadline: Instant) -> Result<ServiceState> {
     let output = run_command_until(
         Path::new("/bin/launchctl"),
-        &[OsStr::new("print"), OsStr::new(&format!("gui/{USER_ID}/{label}"))],
+        &[
+            OsStr::new("print"),
+            OsStr::new(&format!("gui/{USER_ID}/{label}")),
+        ],
         None,
         deadline,
     )?;
@@ -4311,9 +4422,9 @@ fn service_state_until(label: &str, deadline: Instant) -> Result<ServiceState> {
         && absence_lines
             .iter()
             .any(|line| line.starts_with("Could not find service"))
-        && absence_lines.iter().all(|line| {
-            *line == "Bad request." || line.starts_with("Could not find service")
-        });
+        && absence_lines
+            .iter()
+            .all(|line| *line == "Bad request." || line.starts_with("Could not find service"));
     if explicit_absence {
         return Ok(ServiceState::Absent);
     }
@@ -4333,7 +4444,10 @@ fn bootout_exact_service(label: &str) -> Result<()> {
     }
     run_command(
         Path::new("/bin/launchctl"),
-        &[OsStr::new("bootout"), OsStr::new(&format!("gui/{USER_ID}/{label}"))],
+        &[
+            OsStr::new("bootout"),
+            OsStr::new(&format!("gui/{USER_ID}/{label}")),
+        ],
         None,
     )?
     .require_success("launchctl bootout")?;
@@ -4394,11 +4508,13 @@ fn wait_exact_process_absent(executable: &str, timeout: Duration) -> Result<()> 
     }
 }
 
-
 fn launch_snapshot_until(label: &str, deadline: Instant) -> Result<String> {
     let output = run_command_until(
         Path::new("/bin/launchctl"),
-        &[OsStr::new("print"), OsStr::new(&format!("gui/{USER_ID}/{label}"))],
+        &[
+            OsStr::new("print"),
+            OsStr::new(&format!("gui/{USER_ID}/{label}")),
+        ],
         None,
         deadline,
     )?;
@@ -4506,11 +4622,10 @@ fn parse_launch_snapshot(text: &str, expected_label: &str) -> Result<ParsedLaunc
             );
         } else if let Some(value) = line.strip_prefix("runs = ") {
             runs_fields += 1;
-            runs = Some(
-                value
-                    .parse::<u64>()
-                    .map_err(|_| ControllerError("launchctl runs value is malformed".to_owned()))?,
-            );
+            runs =
+                Some(value.parse::<u64>().map_err(|_| {
+                    ControllerError("launchctl runs value is malformed".to_owned())
+                })?);
         } else if let Some(value) = line.strip_prefix("program = ") {
             program_fields += 1;
             if value.is_empty() {
@@ -4536,13 +4651,17 @@ fn parse_launch_snapshot(text: &str, expected_label: &str) -> Result<ParsedLaunc
             "launchctl snapshot has no top-level arguments".to_owned(),
         ));
     }
-    let parsed_pid = pid.ok_or_else(|| ControllerError("launchctl snapshot has no PID".to_owned()))?;
+    let parsed_pid =
+        pid.ok_or_else(|| ControllerError("launchctl snapshot has no PID".to_owned()))?;
     if parsed_pid == 0 {
         return Err(ControllerError("launchctl PID must be positive".to_owned()));
     }
-    let parsed_runs = runs.ok_or_else(|| ControllerError("launchctl snapshot has no runs value".to_owned()))?;
+    let parsed_runs =
+        runs.ok_or_else(|| ControllerError("launchctl snapshot has no runs value".to_owned()))?;
     if parsed_runs == 0 {
-        return Err(ControllerError("launchctl runs must be positive".to_owned()));
+        return Err(ControllerError(
+            "launchctl runs must be positive".to_owned(),
+        ));
     }
     Ok(ParsedLaunch {
         pid: parsed_pid,
@@ -4567,10 +4686,19 @@ fn generation_fields(prefix: &str, generation: &LaunchGeneration) -> Vec<(String
     vec![
         (format!("{prefix}pid"), generation.pid.to_string()),
         (format!("{prefix}runs"), generation.runs.to_string()),
-        (format!("{prefix}process_start"), generation.process_start.clone()),
+        (
+            format!("{prefix}process_start"),
+            generation.process_start.clone(),
+        ),
         (format!("{prefix}nonce"), generation.nonce.clone()),
-        (format!("{prefix}lock_device"), generation.lock_device.to_string()),
-        (format!("{prefix}lock_inode"), generation.lock_inode.to_string()),
+        (
+            format!("{prefix}lock_device"),
+            generation.lock_device.to_string(),
+        ),
+        (
+            format!("{prefix}lock_inode"),
+            generation.lock_inode.to_string(),
+        ),
     ]
 }
 
@@ -4620,9 +4748,9 @@ fn parse_generation_record(bytes: &[u8]) -> Result<Option<(u32, String)>> {
             "worldwide generation PID must be positive".to_owned(),
         ));
     }
-    let nonce = nonce_line
-        .strip_prefix("nonce=")
-        .ok_or_else(|| ControllerError("worldwide generation nonce field is malformed".to_owned()))?;
+    let nonce = nonce_line.strip_prefix("nonce=").ok_or_else(|| {
+        ControllerError("worldwide generation nonce field is malformed".to_owned())
+    })?;
     if nonce.len() != 64
         || !nonce
             .bytes()
@@ -4660,9 +4788,8 @@ fn read_generation_record() -> Result<Option<(u32, String, u64, u64)>> {
         ));
     }
     directory.ensure_file_at_name("worldwide-host.lock", &file)?;
-    Ok(parse_generation_record(&bytes)?.map(|(pid, nonce)| {
-        (pid, nonce, before.dev(), before.ino())
-    }))
+    Ok(parse_generation_record(&bytes)?
+        .map(|(pid, nonce)| (pid, nonce, before.dev(), before.ino())))
 }
 
 fn process_start_identity_until(pid: u32, deadline: Instant) -> Result<String> {
@@ -4679,7 +4806,11 @@ fn process_start_identity_until(pid: u32, deadline: Instant) -> Result<String> {
         deadline,
     )?
     .require_success("read process start identity")?;
-    let values: Vec<&str> = output.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    let values: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
     if values.len() != 1 {
         return Err(ControllerError(format!(
             "process start identity returned {} records, expected one",
@@ -4705,8 +4836,7 @@ fn current_launch_generation_until(
     };
     if parsed.program != executable
         || (label == NEW_LABEL && parsed.arguments != expected_arguments)
-        || (label != NEW_LABEL
-            && parsed.arguments.first().map(String::as_str) != Some(executable))
+        || (label != NEW_LABEL && parsed.arguments.first().map(String::as_str) != Some(executable))
     {
         return Err(ControllerError(format!(
             "launchctl service '{label}' targets unexpected program arguments"
@@ -4766,9 +4896,12 @@ fn verify_launch_generation_until(
     expected: &LaunchGeneration,
     deadline: Instant,
 ) -> Result<()> {
-    let actual = current_launch_generation_until(label, executable, deadline)?.ok_or_else(|| {
-        ControllerError(format!("service '{label}' has no complete current generation"))
-    })?;
+    let actual =
+        current_launch_generation_until(label, executable, deadline)?.ok_or_else(|| {
+            ControllerError(format!(
+                "service '{label}' has no complete current generation"
+            ))
+        })?;
     if &actual != expected {
         return Err(ControllerError(format!(
             "service '{label}' generation changed: expected pid/runs/start/nonce/inode {}/{}/{}/{}/{}:{}, observed {}/{}/{}/{}/{}:{}",
@@ -4812,7 +4945,11 @@ fn checkpoint_log_for_generation(generation: &LaunchGeneration) -> Result<LogChe
 fn process_snapshot_until(deadline: Instant) -> Result<String> {
     run_command_until(
         Path::new("/bin/ps"),
-        &[OsStr::new("-ww"), OsStr::new("-axo"), OsStr::new("pid=,comm=")],
+        &[
+            OsStr::new("-ww"),
+            OsStr::new("-axo"),
+            OsStr::new("pid=,comm="),
+        ],
         None,
         deadline,
     )?
@@ -4873,7 +5010,6 @@ fn require_no_capture_server_processes_until(deadline: Instant) -> Result<()> {
 fn require_no_capture_server_processes() -> Result<()> {
     require_no_capture_server_processes_until(deadline_after(DEFAULT_COMMAND_TIMEOUT)?)
 }
-
 
 fn prove_lock_held_by_legacy() -> Result<()> {
     let deadline = deadline_after(DEFAULT_COMMAND_TIMEOUT)?;
@@ -4941,7 +5077,6 @@ fn prove_lock_acquirable_until(deadline: Instant) -> Result<()> {
 fn prove_lock_acquirable() -> Result<()> {
     prove_lock_acquirable_until(deadline_after(DEFAULT_COMMAND_TIMEOUT)?)
 }
-
 
 #[derive(Clone)]
 struct LockPathMetadata {
@@ -5084,7 +5219,6 @@ fn lsof_holders(path: &Path) -> Result<BTreeSet<u32>> {
     lsof_holders_until(path, deadline_after(DEFAULT_COMMAND_TIMEOUT)?)
 }
 
-
 fn prepare_logs() -> Result<()> {
     validate_real_directory(Path::new("/var/tmp"))?;
     for path in [Path::new(ONLINE_LOG), Path::new(ERROR_LOG)] {
@@ -5126,11 +5260,15 @@ fn safe_log_size(path: &Path) -> Result<LogCheckpoint> {
         .open(path)?;
     let opened = file.metadata()?;
     if !same_inode(&before, &opened) {
-        return Err(ControllerError("log inode changed while opening".to_owned()));
+        return Err(ControllerError(
+            "log inode changed while opening".to_owned(),
+        ));
     }
     let after = fs::symlink_metadata(path)?;
     if !same_inode(&opened, &after) {
-        return Err(ControllerError("log inode changed while checkpointing".to_owned()));
+        return Err(ControllerError(
+            "log inode changed while checkpointing".to_owned(),
+        ));
     }
     Ok(LogCheckpoint {
         offset: opened.len(),
@@ -5231,11 +5369,14 @@ fn wait_for_online_marker_for_generation(
     }
 }
 
-
 fn verify_code_identity_until(target: &Path, deadline: Instant) -> Result<()> {
     run_command_until(
         Path::new("/usr/bin/codesign"),
-        &[OsStr::new("--verify"), OsStr::new("--strict"), target.as_os_str()],
+        &[
+            OsStr::new("--verify"),
+            OsStr::new("--strict"),
+            target.as_os_str(),
+        ],
         None,
         deadline,
     )?
@@ -5314,8 +5455,8 @@ fn plist_arguments_until(plist: &Path, deadline: Instant) -> Result<Vec<String>>
                 output.stderr.trim()
             )));
         }
-        let missing_entry = output.stdout.trim().is_empty()
-            && output.stderr.contains("Does Not Exist");
+        let missing_entry =
+            output.stdout.trim().is_empty() && output.stderr.contains("Does Not Exist");
         if missing_entry {
             if index == 0 {
                 return Err(ControllerError("plist has no ProgramArguments".to_owned()));
@@ -5331,7 +5472,6 @@ fn plist_arguments_until(plist: &Path, deadline: Instant) -> Result<Vec<String>>
         "plist ProgramArguments exceeds the bounded 64-item limit".to_owned(),
     ))
 }
-
 
 fn read_pinned_regular(parent: &PinnedDirectory, name: &str, mode: u32) -> Result<Vec<u8>> {
     let mut file = parent
@@ -5365,22 +5505,15 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
         .is_some();
 
     if linearized_exists {
-        let linearized_bytes = read_pinned_regular(
-            parent,
-            ACTIVE_TRANSACTION_LINEARIZED_NAME,
-            0o600,
-        )?;
+        let linearized_bytes =
+            read_pinned_regular(parent, ACTIVE_TRANSACTION_LINEARIZED_NAME, 0o600)?;
         let _ = parse_active_record(&linearized_bytes)?;
         if finalizing_exists {
-            let finalizing_bytes = read_pinned_regular(
-                parent,
-                ACTIVE_TRANSACTION_FINALIZING_NAME,
-                0o600,
-            )?;
+            let finalizing_bytes =
+                read_pinned_regular(parent, ACTIVE_TRANSACTION_FINALIZING_NAME, 0o600)?;
             if finalizing_bytes != linearized_bytes {
                 return Err(ControllerError(
-                    "linearized and cleanup-only finalizing records disagree"
-                        .to_owned(),
+                    "linearized and cleanup-only finalizing records disagree".to_owned(),
                 ));
             }
         }
@@ -5393,22 +5526,14 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
     if finalizing_exists {
         if pending_exists {
             return Err(ControllerError(
-                "active-pointer recovery found pending and finalizing records together"
-                    .to_owned(),
+                "active-pointer recovery found pending and finalizing records together".to_owned(),
             ));
         }
-        let finalizing_bytes = read_pinned_regular(
-            parent,
-            ACTIVE_TRANSACTION_FINALIZING_NAME,
-            0o600,
-        )?;
+        let finalizing_bytes =
+            read_pinned_regular(parent, ACTIVE_TRANSACTION_FINALIZING_NAME, 0o600)?;
         let _ = parse_active_record(&finalizing_bytes)?;
         if active_exists {
-            let active_bytes = read_pinned_regular(
-                parent,
-                ACTIVE_TRANSACTION_NAME,
-                0o600,
-            )?;
+            let active_bytes = read_pinned_regular(parent, ACTIVE_TRANSACTION_NAME, 0o600)?;
             if active_bytes != finalizing_bytes {
                 return Err(ControllerError(
                     "active and finalizing transaction records disagree".to_owned(),
@@ -5418,19 +5543,11 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
             // same-UID actor could substitute a foreign inode after validation.
             return Ok(ActivePointerRecovery::Active);
         }
-        parent.rename_exclusive(
-            ACTIVE_TRANSACTION_FINALIZING_NAME,
-            ACTIVE_TRANSACTION_NAME,
-        )?;
-        let restored = read_pinned_regular(
-            parent,
-            ACTIVE_TRANSACTION_NAME,
-            0o600,
-        )?;
+        parent.rename_exclusive(ACTIVE_TRANSACTION_FINALIZING_NAME, ACTIVE_TRANSACTION_NAME)?;
+        let restored = read_pinned_regular(parent, ACTIVE_TRANSACTION_NAME, 0o600)?;
         if restored != finalizing_bytes {
             return Err(ControllerError(
-                "restored active transaction pointer bytes changed during publication"
-                    .to_owned(),
+                "restored active transaction pointer bytes changed during publication".to_owned(),
             ));
         }
         return Ok(ActivePointerRecovery::Active);
@@ -5447,16 +5564,9 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
             Ok(ActivePointerRecovery::Active)
         }
         (true, true) => {
-            let active_bytes = read_pinned_regular(
-                parent,
-                ACTIVE_TRANSACTION_NAME,
-                0o600,
-            )?;
-            let pending_bytes = read_pinned_regular(
-                parent,
-                ACTIVE_TRANSACTION_PENDING_NAME,
-                0o600,
-            )?;
+            let active_bytes = read_pinned_regular(parent, ACTIVE_TRANSACTION_NAME, 0o600)?;
+            let pending_bytes =
+                read_pinned_regular(parent, ACTIVE_TRANSACTION_PENDING_NAME, 0o600)?;
             if active_bytes != pending_bytes {
                 return Err(ControllerError(
                     "active and pending transaction records disagree".to_owned(),
@@ -5468,25 +5578,14 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
             Ok(ActivePointerRecovery::Active)
         }
         (false, true) => {
-            let bytes = read_pinned_regular(
-                parent,
-                ACTIVE_TRANSACTION_PENDING_NAME,
-                0o600,
-            )?;
+            let bytes = read_pinned_regular(parent, ACTIVE_TRANSACTION_PENDING_NAME, 0o600)?;
             let _ = parse_active_record(&bytes).map_err(|error| {
                 ControllerError(format!(
                     "malformed pending active pointer was retained without mutation: {error}"
                 ))
             })?;
-            parent.rename_exclusive(
-                ACTIVE_TRANSACTION_PENDING_NAME,
-                ACTIVE_TRANSACTION_NAME,
-            )?;
-            let published = read_pinned_regular(
-                parent,
-                ACTIVE_TRANSACTION_NAME,
-                0o600,
-            )?;
+            parent.rename_exclusive(ACTIVE_TRANSACTION_PENDING_NAME, ACTIVE_TRANSACTION_NAME)?;
+            let published = read_pinned_regular(parent, ACTIVE_TRANSACTION_NAME, 0o600)?;
             if published != bytes {
                 return Err(ControllerError(
                     "recovered active transaction pointer bytes changed during publication"
@@ -5507,16 +5606,10 @@ enum ActivePointerOperation {
 }
 
 trait ActivePointerBackend {
-    fn perform_active_pointer(
-        &mut self,
-        operation: ActivePointerOperation,
-    ) -> Result<()>;
+    fn perform_active_pointer(&mut self, operation: ActivePointerOperation) -> Result<()>;
 }
 
-fn drive_active_pointer<B, H>(
-    backend: &mut B,
-    mut interruption_hook: H,
-) -> Result<()>
+fn drive_active_pointer<B, H>(backend: &mut B, mut interruption_hook: H) -> Result<()>
 where
     B: ActivePointerBackend,
     H: FnMut(usize, ActivePointerOperation, EffectPhase) -> Result<()>,
@@ -5542,73 +5635,50 @@ struct RealActivePointerBackend<'a> {
 }
 
 impl ActivePointerBackend for RealActivePointerBackend<'_> {
-    fn perform_active_pointer(
-        &mut self,
-        operation: ActivePointerOperation,
-    ) -> Result<()> {
+    fn perform_active_pointer(&mut self, operation: ActivePointerOperation) -> Result<()> {
         match operation {
             ActivePointerOperation::CreatePending => {
                 if self
                     .parent
-                    .open_existing_regular(
-                        ACTIVE_TRANSACTION_NAME,
-                        false,
-                    )?
+                    .open_existing_regular(ACTIVE_TRANSACTION_NAME, false)?
                     .is_some()
                     || self
                         .parent
-                        .open_existing_regular(
-                            ACTIVE_TRANSACTION_PENDING_NAME,
-                            false,
-                        )?
+                        .open_existing_regular(ACTIVE_TRANSACTION_PENDING_NAME, false)?
                         .is_some()
                 {
                     return Err(ControllerError(
-                        "active or pending transaction pointer already exists"
-                            .to_owned(),
+                        "active or pending transaction pointer already exists".to_owned(),
                     ));
                 }
                 self.pending_file = Some(
-                    self.parent.create_new_regular(
-                        ACTIVE_TRANSACTION_PENDING_NAME,
-                        0o600,
-                    )?,
+                    self.parent
+                        .create_new_regular(ACTIVE_TRANSACTION_PENDING_NAME, 0o600)?,
                 );
                 Ok(())
             }
             ActivePointerOperation::WriteAndSyncPending => {
                 let file = self.pending_file.as_mut().ok_or_else(|| {
-                    ControllerError(
-                        "active-pointer pending file is unavailable".to_owned(),
-                    )
+                    ControllerError("active-pointer pending file is unavailable".to_owned())
                 })?;
                 file.write_all(&self.expected)?;
                 file.sync_all()?;
-                self.parent.ensure_file_at_name(
-                    ACTIVE_TRANSACTION_PENDING_NAME,
-                    file,
-                )?;
+                self.parent
+                    .ensure_file_at_name(ACTIVE_TRANSACTION_PENDING_NAME, file)?;
                 self.parent.file.sync_all()?;
                 Ok(())
             }
             ActivePointerOperation::PublishPending => {
-                self.parent.rename_exclusive(
-                    ACTIVE_TRANSACTION_PENDING_NAME,
-                    ACTIVE_TRANSACTION_NAME,
-                )?;
+                self.parent
+                    .rename_exclusive(ACTIVE_TRANSACTION_PENDING_NAME, ACTIVE_TRANSACTION_NAME)?;
                 self.pending_file = None;
                 Ok(())
             }
             ActivePointerOperation::VerifyPublished => {
-                let published = read_pinned_regular(
-                    self.parent,
-                    ACTIVE_TRANSACTION_NAME,
-                    0o600,
-                )?;
+                let published = read_pinned_regular(self.parent, ACTIVE_TRANSACTION_NAME, 0o600)?;
                 if published != self.expected {
                     return Err(ControllerError(
-                        "active transaction pointer bytes changed during publication"
-                            .to_owned(),
+                        "active transaction pointer bytes changed during publication".to_owned(),
                     ));
                 }
                 Ok(())
@@ -5617,10 +5687,7 @@ impl ActivePointerBackend for RealActivePointerBackend<'_> {
     }
 }
 
-fn write_active(
-    parent: &PinnedDirectory,
-    evidence: &Path,
-) -> Result<()> {
+fn write_active(parent: &PinnedDirectory, evidence: &Path) -> Result<()> {
     let expected = format!("{}\n", evidence.display()).into_bytes();
     let mut backend = RealActivePointerBackend {
         parent,
@@ -5718,9 +5785,7 @@ fn validate_repository_root(root: &Path) -> Result<PathBuf> {
         ));
     }
     let metadata = fs::symlink_metadata(root)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_dir()
-        || metadata.uid() != effective_uid()
+    if metadata.file_type().is_symlink() || !metadata.is_dir() || metadata.uid() != effective_uid()
     {
         return Err(ControllerError(
             "repository root must be a real directory owned by the current uid".to_owned(),
@@ -5745,7 +5810,8 @@ fn validate_repository_root(root: &Path) -> Result<PathBuf> {
 
 fn validate_private_directory(path: &Path, mode: u32) -> Result<()> {
     let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() || metadata.uid() != effective_uid() {
+    if metadata.file_type().is_symlink() || !metadata.is_dir() || metadata.uid() != effective_uid()
+    {
         return Err(ControllerError(format!(
             "private directory is unsafe: {}",
             path.display()
@@ -5913,11 +5979,7 @@ fn write_record(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     sync_parent(path)
 }
 
-fn write_record_idempotent(
-    path: &Path,
-    bytes: &[u8],
-    mode: u32,
-) -> Result<()> {
+fn write_record_idempotent(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     if entry_exists(path)? {
         let metadata = validate_real_file(path, Some(mode))?;
         if metadata.uid() != effective_uid() || fs::read(path)? != bytes {
@@ -5982,7 +6044,6 @@ fn directory_manifest(root: &Path) -> Result<String> {
     tree_manifest(root)
 }
 
-
 fn sha256_file_until(path: &Path, deadline: Instant) -> Result<String> {
     let output = run_command_until(
         Path::new("/usr/bin/shasum"),
@@ -6017,8 +6078,6 @@ fn command_line(program: &Path, arguments: &[&str], cwd: &Path, label: &str) -> 
     }
     Ok(lines[0].to_owned())
 }
-
-
 
 fn remove_tree(path: &Path) -> Result<()> {
     if !entry_exists(path)? {
@@ -6112,7 +6171,9 @@ fn hex_value(byte: u8) -> Result<u8> {
         b'0'..=b'9' => Ok(byte - b'0'),
         b'a'..=b'f' => Ok(byte - b'a' + 10),
         b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err(ControllerError("invalid percent-encoding hex digit".to_owned())),
+        _ => Err(ControllerError(
+            "invalid percent-encoding hex digit".to_owned(),
+        )),
     }
 }
 
@@ -6182,14 +6243,12 @@ impl FakeWorld {
     fn assert_invariants(&self) -> Result<()> {
         if !self.legacy_app_unchanged || !self.legacy_plist_unchanged {
             return Err(ControllerError(
-                "fake backend mutated a protected legacy rollback source"
-                    .to_owned(),
+                "fake backend mutated a protected legacy rollback source".to_owned(),
             ));
         }
         if self.active_pending && self.active_published {
             return Err(ControllerError(
-                "fake active pointer has pending and published names together"
-                    .to_owned(),
+                "fake active pointer has pending and published names together".to_owned(),
             ));
         }
         if self.new_app_hold && self.new_app_present {
@@ -6207,26 +6266,19 @@ impl FakeWorld {
                 "fake backend overlapped legacy and new hosts".to_owned(),
             ));
         }
-        if self.legacy_running
-            && self.lock_owner != Some(FakeLockOwner::Legacy)
-        {
+        if self.legacy_running && self.lock_owner != Some(FakeLockOwner::Legacy) {
             return Err(ControllerError(
-                "fake legacy process does not exclusively own the runtime lock"
-                    .to_owned(),
+                "fake legacy process does not exclusively own the runtime lock".to_owned(),
             ));
         }
         if self.new_running && self.lock_owner != Some(FakeLockOwner::New) {
             return Err(ControllerError(
-                "fake new process does not exclusively own the runtime lock"
-                    .to_owned(),
+                "fake new process does not exclusively own the runtime lock".to_owned(),
             ));
         }
-        if self.lock_owner == Some(FakeLockOwner::Legacy)
-            && !self.legacy_running
-        {
+        if self.lock_owner == Some(FakeLockOwner::Legacy) && !self.legacy_running {
             return Err(ControllerError(
-                "fake legacy lock owner exists without the legacy process"
-                    .to_owned(),
+                "fake legacy lock owner exists without the legacy process".to_owned(),
             ));
         }
         if self.lock_owner == Some(FakeLockOwner::New) && !self.new_running {
@@ -6242,8 +6294,7 @@ impl FakeWorld {
                 || self.current_pid.is_none())
         {
             return Err(ControllerError(
-                "fake new process lacks its exact installed/disabled contract"
-                    .to_owned(),
+                "fake new process lacks its exact installed/disabled contract".to_owned(),
             ));
         }
         if self.operation_log.len() > 4_096 {
@@ -6260,19 +6311,15 @@ impl FakeWorld {
                 || self.stable_generation != Some(self.generation)
             {
                 return Err(ControllerError(
-                    "fake committed state lacks current-generation readiness"
-                        .to_owned(),
+                    "fake committed state lacks current-generation readiness".to_owned(),
                 ));
             }
         }
         if self.recovery_in_progress
-            && (!self.committed
-                || self.legacy_running
-                || !self.legacy_disabled)
+            && (!self.committed || self.legacy_running || !self.legacy_disabled)
         {
             return Err(ControllerError(
-                "fake committed recovery violates the legacy absence boundary"
-                    .to_owned(),
+                "fake committed recovery violates the legacy absence boundary".to_owned(),
             ));
         }
         Ok(())
@@ -6291,8 +6338,7 @@ impl FakeWorld {
             || self.lock_owner != Some(FakeLockOwner::Legacy)
         {
             return Err(ControllerError(
-                "fake rollback did not restore the exact legacy runtime"
-                    .to_owned(),
+                "fake rollback did not restore the exact legacy runtime".to_owned(),
             ));
         }
         Ok(())
@@ -6309,8 +6355,7 @@ impl FakeWorld {
             || self.current_pid.is_none()
         {
             return Err(ControllerError(
-                "fake committed recovery lacks a fresh stable generation"
-                    .to_owned(),
+                "fake committed recovery lacks a fresh stable generation".to_owned(),
             ));
         }
         Ok(())
@@ -6370,9 +6415,10 @@ impl FakeBackend {
     }
 
     fn checkpoint_fields(&self) -> Result<Vec<(String, String)>> {
-        let generation = self.world.checkpoint_generation.ok_or_else(|| {
-            ControllerError("fake backend lacks a log checkpoint".to_owned())
-        })?;
+        let generation = self
+            .world
+            .checkpoint_generation
+            .ok_or_else(|| ControllerError("fake backend lacks a log checkpoint".to_owned()))?;
         let mut fields = vec![
             ("log_offset".to_owned(), (100 + generation).to_string()),
             ("log_device".to_owned(), "7".to_owned()),
@@ -6382,7 +6428,10 @@ impl FakeBackend {
             fields.extend([
                 ("pid".to_owned(), pid.to_string()),
                 ("runs".to_owned(), generation.to_string()),
-                ("process_start".to_owned(), format!("fake-start-{generation}")),
+                (
+                    "process_start".to_owned(),
+                    format!("fake-start-{generation}"),
+                ),
                 ("nonce".to_owned(), format!("{generation:064x}")),
                 ("lock_device".to_owned(), "29".to_owned()),
                 ("lock_inode".to_owned(), "31".to_owned()),
@@ -6408,7 +6457,10 @@ impl FakeBackend {
             fields.extend([
                 ("recovery_pid".to_owned(), pid.to_string()),
                 ("recovery_runs".to_owned(), generation.to_string()),
-                ("recovery_process_start".to_owned(), format!("fake-start-{generation}")),
+                (
+                    "recovery_process_start".to_owned(),
+                    format!("fake-start-{generation}"),
+                ),
                 ("recovery_nonce".to_owned(), format!("{generation:064x}")),
                 ("recovery_lock_device".to_owned(), "37".to_owned()),
                 ("recovery_lock_inode".to_owned(), "41".to_owned()),
@@ -6445,8 +6497,7 @@ impl ForwardEffectBackend for FakeBackend {
             ForwardEffect::SnapshotLegacy => {
                 if !self.world.legacy_running {
                     return Err(ControllerError(
-                        "fake snapshot requires the running legacy host"
-                            .to_owned(),
+                        "fake snapshot requires the running legacy host".to_owned(),
                     ));
                 }
             }
@@ -6466,8 +6517,7 @@ impl ForwardEffectBackend for FakeBackend {
                     || self.world.lock_owner != Some(FakeLockOwner::Legacy)
                 {
                     return Err(ControllerError(
-                        "fake precutover verification rejected drift"
-                            .to_owned(),
+                        "fake precutover verification rejected drift".to_owned(),
                     ));
                 }
             }
@@ -6490,8 +6540,7 @@ impl ForwardEffectBackend for FakeBackend {
                 self.world.legacy_running = false;
                 self.world.lock_owner = None;
             }
-            ForwardEffect::WaitLegacyServiceAbsent
-            | ForwardEffect::WaitLegacyProcessAbsent => {
+            ForwardEffect::WaitLegacyServiceAbsent | ForwardEffect::WaitLegacyProcessAbsent => {
                 if self.world.legacy_running {
                     return Err(ControllerError(
                         "fake legacy host remained present".to_owned(),
@@ -6545,8 +6594,7 @@ impl ForwardEffectBackend for FakeBackend {
             ForwardEffect::CopyPlistInstallHold => {
                 if self.world.new_plist_hold || self.world.new_plist_present {
                     return Err(ControllerError(
-                        "fake plist install destination is occupied"
-                            .to_owned(),
+                        "fake plist install destination is occupied".to_owned(),
                     ));
                 }
                 self.world.new_plist_hold = true;
@@ -6583,8 +6631,7 @@ impl ForwardEffectBackend for FakeBackend {
                     ));
                 }
                 self.world.generation += 1;
-                self.world.current_pid =
-                    Some(4_200 + self.world.generation as u32);
+                self.world.current_pid = Some(4_200 + self.world.generation as u32);
                 self.world.new_running = true;
                 self.world.lock_owner = Some(FakeLockOwner::New);
                 self.world.marker_generation = None;
@@ -6599,9 +6646,7 @@ impl ForwardEffectBackend for FakeBackend {
                 }
             }
             ForwardEffect::CheckpointGenerationLog => {
-                if !self.world.new_running
-                    || self.observed_pid != self.world.current_pid
-                {
+                if !self.world.new_running || self.observed_pid != self.world.current_pid {
                     return Err(ControllerError(
                         "fake generation checkpoint lacks the observed process".to_owned(),
                     ));
@@ -6618,20 +6663,17 @@ impl ForwardEffectBackend for FakeBackend {
                         EffectPhase::BeforeSideEffect,
                     ));
                 }
-                if self.world.checkpoint_generation
-                    != Some(self.world.generation)
+                if self.world.checkpoint_generation != Some(self.world.generation)
                     || !self.world.new_running
                 {
                     return Err(ControllerError(
-                        "fake marker is not tied to the checkpointed generation"
-                            .to_owned(),
+                        "fake marker is not tied to the checkpointed generation".to_owned(),
                     ));
                 }
                 self.world.marker_generation = Some(self.world.generation);
             }
             ForwardEffect::VerifyStableDeployment => {
-                if self.world.marker_generation
-                    != Some(self.world.generation)
+                if self.world.marker_generation != Some(self.world.generation)
                     || !self.world.new_running
                     || self.world.legacy_running
                     || self.world.lock_owner != Some(FakeLockOwner::New)
@@ -6643,10 +6685,8 @@ impl ForwardEffectBackend for FakeBackend {
                 self.world.stable_generation = Some(self.world.generation);
             }
             ForwardEffect::VerifyCommitState => {
-                if self.world.marker_generation
-                    != Some(self.world.generation)
-                    || self.world.stable_generation
-                        != Some(self.world.generation)
+                if self.world.marker_generation != Some(self.world.generation)
+                    || self.world.stable_generation != Some(self.world.generation)
                 {
                     return Err(ControllerError(
                         "fake commit lacks fresh stable readiness".to_owned(),
@@ -6661,17 +6701,15 @@ impl ForwardEffectBackend for FakeBackend {
         self.log(format!("forward:{effect:?}"))
     }
 
-    fn operation_fields(
-        &mut self,
-        operation: ForwardOperation,
-    ) -> Result<Vec<(String, String)>> {
+    fn operation_fields(&mut self, operation: ForwardOperation) -> Result<Vec<(String, String)>> {
         match operation {
             ForwardOperation::VerifyProvenance => Ok(vec![
                 ("commit".to_owned(), "0123456789abcdef".to_owned()),
                 ("tree".to_owned(), "fedcba9876543210".to_owned()),
             ]),
-            ForwardOperation::ObserveNewPid
-            | ForwardOperation::VerifyReadiness => self.checkpoint_fields(),
+            ForwardOperation::ObserveNewPid | ForwardOperation::VerifyReadiness => {
+                self.checkpoint_fields()
+            }
             ForwardOperation::Commit => {
                 let fields = self.checkpoint_fields()?;
                 if self.commit_race == Some(CommitRacePoint::DuringFieldCapture) {
@@ -6680,8 +6718,7 @@ impl ForwardEffectBackend for FakeBackend {
                 }
                 Ok(fields)
             }
-            ForwardOperation::InstallNew
-            | ForwardOperation::BootstrapNew => Ok(Vec::new()),
+            ForwardOperation::InstallNew | ForwardOperation::BootstrapNew => Ok(Vec::new()),
             ForwardOperation::SnapshotLegacy
             | ForwardOperation::BuildAndStage
             | ForwardOperation::VerifyPrecutover
@@ -6756,11 +6793,7 @@ impl RollbackBackend for FakeBackend {
         Ok(self.world.legacy_running)
     }
 
-    fn perform(
-        &mut self,
-        mode: RollbackMode,
-        operation: RollbackOperation,
-    ) -> Result<()> {
+    fn perform(&mut self, mode: RollbackMode, operation: RollbackOperation) -> Result<()> {
         match operation {
             RollbackOperation::Begin => {
                 // Durable COMMIT, not an unjournaled side effect, is the only
@@ -6791,12 +6824,9 @@ impl RollbackBackend for FakeBackend {
                 self.world.stable_generation = None;
             }
             RollbackOperation::ClearNewDestinations => {
-                if self.world.new_running
-                    || self.world.lock_owner == Some(FakeLockOwner::New)
-                {
+                if self.world.new_running || self.world.lock_owner == Some(FakeLockOwner::New) {
                     return Err(ControllerError(
-                        "fake destination clearing preceded new-host absence"
-                            .to_owned(),
+                        "fake destination clearing preceded new-host absence".to_owned(),
                     ));
                 }
                 self.world.new_app_hold = false;
@@ -6814,8 +6844,7 @@ impl RollbackBackend for FakeBackend {
                     || self.world.lock_owner.is_some()
                 {
                     return Err(ControllerError(
-                        "fake legacy bootstrap would overlap the new host"
-                            .to_owned(),
+                        "fake legacy bootstrap would overlap the new host".to_owned(),
                     ));
                 }
                 self.world.legacy_running = true;
@@ -6837,8 +6866,7 @@ impl RollbackBackend for FakeBackend {
                         || self.world.new_plist_hold)
                 {
                     return Err(ControllerError(
-                        "fake full rollback left a new live destination"
-                            .to_owned(),
+                        "fake full rollback left a new live destination".to_owned(),
                     ));
                 }
             }
@@ -6864,10 +6892,7 @@ impl FakeWorld {
 }
 
 impl CommittedRecoveryBackend for FakeBackend {
-    fn perform(
-        &mut self,
-        operation: CommittedRecoveryOperation,
-    ) -> Result<Vec<(String, String)>> {
+    fn perform(&mut self, operation: CommittedRecoveryOperation) -> Result<Vec<(String, String)>> {
         let fields = match operation {
             CommittedRecoveryOperation::VerifyCommittedDestinations => {
                 if !self.world.committed
@@ -6990,18 +7015,11 @@ impl TemporaryDirectory {
             ));
             match fs::create_dir(&candidate) {
                 Ok(()) => {
-                    fs::set_permissions(
-                        &candidate,
-                        Permissions::from_mode(0o700),
-                    )?;
+                    fs::set_permissions(&candidate, Permissions::from_mode(0o700))?;
                     let canonical = fs::canonicalize(&candidate)?;
                     return Ok(Self { path: canonical });
                 }
-                Err(error)
-                    if error.kind() == io::ErrorKind::AlreadyExists =>
-                {
-                    continue
-                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error.into()),
             }
         }
@@ -7017,8 +7035,7 @@ impl Drop for TemporaryDirectory {
     }
 }
 
-const FAKE_JOURNAL_VERSION: &str =
-    "OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V10";
+const FAKE_JOURNAL_VERSION: &str = "OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V10";
 
 struct FakeJournal {
     path: PathBuf,
@@ -7129,16 +7146,10 @@ impl FakeJournal {
         for line in lines {
             let value = line
                 .strip_prefix("STATE ")
-                .ok_or_else(|| {
-                    ControllerError(
-                        "fake journal record is invalid".to_owned(),
-                    )
-                })?;
+                .ok_or_else(|| ControllerError("fake journal record is invalid".to_owned()))?;
             let token = value.split_whitespace().next().unwrap_or_default();
             let state = State::parse(token).ok_or_else(|| {
-                ControllerError(format!(
-                    "fake journal state is unknown: {token}"
-                ))
+                ControllerError(format!("fake journal state is unknown: {token}"))
             })?;
             last_state = state;
             saw_legacy_disabled |= state_implies_legacy_disabled(state);
@@ -7162,18 +7173,10 @@ impl FakeJournal {
 }
 
 impl JournalSink for FakeJournal {
-    fn record(
-        &mut self,
-        state: State,
-        fields: &[(String, String)],
-    ) -> Result<()> {
+    fn record(&mut self, state: State, fields: &[(String, String)]) -> Result<()> {
         write!(self.file, "STATE {}", state.as_str())?;
         for (key, value) in fields {
-            write!(
-                self.file,
-                " {key}={}",
-                percent_encode(value.as_bytes())
-            )?;
+            write!(self.file, " {key}={}", percent_encode(value.as_bytes()))?;
         }
         writeln!(self.file)?;
         self.file.sync_all()?;
@@ -7205,22 +7208,14 @@ fn injected_failure(
     ))
 }
 
-fn recover_fake_transaction(
-    world: FakeWorld,
-    journal: &mut FakeJournal,
-) -> Result<FakeWorld> {
+fn recover_fake_transaction(world: FakeWorld, journal: &mut FakeJournal) -> Result<FakeWorld> {
     let mut backend = FakeBackend::from_world(world);
     if journal.last_state.is_committed_family() {
-        drive_committed_recovery(
-            &mut backend,
-            journal,
-            |_, _, _| Ok(()),
-        )?;
+        drive_committed_recovery(&mut backend, journal, |_, _, _| Ok(()))?;
         backend.world.evidence_written = true;
         backend.world.assert_committed_current_generation()?;
     } else {
-        let crossed = journal.saw_legacy_stopped
-            || !backend.world.legacy_running;
+        let crossed = journal.saw_legacy_stopped || !backend.world.legacy_running;
         let saw_legacy_disabled = journal.saw_legacy_disabled;
         drive_rollback(
             &mut backend,
@@ -7243,17 +7238,13 @@ fn run_forward_with_boundary_fault(
     let mut journal = FakeJournal::create(&path)?;
     let mut backend = FakeBackend::baseline();
     let mut boundary = 0usize;
-    let result = drive_forward(
-        &mut backend,
-        &mut journal,
-        |_, _, _, effect, phase| {
-            if boundary == target {
-                return Err(injected_failure(fault, effect, phase));
-            }
-            boundary += 1;
-            Ok(())
-        },
-    );
+    let result = drive_forward(&mut backend, &mut journal, |_, _, _, effect, phase| {
+        if boundary == target {
+            return Err(injected_failure(fault, effect, phase));
+        }
+        boundary += 1;
+        Ok(())
+    });
     Ok((result.is_err(), backend.world, journal, directory))
 }
 
@@ -7263,13 +7254,7 @@ fn prepare_failed_forward() -> Result<(FakeWorld, FakeJournal, TemporaryDirector
     let mut journal = FakeJournal::create(&path)?;
     let mut backend = FakeBackend::baseline();
     backend.reject_marker = true;
-    if drive_forward(
-        &mut backend,
-        &mut journal,
-        |_, _, _, _, _| Ok(()),
-    )
-    .is_ok()
-    {
+    if drive_forward(&mut backend, &mut journal, |_, _, _, _, _| Ok(())).is_ok() {
         return Err(ControllerError(
             "fake readiness failure unexpectedly committed".to_owned(),
         ));
@@ -7291,9 +7276,7 @@ fn replace_exactly_once(
     }
     let output = input.replacen(needle, replacement, 1);
     if output == input {
-        return Err(ControllerError(format!(
-            "{label} mutation was a no-op"
-        )));
+        return Err(ControllerError(format!("{label} mutation was a no-op")));
     }
     Ok(output)
 }
@@ -7311,9 +7294,7 @@ fn self_test_parsers() -> Result<()> {
         ("false", false),
         ("true", true),
     ] {
-        let fixture = format!(
-            "disabled services = {{\n    \"{LEGACY_LABEL}\" => {value}\n}}\n"
-        );
+        let fixture = format!("disabled services = {{\n    \"{LEGACY_LABEL}\" => {value}\n}}\n");
         if parse_disabled_override(&fixture, LEGACY_LABEL)? != Some(expected) {
             return Err(ControllerError(format!(
                 "disabled parser misclassified '{value}'"
@@ -7431,14 +7412,10 @@ fn self_test_parsers() -> Result<()> {
         ));
     }
 
-    let unclosed = real_launchctl_fixture
-        .strip_suffix("}\n")
-        .ok_or_else(|| {
-            ControllerError("unclosed launchctl mutation found no final job brace".to_owned())
-        })?;
-    if unclosed == real_launchctl_fixture
-        || parse_launch_snapshot(unclosed, NEW_LABEL).is_ok()
-    {
+    let unclosed = real_launchctl_fixture.strip_suffix("}\n").ok_or_else(|| {
+        ControllerError("unclosed launchctl mutation found no final job brace".to_owned())
+    })?;
+    if unclosed == real_launchctl_fixture || parse_launch_snapshot(unclosed, NEW_LABEL).is_ok() {
         return Err(ControllerError(
             "launchctl parser accepted an unclosed top-level job block".to_owned(),
         ));
@@ -7466,11 +7443,7 @@ fn self_test_generation_race() -> Result<()> {
         let mut journal = FakeJournal::create(&path)?;
         let mut backend = FakeBackend::baseline();
         backend.race_before_effect = Some(injection);
-        let result = drive_forward(
-            &mut backend,
-            &mut journal,
-            |_, _, _, _, _| Ok(()),
-        );
+        let result = drive_forward(&mut backend, &mut journal, |_, _, _, _, _| Ok(()));
         if result.is_ok() {
             return Err(ControllerError(format!(
                 "generation race false-committed at {injection:?}"
@@ -7492,11 +7465,7 @@ fn self_test_generation_race() -> Result<()> {
         let mut journal = FakeJournal::create(&path)?;
         let mut backend = FakeBackend::baseline();
         backend.commit_race = Some(injection);
-        let result = drive_forward(
-            &mut backend,
-            &mut journal,
-            |_, _, _, _, _| Ok(()),
-        );
+        let result = drive_forward(&mut backend, &mut journal, |_, _, _, _, _| Ok(()));
         if result.is_ok() {
             return Err(ControllerError(format!(
                 "post-verification generation race false-committed at {injection:?}"
@@ -7651,10 +7620,12 @@ fn sandbox_bootout(root: &Path) -> Result<()> {
         .filter(|line| !line.is_empty())
         .collect();
     if output.stdout.trim().is_empty()
-        && lines.iter().any(|line| line.starts_with("Could not find service"))
-        && lines.iter().all(|line| {
-            *line == "Bad request." || line.starts_with("Could not find service")
-        })
+        && lines
+            .iter()
+            .any(|line| line.starts_with("Could not find service"))
+        && lines
+            .iter()
+            .all(|line| *line == "Bad request." || line.starts_with("Could not find service"))
     {
         return Ok(());
     }
@@ -7665,8 +7636,7 @@ fn sandbox_bootout(root: &Path) -> Result<()> {
 }
 
 fn sandbox_bootstrap(root: &Path) -> Result<()> {
-    run_sandbox_launch_command(root, "bootstrap")?
-        .require_success("sandbox bootstrap")?;
+    run_sandbox_launch_command(root, "bootstrap")?.require_success("sandbox bootstrap")?;
     Ok(())
 }
 
@@ -7774,16 +7744,10 @@ fn run_real_adapter_fault_case(target_boundary: usize) -> Result<bool> {
     write_record(&legacy_plist, expected_legacy_plist, 0o600)?;
     let journal_path = root.join("journal.log");
     let mut journal = Journal::create(&journal_path)?;
-    let applications_pin = PinnedDirectory::open(
-        &applications,
-        Some(effective_uid()),
-        Some(0o700),
-    )?;
-    let launch_agents_pin = PinnedDirectory::open(
-        &launch_agents,
-        Some(effective_uid()),
-        Some(0o700),
-    )?;
+    let applications_pin =
+        PinnedDirectory::open(&applications, Some(effective_uid()), Some(0o700))?;
+    let launch_agents_pin =
+        PinnedDirectory::open(&launch_agents, Some(effective_uid()), Some(0o700))?;
     let operations = [
         RealAdapterOperation::CopyAppHold,
         RealAdapterOperation::PublishApp,
@@ -7856,21 +7820,20 @@ fn run_real_adapter_fault_case(target_boundary: usize) -> Result<bool> {
             | RealAdapterOperation::Bootout => None,
         };
         if let Some(state) = state {
-            let fields: Vec<(&str, String)> = if state == State::NewPidObserved
-                || state == State::Committed
-            {
-                vec![
-                    ("pid", "4242".to_owned()),
-                    ("runs", "2".to_owned()),
-                    ("process_start", "sandbox-generation-2".to_owned()),
-                    ("nonce", "2".repeat(64)),
-                    ("log_offset", "24".to_owned()),
-                    ("log_device", "7".to_owned()),
-                    ("log_inode", "11".to_owned()),
-                ]
-            } else {
-                Vec::new()
-            };
+            let fields: Vec<(&str, String)> =
+                if state == State::NewPidObserved || state == State::Committed {
+                    vec![
+                        ("pid", "4242".to_owned()),
+                        ("runs", "2".to_owned()),
+                        ("process_start", "sandbox-generation-2".to_owned()),
+                        ("nonce", "2".repeat(64)),
+                        ("log_offset", "24".to_owned()),
+                        ("log_device", "7".to_owned()),
+                        ("log_inode", "11".to_owned()),
+                    ]
+                } else {
+                    Vec::new()
+                };
             journal.transition(state, &fields)?;
         }
         if boundary == target_boundary {
@@ -7937,11 +7900,7 @@ fn self_test_real_adapter() -> Result<()> {
     let destination = applications.join("destination");
     fs::create_dir(&destination)?;
     write_record(&destination.join("payload"), b"foreign", 0o600)?;
-    let pinned = PinnedDirectory::open(
-        &applications,
-        Some(effective_uid()),
-        Some(0o700),
-    )?;
+    let pinned = PinnedDirectory::open(&applications, Some(effective_uid()), Some(0o700))?;
     if publish_directory_hold(&pinned, "hold", "destination").is_ok()
         || fs::read(destination.join("payload"))? != b"foreign"
     {
@@ -7970,14 +7929,21 @@ fn self_test_real_adapter() -> Result<()> {
     Ok(())
 }
 
-
 fn self_test_command_deadlines() -> Result<()> {
     let hanging_script = "trap '' TERM\n( trap '' TERM; while :; do /bin/sleep 1; done ) &\nwhile :; do /bin/sleep 1; done\n";
-    for label in ["forward-launchctl", "rollback-ps", "committed-recovery-lsof"] {
+    for label in [
+        "forward-launchctl",
+        "rollback-ps",
+        "committed-recovery-lsof",
+    ] {
         let started = Instant::now();
         let result = run_command_until(
             Path::new("/bin/sh"),
-            &[OsStr::new("-c"), OsStr::new(hanging_script), OsStr::new(label)],
+            &[
+                OsStr::new("-c"),
+                OsStr::new(hanging_script),
+                OsStr::new(label),
+            ],
             None,
             deadline_after(Duration::from_millis(250))?,
         );
@@ -7998,7 +7964,11 @@ fn self_test_command_deadlines() -> Result<()> {
     let owned_started = Instant::now();
     let owned_result = run_command_owned_until(
         Path::new("/bin/sh"),
-        &["-c".to_owned(), hanging_script.to_owned(), "owned-adapter".to_owned()],
+        &[
+            "-c".to_owned(),
+            hanging_script.to_owned(),
+            "owned-adapter".to_owned(),
+        ],
         None,
         &environment,
         deadline_after(Duration::from_millis(250))?,
@@ -8078,7 +8048,9 @@ fn self_test_command_deadlines() -> Result<()> {
     thread::sleep(Duration::from_millis(5));
     let wall_after = wall_before
         .checked_sub(Duration::from_secs(3600))
-        .ok_or_else(|| ControllerError("could not construct backward wall-clock sample".to_owned()))?;
+        .ok_or_else(|| {
+            ControllerError("could not construct backward wall-clock sample".to_owned())
+        })?;
     if wall_after >= wall_before || monotonic_start.elapsed().is_zero() {
         return Err(ControllerError(
             "monotonic deadline regression did not distinguish a backward wall clock".to_owned(),
@@ -8087,8 +8059,93 @@ fn self_test_command_deadlines() -> Result<()> {
     Ok(())
 }
 
-
 fn self_test_directory_modes() -> Result<()> {
+    let applications = Path::new(APPLICATIONS_DIRECTORY);
+    if !directory_write_policy_allows(
+        applications,
+        APPLICATIONS_UID,
+        APPLICATIONS_GID,
+        APPLICATIONS_MODE,
+        Some(APPLICATIONS_UID),
+        Some(APPLICATIONS_GID),
+        Some(APPLICATIONS_MODE),
+    ) {
+        return Err(ControllerError(
+            "exact root:admin /Applications 0775 policy was rejected".to_owned(),
+        ));
+    }
+    for (path, uid, gid, mode, expected_uid, expected_gid, expected_mode) in [
+        (
+            applications,
+            APPLICATIONS_UID,
+            APPLICATIONS_GID,
+            0o777,
+            Some(APPLICATIONS_UID),
+            Some(APPLICATIONS_GID),
+            Some(0o777),
+        ),
+        (
+            applications,
+            APPLICATIONS_UID + 1,
+            APPLICATIONS_GID,
+            APPLICATIONS_MODE,
+            Some(APPLICATIONS_UID + 1),
+            Some(APPLICATIONS_GID),
+            Some(APPLICATIONS_MODE),
+        ),
+        (
+            applications,
+            APPLICATIONS_UID,
+            20,
+            APPLICATIONS_MODE,
+            Some(APPLICATIONS_UID),
+            Some(20),
+            Some(APPLICATIONS_MODE),
+        ),
+        (
+            applications,
+            APPLICATIONS_UID,
+            APPLICATIONS_GID,
+            APPLICATIONS_MODE,
+            Some(APPLICATIONS_UID),
+            Some(APPLICATIONS_GID),
+            Some(0o755),
+        ),
+        (
+            applications,
+            APPLICATIONS_UID,
+            APPLICATIONS_GID,
+            APPLICATIONS_MODE,
+            None,
+            None,
+            None,
+        ),
+        (
+            Path::new("/tmp/Applications"),
+            APPLICATIONS_UID,
+            APPLICATIONS_GID,
+            APPLICATIONS_MODE,
+            Some(APPLICATIONS_UID),
+            Some(APPLICATIONS_GID),
+            Some(APPLICATIONS_MODE),
+        ),
+    ] {
+        if directory_write_policy_allows(
+            path,
+            uid,
+            gid,
+            mode,
+            expected_uid,
+            expected_gid,
+            expected_mode,
+        ) {
+            return Err(ControllerError(format!(
+                "directory write policy accepted unsafe case {} uid={uid} gid={gid} mode={mode:04o}",
+                path.display()
+            )));
+        }
+    }
+
     let directory = TemporaryDirectory::create("directory-modes")?;
     fs::set_permissions(&directory.path, Permissions::from_mode(0o777))?;
     if validate_repository_root(&directory.path).is_ok() {
@@ -8096,18 +8153,20 @@ fn self_test_directory_modes() -> Result<()> {
             "repository-root mode gate accepted a group/world-writable directory".to_owned(),
         ));
     }
-    if PinnedDirectory::open(
-        &directory.path,
-        Some(effective_uid()),
-        None,
-    )
-    .is_ok()
-    {
+    if PinnedDirectory::open(&directory.path, Some(effective_uid()), None).is_ok() {
         return Err(ControllerError(
             "pinned-directory mode gate accepted a group/world-writable directory".to_owned(),
         ));
     }
 
+    fs::set_permissions(&directory.path, Permissions::from_mode(0o700))?;
+    let policy_pin = PinnedDirectory::open(&directory.path, Some(effective_uid()), Some(0o700))?;
+    fs::set_permissions(&directory.path, Permissions::from_mode(0o750))?;
+    if policy_pin.revalidate().is_ok() {
+        return Err(ControllerError(
+            "pinned-directory revalidation forgot its original owner/mode policy".to_owned(),
+        ));
+    }
     fs::set_permissions(&directory.path, Permissions::from_mode(0o700))?;
     let child = directory.path.join("writable-parent");
     fs::create_dir(&child)?;
@@ -8119,7 +8178,6 @@ fn self_test_directory_modes() -> Result<()> {
     }
     Ok(())
 }
-
 
 fn run_self_test(case: &str) -> Result<()> {
     match case {
@@ -8157,11 +8215,7 @@ fn run_self_test(case: &str) -> Result<()> {
         "deadlines" => self_test_command_deadlines()?,
         "modes" => self_test_directory_modes()?,
         "real-adapter" => self_test_real_adapter()?,
-        _ => {
-            return Err(ControllerError(format!(
-                "unknown self-test case '{case}'"
-            )))
-        }
+        _ => return Err(ControllerError(format!("unknown self-test case '{case}'"))),
     }
     println!("SELF_TEST_OK {case}");
     Ok(())
@@ -8171,10 +8225,7 @@ fn self_test_crash() -> Result<()> {
     let mut target = 0usize;
     loop {
         let (interrupted, world, journal, _directory) =
-            run_forward_with_boundary_fault(
-                InjectedFault::Interruption,
-                target,
-            )?;
+            run_forward_with_boundary_fault(InjectedFault::Interruption, target)?;
         if !interrupted {
             break;
         }
@@ -8242,7 +8293,6 @@ fn self_test_fault_matrix() -> Result<()> {
     Ok(())
 }
 
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RollbackReadinessSample {
     Pending,
@@ -8279,8 +8329,7 @@ fn evaluate_bounded_rollback_readiness(
 fn self_test_rollback() -> Result<()> {
     let mut target = 0usize;
     loop {
-        let (world, mut journal, _forward_directory) =
-            prepare_failed_forward()?;
+        let (world, mut journal, _forward_directory) = prepare_failed_forward()?;
         let crossed = journal.saw_legacy_stopped || !world.legacy_running;
         let mut backend = FakeBackend::from_world(world);
         let mut boundary = 0usize;
@@ -8310,8 +8359,7 @@ fn self_test_rollback() -> Result<()> {
         let interrupted_world = backend.world;
         drop(journal);
         let mut reopened = FakeJournal::open(&path)?;
-        let recovered =
-            recover_fake_transaction(interrupted_world, &mut reopened)?;
+        let recovered = recover_fake_transaction(interrupted_world, &mut reopened)?;
         recovered.assert_legacy_restored()?;
         target += 1;
         if target > 128 {
@@ -8338,31 +8386,17 @@ fn self_test_rollback() -> Result<()> {
             "delayed legacy readiness completed at the wrong sample".to_owned(),
         ));
     }
-    if evaluate_bounded_rollback_readiness(
-        &[RollbackReadinessSample::Pending; 4],
-        4,
-    )
-    .is_ok()
-    {
+    if evaluate_bounded_rollback_readiness(&[RollbackReadinessSample::Pending; 4], 4).is_ok() {
         return Err(ControllerError(
             "rollback readiness timeout false-passed".to_owned(),
         ));
     }
-    if evaluate_bounded_rollback_readiness(
-        &[RollbackReadinessSample::WrongProcess],
-        4,
-    )
-    .is_ok()
-    {
+    if evaluate_bounded_rollback_readiness(&[RollbackReadinessSample::WrongProcess], 4).is_ok() {
         return Err(ControllerError(
             "wrong legacy process false-passed rollback readiness".to_owned(),
         ));
     }
-    if evaluate_bounded_rollback_readiness(
-        &[RollbackReadinessSample::NewHostReappeared],
-        4,
-    )
-    .is_ok()
+    if evaluate_bounded_rollback_readiness(&[RollbackReadinessSample::NewHostReappeared], 4).is_ok()
     {
         return Err(ControllerError(
             "new-host reappearance false-passed rollback readiness".to_owned(),
@@ -8377,29 +8411,16 @@ fn self_test_readiness() -> Result<()> {
     let mut journal = FakeJournal::create(&path)?;
     let mut backend = FakeBackend::baseline();
     backend.reject_marker = true;
-    if drive_forward(
-        &mut backend,
-        &mut journal,
-        |_, _, _, _, _| Ok(()),
-    )
-    .is_ok()
-    {
-        return Err(ControllerError(
-            "readiness failure false-passed".to_owned(),
-        ));
+    if drive_forward(&mut backend, &mut journal, |_, _, _, _, _| Ok(())).is_ok() {
+        return Err(ControllerError("readiness failure false-passed".to_owned()));
     }
-    let recovered =
-        recover_fake_transaction(backend.world, &mut journal)?;
+    let recovered = recover_fake_transaction(backend.world, &mut journal)?;
     recovered.assert_legacy_restored()
 }
 
 fn self_test_concurrency() -> Result<()> {
     let directory = TemporaryDirectory::create("concurrency")?;
-    let pinned = PinnedDirectory::open(
-        &directory.path,
-        Some(effective_uid()),
-        Some(0o700),
-    )?;
+    let pinned = PinnedDirectory::open(&directory.path, Some(effective_uid()), Some(0o700))?;
     let first = pinned.create_new_regular("transaction.lock", 0o600)?;
     // SAFETY: flock is called with a valid descriptor.
     if unsafe { flock(first.as_raw_fd(), LOCK_EX | LOCK_NB) } != 0 {
@@ -8409,16 +8430,13 @@ fn self_test_concurrency() -> Result<()> {
     }
     let second = pinned
         .open_existing_regular("transaction.lock", true)?
-        .ok_or_else(|| {
-            ControllerError("self-test lock disappeared".to_owned())
-        })?;
+        .ok_or_else(|| ControllerError("self-test lock disappeared".to_owned()))?;
     // SAFETY: flock is called with a valid descriptor.
     if unsafe { flock(second.as_raw_fd(), LOCK_EX | LOCK_NB) } == 0 {
         // SAFETY: release the unexpected lock.
         let _ = unsafe { flock(second.as_raw_fd(), LOCK_UN) };
         return Err(ControllerError(
-            "second concurrent transaction lock unexpectedly succeeded"
-                .to_owned(),
+            "second concurrent transaction lock unexpectedly succeeded".to_owned(),
         ));
     }
     // SAFETY: release the first lock.
@@ -8448,10 +8466,7 @@ fn self_test_journal() -> Result<()> {
     let mut real = Journal::create(&real_path)?;
     real.transition(
         State::NewPidObserved,
-        &[
-            ("pid", "4242".to_owned()),
-            ("log_offset", "100".to_owned()),
-        ],
+        &[("pid", "4242".to_owned()), ("log_offset", "100".to_owned())],
     )?;
     drop(real);
     let mut append = OpenOptions::new()
@@ -8466,17 +8481,12 @@ fn self_test_journal() -> Result<()> {
         || reopened_real.required_field("pid")? != "4242"
     {
         return Err(ControllerError(
-            "real journal did not recover its last complete durable record"
-                .to_owned(),
+            "real journal did not recover its last complete durable record".to_owned(),
         ));
     }
 
     let prior_evidence = Path::new(PRIOR_EVIDENCE_PATH);
-    validate_prior_v9_prestop_records(
-        prior_evidence,
-        PRIOR_PRESTOP_JOURNAL,
-        PRIOR_PRESTOP_RESULT,
-    )?;
+    validate_prior_v9_prestop_records(prior_evidence, PRIOR_PRESTOP_JOURNAL, PRIOR_PRESTOP_RESULT)?;
     let mut mutated_journal = PRIOR_PRESTOP_JOURNAL.to_vec();
     mutated_journal.extend_from_slice(b"STATE LEGACY_DISABLED\n");
     let invalid_prior_records = [
@@ -8506,28 +8516,82 @@ fn self_test_journal() -> Result<()> {
         ),
     ];
     for (evidence, prior_journal, prior_result) in invalid_prior_records {
-        if validate_prior_v9_prestop_records(
-            evidence,
-            prior_journal,
-            prior_result,
-        )
-        .is_ok()
-        {
+        if validate_prior_v9_prestop_records(evidence, prior_journal, prior_result).is_ok() {
             return Err(ControllerError(
                 "prior v9 retry contract accepted mutated evidence".to_owned(),
             ));
         }
+    }
+
+    let mut critical_fields = BTreeMap::new();
+    critical_fields.insert("commit".to_owned(), V10_CRITICAL_RECOVERY_COMMIT.to_owned());
+    critical_fields.insert("tree".to_owned(), V10_CRITICAL_RECOVERY_TREE.to_owned());
+    critical_fields.insert("primary".to_owned(), V10_APPLICATIONS_MODE_ERROR.to_owned());
+    critical_fields.insert(
+        "rollback".to_owned(),
+        V10_APPLICATIONS_MODE_ERROR.to_owned(),
+    );
+    if !is_exact_v10_applications_critical_record(
+        Path::new(V10_CRITICAL_RECOVERY_EVIDENCE),
+        State::CriticalFailure,
+        true,
+        true,
+        &critical_fields,
+    ) {
+        return Err(ControllerError(
+            "exact reviewed v10 critical recovery record was rejected".to_owned(),
+        ));
+    }
+    for mutation in ["commit", "tree", "primary", "rollback"] {
+        let mut mutated = critical_fields.clone();
+        mutated.insert(mutation.to_owned(), "mutated".to_owned());
+        if is_exact_v10_applications_critical_record(
+            Path::new(V10_CRITICAL_RECOVERY_EVIDENCE),
+            State::CriticalFailure,
+            true,
+            true,
+            &mutated,
+        ) {
+            return Err(ControllerError(format!(
+                "exact v10 critical recovery gate accepted mutated {mutation}"
+            )));
+        }
+    }
+    if is_exact_v10_applications_critical_record(
+        Path::new(PRIOR_EVIDENCE_PATH),
+        State::CriticalFailure,
+        true,
+        true,
+        &critical_fields,
+    ) || is_exact_v10_applications_critical_record(
+        Path::new(V10_CRITICAL_RECOVERY_EVIDENCE),
+        State::NewStopped,
+        true,
+        true,
+        &critical_fields,
+    ) || is_exact_v10_applications_critical_record(
+        Path::new(V10_CRITICAL_RECOVERY_EVIDENCE),
+        State::CriticalFailure,
+        false,
+        true,
+        &critical_fields,
+    ) || is_exact_v10_applications_critical_record(
+        Path::new(V10_CRITICAL_RECOVERY_EVIDENCE),
+        State::CriticalFailure,
+        true,
+        false,
+        &critical_fields,
+    ) {
+        return Err(ControllerError(
+            "exact v10 critical recovery gate accepted an inexact state boundary".to_owned(),
+        ));
     }
     Ok(())
 }
 
 fn self_test_publication() -> Result<()> {
     let directory = TemporaryDirectory::create("publication")?;
-    let pinned = PinnedDirectory::open(
-        &directory.path,
-        Some(effective_uid()),
-        Some(0o700),
-    )?;
+    let pinned = PinnedDirectory::open(&directory.path, Some(effective_uid()), Some(0o700))?;
     let mut stage = pinned.create_new_regular("stage", 0o600)?;
     stage.write_all(b"new")?;
     stage.sync_all()?;
@@ -8536,33 +8600,24 @@ fn self_test_publication() -> Result<()> {
     attacker.sync_all()?;
     if pinned.rename_exclusive("stage", "destination").is_ok() {
         return Err(ControllerError(
-            "exclusive publication overwrote a concurrent destination"
-                .to_owned(),
+            "exclusive publication overwrote a concurrent destination".to_owned(),
         ));
     }
     let mut destination = pinned
         .open_existing_regular("destination", false)?
-        .ok_or_else(|| {
-            ControllerError(
-                "publication destination disappeared".to_owned(),
-            )
-        })?;
+        .ok_or_else(|| ControllerError("publication destination disappeared".to_owned()))?;
     let mut bytes = Vec::new();
     destination.read_to_end(&mut bytes)?;
     if bytes != b"attacker" {
         return Err(ControllerError(
-            "exclusive publication mutated the concurrent destination"
-                .to_owned(),
+            "exclusive publication mutated the concurrent destination".to_owned(),
         ));
     }
 
     let displaced = directory.path.with_extension("displaced");
     fs::rename(&directory.path, &displaced)?;
     fs::create_dir(&directory.path)?;
-    fs::set_permissions(
-        &directory.path,
-        Permissions::from_mode(0o700),
-    )?;
+    fs::set_permissions(&directory.path, Permissions::from_mode(0o700))?;
     if pinned.revalidate().is_ok() {
         return Err(ControllerError(
             "pinned directory accepted pathname replacement".to_owned(),
@@ -8581,27 +8636,16 @@ fn self_test_disable() -> Result<()> {
     let mut world = FakeWorld::baseline();
     world.legacy_disabled = true;
     let mut backend = FakeBackend::from_world(world);
-    drive_rollback(
-        &mut backend,
-        &mut journal,
-        false,
-        true,
-        |_, _, _| Ok(()),
-    )?;
+    drive_rollback(&mut backend, &mut journal, false, true, |_, _, _| Ok(()))?;
     backend.world.assert_legacy_restored()
 }
 
-fn committed_fake_fixture(
-) -> Result<(FakeBackend, FakeJournal, TemporaryDirectory)> {
+fn committed_fake_fixture() -> Result<(FakeBackend, FakeJournal, TemporaryDirectory)> {
     let directory = TemporaryDirectory::create("committed-fixture")?;
     let path = directory.path.join("journal.log");
     let mut journal = FakeJournal::create(&path)?;
     let mut backend = FakeBackend::baseline();
-    drive_forward(
-        &mut backend,
-        &mut journal,
-        |_, _, _, _, _| Ok(()),
-    )?;
+    drive_forward(&mut backend, &mut journal, |_, _, _, _, _| Ok(()))?;
     if journal.last_state != State::Committed {
         return Err(ControllerError(
             "committed fixture did not durably record COMMITTED".to_owned(),
@@ -8612,48 +8656,40 @@ fn committed_fake_fixture(
 }
 
 fn self_test_committed() -> Result<()> {
-    let (mut backend, mut journal, _directory) =
-        committed_fake_fixture()?;
-    let historical_pid = backend.world.current_pid.ok_or_else(|| {
-        ControllerError("committed fixture has no historical PID".to_owned())
-    })?;
+    let (mut backend, mut journal, _directory) = committed_fake_fixture()?;
+    let historical_pid = backend
+        .world
+        .current_pid
+        .ok_or_else(|| ControllerError("committed fixture has no historical PID".to_owned()))?;
 
     // Simulate a legitimate KeepAlive/login/reboot generation after durable COMMIT while the
     // permanent active tombstone remains. Recovery must not bind to the old PID or accept the old
     // marker generation.
     backend.world.generation += 1;
-    backend.world.current_pid =
-        Some(4_800 + backend.world.generation as u32);
+    backend.world.current_pid = Some(4_800 + backend.world.generation as u32);
     backend.world.committed_pid = Some(historical_pid);
-    backend.world.marker_generation =
-        Some(backend.world.generation - 1);
-    backend.world.stable_generation =
-        Some(backend.world.generation - 1);
+    backend.world.marker_generation = Some(backend.world.generation - 1);
+    backend.world.stable_generation = Some(backend.world.generation - 1);
     backend.world.recovery_in_progress = true;
     backend.world.new_running = true;
     backend.world.lock_owner = Some(FakeLockOwner::New);
     backend.historical_pid = historical_pid.to_string();
 
-    drive_committed_recovery(
-        &mut backend,
-        &mut journal,
-        |_, _, _| Ok(()),
-    )?;
+    drive_committed_recovery(&mut backend, &mut journal, |_, _, _| Ok(()))?;
     backend.world.evidence_written = true;
     backend.world.assert_committed_current_generation()?;
-    let current_pid = backend.world.current_pid.ok_or_else(|| {
-        ControllerError("committed recovery has no current PID".to_owned())
-    })?;
+    let current_pid = backend
+        .world
+        .current_pid
+        .ok_or_else(|| ControllerError("committed recovery has no current PID".to_owned()))?;
     if current_pid == historical_pid {
         return Err(ControllerError(
-            "committed recovery incorrectly retained the historical PID"
-                .to_owned(),
+            "committed recovery incorrectly retained the historical PID".to_owned(),
         ));
     }
     if backend.world.marker_generation != Some(backend.world.generation) {
         return Err(ControllerError(
-            "committed recovery accepted a stale marker generation"
-                .to_owned(),
+            "committed recovery accepted a stale marker generation".to_owned(),
         ));
     }
     Ok(())
@@ -8667,10 +8703,7 @@ struct FakeActivePointerBackend {
 }
 
 impl ActivePointerBackend for FakeActivePointerBackend {
-    fn perform_active_pointer(
-        &mut self,
-        operation: ActivePointerOperation,
-    ) -> Result<()> {
+    fn perform_active_pointer(&mut self, operation: ActivePointerOperation) -> Result<()> {
         match operation {
             ActivePointerOperation::CreatePending => {
                 if self.pending.is_some() || self.active.is_some() {
@@ -8682,17 +8715,14 @@ impl ActivePointerBackend for FakeActivePointerBackend {
             }
             ActivePointerOperation::WriteAndSyncPending => {
                 let pending = self.pending.as_mut().ok_or_else(|| {
-                    ControllerError(
-                        "fake pending active pointer is absent".to_owned(),
-                    )
+                    ControllerError("fake pending active pointer is absent".to_owned())
                 })?;
                 *pending = self.expected.clone();
             }
             ActivePointerOperation::PublishPending => {
                 if self.active.is_some() {
                     return Err(ControllerError(
-                        "fake active pointer publication would overwrite"
-                            .to_owned(),
+                        "fake active pointer publication would overwrite".to_owned(),
                     ));
                 }
                 self.active = self.pending.take();
@@ -8709,9 +8739,7 @@ impl ActivePointerBackend for FakeActivePointerBackend {
     }
 }
 
-fn recover_fake_active_pointer(
-    backend: &mut FakeActivePointerBackend,
-) -> Result<()> {
+fn recover_fake_active_pointer(backend: &mut FakeActivePointerBackend) -> Result<()> {
     if let Some(active) = backend.active.as_ref() {
         if active != &backend.expected {
             return Err(ControllerError(
@@ -8746,11 +8774,7 @@ fn create_final_active_pointer_fixture(
     label: &str,
 ) -> Result<(TemporaryDirectory, PinnedDirectory, Vec<u8>)> {
     let directory = TemporaryDirectory::create(label)?;
-    let parent = PinnedDirectory::open(
-        &directory.path,
-        Some(effective_uid()),
-        Some(0o700),
-    )?;
+    let parent = PinnedDirectory::open(&directory.path, Some(effective_uid()), Some(0o700))?;
     let expected = b"/private/fake-evidence\n".to_vec();
     let mut active = parent.create_new_regular(ACTIVE_TRANSACTION_NAME, 0o600)?;
     active.write_all(&expected)?;
@@ -8807,10 +8831,7 @@ fn self_test_final_generation_active_pointer_boundary() -> Result<()> {
             if phase == RetainedActivePointerPhase::AfterInitialPointerValidation {
                 race_hook_ran.set(true);
                 fs::remove_file(race_parent.path.join(ACTIVE_TRANSACTION_NAME))?;
-                let mut foreign = race_parent.create_new_regular(
-                    ACTIVE_TRANSACTION_NAME,
-                    0o600,
-                )?;
+                let mut foreign = race_parent.create_new_regular(ACTIVE_TRANSACTION_NAME, 0o600)?;
                 foreign.write_all(foreign_bytes)?;
                 foreign.sync_all()?;
                 race_parent.ensure_file_at_name(ACTIVE_TRANSACTION_NAME, &foreign)?;
@@ -8824,9 +8845,7 @@ fn self_test_final_generation_active_pointer_boundary() -> Result<()> {
             "retained-active substitution race false-passed".to_owned(),
         ));
     }
-    if read_pinned_regular(&race_parent, ACTIVE_TRANSACTION_NAME, 0o600)?
-        != foreign_bytes
-    {
+    if read_pinned_regular(&race_parent, ACTIVE_TRANSACTION_NAME, 0o600)? != foreign_bytes {
         return Err(ControllerError(
             "retained-active substitution race did not preserve foreign bytes".to_owned(),
         ));
@@ -8893,11 +8912,8 @@ fn self_test_final_generation_active_pointer_boundary() -> Result<()> {
         },
     )?;
     if ordinary_proof_calls.get() != 1
-        || read_pinned_regular(
-            &ordinary_parent,
-            ACTIVE_TRANSACTION_NAME,
-            0o600,
-        )? != ordinary_expected
+        || read_pinned_regular(&ordinary_parent, ACTIVE_TRANSACTION_NAME, 0o600)?
+            != ordinary_expected
     {
         return Err(ControllerError(
             "ordinary committed lifecycle did not retain exact recovery authority".to_owned(),
@@ -8916,20 +8932,17 @@ fn self_test_active_pointer() -> Result<()> {
             expected: expected.clone(),
         };
         let mut boundary = 0usize;
-        let result = drive_active_pointer(
-            &mut backend,
-            |_, operation, phase| {
-                if boundary == target {
-                    return Err(injected_failure(
-                        InjectedFault::Interruption,
-                        operation,
-                        phase,
-                    ));
-                }
-                boundary += 1;
-                Ok(())
-            },
-        );
+        let result = drive_active_pointer(&mut backend, |_, operation, phase| {
+            if boundary == target {
+                return Err(injected_failure(
+                    InjectedFault::Interruption,
+                    operation,
+                    phase,
+                ));
+            }
+            boundary += 1;
+            Ok(())
+        });
         if result.is_ok() {
             break;
         }
@@ -8938,8 +8951,7 @@ fn self_test_active_pointer() -> Result<()> {
             Ok(()) => {
                 if backend.active.as_deref() != Some(expected.as_slice()) {
                     return Err(ControllerError(
-                        "active-pointer recovery did not publish exact bytes"
-                            .to_owned(),
+                        "active-pointer recovery did not publish exact bytes".to_owned(),
                     ));
                 }
             }
@@ -9007,29 +9019,25 @@ fn self_test_side_effects() -> Result<()> {
     // restart from the durable journal and require a new PID/marker generation.
     let mut target = 0usize;
     loop {
-        let (mut backend, mut journal, _directory) =
-            committed_fake_fixture()?;
-        let historical_pid = backend.world.current_pid.ok_or_else(|| {
-            ControllerError("committed fixture lacks a PID".to_owned())
-        })?;
+        let (mut backend, mut journal, _directory) = committed_fake_fixture()?;
+        let historical_pid = backend
+            .world
+            .current_pid
+            .ok_or_else(|| ControllerError("committed fixture lacks a PID".to_owned()))?;
         backend.historical_pid = historical_pid.to_string();
         backend.world.committed_pid = Some(historical_pid);
         let mut boundary = 0usize;
-        let result = drive_committed_recovery(
-            &mut backend,
-            &mut journal,
-            |_, operation, phase| {
-                if boundary == target {
-                    return Err(injected_failure(
-                        InjectedFault::Interruption,
-                        operation,
-                        phase,
-                    ));
-                }
-                boundary += 1;
-                Ok(())
-            },
-        );
+        let result = drive_committed_recovery(&mut backend, &mut journal, |_, operation, phase| {
+            if boundary == target {
+                return Err(injected_failure(
+                    InjectedFault::Interruption,
+                    operation,
+                    phase,
+                ));
+            }
+            boundary += 1;
+            Ok(())
+        });
         if result.is_ok() {
             backend.world.assert_committed_current_generation()?;
             break;
@@ -9038,13 +9046,11 @@ fn self_test_side_effects() -> Result<()> {
         let interrupted_world = backend.world;
         drop(journal);
         let mut reopened = FakeJournal::open(&path)?;
-        let recovered =
-            recover_fake_transaction(interrupted_world, &mut reopened)?;
+        let recovered = recover_fake_transaction(interrupted_world, &mut reopened)?;
         recovered.assert_committed_current_generation()?;
         if recovered.current_pid == Some(historical_pid) {
             return Err(ControllerError(
-                "interrupted committed recovery reused historical PID"
-                    .to_owned(),
+                "interrupted committed recovery reused historical PID".to_owned(),
             ));
         }
         target += 1;

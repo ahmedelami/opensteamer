@@ -242,6 +242,11 @@ final class MacHostMigrationContractTests: XCTestCase {
             "require_exact_directory_entries",
             "verify_chflags_tool",
             "Path::new(\"/usr/bin/chflags\")",
+            "fn open_applications()",
+            "directory_write_policy_allows",
+            "validate_exact_v10_applications_critical_recovery",
+            "V10_CRITICAL_JOURNAL_SHA256",
+            "V10_APPLICATIONS_MODE_ERROR",
         ] {
             XCTAssertTrue(controller.contains(required), "Controller lacks \(required)")
         }
