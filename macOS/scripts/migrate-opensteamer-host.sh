@@ -17,12 +17,12 @@ EXPECTED_RUSTC_SHA256='d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9
 EXPECTED_RUSTC_CDHASH_FULL='d57b3f82fa576b65e91de0fb90358f766425c35e794feec402416bb666a5008e'
 EXPECTED_RUSTC_DRIVER_SHA256='aa8f5e89644f6d54fd3f1c4d4031bbda10ff750984cede4a75c7addee27e15df'
 EXPECTED_RUSTC_DRIVER_CDHASH_FULL='d304c582680e8f4f226b05865358468995b0f8a337339621968dfe64879d9d4c'
-EXPECTED_CONTROLLER_SOURCE_SHA256='a643cb0931b8dd3338f1c1499c29c2d2340c679a5048a5f4785340753f278230'
-EXPECTED_CONTROLLER_BINARY_SHA256='1c68faf81d4385106779327923a64adf5ef84047a8717de800848070d605f30d'
+EXPECTED_CONTROLLER_SOURCE_SHA256='155c3d86e51ba0042e679a57e391b2fdf1038cdc8b4fe91c0f9d7439a6b8fa9c'
+EXPECTED_CONTROLLER_BINARY_SHA256='abe60a07827ca24d350889d4116fde1374f7b82f4a0807942c369e1686345251'
 EXPECTED_BUILD_SCRIPT_SHA256='bda01b7ec76e5112a127fd97427fbff4a23c5d352232bed64d3cc93cf44e9619'
 EXPECTED_BUNDLE_VERIFIER_SHA256='02a348a88d25b76ab95d45620d823339212bb53ee0f39bfb3a52f04240d3d745'
 EXPECTED_LAUNCH_VERIFIER_SHA256='27c36f8adec05c22216955cb404d6732ceaa6065477e5bb1570f2d41e84db7a9'
-EXPECTED_DEPLOYMENT_VERIFIER_SHA256='4aada5e3ecc97f5cb006672298bc79c9cfbcf3973aec902a2d04bae7b5e325a6'
+EXPECTED_DEPLOYMENT_VERIFIER_SHA256='640030fc03331c9f4807fc6f3aa4db1aecb75f384a2a9dacc7116d5e9920242a'
 EXPECTED_LIVE_PROCESS_VERIFIER_SHA256='0e56403570362c6d59ea86dc10d3cc53d7a5461d4a2f6c78d6e6c86dd13a4b41'
 
 usage() {
@@ -208,7 +208,7 @@ lower_hex_64 "$SOURCE_SHA" || {
     exit 1
 }
 [ "$SOURCE_SHA" = "$EXPECTED_CONTROLLER_SOURCE_SHA256" ] || {
-    echo "controller source hash differs from the reviewed v17 postimage" >&2
+    echo "controller source hash differs from the reviewed v18 postimage" >&2
     exit 1
 }
 verify_companion_script "$BUILD_SCRIPT" "$EXPECTED_BUILD_SCRIPT_SHA256" \
@@ -216,7 +216,7 @@ verify_companion_script "$BUILD_SCRIPT" "$EXPECTED_BUILD_SCRIPT_SHA256" \
     && verify_companion_script "$LAUNCH_VERIFIER" "$EXPECTED_LAUNCH_VERIFIER_SHA256" \
     && verify_companion_script "$DEPLOYMENT_VERIFIER" "$EXPECTED_DEPLOYMENT_VERIFIER_SHA256" \
     && verify_companion_script "$LIVE_PROCESS_VERIFIER" "$EXPECTED_LIVE_PROCESS_VERIFIER_SHA256" || {
-    echo "one or more controller companion scripts differ from the reviewed v17 postimage" >&2
+    echo "one or more controller companion scripts differ from the reviewed v18 postimage" >&2
     exit 1
 }
 
@@ -311,7 +311,7 @@ fi
     exit 1
 }
 
-BUILD_DIR=$(/usr/bin/mktemp -d "$BUILD_PARENT/.controller-build-v17.XXXXXX") || {
+BUILD_DIR=$(/usr/bin/mktemp -d "$BUILD_PARENT/.controller-build-v18.XXXXXX") || {
     echo "could not create private controller build directory" >&2
     exit 1
 }

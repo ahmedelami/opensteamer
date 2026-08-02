@@ -24,10 +24,10 @@ const USER_HOME: &str = "/Users/ahmed";
 const USER_ID: u32 = 501;
 const MIGRATIONS_ROOT: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations";
 const PRIVATE_ROOT: &str = "/Users/ahmed/Library/Application Support/opensteamer";
-const ACTIVE_TRANSACTION_NAME: &str = "active-migration-v17";
-const ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v17.pending";
-const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v17.finalizing";
-const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = ".active-migration-v17.linearized";
+const ACTIVE_TRANSACTION_NAME: &str = "active-migration-v18";
+const ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v18.pending";
+const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v18.finalizing";
+const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = ".active-migration-v18.linearized";
 const PRIOR_V10_ACTIVE_TRANSACTION_NAME: &str = "active-migration-v10";
 const PRIOR_V10_ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v10.pending";
 const PRIOR_V10_ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v10.finalizing";
@@ -63,7 +63,7 @@ const CODE_IDENTIFIER: &str = "com.elamin.AudioStreamer.CaptureServer";
 const ONLINE_LOG: &str = "/var/tmp/opensteamer-worldwide-host.log";
 const ERROR_LOG: &str = "/var/tmp/opensteamer-worldwide-host.err.log";
 const ONLINE_MARKER: &str = "Worldwide paired-device availability is online";
-const JOURNAL_VERSION: &str = "OPENSTEAMER_MIGRATION_JOURNAL_V17";
+const JOURNAL_VERSION: &str = "OPENSTEAMER_MIGRATION_JOURNAL_V18";
 const PRIOR_PRESTOP_JOURNAL: &[u8] = b"OPENSTEAMER_MIGRATION_JOURNAL_V9\nSTATE BEGUN\nSTATE ROLLBACK_STARTED legacy_disable_was_journaled=false rollback_mode=BeforeLegacyStop\nSTATE LEGACY_REENABLED\nSTATE LEGACY_RECOVERED\nSTATE ROLLED_BACK\n";
 const PRIOR_PRESTOP_RESULT: &[u8] = b"result=rolled-back-before-stop\nlegacy_launchd_disabled=false\nphysical_iphone_e2e=unavailable-not-claimed\n";
 const PRIOR_JOURNAL_SHA256: &str =
@@ -563,7 +563,76 @@ const PRIOR_V16_STAGED_APP_XATTRS_SHA256: &str =
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const PRIOR_V16_FAILED_APP_XATTRS_SHA256: &str =
     "fc476ba38a5da85548cfbb83d758b4bbc41e2585495c55fb3344a6908b7ccee6";
-const V17_EVIDENCE_PATH: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v17-after-v16-1785637636-18044";
+const PRIOR_V17_ACTIVE_TRANSACTION_NAME: &str = "active-migration-v17";
+const PRIOR_V17_ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v17.pending";
+const PRIOR_V17_ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v17.finalizing";
+const PRIOR_V17_ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = ".active-migration-v17.linearized";
+const PRIOR_V17_EVIDENCE_PATH: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v17-after-v16-1785637636-18044";
+const PRIOR_V17_ACTIVE_RECORD: &[u8] = b"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v17-after-v16-1785637636-18044\n";
+const PRIOR_V17_ACTIVE_SHA256: &str =
+    "c67386bd19193e913f7116cc179ec44e1768ef077103f51a897e0774324f765a";
+const PRIOR_V17_SOURCE_COMMIT: &str = "bd23d6b7bf9328a383f1d6c8da152754b915eeb5";
+const PRIOR_V17_SOURCE_TREE: &str = "6b536450d997f14b356680c080328cbdced77e67";
+const PRIOR_V17_FINAL_JOURNAL_SIZE: usize = 7_075;
+const PRIOR_V17_FINAL_JOURNAL_LINES: usize = 20;
+const PRIOR_V17_FINAL_JOURNAL_SHA256: &str =
+    "9f66fbd1aff49313ce1528d25290dbb032f720fc79c2e04c509ae230704151d1";
+const PRIOR_V17_PRECUTOVER_JOURNAL_LINE: &[u8] = b"STATE PRECUTOVER_VERIFIED applications_device=16777230 applications_inode=4982341 launch_agents_device=16777230 launch_agents_inode=474668 precutover_available_bytes=1951039488 rollback_reserve_device=16777230 rollback_reserve_inode=21489839 rollback_reserve_bytes=8388608\n";
+const PRIOR_V17_GENERATION_JOURNAL_LINE: &[u8] = b"STATE NEW_PID_OBSERVED log_offset=1705 log_device=16777230 log_inode=20570513 pid=93486 runs=1 process_start=Sun%20Aug%20%202%2015%3A04%3A57%202026 nonce=f69ef6518ac1c0fd57652c02fcc3284fc7a700708b9754a48f256dbb17f12450 lock_device=16777230 lock_inode=10835208\n";
+const PRIOR_V17_ROLLBACK_JOURNAL_TAIL: &[u8] = b"STATE ROLLBACK_STARTED legacy_disable_was_journaled=true rollback_mode=FullRestore\nSTATE NEW_STOPPED\nSTATE NEW_DESTINATIONS_CLEARED\nSTATE LEGACY_REENABLED\nSTATE LEGACY_BOOTSTRAPPED\nSTATE LEGACY_RECOVERED\nSTATE ROLLED_BACK\n";
+const PRIOR_V17_FINAL_RESULT: &[u8] = b"result=rolled-back\nlegacy_launchd_disabled=false\nphysical_iphone_e2e=unavailable-not-claimed\n";
+const PRIOR_V17_FINAL_RESULT_SHA256: &str =
+    "434dea611969ea91d8b873bffe42e4a149f329641fe5111e898b86d66fc3d301";
+const PRIOR_V17_SOURCE_ARCHIVE_SIZE: u64 = 6_717_440;
+const PRIOR_V17_SOURCE_ARCHIVE_SHA256: &str =
+    "b1422da32cba1ab7716def3f11f8e2177584a7d8b4f8f893848ea4f6c0651a16";
+const PRIOR_V17_PROVENANCE_SHA256: &str =
+    "91057613a91cc1d4ae8dc681548e9960fe0de599bbc9acbe110cbe0f12ccb049";
+const PRIOR_V17_PROVENANCE: &[u8] = br#"commit=bd23d6b7bf9328a383f1d6c8da152754b915eeb5
+tree=6b536450d997f14b356680c080328cbdced77e67
+remote=https://github.com/ahmedelami/opensteamer.git
+upstream=origin/agent/auto-select-iphone-microphone
+source_archive_sha256=b1422da32cba1ab7716def3f11f8e2177584a7d8b4f8f893848ea4f6c0651a16
+package_resolved_sha256=161213e9507513e41f0acba0d7439fcf633b9d03d78c22b1e4b15fa9f83a01d9
+"#;
+const PRIOR_V17_LEGACY_MANIFEST_SHA256: &str =
+    "2bdaddf99c5101a8f994d3916b44a66f6c8fcbd3c0cda1b3ae44694263d6971f";
+const PRIOR_V17_LEGACY_XATTRS_SHA256: &str =
+    "cc69a330ffd8dcb92e45bfa1b2f7163f749b2c1875bc2ead51f9ed50dd252ea8";
+const PRIOR_V17_STAGED_HASHES_SHA256: &str =
+    "8da8b4480925deaf1d92f4a2945d3775b297f8e96ffa1f38dffda765b44b9e56";
+const PRIOR_V17_SOURCE_EXPORT_MANIFEST_SHA256: &str =
+    "29bfd8e679ade3541b8edd46c10d4144d7ec082709b6152500c519240a988834";
+const PRIOR_V17_BUILD_STDOUT_SHA256: &str =
+    "a32f0113756c8671e8def69c80edbe324fc5c1f140a0820a926cb72efd9ae157";
+const PRIOR_V17_BUILD_STDOUT_SIZE: usize = 884;
+const PRIOR_V17_BUILD_STDERR_SHA256: &str =
+    "e8665003dd7aec095f28b350b8bf324c84800547028920a905e8e13f7550518a";
+const PRIOR_V17_BUILD_STDERR_SIZE: usize = 3_557;
+const PRIOR_V17_DEPLOYMENT_STDOUT_SHA256: &str =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const PRIOR_V17_DEPLOYMENT_STDOUT_SIZE: usize = 0;
+const PRIOR_V17_DEPLOYMENT_STDERR_SHA256: &str =
+    "11a704463fb667082b2e50bf5877a24d728c0ee7e3b0a48d7686224091262254";
+const PRIOR_V17_DEPLOYMENT_STDERR_SIZE: usize = 4_546;
+const PRIOR_V17_DEPLOYMENT_STDERR_TAIL: &[u8] = b"diff: /Applications/opensteamer Host.app/Contents/Frameworks/LiveKitWebRTC.framework/Versions/Current: Directory loop detected\n";
+const PRIOR_V17_ROLLBACK_RESERVE_SHA256: &str =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const PRIOR_V17_ROLLBACK_RESERVE_DEVICE: u64 = 16_777_230;
+const PRIOR_V17_ROLLBACK_RESERVE_INODE: u64 = 21_489_839;
+const PRIOR_V17_STAGED_EXECUTABLE_SHA256: &str =
+    "859c7c0e7f6432dbafceb50aa6670f3ad39f407d64bccde0707a652890b8ec9a";
+const PRIOR_V17_STAGED_PLIST_SHA256: &str =
+    "7cdcf2d1517dc9ec1ae49b6fbbaf293c77afd958f697878d44f3b3c8e9c7e550";
+const PRIOR_V17_STAGED_APP_MANIFEST_SHA256: &str =
+    "9bb263af1b974a643759e1f726b70ff6f949e10466b1484e0e13adcec5454388";
+const PRIOR_V17_SYMLINK_TARGET_MANIFEST_SHA256: &str =
+    "ab17b5de2703ca8b990a315bb816165d6d6bdb898e2b7b6d8c9d59147cbd8fec";
+const PRIOR_V17_STAGED_APP_XATTRS_SHA256: &str =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const PRIOR_V17_FAILED_APP_XATTRS_SHA256: &str =
+    "4820785b28b99a603cd21d3fd62b8173af84ee7e51231f7586a944f4be21cdfc";
+const V18_EVIDENCE_PATH: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v18-after-v17-1785637636-18044";
 const CHFLAGS_SHA256: &str = "a67367c7fda2e962b72db6cc730173e82115f3709bf4a208d1d2ed1a6787a211";
 const DITTO_SHA256: &str = "31a07d70d9ebea58b083e47d4fa380c1d5b8f7fe58ac3fefa9ce2714ca898ca6";
 const EMBEDDED_BUILD_SCRIPT: &[u8] = include_bytes!("build-opensteamer-host-app.sh");
@@ -577,7 +646,7 @@ const EMBEDDED_LAUNCH_VERIFIER_SHA256: &str =
     "27c36f8adec05c22216955cb404d6732ceaa6065477e5bb1570f2d41e84db7a9";
 const EMBEDDED_DEPLOYMENT_VERIFIER: &[u8] = include_bytes!("verify-mac-host-deployment.sh");
 const EMBEDDED_DEPLOYMENT_VERIFIER_SHA256: &str =
-    "4aada5e3ecc97f5cb006672298bc79c9cfbcf3973aec902a2d04bae7b5e325a6";
+    "640030fc03331c9f4807fc6f3aa4db1aecb75f384a2a9dacc7116d5e9920242a";
 const EMBEDDED_LIVE_PROCESS_VERIFIER: &[u8] = include_bytes!("verify-live-mac-host-process.sh");
 const EMBEDDED_LIVE_PROCESS_VERIFIER_SHA256: &str =
     "0e56403570362c6d59ea86dc10d3cc53d7a5461d4a2f6c78d6e6c86dd13a4b41";
@@ -2075,7 +2144,7 @@ impl Layout {
 
     fn create(repo: PathBuf) -> Result<Self> {
         ensure_private_directory(Path::new(MIGRATIONS_ROOT), 0o700)?;
-        let evidence = PathBuf::from(V17_EVIDENCE_PATH);
+        let evidence = PathBuf::from(V18_EVIDENCE_PATH);
         fs::create_dir(&evidence).map_err(|error| {
             ControllerError(format!("cannot create evidence directory: {error}"))
         })?;
@@ -2762,7 +2831,7 @@ fn verify_prior_retry_state_cli() -> Result<()> {
         ActivePointerRecovery::None => {}
         ActivePointerRecovery::Active => {
             return Err(ControllerError(
-                "a version-17 active transaction already exists".to_owned(),
+                "a version-18 active transaction already exists".to_owned(),
             ))
         }
     }
@@ -2777,6 +2846,7 @@ fn verify_prior_retry_state_cli() -> Result<()> {
     let prior_v14 = validate_prior_v14_rolledback_retry(private_root)?;
     let prior_v15 = validate_prior_v15_rolledback_retry(private_root)?;
     let prior_v16 = validate_prior_v16_rolledback_retry(private_root)?;
+    let prior_v17 = validate_prior_v17_rolledback_retry(private_root)?;
     prior_v9.revalidate(private_root)?;
     prior_v10.revalidate(private_root)?;
     prior_v11.revalidate(private_root)?;
@@ -2785,14 +2855,23 @@ fn verify_prior_retry_state_cli() -> Result<()> {
     prior_v14.revalidate(private_root)?;
     prior_v15.revalidate(private_root)?;
     prior_v16.revalidate(private_root)?;
+    prior_v17.revalidate(private_root)?;
     require_all_prior_retry_residues_absent(private_root)?;
     require_fresh_retry_disk_headroom()?;
-    if entry_exists(Path::new(V17_EVIDENCE_PATH))? {
+    let acceptance_deadline = deadline_after(LEGACY_READINESS_TIMEOUT)?;
+    prove_new_host_absent_during_rollback_until(acceptance_deadline)?;
+    verify_legacy_static_until(acceptance_deadline)?;
+    verify_legacy_disabled_until(false, acceptance_deadline)?;
+    wait_for_exact_legacy_readiness_until(acceptance_deadline)?;
+    if entry_exists(Path::new(V18_EVIDENCE_PATH))? {
         return Err(ControllerError(
-            "the deterministic version-17 evidence path is already occupied".to_owned(),
+            "the deterministic version-18 evidence path is already occupied".to_owned(),
         ));
     }
-    println!("PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16 legacy=sole-ready v17=absent");
+    require_before_deadline(acceptance_deadline, "prior-retry preflight acceptance")?;
+    println!(
+        "PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17 legacy=sole-ready v18=absent"
+    );
     Ok(())
 }
 
@@ -2823,6 +2902,7 @@ fn execute(root: &Path) -> Result<()> {
             let prior_v14 = validate_prior_v14_rolledback_retry(private_root)?;
             let prior_v15 = validate_prior_v15_rolledback_retry(private_root)?;
             let prior_v16 = validate_prior_v16_rolledback_retry(private_root)?;
+            let prior_v17 = validate_prior_v17_rolledback_retry(private_root)?;
             start_new(
                 repo,
                 private_root,
@@ -2834,6 +2914,7 @@ fn execute(root: &Path) -> Result<()> {
                 prior_v14,
                 prior_v15,
                 prior_v16,
+                prior_v17,
             )
         }
         ActivePointerRecovery::Active => recover_active(repo, private_root),
@@ -3099,6 +3180,14 @@ fn require_all_prior_retry_residues_absent(private_root: &PinnedDirectory) -> Re
         PRIOR_V16_ACTIVE_TRANSACTION_LINEARIZED_NAME,
         "v16",
         Path::new(PRIOR_V16_EVIDENCE_PATH),
+    )?;
+    require_prior_retry_residues_absent(
+        private_root,
+        PRIOR_V17_ACTIVE_TRANSACTION_PENDING_NAME,
+        PRIOR_V17_ACTIVE_TRANSACTION_FINALIZING_NAME,
+        PRIOR_V17_ACTIVE_TRANSACTION_LINEARIZED_NAME,
+        "v17",
+        Path::new(PRIOR_V17_EVIDENCE_PATH),
     )
 }
 
@@ -3225,9 +3314,9 @@ impl PriorV9RetryGuard {
 }
 
 /// Version 9 failed before the legacy-stop boundary on this Mac because it referenced the
-/// nonexistent `/bin/chflags`. Its retained evidence must remain untouched. Version 17 may start
+/// nonexistent `/bin/chflags`. Its retained evidence must remain untouched. Version 18 may start
 /// only after independently pinning the exact v9 tombstone together with the exact fully rolled-back
-/// v10, v11, v12, v13, v14, v15, and v16 tombstones and reproving the untouched legacy runtime.
+/// v10, v11, v12, v13, v14, v15, v16, and v17 tombstones and reproving the untouched legacy runtime.
 /// Any other residue fails closed.
 fn validate_prior_v9_prestop_retry(private_root: &PinnedDirectory) -> Result<PriorV9RetryGuard> {
     for residue in [
@@ -7878,6 +7967,657 @@ fn validate_prior_v16_rolledback_retry(
     Ok(guard)
 }
 
+fn validate_prior_v17_rolledback_records(
+    evidence: &Path,
+    journal: &[u8],
+    result: &[u8],
+    provenance: &[u8],
+    deployment_stdout: &[u8],
+    deployment_stderr: &[u8],
+) -> Result<()> {
+    if evidence != Path::new(PRIOR_V17_EVIDENCE_PATH) {
+        return Err(ControllerError(
+            "prior v17 pointer does not name the exact reviewed evidence".to_owned(),
+        ));
+    }
+    if journal.len() != PRIOR_V17_FINAL_JOURNAL_SIZE
+        || journal.iter().filter(|byte| **byte == b'\n').count() != PRIOR_V17_FINAL_JOURNAL_LINES
+        || sha256_bytes(journal)? != PRIOR_V17_FINAL_JOURNAL_SHA256
+        || !journal.starts_with(b"OPENSTEAMER_MIGRATION_JOURNAL_V17\n")
+        || !journal
+            .windows(PRIOR_V17_PRECUTOVER_JOURNAL_LINE.len())
+            .any(|window| window == PRIOR_V17_PRECUTOVER_JOURNAL_LINE)
+        || !journal
+            .windows(PRIOR_V17_GENERATION_JOURNAL_LINE.len())
+            .any(|window| window == PRIOR_V17_GENERATION_JOURNAL_LINE)
+        || !journal.ends_with(PRIOR_V17_ROLLBACK_JOURNAL_TAIL)
+    {
+        return Err(ControllerError(
+            "prior v17 journal is not the exact reviewed status-141 full rollback".to_owned(),
+        ));
+    }
+    if result != PRIOR_V17_FINAL_RESULT || sha256_bytes(result)? != PRIOR_V17_FINAL_RESULT_SHA256 {
+        return Err(ControllerError(
+            "prior v17 result is not the exact reviewed rolled-back outcome".to_owned(),
+        ));
+    }
+    if provenance != PRIOR_V17_PROVENANCE
+        || sha256_bytes(provenance)? != PRIOR_V17_PROVENANCE_SHA256
+    {
+        return Err(ControllerError(
+            "prior v17 provenance is not the exact reviewed record".to_owned(),
+        ));
+    }
+    if deployment_stdout.len() != PRIOR_V17_DEPLOYMENT_STDOUT_SIZE
+        || sha256_bytes(deployment_stdout)? != PRIOR_V17_DEPLOYMENT_STDOUT_SHA256
+        || deployment_stderr.len() != PRIOR_V17_DEPLOYMENT_STDERR_SIZE
+        || sha256_bytes(deployment_stderr)? != PRIOR_V17_DEPLOYMENT_STDERR_SHA256
+        || !deployment_stderr.ends_with(PRIOR_V17_DEPLOYMENT_STDERR_TAIL)
+    {
+        return Err(ControllerError(
+            "prior v17 deployment records are not the exact reviewed codesign/awk SIGPIPE failure"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+struct PriorV17RetryGuard {
+    pointer: File,
+    evidence: PinnedDirectory,
+    records: PinnedDirectory,
+    legacy_snapshot: PinnedDirectory,
+    failed_new: PinnedDirectory,
+    failed_app: PinnedDirectory,
+    staged: PinnedDirectory,
+    staged_app: PinnedDirectory,
+    source_export: PinnedDirectory,
+    scratch: PinnedDirectory,
+    journal: File,
+    result: File,
+    provenance: File,
+    legacy_manifest: File,
+    legacy_xattrs: File,
+    staged_hashes: File,
+    source_export_manifest: File,
+    build_stdout: File,
+    build_stderr: File,
+    deployment_stdout: File,
+    deployment_stderr: File,
+    rollback_reserve: File,
+    staged_plist: File,
+    failed_plist: File,
+    source_archive: File,
+    snapshot_executable: File,
+    snapshot_plist: File,
+}
+
+impl PriorV17RetryGuard {
+    fn journal_fields(&self) -> Vec<(&'static str, String)> {
+        vec![
+            (
+                "prior_v17_active_sha256",
+                PRIOR_V17_ACTIVE_SHA256.to_owned(),
+            ),
+            (
+                "prior_v17_journal_sha256",
+                PRIOR_V17_FINAL_JOURNAL_SHA256.to_owned(),
+            ),
+            (
+                "prior_v17_result_sha256",
+                PRIOR_V17_FINAL_RESULT_SHA256.to_owned(),
+            ),
+            (
+                "prior_v17_source_archive_sha256",
+                PRIOR_V17_SOURCE_ARCHIVE_SHA256.to_owned(),
+            ),
+            (
+                "prior_v17_source_commit",
+                PRIOR_V17_SOURCE_COMMIT.to_owned(),
+            ),
+            ("prior_v17_source_tree", PRIOR_V17_SOURCE_TREE.to_owned()),
+            (
+                "prior_v17_provenance_sha256",
+                PRIOR_V17_PROVENANCE_SHA256.to_owned(),
+            ),
+            (
+                "prior_v17_legacy_executable_sha256",
+                LEGACY_EXECUTABLE_SHA256.to_owned(),
+            ),
+            (
+                "prior_v17_legacy_plist_sha256",
+                LEGACY_PLIST_SHA256.to_owned(),
+            ),
+            (
+                "prior_v17_deployment_stderr_sha256",
+                PRIOR_V17_DEPLOYMENT_STDERR_SHA256.to_owned(),
+            ),
+        ]
+    }
+
+    fn revalidate_directories(&self) -> Result<()> {
+        for directory in [
+            &self.evidence,
+            &self.records,
+            &self.legacy_snapshot,
+            &self.failed_new,
+            &self.failed_app,
+            &self.staged,
+            &self.staged_app,
+            &self.source_export,
+            &self.scratch,
+        ] {
+            directory.revalidate()?;
+        }
+        Ok(())
+    }
+
+    fn validate_shape(&self) -> Result<()> {
+        require_exact_directory_entries(
+            &self.evidence,
+            &[
+                "failed-new",
+                "journal.log",
+                "legacy-snapshot",
+                "records",
+                "source-export",
+                "source.tar",
+                "staged",
+                "swiftpm-scratch",
+            ],
+        )?;
+        require_exact_directory_entries(
+            &self.records,
+            &[
+                "build.stderr",
+                "build.stdout",
+                "deployment.stderr",
+                "deployment.stdout",
+                "legacy-app-tree-manifest.txt",
+                "legacy-app-xattrs.txt",
+                "provenance.txt",
+                "result.txt",
+                "rollback-reserve.bin",
+                "source-export-manifest.txt",
+                "staged-hashes.txt",
+            ],
+        )?;
+        require_exact_directory_entries(
+            &self.legacy_snapshot,
+            &["CaptureServer", "com.elamin.audiostreamer.worldwide.plist"],
+        )?;
+        require_exact_directory_entries(
+            &self.failed_new,
+            &[
+                "opensteamer Host.app",
+                "org.example.opensteamer.worldwide.plist",
+            ],
+        )?;
+        require_exact_directory_entries(
+            &self.staged,
+            &[
+                "opensteamer Host.app",
+                "org.example.opensteamer.worldwide.plist",
+            ],
+        )
+    }
+
+    fn ensure_file_pins(&self) -> Result<()> {
+        self.evidence
+            .ensure_file_at_name("journal.log", &self.journal)?;
+        for (name, file) in [
+            ("result.txt", &self.result),
+            ("provenance.txt", &self.provenance),
+            ("legacy-app-tree-manifest.txt", &self.legacy_manifest),
+            ("legacy-app-xattrs.txt", &self.legacy_xattrs),
+            ("staged-hashes.txt", &self.staged_hashes),
+            ("source-export-manifest.txt", &self.source_export_manifest),
+            ("build.stdout", &self.build_stdout),
+            ("build.stderr", &self.build_stderr),
+            ("deployment.stdout", &self.deployment_stdout),
+            ("deployment.stderr", &self.deployment_stderr),
+            ("rollback-reserve.bin", &self.rollback_reserve),
+        ] {
+            self.records.ensure_file_at_name(name, file)?;
+        }
+        self.staged.ensure_file_at_name(
+            "org.example.opensteamer.worldwide.plist",
+            &self.staged_plist,
+        )?;
+        self.failed_new.ensure_file_at_name(
+            "org.example.opensteamer.worldwide.plist",
+            &self.failed_plist,
+        )?;
+        self.evidence
+            .ensure_file_at_name("source.tar", &self.source_archive)?;
+        self.legacy_snapshot
+            .ensure_file_at_name("CaptureServer", &self.snapshot_executable)?;
+        self.legacy_snapshot.ensure_file_at_name(
+            "com.elamin.audiostreamer.worldwide.plist",
+            &self.snapshot_plist,
+        )
+    }
+
+    fn revalidate(&self, private_root: &PinnedDirectory) -> Result<()> {
+        require_prior_retry_residues_absent(
+            private_root,
+            PRIOR_V17_ACTIVE_TRANSACTION_PENDING_NAME,
+            PRIOR_V17_ACTIVE_TRANSACTION_FINALIZING_NAME,
+            PRIOR_V17_ACTIVE_TRANSACTION_LINEARIZED_NAME,
+            "v17",
+            &self.evidence.path,
+        )?;
+        private_root.ensure_file_at_name(PRIOR_V17_ACTIVE_TRANSACTION_NAME, &self.pointer)?;
+        let pointer_path = private_root.path.join(PRIOR_V17_ACTIVE_TRANSACTION_NAME);
+        let pointer = read_opened_regular(&self.pointer, &pointer_path, 0o600)?;
+        if pointer != PRIOR_V17_ACTIVE_RECORD || sha256_bytes(&pointer)? != PRIOR_V17_ACTIVE_SHA256
+        {
+            return Err(ControllerError(
+                "prior v17 active pointer changed during retry proof".to_owned(),
+            ));
+        }
+        private_root.ensure_file_at_name(PRIOR_V17_ACTIVE_TRANSACTION_NAME, &self.pointer)?;
+        self.revalidate_directories()?;
+        self.validate_shape()?;
+        self.ensure_file_pins()?;
+
+        let journal = read_opened_regular(
+            &self.journal,
+            &self.evidence.path.join("journal.log"),
+            0o600,
+        )?;
+        let result =
+            read_opened_regular(&self.result, &self.records.path.join("result.txt"), 0o600)?;
+        let provenance = read_opened_regular(
+            &self.provenance,
+            &self.records.path.join("provenance.txt"),
+            0o600,
+        )?;
+        let legacy_manifest = read_opened_regular(
+            &self.legacy_manifest,
+            &self.records.path.join("legacy-app-tree-manifest.txt"),
+            0o600,
+        )?;
+        let legacy_xattrs = read_opened_regular(
+            &self.legacy_xattrs,
+            &self.records.path.join("legacy-app-xattrs.txt"),
+            0o600,
+        )?;
+        let staged_hashes = read_opened_regular(
+            &self.staged_hashes,
+            &self.records.path.join("staged-hashes.txt"),
+            0o600,
+        )?;
+        let source_export_manifest = read_opened_regular(
+            &self.source_export_manifest,
+            &self.records.path.join("source-export-manifest.txt"),
+            0o600,
+        )?;
+        let build_stdout = read_opened_regular(
+            &self.build_stdout,
+            &self.records.path.join("build.stdout"),
+            0o600,
+        )?;
+        let build_stderr = read_opened_regular(
+            &self.build_stderr,
+            &self.records.path.join("build.stderr"),
+            0o600,
+        )?;
+        let deployment_stdout = read_opened_regular(
+            &self.deployment_stdout,
+            &self.records.path.join("deployment.stdout"),
+            0o600,
+        )?;
+        let deployment_stderr = read_opened_regular(
+            &self.deployment_stderr,
+            &self.records.path.join("deployment.stderr"),
+            0o600,
+        )?;
+        let rollback_reserve = read_opened_regular(
+            &self.rollback_reserve,
+            &self.records.path.join("rollback-reserve.bin"),
+            0o600,
+        )?;
+
+        if build_stdout.len() != PRIOR_V17_BUILD_STDOUT_SIZE
+            || build_stderr.len() != PRIOR_V17_BUILD_STDERR_SIZE
+        {
+            return Err(ControllerError(
+                "prior v17 build record sizes changed".to_owned(),
+            ));
+        }
+        validate_prior_v17_rolledback_records(
+            &self.evidence.path,
+            &journal,
+            &result,
+            &provenance,
+            &deployment_stdout,
+            &deployment_stderr,
+        )?;
+        if tree_manifest(&self.source_export.path)?.as_bytes() != source_export_manifest {
+            return Err(ControllerError(
+                "prior v17 source export differs from its exact reviewed manifest".to_owned(),
+            ));
+        }
+        if tree_manifest(Path::new(LEGACY_APP))?.as_bytes() != legacy_manifest {
+            return Err(ControllerError(
+                "live legacy app differs from the exact prior v17 snapshot manifest".to_owned(),
+            ));
+        }
+        if capture_legacy_xattrs()?.as_bytes() != legacy_xattrs {
+            return Err(ControllerError(
+                "live legacy app xattrs differ from the exact prior v17 snapshot".to_owned(),
+            ));
+        }
+        for (path, bytes, expected) in [
+            (
+                self.records.path.join("legacy-app-tree-manifest.txt"),
+                legacy_manifest.as_slice(),
+                PRIOR_V17_LEGACY_MANIFEST_SHA256,
+            ),
+            (
+                self.records.path.join("legacy-app-xattrs.txt"),
+                legacy_xattrs.as_slice(),
+                PRIOR_V17_LEGACY_XATTRS_SHA256,
+            ),
+            (
+                self.records.path.join("staged-hashes.txt"),
+                staged_hashes.as_slice(),
+                PRIOR_V17_STAGED_HASHES_SHA256,
+            ),
+            (
+                self.records.path.join("source-export-manifest.txt"),
+                source_export_manifest.as_slice(),
+                PRIOR_V17_SOURCE_EXPORT_MANIFEST_SHA256,
+            ),
+            (
+                self.records.path.join("build.stdout"),
+                build_stdout.as_slice(),
+                PRIOR_V17_BUILD_STDOUT_SHA256,
+            ),
+            (
+                self.records.path.join("build.stderr"),
+                build_stderr.as_slice(),
+                PRIOR_V17_BUILD_STDERR_SHA256,
+            ),
+            (
+                self.records.path.join("rollback-reserve.bin"),
+                rollback_reserve.as_slice(),
+                PRIOR_V17_ROLLBACK_RESERVE_SHA256,
+            ),
+        ] {
+            if sha256_bytes(bytes)? != expected {
+                return Err(ControllerError(format!(
+                    "prior v17 anchored record changed: {}",
+                    path.display()
+                )));
+            }
+        }
+        if !rollback_reserve.is_empty() {
+            return Err(ControllerError(
+                "prior v17 rollback reserve was not durably released".to_owned(),
+            ));
+        }
+        let reserve_metadata = self.rollback_reserve.metadata()?;
+        if reserve_metadata.dev() != PRIOR_V17_ROLLBACK_RESERVE_DEVICE
+            || reserve_metadata.ino() != PRIOR_V17_ROLLBACK_RESERVE_INODE
+        {
+            return Err(ControllerError(
+                "prior v17 rollback reserve inode changed".to_owned(),
+            ));
+        }
+
+        let archive_metadata = self.source_archive.metadata()?;
+        validate_owned_regular(
+            &self.evidence.path.join("source.tar"),
+            &archive_metadata,
+            0o600,
+        )?;
+        let source_archive = read_opened_regular(
+            &self.source_archive,
+            &self.evidence.path.join("source.tar"),
+            0o600,
+        )?;
+        if archive_metadata.len() != PRIOR_V17_SOURCE_ARCHIVE_SIZE
+            || sha256_bytes(&source_archive)? != PRIOR_V17_SOURCE_ARCHIVE_SHA256
+        {
+            return Err(ControllerError(
+                "prior v17 source archive differs from the reviewed rolled-back attempt".to_owned(),
+            ));
+        }
+        let snapshot_executable = read_opened_regular(
+            &self.snapshot_executable,
+            &self.legacy_snapshot.path.join("CaptureServer"),
+            0o500,
+        )?;
+        let snapshot_plist = read_opened_regular(
+            &self.snapshot_plist,
+            &self
+                .legacy_snapshot
+                .path
+                .join("com.elamin.audiostreamer.worldwide.plist"),
+            0o400,
+        )?;
+        if sha256_bytes(&snapshot_executable)? != LEGACY_EXECUTABLE_SHA256
+            || sha256_bytes(&snapshot_plist)? != LEGACY_PLIST_SHA256
+        {
+            return Err(ControllerError(
+                "prior v17 offline legacy snapshot changed".to_owned(),
+            ));
+        }
+
+        let staged_plist = read_opened_regular(
+            &self.staged_plist,
+            &self
+                .staged
+                .path
+                .join("org.example.opensteamer.worldwide.plist"),
+            0o600,
+        )?;
+        let failed_plist = read_opened_regular(
+            &self.failed_plist,
+            &self
+                .failed_new
+                .path
+                .join("org.example.opensteamer.worldwide.plist"),
+            0o600,
+        )?;
+        if sha256_file(&self.staged_app.path.join("Contents/MacOS/CaptureServer"))?
+            != PRIOR_V17_STAGED_EXECUTABLE_SHA256
+            || sha256_file(&self.failed_app.path.join("Contents/MacOS/CaptureServer"))?
+                != PRIOR_V17_STAGED_EXECUTABLE_SHA256
+            || sha256_bytes(&staged_plist)? != PRIOR_V17_STAGED_PLIST_SHA256
+            || sha256_bytes(&failed_plist)? != PRIOR_V17_STAGED_PLIST_SHA256
+        {
+            return Err(ControllerError(
+                "prior v17 staged or archived artifact hash changed".to_owned(),
+            ));
+        }
+        let staged_app_manifest = directory_manifest(&self.staged_app.path)?;
+        let failed_app_manifest = directory_manifest(&self.failed_app.path)?;
+        if sha256_bytes(staged_app_manifest.as_bytes())? != PRIOR_V17_STAGED_APP_MANIFEST_SHA256
+            || failed_app_manifest != staged_app_manifest
+        {
+            return Err(ControllerError(
+                "prior v17 staged or archived full app manifest changed".to_owned(),
+            ));
+        }
+        let staged_symlinks = symlink_target_manifest(&self.staged_app.path)?;
+        let failed_symlinks = symlink_target_manifest(&self.failed_app.path)?;
+        if sha256_bytes(staged_symlinks.as_bytes())? != PRIOR_V17_SYMLINK_TARGET_MANIFEST_SHA256
+            || failed_symlinks != staged_symlinks
+        {
+            return Err(ControllerError(
+                "prior v17 staged or archived symlink target changed".to_owned(),
+            ));
+        }
+        let staged_xattrs = capture_tree_xattrs_until(
+            &self.staged_app.path,
+            deadline_after(DEFAULT_COMMAND_TIMEOUT)?,
+        )?;
+        let failed_xattrs = capture_tree_xattrs_until(
+            &self.failed_app.path,
+            deadline_after(DEFAULT_COMMAND_TIMEOUT)?,
+        )?;
+        if sha256_bytes(staged_xattrs.as_bytes())? != PRIOR_V17_STAGED_APP_XATTRS_SHA256
+            || sha256_bytes(failed_xattrs.as_bytes())? != PRIOR_V17_FAILED_APP_XATTRS_SHA256
+        {
+            return Err(ControllerError(
+                "prior v17 staged or archived app xattrs changed".to_owned(),
+            ));
+        }
+        if staged_plist != failed_plist {
+            return Err(ControllerError(
+                "prior v17 archived plist differs from its staged artifact".to_owned(),
+            ));
+        }
+
+        self.ensure_file_pins()?;
+        self.validate_shape()?;
+        self.revalidate_directories()?;
+        private_root.ensure_file_at_name(PRIOR_V17_ACTIVE_TRANSACTION_NAME, &self.pointer)?;
+        require_prior_retry_residues_absent(
+            private_root,
+            PRIOR_V17_ACTIVE_TRANSACTION_PENDING_NAME,
+            PRIOR_V17_ACTIVE_TRANSACTION_FINALIZING_NAME,
+            PRIOR_V17_ACTIVE_TRANSACTION_LINEARIZED_NAME,
+            "v17",
+            &self.evidence.path,
+        )
+    }
+}
+
+fn validate_prior_v17_rolledback_retry(
+    private_root: &PinnedDirectory,
+) -> Result<PriorV17RetryGuard> {
+    for residue in [
+        PRIOR_V17_ACTIVE_TRANSACTION_PENDING_NAME,
+        PRIOR_V17_ACTIVE_TRANSACTION_FINALIZING_NAME,
+        PRIOR_V17_ACTIVE_TRANSACTION_LINEARIZED_NAME,
+    ] {
+        if private_root
+            .open_existing_regular(residue, false)?
+            .is_some()
+        {
+            return Err(ControllerError(format!(
+                "prior v17 active-pointer residue requires manual recovery: {residue}"
+            )));
+        }
+    }
+    let pointer =
+        open_required_pinned_regular(private_root, PRIOR_V17_ACTIVE_TRANSACTION_NAME, 0o600)?;
+    let pointer_bytes = read_opened_regular(
+        &pointer,
+        &private_root.path.join(PRIOR_V17_ACTIVE_TRANSACTION_NAME),
+        0o600,
+    )?;
+    if pointer_bytes != PRIOR_V17_ACTIVE_RECORD
+        || sha256_bytes(&pointer_bytes)? != PRIOR_V17_ACTIVE_SHA256
+    {
+        return Err(ControllerError(
+            "prior v17 active pointer is not the exact reviewed record".to_owned(),
+        ));
+    }
+    let evidence_path = parse_active_record(&pointer_bytes)?;
+    if evidence_path != Path::new(PRIOR_V17_EVIDENCE_PATH) {
+        return Err(ControllerError(
+            "prior v17 active pointer resolved to unexpected evidence".to_owned(),
+        ));
+    }
+
+    let evidence = PinnedDirectory::open(&evidence_path, Some(effective_uid()), Some(0o700))?;
+    let records = evidence
+        .try_open_directory_child("records", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| ControllerError("prior v17 evidence lacks records".to_owned()))?;
+    let legacy_snapshot = evidence
+        .try_open_directory_child("legacy-snapshot", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| ControllerError("prior v17 evidence lacks legacy snapshot".to_owned()))?;
+    let failed_new = evidence
+        .try_open_directory_child("failed-new", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| ControllerError("prior v17 evidence lacks failed-new".to_owned()))?;
+    let failed_app = failed_new
+        .try_open_directory_child("opensteamer Host.app", Some(effective_uid()), None)?
+        .ok_or_else(|| ControllerError("prior v17 evidence lacks archived app".to_owned()))?;
+    let staged = evidence
+        .try_open_directory_child("staged", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| ControllerError("prior v17 evidence lacks staged directory".to_owned()))?;
+    let staged_app = staged
+        .try_open_directory_child("opensteamer Host.app", Some(effective_uid()), None)?
+        .ok_or_else(|| ControllerError("prior v17 evidence lacks staged app".to_owned()))?;
+    let source_export = evidence
+        .try_open_directory_child("source-export", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| {
+            ControllerError("prior v17 evidence lacks source export directory".to_owned())
+        })?;
+    let scratch = evidence
+        .try_open_directory_child("swiftpm-scratch", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| {
+            ControllerError("prior v17 evidence lacks SwiftPM scratch directory".to_owned())
+        })?;
+    let guard = PriorV17RetryGuard {
+        journal: open_required_pinned_regular(&evidence, "journal.log", 0o600)?,
+        result: open_required_pinned_regular(&records, "result.txt", 0o600)?,
+        provenance: open_required_pinned_regular(&records, "provenance.txt", 0o600)?,
+        legacy_manifest: open_required_pinned_regular(
+            &records,
+            "legacy-app-tree-manifest.txt",
+            0o600,
+        )?,
+        legacy_xattrs: open_required_pinned_regular(&records, "legacy-app-xattrs.txt", 0o600)?,
+        staged_hashes: open_required_pinned_regular(&records, "staged-hashes.txt", 0o600)?,
+        source_export_manifest: open_required_pinned_regular(
+            &records,
+            "source-export-manifest.txt",
+            0o600,
+        )?,
+        build_stdout: open_required_pinned_regular(&records, "build.stdout", 0o600)?,
+        build_stderr: open_required_pinned_regular(&records, "build.stderr", 0o600)?,
+        deployment_stdout: open_required_pinned_regular(&records, "deployment.stdout", 0o600)?,
+        deployment_stderr: open_required_pinned_regular(&records, "deployment.stderr", 0o600)?,
+        rollback_reserve: open_required_pinned_regular(&records, "rollback-reserve.bin", 0o600)?,
+        staged_plist: open_required_pinned_regular(
+            &staged,
+            "org.example.opensteamer.worldwide.plist",
+            0o600,
+        )?,
+        failed_plist: open_required_pinned_regular(
+            &failed_new,
+            "org.example.opensteamer.worldwide.plist",
+            0o600,
+        )?,
+        source_archive: open_required_pinned_regular(&evidence, "source.tar", 0o600)?,
+        snapshot_executable: open_required_pinned_regular(
+            &legacy_snapshot,
+            "CaptureServer",
+            0o500,
+        )?,
+        snapshot_plist: open_required_pinned_regular(
+            &legacy_snapshot,
+            "com.elamin.audiostreamer.worldwide.plist",
+            0o400,
+        )?,
+        pointer,
+        evidence,
+        records,
+        legacy_snapshot,
+        failed_new,
+        failed_app,
+        staged,
+        staged_app,
+        source_export,
+        scratch,
+    };
+    guard.revalidate(private_root)?;
+
+    let deadline = deadline_after(LEGACY_READINESS_TIMEOUT)?;
+    require_new_absent()?;
+    verify_legacy_static_until(deadline)?;
+    verify_legacy_disabled_until(false, deadline)?;
+    wait_for_exact_legacy_readiness_until(deadline)?;
+    guard.revalidate(private_root)?;
+    Ok(guard)
+}
+
 fn start_new(
     repo: PathBuf,
     private_root: &PinnedDirectory,
@@ -7889,6 +8629,7 @@ fn start_new(
     prior_v14: PriorV14RetryGuard,
     prior_v15: PriorV15RetryGuard,
     prior_v16: PriorV16RetryGuard,
+    prior_v17: PriorV17RetryGuard,
 ) -> Result<()> {
     require_fresh_retry_disk_headroom()?;
     let layout = Layout::create(repo)?;
@@ -7901,6 +8642,7 @@ fn start_new(
     prior_fields.extend(prior_v14.journal_fields());
     prior_fields.extend(prior_v15.journal_fields());
     prior_fields.extend(prior_v16.journal_fields());
+    prior_fields.extend(prior_v17.journal_fields());
     journal.transition(State::Begun, &prior_fields)?;
     let operation = (|| {
         prior_v9.revalidate(private_root)?;
@@ -7911,6 +8653,7 @@ fn start_new(
         prior_v14.revalidate(private_root)?;
         prior_v15.revalidate(private_root)?;
         prior_v16.revalidate(private_root)?;
+        prior_v17.revalidate(private_root)?;
         require_all_prior_retry_residues_absent(private_root)?;
         write_active(private_root, &layout.evidence)?;
         prior_v9.revalidate(private_root)?;
@@ -7921,6 +8664,7 @@ fn start_new(
         prior_v14.revalidate(private_root)?;
         prior_v15.revalidate(private_root)?;
         prior_v16.revalidate(private_root)?;
+        prior_v17.revalidate(private_root)?;
         require_all_prior_retry_residues_absent(private_root)?;
         run_transaction(
             &layout,
@@ -7934,6 +8678,7 @@ fn start_new(
             &prior_v14,
             &prior_v15,
             &prior_v16,
+            &prior_v17,
         )
     })();
     match operation {
@@ -8000,7 +8745,7 @@ fn recover_active(repo: PathBuf, private_root: &PinnedDirectory) -> Result<()> {
             )))
         }
         State::CriticalFailure => Err(ControllerError(format!(
-            "active v17 transaction is in CRITICAL_FAILURE; keep Mac offline; evidence={}",
+            "active v18 transaction is in CRITICAL_FAILURE; keep Mac offline; evidence={}",
             layout.evidence.display()
         ))),
         _ => {
@@ -8257,6 +9002,7 @@ struct RealForwardBackend<'a> {
     prior_v14: &'a PriorV14RetryGuard,
     prior_v15: &'a PriorV15RetryGuard,
     prior_v16: &'a PriorV16RetryGuard,
+    prior_v17: &'a PriorV17RetryGuard,
     provenance: Option<Provenance>,
     verifiers: Option<PinnedVerifierSet>,
     cutover: Option<CutoverPreflight>,
@@ -8277,6 +9023,7 @@ impl<'a> RealForwardBackend<'a> {
         prior_v14: &'a PriorV14RetryGuard,
         prior_v15: &'a PriorV15RetryGuard,
         prior_v16: &'a PriorV16RetryGuard,
+        prior_v17: &'a PriorV17RetryGuard,
     ) -> Self {
         Self {
             layout,
@@ -8289,6 +9036,7 @@ impl<'a> RealForwardBackend<'a> {
             prior_v14,
             prior_v15,
             prior_v16,
+            prior_v17,
             provenance: None,
             verifiers: None,
             cutover: None,
@@ -8359,6 +9107,7 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
                 self.prior_v14.revalidate(self.private_root)?;
                 self.prior_v15.revalidate(self.private_root)?;
                 self.prior_v16.revalidate(self.private_root)?;
+                self.prior_v17.revalidate(self.private_root)?;
                 require_all_prior_retry_residues_absent(self.private_root)?;
                 self.verifiers
                     .as_ref()
@@ -8386,6 +9135,7 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
                 self.prior_v14.revalidate(self.private_root)?;
                 self.prior_v15.revalidate(self.private_root)?;
                 self.prior_v16.revalidate(self.private_root)?;
+                self.prior_v17.revalidate(self.private_root)?;
                 require_all_prior_retry_residues_absent(self.private_root)?;
                 self.verifiers
                     .as_ref()
@@ -8455,6 +9205,16 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
                 verify_committed_destinations(self.layout, verifiers)
             }
             ForwardEffect::BootstrapNew => {
+                self.prior_v9.revalidate(self.private_root)?;
+                self.prior_v10.revalidate(self.private_root)?;
+                self.prior_v11.revalidate(self.private_root)?;
+                self.prior_v12.revalidate(self.private_root)?;
+                self.prior_v13.revalidate(self.private_root)?;
+                self.prior_v14.revalidate(self.private_root)?;
+                self.prior_v15.revalidate(self.private_root)?;
+                self.prior_v16.revalidate(self.private_root)?;
+                self.prior_v17.revalidate(self.private_root)?;
+                require_all_prior_retry_residues_absent(self.private_root)?;
                 let verifiers = self.verifiers.as_ref().ok_or_else(|| {
                     ControllerError("forward engine lacks pinned verifier set".to_owned())
                 })?;
@@ -8668,6 +9428,7 @@ fn run_transaction(
     prior_v14: &PriorV14RetryGuard,
     prior_v15: &PriorV15RetryGuard,
     prior_v16: &PriorV16RetryGuard,
+    prior_v17: &PriorV17RetryGuard,
 ) -> Result<()> {
     let mut backend = RealForwardBackend::new(
         layout,
@@ -8680,6 +9441,7 @@ fn run_transaction(
         prior_v14,
         prior_v15,
         prior_v16,
+        prior_v17,
     );
     let fields = drive_forward(&mut backend, journal, |_, _, _, _, _| Ok(()))?;
     release_rollback_reserve(layout, journal)?;
@@ -10380,9 +11142,9 @@ fn release_rollback_reserve_at(
 fn rollback_hidden_paths(layout: &Layout) -> Result<(PathBuf, PathBuf, PathBuf, PathBuf)> {
     let tag = layout.transaction_tag()?;
     Ok((
-        Path::new(APPLICATIONS_DIRECTORY).join(format!(".opensteamer-disabled-v17-{tag}")),
+        Path::new(APPLICATIONS_DIRECTORY).join(format!(".opensteamer-disabled-v18-{tag}")),
         Path::new("/Users/ahmed/Library/LaunchAgents").join(format!(
-            ".org.example.opensteamer.worldwide.plist.disabled-v17-{tag}"
+            ".org.example.opensteamer.worldwide.plist.disabled-v18-{tag}"
         )),
         layout.install_app_hold()?,
         layout.install_plist_hold()?,
@@ -12153,9 +12915,9 @@ fn inspect_active_pointer_read_only(parent: &PinnedDirectory) -> Result<ActivePo
         if let Some(file) = parent.open_existing_regular(name, false)? {
             let path = parent.path.join(name);
             let bytes = read_opened_regular(&file, &path, 0o600)?;
-            let _ = parse_v17_active_record(&bytes).map_err(|error| {
+            let _ = parse_v18_active_record(&bytes).map_err(|error| {
                 ControllerError(format!(
-                    "version-17 active-pointer residue was retained without mutation: {error}"
+                    "version-18 active-pointer residue was retained without mutation: {error}"
                 ))
             })?;
             parent.ensure_file_at_name(name, &file)?;
@@ -12166,7 +12928,7 @@ fn inspect_active_pointer_read_only(parent: &PinnedDirectory) -> Result<ActivePo
         Ok(ActivePointerRecovery::None)
     } else {
         Err(ControllerError(format!(
-            "version-17 active-pointer namespace is occupied; inspection retained every name without mutation: {}",
+            "version-18 active-pointer namespace is occupied; inspection retained every name without mutation: {}",
             present.join(",")
         )))
     }
@@ -12189,7 +12951,7 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
     if linearized_exists {
         let linearized_bytes =
             read_pinned_regular(parent, ACTIVE_TRANSACTION_LINEARIZED_NAME, 0o600)?;
-        let _ = parse_v17_active_record(&linearized_bytes)?;
+        let _ = parse_v18_active_record(&linearized_bytes)?;
         if finalizing_exists {
             let finalizing_bytes =
                 read_pinned_regular(parent, ACTIVE_TRANSACTION_FINALIZING_NAME, 0o600)?;
@@ -12213,7 +12975,7 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
         }
         let finalizing_bytes =
             read_pinned_regular(parent, ACTIVE_TRANSACTION_FINALIZING_NAME, 0o600)?;
-        let _ = parse_v17_active_record(&finalizing_bytes)?;
+        let _ = parse_v18_active_record(&finalizing_bytes)?;
         if active_exists {
             let active_bytes = read_pinned_regular(parent, ACTIVE_TRANSACTION_NAME, 0o600)?;
             if active_bytes != finalizing_bytes {
@@ -12238,7 +13000,7 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
     match (active_exists, pending_exists) {
         (false, false) => Ok(ActivePointerRecovery::None),
         (true, false) => {
-            let _ = parse_v17_active_record(&read_pinned_regular(
+            let _ = parse_v18_active_record(&read_pinned_regular(
                 parent,
                 ACTIVE_TRANSACTION_NAME,
                 0o600,
@@ -12254,14 +13016,14 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
                     "active and pending transaction records disagree".to_owned(),
                 ));
             }
-            let _ = parse_v17_active_record(&active_bytes)?;
+            let _ = parse_v18_active_record(&active_bytes)?;
             // An identical pending record is harmless retained evidence. It is intentionally not
             // unlinked because validation and pathname deletion cannot be made atomic on macOS.
             Ok(ActivePointerRecovery::Active)
         }
         (false, true) => {
             let bytes = read_pinned_regular(parent, ACTIVE_TRANSACTION_PENDING_NAME, 0o600)?;
-            let _ = parse_v17_active_record(&bytes).map_err(|error| {
+            let _ = parse_v18_active_record(&bytes).map_err(|error| {
                 ControllerError(format!(
                     "malformed pending active pointer was retained without mutation: {error}"
                 ))
@@ -12380,18 +13142,18 @@ fn write_active(parent: &PinnedDirectory, evidence: &Path) -> Result<()> {
 }
 
 fn read_active(parent: &PinnedDirectory) -> Result<PathBuf> {
-    parse_v17_active_record(&read_pinned_regular(
+    parse_v18_active_record(&read_pinned_regular(
         parent,
         ACTIVE_TRANSACTION_NAME,
         0o600,
     )?)
 }
 
-fn parse_v17_active_record(bytes: &[u8]) -> Result<PathBuf> {
+fn parse_v18_active_record(bytes: &[u8]) -> Result<PathBuf> {
     let evidence = parse_active_record(bytes)?;
-    if evidence != Path::new(V17_EVIDENCE_PATH) {
+    if evidence != Path::new(V18_EVIDENCE_PATH) {
         return Err(ControllerError(format!(
-            "v17 active pointer selects unreviewed evidence: {}",
+            "v18 active pointer selects unreviewed evidence: {}",
             evidence.display()
         )));
     }
@@ -13892,7 +14654,7 @@ impl Drop for TemporaryDirectory {
     }
 }
 
-const FAKE_JOURNAL_VERSION: &str = "OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V17";
+const FAKE_JOURNAL_VERSION: &str = "OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V18";
 
 struct FakeJournal {
     path: PathBuf,

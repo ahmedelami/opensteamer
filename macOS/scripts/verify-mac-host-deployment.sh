@@ -161,6 +161,54 @@ contains_exact_line() {
     print -r -- "$input" | /usr/bin/grep -Fx -- "$expected" >/dev/null
 }
 
+parse_code_hash() {
+    # Consume the complete producer stream before deciding validity. Exiting on the first CDHash
+    # can SIGPIPE codesign under zsh pipefail even though awk already printed the right value.
+    /usr/bin/awk '
+        /^CDHash=/ {
+            records += 1
+            value=substr($0, length("CDHash=") + 1)
+            normalized=tolower(value)
+            if (length(value) != 40 || value !~ /^[0-9A-Fa-f]+$/) malformed=1
+            else parsed=normalized
+            next
+        }
+        /^CDHash([[:space:]]|$)/ {
+            records += 1
+            malformed=1
+        }
+        END {
+            if (records != 1 || malformed) exit 65
+            print parsed
+        }
+    '
+}
+
+parse_manifest_unsigned_value() {
+    local key="$1"
+    # The launch-state verifier emits a small manifest today, but this parser deliberately consumes
+    # the entire stream so a future diagnostic suffix cannot turn a valid value into SIGPIPE 141.
+    /usr/bin/awk -v key="$key" '
+        {
+            prefix=key "="
+            if (index($0, prefix) == 1) {
+                records += 1
+                value=substr($0, length(prefix) + 1)
+                if (value !~ /^[0-9]+$/) malformed=1
+                else parsed=value
+                next
+            }
+            if ($0 == key || index($0, key " ") == 1 || index($0, key "\t") == 1) {
+                malformed=1
+            }
+        }
+        END {
+            if (records != 1 || malformed) exit 65
+            print parsed
+        }
+    '
+}
+
 self_test_disabled_parser() {
     local label="$LEGACY_LABEL" output
     output="$(parse_disabled_override $'disabled services = {\n    "other" => enabled\n}' "$label")" || fail \
@@ -184,6 +232,7 @@ self_test_disabled_parser() {
 
 self_test_zsh_runtime() {
     local required_command marker large_suffix padding=""
+    local expected_hash uppercase_hash parsed_value pipeline_exit
     for required_command in "${REQUIRED_SYSTEM_COMMANDS[@]}"; do
         [[ -f "$required_command" && ! -L "$required_command" && -x "$required_command" ]] || fail \
             "required system command is unavailable or redirected: $required_command"
@@ -209,6 +258,45 @@ self_test_zsh_runtime() {
         "exact-line matcher rejected an early marker in a large bounded suffix"
     contains_exact_line "${marker}-suffix" "$marker" && fail \
         "exact-line matcher accepted a substring marker"
+
+    expected_hash="0123456789abcdef0123456789abcdef01234567"
+    uppercase_hash="${(U)expected_hash}"
+    parsed_value="$(/usr/bin/awk -v hash="$uppercase_hash" 'BEGIN {
+        print "Executable=/synthetic/CaptureServer"
+        print "CDHash=" hash
+        for (line=0; line < 65536; line++) print "Authority=Synthetic-" line
+    }' | parse_code_hash)" || {
+        pipeline_exit=$?
+        fail "full-consuming CDHash parser rejected a large stream with pipeline status $pipeline_exit"
+    }
+    [[ "$parsed_value" == "$expected_hash" ]] || fail \
+        "CDHash parser returned '$parsed_value' for the large valid stream"
+    print -r -- $'CDHash=0123456789abcdef0123456789abcdef01234567\nCDHash=89abcdef0123456789abcdef0123456789abcdef' \
+        | parse_code_hash >/dev/null 2>&1 && fail "CDHash parser accepted duplicate hashes"
+    print -r -- "CDHash=0123456789abcdef0123456789abcdef0123456g" \
+        | parse_code_hash >/dev/null 2>&1 && fail "CDHash parser accepted a malformed hash"
+    print -r -- "Identifier=synthetic.fixture" \
+        | parse_code_hash >/dev/null 2>&1 && fail "CDHash parser accepted a missing hash"
+
+    parsed_value="$(/usr/bin/awk 'BEGIN {
+        print "pid=4242"
+        for (line=0; line < 65536; line++) print "diagnostic=synthetic-" line
+    }' | parse_manifest_unsigned_value pid)" || {
+        pipeline_exit=$?
+        fail "full-consuming manifest parser rejected a large stream with pipeline status $pipeline_exit"
+    }
+    [[ "$parsed_value" == 4242 ]] || fail \
+        "manifest parser returned '$parsed_value' for the large valid stream"
+    print -r -- $'pid=4242\npid=4343' | parse_manifest_unsigned_value pid >/dev/null 2>&1 \
+        && fail "manifest parser accepted a duplicate PID"
+    print -r -- "pid=not-a-number" | parse_manifest_unsigned_value pid >/dev/null 2>&1 \
+        && fail "manifest parser accepted a malformed PID"
+    print -r -- "runs=1" | parse_manifest_unsigned_value pid >/dev/null 2>&1 \
+        && fail "manifest parser accepted a missing PID"
+    parsed_value="$(print -r -- "runs=17" | parse_manifest_unsigned_value runs)" || fail \
+        "manifest parser rejected a valid runs value"
+    [[ "$parsed_value" == 17 ]] || fail \
+        "manifest parser returned '$parsed_value' for a valid runs value"
     print -r -- "SELF_TEST_OK zsh-runtime"
 }
 
@@ -258,7 +346,7 @@ readonly EXPECTED_ONLINE_MARKER="$ONLINE_MARKER_PREFIX pid=$EXPECTED_PID nonce=$
 
 sha256_file() { /usr/bin/shasum -a 256 "$1" | /usr/bin/awk '{print $1}'; }
 code_hash() {
-    /usr/bin/codesign -dv --verbose=4 "$1" 2>&1 | /usr/bin/awk -F= '$1 == "CDHash" {print tolower($2); exit}'
+    /usr/bin/codesign -dv --verbose=4 "$1" 2>&1 | parse_code_hash
 }
 
 require_legacy_disabled() {
@@ -368,8 +456,10 @@ capture_state() {
 }
 
 manifest_one="$(capture_state "$state_one")" || fail "first launch-state validation failed"
-pid_one="$(print -r -- "$manifest_one" | /usr/bin/awk -F= '$1 == "pid" {print $2; exit}')"
-runs_one="$(print -r -- "$manifest_one" | /usr/bin/awk -F= '$1 == "runs" {print $2; exit}')"
+pid_one="$(print -r -- "$manifest_one" | parse_manifest_unsigned_value pid)" || fail \
+    "first launch-state manifest PID is missing, ambiguous, or malformed"
+runs_one="$(print -r -- "$manifest_one" | parse_manifest_unsigned_value runs)" || fail \
+    "first launch-state manifest runs is missing, ambiguous, or malformed"
 [[ -n "$pid_one" && -n "$runs_one" ]] || fail "first launch-state manifest is incomplete"
 [[ "$pid_one" == "$EXPECTED_PID" ]] || fail \
     "launch agent PID is '$pid_one', expected '$EXPECTED_PID'"
@@ -457,10 +547,10 @@ while (( sample < STABILITY_SAMPLES )); do
     /bin/sleep "$STABILITY_SAMPLE_DELAY"
     manifest_two="$(capture_state "$state_two")" || fail \
         "continuous launch-state validation failed at sample $sample"
-    pid_two="$(print -r -- "$manifest_two" \
-        | /usr/bin/awk -F= '$1 == "pid" {print $2; exit}')"
-    runs_two="$(print -r -- "$manifest_two" \
-        | /usr/bin/awk -F= '$1 == "runs" {print $2; exit}')"
+    pid_two="$(print -r -- "$manifest_two" | parse_manifest_unsigned_value pid)" || fail \
+        "continuous launch-state manifest PID is missing, ambiguous, or malformed"
+    runs_two="$(print -r -- "$manifest_two" | parse_manifest_unsigned_value runs)" || fail \
+        "continuous launch-state manifest runs is missing, ambiguous, or malformed"
     [[ "$pid_two" == "$pid_one" ]] || fail \
         "PID changed during the continuous throttle-interval proof"
     [[ "$runs_two" == "$runs_one" && "$runs_two" == "$EXPECTED_RUNS" ]] || fail \

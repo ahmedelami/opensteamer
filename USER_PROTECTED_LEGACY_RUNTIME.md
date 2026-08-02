@@ -1,16 +1,17 @@
 # User-protected legacy AudioStreamer runtime
 
-Status: **VERSION 16 FULLY ROLLED BACK; VERSION 17 REVIEW/PREFLIGHT ONLY; LEGACY AND IPHONE REMAIN PROTECTED**\
+Status: **VERSION 17 FULLY ROLLED BACK; VERSION 18 REVIEW/PREFLIGHT ONLY; LEGACY AND IPHONE REMAIN PROTECTED**\
 Original preservation direction: **2026-07-25**\
 Mac-only migration authorization recorded: **2026-07-30/31**\
 Version-15 retry authorization recorded: **2026-08-02**\
-Version-16 retry authorization recorded and consumed: **2026-08-02**
+Version-16 retry authorization recorded and consumed: **2026-08-02**\
+Version-17 retry authorization recorded and consumed: **2026-08-02**
 
 The user authorized guarded Mac-only cutovers from the running legacy host to
-the validated opensteamer host. Versions 15 and 16 both fully rolled back to the
-untouched legacy host. The user explicitly authorized the guarded version-16
+the validated opensteamer host. Versions 15, 16, and 17 all fully rolled back to
+the untouched legacy host. The user explicitly authorized the guarded version-17
 Mac-only retry on August 2, 2026; that authorization was consumed by the
-version-16 attempt described below. Version 17 is a review and
+version-17 attempt described below. Version 18 is a review and
 read-only-preflight design only. A further cutover attempt has not been
 authorized. The prior authorization does **not** permit moving, renaming,
 deleting, replacing, modifying, re-signing, quarantining, or installing over the
@@ -256,45 +257,62 @@ and the 2,218-byte deployment stderr SHA-256 is
 `b71cb31d6ff97ce941f65798ee357fcff8c9af922589b1a30d74dbe0071102c0`.
 No physical-iPhone operation occurred.
 
-Controller version 17 is a review and read-only-preflight design only. It may
-describe a further deterministic transaction only after byte-validating the
-complete version-16 MACL-verifier rollback in addition to every version-9
-through version-15 tombstone. The exact version-16 guard must pin its active
-pointer, journal, result, provenance, source/export, build and deployment
-records, legacy snapshot, rollback-reserve identity, staged and failed
-app/plist manifests, symlink targets, and separately anchored xattrs. The guard
-must distinguish the xattr-free staged app from the archived installed app's
-exact canonical root MACL.
+Controller version 17 created one deterministic transaction only after
+byte-validating the complete version-16 rollback and every version-9 through
+version-15 tombstone. It used source commit
+`bd23d6b7bf9328a383f1d6c8da152754b915eeb5` and tree
+`6b536450d997f14b356680c080328cbdced77e67`, built and installed the new host,
+and reached `NEW_PID_OBSERVED` with PID `93486`, runs `1`, log offset `1705`,
+and nonce
+`f69ef6518ac1c0fd57652c02fcc3284fc7a700708b9754a48f256dbb17f12450`.
+Both staged and canonical installed-runtime bundle checks passed, including the
+narrow root-MACL policy.
 
-Version 17's preflight must only inspect active-pointer state. It must not
-rename, publish, remove, repair, or otherwise mutate a pending, finalizing,
-linearized, active, malformed, or colliding pointer record. Pointer recovery is
-reserved for a separately authorized execution path. Readiness must match one
-exact structured log line containing the currently observed launch-generation
-PID and random lock nonce; a generic marker from a crashed KeepAlive generation
-is never reusable. Every readiness-log read, including the embedded deployment
-verifier's read, is byte-bounded and deadline-aware. Forward and committed
-recovery each create one absolute 180-second `READY` deadline before marker
-observation and pass only its remainder through the marker wait, pinned
-verifier, verifier revalidation, output publication, and final acceptance
-checks. Nested helpers may not manufacture fresh budgets.
-Final generation acceptance also proves that the expected PID remains the sole
-canonical lock holder. The read-only preflight validates every absolute system
-command required by the deployment verifier before creating version-17 state.
+The deployment verifier then exited with status `141` before `READY_VERIFIED`.
+The exact cause was its `code_hash` pipeline under `set -euo pipefail`:
+`codesign -dv --verbose=4 ... 2>&1 | awk -F= '$1 == "CDHash" {print
+tolower($2); exit}'`. The successful early `awk` exit closed its input while
+`codesign` still had metadata to write, so `codesign` received `SIGPIPE`
+(signal 13) and zsh reported `128 + 13 = 141`. Read-only reproduction against
+the exact retained staged app produced pipeline statuses `141 0`. The eight
+immediately preceding `diff` directory-loop diagnostics were noise: the exact
+retained staged/failed tree comparison itself returned zero.
 
-The installed-runtime verifier accepts an xattr-free app or limits its sole
-exception to the exact canonical path `/Applications/opensteamer Host.app`, the
-bundle root only, the sole name `com.apple.macl`, and exactly 72 NUL bytes. The
-staged/export bundle must remain xattr-free. A MACL on any nested entry, any
-additional name, any different length or payload, or any noncanonical
-installation path fails closed. The exception never permits stripping or
-rewriting MACL and never relaxes byte, manifest, code-signature, designated-
-requirement, or live-process verification.
-Recursive xattr inspection includes symbolic-link objects, pins the canonical
-app-root device/inode, and repeats the complete policy after code-signature and
-designated-requirement verification.
-Version 17 preserves the 2 GiB pre-attempt gate, 1 GiB post-build gate, and
-8 MiB reserve. No version-17 cutover is authorized.
+Version 17 then completed the exact full rollback through `ROLLBACK_STARTED` in
+`FullRestore` mode, `NEW_STOPPED`, `NEW_DESTINATIONS_CLEARED`,
+`LEGACY_REENABLED`, `LEGACY_BOOTSTRAPPED`, `LEGACY_RECOVERED`, and
+`ROLLED_BACK`. The new app, plist, and service are absent. The exact untouched
+legacy host is again the sole host and canonical shared-lock owner as PID
+`95038`, with its reviewed arguments, hashes, signature, and enabled label. The
+consumed version-17 authorization grants no further attempt. Its pointer and
+evidence are retained permanently at
+`/Users/ahmed/Library/Application Support/opensteamer/active-migration-v17` and
+`/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v17-after-v16-1785637636-18044`.
+The 105-byte pointer SHA-256 is
+`c67386bd19193e913f7116cc179ec44e1768ef077103f51a897e0774324f765a`;
+the 7,075-byte, 20-line journal SHA-256 is
+`9f66fbd1aff49313ce1528d25290dbb032f720fc79c2e04c509ae230704151d1`;
+deployment stdout is exactly empty, and the 4,546-byte deployment stderr
+SHA-256 is
+`11a704463fb667082b2e50bf5877a24d728c0ee7e3b0a48d7686224091262254`.
+No physical-iPhone operation occurred.
+
+Controller version 18 is a review and inspection-only-preflight design. Its new
+exact ninth historical guard pins the complete version-17 pointer, journal,
+result, provenance, source/export, build and deployment records, legacy
+snapshot, rollback-reserve inode, staged and failed app/plist manifests,
+symlink targets, and separately anchored xattrs, while preserving every older
+guard. It revalidates the v17 tombstone around current active-pointer
+publication and immediately before the legacy stop and new-host bootstrap
+boundaries. Its preflight must only inspect pointer state, validate all version-9
+through version-17 tombstones and the sole live legacy host, and prove the
+deterministic version-18 evidence path absent. It must report exactly
+`PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17 legacy=sole-ready v18=absent`.
+Version 18 preserves the strict staged-bundle policy and the sole canonical
+installed-runtime exception for a root-only 72-NUL-byte `com.apple.macl`.
+Version 18 retains the 2 GiB pre-attempt gate, 1 GiB post-build gate, 8 MiB
+reserve, and one absolute 180-second readiness deadline. No version-18 cutover
+is authorized; only its read-only preflight may be reviewed or run.
 
 ## Protected iPhone client
 
