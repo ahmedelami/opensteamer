@@ -1,11 +1,12 @@
 # Guarded side-by-side Mac host migration
 
-The user authorized this **Mac-only** migration on July 30/31, 2026. The legacy
+The user authorized this **Mac-only** migration on July 30/31, 2026 and
+explicitly authorized the guarded version-15 retry on August 2, 2026. The legacy
 app and legacy LaunchAgent plist remain byte-for-byte at their existing paths as
 rollback sources. The authorization does not extend to a physical iPhone,
 TestFlight, pairing reset, or cleanup of recovery/evidence artifacts. Version 14
-fully rolled back; this document records preparation for version 15, but does
-not authorize or claim execution of another cutover attempt.
+fully rolled back. Version 15 is authorized but has not yet crossed the cutover
+boundary.
 
 ## Transaction model
 
@@ -110,7 +111,10 @@ unchanged version-9 through version-13 tombstones and a fresh proof of the exact
 sole live legacy host. It replaces the two invalid verifier paths with
 `/usr/bin/cmp` and `/bin/dd` and makes the isolated command-path self-test part
 of the pre-stop verifier gate. This describes a guarded retry contract only;
-version 15 has not crossed the cutover boundary or been authorized to do so.
+version 15 has been authorized but has not crossed the cutover boundary. A cold
+deep-signature verification on this Mac was measured at 20.35 seconds, so all
+legacy-readiness paths use the controller's bounded 60-second ordinary-command
+budget instead of the inadequate 15-second budget.
 
 Every durable state transition is appended to and fsynced in a per-attempt
 journal. A fixed fsynced active-transaction record points to the attempt. A
@@ -295,8 +299,8 @@ state, and the production lock namespace before it can run any test command.
 
 ## Invocation
 
-The execution form below is retained for operator reference only. It must not be
-run for version 15 unless the user separately authorizes another cutover attempt:
+The execution form below is authorized for the single guarded version-15 retry
+recorded above:
 
 ```sh
 /bin/sh macOS/scripts/migrate-opensteamer-host.sh \

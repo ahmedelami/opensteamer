@@ -1,14 +1,14 @@
 # User-protected legacy AudioStreamer runtime
 
-Status: **VERSION 14 FULLY ROLLED BACK; VERSION 15 REVIEW/PREFLIGHT ONLY; LEGACY AND IPHONE REMAIN PROTECTED**\
+Status: **VERSION 14 FULLY ROLLED BACK; VERSION 15 MAC-ONLY RETRY AUTHORIZED; LEGACY AND IPHONE REMAIN PROTECTED**\
 Original preservation direction: **2026-07-25**\
-Mac-only migration authorization recorded: **2026-07-30/31**
+Mac-only migration authorization recorded: **2026-07-30/31**\
+Version-15 retry authorization recorded: **2026-08-02**
 
 The user authorized one guarded Mac-only cutover from the running legacy host to
 the validated opensteamer host. Version 14 fully rolled back to the untouched
-legacy host. The current version-15 work is limited to review, tests, and
-read-only preflight; this document does not authorize execution of another
-cutover attempt. The original authorization does **not** permit moving, renaming,
+legacy host. The user explicitly authorized one guarded version-15 Mac-only
+retry on August 2, 2026. The authorization does **not** permit moving, renaming,
 deleting, replacing, modifying, re-signing, quarantining, or installing over the
 legacy Mac app or plist. It also does not authorize any physical-iPhone operation.
 
@@ -181,8 +181,11 @@ The corrected verifier uses `/usr/bin/cmp` and `/bin/dd`; before the legacy-stop
 boundary, its isolated embedded-byte zsh self-test verifies the complete declared
 absolute command-path set is present as regular, non-symlink, executable files.
 Version 15 preserves the 2 GiB pre-attempt gate, 1 GiB post-build gate, 8 MiB
-reserve, and 180-second deployment deadline. Version 15 has not been authorized
-to execute and has not crossed the cutover boundary.
+reserve, and 180-second deployment deadline. A cold deep-signature verification
+on this Mac was measured at 20.35 seconds, so every legacy-readiness path now
+uses the bounded 60-second ordinary-command budget rather than the insufficient
+15-second budget. Version 15 is authorized to execute once and has not crossed
+the cutover boundary.
 
 ## Protected iPhone client
 

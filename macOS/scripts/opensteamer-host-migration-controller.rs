@@ -1955,6 +1955,7 @@ impl CommandOutput {
 }
 
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+const LEGACY_READINESS_TIMEOUT: Duration = DEFAULT_COMMAND_TIMEOUT;
 const BUILD_COMMAND_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const DEPLOYMENT_VERIFIER_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 const MINIMUM_FRESH_RETRY_AVAILABLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -3019,7 +3020,7 @@ fn validate_prior_v9_prestop_retry(private_root: &PinnedDirectory) -> Result<Pri
         }
     }
 
-    let deadline = deadline_after(Duration::from_secs(15))?;
+    let deadline = deadline_after(LEGACY_READINESS_TIMEOUT)?;
     require_new_absent()?;
     verify_legacy_static_until(deadline)?;
     verify_legacy_disabled_until(false, deadline)?;
@@ -3565,7 +3566,7 @@ fn validate_prior_v10_rolledback_retry(
         }
     }
 
-    let deadline = deadline_after(Duration::from_secs(15))?;
+    let deadline = deadline_after(LEGACY_READINESS_TIMEOUT)?;
     require_new_absent()?;
     verify_legacy_static_until(deadline)?;
     verify_legacy_disabled_until(false, deadline)?;
@@ -4178,7 +4179,7 @@ fn validate_prior_v11_rolledback_retry(
         }
     }
 
-    let deadline = deadline_after(Duration::from_secs(15))?;
+    let deadline = deadline_after(LEGACY_READINESS_TIMEOUT)?;
     require_new_absent()?;
     verify_legacy_static_until(deadline)?;
     verify_legacy_disabled_until(false, deadline)?;
@@ -4762,7 +4763,7 @@ fn validate_prior_v12_rolledback_retry(
         }
     }
 
-    let deadline = deadline_after(Duration::from_secs(15))?;
+    let deadline = deadline_after(LEGACY_READINESS_TIMEOUT)?;
     require_new_absent()?;
     verify_legacy_static_until(deadline)?;
     verify_legacy_disabled_until(false, deadline)?;
@@ -5458,7 +5459,7 @@ fn validate_prior_v13_rolledback_retry(
         }
     }
 
-    let deadline = deadline_after(Duration::from_secs(15))?;
+    let deadline = deadline_after(LEGACY_READINESS_TIMEOUT)?;
     require_new_absent()?;
     verify_legacy_static_until(deadline)?;
     verify_legacy_disabled_until(false, deadline)?;
@@ -6130,7 +6131,7 @@ fn validate_prior_v14_rolledback_retry(
     };
     guard.revalidate(private_root)?;
 
-    let deadline = deadline_after(Duration::from_secs(15))?;
+    let deadline = deadline_after(LEGACY_READINESS_TIMEOUT)?;
     require_new_absent()?;
     verify_legacy_static_until(deadline)?;
     verify_legacy_disabled_until(false, deadline)?;
@@ -6223,7 +6224,7 @@ fn recover_active(repo: PathBuf, private_root: &PinnedDirectory) -> Result<()> {
     let evidence = read_active(private_root)?;
     let layout = Layout::open(repo, evidence)?;
     if !entry_exists(&layout.journal)? {
-        let readiness_deadline = deadline_after(Duration::from_secs(15))?;
+        let readiness_deadline = deadline_after(LEGACY_READINESS_TIMEOUT)?;
         require_new_absent()?;
         verify_legacy_static_until(readiness_deadline)?;
         verify_legacy_disabled_until(false, readiness_deadline)?;
@@ -8340,7 +8341,7 @@ impl RollbackBackend for RealRollbackBackend<'_> {
             }
             RollbackOperation::VerifyLegacy => match mode {
                 RollbackMode::BeforeLegacyStop | RollbackMode::LegacyStillRunning => {
-                    wait_for_exact_legacy_readiness(Duration::from_secs(15))
+                    wait_for_exact_legacy_readiness(LEGACY_READINESS_TIMEOUT)
                 }
                 RollbackMode::FullRestore => verify_recovered_legacy(self.layout),
             },
@@ -8710,7 +8711,7 @@ fn record_secondary_warning(layout: &Layout, label: &str, message: &str) {
 }
 
 fn verify_recovered_legacy(layout: &Layout) -> Result<()> {
-    let deadline = deadline_after(Duration::from_secs(15))?;
+    let deadline = deadline_after(LEGACY_READINESS_TIMEOUT)?;
     verify_legacy_static_against_snapshot_until(layout, deadline)?;
     verify_legacy_disabled_until(false, deadline)?;
     if service_state_until(NEW_LABEL, deadline)? != ServiceState::Absent {

@@ -112,7 +112,7 @@ final class MacHostMigrationContractTests: XCTestCase {
         )
         XCTAssertTrue(
             source.contains(
-                "EXPECTED_CONTROLLER_BINARY_SHA256='ce4622b1792957b23d69681d2af5c190ca73e1343f62d476dd33872c314efc2e'"
+                "EXPECTED_CONTROLLER_BINARY_SHA256='c1bfb4ced74e87544d0526c747168d09c7b9146b69257f1da409e6980f517367'"
             )
         )
         XCTAssertTrue(source.contains("fresh controller binary differs from the reviewed reproducible postimage"))
@@ -242,6 +242,7 @@ final class MacHostMigrationContractTests: XCTestCase {
             "set_pipe_nonblocking",
             "drain_nonblocking",
             "const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60)",
+            "const LEGACY_READINESS_TIMEOUT: Duration = DEFAULT_COMMAND_TIMEOUT",
             "const DEPLOYMENT_VERIFIER_TIMEOUT: Duration = Duration::from_secs(3 * 60)",
             "wait_for_exact_legacy_readiness_until",
             "revalidate_commit_fields",
@@ -574,6 +575,10 @@ final class MacHostMigrationContractTests: XCTestCase {
             "The production deployment oracle is not wired to its dedicated bounded deadline."
         )
         XCTAssertFalse(controller.contains("Path::new(\"/bin/chflags\")"))
+        XCTAssertFalse(
+            controller.contains("Duration::from_secs(15)"),
+            "Cold deep-signature validation has exceeded 15 seconds on the deployment Mac."
+        )
         XCTAssertFalse(controller.contains("fs::rename(&install_hold, NEW_APP)"))
         XCTAssertFalse(controller.contains("fs::rename(&plist_hold, NEW_PLIST)"))
         XCTAssertFalse(controller.contains("fs::rename(LEGACY_APP"))
