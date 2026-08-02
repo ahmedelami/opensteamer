@@ -209,6 +209,48 @@ parse_manifest_unsigned_value() {
     '
 }
 
+parse_process_start_identity() {
+    # `ps -o lstart=` pads its single record with trailing spaces on macOS. The Rust controller
+    # canonicalizes that output with `str::trim`, so consume the complete stream and apply the
+    # same edge-whitespace normalization while preserving the double space before a one-digit day.
+    /usr/bin/awk '
+        function valid_process_start(value, weekday, month, day, hour, minute, second, year) {
+            if (length(value) != 24) return 0
+            weekday=substr(value, 1, 3)
+            month=substr(value, 5, 3)
+            day=substr(value, 9, 2)
+            hour=substr(value, 12, 2)
+            minute=substr(value, 15, 2)
+            second=substr(value, 18, 2)
+            year=substr(value, 21, 4)
+            if (substr(value, 4, 1) != " " || substr(value, 8, 1) != " " ||
+                substr(value, 11, 1) != " " || substr(value, 14, 1) != ":" ||
+                substr(value, 17, 1) != ":" || substr(value, 20, 1) != " ") return 0
+            if (weekday !~ /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)$/ ||
+                month !~ /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/) return 0
+            if (day !~ /^( [1-9]|[12][0-9]|3[01])$/) return 0
+            if (hour !~ /^[0-9][0-9]$/ || hour + 0 > 23 ||
+                minute !~ /^[0-9][0-9]$/ || minute + 0 > 59 ||
+                second !~ /^[0-9][0-9]$/ || second + 0 > 60 ||
+                year !~ /^[0-9][0-9][0-9][0-9]$/) return 0
+            return 1
+        }
+        {
+            value=$0
+            sub(/^[[:space:]]+/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            if (value == "") next
+            records += 1
+            if (!valid_process_start(value)) malformed=1
+            parsed=value
+        }
+        END {
+            if (records != 1 || malformed) exit 65
+            print parsed
+        }
+    '
+}
+
 self_test_disabled_parser() {
     local label="$LEGACY_LABEL" output
     output="$(parse_disabled_override $'disabled services = {\n    "other" => enabled\n}' "$label")" || fail \
@@ -232,7 +274,7 @@ self_test_disabled_parser() {
 
 self_test_zsh_runtime() {
     local required_command marker large_suffix padding=""
-    local expected_hash uppercase_hash parsed_value pipeline_exit
+    local expected_hash uppercase_hash parsed_value pipeline_exit expected_start
     for required_command in "${REQUIRED_SYSTEM_COMMANDS[@]}"; do
         [[ -f "$required_command" && ! -L "$required_command" && -x "$required_command" ]] || fail \
             "required system command is unavailable or redirected: $required_command"
@@ -297,6 +339,32 @@ self_test_zsh_runtime() {
         "manifest parser rejected a valid runs value"
     [[ "$parsed_value" == 17 ]] || fail \
         "manifest parser returned '$parsed_value' for a valid runs value"
+
+    expected_start="Sun Aug  2 16:35:42 2026"
+    parsed_value="$(/usr/bin/awk -v start="$expected_start" 'BEGIN {
+        print "    " start "    "
+        for (line=0; line < 65536; line++) print "    "
+    }' | parse_process_start_identity)" || {
+        pipeline_exit=$?
+        fail "full-consuming process-start parser rejected padded output with pipeline status $pipeline_exit"
+    }
+    [[ "$parsed_value" == "$expected_start" ]] || fail \
+        "process-start parser returned '$parsed_value' for padded macOS ps output"
+    print -r -- $'Sun Aug  2 16:35:42 2026    \nSun Aug  2 16:35:43 2026    ' \
+        | parse_process_start_identity >/dev/null 2>&1 && fail \
+        "process-start parser accepted multiple nonempty records"
+    print -r -- $'    \n\t' | parse_process_start_identity >/dev/null 2>&1 && fail \
+        "process-start parser accepted a missing record"
+    print -r -- "not-a-process-start" | parse_process_start_identity >/dev/null 2>&1 && fail \
+        "process-start parser accepted a malformed record"
+    print -r -- "Sun Aug  2 24:35:42 2026" \
+        | parse_process_start_identity >/dev/null 2>&1 && fail \
+        "process-start parser accepted an out-of-range record"
+    if parsed_value="$(/bin/zsh -c \
+        'print -r -- "Sun Aug  2 16:35:42 2026    "; exit 42' \
+        | parse_process_start_identity)"; then
+        fail "process-start parser pipeline accepted output from a failed producer"
+    fi
     print -r -- "SELF_TEST_OK zsh-runtime"
 }
 
@@ -340,6 +408,10 @@ esac
 [[ "$EXPECTED_RUNS" != 0 ]] || fail "expected launchd runs must be positive"
 [[ -n "$EXPECTED_PROCESS_START" && "$EXPECTED_PROCESS_START" != *$'\n'* \
     && "$EXPECTED_PROCESS_START" != *$'\r'* ]] || fail "expected process start identity is malformed"
+normalized_expected_process_start="$(print -r -- "$EXPECTED_PROCESS_START" \
+    | parse_process_start_identity)" || fail "expected process start identity is malformed"
+[[ "$normalized_expected_process_start" == "$EXPECTED_PROCESS_START" ]] || fail \
+    "expected process start identity is not canonically normalized"
 print -r -- "$EXPECTED_GENERATION_NONCE" | /usr/bin/grep -Eq '^[0-9a-f]{64}$' || fail \
     "expected generation nonce must be 64 lowercase hexadecimal characters"
 readonly EXPECTED_ONLINE_MARKER="$ONLINE_MARKER_PREFIX pid=$EXPECTED_PID nonce=$EXPECTED_GENERATION_NONCE"
@@ -486,7 +558,8 @@ LOCK_PROBE_OUTPUT="$("$CONTROLLER_BINARY" --probe-lock "$LOCK_DIRECTORY" "$LOCK_
 live_one="$(run_live_process_verifier "$pid_one" "$EXPECTED_EXECUTABLE" \
     "$build_executable_hash" "$EXPECTED_IDENTIFIER" "$EXPECTED_TEAM_ID" "$EXPECTED_FRAMEWORK_EXECUTABLE")" \
     || fail "first live-process verification failed"
-start_one="$(/bin/ps -p "$pid_one" -o lstart= 2>/dev/null)" || fail "could not read process start identity"
+start_one="$(/bin/ps -p "$pid_one" -o lstart= 2>/dev/null \
+    | parse_process_start_identity)" || fail "could not read process start identity"
 [[ "$start_one" == "$EXPECTED_PROCESS_START" ]] || fail \
     "process start identity differs from the controller-observed generation"
 
@@ -555,7 +628,10 @@ while (( sample < STABILITY_SAMPLES )); do
         "PID changed during the continuous throttle-interval proof"
     [[ "$runs_two" == "$runs_one" && "$runs_two" == "$EXPECTED_RUNS" ]] || fail \
         "launch count changed during the continuous throttle-interval proof"
-    [[ "$(/bin/ps -p "$pid_two" -o lstart= 2>/dev/null)" == "$start_one" ]] || fail \
+    start_two="$(/bin/ps -p "$pid_two" -o lstart= 2>/dev/null \
+        | parse_process_start_identity)" || fail \
+        "could not read PID start identity during the continuous proof"
+    [[ "$start_two" == "$start_one" ]] || fail \
         "PID start identity changed during the continuous proof"
     validate_generation_record
     require_service_absent "$LEGACY_LABEL"

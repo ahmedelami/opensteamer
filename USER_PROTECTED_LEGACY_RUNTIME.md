@@ -1,17 +1,18 @@
 # User-protected legacy AudioStreamer runtime
 
-Status: **VERSION 17 FULLY ROLLED BACK; VERSION 18 REVIEW/PREFLIGHT ONLY; LEGACY AND IPHONE REMAIN PROTECTED**\
+Status: **VERSION 18 FULLY ROLLED BACK; VERSION 19 REVIEW/PREFLIGHT ONLY; LEGACY AND IPHONE REMAIN PROTECTED**\
 Original preservation direction: **2026-07-25**\
 Mac-only migration authorization recorded: **2026-07-30/31**\
 Version-15 retry authorization recorded: **2026-08-02**\
 Version-16 retry authorization recorded and consumed: **2026-08-02**\
-Version-17 retry authorization recorded and consumed: **2026-08-02**
+Version-17 retry authorization recorded and consumed: **2026-08-02**\
+Version-18 retry authorization recorded and consumed: **2026-08-02**
 
 The user authorized guarded Mac-only cutovers from the running legacy host to
-the validated opensteamer host. Versions 15, 16, and 17 all fully rolled back to
-the untouched legacy host. The user explicitly authorized the guarded version-17
-Mac-only retry on August 2, 2026; that authorization was consumed by the
-version-17 attempt described below. Version 18 is a review and
+the validated opensteamer host. Versions 15, 16, 17, and 18 all fully rolled
+back to the untouched legacy host. The user explicitly authorized the guarded
+version-18 Mac-only retry on August 2, 2026; that authorization was consumed by
+the version-18 attempt described below. Version 19 is a review and
 read-only-preflight design only. A further cutover attempt has not been
 authorized. The prior authorization does **not** permit moving, renaming,
 deleting, replacing, modifying, re-signing, quarantining, or installing over the
@@ -297,22 +298,67 @@ SHA-256 is
 `11a704463fb667082b2e50bf5877a24d728c0ee7e3b0a48d7686224091262254`.
 No physical-iPhone operation occurred.
 
-Controller version 18 is a review and inspection-only-preflight design. Its new
-exact ninth historical guard pins the complete version-17 pointer, journal,
-result, provenance, source/export, build and deployment records, legacy
-snapshot, rollback-reserve inode, staged and failed app/plist manifests,
-symlink targets, and separately anchored xattrs, while preserving every older
-guard. It revalidates the v17 tombstone around current active-pointer
-publication and immediately before the legacy stop and new-host bootstrap
-boundaries. Its preflight must only inspect pointer state, validate all version-9
-through version-17 tombstones and the sole live legacy host, and prove the
-deterministic version-18 evidence path absent. It must report exactly
-`PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17 legacy=sole-ready v18=absent`.
-Version 18 preserves the strict staged-bundle policy and the sole canonical
-installed-runtime exception for a root-only 72-NUL-byte `com.apple.macl`.
-Version 18 retains the 2 GiB pre-attempt gate, 1 GiB post-build gate, 8 MiB
-reserve, and one absolute 180-second readiness deadline. No version-18 cutover
-is authorized; only its read-only preflight may be reviewed or run.
+Controller version 18 created one deterministic transaction only after
+byte-validating the complete version-17 rollback and every version-9 through
+version-16 tombstone. The fresh version-18 authorization was consumed on August
+2, 2026. It used source commit
+`ff02ca6ba192b27fd1cd22e807c8d42900084f74` and tree
+`fb56a78b685453901ec0ff8af2fccd446d63ea18`, built and installed the new host,
+and reached `NEW_PID_OBSERVED` with PID `53809`, runs `1`, prelaunch log offset
+`2127`, and generation nonce
+`511ac5970b1235bd964bfffb97cf5dd66d975cdfccbfbd8992eb7d76ec5f7aad`.
+The exact generation-bound online marker, signatures, installed-app policy, and
+canonical shared-lock proof passed.
+
+The deployment verifier then rejected the same live generation before
+`READY_VERIFIED` with
+`process start identity differs from the controller-observed generation`. The
+controller's Rust `str::trim` had removed the four trailing padding spaces from
+the fixed-width `/bin/ps -o lstart=` record, while zsh command substitution
+preserved those spaces. The timestamp itself was unchanged; the verifier was
+comparing two different edge-whitespace representations. Internal calendar
+padding, including the double space before a single-digit day in
+`Sun Aug  2 16:35:42 2026`, is semantically significant and must remain intact.
+
+Version 18 then completed the exact full rollback through `ROLLBACK_STARTED` in
+`FullRestore` mode, `NEW_STOPPED`, `NEW_DESTINATIONS_CLEARED`,
+`LEGACY_REENABLED`, `LEGACY_BOOTSTRAPPED`, `LEGACY_RECOVERED`, and
+`ROLLED_BACK`. The new app, plist, and service are absent. The exact untouched
+legacy host is again the sole host and canonical shared-lock owner as PID
+`55688`, with its reviewed arguments, hashes, signature, and enabled label. The
+consumed version-18 authorization grants no further attempt. Its retained
+pointer and evidence are
+`/Users/ahmed/Library/Application Support/opensteamer/active-migration-v18` and
+`/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v18-after-v17-1785637636-18044`.
+The 105-byte pointer SHA-256 is
+`3fd6a39f84d620a203fd75f306184356bdbfe9546d6fa45d6d19f91cb4976144`;
+the 7,956-byte, 20-line journal SHA-256 is
+`bd28126eaae9112af24eccc75f8c18fcb5b43da2e0a4eda3f40169bbed12e55d`;
+the 93-byte result SHA-256 is
+`434dea611969ea91d8b873bffe42e4a149f329641fe5111e898b86d66fc3d301`;
+and the 375-byte provenance SHA-256 is
+`b727f2a085d15722096c999d2e169ae966eb63db6eeef14a7a290808d390f261`.
+The 6,778,880-byte source archive SHA-256 is
+`ea8ec3d76daa2effb4e6a955240adcc0acd9b5c24b083365218657ebb4a09a13`.
+Deployment stdout is exactly empty with SHA-256
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`;
+the 4,884-byte deployment stderr SHA-256 is
+`59a06b517d0adb1223bd725fa323ab837d52e2dcd925e6b282941ff9d1f8acf1`.
+No physical-iPhone or TestFlight operation occurred.
+
+Controller version 19 is review and inspection-only-preflight code. Its exact
+tenth historical guard pins that complete version-18 rollback while preserving
+and revalidating every version-9 through version-17 guard. The process-start
+repair uses one canonical, full-consuming parser for every `ps -o lstart=`
+read: it trims only leading and trailing whitespace, preserves internal double
+day padding, and rejects missing, duplicate, empty-only, or malformed records.
+The read-only preflight may only inspect pointer state, validate all version-9
+through version-18 tombstones and the sole live legacy host, and prove the
+deterministic version-19 evidence path absent. It must report exactly
+`PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18 legacy=sole-ready v19=absent`.
+Version 19 retains the reviewed disk, reserve, signing, installed-MACL, lock,
+and deadline policies. No version-19 cutover is authorized; only its read-only
+preflight may be reviewed or run.
 
 ## Protected iPhone client
 

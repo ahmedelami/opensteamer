@@ -1,13 +1,13 @@
 # Guarded side-by-side Mac host migration
 
 The user authorized this **Mac-only** migration on July 30/31, 2026 and
-explicitly authorized guarded version-15, version-16, and version-17 retries on
-August 2, 2026. All three retries fully rolled back. The version-17 authorization
-was consumed.
+explicitly authorized guarded version-15, version-16, version-17, and version-18
+retries on August 2, 2026. All four retries fully rolled back. The version-18
+authorization was consumed.
 The legacy app and legacy LaunchAgent plist remain
 byte-for-byte at their existing paths as rollback sources. The authorization
 does not extend to a physical iPhone, TestFlight, pairing reset, or cleanup of
-recovery/evidence artifacts. Version 18 is a reviewed, read-only-preflight
+recovery/evidence artifacts. Version 19 is a reviewed, read-only-preflight
 design; a further cutover attempt has not been authorized.
 
 ## Transaction model
@@ -26,9 +26,9 @@ persistent legacy disable, legacy shutdown, lock handoff, side-by-side
 installation, bootstrap, readiness proof, commit, rollback, and crash recovery. Exactly one top-level controller decides process exit;
 rollback-reachable helpers return errors.
 
-The current controller owns the version-18 active-pointer and journal namespace.
-The retained version-9 through version-17 pointers are never moved, replaced, or
-deleted. If separately authorized, version 18 can proceed only when version 9 is
+The current controller owns the version-19 active-pointer and journal namespace.
+The retained version-9 through version-18 pointers are never moved, replaced, or
+deleted. If separately authorized, version 19 can proceed only when version 9 is
 byte-for-byte the reviewed `rolled-back-before-stop` outcome from the August 1
 `/bin/chflags` path failure,
 version 10 is byte-for-byte the reviewed full-restore rollback described below,
@@ -39,6 +39,7 @@ version 12 is byte-for-byte the reviewed pre-stop disk-headroom rollback, versio
 version 15 is byte-for-byte the reviewed fast-marker-checkpoint rollback below,
 version 16 is byte-for-byte the reviewed installed-MACL-verifier rollback below,
 version 17 is byte-for-byte the reviewed status-141 rollback below,
+version 18 is byte-for-byte the reviewed process-start-padding rollback below,
 all older pointer residues and hidden cutover paths are absent, and the exact
 untouched legacy service is re-proved live. The corrected controller invokes the
 existing system tools at their actual absolute paths, including
@@ -62,7 +63,7 @@ the pinned directory across every reopen and rename. Recovery from
 path, active-pointer bytes/hash, journal hash and history, provenance
 commit/tree, failure text, hidden-install layout, untouched legacy snapshot,
 disabled/absent legacy service, absent new service/destinations/processes, and
-acquirable shared lock. Version 18 treats any new `CRITICAL_FAILURE` as
+acquirable shared lock. Version 19 treats any new `CRITICAL_FAILURE` as
 fail-closed rather than reusing that historical recovery exception.
 
 Version 11 built, signed, installed, and bootstrapped the new host, then reached
@@ -218,24 +219,69 @@ SHA-256 is
 `11a704463fb667082b2e50bf5877a24d728c0ee7e3b0a48d7686224091262254`.
 No iPhone was touched.
 
-The version-18 design adds an exact ninth historical guard for that complete
-version-17 outcome while preserving every earlier guard. It pins the v17 active
-pointer, journal, result, provenance, source archive/export, build and
+The version-18 design added an exact ninth historical guard for that complete
+version-17 outcome while preserving every earlier guard. It pinned the v17
+active pointer, journal, result, provenance, source archive/export, build and
 deployment records, legacy snapshot, rollback-reserve inode, staged and failed
-app/plist manifests, symlink targets, and separately anchored xattrs. It
-revalidates the v17 guard around version-18 active-pointer publication and
-immediately before legacy stop and new-host bootstrap. The status-141 repair
-must consume the complete `codesign` metadata stream before emitting one
-validated CDHash; no success-path parser may intentionally close that producer
-early.
+app/plist manifests, symlink targets, and separately anchored xattrs. It also
+repaired the status-141 path by consuming the complete `codesign` metadata
+stream before emitting one validated CDHash.
 
-Version 18 remains review and inspection-only-preflight code. Its preflight
-acquires only the inspection transaction lock, validates all nine historical
-tombstones and the sole live legacy host, and proves the deterministic v18
+The authorized version-18 transaction used source commit
+`ff02ca6ba192b27fd1cd22e807c8d42900084f74` and tree
+`fb56a78b685453901ec0ff8af2fccd446d63ea18`. It built, installed, and
+bootstrapped the new host and reached `NEW_PID_OBSERVED` with PID `53809`, runs
+`1`, prelaunch log offset `2127`, and nonce
+`511ac5970b1235bd964bfffb97cf5dd66d975cdfccbfbd8992eb7d76ec5f7aad`.
+The exact generation-bound online marker, staged and installed signatures,
+installed-app policy, and canonical shared-lock proof passed.
+
+The deployment verifier then failed before `READY_VERIFIED` with
+`process start identity differs from the controller-observed generation`.
+Rust's `str::trim` had removed four trailing padding spaces from the fixed-width
+`/bin/ps -o lstart=` output, while zsh command substitution retained those
+spaces. The timestamp was the same, but the two sides compared different
+edge-whitespace representations. Internal calendar padding such as the double
+space before the day in `Sun Aug  2 16:35:42 2026` must remain preserved.
+
+Version 18 completed exact `FullRestore` rollback through `NEW_STOPPED`,
+`NEW_DESTINATIONS_CLEARED`, `LEGACY_REENABLED`, `LEGACY_BOOTSTRAPPED`,
+`LEGACY_RECOVERED`, and `ROLLED_BACK`. The new app, plist, and service are
+absent. The untouched legacy host is again the sole host and canonical lock
+holder as PID `55688`, with exact arguments, hashes, signature, and enabled
+label. The consumed authorization grants no retry. The retained 105-byte
+`active-migration-v18` pointer SHA-256 is
+`3fd6a39f84d620a203fd75f306184356bdbfe9546d6fa45d6d19f91cb4976144`.
+The evidence directory is
+`migration-v18-after-v17-1785637636-18044`; its 7,956-byte, 20-line journal
+SHA-256 is
+`bd28126eaae9112af24eccc75f8c18fcb5b43da2e0a4eda3f40169bbed12e55d`.
+The 93-byte result SHA-256 is
+`434dea611969ea91d8b873bffe42e4a149f329641fe5111e898b86d66fc3d301`,
+the 375-byte provenance SHA-256 is
+`b727f2a085d15722096c999d2e169ae966eb63db6eeef14a7a290808d390f261`,
+and the 6,778,880-byte source archive SHA-256 is
+`ea8ec3d76daa2effb4e6a955240adcc0acd9b5c24b083365218657ebb4a09a13`.
+Deployment stdout is exactly empty; the 4,884-byte deployment stderr SHA-256 is
+`59a06b517d0adb1223bd725fa323ab837d52e2dcd925e6b282941ff9d1f8acf1`.
+No iPhone or TestFlight action occurred.
+
+The version-19 design adds an exact tenth historical guard for that complete
+version-18 rollback while preserving every earlier guard. It pins and
+revalidates the v18 pointer, complete evidence, and forbidden residues around
+active-pointer publication and every stop/bootstrap boundary. Its
+process-start repair feeds every `ps -o lstart=` read through one canonical,
+full-consuming parser. That parser trims only edge whitespace and preserves the internal double space
+used to pad a single-digit day while rejecting missing,
+duplicate, empty-only, or malformed records.
+
+Version 19 remains review and inspection-only-preflight code. Its preflight
+acquires only the inspection transaction lock, validates all ten historical
+tombstones and the sole live legacy host, and proves the deterministic v19
 evidence path absent without recovering or mutating pointer state. It reports
 exactly
-`PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17 legacy=sole-ready v18=absent`.
-No version-18 cutover is authorized. Ordinary legacy-readiness paths retain the
+`PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18 legacy=sole-ready v19=absent`.
+No version-19 cutover is authorized. Ordinary legacy-readiness paths retain the
 bounded 60-second command budget, and the deployment proof retains one absolute
 180-second deadline.
 Every durable state transition is appended to and fsynced in a per-attempt
@@ -245,12 +291,12 @@ post-commit verification or rolls back an uncommitted attempt. It never treats a
 stale lock file, journal, staged app, or partially installed destination as a
 reason to abandon recovery.
 
-The pinned launcher also exposes a read-only v18 preflight that compiles and
+The pinned launcher also exposes a read-only v19 preflight that compiles and
 attests the exact reviewed controller, acquires an inspection-only transaction
-lock without rewriting it, verifies all nine historical tombstones and the sole
+lock without rewriting it, verifies all ten historical tombstones and the sole
 live legacy host, validates the embedded
 deployment verifier's absolute command-path set, and proves the deterministic
-v18 evidence path is absent. Active-pointer inspection never invokes recovery or
+v19 evidence path is absent. Active-pointer inspection never invokes recovery or
 changes a pointer pathname, inode, bytes, or mode:
 
 ```sh
@@ -375,7 +421,7 @@ publication, and final acceptance checks all receive the same absolute
 Final generation acceptance also re-proves that the expected PID still solely
 holds the canonical advisory lock. The read-only retry preflight validates the
 absolute deployment-verifier command paths and their root-owned regular-file
-metadata before any version-18 evidence can be created.
+metadata before any version-19 evidence can be created.
 
 ## Rollback and recovery
 
@@ -404,12 +450,12 @@ generation-bound readiness proof, and then revalidates the same exact tombstone
 without removing it. A generation change after that proof is an ordinary
 committed lifecycle event. Pre-journal, failed, and rolled-back tombstones are
 also retained, and automatic reruns fail closed for manual inspection. The sole
-fresh-attempt exception is the narrowly encoded version-18 retry gate for the
-exact reviewed version-9 through version-17 failures described above. If
-separately authorized, it can create one deterministic version-18 evidence path
+fresh-attempt exception is the narrowly encoded version-19 retry gate for the
+exact reviewed version-9 through version-18 failures described above. If
+separately authorized, it can create one deterministic version-19 evidence path
 and never reuses or mutates any historical transaction.
 
-Before legacy can be disabled, version 18 physically preallocates and fsyncs an
+Before legacy can be disabled, version 19 physically preallocates and fsyncs an
 8 MiB owner-only rollback reserve, records its device/inode, and revalidates a
 minimum 1 GiB of free space after requiring at least 2 GiB before creating the
 fresh evidence tree. One absolute 180-second monotonic deadline bounds the whole
@@ -450,7 +496,7 @@ state, and the production lock namespace before it can run any test command.
 
 ## Invocation
 
-No version-18 execution is authorized. Only the read-only preflight form above
+No version-19 execution is authorized. Only the read-only preflight form above
 may be used during review. Do not pass the live execution flag, copy individual
 cutover commands out of the controller, or substitute a shared staged app. The
 script performs no iPhone operation.
