@@ -3,7 +3,7 @@
 set -euo pipefail
 umask 077
 
-readonly ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
+readonly ROOT_DIR="$(cd "$(/usr/bin/dirname "$0")/../.." && pwd -P)"
 readonly APP_DIR="/Applications/opensteamer Host.app"
 readonly EXPECTED_EXECUTABLE="$APP_DIR/Contents/MacOS/CaptureServer"
 readonly EXPECTED_FRAMEWORK="$APP_DIR/Contents/Frameworks/LiveKitWebRTC.framework"
@@ -33,6 +33,24 @@ readonly PINNED_LAUNCH_STATE_VERIFIER_SCRIPT="${OPENSTEAMER_PINNED_LAUNCH_STATE_
 readonly STABILITY_SECONDS=11
 readonly STABILITY_SAMPLES=44
 readonly STABILITY_SAMPLE_DELAY=0.25
+readonly -a REQUIRED_SYSTEM_COMMANDS=(
+    /bin/dd
+    /bin/kill
+    /bin/launchctl
+    /bin/ps
+    /bin/rm
+    /bin/sleep
+    /bin/zsh
+    /usr/bin/awk
+    /usr/bin/cmp
+    /usr/bin/codesign
+    /usr/bin/dirname
+    /usr/bin/diff
+    /usr/bin/grep
+    /usr/bin/mktemp
+    /usr/bin/shasum
+    /usr/bin/stat
+)
 
 fail() {
     print -u2 -- "opensteamer host deployment verification failed: $*"
@@ -157,6 +175,11 @@ self_test_disabled_parser() {
 }
 
 self_test_zsh_runtime() {
+    local required_command
+    for required_command in "${REQUIRED_SYSTEM_COMMANDS[@]}"; do
+        [[ -f "$required_command" && ! -L "$required_command" && -x "$required_command" ]] || fail \
+            "required system command is unavailable or redirected: $required_command"
+    done
     require_service_absent_with_command \
         "isolated-self-test" /bin/zsh -c \
         'print -u2 -- "Bad request."; print -u2 -- "Could not find service \"isolated-self-test\" in domain for user gui: $UID"; exit 113'
@@ -296,9 +319,9 @@ require_legacy_disabled
     "installed new LaunchAgent is not a real file"
 run_launch_state_verifier --verify-plist "$EXPECTED_EXECUTABLE" "$SOURCE_LAUNCH_AGENT" >/dev/null
 run_launch_state_verifier --verify-plist "$EXPECTED_EXECUTABLE" "$REVIEWED_LAUNCH_AGENT" >/dev/null
-/bin/cmp -s "$SOURCE_LAUNCH_AGENT" "$REVIEWED_LAUNCH_AGENT" || fail \
+/usr/bin/cmp -s "$SOURCE_LAUNCH_AGENT" "$REVIEWED_LAUNCH_AGENT" || fail \
     "reviewed LaunchAgent bytes differ from checked-in contract"
-/bin/cmp -s "$REVIEWED_LAUNCH_AGENT" "$INSTALLED_LAUNCH_AGENT" || fail \
+/usr/bin/cmp -s "$REVIEWED_LAUNCH_AGENT" "$INSTALLED_LAUNCH_AGENT" || fail \
     "installed LaunchAgent bytes differ from reviewed contract"
 run_bundle_verifier "$BUILD_APP_DIR" "$EXPECTED_TEAM_ID" "$DESIGNATED_REQUIREMENT_REFERENCE" >/dev/null
 run_bundle_verifier "$APP_DIR" "$EXPECTED_TEAM_ID" "$DESIGNATED_REQUIREMENT_REFERENCE" >/dev/null
@@ -391,7 +414,7 @@ log_inode="$(/usr/bin/stat -f '%i' "$ONLINE_LOG")" || fail "could not inspect on
 [[ "$log_device" == "$LOG_DEVICE" && "$log_inode" == "$LOG_INODE" ]] || fail \
     "online log inode differs from the pre-start checkpoint"
 [[ "$log_size" -ge "$LOG_OFFSET" ]] || fail "online log shrank below the pre-start offset"
-LOG_SUFFIX="$(/usr/bin/dd if="$ONLINE_LOG" bs=1 skip="$LOG_OFFSET" 2>/dev/null)" || fail \
+LOG_SUFFIX="$(/bin/dd if="$ONLINE_LOG" bs=1 skip="$LOG_OFFSET" 2>/dev/null)" || fail \
     "could not read post-start log suffix"
 [[ "$(/usr/bin/stat -f '%d:%i' "$ONLINE_LOG")" == "$LOG_DEVICE:$LOG_INODE" ]] || fail \
     "online log inode changed while reading readiness evidence"

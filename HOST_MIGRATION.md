@@ -3,7 +3,9 @@
 The user authorized this **Mac-only** migration on July 30/31, 2026. The legacy
 app and legacy LaunchAgent plist remain byte-for-byte at their existing paths as
 rollback sources. The authorization does not extend to a physical iPhone,
-TestFlight, pairing reset, or cleanup of recovery/evidence artifacts.
+TestFlight, pairing reset, or cleanup of recovery/evidence artifacts. Version 14
+fully rolled back; this document records preparation for version 15, but does
+not authorize or claim execution of another cutover attempt.
 
 ## Transaction model
 
@@ -21,18 +23,24 @@ persistent legacy disable, legacy shutdown, lock handoff, side-by-side
 installation, bootstrap, readiness proof, commit, rollback, and crash recovery. Exactly one top-level controller decides process exit;
 rollback-reachable helpers return errors.
 
-The current controller owns the version-14 active-pointer and journal namespace.
-The retained version-9 through version-13 pointers are never moved, replaced, or
-deleted. Version 14 proceeds only when version 9 is byte-for-byte the reviewed
-`rolled-back-before-stop` outcome from the August 1 `/bin/chflags` path failure,
+The current controller owns the version-15 active-pointer and journal namespace.
+The retained version-9 through version-14 pointers are never moved, replaced, or
+deleted. If separately authorized, version 15 can proceed only when version 9 is
+byte-for-byte the reviewed `rolled-back-before-stop` outcome from the August 1
+`/bin/chflags` path failure,
 version 10 is byte-for-byte the reviewed full-restore rollback described below,
 version 11 is byte-for-byte the reviewed post-readiness-timeout full rollback,
 version 12 is byte-for-byte the reviewed pre-stop disk-headroom rollback, version
 13 is byte-for-byte the reviewed deployment-verifier rollback described below,
+14 is byte-for-byte the reviewed tool-path-verifier rollback described below,
 all older pointer residues and hidden cutover paths are absent, and the exact
 untouched legacy service is re-proved live. The corrected controller invokes the
-existing system tool only at `/usr/bin/chflags`. Any different historical state
-fails closed for manual inspection.
+existing system tools at their actual absolute paths, including
+`/usr/bin/chflags`, `/usr/bin/cmp`, and `/bin/dd`. Before the legacy-stop
+boundary, it runs the exact embedded deployment-verifier bytes in an isolated
+zsh self-test that checks the complete declared command-path set for regular,
+non-symlink, executable files. Any different historical state or unavailable or
+redirected command fails closed for manual inspection.
 
 The first version-10 cutover reached the legacy-stop boundary and then rejected
 this Mac's standard `/Applications` directory because it is `root:admin` mode
@@ -48,7 +56,7 @@ the pinned directory across every reopen and rename. Recovery from
 path, active-pointer bytes/hash, journal hash and history, provenance
 commit/tree, failure text, hidden-install layout, untouched legacy snapshot,
 disabled/absent legacy service, absent new service/destinations/processes, and
-acquirable shared lock. Version 14 treats any new `CRITICAL_FAILURE` as
+acquirable shared lock. Version 15 treats any new `CRITICAL_FAILURE` as
 fail-closed rather than reusing that historical recovery exception.
 
 Version 11 built, signed, installed, and bootstrapped the new host, then reached
@@ -77,12 +85,32 @@ Version 13 built, installed, and bootstrapped the new host and reached
 sample because it assigned the launchctl exit code to zsh's read-only `status`
 parameter. The controller stopped and archived the new destinations, restored
 the exact legacy service as sole process and kernel lock holder, released the
-reserve, and recorded `ROLLED_BACK`. Version 14 accepts only that complete raw
+reserve, and recorded `ROLLED_BACK`. Version 14 accepted only that complete raw
 journal/result/provenance set, the exact empty deployment stdout and exact zsh
 error stderr, every retained build record, both staged/archived app manifests,
 symlink targets, and their separately anchored xattrs. The verifier now uses a
 non-special exit-code local, avoids zsh's tied `path` parameter, and runs an
 isolated embedded-byte zsh regression test before the legacy stop boundary.
+
+Version 14 built, installed, and bootstrapped the new host and reached
+`NEW_PID_OBSERVED`, but its exact embedded deployment verifier then invoked the
+nonexistent `/bin/cmp`. Postmortem review also found a latent `/usr/bin/dd`
+reference that the failed run had not yet reached. The controller performed a
+complete rollback: it stopped and archived the new host, cleared the new live
+destinations, re-enabled and bootstrapped the untouched legacy service, proved
+that legacy was again the sole host and canonical lock holder, released the
+reserve, and recorded `ROLLED_BACK`. All version-9 through version-14 pointers
+and evidence remain retained.
+
+The version-15 design accepts only the exact complete version-14 active pointer,
+journal, result, provenance, build and deployment output records, source/export
+records, legacy snapshot, rollback-reserve record, staged and failed app/plist
+manifests, symlink targets, and separately anchored xattrs, together with the
+unchanged version-9 through version-13 tombstones and a fresh proof of the exact
+sole live legacy host. It replaces the two invalid verifier paths with
+`/usr/bin/cmp` and `/bin/dd` and makes the isolated command-path self-test part
+of the pre-stop verifier gate. This describes a guarded retry contract only;
+version 15 has not crossed the cutover boundary or been authorized to do so.
 
 Every durable state transition is appended to and fsynced in a per-attempt
 journal. A fixed fsynced active-transaction record points to the attempt. A
@@ -91,10 +119,11 @@ post-commit verification or rolls back an uncommitted attempt. It never treats a
 stale lock file, journal, staged app, or partially installed destination as a
 reason to abandon recovery.
 
-The pinned launcher also exposes a read-only v14 preflight that compiles and
+The pinned launcher also exposes a read-only v15 preflight that compiles and
 attests the exact reviewed controller, acquires the migration lock, verifies all
-five historical tombstones and the sole live legacy host, and proves the
-deterministic v14 evidence path is absent:
+six historical tombstones and the sole live legacy host, validates the embedded
+deployment verifier's absolute command-path set, and proves the deterministic
+v15 evidence path is absent:
 
 ```sh
 macOS/scripts/migrate-opensteamer-host.sh --verify-reviewed-prior-retry-state /absolute/path/to/opensteamer
@@ -230,17 +259,19 @@ generation-bound readiness proof, and then revalidates the same exact tombstone
 without removing it. A generation change after that proof is an ordinary
 committed lifecycle event. Pre-journal, failed, and rolled-back tombstones are
 also retained, and automatic reruns fail closed for manual inspection. The sole
-fresh-attempt exception is the narrowly encoded version-14 retry gate for the
-exact reviewed version-9 through version-13 failures described above. It
-exclusively creates one deterministic version-14 evidence path and never
-reuses or mutates any historical transaction.
+fresh-attempt exception is the narrowly encoded version-15 retry gate for the
+exact reviewed version-9 through version-14 failures described above. If
+separately authorized, it can create one deterministic version-15 evidence path
+and never reuses or mutates any historical transaction.
 
-Before legacy can be disabled, version 14 physically preallocates and fsyncs an
+Before legacy can be disabled, version 15 physically preallocates and fsyncs an
 8 MiB owner-only rollback reserve, records its device/inode, and revalidates a
-minimum 1 GiB of free space. Rollback releases that exact reserve inode before
-its first journal append, including after a crash, so an out-of-space failure
-cannot prevent restoration from starting. The reserve is truncated only after
-rollback or after a durable commit and retained-pointer proof.
+minimum 1 GiB of free space after requiring at least 2 GiB before creating the
+fresh evidence tree. The deployment oracle retains its bounded 180-second
+monotonic deadline. Rollback releases that exact reserve inode before its first
+journal append, including after a crash, so an out-of-space failure cannot
+prevent restoration from starting. The reserve is truncated only after rollback
+or after a durable commit and retained-pointer proof.
 
 The controller binary embeds reviewed hashes and exact bytes for all five build
 and deployment scripts. It pins the matching immutable-export inodes and runs
@@ -264,7 +295,8 @@ state, and the production lock namespace before it can run any test command.
 
 ## Invocation
 
-After source review and disposable validation, the repository operator may run:
+The execution form below is retained for operator reference only. It must not be
+run for version 15 unless the user separately authorizes another cutover attempt:
 
 ```sh
 /bin/sh macOS/scripts/migrate-opensteamer-host.sh \

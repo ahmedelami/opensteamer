@@ -1,14 +1,16 @@
 # User-protected legacy AudioStreamer runtime
 
-Status: **MAC-ONLY SIDE-BY-SIDE CUTOVER AUTHORIZED; LEGACY AND IPHONE REMAIN PROTECTED**\
+Status: **VERSION 14 FULLY ROLLED BACK; VERSION 15 REVIEW/PREFLIGHT ONLY; LEGACY AND IPHONE REMAIN PROTECTED**\
 Original preservation direction: **2026-07-25**\
 Mac-only migration authorization recorded: **2026-07-30/31**
 
 The user authorized one guarded Mac-only cutover from the running legacy host to
-the validated opensteamer host. The authorization does **not** permit moving,
-renaming, deleting, replacing, modifying, re-signing, quarantining, or installing
-over the legacy Mac app or plist. It also does not authorize any physical-iPhone
-operation.
+the validated opensteamer host. Version 14 fully rolled back to the untouched
+legacy host. The current version-15 work is limited to review, tests, and
+read-only preflight; this document does not authorize execution of another
+cutover attempt. The original authorization does **not** permit moving, renaming,
+deleting, replacing, modifying, re-signing, quarantining, or installing over the
+legacy Mac app or plist. It also does not authorize any physical-iPhone operation.
 
 ## Untouched legacy Mac rollback source
 
@@ -147,16 +149,40 @@ destinations, restored and reverified the untouched legacy host as sole process
 and canonical kernel-lock holder, released the reserve, recorded `ROLLED_BACK`,
 and retained `active-migration-v13` plus its evidence.
 
-Controller version 14 may create exactly one deterministic fresh transaction
-only after byte-validating the complete version-13 full rollback in addition to
-the version-9 through version-12 tombstones. Its exact gate includes the v13
+Controller version 14 created exactly one deterministic fresh transaction only
+after byte-validating the complete version-13 full rollback in addition to the
+version-9 through version-12 tombstones. Its exact gate included the v13
 deployment stderr, all recorded hashes, both staged and archived app manifests,
 symlink targets, separately anchored xattrs, historical residues, and the live
 legacy proof. The verifier uses no zsh `status` or tied `path` locals and runs an
-isolated embedded-byte zsh regression before the stop boundary. Version 14 keeps
+isolated embedded-byte zsh regression before the stop boundary. Version 14 kept
 the 2 GiB pre-attempt gate, 1 GiB post-build gate, 8 MiB reserve, and 180-second
-deployment deadline. All five older evidence trees and pointers remain
-immutable.
+deployment deadline.
+
+The version-14 transaction built, installed, and bootstrapped the new host and
+reached `NEW_PID_OBSERVED`, but its exact embedded deployment verifier invoked
+the nonexistent `/bin/cmp`. Postmortem review also identified a latent
+`/usr/bin/dd` reference that execution had not yet reached. The controller then
+completed full rollback: it stopped and archived the new host, cleared the new
+live destinations, re-enabled and bootstrapped the exact untouched legacy
+service, proved legacy was again the sole process and canonical kernel-lock
+holder, released the reserve, recorded `ROLLED_BACK`, and retained
+`active-migration-v14` plus all evidence. Every version-9 through version-14
+evidence tree and pointer remains immutable and retained indefinitely.
+
+Controller version 15 is designed to permit exactly one deterministic fresh
+transaction only after byte-validating the complete version-14 full rollback in
+addition to every version-9 through version-13 tombstone. Its exact guard covers
+the v14 active pointer, journal, result, provenance, source/export and build
+records, deployment stdout/stderr, legacy snapshot, rollback-reserve record,
+staged and failed app/plist manifests, symlink targets, separately anchored
+xattrs, historical residues, and a new proof of the exact sole live legacy host.
+The corrected verifier uses `/usr/bin/cmp` and `/bin/dd`; before the legacy-stop
+boundary, its isolated embedded-byte zsh self-test verifies the complete declared
+absolute command-path set is present as regular, non-symlink, executable files.
+Version 15 preserves the 2 GiB pre-attempt gate, 1 GiB post-build gate, 8 MiB
+reserve, and 180-second deployment deadline. Version 15 has not been authorized
+to execute and has not crossed the cutover boundary.
 
 ## Protected iPhone client
 
