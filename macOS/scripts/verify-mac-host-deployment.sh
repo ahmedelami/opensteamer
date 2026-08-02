@@ -23,7 +23,7 @@ readonly EXPECTED_IDENTIFIER="com.elamin.AudioStreamer.CaptureServer"
 readonly LOCK_DIRECTORY="$USER_HOME/Library/Application Support/com.elamin.AudioStreamer.CaptureServer.runtime"
 readonly LOCK_FILE="$LOCK_DIRECTORY/worldwide-host.lock"
 readonly ONLINE_LOG="/var/tmp/opensteamer-worldwide-host.log"
-readonly ONLINE_MARKER="Worldwide paired-device availability is online"
+readonly ONLINE_MARKER_PREFIX="[info] Worldwide paired-device availability is online"
 readonly BUNDLE_VERIFIER="$ROOT_DIR/macOS/scripts/verify-mac-host-bundle.sh"
 readonly LIVE_PROCESS_VERIFIER="$ROOT_DIR/macOS/scripts/verify-live-mac-host-process.sh"
 readonly LAUNCH_STATE_VERIFIER="$ROOT_DIR/macOS/scripts/verify-mac-host-launch-state.sh"
@@ -33,6 +33,7 @@ readonly PINNED_LAUNCH_STATE_VERIFIER_SCRIPT="${OPENSTEAMER_PINNED_LAUNCH_STATE_
 readonly STABILITY_SECONDS=11
 readonly STABILITY_SAMPLES=44
 readonly STABILITY_SAMPLE_DELAY=0.25
+readonly MAX_READINESS_LOG_SUFFIX_BYTES=8388608
 readonly -a REQUIRED_SYSTEM_COMMANDS=(
     /bin/dd
     /bin/kill
@@ -153,6 +154,13 @@ parse_disabled_override() {
     '
 }
 
+contains_exact_line() {
+    local input="$1" expected="$2"
+    # Do not use grep -q here. With pipefail, an early exact match can close the pipe while the
+    # producer still has a bounded-but-large suffix to write, turning valid evidence into SIGPIPE.
+    print -r -- "$input" | /usr/bin/grep -Fx -- "$expected" >/dev/null
+}
+
 self_test_disabled_parser() {
     local label="$LEGACY_LABEL" output
     output="$(parse_disabled_override $'disabled services = {\n    "other" => enabled\n}' "$label")" || fail \
@@ -175,7 +183,7 @@ self_test_disabled_parser() {
 }
 
 self_test_zsh_runtime() {
-    local required_command
+    local required_command marker large_suffix padding=""
     for required_command in "${REQUIRED_SYSTEM_COMMANDS[@]}"; do
         [[ -f "$required_command" && ! -L "$required_command" && -x "$required_command" ]] || fail \
             "required system command is unavailable or redirected: $required_command"
@@ -195,6 +203,12 @@ self_test_zsh_runtime() {
         "service-absence classifier accepted mixed diagnostics"
     service_absence_is_proven 113 "" "Permission denied" "isolated-self-test" && fail \
         "service-absence classifier accepted an unrelated diagnostic"
+    marker="generation-bound-marker"
+    large_suffix="$marker"$'\n'"${(l:262144::x:)padding}"
+    contains_exact_line "$large_suffix" "$marker" || fail \
+        "exact-line matcher rejected an early marker in a large bounded suffix"
+    contains_exact_line "${marker}-suffix" "$marker" && fail \
+        "exact-line matcher accepted a substring marker"
     print -r -- "SELF_TEST_OK zsh-runtime"
 }
 
@@ -240,6 +254,7 @@ esac
     && "$EXPECTED_PROCESS_START" != *$'\r'* ]] || fail "expected process start identity is malformed"
 print -r -- "$EXPECTED_GENERATION_NONCE" | /usr/bin/grep -Eq '^[0-9a-f]{64}$' || fail \
     "expected generation nonce must be 64 lowercase hexadecimal characters"
+readonly EXPECTED_ONLINE_MARKER="$ONLINE_MARKER_PREFIX pid=$EXPECTED_PID nonce=$EXPECTED_GENERATION_NONCE"
 
 sha256_file() { /usr/bin/shasum -a 256 "$1" | /usr/bin/awk '{print $1}'; }
 code_hash() {
@@ -324,7 +339,8 @@ run_launch_state_verifier --verify-plist "$EXPECTED_EXECUTABLE" "$REVIEWED_LAUNC
 /usr/bin/cmp -s "$REVIEWED_LAUNCH_AGENT" "$INSTALLED_LAUNCH_AGENT" || fail \
     "installed LaunchAgent bytes differ from reviewed contract"
 run_bundle_verifier "$BUILD_APP_DIR" "$EXPECTED_TEAM_ID" "$DESIGNATED_REQUIREMENT_REFERENCE" >/dev/null
-run_bundle_verifier "$APP_DIR" "$EXPECTED_TEAM_ID" "$DESIGNATED_REQUIREMENT_REFERENCE" >/dev/null
+run_bundle_verifier --installed-runtime \
+    "$APP_DIR" "$EXPECTED_TEAM_ID" "$DESIGNATED_REQUIREMENT_REFERENCE" >/dev/null
 /usr/bin/diff -qr "$BUILD_APP_DIR" "$APP_DIR" >/dev/null || fail \
     "installed app bytes differ from fresh staged app"
 
@@ -414,12 +430,24 @@ log_inode="$(/usr/bin/stat -f '%i' "$ONLINE_LOG")" || fail "could not inspect on
 [[ "$log_device" == "$LOG_DEVICE" && "$log_inode" == "$LOG_INODE" ]] || fail \
     "online log inode differs from the pre-start checkpoint"
 [[ "$log_size" -ge "$LOG_OFFSET" ]] || fail "online log shrank below the pre-start offset"
-LOG_SUFFIX="$(/bin/dd if="$ONLINE_LOG" bs=1 skip="$LOG_OFFSET" 2>/dev/null)" || fail \
+LOG_SUFFIX_BYTES=$((log_size - LOG_OFFSET))
+(( LOG_SUFFIX_BYTES <= MAX_READINESS_LOG_SUFFIX_BYTES )) || fail \
+    "post-start log suffix exceeds the bounded readiness limit"
+readonly LOG_READ_LIMIT=$((MAX_READINESS_LOG_SUFFIX_BYTES + 1))
+LOG_SUFFIX="$(/bin/dd if="$ONLINE_LOG" bs=1 skip="$LOG_OFFSET" \
+    count="$LOG_READ_LIMIT" 2>/dev/null)" || fail \
     "could not read post-start log suffix"
 [[ "$(/usr/bin/stat -f '%d:%i' "$ONLINE_LOG")" == "$LOG_DEVICE:$LOG_INODE" ]] || fail \
     "online log inode changed while reading readiness evidence"
-print -r -- "$LOG_SUFFIX" | /usr/bin/grep -Fq "$ONLINE_MARKER" || fail \
-    "no fresh post-start online readiness record was observed"
+log_size_after="$(/usr/bin/stat -f '%z' "$ONLINE_LOG")" || fail \
+    "could not reinspect online log size"
+[[ "$log_size_after" -ge "$LOG_OFFSET" ]] || fail \
+    "online log shrank while reading readiness evidence"
+LOG_SUFFIX_BYTES=$((log_size_after - LOG_OFFSET))
+(( LOG_SUFFIX_BYTES <= MAX_READINESS_LOG_SUFFIX_BYTES )) || fail \
+    "post-start log suffix exceeds the bounded readiness limit"
+contains_exact_line "$LOG_SUFFIX" "$EXPECTED_ONLINE_MARKER" || fail \
+    "no generation-bound post-start online readiness record was observed"
 
 sample=0
 manifest_two="$manifest_one"

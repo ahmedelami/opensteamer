@@ -181,6 +181,17 @@ final class MacHostBundleIdentityTests: XCTestCase {
         )
         let positive = try run(executable: verifier, arguments: [app.path])
         XCTAssertEqual(positive.status, 0, positive.diagnostic)
+        let noncanonicalRuntimeMode = try run(
+            executable: verifier,
+            arguments: ["--installed-runtime", app.path]
+        )
+        XCTAssertNotEqual(noncanonicalRuntimeMode.status, 0, noncanonicalRuntimeMode.diagnostic)
+        XCTAssertTrue(
+            noncanonicalRuntimeMode.standardError.contains(
+                "--installed-runtime is restricted to '/Applications/opensteamer Host.app'"
+            ),
+            noncanonicalRuntimeMode.diagnostic
+        )
         let exactRequirement = try run(
             executable: verifier,
             arguments: [app.path, "", executable.path]
@@ -462,6 +473,22 @@ final class MacHostBundleIdentityTests: XCTestCase {
         try assertMutationRejected(
             app: app,
             verifier: verifier,
+            name: "symlink-quarantine-xattr",
+            expectedDiagnostic: "app bundle contains extended attributes"
+        ) { mutant in
+            let frameworkAlias = mutant.appendingPathComponent(
+                "Contents/Frameworks/LiveKitWebRTC.framework/Headers"
+            )
+            let xattr = try self.run(
+                executable: URL(fileURLWithPath: "/usr/bin/xattr"),
+                arguments: ["-s", "-w", "com.apple.quarantine", "0081;fixture", frameworkAlias.path]
+            )
+            XCTAssertEqual(xattr.status, 0, xattr.diagnostic)
+        }
+
+        try assertMutationRejected(
+            app: app,
+            verifier: verifier,
             name: "wrong-framework-install-id",
             expectedDiagnostic: "framework install ID in slice"
         ) { mutant in
@@ -630,11 +657,28 @@ final class MacHostBundleIdentityTests: XCTestCase {
             "/usr/lib/swift/*.dylib",
             "framework symlink escapes its bundle",
             "app bundle contains extended attributes",
+            "--installed-runtime",
+            "installed app contains unreviewed extended attributes",
+            "installed app com.apple.macl is not exactly 72 NUL bytes",
+            "APP_ROOT_DEVICE_INODE",
+            "/usr/bin/xattr -rs",
+            "verify_xattr_policy",
+            "INITIAL_XATTR_POLICY_SNAPSHOT",
+            "app root or extended-attribute policy changed during signature verification",
+            "XATTRS_AFTER",
+            "MACL_HEX_AFTER",
             "LC_RPATH set must be exactly",
             "main executable designated requirement does not match",
         ] {
             XCTAssertTrue(verifier.contains(required), "Verifier lacks \(required)")
         }
+        XCTAssertTrue(
+            verifier.contains(
+                "INSTALLED_RUNTIME_APP_PATH=\"/Applications/opensteamer Host.app\""
+            )
+        )
+        XCTAssertTrue(verifier.contains("${#MACL_HEX} -eq 144"))
+        XCTAssertTrue(verifier.contains("\"$MACL_HEX\" != *[!0]*"))
     }
 
     private func assertMutationRejected(

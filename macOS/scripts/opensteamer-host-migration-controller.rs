@@ -24,10 +24,10 @@ const USER_HOME: &str = "/Users/ahmed";
 const USER_ID: u32 = 501;
 const MIGRATIONS_ROOT: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations";
 const PRIVATE_ROOT: &str = "/Users/ahmed/Library/Application Support/opensteamer";
-const ACTIVE_TRANSACTION_NAME: &str = "active-migration-v16";
-const ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v16.pending";
-const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v16.finalizing";
-const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = ".active-migration-v16.linearized";
+const ACTIVE_TRANSACTION_NAME: &str = "active-migration-v17";
+const ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v17.pending";
+const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v17.finalizing";
+const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = ".active-migration-v17.linearized";
 const PRIOR_V10_ACTIVE_TRANSACTION_NAME: &str = "active-migration-v10";
 const PRIOR_V10_ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v10.pending";
 const PRIOR_V10_ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v10.finalizing";
@@ -63,7 +63,7 @@ const CODE_IDENTIFIER: &str = "com.elamin.AudioStreamer.CaptureServer";
 const ONLINE_LOG: &str = "/var/tmp/opensteamer-worldwide-host.log";
 const ERROR_LOG: &str = "/var/tmp/opensteamer-worldwide-host.err.log";
 const ONLINE_MARKER: &str = "Worldwide paired-device availability is online";
-const JOURNAL_VERSION: &str = "OPENSTEAMER_MIGRATION_JOURNAL_V16";
+const JOURNAL_VERSION: &str = "OPENSTEAMER_MIGRATION_JOURNAL_V17";
 const PRIOR_PRESTOP_JOURNAL: &[u8] = b"OPENSTEAMER_MIGRATION_JOURNAL_V9\nSTATE BEGUN\nSTATE ROLLBACK_STARTED legacy_disable_was_journaled=false rollback_mode=BeforeLegacyStop\nSTATE LEGACY_REENABLED\nSTATE LEGACY_RECOVERED\nSTATE ROLLED_BACK\n";
 const PRIOR_PRESTOP_RESULT: &[u8] = b"result=rolled-back-before-stop\nlegacy_launchd_disabled=false\nphysical_iphone_e2e=unavailable-not-claimed\n";
 const PRIOR_JOURNAL_SHA256: &str =
@@ -494,7 +494,76 @@ const PRIOR_V15_STAGED_APP_XATTRS_SHA256: &str =
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const PRIOR_V15_FAILED_APP_XATTRS_SHA256: &str =
     "760fdf730af579fa4b0b89a349babb39743944bf9e10b88cc513a263d23cb8b3";
-const V16_EVIDENCE_PATH: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v16-after-v15-1785637636-18044";
+const PRIOR_V16_ACTIVE_TRANSACTION_NAME: &str = "active-migration-v16";
+const PRIOR_V16_ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v16.pending";
+const PRIOR_V16_ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v16.finalizing";
+const PRIOR_V16_ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = ".active-migration-v16.linearized";
+const PRIOR_V16_EVIDENCE_PATH: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v16-after-v15-1785637636-18044";
+const PRIOR_V16_ACTIVE_RECORD: &[u8] = b"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v16-after-v15-1785637636-18044\n";
+const PRIOR_V16_ACTIVE_SHA256: &str =
+    "aaf2d32335687c997d8f623324c1dbb5a00855464ff2f110a2f94eb8bb97c15b";
+const PRIOR_V16_SOURCE_COMMIT: &str = "625941d4fc1f2f4d6254df57ee897c71c88f399d";
+const PRIOR_V16_SOURCE_TREE: &str = "3507c97c3b5be7e11a9ffab6c686d615f5a96506";
+const PRIOR_V16_FINAL_JOURNAL_SIZE: usize = 6_194;
+const PRIOR_V16_FINAL_JOURNAL_LINES: usize = 20;
+const PRIOR_V16_FINAL_JOURNAL_SHA256: &str =
+    "a95a7c0a23f8bc50a0a7270d616e75dac0b72aee2ab4676fa8d3b4be6288fbfb";
+const PRIOR_V16_PRECUTOVER_JOURNAL_LINE: &[u8] = b"STATE PRECUTOVER_VERIFIED applications_device=16777230 applications_inode=4982341 launch_agents_device=16777230 launch_agents_inode=474668 precutover_available_bytes=9537269760 rollback_reserve_device=16777230 rollback_reserve_inode=21315340 rollback_reserve_bytes=8388608\n";
+const PRIOR_V16_GENERATION_JOURNAL_LINE: &[u8] = b"STATE NEW_PID_OBSERVED log_offset=1364 log_device=16777230 log_inode=20570513 pid=17632 runs=1 process_start=Sun%20Aug%20%202%2012%3A26%3A54%202026 nonce=88445fa1c01ac2168e9b0e58994f43e44393da7d4a955e82c02df16e7390cd6f lock_device=16777230 lock_inode=10835208\n";
+const PRIOR_V16_ROLLBACK_JOURNAL_TAIL: &[u8] = b"STATE ROLLBACK_STARTED legacy_disable_was_journaled=true rollback_mode=FullRestore\nSTATE NEW_STOPPED\nSTATE NEW_DESTINATIONS_CLEARED\nSTATE LEGACY_REENABLED\nSTATE LEGACY_BOOTSTRAPPED\nSTATE LEGACY_RECOVERED\nSTATE ROLLED_BACK\n";
+const PRIOR_V16_FINAL_RESULT: &[u8] = b"result=rolled-back\nlegacy_launchd_disabled=false\nphysical_iphone_e2e=unavailable-not-claimed\n";
+const PRIOR_V16_FINAL_RESULT_SHA256: &str =
+    "434dea611969ea91d8b873bffe42e4a149f329641fe5111e898b86d66fc3d301";
+const PRIOR_V16_SOURCE_ARCHIVE_SIZE: u64 = 6_635_520;
+const PRIOR_V16_SOURCE_ARCHIVE_SHA256: &str =
+    "2e3ade684c280e2263deb520412093d24b85f25a96dc6db14973a3d56388e864";
+const PRIOR_V16_PROVENANCE_SHA256: &str =
+    "d722f6589eb0834c64b0866bda7034994f83e0266b1cd8d62d8e3541a07aa9ae";
+const PRIOR_V16_PROVENANCE: &[u8] = br#"commit=625941d4fc1f2f4d6254df57ee897c71c88f399d
+tree=3507c97c3b5be7e11a9ffab6c686d615f5a96506
+remote=https://github.com/ahmedelami/opensteamer.git
+upstream=origin/agent/auto-select-iphone-microphone
+source_archive_sha256=2e3ade684c280e2263deb520412093d24b85f25a96dc6db14973a3d56388e864
+package_resolved_sha256=161213e9507513e41f0acba0d7439fcf633b9d03d78c22b1e4b15fa9f83a01d9
+"#;
+const PRIOR_V16_LEGACY_MANIFEST_SHA256: &str =
+    "2bdaddf99c5101a8f994d3916b44a66f6c8fcbd3c0cda1b3ae44694263d6971f";
+const PRIOR_V16_LEGACY_XATTRS_SHA256: &str =
+    "cc69a330ffd8dcb92e45bfa1b2f7163f749b2c1875bc2ead51f9ed50dd252ea8";
+const PRIOR_V16_STAGED_HASHES_SHA256: &str =
+    "63cd1b9df9e78f06737ed41a94f1c524d34c991cf5328144d6c2151690b6ac8c";
+const PRIOR_V16_SOURCE_EXPORT_MANIFEST_SHA256: &str =
+    "9973e8739a4f2280dcd7557a636e270e4211d3401ab09502fdadf55b99bfdab2";
+const PRIOR_V16_BUILD_STDOUT_SHA256: &str =
+    "70e7a699f1e6ace9818610e88c85cc6d698ef1a3c788c1d55731124ea2e39f60";
+const PRIOR_V16_BUILD_STDOUT_SIZE: usize = 884;
+const PRIOR_V16_BUILD_STDERR_SHA256: &str =
+    "84c65dbca95845cb511b10069bbef94d8818a09b3b0845ea639df0077977e05b";
+const PRIOR_V16_BUILD_STDERR_SIZE: usize = 3_557;
+const PRIOR_V16_DEPLOYMENT_STDOUT_SHA256: &str =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const PRIOR_V16_DEPLOYMENT_STDOUT_SIZE: usize = 0;
+const PRIOR_V16_DEPLOYMENT_STDERR_SHA256: &str =
+    "b71cb31d6ff97ce941f65798ee357fcff8c9af922589b1a30d74dbe0071102c0";
+const PRIOR_V16_DEPLOYMENT_STDERR_SIZE: usize = 2_218;
+const PRIOR_V16_DEPLOYMENT_STDERR_TAIL: &[u8] = b"verify-mac-host-bundle: app bundle contains extended attributes: /Applications/opensteamer Host.app: com.apple.macl: \n";
+const PRIOR_V16_ROLLBACK_RESERVE_SHA256: &str =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const PRIOR_V16_ROLLBACK_RESERVE_DEVICE: u64 = 16_777_230;
+const PRIOR_V16_ROLLBACK_RESERVE_INODE: u64 = 21_315_340;
+const PRIOR_V16_STAGED_EXECUTABLE_SHA256: &str =
+    "95b00603881bc06d7c0acf25cf2f359ae177608da6ffa876a62976ec904350f1";
+const PRIOR_V16_STAGED_PLIST_SHA256: &str =
+    "7cdcf2d1517dc9ec1ae49b6fbbaf293c77afd958f697878d44f3b3c8e9c7e550";
+const PRIOR_V16_STAGED_APP_MANIFEST_SHA256: &str =
+    "f68ef887af0ac97f8302e42ff40e9cf793881f08938bcf0e8b9a430133f62839";
+const PRIOR_V16_SYMLINK_TARGET_MANIFEST_SHA256: &str =
+    "ab17b5de2703ca8b990a315bb816165d6d6bdb898e2b7b6d8c9d59147cbd8fec";
+const PRIOR_V16_STAGED_APP_XATTRS_SHA256: &str =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const PRIOR_V16_FAILED_APP_XATTRS_SHA256: &str =
+    "fc476ba38a5da85548cfbb83d758b4bbc41e2585495c55fb3344a6908b7ccee6";
+const V17_EVIDENCE_PATH: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v17-after-v16-1785637636-18044";
 const CHFLAGS_SHA256: &str = "a67367c7fda2e962b72db6cc730173e82115f3709bf4a208d1d2ed1a6787a211";
 const DITTO_SHA256: &str = "31a07d70d9ebea58b083e47d4fa380c1d5b8f7fe58ac3fefa9ce2714ca898ca6";
 const EMBEDDED_BUILD_SCRIPT: &[u8] = include_bytes!("build-opensteamer-host-app.sh");
@@ -502,16 +571,34 @@ const EMBEDDED_BUILD_SCRIPT_SHA256: &str =
     "bda01b7ec76e5112a127fd97427fbff4a23c5d352232bed64d3cc93cf44e9619";
 const EMBEDDED_BUNDLE_VERIFIER: &[u8] = include_bytes!("verify-mac-host-bundle.sh");
 const EMBEDDED_BUNDLE_VERIFIER_SHA256: &str =
-    "b667df23e06d55140a61e8b8e7c1de3a6aa5ebd6f4c4f063c805ddf98b5edc27";
+    "02a348a88d25b76ab95d45620d823339212bb53ee0f39bfb3a52f04240d3d745";
 const EMBEDDED_LAUNCH_VERIFIER: &[u8] = include_bytes!("verify-mac-host-launch-state.sh");
 const EMBEDDED_LAUNCH_VERIFIER_SHA256: &str =
     "27c36f8adec05c22216955cb404d6732ceaa6065477e5bb1570f2d41e84db7a9";
 const EMBEDDED_DEPLOYMENT_VERIFIER: &[u8] = include_bytes!("verify-mac-host-deployment.sh");
 const EMBEDDED_DEPLOYMENT_VERIFIER_SHA256: &str =
-    "1a972c52ad5be2dc10547d1f8666946f6031386e4cfa7daf4b35e2720316576a";
+    "4aada5e3ecc97f5cb006672298bc79c9cfbcf3973aec902a2d04bae7b5e325a6";
 const EMBEDDED_LIVE_PROCESS_VERIFIER: &[u8] = include_bytes!("verify-live-mac-host-process.sh");
 const EMBEDDED_LIVE_PROCESS_VERIFIER_SHA256: &str =
     "0e56403570362c6d59ea86dc10d3cc53d7a5461d4a2f6c78d6e6c86dd13a4b41";
+const DEPLOYMENT_VERIFIER_REQUIRED_SYSTEM_COMMANDS: &[(&str, u32)] = &[
+    ("/bin/dd", 0o755),
+    ("/bin/kill", 0o755),
+    ("/bin/launchctl", 0o755),
+    ("/bin/ps", 0o4755),
+    ("/bin/rm", 0o755),
+    ("/bin/sleep", 0o755),
+    ("/bin/zsh", 0o755),
+    ("/usr/bin/awk", 0o755),
+    ("/usr/bin/cmp", 0o755),
+    ("/usr/bin/codesign", 0o755),
+    ("/usr/bin/dirname", 0o755),
+    ("/usr/bin/diff", 0o755),
+    ("/usr/bin/grep", 0o755),
+    ("/usr/bin/mktemp", 0o755),
+    ("/usr/bin/shasum", 0o755),
+    ("/usr/bin/stat", 0o755),
+];
 const REVIEWED_RUSTC_SHA256: &str =
     "d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd";
 const REVIEWED_RUSTC_CDHASH_FULL: &str =
@@ -1337,9 +1424,15 @@ impl PinnedVerifierSet {
     }
 
     fn revalidate(&self) -> Result<()> {
+        self.revalidate_until(deadline_after(DEFAULT_COMMAND_TIMEOUT)?)
+    }
+
+    fn revalidate_until(&self, deadline: Instant) -> Result<()> {
+        require_before_deadline(deadline, "pinned verifier revalidation")?;
         self.source_export.revalidate()?;
         self.macos_directory.revalidate()?;
         self.scripts_directory.revalidate()?;
+        require_before_deadline(deadline, "pinned verifier revalidation")?;
         self.records
             .ensure_file_at_name("source-export-manifest.txt", &self.source_manifest)?;
         let recorded_manifest = read_opened_regular(
@@ -1347,7 +1440,8 @@ impl PinnedVerifierSet {
             &self.records.path.join("source-export-manifest.txt"),
             0o600,
         )?;
-        if tree_manifest(&self.source_export.path)?.as_bytes() != recorded_manifest {
+        if tree_manifest_until(&self.source_export.path, deadline)?.as_bytes() != recorded_manifest
+        {
             return Err(ControllerError(
                 "source export changed after immutable-manifest attestation".to_owned(),
             ));
@@ -1359,9 +1453,12 @@ impl PinnedVerifierSet {
             &self.deployment,
             &self.live_process,
         ] {
+            require_before_deadline(deadline, "pinned verifier revalidation")?;
             script.revalidate(&self.scripts_directory)?;
         }
-        self.source_export.revalidate()
+        require_before_deadline(deadline, "pinned verifier revalidation")?;
+        self.source_export.revalidate()?;
+        require_before_deadline(deadline, "pinned verifier revalidation")
     }
 
     fn add_helper_environment(&self, environment: &mut BTreeMap<String, String>) {
@@ -1411,6 +1508,28 @@ fn verify_embedded_verifier_hashes() -> Result<()> {
         if sha256_bytes(bytes)? != expected {
             return Err(ControllerError(format!(
                 "embedded {label} bytes differ from the reviewed controller trust anchor"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_deployment_verifier_system_commands() -> Result<()> {
+    for &(command, expected_mode) in DEPLOYMENT_VERIFIER_REQUIRED_SYSTEM_COMMANDS {
+        let path = Path::new(command);
+        let metadata = fs::symlink_metadata(path).map_err(|error| {
+            ControllerError(format!(
+                "required deployment-verifier command is unavailable: {command}: {error}"
+            ))
+        })?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.uid() != 0
+            || metadata.gid() != 0
+            || metadata.permissions().mode() & 0o7777 != expected_mode
+        {
+            return Err(ControllerError(format!(
+                "required deployment-verifier command identity or mode is unsafe: {command}"
             )));
         }
     }
@@ -1542,6 +1661,57 @@ impl State {
 struct TransactionLock {
     file: File,
     parent: PinnedDirectory,
+}
+
+// The advertised prior-retry preflight is inspection-only. In particular, it must not create the
+// private root or lock, repair modes, rewrite the lock owner record, sync directory metadata, or
+// publish/recover any active-pointer name. `flock` changes only the kernel lock state and is
+// released without flushing the read-only descriptor.
+struct InspectionTransactionLock {
+    file: File,
+    parent: PinnedDirectory,
+}
+
+impl InspectionTransactionLock {
+    fn acquire() -> Result<Self> {
+        let parent =
+            PinnedDirectory::open(Path::new(PRIVATE_ROOT), Some(effective_uid()), Some(0o700))?;
+        let name = "migration-controller.lock";
+        let file = parent
+            .open_existing_regular(name, false)?
+            .ok_or_else(|| ControllerError("inspection transaction lock is missing".to_owned()))?;
+        let metadata = file.metadata()?;
+        validate_owned_regular(&parent.path.join(name), &metadata, 0o600)?;
+        parent.ensure_file_at_name(name, &file)?;
+        // SAFETY: flock is called with a valid read-only descriptor. It does not change persistent
+        // file bytes or metadata.
+        let result = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
+        if result != 0 {
+            let error = io::Error::last_os_error();
+            if matches!(error.raw_os_error(), Some(11) | Some(35)) {
+                return Err(ControllerError(
+                    "another opensteamer migration controller holds the transaction lock"
+                        .to_owned(),
+                ));
+            }
+            return Err(ControllerError(format!(
+                "cannot acquire inspection transaction lock: {error}"
+            )));
+        }
+        parent.ensure_file_at_name(name, &file)?;
+        Ok(Self { file, parent })
+    }
+
+    fn parent(&self) -> &PinnedDirectory {
+        &self.parent
+    }
+}
+
+impl Drop for InspectionTransactionLock {
+    fn drop(&mut self) {
+        // SAFETY: the descriptor remains valid until `file` is dropped after this method.
+        let _ = unsafe { flock(self.file.as_raw_fd(), LOCK_UN) };
+    }
 }
 
 impl TransactionLock {
@@ -1905,7 +2075,7 @@ impl Layout {
 
     fn create(repo: PathBuf) -> Result<Self> {
         ensure_private_directory(Path::new(MIGRATIONS_ROOT), 0o700)?;
-        let evidence = PathBuf::from(V16_EVIDENCE_PATH);
+        let evidence = PathBuf::from(V17_EVIDENCE_PATH);
         fs::create_dir(&evidence).map_err(|error| {
             ControllerError(format!("cannot create evidence directory: {error}"))
         })?;
@@ -2400,7 +2570,7 @@ fn run_pinned_script_until(
     environment: &BTreeMap<String, String>,
     deadline: Instant,
 ) -> Result<CommandOutput> {
-    verifiers.revalidate()?;
+    verifiers.revalidate_until(deadline)?;
     if Instant::now() >= deadline {
         return Err(canonical_command_timeout_error(
             &script.logical_path,
@@ -2423,7 +2593,7 @@ fn run_pinned_script_until(
         command.current_dir(directory);
     }
     let output = run_spawned_command(command, &script.logical_path, deadline)?;
-    verifiers.revalidate()?;
+    verifiers.revalidate_until(deadline)?;
     if Instant::now() >= deadline {
         let reaped = Ok(output.status);
         return Err(canonical_command_timeout_error(
@@ -2586,18 +2756,19 @@ fn verify_prior_retry_state_cli() -> Result<()> {
             effective_uid()
         )));
     }
-    let transaction_lock = TransactionLock::acquire()?;
+    let transaction_lock = InspectionTransactionLock::acquire()?;
     let private_root = transaction_lock.parent();
-    match recover_active_pointer(private_root)? {
+    match inspect_active_pointer_read_only(private_root)? {
         ActivePointerRecovery::None => {}
         ActivePointerRecovery::Active => {
             return Err(ControllerError(
-                "a version-16 active transaction already exists".to_owned(),
+                "a version-17 active transaction already exists".to_owned(),
             ))
         }
     }
     verify_chflags_tool()?;
-    self_test_embedded_zsh_verifiers()?;
+    verify_embedded_verifier_hashes()?;
+    verify_deployment_verifier_system_commands()?;
     let prior_v9 = validate_prior_v9_prestop_retry(private_root)?;
     let prior_v10 = validate_prior_v10_rolledback_retry(private_root)?;
     let prior_v11 = validate_prior_v11_rolledback_retry(private_root)?;
@@ -2605,6 +2776,7 @@ fn verify_prior_retry_state_cli() -> Result<()> {
     let prior_v13 = validate_prior_v13_rolledback_retry(private_root)?;
     let prior_v14 = validate_prior_v14_rolledback_retry(private_root)?;
     let prior_v15 = validate_prior_v15_rolledback_retry(private_root)?;
+    let prior_v16 = validate_prior_v16_rolledback_retry(private_root)?;
     prior_v9.revalidate(private_root)?;
     prior_v10.revalidate(private_root)?;
     prior_v11.revalidate(private_root)?;
@@ -2612,14 +2784,15 @@ fn verify_prior_retry_state_cli() -> Result<()> {
     prior_v13.revalidate(private_root)?;
     prior_v14.revalidate(private_root)?;
     prior_v15.revalidate(private_root)?;
+    prior_v16.revalidate(private_root)?;
     require_all_prior_retry_residues_absent(private_root)?;
     require_fresh_retry_disk_headroom()?;
-    if entry_exists(Path::new(V16_EVIDENCE_PATH))? {
+    if entry_exists(Path::new(V17_EVIDENCE_PATH))? {
         return Err(ControllerError(
-            "the deterministic version-16 evidence path is already occupied".to_owned(),
+            "the deterministic version-17 evidence path is already occupied".to_owned(),
         ));
     }
-    println!("PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15 legacy=sole-ready v16=absent");
+    println!("PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16 legacy=sole-ready v17=absent");
     Ok(())
 }
 
@@ -2649,6 +2822,7 @@ fn execute(root: &Path) -> Result<()> {
             let prior_v13 = validate_prior_v13_rolledback_retry(private_root)?;
             let prior_v14 = validate_prior_v14_rolledback_retry(private_root)?;
             let prior_v15 = validate_prior_v15_rolledback_retry(private_root)?;
+            let prior_v16 = validate_prior_v16_rolledback_retry(private_root)?;
             start_new(
                 repo,
                 private_root,
@@ -2659,6 +2833,7 @@ fn execute(root: &Path) -> Result<()> {
                 prior_v13,
                 prior_v14,
                 prior_v15,
+                prior_v16,
             )
         }
         ActivePointerRecovery::Active => recover_active(repo, private_root),
@@ -2916,6 +3091,14 @@ fn require_all_prior_retry_residues_absent(private_root: &PinnedDirectory) -> Re
         PRIOR_V15_ACTIVE_TRANSACTION_LINEARIZED_NAME,
         "v15",
         Path::new(PRIOR_V15_EVIDENCE_PATH),
+    )?;
+    require_prior_retry_residues_absent(
+        private_root,
+        PRIOR_V16_ACTIVE_TRANSACTION_PENDING_NAME,
+        PRIOR_V16_ACTIVE_TRANSACTION_FINALIZING_NAME,
+        PRIOR_V16_ACTIVE_TRANSACTION_LINEARIZED_NAME,
+        "v16",
+        Path::new(PRIOR_V16_EVIDENCE_PATH),
     )
 }
 
@@ -3042,10 +3225,10 @@ impl PriorV9RetryGuard {
 }
 
 /// Version 9 failed before the legacy-stop boundary on this Mac because it referenced the
-/// nonexistent `/bin/chflags`. Its retained evidence must remain untouched. Version 15 may start
+/// nonexistent `/bin/chflags`. Its retained evidence must remain untouched. Version 17 may start
 /// only after independently pinning the exact v9 tombstone together with the exact fully rolled-back
-/// v10, v11, v12, v13, and v14 tombstones and reproving the untouched legacy runtime. Any other
-/// residue fails closed.
+/// v10, v11, v12, v13, v14, v15, and v16 tombstones and reproving the untouched legacy runtime.
+/// Any other residue fails closed.
 fn validate_prior_v9_prestop_retry(private_root: &PinnedDirectory) -> Result<PriorV9RetryGuard> {
     for residue in [
         PRIOR_ACTIVE_TRANSACTION_PENDING_NAME,
@@ -7045,6 +7228,656 @@ fn validate_prior_v15_rolledback_retry(
     Ok(guard)
 }
 
+fn validate_prior_v16_rolledback_records(
+    evidence: &Path,
+    journal: &[u8],
+    result: &[u8],
+    provenance: &[u8],
+    deployment_stdout: &[u8],
+    deployment_stderr: &[u8],
+) -> Result<()> {
+    if evidence != Path::new(PRIOR_V16_EVIDENCE_PATH) {
+        return Err(ControllerError(
+            "prior v16 pointer does not name the exact reviewed evidence".to_owned(),
+        ));
+    }
+    if journal.len() != PRIOR_V16_FINAL_JOURNAL_SIZE
+        || journal.iter().filter(|byte| **byte == b'\n').count() != PRIOR_V16_FINAL_JOURNAL_LINES
+        || sha256_bytes(journal)? != PRIOR_V16_FINAL_JOURNAL_SHA256
+        || !journal.starts_with(b"OPENSTEAMER_MIGRATION_JOURNAL_V16\n")
+        || !journal
+            .windows(PRIOR_V16_PRECUTOVER_JOURNAL_LINE.len())
+            .any(|window| window == PRIOR_V16_PRECUTOVER_JOURNAL_LINE)
+        || !journal
+            .windows(PRIOR_V16_GENERATION_JOURNAL_LINE.len())
+            .any(|window| window == PRIOR_V16_GENERATION_JOURNAL_LINE)
+        || !journal.ends_with(PRIOR_V16_ROLLBACK_JOURNAL_TAIL)
+    {
+        return Err(ControllerError(
+            "prior v16 journal is not the exact reviewed runtime-xattr rollback".to_owned(),
+        ));
+    }
+    if result != PRIOR_V16_FINAL_RESULT || sha256_bytes(result)? != PRIOR_V16_FINAL_RESULT_SHA256 {
+        return Err(ControllerError(
+            "prior v16 result is not the exact reviewed rolled-back outcome".to_owned(),
+        ));
+    }
+    if provenance != PRIOR_V16_PROVENANCE
+        || sha256_bytes(provenance)? != PRIOR_V16_PROVENANCE_SHA256
+    {
+        return Err(ControllerError(
+            "prior v16 provenance is not the exact reviewed record".to_owned(),
+        ));
+    }
+    if deployment_stdout.len() != PRIOR_V16_DEPLOYMENT_STDOUT_SIZE
+        || sha256_bytes(deployment_stdout)? != PRIOR_V16_DEPLOYMENT_STDOUT_SHA256
+        || deployment_stderr.len() != PRIOR_V16_DEPLOYMENT_STDERR_SIZE
+        || sha256_bytes(deployment_stderr)? != PRIOR_V16_DEPLOYMENT_STDERR_SHA256
+        || !deployment_stderr.ends_with(PRIOR_V16_DEPLOYMENT_STDERR_TAIL)
+    {
+        return Err(ControllerError(
+            "prior v16 deployment records are not the exact reviewed root-MACL failure".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+struct PriorV16RetryGuard {
+    pointer: File,
+    evidence: PinnedDirectory,
+    records: PinnedDirectory,
+    legacy_snapshot: PinnedDirectory,
+    failed_new: PinnedDirectory,
+    failed_app: PinnedDirectory,
+    staged: PinnedDirectory,
+    staged_app: PinnedDirectory,
+    source_export: PinnedDirectory,
+    scratch: PinnedDirectory,
+    journal: File,
+    result: File,
+    provenance: File,
+    legacy_manifest: File,
+    legacy_xattrs: File,
+    staged_hashes: File,
+    source_export_manifest: File,
+    build_stdout: File,
+    build_stderr: File,
+    deployment_stdout: File,
+    deployment_stderr: File,
+    rollback_reserve: File,
+    staged_plist: File,
+    failed_plist: File,
+    source_archive: File,
+    snapshot_executable: File,
+    snapshot_plist: File,
+}
+
+impl PriorV16RetryGuard {
+    fn journal_fields(&self) -> Vec<(&'static str, String)> {
+        vec![
+            (
+                "prior_v16_active_sha256",
+                PRIOR_V16_ACTIVE_SHA256.to_owned(),
+            ),
+            (
+                "prior_v16_journal_sha256",
+                PRIOR_V16_FINAL_JOURNAL_SHA256.to_owned(),
+            ),
+            (
+                "prior_v16_result_sha256",
+                PRIOR_V16_FINAL_RESULT_SHA256.to_owned(),
+            ),
+            (
+                "prior_v16_source_archive_sha256",
+                PRIOR_V16_SOURCE_ARCHIVE_SHA256.to_owned(),
+            ),
+            (
+                "prior_v16_source_commit",
+                PRIOR_V16_SOURCE_COMMIT.to_owned(),
+            ),
+            ("prior_v16_source_tree", PRIOR_V16_SOURCE_TREE.to_owned()),
+            (
+                "prior_v16_provenance_sha256",
+                PRIOR_V16_PROVENANCE_SHA256.to_owned(),
+            ),
+            (
+                "prior_v16_legacy_executable_sha256",
+                LEGACY_EXECUTABLE_SHA256.to_owned(),
+            ),
+            (
+                "prior_v16_legacy_plist_sha256",
+                LEGACY_PLIST_SHA256.to_owned(),
+            ),
+            (
+                "prior_v16_deployment_stderr_sha256",
+                PRIOR_V16_DEPLOYMENT_STDERR_SHA256.to_owned(),
+            ),
+        ]
+    }
+
+    fn revalidate_directories(&self) -> Result<()> {
+        for directory in [
+            &self.evidence,
+            &self.records,
+            &self.legacy_snapshot,
+            &self.failed_new,
+            &self.failed_app,
+            &self.staged,
+            &self.staged_app,
+            &self.source_export,
+            &self.scratch,
+        ] {
+            directory.revalidate()?;
+        }
+        Ok(())
+    }
+
+    fn validate_shape(&self) -> Result<()> {
+        require_exact_directory_entries(
+            &self.evidence,
+            &[
+                "failed-new",
+                "journal.log",
+                "legacy-snapshot",
+                "records",
+                "source-export",
+                "source.tar",
+                "staged",
+                "swiftpm-scratch",
+            ],
+        )?;
+        require_exact_directory_entries(
+            &self.records,
+            &[
+                "build.stderr",
+                "build.stdout",
+                "deployment.stderr",
+                "deployment.stdout",
+                "legacy-app-tree-manifest.txt",
+                "legacy-app-xattrs.txt",
+                "provenance.txt",
+                "result.txt",
+                "rollback-reserve.bin",
+                "source-export-manifest.txt",
+                "staged-hashes.txt",
+            ],
+        )?;
+        require_exact_directory_entries(
+            &self.legacy_snapshot,
+            &["CaptureServer", "com.elamin.audiostreamer.worldwide.plist"],
+        )?;
+        require_exact_directory_entries(
+            &self.failed_new,
+            &[
+                "opensteamer Host.app",
+                "org.example.opensteamer.worldwide.plist",
+            ],
+        )?;
+        require_exact_directory_entries(
+            &self.staged,
+            &[
+                "opensteamer Host.app",
+                "org.example.opensteamer.worldwide.plist",
+            ],
+        )
+    }
+
+    fn ensure_file_pins(&self) -> Result<()> {
+        self.evidence
+            .ensure_file_at_name("journal.log", &self.journal)?;
+        for (name, file) in [
+            ("result.txt", &self.result),
+            ("provenance.txt", &self.provenance),
+            ("legacy-app-tree-manifest.txt", &self.legacy_manifest),
+            ("legacy-app-xattrs.txt", &self.legacy_xattrs),
+            ("staged-hashes.txt", &self.staged_hashes),
+            ("source-export-manifest.txt", &self.source_export_manifest),
+            ("build.stdout", &self.build_stdout),
+            ("build.stderr", &self.build_stderr),
+            ("deployment.stdout", &self.deployment_stdout),
+            ("deployment.stderr", &self.deployment_stderr),
+            ("rollback-reserve.bin", &self.rollback_reserve),
+        ] {
+            self.records.ensure_file_at_name(name, file)?;
+        }
+        self.staged.ensure_file_at_name(
+            "org.example.opensteamer.worldwide.plist",
+            &self.staged_plist,
+        )?;
+        self.failed_new.ensure_file_at_name(
+            "org.example.opensteamer.worldwide.plist",
+            &self.failed_plist,
+        )?;
+        self.evidence
+            .ensure_file_at_name("source.tar", &self.source_archive)?;
+        self.legacy_snapshot
+            .ensure_file_at_name("CaptureServer", &self.snapshot_executable)?;
+        self.legacy_snapshot.ensure_file_at_name(
+            "com.elamin.audiostreamer.worldwide.plist",
+            &self.snapshot_plist,
+        )
+    }
+
+    fn revalidate(&self, private_root: &PinnedDirectory) -> Result<()> {
+        require_prior_retry_residues_absent(
+            private_root,
+            PRIOR_V16_ACTIVE_TRANSACTION_PENDING_NAME,
+            PRIOR_V16_ACTIVE_TRANSACTION_FINALIZING_NAME,
+            PRIOR_V16_ACTIVE_TRANSACTION_LINEARIZED_NAME,
+            "v16",
+            &self.evidence.path,
+        )?;
+        private_root.ensure_file_at_name(PRIOR_V16_ACTIVE_TRANSACTION_NAME, &self.pointer)?;
+        let pointer_path = private_root.path.join(PRIOR_V16_ACTIVE_TRANSACTION_NAME);
+        let pointer = read_opened_regular(&self.pointer, &pointer_path, 0o600)?;
+        if pointer != PRIOR_V16_ACTIVE_RECORD || sha256_bytes(&pointer)? != PRIOR_V16_ACTIVE_SHA256
+        {
+            return Err(ControllerError(
+                "prior v16 active pointer changed during retry proof".to_owned(),
+            ));
+        }
+        private_root.ensure_file_at_name(PRIOR_V16_ACTIVE_TRANSACTION_NAME, &self.pointer)?;
+        self.revalidate_directories()?;
+        self.validate_shape()?;
+        self.ensure_file_pins()?;
+
+        let journal = read_opened_regular(
+            &self.journal,
+            &self.evidence.path.join("journal.log"),
+            0o600,
+        )?;
+        let result =
+            read_opened_regular(&self.result, &self.records.path.join("result.txt"), 0o600)?;
+        let provenance = read_opened_regular(
+            &self.provenance,
+            &self.records.path.join("provenance.txt"),
+            0o600,
+        )?;
+        let legacy_manifest = read_opened_regular(
+            &self.legacy_manifest,
+            &self.records.path.join("legacy-app-tree-manifest.txt"),
+            0o600,
+        )?;
+        let legacy_xattrs = read_opened_regular(
+            &self.legacy_xattrs,
+            &self.records.path.join("legacy-app-xattrs.txt"),
+            0o600,
+        )?;
+        let staged_hashes = read_opened_regular(
+            &self.staged_hashes,
+            &self.records.path.join("staged-hashes.txt"),
+            0o600,
+        )?;
+        let source_export_manifest = read_opened_regular(
+            &self.source_export_manifest,
+            &self.records.path.join("source-export-manifest.txt"),
+            0o600,
+        )?;
+        let build_stdout = read_opened_regular(
+            &self.build_stdout,
+            &self.records.path.join("build.stdout"),
+            0o600,
+        )?;
+        let build_stderr = read_opened_regular(
+            &self.build_stderr,
+            &self.records.path.join("build.stderr"),
+            0o600,
+        )?;
+        let deployment_stdout = read_opened_regular(
+            &self.deployment_stdout,
+            &self.records.path.join("deployment.stdout"),
+            0o600,
+        )?;
+        let deployment_stderr = read_opened_regular(
+            &self.deployment_stderr,
+            &self.records.path.join("deployment.stderr"),
+            0o600,
+        )?;
+        let rollback_reserve = read_opened_regular(
+            &self.rollback_reserve,
+            &self.records.path.join("rollback-reserve.bin"),
+            0o600,
+        )?;
+
+        if build_stdout.len() != PRIOR_V16_BUILD_STDOUT_SIZE
+            || build_stderr.len() != PRIOR_V16_BUILD_STDERR_SIZE
+        {
+            return Err(ControllerError(
+                "prior v16 build record sizes changed".to_owned(),
+            ));
+        }
+        validate_prior_v16_rolledback_records(
+            &self.evidence.path,
+            &journal,
+            &result,
+            &provenance,
+            &deployment_stdout,
+            &deployment_stderr,
+        )?;
+        if tree_manifest(&self.source_export.path)?.as_bytes() != source_export_manifest {
+            return Err(ControllerError(
+                "prior v16 source export differs from its exact reviewed manifest".to_owned(),
+            ));
+        }
+        if tree_manifest(Path::new(LEGACY_APP))?.as_bytes() != legacy_manifest {
+            return Err(ControllerError(
+                "live legacy app differs from the exact prior v16 snapshot manifest".to_owned(),
+            ));
+        }
+        if capture_legacy_xattrs()?.as_bytes() != legacy_xattrs {
+            return Err(ControllerError(
+                "live legacy app xattrs differ from the exact prior v16 snapshot".to_owned(),
+            ));
+        }
+        for (path, bytes, expected) in [
+            (
+                self.records.path.join("legacy-app-tree-manifest.txt"),
+                legacy_manifest.as_slice(),
+                PRIOR_V16_LEGACY_MANIFEST_SHA256,
+            ),
+            (
+                self.records.path.join("legacy-app-xattrs.txt"),
+                legacy_xattrs.as_slice(),
+                PRIOR_V16_LEGACY_XATTRS_SHA256,
+            ),
+            (
+                self.records.path.join("staged-hashes.txt"),
+                staged_hashes.as_slice(),
+                PRIOR_V16_STAGED_HASHES_SHA256,
+            ),
+            (
+                self.records.path.join("source-export-manifest.txt"),
+                source_export_manifest.as_slice(),
+                PRIOR_V16_SOURCE_EXPORT_MANIFEST_SHA256,
+            ),
+            (
+                self.records.path.join("build.stdout"),
+                build_stdout.as_slice(),
+                PRIOR_V16_BUILD_STDOUT_SHA256,
+            ),
+            (
+                self.records.path.join("build.stderr"),
+                build_stderr.as_slice(),
+                PRIOR_V16_BUILD_STDERR_SHA256,
+            ),
+            (
+                self.records.path.join("rollback-reserve.bin"),
+                rollback_reserve.as_slice(),
+                PRIOR_V16_ROLLBACK_RESERVE_SHA256,
+            ),
+        ] {
+            if sha256_bytes(bytes)? != expected {
+                return Err(ControllerError(format!(
+                    "prior v16 anchored record changed: {}",
+                    path.display()
+                )));
+            }
+        }
+        if !rollback_reserve.is_empty() {
+            return Err(ControllerError(
+                "prior v16 rollback reserve was not durably released".to_owned(),
+            ));
+        }
+        let reserve_metadata = self.rollback_reserve.metadata()?;
+        if reserve_metadata.dev() != PRIOR_V16_ROLLBACK_RESERVE_DEVICE
+            || reserve_metadata.ino() != PRIOR_V16_ROLLBACK_RESERVE_INODE
+        {
+            return Err(ControllerError(
+                "prior v16 rollback reserve inode changed".to_owned(),
+            ));
+        }
+
+        let archive_metadata = self.source_archive.metadata()?;
+        validate_owned_regular(
+            &self.evidence.path.join("source.tar"),
+            &archive_metadata,
+            0o600,
+        )?;
+        let source_archive = read_opened_regular(
+            &self.source_archive,
+            &self.evidence.path.join("source.tar"),
+            0o600,
+        )?;
+        if archive_metadata.len() != PRIOR_V16_SOURCE_ARCHIVE_SIZE
+            || sha256_bytes(&source_archive)? != PRIOR_V16_SOURCE_ARCHIVE_SHA256
+        {
+            return Err(ControllerError(
+                "prior v16 source archive differs from the reviewed rolled-back attempt".to_owned(),
+            ));
+        }
+        let snapshot_executable = read_opened_regular(
+            &self.snapshot_executable,
+            &self.legacy_snapshot.path.join("CaptureServer"),
+            0o500,
+        )?;
+        let snapshot_plist = read_opened_regular(
+            &self.snapshot_plist,
+            &self
+                .legacy_snapshot
+                .path
+                .join("com.elamin.audiostreamer.worldwide.plist"),
+            0o400,
+        )?;
+        if sha256_bytes(&snapshot_executable)? != LEGACY_EXECUTABLE_SHA256
+            || sha256_bytes(&snapshot_plist)? != LEGACY_PLIST_SHA256
+        {
+            return Err(ControllerError(
+                "prior v16 offline legacy snapshot changed".to_owned(),
+            ));
+        }
+
+        let staged_plist = read_opened_regular(
+            &self.staged_plist,
+            &self
+                .staged
+                .path
+                .join("org.example.opensteamer.worldwide.plist"),
+            0o600,
+        )?;
+        let failed_plist = read_opened_regular(
+            &self.failed_plist,
+            &self
+                .failed_new
+                .path
+                .join("org.example.opensteamer.worldwide.plist"),
+            0o600,
+        )?;
+        if sha256_file(&self.staged_app.path.join("Contents/MacOS/CaptureServer"))?
+            != PRIOR_V16_STAGED_EXECUTABLE_SHA256
+            || sha256_file(&self.failed_app.path.join("Contents/MacOS/CaptureServer"))?
+                != PRIOR_V16_STAGED_EXECUTABLE_SHA256
+            || sha256_bytes(&staged_plist)? != PRIOR_V16_STAGED_PLIST_SHA256
+            || sha256_bytes(&failed_plist)? != PRIOR_V16_STAGED_PLIST_SHA256
+        {
+            return Err(ControllerError(
+                "prior v16 staged or archived artifact hash changed".to_owned(),
+            ));
+        }
+        let staged_app_manifest = directory_manifest(&self.staged_app.path)?;
+        let failed_app_manifest = directory_manifest(&self.failed_app.path)?;
+        if sha256_bytes(staged_app_manifest.as_bytes())? != PRIOR_V16_STAGED_APP_MANIFEST_SHA256
+            || failed_app_manifest != staged_app_manifest
+        {
+            return Err(ControllerError(
+                "prior v16 staged or archived full app manifest changed".to_owned(),
+            ));
+        }
+        let staged_symlinks = symlink_target_manifest(&self.staged_app.path)?;
+        let failed_symlinks = symlink_target_manifest(&self.failed_app.path)?;
+        if sha256_bytes(staged_symlinks.as_bytes())? != PRIOR_V16_SYMLINK_TARGET_MANIFEST_SHA256
+            || failed_symlinks != staged_symlinks
+        {
+            return Err(ControllerError(
+                "prior v16 staged or archived symlink target changed".to_owned(),
+            ));
+        }
+        let staged_xattrs = capture_tree_xattrs_until(
+            &self.staged_app.path,
+            deadline_after(DEFAULT_COMMAND_TIMEOUT)?,
+        )?;
+        let failed_xattrs = capture_tree_xattrs_until(
+            &self.failed_app.path,
+            deadline_after(DEFAULT_COMMAND_TIMEOUT)?,
+        )?;
+        if sha256_bytes(staged_xattrs.as_bytes())? != PRIOR_V16_STAGED_APP_XATTRS_SHA256
+            || sha256_bytes(failed_xattrs.as_bytes())? != PRIOR_V16_FAILED_APP_XATTRS_SHA256
+        {
+            return Err(ControllerError(
+                "prior v16 staged or archived app xattrs changed".to_owned(),
+            ));
+        }
+        if staged_plist != failed_plist {
+            return Err(ControllerError(
+                "prior v16 archived plist differs from its staged artifact".to_owned(),
+            ));
+        }
+
+        self.ensure_file_pins()?;
+        self.validate_shape()?;
+        self.revalidate_directories()?;
+        private_root.ensure_file_at_name(PRIOR_V16_ACTIVE_TRANSACTION_NAME, &self.pointer)?;
+        require_prior_retry_residues_absent(
+            private_root,
+            PRIOR_V16_ACTIVE_TRANSACTION_PENDING_NAME,
+            PRIOR_V16_ACTIVE_TRANSACTION_FINALIZING_NAME,
+            PRIOR_V16_ACTIVE_TRANSACTION_LINEARIZED_NAME,
+            "v16",
+            &self.evidence.path,
+        )
+    }
+}
+
+fn validate_prior_v16_rolledback_retry(
+    private_root: &PinnedDirectory,
+) -> Result<PriorV16RetryGuard> {
+    for residue in [
+        PRIOR_V16_ACTIVE_TRANSACTION_PENDING_NAME,
+        PRIOR_V16_ACTIVE_TRANSACTION_FINALIZING_NAME,
+        PRIOR_V16_ACTIVE_TRANSACTION_LINEARIZED_NAME,
+    ] {
+        if private_root
+            .open_existing_regular(residue, false)?
+            .is_some()
+        {
+            return Err(ControllerError(format!(
+                "prior v16 active-pointer residue requires manual recovery: {residue}"
+            )));
+        }
+    }
+    let pointer =
+        open_required_pinned_regular(private_root, PRIOR_V16_ACTIVE_TRANSACTION_NAME, 0o600)?;
+    let pointer_bytes = read_opened_regular(
+        &pointer,
+        &private_root.path.join(PRIOR_V16_ACTIVE_TRANSACTION_NAME),
+        0o600,
+    )?;
+    if pointer_bytes != PRIOR_V16_ACTIVE_RECORD
+        || sha256_bytes(&pointer_bytes)? != PRIOR_V16_ACTIVE_SHA256
+    {
+        return Err(ControllerError(
+            "prior v16 active pointer is not the exact reviewed record".to_owned(),
+        ));
+    }
+    let evidence_path = parse_active_record(&pointer_bytes)?;
+    if evidence_path != Path::new(PRIOR_V16_EVIDENCE_PATH) {
+        return Err(ControllerError(
+            "prior v16 active pointer resolved to unexpected evidence".to_owned(),
+        ));
+    }
+
+    let evidence = PinnedDirectory::open(&evidence_path, Some(effective_uid()), Some(0o700))?;
+    let records = evidence
+        .try_open_directory_child("records", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| ControllerError("prior v16 evidence lacks records".to_owned()))?;
+    let legacy_snapshot = evidence
+        .try_open_directory_child("legacy-snapshot", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| ControllerError("prior v16 evidence lacks legacy snapshot".to_owned()))?;
+    let failed_new = evidence
+        .try_open_directory_child("failed-new", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| ControllerError("prior v16 evidence lacks failed-new".to_owned()))?;
+    let failed_app = failed_new
+        .try_open_directory_child("opensteamer Host.app", Some(effective_uid()), None)?
+        .ok_or_else(|| ControllerError("prior v16 evidence lacks archived app".to_owned()))?;
+    let staged = evidence
+        .try_open_directory_child("staged", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| ControllerError("prior v16 evidence lacks staged directory".to_owned()))?;
+    let staged_app = staged
+        .try_open_directory_child("opensteamer Host.app", Some(effective_uid()), None)?
+        .ok_or_else(|| ControllerError("prior v16 evidence lacks staged app".to_owned()))?;
+    let source_export = evidence
+        .try_open_directory_child("source-export", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| {
+            ControllerError("prior v16 evidence lacks source export directory".to_owned())
+        })?;
+    let scratch = evidence
+        .try_open_directory_child("swiftpm-scratch", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| {
+            ControllerError("prior v16 evidence lacks SwiftPM scratch directory".to_owned())
+        })?;
+    let guard = PriorV16RetryGuard {
+        journal: open_required_pinned_regular(&evidence, "journal.log", 0o600)?,
+        result: open_required_pinned_regular(&records, "result.txt", 0o600)?,
+        provenance: open_required_pinned_regular(&records, "provenance.txt", 0o600)?,
+        legacy_manifest: open_required_pinned_regular(
+            &records,
+            "legacy-app-tree-manifest.txt",
+            0o600,
+        )?,
+        legacy_xattrs: open_required_pinned_regular(&records, "legacy-app-xattrs.txt", 0o600)?,
+        staged_hashes: open_required_pinned_regular(&records, "staged-hashes.txt", 0o600)?,
+        source_export_manifest: open_required_pinned_regular(
+            &records,
+            "source-export-manifest.txt",
+            0o600,
+        )?,
+        build_stdout: open_required_pinned_regular(&records, "build.stdout", 0o600)?,
+        build_stderr: open_required_pinned_regular(&records, "build.stderr", 0o600)?,
+        deployment_stdout: open_required_pinned_regular(&records, "deployment.stdout", 0o600)?,
+        deployment_stderr: open_required_pinned_regular(&records, "deployment.stderr", 0o600)?,
+        rollback_reserve: open_required_pinned_regular(&records, "rollback-reserve.bin", 0o600)?,
+        staged_plist: open_required_pinned_regular(
+            &staged,
+            "org.example.opensteamer.worldwide.plist",
+            0o600,
+        )?,
+        failed_plist: open_required_pinned_regular(
+            &failed_new,
+            "org.example.opensteamer.worldwide.plist",
+            0o600,
+        )?,
+        source_archive: open_required_pinned_regular(&evidence, "source.tar", 0o600)?,
+        snapshot_executable: open_required_pinned_regular(
+            &legacy_snapshot,
+            "CaptureServer",
+            0o500,
+        )?,
+        snapshot_plist: open_required_pinned_regular(
+            &legacy_snapshot,
+            "com.elamin.audiostreamer.worldwide.plist",
+            0o400,
+        )?,
+        pointer,
+        evidence,
+        records,
+        legacy_snapshot,
+        failed_new,
+        failed_app,
+        staged,
+        staged_app,
+        source_export,
+        scratch,
+    };
+    guard.revalidate(private_root)?;
+
+    let deadline = deadline_after(LEGACY_READINESS_TIMEOUT)?;
+    require_new_absent()?;
+    verify_legacy_static_until(deadline)?;
+    verify_legacy_disabled_until(false, deadline)?;
+    wait_for_exact_legacy_readiness_until(deadline)?;
+    guard.revalidate(private_root)?;
+    Ok(guard)
+}
+
 fn start_new(
     repo: PathBuf,
     private_root: &PinnedDirectory,
@@ -7055,6 +7888,7 @@ fn start_new(
     prior_v13: PriorV13RetryGuard,
     prior_v14: PriorV14RetryGuard,
     prior_v15: PriorV15RetryGuard,
+    prior_v16: PriorV16RetryGuard,
 ) -> Result<()> {
     require_fresh_retry_disk_headroom()?;
     let layout = Layout::create(repo)?;
@@ -7066,6 +7900,7 @@ fn start_new(
     prior_fields.extend(prior_v13.journal_fields());
     prior_fields.extend(prior_v14.journal_fields());
     prior_fields.extend(prior_v15.journal_fields());
+    prior_fields.extend(prior_v16.journal_fields());
     journal.transition(State::Begun, &prior_fields)?;
     let operation = (|| {
         prior_v9.revalidate(private_root)?;
@@ -7075,6 +7910,7 @@ fn start_new(
         prior_v13.revalidate(private_root)?;
         prior_v14.revalidate(private_root)?;
         prior_v15.revalidate(private_root)?;
+        prior_v16.revalidate(private_root)?;
         require_all_prior_retry_residues_absent(private_root)?;
         write_active(private_root, &layout.evidence)?;
         prior_v9.revalidate(private_root)?;
@@ -7084,6 +7920,7 @@ fn start_new(
         prior_v13.revalidate(private_root)?;
         prior_v14.revalidate(private_root)?;
         prior_v15.revalidate(private_root)?;
+        prior_v16.revalidate(private_root)?;
         require_all_prior_retry_residues_absent(private_root)?;
         run_transaction(
             &layout,
@@ -7096,6 +7933,7 @@ fn start_new(
             &prior_v13,
             &prior_v14,
             &prior_v15,
+            &prior_v16,
         )
     })();
     match operation {
@@ -7162,7 +8000,7 @@ fn recover_active(repo: PathBuf, private_root: &PinnedDirectory) -> Result<()> {
             )))
         }
         State::CriticalFailure => Err(ControllerError(format!(
-            "active v16 transaction is in CRITICAL_FAILURE; keep Mac offline; evidence={}",
+            "active v17 transaction is in CRITICAL_FAILURE; keep Mac offline; evidence={}",
             layout.evidence.display()
         ))),
         _ => {
@@ -7418,11 +8256,13 @@ struct RealForwardBackend<'a> {
     prior_v13: &'a PriorV13RetryGuard,
     prior_v14: &'a PriorV14RetryGuard,
     prior_v15: &'a PriorV15RetryGuard,
+    prior_v16: &'a PriorV16RetryGuard,
     provenance: Option<Provenance>,
     verifiers: Option<PinnedVerifierSet>,
     cutover: Option<CutoverPreflight>,
     checkpoint: Option<LogCheckpoint>,
     generation: Option<LaunchGeneration>,
+    readiness_deadline: Option<Instant>,
 }
 
 impl<'a> RealForwardBackend<'a> {
@@ -7436,6 +8276,7 @@ impl<'a> RealForwardBackend<'a> {
         prior_v13: &'a PriorV13RetryGuard,
         prior_v14: &'a PriorV14RetryGuard,
         prior_v15: &'a PriorV15RetryGuard,
+        prior_v16: &'a PriorV16RetryGuard,
     ) -> Self {
         Self {
             layout,
@@ -7447,11 +8288,13 @@ impl<'a> RealForwardBackend<'a> {
             prior_v13,
             prior_v14,
             prior_v15,
+            prior_v16,
             provenance: None,
             verifiers: None,
             cutover: None,
             checkpoint: None,
             generation: None,
+            readiness_deadline: None,
         }
     }
 
@@ -7515,6 +8358,7 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
                 self.prior_v13.revalidate(self.private_root)?;
                 self.prior_v14.revalidate(self.private_root)?;
                 self.prior_v15.revalidate(self.private_root)?;
+                self.prior_v16.revalidate(self.private_root)?;
                 require_all_prior_retry_residues_absent(self.private_root)?;
                 self.verifiers
                     .as_ref()
@@ -7541,6 +8385,7 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
                 self.prior_v13.revalidate(self.private_root)?;
                 self.prior_v14.revalidate(self.private_root)?;
                 self.prior_v15.revalidate(self.private_root)?;
+                self.prior_v16.revalidate(self.private_root)?;
                 require_all_prior_retry_residues_absent(self.private_root)?;
                 self.verifiers
                     .as_ref()
@@ -7655,11 +8500,15 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
                 let generation = self.generation.as_ref().ok_or_else(|| {
                     ControllerError("forward engine lacks a launch generation".to_owned())
                 })?;
-                wait_for_online_marker_for_generation(
+                let readiness_deadline = deadline_after(DEPLOYMENT_VERIFIER_TIMEOUT)?;
+                self.readiness_deadline = Some(readiness_deadline);
+                let marker_deadline =
+                    readiness_deadline.min(deadline_after(Duration::from_secs(20))?);
+                wait_for_online_marker_for_generation_until(
                     Path::new(ONLINE_LOG),
                     &checkpoint,
                     generation,
-                    Duration::from_secs(20),
+                    marker_deadline,
                 )
             }
             ForwardEffect::VerifyStableDeployment => {
@@ -7672,9 +8521,25 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
                 let verifiers = self.verifiers.as_ref().ok_or_else(|| {
                     ControllerError("forward engine lacks pinned verifier set".to_owned())
                 })?;
-                verify_deployment(self.layout, verifiers, generation, &checkpoint)?;
-                verify_launch_generation(NEW_LABEL, NEW_EXECUTABLE, generation)?;
-                verify_legacy_disabled(true)
+                let deadline = self.readiness_deadline.ok_or_else(|| {
+                    ControllerError("forward engine lacks its shared readiness deadline".to_owned())
+                })?;
+                verify_deployment_with_prefix_until(
+                    self.layout,
+                    verifiers,
+                    generation,
+                    &checkpoint,
+                    "deployment",
+                    deadline,
+                )?;
+                verify_launch_generation_until(NEW_LABEL, NEW_EXECUTABLE, generation, deadline)?;
+                require_marker_after_checkpoint_until(
+                    Path::new(ONLINE_LOG),
+                    &checkpoint,
+                    generation,
+                    deadline,
+                )?;
+                verify_legacy_disabled_until(true, deadline)
             }
             ForwardEffect::VerifyCommitState => {
                 let generation = self
@@ -7684,17 +8549,25 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
                 let checkpoint = self
                     .checkpoint
                     .ok_or_else(|| ControllerError("commit has no marker checkpoint".to_owned()))?;
-                verify_launch_generation(NEW_LABEL, NEW_EXECUTABLE, generation)?;
-                require_marker_after_checkpoint(Path::new(ONLINE_LOG), &checkpoint)?;
-                verify_legacy_disabled(true)?;
-                if service_state(LEGACY_LABEL)? != ServiceState::Absent
-                    || !exact_process_pids(LEGACY_EXECUTABLE)?.is_empty()
+                let deadline = self.readiness_deadline.ok_or_else(|| {
+                    ControllerError("commit has no shared readiness deadline".to_owned())
+                })?;
+                verify_launch_generation_until(NEW_LABEL, NEW_EXECUTABLE, generation, deadline)?;
+                require_marker_after_checkpoint_until(
+                    Path::new(ONLINE_LOG),
+                    &checkpoint,
+                    generation,
+                    deadline,
+                )?;
+                verify_legacy_disabled_until(true, deadline)?;
+                if service_state_until(LEGACY_LABEL, deadline)? != ServiceState::Absent
+                    || !exact_process_pids_until(LEGACY_EXECUTABLE, deadline)?.is_empty()
                 {
                     return Err(ControllerError(
                         "legacy host reappeared immediately before COMMIT".to_owned(),
                     ));
                 }
-                verify_launch_generation(NEW_LABEL, NEW_EXECUTABLE, generation)
+                verify_launch_generation_until(NEW_LABEL, NEW_EXECUTABLE, generation, deadline)
             }
         }
     }
@@ -7742,9 +8615,18 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
         let checkpoint = self.checkpoint.ok_or_else(|| {
             ControllerError("final COMMIT revalidation has no log checkpoint".to_owned())
         })?;
-        let deadline = deadline_after(Duration::from_secs(10))?;
+        let deadline = self.readiness_deadline.ok_or_else(|| {
+            ControllerError(
+                "final COMMIT revalidation lacks its shared readiness deadline".to_owned(),
+            )
+        })?;
         verify_launch_generation_until(NEW_LABEL, NEW_EXECUTABLE, generation, deadline)?;
-        require_marker_after_checkpoint(Path::new(ONLINE_LOG), &checkpoint)?;
+        require_marker_after_checkpoint_until(
+            Path::new(ONLINE_LOG),
+            &checkpoint,
+            generation,
+            deadline,
+        )?;
         verify_legacy_disabled_until(true, deadline)?;
         if service_state_until(LEGACY_LABEL, deadline)? != ServiceState::Absent
             || !exact_process_pids_until(LEGACY_EXECUTABLE, deadline)?.is_empty()
@@ -7785,6 +8667,7 @@ fn run_transaction(
     prior_v13: &PriorV13RetryGuard,
     prior_v14: &PriorV14RetryGuard,
     prior_v15: &PriorV15RetryGuard,
+    prior_v16: &PriorV16RetryGuard,
 ) -> Result<()> {
     let mut backend = RealForwardBackend::new(
         layout,
@@ -7796,13 +8679,20 @@ fn run_transaction(
         prior_v13,
         prior_v14,
         prior_v15,
+        prior_v16,
     );
     let fields = drive_forward(&mut backend, journal, |_, _, _, _, _| Ok(()))?;
     release_rollback_reserve(layout, journal)?;
     backend.finalize_success()?;
+    let readiness_deadline = backend.readiness_deadline.ok_or_else(|| {
+        ControllerError(
+            "retained active-pointer proof lacks its shared readiness deadline".to_owned(),
+        )
+    })?;
     verify_retained_active_pointer_after_commit(
         private_root,
         &format!("{}\n", layout.evidence.display()).into_bytes(),
+        readiness_deadline,
         || backend.revalidate_commit_fields(&fields),
         |_| Ok(()),
     )?;
@@ -8656,6 +9546,7 @@ fn verify_committed_destinations(layout: &Layout, verifiers: &PinnedVerifierSet)
         verifiers,
         &verifiers.bundle,
         &[
+            OsStr::new("--installed-runtime"),
             OsStr::new(NEW_APP),
             OsStr::new(TEAM_ID),
             layout.legacy_snapshot_executable.as_os_str(),
@@ -8679,33 +9570,6 @@ fn verify_committed_destinations(layout: &Layout, verifiers: &PinnedVerifierSet)
     Ok(())
 }
 
-fn verify_deployment(
-    layout: &Layout,
-    verifiers: &PinnedVerifierSet,
-    generation: &LaunchGeneration,
-    log_checkpoint: &LogCheckpoint,
-) -> Result<()> {
-    verify_deployment_with_prefix(layout, verifiers, generation, log_checkpoint, "deployment")
-}
-
-fn verify_deployment_with_prefix(
-    layout: &Layout,
-    verifiers: &PinnedVerifierSet,
-    generation: &LaunchGeneration,
-    log_checkpoint: &LogCheckpoint,
-    record_prefix: &str,
-) -> Result<()> {
-    let deadline = deadline_after(DEPLOYMENT_VERIFIER_TIMEOUT)?;
-    verify_deployment_with_prefix_until(
-        layout,
-        verifiers,
-        generation,
-        log_checkpoint,
-        record_prefix,
-        deadline,
-    )
-}
-
 fn verify_deployment_with_prefix_until(
     layout: &Layout,
     verifiers: &PinnedVerifierSet,
@@ -8715,7 +9579,12 @@ fn verify_deployment_with_prefix_until(
     deadline: Instant,
 ) -> Result<()> {
     verify_launch_generation_until(NEW_LABEL, NEW_EXECUTABLE, generation, deadline)?;
-    require_marker_after_checkpoint_until(Path::new(ONLINE_LOG), log_checkpoint, deadline)?;
+    require_marker_after_checkpoint_until(
+        Path::new(ONLINE_LOG),
+        log_checkpoint,
+        generation,
+        deadline,
+    )?;
     let controller_binary = env::var_os("OPENSTEAMER_MIGRATION_CONTROLLER_BINARY")
         .map(PathBuf::from)
         .unwrap_or(env::current_exe()?);
@@ -8786,7 +9655,12 @@ fn verify_deployment_with_prefix_until(
         )));
     }
     verify_launch_generation_until(NEW_LABEL, NEW_EXECUTABLE, generation, deadline)?;
-    require_marker_after_checkpoint_until(Path::new(ONLINE_LOG), log_checkpoint, deadline)
+    require_marker_after_checkpoint_until(
+        Path::new(ONLINE_LOG),
+        log_checkpoint,
+        generation,
+        deadline,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -8866,6 +9740,7 @@ struct RealCommittedRecoveryBackend<'a> {
     historical_nonce: String,
     checkpoint: Option<LogCheckpoint>,
     current_generation: Option<LaunchGeneration>,
+    readiness_deadline: Option<Instant>,
 }
 
 impl RealCommittedRecoveryBackend<'_> {
@@ -8912,9 +9787,19 @@ impl RealCommittedRecoveryBackend<'_> {
                     .to_owned(),
             ));
         }
-        let deadline = deadline_after(Duration::from_secs(10))?;
+        let deadline = self.readiness_deadline.ok_or_else(|| {
+            ControllerError(
+                "committed-recovery retained-pointer validation lacks its shared readiness deadline"
+                    .to_owned(),
+            )
+        })?;
         verify_launch_generation_until(NEW_LABEL, NEW_EXECUTABLE, generation, deadline)?;
-        require_marker_after_checkpoint(Path::new(ONLINE_LOG), &checkpoint)?;
+        require_marker_after_checkpoint_until(
+            Path::new(ONLINE_LOG),
+            &checkpoint,
+            generation,
+            deadline,
+        )?;
         verify_legacy_disabled_until(true, deadline)?;
         if service_state_until(LEGACY_LABEL, deadline)? != ServiceState::Absent
             || !exact_process_pids_until(LEGACY_EXECUTABLE, deadline)?.is_empty()
@@ -9012,11 +9897,15 @@ impl CommittedRecoveryBackend for RealCommittedRecoveryBackend<'_> {
                 let generation = self.current_generation.as_ref().ok_or_else(|| {
                     ControllerError("committed recovery marker check lacks a generation".to_owned())
                 })?;
-                wait_for_online_marker_for_generation(
+                let readiness_deadline = deadline_after(DEPLOYMENT_VERIFIER_TIMEOUT)?;
+                self.readiness_deadline = Some(readiness_deadline);
+                let marker_deadline =
+                    readiness_deadline.min(deadline_after(Duration::from_secs(20))?);
+                wait_for_online_marker_for_generation_until(
                     Path::new(ONLINE_LOG),
                     &checkpoint,
                     generation,
-                    Duration::from_secs(20),
+                    marker_deadline,
                 )?;
                 Ok(Vec::new())
             }
@@ -9031,24 +9920,35 @@ impl CommittedRecoveryBackend for RealCommittedRecoveryBackend<'_> {
                         "committed recovery stability check lacks a generation".to_owned(),
                     )
                 })?;
-                verify_deployment_with_prefix(
+                let deadline = self.readiness_deadline.ok_or_else(|| {
+                    ControllerError(
+                        "committed recovery lacks its shared readiness deadline".to_owned(),
+                    )
+                })?;
+                verify_deployment_with_prefix_until(
                     self.layout,
                     &self.verifiers,
                     generation,
                     &checkpoint,
                     "deployment-committed-recovery",
+                    deadline,
                 )?;
-                verify_launch_generation(NEW_LABEL, NEW_EXECUTABLE, generation)?;
-                require_marker_after_checkpoint(Path::new(ONLINE_LOG), &checkpoint)?;
-                verify_legacy_disabled(true)?;
-                if service_state(LEGACY_LABEL)? != ServiceState::Absent
-                    || !exact_process_pids(LEGACY_EXECUTABLE)?.is_empty()
+                verify_launch_generation_until(NEW_LABEL, NEW_EXECUTABLE, generation, deadline)?;
+                require_marker_after_checkpoint_until(
+                    Path::new(ONLINE_LOG),
+                    &checkpoint,
+                    generation,
+                    deadline,
+                )?;
+                verify_legacy_disabled_until(true, deadline)?;
+                if service_state_until(LEGACY_LABEL, deadline)? != ServiceState::Absent
+                    || !exact_process_pids_until(LEGACY_EXECUTABLE, deadline)?.is_empty()
                 {
                     return Err(ControllerError(
                         "legacy host appeared during committed recovery".to_owned(),
                     ));
                 }
-                verify_launch_generation(NEW_LABEL, NEW_EXECUTABLE, generation)?;
+                verify_launch_generation_until(NEW_LABEL, NEW_EXECUTABLE, generation, deadline)?;
                 self.recovery_fields()
             }
         }
@@ -9078,6 +9978,7 @@ fn verify_committed_runtime(
         historical_nonce,
         checkpoint: None,
         current_generation: None,
+        readiness_deadline: None,
     };
     drive_committed_recovery(&mut backend, journal, |_, _, _| Ok(()))?;
     write_record_idempotent(
@@ -9089,9 +9990,16 @@ fn verify_committed_runtime(
         .as_bytes(),
         0o600,
     )?;
+    let readiness_deadline = backend.readiness_deadline.ok_or_else(|| {
+        ControllerError(
+            "committed-recovery retained active-pointer proof lacks its shared readiness deadline"
+                .to_owned(),
+        )
+    })?;
     verify_retained_active_pointer_after_commit(
         private_root,
         &format!("{}\n", layout.evidence.display()).into_bytes(),
+        readiness_deadline,
         || backend.revalidate_current_generation_for_retained_pointer(),
         |_| Ok(()),
     )?;
@@ -9472,9 +10380,9 @@ fn release_rollback_reserve_at(
 fn rollback_hidden_paths(layout: &Layout) -> Result<(PathBuf, PathBuf, PathBuf, PathBuf)> {
     let tag = layout.transaction_tag()?;
     Ok((
-        Path::new(APPLICATIONS_DIRECTORY).join(format!(".opensteamer-disabled-v16-{tag}")),
+        Path::new(APPLICATIONS_DIRECTORY).join(format!(".opensteamer-disabled-v17-{tag}")),
         Path::new("/Users/ahmed/Library/LaunchAgents").join(format!(
-            ".org.example.opensteamer.worldwide.plist.disabled-v16-{tag}"
+            ".org.example.opensteamer.worldwide.plist.disabled-v17-{tag}"
         )),
         layout.install_app_hold()?,
         layout.install_plist_hold()?,
@@ -10582,7 +11490,8 @@ fn verify_launch_generation_until(
             actual.lock_inode
         )));
     }
-    Ok(())
+    prove_generation_lock_held_only_by_until(expected, deadline)?;
+    require_before_deadline(deadline, "launch generation and lock acceptance")
 }
 
 fn verify_launch_generation(
@@ -10699,7 +11608,65 @@ fn prove_lock_held_only_by_until(expected_pid: u32, deadline: Instant) -> Result
             "nonblocking shared-lock probe failed operationally: {error}"
         )));
     }
-    revalidate_lock_path(&metadata, &file.metadata()?)
+    revalidate_lock_path(&metadata, &file.metadata()?)?;
+    let mut expected_openers_after_probe = expected_holders.clone();
+    expected_openers_after_probe.insert(process::id());
+    let holders_after_probe = lsof_holders_until(Path::new(LOCK_FILE), deadline)?;
+    if holders_after_probe != expected_openers_after_probe {
+        return Err(ControllerError(format!(
+            "shared lock openers changed after contention probe: {holders_after_probe:?}, expected host {expected_pid} and controller {}",
+            process::id()
+        )));
+    }
+    // A second failed acquisition after holder attribution closes the release/reacquire interval:
+    // the controller itself is the only additional opener and does not hold the lock.
+    let reprobe = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
+    if reprobe == 0 {
+        // SAFETY: release the unexpectedly acquired lock before returning failure.
+        let _ = unsafe { flock(file.as_raw_fd(), LOCK_UN) };
+        return Err(ControllerError(
+            "shared advisory lock became acquirable after holder attribution".to_owned(),
+        ));
+    }
+    let reprobe_error = io::Error::last_os_error();
+    if !matches!(reprobe_error.raw_os_error(), Some(11) | Some(35)) {
+        return Err(ControllerError(format!(
+            "second nonblocking shared-lock probe failed operationally: {reprobe_error}"
+        )));
+    }
+    revalidate_lock_path(&metadata, &file.metadata()?)?;
+    let holders_after_reprobe = lsof_holders_until(Path::new(LOCK_FILE), deadline)?;
+    if holders_after_reprobe != expected_openers_after_probe {
+        return Err(ControllerError(format!(
+            "shared lock openers changed after the second contention probe: {holders_after_reprobe:?}, expected host {expected_pid} and controller {}",
+            process::id()
+        )));
+    }
+    revalidate_lock_path(&metadata, &file.metadata()?)?;
+    require_before_deadline(deadline, "shared lock-holder acceptance")
+}
+
+fn prove_generation_lock_held_only_by_until(
+    expected: &LaunchGeneration,
+    deadline: Instant,
+) -> Result<()> {
+    prove_lock_held_only_by_until(expected.pid, deadline)?;
+    let Some((pid, nonce, device, inode)) = read_generation_record()? else {
+        return Err(ControllerError(
+            "generation lock record disappeared after the contention proof".to_owned(),
+        ));
+    };
+    if pid != expected.pid
+        || nonce != expected.nonce
+        || device != expected.lock_device
+        || inode != expected.lock_inode
+    {
+        return Err(ControllerError(
+            "generation lock record changed after the contention proof".to_owned(),
+        ));
+    }
+    prove_lock_held_only_by_until(expected.pid, deadline)?;
+    require_before_deadline(deadline, "generation lock-holder acceptance")
 }
 
 fn prove_lock_acquirable_until(deadline: Instant) -> Result<()> {
@@ -10787,51 +11754,12 @@ fn probe_lock_cli(runtime: &Path, lock_path: &Path, expected_pid_text: &str) -> 
             "expected lock-holder PID must be positive".to_owned(),
         ));
     }
-    if lock_path.parent() != Some(runtime) {
+    if runtime != Path::new(LOCK_DIRECTORY) || lock_path != Path::new(LOCK_FILE) {
         return Err(ControllerError(
-            "lock file must be an immediate child of the supplied runtime directory".to_owned(),
+            "lock proof paths must match the canonical shared runtime and lock".to_owned(),
         ));
     }
-    let lock_name = lock_path
-        .file_name()
-        .and_then(OsStr::to_str)
-        .ok_or_else(|| ControllerError("lock filename is not UTF-8".to_owned()))?;
-    let parent = PinnedDirectory::open(runtime, Some(effective_uid()), Some(0o700))?;
-    let file = parent
-        .open_existing_regular(lock_name, true)?
-        .ok_or_else(|| ControllerError("shared runtime lock is missing".to_owned()))?;
-    validate_owned_regular(lock_path, &file.metadata()?, 0o600)?;
-    let holders = lsof_holders(lock_path)?;
-    let expected: BTreeSet<u32> = std::iter::once(expected_pid).collect();
-    if holders != expected {
-        return Err(ControllerError(format!(
-            "shared lock holders {holders:?}, expected only {expected_pid}"
-        )));
-    }
-    // SAFETY: flock is called with a valid open descriptor.
-    let result = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
-    if result == 0 {
-        // SAFETY: release the unexpectedly acquired probe lock.
-        let _ = unsafe { flock(file.as_raw_fd(), LOCK_UN) };
-        return Err(ControllerError(
-            "shared advisory lock was unexpectedly acquirable".to_owned(),
-        ));
-    }
-    let error = io::Error::last_os_error();
-    if !matches!(error.raw_os_error(), Some(11) | Some(35)) {
-        return Err(ControllerError(format!(
-            "nonblocking shared-lock probe failed operationally: {error}"
-        )));
-    }
-    let reopened = parent
-        .open_existing_regular(lock_name, false)?
-        .ok_or_else(|| ControllerError("shared lock disappeared during probe".to_owned()))?;
-    if !same_inode(&file.metadata()?, &reopened.metadata()?) {
-        return Err(ControllerError(
-            "shared lock inode was substituted during probe".to_owned(),
-        ));
-    }
-    parent.revalidate()?;
+    prove_lock_held_only_by_until(expected_pid, deadline_after(DEFAULT_COMMAND_TIMEOUT)?)?;
     println!("lock_holder={expected_pid}");
     Ok(())
 }
@@ -10869,10 +11797,6 @@ fn lsof_holders_until(path: &Path, deadline: Instant) -> Result<BTreeSet<u32>> {
         );
     }
     Ok(holders)
-}
-
-fn lsof_holders(path: &Path) -> Result<BTreeSet<u32>> {
-    lsof_holders_until(path, deadline_after(DEFAULT_COMMAND_TIMEOUT)?)
 }
 
 fn validate_logs_precutover() -> Result<()> {
@@ -10964,25 +11888,34 @@ fn revalidate_log_checkpoint(path: &Path, checkpoint: &LogCheckpoint) -> Result<
     Ok(())
 }
 
-fn require_marker_after_checkpoint(path: &Path, checkpoint: &LogCheckpoint) -> Result<()> {
-    require_marker_after_checkpoint_until(
-        path,
-        checkpoint,
-        deadline_after(DEFAULT_COMMAND_TIMEOUT)?,
+fn expected_online_marker_for_generation(generation: &LaunchGeneration) -> String {
+    format!(
+        "[info] {ONLINE_MARKER} pid={} nonce={}",
+        generation.pid, generation.nonce
     )
 }
 
-fn require_marker_after_checkpoint_until(
+fn read_bounded_log_suffix_until(
     path: &Path,
     checkpoint: &LogCheckpoint,
     deadline: Instant,
-) -> Result<()> {
+) -> Result<String> {
     require_before_deadline(deadline, "generation-bound marker validation")?;
     let before = fs::symlink_metadata(path)?;
     validate_owned_regular(path, &before, 0o600)?;
     if before.dev() != checkpoint.device || before.ino() != checkpoint.inode {
         return Err(ControllerError(
             "online log inode differs from the generation-bound checkpoint".to_owned(),
+        ));
+    }
+    if before.len() < checkpoint.offset {
+        return Err(ControllerError(
+            "online log was truncated after the generation-bound checkpoint".to_owned(),
+        ));
+    }
+    if before.len().saturating_sub(checkpoint.offset) > MAX_COMMAND_OUTPUT_BYTES as u64 {
+        return Err(ControllerError(
+            "online log suffix exceeds its bounded readiness-evidence limit".to_owned(),
         ));
     }
     let mut file = OpenOptions::new()
@@ -10996,10 +11929,21 @@ fn require_marker_after_checkpoint_until(
         ));
     }
     file.seek(SeekFrom::Start(checkpoint.offset))?;
-    let mut suffix = String::new();
-    file.take((MAX_COMMAND_OUTPUT_BYTES + 1) as u64)
-        .read_to_string(&mut suffix)
-        .map_err(|_| ControllerError("online log suffix is not UTF-8".to_owned()))?;
+    let mut suffix = Vec::new();
+    let mut chunk = [0u8; 64 * 1024];
+    loop {
+        require_before_deadline(deadline, "generation-bound marker validation")?;
+        let remaining = (MAX_COMMAND_OUTPUT_BYTES + 1).saturating_sub(suffix.len());
+        if remaining == 0 {
+            break;
+        }
+        let length = remaining.min(chunk.len());
+        let count = file.read(&mut chunk[..length])?;
+        if count == 0 {
+            break;
+        }
+        suffix.extend_from_slice(&chunk[..count]);
+    }
     if suffix.len() > MAX_COMMAND_OUTPUT_BYTES {
         return Err(ControllerError(
             "online log suffix exceeds its bounded readiness-evidence limit".to_owned(),
@@ -11009,70 +11953,64 @@ fn require_marker_after_checkpoint_until(
     let after = fs::symlink_metadata(path)?;
     if !same_inode(&opened, &after) {
         return Err(ControllerError(
-            "online log inode changed while revalidating readiness evidence".to_owned(),
+            "online log inode changed while reading readiness evidence".to_owned(),
         ));
     }
-    if !suffix.lines().any(|line| line.contains(ONLINE_MARKER)) {
+    if after.len() < checkpoint.offset {
         return Err(ControllerError(
-            "generation-bound online marker disappeared before commit".to_owned(),
+            "online log was truncated while reading readiness evidence".to_owned(),
+        ));
+    }
+    if after.len().saturating_sub(checkpoint.offset) > MAX_COMMAND_OUTPUT_BYTES as u64 {
+        return Err(ControllerError(
+            "online log suffix exceeds its bounded readiness-evidence limit".to_owned(),
+        ));
+    }
+    require_before_deadline(deadline, "generation-bound marker validation")?;
+    String::from_utf8(suffix)
+        .map_err(|_| ControllerError("online log suffix is not UTF-8".to_owned()))
+}
+
+fn require_marker_after_checkpoint_until(
+    path: &Path,
+    checkpoint: &LogCheckpoint,
+    generation: &LaunchGeneration,
+    deadline: Instant,
+) -> Result<()> {
+    let suffix = read_bounded_log_suffix_until(path, checkpoint, deadline)?;
+    let expected = expected_online_marker_for_generation(generation);
+    if !suffix.lines().any(|line| line == expected) {
+        return Err(ControllerError(
+            "exact PID-and-nonce-bound online marker disappeared before commit".to_owned(),
         ));
     }
     require_before_deadline(deadline, "generation-bound marker validation")?;
     Ok(())
 }
 
-fn wait_for_online_marker_for_generation(
+fn wait_for_online_marker_for_generation_until(
     path: &Path,
     checkpoint: &LogCheckpoint,
     generation: &LaunchGeneration,
-    timeout: Duration,
+    deadline: Instant,
 ) -> Result<()> {
-    let deadline = deadline_after(timeout)?;
+    let expected = expected_online_marker_for_generation(generation);
     loop {
         if Instant::now() >= deadline {
             return Err(ControllerError(
-                "fresh online marker was not observed after the current generation was identified"
-                    .to_owned(),
+                "fresh PID-and-nonce-bound online marker was not observed after the current generation was identified".to_owned(),
             ));
         }
         verify_launch_generation_until(NEW_LABEL, NEW_EXECUTABLE, generation, deadline)?;
-        let before = fs::symlink_metadata(path)?;
-        validate_owned_regular(path, &before, 0o600)?;
-        if before.dev() != checkpoint.device || before.ino() != checkpoint.inode {
-            return Err(ControllerError(
-                "online log inode was substituted after the generation-bound checkpoint".to_owned(),
-            ));
-        }
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc_o_nofollow() | O_NONBLOCK_VALUE)
-            .open(path)?;
-        let opened = file.metadata()?;
-        if !same_inode(&before, &opened) || opened.len() < checkpoint.offset {
-            return Err(ControllerError(
-                "online log was replaced or truncated after the generation-bound checkpoint"
-                    .to_owned(),
-            ));
-        }
-        file.seek(SeekFrom::Start(checkpoint.offset))?;
-        let mut suffix = String::new();
-        file.read_to_string(&mut suffix)
-            .map_err(|_| ControllerError("online log suffix is not UTF-8".to_owned()))?;
-        let after = fs::symlink_metadata(path)?;
-        if !same_inode(&opened, &after) {
-            return Err(ControllerError(
-                "online log inode changed while reading readiness evidence".to_owned(),
-            ));
-        }
+        let suffix = read_bounded_log_suffix_until(path, checkpoint, deadline)?;
         verify_launch_generation_until(NEW_LABEL, NEW_EXECUTABLE, generation, deadline)?;
-        if suffix.lines().any(|line| line.contains(ONLINE_MARKER)) {
+        if suffix.lines().any(|line| line == expected) {
             return Ok(());
         }
         let now = Instant::now();
         if now >= deadline {
             return Err(ControllerError(
-                "fresh online marker was not observed after the current generation was identified"
-                    .to_owned(),
+                "fresh PID-and-nonce-bound online marker was not observed after the current generation was identified".to_owned(),
             ));
         }
         thread::sleep(
@@ -11198,10 +12136,40 @@ fn read_pinned_regular(parent: &PinnedDirectory, name: &str, mode: u32) -> Resul
     Ok(bytes)
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ActivePointerRecovery {
     None,
     Active,
+}
+
+fn inspect_active_pointer_read_only(parent: &PinnedDirectory) -> Result<ActivePointerRecovery> {
+    let mut present = Vec::new();
+    for name in [
+        ACTIVE_TRANSACTION_NAME,
+        ACTIVE_TRANSACTION_PENDING_NAME,
+        ACTIVE_TRANSACTION_FINALIZING_NAME,
+        ACTIVE_TRANSACTION_LINEARIZED_NAME,
+    ] {
+        if let Some(file) = parent.open_existing_regular(name, false)? {
+            let path = parent.path.join(name);
+            let bytes = read_opened_regular(&file, &path, 0o600)?;
+            let _ = parse_v17_active_record(&bytes).map_err(|error| {
+                ControllerError(format!(
+                    "version-17 active-pointer residue was retained without mutation: {error}"
+                ))
+            })?;
+            parent.ensure_file_at_name(name, &file)?;
+            present.push(name);
+        }
+    }
+    if present.is_empty() {
+        Ok(ActivePointerRecovery::None)
+    } else {
+        Err(ControllerError(format!(
+            "version-17 active-pointer namespace is occupied; inspection retained every name without mutation: {}",
+            present.join(",")
+        )))
+    }
 }
 
 fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecovery> {
@@ -11221,7 +12189,7 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
     if linearized_exists {
         let linearized_bytes =
             read_pinned_regular(parent, ACTIVE_TRANSACTION_LINEARIZED_NAME, 0o600)?;
-        let _ = parse_v16_active_record(&linearized_bytes)?;
+        let _ = parse_v17_active_record(&linearized_bytes)?;
         if finalizing_exists {
             let finalizing_bytes =
                 read_pinned_regular(parent, ACTIVE_TRANSACTION_FINALIZING_NAME, 0o600)?;
@@ -11245,7 +12213,7 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
         }
         let finalizing_bytes =
             read_pinned_regular(parent, ACTIVE_TRANSACTION_FINALIZING_NAME, 0o600)?;
-        let _ = parse_v16_active_record(&finalizing_bytes)?;
+        let _ = parse_v17_active_record(&finalizing_bytes)?;
         if active_exists {
             let active_bytes = read_pinned_regular(parent, ACTIVE_TRANSACTION_NAME, 0o600)?;
             if active_bytes != finalizing_bytes {
@@ -11270,7 +12238,7 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
     match (active_exists, pending_exists) {
         (false, false) => Ok(ActivePointerRecovery::None),
         (true, false) => {
-            let _ = parse_v16_active_record(&read_pinned_regular(
+            let _ = parse_v17_active_record(&read_pinned_regular(
                 parent,
                 ACTIVE_TRANSACTION_NAME,
                 0o600,
@@ -11286,14 +12254,14 @@ fn recover_active_pointer(parent: &PinnedDirectory) -> Result<ActivePointerRecov
                     "active and pending transaction records disagree".to_owned(),
                 ));
             }
-            let _ = parse_v16_active_record(&active_bytes)?;
+            let _ = parse_v17_active_record(&active_bytes)?;
             // An identical pending record is harmless retained evidence. It is intentionally not
             // unlinked because validation and pathname deletion cannot be made atomic on macOS.
             Ok(ActivePointerRecovery::Active)
         }
         (false, true) => {
             let bytes = read_pinned_regular(parent, ACTIVE_TRANSACTION_PENDING_NAME, 0o600)?;
-            let _ = parse_v16_active_record(&bytes).map_err(|error| {
+            let _ = parse_v17_active_record(&bytes).map_err(|error| {
                 ControllerError(format!(
                     "malformed pending active pointer was retained without mutation: {error}"
                 ))
@@ -11412,18 +12380,18 @@ fn write_active(parent: &PinnedDirectory, evidence: &Path) -> Result<()> {
 }
 
 fn read_active(parent: &PinnedDirectory) -> Result<PathBuf> {
-    parse_v16_active_record(&read_pinned_regular(
+    parse_v17_active_record(&read_pinned_regular(
         parent,
         ACTIVE_TRANSACTION_NAME,
         0o600,
     )?)
 }
 
-fn parse_v16_active_record(bytes: &[u8]) -> Result<PathBuf> {
+fn parse_v17_active_record(bytes: &[u8]) -> Result<PathBuf> {
     let evidence = parse_active_record(bytes)?;
-    if evidence != Path::new(V16_EVIDENCE_PATH) {
+    if evidence != Path::new(V17_EVIDENCE_PATH) {
         return Err(ControllerError(format!(
-            "v16 active pointer selects unreviewed evidence: {}",
+            "v17 active pointer selects unreviewed evidence: {}",
             evidence.display()
         )));
     }
@@ -11460,6 +12428,7 @@ enum RetainedActivePointerPhase {
 fn verify_retained_active_pointer_after_commit<P, H>(
     parent: &PinnedDirectory,
     expected: &[u8],
+    deadline: Instant,
     mut prove_current_generation: P,
     mut hook: H,
 ) -> Result<()>
@@ -11472,7 +12441,9 @@ where
     // pathname. Consequently there is no check/publication or check/unlink interval in which a
     // same-UID replacement can become authoritative or be deleted. This proof is a committed
     // readiness observation. A KeepAlive restart after it is ordinary committed lifecycle.
+    require_before_deadline(deadline, "retained active-pointer acceptance")?;
     let before = read_pinned_regular(parent, ACTIVE_TRANSACTION_NAME, 0o600)?;
+    require_before_deadline(deadline, "retained active-pointer acceptance")?;
     if before != expected {
         return Err(ControllerError(
             "retained active pointer differs from the committed evidence path".to_owned(),
@@ -11480,8 +12451,10 @@ where
     }
     hook(RetainedActivePointerPhase::AfterInitialPointerValidation)?;
     prove_current_generation()?;
+    require_before_deadline(deadline, "retained active-pointer acceptance")?;
     hook(RetainedActivePointerPhase::AfterCommittedGenerationProof)?;
     let after = read_pinned_regular(parent, ACTIVE_TRANSACTION_NAME, 0o600)?;
+    require_before_deadline(deadline, "retained active-pointer acceptance")?;
     if after != expected {
         return Err(ControllerError(
             "retained active pointer changed after the committed generation proof; preserving it"
@@ -11489,7 +12462,7 @@ where
         ));
     }
     hook(RetainedActivePointerPhase::AfterFinalPointerValidation)?;
-    Ok(())
+    require_before_deadline(deadline, "retained active-pointer acceptance")
 }
 
 fn entry_exists(path: &Path) -> Result<bool> {
@@ -12919,7 +13892,7 @@ impl Drop for TemporaryDirectory {
     }
 }
 
-const FAKE_JOURNAL_VERSION: &str = "OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V16";
+const FAKE_JOURNAL_VERSION: &str = "OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V17";
 
 struct FakeJournal {
     path: PathBuf,
@@ -14545,7 +15518,106 @@ fn self_test_rollback() -> Result<()> {
     Ok(())
 }
 
+fn self_test_real_marker_contract() -> Result<()> {
+    let generation_a = LaunchGeneration {
+        pid: 4_201,
+        runs: 1,
+        process_start: "generation-a".to_owned(),
+        nonce: "a".repeat(64),
+        lock_device: 7,
+        lock_inode: 11,
+    };
+    let mut generation_b = generation_a.clone();
+    generation_b.pid = 4_202;
+    generation_b.process_start = "generation-b".to_owned();
+    generation_b.nonce = "b".repeat(64);
+
+    let directory = TemporaryDirectory::create("real-generation-marker")?;
+    let log = directory.path.join("online.log");
+    let marker = format!("{}\n", expected_online_marker_for_generation(&generation_a));
+    write_record(&log, marker.as_bytes(), 0o600)?;
+    let metadata = fs::symlink_metadata(&log)?;
+    let checkpoint = LogCheckpoint {
+        offset: 0,
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    };
+    require_marker_after_checkpoint_until(
+        &log,
+        &checkpoint,
+        &generation_a,
+        deadline_after(Duration::from_secs(1))?,
+    )?;
+    if require_marker_after_checkpoint_until(
+        &log,
+        &checkpoint,
+        &generation_b,
+        deadline_after(Duration::from_secs(1))?,
+    )
+    .is_ok()
+    {
+        return Err(ControllerError(
+            "real marker contract reused generation A readiness for observed generation B"
+                .to_owned(),
+        ));
+    }
+
+    let near_log = directory.path.join("online-near.log");
+    let near_marker = format!(
+        "{} unexpected-suffix\n",
+        expected_online_marker_for_generation(&generation_a)
+    );
+    write_record(&near_log, near_marker.as_bytes(), 0o600)?;
+    let near_metadata = fs::symlink_metadata(&near_log)?;
+    let near_checkpoint = LogCheckpoint {
+        offset: 0,
+        device: near_metadata.dev(),
+        inode: near_metadata.ino(),
+    };
+    if require_marker_after_checkpoint_until(
+        &near_log,
+        &near_checkpoint,
+        &generation_a,
+        deadline_after(Duration::from_secs(1))?,
+    )
+    .is_ok()
+    {
+        return Err(ControllerError(
+            "real marker contract accepted a containing line instead of an exact line".to_owned(),
+        ));
+    }
+
+    let oversized_log = directory.path.join("online-oversized.log");
+    let mut oversized = marker.into_bytes();
+    oversized.resize(MAX_COMMAND_OUTPUT_BYTES + 1, b'x');
+    write_record(&oversized_log, &oversized, 0o600)?;
+    let oversized_metadata = fs::symlink_metadata(&oversized_log)?;
+    let oversized_checkpoint = LogCheckpoint {
+        offset: 0,
+        device: oversized_metadata.dev(),
+        inode: oversized_metadata.ino(),
+    };
+    if read_bounded_log_suffix_until(
+        &oversized_log,
+        &oversized_checkpoint,
+        deadline_after(Duration::from_secs(1))?,
+    )
+    .is_ok()
+    {
+        return Err(ControllerError(
+            "bounded marker reader accepted an oversized suffix".to_owned(),
+        ));
+    }
+    if read_bounded_log_suffix_until(&log, &checkpoint, Instant::now()).is_ok() {
+        return Err(ControllerError(
+            "bounded marker reader ignored an expired shared deadline".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn self_test_readiness() -> Result<()> {
+    self_test_real_marker_contract()?;
     let fast_directory = TemporaryDirectory::create("fast-marker")?;
     let fast_path = fast_directory.path.join("journal.log");
     let mut fast_journal = FakeJournal::create(&fast_path)?;
@@ -15192,6 +16264,7 @@ fn self_test_final_generation_active_pointer_boundary() -> Result<()> {
     let pre_result = verify_retained_active_pointer_after_commit(
         &pre_parent,
         &pre_expected,
+        deadline_after(DEFAULT_COMMAND_TIMEOUT)?,
         || {
             if pre_generation.get() == 1 {
                 Ok(())
@@ -15225,6 +16298,7 @@ fn self_test_final_generation_active_pointer_boundary() -> Result<()> {
     let race_result = verify_retained_active_pointer_after_commit(
         &race_parent,
         &race_expected,
+        deadline_after(DEFAULT_COMMAND_TIMEOUT)?,
         || Ok(()),
         |phase| {
             if phase == RetainedActivePointerPhase::AfterInitialPointerValidation {
@@ -15262,6 +16336,7 @@ fn self_test_final_generation_active_pointer_boundary() -> Result<()> {
         let result = verify_retained_active_pointer_after_commit(
             &parent,
             &expected,
+            deadline_after(DEFAULT_COMMAND_TIMEOUT)?,
             || Ok(()),
             |phase| {
                 if phase == phase_to_interrupt {
@@ -15293,6 +16368,7 @@ fn self_test_final_generation_active_pointer_boundary() -> Result<()> {
     verify_retained_active_pointer_after_commit(
         &ordinary_parent,
         &ordinary_expected,
+        deadline_after(DEFAULT_COMMAND_TIMEOUT)?,
         || {
             ordinary_proof_calls.set(ordinary_proof_calls.get() + 1);
             if ordinary_generation.get() == 1 {
@@ -15316,6 +16392,63 @@ fn self_test_final_generation_active_pointer_boundary() -> Result<()> {
     {
         return Err(ControllerError(
             "ordinary committed lifecycle did not retain exact recovery authority".to_owned(),
+        ));
+    }
+
+    let (_expired_directory, expired_parent, expired_expected) =
+        create_final_active_pointer_fixture("retained-active-expired-deadline")?;
+    let expired_result = verify_retained_active_pointer_after_commit(
+        &expired_parent,
+        &expired_expected,
+        Instant::now(),
+        || Ok(()),
+        |_| Ok(()),
+    );
+    if expired_result.is_ok()
+        || read_pinned_regular(&expired_parent, ACTIVE_TRANSACTION_NAME, 0o600)? != expired_expected
+    {
+        return Err(ControllerError(
+            "expired retained-pointer acceptance deadline false-passed or lost its tombstone"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn self_test_inspection_pointer_preservation() -> Result<()> {
+    for (name, bytes) in [
+        (
+            ACTIVE_TRANSACTION_PENDING_NAME,
+            b"/private/valid-looking-evidence\n".as_slice(),
+        ),
+        (
+            ACTIVE_TRANSACTION_FINALIZING_NAME,
+            b"malformed\r\nresidue".as_slice(),
+        ),
+    ] {
+        let directory = TemporaryDirectory::create("inspect-active-pointer")?;
+        let path = directory.path.join(name);
+        write_record(&path, bytes, 0o600)?;
+        let before = fs::symlink_metadata(&path)?;
+        let pinned = PinnedDirectory::open(&directory.path, Some(effective_uid()), Some(0o700))?;
+        if inspect_active_pointer_read_only(&pinned).is_ok() {
+            return Err(ControllerError(format!(
+                "inspection-only pointer check accepted retained residue {name}"
+            )));
+        }
+        let after = fs::symlink_metadata(&path)?;
+        if !same_inode(&before, &after) || before.len() != after.len() || fs::read(&path)? != bytes
+        {
+            return Err(ControllerError(format!(
+                "inspection-only pointer check changed retained residue {name}"
+            )));
+        }
+    }
+    let empty = TemporaryDirectory::create("inspect-active-pointer-empty")?;
+    let pinned = PinnedDirectory::open(&empty.path, Some(effective_uid()), Some(0o700))?;
+    if inspect_active_pointer_read_only(&pinned)? != ActivePointerRecovery::None {
+        return Err(ControllerError(
+            "inspection-only pointer check misclassified an empty namespace".to_owned(),
         ));
     }
     Ok(())
@@ -15406,7 +16539,7 @@ fn self_test_active_pointer() -> Result<()> {
             "malformed pending recovery did not retain exact bytes and fail closed".to_owned(),
         ));
     }
-    Ok(())
+    self_test_inspection_pointer_preservation()
 }
 
 fn self_test_side_effects() -> Result<()> {

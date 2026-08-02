@@ -38,6 +38,8 @@ actor WorldwideHostCoordinator {
     private let store: WorldwidePairingStore
     private let logger: Logger
     private let hostDisplayName: String?
+    private let availabilityMarkerProcessIdentifier: Int32
+    private let availabilityMarkerGenerationNonce: String
     private let completionContinuation: AsyncThrowingStream<Void, Error>.Continuation
     private let makeAvailabilityClient: @Sendable (
         URL,
@@ -73,6 +75,8 @@ actor WorldwideHostCoordinator {
             WorldwideIPhoneMicrophoneForwardingPolicy = .enabled,
         store: WorldwidePairingStore = WorldwidePairingStore(),
         hostDisplayName: String? = Host.current().localizedName,
+        availabilityMarkerProcessIdentifier: Int32 = ProcessInfo.processInfo.processIdentifier,
+        availabilityMarkerGenerationNonce: String = String(repeating: "0", count: 64),
         availabilityClientFactory: @escaping @Sendable (
             URL,
             RemoteAvailabilityLocator
@@ -107,6 +111,8 @@ actor WorldwideHostCoordinator {
             iPhoneMicrophoneForwardingPolicy
         self.store = store
         self.hostDisplayName = hostDisplayName
+        self.availabilityMarkerProcessIdentifier = availabilityMarkerProcessIdentifier
+        self.availabilityMarkerGenerationNonce = availabilityMarkerGenerationNonce
         makeAvailabilityClient = availabilityClientFactory
         self.availabilityRetrySleep = availabilityRetrySleep
         self.availabilityLoopOverride = availabilityLoopOverride
@@ -326,7 +332,11 @@ actor WorldwideHostCoordinator {
                     if event.validatesHostAvailability,
                        retryPolicy.observedValidAvailabilityState() {
                         retryOrdinal = 0
-                        logger.info("Worldwide paired-device availability is online")
+                        logger.info(
+                            "Worldwide paired-device availability is online " +
+                            "pid=\(availabilityMarkerProcessIdentifier) " +
+                            "nonce=\(availabilityMarkerGenerationNonce)"
+                        )
                     }
                 }
                 guard !isStopped else { return }

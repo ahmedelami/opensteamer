@@ -9,15 +9,22 @@ readonly EXPECTED_FRAMEWORK_IDENTIFIER="io.livekit.LiveKitWebRTC"
 readonly EXPECTED_FRAMEWORK_RPATH="@executable_path/../Frameworks"
 readonly EXPECTED_FRAMEWORK_INSTALL_NAME="@rpath/LiveKitWebRTC.framework/LiveKitWebRTC"
 readonly MINIMUM_MACOS_VERSION="14.0"
+readonly INSTALLED_RUNTIME_APP_PATH="/Applications/opensteamer Host.app"
 
 fail() {
     print -u2 -- "verify-mac-host-bundle: $*"
     exit 1
 }
 
+XATTR_POLICY="strict"
+if (( $# > 0 )) && [[ "$1" == --installed-runtime ]]; then
+    XATTR_POLICY="installed-runtime"
+    shift
+fi
+
 if (( $# < 1 || $# > 3 )); then
     print -u2 -- \
-        "usage: $0 <opensteamer Host.app> [expected-team-id] [designated-requirement-reference-code]"
+        "usage: $0 [--installed-runtime] <opensteamer Host.app> [expected-team-id] [designated-requirement-reference-code]"
     exit 64
 fi
 
@@ -33,6 +40,12 @@ LEXICAL_APP_PATH="${APP_INPUT:a}"
 APP_PATH="${LEXICAL_APP_PATH:A}"
 [[ "${APP_PATH:t}" == "$EXPECTED_APP_BASENAME" ]] || fail \
     "bundle basename: expected '$EXPECTED_APP_BASENAME', found '${APP_PATH:t}'"
+if [[ "$XATTR_POLICY" == installed-runtime ]]; then
+    [[ "$APP_PATH" == "$INSTALLED_RUNTIME_APP_PATH" ]] || fail \
+        "--installed-runtime is restricted to '$INSTALLED_RUNTIME_APP_PATH': $APP_PATH"
+fi
+APP_ROOT_DEVICE_INODE="$(/usr/bin/stat -f '%d:%i' "$APP_PATH")" || fail \
+    "could not capture app root identity"
 
 CONTENTS_DIR="$APP_PATH/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -193,10 +206,57 @@ RESOURCES_ENTRIES="$(/bin/ls -1A "$RESOURCES_DIR")"
 FRAMEWORKS_ENTRIES="$(/bin/ls -1A "$FRAMEWORKS_DIR")"
 [[ "$FRAMEWORKS_ENTRIES" == LiveKitWebRTC.framework ]] || fail "Frameworks directory has unexpected entries"
 
-# Signing should not rely on quarantine/Finder metadata or any unreviewed xattr.
-XATTRS="$(/usr/bin/xattr -lr "$APP_PATH" 2>/dev/null)" || fail \
-    "could not inspect app bundle extended attributes"
-[[ -z "$XATTRS" ]] || fail "app bundle contains extended attributes: $XATTRS"
+# Staged/signing artifacts must remain completely xattr-free. Once the canonical installed app is
+# launched, macOS can attach one root `com.apple.macl` containing exactly 72 NUL bytes. That
+# runtime-only metadata is not part of the signed app bytes, but every other xattr, location, size,
+# and payload remains fail-closed. `-s` includes attributes attached to symbolic-link objects.
+# Each proof is bracketed by the original app-root inode, and the whole policy is repeated after
+# signature and designated-requirement verification.
+XATTR_POLICY_SNAPSHOT=""
+verify_xattr_policy() {
+    local ROOT_IDENTITY_BEFORE ROOT_IDENTITY_AFTER XATTRS XATTRS_AFTER
+    local ROOT_XATTRS="" MACL_HEX="" MACL_HEX_AFTER=""
+    ROOT_IDENTITY_BEFORE="$(/usr/bin/stat -f '%d:%i' "$APP_PATH")" || fail \
+        "could not inspect app root identity before extended-attribute verification"
+    [[ "$ROOT_IDENTITY_BEFORE" == "$APP_ROOT_DEVICE_INODE" ]] || fail \
+        "app root identity changed during verification"
+    XATTRS="$(/usr/bin/xattr -rs "$APP_PATH" 2>/dev/null)" || fail \
+        "could not inspect app bundle extended attributes"
+    if [[ "$XATTR_POLICY" == strict ]]; then
+        [[ -z "$XATTRS" ]] || fail "app bundle contains extended attributes: $XATTRS"
+    elif [[ -n "$XATTRS" ]]; then
+        local EXPECTED_RUNTIME_XATTR="$APP_PATH: com.apple.macl"
+        [[ "$XATTRS" == "$EXPECTED_RUNTIME_XATTR" ]] || fail \
+            "installed app contains unreviewed extended attributes: $XATTRS"
+        ROOT_XATTRS="$(/usr/bin/xattr -s "$APP_PATH" 2>/dev/null)" || fail \
+            "could not inspect installed app root extended attributes"
+        [[ "$ROOT_XATTRS" == com.apple.macl ]] || fail \
+            "installed app root extended attributes differ from runtime policy: $ROOT_XATTRS"
+        MACL_HEX="$(/usr/bin/xattr -spx com.apple.macl "$APP_PATH" 2>/dev/null \
+            | /usr/bin/tr -d '[:space:]')" || fail \
+            "could not inspect installed app com.apple.macl payload"
+        [[ ${#MACL_HEX} -eq 144 && "$MACL_HEX" != *[!0]* ]] || fail \
+            "installed app com.apple.macl is not exactly 72 NUL bytes"
+    fi
+    XATTRS_AFTER="$(/usr/bin/xattr -rs "$APP_PATH" 2>/dev/null)" || fail \
+        "could not reinspect app bundle extended attributes"
+    [[ "$XATTRS_AFTER" == "$XATTRS" ]] || fail \
+        "app bundle extended attributes changed during verification"
+    if [[ "$XATTR_POLICY" == installed-runtime && -n "$XATTRS" ]]; then
+        MACL_HEX_AFTER="$(/usr/bin/xattr -spx com.apple.macl "$APP_PATH" 2>/dev/null \
+            | /usr/bin/tr -d '[:space:]')" || fail \
+            "could not reinspect installed app com.apple.macl payload"
+        [[ "$MACL_HEX_AFTER" == "$MACL_HEX" ]] || fail \
+            "installed app com.apple.macl payload changed during verification"
+    fi
+    ROOT_IDENTITY_AFTER="$(/usr/bin/stat -f '%d:%i' "$APP_PATH")" || fail \
+        "could not reinspect app root identity after extended-attribute verification"
+    [[ "$ROOT_IDENTITY_AFTER" == "$ROOT_IDENTITY_BEFORE" ]] || fail \
+        "app root identity changed during extended-attribute verification"
+    XATTR_POLICY_SNAPSHOT="$ROOT_IDENTITY_AFTER"$'\n'"$XATTRS"$'\n'"$ROOT_XATTRS"$'\n'"$MACL_HEX"
+}
+verify_xattr_policy
+INITIAL_XATTR_POLICY_SNAPSHOT="$XATTR_POLICY_SNAPSHOT"
 
 assert_plist_value() {
     local key="$1" expected="$2" actual
@@ -514,5 +574,9 @@ if [[ -n "$EXPECTED_DESIGNATED_REQUIREMENT_REFERENCE" ]]; then
     [[ "$CODE_DESIGNATED_REQUIREMENT" == "$EXECUTABLE_DR" ]] || fail \
         "main executable designated requirement does not match the reference code object"
 fi
+
+verify_xattr_policy
+[[ "$XATTR_POLICY_SNAPSHOT" == "$INITIAL_XATTR_POLICY_SNAPSHOT" ]] || fail \
+    "app root or extended-attribute policy changed during signature verification"
 
 print -u2 -- "Verified opensteamer Host bundle: $APP_PATH"

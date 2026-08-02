@@ -71,7 +71,7 @@ final class MacHostMigrationContractTests: XCTestCase {
         XCTAssertNotEqual(result.status, 0, result.diagnostic)
         XCTAssertTrue(
             result.standardError.contains("expected lock-holder PID must be positive") ||
-                result.standardError.contains("immediate child"),
+                result.standardError.contains("canonical shared runtime and lock"),
             result.diagnostic
         )
     }
@@ -112,13 +112,13 @@ final class MacHostMigrationContractTests: XCTestCase {
         )
         XCTAssertTrue(
             source.contains(
-                "EXPECTED_CONTROLLER_BINARY_SHA256='a30b7455c407107bd1e97ef7972342206c0d6f7040c1c80fb54800600fa593eb'"
+                "EXPECTED_CONTROLLER_BINARY_SHA256='1c68faf81d4385106779327923a64adf5ef84047a8717de800848070d605f30d'"
             )
         )
         XCTAssertTrue(source.contains("fresh controller binary differs from the reviewed reproducible postimage"))
         XCTAssertTrue(source.contains("--self-test-reviewed-controller-build"))
         XCTAssertTrue(source.contains("--verify-reviewed-prior-retry-state"))
-        XCTAssertTrue(source.contains(".controller-build-v16.XXXXXX"))
+        XCTAssertTrue(source.contains(".controller-build-v17.XXXXXX"))
         XCTAssertTrue(source.contains("SOURCE_COPY=\"$BUILD_DIR/opensteamer-host-migration-controller.rs\""))
         XCTAssertTrue(source.contains("copy_companion_script"))
         XCTAssertTrue(source.contains("verify_private_companion_script"))
@@ -126,7 +126,7 @@ final class MacHostMigrationContractTests: XCTestCase {
         XCTAssertTrue(source.contains("EXPECTED_DEPLOYMENT_VERIFIER_SHA256"))
         XCTAssertTrue(
             source.contains(
-                "EXPECTED_DEPLOYMENT_VERIFIER_SHA256='1a972c52ad5be2dc10547d1f8666946f6031386e4cfa7daf4b35e2720316576a'"
+                "EXPECTED_DEPLOYMENT_VERIFIER_SHA256='4aada5e3ecc97f5cb006672298bc79c9cfbcf3973aec902a2d04bae7b5e325a6'"
             )
         )
         XCTAssertTrue(source.contains("--self-test-cdhash-parser"))
@@ -264,15 +264,26 @@ final class MacHostMigrationContractTests: XCTestCase {
             "verify_retained_active_pointer_after_commit",
             "durable COMMITTED journal record is the sole commit point",
             "self_test_final_generation_active_pointer_boundary",
-            "const ACTIVE_TRANSACTION_NAME: &str = \"active-migration-v16\";",
-            "const ACTIVE_TRANSACTION_PENDING_NAME: &str = \".active-migration-v16.pending\";",
-            "const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = \".active-migration-v16.finalizing\";",
-            "const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = \".active-migration-v16.linearized\";",
-            "const JOURNAL_VERSION: &str = \"OPENSTEAMER_MIGRATION_JOURNAL_V16\";",
-            "const FAKE_JOURNAL_VERSION: &str = \"OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V16\";",
-            "const V16_EVIDENCE_PATH: &str",
-            "parse_v16_active_record",
-            "v16 active pointer selects unreviewed evidence",
+            "const ACTIVE_TRANSACTION_NAME: &str = \"active-migration-v17\";",
+            "const ACTIVE_TRANSACTION_PENDING_NAME: &str = \".active-migration-v17.pending\";",
+            "const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = \".active-migration-v17.finalizing\";",
+            "const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = \".active-migration-v17.linearized\";",
+            "const JOURNAL_VERSION: &str = \"OPENSTEAMER_MIGRATION_JOURNAL_V17\";",
+            "const FAKE_JOURNAL_VERSION: &str = \"OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V17\";",
+            "const V17_EVIDENCE_PATH: &str",
+            "parse_v17_active_record",
+            "v17 active pointer selects unreviewed evidence",
+            "InspectionTransactionLock",
+            "inspect_active_pointer_read_only",
+            "expected_online_marker_for_generation",
+            "read_bounded_log_suffix_until",
+            "wait_for_online_marker_for_generation_until",
+            "revalidate_until",
+            "readiness_deadline: Option<Instant>",
+            "DEPLOYMENT_VERIFIER_REQUIRED_SYSTEM_COMMANDS",
+            "verify_deployment_verifier_system_commands",
+            "prove_generation_lock_held_only_by_until(expected, deadline)",
+            "active-migration-v16",
             "active-migration-v15",
             "active-migration-v14",
             "active-migration-v13",
@@ -393,16 +404,56 @@ final class MacHostMigrationContractTests: XCTestCase {
             "PRIOR_V15_STAGED_APP_XATTRS_SHA256",
             "PRIOR_V15_FAILED_APP_XATTRS_SHA256",
             "require_prior_v15_deployment_records_absent",
+            "validate_prior_v16_rolledback_retry",
+            "validate_prior_v16_rolledback_records",
+            "PriorV16RetryGuard",
+            "PRIOR_V16_ACTIVE_TRANSACTION_NAME",
+            "PRIOR_V16_ACTIVE_TRANSACTION_PENDING_NAME",
+            "PRIOR_V16_ACTIVE_TRANSACTION_FINALIZING_NAME",
+            "PRIOR_V16_ACTIVE_TRANSACTION_LINEARIZED_NAME",
+            "PRIOR_V16_EVIDENCE_PATH",
+            "PRIOR_V16_ACTIVE_RECORD",
+            "PRIOR_V16_ACTIVE_SHA256",
+            "PRIOR_V16_SOURCE_COMMIT",
+            "PRIOR_V16_SOURCE_TREE",
+            "PRIOR_V16_FINAL_JOURNAL_SIZE",
+            "PRIOR_V16_FINAL_JOURNAL_LINES",
+            "PRIOR_V16_FINAL_JOURNAL_SHA256",
+            "PRIOR_V16_FINAL_RESULT",
+            "PRIOR_V16_FINAL_RESULT_SHA256",
+            "PRIOR_V16_SOURCE_ARCHIVE_SIZE",
+            "PRIOR_V16_SOURCE_ARCHIVE_SHA256",
+            "PRIOR_V16_PROVENANCE",
+            "PRIOR_V16_PROVENANCE_SHA256",
+            "PRIOR_V16_LEGACY_MANIFEST_SHA256",
+            "PRIOR_V16_LEGACY_XATTRS_SHA256",
+            "PRIOR_V16_STAGED_HASHES_SHA256",
+            "PRIOR_V16_SOURCE_EXPORT_MANIFEST_SHA256",
+            "PRIOR_V16_BUILD_STDOUT_SHA256",
+            "PRIOR_V16_BUILD_STDERR_SHA256",
+            "PRIOR_V16_DEPLOYMENT_STDOUT_SHA256",
+            "PRIOR_V16_DEPLOYMENT_STDERR_SHA256",
+            "PRIOR_V16_ROLLBACK_RESERVE_SHA256",
+            "PRIOR_V16_ROLLBACK_RESERVE_DEVICE",
+            "PRIOR_V16_ROLLBACK_RESERVE_INODE",
+            "PRIOR_V16_STAGED_EXECUTABLE_SHA256",
+            "PRIOR_V16_STAGED_PLIST_SHA256",
+            "PRIOR_V16_STAGED_APP_MANIFEST_SHA256",
+            "PRIOR_V16_SYMLINK_TARGET_MANIFEST_SHA256",
+            "PRIOR_V16_STAGED_APP_XATTRS_SHA256",
+            "PRIOR_V16_FAILED_APP_XATTRS_SHA256",
             "migration-v14-after-v13-1785637636-18044",
             "migration-v15-after-v14-1785637636-18044",
             "migration-v16-after-v15-1785637636-18044",
+            "migration-v17-after-v16-1785637636-18044",
             "--verify-reviewed-prior-retry-state",
             "prior_fields.extend(prior_v13.journal_fields());",
             "prior_fields.extend(prior_v14.journal_fields());",
             "prior_fields.extend(prior_v15.journal_fields());",
-            "PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15 legacy=sole-ready v16=absent",
-            ".opensteamer-disabled-v16-{tag}",
-            ".org.example.opensteamer.worldwide.plist.disabled-v16-{tag}",
+            "prior_fields.extend(prior_v16.journal_fields());",
+            "PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16 legacy=sole-ready v17=absent",
+            ".opensteamer-disabled-v17-{tag}",
+            ".org.example.opensteamer.worldwide.plist.disabled-v17-{tag}",
             "CutoverPreflight",
             "CutoverParentIdentities",
             "require_cutover_hidden_paths_absent",
@@ -484,7 +535,7 @@ final class MacHostMigrationContractTests: XCTestCase {
                 "    \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\";",
             "const PRIOR_V14_FAILED_APP_XATTRS_SHA256: &str =\n" +
                 "    \"b3803dc3d49417c1f401ee004179d08fed3de6471fee88d51ca743c910fffa56\";",
-            "const V16_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v16-after-v15-1785637636-18044\";",
+            "const V17_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v17-after-v16-1785637636-18044\";",
             "b\"zsh:299: no such file or directory: /bin/cmp\\nopensteamer host deployment verification failed: reviewed LaunchAgent bytes differ from checked-in contract\\n\"",
         ]
         for anchor in exactPriorV14Anchors {
@@ -545,10 +596,63 @@ final class MacHostMigrationContractTests: XCTestCase {
                 "    \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\";",
             "const PRIOR_V15_FAILED_APP_XATTRS_SHA256: &str =\n" +
                 "    \"760fdf730af579fa4b0b89a349babb39743944bf9e10b88cc513a263d23cb8b3\";",
-            "const V16_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v16-after-v15-1785637636-18044\";",
+            "const V17_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v17-after-v16-1785637636-18044\";",
         ]
         for anchor in exactPriorV15Anchors {
             XCTAssertTrue(controller.contains(anchor), "Controller lacks exact v15 anchor \(anchor)")
+        }
+        let exactPriorV16Anchors = [
+            "const PRIOR_V16_ACTIVE_TRANSACTION_NAME: &str = \"active-migration-v16\";",
+            "const PRIOR_V16_ACTIVE_TRANSACTION_PENDING_NAME: &str = \".active-migration-v16.pending\";",
+            "const PRIOR_V16_ACTIVE_TRANSACTION_FINALIZING_NAME: &str = \".active-migration-v16.finalizing\";",
+            "const PRIOR_V16_ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = \".active-migration-v16.linearized\";",
+            "const PRIOR_V16_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v16-after-v15-1785637636-18044\";",
+            "const PRIOR_V16_ACTIVE_RECORD: &[u8] = b\"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v16-after-v15-1785637636-18044\\n\";",
+            "const PRIOR_V16_ACTIVE_SHA256: &str =\n" +
+                "    \"aaf2d32335687c997d8f623324c1dbb5a00855464ff2f110a2f94eb8bb97c15b\";",
+            "const PRIOR_V16_SOURCE_COMMIT: &str = \"625941d4fc1f2f4d6254df57ee897c71c88f399d\";",
+            "const PRIOR_V16_SOURCE_TREE: &str = \"3507c97c3b5be7e11a9ffab6c686d615f5a96506\";",
+            "const PRIOR_V16_FINAL_JOURNAL_SIZE: usize = 6_194;",
+            "const PRIOR_V16_FINAL_JOURNAL_LINES: usize = 20;",
+            "const PRIOR_V16_FINAL_JOURNAL_SHA256: &str =\n" +
+                "    \"a95a7c0a23f8bc50a0a7270d616e75dac0b72aee2ab4676fa8d3b4be6288fbfb\";",
+            "const PRIOR_V16_GENERATION_JOURNAL_LINE: &[u8] = b\"STATE NEW_PID_OBSERVED log_offset=1364 log_device=16777230 log_inode=20570513 pid=17632 runs=1 process_start=Sun%20Aug%20%202%2012%3A26%3A54%202026 nonce=88445fa1c01ac2168e9b0e58994f43e44393da7d4a955e82c02df16e7390cd6f lock_device=16777230 lock_inode=10835208\\n\";",
+            "const PRIOR_V16_ROLLBACK_JOURNAL_TAIL: &[u8] = b\"STATE ROLLBACK_STARTED legacy_disable_was_journaled=true rollback_mode=FullRestore\\nSTATE NEW_STOPPED\\nSTATE NEW_DESTINATIONS_CLEARED\\nSTATE LEGACY_REENABLED\\nSTATE LEGACY_BOOTSTRAPPED\\nSTATE LEGACY_RECOVERED\\nSTATE ROLLED_BACK\\n\";",
+            "const PRIOR_V16_FINAL_RESULT_SHA256: &str =\n" +
+                "    \"434dea611969ea91d8b873bffe42e4a149f329641fe5111e898b86d66fc3d301\";",
+            "const PRIOR_V16_SOURCE_ARCHIVE_SIZE: u64 = 6_635_520;",
+            "const PRIOR_V16_SOURCE_ARCHIVE_SHA256: &str =\n" +
+                "    \"2e3ade684c280e2263deb520412093d24b85f25a96dc6db14973a3d56388e864\";",
+            "const PRIOR_V16_PROVENANCE_SHA256: &str =\n" +
+                "    \"d722f6589eb0834c64b0866bda7034994f83e0266b1cd8d62d8e3541a07aa9ae\";",
+            "const PRIOR_V16_STAGED_HASHES_SHA256: &str =\n" +
+                "    \"63cd1b9df9e78f06737ed41a94f1c524d34c991cf5328144d6c2151690b6ac8c\";",
+            "const PRIOR_V16_SOURCE_EXPORT_MANIFEST_SHA256: &str =\n" +
+                "    \"9973e8739a4f2280dcd7557a636e270e4211d3401ab09502fdadf55b99bfdab2\";",
+            "const PRIOR_V16_BUILD_STDOUT_SHA256: &str =\n" +
+                "    \"70e7a699f1e6ace9818610e88c85cc6d698ef1a3c788c1d55731124ea2e39f60\";",
+            "const PRIOR_V16_BUILD_STDERR_SHA256: &str =\n" +
+                "    \"84c65dbca95845cb511b10069bbef94d8818a09b3b0845ea639df0077977e05b\";",
+            "const PRIOR_V16_DEPLOYMENT_STDOUT_SHA256: &str =\n" +
+                "    \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\";",
+            "const PRIOR_V16_DEPLOYMENT_STDOUT_SIZE: usize = 0;",
+            "const PRIOR_V16_DEPLOYMENT_STDERR_SHA256: &str =\n" +
+                "    \"b71cb31d6ff97ce941f65798ee357fcff8c9af922589b1a30d74dbe0071102c0\";",
+            "const PRIOR_V16_DEPLOYMENT_STDERR_SIZE: usize = 2_218;",
+            "const PRIOR_V16_DEPLOYMENT_STDERR_TAIL: &[u8] = b\"verify-mac-host-bundle: app bundle contains extended attributes: /Applications/opensteamer Host.app: com.apple.macl: \\n\";",
+            "const PRIOR_V16_ROLLBACK_RESERVE_INODE: u64 = 21_315_340;",
+            "const PRIOR_V16_STAGED_EXECUTABLE_SHA256: &str =\n" +
+                "    \"95b00603881bc06d7c0acf25cf2f359ae177608da6ffa876a62976ec904350f1\";",
+            "const PRIOR_V16_STAGED_APP_MANIFEST_SHA256: &str =\n" +
+                "    \"f68ef887af0ac97f8302e42ff40e9cf793881f08938bcf0e8b9a430133f62839\";",
+            "const PRIOR_V16_STAGED_APP_XATTRS_SHA256: &str =\n" +
+                "    \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\";",
+            "const PRIOR_V16_FAILED_APP_XATTRS_SHA256: &str =\n" +
+                "    \"fc476ba38a5da85548cfbb83d758b4bbc41e2585495c55fb3344a6908b7ccee6\";",
+            "const V17_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v17-after-v16-1785637636-18044\";",
+        ]
+        for anchor in exactPriorV16Anchors {
+            XCTAssertTrue(controller.contains(anchor), "Controller lacks exact v16 anchor \(anchor)")
         }
         XCTAssertTrue(
             controller.contains(
@@ -562,17 +666,18 @@ final class MacHostMigrationContractTests: XCTestCase {
                     "                prior_v13,\n" +
                     "                prior_v14,\n" +
                     "                prior_v15,\n" +
+                    "                prior_v16,\n" +
                     "            )"
             ),
-            "All seven exact historical guards are not passed into the v16 transaction."
+            "All eight exact historical guards are not passed into the v17 transaction."
         )
         XCTAssertTrue(
             controller.contains(
-                "    prior_v14: PriorV14RetryGuard,\n" +
-                    "    prior_v15: PriorV15RetryGuard,\n" +
+                "    prior_v15: PriorV15RetryGuard,\n" +
+                    "    prior_v16: PriorV16RetryGuard,\n" +
                     ") -> Result<()> {"
             ),
-            "The exact prior-v15 guard is not owned by v16 startup."
+            "The exact prior-v16 guard is not owned by v17 startup."
         )
         for (name, type) in [
             ("prior_v9", "PriorV9RetryGuard"),
@@ -582,6 +687,7 @@ final class MacHostMigrationContractTests: XCTestCase {
             ("prior_v13", "PriorV13RetryGuard"),
             ("prior_v14", "PriorV14RetryGuard"),
             ("prior_v15", "PriorV15RetryGuard"),
+            ("prior_v16", "PriorV16RetryGuard"),
         ] {
             XCTAssertGreaterThanOrEqual(
                 controller.components(separatedBy: "\(name): &'a \(type),").count - 1,
@@ -595,68 +701,73 @@ final class MacHostMigrationContractTests: XCTestCase {
         }
         XCTAssertTrue(
             controller.contains(
-                "            &prior_v14,\n" +
-                    "            &prior_v15,\n" +
+                "            &prior_v15,\n" +
+                    "            &prior_v16,\n" +
                     "        )"
             ),
-            "The exact prior-v15 guard is not threaded into the v16 transaction."
+            "The exact prior-v16 guard is not threaded into the v17 transaction."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(
-                separatedBy: "prior_v15: &'a PriorV15RetryGuard,"
+                separatedBy: "prior_v16: &'a PriorV16RetryGuard,"
             ).count - 1,
             2,
-            "The exact prior-v15 guard is not retained by the real backend and constructor."
+            "The exact prior-v16 guard is not retained by the real backend and constructor."
         )
         XCTAssertTrue(
             controller.contains(
-                "    prior_v14: &PriorV14RetryGuard,\n" +
-                    "    prior_v15: &PriorV15RetryGuard,\n" +
+                "    prior_v15: &PriorV15RetryGuard,\n" +
+                    "    prior_v16: &PriorV16RetryGuard,\n" +
                     ") -> Result<()> {"
             ),
-            "The exact prior-v15 guard is not part of the transaction contract."
+            "The exact prior-v16 guard is not part of the transaction contract."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(
-                separatedBy: "validate_prior_v15_rolledback_retry(private_root)?;"
+                separatedBy: "validate_prior_v16_rolledback_retry(private_root)?;"
             ).count - 1,
             2,
-            "The exact prior-v15 guard is not acquired by both preflight and execution."
+            "The exact prior-v16 guard is not acquired by both preflight and execution."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v9.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v9 tombstone is not revalidated throughout v16 startup."
+            "The prior-v9 tombstone is not revalidated throughout v17 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v10.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v10 tombstone is not revalidated throughout v16 startup."
+            "The prior-v10 tombstone is not revalidated throughout v17 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v11.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v11 tombstone is not revalidated throughout v16 startup."
+            "The prior-v11 tombstone is not revalidated throughout v17 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v12.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v12 tombstone is not revalidated throughout v16 startup."
+            "The prior-v12 tombstone is not revalidated throughout v17 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v13.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v13 tombstone is not revalidated throughout v16 startup."
+            "The prior-v13 tombstone is not revalidated throughout v17 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v14.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v14 tombstone is not revalidated throughout v16 startup."
+            "The prior-v14 tombstone is not revalidated throughout v17 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v15.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v15 tombstone is not revalidated throughout v16 startup."
+            "The prior-v15 tombstone is not revalidated throughout v17 startup."
+        )
+        XCTAssertGreaterThanOrEqual(
+            controller.components(separatedBy: "prior_v16.revalidate(private_root)?;").count - 1,
+            3,
+            "The prior-v16 tombstone is not revalidated throughout v17 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(
@@ -709,6 +820,13 @@ final class MacHostMigrationContractTests: XCTestCase {
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(
+                separatedBy: "self.prior_v16.revalidate(self.private_root)?;"
+            ).count - 1,
+            2,
+            "The prior-v16 tombstone is not revalidated at both legacy stop boundaries."
+        )
+        XCTAssertGreaterThanOrEqual(
+            controller.components(
                 separatedBy: "require_all_prior_retry_residues_absent(self.private_root)?;"
             ).count - 1,
             2,
@@ -719,14 +837,121 @@ final class MacHostMigrationContractTests: XCTestCase {
                 ") -> Result<()> {\n    require_fresh_retry_disk_headroom()?;\n" +
                     "    let layout = Layout::create(repo)?;"
             ),
-            "The 2 GiB fresh-attempt gate must run before v16 creates its evidence tree."
+            "The 2 GiB fresh-attempt gate must run before v17 creates its evidence tree."
         )
         XCTAssertTrue(
-            controller.contains("let deadline = deadline_after(DEPLOYMENT_VERIFIER_TIMEOUT)?;") &&
+            controller.contains(
+                "let readiness_deadline = deadline_after(DEPLOYMENT_VERIFIER_TIMEOUT)?;"
+            ) &&
+                controller.contains("self.readiness_deadline = Some(readiness_deadline);") &&
                 controller.contains("verify_deployment_with_prefix_until(") &&
                 controller.contains("        deadline,\n    )"),
             "The whole production deployment proof does not share one absolute deadline."
         )
+        let forwardCommitRevalidation = try sourceSection(
+            controller,
+            from: "fn revalidate_commit_fields(&mut self, fields: &[(String, String)]) -> Result<()> {\n" +
+                "        let expected_fields",
+            to: "fn after_commit_revalidation_before_durable_write"
+        )
+        XCTAssertTrue(forwardCommitRevalidation.contains("self.readiness_deadline.ok_or_else"))
+        XCTAssertFalse(
+            forwardCommitRevalidation.contains("deadline_after("),
+            "Final forward COMMIT acceptance must not manufacture a fresh deadline."
+        )
+        let committedRetainedPointerRevalidation = try sourceSection(
+            controller,
+            from: "fn revalidate_current_generation_for_retained_pointer(&self) -> Result<()> {",
+            to: "impl CommittedRecoveryBackend for RealCommittedRecoveryBackend"
+        )
+        XCTAssertTrue(
+            committedRetainedPointerRevalidation.contains("self.readiness_deadline.ok_or_else")
+        )
+        XCTAssertFalse(
+            committedRetainedPointerRevalidation.contains("deadline_after("),
+            "Committed-recovery retained-pointer acceptance must reuse its READY deadline."
+        )
+        let generationRevalidation = try sourceSection(
+            controller,
+            from: "fn verify_launch_generation_until(",
+            to: "fn verify_launch_generation("
+        )
+        XCTAssertTrue(
+            generationRevalidation.contains(
+                "prove_generation_lock_held_only_by_until(expected, deadline)?;"
+            ),
+            "Final generation acceptance must prove that the expected PID still holds the lock."
+        )
+        let lockHolderProof = try sourceSection(
+            controller,
+            from: "fn prove_lock_held_only_by_until(",
+            to: "fn prove_generation_lock_held_only_by_until("
+        )
+        XCTAssertTrue(lockHolderProof.contains("holders_after_probe"))
+        XCTAssertTrue(lockHolderProof.contains("holders_after_reprobe"))
+        XCTAssertTrue(lockHolderProof.contains("expected_openers_after_probe"))
+        XCTAssertTrue(
+            lockHolderProof.contains(
+                "shared advisory lock became acquirable after holder attribution"
+            )
+        )
+        XCTAssertGreaterThanOrEqual(
+            lockHolderProof.components(separatedBy: "lsof_holders_until(").count - 1,
+            3,
+            "Lock ownership must be re-read after both failed contention probes."
+        )
+        let lockProbeCLI = try sourceSection(
+            controller,
+            from: "fn probe_lock_cli(",
+            to: "fn lsof_holders_until("
+        )
+        XCTAssertTrue(lockProbeCLI.contains("runtime != Path::new(LOCK_DIRECTORY)"))
+        XCTAssertTrue(lockProbeCLI.contains("lock_path != Path::new(LOCK_FILE)"))
+        XCTAssertTrue(
+            lockProbeCLI.contains(
+                "prove_lock_held_only_by_until(expected_pid, deadline_after(DEFAULT_COMMAND_TIMEOUT)?)?;"
+            ),
+            "The deployed verifier CLI must reuse the reviewed two-probe lock proof."
+        )
+        XCTAssertFalse(lockProbeCLI.contains("open_existing_regular"))
+        XCTAssertFalse(lockProbeCLI.contains("lsof_holders("))
+        let generationLockProof = try sourceSection(
+            controller,
+            from: "fn prove_generation_lock_held_only_by_until(",
+            to: "fn prove_lock_acquirable_until("
+        )
+        XCTAssertTrue(generationLockProof.contains("read_generation_record()?"))
+        XCTAssertGreaterThanOrEqual(
+            generationLockProof.components(
+                separatedBy: "prove_lock_held_only_by_until(expected.pid, deadline)?;"
+            ).count - 1,
+            2,
+            "Generation-record revalidation must be bracketed by exact holder proofs."
+        )
+        let retainedPointerAcceptance = try sourceSection(
+            controller,
+            from: "fn verify_retained_active_pointer_after_commit<P, H>(",
+            to: "fn entry_exists("
+        )
+        XCTAssertTrue(retainedPointerAcceptance.contains("deadline: Instant"))
+        XCTAssertGreaterThanOrEqual(
+            retainedPointerAcceptance.components(
+                separatedBy: "require_before_deadline(deadline, \"retained active-pointer acceptance\")"
+            ).count - 1,
+            4,
+            "Every retained-pointer acceptance boundary must stay inside the READY deadline."
+        )
+        XCTAssertFalse(retainedPointerAcceptance.contains("deadline_after("))
+        XCTAssertTrue(controller.contains("retained-active-expired-deadline"))
+        let preflight = try sourceSection(
+            controller,
+            from: "fn verify_prior_retry_state_cli()",
+            to: "fn execute("
+        )
+        XCTAssertTrue(preflight.contains("verify_deployment_verifier_system_commands()?;"))
+        XCTAssertTrue(controller.contains("(\"/bin/dd\", 0o755)"))
+        XCTAssertTrue(controller.contains("(\"/bin/ps\", 0o4755)"))
+        XCTAssertTrue(controller.contains("(\"/usr/bin/stat\", 0o755)"))
         XCTAssertGreaterThanOrEqual(
             controller.components(
                 separatedBy: "self.checkpoint = Some(checkpoint_prelaunch_log()?);\n" +
@@ -831,6 +1056,166 @@ final class MacHostMigrationContractTests: XCTestCase {
         XCTAssertFalse(controller.contains("finalize_active_pointer_with_generation_proof"))
     }
 
+    func testProductionReadinessMarkerUsesHeldLockGenerationIdentity() throws {
+        let main = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "macOS/Sources/CaptureServer/CaptureServerMain.swift"
+            ),
+            encoding: .utf8
+        )
+        let coordinator = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "macOS/Sources/CaptureServer/WorldwideHostCoordinator.swift"
+            ),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(main.contains("availabilityMarkerProcessIdentifier:"))
+        XCTAssertTrue(main.contains("ProcessInfo.processInfo.processIdentifier"))
+        XCTAssertTrue(main.contains("availabilityMarkerGenerationNonce:"))
+        XCTAssertTrue(main.contains("worldwideHostProcessLock.generationNonce"))
+        XCTAssertTrue(
+            coordinator.contains(
+                "Worldwide paired-device availability is online \" +"
+            )
+        )
+        XCTAssertTrue(coordinator.contains("pid=\\(availabilityMarkerProcessIdentifier)"))
+        XCTAssertTrue(coordinator.contains("nonce=\\(availabilityMarkerGenerationNonce)"))
+    }
+
+    func testV17PreflightReadinessDeadlineAndInstalledMACLContracts() throws {
+        let controller = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "macOS/scripts/opensteamer-host-migration-controller.rs"
+            ),
+            encoding: .utf8
+        )
+        let deploymentVerifier = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "macOS/scripts/verify-mac-host-deployment.sh"
+            ),
+            encoding: .utf8
+        )
+        let bundleVerifier = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "macOS/scripts/verify-mac-host-bundle.sh"
+            ),
+            encoding: .utf8
+        )
+
+        let preflight = try sourceSection(
+            controller,
+            from: "fn verify_prior_retry_state_cli()",
+            to: "fn execute("
+        )
+        XCTAssertTrue(preflight.contains("InspectionTransactionLock::acquire()?"))
+        XCTAssertTrue(preflight.contains("inspect_active_pointer_read_only(private_root)?"))
+        for forbidden in [
+            "recover_active_pointer(", "rename_exclusive(", "write_active(",
+            "create_new_regular(", "set_len(", "write_all(", "remove_file(",
+        ] {
+            XCTAssertFalse(preflight.contains(forbidden), "Read-only preflight contains \(forbidden)")
+        }
+        let pointerInspection = try sourceSection(
+            controller,
+            from: "fn inspect_active_pointer_read_only(",
+            to: "fn recover_active_pointer("
+        )
+        for required in [
+            "ACTIVE_TRANSACTION_NAME", "ACTIVE_TRANSACTION_PENDING_NAME",
+            "ACTIVE_TRANSACTION_FINALIZING_NAME", "ACTIVE_TRANSACTION_LINEARIZED_NAME",
+            "parse_v17_active_record",
+        ] {
+            XCTAssertTrue(pointerInspection.contains(required))
+        }
+        for forbidden in [
+            "rename_exclusive(", "create_new_regular(", "remove_file(",
+            "set_len(", "write_all(",
+        ] {
+            XCTAssertFalse(
+                pointerInspection.contains(forbidden),
+                "Pointer inspection must retain exact residue: \(forbidden)"
+            )
+        }
+
+        XCTAssertTrue(controller.contains("expected_online_marker_for_generation"))
+        XCTAssertFalse(controller.contains("line.contains(ONLINE_MARKER"))
+        XCTAssertTrue(controller.contains("read_bounded_log_suffix_until"))
+        let markerWait = try sourceSection(
+            controller,
+            from: "fn wait_for_online_marker_for_generation_until(",
+            to: "fn verify_code_identity_until("
+        )
+        XCTAssertTrue(markerWait.contains("read_bounded_log_suffix_until"))
+        XCTAssertFalse(markerWait.contains("read_to_string"))
+        XCTAssertTrue(deploymentVerifier.contains("MAX_READINESS_LOG_SUFFIX_BYTES"))
+        XCTAssertTrue(deploymentVerifier.contains("LOG_SUFFIX_BYTES"))
+        XCTAssertTrue(deploymentVerifier.contains("count=\"$LOG_READ_LIMIT\""))
+        XCTAssertTrue(
+            deploymentVerifier.contains("post-start log suffix exceeds the bounded readiness limit")
+        )
+
+        XCTAssertGreaterThanOrEqual(
+            controller.components(separatedBy: "readiness_deadline: Option<Instant>").count - 1,
+            2
+        )
+        XCTAssertGreaterThanOrEqual(
+            controller.components(
+                separatedBy: "self.readiness_deadline = Some(readiness_deadline);"
+            ).count - 1,
+            2
+        )
+        XCTAssertTrue(controller.contains("fn revalidate_until(&self, deadline: Instant)"))
+        XCTAssertTrue(controller.contains("wait_for_online_marker_for_generation_until("))
+        XCTAssertGreaterThanOrEqual(
+            controller.components(
+                separatedBy: "require_marker_after_checkpoint_until("
+            ).count - 1,
+            4
+        )
+        let deploymentProof = try sourceSection(
+            controller,
+            from: "fn verify_deployment_with_prefix_until(",
+            to: "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\nenum EffectPhase"
+        )
+        XCTAssertTrue(deploymentProof.contains("deadline: Instant"))
+        XCTAssertTrue(deploymentProof.contains("run_pinned_script_until("))
+        XCTAssertFalse(deploymentProof.contains("deadline_after("))
+
+        for required in [
+            "INSTALLED_RUNTIME_APP_PATH=\"/Applications/opensteamer Host.app\"",
+            "XATTR_POLICY=\"strict\"", "XATTR_POLICY=\"installed-runtime\"",
+            "--installed-runtime is restricted to", "EXPECTED_RUNTIME_XATTR=\"$APP_PATH: com.apple.macl\"",
+            "${#MACL_HEX} -eq 144", "\"$MACL_HEX\" != *[!0]*", "XATTRS_AFTER",
+            "APP_ROOT_DEVICE_INODE", "verify_xattr_policy", "/usr/bin/xattr -rs",
+            "INITIAL_XATTR_POLICY_SNAPSHOT",
+            "app root or extended-attribute policy changed during signature verification",
+            "installed app contains unreviewed extended attributes",
+            "installed app com.apple.macl is not exactly 72 NUL bytes",
+        ] {
+            XCTAssertTrue(bundleVerifier.contains(required), "Bundle verifier lacks \(required)")
+        }
+        XCTAssertEqual(
+            deploymentVerifier.components(
+                separatedBy: "run_bundle_verifier --installed-runtime"
+            ).count - 1,
+            1,
+            "Installed-runtime MACL mode must be used exactly once."
+        )
+        XCTAssertTrue(
+            deploymentVerifier.contains(
+                "run_bundle_verifier \"$BUILD_APP_DIR\" \"$EXPECTED_TEAM_ID\""
+            ),
+            "The staged bundle must remain on the strict xattr-free verifier path."
+        )
+        XCTAssertTrue(
+            controller.contains(
+                "OsStr::new(\"--installed-runtime\"),\n            OsStr::new(NEW_APP)"
+            ),
+            "Installed-destination verification must select canonical MACL mode."
+        )
+    }
+
     func testShellVerifiersParseAndLintWithoutExecutingMigration() throws {
         let zshScripts = [
             "macOS/scripts/build-opensteamer-host-app.sh",
@@ -864,6 +1249,32 @@ final class MacHostMigrationContractTests: XCTestCase {
         XCTAssertTrue(deploymentVerifier.contains("--self-test-disabled-parser"))
         XCTAssertTrue(deploymentVerifier.contains("--self-test-zsh-runtime"))
         XCTAssertTrue(deploymentVerifier.contains("EXPECTED_GENERATION_NONCE"))
+        XCTAssertTrue(
+            deploymentVerifier.contains(
+                "ONLINE_MARKER_PREFIX=\"[info] Worldwide paired-device availability is online\""
+            )
+        )
+        XCTAssertTrue(
+            deploymentVerifier.contains(
+                "EXPECTED_ONLINE_MARKER=\"$ONLINE_MARKER_PREFIX pid=$EXPECTED_PID nonce=$EXPECTED_GENERATION_NONCE\""
+            )
+        )
+        XCTAssertTrue(
+            deploymentVerifier.contains(
+                "contains_exact_line \"$LOG_SUFFIX\" \"$EXPECTED_ONLINE_MARKER\""
+            )
+        )
+        XCTAssertFalse(deploymentVerifier.contains("grep -Fxq"))
+        XCTAssertTrue(deploymentVerifier.contains("/usr/bin/grep -Fx -- \"$expected\" >/dev/null"))
+        XCTAssertTrue(deploymentVerifier.contains("${(l:262144::x:)padding}"))
+        XCTAssertTrue(deploymentVerifier.contains("run_bundle_verifier --installed-runtime"))
+        XCTAssertEqual(
+            deploymentVerifier.components(
+                separatedBy: "run_bundle_verifier --installed-runtime"
+            ).count - 1,
+            1,
+            "The relaxed xattr policy must be used only for the canonical installed-app check."
+        )
         XCTAssertTrue(deploymentVerifier.contains("validate_generation_record"))
         XCTAssertTrue(deploymentVerifier.contains("local state_path=\"$1\""))
         let expectedSystemCommands: Set<String> = [
@@ -906,6 +1317,46 @@ final class MacHostMigrationContractTests: XCTestCase {
                 .map(String.init)
         )
         XCTAssertEqual(declaredSystemCommands, expectedSystemCommands)
+        let controller = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "macOS/scripts/opensteamer-host-migration-controller.rs"
+            ),
+            encoding: .utf8
+        )
+        let controllerCommandsRegex = try NSRegularExpression(
+            pattern: #"(?s)const DEPLOYMENT_VERIFIER_REQUIRED_SYSTEM_COMMANDS: &\[\(&str, u32\)\] = &\[\n(.*?)\n\];"#
+        )
+        let controllerRange = NSRange(controller.startIndex..<controller.endIndex, in: controller)
+        let controllerCommandsMatch = try XCTUnwrap(
+            controllerCommandsRegex.firstMatch(in: controller, range: controllerRange)
+        )
+        let controllerCommandsRange = try XCTUnwrap(
+            Range(controllerCommandsMatch.range(at: 1), in: controller)
+        )
+        let controllerCommandsSection = String(controller[controllerCommandsRange])
+        let controllerCommandRegex = try NSRegularExpression(
+            pattern: #"\(\"([^\"]+)\", 0o[0-7]+\)"#
+        )
+        let controllerSectionRange = NSRange(
+            controllerCommandsSection.startIndex..<controllerCommandsSection.endIndex,
+            in: controllerCommandsSection
+        )
+        let controllerSystemCommands = Set(
+            controllerCommandRegex.matches(
+                in: controllerCommandsSection,
+                range: controllerSectionRange
+            ).compactMap { match -> String? in
+                guard let range = Range(match.range(at: 1), in: controllerCommandsSection) else {
+                    return nil
+                }
+                return String(controllerCommandsSection[range])
+            }
+        )
+        XCTAssertEqual(
+            controllerSystemCommands,
+            expectedSystemCommands,
+            "The Rust read-only preflight command gate diverged from the deployment verifier."
+        )
         let executableLiteralRegex = try NSRegularExpression(
             pattern: #"(?<![A-Za-z0-9_.-])(/(?:(?:usr/)?s?bin|usr/libexec)/[A-Za-z0-9_.+-]+)"#
         )
@@ -997,6 +1448,19 @@ final class MacHostMigrationContractTests: XCTestCase {
             arguments: ["-lint", launchAgent.path]
         )
         XCTAssertEqual(plistLint.status, 0, plistLint.diagnostic)
+    }
+
+    private func sourceSection(
+        _ source: String,
+        from start: String,
+        to end: String
+    ) throws -> String {
+        let startRange = try XCTUnwrap(source.range(of: start), "Missing section start: \(start)")
+        let endRange = try XCTUnwrap(
+            source.range(of: end, range: startRange.upperBound..<source.endIndex),
+            "Missing section end: \(end)"
+        )
+        return String(source[startRange.lowerBound..<endRange.lowerBound])
     }
 
     private func compileController() throws -> URL {

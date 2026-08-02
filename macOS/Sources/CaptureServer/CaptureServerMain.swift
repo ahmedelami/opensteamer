@@ -84,7 +84,9 @@ struct CaptureServerMain {
             }
 
             let worldwideHostCoordinator: WorldwideHostCoordinator?
-            if options.worldwideEnabled, let rendezvousURL = options.rendezvousURL {
+            if options.worldwideEnabled,
+               let rendezvousURL = options.rendezvousURL,
+               let worldwideHostProcessLock {
                 let remoteInputController = MacRemoteInputController(
                     allowRemoteControl: options.allowRemoteControl
                 )
@@ -109,6 +111,10 @@ struct CaptureServerMain {
                     remoteInputController: remoteInputController,
                     iPhoneMicrophoneForwardingPolicy:
                         options.iPhoneMicrophoneForwardingPolicy,
+                    availabilityMarkerProcessIdentifier:
+                        ProcessInfo.processInfo.processIdentifier,
+                    availabilityMarkerGenerationNonce:
+                        worldwideHostProcessLock.generationNonce,
                     connectionTelemetry: LocalConnectionTelemetryJournal.applicationSupport(
                         component: "mac-host"
                     ),
