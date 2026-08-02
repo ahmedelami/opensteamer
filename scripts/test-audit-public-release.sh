@@ -26,6 +26,7 @@ function initialize_fixture_repository() {
     "$repository/iOS/opensteamer/Sources/Views" \
     "$repository/macOS/OpensteamerHost" \
     "$repository/macOS/Sources/CaptureServer" \
+    "$repository/macOS/scripts" \
     "$repository/macOS/RelayBridge" \
     "$repository/services/Rendezvous" \
     "$repository/services/RendezvousWorker"
@@ -51,6 +52,18 @@ function initialize_fixture_repository() {
   cp \
     "$ROOT_DIR/macOS/Sources/CaptureServer/Info.plist" \
     "$repository/macOS/Sources/CaptureServer/"
+  print -r -- 'static let legacyPairingService =
+    "com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1"' \
+    >"$repository/macOS/Sources/CaptureServer/WorldwidePairingStore.swift"
+  print -r -- 'static let legacyRuntimeDirectoryName =
+    "com.elamin.AudioStreamer.CaptureServer.runtime"' \
+    >"$repository/macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift"
+  print -r -- 'codesign --identifier com.elamin.AudioStreamer.CaptureServer executable' \
+    >"$repository/macOS/scripts/build-opensteamer-host-app.sh"
+  print -r -- 'EXPECTED_BUNDLE_IDENTIFIER="com.elamin.AudioStreamer.CaptureServer"' \
+    >"$repository/macOS/scripts/verify-mac-host-bundle.sh"
+  print -r -- 'verify-live "com.elamin.AudioStreamer.CaptureServer"' \
+    >"$repository/macOS/scripts/verify-mac-host-deployment.sh"
   cp -R "$ROOT_DIR/macOS/LaunchAgents" "$repository/macOS/"
   cp \
     "$ROOT_DIR/macOS/RelayBridge/package.json" \

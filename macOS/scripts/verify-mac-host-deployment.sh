@@ -27,6 +27,9 @@ readonly ONLINE_MARKER="Worldwide paired-device availability is online"
 readonly BUNDLE_VERIFIER="$ROOT_DIR/macOS/scripts/verify-mac-host-bundle.sh"
 readonly LIVE_PROCESS_VERIFIER="$ROOT_DIR/macOS/scripts/verify-live-mac-host-process.sh"
 readonly LAUNCH_STATE_VERIFIER="$ROOT_DIR/macOS/scripts/verify-mac-host-launch-state.sh"
+readonly PINNED_BUNDLE_VERIFIER_SCRIPT="${OPENSTEAMER_PINNED_BUNDLE_VERIFIER_SCRIPT:-}"
+readonly PINNED_LIVE_PROCESS_VERIFIER_SCRIPT="${OPENSTEAMER_PINNED_LIVE_PROCESS_VERIFIER_SCRIPT:-}"
+readonly PINNED_LAUNCH_STATE_VERIFIER_SCRIPT="${OPENSTEAMER_PINNED_LAUNCH_STATE_VERIFIER_SCRIPT:-}"
 readonly STABILITY_SECONDS=11
 readonly STABILITY_SAMPLES=44
 readonly STABILITY_SAMPLE_DELAY=0.25
@@ -34,6 +37,28 @@ readonly STABILITY_SAMPLE_DELAY=0.25
 fail() {
     print -u2 -- "opensteamer host deployment verification failed: $*"
     exit 1
+}
+
+run_pinned_or_path() {
+    local pinned_script="$1" logical_path="$2"
+    shift 2
+    if [[ -n "$pinned_script" ]]; then
+        /bin/zsh -c "$pinned_script" "$logical_path" "$@"
+    else
+        "$logical_path" "$@"
+    fi
+}
+
+run_bundle_verifier() {
+    run_pinned_or_path "$PINNED_BUNDLE_VERIFIER_SCRIPT" "$BUNDLE_VERIFIER" "$@"
+}
+
+run_live_process_verifier() {
+    run_pinned_or_path "$PINNED_LIVE_PROCESS_VERIFIER_SCRIPT" "$LIVE_PROCESS_VERIFIER" "$@"
+}
+
+run_launch_state_verifier() {
+    run_pinned_or_path "$PINNED_LAUNCH_STATE_VERIFIER_SCRIPT" "$LAUNCH_STATE_VERIFIER" "$@"
 }
 
 parse_disabled_override() {
@@ -198,8 +223,14 @@ other_capture_servers() {
     '
 }
 
-[[ -x "$BUNDLE_VERIFIER" && -x "$LIVE_PROCESS_VERIFIER" && -x "$LAUNCH_STATE_VERIFIER" ]] || fail \
-    "one or more deployment verifiers are missing"
+if [[ -n "$PINNED_BUNDLE_VERIFIER_SCRIPT$PINNED_LIVE_PROCESS_VERIFIER_SCRIPT$PINNED_LAUNCH_STATE_VERIFIER_SCRIPT" ]]; then
+    [[ -n "$PINNED_BUNDLE_VERIFIER_SCRIPT" && -n "$PINNED_LIVE_PROCESS_VERIFIER_SCRIPT" \
+        && -n "$PINNED_LAUNCH_STATE_VERIFIER_SCRIPT" ]] || fail \
+        "pinned deployment verifier set is incomplete"
+else
+    [[ -x "$BUNDLE_VERIFIER" && -x "$LIVE_PROCESS_VERIFIER" && -x "$LAUNCH_STATE_VERIFIER" ]] || fail \
+        "one or more deployment verifiers are missing"
+fi
 [[ -d "$BUILD_APP_DIR" && ! -L "$BUILD_APP_DIR" ]] || fail "staged app is not a real directory"
 [[ -f "$DESIGNATED_REQUIREMENT_REFERENCE" && ! -L "$DESIGNATED_REQUIREMENT_REFERENCE" ]] || fail \
     "offline legacy reference is not a real file"
@@ -222,14 +253,14 @@ require_legacy_disabled
 [[ -d "$APP_DIR" && ! -L "$APP_DIR" ]] || fail "installed new app is not a real directory"
 [[ -f "$INSTALLED_LAUNCH_AGENT" && ! -L "$INSTALLED_LAUNCH_AGENT" ]] || fail \
     "installed new LaunchAgent is not a real file"
-"$LAUNCH_STATE_VERIFIER" --verify-plist "$EXPECTED_EXECUTABLE" "$SOURCE_LAUNCH_AGENT" >/dev/null
-"$LAUNCH_STATE_VERIFIER" --verify-plist "$EXPECTED_EXECUTABLE" "$REVIEWED_LAUNCH_AGENT" >/dev/null
+run_launch_state_verifier --verify-plist "$EXPECTED_EXECUTABLE" "$SOURCE_LAUNCH_AGENT" >/dev/null
+run_launch_state_verifier --verify-plist "$EXPECTED_EXECUTABLE" "$REVIEWED_LAUNCH_AGENT" >/dev/null
 /bin/cmp -s "$SOURCE_LAUNCH_AGENT" "$REVIEWED_LAUNCH_AGENT" || fail \
     "reviewed LaunchAgent bytes differ from checked-in contract"
 /bin/cmp -s "$REVIEWED_LAUNCH_AGENT" "$INSTALLED_LAUNCH_AGENT" || fail \
     "installed LaunchAgent bytes differ from reviewed contract"
-"$BUNDLE_VERIFIER" "$BUILD_APP_DIR" "$EXPECTED_TEAM_ID" "$DESIGNATED_REQUIREMENT_REFERENCE" >/dev/null
-"$BUNDLE_VERIFIER" "$APP_DIR" "$EXPECTED_TEAM_ID" "$DESIGNATED_REQUIREMENT_REFERENCE" >/dev/null
+run_bundle_verifier "$BUILD_APP_DIR" "$EXPECTED_TEAM_ID" "$DESIGNATED_REQUIREMENT_REFERENCE" >/dev/null
+run_bundle_verifier "$APP_DIR" "$EXPECTED_TEAM_ID" "$DESIGNATED_REQUIREMENT_REFERENCE" >/dev/null
 /usr/bin/diff -qr "$BUILD_APP_DIR" "$APP_DIR" >/dev/null || fail \
     "installed app bytes differ from fresh staged app"
 
@@ -252,7 +283,7 @@ capture_state() {
     local path="$1"
     /bin/launchctl print "gui/$UID/$HOST_LABEL" >"$path" 2>/dev/null || fail \
         "new LaunchAgent is not loaded"
-    "$LAUNCH_STATE_VERIFIER" "$path" "$EXPECTED_EXECUTABLE" \
+    run_launch_state_verifier "$path" "$EXPECTED_EXECUTABLE" \
         "$REVIEWED_LAUNCH_AGENT" "$INSTALLED_LAUNCH_AGENT"
 }
 
@@ -282,7 +313,7 @@ LOCK_PROBE_OUTPUT="$("$CONTROLLER_BINARY" --probe-lock "$LOCK_DIRECTORY" "$LOCK_
 [[ "$LOCK_PROBE_OUTPUT" == "lock_holder=$pid_one" ]] || fail \
     "shared-lock proof returned unexpected output: $LOCK_PROBE_OUTPUT"
 
-live_one="$("$LIVE_PROCESS_VERIFIER" "$pid_one" "$EXPECTED_EXECUTABLE" \
+live_one="$(run_live_process_verifier "$pid_one" "$EXPECTED_EXECUTABLE" \
     "$build_executable_hash" "$EXPECTED_IDENTIFIER" "$EXPECTED_TEAM_ID" "$EXPECTED_FRAMEWORK_EXECUTABLE")" \
     || fail "first live-process verification failed"
 start_one="$(/bin/ps -p "$pid_one" -o lstart= 2>/dev/null)" || fail "could not read process start identity"
@@ -360,7 +391,7 @@ while (( sample < STABILITY_SAMPLES )); do
         "shared-lock proof changed during continuous sample $sample"
     sample=$((sample + 1))
 done
-live_two="$("$LIVE_PROCESS_VERIFIER" "$pid_two" "$EXPECTED_EXECUTABLE" \
+live_two="$(run_live_process_verifier "$pid_two" "$EXPECTED_EXECUTABLE" \
     "$build_executable_hash" "$EXPECTED_IDENTIFIER" "$EXPECTED_TEAM_ID" "$EXPECTED_FRAMEWORK_EXECUTABLE")" \
     || fail "final live-process verification failed"
 [[ "$live_two" == "$live_one" ]] || fail \

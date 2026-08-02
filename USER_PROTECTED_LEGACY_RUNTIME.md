@@ -78,22 +78,36 @@ The first guarded attempt on August 1, 2026 stopped before the legacy cutover
 boundary because controller version 9 referenced the nonexistent
 `/bin/chflags`. It durably recorded `ROLLED_BACK`, verified that the exact legacy
 host remained the sole running host, and retained
-`active-migration-v9` plus its evidence. Controller version 10 may retry only
+`active-migration-v9` plus its evidence. Controller version 10 retried only
 after byte-validating that exact pre-stop outcome and independently reproving
-the live legacy hashes, launch state, process set, and shared lock. It preserves
+the live legacy hashes, launch state, process set, and shared lock. It preserved
 the version-9 pointer and evidence permanently.
 
 The first version-10 attempt later stopped the exact legacy service but failed
 before publishing the new app because the controller rejected the canonical
 `root:admin` mode-`0775` `/Applications` directory. Its initial rollback hit the
 same guard, so both hosts were deliberately left offline under the retained
-`active-migration-v10` tombstone. Recovery may resume only when that pointer,
+`active-migration-v10` tombstone. Recovery resumed only after that pointer,
 critical journal hash and history, provenance, offline snapshot, legacy/new
-service topology, shared lock, and hidden install hold exactly match the
+service topology, shared lock, and hidden install hold exactly matched the
 reviewed failed attempt. The directory exception is limited to canonical
 `/Applications` with UID `0`, GID `80`, and mode `0775`, and is preserved across
-pinned-directory revalidation. Recovery restores and proves the untouched
+pinned-directory revalidation. Recovery restored and proved the untouched
 legacy service before archiving the unlaunched new-app hold.
+
+Controller version 11 may create one fresh transaction only after pinning and
+revalidating both historical tombstones and independently reproving the restored
+legacy service. It retains the exact `/Applications` and LaunchAgents directory
+descriptors across shutdown and publication, journals their device/inode
+identities for rollback, rejects all transaction-specific hidden-path collisions
+before disable and bootout, pins the reviewed `ditto` tool, and revalidates both
+historical guards immediately before crossing the stop boundary. Neither older
+pointer or evidence tree may be modified or removed.
+
+Version 11 also keeps a physically allocated, journal-identified rollback
+reserve until recovery or verified commit, executes only controller-embedded and
+inode-pinned verifier bytes, and repeats the no-overlap process/lock proof
+immediately before either host is bootstrapped.
 
 ## Protected iPhone client
 

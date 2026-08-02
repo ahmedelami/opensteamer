@@ -23,10 +23,14 @@ const USER_HOME: &str = "/Users/ahmed";
 const USER_ID: u32 = 501;
 const MIGRATIONS_ROOT: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations";
 const PRIVATE_ROOT: &str = "/Users/ahmed/Library/Application Support/opensteamer";
-const ACTIVE_TRANSACTION_NAME: &str = "active-migration-v10";
-const ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v10.pending";
-const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v10.finalizing";
-const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = ".active-migration-v10.linearized";
+const ACTIVE_TRANSACTION_NAME: &str = "active-migration-v11";
+const ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v11.pending";
+const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v11.finalizing";
+const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = ".active-migration-v11.linearized";
+const PRIOR_V10_ACTIVE_TRANSACTION_NAME: &str = "active-migration-v10";
+const PRIOR_V10_ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v10.pending";
+const PRIOR_V10_ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v10.finalizing";
+const PRIOR_V10_ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = ".active-migration-v10.linearized";
 const PRIOR_ACTIVE_TRANSACTION_NAME: &str = "active-migration-v9";
 const PRIOR_ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v9.pending";
 const PRIOR_ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v9.finalizing";
@@ -58,7 +62,7 @@ const CODE_IDENTIFIER: &str = "com.elamin.AudioStreamer.CaptureServer";
 const ONLINE_LOG: &str = "/var/tmp/opensteamer-worldwide-host.log";
 const ERROR_LOG: &str = "/var/tmp/opensteamer-worldwide-host.err.log";
 const ONLINE_MARKER: &str = "Worldwide paired-device availability is online";
-const JOURNAL_VERSION: &str = "OPENSTEAMER_MIGRATION_JOURNAL_V10";
+const JOURNAL_VERSION: &str = "OPENSTEAMER_MIGRATION_JOURNAL_V11";
 const PRIOR_PRESTOP_JOURNAL: &[u8] = b"OPENSTEAMER_MIGRATION_JOURNAL_V9\nSTATE BEGUN\nSTATE ROLLBACK_STARTED legacy_disable_was_journaled=false rollback_mode=BeforeLegacyStop\nSTATE LEGACY_REENABLED\nSTATE LEGACY_RECOVERED\nSTATE ROLLED_BACK\n";
 const PRIOR_PRESTOP_RESULT: &[u8] = b"result=rolled-back-before-stop\nlegacy_launchd_disabled=false\nphysical_iphone_e2e=unavailable-not-claimed\n";
 const PRIOR_JOURNAL_SHA256: &str =
@@ -73,18 +77,84 @@ const APPLICATIONS_DIRECTORY: &str = "/Applications";
 const APPLICATIONS_UID: u32 = 0;
 const APPLICATIONS_GID: u32 = 80;
 const APPLICATIONS_MODE: u32 = 0o775;
-const V10_CRITICAL_RECOVERY_EVIDENCE: &str =
+const PRIOR_V10_EVIDENCE_PATH: &str =
     "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v10-1785631164-7724";
-const V10_CRITICAL_ACTIVE_RECORD: &[u8] = b"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v10-1785631164-7724\n";
-const V10_CRITICAL_ACTIVE_SHA256: &str =
+const PRIOR_V10_ACTIVE_RECORD: &[u8] = b"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v10-1785631164-7724\n";
+const PRIOR_V10_ACTIVE_SHA256: &str =
     "af917e5ca70f533d1e78b62cf7bda66a682d2fd61dc2d1e337615f52e44ac02a";
-const V10_CRITICAL_JOURNAL_SHA256: &str =
-    "bc03af50f511a5def82b2d5ae4f6699edf87d1898a02337c576f3b22750ee7fa";
-const V10_CRITICAL_RECOVERY_COMMIT: &str = "a0a25f7010a1170330ad7ebd48d0e85839219af4";
-const V10_CRITICAL_RECOVERY_TREE: &str = "98c0c0d230aa89f56121916f0ef158cf8c0563b1";
-const V10_APPLICATIONS_MODE_ERROR: &str =
-    "directory '/Applications' is group/world writable with mode 0775";
+const PRIOR_V10_SOURCE_COMMIT: &str = "a0a25f7010a1170330ad7ebd48d0e85839219af4";
+const PRIOR_V10_SOURCE_TREE: &str = "98c0c0d230aa89f56121916f0ef158cf8c0563b1";
+const PRIOR_V10_FINAL_JOURNAL_SHA256: &str =
+    "3d29812b215a1a765492ac76dd849454159170be618334ccfd08585c67371b0c";
+const PRIOR_V10_FINAL_JOURNAL: &[u8] = br#"OPENSTEAMER_MIGRATION_JOURNAL_V10
+STATE BEGUN
+STATE BEGUN prior_v9_active_sha256=55c5936e520d65c2096811546357853e05064eca41553603793bea5843518559 prior_v9_journal_sha256=566504aa212b4b4ae627996859991c0aa8742f9fa5019145a9e73ca9c6ddf524 prior_v9_result_sha256=d1e58fcd7c826e015fab662e5669abfdfa142f904fc3277c5cf62f754890f875 prior_v9_source_archive_sha256=0d0022af455d2d7a2d49c43025760ece421b9cdd0b33451fad55f338f9746202 prior_v9_source_commit=2ef1c9cbb972c0c138ae36bbe996eacda214113d
+STATE PROVENANCE_VERIFIED commit=a0a25f7010a1170330ad7ebd48d0e85839219af4 tree=98c0c0d230aa89f56121916f0ef158cf8c0563b1
+STATE LEGACY_SNAPSHOTTED
+STATE NEW_STAGED
+STATE PRECUTOVER_VERIFIED
+STATE LEGACY_DISABLED
+STATE LEGACY_STOPPED
+STATE LOCK_HANDED_OFF
+STATE ROLLBACK_STARTED legacy_disable_was_journaled=true rollback_mode=FullRestore
+STATE NEW_STOPPED
+STATE CRITICAL_FAILURE primary=directory%20%27/Applications%27%20is%20group/world%20writable%20with%20mode%200775 rollback=directory%20%27/Applications%27%20is%20group/world%20writable%20with%20mode%200775
+STATE ROLLBACK_STARTED legacy_disable_was_journaled=true rollback_mode=FullRestore
+STATE NEW_STOPPED
+STATE NEW_DESTINATIONS_CLEARED
+STATE LEGACY_REENABLED
+STATE LEGACY_BOOTSTRAPPED
+STATE LEGACY_RECOVERED
+STATE ROLLED_BACK
+"#;
+const PRIOR_V10_FINAL_RESULT: &[u8] = b"result=rolled-back\nlegacy_launchd_disabled=false\nphysical_iphone_e2e=unavailable-not-claimed\n";
+const PRIOR_V10_FINAL_RESULT_SHA256: &str =
+    "434dea611969ea91d8b873bffe42e4a149f329641fe5111e898b86d66fc3d301";
+const PRIOR_V10_SOURCE_ARCHIVE_SIZE: u64 = 6_287_360;
+const PRIOR_V10_SOURCE_ARCHIVE_SHA256: &str =
+    "b742d38f5e21f8febbc6a436112de633cc15e34be9ecd698915b3231a253acb3";
+const PRIOR_V10_PROVENANCE_SHA256: &str =
+    "7bea7b1f67a0a88467526b333e6a941302d160c8fe05393a3619ed398821bba6";
+const PRIOR_V10_PROVENANCE: &[u8] = br#"commit=a0a25f7010a1170330ad7ebd48d0e85839219af4
+tree=98c0c0d230aa89f56121916f0ef158cf8c0563b1
+remote=https://github.com/ahmedelami/opensteamer.git
+upstream=origin/agent/auto-select-iphone-microphone
+source_archive_sha256=b742d38f5e21f8febbc6a436112de633cc15e34be9ecd698915b3231a253acb3
+package_resolved_sha256=161213e9507513e41f0acba0d7439fcf633b9d03d78c22b1e4b15fa9f83a01d9
+"#;
+const PRIOR_V10_LEGACY_MANIFEST_SHA256: &str =
+    "2bdaddf99c5101a8f994d3916b44a66f6c8fcbd3c0cda1b3ae44694263d6971f";
+const PRIOR_V10_LEGACY_XATTRS_SHA256: &str =
+    "cc69a330ffd8dcb92e45bfa1b2f7163f749b2c1875bc2ead51f9ed50dd252ea8";
+const PRIOR_V10_STAGED_HASHES_SHA256: &str =
+    "176c8c5e3523e8a7a97131fb414f2d27ae8c3d23ff33705e617eee8d34478ea8";
+const PRIOR_V10_SOURCE_EXPORT_MANIFEST_SHA256: &str =
+    "89964eeffb7787860c52ea2745a690d21fe98fe28cb9eec21a709f4f0b334b2c";
+const PRIOR_V10_BUILD_STDOUT_SHA256: &str =
+    "ef569e73e8b88e85c24c133dab6464473515f3c341e494a5bf77238be5d23fd4";
+const PRIOR_V10_BUILD_STDERR_SHA256: &str =
+    "f36f6e9ae4f5c5c1471669ff8bffd1b1882c2742578d26e0bb084eefb9b10b3c";
+const PRIOR_V10_STAGED_EXECUTABLE_SHA256: &str =
+    "0044981bbfffbe81a6403eb941d3a627890b4528fc45c8ff85c831bae9c53d53";
+const PRIOR_V10_STAGED_PLIST_SHA256: &str =
+    "7cdcf2d1517dc9ec1ae49b6fbbaf293c77afd958f697878d44f3b3c8e9c7e550";
 const CHFLAGS_SHA256: &str = "a67367c7fda2e962b72db6cc730173e82115f3709bf4a208d1d2ed1a6787a211";
+const DITTO_SHA256: &str = "31a07d70d9ebea58b083e47d4fa380c1d5b8f7fe58ac3fefa9ce2714ca898ca6";
+const EMBEDDED_BUILD_SCRIPT: &[u8] = include_bytes!("build-opensteamer-host-app.sh");
+const EMBEDDED_BUILD_SCRIPT_SHA256: &str =
+    "bda01b7ec76e5112a127fd97427fbff4a23c5d352232bed64d3cc93cf44e9619";
+const EMBEDDED_BUNDLE_VERIFIER: &[u8] = include_bytes!("verify-mac-host-bundle.sh");
+const EMBEDDED_BUNDLE_VERIFIER_SHA256: &str =
+    "b667df23e06d55140a61e8b8e7c1de3a6aa5ebd6f4c4f063c805ddf98b5edc27";
+const EMBEDDED_LAUNCH_VERIFIER: &[u8] = include_bytes!("verify-mac-host-launch-state.sh");
+const EMBEDDED_LAUNCH_VERIFIER_SHA256: &str =
+    "27c36f8adec05c22216955cb404d6732ceaa6065477e5bb1570f2d41e84db7a9";
+const EMBEDDED_DEPLOYMENT_VERIFIER: &[u8] = include_bytes!("verify-mac-host-deployment.sh");
+const EMBEDDED_DEPLOYMENT_VERIFIER_SHA256: &str =
+    "394960cffadf889adffc6fa9a8e54fd86820ef1e715b75c5d7889b6a09861893";
+const EMBEDDED_LIVE_PROCESS_VERIFIER: &[u8] = include_bytes!("verify-live-mac-host-process.sh");
+const EMBEDDED_LIVE_PROCESS_VERIFIER_SHA256: &str =
+    "0e56403570362c6d59ea86dc10d3cc53d7a5461d4a2f6c78d6e6c86dd13a4b41";
 const REVIEWED_RUSTC_SHA256: &str =
     "d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd";
 const REVIEWED_RUSTC_CDHASH_FULL: &str =
@@ -140,6 +210,8 @@ const O_EXCL_VALUE: i32 = 0x0000_0080;
 const O_EXCL_VALUE: i32 = 0;
 const O_RDONLY_VALUE: i32 = 0;
 const O_RDWR_VALUE: i32 = 2;
+const W_OK_VALUE: i32 = 2;
+const X_OK_VALUE: i32 = 1;
 #[cfg(target_os = "macos")]
 const O_NONBLOCK_VALUE: i32 = 0x0000_0004;
 #[cfg(target_os = "linux")]
@@ -150,12 +222,31 @@ const O_NONBLOCK_VALUE: i32 = 0;
 const RENAME_EXCL_VALUE: u32 = 0x0000_0004;
 #[cfg(target_os = "linux")]
 const RENAME_EXCL_VALUE: u32 = 0x0000_0001;
+#[cfg(target_os = "macos")]
+const F_PREALLOCATE_VALUE: i32 = 42;
+#[cfg(target_os = "macos")]
+const F_ALLOCATECONTIG_VALUE: u32 = 0x0000_0002;
+#[cfg(target_os = "macos")]
+const F_ALLOCATEALL_VALUE: u32 = 0x0000_0004;
+#[cfg(target_os = "macos")]
+const F_PEOFPOSMODE_VALUE: i32 = 3;
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct FStore {
+    flags: u32,
+    posmode: i32,
+    offset: i64,
+    length: i64,
+    bytes_allocated: i64,
+}
 
 extern "C" {
     fn flock(fd: i32, operation: i32) -> i32;
     fn geteuid() -> u32;
     fn openat(dirfd: i32, path: *const i8, flags: i32, ...) -> i32;
     fn mkdirat(dirfd: i32, path: *const i8, mode: ModeValue) -> i32;
+    fn faccessat(dirfd: i32, path: *const i8, mode: i32, flags: i32) -> i32;
     fn setpgid(pid: i32, pgid: i32) -> i32;
     fn kill(pid: i32, signal: i32) -> i32;
     fn fcntl(fd: i32, command: i32, ...) -> i32;
@@ -477,6 +568,29 @@ impl PinnedDirectory {
         Ok(())
     }
 
+    fn prove_write_execute_and_sync(&self) -> Result<()> {
+        self.revalidate()?;
+        let current_directory = CString::new(".").expect("literal has no NUL");
+        // SAFETY: the directory descriptor and constant NUL-terminated relative path are valid.
+        if unsafe {
+            faccessat(
+                self.as_raw_fd(),
+                current_directory.as_ptr(),
+                W_OK_VALUE | X_OK_VALUE,
+                0,
+            )
+        } != 0
+        {
+            return Err(ControllerError(format!(
+                "destination directory is not writable/searchable: {}: {}",
+                self.path.display(),
+                io::Error::last_os_error()
+            )));
+        }
+        self.file.sync_all()?;
+        self.revalidate()
+    }
+
     fn as_raw_fd(&self) -> RawFd {
         self.file.as_raw_fd()
     }
@@ -626,6 +740,324 @@ impl PinnedDirectory {
         self.file.sync_all()?;
         self.revalidate()
     }
+}
+
+struct PinnedSystemTool {
+    path: PathBuf,
+    file: File,
+    device: u64,
+    inode: u64,
+    expected_sha256: &'static str,
+}
+
+impl PinnedSystemTool {
+    fn open(path: &Path, expected_sha256: &'static str) -> Result<Self> {
+        let before = fs::symlink_metadata(path)?;
+        Self::validate_metadata(path, &before)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc_o_nofollow() | O_NONBLOCK_VALUE)
+            .open(path)?;
+        let opened = file.metadata()?;
+        Self::validate_metadata(path, &opened)?;
+        if !same_inode(&before, &opened) || sha256_file(path)? != expected_sha256 {
+            return Err(ControllerError(format!(
+                "reviewed system tool changed while pinning: {}",
+                path.display()
+            )));
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            file,
+            device: opened.dev(),
+            inode: opened.ino(),
+            expected_sha256,
+        })
+    }
+
+    fn validate_metadata(path: &Path, metadata: &Metadata) -> Result<()> {
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.uid() != 0
+            || metadata.gid() != 0
+            || metadata.nlink() != 1
+            || metadata.permissions().mode() & 0o7777 != 0o755
+        {
+            return Err(ControllerError(format!(
+                "reviewed system tool identity or mode is unsafe: {}",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    fn revalidate(&self) -> Result<()> {
+        let current = fs::symlink_metadata(&self.path)?;
+        let opened = self.file.metadata()?;
+        Self::validate_metadata(&self.path, &current)?;
+        Self::validate_metadata(&self.path, &opened)?;
+        if current.dev() != self.device
+            || current.ino() != self.inode
+            || !same_inode(&current, &opened)
+            || sha256_file(&self.path)? != self.expected_sha256
+        {
+            return Err(ControllerError(format!(
+                "reviewed system tool changed after preflight: {}",
+                self.path.display()
+            )));
+        }
+        Ok(())
+    }
+}
+
+struct PinnedScript {
+    name: &'static str,
+    logical_path: PathBuf,
+    file: File,
+    device: u64,
+    inode: u64,
+    expected: &'static [u8],
+    text: String,
+}
+
+impl PinnedScript {
+    fn open(
+        scripts_directory: &PinnedDirectory,
+        name: &'static str,
+        expected: &'static [u8],
+    ) -> Result<Self> {
+        let file = scripts_directory
+            .open_existing_regular(name, false)?
+            .ok_or_else(|| ControllerError(format!("pinned script is missing: {name}")))?;
+        let logical_path = scripts_directory.path.join(name);
+        let metadata = file.metadata()?;
+        validate_pinned_script_metadata(&logical_path, &metadata)?;
+        let bytes = read_pinned_script_bytes(&file, &logical_path)?;
+        if bytes != expected {
+            return Err(ControllerError(format!(
+                "source-export script differs from the bytes embedded in the attested controller: {}",
+                logical_path.display()
+            )));
+        }
+        let text = String::from_utf8(bytes)
+            .map_err(|_| ControllerError(format!("pinned script is not UTF-8: {name}")))?;
+        if text.as_bytes().contains(&0) {
+            return Err(ControllerError(format!(
+                "pinned script contains a NUL byte: {name}"
+            )));
+        }
+        scripts_directory.ensure_file_at_name(name, &file)?;
+        Ok(Self {
+            name,
+            logical_path,
+            file,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            expected,
+            text,
+        })
+    }
+
+    fn revalidate(&self, scripts_directory: &PinnedDirectory) -> Result<()> {
+        scripts_directory.ensure_file_at_name(self.name, &self.file)?;
+        let opened = self.file.metadata()?;
+        validate_pinned_script_metadata(&self.logical_path, &opened)?;
+        if opened.dev() != self.device
+            || opened.ino() != self.inode
+            || read_pinned_script_bytes(&self.file, &self.logical_path)? != self.expected
+        {
+            return Err(ControllerError(format!(
+                "pinned script changed after attestation: {}",
+                self.logical_path.display()
+            )));
+        }
+        scripts_directory.ensure_file_at_name(self.name, &self.file)
+    }
+}
+
+fn validate_pinned_script_metadata(path: &Path, metadata: &Metadata) -> Result<()> {
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.uid() != effective_uid()
+        || metadata.nlink() != 1
+        || metadata.permissions().mode() & 0o022 != 0
+        || metadata.permissions().mode() & 0o111 == 0
+        || metadata.len() == 0
+        || metadata.len() > MAX_PINNED_SCRIPT_BYTES
+    {
+        return Err(ControllerError(format!(
+            "pinned script metadata is unsafe: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn read_pinned_script_bytes(file: &File, path: &Path) -> Result<Vec<u8>> {
+    let before = file.metadata()?;
+    validate_pinned_script_metadata(path, &before)?;
+    let mut reader = file.try_clone()?;
+    reader.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_PINNED_SCRIPT_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    let after = file.metadata()?;
+    validate_pinned_script_metadata(path, &after)?;
+    if !same_inode(&before, &after)
+        || before.len() != after.len()
+        || bytes.len() as u64 != after.len()
+    {
+        return Err(ControllerError(format!(
+            "pinned script changed while being read: {}",
+            path.display()
+        )));
+    }
+    Ok(bytes)
+}
+
+struct PinnedVerifierSet {
+    source_export: PinnedDirectory,
+    macos_directory: PinnedDirectory,
+    scripts_directory: PinnedDirectory,
+    records: PinnedDirectory,
+    source_manifest: File,
+    build: PinnedScript,
+    bundle: PinnedScript,
+    launch: PinnedScript,
+    deployment: PinnedScript,
+    live_process: PinnedScript,
+}
+
+impl PinnedVerifierSet {
+    fn open(layout: &Layout) -> Result<Self> {
+        verify_embedded_verifier_hashes()?;
+        let source_export =
+            PinnedDirectory::open(&layout.source_export, Some(effective_uid()), Some(0o700))?;
+        let macos_directory = source_export
+            .try_open_directory_child("macOS", Some(effective_uid()), Some(0o700))?
+            .ok_or_else(|| ControllerError("source export lacks macOS directory".to_owned()))?;
+        let scripts_directory = macos_directory
+            .try_open_directory_child("scripts", Some(effective_uid()), Some(0o700))?
+            .ok_or_else(|| ControllerError("source export lacks scripts directory".to_owned()))?;
+        let records = PinnedDirectory::open(&layout.records, Some(effective_uid()), Some(0o700))?;
+        let source_manifest =
+            open_required_pinned_regular(&records, "source-export-manifest.txt", 0o600)?;
+        let set = Self {
+            build: PinnedScript::open(
+                &scripts_directory,
+                "build-opensteamer-host-app.sh",
+                EMBEDDED_BUILD_SCRIPT,
+            )?,
+            bundle: PinnedScript::open(
+                &scripts_directory,
+                "verify-mac-host-bundle.sh",
+                EMBEDDED_BUNDLE_VERIFIER,
+            )?,
+            launch: PinnedScript::open(
+                &scripts_directory,
+                "verify-mac-host-launch-state.sh",
+                EMBEDDED_LAUNCH_VERIFIER,
+            )?,
+            deployment: PinnedScript::open(
+                &scripts_directory,
+                "verify-mac-host-deployment.sh",
+                EMBEDDED_DEPLOYMENT_VERIFIER,
+            )?,
+            live_process: PinnedScript::open(
+                &scripts_directory,
+                "verify-live-mac-host-process.sh",
+                EMBEDDED_LIVE_PROCESS_VERIFIER,
+            )?,
+            source_export,
+            macos_directory,
+            scripts_directory,
+            records,
+            source_manifest,
+        };
+        set.revalidate()?;
+        Ok(set)
+    }
+
+    fn revalidate(&self) -> Result<()> {
+        self.source_export.revalidate()?;
+        self.macos_directory.revalidate()?;
+        self.scripts_directory.revalidate()?;
+        self.records
+            .ensure_file_at_name("source-export-manifest.txt", &self.source_manifest)?;
+        let recorded_manifest = read_opened_regular(
+            &self.source_manifest,
+            &self.records.path.join("source-export-manifest.txt"),
+            0o600,
+        )?;
+        if tree_manifest(&self.source_export.path)?.as_bytes() != recorded_manifest {
+            return Err(ControllerError(
+                "source export changed after immutable-manifest attestation".to_owned(),
+            ));
+        }
+        for script in [
+            &self.build,
+            &self.bundle,
+            &self.launch,
+            &self.deployment,
+            &self.live_process,
+        ] {
+            script.revalidate(&self.scripts_directory)?;
+        }
+        self.source_export.revalidate()
+    }
+
+    fn add_helper_environment(&self, environment: &mut BTreeMap<String, String>) {
+        environment.insert(
+            "OPENSTEAMER_PINNED_BUNDLE_VERIFIER_SCRIPT".to_owned(),
+            self.bundle.text.clone(),
+        );
+        environment.insert(
+            "OPENSTEAMER_PINNED_LAUNCH_STATE_VERIFIER_SCRIPT".to_owned(),
+            self.launch.text.clone(),
+        );
+        environment.insert(
+            "OPENSTEAMER_PINNED_LIVE_PROCESS_VERIFIER_SCRIPT".to_owned(),
+            self.live_process.text.clone(),
+        );
+    }
+}
+
+fn verify_embedded_verifier_hashes() -> Result<()> {
+    for (label, bytes, expected) in [
+        (
+            "build verifier",
+            EMBEDDED_BUILD_SCRIPT,
+            EMBEDDED_BUILD_SCRIPT_SHA256,
+        ),
+        (
+            "bundle verifier",
+            EMBEDDED_BUNDLE_VERIFIER,
+            EMBEDDED_BUNDLE_VERIFIER_SHA256,
+        ),
+        (
+            "launch verifier",
+            EMBEDDED_LAUNCH_VERIFIER,
+            EMBEDDED_LAUNCH_VERIFIER_SHA256,
+        ),
+        (
+            "deployment verifier",
+            EMBEDDED_DEPLOYMENT_VERIFIER,
+            EMBEDDED_DEPLOYMENT_VERIFIER_SHA256,
+        ),
+        (
+            "live-process verifier",
+            EMBEDDED_LIVE_PROCESS_VERIFIER,
+            EMBEDDED_LIVE_PROCESS_VERIFIER_SHA256,
+        ),
+    ] {
+        if sha256_bytes(bytes)? != expected {
+            return Err(ControllerError(format!(
+                "embedded {label} bytes differ from the reviewed controller trust anchor"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_regular_metadata(path: &Path, metadata: &Metadata) -> Result<()> {
@@ -1121,7 +1553,7 @@ impl Layout {
             .map_err(|_| ControllerError("system clock is before epoch".to_owned()))?
             .as_secs();
         let evidence =
-            Path::new(MIGRATIONS_ROOT).join(format!("migration-v10-{now}-{}", process::id()));
+            Path::new(MIGRATIONS_ROOT).join(format!("migration-v11-{now}-{}", process::id()));
         fs::create_dir(&evidence).map_err(|error| {
             ControllerError(format!("cannot create evidence directory: {error}"))
         })?;
@@ -1234,6 +1666,10 @@ impl CommandOutput {
 
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const BUILD_COMMAND_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const MINIMUM_PRECUTOVER_AVAILABLE_BYTES: u64 = 1024 * 1024 * 1024;
+const ROLLBACK_RESERVE_BYTES: u64 = 8 * 1024 * 1024;
+const ROLLBACK_RESERVE_NAME: &str = "rollback-reserve.bin";
+const MAX_PINNED_SCRIPT_BYTES: u64 = 128 * 1024;
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const SIGKILL_VALUE: i32 = 9;
 
@@ -1256,6 +1692,19 @@ const F_GETFL_VALUE: i32 = 3;
 const F_SETFL_VALUE: i32 = 4;
 const MAX_COMMAND_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 const COMMAND_TERMINATION_RESERVE_MAX: Duration = Duration::from_millis(250);
+
+fn fixed_child_environment() -> BTreeMap<String, String> {
+    [
+        ("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+        ("HOME", USER_HOME),
+        ("TMPDIR", "/var/tmp"),
+        ("LANG", "C"),
+        ("LC_ALL", "C"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+    .collect()
+}
 
 fn set_pipe_nonblocking(fd: RawFd, label: &str) -> Result<()> {
     // SAFETY: `fd` is an owned child pipe descriptor and F_GETFL/F_SETFL do not dereference
@@ -1510,7 +1959,14 @@ fn run_command_until(
         )));
     }
     let mut command = Command::new(program);
-    command.args(arguments);
+    command
+        .args(arguments)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("HOME", USER_HOME)
+        .env("TMPDIR", "/var/tmp")
+        .env("LANG", "C")
+        .env("LC_ALL", "C");
     if let Some(directory) = cwd {
         command.current_dir(directory);
     }
@@ -1549,18 +2005,51 @@ fn run_command_owned_until(
     run_spawned_command(command, program, deadline)
 }
 
-fn run_command_owned(
-    program: &Path,
-    arguments: &[String],
+fn run_pinned_script_until(
+    verifiers: &PinnedVerifierSet,
+    script: &PinnedScript,
+    arguments: &[&OsStr],
+    cwd: Option<&Path>,
+    environment: &BTreeMap<String, String>,
+    deadline: Instant,
+) -> Result<CommandOutput> {
+    verifiers.revalidate()?;
+    if Instant::now() >= deadline {
+        return Err(ControllerError(format!(
+            "pinned script '{}' was not started because its monotonic deadline expired",
+            script.logical_path.display()
+        )));
+    }
+    let mut command = Command::new("/bin/zsh");
+    command
+        .arg("-c")
+        .arg(&script.text)
+        .arg(&script.logical_path)
+        .args(arguments)
+        .env_clear()
+        .envs(environment);
+    if let Some(directory) = cwd {
+        command.current_dir(directory);
+    }
+    let output = run_spawned_command(command, &script.logical_path, deadline)?;
+    verifiers.revalidate()?;
+    Ok(output)
+}
+
+fn run_pinned_script(
+    verifiers: &PinnedVerifierSet,
+    script: &PinnedScript,
+    arguments: &[&OsStr],
     cwd: Option<&Path>,
     environment: &BTreeMap<String, String>,
 ) -> Result<CommandOutput> {
-    run_command_owned_until(
-        program,
+    run_pinned_script_until(
+        verifiers,
+        script,
         arguments,
         cwd,
         environment,
-        deadline_after(BUILD_COMMAND_TIMEOUT)?,
+        deadline_after(DEFAULT_COMMAND_TIMEOUT)?,
     )
 }
 
@@ -1579,7 +2068,14 @@ fn run_command_with_stdout_file(
         )));
     }
     let mut command = Command::new(program);
-    command.args(arguments);
+    command
+        .args(arguments)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("HOME", USER_HOME)
+        .env("TMPDIR", "/var/tmp")
+        .env("LANG", "C")
+        .env("LC_ALL", "C");
     if let Some(directory) = cwd {
         command.current_dir(directory);
     }
@@ -1692,7 +2188,8 @@ fn execute(root: &Path) -> Result<()> {
         ActivePointerRecovery::None => {
             verify_chflags_tool()?;
             let prior_v9 = validate_prior_v9_prestop_retry(private_root)?;
-            start_new(repo, private_root, prior_v9)
+            let prior_v10 = validate_prior_v10_rolledback_retry(private_root)?;
+            start_new(repo, private_root, prior_v9, prior_v10)
         }
         ActivePointerRecovery::Active => recover_active(repo, private_root),
     }
@@ -1876,14 +2373,12 @@ impl PriorV9RetryGuard {
 
     fn revalidate(&self, private_root: &PinnedDirectory) -> Result<()> {
         private_root.ensure_file_at_name(PRIOR_ACTIVE_TRANSACTION_NAME, &self.pointer)?;
-        if read_opened_regular(
+        let pointer = read_opened_regular(
             &self.pointer,
             &private_root.path.join(PRIOR_ACTIVE_TRANSACTION_NAME),
             0o600,
-        )? != PRIOR_ACTIVE_RECORD
-            || sha256_file(&private_root.path.join(PRIOR_ACTIVE_TRANSACTION_NAME))?
-                != PRIOR_ACTIVE_SHA256
-        {
+        )?;
+        if pointer != PRIOR_ACTIVE_RECORD || sha256_bytes(&pointer)? != PRIOR_ACTIVE_SHA256 {
             return Err(ControllerError(
                 "prior v9 active pointer changed during retry proof".to_owned(),
             ));
@@ -1924,8 +2419,8 @@ impl PriorV9RetryGuard {
         let result =
             read_opened_regular(&self.result, &self.records.path.join("result.txt"), 0o600)?;
         validate_prior_v9_prestop_records(&self.evidence.path, &journal, &result)?;
-        if sha256_file(&self.evidence.path.join("journal.log"))? != PRIOR_JOURNAL_SHA256
-            || sha256_file(&self.records.path.join("result.txt"))? != PRIOR_RESULT_SHA256
+        if sha256_bytes(&journal)? != PRIOR_JOURNAL_SHA256
+            || sha256_bytes(&result)? != PRIOR_RESULT_SHA256
         {
             return Err(ControllerError(
                 "prior v9 journal or result hash changed during retry proof".to_owned(),
@@ -1937,8 +2432,13 @@ impl PriorV9RetryGuard {
             &archive_metadata,
             0o600,
         )?;
+        let source_archive = read_opened_regular(
+            &self.source_archive,
+            &self.evidence.path.join("source.tar"),
+            0o600,
+        )?;
         if archive_metadata.len() != PRIOR_SOURCE_ARCHIVE_SIZE
-            || sha256_file(&self.evidence.path.join("source.tar"))? != PRIOR_SOURCE_ARCHIVE_SHA256
+            || sha256_bytes(&source_archive)? != PRIOR_SOURCE_ARCHIVE_SHA256
         {
             return Err(ControllerError(
                 "prior v9 source archive differs from the reviewed failed attempt".to_owned(),
@@ -1955,9 +2455,9 @@ impl PriorV9RetryGuard {
 }
 
 /// Version 9 failed before the legacy-stop boundary on this Mac because it referenced the
-/// nonexistent `/bin/chflags`. Its retained evidence must remain untouched. Version 10 may start
-/// only after independently pinning that exact tombstone, proving its exact pre-stop rollback
-/// sequence, and reproving the untouched legacy runtime. Any other v9 residue fails closed.
+/// nonexistent `/bin/chflags`. Its retained evidence must remain untouched. Version 11 may start
+/// only after independently pinning that exact tombstone together with the exact fully rolled-back
+/// version-10 tombstone and reproving the untouched legacy runtime. Any other residue fails closed.
 fn validate_prior_v9_prestop_retry(private_root: &PinnedDirectory) -> Result<PriorV9RetryGuard> {
     for residue in [
         PRIOR_ACTIVE_TRANSACTION_PENDING_NAME,
@@ -2058,19 +2558,554 @@ fn validate_prior_v9_prestop_retry(private_root: &PinnedDirectory) -> Result<Pri
     Ok(guard)
 }
 
+fn validate_prior_v10_rolledback_records(
+    evidence: &Path,
+    journal: &[u8],
+    result: &[u8],
+    provenance: &[u8],
+) -> Result<()> {
+    if evidence != Path::new(PRIOR_V10_EVIDENCE_PATH) {
+        return Err(ControllerError(
+            "prior v10 pointer does not name the exact reviewed evidence".to_owned(),
+        ));
+    }
+    if journal != PRIOR_V10_FINAL_JOURNAL {
+        return Err(ControllerError(
+            "prior v10 journal is not the exact reviewed full-restore rollback".to_owned(),
+        ));
+    }
+    if result != PRIOR_V10_FINAL_RESULT {
+        return Err(ControllerError(
+            "prior v10 result is not the exact reviewed rolled-back outcome".to_owned(),
+        ));
+    }
+    if provenance != PRIOR_V10_PROVENANCE {
+        return Err(ControllerError(
+            "prior v10 provenance is not the exact reviewed record".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+struct PriorV10RetryGuard {
+    pointer: File,
+    evidence: PinnedDirectory,
+    records: PinnedDirectory,
+    legacy_snapshot: PinnedDirectory,
+    failed_new: PinnedDirectory,
+    failed_app: PinnedDirectory,
+    staged: PinnedDirectory,
+    staged_app: PinnedDirectory,
+    source_export: PinnedDirectory,
+    scratch: PinnedDirectory,
+    journal: File,
+    result: File,
+    provenance: File,
+    legacy_manifest: File,
+    legacy_xattrs: File,
+    staged_hashes: File,
+    source_export_manifest: File,
+    build_stdout: File,
+    build_stderr: File,
+    staged_plist: File,
+    source_archive: File,
+    snapshot_executable: File,
+    snapshot_plist: File,
+}
+
+impl PriorV10RetryGuard {
+    fn journal_fields(&self) -> Vec<(&'static str, String)> {
+        vec![
+            (
+                "prior_v10_active_sha256",
+                PRIOR_V10_ACTIVE_SHA256.to_owned(),
+            ),
+            (
+                "prior_v10_journal_sha256",
+                PRIOR_V10_FINAL_JOURNAL_SHA256.to_owned(),
+            ),
+            (
+                "prior_v10_result_sha256",
+                PRIOR_V10_FINAL_RESULT_SHA256.to_owned(),
+            ),
+            (
+                "prior_v10_source_archive_sha256",
+                PRIOR_V10_SOURCE_ARCHIVE_SHA256.to_owned(),
+            ),
+            (
+                "prior_v10_source_commit",
+                PRIOR_V10_SOURCE_COMMIT.to_owned(),
+            ),
+            ("prior_v10_source_tree", PRIOR_V10_SOURCE_TREE.to_owned()),
+            (
+                "prior_v10_provenance_sha256",
+                PRIOR_V10_PROVENANCE_SHA256.to_owned(),
+            ),
+            (
+                "prior_v10_legacy_executable_sha256",
+                LEGACY_EXECUTABLE_SHA256.to_owned(),
+            ),
+            (
+                "prior_v10_legacy_plist_sha256",
+                LEGACY_PLIST_SHA256.to_owned(),
+            ),
+        ]
+    }
+
+    fn revalidate(&self, private_root: &PinnedDirectory) -> Result<()> {
+        private_root.ensure_file_at_name(PRIOR_V10_ACTIVE_TRANSACTION_NAME, &self.pointer)?;
+        let pointer_path = private_root.path.join(PRIOR_V10_ACTIVE_TRANSACTION_NAME);
+        let pointer = read_opened_regular(&self.pointer, &pointer_path, 0o600)?;
+        if pointer != PRIOR_V10_ACTIVE_RECORD || sha256_bytes(&pointer)? != PRIOR_V10_ACTIVE_SHA256
+        {
+            return Err(ControllerError(
+                "prior v10 active pointer changed during retry proof".to_owned(),
+            ));
+        }
+        private_root.ensure_file_at_name(PRIOR_V10_ACTIVE_TRANSACTION_NAME, &self.pointer)?;
+
+        self.evidence.revalidate()?;
+        self.records.revalidate()?;
+        self.legacy_snapshot.revalidate()?;
+        self.failed_new.revalidate()?;
+        self.failed_app.revalidate()?;
+        self.staged.revalidate()?;
+        self.staged_app.revalidate()?;
+        self.source_export.revalidate()?;
+        self.scratch.revalidate()?;
+        require_exact_directory_entries(
+            &self.evidence,
+            &[
+                "failed-new",
+                "journal.log",
+                "legacy-snapshot",
+                "records",
+                "source-export",
+                "source.tar",
+                "staged",
+                "swiftpm-scratch",
+            ],
+        )?;
+        require_exact_directory_entries(
+            &self.records,
+            &[
+                "build.stderr",
+                "build.stdout",
+                "legacy-app-tree-manifest.txt",
+                "legacy-app-xattrs.txt",
+                "provenance.txt",
+                "result.txt",
+                "source-export-manifest.txt",
+                "staged-hashes.txt",
+            ],
+        )?;
+        require_exact_directory_entries(
+            &self.legacy_snapshot,
+            &["CaptureServer", "com.elamin.audiostreamer.worldwide.plist"],
+        )?;
+        require_exact_directory_entries(&self.failed_new, &["partial-install-hold"])?;
+        require_exact_directory_entries(
+            &self.staged,
+            &[
+                "opensteamer Host.app",
+                "org.example.opensteamer.worldwide.plist",
+            ],
+        )?;
+
+        self.evidence
+            .ensure_file_at_name("journal.log", &self.journal)?;
+        self.records
+            .ensure_file_at_name("result.txt", &self.result)?;
+        self.records
+            .ensure_file_at_name("provenance.txt", &self.provenance)?;
+        self.records
+            .ensure_file_at_name("legacy-app-tree-manifest.txt", &self.legacy_manifest)?;
+        self.records
+            .ensure_file_at_name("legacy-app-xattrs.txt", &self.legacy_xattrs)?;
+        self.records
+            .ensure_file_at_name("staged-hashes.txt", &self.staged_hashes)?;
+        self.records
+            .ensure_file_at_name("source-export-manifest.txt", &self.source_export_manifest)?;
+        self.records
+            .ensure_file_at_name("build.stdout", &self.build_stdout)?;
+        self.records
+            .ensure_file_at_name("build.stderr", &self.build_stderr)?;
+        self.staged.ensure_file_at_name(
+            "org.example.opensteamer.worldwide.plist",
+            &self.staged_plist,
+        )?;
+        self.evidence
+            .ensure_file_at_name("source.tar", &self.source_archive)?;
+        self.legacy_snapshot
+            .ensure_file_at_name("CaptureServer", &self.snapshot_executable)?;
+        self.legacy_snapshot.ensure_file_at_name(
+            "com.elamin.audiostreamer.worldwide.plist",
+            &self.snapshot_plist,
+        )?;
+
+        let journal = read_opened_regular(
+            &self.journal,
+            &self.evidence.path.join("journal.log"),
+            0o600,
+        )?;
+        let result =
+            read_opened_regular(&self.result, &self.records.path.join("result.txt"), 0o600)?;
+        let provenance = read_opened_regular(
+            &self.provenance,
+            &self.records.path.join("provenance.txt"),
+            0o600,
+        )?;
+        let legacy_manifest = read_opened_regular(
+            &self.legacy_manifest,
+            &self.records.path.join("legacy-app-tree-manifest.txt"),
+            0o600,
+        )?;
+        let legacy_xattrs = read_opened_regular(
+            &self.legacy_xattrs,
+            &self.records.path.join("legacy-app-xattrs.txt"),
+            0o600,
+        )?;
+        let source_export_manifest = read_opened_regular(
+            &self.source_export_manifest,
+            &self.records.path.join("source-export-manifest.txt"),
+            0o600,
+        )?;
+        let staged_hashes = read_opened_regular(
+            &self.staged_hashes,
+            &self.records.path.join("staged-hashes.txt"),
+            0o600,
+        )?;
+        let build_stdout = read_opened_regular(
+            &self.build_stdout,
+            &self.records.path.join("build.stdout"),
+            0o600,
+        )?;
+        let build_stderr = read_opened_regular(
+            &self.build_stderr,
+            &self.records.path.join("build.stderr"),
+            0o600,
+        )?;
+        validate_prior_v10_rolledback_records(&self.evidence.path, &journal, &result, &provenance)?;
+        if tree_manifest(&self.source_export.path)?.as_bytes() != source_export_manifest {
+            return Err(ControllerError(
+                "prior v10 source export differs from its exact reviewed manifest".to_owned(),
+            ));
+        }
+        if tree_manifest(Path::new(LEGACY_APP))?.as_bytes() != legacy_manifest {
+            return Err(ControllerError(
+                "live legacy app differs from the exact prior v10 snapshot manifest".to_owned(),
+            ));
+        }
+        if capture_legacy_xattrs()?.as_bytes() != legacy_xattrs {
+            return Err(ControllerError(
+                "live legacy app xattrs differ from the exact prior v10 snapshot".to_owned(),
+            ));
+        }
+        if sha256_bytes(&journal)? != PRIOR_V10_FINAL_JOURNAL_SHA256
+            || sha256_bytes(&result)? != PRIOR_V10_FINAL_RESULT_SHA256
+            || sha256_bytes(&provenance)? != PRIOR_V10_PROVENANCE_SHA256
+        {
+            return Err(ControllerError(
+                "prior v10 journal, result, or provenance hash changed during retry proof"
+                    .to_owned(),
+            ));
+        }
+        for (path, bytes, expected) in [
+            (
+                self.records.path.join("legacy-app-tree-manifest.txt"),
+                legacy_manifest.as_slice(),
+                PRIOR_V10_LEGACY_MANIFEST_SHA256,
+            ),
+            (
+                self.records.path.join("legacy-app-xattrs.txt"),
+                legacy_xattrs.as_slice(),
+                PRIOR_V10_LEGACY_XATTRS_SHA256,
+            ),
+            (
+                self.records.path.join("staged-hashes.txt"),
+                staged_hashes.as_slice(),
+                PRIOR_V10_STAGED_HASHES_SHA256,
+            ),
+            (
+                self.records.path.join("source-export-manifest.txt"),
+                source_export_manifest.as_slice(),
+                PRIOR_V10_SOURCE_EXPORT_MANIFEST_SHA256,
+            ),
+            (
+                self.records.path.join("build.stdout"),
+                build_stdout.as_slice(),
+                PRIOR_V10_BUILD_STDOUT_SHA256,
+            ),
+            (
+                self.records.path.join("build.stderr"),
+                build_stderr.as_slice(),
+                PRIOR_V10_BUILD_STDERR_SHA256,
+            ),
+        ] {
+            if sha256_bytes(bytes)? != expected {
+                return Err(ControllerError(format!(
+                    "prior v10 anchored record changed: {}",
+                    path.display()
+                )));
+            }
+        }
+
+        let archive_metadata = self.source_archive.metadata()?;
+        validate_owned_regular(
+            &self.evidence.path.join("source.tar"),
+            &archive_metadata,
+            0o600,
+        )?;
+        let source_archive = read_opened_regular(
+            &self.source_archive,
+            &self.evidence.path.join("source.tar"),
+            0o600,
+        )?;
+        if archive_metadata.len() != PRIOR_V10_SOURCE_ARCHIVE_SIZE
+            || sha256_bytes(&source_archive)? != PRIOR_V10_SOURCE_ARCHIVE_SHA256
+        {
+            return Err(ControllerError(
+                "prior v10 source archive differs from the reviewed rolled-back attempt".to_owned(),
+            ));
+        }
+        let snapshot_executable = read_opened_regular(
+            &self.snapshot_executable,
+            &self.legacy_snapshot.path.join("CaptureServer"),
+            0o500,
+        )?;
+        let snapshot_plist = read_opened_regular(
+            &self.snapshot_plist,
+            &self
+                .legacy_snapshot
+                .path
+                .join("com.elamin.audiostreamer.worldwide.plist"),
+            0o400,
+        )?;
+        if sha256_bytes(&snapshot_executable)? != LEGACY_EXECUTABLE_SHA256
+            || sha256_bytes(&snapshot_plist)? != LEGACY_PLIST_SHA256
+        {
+            return Err(ControllerError(
+                "prior v10 offline legacy snapshot changed".to_owned(),
+            ));
+        }
+        if sha256_file(&self.staged_app.path.join("Contents/MacOS/CaptureServer"))?
+            != PRIOR_V10_STAGED_EXECUTABLE_SHA256
+            || sha256_file(&self.failed_app.path.join("Contents/MacOS/CaptureServer"))?
+                != PRIOR_V10_STAGED_EXECUTABLE_SHA256
+            || sha256_bytes(&read_opened_regular(
+                &self.staged_plist,
+                &self
+                    .staged
+                    .path
+                    .join("org.example.opensteamer.worldwide.plist"),
+                0o600,
+            )?)? != PRIOR_V10_STAGED_PLIST_SHA256
+        {
+            return Err(ControllerError(
+                "prior v10 staged or archived artifact hash changed".to_owned(),
+            ));
+        }
+        if directory_manifest(&self.failed_app.path)? != directory_manifest(&self.staged_app.path)?
+        {
+            return Err(ControllerError(
+                "prior v10 archived install hold differs from its staged app".to_owned(),
+            ));
+        }
+
+        self.evidence
+            .ensure_file_at_name("journal.log", &self.journal)?;
+        self.records
+            .ensure_file_at_name("result.txt", &self.result)?;
+        self.records
+            .ensure_file_at_name("provenance.txt", &self.provenance)?;
+        self.records
+            .ensure_file_at_name("legacy-app-tree-manifest.txt", &self.legacy_manifest)?;
+        self.records
+            .ensure_file_at_name("legacy-app-xattrs.txt", &self.legacy_xattrs)?;
+        self.records
+            .ensure_file_at_name("staged-hashes.txt", &self.staged_hashes)?;
+        self.records
+            .ensure_file_at_name("source-export-manifest.txt", &self.source_export_manifest)?;
+        self.records
+            .ensure_file_at_name("build.stdout", &self.build_stdout)?;
+        self.records
+            .ensure_file_at_name("build.stderr", &self.build_stderr)?;
+        self.staged.ensure_file_at_name(
+            "org.example.opensteamer.worldwide.plist",
+            &self.staged_plist,
+        )?;
+        self.evidence
+            .ensure_file_at_name("source.tar", &self.source_archive)?;
+        private_root.ensure_file_at_name(PRIOR_V10_ACTIVE_TRANSACTION_NAME, &self.pointer)
+    }
+}
+
+fn validate_prior_v10_rolledback_retry(
+    private_root: &PinnedDirectory,
+) -> Result<PriorV10RetryGuard> {
+    for residue in [
+        PRIOR_V10_ACTIVE_TRANSACTION_PENDING_NAME,
+        PRIOR_V10_ACTIVE_TRANSACTION_FINALIZING_NAME,
+        PRIOR_V10_ACTIVE_TRANSACTION_LINEARIZED_NAME,
+    ] {
+        if private_root
+            .open_existing_regular(residue, false)?
+            .is_some()
+        {
+            return Err(ControllerError(format!(
+                "prior v10 active-pointer residue requires manual recovery: {residue}"
+            )));
+        }
+    }
+    let pointer =
+        open_required_pinned_regular(private_root, PRIOR_V10_ACTIVE_TRANSACTION_NAME, 0o600)?;
+    let pointer_bytes = read_opened_regular(
+        &pointer,
+        &private_root.path.join(PRIOR_V10_ACTIVE_TRANSACTION_NAME),
+        0o600,
+    )?;
+    if pointer_bytes != PRIOR_V10_ACTIVE_RECORD {
+        return Err(ControllerError(
+            "prior v10 active pointer is not the exact reviewed record".to_owned(),
+        ));
+    }
+    let evidence = parse_active_record(&pointer_bytes)?;
+    if evidence != Path::new(PRIOR_V10_EVIDENCE_PATH) {
+        return Err(ControllerError(
+            "prior v10 active pointer resolved to unexpected evidence".to_owned(),
+        ));
+    }
+
+    let evidence = PinnedDirectory::open(&evidence, Some(effective_uid()), Some(0o700))?;
+    let records = evidence
+        .try_open_directory_child("records", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| ControllerError("prior v10 evidence lacks records".to_owned()))?;
+    let legacy_snapshot = evidence
+        .try_open_directory_child("legacy-snapshot", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| ControllerError("prior v10 evidence lacks legacy snapshot".to_owned()))?;
+    let failed_new = evidence
+        .try_open_directory_child("failed-new", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| ControllerError("prior v10 evidence lacks failed-new".to_owned()))?;
+    let failed_app = failed_new
+        .try_open_directory_child("partial-install-hold", Some(effective_uid()), None)?
+        .ok_or_else(|| {
+            ControllerError("prior v10 evidence lacks archived install hold".to_owned())
+        })?;
+    let staged = evidence
+        .try_open_directory_child("staged", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| ControllerError("prior v10 evidence lacks staged directory".to_owned()))?;
+    let staged_app = staged
+        .try_open_directory_child("opensteamer Host.app", Some(effective_uid()), None)?
+        .ok_or_else(|| ControllerError("prior v10 evidence lacks staged app".to_owned()))?;
+    let source_export = evidence
+        .try_open_directory_child("source-export", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| {
+            ControllerError("prior v10 evidence lacks source export directory".to_owned())
+        })?;
+    let scratch = evidence
+        .try_open_directory_child("swiftpm-scratch", Some(effective_uid()), Some(0o700))?
+        .ok_or_else(|| {
+            ControllerError("prior v10 evidence lacks SwiftPM scratch directory".to_owned())
+        })?;
+    let journal = open_required_pinned_regular(&evidence, "journal.log", 0o600)?;
+    let result = open_required_pinned_regular(&records, "result.txt", 0o600)?;
+    let provenance = open_required_pinned_regular(&records, "provenance.txt", 0o600)?;
+    let legacy_manifest =
+        open_required_pinned_regular(&records, "legacy-app-tree-manifest.txt", 0o600)?;
+    let legacy_xattrs = open_required_pinned_regular(&records, "legacy-app-xattrs.txt", 0o600)?;
+    let staged_hashes = open_required_pinned_regular(&records, "staged-hashes.txt", 0o600)?;
+    let source_export_manifest =
+        open_required_pinned_regular(&records, "source-export-manifest.txt", 0o600)?;
+    let build_stdout = open_required_pinned_regular(&records, "build.stdout", 0o600)?;
+    let build_stderr = open_required_pinned_regular(&records, "build.stderr", 0o600)?;
+    let staged_plist =
+        open_required_pinned_regular(&staged, "org.example.opensteamer.worldwide.plist", 0o600)?;
+    let source_archive = open_required_pinned_regular(&evidence, "source.tar", 0o600)?;
+    let snapshot_executable =
+        open_required_pinned_regular(&legacy_snapshot, "CaptureServer", 0o500)?;
+    let snapshot_plist = open_required_pinned_regular(
+        &legacy_snapshot,
+        "com.elamin.audiostreamer.worldwide.plist",
+        0o400,
+    )?;
+    let guard = PriorV10RetryGuard {
+        pointer,
+        evidence,
+        records,
+        legacy_snapshot,
+        failed_new,
+        failed_app,
+        staged,
+        staged_app,
+        source_export,
+        scratch,
+        journal,
+        result,
+        provenance,
+        legacy_manifest,
+        legacy_xattrs,
+        staged_hashes,
+        source_export_manifest,
+        build_stdout,
+        build_stderr,
+        staged_plist,
+        source_archive,
+        snapshot_executable,
+        snapshot_plist,
+    };
+    guard.revalidate(private_root)?;
+
+    let tag = guard
+        .evidence
+        .path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| ControllerError("prior v10 evidence tag is not UTF-8".to_owned()))?;
+    for residue in [
+        Path::new(APPLICATIONS_DIRECTORY).join(format!(".opensteamer-disabled-v10-{tag}")),
+        Path::new(APPLICATIONS_DIRECTORY).join(format!(".opensteamer-install-hold-{tag}")),
+        Path::new("/Users/ahmed/Library/LaunchAgents").join(format!(
+            ".org.example.opensteamer.worldwide.plist.disabled-v10-{tag}"
+        )),
+        Path::new("/Users/ahmed/Library/LaunchAgents").join(format!(
+            ".org.example.opensteamer.worldwide.plist.install-{tag}"
+        )),
+    ] {
+        if entry_exists(&residue)? {
+            return Err(ControllerError(format!(
+                "prior v10 rollback residue remains at {}",
+                residue.display()
+            )));
+        }
+    }
+
+    let deadline = deadline_after(Duration::from_secs(15))?;
+    require_new_absent()?;
+    verify_legacy_static_until(deadline)?;
+    verify_legacy_disabled_until(false, deadline)?;
+    wait_for_exact_legacy_readiness_until(deadline)?;
+    guard.revalidate(private_root)?;
+    Ok(guard)
+}
+
 fn start_new(
     repo: PathBuf,
     private_root: &PinnedDirectory,
     prior_v9: PriorV9RetryGuard,
+    prior_v10: PriorV10RetryGuard,
 ) -> Result<()> {
     let layout = Layout::create(repo)?;
     let mut journal = Journal::create(&layout.journal)?;
-    journal.transition(State::Begun, &prior_v9.journal_fields())?;
+    let mut prior_fields = prior_v9.journal_fields();
+    prior_fields.extend(prior_v10.journal_fields());
+    journal.transition(State::Begun, &prior_fields)?;
     let operation = (|| {
         prior_v9.revalidate(private_root)?;
+        prior_v10.revalidate(private_root)?;
         write_active(private_root, &layout.evidence)?;
         prior_v9.revalidate(private_root)?;
-        run_transaction(&layout, &mut journal, private_root)
+        prior_v10.revalidate(private_root)?;
+        run_transaction(&layout, &mut journal, private_root, &prior_v9, &prior_v10)
     })();
     match operation {
         Ok(()) => {
@@ -2104,92 +3139,6 @@ fn start_new(
     }
 }
 
-fn is_exact_v10_applications_critical_record(
-    evidence: &Path,
-    state: State,
-    saw_legacy_disabled: bool,
-    saw_legacy_stopped: bool,
-    fields: &BTreeMap<String, String>,
-) -> bool {
-    evidence == Path::new(V10_CRITICAL_RECOVERY_EVIDENCE)
-        && state == State::CriticalFailure
-        && saw_legacy_disabled
-        && saw_legacy_stopped
-        && fields.get("commit").map(String::as_str) == Some(V10_CRITICAL_RECOVERY_COMMIT)
-        && fields.get("tree").map(String::as_str) == Some(V10_CRITICAL_RECOVERY_TREE)
-        && fields.get("primary").map(String::as_str) == Some(V10_APPLICATIONS_MODE_ERROR)
-        && fields.get("rollback").map(String::as_str) == Some(V10_APPLICATIONS_MODE_ERROR)
-}
-
-fn validate_exact_v10_applications_critical_recovery(
-    layout: &Layout,
-    journal: &Journal,
-    private_root: &PinnedDirectory,
-) -> Result<()> {
-    if !is_exact_v10_applications_critical_record(
-        &layout.evidence,
-        journal.state,
-        journal.saw_legacy_disabled,
-        journal.saw_legacy_stopped,
-        &journal.fields,
-    ) {
-        return Err(ControllerError(
-            "CRITICAL_FAILURE is not the exact reviewed v10 /Applications-mode failure".to_owned(),
-        ));
-    }
-    if sha256_file(&layout.journal)? != V10_CRITICAL_JOURNAL_SHA256 {
-        return Err(ControllerError(
-            "critical v10 journal differs from the exact reviewed failure sequence".to_owned(),
-        ));
-    }
-
-    let active = open_required_pinned_regular(private_root, ACTIVE_TRANSACTION_NAME, 0o600)?;
-    let active_path = private_root.path.join(ACTIVE_TRANSACTION_NAME);
-    if read_opened_regular(&active, &active_path, 0o600)? != V10_CRITICAL_ACTIVE_RECORD
-        || sha256_file(&active_path)? != V10_CRITICAL_ACTIVE_SHA256
-    {
-        return Err(ControllerError(
-            "active v10 pointer differs from the exact reviewed critical record".to_owned(),
-        ));
-    }
-    private_root.ensure_file_at_name(ACTIVE_TRANSACTION_NAME, &active)?;
-
-    require_new_absent()?;
-    if service_state(LEGACY_LABEL)? != ServiceState::Absent {
-        return Err(ControllerError(
-            "exact v10 critical recovery requires the legacy service to remain absent".to_owned(),
-        ));
-    }
-    require_no_capture_server_processes()?;
-    verify_legacy_disabled(true)?;
-    verify_legacy_static_against_snapshot(layout)?;
-    prove_lock_acquirable()?;
-
-    let (disabled_app, disabled_plist, install_app_hold, install_plist_hold) =
-        rollback_hidden_paths(layout)?;
-    if entry_exists(&disabled_app)?
-        || entry_exists(&disabled_plist)?
-        || entry_exists(&install_plist_hold)?
-        || !entry_exists(&install_app_hold)?
-    {
-        return Err(ControllerError(
-            "v10 critical hidden-install state differs from the reviewed failure".to_owned(),
-        ));
-    }
-    validate_real_directory(&install_app_hold)?;
-    if directory_manifest(&install_app_hold)? != directory_manifest(&layout.staged_app)? {
-        return Err(ControllerError(
-            "v10 critical app install hold differs from the staged app".to_owned(),
-        ));
-    }
-    if entry_exists(&layout.records.join("result.txt"))? {
-        return Err(ControllerError(
-            "v10 critical transaction unexpectedly has a terminal result record".to_owned(),
-        ));
-    }
-    private_root.ensure_file_at_name(ACTIVE_TRANSACTION_NAME, &active)
-}
-
 fn recover_active(repo: PathBuf, private_root: &PinnedDirectory) -> Result<()> {
     let evidence = read_active(private_root)?;
     let layout = Layout::open(repo, evidence)?;
@@ -2221,14 +3170,10 @@ fn recover_active(repo: PathBuf, private_root: &PinnedDirectory) -> Result<()> {
                 layout.evidence.display()
             )))
         }
-        State::CriticalFailure => {
-            validate_exact_v10_applications_critical_recovery(&layout, &journal, private_root)?;
-            rollback(&layout, &mut journal)?;
-            Err(ControllerError(format!(
-                "exact reviewed v10 /Applications-mode failure was rolled back; protected legacy service was recovered and the active tombstone was retained; evidence={}",
-                layout.evidence.display()
-            )))
-        }
+        State::CriticalFailure => Err(ControllerError(format!(
+            "active v11 transaction is in CRITICAL_FAILURE; keep Mac offline; evidence={}",
+            layout.evidence.display()
+        ))),
         _ => {
             rollback(&layout, &mut journal)?;
             Err(ControllerError(format!(
@@ -2474,16 +3419,31 @@ where
 
 struct RealForwardBackend<'a> {
     layout: &'a Layout,
+    private_root: &'a PinnedDirectory,
+    prior_v9: &'a PriorV9RetryGuard,
+    prior_v10: &'a PriorV10RetryGuard,
     provenance: Option<Provenance>,
+    verifiers: Option<PinnedVerifierSet>,
+    cutover: Option<CutoverPreflight>,
     checkpoint: Option<LogCheckpoint>,
     generation: Option<LaunchGeneration>,
 }
 
 impl<'a> RealForwardBackend<'a> {
-    fn new(layout: &'a Layout) -> Self {
+    fn new(
+        layout: &'a Layout,
+        private_root: &'a PinnedDirectory,
+        prior_v9: &'a PriorV9RetryGuard,
+        prior_v10: &'a PriorV10RetryGuard,
+    ) -> Self {
         Self {
             layout,
+            private_root,
+            prior_v9,
+            prior_v10,
             provenance: None,
+            verifiers: None,
+            cutover: None,
             checkpoint: None,
             generation: None,
         }
@@ -2529,12 +3489,60 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
                 let provenance = self.provenance.as_ref().ok_or_else(|| {
                     ControllerError("forward engine lacks verified provenance".to_owned())
                 })?;
-                build_and_stage(self.layout, provenance)
+                let verifiers = PinnedVerifierSet::open(self.layout)?;
+                build_and_stage(self.layout, provenance, &verifiers)?;
+                self.verifiers = Some(verifiers);
+                Ok(())
             }
-            ForwardEffect::VerifyPrecutover => verify_precutover(self.layout),
-            ForwardEffect::DisableLegacy => set_legacy_disabled(true),
+            ForwardEffect::VerifyPrecutover => {
+                let verifiers = self.verifiers.as_ref().ok_or_else(|| {
+                    ControllerError("forward engine lacks pinned verifier set".to_owned())
+                })?;
+                self.cutover = Some(verify_precutover(self.layout, verifiers)?);
+                Ok(())
+            }
+            ForwardEffect::DisableLegacy => {
+                self.prior_v9.revalidate(self.private_root)?;
+                self.prior_v10.revalidate(self.private_root)?;
+                self.verifiers
+                    .as_ref()
+                    .ok_or_else(|| {
+                        ControllerError("forward engine lacks pinned verifier set".to_owned())
+                    })?
+                    .revalidate()?;
+                let cutover = self.cutover.as_ref().ok_or_else(|| {
+                    ControllerError("forward engine lacks pinned cutover preflight".to_owned())
+                })?;
+                cutover.revalidate()?;
+                require_cutover_hidden_paths_absent(self.layout)?;
+                verify_legacy_static_against_snapshot(self.layout)?;
+                verify_legacy_running()?;
+                require_new_absent()?;
+                set_legacy_disabled(true)
+            }
             ForwardEffect::VerifyLegacyDisabled => verify_legacy_disabled(true),
-            ForwardEffect::BootoutLegacy => bootout_exact_service(LEGACY_LABEL),
+            ForwardEffect::BootoutLegacy => {
+                self.prior_v9.revalidate(self.private_root)?;
+                self.prior_v10.revalidate(self.private_root)?;
+                self.verifiers
+                    .as_ref()
+                    .ok_or_else(|| {
+                        ControllerError("forward engine lacks pinned verifier set".to_owned())
+                    })?
+                    .revalidate()?;
+                self.cutover
+                    .as_ref()
+                    .ok_or_else(|| {
+                        ControllerError("forward engine lacks pinned cutover preflight".to_owned())
+                    })?
+                    .revalidate()?;
+                require_cutover_hidden_paths_absent(self.layout)?;
+                verify_legacy_static_against_snapshot(self.layout)?;
+                verify_legacy_disabled(true)?;
+                verify_legacy_running()?;
+                require_new_absent()?;
+                bootout_exact_service(LEGACY_LABEL)
+            }
             ForwardEffect::WaitLegacyServiceAbsent => {
                 wait_service_absent(LEGACY_LABEL, Duration::from_secs(10))
             }
@@ -2545,16 +3553,64 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
             ForwardEffect::VerifyLockHandoff => prove_lock_acquirable(),
             ForwardEffect::PrepareLogs => {
                 require_new_absent()?;
+                self.cutover
+                    .as_ref()
+                    .ok_or_else(|| {
+                        ControllerError("forward engine lacks pinned cutover preflight".to_owned())
+                    })?
+                    .revalidate()?;
                 prepare_logs()
             }
-            ForwardEffect::CopyAppInstallHold => copy_new_app_to_install_hold(self.layout),
-            ForwardEffect::PublishApp => publish_new_app_from_install_hold(self.layout),
-            ForwardEffect::CopyPlistInstallHold => copy_new_plist_to_install_hold(self.layout),
-            ForwardEffect::PublishPlist => publish_new_plist_from_install_hold(self.layout),
-            ForwardEffect::VerifyInstalledDestinations => {
-                verify_committed_destinations(self.layout)
+            ForwardEffect::CopyAppInstallHold => {
+                let cutover = self.cutover.as_ref().ok_or_else(|| {
+                    ControllerError("forward engine lacks pinned cutover preflight".to_owned())
+                })?;
+                copy_new_app_to_install_hold(self.layout, cutover)
             }
-            ForwardEffect::BootstrapNew => bootstrap_exact_plist(Path::new(NEW_PLIST)),
+            ForwardEffect::PublishApp => {
+                let cutover = self.cutover.as_ref().ok_or_else(|| {
+                    ControllerError("forward engine lacks pinned cutover preflight".to_owned())
+                })?;
+                publish_new_app_from_install_hold(self.layout, &cutover.applications)
+            }
+            ForwardEffect::CopyPlistInstallHold => {
+                let cutover = self.cutover.as_ref().ok_or_else(|| {
+                    ControllerError("forward engine lacks pinned cutover preflight".to_owned())
+                })?;
+                copy_new_plist_to_install_hold(self.layout, &cutover.launch_agents)
+            }
+            ForwardEffect::PublishPlist => {
+                let cutover = self.cutover.as_ref().ok_or_else(|| {
+                    ControllerError("forward engine lacks pinned cutover preflight".to_owned())
+                })?;
+                publish_new_plist_from_install_hold(self.layout, &cutover.launch_agents)
+            }
+            ForwardEffect::VerifyInstalledDestinations => {
+                let verifiers = self.verifiers.as_ref().ok_or_else(|| {
+                    ControllerError("forward engine lacks pinned verifier set".to_owned())
+                })?;
+                verify_committed_destinations(self.layout, verifiers)
+            }
+            ForwardEffect::BootstrapNew => {
+                let verifiers = self.verifiers.as_ref().ok_or_else(|| {
+                    ControllerError("forward engine lacks pinned verifier set".to_owned())
+                })?;
+                verifiers.revalidate()?;
+                verify_committed_destinations(self.layout, verifiers)?;
+                verify_legacy_disabled(true)?;
+                if service_state(LEGACY_LABEL)? != ServiceState::Absent
+                    || !exact_process_pids(LEGACY_EXECUTABLE)?.is_empty()
+                {
+                    return Err(ControllerError(
+                        "legacy host reappeared immediately before new bootstrap".to_owned(),
+                    ));
+                }
+                require_new_runtime_absent()?;
+                require_no_capture_server_processes()?;
+                prove_lock_acquirable()?;
+                require_new_runtime_absent()?;
+                bootstrap_exact_plist(Path::new(NEW_PLIST))
+            }
             ForwardEffect::ObserveNewPid => {
                 self.generation = Some(observe_launch_generation(
                     NEW_LABEL,
@@ -2591,7 +3647,10 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
                 let generation = self.generation.as_ref().ok_or_else(|| {
                     ControllerError("forward engine lacks a launch generation".to_owned())
                 })?;
-                verify_deployment(self.layout, generation, &checkpoint)?;
+                let verifiers = self.verifiers.as_ref().ok_or_else(|| {
+                    ControllerError("forward engine lacks pinned verifier set".to_owned())
+                })?;
+                verify_deployment(self.layout, verifiers, generation, &checkpoint)?;
                 verify_launch_generation(NEW_LABEL, NEW_EXECUTABLE, generation)?;
                 verify_legacy_disabled(true)
             }
@@ -2632,10 +3691,16 @@ impl ForwardEffectBackend for RealForwardBackend<'_> {
             ForwardOperation::ObserveNewPid
             | ForwardOperation::VerifyReadiness
             | ForwardOperation::Commit => self.checkpoint_fields(),
+            ForwardOperation::VerifyPrecutover => self
+                .cutover
+                .as_ref()
+                .ok_or_else(|| {
+                    ControllerError("forward engine lacks pinned cutover preflight".to_owned())
+                })
+                .map(CutoverPreflight::journal_fields),
             ForwardOperation::InstallNew | ForwardOperation::BootstrapNew => Ok(Vec::new()),
             ForwardOperation::SnapshotLegacy
             | ForwardOperation::BuildAndStage
-            | ForwardOperation::VerifyPrecutover
             | ForwardOperation::DisableLegacy
             | ForwardOperation::StopLegacy
             | ForwardOperation::VerifyLockHandoff => Ok(Vec::new()),
@@ -2691,16 +3756,20 @@ fn run_transaction(
     layout: &Layout,
     journal: &mut Journal,
     private_root: &PinnedDirectory,
+    prior_v9: &PriorV9RetryGuard,
+    prior_v10: &PriorV10RetryGuard,
 ) -> Result<()> {
-    let mut backend = RealForwardBackend::new(layout);
+    let mut backend = RealForwardBackend::new(layout, private_root, prior_v9, prior_v10);
     let fields = drive_forward(&mut backend, journal, |_, _, _, _, _| Ok(()))?;
+    release_rollback_reserve(layout, journal)?;
     backend.finalize_success()?;
     verify_retained_active_pointer_after_commit(
         private_root,
         &format!("{}\n", layout.evidence.display()).into_bytes(),
         || backend.revalidate_commit_fields(&fields),
         |_| Ok(()),
-    )
+    )?;
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -2943,24 +4012,11 @@ fn snapshot_legacy(layout: &Layout) -> Result<()> {
     Ok(())
 }
 
-fn build_and_stage(layout: &Layout, provenance: &Provenance) -> Result<()> {
-    let build_script = layout
-        .source_export
-        .join("macOS/scripts/build-opensteamer-host-app.sh");
-    let bundle_verifier = layout
-        .source_export
-        .join("macOS/scripts/verify-mac-host-bundle.sh");
-    let launch_verifier = layout
-        .source_export
-        .join("macOS/scripts/verify-mac-host-launch-state.sh");
-    for required in [&build_script, &bundle_verifier, &launch_verifier] {
-        if !required.is_file() {
-            return Err(ControllerError(format!(
-                "immutable export is missing required script: {}",
-                required.display()
-            )));
-        }
-    }
+fn build_and_stage(
+    layout: &Layout,
+    provenance: &Provenance,
+    verifiers: &PinnedVerifierSet,
+) -> Result<()> {
     let mut environment = BTreeMap::new();
     environment.insert(
         "PATH".to_owned(),
@@ -3009,11 +4065,14 @@ fn build_and_stage(layout: &Layout, provenance: &Provenance) -> Result<()> {
     );
     environment.insert("OTHER_CFLAGS".to_owned(), "-Werror".to_owned());
     environment.insert("OTHER_CPLUSPLUSFLAGS".to_owned(), "-Werror".to_owned());
-    let build = run_command_owned(
-        &build_script,
+    verifiers.add_helper_environment(&mut environment);
+    let build = run_pinned_script_until(
+        verifiers,
+        &verifiers.build,
         &[],
         Some(&layout.source_export),
         &environment,
+        deadline_after(BUILD_COMMAND_TIMEOUT)?,
     )?;
     write_record(
         &layout.records.join("build.stdout"),
@@ -3046,24 +4105,28 @@ fn build_and_stage(layout: &Layout, provenance: &Provenance) -> Result<()> {
         &layout.staged_plist,
         0o600,
     )?;
-    run_command(
-        &bundle_verifier,
+    run_pinned_script(
+        verifiers,
+        &verifiers.bundle,
         &[
             layout.staged_app.as_os_str(),
             OsStr::new(TEAM_ID),
             layout.legacy_snapshot_executable.as_os_str(),
         ],
         Some(&layout.source_export),
+        &environment,
     )?
     .require_success("staged bundle verification")?;
-    run_command(
-        &launch_verifier,
+    run_pinned_script(
+        verifiers,
+        &verifiers.launch,
         &[
             OsStr::new("--verify-plist"),
             OsStr::new(NEW_EXECUTABLE),
             layout.staged_plist.as_os_str(),
         ],
         Some(&layout.source_export),
+        &environment,
     )?
     .require_success("staged LaunchAgent verification")?;
     write_record(
@@ -3080,9 +4143,280 @@ fn build_and_stage(layout: &Layout, provenance: &Provenance) -> Result<()> {
     Ok(())
 }
 
-fn verify_precutover(layout: &Layout) -> Result<()> {
-    let applications = PinnedDirectory::open_applications()?;
-    applications.revalidate()?;
+struct CutoverPreflight {
+    applications: PinnedDirectory,
+    launch_agents: PinnedDirectory,
+    records: PinnedDirectory,
+    rollback_reserve: RollbackReserve,
+    ditto: PinnedSystemTool,
+    initial_available_bytes: u64,
+}
+
+struct RollbackReserve {
+    file: File,
+    device: u64,
+    inode: u64,
+}
+
+impl RollbackReserve {
+    fn create(records: &PinnedDirectory) -> Result<Self> {
+        if records
+            .open_existing_regular(ROLLBACK_RESERVE_NAME, false)?
+            .is_some()
+        {
+            return Err(ControllerError(
+                "rollback reserve already exists before pre-cutover".to_owned(),
+            ));
+        }
+        let file = records.create_new_regular(ROLLBACK_RESERVE_NAME, 0o600)?;
+        physically_preallocate(&file, ROLLBACK_RESERVE_BYTES)?;
+        file.set_len(ROLLBACK_RESERVE_BYTES)?;
+        file.sync_all()?;
+        records.file.sync_all()?;
+        let metadata = file.metadata()?;
+        validate_owned_regular(&records.path.join(ROLLBACK_RESERVE_NAME), &metadata, 0o600)?;
+        if metadata.len() != ROLLBACK_RESERVE_BYTES {
+            return Err(ControllerError(
+                "rollback reserve length differs from its physical allocation".to_owned(),
+            ));
+        }
+        records.ensure_file_at_name(ROLLBACK_RESERVE_NAME, &file)?;
+        Ok(Self {
+            file,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+
+    fn revalidate_full(&self, records: &PinnedDirectory) -> Result<()> {
+        records.ensure_file_at_name(ROLLBACK_RESERVE_NAME, &self.file)?;
+        let metadata = self.file.metadata()?;
+        validate_owned_regular(&records.path.join(ROLLBACK_RESERVE_NAME), &metadata, 0o600)?;
+        if metadata.dev() != self.device
+            || metadata.ino() != self.inode
+            || metadata.len() != ROLLBACK_RESERVE_BYTES
+        {
+            return Err(ControllerError(
+                "rollback reserve changed before the legacy stop boundary".to_owned(),
+            ));
+        }
+        records.ensure_file_at_name(ROLLBACK_RESERVE_NAME, &self.file)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn physically_preallocate(file: &File, bytes: u64) -> Result<()> {
+    let length = i64::try_from(bytes)
+        .map_err(|_| ControllerError("rollback reserve length is too large".to_owned()))?;
+    let mut store = FStore {
+        flags: F_ALLOCATECONTIG_VALUE,
+        posmode: F_PEOFPOSMODE_VALUE,
+        offset: 0,
+        length,
+        bytes_allocated: 0,
+    };
+    // SAFETY: the file descriptor and writable FStore pointer remain valid for the call.
+    let contiguous = unsafe { fcntl(file.as_raw_fd(), F_PREALLOCATE_VALUE, &mut store) };
+    if contiguous != 0 || store.bytes_allocated < length {
+        store.flags = F_ALLOCATEALL_VALUE;
+        store.bytes_allocated = 0;
+        // SAFETY: same valid descriptor and FStore pointer; this is the documented fallback.
+        if unsafe { fcntl(file.as_raw_fd(), F_PREALLOCATE_VALUE, &mut store) } != 0 {
+            return Err(ControllerError(format!(
+                "cannot physically allocate rollback reserve: {}",
+                io::Error::last_os_error()
+            )));
+        }
+    }
+    if store.bytes_allocated < length {
+        return Err(ControllerError(format!(
+            "rollback reserve allocated {} bytes, expected at least {length}",
+            store.bytes_allocated
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn physically_preallocate(file: &File, bytes: u64) -> Result<()> {
+    let mut writer = file.try_clone()?;
+    writer.seek(SeekFrom::Start(0))?;
+    let block = [0x5au8; 64 * 1024];
+    let mut remaining = bytes;
+    while remaining != 0 {
+        let length = usize::try_from(remaining.min(block.len() as u64))
+            .map_err(|_| ControllerError("rollback reserve chunk overflowed".to_owned()))?;
+        writer.write_all(&block[..length])?;
+        remaining -= length as u64;
+    }
+    writer.sync_all()?;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct CutoverParentIdentities {
+    applications_device: u64,
+    applications_inode: u64,
+    launch_agents_device: u64,
+    launch_agents_inode: u64,
+}
+
+impl CutoverPreflight {
+    fn open(layout: &Layout) -> Result<Self> {
+        let initial_available_bytes = require_precutover_disk_headroom()?;
+        let records = PinnedDirectory::open(&layout.records, Some(effective_uid()), Some(0o700))?;
+        let rollback_reserve = RollbackReserve::create(&records)?;
+        Ok(Self {
+            applications: PinnedDirectory::open_applications()?,
+            launch_agents: PinnedDirectory::open(
+                Path::new("/Users/ahmed/Library/LaunchAgents"),
+                Some(effective_uid()),
+                None,
+            )?,
+            records,
+            rollback_reserve,
+            ditto: PinnedSystemTool::open(Path::new("/usr/bin/ditto"), DITTO_SHA256)?,
+            initial_available_bytes,
+        })
+    }
+
+    fn revalidate(&self) -> Result<()> {
+        self.applications.prove_write_execute_and_sync()?;
+        self.launch_agents.prove_write_execute_and_sync()?;
+        self.rollback_reserve.revalidate_full(&self.records)?;
+        self.ditto.revalidate()?;
+        require_precutover_disk_headroom()?;
+        Ok(())
+    }
+
+    fn journal_fields(&self) -> Vec<(String, String)> {
+        vec![
+            (
+                "applications_device".to_owned(),
+                self.applications.device.to_string(),
+            ),
+            (
+                "applications_inode".to_owned(),
+                self.applications.inode.to_string(),
+            ),
+            (
+                "launch_agents_device".to_owned(),
+                self.launch_agents.device.to_string(),
+            ),
+            (
+                "launch_agents_inode".to_owned(),
+                self.launch_agents.inode.to_string(),
+            ),
+            (
+                "precutover_available_bytes".to_owned(),
+                self.initial_available_bytes.to_string(),
+            ),
+            (
+                "rollback_reserve_device".to_owned(),
+                self.rollback_reserve.device.to_string(),
+            ),
+            (
+                "rollback_reserve_inode".to_owned(),
+                self.rollback_reserve.inode.to_string(),
+            ),
+            (
+                "rollback_reserve_bytes".to_owned(),
+                ROLLBACK_RESERVE_BYTES.to_string(),
+            ),
+        ]
+    }
+}
+
+fn parse_posix_df_available_bytes(output: &str) -> Result<u64> {
+    let lines: Vec<&str> = output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    if lines.len() != 2 {
+        return Err(ControllerError(format!(
+            "df returned {} nonempty lines, expected exactly two",
+            lines.len()
+        )));
+    }
+    let fields: Vec<&str> = lines[1].split_whitespace().collect();
+    if fields.len() != 6 {
+        return Err(ControllerError(format!(
+            "df data row has {} fields, expected exactly six",
+            fields.len()
+        )));
+    }
+    let available_kib = fields[3]
+        .parse::<u64>()
+        .map_err(|_| ControllerError("df available-block count is malformed".to_owned()))?;
+    available_kib
+        .checked_mul(1024)
+        .ok_or_else(|| ControllerError("df available-byte count overflowed".to_owned()))
+}
+
+fn available_bytes_for(path: &Path) -> Result<u64> {
+    let output = run_command(
+        Path::new("/bin/df"),
+        &[OsStr::new("-P"), OsStr::new("-k"), path.as_os_str()],
+        None,
+    )?
+    .require_success("pre-cutover disk headroom")?;
+    parse_posix_df_available_bytes(&output)
+}
+
+fn require_precutover_disk_headroom() -> Result<u64> {
+    let available = available_bytes_for(Path::new(PRIVATE_ROOT))?
+        .min(available_bytes_for(Path::new(APPLICATIONS_DIRECTORY))?);
+    if available < MINIMUM_PRECUTOVER_AVAILABLE_BYTES {
+        return Err(ControllerError(format!(
+            "pre-cutover disk headroom is {available} bytes, below the required {MINIMUM_PRECUTOVER_AVAILABLE_BYTES} bytes"
+        )));
+    }
+    Ok(available)
+}
+
+fn require_cutover_hidden_paths_absent(layout: &Layout) -> Result<()> {
+    let (disabled_app, disabled_plist, install_app_hold, install_plist_hold) =
+        rollback_hidden_paths(layout)?;
+    require_paths_absent(&[
+        disabled_app,
+        disabled_plist,
+        install_app_hold,
+        install_plist_hold,
+    ])
+}
+
+fn require_paths_absent(paths: &[PathBuf]) -> Result<()> {
+    for path in paths {
+        if entry_exists(&path)? {
+            return Err(ControllerError(format!(
+                "transaction-specific hidden cutover path already exists: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_precutover(layout: &Layout, verifiers: &PinnedVerifierSet) -> Result<CutoverPreflight> {
+    let cutover = CutoverPreflight::open(layout)?;
+    cutover.revalidate()?;
+    require_cutover_hidden_paths_absent(layout)?;
+    validate_logs_precutover()?;
+    let mut environment = fixed_child_environment();
+    verifiers.add_helper_environment(&mut environment);
+    let deployment_parser = run_pinned_script(
+        verifiers,
+        &verifiers.deployment,
+        &[OsStr::new("--self-test-disabled-parser")],
+        Some(&layout.source_export),
+        &environment,
+    )?
+    .require_success("deployment disabled-state parser self-test")?;
+    if deployment_parser.trim() != "SELF_TEST_OK disabled-parser" {
+        return Err(ControllerError(
+            "deployment disabled-state parser self-test returned unexpected output".to_owned(),
+        ));
+    }
     verify_legacy_static()?;
     verify_legacy_disabled(false)?;
     verify_legacy_running()?;
@@ -3102,12 +4436,22 @@ fn verify_precutover(layout: &Layout) -> Result<()> {
             "legacy app extended attributes changed after snapshot".to_owned(),
         ));
     }
-    Ok(())
+    require_cutover_hidden_paths_absent(layout)?;
+    cutover.revalidate()?;
+    Ok(cutover)
 }
 
-fn copy_new_app_to_install_hold(layout: &Layout) -> Result<()> {
+fn copy_new_app_to_install_hold(layout: &Layout, cutover: &CutoverPreflight) -> Result<()> {
+    let applications = &cutover.applications;
+    cutover.ditto.revalidate()?;
+    applications.revalidate()?;
     require_new_absent()?;
     let install_hold = layout.install_app_hold()?;
+    if install_hold.parent() != Some(applications.path.as_path()) {
+        return Err(ControllerError(
+            "install app hold escaped the pinned Applications directory".to_owned(),
+        ));
+    }
     if entry_exists(&install_hold)? {
         return Err(ControllerError(format!(
             "install app hold already exists: {}",
@@ -3120,7 +4464,16 @@ fn copy_new_app_to_install_hold(layout: &Layout) -> Result<()> {
         None,
     )?
     .require_success("copy staged app to install hold")?;
-    validate_real_directory(&install_hold)
+    cutover.ditto.revalidate()?;
+    applications.revalidate()?;
+    let hold_name = install_hold
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| ControllerError("install app hold name is not UTF-8".to_owned()))?;
+    let _hold = applications
+        .try_open_directory_child(hold_name, Some(effective_uid()), None)?
+        .ok_or_else(|| ControllerError("install app hold disappeared after copy".to_owned()))?;
+    applications.revalidate()
 }
 
 fn publish_directory_hold(
@@ -3161,47 +4514,65 @@ fn publish_regular_file_hold(
     Ok(())
 }
 
-fn publish_new_app_from_install_hold(layout: &Layout) -> Result<()> {
-    let applications = PinnedDirectory::open_applications()?;
+fn publish_new_app_from_install_hold(
+    layout: &Layout,
+    applications: &PinnedDirectory,
+) -> Result<()> {
+    applications.revalidate()?;
     let install_hold = layout.install_app_hold()?;
     let app_hold_name = install_hold
         .file_name()
         .and_then(OsStr::to_str)
         .ok_or_else(|| ControllerError("install app hold name is not UTF-8".to_owned()))?;
-    publish_directory_hold(&applications, app_hold_name, "opensteamer Host.app")
+    publish_directory_hold(applications, app_hold_name, "opensteamer Host.app")
 }
 
-fn copy_new_plist_to_install_hold(layout: &Layout) -> Result<()> {
+fn copy_new_plist_to_install_hold(layout: &Layout, launch_agents: &PinnedDirectory) -> Result<()> {
+    launch_agents.revalidate()?;
     let plist_hold = layout.install_plist_hold()?;
+    if plist_hold.parent() != Some(launch_agents.path.as_path()) {
+        return Err(ControllerError(
+            "install plist hold escaped the pinned LaunchAgents directory".to_owned(),
+        ));
+    }
     if entry_exists(&plist_hold)? {
         return Err(ControllerError(format!(
             "install plist hold already exists: {}",
             plist_hold.display()
         )));
     }
-    copy_exact_file(&layout.staged_plist, &plist_hold, 0o600)
+    copy_exact_file(&layout.staged_plist, &plist_hold, 0o600)?;
+    launch_agents.revalidate()?;
+    let hold_name = plist_hold
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| ControllerError("install plist hold name is not UTF-8".to_owned()))?;
+    let hold = launch_agents
+        .open_existing_regular(hold_name, false)?
+        .ok_or_else(|| ControllerError("install plist hold disappeared after copy".to_owned()))?;
+    validate_owned_regular(&plist_hold, &hold.metadata()?, 0o600)?;
+    launch_agents.ensure_file_at_name(hold_name, &hold)
 }
 
-fn publish_new_plist_from_install_hold(layout: &Layout) -> Result<()> {
-    let launch_agents = PinnedDirectory::open(
-        Path::new("/Users/ahmed/Library/LaunchAgents"),
-        Some(effective_uid()),
-        None,
-    )?;
+fn publish_new_plist_from_install_hold(
+    layout: &Layout,
+    launch_agents: &PinnedDirectory,
+) -> Result<()> {
+    launch_agents.revalidate()?;
     let plist_hold = layout.install_plist_hold()?;
     let plist_hold_name = plist_hold
         .file_name()
         .and_then(OsStr::to_str)
         .ok_or_else(|| ControllerError("install plist hold name is not UTF-8".to_owned()))?;
     publish_regular_file_hold(
-        &launch_agents,
+        launch_agents,
         plist_hold_name,
         "org.example.opensteamer.worldwide.plist",
         0o600,
     )
 }
 
-fn verify_committed_destinations(layout: &Layout) -> Result<()> {
+fn verify_committed_destinations(layout: &Layout, verifiers: &PinnedVerifierSet) -> Result<()> {
     verify_legacy_static_against_snapshot(layout)?;
     validate_real_directory(Path::new(NEW_APP))?;
     validate_real_file(Path::new(NEW_PLIST), Some(0o600))?;
@@ -3215,30 +4586,30 @@ fn verify_committed_destinations(layout: &Layout) -> Result<()> {
             "installed plist differs from staged plist".to_owned(),
         ));
     }
-    let bundle_verifier = layout
-        .source_export
-        .join("macOS/scripts/verify-mac-host-bundle.sh");
-    let launch_verifier = layout
-        .source_export
-        .join("macOS/scripts/verify-mac-host-launch-state.sh");
-    run_command(
-        &bundle_verifier,
+    let mut environment = fixed_child_environment();
+    verifiers.add_helper_environment(&mut environment);
+    run_pinned_script(
+        verifiers,
+        &verifiers.bundle,
         &[
             OsStr::new(NEW_APP),
             OsStr::new(TEAM_ID),
             layout.legacy_snapshot_executable.as_os_str(),
         ],
         Some(&layout.source_export),
+        &environment,
     )?
     .require_success("installed bundle verification")?;
-    run_command(
-        &launch_verifier,
+    run_pinned_script(
+        verifiers,
+        &verifiers.launch,
         &[
             OsStr::new("--verify-plist"),
             OsStr::new(NEW_EXECUTABLE),
             OsStr::new(NEW_PLIST),
         ],
         Some(&layout.source_export),
+        &environment,
     )?
     .require_success("installed LaunchAgent verification")?;
     Ok(())
@@ -3246,23 +4617,22 @@ fn verify_committed_destinations(layout: &Layout) -> Result<()> {
 
 fn verify_deployment(
     layout: &Layout,
+    verifiers: &PinnedVerifierSet,
     generation: &LaunchGeneration,
     log_checkpoint: &LogCheckpoint,
 ) -> Result<()> {
-    verify_deployment_with_prefix(layout, generation, log_checkpoint, "deployment")
+    verify_deployment_with_prefix(layout, verifiers, generation, log_checkpoint, "deployment")
 }
 
 fn verify_deployment_with_prefix(
     layout: &Layout,
+    verifiers: &PinnedVerifierSet,
     generation: &LaunchGeneration,
     log_checkpoint: &LogCheckpoint,
     record_prefix: &str,
 ) -> Result<()> {
     verify_launch_generation(NEW_LABEL, NEW_EXECUTABLE, generation)?;
     require_marker_after_checkpoint(Path::new(ONLINE_LOG), log_checkpoint)?;
-    let verifier = layout
-        .source_export
-        .join("macOS/scripts/verify-mac-host-deployment.sh");
     let controller_binary = env::var_os("OPENSTEAMER_MIGRATION_CONTROLLER_BINARY")
         .map(PathBuf::from)
         .unwrap_or(env::current_exe()?);
@@ -3288,15 +4658,19 @@ fn verify_deployment_with_prefix(
         OsStr::new(&expected_lock_device),
         OsStr::new(&expected_lock_inode),
     ];
-    let mut command = Command::new(&verifier);
-    command
-        .args(arguments)
-        .current_dir(&layout.source_export)
-        .env(
-            "OPENSTEAMER_MIGRATION_CONTROLLER_BINARY",
-            &controller_binary,
-        );
-    let output = run_spawned_command(command, &verifier, deadline_after(DEFAULT_COMMAND_TIMEOUT)?)?;
+    let mut environment = fixed_child_environment();
+    environment.insert(
+        "OPENSTEAMER_MIGRATION_CONTROLLER_BINARY".to_owned(),
+        controller_binary.display().to_string(),
+    );
+    verifiers.add_helper_environment(&mut environment);
+    let output = run_pinned_script(
+        verifiers,
+        &verifiers.deployment,
+        &arguments,
+        Some(&layout.source_export),
+        &environment,
+    )?;
     let CommandOutput {
         status,
         stdout,
@@ -3399,6 +4773,7 @@ where
 
 struct RealCommittedRecoveryBackend<'a> {
     layout: &'a Layout,
+    verifiers: PinnedVerifierSet,
     historical_pid: u32,
     historical_nonce: String,
     checkpoint: Option<LogCheckpoint>,
@@ -3469,7 +4844,7 @@ impl CommittedRecoveryBackend for RealCommittedRecoveryBackend<'_> {
     fn perform(&mut self, operation: CommittedRecoveryOperation) -> Result<Vec<(String, String)>> {
         match operation {
             CommittedRecoveryOperation::VerifyCommittedDestinations => {
-                verify_committed_destinations(self.layout)?;
+                verify_committed_destinations(self.layout, &self.verifiers)?;
                 verify_legacy_static_against_snapshot(self.layout)?;
                 verify_legacy_disabled(true)?;
                 if service_state(LEGACY_LABEL)? != ServiceState::Absent {
@@ -3492,6 +4867,21 @@ impl CommittedRecoveryBackend for RealCommittedRecoveryBackend<'_> {
             }
             CommittedRecoveryOperation::BootstrapNew => {
                 prepare_logs()?;
+                self.verifiers.revalidate()?;
+                verify_committed_destinations(self.layout, &self.verifiers)?;
+                verify_legacy_disabled(true)?;
+                if service_state(LEGACY_LABEL)? != ServiceState::Absent
+                    || !exact_process_pids(LEGACY_EXECUTABLE)?.is_empty()
+                {
+                    return Err(ControllerError(
+                        "legacy host appeared immediately before committed-recovery bootstrap"
+                            .to_owned(),
+                    ));
+                }
+                require_new_runtime_absent()?;
+                require_no_capture_server_processes()?;
+                prove_lock_acquirable()?;
+                require_new_runtime_absent()?;
                 bootstrap_exact_plist(Path::new(NEW_PLIST))?;
                 Ok(Vec::new())
             }
@@ -3549,6 +4939,7 @@ impl CommittedRecoveryBackend for RealCommittedRecoveryBackend<'_> {
                 })?;
                 verify_deployment_with_prefix(
                     self.layout,
+                    &self.verifiers,
                     generation,
                     &checkpoint,
                     "deployment-committed-recovery",
@@ -3575,6 +4966,7 @@ fn verify_committed_runtime(
     journal: &mut Journal,
     private_root: &PinnedDirectory,
 ) -> Result<()> {
+    release_rollback_reserve(layout, journal)?;
     let historical_pid = journal
         .fields
         .get("pid")
@@ -3584,8 +4976,10 @@ fn verify_committed_runtime(
     let historical_nonce = journal.fields.get("nonce").cloned().ok_or_else(|| {
         ControllerError("COMMIT journal has no historical generation nonce".to_owned())
     })?;
+    let verifiers = PinnedVerifierSet::open(layout)?;
     let mut backend = RealCommittedRecoveryBackend {
         layout,
+        verifiers,
         historical_pid,
         historical_nonce,
         checkpoint: None,
@@ -3606,7 +5000,8 @@ fn verify_committed_runtime(
         &format!("{}\n", layout.evidence.display()).into_bytes(),
         || backend.revalidate_current_generation_for_retained_pointer(),
         |_| Ok(()),
-    )
+    )?;
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3735,6 +5130,7 @@ where
 
 struct RealRollbackBackend<'a> {
     layout: &'a Layout,
+    parent_identities: Option<CutoverParentIdentities>,
 }
 
 impl RollbackBackend for RealRollbackBackend<'_> {
@@ -3760,7 +5156,13 @@ impl RollbackBackend for RealRollbackBackend<'_> {
             RollbackOperation::ClearNewDestinations => {
                 require_no_capture_server_processes()?;
                 prove_lock_acquirable()?;
-                clear_new_live_destinations(self.layout)
+                let identities = self.parent_identities.ok_or_else(|| {
+                    ControllerError(
+                        "post-stop rollback lacks pre-cutover destination-parent identities"
+                            .to_owned(),
+                    )
+                })?;
+                clear_new_live_destinations(self.layout, identities)
             }
             RollbackOperation::EnableLegacy => {
                 match mode {
@@ -3784,6 +5186,11 @@ impl RollbackBackend for RealRollbackBackend<'_> {
             }
             RollbackOperation::BootstrapLegacy => {
                 if service_state(LEGACY_LABEL)? == ServiceState::Absent {
+                    require_new_absent()?;
+                    verify_legacy_static_against_snapshot(self.layout)?;
+                    require_no_capture_server_processes()?;
+                    prove_lock_acquirable()?;
+                    require_new_absent()?;
                     bootstrap_exact_plist(Path::new(LEGACY_PLIST))?;
                 }
                 Ok(())
@@ -3812,11 +5219,49 @@ impl RollbackBackend for RealRollbackBackend<'_> {
 }
 
 fn rollback(layout: &Layout, journal: &mut Journal) -> Result<()> {
+    if let Err(error) = release_rollback_reserve(layout, journal) {
+        eprintln!(
+            "opensteamer migration controller: could not release rollback reserve before recovery: {error}"
+        );
+    }
     let legacy_service_before_rollback = service_state(LEGACY_LABEL)?;
     let crossed_legacy_stop_boundary =
         journal.saw_legacy_stopped || legacy_service_before_rollback == ServiceState::Absent;
     let legacy_disable_was_journaled = journal.saw_legacy_disabled;
-    let mut backend = RealRollbackBackend { layout };
+    let parent_identities = if crossed_legacy_stop_boundary {
+        Some(CutoverParentIdentities {
+            applications_device: journal
+                .required_field("applications_device")?
+                .parse::<u64>()
+                .map_err(|_| {
+                    ControllerError("journal applications device is malformed".to_owned())
+                })?,
+            applications_inode: journal
+                .required_field("applications_inode")?
+                .parse::<u64>()
+                .map_err(|_| {
+                    ControllerError("journal applications inode is malformed".to_owned())
+                })?,
+            launch_agents_device: journal
+                .required_field("launch_agents_device")?
+                .parse::<u64>()
+                .map_err(|_| {
+                    ControllerError("journal LaunchAgents device is malformed".to_owned())
+                })?,
+            launch_agents_inode: journal
+                .required_field("launch_agents_inode")?
+                .parse::<u64>()
+                .map_err(|_| {
+                    ControllerError("journal LaunchAgents inode is malformed".to_owned())
+                })?,
+        })
+    } else {
+        None
+    };
+    let mut backend = RealRollbackBackend {
+        layout,
+        parent_identities,
+    };
     let _mode = drive_rollback(
         &mut backend,
         journal,
@@ -3827,19 +5272,122 @@ fn rollback(layout: &Layout, journal: &mut Journal) -> Result<()> {
     Ok(())
 }
 
+fn release_rollback_reserve(layout: &Layout, journal: &Journal) -> Result<()> {
+    let device = journal.fields.get("rollback_reserve_device");
+    let inode = journal.fields.get("rollback_reserve_inode");
+    let bytes = journal.fields.get("rollback_reserve_bytes");
+    if device.is_none() && inode.is_none() && bytes.is_none() {
+        return release_unjournaled_rollback_reserve(layout);
+    }
+    let (device, inode, bytes) = match (device, inode, bytes) {
+        (Some(device), Some(inode), Some(bytes)) => (device, inode, bytes),
+        _ => {
+            return Err(ControllerError(
+                "journal has an incomplete rollback-reserve identity".to_owned(),
+            ))
+        }
+    };
+    let expected_device = device
+        .parse::<u64>()
+        .map_err(|_| ControllerError("rollback-reserve device is malformed".to_owned()))?;
+    let expected_inode = inode
+        .parse::<u64>()
+        .map_err(|_| ControllerError("rollback-reserve inode is malformed".to_owned()))?;
+    let expected_bytes = bytes
+        .parse::<u64>()
+        .map_err(|_| ControllerError("rollback-reserve length is malformed".to_owned()))?;
+    if expected_bytes != ROLLBACK_RESERVE_BYTES {
+        return Err(ControllerError(
+            "journal rollback-reserve length differs from the reviewed size".to_owned(),
+        ));
+    }
+    release_rollback_reserve_at(
+        &layout.records,
+        expected_device,
+        expected_inode,
+        expected_bytes,
+    )
+}
+
+fn release_unjournaled_rollback_reserve(layout: &Layout) -> Result<()> {
+    release_unjournaled_rollback_reserve_at(&layout.records)
+}
+
+fn release_unjournaled_rollback_reserve_at(records_path: &Path) -> Result<()> {
+    let records = PinnedDirectory::open(records_path, Some(effective_uid()), Some(0o700))?;
+    let Some(file) = records.open_existing_regular(ROLLBACK_RESERVE_NAME, true)? else {
+        return Ok(());
+    };
+    let before = file.metadata()?;
+    validate_owned_regular(&records.path.join(ROLLBACK_RESERVE_NAME), &before, 0o600)?;
+    if before.len() != 0 && before.len() != ROLLBACK_RESERVE_BYTES {
+        return Err(ControllerError(
+            "unjournaled rollback reserve has an unreviewed length".to_owned(),
+        ));
+    }
+    file.set_len(0)?;
+    file.sync_all()?;
+    records.file.sync_all()?;
+    let after = file.metadata()?;
+    if !same_inode(&before, &after) || after.len() != 0 {
+        return Err(ControllerError(
+            "unjournaled rollback reserve did not release on its pinned inode".to_owned(),
+        ));
+    }
+    records.ensure_file_at_name(ROLLBACK_RESERVE_NAME, &file)
+}
+
+fn release_rollback_reserve_at(
+    records_path: &Path,
+    expected_device: u64,
+    expected_inode: u64,
+    expected_bytes: u64,
+) -> Result<()> {
+    if expected_bytes != ROLLBACK_RESERVE_BYTES {
+        return Err(ControllerError(
+            "rollback-reserve release received an unreviewed size".to_owned(),
+        ));
+    }
+    let records = PinnedDirectory::open(records_path, Some(effective_uid()), Some(0o700))?;
+    let file = records
+        .open_existing_regular(ROLLBACK_RESERVE_NAME, true)?
+        .ok_or_else(|| ControllerError("journaled rollback reserve is missing".to_owned()))?;
+    let before = file.metadata()?;
+    validate_owned_regular(&records.path.join(ROLLBACK_RESERVE_NAME), &before, 0o600)?;
+    if before.dev() != expected_device
+        || before.ino() != expected_inode
+        || (before.len() != 0 && before.len() != expected_bytes)
+    {
+        return Err(ControllerError(
+            "journaled rollback reserve identity or length changed".to_owned(),
+        ));
+    }
+    file.set_len(0)?;
+    file.sync_all()?;
+    records.file.sync_all()?;
+    let after = file.metadata()?;
+    validate_owned_regular(&records.path.join(ROLLBACK_RESERVE_NAME), &after, 0o600)?;
+    if after.dev() != expected_device || after.ino() != expected_inode || after.len() != 0 {
+        return Err(ControllerError(
+            "rollback reserve did not release to the same zero-length evidence inode".to_owned(),
+        ));
+    }
+    records.ensure_file_at_name(ROLLBACK_RESERVE_NAME, &file)
+}
+
 fn rollback_hidden_paths(layout: &Layout) -> Result<(PathBuf, PathBuf, PathBuf, PathBuf)> {
     let tag = layout.transaction_tag()?;
     Ok((
-        Path::new("/Applications").join(format!(".opensteamer-disabled-v10-{tag}")),
+        Path::new(APPLICATIONS_DIRECTORY).join(format!(".opensteamer-disabled-v11-{tag}")),
         Path::new("/Users/ahmed/Library/LaunchAgents").join(format!(
-            ".org.example.opensteamer.worldwide.plist.disabled-v10-{tag}"
+            ".org.example.opensteamer.worldwide.plist.disabled-v11-{tag}"
         )),
         layout.install_app_hold()?,
         layout.install_plist_hold()?,
     ))
 }
 
-fn clear_new_live_destinations(layout: &Layout) -> Result<()> {
+fn clear_new_live_destinations(layout: &Layout, expected: CutoverParentIdentities) -> Result<()> {
     let (disabled_app, disabled_plist, _, _) = rollback_hidden_paths(layout)?;
     let applications = PinnedDirectory::open_applications()?;
     let launch_agents = PinnedDirectory::open(
@@ -3847,6 +5395,15 @@ fn clear_new_live_destinations(layout: &Layout) -> Result<()> {
         Some(effective_uid()),
         None,
     )?;
+    if applications.device != expected.applications_device
+        || applications.inode != expected.applications_inode
+        || launch_agents.device != expected.launch_agents_device
+        || launch_agents.inode != expected.launch_agents_inode
+    {
+        return Err(ControllerError(
+            "destination parent identity changed after pre-cutover verification".to_owned(),
+        ));
+    }
 
     if entry_exists(Path::new(NEW_APP))? {
         validate_real_directory(Path::new(NEW_APP))?;
@@ -4267,6 +5824,10 @@ fn require_new_absent() -> Result<()> {
             "new live destination already exists".to_owned(),
         ));
     }
+    require_new_runtime_absent()
+}
+
+fn require_new_runtime_absent() -> Result<()> {
     if service_state(NEW_LABEL)? != ServiceState::Absent {
         return Err(ControllerError("new service is already loaded".to_owned()));
     }
@@ -5219,6 +6780,20 @@ fn lsof_holders(path: &Path) -> Result<BTreeSet<u32>> {
     lsof_holders_until(path, deadline_after(DEFAULT_COMMAND_TIMEOUT)?)
 }
 
+fn validate_logs_precutover() -> Result<()> {
+    validate_real_directory(Path::new("/var/tmp"))?;
+    for path in [Path::new(ONLINE_LOG), Path::new(ERROR_LOG)] {
+        let metadata = fs::symlink_metadata(path).map_err(|error| {
+            ControllerError(format!(
+                "required pre-cutover log '{}' is unavailable: {error}",
+                path.display()
+            ))
+        })?;
+        validate_owned_regular(path, &metadata, 0o600)?;
+    }
+    Ok(())
+}
+
 fn prepare_logs() -> Result<()> {
     validate_real_directory(Path::new("/var/tmp"))?;
     for path in [Path::new(ONLINE_LOG), Path::new(ERROR_LOG)] {
@@ -6064,6 +7639,91 @@ fn sha256_file_until(path: &Path, deadline: Instant) -> Result<String> {
 
 fn sha256_file(path: &Path) -> Result<String> {
     sha256_file_until(path, deadline_after(DEFAULT_COMMAND_TIMEOUT)?)
+}
+
+fn sha256_bytes(bytes: &[u8]) -> Result<String> {
+    const INITIAL: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    const ROUND: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+    let bit_length = u64::try_from(bytes.len())
+        .ok()
+        .and_then(|length| length.checked_mul(8))
+        .ok_or_else(|| ControllerError("SHA-256 input length overflowed".to_owned()))?;
+    let mut padded = bytes.to_vec();
+    padded.push(0x80);
+    while padded.len() % 64 != 56 {
+        padded.push(0);
+    }
+    padded.extend_from_slice(&bit_length.to_be_bytes());
+
+    let mut state = INITIAL;
+    for chunk in padded.chunks_exact(64) {
+        let mut schedule = [0u32; 64];
+        for (index, word) in schedule.iter_mut().take(16).enumerate() {
+            let offset = index * 4;
+            *word = u32::from_be_bytes([
+                chunk[offset],
+                chunk[offset + 1],
+                chunk[offset + 2],
+                chunk[offset + 3],
+            ]);
+        }
+        for index in 16..64 {
+            let s0 = schedule[index - 15].rotate_right(7)
+                ^ schedule[index - 15].rotate_right(18)
+                ^ (schedule[index - 15] >> 3);
+            let s1 = schedule[index - 2].rotate_right(17)
+                ^ schedule[index - 2].rotate_right(19)
+                ^ (schedule[index - 2] >> 10);
+            schedule[index] = schedule[index - 16]
+                .wrapping_add(s0)
+                .wrapping_add(schedule[index - 7])
+                .wrapping_add(s1);
+        }
+
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = state;
+        for index in 0..64 {
+            let upper_e = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let choose = (e & f) ^ ((!e) & g);
+            let temp_one = h
+                .wrapping_add(upper_e)
+                .wrapping_add(choose)
+                .wrapping_add(ROUND[index])
+                .wrapping_add(schedule[index]);
+            let upper_a = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let majority = (a & b) ^ (a & c) ^ (b & c);
+            let temp_two = upper_a.wrapping_add(majority);
+            h = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temp_one);
+            d = c;
+            c = b;
+            b = a;
+            a = temp_one.wrapping_add(temp_two);
+        }
+        for (slot, value) in state.iter_mut().zip([a, b, c, d, e, f, g, h].into_iter()) {
+            *slot = slot.wrapping_add(value);
+        }
+    }
+    let mut digest = String::with_capacity(64);
+    for value in state {
+        digest.push_str(&format!("{value:08x}"));
+    }
+    Ok(digest)
 }
 
 fn command_line(program: &Path, arguments: &[&str], cwd: &Path, label: &str) -> Result<String> {
@@ -7035,7 +8695,7 @@ impl Drop for TemporaryDirectory {
     }
 }
 
-const FAKE_JOURNAL_VERSION: &str = "OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V10";
+const FAKE_JOURNAL_VERSION: &str = "OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V11";
 
 struct FakeJournal {
     path: PathBuf,
@@ -7282,6 +8942,35 @@ fn replace_exactly_once(
 }
 
 fn self_test_parsers() -> Result<()> {
+    if sha256_bytes(b"")? != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        || sha256_bytes(b"abc")?
+            != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    {
+        return Err(ControllerError(
+            "in-process SHA-256 failed its reviewed test vectors".to_owned(),
+        ));
+    }
+    verify_embedded_verifier_hashes()?;
+
+    let df_fixture = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk3s1 239362496 206822552 8990052 96% /System/Volumes/Data\n";
+    if parse_posix_df_available_bytes(df_fixture)? != 8_990_052 * 1024 {
+        return Err(ControllerError(
+            "df parser returned the wrong available-byte count".to_owned(),
+        ));
+    }
+    for malformed in [
+        "",
+        "header only\n",
+        "header\n/dev/disk3s1 1 2 nope 4% /\n",
+        "header\n/dev/disk3s1 1 2 3 4% / extra\n",
+    ] {
+        if parse_posix_df_available_bytes(malformed).is_ok() {
+            return Err(ControllerError(
+                "df parser accepted malformed or ambiguous output".to_owned(),
+            ));
+        }
+    }
+
     let missing = "disabled services = {\n    \"other.label\" => enabled\n}\n";
     if parse_disabled_override(missing, LEGACY_LABEL)? != None {
         return Err(ControllerError(
@@ -7930,6 +9619,25 @@ fn self_test_real_adapter() -> Result<()> {
 }
 
 fn self_test_command_deadlines() -> Result<()> {
+    let sanitized = run_command(Path::new("/usr/bin/env"), &[], None)?
+        .require_success("sanitized child environment")?;
+    let actual_environment: BTreeSet<String> = sanitized.lines().map(str::to_owned).collect();
+    let expected_environment: BTreeSet<String> = [
+        "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+        "HOME=/Users/ahmed",
+        "TMPDIR=/var/tmp",
+        "LANG=C",
+        "LC_ALL=C",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    if actual_environment != expected_environment {
+        return Err(ControllerError(format!(
+            "ordinary child environment was not fully sanitized: {actual_environment:?}"
+        )));
+    }
+
     let hanging_script = "trap '' TERM\n( trap '' TERM; while :; do /bin/sleep 1; done ) &\nwhile :; do /bin/sleep 1; done\n";
     for label in [
         "forward-launchctl",
@@ -8161,6 +9869,7 @@ fn self_test_directory_modes() -> Result<()> {
 
     fs::set_permissions(&directory.path, Permissions::from_mode(0o700))?;
     let policy_pin = PinnedDirectory::open(&directory.path, Some(effective_uid()), Some(0o700))?;
+    policy_pin.prove_write_execute_and_sync()?;
     fs::set_permissions(&directory.path, Permissions::from_mode(0o750))?;
     if policy_pin.revalidate().is_ok() {
         return Err(ControllerError(
@@ -8174,6 +9883,61 @@ fn self_test_directory_modes() -> Result<()> {
     if PinnedDirectory::open(&child, Some(effective_uid()), None).is_ok() {
         return Err(ControllerError(
             "transaction-parent mode gate accepted a group/world-writable directory".to_owned(),
+        ));
+    }
+
+    let collision_root = TemporaryDirectory::create("hidden-collision")?;
+    let absent = collision_root.path.join("absent");
+    require_paths_absent(std::slice::from_ref(&absent))?;
+    let collision = collision_root.path.join("foreign");
+    write_record(&collision, b"foreign", 0o600)?;
+    if require_paths_absent(std::slice::from_ref(&collision)).is_ok()
+        || fs::read(&collision)? != b"foreign"
+    {
+        return Err(ControllerError(
+            "hidden-path collision gate did not preserve foreign data".to_owned(),
+        ));
+    }
+
+    let reserve_root = TemporaryDirectory::create("rollback-reserve")?;
+    let records_path = reserve_root.path.join("records");
+    fs::create_dir(&records_path)?;
+    fs::set_permissions(&records_path, Permissions::from_mode(0o700))?;
+    let records = PinnedDirectory::open(&records_path, Some(effective_uid()), Some(0o700))?;
+    let reserve = RollbackReserve::create(&records)?;
+    reserve.revalidate_full(&records)?;
+    release_rollback_reserve_at(
+        &records_path,
+        reserve.device,
+        reserve.inode,
+        ROLLBACK_RESERVE_BYTES,
+    )?;
+    release_rollback_reserve_at(
+        &records_path,
+        reserve.device,
+        reserve.inode,
+        ROLLBACK_RESERVE_BYTES,
+    )?;
+    let released = reserve.file.metadata()?;
+    if released.dev() != reserve.device || released.ino() != reserve.inode || released.len() != 0 {
+        return Err(ControllerError(
+            "rollback reserve release was not idempotent on the same evidence inode".to_owned(),
+        ));
+    }
+    let unjournaled_path = reserve_root.path.join("unjournaled-records");
+    fs::create_dir(&unjournaled_path)?;
+    fs::set_permissions(&unjournaled_path, Permissions::from_mode(0o700))?;
+    let unjournaled_records =
+        PinnedDirectory::open(&unjournaled_path, Some(effective_uid()), Some(0o700))?;
+    let unjournaled = RollbackReserve::create(&unjournaled_records)?;
+    release_unjournaled_rollback_reserve_at(&unjournaled_path)?;
+    let released_unjournaled = unjournaled.file.metadata()?;
+    if released_unjournaled.dev() != unjournaled.device
+        || released_unjournaled.ino() != unjournaled.inode
+        || released_unjournaled.len() != 0
+    {
+        return Err(ControllerError(
+            "pre-journal rollback reserve recovery changed the evidence inode".to_owned(),
         ));
     }
     Ok(())
@@ -8523,68 +10287,63 @@ fn self_test_journal() -> Result<()> {
         }
     }
 
-    let mut critical_fields = BTreeMap::new();
-    critical_fields.insert("commit".to_owned(), V10_CRITICAL_RECOVERY_COMMIT.to_owned());
-    critical_fields.insert("tree".to_owned(), V10_CRITICAL_RECOVERY_TREE.to_owned());
-    critical_fields.insert("primary".to_owned(), V10_APPLICATIONS_MODE_ERROR.to_owned());
-    critical_fields.insert(
-        "rollback".to_owned(),
-        V10_APPLICATIONS_MODE_ERROR.to_owned(),
-    );
-    if !is_exact_v10_applications_critical_record(
-        Path::new(V10_CRITICAL_RECOVERY_EVIDENCE),
-        State::CriticalFailure,
-        true,
-        true,
-        &critical_fields,
-    ) {
+    validate_prior_v10_rolledback_records(
+        Path::new(PRIOR_V10_EVIDENCE_PATH),
+        PRIOR_V10_FINAL_JOURNAL,
+        PRIOR_V10_FINAL_RESULT,
+        PRIOR_V10_PROVENANCE,
+    )?;
+    let prior_v10_journal_path = directory.path.join("prior-v10-journal.log");
+    let prior_v10_result_path = directory.path.join("prior-v10-result.txt");
+    let prior_v10_provenance_path = directory.path.join("prior-v10-provenance.txt");
+    write_record(&prior_v10_journal_path, PRIOR_V10_FINAL_JOURNAL, 0o600)?;
+    write_record(&prior_v10_result_path, PRIOR_V10_FINAL_RESULT, 0o600)?;
+    write_record(&prior_v10_provenance_path, PRIOR_V10_PROVENANCE, 0o600)?;
+    if sha256_file(&prior_v10_journal_path)? != PRIOR_V10_FINAL_JOURNAL_SHA256
+        || sha256_file(&prior_v10_result_path)? != PRIOR_V10_FINAL_RESULT_SHA256
+        || sha256_file(&prior_v10_provenance_path)? != PRIOR_V10_PROVENANCE_SHA256
+    {
         return Err(ControllerError(
-            "exact reviewed v10 critical recovery record was rejected".to_owned(),
+            "embedded prior v10 retry records do not match their reviewed hashes".to_owned(),
         ));
     }
-    for mutation in ["commit", "tree", "primary", "rollback"] {
-        let mut mutated = critical_fields.clone();
-        mutated.insert(mutation.to_owned(), "mutated".to_owned());
-        if is_exact_v10_applications_critical_record(
-            Path::new(V10_CRITICAL_RECOVERY_EVIDENCE),
-            State::CriticalFailure,
-            true,
-            true,
-            &mutated,
-        ) {
-            return Err(ControllerError(format!(
-                "exact v10 critical recovery gate accepted mutated {mutation}"
-            )));
+    let mut mutated_journal = PRIOR_V10_FINAL_JOURNAL.to_vec();
+    mutated_journal.extend_from_slice(b"STATE LEGACY_DISABLED\n");
+    let mut mutated_result = PRIOR_V10_FINAL_RESULT.to_vec();
+    mutated_result.extend_from_slice(b"unexpected=true\n");
+    let mut mutated_provenance = PRIOR_V10_PROVENANCE.to_vec();
+    mutated_provenance.extend_from_slice(b"unexpected=true\n");
+    for (evidence, journal, result, provenance) in [
+        (
+            Path::new(PRIOR_EVIDENCE_PATH),
+            PRIOR_V10_FINAL_JOURNAL,
+            PRIOR_V10_FINAL_RESULT,
+            PRIOR_V10_PROVENANCE,
+        ),
+        (
+            Path::new(PRIOR_V10_EVIDENCE_PATH),
+            mutated_journal.as_slice(),
+            PRIOR_V10_FINAL_RESULT,
+            PRIOR_V10_PROVENANCE,
+        ),
+        (
+            Path::new(PRIOR_V10_EVIDENCE_PATH),
+            PRIOR_V10_FINAL_JOURNAL,
+            mutated_result.as_slice(),
+            PRIOR_V10_PROVENANCE,
+        ),
+        (
+            Path::new(PRIOR_V10_EVIDENCE_PATH),
+            PRIOR_V10_FINAL_JOURNAL,
+            PRIOR_V10_FINAL_RESULT,
+            mutated_provenance.as_slice(),
+        ),
+    ] {
+        if validate_prior_v10_rolledback_records(evidence, journal, result, provenance).is_ok() {
+            return Err(ControllerError(
+                "prior v10 retry contract accepted mutated evidence".to_owned(),
+            ));
         }
-    }
-    if is_exact_v10_applications_critical_record(
-        Path::new(PRIOR_EVIDENCE_PATH),
-        State::CriticalFailure,
-        true,
-        true,
-        &critical_fields,
-    ) || is_exact_v10_applications_critical_record(
-        Path::new(V10_CRITICAL_RECOVERY_EVIDENCE),
-        State::NewStopped,
-        true,
-        true,
-        &critical_fields,
-    ) || is_exact_v10_applications_critical_record(
-        Path::new(V10_CRITICAL_RECOVERY_EVIDENCE),
-        State::CriticalFailure,
-        false,
-        true,
-        &critical_fields,
-    ) || is_exact_v10_applications_critical_record(
-        Path::new(V10_CRITICAL_RECOVERY_EVIDENCE),
-        State::CriticalFailure,
-        true,
-        false,
-        &critical_fields,
-    ) {
-        return Err(ControllerError(
-            "exact v10 critical recovery gate accepted an inexact state boundary".to_owned(),
-        ));
     }
     Ok(())
 }

@@ -21,28 +21,32 @@ persistent legacy disable, legacy shutdown, lock handoff, side-by-side
 installation, bootstrap, readiness proof, commit, rollback, and crash recovery. Exactly one top-level controller decides process exit;
 rollback-reachable helpers return errors.
 
-The current controller owns the version-10 active-pointer and journal namespace.
-The retained version-9 pointer is never moved, replaced, or deleted. Version 10
-will proceed past it only when the pointer, private evidence layout, journal, and
-result are byte-for-byte the reviewed `rolled-back-before-stop` outcome from the
-August 1 `/bin/chflags` path failure, all other version-9 pointer residues are
-absent, the new service and destinations are absent, and the exact untouched
-legacy service is re-proved live. The corrected controller invokes the existing
-system tool only at `/usr/bin/chflags`. Any different version-9 state fails
-closed for manual inspection.
+The current controller owns the version-11 active-pointer and journal namespace.
+The retained version-9 and version-10 pointers are never moved, replaced, or
+deleted. Version 11 proceeds only when version 9 is byte-for-byte the reviewed
+`rolled-back-before-stop` outcome from the August 1 `/bin/chflags` path failure,
+version 10 is byte-for-byte the reviewed full-restore rollback described below,
+all older pointer residues and hidden cutover paths are absent, and the exact
+untouched legacy service is re-proved live. The corrected controller invokes the
+existing system tool only at `/usr/bin/chflags`. Any different historical state
+fails closed for manual inspection.
 
 The first version-10 cutover reached the legacy-stop boundary and then rejected
 this Mac's standard `/Applications` directory because it is `root:admin` mode
 `0775`. The new app was not published or launched, but the same validation also
-prevented rollback from clearing destinations, leaving both hosts offline. The
-controller permits group write only for the exact canonical `/Applications`
+prevented rollback from clearing destinations, temporarily leaving both hosts
+offline. The exact gated recovery completed, re-enabled and bootstrapped the
+untouched legacy service, proved it was the sole host and lock holder, archived
+the unlaunched install hold, and retained both tombstones. The controller permits
+group write only for the exact canonical `/Applications`
 path with UID `0`, GID `80`, and mode `0775`; that policy remains attached to
 the pinned directory across every reopen and rename. Recovery from
 `CRITICAL_FAILURE` is enabled only for the exact retained version-10 evidence
 path, active-pointer bytes/hash, journal hash and history, provenance
 commit/tree, failure text, hidden-install layout, untouched legacy snapshot,
 disabled/absent legacy service, absent new service/destinations/processes, and
-acquirable shared lock. Any mismatch remains fail-closed.
+acquirable shared lock. Version 11 treats any new `CRITICAL_FAILURE` as
+fail-closed rather than reusing that historical recovery exception.
 
 Every durable state transition is appended to and fsynced in a per-attempt
 journal. A fixed fsynced active-transaction record points to the attempt. A
@@ -181,9 +185,30 @@ generation-bound readiness proof, and then revalidates the same exact tombstone
 without removing it. A generation change after that proof is an ordinary
 committed lifecycle event. Pre-journal, failed, and rolled-back tombstones are
 also retained, and automatic reruns fail closed for manual inspection. The sole
-exception is the narrowly encoded version-10 retry gate for the exact reviewed
-version-9 pre-stop failure described above; it creates a distinct version-10
-tombstone and never reuses or mutates the version-9 transaction.
+fresh-attempt exception is the narrowly encoded version-11 retry gate for the
+exact reviewed version-9 and fully rolled-back version-10 failures described
+above. It creates a distinct version-11 tombstone and never reuses or mutates
+either historical transaction.
+
+Before legacy can be disabled, version 11 physically preallocates and fsyncs an
+8 MiB owner-only rollback reserve, records its device/inode, and revalidates a
+minimum 1 GiB of free space. Rollback releases that exact reserve inode before
+its first journal append, including after a crash, so an out-of-space failure
+cannot prevent restoration from starting. The reserve is truncated only after
+rollback or after a durable commit and retained-pointer proof.
+
+The controller binary embeds reviewed hashes and exact bytes for all five build
+and deployment scripts. It pins the matching immutable-export inodes and runs
+their captured bytes through `/bin/zsh -c` with a sanitized environment; nested
+deployment helpers are passed as pinned script text rather than reopened by
+path. Legacy/new process absence and the shared lock are re-proved immediately
+before every forward, rollback, or committed-recovery bootstrap.
+
+The launcher compiles twice with the reviewed compiler, driver, explicit
+sysroot, and a fixed source-path remap. Both outputs must be byte-identical and
+must match the reviewed controller-binary SHA-256 before the private executable
+is allowed to run. A build-only mode exercises that exact launcher path and the
+complete controller self-test matrix without entering live migration.
 
 Controller self-tests retain the deterministic fake backend and additionally
 exercise the production journal, pinned-directory, app/plist hold, exclusive

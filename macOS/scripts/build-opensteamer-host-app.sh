@@ -4,6 +4,8 @@ set -euo pipefail
 umask 077
 
 readonly ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
+readonly BUNDLE_VERIFIER="$ROOT_DIR/macOS/scripts/verify-mac-host-bundle.sh"
+readonly PINNED_BUNDLE_VERIFIER_SCRIPT="${OPENSTEAMER_PINNED_BUNDLE_VERIFIER_SCRIPT:-}"
 readonly APP_OUTPUT_DIR="${OPENSTEAMER_HOST_APP_OUTPUT_DIR:-$ROOT_DIR/build}"
 readonly APP_DIR="$APP_OUTPUT_DIR/opensteamer Host.app"
 readonly CONTENTS_DIR="$APP_DIR/Contents"
@@ -21,6 +23,14 @@ readonly EXPECTED_ARCHITECTURES="${OPENSTEAMER_EXPECTED_ARCHITECTURES:-}"
 fail() {
     print -u2 -- "build-opensteamer-host-app: $*"
     exit 1
+}
+
+run_bundle_verifier() {
+    if [[ -n "$PINNED_BUNDLE_VERIFIER_SCRIPT" ]]; then
+        /bin/zsh -c "$PINNED_BUNDLE_VERIFIER_SCRIPT" "$BUNDLE_VERIFIER" "$@"
+    else
+        "$BUNDLE_VERIFIER" "$@"
+    fi
 }
 
 [[ "$REQUIRE_FRESH_RELEASE" == 0 || "$REQUIRE_FRESH_RELEASE" == 1 ]] || fail \
@@ -291,7 +301,7 @@ if [[ -n "$DESIGNATED_REQUIREMENT_REFERENCE" ]]; then
     VERIFY_ARGUMENTS+=("$DESIGNATED_REQUIREMENT_REFERENCE")
 fi
 OPENSTEAMER_EXPECTED_ARCHITECTURES="$EXPECTED_ARCHITECTURES" \
-    "$ROOT_DIR/macOS/scripts/verify-mac-host-bundle.sh" "${VERIFY_ARGUMENTS[@]}"
+    run_bundle_verifier "${VERIFY_ARGUMENTS[@]}"
 
 print -u2 -- "Signed opensteamer Host with: $SIGNING_IDENTITY"
 print -r -- "$APP_DIR"

@@ -102,7 +102,25 @@ final class MacHostMigrationContractTests: XCTestCase {
         XCTAssertTrue(source.contains("/bin/ln \"$BINARY_BUILD\" \"$BINARY\""))
         XCTAssertTrue(source.contains("OPENSTEAMER_MIGRATION_CONTROLLER_BINARY"))
         XCTAssertTrue(source.contains("OPENSTEAMER_MIGRATION_RUSTC_CDHASH_FULL"))
+        XCTAssertTrue(source.contains("PINNED_RUSTC=\"$BUILD_DIR/rustc\""))
+        XCTAssertTrue(source.contains("TRUSTED_RUSTC_SYSROOT='/opt/homebrew/Cellar/rust/1.97.1'"))
+        XCTAssertTrue(source.contains("DYLD_LIBRARY_PATH=\"$PINNED_RUSTC_LIB\""))
+        XCTAssertTrue(source.contains("--sysroot \"$TRUSTED_RUSTC_SYSROOT\""))
+        XCTAssertTrue(
+            source.contains("--remap-path-prefix \"$BUILD_DIR=$REVIEWED_BUILD_PREFIX\"")
+        )
+        XCTAssertTrue(
+            source.contains(
+                "EXPECTED_CONTROLLER_BINARY_SHA256='bedf56fb4530098c2e7637fd08aa5aa17eafc2848c93a80b80c40e42ae722097'"
+            )
+        )
+        XCTAssertTrue(source.contains("fresh controller binary differs from the reviewed reproducible postimage"))
+        XCTAssertTrue(source.contains("--self-test-reviewed-controller-build"))
         XCTAssertTrue(source.contains("SOURCE_COPY=\"$BUILD_DIR/opensteamer-host-migration-controller.rs\""))
+        XCTAssertTrue(source.contains("copy_companion_script"))
+        XCTAssertTrue(source.contains("verify_private_companion_script"))
+        XCTAssertTrue(source.contains("EXPECTED_BUILD_SCRIPT_SHA256"))
+        XCTAssertTrue(source.contains("EXPECTED_DEPLOYMENT_VERIFIER_SHA256"))
         XCTAssertTrue(source.contains("--self-test-cdhash-parser"))
         XCTAssertTrue(source.contains("CandidateCDHashFull sha256="))
         XCTAssertFalse(source.contains("CDHashFull="))
@@ -231,7 +249,8 @@ final class MacHostMigrationContractTests: XCTestCase {
             "verify_retained_active_pointer_after_commit",
             "durable COMMITTED journal record is the sole commit point",
             "self_test_final_generation_active_pointer_boundary",
-            "OPENSTEAMER_MIGRATION_JOURNAL_V10",
+            "OPENSTEAMER_MIGRATION_JOURNAL_V11",
+            "active-migration-v11",
             "active-migration-v10",
             "active-migration-v9",
             "validate_prior_v9_prestop_retry",
@@ -244,9 +263,28 @@ final class MacHostMigrationContractTests: XCTestCase {
             "Path::new(\"/usr/bin/chflags\")",
             "fn open_applications()",
             "directory_write_policy_allows",
-            "validate_exact_v10_applications_critical_recovery",
-            "V10_CRITICAL_JOURNAL_SHA256",
-            "V10_APPLICATIONS_MODE_ERROR",
+            "validate_prior_v10_rolledback_retry",
+            "validate_prior_v10_rolledback_records",
+            "PriorV10RetryGuard",
+            "PRIOR_V10_FINAL_JOURNAL",
+            "PRIOR_V10_FINAL_JOURNAL_SHA256",
+            "CutoverPreflight",
+            "CutoverParentIdentities",
+            "require_cutover_hidden_paths_absent",
+            "prove_write_execute_and_sync",
+            "PinnedSystemTool",
+            "DITTO_SHA256",
+            "validate_logs_precutover",
+            "RollbackReserve",
+            "ROLLBACK_RESERVE_BYTES",
+            "F_PREALLOCATE_VALUE",
+            "release_rollback_reserve",
+            "PinnedVerifierSet",
+            "run_pinned_script",
+            "include_bytes!(\"verify-mac-host-deployment.sh\")",
+            "verify_embedded_verifier_hashes",
+            "require_new_runtime_absent",
+            "require_precutover_disk_headroom",
         ] {
             XCTAssertTrue(controller.contains(required), "Controller lacks \(required)")
         }
