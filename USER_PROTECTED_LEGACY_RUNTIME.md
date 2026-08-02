@@ -132,14 +132,31 @@ console-only disk-space error is not itself retained in the journal. The exact
 legacy host remains the sole process and shared-lock holder, and the new app,
 plist, and service are absent.
 
-Controller version 13 may create exactly one deterministic fresh transaction
-only after byte-validating the complete version-12 pre-stop rollback in addition
-to the version-9 through version-11 tombstones, reproving the live legacy
-service, and proving every historical hidden cutover path absent. It requires
-at least 2 GiB free on the destination volume before creating new evidence,
-then preserves the existing 1 GiB post-build gate, 8 MiB rollback reserve, and
-180-second deployment-oracle deadline. All four older evidence trees and
-pointers remain immutable.
+Controller version 13 created exactly one deterministic fresh transaction only
+after byte-validating the complete version-12 pre-stop rollback in addition to
+the version-9 through version-11 tombstones, reproving the live legacy service,
+and proving every historical hidden cutover path absent. It required at least
+2 GiB free before creating evidence and preserved the 1 GiB post-build gate,
+8 MiB rollback reserve, and 180-second deployment-oracle deadline.
+
+The version-13 transaction built, installed, and bootstrapped the new host and
+reached `NEW_PID_OBSERVED`, but its embedded zsh deployment verifier failed
+before `READY_VERIFIED` because it assigned the absent-service exit code to
+zsh's read-only `status` parameter. The controller stopped and archived the new
+destinations, restored and reverified the untouched legacy host as sole process
+and canonical kernel-lock holder, released the reserve, recorded `ROLLED_BACK`,
+and retained `active-migration-v13` plus its evidence.
+
+Controller version 14 may create exactly one deterministic fresh transaction
+only after byte-validating the complete version-13 full rollback in addition to
+the version-9 through version-12 tombstones. Its exact gate includes the v13
+deployment stderr, all recorded hashes, both staged and archived app manifests,
+symlink targets, separately anchored xattrs, historical residues, and the live
+legacy proof. The verifier uses no zsh `status` or tied `path` locals and runs an
+isolated embedded-byte zsh regression before the stop boundary. Version 14 keeps
+the 2 GiB pre-attempt gate, 1 GiB post-build gate, 8 MiB reserve, and 180-second
+deployment deadline. All five older evidence trees and pointers remain
+immutable.
 
 ## Protected iPhone client
 

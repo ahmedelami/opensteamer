@@ -21,13 +21,14 @@ persistent legacy disable, legacy shutdown, lock handoff, side-by-side
 installation, bootstrap, readiness proof, commit, rollback, and crash recovery. Exactly one top-level controller decides process exit;
 rollback-reachable helpers return errors.
 
-The current controller owns the version-13 active-pointer and journal namespace.
-The retained version-9, version-10, version-11, and version-12 pointers are never
-moved, replaced, or deleted. Version 13 proceeds only when version 9 is byte-for-byte the reviewed
+The current controller owns the version-14 active-pointer and journal namespace.
+The retained version-9 through version-13 pointers are never moved, replaced, or
+deleted. Version 14 proceeds only when version 9 is byte-for-byte the reviewed
 `rolled-back-before-stop` outcome from the August 1 `/bin/chflags` path failure,
 version 10 is byte-for-byte the reviewed full-restore rollback described below,
 version 11 is byte-for-byte the reviewed post-readiness-timeout full rollback,
-version 12 is byte-for-byte the reviewed pre-stop disk-headroom rollback,
+version 12 is byte-for-byte the reviewed pre-stop disk-headroom rollback, version
+13 is byte-for-byte the reviewed deployment-verifier rollback described below,
 all older pointer residues and hidden cutover paths are absent, and the exact
 untouched legacy service is re-proved live. The corrected controller invokes the
 existing system tool only at `/usr/bin/chflags`. Any different historical state
@@ -47,7 +48,7 @@ the pinned directory across every reopen and rename. Recovery from
 path, active-pointer bytes/hash, journal hash and history, provenance
 commit/tree, failure text, hidden-install layout, untouched legacy snapshot,
 disabled/absent legacy service, absent new service/destinations/processes, and
-acquirable shared lock. Version 13 treats any new `CRITICAL_FAILURE` as
+acquirable shared lock. Version 14 treats any new `CRITICAL_FAILURE` as
 fail-closed rather than reusing that historical recovery exception.
 
 Version 11 built, signed, installed, and bootstrapped the new host, then reached
@@ -71,6 +72,18 @@ Version 13 accepts only that complete byte-for-byte v12 tombstone, requires at
 least 2 GiB free before creating its evidence tree, and keeps the existing 1 GiB
 post-build cutover gate and 8 MiB rollback reserve unchanged.
 
+Version 13 built, installed, and bootstrapped the new host and reached
+`NEW_PID_OBSERVED`, but the deployment oracle exited before its first stability
+sample because it assigned the launchctl exit code to zsh's read-only `status`
+parameter. The controller stopped and archived the new destinations, restored
+the exact legacy service as sole process and kernel lock holder, released the
+reserve, and recorded `ROLLED_BACK`. Version 14 accepts only that complete raw
+journal/result/provenance set, the exact empty deployment stdout and exact zsh
+error stderr, every retained build record, both staged/archived app manifests,
+symlink targets, and their separately anchored xattrs. The verifier now uses a
+non-special exit-code local, avoids zsh's tied `path` parameter, and runs an
+isolated embedded-byte zsh regression test before the legacy stop boundary.
+
 Every durable state transition is appended to and fsynced in a per-attempt
 journal. A fixed fsynced active-transaction record points to the attempt. A
 later invocation holding the transaction lock deterministically resumes
@@ -78,10 +91,10 @@ post-commit verification or rolls back an uncommitted attempt. It never treats a
 stale lock file, journal, staged app, or partially installed destination as a
 reason to abandon recovery.
 
-The pinned launcher also exposes a read-only v13 preflight that compiles and
+The pinned launcher also exposes a read-only v14 preflight that compiles and
 attests the exact reviewed controller, acquires the migration lock, verifies all
-four historical tombstones and the sole live legacy host, and proves the
-deterministic v13 evidence path is absent:
+five historical tombstones and the sole live legacy host, and proves the
+deterministic v14 evidence path is absent:
 
 ```sh
 macOS/scripts/migrate-opensteamer-host.sh --verify-reviewed-prior-retry-state /absolute/path/to/opensteamer
@@ -217,12 +230,12 @@ generation-bound readiness proof, and then revalidates the same exact tombstone
 without removing it. A generation change after that proof is an ordinary
 committed lifecycle event. Pre-journal, failed, and rolled-back tombstones are
 also retained, and automatic reruns fail closed for manual inspection. The sole
-fresh-attempt exception is the narrowly encoded version-13 retry gate for the
-exact reviewed version-9 through version-12 failures described above. It
-exclusively creates one deterministic version-13 evidence path and never
+fresh-attempt exception is the narrowly encoded version-14 retry gate for the
+exact reviewed version-9 through version-13 failures described above. It
+exclusively creates one deterministic version-14 evidence path and never
 reuses or mutates any historical transaction.
 
-Before legacy can be disabled, version 13 physically preallocates and fsyncs an
+Before legacy can be disabled, version 14 physically preallocates and fsyncs an
 8 MiB owner-only rollback reserve, records its device/inode, and revalidates a
 minimum 1 GiB of free space. Rollback releases that exact reserve inode before
 its first journal append, including after a crash, so an out-of-space failure

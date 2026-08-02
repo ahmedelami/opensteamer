@@ -61,6 +61,45 @@ run_launch_state_verifier() {
     run_pinned_or_path "$PINNED_LAUNCH_STATE_VERIFIER_SCRIPT" "$LAUNCH_STATE_VERIFIER" "$@"
 }
 
+# Classify only launchctl's explicit not-found diagnostic as absence. Every other nonzero exit is
+# an operational failure. `status` is a read-only special parameter in zsh, so the captured exit
+# code deliberately uses a non-special local name.
+service_absence_is_proven() {
+    local command_exit="$1" captured_stdout="$2" diagnostic="$3" label="$4"
+    local expected_diagnostic=$'Bad request.\nCould not find service "'"$label"$'" in domain for user gui: '"$UID"
+    [[ "$command_exit" -eq 113 && -z "$captured_stdout" \
+        && "$diagnostic" == "$expected_diagnostic" ]]
+}
+
+require_service_absent_with_command() {
+    (
+        local label="$1" launchctl_exit diagnostic captured_stdout
+        local capture_stdout_file="" capture_stderr_file=""
+        shift
+        trap '/bin/rm -f -- "$capture_stdout_file" "$capture_stderr_file"' EXIT HUP INT TERM
+        capture_stdout_file="$(/usr/bin/mktemp /var/tmp/opensteamer-launch-out.XXXXXX)" || fail \
+            "could not create launchctl capture"
+        capture_stderr_file="$(/usr/bin/mktemp /var/tmp/opensteamer-launch-err.XXXXXX)" || fail \
+            "could not create launchctl capture"
+        if "$@" >"$capture_stdout_file" 2>"$capture_stderr_file"; then
+            fail "launchd service is still loaded: $label"
+        else
+            launchctl_exit=$?
+        fi
+        diagnostic="$(<"$capture_stderr_file")"
+        captured_stdout="$(<"$capture_stdout_file")"
+        service_absence_is_proven \
+            "$launchctl_exit" "$captured_stdout" "$diagnostic" "$label" || fail \
+            "launchctl could not prove service absence for '$label': $diagnostic"
+    )
+}
+
+require_service_absent() {
+    local label="$1"
+    require_service_absent_with_command \
+        "$label" /bin/launchctl print "gui/$UID/$label"
+}
+
 parse_disabled_override() {
     local input="$1" label="$2"
     print -r -- "$input" | /usr/bin/awk -v label="$label" '
@@ -117,8 +156,30 @@ self_test_disabled_parser() {
     print -r -- "SELF_TEST_OK disabled-parser"
 }
 
+self_test_zsh_runtime() {
+    require_service_absent_with_command \
+        "isolated-self-test" /bin/zsh -c \
+        'print -u2 -- "Bad request."; print -u2 -- "Could not find service \"isolated-self-test\" in domain for user gui: $UID"; exit 113'
+    local exact_diagnostic=$'Bad request.\nCould not find service "isolated-self-test" in domain for user gui: '"$UID"
+    service_absence_is_proven 0 "" "$exact_diagnostic" "isolated-self-test" && fail \
+        "service-absence classifier accepted a successful command"
+    service_absence_is_proven 42 "" "$exact_diagnostic" "isolated-self-test" && fail \
+        "service-absence classifier accepted the wrong command exit"
+    service_absence_is_proven 113 "unexpected" "$exact_diagnostic" "isolated-self-test" && fail \
+        "service-absence classifier accepted stdout contamination"
+    service_absence_is_proven 113 "" "$exact_diagnostic"$'\nPermission denied' \
+        "isolated-self-test" && fail \
+        "service-absence classifier accepted mixed diagnostics"
+    service_absence_is_proven 113 "" "Permission denied" "isolated-self-test" && fail \
+        "service-absence classifier accepted an unrelated diagnostic"
+    print -r -- "SELF_TEST_OK zsh-runtime"
+}
+
 if (( $# == 1 )) && [[ "$1" == --self-test-disabled-parser ]]; then
     self_test_disabled_parser
+    exit 0
+elif (( $# == 1 )) && [[ "$1" == --self-test-zsh-runtime ]]; then
+    self_test_zsh_runtime
     exit 0
 fi
 
@@ -160,26 +221,6 @@ print -r -- "$EXPECTED_GENERATION_NONCE" | /usr/bin/grep -Eq '^[0-9a-f]{64}$' ||
 sha256_file() { /usr/bin/shasum -a 256 "$1" | /usr/bin/awk '{print $1}'; }
 code_hash() {
     /usr/bin/codesign -dv --verbose=4 "$1" 2>&1 | /usr/bin/awk -F= '$1 == "CDHash" {print tolower($2); exit}'
-}
-
-# Classify only launchctl's explicit not-found diagnostic as absence. Every other nonzero status is
-# an operational failure.
-require_service_absent() {
-    local label="$1" out err status
-    out="$(/usr/bin/mktemp /var/tmp/opensteamer-launch-out.XXXXXX)" || fail "could not create launchctl capture"
-    err="$(/usr/bin/mktemp /var/tmp/opensteamer-launch-err.XXXXXX)" || fail "could not create launchctl capture"
-    if /bin/launchctl print "gui/$UID/$label" >"$out" 2>"$err"; then
-        /bin/rm -f "$out" "$err"
-        fail "launchd service is still loaded: $label"
-    else
-        status=$?
-    fi
-    diagnostic="$(<"$err")"
-    captured_stdout="$(<"$out")"
-    /bin/rm -f "$out" "$err"
-    [[ "$status" -ne 0 && -z "$captured_stdout" \
-        && "$diagnostic" == *"Could not find service"* ]] || fail \
-        "launchctl could not prove service absence for '$label': $diagnostic"
 }
 
 require_legacy_disabled() {
@@ -280,10 +321,10 @@ state_one="$(/usr/bin/mktemp /var/tmp/opensteamer-launch-one.XXXXXX)" || fail "c
 state_two="$(/usr/bin/mktemp /var/tmp/opensteamer-launch-two.XXXXXX)" || fail "could not create state capture"
 trap '/bin/rm -f "$state_one" "$state_two"' EXIT
 capture_state() {
-    local path="$1"
-    /bin/launchctl print "gui/$UID/$HOST_LABEL" >"$path" 2>/dev/null || fail \
+    local state_path="$1"
+    /bin/launchctl print "gui/$UID/$HOST_LABEL" >"$state_path" 2>/dev/null || fail \
         "new LaunchAgent is not loaded"
-    run_launch_state_verifier "$path" "$EXPECTED_EXECUTABLE" \
+    run_launch_state_verifier "$state_path" "$EXPECTED_EXECUTABLE" \
         "$REVIEWED_LAUNCH_AGENT" "$INSTALLED_LAUNCH_AGENT"
 }
 
