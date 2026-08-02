@@ -299,6 +299,20 @@ is_production_rendezvous_match() {
         "readonly REVIEWED_RENDEZVOUS_URL=\"wss://${PRODUCTION_RENDEZVOUS_HOST}\"" || \
         "$content" == "wss://${PRODUCTION_RENDEZVOUS_HOST}" ]]
       ;;
+    macOS/scripts/opensteamer-host-migration-controller.rs)
+      content=$(awk -v wanted="$line" '
+        NR == wanted {
+          sub(/^[[:space:]]+/, "")
+          sub(/[[:space:]]+$/, "")
+          print
+          exit
+        }
+      ' "$file_path")
+      [[ "$content" == \
+        "\"wss://${PRODUCTION_RENDEZVOUS_HOST}\".to_owned()," || \
+        "$content" == \
+        "\"        wss://${PRODUCTION_RENDEZVOUS_HOST}\".to_owned()," ]]
+      ;;
     *) return 1 ;;
   esac
 }
@@ -388,6 +402,11 @@ is_allowed_legacy_token() {
       ;;
     macOS/Tests/CaptureServerTests/MacHostDeploymentContractTests.swift)
       is_identity_token "$token" || is_rendezvous_fallback_token "$token"
+      ;;
+    macOS/scripts/opensteamer-host-migration-controller.rs)
+      [[ "$token" == "$FORMER_LOWER.worldwide" \
+        || "$token" == "$FORMER_LOWER.worldwide.plist" ]] || \
+        is_identity_token "$token"
       ;;
     macOS/Tests/CaptureServerTests/PhysicalValidationScriptTests.swift)
       [[ "$token" == "$FORMER_CAMEL" ]]

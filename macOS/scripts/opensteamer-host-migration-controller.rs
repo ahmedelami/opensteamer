@@ -23,10 +23,18 @@ const USER_HOME: &str = "/Users/ahmed";
 const USER_ID: u32 = 501;
 const MIGRATIONS_ROOT: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations";
 const PRIVATE_ROOT: &str = "/Users/ahmed/Library/Application Support/opensteamer";
-const ACTIVE_TRANSACTION_NAME: &str = "active-migration-v9";
-const ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v9.pending";
-const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v9.finalizing";
-const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = ".active-migration-v9.linearized";
+const ACTIVE_TRANSACTION_NAME: &str = "active-migration-v10";
+const ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v10.pending";
+const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v10.finalizing";
+const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = ".active-migration-v10.linearized";
+const PRIOR_ACTIVE_TRANSACTION_NAME: &str = "active-migration-v9";
+const PRIOR_ACTIVE_TRANSACTION_PENDING_NAME: &str = ".active-migration-v9.pending";
+const PRIOR_ACTIVE_TRANSACTION_FINALIZING_NAME: &str = ".active-migration-v9.finalizing";
+const PRIOR_ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = ".active-migration-v9.linearized";
+const PRIOR_EVIDENCE_PATH: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v9-1785629833-85682";
+const PRIOR_ACTIVE_RECORD: &[u8] = b"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v9-1785629833-85682\n";
+const PRIOR_ACTIVE_SHA256: &str =
+    "55c5936e520d65c2096811546357853e05064eca41553603793bea5843518559";
 const LEGACY_APP: &str = "/Applications/AudioStreamer Host.app";
 const LEGACY_EXECUTABLE: &str = "/Applications/AudioStreamer Host.app/Contents/MacOS/CaptureServer";
 const LEGACY_LABEL: &str = "com.elamin.audiostreamer.worldwide";
@@ -48,7 +56,19 @@ const CODE_IDENTIFIER: &str = "com.elamin.AudioStreamer.CaptureServer";
 const ONLINE_LOG: &str = "/var/tmp/opensteamer-worldwide-host.log";
 const ERROR_LOG: &str = "/var/tmp/opensteamer-worldwide-host.err.log";
 const ONLINE_MARKER: &str = "Worldwide paired-device availability is online";
-const JOURNAL_VERSION: &str = "OPENSTEAMER_MIGRATION_JOURNAL_V9";
+const JOURNAL_VERSION: &str = "OPENSTEAMER_MIGRATION_JOURNAL_V10";
+const PRIOR_PRESTOP_JOURNAL: &[u8] = b"OPENSTEAMER_MIGRATION_JOURNAL_V9\nSTATE BEGUN\nSTATE ROLLBACK_STARTED legacy_disable_was_journaled=false rollback_mode=BeforeLegacyStop\nSTATE LEGACY_REENABLED\nSTATE LEGACY_RECOVERED\nSTATE ROLLED_BACK\n";
+const PRIOR_PRESTOP_RESULT: &[u8] = b"result=rolled-back-before-stop\nlegacy_launchd_disabled=false\nphysical_iphone_e2e=unavailable-not-claimed\n";
+const PRIOR_JOURNAL_SHA256: &str =
+    "566504aa212b4b4ae627996859991c0aa8742f9fa5019145a9e73ca9c6ddf524";
+const PRIOR_RESULT_SHA256: &str =
+    "d1e58fcd7c826e015fab662e5669abfdfa142f904fc3277c5cf62f754890f875";
+const PRIOR_SOURCE_ARCHIVE_SIZE: u64 = 6_266_880;
+const PRIOR_SOURCE_ARCHIVE_SHA256: &str =
+    "0d0022af455d2d7a2d49c43025760ece421b9cdd0b33451fad55f338f9746202";
+const PRIOR_SOURCE_COMMIT: &str = "2ef1c9cbb972c0c138ae36bbe996eacda214113d";
+const CHFLAGS_SHA256: &str =
+    "a67367c7fda2e962b72db6cc730173e82115f3709bf4a208d1d2ed1a6787a211";
 const REVIEWED_RUSTC_SHA256: &str =
     "d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd";
 const REVIEWED_RUSTC_CDHASH_FULL: &str =
@@ -1006,7 +1026,7 @@ impl Layout {
             .map_err(|_| ControllerError("system clock is before epoch".to_owned()))?
             .as_secs();
         let evidence = Path::new(MIGRATIONS_ROOT).join(format!(
-            "migration-v9-{now}-{}",
+            "migration-v10-{now}-{}",
             process::id()
         ));
         fs::create_dir(&evidence)
@@ -1557,7 +1577,11 @@ fn execute(root: &Path) -> Result<()> {
     let transaction_lock = TransactionLock::acquire()?;
     let private_root = transaction_lock.parent();
     match recover_active_pointer(private_root)? {
-        ActivePointerRecovery::None => start_new(repo, private_root),
+        ActivePointerRecovery::None => {
+            verify_chflags_tool()?;
+            let prior_v9 = validate_prior_v9_prestop_retry(private_root)?;
+            start_new(repo, private_root, prior_v9)
+        }
         ActivePointerRecovery::Active => recover_active(repo, private_root),
     }
 }
@@ -1627,12 +1651,331 @@ fn verify_launcher_attestation(repo: &Path) -> Result<()> {
     Ok(())
 }
 
+fn validate_prior_v9_prestop_records(evidence: &Path, journal: &[u8], result: &[u8]) -> Result<()> {
+    if evidence != Path::new(PRIOR_EVIDENCE_PATH) {
+        return Err(ControllerError(
+            "prior active pointer does not name the exact reviewed v9 evidence".to_owned(),
+        ));
+    }
+    if journal != PRIOR_PRESTOP_JOURNAL {
+        return Err(ControllerError(
+            "prior v9 journal is not the exact reviewed rolled-back-before-stop sequence"
+                .to_owned(),
+        ));
+    }
+    if result != PRIOR_PRESTOP_RESULT {
+        return Err(ControllerError(
+            "prior v9 result is not the exact reviewed rolled-back-before-stop outcome"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
 
-fn start_new(repo: PathBuf, private_root: &PinnedDirectory) -> Result<()> {
+fn verify_chflags_tool() -> Result<()> {
+    let path = Path::new("/usr/bin/chflags");
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.gid() != 0
+        || metadata.nlink() != 1
+        || metadata.permissions().mode() & 0o7777 != 0o755
+    {
+        return Err(ControllerError(
+            "reviewed /usr/bin/chflags identity or mode is unsafe".to_owned(),
+        ));
+    }
+    if sha256_file(path)? != CHFLAGS_SHA256 {
+        return Err(ControllerError(
+            "reviewed /usr/bin/chflags SHA-256 changed".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn open_required_pinned_regular(
+    parent: &PinnedDirectory,
+    name: &str,
+    mode: u32,
+) -> Result<File> {
+    let file = parent
+        .open_existing_regular(name, false)?
+        .ok_or_else(|| ControllerError(format!("required private record is missing: {name}")))?;
+    validate_owned_regular(&parent.path.join(name), &file.metadata()?, mode)?;
+    parent.ensure_file_at_name(name, &file)?;
+    Ok(file)
+}
+
+fn read_opened_regular(file: &File, path: &Path, mode: u32) -> Result<Vec<u8>> {
+    validate_owned_regular(path, &file.metadata()?, mode)?;
+    let mut reader = file.try_clone()?;
+    reader.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn require_exact_directory_entries(
+    directory: &PinnedDirectory,
+    expected: &[&str],
+) -> Result<()> {
+    directory.revalidate()?;
+    let mut actual = BTreeSet::new();
+    for entry in fs::read_dir(&directory.path)? {
+        let entry = entry?;
+        let name = entry.file_name().into_string().map_err(|_| {
+            ControllerError(format!(
+                "private directory contains a non-UTF-8 entry: {}",
+                directory.path.display()
+            ))
+        })?;
+        actual.insert(name);
+    }
+    directory.revalidate()?;
+    let expected: BTreeSet<String> = expected.iter().map(|value| (*value).to_owned()).collect();
+    if actual != expected {
+        return Err(ControllerError(format!(
+            "private directory entries differ at {}: actual={actual:?} expected={expected:?}",
+            directory.path.display()
+        )));
+    }
+    Ok(())
+}
+
+struct PriorV9RetryGuard {
+    pointer: File,
+    evidence: PinnedDirectory,
+    records: PinnedDirectory,
+    empty_directories: Vec<PinnedDirectory>,
+    journal: File,
+    result: File,
+    source_archive: File,
+}
+
+impl PriorV9RetryGuard {
+    fn journal_fields(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("prior_v9_active_sha256", PRIOR_ACTIVE_SHA256.to_owned()),
+            ("prior_v9_journal_sha256", PRIOR_JOURNAL_SHA256.to_owned()),
+            ("prior_v9_result_sha256", PRIOR_RESULT_SHA256.to_owned()),
+            (
+                "prior_v9_source_archive_sha256",
+                PRIOR_SOURCE_ARCHIVE_SHA256.to_owned(),
+            ),
+            ("prior_v9_source_commit", PRIOR_SOURCE_COMMIT.to_owned()),
+        ]
+    }
+
+    fn revalidate(&self, private_root: &PinnedDirectory) -> Result<()> {
+        private_root.ensure_file_at_name(PRIOR_ACTIVE_TRANSACTION_NAME, &self.pointer)?;
+        if read_opened_regular(
+            &self.pointer,
+            &private_root.path.join(PRIOR_ACTIVE_TRANSACTION_NAME),
+            0o600,
+        )? != PRIOR_ACTIVE_RECORD
+            || sha256_file(&private_root.path.join(PRIOR_ACTIVE_TRANSACTION_NAME))?
+                != PRIOR_ACTIVE_SHA256
+        {
+            return Err(ControllerError(
+                "prior v9 active pointer changed during retry proof".to_owned(),
+            ));
+        }
+        private_root.ensure_file_at_name(PRIOR_ACTIVE_TRANSACTION_NAME, &self.pointer)?;
+
+        self.evidence.revalidate()?;
+        self.records.revalidate()?;
+        require_exact_directory_entries(
+            &self.evidence,
+            &[
+                "failed-new",
+                "journal.log",
+                "legacy-snapshot",
+                "records",
+                "source-export",
+                "source.tar",
+                "staged",
+                "swiftpm-scratch",
+            ],
+        )?;
+        require_exact_directory_entries(&self.records, &["result.txt"])?;
+        for directory in &self.empty_directories {
+            require_exact_directory_entries(directory, &[])?;
+        }
+
+        self.evidence.ensure_file_at_name("journal.log", &self.journal)?;
+        self.records.ensure_file_at_name("result.txt", &self.result)?;
+        self.evidence
+            .ensure_file_at_name("source.tar", &self.source_archive)?;
+        let journal = read_opened_regular(
+            &self.journal,
+            &self.evidence.path.join("journal.log"),
+            0o600,
+        )?;
+        let result = read_opened_regular(
+            &self.result,
+            &self.records.path.join("result.txt"),
+            0o600,
+        )?;
+        validate_prior_v9_prestop_records(&self.evidence.path, &journal, &result)?;
+        if sha256_file(&self.evidence.path.join("journal.log"))? != PRIOR_JOURNAL_SHA256
+            || sha256_file(&self.records.path.join("result.txt"))? != PRIOR_RESULT_SHA256
+        {
+            return Err(ControllerError(
+                "prior v9 journal or result hash changed during retry proof".to_owned(),
+            ));
+        }
+        let archive_metadata = self.source_archive.metadata()?;
+        validate_owned_regular(
+            &self.evidence.path.join("source.tar"),
+            &archive_metadata,
+            0o600,
+        )?;
+        if archive_metadata.len() != PRIOR_SOURCE_ARCHIVE_SIZE
+            || sha256_file(&self.evidence.path.join("source.tar"))?
+                != PRIOR_SOURCE_ARCHIVE_SHA256
+        {
+            return Err(ControllerError(
+                "prior v9 source archive differs from the reviewed failed attempt".to_owned(),
+            ));
+        }
+        self.evidence.ensure_file_at_name("journal.log", &self.journal)?;
+        self.records.ensure_file_at_name("result.txt", &self.result)?;
+        self.evidence
+            .ensure_file_at_name("source.tar", &self.source_archive)?;
+        Ok(())
+    }
+}
+
+/// Version 9 failed before the legacy-stop boundary on this Mac because it referenced the
+/// nonexistent `/bin/chflags`. Its retained evidence must remain untouched. Version 10 may start
+/// only after independently pinning that exact tombstone, proving its exact pre-stop rollback
+/// sequence, and reproving the untouched legacy runtime. Any other v9 residue fails closed.
+fn validate_prior_v9_prestop_retry(private_root: &PinnedDirectory) -> Result<PriorV9RetryGuard> {
+    for residue in [
+        PRIOR_ACTIVE_TRANSACTION_PENDING_NAME,
+        PRIOR_ACTIVE_TRANSACTION_FINALIZING_NAME,
+        PRIOR_ACTIVE_TRANSACTION_LINEARIZED_NAME,
+    ] {
+        if private_root.open_existing_regular(residue, false)?.is_some() {
+            return Err(ControllerError(format!(
+                "prior v9 active-pointer residue requires manual recovery: {residue}"
+            )));
+        }
+    }
+    let pointer = open_required_pinned_regular(
+        private_root,
+        PRIOR_ACTIVE_TRANSACTION_NAME,
+        0o600,
+    )?;
+    let pointer_bytes = read_opened_regular(
+        &pointer,
+        &private_root.path.join(PRIOR_ACTIVE_TRANSACTION_NAME),
+        0o600,
+    )?;
+    if pointer_bytes != PRIOR_ACTIVE_RECORD {
+        return Err(ControllerError(
+            "prior v9 active pointer is not the exact reviewed record".to_owned(),
+        ));
+    }
+    let evidence = parse_active_record(&pointer_bytes)?;
+    if evidence != Path::new(PRIOR_EVIDENCE_PATH) {
+        return Err(ControllerError(
+            "prior v9 active pointer resolved to unexpected evidence".to_owned(),
+        ));
+    }
+    let evidence_directory = PinnedDirectory::open(
+        &evidence,
+        Some(effective_uid()),
+        Some(0o700),
+    )?;
+    let mut empty_directories = Vec::new();
+    for child in [
+        "source-export",
+        "staged",
+        "swiftpm-scratch",
+        "legacy-snapshot",
+        "failed-new",
+    ] {
+        let directory = evidence_directory
+            .try_open_directory_child(
+                child,
+                Some(effective_uid()),
+                Some(0o700),
+            )?
+            .ok_or_else(|| ControllerError(format!(
+                "prior v9 evidence lacks private directory '{child}'"
+            )))?;
+        empty_directories.push(directory);
+    }
+    let records = evidence_directory
+        .try_open_directory_child(
+            "records",
+            Some(effective_uid()),
+            Some(0o700),
+        )?
+        .ok_or_else(|| ControllerError("prior v9 evidence lacks records directory".to_owned()))?;
+    let journal = open_required_pinned_regular(&evidence_directory, "journal.log", 0o600)?;
+    let result = open_required_pinned_regular(&records, "result.txt", 0o600)?;
+    let source_archive =
+        open_required_pinned_regular(&evidence_directory, "source.tar", 0o600)?;
+    let guard = PriorV9RetryGuard {
+        pointer,
+        evidence: evidence_directory,
+        records,
+        empty_directories,
+        journal,
+        result,
+        source_archive,
+    };
+    guard.revalidate(private_root)?;
+
+    let tag = guard
+        .evidence
+        .path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| ControllerError("prior v9 evidence tag is not UTF-8".to_owned()))?;
+    for residue in [
+        Path::new("/Applications").join(format!(".opensteamer-disabled-v9-{tag}")),
+        Path::new("/Applications").join(format!(".opensteamer-install-hold-{tag}")),
+        Path::new("/Users/ahmed/Library/LaunchAgents")
+            .join(format!(".org.example.opensteamer.worldwide.plist.disabled-v9-{tag}")),
+        Path::new("/Users/ahmed/Library/LaunchAgents")
+            .join(format!(".org.example.opensteamer.worldwide.plist.install-{tag}")),
+    ] {
+        if entry_exists(&residue)? {
+            return Err(ControllerError(format!(
+                "prior v9 rollback residue remains at {}",
+                residue.display()
+            )));
+        }
+    }
+
+    let deadline = deadline_after(Duration::from_secs(15))?;
+    require_new_absent()?;
+    verify_legacy_static_until(deadline)?;
+    verify_legacy_disabled_until(false, deadline)?;
+    wait_for_exact_legacy_readiness_until(deadline)?;
+    guard.revalidate(private_root)?;
+    Ok(guard)
+}
+
+
+fn start_new(
+    repo: PathBuf,
+    private_root: &PinnedDirectory,
+    prior_v9: PriorV9RetryGuard,
+) -> Result<()> {
     let layout = Layout::create(repo)?;
-    write_active(private_root, &layout.evidence)?;
     let mut journal = Journal::create(&layout.journal)?;
-    let operation = run_transaction(&layout, &mut journal, private_root);
+    journal.transition(State::Begun, &prior_v9.journal_fields())?;
+    let operation = (|| {
+        prior_v9.revalidate(private_root)?;
+        write_active(private_root, &layout.evidence)?;
+        prior_v9.revalidate(private_root)?;
+        run_transaction(&layout, &mut journal, private_root)
+    })();
     match operation {
         Ok(()) => {
             println!("MIGRATION_OK evidence={}", layout.evidence.display());
@@ -2317,7 +2660,7 @@ fn verify_provenance(layout: &Layout) -> Result<Provenance> {
     sync_parent(&layout.source_archive)?;
     let archive_sha256 = sha256_file(&layout.source_archive)?;
     run_command(
-        Path::new("/bin/chflags"),
+        Path::new("/usr/bin/chflags"),
         &[OsStr::new("uchg"), layout.source_archive.as_os_str()],
         None,
     )?
@@ -2352,7 +2695,7 @@ fn verify_provenance(layout: &Layout) -> Result<Provenance> {
         0o600,
     )?;
     run_command(
-        Path::new("/bin/chflags"),
+        Path::new("/usr/bin/chflags"),
         &[OsStr::new("-R"), OsStr::new("uchg"), layout.source_export.as_os_str()],
         None,
     )?
@@ -3368,9 +3711,9 @@ fn rollback(layout: &Layout, journal: &mut Journal) -> Result<()> {
 fn rollback_hidden_paths(layout: &Layout) -> Result<(PathBuf, PathBuf, PathBuf, PathBuf)> {
     let tag = layout.transaction_tag()?;
     Ok((
-        Path::new("/Applications").join(format!(".opensteamer-disabled-v9-{tag}")),
+        Path::new("/Applications").join(format!(".opensteamer-disabled-v10-{tag}")),
         Path::new("/Users/ahmed/Library/LaunchAgents").join(format!(
-            ".org.example.opensteamer.worldwide.plist.disabled-v9-{tag}"
+            ".org.example.opensteamer.worldwide.plist.disabled-v10-{tag}"
         )),
         layout.install_app_hold()?,
         layout.install_plist_hold()?,
@@ -6675,7 +7018,7 @@ impl Drop for TemporaryDirectory {
 }
 
 const FAKE_JOURNAL_VERSION: &str =
-    "OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V9";
+    "OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V10";
 
 struct FakeJournal {
     path: PathBuf,
@@ -8126,6 +8469,54 @@ fn self_test_journal() -> Result<()> {
             "real journal did not recover its last complete durable record"
                 .to_owned(),
         ));
+    }
+
+    let prior_evidence = Path::new(PRIOR_EVIDENCE_PATH);
+    validate_prior_v9_prestop_records(
+        prior_evidence,
+        PRIOR_PRESTOP_JOURNAL,
+        PRIOR_PRESTOP_RESULT,
+    )?;
+    let mut mutated_journal = PRIOR_PRESTOP_JOURNAL.to_vec();
+    mutated_journal.extend_from_slice(b"STATE LEGACY_DISABLED\n");
+    let invalid_prior_records = [
+        (
+            Path::new(
+                "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v8-1-2",
+            ),
+            PRIOR_PRESTOP_JOURNAL,
+            PRIOR_PRESTOP_RESULT,
+        ),
+        (
+            Path::new(
+                "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v9-bad-2",
+            ),
+            PRIOR_PRESTOP_JOURNAL,
+            PRIOR_PRESTOP_RESULT,
+        ),
+        (
+            prior_evidence,
+            mutated_journal.as_slice(),
+            PRIOR_PRESTOP_RESULT,
+        ),
+        (
+            prior_evidence,
+            PRIOR_PRESTOP_JOURNAL,
+            b"result=rolled-back\n".as_slice(),
+        ),
+    ];
+    for (evidence, prior_journal, prior_result) in invalid_prior_records {
+        if validate_prior_v9_prestop_records(
+            evidence,
+            prior_journal,
+            prior_result,
+        )
+        .is_ok()
+        {
+            return Err(ControllerError(
+                "prior v9 retry contract accepted mutated evidence".to_owned(),
+            ));
+        }
     }
     Ok(())
 }

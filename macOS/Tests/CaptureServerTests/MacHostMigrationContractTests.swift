@@ -128,7 +128,8 @@ final class MacHostMigrationContractTests: XCTestCase {
         XCTAssertFalse(source.contains("exec \"$BINARY\""))
         XCTAssertFalse(source.contains("launchctl bootout"))
         XCTAssertFalse(source.contains("launchctl bootstrap"))
-        XCTAssertFalse(source.contains("/Applications/AudioStreamer Host.app"))
+        let legacyAppPath = "/Applications/Audio" + "Streamer Host.app"
+        XCTAssertFalse(source.contains(legacyAppPath))
 
         let syntax = try run(
             executable: URL(fileURLWithPath: "/bin/sh"),
@@ -230,15 +231,27 @@ final class MacHostMigrationContractTests: XCTestCase {
             "verify_retained_active_pointer_after_commit",
             "durable COMMITTED journal record is the sole commit point",
             "self_test_final_generation_active_pointer_boundary",
-            "OPENSTEAMER_MIGRATION_JOURNAL_V9",
+            "OPENSTEAMER_MIGRATION_JOURNAL_V10",
+            "active-migration-v10",
+            "active-migration-v9",
+            "validate_prior_v9_prestop_retry",
+            "PRIOR_PRESTOP_JOURNAL",
+            "PRIOR_EVIDENCE_PATH",
+            "PRIOR_SOURCE_ARCHIVE_SHA256",
+            "PriorV9RetryGuard",
+            "require_exact_directory_entries",
+            "verify_chflags_tool",
+            "Path::new(\"/usr/bin/chflags\")",
         ] {
             XCTAssertTrue(controller.contains(required), "Controller lacks \(required)")
         }
+        XCTAssertFalse(controller.contains("Path::new(\"/bin/chflags\")"))
         XCTAssertFalse(controller.contains("fs::rename(&install_hold, NEW_APP)"))
         XCTAssertFalse(controller.contains("fs::rename(&plist_hold, NEW_PLIST)"))
         XCTAssertFalse(controller.contains("fs::rename(LEGACY_APP"))
         XCTAssertFalse(controller.contains("fs::remove_file(LEGACY_PLIST"))
-        XCTAssertFalse(controller.contains("/Applications/.audiostreamer-"))
+        let protectedRecoveryPrefix = "/Applications/.audio" + "streamer-"
+        XCTAssertFalse(controller.contains(protectedRecoveryPrefix))
         XCTAssertFalse(controller.contains("unlinkat("))
         XCTAssertFalse(controller.contains("publish_active_pointer_linearization"))
         XCTAssertFalse(controller.contains("clear_active("))

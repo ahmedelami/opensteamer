@@ -215,6 +215,8 @@ print -r -- "\"${PRODUCTION_URL}\"," \
   >"$HOST_CONTRACTS/macOS/Tests/CaptureServerTests/MacHostDeploymentContractTests.swift"
 print -r -- "readonly REVIEWED_RENDEZVOUS_URL=\"${PRODUCTION_URL}\"" \
   >"$HOST_CONTRACTS/macOS/scripts/verify-mac-host-launch-state.sh"
+print -r -- "        \"${PRODUCTION_URL}\".to_owned()," \
+  >"$HOST_CONTRACTS/macOS/scripts/opensteamer-host-migration-controller.rs"
 commit_all "$HOST_CONTRACTS"
 "$HOST_CONTRACTS/scripts/check-product-branding.sh" "$HOST_CONTRACTS" >/dev/null
 

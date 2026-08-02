@@ -10,7 +10,7 @@ TRUSTED_RUSTC_CANONICAL='/opt/homebrew/Cellar/rust/1.97.1/bin/rustc'
 EXPECTED_RUSTC_VERSION='rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)'
 EXPECTED_RUSTC_SHA256='d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd'
 EXPECTED_RUSTC_CDHASH_FULL='d57b3f82fa576b65e91de0fb90358f766425c35e794feec402416bb666a5008e'
-EXPECTED_CONTROLLER_SOURCE_SHA256='d097400da7cf10b4d5955906023b0859d880883b8bc838a7890a50f1281cfd87'
+EXPECTED_CONTROLLER_SOURCE_SHA256='5927df6ccf5482f9b07942360e99ac84e5ee9445278f8362c6504de90c728100'
 
 usage() {
     echo "usage: $0 $AUTHORIZED_MODE <absolute-canonical-repository-root>" >&2
@@ -153,7 +153,7 @@ lower_hex_64 "$SOURCE_SHA" || {
     exit 1
 }
 [ "$SOURCE_SHA" = "$EXPECTED_CONTROLLER_SOURCE_SHA256" ] || {
-    echo "controller source hash differs from the reviewed v9 postimage" >&2
+    echo "controller source hash differs from the reviewed v10 postimage" >&2
     exit 1
 }
 
@@ -230,7 +230,7 @@ fi
     exit 1
 }
 
-BUILD_DIR=$(/usr/bin/mktemp -d "$BUILD_PARENT/.controller-build-v9.XXXXXX") || {
+BUILD_DIR=$(/usr/bin/mktemp -d "$BUILD_PARENT/.controller-build-v10.XXXXXX") || {
     echo "could not create private controller build directory" >&2
     exit 1
 }

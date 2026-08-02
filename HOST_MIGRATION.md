@@ -21,6 +21,16 @@ persistent legacy disable, legacy shutdown, lock handoff, side-by-side
 installation, bootstrap, readiness proof, commit, rollback, and crash recovery. Exactly one top-level controller decides process exit;
 rollback-reachable helpers return errors.
 
+The current controller owns the version-10 active-pointer and journal namespace.
+The retained version-9 pointer is never moved, replaced, or deleted. Version 10
+will proceed past it only when the pointer, private evidence layout, journal, and
+result are byte-for-byte the reviewed `rolled-back-before-stop` outcome from the
+August 1 `/bin/chflags` path failure, all other version-9 pointer residues are
+absent, the new service and destinations are absent, and the exact untouched
+legacy service is re-proved live. The corrected controller invokes the existing
+system tool only at `/usr/bin/chflags`. Any different version-9 state fails
+closed for manual inspection.
+
 Every durable state transition is appended to and fsynced in a per-attempt
 journal. A fixed fsynced active-transaction record points to the attempt. A
 later invocation holding the transaction lock deterministically resumes
@@ -157,7 +167,10 @@ historical PID and log-marker fields as evidence only, establishes a fresh
 generation-bound readiness proof, and then revalidates the same exact tombstone
 without removing it. A generation change after that proof is an ordinary
 committed lifecycle event. Pre-journal, failed, and rolled-back tombstones are
-also retained, and automatic reruns fail closed for manual inspection.
+also retained, and automatic reruns fail closed for manual inspection. The sole
+exception is the narrowly encoded version-10 retry gate for the exact reviewed
+version-9 pre-stop failure described above; it creates a distinct version-10
+tombstone and never reuses or mutates the version-9 transaction.
 
 Controller self-tests retain the deterministic fake backend and additionally
 exercise the production journal, pinned-directory, app/plist hold, exclusive

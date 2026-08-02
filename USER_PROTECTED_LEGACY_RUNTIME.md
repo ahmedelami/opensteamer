@@ -74,6 +74,15 @@ provenance record, offline legacy snapshot, staged artifacts, verification
 records, and final outcome are retained indefinitely. Failed-new evidence must
 not leave a second launchable app in an application-search path.
 
+The first guarded attempt on August 1, 2026 stopped before the legacy cutover
+boundary because controller version 9 referenced the nonexistent
+`/bin/chflags`. It durably recorded `ROLLED_BACK`, verified that the exact legacy
+host remained the sole running host, and retained
+`active-migration-v9` plus its evidence. Controller version 10 may retry only
+after byte-validating that exact pre-stop outcome and independently reproving
+the live legacy hashes, launch state, process set, and shared lock. It preserves
+the version-9 pointer and evidence permanently.
+
 ## Protected iPhone client
 
 The production iOS app and the development Release target both use bundle
