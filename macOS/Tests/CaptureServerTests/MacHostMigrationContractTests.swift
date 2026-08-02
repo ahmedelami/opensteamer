@@ -111,13 +111,13 @@ final class MacHostMigrationContractTests: XCTestCase {
         )
         XCTAssertTrue(
             source.contains(
-                "EXPECTED_CONTROLLER_BINARY_SHA256='163fd066c6e9eb13079a3ba6436841e1a2e5394cde8a7a28ad1e5dbd7a75c025'"
+                "EXPECTED_CONTROLLER_BINARY_SHA256='a868f1176f6ce42ea4a26a159fc9f3aa19fa816ad3450c05eeca10d451da31d7'"
             )
         )
         XCTAssertTrue(source.contains("fresh controller binary differs from the reviewed reproducible postimage"))
         XCTAssertTrue(source.contains("--self-test-reviewed-controller-build"))
         XCTAssertTrue(source.contains("--verify-reviewed-prior-retry-state"))
-        XCTAssertTrue(source.contains(".controller-build-v12.XXXXXX"))
+        XCTAssertTrue(source.contains(".controller-build-v13.XXXXXX"))
         XCTAssertTrue(source.contains("SOURCE_COPY=\"$BUILD_DIR/opensteamer-host-migration-controller.rs\""))
         XCTAssertTrue(source.contains("copy_companion_script"))
         XCTAssertTrue(source.contains("verify_private_companion_script"))
@@ -253,12 +253,13 @@ final class MacHostMigrationContractTests: XCTestCase {
             "verify_retained_active_pointer_after_commit",
             "durable COMMITTED journal record is the sole commit point",
             "self_test_final_generation_active_pointer_boundary",
-            "const ACTIVE_TRANSACTION_NAME: &str = \"active-migration-v12\";",
-            "const ACTIVE_TRANSACTION_PENDING_NAME: &str = \".active-migration-v12.pending\";",
-            "const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = \".active-migration-v12.finalizing\";",
-            "const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = \".active-migration-v12.linearized\";",
-            "const JOURNAL_VERSION: &str = \"OPENSTEAMER_MIGRATION_JOURNAL_V12\";",
-            "const FAKE_JOURNAL_VERSION: &str = \"OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V12\";",
+            "const ACTIVE_TRANSACTION_NAME: &str = \"active-migration-v13\";",
+            "const ACTIVE_TRANSACTION_PENDING_NAME: &str = \".active-migration-v13.pending\";",
+            "const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = \".active-migration-v13.finalizing\";",
+            "const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = \".active-migration-v13.linearized\";",
+            "const JOURNAL_VERSION: &str = \"OPENSTEAMER_MIGRATION_JOURNAL_V13\";",
+            "const FAKE_JOURNAL_VERSION: &str = \"OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V13\";",
+            "active-migration-v12",
             "active-migration-v11",
             "active-migration-v10",
             "active-migration-v9",
@@ -285,8 +286,17 @@ final class MacHostMigrationContractTests: XCTestCase {
             "PRIOR_V11_FINAL_JOURNAL",
             "PRIOR_V11_FINAL_JOURNAL_SHA256",
             "PRIOR_V11_ROLLBACK_RESERVE_INODE",
-            "migration-v12-after-v11-1785637636-18044",
+            "validate_prior_v12_rolledback_retry",
+            "validate_prior_v12_rolledback_records",
+            "PriorV12RetryGuard",
+            "PRIOR_V12_FINAL_JOURNAL",
+            "PRIOR_V12_FINAL_JOURNAL_SHA256",
+            "PRIOR_V12_ROLLBACK_RESERVE_INODE",
+            "PRIOR_V12_STAGED_APP_MANIFEST_SHA256",
+            "migration-v13-after-v12-1785637636-18044",
             "--verify-reviewed-prior-retry-state",
+            "prior_fields.extend(prior_v12.journal_fields());",
+            "PRIOR_RETRY_STATE_OK v9=v10=v11=v12 legacy=sole-ready v13=absent",
             "CutoverPreflight",
             "CutoverParentIdentities",
             "require_cutover_hidden_paths_absent",
@@ -306,19 +316,33 @@ final class MacHostMigrationContractTests: XCTestCase {
             "verify_embedded_verifier_hashes",
             "require_new_runtime_absent",
             "require_precutover_disk_headroom",
+            "require_fresh_retry_disk_headroom",
+            "const MINIMUM_FRESH_RETRY_AVAILABLE_BYTES: u64 = 2 * 1024 * 1024 * 1024",
         ] {
             XCTAssertTrue(controller.contains(required), "Controller lacks \(required)")
         }
         XCTAssertTrue(
             controller.contains(
-                "start_new(repo, private_root, prior_v9, prior_v10, prior_v11)"
+                "            start_new(\n" +
+                    "                repo,\n" +
+                    "                private_root,\n" +
+                    "                prior_v9,\n" +
+                    "                prior_v10,\n" +
+                    "                prior_v11,\n" +
+                    "                prior_v12,\n" +
+                    "            )"
             ),
-            "The exact prior-v11 guard is not passed into the v12 transaction."
+            "All four exact historical guards are not passed into the v13 transaction."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v11.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v11 tombstone is not revalidated throughout v12 startup."
+            "The prior-v11 tombstone is not revalidated throughout v13 startup."
+        )
+        XCTAssertGreaterThanOrEqual(
+            controller.components(separatedBy: "prior_v12.revalidate(private_root)?;").count - 1,
+            3,
+            "The prior-v12 tombstone is not revalidated throughout v13 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(
@@ -329,10 +353,24 @@ final class MacHostMigrationContractTests: XCTestCase {
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(
+                separatedBy: "self.prior_v12.revalidate(self.private_root)?;"
+            ).count - 1,
+            2,
+            "The prior-v12 tombstone is not revalidated at both legacy stop boundaries."
+        )
+        XCTAssertGreaterThanOrEqual(
+            controller.components(
                 separatedBy: "require_all_prior_retry_residues_absent(self.private_root)?;"
             ).count - 1,
             2,
             "Historical pointer and cutover residues lack a final aggregate stop-boundary check."
+        )
+        XCTAssertTrue(
+            controller.contains(
+                ") -> Result<()> {\n    require_fresh_retry_disk_headroom()?;\n" +
+                    "    let layout = Layout::create(repo)?;"
+            ),
+            "The 2 GiB fresh-attempt gate must run before v13 creates its evidence tree."
         )
         XCTAssertTrue(
             controller.contains(

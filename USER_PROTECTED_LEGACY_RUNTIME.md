@@ -116,13 +116,30 @@ stopped and archived the new destinations, restored the exact legacy service as
 the sole process and shared-lock holder, released its rollback reserve, recorded
 `ROLLED_BACK`, and retained `active-migration-v11` plus all evidence.
 
-Controller version 12 may create exactly one deterministic fresh transaction
+Controller version 12 created exactly one deterministic fresh transaction
 only after byte-validating the complete version-11 rollback in addition to the
 version-9 and version-10 tombstones, reproving the live legacy service, and
 proving every version-11 hidden cutover path absent. It preserves the default
 60-second ordinary-command bound and existing 30-minute build bound while
 allowing the unchanged full deployment oracle a bounded 180-second monotonic
 deadline. All three older evidence trees and pointers remain immutable.
+
+The version-12 transaction built and staged the new host but stopped before
+disabling or stopping the legacy host because the invocation reported less than
+the required 1 GiB of post-build disk headroom. Its retained journal proves a
+`BeforeLegacyStop` rollback through `LEGACY_RECOVERED` and `ROLLED_BACK`; the
+console-only disk-space error is not itself retained in the journal. The exact
+legacy host remains the sole process and shared-lock holder, and the new app,
+plist, and service are absent.
+
+Controller version 13 may create exactly one deterministic fresh transaction
+only after byte-validating the complete version-12 pre-stop rollback in addition
+to the version-9 through version-11 tombstones, reproving the live legacy
+service, and proving every historical hidden cutover path absent. It requires
+at least 2 GiB free on the destination volume before creating new evidence,
+then preserves the existing 1 GiB post-build gate, 8 MiB rollback reserve, and
+180-second deployment-oracle deadline. All four older evidence trees and
+pointers remain immutable.
 
 ## Protected iPhone client
 
