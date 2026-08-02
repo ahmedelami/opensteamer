@@ -6,6 +6,7 @@ umask 077
 
 AUTHORIZED_MODE='--execute-authorized-mac-only-migration'
 SELF_TEST_BUILD_MODE='--self-test-reviewed-controller-build'
+PRIOR_RETRY_PREFLIGHT_MODE='--verify-reviewed-prior-retry-state'
 TRUSTED_RUSTC_LINK='/opt/homebrew/bin/rustc'
 TRUSTED_RUSTC_CANONICAL='/opt/homebrew/Cellar/rust/1.97.1/bin/rustc'
 TRUSTED_RUSTC_DRIVER='/opt/homebrew/Cellar/rust/1.97.1/lib/librustc_driver-1aebdb596416d2c8.dylib'
@@ -16,8 +17,8 @@ EXPECTED_RUSTC_SHA256='d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9
 EXPECTED_RUSTC_CDHASH_FULL='d57b3f82fa576b65e91de0fb90358f766425c35e794feec402416bb666a5008e'
 EXPECTED_RUSTC_DRIVER_SHA256='aa8f5e89644f6d54fd3f1c4d4031bbda10ff750984cede4a75c7addee27e15df'
 EXPECTED_RUSTC_DRIVER_CDHASH_FULL='d304c582680e8f4f226b05865358468995b0f8a337339621968dfe64879d9d4c'
-EXPECTED_CONTROLLER_SOURCE_SHA256='4fbb3056157c9a9aeee15adc09c583347cd758d43e347b1a6ac2bcd650f21f91'
-EXPECTED_CONTROLLER_BINARY_SHA256='bedf56fb4530098c2e7637fd08aa5aa17eafc2848c93a80b80c40e42ae722097'
+EXPECTED_CONTROLLER_SOURCE_SHA256='5754df447a489b805d214ec949cf891fa348cb957c7cc29309c579458db0fcaa'
+EXPECTED_CONTROLLER_BINARY_SHA256='163fd066c6e9eb13079a3ba6436841e1a2e5394cde8a7a28ad1e5dbd7a75c025'
 EXPECTED_BUILD_SCRIPT_SHA256='bda01b7ec76e5112a127fd97427fbff4a23c5d352232bed64d3cc93cf44e9619'
 EXPECTED_BUNDLE_VERIFIER_SHA256='b667df23e06d55140a61e8b8e7c1de3a6aa5ebd6f4c4f063c805ddf98b5edc27'
 EXPECTED_LAUNCH_VERIFIER_SHA256='27c36f8adec05c22216955cb404d6732ceaa6065477e5bb1570f2d41e84db7a9'
@@ -25,7 +26,7 @@ EXPECTED_DEPLOYMENT_VERIFIER_SHA256='394960cffadf889adffc6fa9a8e54fd86820ef1e715
 EXPECTED_LIVE_PROCESS_VERIFIER_SHA256='0e56403570362c6d59ea86dc10d3cc53d7a5461d4a2f6c78d6e6c86dd13a4b41'
 
 usage() {
-    echo "usage: $0 {$AUTHORIZED_MODE|$SELF_TEST_BUILD_MODE} <absolute-canonical-repository-root>" >&2
+    echo "usage: $0 {$AUTHORIZED_MODE|$SELF_TEST_BUILD_MODE|$PRIOR_RETRY_PREFLIGHT_MODE} <absolute-canonical-repository-root>" >&2
     exit 64
 }
 
@@ -165,7 +166,8 @@ if [ "$#" -eq 1 ] && [ "$1" = "--self-test-cdhash-parser" ]; then
 fi
 
 [ "$#" -eq 2 ] || usage
-[ "$1" = "$AUTHORIZED_MODE" ] || [ "$1" = "$SELF_TEST_BUILD_MODE" ] || usage
+[ "$1" = "$AUTHORIZED_MODE" ] || [ "$1" = "$SELF_TEST_BUILD_MODE" ] \
+    || [ "$1" = "$PRIOR_RETRY_PREFLIGHT_MODE" ] || usage
 REQUESTED_MODE=$1
 case "$2" in /*) ;; *) echo "repository root must be absolute" >&2; exit 1 ;; esac
 ROOT=$(CDPATH= cd "$2" 2>/dev/null && pwd -P) || {
@@ -206,7 +208,7 @@ lower_hex_64 "$SOURCE_SHA" || {
     exit 1
 }
 [ "$SOURCE_SHA" = "$EXPECTED_CONTROLLER_SOURCE_SHA256" ] || {
-    echo "controller source hash differs from the reviewed v11 postimage" >&2
+    echo "controller source hash differs from the reviewed v12 postimage" >&2
     exit 1
 }
 verify_companion_script "$BUILD_SCRIPT" "$EXPECTED_BUILD_SCRIPT_SHA256" \
@@ -214,7 +216,7 @@ verify_companion_script "$BUILD_SCRIPT" "$EXPECTED_BUILD_SCRIPT_SHA256" \
     && verify_companion_script "$LAUNCH_VERIFIER" "$EXPECTED_LAUNCH_VERIFIER_SHA256" \
     && verify_companion_script "$DEPLOYMENT_VERIFIER" "$EXPECTED_DEPLOYMENT_VERIFIER_SHA256" \
     && verify_companion_script "$LIVE_PROCESS_VERIFIER" "$EXPECTED_LIVE_PROCESS_VERIFIER_SHA256" || {
-    echo "one or more controller companion scripts differ from the reviewed v11 postimage" >&2
+    echo "one or more controller companion scripts differ from the reviewed v12 postimage" >&2
     exit 1
 }
 
@@ -309,7 +311,7 @@ fi
     exit 1
 }
 
-BUILD_DIR=$(/usr/bin/mktemp -d "$BUILD_PARENT/.controller-build-v11.XXXXXX") || {
+BUILD_DIR=$(/usr/bin/mktemp -d "$BUILD_PARENT/.controller-build-v12.XXXXXX") || {
     echo "could not create private controller build directory" >&2
     exit 1
 }
@@ -528,6 +530,11 @@ lower_hex_64 "$BINARY_SHA" || {
 
 if [ "$REQUESTED_MODE" = "$SELF_TEST_BUILD_MODE" ]; then
     "$BINARY" --self-test all
+    exit $?
+fi
+
+if [ "$REQUESTED_MODE" = "$PRIOR_RETRY_PREFLIGHT_MODE" ]; then
+    "$BINARY" "$PRIOR_RETRY_PREFLIGHT_MODE"
     exit $?
 fi
 

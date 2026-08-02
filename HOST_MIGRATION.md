@@ -21,11 +21,12 @@ persistent legacy disable, legacy shutdown, lock handoff, side-by-side
 installation, bootstrap, readiness proof, commit, rollback, and crash recovery. Exactly one top-level controller decides process exit;
 rollback-reachable helpers return errors.
 
-The current controller owns the version-11 active-pointer and journal namespace.
-The retained version-9 and version-10 pointers are never moved, replaced, or
-deleted. Version 11 proceeds only when version 9 is byte-for-byte the reviewed
+The current controller owns the version-12 active-pointer and journal namespace.
+The retained version-9, version-10, and version-11 pointers are never moved,
+replaced, or deleted. Version 12 proceeds only when version 9 is byte-for-byte the reviewed
 `rolled-back-before-stop` outcome from the August 1 `/bin/chflags` path failure,
 version 10 is byte-for-byte the reviewed full-restore rollback described below,
+version 11 is byte-for-byte the reviewed post-readiness-timeout full rollback,
 all older pointer residues and hidden cutover paths are absent, and the exact
 untouched legacy service is re-proved live. The corrected controller invokes the
 existing system tool only at `/usr/bin/chflags`. Any different historical state
@@ -45,8 +46,19 @@ the pinned directory across every reopen and rename. Recovery from
 path, active-pointer bytes/hash, journal hash and history, provenance
 commit/tree, failure text, hidden-install layout, untouched legacy snapshot,
 disabled/absent legacy service, absent new service/destinations/processes, and
-acquirable shared lock. Version 11 treats any new `CRITICAL_FAILURE` as
+acquirable shared lock. Version 12 treats any new `CRITICAL_FAILURE` as
 fail-closed rather than reusing that historical recovery exception.
+
+Version 11 built, signed, installed, and bootstrapped the new host, then reached
+`NEW_PID_OBSERVED`. Its unchanged 44-sample stable deployment oracle exceeded
+the default 60-second ordinary child-command budget because those samples perform
+thousands of independent static and live checks. The controller did not commit:
+it stopped and archived the new destinations, re-enabled and bootstrapped the
+exact legacy service, proved it was again the sole process and lock holder,
+released the rollback reserve, and durably recorded `ROLLED_BACK`. Version 12
+keeps the default 60-second ordinary-command limit and the existing 30-minute
+build limit, while giving the complete deployment oracle a bounded 180-second
+monotonic budget.
 
 Every durable state transition is appended to and fsynced in a per-attempt
 journal. A fixed fsynced active-transaction record points to the attempt. A
@@ -54,6 +66,15 @@ later invocation holding the transaction lock deterministically resumes
 post-commit verification or rolls back an uncommitted attempt. It never treats a
 stale lock file, journal, staged app, or partially installed destination as a
 reason to abandon recovery.
+
+The pinned launcher also exposes a read-only v12 preflight that compiles and
+attests the exact reviewed controller, acquires the migration lock, verifies all
+three historical tombstones and the sole live legacy host, and proves the
+deterministic v12 evidence path is absent:
+
+```sh
+macOS/scripts/migrate-opensteamer-host.sh --verify-reviewed-prior-retry-state /absolute/path/to/opensteamer
+```
 
 The controller requires:
 
@@ -185,12 +206,12 @@ generation-bound readiness proof, and then revalidates the same exact tombstone
 without removing it. A generation change after that proof is an ordinary
 committed lifecycle event. Pre-journal, failed, and rolled-back tombstones are
 also retained, and automatic reruns fail closed for manual inspection. The sole
-fresh-attempt exception is the narrowly encoded version-11 retry gate for the
-exact reviewed version-9 and fully rolled-back version-10 failures described
-above. It creates a distinct version-11 tombstone and never reuses or mutates
-either historical transaction.
+fresh-attempt exception is the narrowly encoded version-12 retry gate for the
+exact reviewed version-9, version-10, and version-11 failures described above.
+It exclusively creates one deterministic version-12 evidence path and never
+reuses or mutates any historical transaction.
 
-Before legacy can be disabled, version 11 physically preallocates and fsyncs an
+Before legacy can be disabled, version 12 physically preallocates and fsyncs an
 8 MiB owner-only rollback reserve, records its device/inode, and revalidates a
 minimum 1 GiB of free space. Rollback releases that exact reserve inode before
 its first journal append, including after a crash, so an out-of-space failure

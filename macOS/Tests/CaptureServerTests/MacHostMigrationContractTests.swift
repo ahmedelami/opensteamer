@@ -111,11 +111,13 @@ final class MacHostMigrationContractTests: XCTestCase {
         )
         XCTAssertTrue(
             source.contains(
-                "EXPECTED_CONTROLLER_BINARY_SHA256='bedf56fb4530098c2e7637fd08aa5aa17eafc2848c93a80b80c40e42ae722097'"
+                "EXPECTED_CONTROLLER_BINARY_SHA256='163fd066c6e9eb13079a3ba6436841e1a2e5394cde8a7a28ad1e5dbd7a75c025'"
             )
         )
         XCTAssertTrue(source.contains("fresh controller binary differs from the reviewed reproducible postimage"))
         XCTAssertTrue(source.contains("--self-test-reviewed-controller-build"))
+        XCTAssertTrue(source.contains("--verify-reviewed-prior-retry-state"))
+        XCTAssertTrue(source.contains(".controller-build-v12.XXXXXX"))
         XCTAssertTrue(source.contains("SOURCE_COPY=\"$BUILD_DIR/opensteamer-host-migration-controller.rs\""))
         XCTAssertTrue(source.contains("copy_companion_script"))
         XCTAssertTrue(source.contains("verify_private_companion_script"))
@@ -233,6 +235,8 @@ final class MacHostMigrationContractTests: XCTestCase {
             "terminate_process_group_and_reap",
             "set_pipe_nonblocking",
             "drain_nonblocking",
+            "const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60)",
+            "const DEPLOYMENT_VERIFIER_TIMEOUT: Duration = Duration::from_secs(3 * 60)",
             "wait_for_exact_legacy_readiness_until",
             "revalidate_commit_fields",
             "CommitRacePoint::AfterVerifyEffect",
@@ -249,7 +253,12 @@ final class MacHostMigrationContractTests: XCTestCase {
             "verify_retained_active_pointer_after_commit",
             "durable COMMITTED journal record is the sole commit point",
             "self_test_final_generation_active_pointer_boundary",
-            "OPENSTEAMER_MIGRATION_JOURNAL_V11",
+            "const ACTIVE_TRANSACTION_NAME: &str = \"active-migration-v12\";",
+            "const ACTIVE_TRANSACTION_PENDING_NAME: &str = \".active-migration-v12.pending\";",
+            "const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = \".active-migration-v12.finalizing\";",
+            "const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = \".active-migration-v12.linearized\";",
+            "const JOURNAL_VERSION: &str = \"OPENSTEAMER_MIGRATION_JOURNAL_V12\";",
+            "const FAKE_JOURNAL_VERSION: &str = \"OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V12\";",
             "active-migration-v11",
             "active-migration-v10",
             "active-migration-v9",
@@ -268,6 +277,16 @@ final class MacHostMigrationContractTests: XCTestCase {
             "PriorV10RetryGuard",
             "PRIOR_V10_FINAL_JOURNAL",
             "PRIOR_V10_FINAL_JOURNAL_SHA256",
+            "validate_prior_v11_rolledback_retry",
+            "validate_prior_v11_rolledback_records",
+            "PriorV11RetryGuard",
+            "require_prior_retry_residues_absent",
+            "require_all_prior_retry_residues_absent",
+            "PRIOR_V11_FINAL_JOURNAL",
+            "PRIOR_V11_FINAL_JOURNAL_SHA256",
+            "PRIOR_V11_ROLLBACK_RESERVE_INODE",
+            "migration-v12-after-v11-1785637636-18044",
+            "--verify-reviewed-prior-retry-state",
             "CutoverPreflight",
             "CutoverParentIdentities",
             "require_cutover_hidden_paths_absent",
@@ -281,6 +300,8 @@ final class MacHostMigrationContractTests: XCTestCase {
             "release_rollback_reserve",
             "PinnedVerifierSet",
             "run_pinned_script",
+            "DEPLOYMENT_VERIFIER_TIMEOUT",
+            "run_pinned_script_until",
             "include_bytes!(\"verify-mac-host-deployment.sh\")",
             "verify_embedded_verifier_hashes",
             "require_new_runtime_absent",
@@ -288,6 +309,44 @@ final class MacHostMigrationContractTests: XCTestCase {
         ] {
             XCTAssertTrue(controller.contains(required), "Controller lacks \(required)")
         }
+        XCTAssertTrue(
+            controller.contains(
+                "start_new(repo, private_root, prior_v9, prior_v10, prior_v11)"
+            ),
+            "The exact prior-v11 guard is not passed into the v12 transaction."
+        )
+        XCTAssertGreaterThanOrEqual(
+            controller.components(separatedBy: "prior_v11.revalidate(private_root)?;").count - 1,
+            3,
+            "The prior-v11 tombstone is not revalidated throughout v12 startup."
+        )
+        XCTAssertGreaterThanOrEqual(
+            controller.components(
+                separatedBy: "self.prior_v11.revalidate(self.private_root)?;"
+            ).count - 1,
+            2,
+            "The prior-v11 tombstone is not revalidated at both legacy stop boundaries."
+        )
+        XCTAssertGreaterThanOrEqual(
+            controller.components(
+                separatedBy: "require_all_prior_retry_residues_absent(self.private_root)?;"
+            ).count - 1,
+            2,
+            "Historical pointer and cutover residues lack a final aggregate stop-boundary check."
+        )
+        XCTAssertTrue(
+            controller.contains(
+                "    let output = run_pinned_script_until(\n" +
+                    "        verifiers,\n" +
+                    "        &verifiers.deployment,\n" +
+                    "        &arguments,\n" +
+                    "        Some(&layout.source_export),\n" +
+                    "        &environment,\n" +
+                    "        deadline_after(DEPLOYMENT_VERIFIER_TIMEOUT)?,\n" +
+                    "    )?;"
+            ),
+            "The production deployment oracle is not wired to its dedicated bounded deadline."
+        )
         XCTAssertFalse(controller.contains("Path::new(\"/bin/chflags\")"))
         XCTAssertFalse(controller.contains("fs::rename(&install_hold, NEW_APP)"))
         XCTAssertFalse(controller.contains("fs::rename(&plist_hold, NEW_PLIST)"))

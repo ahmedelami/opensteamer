@@ -95,7 +95,7 @@ reviewed failed attempt. The directory exception is limited to canonical
 pinned-directory revalidation. Recovery restored and proved the untouched
 legacy service before archiving the unlaunched new-app hold.
 
-Controller version 11 may create one fresh transaction only after pinning and
+Controller version 11 created one fresh transaction only after pinning and
 revalidating both historical tombstones and independently reproving the restored
 legacy service. It retains the exact `/Applications` and LaunchAgents directory
 descriptors across shutdown and publication, journals their device/inode
@@ -104,10 +104,25 @@ before disable and bootout, pins the reviewed `ditto` tool, and revalidates both
 historical guards immediately before crossing the stop boundary. Neither older
 pointer or evidence tree may be modified or removed.
 
-Version 11 also keeps a physically allocated, journal-identified rollback
+Version 11 also kept a physically allocated, journal-identified rollback
 reserve until recovery or verified commit, executes only controller-embedded and
 inode-pinned verifier bytes, and repeats the no-overlap process/lock proof
 immediately before either host is bootstrapped.
+
+The version-11 transaction built, installed, and launched the new host but did
+not reach `READY_VERIFIED` or `COMMITTED`: the complete 44-sample deployment
+oracle exceeded its generic 60-second child-command budget. Version 11 then
+stopped and archived the new destinations, restored the exact legacy service as
+the sole process and shared-lock holder, released its rollback reserve, recorded
+`ROLLED_BACK`, and retained `active-migration-v11` plus all evidence.
+
+Controller version 12 may create exactly one deterministic fresh transaction
+only after byte-validating the complete version-11 rollback in addition to the
+version-9 and version-10 tombstones, reproving the live legacy service, and
+proving every version-11 hidden cutover path absent. It preserves the default
+60-second ordinary-command bound and existing 30-minute build bound while
+allowing the unchanged full deployment oracle a bounded 180-second monotonic
+deadline. All three older evidence trees and pointers remain immutable.
 
 ## Protected iPhone client
 
