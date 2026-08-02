@@ -4,20 +4,24 @@ import Streaming
 
 /// Converts captured audio callbacks into the project's framed PCM wire format.
 ///
-/// Both capture backends feed this type from framework-owned threads. The private
-/// queue owns all mutable counters, converter state, and sink ordering; `completion`
-/// prevents `finish()` from racing accepted work. The unchecked conformance is
-/// therefore limited to that explicit queue boundary.
+/// ScreenCaptureKit invokes `consume(_:)` directly on `sampleHandlerQueue`, so its
+/// non-Sendable `CMSampleBuffer` is extracted synchronously without a second handoff.
+/// The BlackHole backend copies Audio Queue memory into a queue-independent value and enqueues
+/// that value on the same queue. `completion` tracks those accepted asynchronous PCM
+/// values so `finish()` cannot race them, while the queue owns all mutable state.
 final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
     private let sink: PCMFrameSink
     private let logger: Logger
     private let queue = DispatchQueue(label: "opensteamer.StreamingAudioProcessor")
     private let completion = DispatchGroup()
+    private let callbackTimeProvider: @Sendable () -> UInt64
+    private let enqueueLinearizationLock = NSLock()
 
+    private var lastEnqueuedCallbackTime: UInt64?
+    private var lastRecordedCallbackTime: UInt64?
     private var sampleStorage: [Float] = []
     private var converter = PCM16Converter()
     private var streamFormat: StreamAudioFormat?
-    private var headerSent = false
     private var sequence: UInt32 = 0
     private var callbackStatistics = CallbackStatistics()
     private var metricSummary = MetricSummary()
@@ -28,33 +32,56 @@ final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
     private var diagnosticBuffersLogged = 0
 
     /// Creates a processor for one sink; processors are not reused across streams.
-    init(sink: PCMFrameSink, logger: Logger) {
+    init(
+        sink: PCMFrameSink,
+        logger: Logger,
+        callbackTimeProvider: @escaping @Sendable () -> UInt64 = {
+            DispatchTime.now().uptimeNanoseconds
+        }
+    ) {
         self.sink = sink
         self.logger = logger
+        self.callbackTimeProvider = callbackTimeProvider
     }
 
-    /// Enqueues a ScreenCaptureKit `CMSampleBuffer` for serialized extraction.
-    func enqueue(_ sampleBuffer: CMSampleBuffer) {
-        completion.enter()
-        let callbackTime = DispatchTime.now().uptimeNanoseconds
-        queue.async { [weak self] in
-            defer { self?.completion.leave() }
-            self?.process(sampleBuffer, callbackTime: callbackTime)
-        }
+    /// The exact queue ScreenCaptureKit must use for this consumer's callbacks.
+    var sampleHandlerQueue: DispatchQueue { queue }
+
+    /// Extracts one ScreenCaptureKit buffer synchronously on the ownership queue.
+    func consume(_ sampleBuffer: CMSampleBuffer) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        process(
+            sampleBuffer,
+            callbackTime: callbackTimeProvider()
+        )
     }
 
-    /// Enqueues already-decoded PCM from the Core Audio input backend.
+    /// Enqueues already-decoded PCM copied from the Core Audio input backend.
     func enqueue(_ pcm: PCMBuffer, presentationTimestampNanoseconds: UInt64?) {
+        // Capture arrival time before any processing backlog, and keep timestamp capture,
+        // group admission, and serial-queue submission in one linearization order.
+        enqueueLinearizationLock.lock()
+        let sampledCallbackTime = callbackTimeProvider()
+        let callbackTime = max(
+            sampledCallbackTime,
+            lastEnqueuedCallbackTime ?? sampledCallbackTime
+        )
+        lastEnqueuedCallbackTime = callbackTime
         completion.enter()
-        let callbackTime = DispatchTime.now().uptimeNanoseconds
-        queue.async { [weak self] in
-            defer { self?.completion.leave() }
-            self?.process(pcm, callbackTime: callbackTime, presentationTimestampNanoseconds: presentationTimestampNanoseconds)
+        queue.async { [self] in
+            defer { completion.leave() }
+            process(
+                pcm,
+                callbackTime: callbackTime,
+                presentationTimestampNanoseconds: presentationTimestampNanoseconds
+            )
         }
+        enqueueLinearizationLock.unlock()
     }
 
     /// Drains accepted callbacks and either returns final counters or the first error.
     func finish() throws -> StreamingProcessingSummary {
+        dispatchPrecondition(condition: .notOnQueue(queue))
         completion.wait()
         var result: Result<StreamingProcessingSummary, Error>!
         queue.sync {
@@ -79,7 +106,8 @@ final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
 
     /// Returns an immutable progress snapshot taken on the ownership queue.
     func latestSnapshot() -> StreamingMetricsSnapshot {
-        queue.sync {
+        dispatchPrecondition(condition: .notOnQueue(queue))
+        return queue.sync {
             StreamingMetricsSnapshot(
                 callbackStatistics: callbackStatistics,
                 latestMetrics: latestMetrics,
@@ -110,8 +138,9 @@ final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
 
     /// Frames decoded PCM and sends it in sequence order to the transport sink.
     private func process(_ pcm: PCMBuffer, callbackTime: UInt64, presentationTimestampNanoseconds: UInt64?) {
+        guard firstError == nil else { return }
         callbackStatistics.recordCallback(
-            uptimeNanoseconds: callbackTime,
+            uptimeNanoseconds: orderedCallbackTime(callbackTime),
             presentationTime: presentationTimestampNanoseconds.map { Double($0) / 1_000_000_000 }
         )
 
@@ -122,7 +151,6 @@ final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
                 channels: UInt16(pcm.channels)
             )
             sink.configureStream(header)
-            headerSent = true
             logger.info(
                 "Streaming format: \(pcm.format.sampleRate) Hz, \(pcm.channels) channels, " +
                 "float=\(pcm.format.isFloat), interleaved=\(pcm.format.isInterleaved), " +
@@ -147,6 +175,16 @@ final class StreamingAudioProcessor: @unchecked Sendable, SampleBufferConsumer {
         sequence &+= 1
         framesStreamed += Int64(pcm.frameCount)
         bytesStreamed += Int64(pcmBytes.count)
+    }
+
+    /// Defensively preserves the monotonic contract even if an injected clock regresses.
+    private func orderedCallbackTime(_ callbackTime: UInt64) -> UInt64 {
+        let ordered = max(
+            callbackTime,
+            lastRecordedCallbackTime ?? callbackTime
+        )
+        lastRecordedCallbackTime = ordered
+        return ordered
     }
 
     /// Computes levels before quantization so diagnostics reflect the captured signal.

@@ -90,7 +90,49 @@ private final class BlackHoleMicrophoneOutputProgressStorage:
     }
 }
 
+struct BlackHoleMicrophoneOutputQueueDisposalRedriveResult:
+    Equatable,
+    Sendable
+{
+    let retainedCount: Int
+    let lastFailureStatus: OSStatus?
+
+    var permitsReplacement: Bool {
+        retainedCount == 0
+    }
+}
+
+/// Compatibility facade for older call sites. `AudioQueueDispose` is terminal in the
+/// macOS 26 SDK regardless of its returned status, so queue disposal is no longer
+/// retried or retained after the call returns.
+final class BlackHoleMicrophoneOutputQueueDisposalRetainer:
+    @unchecked Sendable
+{
+    static let shared =
+        BlackHoleMicrophoneOutputQueueDisposalRetainer()
+
+    @discardableResult
+    func redriveRetained(
+        maximumAttemptCount _: Int
+    ) -> BlackHoleMicrophoneOutputQueueDisposalRedriveResult {
+        BlackHoleMicrophoneOutputQueueDisposalRedriveResult(
+            retainedCount: 0,
+            lastFailureStatus: nil
+        )
+    }
+
+    var retainedDisposalCount: Int { 0 }
+
+    #if DEBUG
+    var debugFirstCallbackContextPointerForTesting:
+        UnsafeMutableRawPointer? {
+        nil
+    }
+    #endif
+}
+
 /// Output-device-clock sink for the decoded `iphone-microphone` track.
+
 ///
 /// Core Audio owns the fixed buffers. The realtime callback performs one
 /// caller-owned WebRTC pull and re-enqueues the same buffer; unavailable data
@@ -113,12 +155,29 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         "prime BlackHole output buffer"
     private static let startQueueOperation =
         "start BlackHole output queue"
+    private static let disposeQueueOperation =
+        "dispose BlackHole output queue"
     private static let runtimeEnqueueOperation =
         "re-enqueue BlackHole output buffer"
-    private static let runtimeFailureReportingQueue = DispatchQueue(
-        label: "opensteamer.BlackHoleMicrophoneOutput.RuntimeFailure",
-        qos: .utility
-    )
+    private static let runtimeFailureReportingQueueKey =
+        DispatchSpecificKey<UInt8>()
+    private static let runtimeFailureReportingQueue: DispatchQueue = {
+        let queue = DispatchQueue(
+            label: "opensteamer.BlackHoleMicrophoneOutput.RuntimeFailure",
+            qos: .utility
+        )
+        queue.setSpecific(
+            key: runtimeFailureReportingQueueKey,
+            value: 1
+        )
+        return queue
+    }()
+    private static let runtimeFailurePollInterval =
+        DispatchTimeInterval.milliseconds(10)
+    private static let runtimeFailureTimerLeeway =
+        DispatchTimeInterval.milliseconds(2)
+    private static let defaultProgressStallGraceNanoseconds: UInt64 =
+        2_000_000_000
 
     private let source: WebRTCMacDecodedAudioSource?
     private let deviceUID: String
@@ -130,7 +189,19 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
     private var callbackContext: BlackHoleMicrophoneOutputCallbackContext?
     private var callbackContextPointer: UnsafeMutableRawPointer?
     private var buffers: [AudioQueueBufferRef] = []
+    private var lastDisposeStatus: OSStatus?
     private var runtimeFailureTimer: (any DispatchSourceTimer)?
+    private var runtimeFailureGeneration: UInt64 = 0
+    private var activeRuntimeFailureGeneration: UInt64?
+    private var runtimeFailureMonitoringStartTime: UInt64?
+    private var lastObservedPostStartCallbackCount: UInt64 = 0
+    private var lastPostStartCallbackAdvanceTime: UInt64?
+    private var lastObservedSuccessfulFrameCount: UInt64 = 0
+    private var lastSuccessfulFrameAdvanceTime: UInt64?
+    private var didReportRuntimeFailure = false
+    private let runtimeFailureNow:
+        @Sendable () -> UInt64
+    private let progressStallGraceNanoseconds: UInt64
     private let framesPerBuffer: UInt32 = 480
     private let channelCount: UInt32 = 2
 
@@ -140,6 +211,10 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
     private let renderForTesting:
         ((UnsafeMutablePointer<Int16>, Int) -> Bool)?
     private let deinitForTesting: (@Sendable () -> Void)?
+    private let callbackContextDeinitForTesting:
+        (@Sendable () -> Void)?
+    private let runtimeEnqueueFailurePublicationInterlockForTesting:
+        BlackHoleMicrophoneOutputRuntimeEnqueueFailurePublicationInterlock?
     #endif
 
     init?(
@@ -165,10 +240,15 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         self.progressStorage = progressStorage
         self.runtimeFailureHandler = runtimeFailureHandler
         automaticallyReportsRuntimeFailures = true
+        runtimeFailureNow = { DispatchTime.now().uptimeNanoseconds }
+        progressStallGraceNanoseconds = Self.defaultProgressStallGraceNanoseconds
         #if DEBUG
         testingAudioQueueOperations = nil
         renderForTesting = nil
         deinitForTesting = nil
+        callbackContextDeinitForTesting = nil
+        runtimeEnqueueFailurePublicationInterlockForTesting =
+            nil
         #endif
     }
 
@@ -178,10 +258,22 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
             any BlackHoleMicrophoneOutputAudioQueueOperations,
         deviceUID: String = "BlackHole2ch_UID",
         automaticallyReportsRuntimeFailures: Bool = false,
+        runtimeFailureNow: @escaping @Sendable () -> UInt64 = {
+            DispatchTime.now().uptimeNanoseconds
+        },
+        progressStallGraceNanoseconds: UInt64 = 2_000_000_000,
+        runtimeEnqueueFailurePublicationInterlockForTesting:
+            BlackHoleMicrophoneOutputRuntimeEnqueueFailurePublicationInterlock? = nil,
         renderForTesting: @escaping (
             UnsafeMutablePointer<Int16>,
             Int
         ) -> Bool = { _, _ in false },
+        queueDisposalRetainer:
+            BlackHoleMicrophoneOutputQueueDisposalRetainer =
+                .shared,
+        maximumQueueDisposalAttemptCountPerEpisode:
+            Int = 3,
+        callbackContextDeinitForTesting: (@Sendable () -> Void)? = nil,
         deinitForTesting: (@Sendable () -> Void)? = nil,
         runtimeFailureHandler: @escaping RuntimeFailureHandler
     ) {
@@ -204,9 +296,17 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         self.runtimeFailureHandler = runtimeFailureHandler
         self.automaticallyReportsRuntimeFailures =
             automaticallyReportsRuntimeFailures
+        self.runtimeFailureNow = runtimeFailureNow
+        self.progressStallGraceNanoseconds = progressStallGraceNanoseconds
+        _ = queueDisposalRetainer
+        _ = maximumQueueDisposalAttemptCountPerEpisode
         self.testingAudioQueueOperations = testingAudioQueueOperations
         self.renderForTesting = renderForTesting
         self.deinitForTesting = deinitForTesting
+        self.callbackContextDeinitForTesting =
+            callbackContextDeinitForTesting
+        self.runtimeEnqueueFailurePublicationInterlockForTesting =
+            runtimeEnqueueFailurePublicationInterlockForTesting
     }
     #endif
 
@@ -216,6 +316,7 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         deinitForTesting?()
         #endif
     }
+
 
     var forwardingProgressSnapshot:
         BlackHoleMicrophoneOutputProgressSnapshot {
@@ -257,7 +358,11 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
             channelCount: channelCount,
             progressStorage: progressStorage,
             testingAudioQueueOperations: testingAudioQueueOperations,
-            renderForTesting: renderForTesting
+            renderForTesting: renderForTesting,
+            runtimeEnqueueFailurePublicationInterlockForTesting:
+                runtimeEnqueueFailurePublicationInterlockForTesting,
+            deinitForTesting:
+                callbackContextDeinitForTesting
         )
         #else
         callbackContext = BlackHoleMicrophoneOutputCallbackContext(
@@ -375,37 +480,30 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         buffers = createdBuffers
         progressStorage.setQueueRunning(true)
         startupCommitted = true
-        if automaticallyReportsRuntimeFailures {
-            startRuntimeFailureMonitoring()
-        }
+        startRuntimeFailureMonitoring(
+            scheduleTimer: automaticallyReportsRuntimeFailures
+        )
     }
 
     func stop() {
-        progressStorage.setQueueRunning(false)
         stopRuntimeFailureMonitoring()
         guard let queue = audioQueue,
               let callbackContext,
-              let callbackContextPointer else { return }
+              let callbackContextPointer else {
+            return
+        }
 
         audioQueue = nil
         self.callbackContext = nil
         self.callbackContextPointer = nil
         buffers.removeAll(keepingCapacity: false)
 
-        callbackContext.closeCallbacks()
-        _ = stopQueue(queue, immediate: true)
-        callbackContext.waitForCallbacks()
-
-        let disposeStatus = disposeQueue(queue, immediate: true)
-        guard disposeStatus == noErr else {
-            // Core Audio may still invoke the supplied userData after a failed
-            // dispose. Keep the queue's retained, closed context intentionally;
-            // later callbacks fail the gate without touching Swift state.
-            return
-        }
-        Unmanaged<BlackHoleMicrophoneOutputCallbackContext>
-            .fromOpaque(callbackContextPointer)
-            .release()
+        closeStopDisposeAndRelease(
+            queue: queue,
+            callbackContext: callbackContext,
+            callbackContextPointer: callbackContextPointer,
+            didAttemptStart: true
+        )
     }
 
     private func cleanupCreatedQueue(
@@ -414,61 +512,197 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         callbackContextPointer: UnsafeMutableRawPointer,
         didAttemptStart: Bool
     ) {
-        callbackContext.closeCallbacks()
-        if didAttemptStart, let queue {
-            _ = stopQueue(queue, immediate: true)
-        }
-        callbackContext.waitForCallbacks()
-
         guard let queue else {
+            callbackContext.closeCallbacks()
+            callbackContext.waitForCallbacks()
             Unmanaged<BlackHoleMicrophoneOutputCallbackContext>
                 .fromOpaque(callbackContextPointer)
                 .release()
             return
         }
 
-        // AudioQueueDispose is the sole owner of allocated queue-buffer teardown.
-        let disposeStatus = disposeQueue(queue, immediate: true)
-        guard disposeStatus == noErr else {
-            // Preserve the closed context if Core Audio retained the queue.
-            // This is a bounded safety leak rather than a dangling userData.
-            return
+        closeStopDisposeAndRelease(
+            queue: queue,
+            callbackContext: callbackContext,
+            callbackContextPointer: callbackContextPointer,
+            didAttemptStart: didAttemptStart
+        )
+    }
+
+    private func closeStopDisposeAndRelease(
+        queue: AudioQueueRef,
+        callbackContext: BlackHoleMicrophoneOutputCallbackContext,
+        callbackContextPointer: UnsafeMutableRawPointer,
+        didAttemptStart: Bool
+    ) {
+        callbackContext.closeCallbacks()
+        if didAttemptStart {
+            _ = stopQueue(queue, immediate: true)
         }
+        callbackContext.waitForCallbacks()
+        let status = disposeQueue(queue, immediate: true)
+        lastDisposeStatus = status
         Unmanaged<BlackHoleMicrophoneOutputCallbackContext>
             .fromOpaque(callbackContextPointer)
             .release()
     }
 
-    private func startRuntimeFailureMonitoring() {
-        guard runtimeFailureTimer == nil else { return }
+    private func startRuntimeFailureMonitoring(
 
-        let timer = DispatchSource.makeTimerSource(
-            queue: Self.runtimeFailureReportingQueue
-        )
-        timer.schedule(
-            deadline: .now() + .milliseconds(10),
-            repeating: .milliseconds(10),
-            leeway: .milliseconds(2)
-        )
-        timer.setEventHandler { [weak self] in
-            self?.reportLatchedRuntimeFailure()
+        scheduleTimer: Bool
+    ) {
+        withRuntimeFailureReportingQueue {
+            guard activeRuntimeFailureGeneration == nil else {
+                return
+            }
+
+            runtimeFailureGeneration = Self.nextNonzero(
+                runtimeFailureGeneration
+            )
+            let generation = runtimeFailureGeneration
+            activeRuntimeFailureGeneration = generation
+            runtimeFailureMonitoringStartTime =
+                runtimeFailureNow()
+            lastObservedPostStartCallbackCount = 0
+            lastPostStartCallbackAdvanceTime = nil
+            lastObservedSuccessfulFrameCount = 0
+            lastSuccessfulFrameAdvanceTime = nil
+            didReportRuntimeFailure = false
+
+            guard scheduleTimer else { return }
+            let timer = DispatchSource.makeTimerSource(
+                queue: Self.runtimeFailureReportingQueue
+            )
+            timer.schedule(
+                deadline: .now()
+                    + Self.runtimeFailurePollInterval,
+                repeating: Self.runtimeFailurePollInterval,
+                leeway: Self.runtimeFailureTimerLeeway
+            )
+            timer.setEventHandler { [weak self] in
+                self?.pollRuntimeFailureMonitoring(
+                    generation: generation
+                )
+            }
+            runtimeFailureTimer = timer
+            timer.activate()
         }
-        runtimeFailureTimer = timer
-        timer.activate()
     }
 
     private func stopRuntimeFailureMonitoring() {
-        let timer = runtimeFailureTimer
-        runtimeFailureTimer = nil
-        timer?.cancel()
+        withRuntimeFailureReportingQueue {
+            progressStorage.setQueueRunning(false)
+            activeRuntimeFailureGeneration = nil
+            runtimeFailureGeneration = Self.nextNonzero(
+                runtimeFailureGeneration
+            )
+            runtimeFailureMonitoringStartTime = nil
+            lastObservedPostStartCallbackCount = 0
+            lastPostStartCallbackAdvanceTime = nil
+            lastObservedSuccessfulFrameCount = 0
+            lastSuccessfulFrameAdvanceTime = nil
+            didReportRuntimeFailure = false
+
+            let timer = runtimeFailureTimer
+            runtimeFailureTimer = nil
+            timer?.setEventHandler {}
+            timer?.cancel()
+        }
     }
 
-    private func reportLatchedRuntimeFailure() {
-        guard let status = runtimeFailureLatch.take() else { return }
-        runtimeFailureHandler(
-            self,
-            .operation(Self.runtimeEnqueueOperation, status)
+    private func pollRuntimeFailureMonitoring(
+        generation: UInt64
+    ) {
+        withRuntimeFailureReportingQueue {
+            guard activeRuntimeFailureGeneration == generation,
+                  !didReportRuntimeFailure else {
+                return
+            }
+
+            let progress = progressStorage.snapshot
+            guard progress.queueRunning else { return }
+
+            let now = runtimeFailureNow()
+            var shouldReportProgressStall = false
+            let successfulFrameCount =
+                progress.successfulFrameCount
+            if successfulFrameCount > 0 {
+                if successfulFrameCount
+                        > lastObservedSuccessfulFrameCount {
+                    lastObservedSuccessfulFrameCount =
+                        successfulFrameCount
+                    lastSuccessfulFrameAdvanceTime = now
+                } else if let lastSuccessfulFrameAdvanceTime,
+                          now >= lastSuccessfulFrameAdvanceTime,
+                          now - lastSuccessfulFrameAdvanceTime
+                            >= progressStallGraceNanoseconds {
+                    shouldReportProgressStall = true
+                }
+            } else {
+                let callbackCount =
+                    progress.postStartCallbackCount
+                if callbackCount
+                        > lastObservedPostStartCallbackCount {
+                    lastObservedPostStartCallbackCount =
+                        callbackCount
+                    lastPostStartCallbackAdvanceTime = now
+                } else if callbackCount == 0,
+                          let runtimeFailureMonitoringStartTime,
+                          now >= runtimeFailureMonitoringStartTime,
+                          now - runtimeFailureMonitoringStartTime
+                            >= progressStallGraceNanoseconds {
+                    shouldReportProgressStall = true
+                } else if callbackCount > 0,
+                          let lastPostStartCallbackAdvanceTime,
+                          now >= lastPostStartCallbackAdvanceTime,
+                          now - lastPostStartCallbackAdvanceTime
+                            >= progressStallGraceNanoseconds {
+                    shouldReportProgressStall = true
+                }
+            }
+
+            if let status = runtimeFailureLatch.take() {
+                didReportRuntimeFailure = true
+                runtimeFailureHandler(
+                    self,
+                    .operation(
+                        Self.runtimeEnqueueOperation,
+                        status
+                    )
+                )
+                return
+            }
+
+            guard shouldReportProgressStall else {
+                return
+            }
+
+            didReportRuntimeFailure = true
+            runtimeFailureHandler(
+                self,
+                .progressStalled
+            )
+        }
+    }
+
+    private func withRuntimeFailureReportingQueue<T>(
+        _ body: () -> T
+    ) -> T {
+        if DispatchQueue.getSpecific(
+            key: Self.runtimeFailureReportingQueueKey
+        ) != nil {
+            return body()
+        }
+        return Self.runtimeFailureReportingQueue.sync(
+            execute: body
         )
+    }
+
+    private static func nextNonzero(
+        _ value: UInt64
+    ) -> UInt64 {
+        let next = value &+ 1
+        return next == 0 ? 1 : next
     }
 
     private func createOutputQueue(
@@ -626,6 +860,14 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         callbackContextPointer
     }
 
+    var debugHasPendingQueueDisposalForTesting: Bool {
+        false
+    }
+
+    var debugLastDisposeStatusForTesting: OSStatus? {
+        lastDisposeStatus
+    }
+
     static func debugInvokeRealtimeCallbackWithContextForTesting(
         context: UnsafeMutableRawPointer,
         queue: AudioQueueRef,
@@ -639,7 +881,26 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
     }
 
     func debugReportLatchedRuntimeFailureForTesting() {
-        reportLatchedRuntimeFailure()
+        guard let generation =
+                debugRuntimeFailureMonitoringGenerationForTesting() else {
+            return
+        }
+        debugPollRuntimeFailureMonitoringForTesting(
+            generation: generation
+        )
+    }
+
+    func debugRuntimeFailureMonitoringGenerationForTesting()
+        -> UInt64? {
+        withRuntimeFailureReportingQueue {
+            activeRuntimeFailureGeneration
+        }
+    }
+
+    func debugPollRuntimeFailureMonitoringForTesting(
+        generation: UInt64
+    ) {
+        pollRuntimeFailureMonitoring(generation: generation)
     }
     #endif
 }
@@ -701,6 +962,73 @@ protocol BlackHoleMicrophoneOutputAudioQueueOperations:
 }
 #endif
 
+#if DEBUG
+final class BlackHoleMicrophoneOutputRuntimeEnqueueFailurePublicationInterlock:
+    @unchecked Sendable
+{
+    private enum State {
+        case disarmed
+        case armed
+        case paused
+        case released
+    }
+
+    private let lock = NSLock()
+    private let publicationReached = DispatchSemaphore(value: 0)
+    private let callbackRelease = DispatchSemaphore(value: 0)
+    private var state = State.disarmed
+
+    func armNextFailureCallback() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard case .disarmed = state else {
+            preconditionFailure(
+                "Runtime enqueue failure interlock is already armed."
+            )
+        }
+        state = .armed
+    }
+
+    fileprivate func pauseCallbackAfterPublication() {
+        lock.lock()
+        guard case .armed = state else {
+            lock.unlock()
+            return
+        }
+        state = .paused
+        lock.unlock()
+
+        publicationReached.signal()
+        callbackRelease.wait()
+
+        lock.lock()
+        state = .disarmed
+        lock.unlock()
+    }
+
+    func waitUntilCallbackPaused(
+        timeout: DispatchTime
+    ) -> DispatchTimeoutResult {
+        return publicationReached.wait(timeout: timeout)
+    }
+
+    func releaseCallback() {
+        lock.lock()
+        switch state {
+        case .armed:
+            state = .disarmed
+            lock.unlock()
+        case .paused:
+            state = .released
+            lock.unlock()
+            callbackRelease.signal()
+        case .disarmed, .released:
+            lock.unlock()
+        }
+    }
+}
+#endif
+
 private final class BlackHoleMicrophoneOutputCallbackContext:
     @unchecked Sendable
 {
@@ -711,12 +1039,44 @@ private final class BlackHoleMicrophoneOutputCallbackContext:
     private let progressStorage: BlackHoleMicrophoneOutputProgressStorage
 
     #if DEBUG
-    private var testingAudioQueueOperations:
+    private let testingAudioQueueOperations:
         (any BlackHoleMicrophoneOutputAudioQueueOperations)?
-    private var renderForTesting:
+    private let renderForTesting:
         ((UnsafeMutablePointer<Int16>, Int) -> Bool)?
+    private let runtimeEnqueueFailurePublicationInterlockForTesting:
+        BlackHoleMicrophoneOutputRuntimeEnqueueFailurePublicationInterlock?
+    private let deinitForTesting:
+        (@Sendable () -> Void)?
     #endif
 
+    #if DEBUG
+    init(
+        callbackLifetime: UnsafeMutableRawPointer,
+        source: WebRTCMacDecodedAudioSource?,
+        runtimeFailureLatch: WebRTCMacAudioQueueRuntimeFailureLatch,
+        channelCount: UInt32,
+        progressStorage: BlackHoleMicrophoneOutputProgressStorage,
+        testingAudioQueueOperations:
+            (any BlackHoleMicrophoneOutputAudioQueueOperations)?,
+        renderForTesting:
+            ((UnsafeMutablePointer<Int16>, Int) -> Bool)?,
+        runtimeEnqueueFailurePublicationInterlockForTesting:
+            BlackHoleMicrophoneOutputRuntimeEnqueueFailurePublicationInterlock?,
+        deinitForTesting:
+            (@Sendable () -> Void)?
+    ) {
+        self.callbackLifetime = callbackLifetime
+        self.source = source
+        self.runtimeFailureLatch = runtimeFailureLatch
+        self.channelCount = channelCount
+        self.progressStorage = progressStorage
+        self.testingAudioQueueOperations = testingAudioQueueOperations
+        self.renderForTesting = renderForTesting
+        self.runtimeEnqueueFailurePublicationInterlockForTesting =
+            runtimeEnqueueFailurePublicationInterlockForTesting
+        self.deinitForTesting = deinitForTesting
+    }
+    #else
     init(
         callbackLifetime: UnsafeMutableRawPointer,
         source: WebRTCMacDecodedAudioSource?,
@@ -729,38 +1089,14 @@ private final class BlackHoleMicrophoneOutputCallbackContext:
         self.runtimeFailureLatch = runtimeFailureLatch
         self.channelCount = channelCount
         self.progressStorage = progressStorage
-        #if DEBUG
-        testingAudioQueueOperations = nil
-        renderForTesting = nil
-        #endif
-    }
-
-    #if DEBUG
-    convenience init(
-        callbackLifetime: UnsafeMutableRawPointer,
-        source: WebRTCMacDecodedAudioSource?,
-        runtimeFailureLatch: WebRTCMacAudioQueueRuntimeFailureLatch,
-        channelCount: UInt32,
-        progressStorage: BlackHoleMicrophoneOutputProgressStorage,
-        testingAudioQueueOperations:
-            (any BlackHoleMicrophoneOutputAudioQueueOperations)?,
-        renderForTesting:
-            ((UnsafeMutablePointer<Int16>, Int) -> Bool)?
-    ) {
-        self.init(
-            callbackLifetime: callbackLifetime,
-            source: source,
-            runtimeFailureLatch: runtimeFailureLatch,
-            channelCount: channelCount,
-            progressStorage: progressStorage
-        )
-        self.testingAudioQueueOperations = testingAudioQueueOperations
-        self.renderForTesting = renderForTesting
     }
     #endif
 
     deinit {
         ASMacAudioQueueCallbackLifetimeDestroy(callbackLifetime)
+        #if DEBUG
+        deinitForTesting?()
+        #endif
     }
 
     @inline(__always)
@@ -782,6 +1118,14 @@ private final class BlackHoleMicrophoneOutputCallbackContext:
             callbackLifetime
         )
     }
+
+    #if DEBUG
+    @inline(__always)
+    fileprivate func pauseRuntimeEnqueueFailurePublicationForTesting() {
+        runtimeEnqueueFailurePublicationInterlockForTesting?
+            .pauseCallbackAfterPublication()
+    }
+    #endif
 
     @inline(__always)
     fileprivate func fillAndEnqueue(
@@ -894,13 +1238,18 @@ private func blackHoleMicrophoneOutputCallback(
         queue: queue,
         buffer: buffer
     )
+    if result.enqueueStatus != noErr {
+        // Publish the first-status latch before the multi-field progress
+        // snapshot. A watchdog poll interleaved between these publications
+        // must therefore select the enqueue failure.
+        callbackContext.publishRuntimeEnqueueFailure(
+            result.enqueueStatus
+        )
+        #if DEBUG
+        callbackContext.pauseRuntimeEnqueueFailurePublicationForTesting()
+        #endif
+    }
     callbackContext.publishProgress(result)
-    guard result.enqueueStatus != noErr else { return }
-
-    // This is the callback's sole failure action: one lock-free status
-    // publication. Reporting, logging, stopping, freeing, and disposal remain
-    // exclusively outside the realtime callback.
-    callbackContext.publishRuntimeEnqueueFailure(result.enqueueStatus)
 }
 
 enum BlackHoleMicrophoneOutputError:
@@ -909,11 +1258,15 @@ enum BlackHoleMicrophoneOutputError:
     Sendable
 {
     case operation(String, OSStatus)
+    case progressStalled
 
     var errorDescription: String? {
         switch self {
         case .operation(let operation, let status):
             return "\(operation) failed with Core Audio status \(status)."
+        case .progressStalled:
+            return "BlackHole audio callback or decoded-frame progress " +
+                "stalled while iPhone microphone forwarding was active."
         }
     }
 }

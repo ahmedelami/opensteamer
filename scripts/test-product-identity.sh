@@ -15,6 +15,7 @@ mkdir -p \
   "$BASELINE/iOS/opensteamer/Sources/Views" \
   "$BASELINE/iOS/opensteamer/opensteamer.xcodeproj/xcshareddata/xcschemes" \
   "$BASELINE/macOS/OpensteamerHost" \
+  "$BASELINE/macOS/scripts" \
   "$BASELINE/macOS/Sources/CaptureServer" \
   "$BASELINE/macOS/LaunchAgents" \
   "$BASELINE/macOS/RelayBridge" \
@@ -214,7 +215,7 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
 <key>CFBundleDisplayName</key><string>opensteamer Host</string>
 <key>CFBundleName</key><string>opensteamer Host</string>
-<key>CFBundleIdentifier</key><string>org.example.AudioStreamer.CaptureServer</string>
+<key>CFBundleIdentifier</key><string>com.elamin.AudioStreamer.CaptureServer</string>
 <key>CFBundleExecutable</key><string>CaptureServer</string>
 <key>NSAudioCaptureUsageDescription</key><string>opensteamer captures this Mac&apos;s audio so it can stream playback to your iPhone.</string>
 <key>NSMicrophoneUsageDescription</key><string>opensteamer records the BlackHole virtual input so it can stream this Mac&apos;s routed audio to your iPhone.</string>
@@ -223,15 +224,27 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleName</key><string>opensteamer Capture Server</string>
-<key>CFBundleIdentifier</key><string>org.example.AudioStreamer.CaptureServer</string>
+<key>CFBundleIdentifier</key><string>com.elamin.AudioStreamer.CaptureServer</string>
 </dict></plist>' >"$BASELINE/macOS/Sources/CaptureServer/Info.plist"
+print -r -- 'static let legacyPairingService =
+    "com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1"' \
+  >"$BASELINE/macOS/Sources/CaptureServer/WorldwidePairingStore.swift"
+print -r -- 'static let legacyRuntimeDirectoryName =
+    "com.elamin.AudioStreamer.CaptureServer.runtime"' \
+  >"$BASELINE/macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift"
+print -r -- 'codesign --identifier com.elamin.AudioStreamer.CaptureServer executable' \
+  >"$BASELINE/macOS/scripts/build-opensteamer-host-app.sh"
+print -r -- 'EXPECTED_BUNDLE_IDENTIFIER="com.elamin.AudioStreamer.CaptureServer"' \
+  >"$BASELINE/macOS/scripts/verify-mac-host-bundle.sh"
+print -r -- 'verify-live "com.elamin.AudioStreamer.CaptureServer"' \
+  >"$BASELINE/macOS/scripts/verify-mac-host-deployment.sh"
 print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>org.example.opensteamer.worldwide</string>
 <key>ProgramArguments</key><array><string>/Applications/opensteamer Host.app/Contents/MacOS/CaptureServer</string></array>
-<key>StandardOutPath</key><string>/tmp/opensteamer/worldwide-host.log</string>
-<key>StandardErrorPath</key><string>/tmp/opensteamer/worldwide-host.err.log</string>
+<key>StandardOutPath</key><string>/var/tmp/opensteamer-worldwide-host.log</string>
+<key>StandardErrorPath</key><string>/var/tmp/opensteamer-worldwide-host.err.log</string>
 </dict></plist>' >"$BASELINE/macOS/LaunchAgents/org.example.opensteamer.worldwide.plist"
 
 print -r -- '{"name":"@opensteamer/rendezvous"}' >"$BASELINE/services/Rendezvous/package.json"
@@ -415,11 +428,65 @@ replace_once "$CASE/iOS/opensteamer/Sources/Views/BrowserView.swift" \
   '.navigationTitle("opensteamer")' '.navigationTitle("Opensteamer")'
 require_rejection "$CASE" 'iOS navigation-title lowercase identity'
 
+CASE=$(new_case mac-host-bundle-identifier)
+replace_once "$CASE/macOS/OpensteamerHost/Info.plist" \
+  '<key>CFBundleIdentifier</key><string>com.elamin.AudioStreamer.CaptureServer</string>' \
+  '<key>CFBundleIdentifier</key><string>org.example.AudioStreamer.CaptureServer</string>'
+require_rejection "$CASE" 'preserved macOS host bundle identifier'
+
+CASE=$(new_case swiftpm-host-bundle-identifier)
+replace_once "$CASE/macOS/Sources/CaptureServer/Info.plist" \
+  '<key>CFBundleIdentifier</key><string>com.elamin.AudioStreamer.CaptureServer</string>' \
+  '<key>CFBundleIdentifier</key><string>org.example.AudioStreamer.CaptureServer</string>'
+require_rejection "$CASE" 'preserved SwiftPM capture-server bundle identifier'
+
+CASE=$(new_case mac-pairing-keychain-service)
+replace_once "$CASE/macOS/Sources/CaptureServer/WorldwidePairingStore.swift" \
+  '"com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1"' \
+  '"org.example.AudioStreamer.CaptureServer.WorldwidePairing.v1"'
+require_rejection "$CASE" 'preserved macOS pairing Keychain service'
+
+CASE=$(new_case mac-runtime-lock-namespace)
+replace_once "$CASE/macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift" \
+  '"com.elamin.AudioStreamer.CaptureServer.runtime"' \
+  '"org.example.AudioStreamer.CaptureServer.runtime"'
+require_rejection "$CASE" 'preserved cross-version runtime lock namespace'
+
+CASE=$(new_case mac-executable-signature-identifier)
+replace_once "$CASE/macOS/scripts/build-opensteamer-host-app.sh" \
+  '--identifier com.elamin.AudioStreamer.CaptureServer' \
+  '--identifier org.example.AudioStreamer.CaptureServer'
+require_rejection "$CASE" 'preserved macOS executable signature identifier'
+
+CASE=$(new_case mac-bundle-verifier-identity)
+replace_once "$CASE/macOS/scripts/verify-mac-host-bundle.sh" \
+  'EXPECTED_BUNDLE_IDENTIFIER="com.elamin.AudioStreamer.CaptureServer"' \
+  'EXPECTED_BUNDLE_IDENTIFIER="org.example.AudioStreamer.CaptureServer"'
+require_rejection "$CASE" 'macOS bundle verifier identity'
+
+CASE=$(new_case mac-deployment-verifier-identity)
+replace_once "$CASE/macOS/scripts/verify-mac-host-deployment.sh" \
+  '"com.elamin.AudioStreamer.CaptureServer"' \
+  '"org.example.AudioStreamer.CaptureServer"'
+require_rejection "$CASE" 'macOS deployment verifier identity'
+
 CASE=$(new_case launch-agent-host-path)
 replace_once "$CASE/macOS/LaunchAgents/org.example.opensteamer.worldwide.plist" \
   '/Applications/opensteamer Host.app/Contents/MacOS/CaptureServer' \
   '/Applications/Opensteamer Host.app/Contents/MacOS/CaptureServer'
 require_rejection "$CASE" 'LaunchAgent host program path'
+
+CASE=$(new_case launch-agent-standard-output-path)
+replace_once "$CASE/macOS/LaunchAgents/org.example.opensteamer.worldwide.plist" \
+  '/var/tmp/opensteamer-worldwide-host.log' \
+  '/tmp/opensteamer/worldwide-host.log'
+require_rejection "$CASE" 'LaunchAgent standard-output path'
+
+CASE=$(new_case launch-agent-standard-error-path)
+replace_once "$CASE/macOS/LaunchAgents/org.example.opensteamer.worldwide.plist" \
+  '/var/tmp/opensteamer-worldwide-host.err.log' \
+  '/tmp/opensteamer/worldwide-host.err.log'
+require_rejection "$CASE" 'LaunchAgent standard-error path'
 
 CASE=$(new_case npm-package-name)
 replace_once "$CASE/services/Rendezvous/package.json" \

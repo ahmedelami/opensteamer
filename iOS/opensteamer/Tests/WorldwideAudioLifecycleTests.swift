@@ -1264,6 +1264,160 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         await session.peer.close()
     }
 
+    func testAutomaticMicrophoneStartsOnHealthyTransportWithoutRemoteAudio() async throws {
+        let session = try makeAutomaticMicrophonePolicyFixture(
+            provenance: .authenticatedPairedCoordinatorHandoff,
+            installsRemoteAudioTrack: false
+        )
+        let permissionRequested = expectation(
+            description: "automatic permission requested"
+        )
+        let enableCommitted = expectation(
+            description: "microphone enabled without inbound audio"
+        )
+        var permissionRequestCount = 0
+        var nativeAuthorization: WebRTCIOSMicrophoneAuthorization?
+
+        session.viewModel.debugInstallIPhoneMicrophonePermissionRequester {
+            permissionRequestCount += 1
+            permissionRequested.fulfill()
+            return true
+        }
+        session.viewModel.debugInstallIPhoneMicrophoneNativeHandlers(
+            enable: { authorization in
+                nativeAuthorization = authorization
+            },
+            disable: { authorization, _ in
+                if authorization == nil
+                    || nativeAuthorization === authorization {
+                    nativeAuthorization = nil
+                }
+                return true
+            }
+        )
+        session.viewModel.debugInstallIPhoneMicrophoneDidCommitObserver {
+            authorization in
+            XCTAssertTrue(nativeAuthorization === authorization)
+            enableCommitted.fulfill()
+        }
+
+        XCTAssertFalse(session.viewModel.isRemoteAudioAvailable)
+        XCTAssertFalse(session.viewModel.isRemoteAudioPlaying)
+
+        session.viewModel.handleAppBecameActive()
+        await session.viewModel
+            .debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        await fulfillment(
+            of: [permissionRequested, enableCommitted],
+            timeout: 2
+        )
+
+        XCTAssertEqual(permissionRequestCount, 1)
+        XCTAssertTrue(session.viewModel.canViewScreen)
+        XCTAssertFalse(session.viewModel.isRemoteAudioAvailable)
+        XCTAssertFalse(session.viewModel.isRemoteAudioPlaying)
+        XCTAssertTrue(session.viewModel.microphoneIntentEnabled)
+        XCTAssertTrue(session.viewModel.isMicrophoneSending)
+        XCTAssertEqual(session.viewModel.microphoneStateText, "On")
+        XCTAssertTrue(
+            nativeAuthorization
+                === session.viewModel.debugIPhoneMicrophoneAuthorizationForTests
+        )
+
+        session.viewModel.toggleIPhoneMicrophone()
+        session.viewModel.disconnect()
+        await session.peer.close()
+    }
+
+    func testAutomaticMicrophoneStartsAfterAuthenticatedRecoveryProofWithoutRemoteAudio()
+        async throws {
+        let session = try makeAutomaticMicrophonePolicyFixture(
+            provenance: .authenticatedPairedCoordinatorHandoff,
+            installsRemoteAudioTrack: false
+        )
+        let permissionRequested = expectation(
+            description: "recovery requested microphone permission"
+        )
+        let enableCommitted = expectation(
+            description: "recovery committed microphone enable"
+        )
+        var permissionRequestCount = 0
+        var nativeAuthorization:
+            WebRTCIOSMicrophoneAuthorization?
+
+        session.viewModel
+            .debugInstallIPhoneMicrophonePermissionRequester {
+                permissionRequestCount += 1
+                permissionRequested.fulfill()
+                return true
+            }
+        session.viewModel
+            .debugInstallIPhoneMicrophoneNativeHandlers(
+                enable: { authorization in
+                    nativeAuthorization = authorization
+                },
+                disable: { authorization, _ in
+                    if authorization == nil
+                        || nativeAuthorization === authorization {
+                        nativeAuthorization = nil
+                    }
+                    return true
+                }
+            )
+        session.viewModel
+            .debugInstallIPhoneMicrophoneDidCommitObserver {
+                authorization in
+                XCTAssertTrue(
+                    nativeAuthorization === authorization
+                )
+                enableCommitted.fulfill()
+            }
+
+        session.viewModel
+            .debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+        session.viewModel.handleAppBecameActive()
+
+        XCTAssertFalse(
+            session.viewModel.microphoneIntentEnabled
+        )
+        XCTAssertFalse(
+            session.viewModel.isRemoteAudioAvailable
+        )
+        XCTAssertFalse(
+            session.viewModel.isRemoteAudioPlaying
+        )
+
+        await session.viewModel
+            .debugCompleteRecoveryProbeForAutomaticMicrophoneTests()
+        await fulfillment(
+            of: [permissionRequested, enableCommitted],
+            timeout: 2
+        )
+
+        XCTAssertEqual(permissionRequestCount, 1)
+        XCTAssertTrue(session.viewModel.canViewScreen)
+        XCTAssertTrue(
+            session.viewModel.microphoneIntentEnabled
+        )
+        XCTAssertTrue(session.viewModel.isMicrophoneSending)
+        XCTAssertEqual(
+            session.viewModel.microphoneStateText,
+            "On"
+        )
+        XCTAssertFalse(
+            session.viewModel.isRemoteAudioAvailable
+        )
+        XCTAssertTrue(
+            nativeAuthorization
+                === session.viewModel
+                    .debugIPhoneMicrophoneAuthorizationForTests
+        )
+
+        session.viewModel.toggleIPhoneMicrophone()
+        session.viewModel.disconnect()
+        await session.peer.close()
+    }
+
     func testInactiveDuringPendingNativeMicrophoneEnableRevokesAndRetriesOnce() async throws {
         let session = try makeAutomaticMicrophonePolicyFixture(
             provenance: .authenticatedPairedCoordinatorHandoff
@@ -7762,7 +7916,8 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
 
     #if DEBUG
     private func makeAutomaticMicrophonePolicyFixture(
-        provenance: WorldwideSessionViewModel.MediaSessionProvenance
+        provenance: WorldwideSessionViewModel.MediaSessionProvenance,
+        installsRemoteAudioTrack: Bool = true
     ) throws -> (
         viewModel: WorldwideSessionViewModel,
         fixture: AudioLifecycleFixture,
@@ -7772,7 +7927,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
         let peer = try makeAudioRacePeer()
         fixture.controller.prepare(serverName: "Mac mini")
-        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        if installsRemoteAudioTrack {
+            fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        }
         viewModel.debugInstallScreenSessionForTests(
             peer: peer,
             provenance: provenance

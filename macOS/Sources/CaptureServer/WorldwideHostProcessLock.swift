@@ -1,45 +1,71 @@
 import Darwin
 import Foundation
 
-/// Per-user advisory lock that prevents concurrent worldwide host processes.
+/// Per-user advisory lock that prevents concurrent legacy and rebranded worldwide hosts.
 ///
-/// The runtime directory and lock file are constrained to the effective user, refuse
-/// symlinks, and use close-on-exec. The descriptor itself owns the advisory lock; the
-/// local `descriptorLock` makes explicit release and deinitialization idempotent.
+/// The canonical runtime-directory inode is opened with `O_NOFOLLOW`, all lock operations use
+/// `openat`/`fstatat` relative to that descriptor, and the pathname is re-opened and compared before
+/// the lock is returned. A directory rename/replacement or lock-entry substitution therefore fails
+/// closed instead of allowing a second host to acquire a different inode under the same pathname.
 final class WorldwideHostProcessLock {
-    // This shipped namespace is a cross-version exclusion boundary. Renaming it would let an
-    // older host and a rebranded host acquire different locks and capture concurrently.
-    static let legacyRuntimeDirectoryName = "org.example.AudioStreamer.CaptureServer.runtime"
+    static let legacyRuntimeDirectoryName = "com.elamin.AudioStreamer.CaptureServer.runtime"
     private static let fileName = "worldwide-host.lock"
 
     private let descriptorLock = NSLock()
     private var descriptor: Int32?
+    let generationNonce: String
 
-    private init(descriptor: Int32) {
+    private init(descriptor: Int32, generationNonce: String) {
         self.descriptor = descriptor
+        self.generationNonce = generationNonce
     }
 
     deinit {
         release()
     }
 
-    /// Atomically creates/opens and exclusively locks the protected runtime file.
-    static func acquire(lockDirectoryURL: URL? = nil) throws -> WorldwideHostProcessLock {
+    static func acquire(
+        lockDirectoryURL: URL? = nil,
+        afterDirectoryValidationForTesting: (() throws -> Void)? = nil,
+        afterLockOpenForTesting: (() throws -> Void)? = nil
+    ) throws -> WorldwideHostProcessLock {
         let directoryURL = try lockDirectoryURL ?? defaultLockDirectoryURL()
-        try prepareLockDirectory(directoryURL)
+        let openedDirectory = try openValidatedLockDirectory(directoryURL)
+        defer { Darwin.close(openedDirectory.descriptor) }
 
-        let lockURL = directoryURL.appendingPathComponent(fileName, isDirectory: false)
-        let descriptor = try openLockFile(lockURL)
+        try afterDirectoryValidationForTesting?()
+        let lockDescriptor = try openLockFile(in: openedDirectory.descriptor)
         do {
-            try validateAndRestrictLockFile(descriptor)
-            return WorldwideHostProcessLock(descriptor: descriptor)
+            try afterLockOpenForTesting?()
+            try validateAndRestrictLockFile(
+                lockDescriptor,
+                in: openedDirectory.descriptor
+            )
+            try revalidateCanonicalPath(
+                directoryURL,
+                expectedDirectory: openedDirectory.metadata,
+                expectedLockDescriptor: lockDescriptor
+            )
+            let generationNonce = makeGenerationNonce()
+            try publishGenerationRecord(
+                descriptor: lockDescriptor,
+                nonce: generationNonce
+            )
+            try revalidateCanonicalPath(
+                directoryURL,
+                expectedDirectory: openedDirectory.metadata,
+                expectedLockDescriptor: lockDescriptor
+            )
+            return WorldwideHostProcessLock(
+                descriptor: lockDescriptor,
+                generationNonce: generationNonce
+            )
         } catch {
-            Darwin.close(descriptor)
+            Darwin.close(lockDescriptor)
             throw error
         }
     }
 
-    /// Closes the descriptor once, releasing the advisory lock to another process.
     func release() {
         descriptorLock.lock()
         guard let descriptor else {
@@ -48,11 +74,14 @@ final class WorldwideHostProcessLock {
         }
         self.descriptor = nil
         descriptorLock.unlock()
-
         Darwin.close(descriptor)
     }
 
-    /// Resolves the current account's Application Support runtime directory.
+    private struct OpenedDirectory {
+        let descriptor: Int32
+        let metadata: stat
+    }
+
     private static func defaultLockDirectoryURL() throws -> URL {
         guard let applicationSupportURL = FileManager.default.urls(
             for: .applicationSupportDirectory,
@@ -66,79 +95,282 @@ final class WorldwideHostProcessLock {
         )
     }
 
-    /// Creates and verifies an owner-only, real directory before opening the lock.
-    private static func prepareLockDirectory(_ directoryURL: URL) throws {
+    private static func openValidatedLockDirectory(_ directoryURL: URL) throws -> OpenedDirectory {
         guard directoryURL.isFileURL else {
             throw WorldwideHostProcessLockError.unsafeLockDirectory
         }
-
         let path = directoryURL.standardizedFileURL.path
         let createResult = path.withCString { pointer in
             Darwin.mkdir(pointer, mode_t(0o700))
         }
         if createResult != 0, errno != EEXIST {
-            throw systemCallError(operation: "create its runtime directory")
+            throw systemCallError(operation: "create its runtime directory", code: errno)
         }
 
-        var metadata = stat()
-        let statusResult = path.withCString { pointer in
-            Darwin.lstat(pointer, &metadata)
-        }
-        guard statusResult == 0 else {
-            throw systemCallError(operation: "inspect its runtime directory")
-        }
-        guard metadata.st_mode & S_IFMT == S_IFDIR,
-              metadata.st_uid == Darwin.geteuid() else {
-            throw WorldwideHostProcessLockError.unsafeLockDirectory
-        }
-
-        let permissionResult = path.withCString { pointer in
-            Darwin.chmod(pointer, mode_t(0o700))
-        }
-        guard permissionResult == 0 else {
-            throw systemCallError(operation: "secure its runtime directory")
-        }
-    }
-
-    /// Opens and locks a non-symlink file without a check-then-open race.
-    private static func openLockFile(_ lockURL: URL) throws -> Int32 {
-        // O_EXLOCK acquires the advisory lock atomically with open; O_NONBLOCK rejects duplicates.
-        let flags = O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK | O_EXLOCK
-        let descriptor = lockURL.path.withCString { pointer in
-            Darwin.open(pointer, flags, mode_t(0o600))
+        let flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        let descriptor = path.withCString { pointer in
+            Darwin.open(pointer, flags)
         }
         guard descriptor >= 0 else {
-            let code = errno
-            if code == EWOULDBLOCK || code == EAGAIN {
-                throw WorldwideHostProcessLockError.alreadyRunning
+            if errno == ELOOP || errno == ENOTDIR {
+                throw WorldwideHostProcessLockError.unsafeLockDirectory
             }
-            throw systemCallError(operation: "open its process lock")
+            throw systemCallError(operation: "open its runtime directory", code: errno)
         }
-        return descriptor
+
+        do {
+            var metadata = stat()
+            guard Darwin.fstat(descriptor, &metadata) == 0 else {
+                throw systemCallError(operation: "inspect its runtime directory", code: errno)
+            }
+            guard metadata.st_mode & S_IFMT == S_IFDIR,
+                  metadata.st_uid == Darwin.geteuid() else {
+                throw WorldwideHostProcessLockError.unsafeLockDirectory
+            }
+            guard Darwin.fchmod(descriptor, mode_t(0o700)) == 0 else {
+                throw systemCallError(operation: "secure its runtime directory", code: errno)
+            }
+            var securedMetadata = stat()
+            guard Darwin.fstat(descriptor, &securedMetadata) == 0 else {
+                throw systemCallError(operation: "reinspect its secured runtime directory", code: errno)
+            }
+            guard securedMetadata.st_mode & S_IFMT == S_IFDIR,
+                  securedMetadata.st_uid == Darwin.geteuid(),
+                  securedMetadata.st_mode & mode_t(0o777) == mode_t(0o700),
+                  sameIdentity(metadata, securedMetadata) else {
+                throw WorldwideHostProcessLockError.unsafeLockDirectory
+            }
+            return OpenedDirectory(descriptor: descriptor, metadata: securedMetadata)
+        } catch {
+            Darwin.close(descriptor)
+            throw error
+        }
     }
 
-    /// Verifies the opened inode is a single-link regular file owned by this account.
-    private static func validateAndRestrictLockFile(_ descriptor: Int32) throws {
-        var metadata = stat()
-        guard Darwin.fstat(descriptor, &metadata) == 0 else {
-            throw systemCallError(operation: "inspect its process lock")
+    private static func openLockFile(in directoryDescriptor: Int32) throws -> Int32 {
+        let existingFlags = O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK | O_EXLOCK
+        let existing = fileName.withCString { pointer in
+            Darwin.openat(directoryDescriptor, pointer, existingFlags)
         }
-        guard metadata.st_mode & S_IFMT == S_IFREG,
-              metadata.st_uid == Darwin.geteuid(),
-              metadata.st_nlink == 1 else {
+        if existing >= 0 {
+            return existing
+        }
+        let existingError = errno
+        if existingError == EWOULDBLOCK || existingError == EAGAIN {
+            throw WorldwideHostProcessLockError.alreadyRunning
+        }
+        if existingError == ELOOP {
+            throw WorldwideHostProcessLockError.unsafeLockFile
+        }
+        guard existingError == ENOENT else {
+            throw systemCallError(operation: "open its existing process lock", code: existingError)
+        }
+
+        let createFlags = existingFlags | O_CREAT | O_EXCL
+        let created = fileName.withCString { pointer in
+            Darwin.openat(directoryDescriptor, pointer, createFlags, mode_t(0o600))
+        }
+        if created >= 0 {
+            return created
+        }
+        let createError = errno
+        if createError == EEXIST {
+            let raced = fileName.withCString { pointer in
+                Darwin.openat(directoryDescriptor, pointer, existingFlags)
+            }
+            if raced >= 0 {
+                return raced
+            }
+            let racedError = errno
+            if racedError == EWOULDBLOCK || racedError == EAGAIN {
+                throw WorldwideHostProcessLockError.alreadyRunning
+            }
+            if racedError == ELOOP {
+                throw WorldwideHostProcessLockError.unsafeLockFile
+            }
+            throw systemCallError(operation: "open its raced process lock", code: racedError)
+        }
+        if createError == EWOULDBLOCK || createError == EAGAIN {
+            throw WorldwideHostProcessLockError.alreadyRunning
+        }
+        if createError == ELOOP {
+            throw WorldwideHostProcessLockError.unsafeLockFile
+        }
+        throw systemCallError(operation: "exclusively create its process lock", code: createError)
+    }
+
+    private static func validateAndRestrictLockFile(
+        _ descriptor: Int32,
+        in directoryDescriptor: Int32
+    ) throws {
+        var descriptorMetadata = stat()
+        guard Darwin.fstat(descriptor, &descriptorMetadata) == 0 else {
+            throw systemCallError(operation: "inspect its process lock", code: errno)
+        }
+        guard isStructurallySafeLockMetadata(descriptorMetadata) else {
+            throw WorldwideHostProcessLockError.unsafeLockFile
+        }
+
+        var entryMetadata = stat()
+        let entryStatus = fileName.withCString { pointer in
+            Darwin.fstatat(
+                directoryDescriptor,
+                pointer,
+                &entryMetadata,
+                AT_SYMLINK_NOFOLLOW
+            )
+        }
+        guard entryStatus == 0 else {
+            throw systemCallError(operation: "reinspect its process lock", code: errno)
+        }
+        guard isStructurallySafeLockMetadata(entryMetadata),
+              sameIdentity(descriptorMetadata, entryMetadata) else {
             throw WorldwideHostProcessLockError.unsafeLockFile
         }
         guard Darwin.fchmod(descriptor, mode_t(0o600)) == 0 else {
-            throw systemCallError(operation: "secure its process lock")
+            throw systemCallError(operation: "secure its process lock", code: errno)
+        }
+        var securedDescriptorMetadata = stat()
+        guard Darwin.fstat(descriptor, &securedDescriptorMetadata) == 0 else {
+            throw systemCallError(operation: "reinspect its secured process lock", code: errno)
+        }
+        var securedEntryMetadata = stat()
+        let securedEntryStatus = fileName.withCString { pointer in
+            Darwin.fstatat(
+                directoryDescriptor,
+                pointer,
+                &securedEntryMetadata,
+                AT_SYMLINK_NOFOLLOW
+            )
+        }
+        guard securedEntryStatus == 0,
+              isSafeLockMetadata(securedDescriptorMetadata),
+              isSafeLockMetadata(securedEntryMetadata),
+              sameIdentity(securedDescriptorMetadata, securedEntryMetadata) else {
+            throw WorldwideHostProcessLockError.unsafeLockFile
         }
     }
 
-    private static func systemCallError(operation: String) -> WorldwideHostProcessLockError {
-        WorldwideHostProcessLockError.systemCall(operation: operation, code: errno)
+    /// Re-opens the canonical pathname and binds it to the directory and lock inodes already held.
+    private static func revalidateCanonicalPath(
+        _ directoryURL: URL,
+        expectedDirectory: stat,
+        expectedLockDescriptor: Int32
+    ) throws {
+        let path = directoryURL.standardizedFileURL.path
+        let flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        let currentDirectoryDescriptor = path.withCString { pointer in
+            Darwin.open(pointer, flags)
+        }
+        guard currentDirectoryDescriptor >= 0 else {
+            throw WorldwideHostProcessLockError.unsafeLockDirectory
+        }
+        defer { Darwin.close(currentDirectoryDescriptor) }
+
+        var currentDirectoryMetadata = stat()
+        guard Darwin.fstat(currentDirectoryDescriptor, &currentDirectoryMetadata) == 0 else {
+            throw systemCallError(operation: "reinspect its canonical runtime directory", code: errno)
+        }
+        guard currentDirectoryMetadata.st_mode & S_IFMT == S_IFDIR,
+              currentDirectoryMetadata.st_uid == Darwin.geteuid(),
+              currentDirectoryMetadata.st_mode & mode_t(0o777) == mode_t(0o700),
+              sameIdentity(expectedDirectory, currentDirectoryMetadata) else {
+            throw WorldwideHostProcessLockError.unsafeLockDirectory
+        }
+
+        var descriptorMetadata = stat()
+        guard Darwin.fstat(expectedLockDescriptor, &descriptorMetadata) == 0 else {
+            throw systemCallError(operation: "reinspect its open process lock", code: errno)
+        }
+        var currentEntryMetadata = stat()
+        let entryStatus = fileName.withCString { pointer in
+            Darwin.fstatat(
+                currentDirectoryDescriptor,
+                pointer,
+                &currentEntryMetadata,
+                AT_SYMLINK_NOFOLLOW
+            )
+        }
+        guard entryStatus == 0 else {
+            throw WorldwideHostProcessLockError.unsafeLockFile
+        }
+        guard isSafeLockMetadata(currentEntryMetadata),
+              sameIdentity(descriptorMetadata, currentEntryMetadata) else {
+            throw WorldwideHostProcessLockError.unsafeLockFile
+        }
+    }
+
+    private static func makeGenerationNonce() -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        bytes.withUnsafeMutableBytes { buffer in
+            guard let baseAddress = buffer.baseAddress else { return }
+            Darwin.arc4random_buf(baseAddress, buffer.count)
+        }
+        return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func publishGenerationRecord(
+        descriptor: Int32,
+        nonce: String
+    ) throws {
+        guard nonce.count == 64, nonce.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else {
+            throw WorldwideHostProcessLockError.unsafeLockFile
+        }
+        let record = """
+        OPENSTEAMER_WORLDWIDE_HOST_GENERATION_V1
+        pid=\(Darwin.getpid())
+        nonce=\(nonce)
+
+        """
+        let bytes = Array(record.utf8)
+        guard Darwin.ftruncate(descriptor, 0) == 0 else {
+            throw systemCallError(operation: "reset its process generation record", code: errno)
+        }
+        guard Darwin.lseek(descriptor, 0, SEEK_SET) == 0 else {
+            throw systemCallError(operation: "seek its process generation record", code: errno)
+        }
+        var written = 0
+        while written < bytes.count {
+            let result = bytes.withUnsafeBytes { buffer in
+                Darwin.write(
+                    descriptor,
+                    buffer.baseAddress!.advanced(by: written),
+                    bytes.count - written
+                )
+            }
+            guard result > 0 else {
+                throw systemCallError(operation: "write its process generation record", code: errno)
+            }
+            written += result
+        }
+        guard Darwin.fsync(descriptor) == 0 else {
+            throw systemCallError(operation: "durably publish its process generation record", code: errno)
+        }
+    }
+
+    private static func isStructurallySafeLockMetadata(_ metadata: stat) -> Bool {
+        metadata.st_mode & S_IFMT == S_IFREG
+            && metadata.st_uid == Darwin.geteuid()
+            && metadata.st_nlink == 1
+    }
+
+    private static func isSafeLockMetadata(_ metadata: stat) -> Bool {
+        isStructurallySafeLockMetadata(metadata)
+            && metadata.st_mode & mode_t(0o777) == mode_t(0o600)
+    }
+
+    private static func sameIdentity(_ lhs: stat, _ rhs: stat) -> Bool {
+        lhs.st_dev == rhs.st_dev && lhs.st_ino == rhs.st_ino
+    }
+
+    private static func systemCallError(
+        operation: String,
+        code: Int32
+    ) -> WorldwideHostProcessLockError {
+        WorldwideHostProcessLockError.systemCall(operation: operation, code: code)
     }
 }
 
-/// Contention and filesystem-safety failures from the process lock boundary.
 enum WorldwideHostProcessLockError: LocalizedError, Equatable {
     case alreadyRunning
     case applicationSupportUnavailable
@@ -153,9 +385,9 @@ enum WorldwideHostProcessLockError: LocalizedError, Equatable {
         case .applicationSupportUnavailable:
             "opensteamer could not locate this macOS account's Application Support directory."
         case .unsafeLockDirectory:
-            "opensteamer's worldwide-host runtime directory is not safely owned by this account."
+            "opensteamer's worldwide-host runtime directory changed or is not safely owned."
         case .unsafeLockFile:
-            "opensteamer's worldwide-host process lock is not a safe regular file."
+            "opensteamer's worldwide-host process lock changed or is not a safe regular file."
         case .systemCall(let operation, let code):
             "opensteamer could not \(operation) (errno \(code))."
         }

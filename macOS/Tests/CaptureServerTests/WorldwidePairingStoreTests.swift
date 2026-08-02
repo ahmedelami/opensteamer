@@ -13,7 +13,7 @@ final class WorldwidePairingStoreTests: XCTestCase {
     func testVisibleRebrandPreservesExistingKeychainService() {
         XCTAssertEqual(
             WorldwideKeychainDataStore.legacyPairingService,
-            "org.example.AudioStreamer.CaptureServer.WorldwidePairing.v1"
+            "com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1"
         )
     }
 

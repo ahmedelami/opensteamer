@@ -175,7 +175,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CaptureCoreTests",
-            dependencies: ["CaptureCore"],
+            dependencies: ["CaptureCore", "Streaming"],
             path: "macOS/Tests/CaptureCoreTests"
         ),
         .testTarget(

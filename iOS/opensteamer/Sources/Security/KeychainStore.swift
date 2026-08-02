@@ -56,6 +56,20 @@ struct KeychainStore: RemoteTokenStoring {
         account: "worldwide-paired-mac"
     )
 
+    // The production bundle used this service before build 34. Only the paired viewer identity
+    // and Mac record participate in the compatibility fallback; activation and invitation state
+    // remain owned by their current items above. The selector in ViewerPairingStore.swift never
+    // combines one of these payloads with a payload from the current service.
+    static let legacyViewerDeviceIdentityItem = Item(
+        service: "com.elamin.AudioStreamer",
+        account: "worldwide-viewer-device-identity"
+    )
+
+    static let legacyPairedMacItem = Item(
+        service: "com.elamin.AudioStreamer",
+        account: "worldwide-paired-mac"
+    )
+
     private let item: Item
 
     init(item: Item = Self.remoteTokenItem) {
@@ -123,6 +137,27 @@ struct KeychainStore: RemoteTokenStoring {
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
         guard addStatus == errSecSuccess else {
             throw KeychainStoreError.operationFailed(addStatus)
+        }
+    }
+
+    /// Inserts a new item without overwriting an item that appeared after the caller's read.
+    ///
+    /// Pairing-namespace migration uses this compare-before-insert boundary when promoting an
+    /// existing identity. A duplicate result is returned to the caller for an exact re-read so a
+    /// concurrently created, different identity can never be replaced.
+    @discardableResult
+    func insertDataIfAbsent(_ data: Data) throws -> Bool {
+        var addQuery = baseQuery
+        addQuery[kSecValueData as String] = data
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let status = SecItemAdd(addQuery as CFDictionary, nil)
+        switch status {
+        case errSecSuccess:
+            return true
+        case errSecDuplicateItem:
+            return false
+        default:
+            throw KeychainStoreError.operationFailed(status)
         }
     }
 

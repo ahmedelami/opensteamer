@@ -269,7 +269,7 @@ enum WebRTCIPhoneMicrophoneSenderStatisticsSampler {
               diagnostics.deliveredFrameCount
                 >= diagnostics.deliveryCallbackCount,
               !parsed.outboundRTPRecordIDs.isEmpty,
-              parsed.outboundRTPRecordIDs.allSatisfy { !$0.isEmpty },
+              parsed.outboundRTPRecordIDs.allSatisfy({ !$0.isEmpty }),
               Set(parsed.outboundRTPRecordIDs).count
                 == parsed.outboundRTPRecordIDs.count,
               parsed.packetsSent <= maximumCounter,
@@ -1403,6 +1403,25 @@ public struct WebRTCIOSPlayoutDiagnostics: Sendable {
 }
 #endif
 
+/// Platform policy for creating the local iPhone-microphone sender track.
+///
+/// iOS viewers always own the track. DEBUG macOS viewers may opt into the headless
+/// audio test path. Release macOS structurally excludes track creation and reports false.
+enum WebRTCIPhoneMicrophoneTrackCreationPolicy {
+    static func shouldCreate(
+        role: RemotePeerRole,
+        useHeadlessMacViewerAudioForTesting: Bool = false
+    ) -> Bool {
+        #if os(iOS)
+        role == .viewer
+        #elseif DEBUG && os(macOS)
+        role == .viewer && useHeadlessMacViewerAudioForTesting
+        #else
+        false
+        #endif
+    }
+}
+
 /// Owns one role-specific native WebRTC connection and its ordered control/input state machines.
 ///
 /// Actor isolation serializes signaling epochs, candidate generations, replay histories, and
@@ -1724,14 +1743,9 @@ public actor WebRTCPeer {
         peerConnection = nativePeer
 
         #if os(iOS)
-        let shouldCreateIPhoneMicrophoneTrack = configuration.role == .viewer
-        #elseif DEBUG && os(macOS)
-        let shouldCreateIPhoneMicrophoneTrack =
-            configuration.role == .viewer && Self.useHeadlessMacViewerAudioForTesting
-        #else
-        let shouldCreateIPhoneMicrophoneTrack = false
-        #endif
-        if shouldCreateIPhoneMicrophoneTrack {
+        if WebRTCIPhoneMicrophoneTrackCreationPolicy.shouldCreate(
+            role: configuration.role
+        ) {
             let source = nativeFactory.audioSource(with: nil)
             let track = nativeFactory.audioTrack(
                 with: source,
@@ -1742,6 +1756,25 @@ public actor WebRTCPeer {
         } else {
             localIPhoneMicrophoneTrack = nil
         }
+        #elseif DEBUG && os(macOS)
+        if WebRTCIPhoneMicrophoneTrackCreationPolicy.shouldCreate(
+            role: configuration.role,
+            useHeadlessMacViewerAudioForTesting:
+                Self.useHeadlessMacViewerAudioForTesting
+        ) {
+            let source = nativeFactory.audioSource(with: nil)
+            let track = nativeFactory.audioTrack(
+                with: source,
+                trackId: WebRTCAudioTrackIdentifiers.iPhoneMicrophone
+            )
+            track.isEnabled = false
+            localIPhoneMicrophoneTrack = track
+        } else {
+            localIPhoneMicrophoneTrack = nil
+        }
+        #else
+        localIPhoneMicrophoneTrack = nil
+        #endif
 
         var configuredIPhoneMicrophoneReceiverID: String?
         if configuration.role == .host {

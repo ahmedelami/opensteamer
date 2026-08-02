@@ -9,9 +9,13 @@ default Keychain access group.
 
 Some pre-rebrand identifiers are intentionally immutable compatibility data rather than branding:
 
-- The iOS Keychain service stays `org.example.AudioStreamer`, and the macOS host keeps its shipped
-  bundle and Keychain identifiers, so activation state, durable pairings, and macOS privacy grants
-  survive the rename.
+- The current iOS Keychain service stays `org.example.AudioStreamer`; migration code may read the
+  earlier `com.elamin.AudioStreamer` identity and paired-Mac items only as one validated,
+  same-namespace fallback pair. The macOS host keeps its shipped
+  `com.elamin.AudioStreamer.CaptureServer` bundle/signature identifier,
+  `com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1` pairing service, and
+  `com.elamin.AudioStreamer.CaptureServer.runtime` lock namespace. Those exact deployed identities
+  preserve activation state, durable pairings, macOS privacy grants, and mixed-version exclusion.
 - The deployed v1 WebSocket headers/subprotocols, WebRTC data-channel identifiers, invitation
   checksum domain, and cryptographic transcript labels retain their original bytes. These values
   are authenticated protocol ABI. They may change only behind a negotiated new protocol version

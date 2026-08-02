@@ -241,6 +241,7 @@ is_production_rendezvous_match() {
   local file_path=$1
   local line=$2
   local token=$3
+  local content
 
   [[ "$token" == "$PRODUCTION_RENDEZVOUS_HOST" ]] || return 1
 
@@ -250,6 +251,53 @@ is_production_rendezvous_match() {
       ;;
     iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj)
       is_pbxproj_production_rendezvous_match "$line"
+      ;;
+    HOST_MIGRATION.md)
+      content=$(awk -v wanted="$line" '
+        NR == wanted {
+          sub(/^[[:space:]]+/, "")
+          sub(/[[:space:]]+$/, "")
+          print
+          exit
+        }
+      ' "$file_path")
+      [[ "$content" == "8. \`wss://${PRODUCTION_RENDEZVOUS_HOST}\`" ]]
+      ;;
+    macOS/LaunchAgents/org.example.opensteamer.worldwide.plist)
+      content=$(awk -v wanted="$line" '
+        NR == wanted {
+          sub(/^[[:space:]]+/, "")
+          sub(/[[:space:]]+$/, "")
+          print
+          exit
+        }
+      ' "$file_path")
+      [[ "$content" == "<string>wss://${PRODUCTION_RENDEZVOUS_HOST}</string>" ]]
+      ;;
+    macOS/Tests/CaptureServerTests/MacHostDeploymentContractTests.swift)
+      content=$(awk -v wanted="$line" '
+        NR == wanted {
+          sub(/^[[:space:]]+/, "")
+          sub(/[[:space:]]+$/, "")
+          print
+          exit
+        }
+      ' "$file_path")
+      [[ "$content" == "\"wss://${PRODUCTION_RENDEZVOUS_HOST}\"," || \
+        "$content" == "wss://${PRODUCTION_RENDEZVOUS_HOST}" ]]
+      ;;
+    macOS/scripts/verify-mac-host-launch-state.sh)
+      content=$(awk -v wanted="$line" '
+        NR == wanted {
+          sub(/^[[:space:]]+/, "")
+          sub(/[[:space:]]+$/, "")
+          print
+          exit
+        }
+      ' "$file_path")
+      [[ "$content" == \
+        "readonly REVIEWED_RENDEZVOUS_URL=\"wss://${PRODUCTION_RENDEZVOUS_HOST}\"" || \
+        "$content" == "wss://${PRODUCTION_RENDEZVOUS_HOST}" ]]
       ;;
     *) return 1 ;;
   esac
@@ -274,7 +322,8 @@ is_allowed_legacy_token() {
     HOST_MIGRATION.md)
       [[ "$token" == "$FORMER_CAMEL" \
         || "$token" == "$FORMER_LOWER.worldwide" \
-        || "$token" == "$FORMER_LOWER.worldwide.plist" ]]
+        || "$token" == "$FORMER_LOWER.worldwide.plist" ]] || \
+        is_identity_token "$token"
       ;;
     USER_PROTECTED_LEGACY_RUNTIME.md)
       [[ "$token" == "$FORMER_CAMEL" \
@@ -328,11 +377,14 @@ is_allowed_legacy_token() {
       macOS/Sources/CaptureServer/WorldwidePairingStore.swift|\
       macOS/scripts/build-opensteamer-host-app.sh|\
       macOS/scripts/verify-mac-host-bundle.sh|\
-      macOS/scripts/verify-mac-host-deployment.sh|\
-      macOS/Tests/CaptureServerTests/MacHostBundleIdentityTests.swift|\
       macOS/Tests/CaptureServerTests/WorldwideHostProcessLockTests.swift|\
       macOS/Tests/CaptureServerTests/WorldwidePairingStoreTests.swift)
       is_identity_token "$token"
+      ;;
+    macOS/scripts/verify-mac-host-deployment.sh|\
+      macOS/Tests/CaptureServerTests/MacHostBundleIdentityTests.swift)
+      [[ "$token" == "$FORMER_LOWER.worldwide" ]] || \
+        is_identity_token "$token"
       ;;
     macOS/Tests/CaptureServerTests/MacHostDeploymentContractTests.swift)
       is_identity_token "$token" || is_rendezvous_fallback_token "$token"

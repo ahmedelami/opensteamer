@@ -1,5 +1,7 @@
+import CoreAudio
 import Foundation
 import XCTest
+@testable import CaptureCore
 @testable import CaptureServer
 
 /// Defines the ordering and failure boundary for acknowledging that remote screen video is hidden.
@@ -231,6 +233,59 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
         )
     }
 
+    func testIPhoneMicrophoneRuntimeFailureMappingAndLogAreSemantic()
+        throws {
+        XCTAssertEqual(
+            WorldwideScreenService
+                .iPhoneMicrophoneRuntimeFailureCategory(
+                    for: .operation("enqueue", -1)
+                ),
+            .runtimeEnqueueFailed
+        )
+        XCTAssertEqual(
+            WorldwideScreenService
+                .iPhoneMicrophoneRuntimeFailureCategory(
+                    for: .progressStalled
+                ),
+            .runtimeProgressStalled
+        )
+
+        let message = WorldwideScreenService
+            .iPhoneMicrophoneRuntimeFailureLogMessage(
+                error: .progressStalled
+            )
+        XCTAssertTrue(message.contains("output runtime failure"))
+        XCTAssertFalse(message.contains("AudioQueue"))
+
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let serviceSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "macOS/Sources/CaptureServer/WorldwideScreenService.swift"
+            ),
+            encoding: .utf8
+        )
+        let handler = try sourceSlice(
+            in: serviceSource,
+            after: "    private func iPhoneMicrophoneOutputDidFail(",
+            before: "    private func installIPhoneMicrophoneTrack("
+        )
+        XCTAssertTrue(
+            handler.contains(
+                "iPhoneMicrophoneRuntimeFailureCategory("
+            )
+        )
+        XCTAssertTrue(
+            handler.contains(
+                "iPhoneMicrophoneRuntimeFailureLogMessage("
+            )
+        )
+        XCTAssertFalse(handler.contains("AudioQueue failure"))
+    }
+
     func testDefaultInputSelectionPrecedesSystemAudioAndHasNoTrackDependency()
         throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
@@ -285,6 +340,12 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
                 systemAudio.lowerBound,
                 "Default-input acquisition must complete before the first system-audio await."
             )
+            XCTAssertFalse(
+                function.contains(
+                    "await consumeCurrentBlackHoleDeviceSnapshot()"
+                ),
+                "Default-input selection must not await forwarding startup, readiness sampling, retries, or PCM."
+            )
         }
 
         XCTAssertTrue(
@@ -292,6 +353,49 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
                 "blackHoleDeviceAvailabilityMonitor.currentSnapshot()"
             ),
             "The healthy boundary must consume an already-published monitor generation synchronously."
+        )
+
+        let monitorStartup = try sourceSlice(
+            in: serviceSource,
+            after: "    private func startIPhoneMicrophoneDeviceMonitoringIfNeeded()",
+            before: "    private func consumeCurrentBlackHoleDeviceSnapshot()"
+        )
+        let forwardingMonitorStart = try XCTUnwrap(
+            monitorStartup.range(
+                of: "iPhoneMicrophoneForwarding.beginMonitoring("
+            )
+        )
+        let initialSnapshotConsumption = try XCTUnwrap(
+            monitorStartup.range(
+                of: "await consumeCurrentBlackHoleDeviceSnapshot()"
+            )
+        )
+        XCTAssertLessThan(
+            forwardingMonitorStart.lowerBound,
+            initialSnapshotConsumption.lowerBound,
+            "The forwarding driver must accept the monitor epoch before the initial snapshot is consumed."
+        )
+
+        let initialSnapshotConsumer = try sourceSlice(
+            in: serviceSource,
+            after: "    private func consumeCurrentBlackHoleDeviceSnapshot()",
+            before: "    private func blackHoleDeviceAvailabilityDidChange("
+        )
+        XCTAssertTrue(
+            initialSnapshotConsumer.contains(
+                "await iPhoneMicrophoneForwarding.updateDeviceSnapshot("
+            ),
+            "The initial monitor snapshot must be delivered to forwarding independently of later callbacks."
+        )
+
+        let deviceChange = try sourceSlice(
+            in: serviceSource,
+            after: "    private func blackHoleDeviceAvailabilityDidChange(",
+            before: "    func iPhoneMicrophoneForwardingSnapshot()"
+        )
+        XCTAssertFalse(
+            deviceChange.contains("await blackHoleDefaultInput"),
+            "Forwarding must not await default-input retry coordination."
         )
 
         let coordinatorSource = try String(
@@ -311,6 +415,300 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
         XCTAssertFalse(coordinator.contains("successfulFrame"))
         XCTAssertFalse(coordinator.contains("forwardingProgress"))
         XCTAssertFalse(coordinator.contains("installTrack"))
+        XCTAssertFalse(
+            coordinator.contains("isDriving"),
+            "Default-input retries must complete synchronously; callers cannot observe an in-progress noChange."
+        )
+        XCTAssertFalse(
+            coordinator.contains("retrySleep"),
+            "Default-input retries must not suspend and let a concurrent drive escape early."
+        )
+        XCTAssertTrue(
+            coordinator.contains(
+                "nextLeaseGeneration = Self.nextNonzero("
+            ),
+            "Every ownership attempt must receive a fresh lease generation."
+        )
+        XCTAssertFalse(
+            coordinator.contains(
+                "leaseGeneration:\n" +
+                    "                    identity.connectionGeneration"
+            ),
+            "Connection generations must not be reused as ownership-attempt generations."
+        )
+
+        let releaseFunction = try sourceSlice(
+            in: coordinatorSource,
+            after: "    private func releaseActive()",
+            before: "    private func releaseActiveBounded()"
+        )
+        let releaseCall = try XCTUnwrap(
+            releaseFunction.range(
+                of: "lease.release("
+            )
+        )
+        let keyClear = try XCTUnwrap(
+            releaseFunction.range(
+                of: "self.activeKey = nil"
+            )
+        )
+        XCTAssertLessThan(
+            releaseCall.lowerBound,
+            keyClear.lowerBound,
+            "The coordinator must retain the lease generation until restoration reports completion."
+        )
+    }
+
+    func testActualStartupGateBlocksPersistentDeferredLeaseCleanupUntilExactOwnerCompletes()
+    {
+        let operations =
+            WorldwideScreenDefaultInputLeaseOperationsFake()
+        let deferredRetainer =
+            BlackHoleDefaultInputLeaseDeferredCleanupRetainer()
+        var lease: BlackHoleDefaultInputLease? =
+            BlackHoleDefaultInputLease(
+                operations: operations,
+                operationQueue: DispatchQueue(
+                    label:
+                        "test.WorldwideScreen.default-input-cleanup.operations"
+                ),
+                listenerQueue: DispatchQueue(
+                    label:
+                        "test.WorldwideScreen.default-input-cleanup.listener"
+                ),
+                proofTimeout: 0.01,
+                deferredCleanupRetainer:
+                    deferredRetainer
+            )
+
+        XCTAssertTrue(lease!.acquire(generation: 1))
+        operations.restoreFailuresRemaining = 9
+        XCTAssertEqual(
+            lease!.shutdown(),
+            .retryableFailure
+        )
+        lease = nil
+
+        for _ in 0..<6 {
+            XCTAssertEqual(
+                operations.restoreWriteAttempted.wait(
+                    timeout: .now() + .seconds(1)
+                ),
+                .success,
+                "The explicit shutdown and asynchronous deinit redrive must each consume one bounded three-attempt episode."
+            )
+        }
+
+        XCTAssertEqual(
+            deferredRetainer.retainedJobCount,
+            1
+        )
+        XCTAssertEqual(
+            operations.currentUID,
+            BlackHoleDefaultInputLease.canonicalDeviceUID
+        )
+        XCTAssertFalse(
+            operations.removedExactRegistration
+        )
+
+        let serviceRetainer =
+            WorldwideBlackHoleAudioRoutingCleanupRetainer()
+        let replacement =
+            WorldwideScreenRoutingOwnershipInstallationProbe()
+        let deferredCleanup:
+            @Sendable (Int) -> Bool = {
+                maximumAttemptCount in
+                BlackHoleDefaultInputLease
+                    .redriveDeferredCleanup(
+                        using: deferredRetainer,
+                        maximumAttemptCount:
+                            maximumAttemptCount
+                    )
+            }
+
+        XCTAssertFalse(
+            replacement.start(
+                using: serviceRetainer,
+                deferredDefaultInputCleanup:
+                    deferredCleanup
+            ),
+            "The actual production startup gate must block while the old exact default-input listener/route cleanup still fails."
+        )
+        XCTAssertEqual(
+            replacement.installationCount,
+            0
+        )
+        XCTAssertEqual(
+            deferredRetainer.retainedJobCount,
+            1
+        )
+        XCTAssertEqual(
+            operations.currentUID,
+            BlackHoleDefaultInputLease.canonicalDeviceUID
+        )
+        XCTAssertFalse(
+            operations.removedExactRegistration
+        )
+
+        XCTAssertTrue(
+            replacement.start(
+                using: serviceRetainer,
+                deferredDefaultInputCleanup:
+                    deferredCleanup
+            ),
+            "Replacement ownership is permitted only after the same retained exact route restoration and listener removal complete."
+        )
+        XCTAssertEqual(
+            replacement.installationCount,
+            1
+        )
+        XCTAssertEqual(
+            deferredRetainer.retainedJobCount,
+            0
+        )
+        XCTAssertEqual(
+            operations.currentUID,
+            "BuiltInMic_UID"
+        )
+        XCTAssertTrue(
+            operations.removedExactRegistration
+        )
+        XCTAssertEqual(
+            operations.listenerRemovalCompleted.wait(
+                timeout: .now() + .seconds(1)
+            ),
+            .success
+        )
+    }
+
+    func testRetainedAudioRoutingCleanupBlocksReplacementOwnershipUntilLaterLifecycleCompletes()
+        throws {
+        let retainer =
+            WorldwideBlackHoleAudioRoutingCleanupRetainer()
+        let cleanup =
+            WorldwideScreenRoutingCleanupAttemptProbe(
+                results: [false, true]
+            )
+        let stoppedService =
+            WorldwideScreenStoppedRoutingLifecycleProbe(
+                retainer: retainer,
+                cleanup: cleanup
+            )
+        stoppedService.stopWithDegradedCleanup()
+
+        XCTAssertEqual(retainer.retainedJobCount, 1)
+
+        let replacement =
+            WorldwideScreenRoutingOwnershipInstallationProbe()
+        XCTAssertFalse(
+            replacement.start(
+                using: retainer,
+                deferredDefaultInputCleanup: {
+                    _ in true
+                }
+            ),
+            "One bounded failed lifecycle redrive must block creation of any replacement monitor or lease ownership."
+        )
+        XCTAssertEqual(cleanup.attemptCount, 1)
+        XCTAssertEqual(
+            replacement.installationCount,
+            0
+        )
+        XCTAssertEqual(retainer.retainedJobCount, 1)
+
+        XCTAssertTrue(
+            replacement.start(
+                using: retainer,
+                deferredDefaultInputCleanup: {
+                    _ in true
+                }
+            ),
+            "A later lifecycle may install replacement ownership only after the retained exact cleanup succeeds."
+        )
+        XCTAssertEqual(cleanup.attemptCount, 2)
+        XCTAssertEqual(
+            replacement.installationCount,
+            1
+        )
+        XCTAssertEqual(retainer.retainedJobCount, 0)
+
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let serviceSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "macOS/Sources/CaptureServer/WorldwideScreenService.swift"
+            ),
+            encoding: .utf8
+        )
+
+        let monitorStartup = try sourceSlice(
+            in: serviceSource,
+            after: "    private func startIPhoneMicrophoneDeviceMonitoringIfNeeded()",
+            before: "    private func consumeCurrentBlackHoleDeviceSnapshot()"
+        )
+        let startupGate = try XCTUnwrap(
+            monitorStartup.range(
+                of: "redriveAndPermitNewOwnership("
+            )
+        )
+        let monitorInstallation = try XCTUnwrap(
+            monitorStartup.range(
+                of: "blackHoleDeviceAvailabilityMonitor.start"
+            )
+        )
+        XCTAssertLessThan(
+            startupGate.lowerBound,
+            monitorInstallation.lowerBound,
+            "The behavior-tested retained-cleanup gate must run before production installs a replacement monitor."
+        )
+
+        let driverSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "macOS/Sources/CaptureServer/" +
+                    "WorldwideIPhoneMicrophoneForwardingDriver.swift"
+            ),
+            encoding: .utf8
+        )
+        let productionGate = try sourceSlice(
+            in: driverSource,
+            after:
+                "enum WorldwideBlackHoleAudioRoutingStartupGate {",
+            before:
+                "/// Retains exact degraded Core Audio cleanup ownership after its originating"
+        )
+        XCTAssertTrue(
+            productionGate.contains(
+                "BlackHoleDefaultInputLease\n" +
+                    "                    .redriveRetainedDeferredCleanup("
+            ),
+            "Production replacement startup must redrive the lease-local deferred exact-cleanup domain."
+        )
+        XCTAssertTrue(
+            productionGate.contains(
+                "retainer.redriveRetained("
+            ),
+            "Production replacement startup must also redrive the service-level retained cleanup domain."
+        )
+
+        let shutdown = try sourceSlice(
+            in: serviceSource,
+            after: "    private func shutdownBlackHoleAudioRouting() {",
+            before: "    private func recordBlackHoleDefaultInputOutcome("
+        )
+        XCTAssertTrue(
+            shutdown.contains(
+                "WorldwideBlackHoleAudioRoutingCleanupRetainer\n" +
+                    "                .shared\n" +
+                    "                .retain("
+            )
+        )
+        XCTAssertFalse(
+            shutdown.contains("during object deinitialization"),
+            "Persistent degradation must be transferred to retained exact ownership rather than relying on discarded deinit state."
+        )
     }
 
     func testIPhoneMicrophoneForwardingRevalidatesAfterBlockingOutputStart() async {
@@ -645,6 +1043,283 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
             violations.append("direct-peer-acknowledgement")
         }
         return violations
+    }
+}
+
+private final class WorldwideScreenRoutingCleanupAttemptProbe:
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var results: [Bool]
+    private var attempts = 0
+
+    init(results: [Bool]) {
+        self.results = results
+    }
+
+    func attempt() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        attempts += 1
+        guard !results.isEmpty else {
+            return false
+        }
+        return results.removeFirst()
+    }
+
+    var attemptCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return attempts
+    }
+}
+
+private final class WorldwideScreenStoppedRoutingLifecycleProbe:
+    @unchecked Sendable
+{
+    private let id = UUID()
+    private let retainer:
+        any WorldwideBlackHoleAudioRoutingCleanupRetaining
+    private let cleanup:
+        WorldwideScreenRoutingCleanupAttemptProbe
+    private let lock = NSLock()
+    private var didStop = false
+
+    init(
+        retainer:
+            any WorldwideBlackHoleAudioRoutingCleanupRetaining,
+        cleanup:
+            WorldwideScreenRoutingCleanupAttemptProbe
+    ) {
+        self.retainer = retainer
+        self.cleanup = cleanup
+    }
+
+    func stopWithDegradedCleanup() {
+        lock.lock()
+        guard !didStop else {
+            lock.unlock()
+            return
+        }
+        didStop = true
+        lock.unlock()
+
+        let cleanup = cleanup
+        retainer.retain(id: id) {
+            cleanup.attempt()
+        }
+    }
+}
+
+private final class WorldwideScreenRoutingOwnershipInstallationProbe:
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var installationCountStorage = 0
+
+    var installationCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return installationCountStorage
+    }
+
+    func start(
+        using retainer:
+            any WorldwideBlackHoleAudioRoutingCleanupRetaining,
+        deferredDefaultInputCleanup:
+            @Sendable (Int) -> Bool = {
+                maximumAttemptCount in
+                BlackHoleDefaultInputLease
+                    .redriveRetainedDeferredCleanup(
+                        maximumAttemptCount:
+                            maximumAttemptCount
+                    )
+            }
+    ) -> Bool {
+        guard WorldwideBlackHoleAudioRoutingStartupGate
+                .redriveAndPermitNewOwnership(
+                    retainer: retainer,
+                    maximumAttemptCount: 1,
+                    deferredDefaultInputCleanup:
+                        deferredDefaultInputCleanup
+                ) else {
+            return false
+        }
+        lock.lock()
+        installationCountStorage += 1
+        lock.unlock()
+        return true
+    }
+}
+
+private final class
+    WorldwideScreenDefaultInputLeaseOperationsFake:
+    BlackHoleDefaultInputLeaseOperations,
+    @unchecked Sendable
+{
+    private struct Listener:
+        @unchecked Sendable
+    {
+        var address: AudioObjectPropertyAddress
+        let queue: DispatchQueue
+        let registration:
+            CoreAudioPropertyListenerRegistration
+    }
+
+    private let lock = NSLock()
+    private let devices: [AudioDeviceID: String] = [
+        1: "BuiltInMic_UID",
+        2: "BlackHole2ch_UID",
+    ]
+    private var currentDeviceID: AudioDeviceID = 1
+    private var listener: Listener?
+    private var restoreFailuresRemainingStorage = 0
+    private var removedExactRegistrationStorage = false
+
+    let restoreWriteAttempted =
+        DispatchSemaphore(value: 0)
+    let listenerRemovalCompleted =
+        DispatchSemaphore(value: 0)
+
+    var restoreFailuresRemaining: Int {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return restoreFailuresRemainingStorage
+        }
+        set {
+            lock.lock()
+            restoreFailuresRemainingStorage =
+                max(0, newValue)
+            lock.unlock()
+        }
+    }
+
+    var currentUID: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return devices[currentDeviceID]!
+    }
+
+    var removedExactRegistration: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return removedExactRegistrationStorage
+    }
+
+    func addDefaultInputListener(
+        address: inout AudioObjectPropertyAddress,
+        queue: DispatchQueue,
+        listener registration:
+            CoreAudioPropertyListenerRegistration
+    ) -> OSStatus {
+        lock.lock()
+        listener = Listener(
+            address: address,
+            queue: queue,
+            registration: registration
+        )
+        lock.unlock()
+        return noErr
+    }
+
+    func removeDefaultInputListener(
+        address: inout AudioObjectPropertyAddress,
+        queue: DispatchQueue,
+        listener registration:
+            CoreAudioPropertyListenerRegistration
+    ) -> OSStatus {
+        let removed: Bool
+        lock.lock()
+        if let listener {
+            removed =
+                listener.address.mSelector
+                    == address.mSelector
+                && listener.address.mScope
+                    == address.mScope
+                && listener.address.mElement
+                    == address.mElement
+                && listener.queue === queue
+                && listener.registration
+                    === registration
+            if removed {
+                self.listener = nil
+                removedExactRegistrationStorage =
+                    true
+            }
+        } else {
+            removed = true
+        }
+        lock.unlock()
+
+        if removed {
+            listenerRemovalCompleted.signal()
+            return noErr
+        }
+        return OSStatus(-66_501)
+    }
+
+    func currentDefaultInputUID() throws
+        -> String {
+        currentUID
+    }
+
+    func resolveDeviceID(
+        uid: String
+    ) throws -> AudioDeviceID {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let device = devices.first(
+            where: { $0.value == uid }
+        )?.key else {
+            throw CaptureError.audioDeviceNotFound(
+                "injected missing UID"
+            )
+        }
+        return device
+    }
+
+    func compareAndSetDefaultInputDevice(
+        _ deviceID: AudioDeviceID,
+        expectedCurrentUID: String
+    ) -> BlackHoleDefaultInputMutationResult {
+        if deviceID == 1 {
+            restoreWriteAttempted.signal()
+        }
+
+        let result: (
+            BlackHoleDefaultInputMutationResult,
+            Listener?
+        )
+        lock.lock()
+        guard devices[currentDeviceID]
+                == expectedCurrentUID else {
+            lock.unlock()
+            return .currentInputMismatch
+        }
+        if deviceID == 1,
+           restoreFailuresRemainingStorage > 0 {
+            restoreFailuresRemainingStorage -= 1
+            lock.unlock()
+            return .written(OSStatus(-66_502))
+        }
+        guard devices[deviceID] != nil else {
+            lock.unlock()
+            return .written(OSStatus(-66_503))
+        }
+        currentDeviceID = deviceID
+        result = (.written(noErr), listener)
+        lock.unlock()
+
+        if let listener = result.1 {
+            listener.queue.sync {
+                var address = listener.address
+                withUnsafePointer(to: &address) {
+                    listener.registration.block(1, $0)
+                }
+            }
+        }
+        return result.0
     }
 }
 

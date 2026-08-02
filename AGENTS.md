@@ -70,7 +70,7 @@ manual IP addresses, router configuration, or public TCP ports.
   TestFlight app so physical validation cannot replace the user's release container
   or masquerade as a TestFlight-to-TestFlight update.
 - Run the persistent Mac service from the signed `opensteamer Host.app` bundle with
-  the intentionally preserved identifier `org.example.AudioStreamer.CaptureServer`.
+  the intentionally preserved identifier `com.elamin.AudioStreamer.CaptureServer`.
   That pre-rebrand identifier is compatibility data: changing it would detach existing
   Screen Recording, Accessibility, and Keychain grants. Keep the signed identity stable;
   an obsolete host bundle or a naked executable can bind

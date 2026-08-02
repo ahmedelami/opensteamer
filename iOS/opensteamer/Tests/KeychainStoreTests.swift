@@ -42,6 +42,19 @@ final class KeychainStoreTests: XCTestCase {
         )
         XCTAssertEqual(KeychainStore.pairedMacItem.service, "org.example.AudioStreamer")
         XCTAssertEqual(KeychainStore.pairedMacItem.account, "worldwide-paired-mac")
+        XCTAssertEqual(
+            KeychainStore.legacyViewerDeviceIdentityItem.service,
+            "com.elamin.AudioStreamer"
+        )
+        XCTAssertEqual(
+            KeychainStore.legacyViewerDeviceIdentityItem.account,
+            "worldwide-viewer-device-identity"
+        )
+        XCTAssertEqual(
+            KeychainStore.legacyPairedMacItem.service,
+            "com.elamin.AudioStreamer"
+        )
+        XCTAssertEqual(KeychainStore.legacyPairedMacItem.account, "worldwide-paired-mac")
         XCTAssertNotEqual(
             KeychainStore.remoteTokenItem,
             KeychainStore.worldwideInvitationCodeItem

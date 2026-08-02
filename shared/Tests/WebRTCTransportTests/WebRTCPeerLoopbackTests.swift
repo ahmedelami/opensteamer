@@ -175,6 +175,72 @@ private func sampleIPhoneMicrophoneSenderStatistics(
 /// Exercises two real in-process native peers. Milestones, exact signaling counts, decoded PCM
 /// waveform evidence, media frames, and authorization revocation form the end-to-end oracles.
 final class WebRTCPeerLoopbackTests: XCTestCase {
+    func testIPhoneMicrophoneTrackCreationPolicyMatchesPlatformAndConfiguration() {
+        #if os(iOS)
+        XCTAssertTrue(
+            WebRTCIPhoneMicrophoneTrackCreationPolicy.shouldCreate(role: .viewer)
+        )
+        XCTAssertFalse(
+            WebRTCIPhoneMicrophoneTrackCreationPolicy.shouldCreate(role: .host)
+        )
+        #elseif DEBUG && os(macOS)
+        XCTAssertFalse(
+            WebRTCIPhoneMicrophoneTrackCreationPolicy.shouldCreate(
+                role: .viewer,
+                useHeadlessMacViewerAudioForTesting: false
+            )
+        )
+        XCTAssertTrue(
+            WebRTCIPhoneMicrophoneTrackCreationPolicy.shouldCreate(
+                role: .viewer,
+                useHeadlessMacViewerAudioForTesting: true
+            )
+        )
+        XCTAssertFalse(
+            WebRTCIPhoneMicrophoneTrackCreationPolicy.shouldCreate(
+                role: .host,
+                useHeadlessMacViewerAudioForTesting: true
+            )
+        )
+        #else
+        XCTAssertFalse(
+            WebRTCIPhoneMicrophoneTrackCreationPolicy.shouldCreate(
+                role: .viewer,
+                useHeadlessMacViewerAudioForTesting: true
+            )
+        )
+        XCTAssertFalse(
+            WebRTCIPhoneMicrophoneTrackCreationPolicy.shouldCreate(role: .host)
+        )
+        #endif
+    }
+
+    func testExactIPhoneMicrophoneSenderStatisticsRejectsEmptyAndDuplicateRecordIDs() {
+        let authorization = SenderStatisticsIdentity()
+        let captured = senderStatisticsValidation(
+            authorizationIdentity: ObjectIdentifier(authorization)
+        )
+        let callbackCompletedAt = Date(timeIntervalSince1970: 1_000)
+        let currentTime = Date(timeIntervalSince1970: 1_000.1)
+        let reportDate = Date(timeIntervalSince1970: 999.75)
+
+        for recordIDs in [[], [""], ["duplicate", "duplicate"]] {
+            XCTAssertNil(
+                sampleIPhoneMicrophoneSenderStatistics(
+                    parsed: senderOutboundStatistics(
+                        reportDate: reportDate,
+                        outboundRTPRecordIDs: recordIDs
+                    ),
+                    captured: captured,
+                    current: captured,
+                    diagnostics: admittedIPhoneMicrophoneSenderDiagnostics(),
+                    callbackCompletedAt: callbackCompletedAt,
+                    currentTime: currentTime
+                )
+            )
+        }
+    }
+
 #if DEBUG
     func testFailedVisibilitySendStillRevokesViewerInputSynchronously() async throws {
         let viewer = try WebRTCPeer(

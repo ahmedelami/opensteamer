@@ -4,14 +4,14 @@ import ScreenCaptureKit
 
 /// Owns the ScreenCaptureKit stream used by file-backed system-audio capture.
 ///
-/// Stream callbacks arrive on `sampleQueue`; the downstream consumer is
-/// responsible for draining its work before capture resources are released.
+/// ScreenCaptureKit invokes each audio callback on the downstream processor's exact
+/// serial ownership queue. The processor consumes the non-Sendable sample buffer
+/// synchronously, so no CoreMedia object crosses a second concurrency boundary.
 final class ScreenCaptureAudioSource: NSObject {
     private let displayID: UInt32?
     private let logger: Logger
     private var stream: SCStream?
     private var output: StreamOutput?
-    private let sampleQueue = DispatchQueue(label: "opensteamer.ScreenCaptureKit")
 
     init(displayID: UInt32?, logger: Logger) {
         self.displayID = displayID
@@ -33,10 +33,14 @@ final class ScreenCaptureAudioSource: NSObject {
         configuration.height = 2
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
-        let output = StreamOutput(consumer: consumer)
+        let registration = Self.makeOutputRegistration(consumer: consumer)
         let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
-        try stream.addStreamOutput(output, type: .audio, sampleHandlerQueue: sampleQueue)
-        self.output = output
+        try stream.addStreamOutput(
+            registration.output,
+            type: .audio,
+            sampleHandlerQueue: registration.sampleHandlerQueue
+        )
+        output = registration.output
         self.stream = stream
 
         logger.info("Starting ScreenCaptureKit capture")
@@ -49,7 +53,17 @@ final class ScreenCaptureAudioSource: NSObject {
         logger.info("Stopping ScreenCaptureKit capture")
         try await stream.stopCapture()
         self.stream = nil
-        self.output = nil
+        output = nil
+    }
+
+    /// Builds the production registration without introducing an intermediate queue.
+    static func makeOutputRegistration(
+        consumer: SampleBufferConsumer
+    ) -> StreamOutputRegistration {
+        StreamOutputRegistration(
+            output: StreamOutput(consumer: consumer),
+            sampleHandlerQueue: consumer.sampleHandlerQueue
+        )
     }
 
     /// Applies explicit display selection and reports configuration errors early.

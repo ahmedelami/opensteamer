@@ -965,15 +965,14 @@ final class WorldwideSessionViewModel: ObservableObject {
             return await requester()
         }
         #endif
-        let session = AVAudioSession.sharedInstance()
-        switch session.recordPermission {
+        switch AVAudioApplication.shared.recordPermission {
         case .granted:
             return true
         case .denied:
             return false
         case .undetermined:
             return await withCheckedContinuation { continuation in
-                session.requestRecordPermission { granted in
+                AVAudioApplication.requestRecordPermission { granted in
                     continuation.resume(returning: granted)
                 }
             }
@@ -1029,10 +1028,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             microphoneStateText = "Paused — waiting for app"
             return
         }
-        guard isRemoteAudioPlaying,
-              canViewScreen,
+        guard canViewScreen,
               let expectedPeer = peer else {
-            microphoneStateText = "Paused — waiting for healthy audio"
+            microphoneStateText = "Paused — waiting for healthy connection"
             return
         }
 
@@ -4893,6 +4891,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         // The authenticated, current-generation inactive acknowledgement is the recovery proof
         // that permits remote audio to leave the fail-closed mute gate.
         audioLifecycle.transportBecameHealthy()
+        establishAutomaticIPhoneMicrophoneIntentIfEligible()
+        continueIPhoneMicrophoneEnablementIfPossible()
         await recoveryCoordinator?.iceStateChanged(.connected)
     }
 
@@ -5630,6 +5630,36 @@ final class WorldwideSessionViewModel: ObservableObject {
     func debugMarkViewerTransportUncertainForAutomaticMicrophoneTests() {
         isPeerConnected = false
         markTransportUncertain("Recovering secure media")
+    }
+
+    func debugCompleteRecoveryProbeForAutomaticMicrophoneTests() async {
+        guard let peer else { return }
+
+        recoveryProofEpoch &+= 1
+        if recoveryProofEpoch == 0 {
+            recoveryProofEpoch = 1
+        }
+        recoveryProofRequired = true
+        let requestID: UInt64 = 0xA11C_EC01
+        let requestKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: sessionGeneration,
+            requestID: requestID
+        )
+        pendingRecoveryProbe = PendingRecoveryProbe(
+            sessionGeneration: sessionGeneration,
+            epoch: recoveryProofEpoch,
+            requestKey: requestKey,
+            expectedPeer: peer
+        )
+        await completeRecoveryProbe(
+            with: WebRTCControlAcknowledgement(
+                id: requestID,
+                state: .inactive
+            ),
+            inputAuthorization: nil,
+            sourcePeer: peer,
+            sourceGeneration: sessionGeneration
+        )
     }
 
     @discardableResult

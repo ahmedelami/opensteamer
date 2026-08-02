@@ -202,6 +202,30 @@ write_current_automatic_signing_fixture "$AUTOMATIC_SIGNING"
 commit_all "$AUTOMATIC_SIGNING"
 "$AUTOMATIC_SIGNING/scripts/check-product-branding.sh" "$AUTOMATIC_SIGNING" >/dev/null
 
+HOST_CONTRACTS="$TEMPORARY_ROOT/host-contracts"
+initialize_repository "$HOST_CONTRACTS"
+mkdir -p \
+  "$HOST_CONTRACTS/macOS/LaunchAgents" \
+  "$HOST_CONTRACTS/macOS/Tests/CaptureServerTests" \
+  "$HOST_CONTRACTS/macOS/scripts"
+print -r -- "8. \`${PRODUCTION_URL}\`" >"$HOST_CONTRACTS/HOST_MIGRATION.md"
+print -r -- "<string>${PRODUCTION_URL}</string>" \
+  >"$HOST_CONTRACTS/macOS/LaunchAgents/org.example.opensteamer.worldwide.plist"
+print -r -- "\"${PRODUCTION_URL}\"," \
+  >"$HOST_CONTRACTS/macOS/Tests/CaptureServerTests/MacHostDeploymentContractTests.swift"
+print -r -- "readonly REVIEWED_RENDEZVOUS_URL=\"${PRODUCTION_URL}\"" \
+  >"$HOST_CONTRACTS/macOS/scripts/verify-mac-host-launch-state.sh"
+commit_all "$HOST_CONTRACTS"
+"$HOST_CONTRACTS/scripts/check-product-branding.sh" "$HOST_CONTRACTS" >/dev/null
+
+HOST_CONTRACT_WRONG_CONTEXT="$TEMPORARY_ROOT/host-contract-wrong-context"
+initialize_repository "$HOST_CONTRACT_WRONG_CONTEXT"
+print -r -- "9. \`${PRODUCTION_URL}\`" \
+  >"$HOST_CONTRACT_WRONG_CONTEXT/HOST_MIGRATION.md"
+commit_all "$HOST_CONTRACT_WRONG_CONTEXT"
+require_failure "$HOST_CONTRACT_WRONG_CONTEXT" \
+  "HOST_MIGRATION.md:1:${PRODUCTION_HOST}"
+
 RENDEZVOUS_WRONG_PATH="$TEMPORARY_ROOT/rendezvous-wrong-path"
 initialize_repository "$RENDEZVOUS_WRONG_PATH"
 write_current_automatic_signing_fixture "$RENDEZVOUS_WRONG_PATH"

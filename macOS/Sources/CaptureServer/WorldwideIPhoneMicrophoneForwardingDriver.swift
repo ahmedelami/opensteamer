@@ -24,6 +24,7 @@ enum WorldwideIPhoneMicrophoneForwardingPhase:
     case starting
     case admittingTrack
     case checkingReadiness
+    case awaitingFrames
     case forwardingReady
     case forwardingHealthy
     case outputUnavailable
@@ -46,6 +47,7 @@ enum WorldwideIPhoneMicrophoneForwardingFailureCategory:
     case admissionFailed
     case readinessFailed
     case runtimeEnqueueFailed
+    case runtimeProgressStalled
 }
 
 struct WorldwideIPhoneMicrophoneForwardingKey:
@@ -174,6 +176,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         let deviceUID: String
         let output: any WorldwideIPhoneMicrophoneOutput
         var exactTrackAdmitted = false
+        var deferredReadyProgress:
+            BlackHoleMicrophoneOutputProgressSnapshot?
 
         init(
             id: UUID,
@@ -195,7 +199,9 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     private let admit: Admission
     private let disableTrack: TrackDisabler
     private let readinessSleep: ReadinessSleep
+    private let retrySleep: ReadinessSleep
     private let readinessSampleLimit: Int
+    private let maximumAttemptCountPerKey: Int
     private let makeAttemptID: @Sendable () -> UUID
 
     private var activeMonitorEpoch: UUID?
@@ -210,8 +216,13 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     private var trackGeneration: UInt64 = 0
 
     private var currentAttempt: Attempt?
-    private var attemptedKeys:
-        Set<WorldwideIPhoneMicrophoneForwardingKey> = []
+    private struct AttemptHistory {
+        var count: Int
+        var mayRetry: Bool
+    }
+
+    private var attemptHistory:
+        [WorldwideIPhoneMicrophoneForwardingKey: AttemptHistory] = [:]
     private var attemptedKeyOrder:
         [WorldwideIPhoneMicrophoneForwardingKey] = []
     private var lastAttemptedKey:
@@ -234,7 +245,11 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         readinessSleep: @escaping ReadinessSleep = {
             try await Task.sleep(for: .milliseconds(20))
         },
-        readinessSampleLimit: Int = 20,
+        readinessSampleLimit: Int = 50,
+        retrySleep: @escaping ReadinessSleep = {
+            try await Task.sleep(for: .milliseconds(100))
+        },
+        maximumAttemptCountPerKey: Int = 3,
         makeAttemptID: @escaping @Sendable () -> UUID = {
             UUID()
         }
@@ -245,7 +260,12 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         self.admit = admit
         self.disableTrack = disableTrack
         self.readinessSleep = readinessSleep
+        self.retrySleep = retrySleep
         self.readinessSampleLimit = max(2, readinessSampleLimit)
+        self.maximumAttemptCountPerKey = max(
+            1,
+            maximumAttemptCountPerKey
+        )
         self.makeAttemptID = makeAttemptID
         phase = policy == .suppressedForLANCoexistence
             ? .suppressedForLANCoexistence
@@ -427,8 +447,10 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     @discardableResult
     func handleRuntimeFailure(
         isolation: isolated (any Actor)? = #isolation,
-        from output: any WorldwideIPhoneMicrophoneOutput
-    ) -> Bool {
+        from output: any WorldwideIPhoneMicrophoneOutput,
+        category:
+            WorldwideIPhoneMicrophoneForwardingFailureCategory
+    ) async -> Bool {
         guard !isStopped,
               let attempt = currentAttempt,
               attempt.output === output else {
@@ -440,9 +462,15 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             disableTrack(attempt.track)
         }
         attempt.output.stop()
-        lastFailureCategory = .runtimeEnqueueFailed
+        lastFailureCategory = category
         phase = .runtimeFailed
-        redriveRequested = true
+        redriveRequested = markRetryable(
+            attempt.key,
+            category: category
+        )
+        if redriveRequested {
+            await drive(isolation: isolation)
+        }
         return true
     }
 
@@ -466,6 +494,12 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         let progress = currentAttempt?
             .output
             .forwardingProgressSnapshot ?? .zero
+        if let currentAttempt {
+            promoteDeferredReadinessIfPossible(
+                attempt: currentAttempt,
+                progress: progress
+            )
+        }
         return WorldwideIPhoneMicrophoneForwardingHostSnapshot(
             policy: policy,
             phase: phase,
@@ -534,8 +568,26 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             updateIneligiblePhase()
             return
         }
-        guard !attemptedKeys.contains(candidate.key) else {
+        guard candidateMayBeAttempted(candidate.key) else {
             return
+        }
+
+        if attemptHistory[candidate.key] != nil {
+            do {
+                try await retrySleep()
+            } catch {
+                guard candidateStillCurrent(candidate) else {
+                    redriveRequested = true
+                    return
+                }
+                markRetryExhausted(candidate.key)
+                return
+            }
+
+            guard candidateStillCurrent(candidate) else {
+                redriveRequested = true
+                return
+            }
         }
 
         rememberAttempted(candidate.key)
@@ -568,7 +620,11 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
                 finishSupersededAttempt(attempt)
                 return
             }
-            failAttempt(attempt, category: .startFailed)
+            failAttempt(
+                attempt,
+                category: .startFailed,
+                allowRetry: !Task.isCancelled
+            )
             return
         }
 
@@ -607,6 +663,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     ) async {
         var previousReadyProgress:
             BlackHoleMicrophoneOutputProgressSnapshot?
+        var previousProgress:
+            BlackHoleMicrophoneOutputProgressSnapshot?
 
         for sampleIndex in 0..<readinessSampleLimit {
             guard candidateStillOwnsAttempt(attempt) else {
@@ -619,17 +677,33 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             if progress.enqueueFailureCount > 0 {
                 failAttempt(
                     attempt,
-                    category: .runtimeEnqueueFailed
+                    category: .runtimeEnqueueFailed,
+                    allowRetry: !Task.isCancelled
                 )
                 return
             }
             guard progress.queueRunning else {
                 failAttempt(
                     attempt,
-                    category: .readinessFailed
+                    category: .readinessFailed,
+                    allowRetry: !Task.isCancelled
                 )
                 return
             }
+
+            if let previousProgress,
+               progress.postStartCallbackCount
+                > previousProgress.postStartCallbackCount,
+               progress.successfulFrameCount
+                == previousProgress.successfulFrameCount {
+                // A running callback clock with successful enqueues is a
+                // healthy-silent queue. The remote microphone may still be
+                // waiting for permission or its first PCM. Keep this exact
+                // attempt admitted instead of consuming its retry budget.
+                phase = .awaitingFrames
+                return
+            }
+            previousProgress = progress
 
             if WorldwideIPhoneMicrophoneForwardingProgressEvaluator
                 .isReady(progress) {
@@ -664,7 +738,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
                 }
                 failAttempt(
                     attempt,
-                    category: .readinessFailed
+                    category: .readinessFailed,
+                    allowRetry: !Task.isCancelled
                 )
                 return
             }
@@ -674,7 +749,11 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             finishSupersededAttempt(attempt)
             return
         }
-        failAttempt(attempt, category: .readinessFailed)
+        failAttempt(
+            attempt,
+            category: .readinessFailed,
+            allowRetry: !Task.isCancelled
+        )
     }
 
     private var hasUnattemptedEligibleCandidate: Bool {
@@ -682,7 +761,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
               let candidate = currentCandidate() else {
             return false
         }
-        return !attemptedKeys.contains(candidate.key)
+        return candidateMayBeAttempted(candidate.key)
     }
 
     private func currentCandidate() -> Candidate? {
@@ -735,6 +814,50 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         return true
     }
 
+    private func candidateStillCurrent(
+        _ candidate: Candidate
+    ) -> Bool {
+        guard let current = currentCandidate(),
+              current.key == candidate.key,
+              current.peer === candidate.peer,
+              current.track === candidate.track,
+              current.deviceUID == candidate.deviceUID else {
+            return false
+        }
+        return true
+    }
+
+    private func promoteDeferredReadinessIfPossible(
+        attempt: Attempt,
+        progress: BlackHoleMicrophoneOutputProgressSnapshot
+    ) {
+        guard currentAttempt === attempt,
+              attempt.exactTrackAdmitted,
+              phase == .awaitingFrames
+                || phase == .forwardingReady else {
+            return
+        }
+        guard WorldwideIPhoneMicrophoneForwardingProgressEvaluator
+                .isReady(progress) else {
+            attempt.deferredReadyProgress = nil
+            phase = .awaitingFrames
+            return
+        }
+
+        if let previous = attempt.deferredReadyProgress,
+           WorldwideIPhoneMicrophoneForwardingProgressEvaluator
+            .provesContinuingHealth(
+                previous: previous,
+                current: progress
+            ) {
+            phase = .forwardingHealthy
+            return
+        }
+
+        attempt.deferredReadyProgress = progress
+        phase = .forwardingReady
+    }
+
     private func invalidateCurrentAttempt() {
         guard let attempt = currentAttempt else { return }
         currentAttempt = nil
@@ -765,7 +888,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     private func failAttempt(
         _ attempt: Attempt,
         category:
-            WorldwideIPhoneMicrophoneForwardingFailureCategory
+            WorldwideIPhoneMicrophoneForwardingFailureCategory,
+        allowRetry: Bool = true
     ) {
         guard currentAttempt === attempt else {
             finishSupersededAttempt(attempt)
@@ -779,7 +903,11 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         attempt.output.stop()
         lastFailureCategory = category
         phase = Self.phase(for: category)
-        redriveRequested = true
+        redriveRequested = allowRetry
+            && markRetryable(
+                attempt.key,
+                category: category
+            )
     }
 
     private func failWithoutOutput(
@@ -798,21 +926,70 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         disableTrack(candidate.track)
         lastFailureCategory = category
         phase = Self.phase(for: category)
-        redriveRequested = true
+        redriveRequested = markRetryable(
+            candidate.key,
+            category: category
+        )
     }
 
     private func rememberAttempted(
         _ key: WorldwideIPhoneMicrophoneForwardingKey
     ) {
-        guard attemptedKeys.insert(key).inserted else { return }
-        attemptedKeyOrder.append(key)
+        if var history = attemptHistory[key] {
+            history.count += 1
+            history.mayRetry = false
+            attemptHistory[key] = history
+        } else {
+            attemptHistory[key] = AttemptHistory(
+                count: 1,
+                mayRetry: false
+            )
+            attemptedKeyOrder.append(key)
+        }
 
         let maximumRetainedKeys = 256
         while attemptedKeyOrder.count > maximumRetainedKeys {
             let removed = attemptedKeyOrder.removeFirst()
-            attemptedKeys.remove(removed)
+            attemptHistory.removeValue(forKey: removed)
         }
         lastAttemptedKey = key
+    }
+
+    private func candidateMayBeAttempted(
+        _ key: WorldwideIPhoneMicrophoneForwardingKey
+    ) -> Bool {
+        guard let history = attemptHistory[key] else {
+            return true
+        }
+        return history.mayRetry
+            && history.count < maximumAttemptCountPerKey
+    }
+
+    @discardableResult
+    private func markRetryable(
+        _ key: WorldwideIPhoneMicrophoneForwardingKey,
+        category:
+            WorldwideIPhoneMicrophoneForwardingFailureCategory
+    ) -> Bool {
+        guard Self.isRetryable(category),
+              var history = attemptHistory[key],
+              history.count < maximumAttemptCountPerKey else {
+            return false
+        }
+        history.mayRetry = true
+        attemptHistory[key] = history
+        return true
+    }
+
+    private func markRetryExhausted(
+        _ key: WorldwideIPhoneMicrophoneForwardingKey
+    ) {
+        guard var history = attemptHistory[key] else {
+            return
+        }
+        history.mayRetry = false
+        attemptHistory[key] = history
+        redriveRequested = false
     }
 
     private func disableCurrentTrack() {
@@ -859,7 +1036,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         }
 
         if let candidate = currentCandidate(),
-           attemptedKeys.contains(candidate.key) {
+           attemptHistory[candidate.key] != nil,
+           !candidateMayBeAttempted(candidate.key) {
             // Preserve the terminal result for this already-attempted key.
             return
         }
@@ -881,8 +1059,22 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             .admissionFailed
         case .readinessFailed:
             .readinessFailed
-        case .runtimeEnqueueFailed:
+        case .runtimeEnqueueFailed, .runtimeProgressStalled:
             .runtimeFailed
+        }
+    }
+
+    private static func isRetryable(
+        _ category:
+            WorldwideIPhoneMicrophoneForwardingFailureCategory
+    ) -> Bool {
+        switch category {
+        case .outputUnavailable, .startFailed,
+             .readinessFailed, .runtimeEnqueueFailed,
+             .runtimeProgressStalled:
+            true
+        case .monitoringFailed, .admissionFailed:
+            false
         }
     }
 
@@ -898,12 +1090,15 @@ protocol WorldwideBlackHoleDefaultInputLeasing:
     AnyObject,
     Sendable
 {
-    func acquire(
+    func acquisitionResult(
         generation: UInt64,
         targetUID: String
-    ) -> Bool
-    func release(generation: UInt64)
+    ) -> BlackHoleDefaultInputLeaseAcquisitionResult
+    func release(
+        generation: UInt64
+    ) -> BlackHoleDefaultInputLeaseReleaseResult
     func shutdown()
+        -> BlackHoleDefaultInputLeaseReleaseResult
 }
 
 extension BlackHoleDefaultInputLease:
@@ -919,6 +1114,7 @@ struct WorldwideBlackHoleDefaultInputKey:
     let peerGeneration: UInt64
     let connectionGeneration: UInt64
     let leaseGeneration: UInt64
+    let deviceUID: String
 }
 
 enum WorldwideBlackHoleDefaultInputOutcome:
@@ -934,6 +1130,202 @@ enum WorldwideBlackHoleDefaultInputOutcome:
     case suppressed
 }
 
+enum WorldwideBlackHoleAudioRoutingCleanupResult:
+    Equatable,
+    Sendable
+{
+    case cleaned
+    case degraded
+}
+
+/// Runs default-input and device-list cleanup as one bounded lifecycle policy.
+///
+/// Every episode drives both owners. A completed half remains safe to call
+/// idempotently while the other half is redriven with its retained exact
+/// Core Audio identity.
+enum WorldwideBlackHoleAudioRoutingCleanupPolicy {
+    static func run(
+        maximumEpisodeCount: Int,
+        shutdownDefaultInput:
+            () -> WorldwideBlackHoleDefaultInputOutcome,
+        stopDeviceMonitor:
+            () -> BlackHoleDeviceAvailabilityMonitorStopResult
+    ) -> WorldwideBlackHoleAudioRoutingCleanupResult {
+        let boundedEpisodeCount = max(
+            1,
+            maximumEpisodeCount
+        )
+
+        for _ in 0..<boundedEpisodeCount {
+            let defaultInputOutcome =
+                shutdownDefaultInput()
+            let monitorOutcome =
+                stopDeviceMonitor()
+
+            if defaultInputOutcome != .degraded,
+               monitorOutcome == .stopped {
+                return .cleaned
+            }
+        }
+
+        return .degraded
+    }
+}
+
+protocol WorldwideBlackHoleAudioRoutingCleanupRetaining:
+    AnyObject,
+    Sendable
+{
+    func retain(
+        id: UUID,
+        attempt: @escaping @Sendable () -> Bool
+    )
+    func remove(id: UUID)
+
+    @discardableResult
+    func redriveRetained(
+        maximumAttemptCount: Int
+    ) -> Int
+
+    var retainedJobCount: Int { get }
+}
+
+/// One shared lifecycle fence between retained exact Core Audio cleanup and
+/// installation of any replacement monitor/default-input ownership.
+enum WorldwideBlackHoleAudioRoutingStartupGate {
+    static func redriveAndPermitNewOwnership(
+        retainer:
+            any WorldwideBlackHoleAudioRoutingCleanupRetaining,
+        maximumAttemptCount: Int = 1,
+        deferredDefaultInputCleanup:
+            @Sendable (Int) -> Bool = {
+                maximumAttemptCount in
+                BlackHoleDefaultInputLease
+                    .redriveRetainedDeferredCleanup(
+                        maximumAttemptCount:
+                            maximumAttemptCount
+                    )
+            }
+    ) -> Bool {
+        let defaultInputCleanupCompleted =
+            deferredDefaultInputCleanup(
+                maximumAttemptCount
+            )
+        let serviceCleanupCompleted =
+            retainer.redriveRetained(
+                maximumAttemptCount:
+                    maximumAttemptCount
+            ) == 0
+        return defaultInputCleanupCompleted
+            && serviceCleanupCompleted
+    }
+}
+
+/// Retains exact degraded Core Audio cleanup ownership after its originating
+/// service has stopped.
+///
+/// Each redrive call has one global attempt budget shared across all retained
+/// jobs. A failed job moves to the back of the queue and remains retained for a
+/// later explicit lifecycle redrive; there is no timer loop or unbounded retry.
+final class WorldwideBlackHoleAudioRoutingCleanupRetainer:
+    WorldwideBlackHoleAudioRoutingCleanupRetaining,
+    @unchecked Sendable
+{
+    private struct Job {
+        let id: UUID
+        let attempt: @Sendable () -> Bool
+    }
+
+    static let shared =
+        WorldwideBlackHoleAudioRoutingCleanupRetainer()
+
+    private let lock = NSLock()
+    private var jobs: [UUID: Job] = [:]
+    private var jobOrder: [UUID] = []
+
+    func retain(
+        id: UUID,
+        attempt: @escaping @Sendable () -> Bool
+    ) {
+        withLock {
+            let isNew = jobs[id] == nil
+            jobs[id] = Job(
+                id: id,
+                attempt: attempt
+            )
+            if isNew {
+                jobOrder.append(id)
+            }
+        }
+    }
+
+    func remove(id: UUID) {
+        withLock {
+            jobs.removeValue(forKey: id)
+            jobOrder.removeAll {
+                $0 == id
+            }
+        }
+    }
+
+    /// Performs at most `maximumAttemptCount` total cleanup episodes, not that
+    /// many episodes per retained owner.
+    @discardableResult
+    func redriveRetained(
+        maximumAttemptCount: Int
+    ) -> Int {
+        let boundedAttemptCount = max(
+            0,
+            maximumAttemptCount
+        )
+
+        for _ in 0..<boundedAttemptCount {
+            let job: Job? = withLock {
+                while let id = jobOrder.first {
+                    jobOrder.removeFirst()
+                    if let job = jobs[id] {
+                        return job
+                    }
+                }
+                return nil
+            }
+            guard let job else {
+                break
+            }
+
+            let completed = job.attempt()
+            withLock {
+                guard jobs[job.id] != nil else {
+                    return
+                }
+                if completed {
+                    jobs.removeValue(
+                        forKey: job.id
+                    )
+                } else {
+                    jobOrder.append(job.id)
+                }
+            }
+        }
+
+        return retainedJobCount
+    }
+
+    var retainedJobCount: Int {
+        withLock {
+            jobs.count
+        }
+    }
+
+    private func withLock<T>(
+        _ body: () -> T
+    ) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+}
+
 /// Connection-level default-input ownership, deliberately independent of remote
 /// track arrival, decoded PCM, and forwarding readiness.
 final class WorldwideBlackHoleDefaultInputCoordinator {
@@ -945,28 +1337,59 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         let deviceUID: String
     }
 
+    private enum ReleaseDisposition {
+        case noChange
+        case released
+        case retryableFailure
+        case externallySuperseded
+    }
+
     private let policy:
         WorldwideIPhoneMicrophoneForwardingPolicy
     private let lease:
         any WorldwideBlackHoleDefaultInputLeasing
+    private let maximumAcquisitionAttemptCount: Int
+    private let maximumReleaseAttemptCount: Int
+    private let maximumShutdownAttemptCount: Int
 
     private var activeMonitorEpoch: UUID?
     private var monitorSnapshot: BlackHoleDeviceAvailabilitySnapshot?
     private var healthyPeerGeneration: UInt64?
+    private var highestPeerGenerationSeen: UInt64 = 0
     private var connectionGeneration: UInt64 = 0
+    private var nextLeaseGeneration: UInt64 = 0
     private var activeKey: WorldwideBlackHoleDefaultInputKey?
     private var activeSelectionConfirmed = false
+    private var releaseIsPending = false
+    private var terminalConnectionGeneration: UInt64?
     private var lastAttemptedIdentity: CandidateIdentity?
+    private var acquisitionAttemptCount = 0
     private var isStopped = false
+    private var shutdownCleanupWasPending = false
 
     init(
         policy:
             WorldwideIPhoneMicrophoneForwardingPolicy,
         lease:
-            any WorldwideBlackHoleDefaultInputLeasing
+            any WorldwideBlackHoleDefaultInputLeasing,
+        maximumAcquisitionAttemptCount: Int = 3,
+        maximumReleaseAttemptCount: Int = 1,
+        maximumShutdownAttemptCount: Int = 1
     ) {
         self.policy = policy
         self.lease = lease
+        self.maximumAcquisitionAttemptCount = max(
+            1,
+            maximumAcquisitionAttemptCount
+        )
+        self.maximumReleaseAttemptCount = max(
+            1,
+            maximumReleaseAttemptCount
+        )
+        self.maximumShutdownAttemptCount = max(
+            1,
+            maximumShutdownAttemptCount
+        )
     }
 
     func beginMonitoring(
@@ -982,11 +1405,14 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
             return .noChange
         }
 
-        let released = releaseActive()
+        let release = releaseActiveBounded()
         activeMonitorEpoch = epoch
         monitorSnapshot = nil
-        lastAttemptedIdentity = nil
-        return released ? .released : .waitingForMonitor
+        resetAcquisitionAttempts()
+        return outcome(
+            for: release,
+            whenNoChange: .waitingForMonitor
+        )
     }
 
     func monitoringDidFail()
@@ -997,10 +1423,10 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         guard policy == .enabled else {
             return .suppressed
         }
-        _ = releaseActive()
+        _ = releaseActiveBounded()
         activeMonitorEpoch = nil
         monitorSnapshot = nil
-        lastAttemptedIdentity = nil
+        resetAcquisitionAttempts()
         return .degraded
     }
 
@@ -1023,15 +1449,28 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
                     > monitorSnapshot.deviceGeneration else {
                 return .noChange
             }
+            if snapshot.isAvailable
+                    == monitorSnapshot.isAvailable,
+               snapshot.deviceUID
+                    == monitorSnapshot.deviceUID {
+                if releaseIsPending {
+                    return outcome(
+                        for: releaseActiveBounded(),
+                        whenNoChange: .noChange
+                    )
+                }
+                return .noChange
+            }
         }
 
         monitorSnapshot = snapshot
         if !snapshot.isAvailable
             || snapshot.deviceUID == nil {
-            lastAttemptedIdentity = nil
-            return releaseActive()
-                ? .released
-                : .waitingForDevice
+            resetAcquisitionAttempts()
+            return outcome(
+                for: releaseActiveBounded(),
+                whenNoChange: .waitingForDevice
+            )
         }
         return drive()
     }
@@ -1045,32 +1484,69 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         guard policy == .enabled else {
             return .suppressed
         }
+        guard peerGeneration
+                >= highestPeerGenerationSeen else {
+            return .noChange
+        }
+        if peerGeneration
+                > highestPeerGenerationSeen {
+            highestPeerGenerationSeen = peerGeneration
+        }
 
         if healthyPeerGeneration == peerGeneration {
             return drive()
         }
 
-        _ = releaseActive()
+        let release = releaseActiveBounded()
         healthyPeerGeneration = peerGeneration
         connectionGeneration = Self.nextNonzero(
             connectionGeneration
         )
-        lastAttemptedIdentity = nil
+        terminalConnectionGeneration = nil
+        resetAcquisitionAttempts()
+        if release == .retryableFailure {
+            return .degraded
+        }
         return drive()
     }
 
     func transportDidBecomeUnhealthy(
         peerGeneration: UInt64
     ) -> WorldwideBlackHoleDefaultInputOutcome {
-        guard !isStopped,
-              healthyPeerGeneration == peerGeneration else {
+        guard !isStopped else {
             return .noChange
         }
-        healthyPeerGeneration = nil
-        lastAttemptedIdentity = nil
-        return releaseActive()
-            ? .released
-            : .noChange
+        let ownsPeer =
+            healthyPeerGeneration == peerGeneration
+                || activeKey?.peerGeneration == peerGeneration
+        guard ownsPeer else {
+            return .noChange
+        }
+        if healthyPeerGeneration == peerGeneration {
+            healthyPeerGeneration = nil
+        }
+        resetAcquisitionAttempts()
+        let release = releaseActiveBounded()
+        let releaseOutcome = outcome(
+            for: release,
+            whenNoChange: .noChange
+        )
+        switch release {
+        case .retryableFailure:
+            return releaseOutcome
+        case .noChange, .released,
+             .externallySuperseded:
+            break
+        }
+
+        guard healthyPeerGeneration != nil else {
+            return releaseOutcome
+        }
+        let replacementOutcome = drive()
+        if case .noChange = replacementOutcome {
+            return releaseOutcome
+        }
+        return replacementOutcome
     }
 
     func invalidateCurrentConnection()
@@ -1079,25 +1555,64 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
             return .noChange
         }
         healthyPeerGeneration = nil
-        lastAttemptedIdentity = nil
-        return releaseActive()
-            ? .released
-            : .noChange
+        resetAcquisitionAttempts()
+        return outcome(
+            for: releaseActiveBounded(),
+            whenNoChange: .noChange
+        )
     }
 
-    func shutdown() {
-        guard !isStopped else {
-            return
+    func shutdown()
+        -> WorldwideBlackHoleDefaultInputOutcome {
+        if !isStopped {
+            isStopped = true
+            healthyPeerGeneration = nil
+            resetAcquisitionAttempts()
         }
-        isStopped = true
-        healthyPeerGeneration = nil
-        lastAttemptedIdentity = nil
-        _ = releaseActive()
-        lease.shutdown()
+
+        var completedCleanup =
+            shutdownCleanupWasPending
+        var attemptCount = 0
+
+        while attemptCount
+                < maximumShutdownAttemptCount {
+            attemptCount += 1
+
+            let release = releaseActiveBounded()
+            switch release {
+            case .retryableFailure:
+                shutdownCleanupWasPending = true
+                continue
+
+            case .released,
+                 .externallySuperseded:
+                completedCleanup = true
+
+            case .noChange:
+                break
+            }
+
+            switch lease.shutdown() {
+            case .released,
+                 .externallySuperseded:
+                shutdownCleanupWasPending = false
+                return completedCleanup
+                    ? .released
+                    : .noChange
+
+            case .retryableFailure:
+                shutdownCleanupWasPending = true
+            }
+        }
+
+        return .degraded
     }
 
     private func drive()
         -> WorldwideBlackHoleDefaultInputOutcome {
+        guard !isStopped else {
+            return .noChange
+        }
         guard let activeMonitorEpoch,
               let monitorSnapshot else {
             return .waitingForMonitor
@@ -1110,6 +1625,11 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         guard let healthyPeerGeneration else {
             return .noChange
         }
+        if terminalConnectionGeneration
+                == connectionGeneration,
+           activeKey == nil {
+            return .degraded
+        }
 
         let identity = CandidateIdentity(
             monitorEpoch: activeMonitorEpoch,
@@ -1120,55 +1640,160 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
                 connectionGeneration,
             deviceUID: deviceUID
         )
+        let activeKeyMatchesIdentity =
+            activeKey.map {
+                $0.monitorEpoch == identity.monitorEpoch
+                    && $0.deviceGeneration
+                        == identity.deviceGeneration
+                    && $0.peerGeneration
+                        == identity.peerGeneration
+                    && $0.connectionGeneration
+                        == identity.connectionGeneration
+                    && $0.deviceUID
+                        == identity.deviceUID
+            } ?? false
         if activeSelectionConfirmed,
-           let activeKey,
-           activeKey.monitorEpoch
-                == identity.monitorEpoch,
-           activeKey.peerGeneration
-                == identity.peerGeneration,
-           activeKey.connectionGeneration
-                == identity.connectionGeneration {
-            return .noChange
-        }
-        guard lastAttemptedIdentity != identity else {
+           activeKeyMatchesIdentity,
+           !releaseIsPending {
             return .noChange
         }
 
-        _ = releaseActive()
-        lastAttemptedIdentity = identity
-        let key = WorldwideBlackHoleDefaultInputKey(
-            monitorEpoch: identity.monitorEpoch,
-            deviceGeneration:
-                identity.deviceGeneration,
-            peerGeneration: identity.peerGeneration,
-            connectionGeneration:
-                identity.connectionGeneration,
-            leaseGeneration: connectionGeneration
-        )
+        if activeKey != nil,
+           releaseIsPending
+                || !activeKeyMatchesIdentity {
+            let release = releaseActiveBounded()
+            if release == .retryableFailure {
+                return .degraded
+            }
+            if terminalConnectionGeneration
+                == connectionGeneration {
+                return .degraded
+            }
+        }
 
-        activeKey = key
-        activeSelectionConfirmed = false
-        guard lease.acquire(
-            generation: key.leaseGeneration,
-            targetUID: deviceUID
-        ) else {
+        if lastAttemptedIdentity != identity {
+            lastAttemptedIdentity = identity
+            acquisitionAttemptCount = 0
+        }
+        guard acquisitionAttemptCount
+                < maximumAcquisitionAttemptCount else {
             return .degraded
         }
-        activeSelectionConfirmed = true
-        return .selected(key)
+
+        let key: WorldwideBlackHoleDefaultInputKey
+        if let activeKey {
+            key = activeKey
+        } else {
+            nextLeaseGeneration = Self.nextNonzero(
+                nextLeaseGeneration
+            )
+            key = WorldwideBlackHoleDefaultInputKey(
+                monitorEpoch: identity.monitorEpoch,
+                deviceGeneration:
+                    identity.deviceGeneration,
+                peerGeneration: identity.peerGeneration,
+                connectionGeneration:
+                    identity.connectionGeneration,
+                leaseGeneration:
+                    nextLeaseGeneration,
+                deviceUID: identity.deviceUID
+            )
+            activeKey = key
+            activeSelectionConfirmed = false
+        }
+
+        while acquisitionAttemptCount
+                < maximumAcquisitionAttemptCount {
+            acquisitionAttemptCount += 1
+            switch lease.acquisitionResult(
+                generation: key.leaseGeneration,
+                targetUID: deviceUID
+            ) {
+            case .acquired:
+                activeSelectionConfirmed = true
+                return .selected(key)
+            case .retryableFailure:
+                continue
+            case .terminalFailure:
+                terminalConnectionGeneration =
+                    key.connectionGeneration
+                acquisitionAttemptCount =
+                    maximumAcquisitionAttemptCount
+                _ = releaseActiveBounded()
+                return .degraded
+            }
+        }
+
+        // Retryable pre-write failures can retain the exact generation's
+        // retry baseline or pending listener deregistration even without a
+        // default-input write. Exhaustion therefore performs one bounded
+        // exact cleanup episode. A retryable release preserves activeKey and
+        // releaseIsPending for a later lifecycle callback; success clears the
+        // key through the existing release path. Keep the exhausted identity
+        // and attempt count so no callback can bypass its acquisition budget.
+        _ = releaseActiveBounded()
+        return .degraded
     }
 
-    @discardableResult
-    private func releaseActive() -> Bool {
+    private func releaseActive()
+        -> ReleaseDisposition {
         guard let activeKey else {
-            return false
+            releaseIsPending = false
+            return .noChange
         }
-        self.activeKey = nil
-        activeSelectionConfirmed = false
-        lease.release(
+        switch lease.release(
             generation: activeKey.leaseGeneration
-        )
-        return true
+        ) {
+        case .released:
+            self.activeKey = nil
+            activeSelectionConfirmed = false
+            releaseIsPending = false
+            return .released
+
+        case .retryableFailure:
+            releaseIsPending = true
+            return .retryableFailure
+
+        case .externallySuperseded:
+            self.activeKey = nil
+            activeSelectionConfirmed = false
+            releaseIsPending = false
+            terminalConnectionGeneration =
+                activeKey.connectionGeneration
+            return .externallySuperseded
+        }
+    }
+
+    private func releaseActiveBounded()
+        -> ReleaseDisposition {
+        var result = releaseActive()
+        var attemptCount = 1
+        while result == .retryableFailure,
+              attemptCount < maximumReleaseAttemptCount {
+            attemptCount += 1
+            result = releaseActive()
+        }
+        return result
+    }
+
+    private func outcome(
+        for release: ReleaseDisposition,
+        whenNoChange fallback:
+            WorldwideBlackHoleDefaultInputOutcome
+    ) -> WorldwideBlackHoleDefaultInputOutcome {
+        switch release {
+        case .noChange:
+            return fallback
+        case .released, .externallySuperseded:
+            return .released
+        case .retryableFailure:
+            return .degraded
+        }
+    }
+
+    private func resetAcquisitionAttempts() {
+        lastAttemptedIdentity = nil
+        acquisitionAttemptCount = 0
     }
 
     private static func nextNonzero(

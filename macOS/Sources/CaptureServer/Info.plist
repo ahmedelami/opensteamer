@@ -13,7 +13,7 @@
 	<string>CaptureServer</string>
 	<key>CFBundleIdentifier</key>
 	<!-- Match the shipped host identity so local runs share the established privacy boundary. -->
-	<string>org.example.AudioStreamer.CaptureServer</string>
+	<string>com.elamin.AudioStreamer.CaptureServer</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

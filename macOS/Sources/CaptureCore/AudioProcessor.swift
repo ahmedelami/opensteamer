@@ -2,16 +2,16 @@ import CoreMedia
 import Foundation
 import WAV
 
-/// Serializes captured audio buffers, measures them, and appends them to a WAV file.
+/// Measures captured audio and appends it to a WAV file on one serial ownership queue.
 ///
-/// ScreenCaptureKit may call `enqueue(_:)` concurrently. All mutable state belongs
-/// to `queue`; `completion` tracks accepted callbacks so `finish()` cannot close the
-/// writer while queued samples still reference their CoreMedia buffers.
+/// ScreenCaptureKit is configured to invoke `consume(_:)` directly on `sampleHandlerQueue`.
+/// The non-Sendable `CMSampleBuffer` is therefore extracted synchronously inside its callback
+/// and is never retained by another asynchronous closure. `finish()` synchronizes with that
+/// queue after source shutdown, so every accepted callback has completed before finalization.
 public final class AudioProcessor: @unchecked Sendable, SampleBufferConsumer {
     private let outputURL: URL
     private let logger: Logger
     private let queue = DispatchQueue(label: "opensteamer.AudioProcessor")
-    private let completion = DispatchGroup()
 
     private var writer: WAVWriter?
     private var streamFormat: StreamAudioFormat?
@@ -29,21 +29,23 @@ public final class AudioProcessor: @unchecked Sendable, SampleBufferConsumer {
         self.logger = logger
     }
 
-    /// Accepts a capture callback and transfers its processing to the private queue.
-    public func enqueue(_ sampleBuffer: CMSampleBuffer) {
-        completion.enter()
-        let callbackTime = DispatchTime.now().uptimeNanoseconds
-        queue.async { [weak self] in
-            defer { self?.completion.leave() }
-            self?.process(sampleBuffer, callbackTime: callbackTime)
-        }
+    /// The exact queue ScreenCaptureKit must use for this consumer's callbacks.
+    var sampleHandlerQueue: DispatchQueue { queue }
+
+    /// Processes one ScreenCaptureKit callback synchronously on the ownership queue.
+    func consume(_ sampleBuffer: CMSampleBuffer) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        process(
+            sampleBuffer,
+            callbackTime: DispatchTime.now().uptimeNanoseconds
+        )
     }
 
-    /// Drains all accepted callbacks, finalizes the WAV header, and returns counters.
+    /// Finalizes the WAV header after the source has stopped and queued callbacks have drained.
     ///
-    /// The first processing failure wins and is rethrown after the queue has drained.
+    /// The first processing failure wins and is rethrown after queue synchronization.
     public func finish() throws -> ProcessingSummary {
-        completion.wait()
+        dispatchPrecondition(condition: .notOnQueue(queue))
         var result: Result<ProcessingSummary, Error>!
         queue.sync {
             if let firstError {
@@ -75,7 +77,8 @@ public final class AudioProcessor: @unchecked Sendable, SampleBufferConsumer {
 
     /// Returns a queue-consistent progress snapshot for logging or diagnostics.
     public func latestSnapshot() -> MetricsSnapshot {
-        queue.sync {
+        dispatchPrecondition(condition: .notOnQueue(queue))
+        return queue.sync {
             MetricsSnapshot(
                 callbackStatistics: callbackStatistics,
                 latestMetrics: latestMetrics,

@@ -32,7 +32,7 @@ final class WorldwidePresentationTests: XCTestCase {
 
     func testSupersededPreparedSessionCannotConnectAtHandoffEntry() async {
         let staleGeneration = UUID()
-        var currentGeneration = UUID()
+        let currentGeneration = UUID()
         var connectCount = 0
         var closeCount = 0
         var publicationCount = 0
@@ -100,7 +100,7 @@ final class WorldwidePresentationTests: XCTestCase {
 
     func testCurrentPreparedSessionConflictPublishesOnlyAfterCloseCompletes() async {
         let generation = UUID()
-        var currentGeneration = generation
+        let currentGeneration = generation
         var events: [String] = []
 
         await BrowserView.handoffPreparedWorldwideSession(

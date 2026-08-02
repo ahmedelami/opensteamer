@@ -13,7 +13,7 @@
 	<string>CaptureServer</string>
 	<key>CFBundleIdentifier</key>
 	<!-- Keep the shipped code identity stable so upgrades retain macOS privacy grants. -->
-	<string>org.example.AudioStreamer.CaptureServer</string>
+	<string>com.elamin.AudioStreamer.CaptureServer</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

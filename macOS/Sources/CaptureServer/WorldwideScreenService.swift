@@ -306,6 +306,25 @@ actor WorldwideScreenService {
             "peerGeneration=\(peerGeneration) pid=\(processIdentifier)"
     }
 
+    nonisolated static func iPhoneMicrophoneRuntimeFailureCategory(
+        for error: BlackHoleMicrophoneOutputError
+    ) -> WorldwideIPhoneMicrophoneForwardingFailureCategory {
+        switch error {
+        case .operation:
+            return .runtimeEnqueueFailed
+        case .progressStalled:
+            return .runtimeProgressStalled
+        }
+    }
+
+    nonisolated static func iPhoneMicrophoneRuntimeFailureLogMessage(
+        error: BlackHoleMicrophoneOutputError
+    ) -> String {
+        "iPhone microphone forwarding encountered an output runtime " +
+            "failure and ran its bounded restart policy: " +
+            error.localizedDescription
+    }
+
     private let invitation: RemoteInvitationCode?
     private let signaling: RendezvousSignalingClient
     private let icePolicy: WebRTCICEPolicy
@@ -320,6 +339,10 @@ actor WorldwideScreenService {
         BlackHoleDeviceAvailabilityMonitor()
     private let blackHoleDefaultInputLease =
         BlackHoleDefaultInputLease()
+    private let blackHoleAudioRoutingCleanupID =
+        UUID()
+    private let maximumBlackHoleAudioRoutingCleanupEpisodeCount =
+        1
     private let logger: Logger
     private let completionContinuation: AsyncStream<Void>.Continuation
 
@@ -504,7 +527,7 @@ actor WorldwideScreenService {
         }
         isStarted = true
 
-        startIPhoneMicrophoneDeviceMonitoringIfNeeded()
+        await startIPhoneMicrophoneDeviceMonitoringIfNeeded()
         do {
             let events = try await signaling.connect()
             signalingTask = Task { [weak self] in
@@ -512,9 +535,7 @@ actor WorldwideScreenService {
             }
         } catch {
             isStopped = true
-            blackHoleDefaultInput.shutdown()
-            blackHoleDeviceMonitorEpoch = nil
-            blackHoleDeviceAvailabilityMonitor.stop()
+            shutdownBlackHoleAudioRouting()
             iPhoneMicrophoneForwarding.shutdown()
             completionContinuation.finish()
             throw error
@@ -529,9 +550,7 @@ actor WorldwideScreenService {
         guard !isStopped else { return }
         isStopped = true
 
-        blackHoleDefaultInput.shutdown()
-        blackHoleDeviceMonitorEpoch = nil
-        blackHoleDeviceAvailabilityMonitor.stop()
+        shutdownBlackHoleAudioRouting()
         iPhoneMicrophoneForwarding.shutdown()
         signalingTask?.cancel()
         signalingTask = nil
@@ -678,7 +697,9 @@ actor WorldwideScreenService {
                 maximumVideoBitrate: maximumVideoBitrate
             )
         )
-        _ = blackHoleDefaultInput.invalidateCurrentConnection()
+        recordBlackHoleDefaultInputOutcome(
+            blackHoleDefaultInput.invalidateCurrentConnection()
+        )
         peerGeneration &+= 1
         let generation = peerGeneration
         highestRestartRequestID = nil
@@ -1437,10 +1458,12 @@ actor WorldwideScreenService {
         revokeSystemAudioAuthorization()
         captureSink?.stopForwarding()
         audioSink?.stopForwarding()
-        _ = blackHoleDefaultInput
-            .transportDidBecomeUnhealthy(
-                peerGeneration: peerGeneration
-            )
+        recordBlackHoleDefaultInputOutcome(
+            blackHoleDefaultInput
+                .transportDidBecomeUnhealthy(
+                    peerGeneration: peerGeneration
+                )
+        )
         iPhoneMicrophoneForwarding.invalidateTransport()
         await peer?.suspendSystemAudioForTransportUncertainty()
         await stopScreenCaptureForTransportUncertainty(reason)
@@ -1479,10 +1502,12 @@ actor WorldwideScreenService {
         isRecovering = true
         revokeCaptureAuthorization()
         revokeSystemAudioAuthorization()
-        _ = blackHoleDefaultInput
-            .transportDidBecomeUnhealthy(
-                peerGeneration: peerGeneration
-            )
+        recordBlackHoleDefaultInputOutcome(
+            blackHoleDefaultInput
+                .transportDidBecomeUnhealthy(
+                    peerGeneration: peerGeneration
+                )
+        )
         iPhoneMicrophoneForwarding.invalidateTransport()
         if recoveryProofRequired {
             // Invalidate a pre-uncertainty Hide/ACK without severing the current offer→answer
@@ -1500,10 +1525,12 @@ actor WorldwideScreenService {
     private func installRecoveryProofBoundary(awaitingAnswer: Bool) -> UInt64 {
         revokeCaptureAuthorization()
         revokeSystemAudioAuthorization()
-        _ = blackHoleDefaultInput
-            .transportDidBecomeUnhealthy(
-                peerGeneration: peerGeneration
-            )
+        recordBlackHoleDefaultInputOutcome(
+            blackHoleDefaultInput
+                .transportDidBecomeUnhealthy(
+                    peerGeneration: peerGeneration
+                )
+        )
         iPhoneMicrophoneForwarding.invalidateTransport()
         recoveryProofAuthorization?.revoke()
         recoveryProofEpoch &+= 1
@@ -1576,7 +1603,7 @@ actor WorldwideScreenService {
         restartAnswerAppliedEpoch = nil
         recoveryProofRequired = false
         isRecovering = false
-        consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
+        _ = consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
         recordBlackHoleDefaultInputOutcome(
             blackHoleDefaultInput
                 .transportDidBecomeHealthy(
@@ -1603,7 +1630,7 @@ actor WorldwideScreenService {
             return false
         }
         isRecovering = false
-        consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
+        _ = consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
         recordBlackHoleDefaultInputOutcome(
             blackHoleDefaultInput
                 .transportDidBecomeHealthy(
@@ -1622,8 +1649,25 @@ actor WorldwideScreenService {
 
     // MARK: - iPhone microphone to BlackHole
 
-    private func startIPhoneMicrophoneDeviceMonitoringIfNeeded() {
+    private func startIPhoneMicrophoneDeviceMonitoringIfNeeded()
+        async {
         guard iPhoneMicrophoneForwardingPolicy == .enabled else {
+            return
+        }
+
+        guard WorldwideBlackHoleAudioRoutingStartupGate
+            .redriveAndPermitNewOwnership(
+                retainer:
+                    WorldwideBlackHoleAudioRoutingCleanupRetainer
+                        .shared,
+                maximumAttemptCount: 1
+            ) else {
+            blackHoleDeviceMonitorEpoch = nil
+            logger.error(
+                "BlackHole device monitoring startup is deferred " +
+                    "because an older lease or service still retains unresolved " +
+                    "exact Core Audio routing cleanup ownership"
+            )
             return
         }
 
@@ -1640,10 +1684,10 @@ actor WorldwideScreenService {
             _ = blackHoleDefaultInput.beginMonitoring(
                 epoch: epoch
             )
-            consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
             iPhoneMicrophoneForwarding.beginMonitoring(
                 epoch: epoch
             )
+            await consumeCurrentBlackHoleDeviceSnapshot()
         } catch {
             blackHoleDeviceMonitorEpoch = nil
             recordBlackHoleDefaultInputOutcome(
@@ -1658,17 +1702,31 @@ actor WorldwideScreenService {
         }
     }
 
-    private func consumeCurrentBlackHoleDeviceSnapshotForDefaultInput() {
+    private func consumeCurrentBlackHoleDeviceSnapshot()
+        async {
+        guard let snapshot =
+                consumeCurrentBlackHoleDeviceSnapshotForDefaultInput() else {
+            return
+        }
+        await iPhoneMicrophoneForwarding.updateDeviceSnapshot(
+            snapshot
+        )
+    }
+
+    @discardableResult
+    private func consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
+        -> BlackHoleDeviceAvailabilitySnapshot? {
         guard !isStopped,
               let snapshot =
                 blackHoleDeviceAvailabilityMonitor.currentSnapshot(),
               snapshot.monitorEpoch == blackHoleDeviceMonitorEpoch else {
-            return
+            return nil
         }
         recordBlackHoleDefaultInputOutcome(
             blackHoleDefaultInput
                 .updateDeviceSnapshot(snapshot)
         )
+        return snapshot
     }
 
     private func blackHoleDeviceAvailabilityDidChange(
@@ -1704,6 +1762,54 @@ actor WorldwideScreenService {
         )
     }
 
+    private func shutdownBlackHoleAudioRouting() {
+        blackHoleDeviceMonitorEpoch = nil
+
+        let result =
+            WorldwideBlackHoleAudioRoutingCleanupPolicy.run(
+                maximumEpisodeCount:
+                    maximumBlackHoleAudioRoutingCleanupEpisodeCount,
+                shutdownDefaultInput: {
+                    self.blackHoleDefaultInput.shutdown()
+                },
+                stopDeviceMonitor: {
+                    self.blackHoleDeviceAvailabilityMonitor
+                        .stop()
+                }
+            )
+
+        if result == .degraded {
+            let lease = blackHoleDefaultInputLease
+            let monitor =
+                blackHoleDeviceAvailabilityMonitor
+            WorldwideBlackHoleAudioRoutingCleanupRetainer
+                .shared
+                .retain(
+                    id: blackHoleAudioRoutingCleanupID
+                ) {
+                    let defaultInputCompleted =
+                        lease.shutdown()
+                            != .retryableFailure
+                    let monitorCompleted =
+                        monitor.stop() == .stopped
+                    return defaultInputCompleted
+                        && monitorCompleted
+                }
+            logger.error(
+                "BlackHole audio-routing cleanup remains degraded " +
+                    "after its single globally bounded shutdown " +
+                    "episode; exact Core Audio cleanup ownership " +
+                    "is retained for a later explicit lifecycle redrive"
+            )
+        } else {
+            WorldwideBlackHoleAudioRoutingCleanupRetainer
+                .shared
+                .remove(
+                    id: blackHoleAudioRoutingCleanupID
+                )
+        }
+    }
+
     private func recordBlackHoleDefaultInputOutcome(
         _ outcome:
             WorldwideBlackHoleDefaultInputOutcome
@@ -1732,16 +1838,22 @@ actor WorldwideScreenService {
     private func iPhoneMicrophoneOutputDidFail(
         output: BlackHoleMicrophoneOutput,
         error: BlackHoleMicrophoneOutputError
-    ) {
-        guard iPhoneMicrophoneForwarding.handleRuntimeFailure(
-            from: output
+    ) async {
+        let category =
+            Self.iPhoneMicrophoneRuntimeFailureCategory(
+                for: error
+            )
+        guard await iPhoneMicrophoneForwarding.handleRuntimeFailure(
+            from: output,
+            category: category
         ) else {
             return
         }
 
         logger.error(
-            "iPhone microphone forwarding stopped after an AudioQueue failure: "
-                + error.localizedDescription
+            Self.iPhoneMicrophoneRuntimeFailureLogMessage(
+                error: error
+            )
         )
     }
 

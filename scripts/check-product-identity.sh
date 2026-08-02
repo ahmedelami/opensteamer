@@ -551,7 +551,7 @@ assert_plist_value macOS/OpensteamerHost/Info.plist \
 assert_plist_value macOS/OpensteamerHost/Info.plist \
   CFBundleName 'opensteamer Host' 'macOS host CFBundleName'
 assert_plist_value macOS/OpensteamerHost/Info.plist \
-  CFBundleIdentifier org.example.AudioStreamer.CaptureServer 'preserved macOS host bundle identifier'
+  CFBundleIdentifier com.elamin.AudioStreamer.CaptureServer 'preserved macOS host bundle identifier'
 assert_plist_value macOS/OpensteamerHost/Info.plist \
   CFBundleExecutable CaptureServer 'macOS host executable name'
 assert_plist_value macOS/OpensteamerHost/Info.plist \
@@ -563,10 +563,25 @@ assert_plist_value macOS/OpensteamerHost/Info.plist \
   "opensteamer records the BlackHole virtual input so it can stream this Mac's routed audio to your iPhone." \
   'macOS host microphone description lowercase identity'
 assert_plist_value macOS/Sources/CaptureServer/Info.plist \
-  CFBundleIdentifier org.example.AudioStreamer.CaptureServer \
+  CFBundleIdentifier com.elamin.AudioStreamer.CaptureServer \
   'preserved SwiftPM capture-server bundle identifier'
 assert_plist_value macOS/Sources/CaptureServer/Info.plist \
   CFBundleName 'opensteamer Capture Server' 'SwiftPM capture-server bundle name'
+assert_literal_count macOS/Sources/CaptureServer/WorldwidePairingStore.swift \
+  '"com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1"' 1 \
+  'preserved macOS pairing Keychain service'
+assert_literal_count macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift \
+  '"com.elamin.AudioStreamer.CaptureServer.runtime"' 1 \
+  'preserved cross-version runtime lock namespace'
+assert_literal_count macOS/scripts/build-opensteamer-host-app.sh \
+  '--identifier com.elamin.AudioStreamer.CaptureServer' 1 \
+  'preserved macOS executable signature identifier'
+assert_literal_count macOS/scripts/verify-mac-host-bundle.sh \
+  'EXPECTED_BUNDLE_IDENTIFIER="com.elamin.AudioStreamer.CaptureServer"' 1 \
+  'macOS bundle verifier identity'
+assert_literal_count macOS/scripts/verify-mac-host-deployment.sh \
+  '"com.elamin.AudioStreamer.CaptureServer"' 1 \
+  'macOS deployment verifier identity'
 
 LAUNCH_AGENT_DIRECTORY='macOS/LaunchAgents'
 if require_directory "$LAUNCH_AGENT_DIRECTORY"; then
@@ -581,9 +596,9 @@ assert_plist_value "$LAUNCH_AGENT" ProgramArguments.0 \
   '/Applications/opensteamer Host.app/Contents/MacOS/CaptureServer' \
   'LaunchAgent host program path'
 assert_plist_value "$LAUNCH_AGENT" StandardOutPath \
-  /tmp/opensteamer/worldwide-host.log 'LaunchAgent standard-output path'
+  /var/tmp/opensteamer-worldwide-host.log 'LaunchAgent standard-output path'
 assert_plist_value "$LAUNCH_AGENT" StandardErrorPath \
-  /tmp/opensteamer/worldwide-host.err.log 'LaunchAgent standard-error path'
+  /var/tmp/opensteamer-worldwide-host.err.log 'LaunchAgent standard-error path'
 
 # npm records the identity twice in lockfiles: once at the document root and once for packages[""].
 assert_json_name services/Rendezvous/package.json top @opensteamer/rendezvous \

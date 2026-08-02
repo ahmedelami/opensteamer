@@ -122,7 +122,7 @@ struct WorldwideKeychainDataStore: WorldwidePairingDataStore {
     // Existing installations already own pairing secrets in this service. Keeping the legacy
     // value is what makes the opensteamer host an in-place upgrade instead of a newly paired Mac.
     static let legacyPairingService =
-        "org.example.AudioStreamer.CaptureServer.WorldwidePairing.v1"
+        "com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1"
     private let service: String
 
     init(service: String = Self.legacyPairingService) {

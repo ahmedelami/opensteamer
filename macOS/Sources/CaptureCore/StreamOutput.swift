@@ -2,15 +2,23 @@ import CoreMedia
 import Foundation
 import ScreenCaptureKit
 
-/// Queue-bound consumer used to move ScreenCaptureKit samples into processing.
+/// Queue-bound consumer used directly by ScreenCaptureKit's audio callback.
+///
+/// `sampleHandlerQueue` is the consumer's state-ownership queue. ScreenCaptureKit
+/// must invoke `consume(_:)` on that exact queue, and the consumer must finish using
+/// the non-Sendable `CMSampleBuffer` before the callback returns.
 protocol SampleBufferConsumer: AnyObject {
-    func enqueue(_ sampleBuffer: CMSampleBuffer)
+    var sampleHandlerQueue: DispatchQueue { get }
+    func consume(_ sampleBuffer: CMSampleBuffer)
 }
 
-/// Filters an `SCStream` down to audio and forwards buffers to its owner.
-///
-/// ScreenCaptureKit owns the callback thread; the consumer must establish any
-/// stronger serialization or lifetime guarantees it needs.
+/// Couples an `SCStreamOutput` with the exact queue that owns its consumer.
+struct StreamOutputRegistration {
+    let output: StreamOutput
+    let sampleHandlerQueue: DispatchQueue
+}
+
+/// Filters an `SCStream` down to audio and synchronously invokes its queue owner.
 final class StreamOutput: NSObject, SCStreamOutput {
     private let consumer: SampleBufferConsumer
 
@@ -18,8 +26,17 @@ final class StreamOutput: NSObject, SCStreamOutput {
         self.consumer = consumer
     }
 
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
+    func stream(
+        _ stream: SCStream,
+        didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+        of outputType: SCStreamOutputType
+    ) {
+        handle(sampleBuffer, outputType: outputType)
+    }
+
+    /// Internal callback seam used by deterministic queue/lifetime tests.
+    func handle(_ sampleBuffer: CMSampleBuffer, outputType: SCStreamOutputType) {
         guard outputType == .audio else { return }
-        consumer.enqueue(sampleBuffer)
+        consumer.consume(sampleBuffer)
     }
 }

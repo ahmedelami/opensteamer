@@ -24,6 +24,7 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
     private let rawReplacementIdentity =
         RawMicrophoneOracleIdentity()
 
+    @MainActor
     func testRawMicrophoneProductionOracleRequiresTwoExactSamplesAndRoundTrips() throws {
         var tracker = WorldwideRawMicrophoneContinuityTracker()
         XCTAssertEqual(
@@ -492,6 +493,7 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
         }
     }
 
+    @MainActor
     func testRawMicrophoneAccessibilityParserAndPhysicalContinuityFailClosed() throws {
         let baseValue = rawOracleAccessibilityValue()
         let snapshots = (0...2).map {
