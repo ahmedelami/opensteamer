@@ -10,7 +10,7 @@ readonly EXPECTED_BUNDLE_IDENTIFIER="com.elamin.opensteamer"
 readonly PROTECTED_BUNDLE_IDENTIFIER="com.elamin.AudioStreamer"
 readonly EXPECTED_SCHEME="opensteamerTestFlight"
 readonly EXPECTED_CONFIGURATION="TestFlight"
-readonly EXPECTED_BUILD_NUMBER="38"
+readonly EXPECTED_BUILD_NUMBER="39"
 readonly EXPECTED_TEAM_ID="MSMG8CJLB3"
 readonly EXPECTED_RENDEZVOUS_URL="wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
 
