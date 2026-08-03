@@ -164,6 +164,71 @@ final class MacHostMigrationContractTests: XCTestCase {
         XCTAssertEqual(syntax.status, 0, syntax.diagnostic)
     }
 
+    func testPostV20UpdaterHasPinnedCrashRecoverableJournalAndSafeSelfTest() throws {
+        let controller = repositoryRoot.appendingPathComponent(
+            "macOS/scripts/opensteamer-host-post-v20-update-controller.rs"
+        )
+        let launcher = repositoryRoot.appendingPathComponent(
+            "macOS/scripts/update-opensteamer-host-post-v20.sh"
+        )
+        let controllerSource = try String(contentsOf: controller, encoding: .utf8)
+        let launcherSource = try String(contentsOf: launcher, encoding: .utf8)
+
+        for required in [
+            "file.set_len(complete_length as u64)?;",
+            "journal recovery accepted an incomplete final record",
+            "journal recovery accepted a malformed complete record",
+            "journal validation failure changed durable bytes",
+            "poisoned journal allowed a later mutation",
+            "post-v20 transaction lock allowed concurrent ownership",
+            "journal_field_schema",
+            "retired-active-pointer.txt",
+            "rolled-back update pointer retirement was not durable",
+            "rolled-back-recovered",
+            "ensure_rolled_back_result",
+            "rename_replacing(&pending, path)",
+            "rolled-back result recovery did not atomically replace prior success",
+            "exact retained staged host survived bounded SIGKILL wait",
+            "staged rollback process topology self-test failed",
+            ".arg(\"--reset-worldwide-pairing\")",
+            "com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1",
+            "staged pairing namespace is not isolated",
+        ] {
+            XCTAssertTrue(controllerSource.contains(required), "Post-v20 controller lacks \(required)")
+        }
+        XCTAssertFalse(controllerSource.contains("delete-generic-password"))
+
+        let sourceHashResult = try run(
+            executable: URL(fileURLWithPath: "/usr/bin/shasum"),
+            arguments: ["-a", "256", controller.path]
+        )
+        XCTAssertEqual(sourceHashResult.status, 0, sourceHashResult.diagnostic)
+        let sourceHash = try XCTUnwrap(
+            sourceHashResult.standardOutput.split(whereSeparator: \.isWhitespace).first.map(String.init)
+        )
+        XCTAssertTrue(
+            launcherSource.contains("EXPECTED_SOURCE_SHA256='\(sourceHash)'"),
+            "Post-v20 launcher source attestation is stale."
+        )
+
+        let syntax = try run(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-n", launcher.path]
+        )
+        XCTAssertEqual(syntax.status, 0, syntax.diagnostic)
+
+        let selfTest = try run(
+            executable: launcher,
+            arguments: ["--self-test-post-v20-host-update"]
+        )
+        XCTAssertEqual(selfTest.status, 0, selfTest.diagnostic)
+        XCTAssertEqual(
+            selfTest.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines),
+            "SELF_TEST_OK post-v20-host-update-controller",
+            selfTest.diagnostic
+        )
+    }
+
     func testMigrationSourcesContainNoForbiddenRuntimeAndUseExclusivePublicationAndDurableDisable() throws {
         let relativePaths = [
             "macOS/scripts/migrate-opensteamer-host.sh",

@@ -332,7 +332,8 @@ is_production_rendezvous_match() {
       [[ "$content" == \
         "\"wss://${PRODUCTION_RENDEZVOUS_HOST}\".to_owned()," || \
         "$content" == \
-        "\"        wss://${PRODUCTION_RENDEZVOUS_HOST}\".to_owned()," ]]
+        "\"        wss://${PRODUCTION_RENDEZVOUS_HOST}\".to_owned()," || \
+        "$content" == "\"wss://${PRODUCTION_RENDEZVOUS_HOST}\"," ]]
       ;;
     *) return 1 ;;
   esac
