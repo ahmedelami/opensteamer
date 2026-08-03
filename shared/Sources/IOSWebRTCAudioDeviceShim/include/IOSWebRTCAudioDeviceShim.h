@@ -192,6 +192,15 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
 
 @end
 
+/// Production classification result for AVAudioSession route-change evidence. The deterministic
+/// harness below exposes the same classifier in DEBUG builds, but the native release path also
+/// consumes this type while deciding whether to retain or retire a route transaction.
+typedef NS_ENUM(NSInteger, ASIOSExpectedRouteChangeDisposition) {
+    ASIOSExpectedRouteChangeDispositionUnrelated = 0,
+    ASIOSExpectedRouteChangeDispositionConsume = 1,
+    ASIOSExpectedRouteChangeDispositionRejectTransaction = 2,
+};
+
 #if DEBUG
 typedef struct ASIOSStereoPlayoutPublicationSnapshot {
     uint64_t callbackCount;
@@ -236,12 +245,6 @@ typedef struct ASIOSStereoPlayoutPublicationSnapshot {
 - (void)markRecoveryBoundary;
 
 @end
-
-typedef NS_ENUM(NSInteger, ASIOSExpectedRouteChangeDisposition) {
-    ASIOSExpectedRouteChangeDispositionUnrelated = 0,
-    ASIOSExpectedRouteChangeDispositionConsume = 1,
-    ASIOSExpectedRouteChangeDispositionRejectTransaction = 2,
-};
 
 typedef NS_ENUM(NSInteger, ASIOSExpectedRouteChangeTestScenario) {
     ASIOSExpectedRouteChangeTestScenarioPendingActivation = 0,
