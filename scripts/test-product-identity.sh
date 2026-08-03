@@ -416,6 +416,12 @@ replace_once "$CASE/iOS/opensteamer/project.yml" \
   $'PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev\n          PRODUCT_NAME: Opensteamer'
 require_rejection "$CASE" 'project.yml product-name override count'
 
+CASE=$(new_case project-code-sign-identity-override)
+replace_once "$CASE/iOS/opensteamer/project.yml" \
+  'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer' \
+  $'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer\n          CODE_SIGN_IDENTITY: "Apple Distribution"'
+require_rejection "$CASE" 'project.yml code-sign identity override count'
+
 CASE=$(new_case project-debug-bundle-id)
 replace_once "$CASE/iOS/opensteamer/project.yml" \
   'PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev' \

@@ -204,6 +204,8 @@ if require_file "$PROJECT_YML"; then
   # so the authoritative XcodeGen source must continue to inherit its exact target identities.
   assert_literal_count \
     "$PROJECT_YML" 'PRODUCT_NAME:' 0 'project.yml product-name override count'
+  assert_literal_count \
+    "$PROJECT_YML" 'CODE_SIGN_IDENTITY:' 0 'project.yml code-sign identity override count'
 
   XCODEGEN_PROJECT_NAME=$(awk '
     /^name:[[:space:]]*/ {

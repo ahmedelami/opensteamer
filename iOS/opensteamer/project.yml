@@ -72,7 +72,6 @@ targets:
           DEVELOPMENT_TEAM: MSMG8CJLB3
           CURRENT_PROJECT_VERSION: 37
           CODE_SIGN_STYLE: Automatic
-          CODE_SIGN_IDENTITY: "Apple Distribution"
           OPENSTEAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
           AUDIOSTREAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
     scheme:

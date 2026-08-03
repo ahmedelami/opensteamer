@@ -142,6 +142,13 @@ function verify_effective_build_settings() {
     || fail "effective build number is not ${EXPECTED_BUILD_NUMBER}"
   [[ "$(effective_app_setting "${settings_json}" DEVELOPMENT_TEAM)" == "${EXPECTED_TEAM_ID}" ]] \
     || fail "effective development team is not ${EXPECTED_TEAM_ID}"
+  [[ "$(effective_app_setting "${settings_json}" CODE_SIGN_STYLE)" == "Automatic" ]] \
+    || fail "effective code-signing style is not automatic"
+  local archive_signing_identity
+  archive_signing_identity=$(effective_app_setting "${settings_json}" CODE_SIGN_IDENTITY)
+  [[ "${archive_signing_identity}" == "iPhone Developer" \
+      || "${archive_signing_identity}" == "Apple Development" ]] \
+    || fail "effective archive signing identity is ${archive_signing_identity}, not development"
   [[ "$(effective_app_setting "${settings_json}" OPENSTEAMER_RENDEZVOUS_URL)" == "${EXPECTED_RENDEZVOUS_URL}" ]] \
     || fail "effective rendezvous endpoint is not production"
   [[ "$(effective_app_setting "${settings_json}" AUDIOSTREAMER_RENDEZVOUS_URL)" == "${EXPECTED_RENDEZVOUS_URL}" ]] \
