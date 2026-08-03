@@ -1401,6 +1401,62 @@ public struct WebRTCIOSPlayoutDiagnostics: Sendable {
         self.playoutLastCallbackMeanMagnitude = playoutLastCallbackMeanMagnitude
     }
 }
+
+/// Preserves the exact native audio-session failure at the microphone-admission boundary.
+///
+/// The native device rolls back immediately after a failed duplex rebuild. Capturing this
+/// snapshot before the higher-level cleanup runs is therefore the only reliable way to
+/// distinguish a session preference failure from an active-route or RemoteIO failure.
+enum WebRTCIOSMicrophoneAdmissionDiagnostics {
+    static func failureDescription(
+        _ diagnostics: WebRTCIOSPlayoutDiagnostics?
+    ) -> String {
+        let prefix =
+            "The current iPhone route could not stage the authorized microphone topology."
+        guard let diagnostics else {
+            return prefix + " Native diagnostics were unavailable."
+        }
+
+        let nativeMessage = diagnostics.failureMessage?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayMessage = nativeMessage.flatMap { message in
+            message.isEmpty ? nil : message
+        } ?? "none"
+        let category: String
+        if diagnostics.categoryIsMediaPlayAndRecord {
+            category = "playAndRecord"
+        } else if diagnostics.categoryIsMediaPlayback {
+            category = "playback"
+        } else {
+            category = "other"
+        }
+        let options: String
+        if diagnostics.categoryOptionsAreEmpty {
+            options = "empty"
+        } else if diagnostics.categoryOptionsAreMixWithOthers {
+            options = "mixWithOthers"
+        } else {
+            options = "other"
+        }
+        let route = diagnostics.hasOutputRoute ? "present" : "missing"
+
+        return prefix
+            + " Native failure: code=\(diagnostics.failureCode), "
+            + "status=\(diagnostics.lastLifecycleStatus), "
+            + "message=\(displayMessage). "
+            + "Snapshot: category=\(category), modeDefault=\(diagnostics.modeIsDefault), "
+            + "options=\(options), route=\(route), "
+            + "rate=\(diagnostics.sampleRate), buffer=\(diagnostics.outputIOBufferDuration), "
+            + "outputChannels=\(diagnostics.outputChannelCount), "
+            + "sessionActive=\(diagnostics.sessionActive), "
+            + "ownsActivation=\(diagnostics.ownsSessionActivation), "
+            + "remoteIO=\(diagnostics.remoteIOCreated), "
+            + "inputBus=\(diagnostics.inputBusEnabled), "
+            + "outputBus=\(diagnostics.outputBusEnabled), "
+            + "recoveryRequired=\(diagnostics.recoveryRequired), "
+            + "explicitResumeRequired=\(diagnostics.explicitResumeRequired)."
+    }
+}
 #endif
 
 /// Platform policy for creating the local iPhone-microphone sender track.
@@ -1508,6 +1564,8 @@ public actor WebRTCPeer {
     #if DEBUG
     private var debugIPhoneMicrophonePolicyApplier:
         (@Sendable (Bool) -> Bool)?
+    private var debugIPhoneMicrophoneStageFailureDiagnostics:
+        WebRTCIOSPlayoutDiagnostics?
     #endif
     #endif
 
@@ -3073,7 +3131,10 @@ public actor WebRTCPeer {
 
             guard recordingGeneration != 0 else {
                 throw WebRTCTransportError.nativeFailure(
-                    "The current iPhone route could not stage the authorized microphone topology."
+                    WebRTCIOSMicrophoneAdmissionDiagnostics
+                        .failureDescription(
+                            iPhoneMicrophoneAdmissionFailureDiagnostics()
+                        )
                 )
             }
 
@@ -3515,11 +3576,29 @@ public actor WebRTCPeer {
     private func stageNativeIPhoneMicrophonePolicy(
         _ authorization: WebRTCIOSMicrophoneAuthorization
     ) -> UInt64 {
+        #if DEBUG
+        if debugIPhoneMicrophoneStageFailureDiagnostics != nil {
+            authorization.revoke()
+            return 0
+        }
+        #endif
         guard let device = iOSStereoPlayoutAudioDevice else {
             authorization.revoke()
             return 0
         }
         return device.stageMicrophoneAuthorization(authorization.native)
+    }
+
+    private func iPhoneMicrophoneAdmissionFailureDiagnostics()
+        -> WebRTCIOSPlayoutDiagnostics?
+    {
+        #if DEBUG
+        if let diagnostics = debugIPhoneMicrophoneStageFailureDiagnostics {
+            debugIPhoneMicrophoneStageFailureDiagnostics = nil
+            return diagnostics
+        }
+        #endif
+        return iOSPlayoutDiagnostics()
     }
 
     private func approveNativeIPhoneMicrophonePolicy(
@@ -5815,6 +5894,22 @@ public actor WebRTCPeer {
         _ applier: @escaping @Sendable (Bool) -> Bool
     ) {
         debugIPhoneMicrophonePolicyApplier = applier
+    }
+
+    func debugInstallIPhoneMicrophoneStageFailureForTesting(
+        _ diagnostics: WebRTCIOSPlayoutDiagnostics
+    ) {
+        debugIPhoneMicrophoneStageFailureDiagnostics = diagnostics
+    }
+
+    func debugEnableIPhoneMicrophoneThroughNativeStageForTesting(
+        _ authorization: WebRTCIOSMicrophoneAuthorization
+    ) async throws {
+        try await enableIPhoneMicrophone(
+            authorization: authorization,
+            requiresHealthyTransport: false,
+            requiresRawNegotiatedSenderProof: true
+        )
     }
 
     func debugInstallIPhoneMicrophonePreSuspensionHandlerHook(

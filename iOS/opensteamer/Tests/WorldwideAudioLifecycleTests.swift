@@ -33,6 +33,64 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertEqual(configuration.outputNumberOfChannels, 2)
     }
 
+    func testMicrophoneAdmissionFailurePreservesExactNativeRouteEvidence() async throws {
+        let peer = try makeAudioRacePeer()
+        let diagnostics = iosPlayoutDiagnostics(
+            callbacks: 0,
+            frames: 0,
+            failures: 1,
+            failureCode: 4,
+            lastLifecycleStatus: kAudio_ParamError,
+            initialized: true,
+            playoutInitialized: false,
+            playing: false,
+            sessionActive: false,
+            ownsSessionActivation: false,
+            remoteIOCreated: false,
+            inputBusEnabled: false,
+            outputBusEnabled: false,
+            categoryIsMediaPlayback: false,
+            categoryIsMediaPlayAndRecord: true,
+            sampleRate: 48_000,
+            outputChannelCount: 1,
+            failureMessage:
+                "The active route cannot satisfy the 48 kHz stereo output policy (output=1, input=1)."
+        )
+        await peer.debugInstallIPhoneMicrophoneStageFailureForTesting(
+            diagnostics
+        )
+        let authorization = WebRTCIOSMicrophoneAuthorization()
+        let capturedError: WebRTCTransportError?
+
+        do {
+            try await peer
+                .debugEnableIPhoneMicrophoneThroughNativeStageForTesting(
+                    authorization
+                )
+            capturedError = nil
+            XCTFail("The injected zero-generation native stage must fail.")
+        } catch let error as WebRTCTransportError {
+            capturedError = error
+        }
+
+        guard case .nativeFailure(let description) = capturedError else {
+            await peer.close()
+            return XCTFail("Expected the exact native stage failure.")
+        }
+
+        XCTAssertTrue(description.contains("code=4"))
+        XCTAssertTrue(description.contains("status=-50"))
+        XCTAssertTrue(description.contains("category=playAndRecord"))
+        XCTAssertTrue(description.contains("outputChannels=1"))
+        XCTAssertTrue(description.contains("output=1, input=1"))
+        XCTAssertNotEqual(
+            description,
+            "The current iPhone route could not stage the authorized microphone topology."
+        )
+        XCTAssertFalse(authorization.isValid)
+        await peer.close()
+    }
+
     func testLegacyLongFormPlaybackConfigurationUsesNoExplicitOptions() {
         XCTAssertEqual(AudioSessionManager.playbackCategory, .playback)
         XCTAssertEqual(AudioSessionManager.playbackMode, .moviePlayback)
@@ -9031,6 +9089,7 @@ private func iosPlayoutDiagnostics(
     outputIOBufferDuration: TimeInterval = 0.01,
     outputChannelCount: Int = 2,
     audioUnitSubType: UInt32 = kAudioUnitSubType_RemoteIO,
+    failureMessage: String? = nil,
     pcmSampleCount: UInt64? = nil,
     pcmNonzeroSampleCount: UInt64? = nil,
     pcmAbsoluteSampleSum: UInt64? = nil,
@@ -9090,7 +9149,10 @@ private func iosPlayoutDiagnostics(
         failureCode: failureCode,
         lastLifecycleStatus:
             lastLifecycleStatus ?? (failureCode == 0 ? noErr : lastStatus),
-        failureMessage: failureCode == 0 ? nil : "Synthetic lifecycle failure",
+        failureMessage:
+            failureCode == 0
+                ? nil
+                : (failureMessage ?? "Synthetic lifecycle failure"),
         playoutCallbackCount: callbacks,
         playoutFrameCount: frames,
         playoutFailureCount: failures,

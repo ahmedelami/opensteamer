@@ -264,6 +264,50 @@ static AVAudioSessionCategory ASCategoryForAudioPolicyConfiguration(
         : AVAudioSessionCategoryPlayback;
 }
 
+/// Failure-only route evidence. Port types identify receiver/speaker/Bluetooth policy without
+/// exposing user-assigned device names.
+static NSString *ASAudioSessionPortTypesDescription(
+    NSArray<AVAudioSessionPortDescription *> *ports
+) {
+    if (ports.count == 0) {
+        return @"none";
+    }
+    NSMutableArray<NSString *> *types =
+        [NSMutableArray arrayWithCapacity:ports.count];
+    for (AVAudioSessionPortDescription *port in ports) {
+        [types addObject:port.portType ?: @"unknown"];
+    }
+    return [types componentsJoinedByString:@","];
+}
+
+static NSString *ASAudioSessionDiagnosticDescription(
+    AVAudioSession *session
+) {
+    AVAudioSessionRouteDescription *route = session.currentRoute;
+    return [NSString stringWithFormat:
+        @"audioSession{category=%@, mode=%@, options=%lu, routeSharing=%ld, "
+         "rate=%.1f, preferredRate=%.1f, duration=%.6f, preferredDuration=%.6f, "
+         "inputAvailable=%@, input=%ld, preferredInput=%ld, maxInput=%ld, "
+         "output=%ld, preferredOutput=%ld, maxOutput=%ld, inputs=%@, outputs=%@}",
+        session.category,
+        session.mode,
+        (unsigned long)session.categoryOptions,
+        (long)session.routeSharingPolicy,
+        session.sampleRate,
+        session.preferredSampleRate,
+        session.IOBufferDuration,
+        session.preferredIOBufferDuration,
+        session.isInputAvailable ? @"yes" : @"no",
+        (long)session.inputNumberOfChannels,
+        (long)session.preferredInputNumberOfChannels,
+        (long)session.maximumInputNumberOfChannels,
+        (long)session.outputNumberOfChannels,
+        (long)session.preferredOutputNumberOfChannels,
+        (long)session.maximumOutputNumberOfChannels,
+        ASAudioSessionPortTypesDescription(route.inputs),
+        ASAudioSessionPortTypesDescription(route.outputs)];
+}
+
 static BOOL ASAudioStreamBasicDescriptionsEqual(
     AudioStreamBasicDescription lhs,
     AudioStreamBasicDescription rhs
@@ -4924,23 +4968,51 @@ static OSStatus ASRemoteIOInput(
             setPreferredOutputNumberOfChannels:ASOutputChannelCount
                                          error:nil];
     } else {
-        if (![session setPreferredSampleRate:ASSampleRate error:&error]
-            || ![session
-                setPreferredIOBufferDuration:ASIOBufferDuration
-                                       error:&error]
-            || ![session
-                setPreferredOutputNumberOfChannels:ASOutputChannelCount
-                                             error:&error]
-            || (microphoneEnabled
-                && ![session
-                    setPreferredInputNumberOfChannels:ASInputChannelCount
-                                                error:&error])) {
+        if (![session setPreferredSampleRate:ASSampleRate error:&error]) {
             [self failAndRollbackWithCode:
                 ASIOSStereoPlayoutFailureSessionPreference
                                    status:(int32_t)error.code
                                   message:[NSString stringWithFormat:
-                                      @"Media playback hardware preference failed: %@",
-                                      error.localizedDescription ?: @"unknown error"]];
+                                      @"Preferred sample-rate request failed: %@. %@",
+                                      error.localizedDescription ?: @"unknown error",
+                                      ASAudioSessionDiagnosticDescription(session)]];
+            return NO;
+        }
+        if (![session
+                setPreferredIOBufferDuration:ASIOBufferDuration
+                                       error:&error]) {
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureSessionPreference
+                                   status:(int32_t)error.code
+                                  message:[NSString stringWithFormat:
+                                      @"Preferred IO-buffer-duration request failed: %@. %@",
+                                      error.localizedDescription ?: @"unknown error",
+                                      ASAudioSessionDiagnosticDescription(session)]];
+            return NO;
+        }
+        if (![session
+                setPreferredOutputNumberOfChannels:ASOutputChannelCount
+                                             error:&error]) {
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureSessionPreference
+                                   status:(int32_t)error.code
+                                  message:[NSString stringWithFormat:
+                                      @"Preferred stereo-output request failed: %@. %@",
+                                      error.localizedDescription ?: @"unknown error",
+                                      ASAudioSessionDiagnosticDescription(session)]];
+            return NO;
+        }
+        if (microphoneEnabled
+            && ![session
+                setPreferredInputNumberOfChannels:ASInputChannelCount
+                                            error:&error]) {
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureSessionPreference
+                                   status:(int32_t)error.code
+                                  message:[NSString stringWithFormat:
+                                      @"Preferred mono-input request failed: %@. %@",
+                                      error.localizedDescription ?: @"unknown error",
+                                      ASAudioSessionDiagnosticDescription(session)]];
             return NO;
         }
     }
@@ -4948,8 +5020,9 @@ static OSStatus ASRemoteIOInput(
         [self failAndRollbackWithCode:ASIOSStereoPlayoutFailureSessionActivation
                                status:(int32_t)error.code
                               message:[NSString stringWithFormat:
-                                  @"Media playback audio-session activation failed: %@",
-                                  error.localizedDescription ?: @"unknown error"]];
+                                  @"Media playback audio-session activation failed: %@. %@",
+                                  error.localizedDescription ?: @"unknown error",
+                                  ASAudioSessionDiagnosticDescription(session)]];
         return NO;
     }
     if (hostedCallMode
@@ -4981,16 +5054,10 @@ static OSStatus ASRemoteIOInput(
                                status:kAudio_ParamError
                               message:[NSString stringWithFormat:
                                   @"The active route cannot satisfy the %@ output policy "
-                                   @"(category=%@, mode=%@, options=%lu, rate=%.1f, duration=%.6f, output=%ld, input=%ld, route=%@).",
+                                   @"(route=%@). %@",
                                   hostedCallMode ? @"hosted-call" : @"48 kHz stereo",
-                                  session.category,
-                                  session.mode,
-                                  (unsigned long)session.categoryOptions,
-                                  session.sampleRate,
-                                  session.IOBufferDuration,
-                                  (long)session.outputNumberOfChannels,
-                                  (long)session.inputNumberOfChannels,
-                                  hasOutputRoute ? @"present" : @"missing"]];
+                                  hasOutputRoute ? @"present" : @"missing",
+                                  ASAudioSessionDiagnosticDescription(session)]];
         return NO;
     }
 
