@@ -449,11 +449,16 @@ A separate archive-only `TestFlight` configuration now uses bundle identifier
 Its guarded upload path rejects the protected bundle identifier and validates
 the completed archive identity before any upload. This side-by-side app has a
 separate container and Keychain scope, so it requires fresh pairing with the new
-Mac host and cannot inherit the protected app's pairing state. No archive was
-uploaded and no physical-iPhone validation occurred. The maintainer reported the
-Apple Developer Program membership renewed on 2026-08-02; signing and App Store
-Connect availability still require live verification before this record can
-claim that build 37 was uploaded.
+Mac host and cannot inherit the protected app's pairing state. No TestFlight
+build was uploaded and no physical-iPhone validation occurred. The maintainer
+reported the
+Apple Developer Program membership renewed on 2026-08-02. A development-signed
+build-37 archive subsequently completed and passed the exact bundle, build,
+endpoint, Team ID, and signature guards for `com.elamin.opensteamer`. App Store
+Connect's app-record query succeeded with HTTP 200 but returned no record for
+that bundle. Both the Apple Developer account and App Store Connect still report
+the membership as expired, and App Store Connect rejects new-app creation until
+renewal propagation completes.
 
 - Do not install, replace, migrate, launch, reset, re-pair, or modify the
   production app on a physical iPhone.
