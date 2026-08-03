@@ -1329,6 +1329,201 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         await session.peer.close()
     }
 
+    func testNativeAutomaticMicrophoneFailureLatchesUntilExplicitRetry() async throws {
+        let session = try makeAutomaticMicrophonePolicyFixture(
+            provenance: .authenticatedPairedCoordinatorHandoff,
+            installsRemoteAudioTrack: false
+        )
+        let permissionRequested = expectation(
+            description: "automatic permission requested"
+        )
+        let firstEnableFailed = expectation(
+            description: "first native microphone enable failed"
+        )
+        let retryCommitted = expectation(
+            description: "explicit microphone retry committed"
+        )
+        let cleanupGate = AudioNonCooperativeGate<Bool>()
+        var enableAttemptCount = 0
+        var nativeAuthorization: WebRTCIOSMicrophoneAuthorization?
+
+        session.viewModel.debugInstallIPhoneMicrophonePermissionRequester {
+            permissionRequested.fulfill()
+            return true
+        }
+        session.viewModel.debugInstallIPhoneMicrophoneNativeHandlers(
+            enable: { authorization in
+                enableAttemptCount += 1
+                if enableAttemptCount == 1 {
+                    firstEnableFailed.fulfill()
+                    throw TestAudioError.activation
+                }
+                nativeAuthorization = authorization
+            },
+            disable: { authorization, _ in
+                if enableAttemptCount == 1,
+                   authorization != nil {
+                    return await cleanupGate.wait()
+                }
+                if authorization == nil
+                    || nativeAuthorization === authorization {
+                    nativeAuthorization = nil
+                }
+                return true
+            }
+        )
+        session.viewModel.debugInstallIPhoneMicrophoneDidCommitObserver {
+            authorization in
+            XCTAssertTrue(nativeAuthorization === authorization)
+            retryCommitted.fulfill()
+        }
+
+        session.viewModel.handleAppBecameActive()
+        await session.viewModel
+            .debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        await fulfillment(
+            of: [permissionRequested, firstEnableFailed],
+            timeout: 2
+        )
+        await cleanupGate.waitUntilBlocked()
+        XCTAssertTrue(
+            session.viewModel.isMicrophoneAdmissionCleanupInProgress
+        )
+        XCTAssertFalse(session.viewModel.canToggleIPhoneMicrophone)
+        XCTAssertEqual(
+            session.viewModel.microphoneStateText,
+            "Recovering audio"
+        )
+        session.viewModel.toggleIPhoneMicrophone()
+        for index in 0..<12 {
+            session.fixture.controller.updateRuntimePlayout(
+                isReady: index.isMultiple(of: 2)
+            )
+            await Task.yield()
+        }
+
+        XCTAssertEqual(enableAttemptCount, 1)
+        await cleanupGate.open(true)
+        for _ in 0..<12 {
+            await Task.yield()
+        }
+        XCTAssertFalse(
+            session.viewModel.isMicrophoneAdmissionCleanupInProgress
+        )
+        XCTAssertTrue(session.viewModel.microphoneIntentEnabled)
+        XCTAssertFalse(session.viewModel.isMicrophoneSending)
+        XCTAssertEqual(session.viewModel.microphoneStateText, "Unavailable")
+        XCTAssertEqual(session.viewModel.microphoneError, "activation failed")
+        XCTAssertEqual(
+            session.viewModel.iPhoneMicrophoneButtonTitle,
+            "Retry iPhone Microphone"
+        )
+        XCTAssertEqual(
+            session.viewModel.iPhoneMicrophoneButtonSystemImage,
+            "arrow.clockwise"
+        )
+
+        session.viewModel.toggleIPhoneMicrophone()
+        await fulfillment(of: [retryCommitted], timeout: 2)
+
+        XCTAssertEqual(enableAttemptCount, 2)
+        XCTAssertTrue(session.viewModel.microphoneIntentEnabled)
+        XCTAssertTrue(session.viewModel.isMicrophoneSending)
+        XCTAssertEqual(session.viewModel.microphoneStateText, "On")
+        XCTAssertNil(session.viewModel.microphoneError)
+        XCTAssertEqual(
+            session.viewModel.iPhoneMicrophoneButtonTitle,
+            "Turn Off iPhone Microphone"
+        )
+
+        session.viewModel.toggleIPhoneMicrophone()
+        session.viewModel.disconnect()
+        await session.peer.close()
+    }
+
+    func testTransportRaceWaitsForFreshHealthyProofThenRetriesAutomatically()
+        async throws {
+        let session = try makeAutomaticMicrophonePolicyFixture(
+            provenance: .authenticatedPairedCoordinatorHandoff,
+            installsRemoteAudioTrack: false
+        )
+        let permissionRequested = expectation(
+            description: "automatic permission requested"
+        )
+        let firstEnableDeferred = expectation(
+            description: "first transport-raced enable deferred"
+        )
+        let retryCommitted = expectation(
+            description: "fresh healthy proof committed retry"
+        )
+        var enableAttemptCount = 0
+        var nativeAuthorization: WebRTCIOSMicrophoneAuthorization?
+
+        session.viewModel.debugInstallIPhoneMicrophonePermissionRequester {
+            permissionRequested.fulfill()
+            return true
+        }
+        session.viewModel.debugInstallIPhoneMicrophoneNativeHandlers(
+            enable: { authorization in
+                enableAttemptCount += 1
+                if enableAttemptCount == 1 {
+                    firstEnableDeferred.fulfill()
+                    throw WebRTCTransportError.transportNotHealthy
+                }
+                nativeAuthorization = authorization
+            },
+            disable: { authorization, _ in
+                if authorization == nil
+                    || nativeAuthorization === authorization {
+                    nativeAuthorization = nil
+                }
+                return true
+            }
+        )
+        session.viewModel.debugInstallIPhoneMicrophoneDidCommitObserver {
+            authorization in
+            XCTAssertTrue(nativeAuthorization === authorization)
+            retryCommitted.fulfill()
+        }
+
+        session.viewModel.handleAppBecameActive()
+        await session.viewModel
+            .debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        await fulfillment(
+            of: [permissionRequested, firstEnableDeferred],
+            timeout: 2
+        )
+        for index in 0..<12 {
+            session.fixture.controller.updateRuntimePlayout(
+                isReady: index.isMultiple(of: 2)
+            )
+            await Task.yield()
+        }
+
+        XCTAssertEqual(enableAttemptCount, 1)
+        XCTAssertTrue(session.viewModel.microphoneIntentEnabled)
+        XCTAssertFalse(session.viewModel.isMicrophoneSending)
+        XCTAssertEqual(
+            session.viewModel.microphoneStateText,
+            "Paused — waiting for healthy connection"
+        )
+
+        session.viewModel
+            .debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+        await session.viewModel
+            .debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        await fulfillment(of: [retryCommitted], timeout: 2)
+
+        XCTAssertEqual(enableAttemptCount, 2)
+        XCTAssertTrue(session.viewModel.isMicrophoneSending)
+        XCTAssertEqual(session.viewModel.microphoneStateText, "On")
+        XCTAssertNil(session.viewModel.microphoneError)
+
+        session.viewModel.toggleIPhoneMicrophone()
+        session.viewModel.disconnect()
+        await session.peer.close()
+    }
+
     func testAutomaticMicrophoneStartsAfterAuthenticatedRecoveryProofWithoutRemoteAudio()
         async throws {
         let session = try makeAutomaticMicrophonePolicyFixture(

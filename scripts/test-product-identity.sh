@@ -259,7 +259,7 @@ readonly EXPECTED_BUNDLE_IDENTIFIER="com.elamin.opensteamer"
 readonly PROTECTED_BUNDLE_IDENTIFIER="com.elamin.AudioStreamer"
 readonly EXPECTED_SCHEME="opensteamerTestFlight"
 readonly EXPECTED_CONFIGURATION="TestFlight"
-readonly EXPECTED_BUILD_NUMBER="37"
+readonly EXPECTED_BUILD_NUMBER="38"
 readonly PRIVATE_TEMPORARY_ROOT="/private/tmp"' \
   >"$BASELINE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh"
 print -r -- '<?xml version="1.0" encoding="UTF-8"?>

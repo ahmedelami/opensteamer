@@ -2324,6 +2324,57 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             nil
         )
 
+        await viewer.debugSetIPhoneMicrophoneAudioProcessingStateForTesting(
+            WebRTCAudioProcessingSnapshot(
+                hasAudioProcessingModule: true,
+                echoCancellation: WebRTCAudioProcessingComponentSnapshot(
+                    requestedEnabled: false,
+                    softwareActive: true,
+                    platformActive: false
+                ),
+                noiseSuppression: inactiveProcessingComponent,
+                autoGainControl: inactiveProcessingComponent,
+                highPassFilter: inactiveProcessingComponent
+            )
+        )
+        let delayedAdmissionBaseline =
+            await viewer.iPhoneMicrophoneSenderStateForTesting()
+        let delayedRawProcessingAdmission = Task {
+            try await viewer
+                .debugEnableIPhoneMicrophoneTrackAfterRawProcessingForTesting(
+                    maximumAttempts: 100,
+                    rawProcessingMaximumAttempts: nil
+                )
+        }
+        var observedDelayedRawProcessingRequest = false
+        for _ in 0..<100 {
+            let senderState =
+                await viewer.iPhoneMicrophoneSenderStateForTesting()
+            if senderState.rawProcessingRequestCount
+                > delayedAdmissionBaseline.rawProcessingRequestCount {
+                observedDelayedRawProcessingRequest = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(observedDelayedRawProcessingRequest)
+        try await Task.sleep(for: .milliseconds(350))
+        await viewer.debugSetIPhoneMicrophoneAudioProcessingStateForTesting(
+            WebRTCAudioProcessingSnapshot(
+                hasAudioProcessingModule: true,
+                echoCancellation: inactiveProcessingComponent,
+                noiseSuppression: inactiveProcessingComponent,
+                autoGainControl: inactiveProcessingComponent,
+                highPassFilter: inactiveProcessingComponent
+            )
+        )
+        let delayedProcessingState = try await delayedRawProcessingAdmission.value
+        XCTAssertFalse(delayedProcessingState.echoCancellation.softwareActive)
+        await viewer.debugDisableIPhoneMicrophoneTrackForTesting()
+        await viewer.debugSetIPhoneMicrophoneAudioProcessingStateForTesting(
+            nil
+        )
+
         let preRestartMicrophoneSenderState =
             await viewer.iPhoneMicrophoneSenderStateForTesting()
         let rawProcessingRequestsBeforeRestart =

@@ -413,9 +413,8 @@ struct BrowserView: View {
         } label: {
             Label(
                 worldwideViewModel.iPhoneMicrophoneButtonTitle,
-                systemImage: worldwideViewModel.microphoneIntentEnabled
-                    ? "mic.slash.fill"
-                    : "mic.fill"
+                systemImage:
+                    worldwideViewModel.iPhoneMicrophoneButtonSystemImage
             )
         }
         .disabled(!worldwideViewModel.canToggleIPhoneMicrophone)

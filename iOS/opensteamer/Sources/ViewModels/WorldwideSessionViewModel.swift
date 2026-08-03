@@ -378,6 +378,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     @Published private(set) var microphoneError: String?
     @Published private(set) var microphoneIntentEnabled = false
     @Published private(set) var isMicrophoneSending = false
+    @Published private(set) var isMicrophoneAdmissionCleanupInProgress = false
     @Published private(set) var routeText = "Unknown"
     @Published private(set) var iceStateText = "Inactive"
     @Published private(set) var remoteDisplayName = "Mac mini"
@@ -459,6 +460,16 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var automaticMicrophoneEligibleSessionGeneration: UUID?
     private var automaticMicrophoneAttemptedSessionGeneration: UUID?
     private var manuallyDisabledMicrophoneSessionGeneration: UUID?
+    /// A native admission failure is terminal for the current automatic attempt. Audio-policy
+    /// snapshots continue while output-only recovery settles, so retrying from those snapshots
+    /// would otherwise create an unbounded Starting/Unavailable loop.
+    private var microphoneAdmissionFailedSessionGeneration: UUID?
+    /// A peer-actor health race is not a terminal native admission failure. Hold the retry until
+    /// the MainActor observes a newer healthy-transport proof so lifecycle snapshots cannot spin.
+    private var microphoneAdmissionDeferredUntilTransportProof:
+        (sessionGeneration: UUID, proofRevision: UInt64)?
+    private var viewerTransportHealthProofRevision: UInt64 = 0
+    private var microphoneAdmissionCleanupID: UUID?
     private var controlAcknowledgementTimeoutTask: Task<Void, Never>?
     private var pendingScreenVisibilityRequest: PendingScreenVisibilityRequest?
     private var earlyControlAcknowledgements: [
@@ -662,13 +673,25 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     var canToggleIPhoneMicrophone: Bool {
-        hasActiveSession && peer != nil
+        hasActiveSession
+            && peer != nil
+            && !isMicrophoneAdmissionCleanupInProgress
     }
 
     var iPhoneMicrophoneButtonTitle: String {
-        microphoneIntentEnabled
+        if microphoneAdmissionFailedSessionGeneration == sessionGeneration {
+            return "Retry iPhone Microphone"
+        }
+        return microphoneIntentEnabled
             ? "Turn Off iPhone Microphone"
             : "Use iPhone Microphone"
+    }
+
+    var iPhoneMicrophoneButtonSystemImage: String {
+        if microphoneAdmissionFailedSessionGeneration == sessionGeneration {
+            return "arrow.clockwise"
+        }
+        return microphoneIntentEnabled ? "mic.slash.fill" : "mic.fill"
     }
 
     #if DEBUG
@@ -743,6 +766,11 @@ final class WorldwideSessionViewModel: ObservableObject {
             provenance == .authenticatedPairedCoordinatorHandoff ? sessionGeneration : nil
         automaticMicrophoneAttemptedSessionGeneration = nil
         manuallyDisabledMicrophoneSessionGeneration = nil
+        microphoneAdmissionFailedSessionGeneration = nil
+        microphoneAdmissionDeferredUntilTransportProof = nil
+        viewerTransportHealthProofRevision = 0
+        microphoneAdmissionCleanupID = nil
+        isMicrophoneAdmissionCleanupInProgress = false
         nextICERestartRequestID = 1
         hasHandledRemoteOffer = false
         recoveryProofEpoch = 0
@@ -859,9 +887,22 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     func toggleIPhoneMicrophone() {
+        guard !isMicrophoneAdmissionCleanupInProgress else { return }
+
+        if microphoneAdmissionFailedSessionGeneration == sessionGeneration {
+            microphoneAdmissionFailedSessionGeneration = nil
+            microphoneAdmissionDeferredUntilTransportProof = nil
+            microphoneError = nil
+            microphoneStateText = "Starting"
+            continueIPhoneMicrophoneEnablementIfPossible()
+            return
+        }
+
         if microphoneIntentEnabled {
             manuallyDisabledMicrophoneSessionGeneration = sessionGeneration
             automaticMicrophoneAttemptedSessionGeneration = sessionGeneration
+            microphoneAdmissionFailedSessionGeneration = nil
+            microphoneAdmissionDeferredUntilTransportProof = nil
             microphoneError = nil
             suspendIPhoneMicrophone(
                 stateText: "Off",
@@ -876,6 +917,8 @@ final class WorldwideSessionViewModel: ObservableObject {
             automaticMicrophoneAttemptedSessionGeneration = sessionGeneration
         }
         microphoneIntentEnabled = true
+        microphoneAdmissionFailedSessionGeneration = nil
+        microphoneAdmissionDeferredUntilTransportProof = nil
         microphoneError = nil
         continueIPhoneMicrophoneEnablementIfPossible()
     }
@@ -1028,6 +1071,21 @@ final class WorldwideSessionViewModel: ObservableObject {
             microphoneStateText = "Paused — waiting for app"
             return
         }
+        guard !isMicrophoneAdmissionCleanupInProgress else {
+            microphoneStateText = "Recovering audio"
+            return
+        }
+        guard microphoneAdmissionDeferredUntilTransportProof?
+            .sessionGeneration != sessionGeneration else {
+            microphoneStateText = "Paused — waiting for healthy connection"
+            return
+        }
+        guard microphoneAdmissionFailedSessionGeneration != sessionGeneration else {
+            if microphoneAuthorization == nil {
+                microphoneStateText = "Unavailable"
+            }
+            return
+        }
         guard canViewScreen,
               let expectedPeer = peer else {
             microphoneStateText = "Paused — waiting for healthy connection"
@@ -1088,13 +1146,29 @@ final class WorldwideSessionViewModel: ObservableObject {
                     return
                 }
                 self.invalidateRawMicrophoneOracle()
+                let shouldDeferUntilTransportProof =
+                    (error as? WebRTCTransportError) == .transportNotHealthy
+                let transportProofRevisionAtFailure =
+                    viewerTransportHealthProofRevision
                 let outputOnlyToken =
                     armIPhoneMicrophoneOutputOnlyToken(
                         ownerEpoch: expectedSessionGeneration
                     )
+                let cleanupID = UUID()
+                microphoneAdmissionCleanupID = cleanupID
+                isMicrophoneAdmissionCleanupInProgress = true
+                microphoneAdmissionFailedSessionGeneration = nil
+                if shouldDeferUntilTransportProof {
+                    microphoneAdmissionDeferredUntilTransportProof = (
+                        expectedSessionGeneration,
+                        transportProofRevisionAtFailure
+                    )
+                } else {
+                    microphoneAdmissionDeferredUntilTransportProof = nil
+                }
                 microphoneAuthorization = nil
                 isMicrophoneSending = false
-                microphoneStateText = "Unavailable"
+                microphoneStateText = "Recovering audio"
                 microphoneError = error.localizedDescription
                 _ = await self.performIPhoneMicrophoneDisable(
                     on: expectedPeer,
@@ -1104,13 +1178,37 @@ final class WorldwideSessionViewModel: ObservableObject {
                 clearIPhoneMicrophoneOutputOnlyToken(
                     outputOnlyToken
                 )
+                guard microphoneAdmissionCleanupID == cleanupID else {
+                    return
+                }
+                microphoneAdmissionCleanupID = nil
+                isMicrophoneAdmissionCleanupInProgress = false
                 guard microphoneOperationGeneration == operationGeneration,
                       sessionGeneration == expectedSessionGeneration,
                       peer === expectedPeer,
                       microphoneAuthorization == nil else {
                     return
                 }
-                beginIOSPlayoutProof(requestRecovery: false)
+                if shouldDeferUntilTransportProof {
+                    microphoneStateText =
+                        "Paused — waiting for healthy connection"
+                    if viewerTransportHealthProofRevision
+                        > transportProofRevisionAtFailure,
+                       canViewScreen {
+                        microphoneAdmissionDeferredUntilTransportProof = nil
+                        microphoneError = nil
+                        microphoneStateText = "Starting"
+                    }
+                } else {
+                    microphoneAdmissionFailedSessionGeneration =
+                        expectedSessionGeneration
+                    microphoneStateText = "Unavailable"
+                }
+                beginIOSPlayoutProof(requestRecovery: true)
+                if shouldDeferUntilTransportProof,
+                   microphoneAdmissionDeferredUntilTransportProof == nil {
+                    reconcileIPhoneMicrophone()
+                }
                 return
             }
 
@@ -1146,6 +1244,8 @@ final class WorldwideSessionViewModel: ObservableObject {
                 return
             }
             invalidateRawMicrophoneOracle()
+            microphoneAdmissionFailedSessionGeneration = nil
+            microphoneAdmissionDeferredUntilTransportProof = nil
             isMicrophoneSending = true
             microphoneStateText = "On"
             microphoneError = nil
@@ -1212,6 +1312,8 @@ final class WorldwideSessionViewModel: ObservableObject {
 
         if !preserveIntent {
             microphoneIntentEnabled = false
+            microphoneAdmissionFailedSessionGeneration = nil
+            microphoneAdmissionDeferredUntilTransportProof = nil
             microphonePermissionOperationGeneration = UUID()
             microphonePermissionTask?.cancel()
             microphonePermissionTask = nil
@@ -2632,6 +2734,11 @@ final class WorldwideSessionViewModel: ObservableObject {
         automaticMicrophoneEligibleSessionGeneration = nil
         automaticMicrophoneAttemptedSessionGeneration = nil
         manuallyDisabledMicrophoneSessionGeneration = nil
+        microphoneAdmissionFailedSessionGeneration = nil
+        microphoneAdmissionDeferredUntilTransportProof = nil
+        viewerTransportHealthProofRevision = 0
+        microphoneAdmissionCleanupID = nil
+        isMicrophoneAdmissionCleanupInProgress = false
         microphoneOutputOnlyToken = nil
         audioLifecycle.stop()
         audioPolicyGeneration = UUID()
@@ -2703,6 +2810,11 @@ final class WorldwideSessionViewModel: ObservableObject {
         automaticMicrophoneEligibleSessionGeneration = nil
         automaticMicrophoneAttemptedSessionGeneration = nil
         manuallyDisabledMicrophoneSessionGeneration = nil
+        microphoneAdmissionFailedSessionGeneration = nil
+        microphoneAdmissionDeferredUntilTransportProof = nil
+        viewerTransportHealthProofRevision = 0
+        microphoneAdmissionCleanupID = nil
+        isMicrophoneAdmissionCleanupInProgress = false
         microphoneOutputOnlyToken = nil
         routeText = "Unknown"
         iceStateText = "Inactive"
@@ -4890,6 +5002,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         stateText = "Connected"
         // The authenticated, current-generation inactive acknowledgement is the recovery proof
         // that permits remote audio to leave the fail-closed mute gate.
+        recordViewerTransportHealthProof()
         audioLifecycle.transportBecameHealthy()
         establishAutomaticIPhoneMicrophoneIntentIfEligible()
         continueIPhoneMicrophoneEnablementIfPossible()
@@ -5611,6 +5724,11 @@ final class WorldwideSessionViewModel: ObservableObject {
             provenance == .authenticatedPairedCoordinatorHandoff ? generation : nil
         automaticMicrophoneAttemptedSessionGeneration = nil
         manuallyDisabledMicrophoneSessionGeneration = nil
+        microphoneAdmissionFailedSessionGeneration = nil
+        microphoneAdmissionDeferredUntilTransportProof = nil
+        viewerTransportHealthProofRevision = 0
+        microphoneAdmissionCleanupID = nil
+        isMicrophoneAdmissionCleanupInProgress = false
         isPeerConnected = true
         iceIsConnected = true
         isControlChannelReady = true
@@ -5970,11 +6088,24 @@ final class WorldwideSessionViewModel: ObservableObject {
         if !isScreenVisible {
             stateText = "Connected"
         }
+        recordViewerTransportHealthProof()
         audioLifecycle.transportBecameHealthy()
         await activatePendingIOSStartupConnectedCallPlayoutIfPossible()
         establishAutomaticIPhoneMicrophoneIntentIfEligible()
         continueIPhoneMicrophoneEnablementIfPossible()
         await recoveryCoordinator?.iceStateChanged(state)
+    }
+
+    private func recordViewerTransportHealthProof() {
+        viewerTransportHealthProofRevision &+= 1
+        guard let deferred = microphoneAdmissionDeferredUntilTransportProof,
+              deferred.sessionGeneration == sessionGeneration,
+              viewerTransportHealthProofRevision > deferred.proofRevision,
+              !isMicrophoneAdmissionCleanupInProgress else {
+            return
+        }
+        microphoneAdmissionDeferredUntilTransportProof = nil
+        microphoneError = nil
     }
 
     private func markTransportUncertain(

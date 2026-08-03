@@ -1,6 +1,6 @@
 # User-protected legacy AudioStreamer runtime
 
-Status: **VERSION 20 COMMITTED; NEW HOST ACTIVE; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
+Status: **POST-V20 ISOLATED-PAIRING UPDATE COMMITTED; NEW HOST ACTIVE; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
 Original preservation direction: **2026-07-25**\
 Mac-only migration authorization recorded: **2026-07-30/31**\
 Version-15 retry authorization recorded: **2026-08-02**\
@@ -66,10 +66,12 @@ namespace remain unchanged.
 - Pairing service after the authorized update:
   `com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1`
 
-The source update is not deployment evidence. Until a newly signed host is
-verified and launched, the installed version-20 binary remains the active
-postimage and still addresses the protected legacy pairing service. Never run
-its `--reset-worldwide-pairing` option.
+Source changes alone are not deployment evidence. The guarded post-version-20
+transaction recorded below is the authority for the installed host. It proved
+that the installed binary addresses only the isolated new-host pairing service
+and does not contain the protected legacy pairing service. Never run either
+host's `--reset-worldwide-pairing` option outside a separately authorized,
+guarded recovery.
 
 Legacy and new hosts must never overlap. Before starting the new host, the
 controller must prove that the legacy job and every legacy `CaptureServer`
@@ -479,11 +481,31 @@ evidence at
 `/Users/ahmed/Library/Application Support/opensteamer/host-updates/post-v20-update-1785753577-2449-71a9da03-8850-49ab-a0e4-8389b84527ab`,
 but its one-time invitation expired before pairing committed. The strengthened
 automatic rollback restored and reverified exact v20 without manual recovery.
-The active host is therefore still committed v20, now PID `6308` at the time of
-this record, with executable SHA-256
+The next guarded retry paired successfully and committed the isolated host. Its
+retained evidence is
+`/Users/ahmed/Library/Application Support/opensteamer/host-updates/post-v20-update-1785755610-30384-e2654f34-367f-4767-93f8-76d27a7e2c10`.
+It used source commit `3ca45ac1e83165c0800b10ce1d72d70e091eeb9a`, tree
+`da9b343b72a522d3599b7a64465a4afeacb72caf`, and source-archive SHA-256
+`7f0fc3bc8efb16958c8c424e159188e2b9fc2b1ee8747f25a0a2261ee7091b9f`.
+The journal records the complete ordered path through pairing, publication,
+persistent bootstrap, `READY_VERIFIED`, and `COMMITTED`. Its 1,007-byte journal
+SHA-256 is
+`1c6051a9538901c0002b126b373c9476b93aa48c220127358e7e08e2b58d5ff5`;
+the success-result SHA-256 is
+`22127aa5523e3efa468822044100fb2fd1cc5ceb97552377c986b1f5c1a15d77`.
+The retained 136-byte `active-post-v20-host-update-v1` pointer SHA-256 is
+`f6e76a7d67e424fe319f12ef505d94b6826cc5c36f0415644832c853e9788cdf`.
+
+At the time of this record, the committed isolated host is the sole
+`CaptureServer` as PID `33447`, launchd runs `1`, with executable SHA-256
+`ae7638a512440bb567d5e07f1067d8e5035bb59951e38c0559a74e4afa1d2e52`
+and LaunchAgent plist SHA-256
+`7cdcf2d1517dc9ec1ae49b6fbbaf293c77afd958f697878d44f3b3c8e9c7e550`.
+The exact committed version-20 host remains retained as the verified rollback
+postimage with executable SHA-256
 `2d420326dab660e0eee8b0c839aa5fa4da4a792d8d279a682d94eccdc6fee443`.
-No post-version-20 replacement is installed. A future guarded retry requires a
-new one-time code; never reuse either expired code from these attempts.
+The protected legacy executable and plist still match their reviewed hashes;
+their label is disabled and absent. No pairing code is reusable.
 
 ## Protected iPhone client
 
@@ -492,7 +514,7 @@ identifier `com.elamin.AudioStreamer`. The physical iPhone was unavailable while
 this migration was prepared.
 
 A separate archive-only `TestFlight` configuration now uses bundle identifier
-`com.elamin.opensteamer`, build `37`, and the production rendezvous endpoint.
+`com.elamin.opensteamer`, build `38`, and the production rendezvous endpoint.
 Its guarded upload path rejects the protected bundle identifier and validates
 the completed archive identity before any upload. This side-by-side app has a
 separate container and Keychain scope, so it requires fresh pairing with the new
@@ -522,6 +544,26 @@ availability and invitation alone do not establish physical-iPhone behavior.
 The later guarded pairing commit establishes that the separate client reached
 the isolated host once, but the host update rolled back before physical audio,
 microphone, call, or full end-to-end behavior was validated.
+
+After the isolated host committed, the maintainer physically paired build `37`
+and observed the microphone status rapidly cycle among `Starting`,
+`Paused — waiting for audio policy`, and `Unavailable`. That observation is a
+failure report, not microphone validation. The Mac host remained the sole
+process and its direct WebRTC route continued carrying system audio.
+
+Build `38` changes microphone admission so a native failure is latched once for
+explicit retry, a transport race waits for a newer healthy-transport proof and
+then retries automatically, and output-only cleanup gates both automatic and
+manual retry. Raw-processing convergence now has a two-second production safety
+deadline instead of the earlier 200-millisecond attempt window. The focused
+macOS WebRTC loopback regression and two focused iOS lifecycle regressions
+passed. The guarded archive verified exact bundle `com.elamin.opensteamer`,
+build `38`, production endpoints, Team ID, and signature, then uploaded
+successfully at 2026-08-03 08:11 EDT. Xcode reported `Upload succeeded` and
+`** EXPORT SUCCEEDED **`; retained evidence is under
+`/private/tmp/opensteamer-testflight-output.nZPlNR`. App Store Connect processing
+and a fresh physical-iPhone oracle are still required before claiming the fix
+works end to end. The non-blocking LiveKitWebRTC missing-dSYM warning remains.
 
 - Do not install, replace, migrate, launch, reset, re-pair, or modify the
   production app on a physical iPhone.

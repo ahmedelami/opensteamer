@@ -2750,7 +2750,8 @@ public actor WebRTCPeer {
     }
 
     func debugEnableIPhoneMicrophoneTrackAfterRawProcessingForTesting(
-        maximumAttempts: Int = 20
+        maximumAttempts: Int = 20,
+        rawProcessingMaximumAttempts: Int? = 20
     ) async throws -> WebRTCAudioProcessingSnapshot {
         #if os(macOS)
         try ensureOpen()
@@ -2778,7 +2779,7 @@ public actor WebRTCPeer {
             try await awaitRawIPhoneMicrophoneProcessing(
                 expectedNegotiationEpoch: expectedNegotiationEpoch,
                 requiresHealthyTransport: false,
-                maximumAttempts: maximumAttempts
+                maximumAttempts: rawProcessingMaximumAttempts
             )
             let recordingGeneration =
                 try await awaitHeadlessMacIPhoneMicrophoneRecordingGeneration(
@@ -5247,10 +5248,13 @@ public actor WebRTCPeer {
     private func awaitRawIPhoneMicrophoneProcessing(
         expectedNegotiationEpoch: UInt64,
         requiresHealthyTransport: Bool,
-        maximumAttempts: Int = 20
+        maximumAttempts: Int? = nil
     ) async throws {
-        let finalAttempt = max(0, maximumAttempts)
-        for attempt in 0...finalAttempt {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        let boundedMaximumAttempts = maximumAttempts.map { max(0, $0) }
+        var attempt = 0
+        while true {
             guard !isClosed,
                   localIPhoneMicrophoneTrack?.isEnabled == true,
                   iPhoneMicrophoneSenderOwnsLocalTrack(
@@ -5267,13 +5271,19 @@ public actor WebRTCPeer {
             if rawIPhoneMicrophoneProcessingIsLive() {
                 return
             }
-            if attempt == finalAttempt {
+            let exhaustedAttemptOverride = boundedMaximumAttempts.map {
+                attempt >= $0
+            } ?? false
+            if exhaustedAttemptOverride
+                || (boundedMaximumAttempts == nil && clock.now >= deadline) {
                 throw WebRTCTransportError.nativeFailure(
                     "WebRTC did not disable call-oriented iPhone-microphone processing "
-                        + "within 200 ms: \(rawIPhoneMicrophoneProcessingDiagnostic())"
+                        + "within the 2-second safety deadline: "
+                        + rawIPhoneMicrophoneProcessingDiagnostic()
                 )
             }
-            try await Task.sleep(for: .milliseconds(10))
+            attempt += 1
+            try await Task.sleep(for: .milliseconds(20))
         }
     }
 
