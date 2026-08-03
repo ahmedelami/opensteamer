@@ -55,6 +55,7 @@ const V20_EVIDENCE: &str = "/Users/ahmed/Library/Application Support/opensteamer
 const V20_STAGED_APP: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v20-after-v19-1785637636-18044/staged/opensteamer Host.app";
 const OFFLINE_LEGACY_REFERENCE: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v20-after-v19-1785637636-18044/legacy-snapshot/CaptureServer";
 const OFFLINE_LEGACY_REFERENCE_MODE: u32 = 0o500;
+const REPOSITORY_EXECUTABLE_MODE: u32 = 0o755;
 const SOURCE_EXPORT_EXECUTABLE_MODE: u32 = 0o700;
 const ONLINE_LOG: &str = "/var/tmp/opensteamer-worldwide-host.log";
 const REVIEWED_PREBUILT_APP: &str =
@@ -572,7 +573,7 @@ fn execute_update(repo: PathBuf, build_input: BuildInput) -> Result<()> {
             "before creating fresh-build post-v20 update evidence",
         )?,
         BuildInput::ReviewedPrebuilt(app) => {
-            verify_reviewed_prebuilt_source(&repo, app)?;
+            verify_reviewed_prebuilt_source(&repo, app, REPOSITORY_EXECUTABLE_MODE)?;
             require_available_bytes(
                 Path::new(PRIVATE_ROOT),
                 768 * 1_024 * 1_024,
@@ -1276,16 +1277,20 @@ fn build_and_verify_staged_app(layout: &Layout) -> Result<()> {
         .stderr(Stdio::from(stderr))
         .status()?;
     require_success(status, "fresh signed host build")?;
-    verify_staged_app_contract(&layout.source_export, &layout.staged_app)
+    verify_staged_app_contract(
+        &layout.source_export,
+        &layout.staged_app,
+        SOURCE_EXPORT_EXECUTABLE_MODE,
+    )
 }
 
-fn verify_reviewed_prebuilt_source(repo: &Path, app: &Path) -> Result<()> {
+fn verify_reviewed_prebuilt_source(repo: &Path, app: &Path, verifier_mode: u32) -> Result<()> {
     if app != Path::new(REVIEWED_PREBUILT_APP) {
         return Err(ControllerError(
             "prebuilt source escaped the exact reviewed path".to_owned(),
         ));
     }
-    verify_staged_app_contract(repo, app)?;
+    verify_staged_app_contract(repo, app, verifier_mode)?;
     let executable = app.join("Contents/MacOS/CaptureServer");
     if sha256(&executable)? != REVIEWED_PREBUILT_EXECUTABLE_SHA256 {
         return Err(ControllerError(
@@ -1296,7 +1301,7 @@ fn verify_reviewed_prebuilt_source(repo: &Path, app: &Path) -> Result<()> {
 }
 
 fn import_and_verify_prebuilt(layout: &Layout, source: &Path) -> Result<()> {
-    verify_reviewed_prebuilt_source(&layout.source_export, source)?;
+    verify_reviewed_prebuilt_source(&layout.source_export, source, SOURCE_EXPORT_EXECUTABLE_MODE)?;
     require_path_absent(&layout.stage_output, "staged output")?;
     create_private_directory(&layout.stage_output)?;
     let output = command_output(
@@ -1310,7 +1315,11 @@ fn import_and_verify_prebuilt(layout: &Layout, source: &Path) -> Result<()> {
     )?;
     require_output_success(&output, "copy reviewed prebuilt app into evidence")?;
     require_tree_equal(source, &layout.staged_app)?;
-    verify_staged_app_contract(&layout.source_export, &layout.staged_app)?;
+    verify_staged_app_contract(
+        &layout.source_export,
+        &layout.staged_app,
+        SOURCE_EXPORT_EXECUTABLE_MODE,
+    )?;
     if sha256(&layout.staged_app.join("Contents/MacOS/CaptureServer"))?
         != REVIEWED_PREBUILT_EXECUTABLE_SHA256
     {
@@ -1321,8 +1330,8 @@ fn import_and_verify_prebuilt(layout: &Layout, source: &Path) -> Result<()> {
     Ok(())
 }
 
-fn verify_staged_app_contract(repo: &Path, staged_app: &Path) -> Result<()> {
-    verify_bundle(repo, staged_app, false)?;
+fn verify_staged_app_contract(repo: &Path, staged_app: &Path, verifier_mode: u32) -> Result<()> {
+    verify_bundle(repo, staged_app, false, verifier_mode)?;
 
     let staged_executable = staged_app.join("Contents/MacOS/CaptureServer");
     let staged_hash = sha256(&staged_executable)?;
@@ -1374,7 +1383,12 @@ fn prepare_install_hold(layout: &Layout) -> Result<()> {
         None,
     )?;
     require_output_success(&output, "copy staged app to hidden install hold")?;
-    verify_bundle(&layout.source_export, &layout.install_hold, false)?;
+    verify_bundle(
+        &layout.source_export,
+        &layout.install_hold,
+        false,
+        SOURCE_EXPORT_EXECUTABLE_MODE,
+    )?;
     require_tree_equal(&layout.staged_app, &layout.install_hold)?;
     Ok(())
 }
@@ -1388,16 +1402,21 @@ fn record_install_hold_name(layout: &Layout) -> Result<()> {
 }
 
 fn verify_installed_matches_stage(layout: &Layout) -> Result<()> {
-    verify_bundle(&layout.source_export, Path::new(NEW_APP), true)?;
+    verify_bundle(
+        &layout.source_export,
+        Path::new(NEW_APP),
+        true,
+        SOURCE_EXPORT_EXECUTABLE_MODE,
+    )?;
     require_tree_equal(&layout.staged_app, Path::new(NEW_APP))?;
     verify_legacy_sources()?;
     require_legacy_disabled_and_absent()?;
     Ok(())
 }
 
-fn verify_bundle(repo: &Path, app: &Path, installed: bool) -> Result<()> {
+fn verify_bundle(repo: &Path, app: &Path, installed: bool, verifier_mode: u32) -> Result<()> {
     let verifier = repo.join("macOS/scripts/verify-mac-host-bundle.sh");
-    require_regular(&verifier, SOURCE_EXPORT_EXECUTABLE_MODE)?;
+    require_regular(&verifier, verifier_mode)?;
     let mut arguments = Vec::new();
     if installed {
         arguments.push("--installed-runtime".to_owned());
@@ -2061,7 +2080,12 @@ fn spawn_interactive_host(layout: &Layout) -> Result<Child> {
     require_legacy_disabled_and_absent()?;
     require_no_capture_servers()?;
     let lock = acquire_unowned_shared_lock()?;
-    verify_bundle(&layout.source_export, &layout.staged_app, false)?;
+    verify_bundle(
+        &layout.source_export,
+        &layout.staged_app,
+        false,
+        SOURCE_EXPORT_EXECUTABLE_MODE,
+    )?;
     let staged_executable = layout.staged_app.join("Contents/MacOS/CaptureServer");
     drop(lock);
     let child = Command::new(&staged_executable)

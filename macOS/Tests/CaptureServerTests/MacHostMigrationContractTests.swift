@@ -197,14 +197,22 @@ final class MacHostMigrationContractTests: XCTestCase {
             "staged pairing namespace is not isolated",
             "const OFFLINE_LEGACY_REFERENCE_MODE: u32 = 0o500;",
             "Path::new(OFFLINE_LEGACY_REFERENCE),\n        OFFLINE_LEGACY_REFERENCE_MODE,",
+            "const REPOSITORY_EXECUTABLE_MODE: u32 = 0o755;",
             "const SOURCE_EXPORT_EXECUTABLE_MODE: u32 = 0o700;",
+            "verify_reviewed_prebuilt_source(&repo, app, REPOSITORY_EXECUTABLE_MODE)?;",
+            "require_regular(&verifier, verifier_mode)?;",
         ] {
             XCTAssertTrue(controllerSource.contains(required), "Post-v20 controller lacks \(required)")
         }
         XCTAssertEqual(
             controllerSource.components(separatedBy: "SOURCE_EXPORT_EXECUTABLE_MODE").count - 1,
-            5,
+            10,
             "Every executable consumed from the owner-only source export must use its exact 0700 mode."
+        )
+        XCTAssertEqual(
+            controllerSource.components(separatedBy: "REPOSITORY_EXECUTABLE_MODE").count - 1,
+            2,
+            "Only the initial live-checkout verifier may require repository mode 0755."
         )
         XCTAssertFalse(controllerSource.contains("delete-generic-password"))
 
