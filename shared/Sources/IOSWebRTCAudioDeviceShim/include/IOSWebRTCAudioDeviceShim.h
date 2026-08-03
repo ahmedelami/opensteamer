@@ -105,6 +105,7 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
     uint64_t microphoneDeliveryCallbackCount;
     uint64_t microphoneDeliveredFrameCount;
     bool categoryOptionsAreEmpty;
+    bool categoryOptionsAreIPhoneMicrophoneRouting;
     bool routeSharingPolicyIsDefault;
     bool categoryOptionsAreMixWithOthers;
     bool hasOutputRoute;
@@ -236,6 +237,42 @@ typedef struct ASIOSStereoPlayoutPublicationSnapshot {
 
 @end
 
+typedef NS_ENUM(NSInteger, ASIOSExpectedRouteChangeDisposition) {
+    ASIOSExpectedRouteChangeDispositionUnrelated = 0,
+    ASIOSExpectedRouteChangeDispositionConsume = 1,
+    ASIOSExpectedRouteChangeDispositionRejectTransaction = 2,
+};
+
+typedef NS_ENUM(NSInteger, ASIOSExpectedRouteChangeTestScenario) {
+    ASIOSExpectedRouteChangeTestScenarioPendingActivation = 0,
+    ASIOSExpectedRouteChangeTestScenarioPendingBound = 1,
+    ASIOSExpectedRouteChangeTestScenarioPendingCategory = 2,
+    ASIOSExpectedRouteChangeTestScenarioPendingOverride = 3,
+    ASIOSExpectedRouteChangeTestScenarioPendingWrongPreviousRoute = 4,
+    ASIOSExpectedRouteChangeTestScenarioPendingWrongGeneration = 5,
+    ASIOSExpectedRouteChangeTestScenarioPendingWrongOwnership = 6,
+    ASIOSExpectedRouteChangeTestScenarioConvergedDuplicate = 7,
+    ASIOSExpectedRouteChangeTestScenarioConvergedChangedRoute = 8,
+    ASIOSExpectedRouteChangeTestScenarioConvergedRecoveryRequired = 9,
+    ASIOSExpectedRouteChangeTestScenarioConvergedExpired = 10,
+    ASIOSExpectedRouteChangeTestScenarioPendingCoalescedSkippedIntermediate = 11,
+    ASIOSExpectedRouteChangeTestScenarioPendingExpired = 12,
+    ASIOSExpectedRouteChangeTestScenarioPendingSequenceNotAdvanced = 13,
+    ASIOSExpectedRouteChangeTestScenarioPendingWrongSystemGeneration = 14,
+    ASIOSExpectedRouteChangeTestScenarioPendingWrongPolicy = 15,
+    ASIOSExpectedRouteChangeTestScenarioPendingMissingFingerprint = 16,
+    ASIOSExpectedRouteChangeTestScenarioConvergedWrongOwnership = 17,
+    ASIOSExpectedRouteChangeTestScenarioConvergedInactive = 18,
+    ASIOSExpectedRouteChangeTestScenarioConvergedOutputMissing = 19,
+    ASIOSExpectedRouteChangeTestScenarioConvergedChannelMismatch = 20,
+    ASIOSExpectedRouteChangeTestScenarioConvergedTargetMismatch = 21,
+    ASIOSExpectedRouteChangeTestScenarioConvergedPreferredMismatch = 22,
+    ASIOSExpectedRouteChangeTestScenarioConvergedWrongSystemGeneration = 23,
+    ASIOSExpectedRouteChangeTestScenarioConvergedWrongGeneration = 24,
+    ASIOSExpectedRouteChangeTestScenarioConvergedPreviousUnseen = 25,
+    ASIOSExpectedRouteChangeTestScenarioConvergedExplicitResumeRequired = 26,
+};
+
 /// Drives the real queued recovery boundary without starting playout or touching audio hardware.
 @interface ASIOSStereoPlayoutRecoveryTestHarness : NSObject
 
@@ -244,6 +281,7 @@ typedef struct ASIOSStereoPlayoutPublicationSnapshot {
 /// Number of invocations of the production audio-policy configuration boundary. The deterministic
 /// harness records the exact inputs to that operation but does not create a hardware AudioUnit.
 @property(nonatomic, readonly) NSUInteger configurationOperationCount;
+@property(nonatomic, copy, readonly) NSArray<NSString *> *lastChannelPreferenceOperations;
 @property(nonatomic, readonly, nullable) NSString *lastConfiguredCategory;
 @property(nonatomic, readonly, nullable) NSString *lastConfiguredMode;
 @property(nonatomic, readonly) NSInteger lastConfiguredRouteSharingPolicy;
@@ -264,6 +302,19 @@ typedef struct ASIOSStereoPlayoutPublicationSnapshot {
 - (void)debugCloseAndFenceRealtimeGateForTesting;
 - (void)waitForRealtimeGateClosureForTesting;
 - (BOOL)debugTerminateForTesting;
+- (BOOL)debugApplyActiveChannelPreferencesForTestingWithSessionActive:
+    (BOOL)sessionActive
+                                       maximumInputChannels:
+    (NSInteger)maximumInputChannels
+                                      maximumOutputChannels:
+    (NSInteger)maximumOutputChannels
+                                            microphoneEnabled:
+    (BOOL)microphoneEnabled
+    NS_SWIFT_NAME(debugApplyActiveChannelPreferencesForTesting(sessionActive:maximumInputChannels:maximumOutputChannels:microphoneEnabled:));
+- (ASIOSExpectedRouteChangeDisposition)
+    debugClassifyExpectedRouteChangeForTesting:
+        (ASIOSExpectedRouteChangeTestScenario)scenario
+    NS_SWIFT_NAME(debugClassifyExpectedRouteChangeForTesting(_:));
 - (void)publishCallbackWithFrameCount:(uint32_t)frameCount
                                  status:(int32_t)status;
 - (void)queueRecoveryWithAuthorization:

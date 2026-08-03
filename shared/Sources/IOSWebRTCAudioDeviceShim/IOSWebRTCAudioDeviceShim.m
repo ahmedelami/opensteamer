@@ -16,6 +16,10 @@ static const double ASSampleRate = 48000.0;
 static const NSTimeInterval ASIOBufferDuration = 0.010;
 static const UInt32 ASOutputChannelCount = 2;
 static const UInt32 ASInputChannelCount = 1;
+static const uint64_t ASMicrophoneRouteConvergenceTimeoutNanoseconds =
+    1000000000;
+static const uint64_t ASExpectedMicrophoneRouteChangeLifetimeNanoseconds =
+    3000000000;
 // The release route accepts at most a 20 ms IO buffer. A healthy 10 ms RemoteIO cadence therefore
 // gets ordinary scheduler tolerance, but a 30 ms callback separation (one whole preferred buffer
 // late) must fail. This catches recurring short dropouts instead of only catastrophic stalls.
@@ -212,8 +216,22 @@ static inline void ASEndAuthorizationRealtimeAdmission(ASRealtimeGate *gate) {
 /// successful activation a monotonically increasing lease prevents a retiring peer from calling
 /// `setActive:NO` after a newer peer has become the process's audio owner.
 static os_unfair_lock ASSessionOwnershipLock = OS_UNFAIR_LOCK_INIT;
+static os_unfair_lock ASSessionConfigurationLock = OS_UNFAIR_LOCK_INIT;
 static uint64_t ASNextSessionOwnershipToken = 0;
 static uint64_t ASCurrentSessionOwnershipToken = 0;
+static atomic_uint_fast64_t ASCurrentSessionOwnershipTokenSnapshot =
+    ATOMIC_VAR_INIT(0);
+
+typedef struct ASUnfairLockScope {
+    os_unfair_lock *lock;
+} ASUnfairLockScope;
+
+static void ASReleaseUnfairLockScope(ASUnfairLockScope *scope) {
+    if (scope->lock != NULL) {
+        os_unfair_lock_unlock(scope->lock);
+        scope->lock = NULL;
+    }
+}
 
 typedef NS_ENUM(NSUInteger, ASSystemAudioEvent) {
     ASSystemAudioEventInterruptionBegan,
@@ -240,6 +258,178 @@ typedef struct ASAudioPolicyConfiguration {
     AudioStreamBasicDescription outputStreamFormat;
 } ASAudioPolicyConfiguration;
 
+typedef NS_ENUM(NSUInteger, ASActiveChannelPreferenceFailure) {
+    ASActiveChannelPreferenceFailureNone,
+    ASActiveChannelPreferenceFailureSessionInactive,
+    ASActiveChannelPreferenceFailureOutputUnavailable,
+    ASActiveChannelPreferenceFailureOutputRequest,
+    ASActiveChannelPreferenceFailureInputUnavailable,
+    ASActiveChannelPreferenceFailureInputRequest,
+};
+
+typedef NS_ENUM(NSUInteger, ASOwnedSessionConfigurationFailure) {
+    ASOwnedSessionConfigurationFailureNone,
+    ASOwnedSessionConfigurationFailureActivation,
+    ASOwnedSessionConfigurationFailureBuiltInMicrophoneUnavailable,
+    ASOwnedSessionConfigurationFailurePreferredInputRequest,
+    ASOwnedSessionConfigurationFailurePreferredInputDidNotConverge,
+    ASOwnedSessionConfigurationFailureSessionInactive,
+    ASOwnedSessionConfigurationFailureOutputUnavailable,
+    ASOwnedSessionConfigurationFailureOutputRequest,
+    ASOwnedSessionConfigurationFailureInputUnavailable,
+    ASOwnedSessionConfigurationFailureInputRequest,
+};
+
+typedef NS_ENUM(NSUInteger, ASExpectedMicrophoneRouteChangeState) {
+    ASExpectedMicrophoneRouteChangeStateNone,
+    ASExpectedMicrophoneRouteChangeStatePending,
+    ASExpectedMicrophoneRouteChangeStateConsumed,
+    ASExpectedMicrophoneRouteChangeStateRejected,
+};
+
+typedef struct ASExpectedRouteChangeEvidence {
+    ASExpectedMicrophoneRouteChangeState state;
+    AVAudioSessionRouteChangeReason reason;
+    BOOL sequenceAdvanced;
+    BOOL withinDeadline;
+    BOOL configurationGenerationMatches;
+    BOOL systemAudioGenerationMatches;
+    BOOL fingerprintsArePresent;
+    BOOL previousFingerprintWasObserved;
+    BOOL policyIsExact;
+    BOOL ownershipIsBound;
+    BOOL ownershipMatches;
+    BOOL sessionActive;
+    BOOL recoveryRequired;
+    BOOL explicitResumeRequired;
+    BOOL currentRouteMatchesConvergedRoute;
+    BOOL outputIsExact;
+    BOOL channelsAreExact;
+    BOOL targetInputIsExact;
+    BOOL preferredInputIsExact;
+} ASExpectedRouteChangeEvidence;
+
+static ASIOSExpectedRouteChangeDisposition
+ASClassifyExpectedRouteChangeEvidence(
+    ASExpectedRouteChangeEvidence evidence
+) {
+    if (evidence.reason == AVAudioSessionRouteChangeReasonCategoryChange) {
+        return ASIOSExpectedRouteChangeDispositionUnrelated;
+    }
+    BOOL common = evidence.reason
+            == AVAudioSessionRouteChangeReasonRouteConfigurationChange
+        && evidence.sequenceAdvanced
+        && evidence.withinDeadline
+        && evidence.configurationGenerationMatches
+        && evidence.systemAudioGenerationMatches
+        && evidence.fingerprintsArePresent
+        && evidence.previousFingerprintWasObserved
+        && evidence.policyIsExact;
+    if (evidence.state == ASExpectedMicrophoneRouteChangeStatePending) {
+        BOOL ownershipIsAdmissible = !evidence.ownershipIsBound
+            || (evidence.ownershipMatches && evidence.sessionActive);
+        return common && ownershipIsAdmissible
+            ? ASIOSExpectedRouteChangeDispositionConsume
+            : ASIOSExpectedRouteChangeDispositionRejectTransaction;
+    }
+    if (evidence.state == ASExpectedMicrophoneRouteChangeStateConsumed) {
+        BOOL exactDuplicate = common
+            && evidence.ownershipIsBound
+            && evidence.ownershipMatches
+            && evidence.sessionActive
+            && !evidence.recoveryRequired
+            && !evidence.explicitResumeRequired
+            && evidence.currentRouteMatchesConvergedRoute
+            && evidence.outputIsExact
+            && evidence.channelsAreExact
+            && evidence.targetInputIsExact
+            && evidence.preferredInputIsExact;
+        return exactDuplicate
+            ? ASIOSExpectedRouteChangeDispositionConsume
+            : ASIOSExpectedRouteChangeDispositionUnrelated;
+    }
+    return ASIOSExpectedRouteChangeDispositionUnrelated;
+}
+
+@protocol ASAudioSessionChannelPreferenceConfiguring <NSObject>
+@property(nonatomic, readonly) NSInteger inputNumberOfChannels;
+@property(nonatomic, readonly) NSInteger outputNumberOfChannels;
+@property(nonatomic, readonly) NSInteger maximumInputNumberOfChannels;
+@property(nonatomic, readonly) NSInteger maximumOutputNumberOfChannels;
+- (BOOL)setPreferredInputNumberOfChannels:(NSInteger)count
+                                    error:(NSError *_Nullable *_Nullable)error;
+- (BOOL)setPreferredOutputNumberOfChannels:(NSInteger)count
+                                     error:(NSError *_Nullable *_Nullable)error;
+@end
+
+/// Channel-count preferences describe the active hardware route, not the stale route that happened
+/// to exist before this app activated `playAndRecord`. In particular, an inactive A2DP route is
+/// output-only and truthfully reports zero maximum input channels. Apple requires both channel
+/// preference setters to run only after category/mode selection and session activation.
+static ASActiveChannelPreferenceFailure ASApplyActiveChannelPreferences(
+    id<ASAudioSessionChannelPreferenceConfiguring> session,
+    BOOL sessionActive,
+    BOOL microphoneEnabled,
+    NSError **error
+) {
+    if (!sessionActive) {
+        return ASActiveChannelPreferenceFailureSessionInactive;
+    }
+    if (session.maximumOutputNumberOfChannels < ASOutputChannelCount) {
+        return ASActiveChannelPreferenceFailureOutputUnavailable;
+    }
+    if (microphoneEnabled
+        && session.maximumInputNumberOfChannels < ASInputChannelCount) {
+        return ASActiveChannelPreferenceFailureInputUnavailable;
+    }
+    if (session.outputNumberOfChannels != ASOutputChannelCount) {
+        if (![session
+                setPreferredOutputNumberOfChannels:ASOutputChannelCount
+                                             error:error]) {
+            return ASActiveChannelPreferenceFailureOutputRequest;
+        }
+    }
+    if (!microphoneEnabled) {
+        return ASActiveChannelPreferenceFailureNone;
+    }
+    if (session.maximumInputNumberOfChannels < ASInputChannelCount) {
+        return ASActiveChannelPreferenceFailureInputUnavailable;
+    }
+    if (session.inputNumberOfChannels != ASInputChannelCount) {
+        if (![session
+                setPreferredInputNumberOfChannels:ASInputChannelCount
+                                            error:error]) {
+            return ASActiveChannelPreferenceFailureInputRequest;
+        }
+    }
+    return ASActiveChannelPreferenceFailureNone;
+}
+
+static ASOwnedSessionConfigurationFailure ASOwnedSessionFailureForChannels(
+    ASActiveChannelPreferenceFailure failure
+) {
+    switch (failure) {
+        case ASActiveChannelPreferenceFailureNone:
+            return ASOwnedSessionConfigurationFailureNone;
+        case ASActiveChannelPreferenceFailureSessionInactive:
+            return ASOwnedSessionConfigurationFailureSessionInactive;
+        case ASActiveChannelPreferenceFailureOutputUnavailable:
+            return ASOwnedSessionConfigurationFailureOutputUnavailable;
+        case ASActiveChannelPreferenceFailureOutputRequest:
+            return ASOwnedSessionConfigurationFailureOutputRequest;
+        case ASActiveChannelPreferenceFailureInputUnavailable:
+            return ASOwnedSessionConfigurationFailureInputUnavailable;
+        case ASActiveChannelPreferenceFailureInputRequest:
+            return ASOwnedSessionConfigurationFailureInputRequest;
+    }
+    return ASOwnedSessionConfigurationFailureSessionInactive;
+}
+
+static AVAudioSessionCategoryOptions ASIPhoneMicrophoneCategoryOptions(void) {
+    return AVAudioSessionCategoryOptionDefaultToSpeaker
+        | AVAudioSessionCategoryOptionAllowBluetoothA2DP;
+}
+
 static ASAudioPolicyConfiguration ASMakeAudioPolicyConfiguration(
     BOOL hostedCallMode,
     BOOL microphoneEnabled,
@@ -248,7 +438,9 @@ static ASAudioPolicyConfiguration ASMakeAudioPolicyConfiguration(
     return (ASAudioPolicyConfiguration) {
         .categoryOptions = hostedCallMode
             ? AVAudioSessionCategoryOptionMixWithOthers
-            : 0,
+            : (microphoneEnabled
+                ? ASIPhoneMicrophoneCategoryOptions()
+                : 0),
         .routeSharingPolicy = AVAudioSessionRouteSharingPolicyDefault,
         .inputBusEnabled = microphoneEnabled,
         .outputBusEnabled = YES,
@@ -278,6 +470,74 @@ static NSString *ASAudioSessionPortTypesDescription(
         [types addObject:port.portType ?: @"unknown"];
     }
     return [types componentsJoinedByString:@","];
+}
+
+static NSString *ASAudioSessionPortsFingerprint(
+    NSArray<AVAudioSessionPortDescription *> *ports
+) {
+    NSMutableString *fingerprint = [NSMutableString string];
+    [fingerprint appendFormat:@"%lu|", (unsigned long)ports.count];
+    for (AVAudioSessionPortDescription *port in ports) {
+        NSString *type = port.portType ?: @"";
+        NSString *identifier = port.UID ?: @"";
+        [fingerprint appendFormat:
+            @"%lu:%@%lu:%@|",
+            (unsigned long)type.length,
+            type,
+            (unsigned long)identifier.length,
+            identifier];
+    }
+    return fingerprint;
+}
+
+static NSString *ASAudioSessionRouteFingerprint(
+    AVAudioSessionRouteDescription *route
+) {
+    return [NSString stringWithFormat:
+        @"inputs{%@}outputs{%@}",
+        ASAudioSessionPortsFingerprint(route.inputs),
+        ASAudioSessionPortsFingerprint(route.outputs)];
+}
+
+static BOOL ASAudioSessionPortMatches(
+    AVAudioSessionPortDescription *port,
+    AVAudioSessionPort type,
+    NSString *identifier
+) {
+    return port != nil
+        && identifier.length > 0
+        && [port.portType isEqualToString:type]
+        && [port.UID isEqualToString:identifier];
+}
+
+static BOOL ASAudioSessionPortsContainBuiltInMicrophone(
+    NSArray<AVAudioSessionPortDescription *> *ports
+) {
+    for (AVAudioSessionPortDescription *port in ports) {
+        if ([port.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static BOOL ASAudioSessionUsesBuiltInMicrophone(AVAudioSession *session) {
+    return ASAudioSessionPortsContainBuiltInMicrophone(
+        session.currentRoute.inputs
+    );
+}
+
+static uint64_t ASMonotonicNanoseconds(void) {
+    mach_timebase_info_data_t timebase = {0};
+    if (mach_timebase_info(&timebase) != KERN_SUCCESS
+        || timebase.denom == 0) {
+        return 0;
+    }
+    __uint128_t nanoseconds = (__uint128_t)mach_absolute_time()
+        * timebase.numer / timebase.denom;
+    return nanoseconds > UINT64_MAX
+        ? UINT64_MAX
+        : (uint64_t)nanoseconds;
 }
 
 static NSString *ASAudioSessionDiagnosticDescription(
@@ -450,6 +710,7 @@ typedef struct ASLifecycleDiagnostics {
 @private
     ASLifecycleDiagnostics _lifecycle;
     atomic_uint_fast64_t _systemAudioGeneration;
+    atomic_uint_fast64_t _activeAudioConfigurationGeneration;
     AudioStreamBasicDescription _streamFormat;
     AudioStreamBasicDescription _inputStreamFormat;
     BOOL _initialized;
@@ -469,11 +730,27 @@ typedef struct ASLifecycleDiagnostics {
     NSArray<id> *_notificationTokens;
     ASIOSMicrophoneAuthorization *_microphoneAuthorization;
     uint64_t _microphoneRecordingGenerationCounter;
+    uint64_t _audioConfigurationGenerationCounter;
     atomic_uint_fast64_t _microphoneApprovalConsumedGeneration;
     uint64_t _hostedCallAuthorizationGeneration;
     NSUUID *_hostedCallPolicyIdentifier;
     ASIOSHostedCallPlayoutAuthorization *_hostedCallAuthorization;
     ASIOSHostedCallPlayoutAuthorization *_hostedCallRecoveryInProgressAuthorization;
+    os_unfair_lock _expectedMicrophoneRouteChangeLock;
+    uint64_t _routeChangeNotificationSequence;
+    ASExpectedMicrophoneRouteChangeState _expectedMicrophoneRouteChangeState;
+    uint64_t _expectedMicrophoneRouteChangeConfigurationGeneration;
+    uint64_t _expectedMicrophoneRouteChangeOwnershipToken;
+    uint64_t _expectedMicrophoneRouteChangeSystemAudioGeneration;
+    uint64_t _expectedMicrophoneRouteChangeObserverSequenceBaseline;
+    uint64_t _expectedMicrophoneRouteChangeDeadlineNanoseconds;
+    NSString *_expectedMicrophoneRouteChangePreviousRouteFingerprint;
+    NSString *_expectedMicrophoneRouteChangeConvergedRouteFingerprint;
+    NSString *_expectedMicrophoneRouteChangeTargetInputIdentifier;
+    NSMutableSet<NSString *> *_expectedMicrophoneRouteChangeObservedFingerprints;
+    BOOL _expectedMicrophoneRouteChangeInputRequired;
+    BOOL _expectedMicrophoneRouteChangeRequiresPreferredInput;
+    dispatch_semaphore_t _expectedMicrophoneRouteChangeSemaphore;
 #if DEBUG
     os_unfair_lock _debugRealtimeAdmissionLock;
     ASRealtimeGate *_debugAdmittedDeviceGate;
@@ -518,10 +795,54 @@ typedef struct ASLifecycleDiagnostics {
                          status:(int32_t)status
                         message:(NSString *)message;
 - (OSStatus)stopAndDisposeAudioUnit;
-- (BOOL)activateOwnedSession:(AVAudioSession *)session
-                       error:(NSError *_Nullable *_Nullable)error;
+- (ASOwnedSessionConfigurationFailure)
+    activateOwnedSessionAndApplyRoutePreferences:
+        (AVAudioSession *)session
+                             hostedCallMode:(BOOL)hostedCallMode
+                           microphoneEnabled:(BOOL)microphoneEnabled
+                       configurationGeneration:
+                           (uint64_t)configurationGeneration
+                                      error:
+                                          (NSError *_Nullable *_Nullable)error;
 - (BOOL)deactivateOwnedSessionWithError:(NSError *_Nullable *_Nullable)error;
 - (BOOL)ownsCurrentSessionActivation;
+- (BOOL)sessionOwnershipMatchesToken:(uint64_t)ownershipToken;
+- (BOOL)armExpectedMicrophoneRouteChangeForSession:
+    (AVAudioSession *)session
+                                      inputRequired:(BOOL)inputRequired
+                         configurationGeneration:
+                             (uint64_t)configurationGeneration;
+- (BOOL)bindExpectedMicrophoneRouteChangeToTargetInput:
+    (AVAudioSessionPortDescription *_Nullable)targetInput
+                                              ownershipToken:
+                                                  (uint64_t)ownershipToken
+                                      requirePreferredInput:
+                                          (BOOL)requirePreferredInput
+                                      configurationGeneration:
+                                          (uint64_t)configurationGeneration;
+- (BOOL)waitForExpectedMicrophoneConvergenceForSession:
+    (AVAudioSession *)session
+                                                targetInput:
+                                                    (AVAudioSessionPortDescription *)targetInput
+                                     requirePreferredInput:
+                                         (BOOL)requirePreferredInput
+                                          requireExactChannels:
+                                              (BOOL)requireExactChannels
+                                configurationGeneration:
+                                    (uint64_t)configurationGeneration
+                                             ownershipToken:
+                                                 (uint64_t)ownershipToken;
+- (BOOL)markExpectedMicrophoneRouteChangeConvergedForSession:
+    (AVAudioSession *)session
+                                  configurationGeneration:
+                                      (uint64_t)configurationGeneration
+                                               ownershipToken:
+                                                   (uint64_t)ownershipToken;
+- (BOOL)consumeExpectedMicrophoneRouteChangeNotification:
+    (NSNotification *)notification
+                                                reason:
+                                                    (AVAudioSessionRouteChangeReason)reason;
+- (void)clearExpectedMicrophoneRouteChange;
 - (void)publishFailureCode:(ASIOSStereoPlayoutFailureCode)code
                      status:(int32_t)status
                     message:(NSString *)message;
@@ -1813,9 +2134,45 @@ static inline void ASPublishPlayoutCallback(
 
 @end
 
+@interface ASAudioSessionChannelPreferenceTestDouble
+    : NSObject <ASAudioSessionChannelPreferenceConfiguring>
+@property(nonatomic) NSInteger maximumInputNumberOfChannels;
+@property(nonatomic) NSInteger maximumOutputNumberOfChannels;
+@property(nonatomic) NSInteger inputNumberOfChannels;
+@property(nonatomic) NSInteger outputNumberOfChannels;
+@property(nonatomic, strong) NSMutableArray<NSString *> *operations;
+@end
+
+@implementation ASAudioSessionChannelPreferenceTestDouble
+
+- (instancetype)init {
+    self = [super init];
+    if (self != nil) {
+        _operations = [NSMutableArray array];
+    }
+    return self;
+}
+
+- (BOOL)setPreferredInputNumberOfChannels:(NSInteger)count
+                                    error:(NSError **)error {
+    [self.operations addObject:[NSString stringWithFormat:@"input=%ld", (long)count]];
+    self.inputNumberOfChannels = count;
+    return YES;
+}
+
+- (BOOL)setPreferredOutputNumberOfChannels:(NSInteger)count
+                                     error:(NSError **)error {
+    [self.operations addObject:[NSString stringWithFormat:@"output=%ld", (long)count]];
+    self.outputNumberOfChannels = count;
+    return YES;
+}
+
+@end
+
 @interface ASIOSStereoPlayoutRecoveryTestHarness ()
 @property(nonatomic, strong) ASIOSStereoPlayoutAudioDevice *device;
 @property(nonatomic, strong) ASIOSStereoPlayoutRecoveryHarnessDelegate *delegate;
+@property(nonatomic, copy) NSArray<NSString *> *lastChannelPreferenceOperations;
 @end
 
 @implementation ASIOSStereoPlayoutRecoveryTestHarness
@@ -1827,6 +2184,7 @@ static inline void ASPublishPlayoutCallback(
     }
     _device = [[ASIOSStereoPlayoutAudioDevice alloc] init];
     _delegate = [[ASIOSStereoPlayoutRecoveryHarnessDelegate alloc] init];
+    _lastChannelPreferenceOperations = @[];
     [_device debugEnableRecoveryHarnessModeForTesting];
     if (![_device initializeWithDelegate:_delegate]) {
         return nil;
@@ -1846,6 +2204,155 @@ static inline void ASPublishPlayoutCallback(
     @synchronized (self.delegate) {
         return self.delegate.queuedOperations.count;
     }
+}
+
+- (BOOL)debugApplyActiveChannelPreferencesForTestingWithSessionActive:
+    (BOOL)sessionActive
+                                       maximumInputChannels:
+    (NSInteger)maximumInputChannels
+                                      maximumOutputChannels:
+    (NSInteger)maximumOutputChannels
+                                            microphoneEnabled:
+    (BOOL)microphoneEnabled {
+    ASAudioSessionChannelPreferenceTestDouble *session =
+        [[ASAudioSessionChannelPreferenceTestDouble alloc] init];
+    session.maximumInputNumberOfChannels = maximumInputChannels;
+    session.maximumOutputNumberOfChannels = maximumOutputChannels;
+    ASActiveChannelPreferenceFailure failure = ASApplyActiveChannelPreferences(
+        session,
+        sessionActive,
+        microphoneEnabled,
+        nil
+    );
+    self.lastChannelPreferenceOperations = [session.operations copy];
+    return failure == ASActiveChannelPreferenceFailureNone;
+}
+
+- (ASIOSExpectedRouteChangeDisposition)
+    debugClassifyExpectedRouteChangeForTesting:
+        (ASIOSExpectedRouteChangeTestScenario)scenario {
+    ASExpectedRouteChangeEvidence evidence = {
+        .state = ASExpectedMicrophoneRouteChangeStatePending,
+        .reason = AVAudioSessionRouteChangeReasonRouteConfigurationChange,
+        .sequenceAdvanced = YES,
+        .withinDeadline = YES,
+        .configurationGenerationMatches = YES,
+        .systemAudioGenerationMatches = YES,
+        .fingerprintsArePresent = YES,
+        .previousFingerprintWasObserved = YES,
+        .policyIsExact = YES,
+        .ownershipIsBound = YES,
+        .ownershipMatches = YES,
+        .sessionActive = YES,
+        .recoveryRequired = NO,
+        .explicitResumeRequired = NO,
+        .currentRouteMatchesConvergedRoute = YES,
+        .outputIsExact = YES,
+        .channelsAreExact = YES,
+        .targetInputIsExact = YES,
+        .preferredInputIsExact = YES,
+    };
+    switch (scenario) {
+        case ASIOSExpectedRouteChangeTestScenarioPendingActivation:
+            evidence.ownershipIsBound = NO;
+            evidence.ownershipMatches = NO;
+            evidence.sessionActive = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioPendingBound:
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioPendingCategory:
+            evidence.reason = AVAudioSessionRouteChangeReasonCategoryChange;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioPendingOverride:
+            evidence.reason = AVAudioSessionRouteChangeReasonOverride;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioPendingWrongPreviousRoute:
+            evidence.previousFingerprintWasObserved = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioPendingWrongGeneration:
+            evidence.configurationGenerationMatches = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioPendingWrongOwnership:
+            evidence.ownershipMatches = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioConvergedDuplicate:
+            evidence.state = ASExpectedMicrophoneRouteChangeStateConsumed;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioConvergedChangedRoute:
+            evidence.state = ASExpectedMicrophoneRouteChangeStateConsumed;
+            evidence.currentRouteMatchesConvergedRoute = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioConvergedRecoveryRequired:
+            evidence.state = ASExpectedMicrophoneRouteChangeStateConsumed;
+            evidence.recoveryRequired = YES;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioConvergedExpired:
+            evidence.state = ASExpectedMicrophoneRouteChangeStateConsumed;
+            evidence.withinDeadline = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioPendingCoalescedSkippedIntermediate:
+            // Models A -> B -> C where the first callback reports previous A with live current C,
+            // then the second callback reports unseen previous B. The chain intentionally fails
+            // closed rather than claiming provenance for a route it never observed.
+            evidence.previousFingerprintWasObserved = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioPendingExpired:
+            evidence.withinDeadline = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioPendingSequenceNotAdvanced:
+            evidence.sequenceAdvanced = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioPendingWrongSystemGeneration:
+            evidence.systemAudioGenerationMatches = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioPendingWrongPolicy:
+            evidence.policyIsExact = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioPendingMissingFingerprint:
+            evidence.fingerprintsArePresent = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioConvergedWrongOwnership:
+            evidence.state = ASExpectedMicrophoneRouteChangeStateConsumed;
+            evidence.ownershipMatches = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioConvergedInactive:
+            evidence.state = ASExpectedMicrophoneRouteChangeStateConsumed;
+            evidence.sessionActive = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioConvergedOutputMissing:
+            evidence.state = ASExpectedMicrophoneRouteChangeStateConsumed;
+            evidence.outputIsExact = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioConvergedChannelMismatch:
+            evidence.state = ASExpectedMicrophoneRouteChangeStateConsumed;
+            evidence.channelsAreExact = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioConvergedTargetMismatch:
+            evidence.state = ASExpectedMicrophoneRouteChangeStateConsumed;
+            evidence.targetInputIsExact = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioConvergedPreferredMismatch:
+            evidence.state = ASExpectedMicrophoneRouteChangeStateConsumed;
+            evidence.preferredInputIsExact = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioConvergedWrongSystemGeneration:
+            evidence.state = ASExpectedMicrophoneRouteChangeStateConsumed;
+            evidence.systemAudioGenerationMatches = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioConvergedWrongGeneration:
+            evidence.state = ASExpectedMicrophoneRouteChangeStateConsumed;
+            evidence.configurationGenerationMatches = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioConvergedPreviousUnseen:
+            evidence.state = ASExpectedMicrophoneRouteChangeStateConsumed;
+            evidence.previousFingerprintWasObserved = NO;
+            break;
+        case ASIOSExpectedRouteChangeTestScenarioConvergedExplicitResumeRequired:
+            evidence.state = ASExpectedMicrophoneRouteChangeStateConsumed;
+            evidence.explicitResumeRequired = YES;
+            break;
+    }
+    return ASClassifyExpectedRouteChangeEvidence(evidence);
 }
 
 - (NSUInteger)configurationOperationCount {
@@ -2208,7 +2715,25 @@ static OSStatus ASRemoteIOInput(
     atomic_init(&_realtimeApprovedMicrophoneRecordingGeneration, 0);
     atomic_init(&_microphoneApprovalConsumedGeneration, 0);
     atomic_init(&_systemAudioGeneration, 0);
+    atomic_init(&_activeAudioConfigurationGeneration, 0);
     _microphoneRecordingGenerationCounter = 0;
+    _audioConfigurationGenerationCounter = 0;
+    _expectedMicrophoneRouteChangeLock = OS_UNFAIR_LOCK_INIT;
+    _routeChangeNotificationSequence = 0;
+    _expectedMicrophoneRouteChangeState =
+        ASExpectedMicrophoneRouteChangeStateNone;
+    _expectedMicrophoneRouteChangeConfigurationGeneration = 0;
+    _expectedMicrophoneRouteChangeOwnershipToken = 0;
+    _expectedMicrophoneRouteChangeSystemAudioGeneration = 0;
+    _expectedMicrophoneRouteChangeObserverSequenceBaseline = 0;
+    _expectedMicrophoneRouteChangeDeadlineNanoseconds = 0;
+    _expectedMicrophoneRouteChangePreviousRouteFingerprint = nil;
+    _expectedMicrophoneRouteChangeConvergedRouteFingerprint = nil;
+    _expectedMicrophoneRouteChangeTargetInputIdentifier = nil;
+    _expectedMicrophoneRouteChangeObservedFingerprints = nil;
+    _expectedMicrophoneRouteChangeInputRequired = NO;
+    _expectedMicrophoneRouteChangeRequiresPreferredInput = NO;
+    _expectedMicrophoneRouteChangeSemaphore = nil;
 #if DEBUG
     _debugRealtimeAdmissionLock = OS_UNFAIR_LOCK_INIT;
     _debugAdmittedDeviceGate = NULL;
@@ -4136,6 +4661,10 @@ static OSStatus ASRemoteIOInput(
         diagnostics.categoryOptionsAreEmpty =
             hasActiveRecordedConfiguration
             && _debugLastConfiguredCategoryOptions == 0;
+        diagnostics.categoryOptionsAreIPhoneMicrophoneRouting =
+            hasActiveRecordedConfiguration
+            && _debugLastConfiguredCategoryOptions
+                == ASIPhoneMicrophoneCategoryOptions();
         diagnostics.routeSharingPolicyIsDefault =
             hasActiveRecordedConfiguration
             && _debugLastConfiguredRouteSharingPolicy
@@ -4147,6 +4676,8 @@ static OSStatus ASRemoteIOInput(
     } else {
  #endif
         diagnostics.categoryOptionsAreEmpty = session.categoryOptions == 0;
+        diagnostics.categoryOptionsAreIPhoneMicrophoneRouting =
+            session.categoryOptions == ASIPhoneMicrophoneCategoryOptions();
         diagnostics.routeSharingPolicyIsDefault =
             session.routeSharingPolicy == AVAudioSessionRouteSharingPolicyDefault;
         diagnostics.categoryOptionsAreMixWithOthers =
@@ -4445,6 +4976,7 @@ static OSStatus ASRemoteIOInput(
 }
 
 - (uint64_t)advanceSystemAudioGeneration {
+    [self clearExpectedMicrophoneRouteChange];
     uint64_t generation = atomic_fetch_add_explicit(
         &_systemAudioGeneration,
         1,
@@ -4852,6 +5384,12 @@ static OSStatus ASRemoteIOInput(
     [self clearCurrentMicrophoneRecordingGeneration];
     NSError *error = nil;
     AVAudioSession *session = [self currentAudioSession];
+    __attribute__((cleanup(ASReleaseUnfairLockScope)))
+    ASUnfairLockScope sessionConfigurationScope = {
+        .lock = NULL,
+    };
+    uint64_t configurationGeneration = 0;
+    uint64_t configurationOwnershipToken = 0;
 #if DEBUG
     BOOL usesDeterministicConfigurationBoundary = _debugRecoveryHarnessMode;
 #else
@@ -4910,6 +5448,32 @@ static OSStatus ASRemoteIOInput(
             microphoneEnabled,
             _streamFormat
         );
+    if (!usesDeterministicConfigurationBoundary) {
+        os_unfair_lock_lock(&ASSessionConfigurationLock);
+        sessionConfigurationScope.lock = &ASSessionConfigurationLock;
+        _audioConfigurationGenerationCounter += 1;
+        if (_audioConfigurationGenerationCounter == 0) {
+            _audioConfigurationGenerationCounter = 1;
+        }
+        configurationGeneration = _audioConfigurationGenerationCounter;
+        atomic_store_explicit(
+            &_activeAudioConfigurationGeneration,
+            configurationGeneration,
+            memory_order_release
+        );
+        [self clearExpectedMicrophoneRouteChange];
+        if (!hostedCallMode
+            && ![self
+                armExpectedMicrophoneRouteChangeForSession:session
+                inputRequired:microphoneEnabled
+                configurationGeneration:configurationGeneration]) {
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureSessionConfiguration
+                                   status:kAudio_ParamError
+                                  message:@"The iPhone microphone audio-session transaction could not be armed."];
+            return NO;
+        }
+    }
     if (![self applyAudioPolicyConfiguration:configuration
                                    toSession:session
                                        error:&error]) {
@@ -4964,9 +5528,6 @@ static OSStatus ASRemoteIOInput(
     if (hostedCallMode) {
         (void)[session setPreferredSampleRate:ASSampleRate error:nil];
         (void)[session setPreferredIOBufferDuration:ASIOBufferDuration error:nil];
-        (void)[session
-            setPreferredOutputNumberOfChannels:ASOutputChannelCount
-                                         error:nil];
     } else {
         if (![session setPreferredSampleRate:ASSampleRate error:&error]) {
             [self failAndRollbackWithCode:
@@ -4990,9 +5551,67 @@ static OSStatus ASRemoteIOInput(
                                       ASAudioSessionDiagnosticDescription(session)]];
             return NO;
         }
-        if (![session
-                setPreferredOutputNumberOfChannels:ASOutputChannelCount
-                                             error:&error]) {
+    }
+    error = nil;
+    ASOwnedSessionConfigurationFailure sessionFailure =
+        [self activateOwnedSessionAndApplyRoutePreferences:session
+                                            hostedCallMode:hostedCallMode
+                                          microphoneEnabled:microphoneEnabled
+                                      configurationGeneration:
+                                          configurationGeneration
+                                                     error:&error];
+    switch (sessionFailure) {
+        case ASOwnedSessionConfigurationFailureNone:
+            break;
+        case ASOwnedSessionConfigurationFailureActivation:
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureSessionActivation
+                                   status:(int32_t)error.code
+                                  message:[NSString stringWithFormat:
+                                      @"Media playback audio-session activation failed: %@. %@",
+                                      error.localizedDescription ?: @"unknown error",
+                                      ASAudioSessionDiagnosticDescription(session)]];
+            return NO;
+        case ASOwnedSessionConfigurationFailureBuiltInMicrophoneUnavailable:
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureMediaRouteInvariant
+                                   status:kAudio_ParamError
+                                  message:[NSString stringWithFormat:
+                                      @"The active route exposes no built-in iPhone microphone. %@",
+                                      ASAudioSessionDiagnosticDescription(session)]];
+            return NO;
+        case ASOwnedSessionConfigurationFailurePreferredInputRequest:
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureSessionPreference
+                                   status:(int32_t)error.code
+                                  message:[NSString stringWithFormat:
+                                      @"Preferred built-in iPhone microphone request failed: %@. %@",
+                                      error.localizedDescription ?: @"unknown error",
+                                      ASAudioSessionDiagnosticDescription(session)]];
+            return NO;
+        case ASOwnedSessionConfigurationFailurePreferredInputDidNotConverge:
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureMediaRouteInvariant
+                                   status:kAudio_ParamError
+                                  message:[NSString stringWithFormat:
+                                      @"The built-in iPhone microphone route did not converge before RemoteIO creation. %@",
+                                      ASAudioSessionDiagnosticDescription(session)]];
+            return NO;
+        case ASOwnedSessionConfigurationFailureSessionInactive:
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureSessionActivation
+                                   status:kAudio_ParamError
+                                  message:@"Channel preferences were rejected because this peer does not own an active audio session."];
+            return NO;
+        case ASOwnedSessionConfigurationFailureOutputUnavailable:
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureMediaRouteInvariant
+                                   status:kAudio_ParamError
+                                  message:[NSString stringWithFormat:
+                                      @"The active route cannot provide stereo output before RemoteIO creation. %@",
+                                      ASAudioSessionDiagnosticDescription(session)]];
+            return NO;
+        case ASOwnedSessionConfigurationFailureOutputRequest:
             [self failAndRollbackWithCode:
                 ASIOSStereoPlayoutFailureSessionPreference
                                    status:(int32_t)error.code
@@ -5001,11 +5620,15 @@ static OSStatus ASRemoteIOInput(
                                       error.localizedDescription ?: @"unknown error",
                                       ASAudioSessionDiagnosticDescription(session)]];
             return NO;
-        }
-        if (microphoneEnabled
-            && ![session
-                setPreferredInputNumberOfChannels:ASInputChannelCount
-                                            error:&error]) {
+        case ASOwnedSessionConfigurationFailureInputUnavailable:
+            [self failAndRollbackWithCode:
+                ASIOSStereoPlayoutFailureMediaRouteInvariant
+                                   status:kAudio_ParamError
+                                  message:[NSString stringWithFormat:
+                                      @"The active route cannot provide mono iPhone microphone input before RemoteIO creation. %@",
+                                      ASAudioSessionDiagnosticDescription(session)]];
+            return NO;
+        case ASOwnedSessionConfigurationFailureInputRequest:
             [self failAndRollbackWithCode:
                 ASIOSStereoPlayoutFailureSessionPreference
                                    status:(int32_t)error.code
@@ -5014,15 +5637,22 @@ static OSStatus ASRemoteIOInput(
                                       error.localizedDescription ?: @"unknown error",
                                       ASAudioSessionDiagnosticDescription(session)]];
             return NO;
-        }
     }
-    if (![self activateOwnedSession:session error:&error]) {
-        [self failAndRollbackWithCode:ASIOSStereoPlayoutFailureSessionActivation
-                               status:(int32_t)error.code
-                              message:[NSString stringWithFormat:
-                                  @"Media playback audio-session activation failed: %@. %@",
-                                  error.localizedDescription ?: @"unknown error",
-                                  ASAudioSessionDiagnosticDescription(session)]];
+    configurationOwnershipToken = atomic_load_explicit(
+        &ASCurrentSessionOwnershipTokenSnapshot,
+        memory_order_acquire
+    );
+    if (configurationOwnershipToken == 0
+        || ![self
+            sessionOwnershipMatchesToken:configurationOwnershipToken]
+        || atomic_load_explicit(
+            &_activeAudioConfigurationGeneration,
+            memory_order_acquire
+        ) != configurationGeneration) {
+        [self failAndRollbackWithCode:
+            ASIOSStereoPlayoutFailureSessionActivation
+                               status:kAudio_ParamError
+                              message:@"Audio-session ownership changed before route validation."];
         return NO;
     }
     if (hostedCallMode
@@ -5034,7 +5664,7 @@ static OSStatus ASRemoteIOInput(
         [self failAndRollbackWithCode:
             ASIOSStereoPlayoutFailureSessionActivation
                                status:kAudio_ParamError
-                              message:@"Hosted-call ownership changed during audio-session activation."];
+                               message:@"Hosted-call ownership changed during audio-session activation."];
         return NO;
     }
 
@@ -5334,21 +5964,66 @@ static OSStatus ASRemoteIOInput(
                                   (int)status]];
         return NO;
     }
-    _playoutInitialized = YES;
-    atomic_store_explicit(&_lifecycle.playoutInitialized, true, memory_order_relaxed);
+    if (![self sessionOwnershipMatchesToken:configurationOwnershipToken]
+        || atomic_load_explicit(
+            &_activeAudioConfigurationGeneration,
+            memory_order_acquire
+        ) != configurationGeneration
+        || ![self sessionMatchesCurrentPolicy:session]
+        || ![self hasOutputRouteForSession:session]
+        || (microphoneEnabled
+            && (!ASAudioSessionUsesBuiltInMicrophone(session)
+                || session.inputNumberOfChannels
+                    < ASInputChannelCount))
+        || (!hostedCallMode
+            && session.outputNumberOfChannels
+                < ASOutputChannelCount)) {
+        [self failAndRollbackWithCode:
+            ASIOSStereoPlayoutFailureMediaRouteInvariant
+                               status:kAudio_ParamError
+                              message:[NSString stringWithFormat:
+                                  @"Audio-session ownership or route changed before RemoteIO publication. %@",
+                                  ASAudioSessionDiagnosticDescription(session)]];
+        return NO;
+    }
     _recoveryRequired = NO;
     _explicitResumeRequired = NO;
     atomic_store_explicit(&_lifecycle.recoveryRequired, false, memory_order_relaxed);
     atomic_store_explicit(&_lifecycle.explicitResumeRequired, false, memory_order_relaxed);
+    if (!hostedCallMode
+        && ![self
+            markExpectedMicrophoneRouteChangeConvergedForSession:session
+            configurationGeneration:configurationGeneration
+            ownershipToken:configurationOwnershipToken]) {
+        [self failAndRollbackWithCode:
+            ASIOSStereoPlayoutFailureMediaRouteInvariant
+                               status:kAudio_ParamError
+                              message:@"The audio-session route transaction changed before RemoteIO publication."];
+        return NO;
+    }
+    _playoutInitialized = YES;
+    atomic_store_explicit(&_lifecycle.playoutInitialized, true, memory_order_relaxed);
     [self clearLifecycleFailure];
     return YES;
 }
 
-- (BOOL)activateOwnedSession:(AVAudioSession *)session error:(NSError **)error {
-    NSError *activationError = nil;
-    BOOL activated = NO;
+- (ASOwnedSessionConfigurationFailure)
+    activateOwnedSessionAndApplyRoutePreferences:
+        (AVAudioSession *)session
+                             hostedCallMode:(BOOL)hostedCallMode
+                           microphoneEnabled:(BOOL)microphoneEnabled
+                       configurationGeneration:
+                           (uint64_t)configurationGeneration
+                                      error:(NSError **)error {
+    NSError *transactionError = nil;
+    ASOwnedSessionConfigurationFailure failure =
+        ASOwnedSessionConfigurationFailureNone;
+    uint64_t ownershipToken = 0;
+    AVAudioSessionPortDescription *targetBuiltInMicrophone = nil;
+    BOOL preferredInputMutationIssued = NO;
+
     os_unfair_lock_lock(&ASSessionOwnershipLock);
-    activated = [session setActive:YES error:&activationError];
+    BOOL activated = [session setActive:YES error:&transactionError];
     if (activated) {
         ASNextSessionOwnershipToken += 1;
         if (ASNextSessionOwnershipToken == 0) {
@@ -5356,20 +6031,177 @@ static OSStatus ASRemoteIOInput(
         }
         _sessionOwnershipToken = ASNextSessionOwnershipToken;
         ASCurrentSessionOwnershipToken = _sessionOwnershipToken;
+        ownershipToken = _sessionOwnershipToken;
+        atomic_store_explicit(
+            &ASCurrentSessionOwnershipTokenSnapshot,
+            ownershipToken,
+            memory_order_release
+        );
     }
     os_unfair_lock_unlock(&ASSessionOwnershipLock);
 
-    if (activated) {
+    if (!activated) {
+        failure = ASOwnedSessionConfigurationFailureActivation;
+    } else {
         _sessionActive = YES;
-        atomic_store_explicit(&_lifecycle.sessionActive, true, memory_order_relaxed);
+        atomic_store_explicit(
+            &_lifecycle.sessionActive,
+            true,
+            memory_order_release
+        );
+    }
+
+    if (failure == ASOwnedSessionConfigurationFailureNone
+        && !hostedCallMode
+        && !microphoneEnabled
+        && ![self
+            bindExpectedMicrophoneRouteChangeToTargetInput:nil
+            ownershipToken:ownershipToken
+            requirePreferredInput:NO
+            configurationGeneration:configurationGeneration]) {
+        failure = ASOwnedSessionConfigurationFailureSessionInactive;
+    }
+
+    if (failure == ASOwnedSessionConfigurationFailureNone
+        && !hostedCallMode
+        && microphoneEnabled) {
+        for (AVAudioSessionPortDescription *input in session.availableInputs) {
+            if ([input.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
+                targetBuiltInMicrophone = input;
+                break;
+            }
+        }
+        if (targetBuiltInMicrophone == nil
+            || targetBuiltInMicrophone.UID.length == 0) {
+            failure =
+                ASOwnedSessionConfigurationFailureBuiltInMicrophoneUnavailable;
+        } else {
+            BOOL currentInputIsExactTarget =
+                session.currentRoute.inputs.count == 1
+                && ASAudioSessionPortMatches(
+                    session.currentRoute.inputs.firstObject,
+                    AVAudioSessionPortBuiltInMic,
+                    targetBuiltInMicrophone.UID
+                );
+            preferredInputMutationIssued = !currentInputIsExactTarget;
+            if (![self
+                bindExpectedMicrophoneRouteChangeToTargetInput:
+                    targetBuiltInMicrophone
+                ownershipToken:ownershipToken
+                requirePreferredInput:preferredInputMutationIssued
+                configurationGeneration:configurationGeneration]) {
+                failure =
+                    ASOwnedSessionConfigurationFailurePreferredInputDidNotConverge;
+            } else if (preferredInputMutationIssued) {
+                os_unfair_lock_lock(&ASSessionOwnershipLock);
+                BOOL stillOwnsSession =
+                    ownershipToken != 0
+                    && _sessionOwnershipToken == ownershipToken
+                    && ASCurrentSessionOwnershipToken == ownershipToken;
+                BOOL selected = stillOwnsSession
+                    && [session setPreferredInput:targetBuiltInMicrophone
+                                            error:&transactionError];
+                os_unfair_lock_unlock(&ASSessionOwnershipLock);
+                if (!stillOwnsSession) {
+                    failure =
+                        ASOwnedSessionConfigurationFailureSessionInactive;
+                } else if (!selected) {
+                    failure =
+                        ASOwnedSessionConfigurationFailurePreferredInputRequest;
+                }
+            }
+            if (failure == ASOwnedSessionConfigurationFailureNone
+                && ![self
+                    waitForExpectedMicrophoneConvergenceForSession:session
+                    targetInput:targetBuiltInMicrophone
+                    requirePreferredInput:preferredInputMutationIssued
+                    requireExactChannels:NO
+                    configurationGeneration:configurationGeneration
+                    ownershipToken:ownershipToken]) {
+                failure =
+                    ASOwnedSessionConfigurationFailurePreferredInputDidNotConverge;
+            }
+        }
+    }
+
+    if (failure == ASOwnedSessionConfigurationFailureNone
+        && !hostedCallMode) {
+        os_unfair_lock_lock(&ASSessionOwnershipLock);
+        BOOL stillOwnsSession =
+            ownershipToken != 0
+            && _sessionOwnershipToken == ownershipToken
+            && ASCurrentSessionOwnershipToken == ownershipToken;
+        ASActiveChannelPreferenceFailure channelFailure =
+            ASApplyActiveChannelPreferences(
+                (id<ASAudioSessionChannelPreferenceConfiguring>)session,
+                stillOwnsSession,
+                microphoneEnabled,
+                &transactionError
+            );
+        BOOL ownershipSurvivedMutation =
+            stillOwnsSession
+            && _sessionOwnershipToken == ownershipToken
+            && ASCurrentSessionOwnershipToken == ownershipToken;
+        os_unfair_lock_unlock(&ASSessionOwnershipLock);
+        failure = ownershipSurvivedMutation
+            ? ASOwnedSessionFailureForChannels(channelFailure)
+            : ASOwnedSessionConfigurationFailureSessionInactive;
+    }
+
+    if (failure == ASOwnedSessionConfigurationFailureNone
+        && !hostedCallMode) {
+        if (![self
+            waitForExpectedMicrophoneConvergenceForSession:session
+            targetInput:targetBuiltInMicrophone
+            requirePreferredInput:preferredInputMutationIssued
+            requireExactChannels:YES
+            configurationGeneration:configurationGeneration
+            ownershipToken:ownershipToken]) {
+            failure = session.outputNumberOfChannels < ASOutputChannelCount
+                ? ASOwnedSessionConfigurationFailureOutputUnavailable
+                : (microphoneEnabled
+                    && session.inputNumberOfChannels < ASInputChannelCount
+                    ? ASOwnedSessionConfigurationFailureInputUnavailable
+                    : ASOwnedSessionConfigurationFailurePreferredInputDidNotConverge);
+        }
+    }
+
+    if (failure != ASOwnedSessionConfigurationFailureNone) {
+        [self clearExpectedMicrophoneRouteChange];
+        os_unfair_lock_lock(&ASSessionOwnershipLock);
+        if (ownershipToken != 0
+            && _sessionOwnershipToken == ownershipToken
+            && ASCurrentSessionOwnershipToken == ownershipToken) {
+            (void)[session setActive:NO error:nil];
+            ASCurrentSessionOwnershipToken = 0;
+            atomic_store_explicit(
+                &ASCurrentSessionOwnershipTokenSnapshot,
+                0,
+                memory_order_release
+            );
+        }
+        _sessionOwnershipToken = 0;
+        os_unfair_lock_unlock(&ASSessionOwnershipLock);
+        _sessionActive = NO;
+        atomic_store_explicit(
+            &_lifecycle.sessionActive,
+            false,
+            memory_order_release
+        );
     }
     if (error != NULL) {
-        *error = activationError;
+        *error = transactionError;
     }
-    return activated;
+    return failure;
 }
 
 - (BOOL)deactivateOwnedSessionWithError:(NSError **)error {
+    [self clearExpectedMicrophoneRouteChange];
+    atomic_store_explicit(
+        &_activeAudioConfigurationGeneration,
+        0,
+        memory_order_release
+    );
 #if DEBUG
     if (_debugRecoveryHarnessMode) {
         _debugOwnsSessionActivation = NO;
@@ -5399,6 +6231,11 @@ static OSStatus ASRemoteIOInput(
         // This retiring lease must never remain authoritative. A later successful activation will
         // take a fresh token even if native deactivation reported an error.
         ASCurrentSessionOwnershipToken = 0;
+        atomic_store_explicit(
+            &ASCurrentSessionOwnershipTokenSnapshot,
+            0,
+            memory_order_release
+        );
     }
     _sessionOwnershipToken = 0;
     os_unfair_lock_unlock(&ASSessionOwnershipLock);
@@ -5423,6 +6260,524 @@ static OSStatus ASRemoteIOInput(
         && ASCurrentSessionOwnershipToken == _sessionOwnershipToken;
     os_unfair_lock_unlock(&ASSessionOwnershipLock);
     return owns;
+}
+
+- (BOOL)sessionOwnershipMatchesToken:(uint64_t)ownershipToken {
+#if DEBUG
+    if (_debugRecoveryHarnessMode) {
+        return ownershipToken != 0
+            && _debugOwnsSessionActivation
+            && _sessionOwnershipToken == ownershipToken;
+    }
+#endif
+    os_unfair_lock_lock(&ASSessionOwnershipLock);
+    BOOL matches = ownershipToken != 0
+        && _sessionOwnershipToken == ownershipToken
+        && ASCurrentSessionOwnershipToken == ownershipToken;
+    os_unfair_lock_unlock(&ASSessionOwnershipLock);
+    return matches;
+}
+
+- (BOOL)armExpectedMicrophoneRouteChangeForSession:
+    (AVAudioSession *)session
+                                      inputRequired:(BOOL)inputRequired
+                         configurationGeneration:
+                             (uint64_t)configurationGeneration {
+    NSString *initialRouteFingerprint =
+        ASAudioSessionRouteFingerprint(session.currentRoute);
+    uint64_t now = ASMonotonicNanoseconds();
+    uint64_t systemAudioGeneration = atomic_load_explicit(
+        &_systemAudioGeneration,
+        memory_order_acquire
+    );
+    uint64_t activeConfigurationGeneration = atomic_load_explicit(
+        &_activeAudioConfigurationGeneration,
+        memory_order_acquire
+    );
+    if (configurationGeneration == 0
+        || configurationGeneration != activeConfigurationGeneration
+        || systemAudioGeneration == 0
+        || now == 0
+        || initialRouteFingerprint.length == 0) {
+        return NO;
+    }
+
+    uint64_t deadline =
+        now > UINT64_MAX
+                - ASExpectedMicrophoneRouteChangeLifetimeNanoseconds
+        ? UINT64_MAX
+        : now + ASExpectedMicrophoneRouteChangeLifetimeNanoseconds;
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    os_unfair_lock_lock(&_expectedMicrophoneRouteChangeLock);
+    BOOL canArm = _expectedMicrophoneRouteChangeState
+        == ASExpectedMicrophoneRouteChangeStateNone;
+    if (canArm) {
+        _expectedMicrophoneRouteChangeState =
+            ASExpectedMicrophoneRouteChangeStatePending;
+        _expectedMicrophoneRouteChangeConfigurationGeneration =
+            configurationGeneration;
+        _expectedMicrophoneRouteChangeOwnershipToken = 0;
+        _expectedMicrophoneRouteChangeSystemAudioGeneration =
+            systemAudioGeneration;
+        _expectedMicrophoneRouteChangeObserverSequenceBaseline =
+            _routeChangeNotificationSequence;
+        _expectedMicrophoneRouteChangeDeadlineNanoseconds = deadline;
+        _expectedMicrophoneRouteChangePreviousRouteFingerprint =
+            [initialRouteFingerprint copy];
+        _expectedMicrophoneRouteChangeConvergedRouteFingerprint = nil;
+        _expectedMicrophoneRouteChangeTargetInputIdentifier = nil;
+        _expectedMicrophoneRouteChangeObservedFingerprints =
+            [NSMutableSet setWithObject:initialRouteFingerprint];
+        _expectedMicrophoneRouteChangeInputRequired = inputRequired;
+        _expectedMicrophoneRouteChangeRequiresPreferredInput = NO;
+        _expectedMicrophoneRouteChangeSemaphore = semaphore;
+    }
+    os_unfair_lock_unlock(&_expectedMicrophoneRouteChangeLock);
+    return canArm;
+}
+
+- (BOOL)bindExpectedMicrophoneRouteChangeToTargetInput:
+    (AVAudioSessionPortDescription *)targetInput
+                                              ownershipToken:
+                                                  (uint64_t)ownershipToken
+                                      requirePreferredInput:
+                                          (BOOL)requirePreferredInput
+                                      configurationGeneration:
+                                          (uint64_t)configurationGeneration {
+    NSString *targetType = [targetInput.portType copy];
+    NSString *targetIdentifier = [targetInput.UID copy];
+    uint64_t now = ASMonotonicNanoseconds();
+    uint64_t systemAudioGeneration = atomic_load_explicit(
+        &_systemAudioGeneration,
+        memory_order_acquire
+    );
+    uint64_t activeConfigurationGeneration = atomic_load_explicit(
+        &_activeAudioConfigurationGeneration,
+        memory_order_acquire
+    );
+    uint64_t currentOwnershipToken = atomic_load_explicit(
+        &ASCurrentSessionOwnershipTokenSnapshot,
+        memory_order_acquire
+    );
+    BOOL sessionActive = atomic_load_explicit(
+        &_lifecycle.sessionActive,
+        memory_order_acquire
+    );
+
+    os_unfair_lock_lock(&_expectedMicrophoneRouteChangeLock);
+    BOOL inputRequired = _expectedMicrophoneRouteChangeInputRequired;
+    BOOL targetIsValid = inputRequired
+        ? (targetIdentifier.length > 0
+            && [targetType isEqualToString:AVAudioSessionPortBuiltInMic])
+        : targetIdentifier.length == 0;
+    BOOL bound =
+        _expectedMicrophoneRouteChangeState
+            == ASExpectedMicrophoneRouteChangeStatePending
+        && _expectedMicrophoneRouteChangeConfigurationGeneration
+            == configurationGeneration
+        && _expectedMicrophoneRouteChangeOwnershipToken == 0
+        && _expectedMicrophoneRouteChangeSystemAudioGeneration
+            == systemAudioGeneration
+        && configurationGeneration == activeConfigurationGeneration
+        && ownershipToken != 0
+        && ownershipToken == currentOwnershipToken
+        && sessionActive
+        && now != 0
+        && now <= _expectedMicrophoneRouteChangeDeadlineNanoseconds
+        && targetIsValid;
+    if (bound) {
+        _expectedMicrophoneRouteChangeOwnershipToken = ownershipToken;
+        _expectedMicrophoneRouteChangeTargetInputIdentifier =
+            [targetIdentifier copy];
+        _expectedMicrophoneRouteChangeRequiresPreferredInput =
+            requirePreferredInput;
+    }
+    os_unfair_lock_unlock(&_expectedMicrophoneRouteChangeLock);
+    return bound;
+}
+
+- (BOOL)waitForExpectedMicrophoneConvergenceForSession:
+    (AVAudioSession *)session
+                                                targetInput:
+                                                    (AVAudioSessionPortDescription *)targetInput
+                                     requirePreferredInput:
+                                         (BOOL)requirePreferredInput
+                                          requireExactChannels:
+                                              (BOOL)requireExactChannels
+                                configurationGeneration:
+                                    (uint64_t)configurationGeneration
+                                             ownershipToken:
+                                                 (uint64_t)ownershipToken {
+    NSString *targetIdentifier = [targetInput.UID copy];
+    uint64_t startedAt = ASMonotonicNanoseconds();
+    if (startedAt == 0) {
+        return NO;
+    }
+    uint64_t waitDeadline =
+        startedAt > UINT64_MAX
+                - ASMicrophoneRouteConvergenceTimeoutNanoseconds
+        ? UINT64_MAX
+        : startedAt + ASMicrophoneRouteConvergenceTimeoutNanoseconds;
+
+    for (;;) {
+        AVAudioSessionRouteDescription *route = session.currentRoute;
+        AVAudioSessionPortDescription *currentInput =
+            route.inputs.firstObject;
+        AVAudioSessionPortDescription *preferredInput =
+            session.preferredInput;
+        BOOL targetRequired = targetIdentifier.length > 0;
+        BOOL targetIsCurrent = !targetRequired
+            || (route.inputs.count == 1
+                && ASAudioSessionPortMatches(
+                    currentInput,
+                    AVAudioSessionPortBuiltInMic,
+                    targetIdentifier
+                ));
+        BOOL targetIsPreferred = !requirePreferredInput
+            || ASAudioSessionPortMatches(
+                preferredInput,
+                AVAudioSessionPortBuiltInMic,
+                targetIdentifier
+            );
+        BOOL channelsAreExact = !requireExactChannels
+            || (session.outputNumberOfChannels == ASOutputChannelCount
+                && (!targetRequired
+                    || session.inputNumberOfChannels
+                        == ASInputChannelCount));
+        BOOL outputPresent = route.outputs.count > 0;
+        BOOL ownsSession = [self
+            sessionOwnershipMatchesToken:ownershipToken];
+        uint64_t activeConfigurationGeneration = atomic_load_explicit(
+            &_activeAudioConfigurationGeneration,
+            memory_order_acquire
+        );
+        uint64_t systemAudioGeneration = atomic_load_explicit(
+            &_systemAudioGeneration,
+            memory_order_acquire
+        );
+        uint64_t now = ASMonotonicNanoseconds();
+
+        os_unfair_lock_lock(&_expectedMicrophoneRouteChangeLock);
+        BOOL targetMatches =
+            (_expectedMicrophoneRouteChangeTargetInputIdentifier == nil
+                && targetIdentifier == nil)
+            || [_expectedMicrophoneRouteChangeTargetInputIdentifier
+                isEqualToString:targetIdentifier];
+        BOOL transactionIsLive =
+            _expectedMicrophoneRouteChangeState
+                == ASExpectedMicrophoneRouteChangeStatePending
+            && _expectedMicrophoneRouteChangeConfigurationGeneration
+                == configurationGeneration
+            && _expectedMicrophoneRouteChangeOwnershipToken
+                == ownershipToken
+            && _expectedMicrophoneRouteChangeSystemAudioGeneration
+                == systemAudioGeneration
+            && configurationGeneration == activeConfigurationGeneration
+            && targetMatches
+            && ownsSession
+            && now != 0
+            && now <= _expectedMicrophoneRouteChangeDeadlineNanoseconds;
+        BOOL converged = transactionIsLive
+            && targetIsCurrent
+            && targetIsPreferred
+            && channelsAreExact
+            && outputPresent;
+        dispatch_semaphore_t semaphore = transactionIsLive
+            ? _expectedMicrophoneRouteChangeSemaphore
+            : nil;
+        os_unfair_lock_unlock(&_expectedMicrophoneRouteChangeLock);
+
+        if (converged) {
+            return YES;
+        }
+        if (!transactionIsLive || now >= waitDeadline || semaphore == nil) {
+            return NO;
+        }
+        uint64_t remaining = waitDeadline - now;
+        uint64_t slice = MIN(remaining, (uint64_t)10000000);
+        (void)dispatch_semaphore_wait(
+            semaphore,
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)slice)
+        );
+    }
+}
+
+- (BOOL)markExpectedMicrophoneRouteChangeConvergedForSession:
+    (AVAudioSession *)session
+                                  configurationGeneration:
+                                      (uint64_t)configurationGeneration
+                                               ownershipToken:
+                                                   (uint64_t)ownershipToken {
+    AVAudioSessionRouteDescription *route = session.currentRoute;
+    AVAudioSessionPortDescription *currentInput = route.inputs.firstObject;
+    AVAudioSessionPortDescription *preferredInput = session.preferredInput;
+    NSString *currentInputType = [currentInput.portType copy];
+    NSString *currentInputIdentifier = [currentInput.UID copy];
+    NSString *preferredInputType = [preferredInput.portType copy];
+    NSString *preferredInputIdentifier = [preferredInput.UID copy];
+    NSString *currentRouteFingerprint =
+        ASAudioSessionRouteFingerprint(route);
+    NSString *category = [session.category copy];
+    NSString *mode = [session.mode copy];
+    AVAudioSessionCategoryOptions options = session.categoryOptions;
+    AVAudioSessionRouteSharingPolicy sharingPolicy =
+        session.routeSharingPolicy;
+    NSUInteger inputCount = route.inputs.count;
+    NSUInteger outputCount = route.outputs.count;
+    NSInteger inputChannels = session.inputNumberOfChannels;
+    NSInteger outputChannels = session.outputNumberOfChannels;
+    BOOL ownsSession = [self sessionOwnershipMatchesToken:ownershipToken];
+    uint64_t now = ASMonotonicNanoseconds();
+    uint64_t systemAudioGeneration = atomic_load_explicit(
+        &_systemAudioGeneration,
+        memory_order_acquire
+    );
+    uint64_t activeConfigurationGeneration = atomic_load_explicit(
+        &_activeAudioConfigurationGeneration,
+        memory_order_acquire
+    );
+    BOOL sessionActive = atomic_load_explicit(
+        &_lifecycle.sessionActive,
+        memory_order_acquire
+    );
+    BOOL recoveryRequired = atomic_load_explicit(
+        &_lifecycle.recoveryRequired,
+        memory_order_acquire
+    );
+    BOOL explicitResumeRequired = atomic_load_explicit(
+        &_lifecycle.explicitResumeRequired,
+        memory_order_acquire
+    );
+
+    os_unfair_lock_lock(&_expectedMicrophoneRouteChangeLock);
+    BOOL inputRequired = _expectedMicrophoneRouteChangeInputRequired;
+    BOOL targetIsCurrent = !inputRequired
+        || (inputCount == 1
+            && [currentInputType
+                isEqualToString:AVAudioSessionPortBuiltInMic]
+            && [currentInputIdentifier isEqualToString:
+                _expectedMicrophoneRouteChangeTargetInputIdentifier]);
+    BOOL targetIsPreferred =
+        !_expectedMicrophoneRouteChangeRequiresPreferredInput
+        || ([preferredInputType
+                isEqualToString:AVAudioSessionPortBuiltInMic]
+            && [preferredInputIdentifier isEqualToString:
+                _expectedMicrophoneRouteChangeTargetInputIdentifier]);
+    BOOL policyIsExact = inputRequired
+        ? ([category isEqualToString:AVAudioSessionCategoryPlayAndRecord]
+            && options == ASIPhoneMicrophoneCategoryOptions())
+        : ([category isEqualToString:AVAudioSessionCategoryPlayback]
+            && options == 0);
+    BOOL converged =
+        _expectedMicrophoneRouteChangeState
+            == ASExpectedMicrophoneRouteChangeStatePending
+        && _expectedMicrophoneRouteChangeConfigurationGeneration
+            == configurationGeneration
+        && _expectedMicrophoneRouteChangeOwnershipToken == ownershipToken
+        && _expectedMicrophoneRouteChangeSystemAudioGeneration
+            == systemAudioGeneration
+        && configurationGeneration == activeConfigurationGeneration
+        && ownsSession
+        && sessionActive
+        && !recoveryRequired
+        && !explicitResumeRequired
+        && now != 0
+        && now <= _expectedMicrophoneRouteChangeDeadlineNanoseconds
+        && currentRouteFingerprint.length > 0
+        && outputCount > 0
+        && outputChannels == ASOutputChannelCount
+        && (!inputRequired || inputChannels == ASInputChannelCount)
+        && targetIsCurrent
+        && targetIsPreferred
+        && policyIsExact
+        && [mode isEqualToString:AVAudioSessionModeDefault]
+        && sharingPolicy == AVAudioSessionRouteSharingPolicyDefault;
+    dispatch_semaphore_t semaphore = nil;
+    if (converged) {
+        _expectedMicrophoneRouteChangeState =
+            ASExpectedMicrophoneRouteChangeStateConsumed;
+        _expectedMicrophoneRouteChangeConvergedRouteFingerprint =
+            [currentRouteFingerprint copy];
+        [_expectedMicrophoneRouteChangeObservedFingerprints
+            addObject:currentRouteFingerprint];
+        _expectedMicrophoneRouteChangeDeadlineNanoseconds =
+            now > UINT64_MAX
+                    - ASExpectedMicrophoneRouteChangeLifetimeNanoseconds
+            ? UINT64_MAX
+            : now + ASExpectedMicrophoneRouteChangeLifetimeNanoseconds;
+        semaphore = _expectedMicrophoneRouteChangeSemaphore;
+        _expectedMicrophoneRouteChangeSemaphore = nil;
+    }
+    os_unfair_lock_unlock(&_expectedMicrophoneRouteChangeLock);
+    if (semaphore != nil) {
+        dispatch_semaphore_signal(semaphore);
+    }
+    return converged;
+}
+
+- (BOOL)consumeExpectedMicrophoneRouteChangeNotification:
+    (NSNotification *)notification
+                                                reason:
+                                                    (AVAudioSessionRouteChangeReason)reason {
+    AVAudioSession *session = [self currentAudioSession];
+    AVAudioSessionRouteDescription *previousRoute =
+        notification.userInfo[AVAudioSessionRouteChangePreviousRouteKey];
+    AVAudioSessionRouteDescription *currentRoute = session.currentRoute;
+    NSString *previousFingerprint = previousRoute == nil
+        ? nil
+        : ASAudioSessionRouteFingerprint(previousRoute);
+    NSString *currentFingerprint = ASAudioSessionRouteFingerprint(currentRoute);
+    AVAudioSessionPortDescription *currentInput =
+        currentRoute.inputs.firstObject;
+    AVAudioSessionPortDescription *preferredInput = session.preferredInput;
+    NSString *currentInputType = [currentInput.portType copy];
+    NSString *currentInputIdentifier = [currentInput.UID copy];
+    NSString *preferredInputType = [preferredInput.portType copy];
+    NSString *preferredInputIdentifier = [preferredInput.UID copy];
+    NSString *category = [session.category copy];
+    NSString *mode = [session.mode copy];
+    AVAudioSessionCategoryOptions options = session.categoryOptions;
+    AVAudioSessionRouteSharingPolicy sharingPolicy =
+        session.routeSharingPolicy;
+    NSUInteger inputCount = currentRoute.inputs.count;
+    NSUInteger outputCount = currentRoute.outputs.count;
+    NSInteger inputChannels = session.inputNumberOfChannels;
+    NSInteger outputChannels = session.outputNumberOfChannels;
+    uint64_t observedAt = ASMonotonicNanoseconds();
+    uint64_t activeConfigurationGeneration = atomic_load_explicit(
+        &_activeAudioConfigurationGeneration,
+        memory_order_acquire
+    );
+    uint64_t currentOwnershipToken = atomic_load_explicit(
+        &ASCurrentSessionOwnershipTokenSnapshot,
+        memory_order_acquire
+    );
+    uint64_t systemAudioGeneration = atomic_load_explicit(
+        &_systemAudioGeneration,
+        memory_order_acquire
+    );
+    BOOL sessionActive = atomic_load_explicit(
+        &_lifecycle.sessionActive,
+        memory_order_acquire
+    );
+    BOOL recoveryRequired = atomic_load_explicit(
+        &_lifecycle.recoveryRequired,
+        memory_order_acquire
+    );
+    BOOL explicitResumeRequired = atomic_load_explicit(
+        &_lifecycle.explicitResumeRequired,
+        memory_order_acquire
+    );
+
+    os_unfair_lock_lock(&_expectedMicrophoneRouteChangeLock);
+    _routeChangeNotificationSequence += 1;
+    if (_routeChangeNotificationSequence == 0) {
+        _routeChangeNotificationSequence = 1;
+    }
+    ASExpectedMicrophoneRouteChangeState state =
+        _expectedMicrophoneRouteChangeState;
+    NSString *targetIdentifier =
+        _expectedMicrophoneRouteChangeTargetInputIdentifier;
+    BOOL inputRequired = _expectedMicrophoneRouteChangeInputRequired;
+    BOOL targetIsCurrent = !inputRequired
+        || (inputCount == 1
+            && [currentInputType
+                isEqualToString:AVAudioSessionPortBuiltInMic]
+            && [currentInputIdentifier isEqualToString:targetIdentifier]);
+    BOOL targetIsPreferred =
+        !_expectedMicrophoneRouteChangeRequiresPreferredInput
+        || ([preferredInputType
+                isEqualToString:AVAudioSessionPortBuiltInMic]
+            && [preferredInputIdentifier isEqualToString:targetIdentifier]);
+    BOOL policyIsExact = inputRequired
+        ? ([category isEqualToString:AVAudioSessionCategoryPlayAndRecord]
+            && options == ASIPhoneMicrophoneCategoryOptions())
+        : ([category isEqualToString:AVAudioSessionCategoryPlayback]
+            && options == 0);
+    ASExpectedRouteChangeEvidence evidence = {
+        .state = state,
+        .reason = reason,
+        .sequenceAdvanced = _routeChangeNotificationSequence
+            > _expectedMicrophoneRouteChangeObserverSequenceBaseline,
+        .withinDeadline = observedAt != 0
+            && observedAt
+                <= _expectedMicrophoneRouteChangeDeadlineNanoseconds,
+        .configurationGenerationMatches =
+            activeConfigurationGeneration
+                == _expectedMicrophoneRouteChangeConfigurationGeneration,
+        .systemAudioGenerationMatches = systemAudioGeneration
+            == _expectedMicrophoneRouteChangeSystemAudioGeneration,
+        .fingerprintsArePresent = currentFingerprint.length > 0
+            && previousFingerprint.length > 0,
+        .previousFingerprintWasObserved =
+            [_expectedMicrophoneRouteChangeObservedFingerprints
+                containsObject:previousFingerprint],
+        .policyIsExact = policyIsExact
+            && [mode isEqualToString:AVAudioSessionModeDefault]
+            && sharingPolicy
+                == AVAudioSessionRouteSharingPolicyDefault,
+        .ownershipIsBound =
+            _expectedMicrophoneRouteChangeOwnershipToken != 0,
+        .ownershipMatches =
+            _expectedMicrophoneRouteChangeOwnershipToken
+                == currentOwnershipToken,
+        .sessionActive = sessionActive,
+        .recoveryRequired = recoveryRequired,
+        .explicitResumeRequired = explicitResumeRequired,
+        .currentRouteMatchesConvergedRoute =
+            [_expectedMicrophoneRouteChangeConvergedRouteFingerprint
+                isEqualToString:currentFingerprint],
+        .outputIsExact = outputCount > 0,
+        .channelsAreExact = outputChannels == ASOutputChannelCount
+            && (!inputRequired || inputChannels == ASInputChannelCount),
+        .targetInputIsExact = targetIsCurrent,
+        .preferredInputIsExact = targetIsPreferred,
+    };
+    ASIOSExpectedRouteChangeDisposition disposition =
+        ASClassifyExpectedRouteChangeEvidence(evidence);
+    dispatch_semaphore_t semaphore = nil;
+    if (disposition == ASIOSExpectedRouteChangeDispositionConsume
+        && state == ASExpectedMicrophoneRouteChangeStatePending) {
+        [_expectedMicrophoneRouteChangeObservedFingerprints
+            addObject:currentFingerprint];
+        semaphore = _expectedMicrophoneRouteChangeSemaphore;
+    } else if (disposition
+        == ASIOSExpectedRouteChangeDispositionRejectTransaction) {
+        _expectedMicrophoneRouteChangeState =
+            ASExpectedMicrophoneRouteChangeStateRejected;
+        semaphore = _expectedMicrophoneRouteChangeSemaphore;
+    }
+    os_unfair_lock_unlock(&_expectedMicrophoneRouteChangeLock);
+    if (semaphore != nil) {
+        dispatch_semaphore_signal(semaphore);
+    }
+    return disposition == ASIOSExpectedRouteChangeDispositionConsume;
+}
+
+- (void)clearExpectedMicrophoneRouteChange {
+    os_unfair_lock_lock(&_expectedMicrophoneRouteChangeLock);
+    BOOL mustSignal = _expectedMicrophoneRouteChangeState
+        == ASExpectedMicrophoneRouteChangeStatePending;
+    dispatch_semaphore_t semaphore =
+        _expectedMicrophoneRouteChangeSemaphore;
+    _expectedMicrophoneRouteChangeState =
+        ASExpectedMicrophoneRouteChangeStateNone;
+    _expectedMicrophoneRouteChangeConfigurationGeneration = 0;
+    _expectedMicrophoneRouteChangeOwnershipToken = 0;
+    _expectedMicrophoneRouteChangeSystemAudioGeneration = 0;
+    _expectedMicrophoneRouteChangeObserverSequenceBaseline = 0;
+    _expectedMicrophoneRouteChangeDeadlineNanoseconds = 0;
+    _expectedMicrophoneRouteChangePreviousRouteFingerprint = nil;
+    _expectedMicrophoneRouteChangeConvergedRouteFingerprint = nil;
+    _expectedMicrophoneRouteChangeTargetInputIdentifier = nil;
+    _expectedMicrophoneRouteChangeObservedFingerprints = nil;
+    _expectedMicrophoneRouteChangeInputRequired = NO;
+    _expectedMicrophoneRouteChangeRequiresPreferredInput = NO;
+    _expectedMicrophoneRouteChangeSemaphore = nil;
+    os_unfair_lock_unlock(&_expectedMicrophoneRouteChangeLock);
+    if (mustSignal && semaphore != nil) {
+        dispatch_semaphore_signal(semaphore);
+    }
 }
 
 - (void)failAndRollbackWithCode:(ASIOSStereoPlayoutFailureCode)code
@@ -5474,6 +6829,12 @@ static OSStatus ASRemoteIOInput(
 }
 
 - (OSStatus)stopAndDisposeAudioUnit {
+    [self clearExpectedMicrophoneRouteChange];
+    atomic_store_explicit(
+        &_activeAudioConfigurationGeneration,
+        0,
+        memory_order_release
+    );
     [self closeAndFenceRealtimeMicrophoneResources];
     [self clearCurrentMicrophoneRecordingGeneration];
     OSStatus firstFailure = noErr;
@@ -5907,6 +7268,7 @@ static OSStatus ASRemoteIOInput(
         if (self == nil || typeValue == nil) {
             return;
         }
+        [self clearExpectedMicrophoneRouteChange];
         BOOL began = typeValue.unsignedIntegerValue == AVAudioSessionInterruptionTypeBegan;
         [self scheduleSystemEvent:(began
             ? ASSystemAudioEventInterruptionBegan
@@ -5917,17 +7279,28 @@ static OSStatus ASRemoteIOInput(
                                    object:AVAudioSession.sharedInstance
                                     queue:nil
                                usingBlock:^(NSNotification *notification) {
+        ASIOSStereoPlayoutAudioDevice *self = weakSelf;
+        if (self == nil) {
+            return;
+        }
         NSNumber *reasonValue = notification.userInfo[AVAudioSessionRouteChangeReasonKey];
         AVAudioSessionRouteChangeReason reason = reasonValue == nil
             ? AVAudioSessionRouteChangeReasonUnknown
             : (AVAudioSessionRouteChangeReason)reasonValue.unsignedIntegerValue;
-        [weakSelf scheduleSystemEvent:ASSystemAudioEventRouteChanged routeReason:reason];
+        if ([self
+            consumeExpectedMicrophoneRouteChangeNotification:notification
+            reason:reason]) {
+            return;
+        }
+        [self scheduleSystemEvent:ASSystemAudioEventRouteChanged routeReason:reason];
     }];
     id reset = [center addObserverForName:AVAudioSessionMediaServicesWereResetNotification
                                object:AVAudioSession.sharedInstance
                                     queue:nil
                                usingBlock:^(__unused NSNotification *notification) {
-        [weakSelf scheduleSystemEvent:ASSystemAudioEventMediaServicesReset
+        ASIOSStereoPlayoutAudioDevice *self = weakSelf;
+        [self clearExpectedMicrophoneRouteChange];
+        [self scheduleSystemEvent:ASSystemAudioEventMediaServicesReset
                           routeReason:AVAudioSessionRouteChangeReasonUnknown];
     }];
     _notificationTokens = @[interruption, route, reset];
