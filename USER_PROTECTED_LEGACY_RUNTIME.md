@@ -514,7 +514,7 @@ identifier `com.elamin.AudioStreamer`. The physical iPhone was unavailable while
 this migration was prepared.
 
 A separate archive-only `TestFlight` configuration now uses bundle identifier
-`com.elamin.opensteamer`, build `38`, and the production rendezvous endpoint.
+`com.elamin.opensteamer`, build `40`, and the production rendezvous endpoint.
 Its guarded upload path rejects the protected bundle identifier and validates
 the completed archive identity before any upload. This side-by-side app has a
 separate container and Keychain scope, so it requires fresh pairing with the new
@@ -564,6 +564,31 @@ successfully at 2026-08-03 08:11 EDT. Xcode reported `Upload succeeded` and
 `/private/tmp/opensteamer-testflight-output.nZPlNR`. App Store Connect processing
 and a fresh physical-iPhone oracle are still required before claiming the fix
 works end to end. The non-blocking LiveKitWebRTC missing-dSYM warning remains.
+
+Build `39` added exact native audio-session admission diagnostics. A physical
+iPhone report then proved the failure was not a signaling guess: the preferred
+mono-input request returned OSStatus `-50` while the observed route was inactive,
+output-only A2DP with zero maximum input channels. Build `40` moves channel
+preference requests after activation, selects the built-in microphone only after
+activation, and serializes the complete owned AVAudioSession transaction through
+exact route and channel convergence. Route notifications are admitted only when
+their generation, ownership, policy, and route-fingerprint evidence match; all
+other mutations fail closed. Focused native, lifecycle, physical-oracle, and
+WebRTC loopback suites passed, with only the hardware-only simulator tests
+skipped. An independent post-refactor audit reported no actionable P0-P2 finding.
+
+The first build-40 archive attempt failed locally before export because the
+production classifier's disposition enum was mistakenly DEBUG-only; no package
+was uploaded. The type was moved into the production header, and the guarded
+retry verified exact bundle `com.elamin.opensteamer`, build `40`, production
+endpoints, Team ID, and signed identifier before upload. App Store Connect
+accepted the package at 2026-08-03 10:22 EDT and reported `Upload succeeded` and
+`** EXPORT SUCCEEDED **`; retained evidence is under
+`/private/tmp/opensteamer-testflight-output.O7lBK3`. App Store Connect completed
+processing at 10:24 EDT, and TestFlight reported build `40` ready to test at
+10:25 EDT. The non-blocking LiveKitWebRTC missing-dSYM warning remains. A fresh
+physical iPhone call and raw-microphone oracle is still required before claiming
+the fix works end to end.
 
 - Do not install, replace, migrate, launch, reset, re-pair, or modify the
   production app on a physical iPhone.
