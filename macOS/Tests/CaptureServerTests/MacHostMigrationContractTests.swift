@@ -190,6 +190,8 @@ final class MacHostMigrationContractTests: XCTestCase {
             "rolled-back result recovery did not atomically replace prior success",
             "exact retained staged host survived bounded SIGKILL wait",
             "staged rollback process topology self-test failed",
+            "filename-aware shasum parser self-test failed",
+            "parse_shasum_output",
             ".arg(\"--reset-worldwide-pairing\")",
             "com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1",
             "staged pairing namespace is not isolated",

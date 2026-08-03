@@ -3119,6 +3119,21 @@ fn self_test() -> Result<()> {
             "invitation parser self-test failed".to_owned(),
         ));
     }
+    let spaced_path = "/private/tmp/opensteamer Host.app/Contents/MacOS/CaptureServer";
+    let digest = "a".repeat(64);
+    if parse_shasum_output(&format!("{digest}  {spaced_path}\n"), spaced_path)? != digest
+        || parse_shasum_output(&format!("{digest} *{spaced_path}\n"), spaced_path)? != digest
+        || parse_shasum_output(
+            &format!("{digest}  /private/tmp/opensteamer\n"),
+            spaced_path,
+        )
+        .is_ok()
+        || parse_shasum_output(&format!("{digest}  {spaced_path}\nextra\n"), spaced_path).is_ok()
+    {
+        return Err(ControllerError(
+            "filename-aware shasum parser self-test failed".to_owned(),
+        ));
+    }
     let valid = format!(
         "{JOURNAL_HEADER}\nSTATE BEGUN\nSTATE SOURCE_EXPORTED commit={} tree={} initial_pid=41\nSTATE BUILD_VERIFIED executable_sha256={}\nSTATE STOP_INITIATED reserve_device=1 reserve_inode=2 reserve_bytes=8388608\nSTATE INSTALL_HOLD_VERIFIED\nSTATE V20_STOPPED\nSTATE INTERACTIVE_READY pid=42 process_start=Mon_Aug_3 nonce={} lock_device=1 lock_inode=2\nSTATE PAIRING_COMMITTED pid=42 process_start=Mon_Aug_3 nonce={} lock_device=1 lock_inode=2\nSTATE INTERACTIVE_STOPPED\nSTATE V20_HELD\nSTATE NEW_PUBLISHED\nSTATE PERSISTENT_BOOTSTRAPPED\nSTATE READY_VERIFIED pid=43 runs=1 nonce={}\nSTATE COMMITTED\n",
         "a".repeat(40),
@@ -3691,16 +3706,22 @@ fn sha256(path: &Path) -> Result<String> {
     let output = command_output("/usr/bin/shasum", &["-a", "256", path_text(path)?], None)?;
     require_output_success(&output, "compute SHA-256")?;
     let text = decode_utf8(&output.stdout, "shasum output")?;
-    let mut fields = text.split_ascii_whitespace();
-    let hash = fields
-        .next()
-        .ok_or_else(|| ControllerError("shasum returned no hash".to_owned()))?;
+    parse_shasum_output(text, path_text(path)?)
+}
+
+fn parse_shasum_output(text: &str, expected_path: &str) -> Result<String> {
+    let line = text
+        .strip_suffix('\n')
+        .ok_or_else(|| ControllerError("shasum output is not newline-terminated".to_owned()))?;
+    if line.contains('\n') || line.len() < 66 || !line.is_char_boundary(64) {
+        return Err(ControllerError("shasum output is malformed".to_owned()));
+    }
+    let (hash, suffix) = line.split_at(64);
     if hash.len() != 64
         || !hash
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        || fields.next().is_none()
-        || fields.next().is_some()
+        || (suffix != format!("  {expected_path}") && suffix != format!(" *{expected_path}"))
     {
         return Err(ControllerError("shasum output is malformed".to_owned()));
     }
