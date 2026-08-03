@@ -207,6 +207,19 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         XCTAssertTrue(staged.outputBusEnabled)
         XCTAssertTrue(staged.categoryIsMediaPlayAndRecord)
         XCTAssertTrue(staged.modeIsDefault)
+        XCTAssertEqual(
+            harness.lastConfiguredCategory,
+            AVAudioSession.Category.playAndRecord.rawValue
+        )
+        XCTAssertEqual(
+            AVAudioSession.CategoryOptions(
+                rawValue: harness.lastConfiguredCategoryOptions
+            ),
+            [.defaultToSpeaker, .allowBluetoothA2DP]
+        )
+        XCTAssertFalse(staged.categoryOptionsAreEmpty)
+        XCTAssertTrue(staged.categoryOptionsAreIPhoneMicrophoneRouting)
+        XCTAssertFalse(staged.categoryOptionsAreMixWithOthers)
         XCTAssertTrue(staged.microphoneDeviceGateClosedAndDrained)
         XCTAssertFalse(staged.microphoneAuthorizationGatePublished)
         XCTAssertEqual(
@@ -249,6 +262,135 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         XCTAssertTrue(duplicate.microphoneDeviceGateClosedAndDrained)
         XCTAssertFalse(duplicate.microphoneAuthorizationGatePublished)
         XCTAssertFalse(harness.debugBeginRealtimeAdmissionForTesting())
+    }
+
+    func testInactiveA2DPRouteCannotIssueChannelPreferenceRequests() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertFalse(
+            harness.debugApplyActiveChannelPreferencesForTesting(
+                sessionActive: false,
+                maximumInputChannels: 0,
+                maximumOutputChannels: 2,
+                microphoneEnabled: true
+            )
+        )
+        XCTAssertEqual(harness.lastChannelPreferenceOperations, [])
+    }
+
+    func testActiveDuplexRouteAppliesStereoThenMonoPreferences() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertTrue(
+            harness.debugApplyActiveChannelPreferencesForTesting(
+                sessionActive: true,
+                maximumInputChannels: 1,
+                maximumOutputChannels: 2,
+                microphoneEnabled: true
+            )
+        )
+        XCTAssertEqual(
+            harness.lastChannelPreferenceOperations,
+            ["output=2", "input=1"]
+        )
+    }
+
+    func testActiveOutputOnlyRouteRejectsMicrophoneBeforeAnyPreferenceRequest() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertFalse(
+            harness.debugApplyActiveChannelPreferencesForTesting(
+                sessionActive: true,
+                maximumInputChannels: 0,
+                maximumOutputChannels: 2,
+                microphoneEnabled: true
+            )
+        )
+        XCTAssertEqual(harness.lastChannelPreferenceOperations, [])
+    }
+
+    func testExpectedRouteTransactionConsumesActivationAndBoundConfigurationEvents() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertEqual(
+            harness.debugClassifyExpectedRouteChangeForTesting(
+                .pendingActivation
+            ),
+            .consume
+        )
+        XCTAssertEqual(
+            harness.debugClassifyExpectedRouteChangeForTesting(
+                .pendingBound
+            ),
+            .consume
+        )
+        XCTAssertEqual(
+            harness.debugClassifyExpectedRouteChangeForTesting(
+                .pendingCategory
+            ),
+            .unrelated
+        )
+    }
+
+    func testExpectedRouteTransactionRejectsWrongProvenanceAndOutputOverride() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        for scenario: WebRTCIOSExpectedRouteChangeTestScenario in [
+            .pendingOverride,
+            .pendingWrongPreviousRoute,
+            .pendingWrongGeneration,
+            .pendingWrongOwnership,
+            .pendingCoalescedSkippedIntermediate,
+            .pendingExpired,
+            .pendingSequenceNotAdvanced,
+            .pendingWrongSystemGeneration,
+            .pendingWrongPolicy,
+            .pendingMissingFingerprint,
+        ] {
+            XCTAssertEqual(
+                harness.debugClassifyExpectedRouteChangeForTesting(scenario),
+                .rejectTransaction,
+                "Scenario \(scenario.rawValue) was not rejected."
+            )
+        }
+    }
+
+    func testConvergedRouteTransactionIsIdempotentOnlyForExactBoundedDuplicates() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertEqual(
+            harness.debugClassifyExpectedRouteChangeForTesting(
+                .convergedDuplicate
+            ),
+            .consume
+        )
+        for scenario: WebRTCIOSExpectedRouteChangeTestScenario in [
+            .convergedChangedRoute,
+            .convergedRecoveryRequired,
+            .convergedExpired,
+            .convergedWrongOwnership,
+            .convergedInactive,
+            .convergedOutputMissing,
+            .convergedChannelMismatch,
+            .convergedTargetMismatch,
+            .convergedPreferredMismatch,
+            .convergedWrongSystemGeneration,
+            .convergedWrongGeneration,
+            .convergedPreviousUnseen,
+            .convergedExplicitResumeRequired,
+        ] {
+            XCTAssertEqual(
+                harness.debugClassifyExpectedRouteChangeForTesting(scenario),
+                .unrelated,
+                "Scenario \(scenario.rawValue) was incorrectly consumed."
+            )
+        }
     }
 
     func testMicrophoneApprovalRejectsZeroWrongStaleRevokedAndRetiredGenerations() {
@@ -1003,6 +1145,7 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         XCTAssertFalse(healthy.recoveryRequired)
         XCTAssertFalse(healthy.explicitResumeRequired)
         XCTAssertTrue(healthy.categoryOptionsAreEmpty)
+        XCTAssertFalse(healthy.categoryOptionsAreIPhoneMicrophoneRouting)
         XCTAssertFalse(healthy.categoryOptionsAreMixWithOthers)
         XCTAssertTrue(healthy.routeSharingPolicyIsDefault)
         XCTAssertTrue(healthy.hasOutputRoute)
@@ -1535,6 +1678,7 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         XCTAssertFalse(normal.recoveryRequired)
         XCTAssertFalse(normal.explicitResumeRequired)
         XCTAssertTrue(normal.categoryOptionsAreEmpty)
+        XCTAssertFalse(normal.categoryOptionsAreIPhoneMicrophoneRouting)
         XCTAssertFalse(normal.categoryOptionsAreMixWithOthers)
         XCTAssertTrue(normal.routeSharingPolicyIsDefault)
         XCTAssertTrue(normal.hasOutputRoute)

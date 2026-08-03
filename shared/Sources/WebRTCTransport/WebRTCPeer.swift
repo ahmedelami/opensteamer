@@ -244,7 +244,8 @@ enum WebRTCIPhoneMicrophoneSenderStatisticsSampler {
               diagnostics.usesRemoteIO,
               diagnostics.inputBusEnabled,
               diagnostics.outputBusEnabled,
-              diagnostics.categoryOptionsAreEmpty,
+              !diagnostics.categoryOptionsAreEmpty,
+              diagnostics.categoryOptionsAreIPhoneMicrophoneRouting,
               diagnostics.routeSharingPolicyIsDefault,
               diagnostics.hasOutputRoute,
               diagnostics.sampleRateIs48k,
@@ -1003,6 +1004,7 @@ public struct WebRTCIOSPlayoutRecoveryTestDiagnostics: Equatable, Sendable {
     public let recoveryRequired: Bool
     public let explicitResumeRequired: Bool
     public let categoryOptionsAreEmpty: Bool
+    public let categoryOptionsAreIPhoneMicrophoneRouting: Bool
     public let routeSharingPolicyIsDefault: Bool
     public let categoryOptionsAreMixWithOthers: Bool
     public let hasOutputRoute: Bool
@@ -1012,6 +1014,114 @@ public struct WebRTCIOSPlayoutRecoveryTestDiagnostics: Equatable, Sendable {
     public let hostedCallOrigin: WebRTCIOSHostedCallPlayoutOrigin?
     public let systemAudioGeneration: UInt64
     public let hostedCallAuthorizationGeneration: UInt64
+}
+
+public enum WebRTCIOSExpectedRouteChangeDisposition: Sendable {
+    case unrelated
+    case consume
+    case rejectTransaction
+
+    fileprivate init(native: ASIOSExpectedRouteChangeDisposition) {
+        switch native {
+        case .unrelated:
+            self = .unrelated
+        case .consume:
+            self = .consume
+        case .rejectTransaction:
+            self = .rejectTransaction
+        @unknown default:
+            self = .unrelated
+        }
+    }
+}
+
+public enum WebRTCIOSExpectedRouteChangeTestScenario: Int, Sendable {
+    case pendingActivation
+    case pendingBound
+    case pendingCategory
+    case pendingOverride
+    case pendingWrongPreviousRoute
+    case pendingWrongGeneration
+    case pendingWrongOwnership
+    case convergedDuplicate
+    case convergedChangedRoute
+    case convergedRecoveryRequired
+    case convergedExpired
+    case pendingCoalescedSkippedIntermediate
+    case pendingExpired
+    case pendingSequenceNotAdvanced
+    case pendingWrongSystemGeneration
+    case pendingWrongPolicy
+    case pendingMissingFingerprint
+    case convergedWrongOwnership
+    case convergedInactive
+    case convergedOutputMissing
+    case convergedChannelMismatch
+    case convergedTargetMismatch
+    case convergedPreferredMismatch
+    case convergedWrongSystemGeneration
+    case convergedWrongGeneration
+    case convergedPreviousUnseen
+    case convergedExplicitResumeRequired
+
+    fileprivate var native: ASIOSExpectedRouteChangeTestScenario {
+        switch self {
+        case .pendingActivation:
+            return .pendingActivation
+        case .pendingBound:
+            return .pendingBound
+        case .pendingCategory:
+            return .pendingCategory
+        case .pendingOverride:
+            return .pendingOverride
+        case .pendingWrongPreviousRoute:
+            return .pendingWrongPreviousRoute
+        case .pendingWrongGeneration:
+            return .pendingWrongGeneration
+        case .pendingWrongOwnership:
+            return .pendingWrongOwnership
+        case .convergedDuplicate:
+            return .convergedDuplicate
+        case .convergedChangedRoute:
+            return .convergedChangedRoute
+        case .convergedRecoveryRequired:
+            return .convergedRecoveryRequired
+        case .convergedExpired:
+            return .convergedExpired
+        case .pendingCoalescedSkippedIntermediate:
+            return .pendingCoalescedSkippedIntermediate
+        case .pendingExpired:
+            return .pendingExpired
+        case .pendingSequenceNotAdvanced:
+            return .pendingSequenceNotAdvanced
+        case .pendingWrongSystemGeneration:
+            return .pendingWrongSystemGeneration
+        case .pendingWrongPolicy:
+            return .pendingWrongPolicy
+        case .pendingMissingFingerprint:
+            return .pendingMissingFingerprint
+        case .convergedWrongOwnership:
+            return .convergedWrongOwnership
+        case .convergedInactive:
+            return .convergedInactive
+        case .convergedOutputMissing:
+            return .convergedOutputMissing
+        case .convergedChannelMismatch:
+            return .convergedChannelMismatch
+        case .convergedTargetMismatch:
+            return .convergedTargetMismatch
+        case .convergedPreferredMismatch:
+            return .convergedPreferredMismatch
+        case .convergedWrongSystemGeneration:
+            return .convergedWrongSystemGeneration
+        case .convergedWrongGeneration:
+            return .convergedWrongGeneration
+        case .convergedPreviousUnseen:
+            return .convergedPreviousUnseen
+        case .convergedExplicitResumeRequired:
+            return .convergedExplicitResumeRequired
+        }
+    }
 }
 
 /// Drives the real native recovery gate and records the production configuration-operation inputs
@@ -1024,6 +1134,9 @@ public final class WebRTCIOSPlayoutRecoveryTestHarness: @unchecked Sendable {
     public var queuedOperationCount: Int { Int(native.queuedOperationCount) }
     public var configurationOperationCount: Int {
         Int(native.configurationOperationCount)
+    }
+    public var lastChannelPreferenceOperations: [String] {
+        native.lastChannelPreferenceOperations
     }
     public var lastConfiguredCategory: String? {
         native.lastConfiguredCategory
@@ -1087,6 +1200,8 @@ public final class WebRTCIOSPlayoutRecoveryTestHarness: @unchecked Sendable {
             recoveryRequired: value.recoveryRequired,
             explicitResumeRequired: value.explicitResumeRequired,
             categoryOptionsAreEmpty: value.categoryOptionsAreEmpty,
+            categoryOptionsAreIPhoneMicrophoneRouting:
+                value.categoryOptionsAreIPhoneMicrophoneRouting,
             routeSharingPolicyIsDefault: value.routeSharingPolicyIsDefault,
             categoryOptionsAreMixWithOthers:
                 value.categoryOptionsAreMixWithOthers,
@@ -1143,6 +1258,30 @@ public final class WebRTCIOSPlayoutRecoveryTestHarness: @unchecked Sendable {
 
     public func debugTerminateForTesting() -> Bool {
         native.debugTerminateForTesting()
+    }
+
+    public func debugApplyActiveChannelPreferencesForTesting(
+        sessionActive: Bool,
+        maximumInputChannels: Int,
+        maximumOutputChannels: Int,
+        microphoneEnabled: Bool
+    ) -> Bool {
+        native.debugApplyActiveChannelPreferencesForTesting(
+            sessionActive: sessionActive,
+            maximumInputChannels: maximumInputChannels,
+            maximumOutputChannels: maximumOutputChannels,
+            microphoneEnabled: microphoneEnabled
+        )
+    }
+
+    public func debugClassifyExpectedRouteChangeForTesting(
+        _ scenario: WebRTCIOSExpectedRouteChangeTestScenario
+    ) -> WebRTCIOSExpectedRouteChangeDisposition {
+        WebRTCIOSExpectedRouteChangeDisposition(
+            native: native.debugClassifyExpectedRouteChangeForTesting(
+                scenario.native
+            )
+        )
     }
 
     public func publishCallback(frameCount: UInt32, status: Int32) {
@@ -1227,6 +1366,7 @@ public struct WebRTCIOSPlayoutDiagnostics: Sendable {
     public let categoryIsMediaPlayAndRecord: Bool
     public let modeIsDefault: Bool
     public let categoryOptionsAreEmpty: Bool
+    public let categoryOptionsAreIPhoneMicrophoneRouting: Bool
     public let categoryOptionsAreMixWithOthers: Bool
     public let routeSharingPolicyIsDefault: Bool
     public let hasOutputRoute: Bool
@@ -1288,6 +1428,7 @@ public struct WebRTCIOSPlayoutDiagnostics: Sendable {
         categoryIsMediaPlayAndRecord: Bool = false,
         modeIsDefault: Bool,
         categoryOptionsAreEmpty: Bool,
+        categoryOptionsAreIPhoneMicrophoneRouting: Bool = false,
         categoryOptionsAreMixWithOthers: Bool = false,
         routeSharingPolicyIsDefault: Bool,
         hasOutputRoute: Bool = true,
@@ -1348,6 +1489,8 @@ public struct WebRTCIOSPlayoutDiagnostics: Sendable {
         self.categoryIsMediaPlayAndRecord = categoryIsMediaPlayAndRecord
         self.modeIsDefault = modeIsDefault
         self.categoryOptionsAreEmpty = categoryOptionsAreEmpty
+        self.categoryOptionsAreIPhoneMicrophoneRouting =
+            categoryOptionsAreIPhoneMicrophoneRouting
         self.categoryOptionsAreMixWithOthers = categoryOptionsAreMixWithOthers
         self.routeSharingPolicyIsDefault = routeSharingPolicyIsDefault
         self.hasOutputRoute = hasOutputRoute
@@ -1433,6 +1576,8 @@ enum WebRTCIOSMicrophoneAdmissionDiagnostics {
         let options: String
         if diagnostics.categoryOptionsAreEmpty {
             options = "empty"
+        } else if diagnostics.categoryOptionsAreIPhoneMicrophoneRouting {
+            options = "iPhoneMicRouting"
         } else if diagnostics.categoryOptionsAreMixWithOthers {
             options = "mixWithOthers"
         } else {
@@ -3659,6 +3804,8 @@ public actor WebRTCPeer {
             categoryIsMediaPlayAndRecord: value.categoryIsMediaPlayAndRecord,
             modeIsDefault: value.modeIsDefault,
             categoryOptionsAreEmpty: value.categoryOptionsAreEmpty,
+            categoryOptionsAreIPhoneMicrophoneRouting:
+                value.categoryOptionsAreIPhoneMicrophoneRouting,
             categoryOptionsAreMixWithOthers:
                 value.categoryOptionsAreMixWithOthers,
             routeSharingPolicyIsDefault: value.routeSharingPolicyIsDefault,
@@ -4026,7 +4173,8 @@ public actor WebRTCPeer {
             && native.modeIsDefault
             && native.inputBusEnabled
             && native.outputBusEnabled
-            && native.categoryOptionsAreEmpty
+            && !native.categoryOptionsAreEmpty
+            && native.categoryOptionsAreIPhoneMicrophoneRouting
             && native.routeSharingPolicyIsDefault
             && sampleRateIs48k
             && ioBufferDurationIsBounded
@@ -4068,6 +4216,8 @@ public actor WebRTCPeer {
             outputBusEnabled: native.outputBusEnabled,
             categoryOptionsAreEmpty:
                 native.categoryOptionsAreEmpty,
+            categoryOptionsAreIPhoneMicrophoneRouting:
+                native.categoryOptionsAreIPhoneMicrophoneRouting,
             routeSharingPolicyIsDefault:
                 native.routeSharingPolicyIsDefault,
             hasOutputRoute: native.hasOutputRoute,

@@ -1033,6 +1033,7 @@ public struct WebRTCIPhoneMicrophoneSenderDiagnostics: Equatable, Sendable {
     public let inputBusEnabled: Bool
     public let outputBusEnabled: Bool
     public let categoryOptionsAreEmpty: Bool
+    public let categoryOptionsAreIPhoneMicrophoneRouting: Bool
     public let routeSharingPolicyIsDefault: Bool
     public let hasOutputRoute: Bool
     public let sampleRateIs48k: Bool
