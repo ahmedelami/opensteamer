@@ -1,21 +1,22 @@
 # User-protected legacy AudioStreamer runtime
 
-Status: **VERSION 19 FULLY ROLLED BACK; VERSION 20 REVIEW/PREFLIGHT ONLY; LEGACY AND IPHONE REMAIN PROTECTED**\
+Status: **VERSION 19 FULLY ROLLED BACK; ONE VERSION 20 MAC-ONLY CUTOVER AUTHORIZED; LEGACY AND IPHONE REMAIN PROTECTED**\
 Original preservation direction: **2026-07-25**\
 Mac-only migration authorization recorded: **2026-07-30/31**\
 Version-15 retry authorization recorded: **2026-08-02**\
 Version-16 retry authorization recorded and consumed: **2026-08-02**\
 Version-17 retry authorization recorded and consumed: **2026-08-02**\
 Version-18 retry authorization recorded and consumed: **2026-08-02**\
-Version-19 retry authorization recorded and consumed: **2026-08-02**
+Version-19 retry authorization recorded and consumed: **2026-08-02**\
+Version-20 retry authorization recorded: **2026-08-02**
 
 The user authorized guarded Mac-only cutovers from the running legacy host to
 the validated opensteamer host. Versions 15, 16, 17, 18, and 19 all fully
 rolled back to the untouched legacy host. The user explicitly authorized the
 guarded version-19 Mac-only retry on August 2, 2026; that authorization was
-consumed by the version-19 attempt described below. Version 20 is a review and
-read-only-preflight design only. A further cutover attempt has not been
-authorized. The prior authorization does **not** permit moving, renaming,
+consumed by the version-19 attempt described below. On August 2, 2026, the user
+explicitly authorized exactly one guarded version-20 Mac-only cutover. That
+single-use authorization does **not** permit moving, renaming,
 deleting, replacing, modifying, re-signing, quarantining, or installing over the
 legacy Mac app or plist. It also does not authorize any physical-iPhone operation.
 
@@ -414,8 +415,9 @@ through version-19 tombstones and the sole live legacy host, and prove the
 deterministic version-20 evidence path absent. It must report exactly
 `PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18=v19 legacy=sole-ready v20=absent`.
 Version 20 retains the reviewed disk, reserve, signing, installed-MACL, lock,
-and deadline policies. No version-20 cutover is authorized; only its read-only
-preflight may be reviewed or run.
+and deadline policies. Exactly one guarded version-20 Mac-only cutover is
+authorized. The authorization remains single-use and does not authorize a
+physical-iPhone operation.
 
 ## Protected iPhone client
 

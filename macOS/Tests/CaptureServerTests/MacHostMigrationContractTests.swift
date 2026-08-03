@@ -1632,7 +1632,7 @@ final class MacHostMigrationContractTests: XCTestCase {
             "bounded restart of the complete lock-path",
             "validates all eleven historical",
             exactPreflightOutput,
-            "No version-20 cutover is authorized.",
+            "Exactly one guarded version-20 Mac-only cutover is authorized.",
             "migrate-opensteamer-host.sh --verify-reviewed-prior-retry-state",
         ] {
             XCTAssertTrue(migrationGuide.contains(required), "Migration guide lacks \(required)")
@@ -1646,7 +1646,7 @@ final class MacHostMigrationContractTests: XCTestCase {
             "validate all version-9",
             "through version-19 tombstones",
             exactPreflightOutput,
-            "No version-20 cutover",
+            "Exactly one guarded version-20 Mac-only cutover",
         ] {
             XCTAssertTrue(
                 protectedRuntimeGuide.contains(required),
