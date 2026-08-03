@@ -1,8 +1,8 @@
 import XCTest
 
 /// Release gate for the exact physical failure reported from the distributed production build. The test deliberately
-/// launches the production bundle rather than the side-by-side `.dev` app so it observes the
-/// user's real Keychain pair. A shell preflight must first prove the expected production build is
+/// launches the isolated TestFlight bundle rather than the side-by-side `.dev` app. A shell
+/// preflight must first prove the expected distributed build is
 /// installed; missing pairing, accessibility identifiers, host availability, or any live route is
 /// a failure, never a skip.
 @MainActor
@@ -56,9 +56,10 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
         let sampleLog: String
     }
 
-    // The visible product is opensteamer, and physical release validation targets the immutable
-    // App Store/TestFlight production bundle so it observes the installed app's Keychain state.
-    private let app = XCUIApplication(bundleIdentifier: "com.elamin.AudioStreamer")
+    // The validation shell exports the exact side-by-side TestFlight identity. The application
+    // object itself is never constructed with caller-controlled input.
+    private static let sideBySideAppBundleIdentifier = "com.elamin.opensteamer"
+    private let app = XCUIApplication(bundleIdentifier: Self.sideBySideAppBundleIdentifier)
     // Audio diagnostics are published by the one-second WebRTC statistics task, so 1.5 seconds
     // permits one ordinary publication interval without allowing a late burst to launder a stall.
     private let maximumAudioOracleProgressGap: TimeInterval = 1.5
@@ -74,6 +75,15 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
     override func setUp() {
         super.setUp()
         continueAfterFailure = false
+        let requestedBundleIdentifier = ProcessInfo.processInfo.environment[
+            "OPENSTEAMER_EXPECTED_APP_BUNDLE_IDENTIFIER"
+        ]?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? Self.sideBySideAppBundleIdentifier
+        XCTAssertEqual(
+            requestedBundleIdentifier,
+            Self.sideBySideAppBundleIdentifier,
+            "Physical TestFlight validation is restricted to the isolated side-by-side app."
+        )
     }
 
     /// Pre-update evidence for the production build that originally exhibited the regression.

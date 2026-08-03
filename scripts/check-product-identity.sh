@@ -13,7 +13,7 @@ fi
 ROOT="$(cd "$REPOSITORY" && pwd -P)"
 FAILURES=0
 EXPECTED_IOS_TARGETS=$'opensteamer\nopensteamerTests\nopensteamerUITests'
-EXPECTED_SCHEME_FILES=$'opensteamer.xcscheme\nopensteamerUITests.xcscheme'
+EXPECTED_SCHEME_FILES=$'opensteamer.xcscheme\nopensteamerTestFlight.xcscheme\nopensteamerUITests.xcscheme'
 
 fail() {
   print -u2 -r -- "product identity check failed: $1"
@@ -196,6 +196,10 @@ fi
 
 PROJECT_YML='iOS/opensteamer/project.yml'
 if require_file "$PROJECT_YML"; then
+  assert_literal_count \
+    "$PROJECT_YML" \
+    'postGenCommand: /bin/zsh scripts/restore-archive-only-testflight-scheme.sh' 1 \
+    'project.yml archive-only TestFlight scheme restoration hook'
   # Target names are the product names. An override can silently rename only one configuration,
   # so the authoritative XcodeGen source must continue to inherit its exact target identities.
   assert_literal_count \
@@ -271,6 +275,7 @@ if require_file "$PROJECT_YML"; then
     in_targets && /^      configs:[[:space:]]*$/ { scope = ""; next }
     in_targets && /^        Debug:[[:space:]]*$/ { scope = "Debug"; next }
     in_targets && /^        Release:[[:space:]]*$/ { scope = "Release"; next }
+    in_targets && /^        TestFlight:[[:space:]]*$/ { scope = "TestFlight"; next }
     in_targets && /PRODUCT_BUNDLE_IDENTIFIER:[[:space:]]*/ {
       value = $0
       sub(/^.*PRODUCT_BUNDLE_IDENTIFIER:[[:space:]]*/, "", value)
@@ -280,6 +285,7 @@ if require_file "$PROJECT_YML"; then
   EXPECTED_XCODEGEN_BUNDLE_ID_MAPPINGS=$(printf '%s\n' \
     'opensteamer|Debug|org.example.AudioStreamer.dev' \
     'opensteamer|Release|com.elamin.AudioStreamer' \
+    'opensteamer|TestFlight|com.elamin.opensteamer' \
     'opensteamerTests|base|org.example.AudioStreamerTests' \
     'opensteamerUITests|base|org.example.AudioStreamerUITests' \
     | LC_ALL=C sort)
@@ -394,7 +400,7 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
         const configuration = buildConfigurations.get(entryID);
         if (!configuration) throw new Error(`missing configuration ${entryID} for ${name}`);
         const configurationName = setting(configuration.body, "name");
-        if (configurationName !== "Debug" && configurationName !== "Release") {
+        if (!["Debug", "Release", "TestFlight"].includes(configurationName)) {
           throw new Error(`unexpected configuration ${configurationName} for ${name}`);
         }
         if (configurationNames.has(configurationName)) {
@@ -404,7 +410,7 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
         const bundleID = setting(configuration.body, "PRODUCT_BUNDLE_IDENTIFIER");
         lines.push(`build|${name}|${configurationName}|${bundleID}`);
       }
-      if (entryIDs.length !== 2 || configurationNames.size !== 2) {
+      if (entryIDs.length !== 3 || configurationNames.size !== 3) {
         throw new Error(`wrong configuration set for ${name}`);
       }
     }
@@ -429,10 +435,13 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
     EXPECTED_PBX_BUILD_CONTRACTS=$(printf '%s\n' \
       'build|opensteamer|Debug|org.example.AudioStreamer.dev' \
       'build|opensteamer|Release|com.elamin.AudioStreamer' \
+      'build|opensteamer|TestFlight|com.elamin.opensteamer' \
       'build|opensteamerTests|Debug|org.example.AudioStreamerTests' \
       'build|opensteamerTests|Release|org.example.AudioStreamerTests' \
+      'build|opensteamerTests|TestFlight|org.example.AudioStreamerTests' \
       'build|opensteamerUITests|Debug|org.example.AudioStreamerUITests' \
       'build|opensteamerUITests|Release|org.example.AudioStreamerUITests' \
+      'build|opensteamerUITests|TestFlight|org.example.AudioStreamerUITests' \
       | LC_ALL=C sort)
     assert_equal \
       "generated Xcode target/configuration bundle-ID mapping" \
@@ -453,13 +462,13 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
       || fail "could not resolve exactly one generated UI-test target ID"
   fi
 
-  # XcodeGen emits one project-level Debug and Release fallback. Target configurations must not
+  # XcodeGen emits one project-level fallback for each configuration. Target configurations must not
   # override it; together with the target-name mapping above this proves the effective product,
   # wrapper, and executable names in both configurations.
   assert_literal_count \
-    "$PBX_PROJECT" 'PRODUCT_NAME = ' 2 'generated Xcode product-name setting count'
+    "$PBX_PROJECT" 'PRODUCT_NAME = ' 3 'generated Xcode product-name setting count'
   assert_literal_count \
-    "$PBX_PROJECT" 'PRODUCT_NAME = "$(TARGET_NAME)";' 2 \
+    "$PBX_PROJECT" 'PRODUCT_NAME = "$(TARGET_NAME)";' 3 \
     'generated Xcode inherited product-name defaults'
 fi
 
@@ -488,7 +497,7 @@ if require_directory "$SCHEME_DIRECTORY"; then
     -exec basename {} \; | LC_ALL=C sort)
   assert_equal "shared Xcode scheme filename set" "$EXPECTED_SCHEME_FILES" "$SCHEME_FILES"
 
-  for scheme in opensteamer.xcscheme opensteamerUITests.xcscheme; do
+  for scheme in opensteamer.xcscheme opensteamerTestFlight.xcscheme opensteamerUITests.xcscheme; do
     if [[ -f "$ROOT/$SCHEME_DIRECTORY/$scheme" ]] \
       && ! xmllint --noout "$ROOT/$SCHEME_DIRECTORY/$scheme" >/dev/null 2>&1; then
       fail "shared Xcode scheme is not valid XML: $scheme"
@@ -511,6 +520,54 @@ if require_directory "$SCHEME_DIRECTORY"; then
     fi
   fi
 
+  TESTFLIGHT_SCHEME="$ROOT/$SCHEME_DIRECTORY/opensteamerTestFlight.xcscheme"
+  if [[ -f "$TESTFLIGHT_SCHEME" ]]; then
+    if ! TESTFLIGHT_SCHEME_CONTRACTS=$(scheme_contracts "$TESTFLIGHT_SCHEME"); then
+      fail "could not parse opensteamerTestFlight scheme buildable mappings"
+    else
+      assert_equal \
+        "opensteamerTestFlight scheme buildable/blueprint/project mapping" \
+        "$APP_TARGET_ID|opensteamer.app|opensteamer|container:opensteamer.xcodeproj" \
+        "$TESTFLIGHT_SCHEME_CONTRACTS"
+    fi
+    TESTFLIGHT_ARCHIVE_CONFIG=$(xmllint --xpath \
+      'string(/Scheme/ArchiveAction/@buildConfiguration)' "$TESTFLIGHT_SCHEME" 2>/dev/null)
+    assert_equal \
+      "opensteamerTestFlight archive configuration" \
+      TestFlight \
+      "$TESTFLIGHT_ARCHIVE_CONFIG"
+    TESTFLIGHT_BUILD_FLAGS=$(xmllint --xpath \
+      'concat(string(/Scheme/BuildAction/BuildActionEntries/BuildActionEntry/@buildForTesting), "|", string(/Scheme/BuildAction/BuildActionEntries/BuildActionEntry/@buildForRunning), "|", string(/Scheme/BuildAction/BuildActionEntries/BuildActionEntry/@buildForProfiling), "|", string(/Scheme/BuildAction/BuildActionEntries/BuildActionEntry/@buildForArchiving), "|", string(/Scheme/BuildAction/BuildActionEntries/BuildActionEntry/@buildForAnalyzing))' \
+      "$TESTFLIGHT_SCHEME" 2>/dev/null)
+    assert_equal \
+      "opensteamerTestFlight archive-only build flags" \
+      'NO|NO|NO|YES|NO' \
+      "$TESTFLIGHT_BUILD_FLAGS"
+    TESTFLIGHT_NONARCHIVE_ACTION_COUNT=$(xmllint --xpath \
+      'count(/Scheme/TestAction | /Scheme/LaunchAction | /Scheme/ProfileAction | /Scheme/AnalyzeAction)' \
+      "$TESTFLIGHT_SCHEME" 2>/dev/null)
+    assert_equal \
+      "opensteamerTestFlight non-archive action count" \
+      0 \
+      "$TESTFLIGHT_NONARCHIVE_ACTION_COUNT"
+  fi
+
+  TESTFLIGHT_SCHEME_SOURCE='iOS/opensteamer/TestFlightScheme/opensteamerTestFlight.xcscheme'
+  TESTFLIGHT_SCHEME_RESTORER='iOS/opensteamer/scripts/restore-archive-only-testflight-scheme.sh'
+  require_file "$TESTFLIGHT_SCHEME_SOURCE"
+  require_file "$TESTFLIGHT_SCHEME_RESTORER"
+  if [[ -f "$ROOT/$TESTFLIGHT_SCHEME_SOURCE" \
+      && -f "$TESTFLIGHT_SCHEME" ]] \
+      && ! cmp -s "$ROOT/$TESTFLIGHT_SCHEME_SOURCE" "$TESTFLIGHT_SCHEME"; then
+    fail 'generated TestFlight scheme differs from reviewed archive-only source'
+  fi
+  assert_literal_count "$TESTFLIGHT_SCHEME_RESTORER" \
+    'SOURCE_SCHEME="${PROJECT_DIR}/TestFlightScheme/opensteamerTestFlight.xcscheme"' 1 \
+    'archive-only TestFlight restorer source'
+  assert_literal_count "$TESTFLIGHT_SCHEME_RESTORER" \
+    'DESTINATION_SCHEME="${PROJECT_DIR}/opensteamer.xcodeproj/xcshareddata/xcschemes/opensteamerTestFlight.xcscheme"' 1 \
+    'archive-only TestFlight restorer destination'
+
   UI_SCHEME="$ROOT/$SCHEME_DIRECTORY/opensteamerUITests.xcscheme"
   if [[ -f "$UI_SCHEME" ]]; then
     if ! UI_SCHEME_CONTRACTS=$(scheme_contracts "$UI_SCHEME"); then
@@ -523,6 +580,49 @@ if require_directory "$SCHEME_DIRECTORY"; then
     fi
   fi
 fi
+
+SIDE_BY_SIDE_TESTFLIGHT_SCRIPT='iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh'
+require_file "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT"
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_BUNDLE_IDENTIFIER="com.elamin.opensteamer"' 1 \
+  'side-by-side TestFlight expected bundle guard'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'PROTECTED_BUNDLE_IDENTIFIER="com.elamin.AudioStreamer"' 1 \
+  'side-by-side TestFlight protected bundle rejection guard'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_SCHEME="opensteamerTestFlight"' 1 \
+  'side-by-side TestFlight scheme guard'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_CONFIGURATION="TestFlight"' 1 \
+  'side-by-side TestFlight configuration guard'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_BUILD_NUMBER="37"' 1 \
+  'side-by-side TestFlight build-number guard'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'PRIVATE_TEMPORARY_ROOT="/private/tmp"' 1 \
+  'side-by-side TestFlight fixed temporary root'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TMPDIR' 0 \
+  'side-by-side TestFlight caller-controlled temporary root rejection'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'require_new_output_directory' 0 \
+  'side-by-side TestFlight caller-controlled output path rejection'
+
+SIDE_BY_SIDE_EXPORT_OPTIONS='iOS/opensteamer/TestFlightExportOptions.plist'
+assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" destination upload \
+  'side-by-side TestFlight export destination'
+assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" method app-store-connect \
+  'side-by-side TestFlight export method'
+assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" signingStyle automatic \
+  'side-by-side TestFlight export signing style'
+assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" teamID MSMG8CJLB3 \
+  'side-by-side TestFlight export team'
+assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" manageAppVersionAndBuildNumber false \
+  'side-by-side TestFlight fixed build-number policy'
+assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" testFlightInternalTestingOnly true \
+  'side-by-side TestFlight internal-only policy'
+assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" uploadSymbols true \
+  'side-by-side TestFlight symbol upload policy'
 
 assert_plist_value iOS/opensteamer/Sources/Support/Info.plist \
   CFBundleDisplayName opensteamer 'iOS CFBundleDisplayName lowercase identity'

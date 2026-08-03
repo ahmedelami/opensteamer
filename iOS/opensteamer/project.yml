@@ -3,6 +3,15 @@ options:
   minimumXcodeGenVersion: 2.45.0
   deploymentTarget:
     iOS: "17.0"
+  # XcodeGen 2.45 emits runnable actions even when a top-level scheme declares only archive.
+  # Restore the reviewed archive-only scheme after every regeneration.
+  postGenCommand: /bin/zsh scripts/restore-archive-only-testflight-scheme.sh
+configs:
+  Debug: debug
+  Release: release
+  # Archive-only side-by-side distribution. The existing Release configuration intentionally
+  # retains the protected com.elamin.AudioStreamer identity and is not used by this path.
+  TestFlight: release
 packages:
   opensteamer:
     path: ../..
@@ -48,12 +57,22 @@ targets:
           # stable because the install-over-update oracle addresses the same development container.
           PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev
         Release:
-          # App Store Connect/TestFlight production identity. Legacy Keychain service and
-          # protocol literals remain org.example.AudioStreamer compatibility data.
+          # Protected production identity retained solely for legacy compatibility. The guarded
+          # side-by-side TestFlight path below must never archive this configuration.
           PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer
           DEVELOPMENT_TEAM: MSMG8CJLB3
           CURRENT_PROJECT_VERSION: 36
           CODE_SIGN_STYLE: Automatic
+          OPENSTEAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
+          AUDIOSTREAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
+        TestFlight:
+          # This identity must remain distinct from the protected production app so installing a
+          # TestFlight build cannot replace its app container or binary.
+          PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer
+          DEVELOPMENT_TEAM: MSMG8CJLB3
+          CURRENT_PROJECT_VERSION: 37
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "Apple Distribution"
           OPENSTEAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
           AUDIOSTREAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
     scheme:

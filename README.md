@@ -99,7 +99,8 @@ The authoritative values for the maintainer build are:
 
 | Configuration field | Checked-in value |
 | --- | --- |
-| Production bundle | <code>com.elamin.AudioStreamer</code> |
+| Protected legacy Release bundle | <code>com.elamin.AudioStreamer</code>, build `36` |
+| Side-by-side TestFlight bundle | <code>com.elamin.opensteamer</code>, build `37` |
 | Development team | `MSMG8CJLB3` |
 | Marketing version / build | `0.1.0` / `36` |
 | Release rendezvous | Both `OPENSTEAMER_RENDEZVOUS_URL` and compatibility `AUDIOSTREAMER_RENDEZVOUS_URL` use the production WSS Worker origin declared in [`project.yml`](iOS/opensteamer/project.yml) |
@@ -111,31 +112,33 @@ Clients append `/v1/rendezvous` and `/v2/availability` to the configured origin.
 `iOS/opensteamer/project.yml` is authoritative, and the generated
 `opensteamer.xcodeproj/project.pbxproj` must remain XcodeGen-equivalent. The Release target
 declares `ProvisioningStyle = Automatic` and `CODE_SIGN_STYLE = Automatic`. The authoritative
-project file does not pin `CODE_SIGN_IDENTITY` or `PROVISIONING_PROFILE_SPECIFIER`.
-`ExportOptions.plist` likewise uses automatic signing and contains no provisioning-profile map
-or signing-certificate selector. It keeps upload destination, team `MSMG8CJLB3`, build-number
-management disabled, and internal-only TestFlight export enabled.
+Release configuration does not pin `CODE_SIGN_IDENTITY` or `PROVISIONING_PROFILE_SPECIFIER`.
+The separate `TestFlight` configuration and `TestFlightExportOptions.plist` use automatic
+signing for `com.elamin.opensteamer`, contain no provisioning-profile map, disable automatic
+build-number management, and limit the upload to internal TestFlight testing.
 
-A validated archive completed without `-allowProvisioningUpdates`. Xcode development-signed the
-archive, and the automatic App Store export selected the current distribution assets and re-signed
-the IPA with Apple Distribution. That two-stage signing is expected. Do not copy the observed
-profile UUID or name into the repository.
+XcodeGen 2.45 synthesizes runnable actions for top-level schemes even when only archive was
+declared. The checked-in post-generation helper therefore restores the reviewed archive-only
+`opensteamerTestFlight` scheme after every project regeneration. Identity checks fail if the
+generated scheme and reviewed source differ.
 
-From `iOS/opensteamer`, the operator flow is:
+Historical protected-Release evidence: build 36 previously archived without
+`-allowProvisioningUpdates`; Xcode development-signed that archive and its automatic App Store
+export selected the current distribution assets and re-signed the IPA with Apple Distribution.
+That evidence does not validate the separate `com.elamin.opensteamer` TestFlight path. Do not copy
+the observed profile UUID or name into the repository.
+
+From `iOS/opensteamer`, the guarded side-by-side operator flow is:
 
 ```sh
 xcodegen generate
-xcodebuild -project opensteamer.xcodeproj \
-  -scheme opensteamer \
-  -configuration Release \
-  -destination 'generic/platform=iOS' \
-  -archivePath "$PWD/build/opensteamer.xcarchive" \
-  archive
-xcodebuild -exportArchive \
-  -archivePath "$PWD/build/opensteamer.xcarchive" \
-  -exportPath "$PWD/build/export" \
-  -exportOptionsPlist ExportOptions.plist
+scripts/archive-upload-side-by-side-testflight.sh --verify-config-only
+scripts/archive-upload-side-by-side-testflight.sh --upload-authorized-side-by-side-testflight
 ```
+
+The upload flag is an explicit release action. The helper accepts no caller-controlled identity,
+scheme, configuration, or output path, and verifies the completed archive before export. Never
+use the protected `Release` configuration for this side-by-side TestFlight deployment.
 
 The signing machine must already have access to the maintainer's Apple account and local signing
 assets. None of those credentials are stored in the repository.
@@ -156,9 +159,10 @@ xcodegen generate
 open opensteamer.xcodeproj
 ```
 
-Regeneration should leave the checked-in project unchanged. The endpoint-free Debug bundle is for
-development and physical tests; it cannot replace the production app container. Use the Release
-flow above, and do not override its automatic signing contract with manual signing flags.
+Regeneration should leave the checked-in project unchanged, including restoration of the reviewed
+archive-only TestFlight scheme. The endpoint-free Debug bundle is for development and simulator
+tests. Use the guarded side-by-side flow above for TestFlight, and do not override its automatic
+signing contract with manual signing flags.
 
 Build the signed Mac host from the repository root:
 

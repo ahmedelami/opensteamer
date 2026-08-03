@@ -13,6 +13,8 @@ mkdir -p \
   "$BASELINE/iOS/opensteamer/Sources/App" \
   "$BASELINE/iOS/opensteamer/Sources/Support" \
   "$BASELINE/iOS/opensteamer/Sources/Views" \
+  "$BASELINE/iOS/opensteamer/TestFlightScheme" \
+  "$BASELINE/iOS/opensteamer/scripts" \
   "$BASELINE/iOS/opensteamer/opensteamer.xcodeproj/xcshareddata/xcschemes" \
   "$BASELINE/macOS/OpensteamerHost" \
   "$BASELINE/macOS/scripts" \
@@ -35,6 +37,12 @@ print -r -- '# opensteamer
 Identity regression fixture.' >"$BASELINE/README.md"
 
 print -r -- 'name: opensteamer
+options:
+  postGenCommand: /bin/zsh scripts/restore-archive-only-testflight-scheme.sh
+configs:
+  Debug: debug
+  Release: release
+  TestFlight: release
 packages:
   opensteamer:
     path: ../..
@@ -49,6 +57,8 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer
+        TestFlight:
+          PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer
   opensteamerTests:
     type: bundle.unit-test
     settings:
@@ -141,6 +151,27 @@ print -r -- '// !$*UTF8*$!
       };
       name = Release;
     };
+    B7 /* TestFlight */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        PRODUCT_BUNDLE_IDENTIFIER = com.elamin.opensteamer;
+      };
+      name = TestFlight;
+    };
+    B8 /* TestFlight */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamerTests;
+      };
+      name = TestFlight;
+    };
+    B9 /* TestFlight */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamerUITests;
+      };
+      name = TestFlight;
+    };
     F1 /* Debug */ = {
       isa = XCBuildConfiguration;
       buildSettings = {
@@ -155,6 +186,13 @@ print -r -- '// !$*UTF8*$!
       };
       name = Release;
     };
+    F3 /* TestFlight */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        PRODUCT_NAME = "$(TARGET_NAME)";
+      };
+      name = TestFlight;
+    };
 /* End XCBuildConfiguration section */
 /* Begin XCConfigurationList section */
     D1 /* Build configuration list for PBXNativeTarget "opensteamer" */ = {
@@ -162,6 +200,7 @@ print -r -- '// !$*UTF8*$!
       buildConfigurations = (
         B1 /* Debug */,
         B2 /* Release */,
+        B7 /* TestFlight */,
       );
     };
     D2 /* Build configuration list for PBXNativeTarget "opensteamerTests" */ = {
@@ -169,6 +208,7 @@ print -r -- '// !$*UTF8*$!
       buildConfigurations = (
         B3 /* Debug */,
         B4 /* Release */,
+        B8 /* TestFlight */,
       );
     };
     D3 /* Build configuration list for PBXNativeTarget "opensteamerUITests" */ = {
@@ -176,6 +216,7 @@ print -r -- '// !$*UTF8*$!
       buildConfigurations = (
         B5 /* Debug */,
         B6 /* Release */,
+        B9 /* TestFlight */,
       );
     };
 /* End XCConfigurationList section */
@@ -193,6 +234,45 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <Scheme>
   <BuildableReference BuildableName="opensteamerUITests.xctest" BlueprintName="opensteamerUITests" BlueprintIdentifier="A3" ReferencedContainer="container:opensteamer.xcodeproj"/>
 </Scheme>' >"$BASELINE/iOS/opensteamer/opensteamer.xcodeproj/xcshareddata/xcschemes/opensteamerUITests.xcscheme"
+print -r -- '<?xml version="1.0" encoding="UTF-8"?>
+<Scheme>
+  <BuildAction>
+    <BuildActionEntries>
+      <BuildActionEntry buildForTesting="NO" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="YES" buildForAnalyzing="NO">
+        <BuildableReference BuildableName="opensteamer.app" BlueprintName="opensteamer" BlueprintIdentifier="A1" ReferencedContainer="container:opensteamer.xcodeproj"/>
+      </BuildActionEntry>
+    </BuildActionEntries>
+  </BuildAction>
+  <ArchiveAction buildConfiguration="TestFlight"/>
+</Scheme>' >"$BASELINE/iOS/opensteamer/opensteamer.xcodeproj/xcshareddata/xcschemes/opensteamerTestFlight.xcscheme"
+cp \
+  "$BASELINE/iOS/opensteamer/opensteamer.xcodeproj/xcshareddata/xcschemes/opensteamerTestFlight.xcscheme" \
+  "$BASELINE/iOS/opensteamer/TestFlightScheme/opensteamerTestFlight.xcscheme"
+
+print -r -- '#!/bin/zsh
+readonly SOURCE_SCHEME="${PROJECT_DIR}/TestFlightScheme/opensteamerTestFlight.xcscheme"
+readonly DESTINATION_SCHEME="${PROJECT_DIR}/opensteamer.xcodeproj/xcshareddata/xcschemes/opensteamerTestFlight.xcscheme"' \
+  >"$BASELINE/iOS/opensteamer/scripts/restore-archive-only-testflight-scheme.sh"
+
+print -r -- '#!/bin/zsh
+readonly EXPECTED_BUNDLE_IDENTIFIER="com.elamin.opensteamer"
+readonly PROTECTED_BUNDLE_IDENTIFIER="com.elamin.AudioStreamer"
+readonly EXPECTED_SCHEME="opensteamerTestFlight"
+readonly EXPECTED_CONFIGURATION="TestFlight"
+readonly EXPECTED_BUILD_NUMBER="37"
+readonly PRIVATE_TEMPORARY_ROOT="/private/tmp"' \
+  >"$BASELINE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh"
+print -r -- '<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>destination</key><string>upload</string>
+<key>manageAppVersionAndBuildNumber</key><false/>
+<key>method</key><string>app-store-connect</string>
+<key>signingStyle</key><string>automatic</string>
+<key>teamID</key><string>MSMG8CJLB3</string>
+<key>testFlightInternalTestingOnly</key><true/>
+<key>uploadSymbols</key><true/>
+</dict></plist>' >"$BASELINE/iOS/opensteamer/TestFlightExportOptions.plist"
 
 print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -319,6 +399,12 @@ replace_once "$CASE/iOS/opensteamer/project.yml" \
   $'  opensteamerTests:\n' $'  opensteamerUnitTests:\n'
 require_rejection "$CASE" 'project.yml targets'
 
+CASE=$(new_case project-testflight-postgen-hook)
+replace_once "$CASE/iOS/opensteamer/project.yml" \
+  'postGenCommand: /bin/zsh scripts/restore-archive-only-testflight-scheme.sh' \
+  'postGenCommand: /bin/true'
+require_rejection "$CASE" 'project.yml archive-only TestFlight scheme restoration hook'
+
 CASE=$(new_case project-target-product-type)
 replace_once "$CASE/iOS/opensteamer/project.yml" \
   'type: application' 'type: bundle.unit-test'
@@ -340,6 +426,12 @@ CASE=$(new_case project-release-bundle-id)
 replace_once "$CASE/iOS/opensteamer/project.yml" \
   'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer' \
   'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer'
+require_rejection "$CASE" 'project.yml target/configuration bundle-ID mapping'
+
+CASE=$(new_case project-testflight-bundle-id)
+replace_once "$CASE/iOS/opensteamer/project.yml" \
+  'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer' \
+  'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer'
 require_rejection "$CASE" 'project.yml target/configuration bundle-ID mapping'
 
 CASE=$(new_case project-unit-test-bundle-id)
@@ -365,6 +457,24 @@ replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
   'PRODUCT_BUNDLE_IDENTIFIER = com.elamin.AudioStreamer;' \
   'PRODUCT_BUNDLE_IDENTIFIER = com.elamin.opensteamer;'
 require_rejection "$CASE" 'generated Xcode target/configuration bundle-ID mapping'
+
+CASE=$(new_case generated-project-testflight-bundle-id)
+replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
+  'PRODUCT_BUNDLE_IDENTIFIER = com.elamin.opensteamer;' \
+  'PRODUCT_BUNDLE_IDENTIFIER = com.elamin.AudioStreamer;'
+require_rejection "$CASE" 'generated Xcode target/configuration bundle-ID mapping'
+
+CASE=$(new_case testflight-temporary-root)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'PRIVATE_TEMPORARY_ROOT="/private/tmp"' \
+  'PRIVATE_TEMPORARY_ROOT="/Applications/AudioStreamer Host.app"'
+require_rejection "$CASE" 'side-by-side TestFlight fixed temporary root'
+
+CASE=$(new_case testflight-export-build-number-management)
+replace_once "$CASE/iOS/opensteamer/TestFlightExportOptions.plist" \
+  '<key>manageAppVersionAndBuildNumber</key><false/>' \
+  '<key>manageAppVersionAndBuildNumber</key><true/>'
+require_rejection "$CASE" 'side-by-side TestFlight fixed build-number policy'
 
 CASE=$(new_case generated-project-unit-test-bundle-id)
 replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
@@ -422,6 +532,44 @@ CASE=$(new_case scheme-blueprint-identifier)
 replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/xcshareddata/xcschemes/opensteamer.xcscheme" \
   'BlueprintIdentifier="A1"' 'BlueprintIdentifier="A2"'
 require_rejection "$CASE" 'opensteamer scheme buildable/blueprint/project mapping'
+
+CASE=$(new_case testflight-reviewed-scheme-drift)
+replace_once "$CASE/iOS/opensteamer/TestFlightScheme/opensteamerTestFlight.xcscheme" \
+  'buildForRunning="NO"' 'buildForRunning="YES"'
+require_rejection "$CASE" 'generated TestFlight scheme differs from reviewed archive-only source'
+
+CASE=$(new_case testflight-restorer-destination)
+replace_once "$CASE/iOS/opensteamer/scripts/restore-archive-only-testflight-scheme.sh" \
+  'DESTINATION_SCHEME="${PROJECT_DIR}/opensteamer.xcodeproj/xcshareddata/xcschemes/opensteamerTestFlight.xcscheme"' \
+  'DESTINATION_SCHEME="${PROJECT_DIR}/opensteamer.xcodeproj/xcshareddata/xcschemes/opensteamer.xcscheme"'
+require_rejection "$CASE" 'archive-only TestFlight restorer destination'
+
+# The real post-generation helper must reject an existing destination symlink without following
+# it. This exercises the filesystem boundary directly instead of relying only on source inspection.
+RESTORER_CASE="$TEMPORARY_ROOT/testflight-restorer-symlink"
+RESTORER_PROJECT="$RESTORER_CASE/iOS/opensteamer"
+mkdir -p \
+  "$RESTORER_PROJECT/TestFlightScheme" \
+  "$RESTORER_PROJECT/scripts" \
+  "$RESTORER_PROJECT/opensteamer.xcodeproj/xcshareddata/xcschemes"
+cp "$ROOT_DIR/iOS/opensteamer/TestFlightScheme/opensteamerTestFlight.xcscheme" \
+  "$RESTORER_PROJECT/TestFlightScheme/opensteamerTestFlight.xcscheme"
+cp "$ROOT_DIR/iOS/opensteamer/scripts/restore-archive-only-testflight-scheme.sh" \
+  "$RESTORER_PROJECT/scripts/restore-archive-only-testflight-scheme.sh"
+chmod 755 "$RESTORER_PROJECT/scripts/restore-archive-only-testflight-scheme.sh"
+RESTORER_SENTINEL="$RESTORER_CASE/protected-sentinel"
+print -r -- 'must remain unchanged' >"$RESTORER_SENTINEL"
+ln -s "$RESTORER_SENTINEL" \
+  "$RESTORER_PROJECT/opensteamer.xcodeproj/xcshareddata/xcschemes/opensteamerTestFlight.xcscheme"
+if "$RESTORER_PROJECT/scripts/restore-archive-only-testflight-scheme.sh" \
+    >"$RESTORER_CASE/restorer.log" 2>&1; then
+  print -u2 -r -- 'archive-only TestFlight restorer unexpectedly followed a destination symlink'
+  exit 1
+fi
+if [[ "$(<"$RESTORER_SENTINEL")" != 'must remain unchanged' ]]; then
+  print -u2 -r -- 'archive-only TestFlight restorer modified the destination symlink target'
+  exit 1
+fi
 
 CASE=$(new_case visible-navigation-title)
 replace_once "$CASE/iOS/opensteamer/Sources/Views/BrowserView.swift" \

@@ -2066,28 +2066,29 @@ final class PhysicalValidationScriptTests: XCTestCase {
             let runnerURL = temporaryDirectory.appendingPathComponent("validate.zsh")
             try """
             set -eu
+            EXPECTED_APP_BUNDLE_IDENTIFIER=com.elamin.opensteamer
             \(functionSource)
             validate_production_app_termination_json "$1" "$2"
             """.write(to: runnerURL, atomically: true, encoding: .utf8)
 
             let fixtures: [(name: String, json: String, shouldPass: Bool)] = [
-                ("same-object", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"processIdentifier":4242,"bundleIdentifier":"com.elamin.AudioStreamer"}}}"#, true),
+                ("same-object", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"processIdentifier":4242,"bundleIdentifier":"com.elamin.opensteamer"}}}"#, true),
                 ("empty-result", #"{"info":{"outcome":"success"},"result":{}}"#, false),
                 ("pid-only", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"processIdentifier":4242}}}"#, false),
-                ("bundle-only", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"bundleIdentifier":"com.elamin.AudioStreamer"}}}"#, false),
-                ("split-identity", #"{"info":{"outcome":"success"},"result":{"records":[{"processIdentifier":4242},{"bundleIdentifier":"com.elamin.AudioStreamer"}]}}"#, false),
+                ("bundle-only", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"bundleIdentifier":"com.elamin.opensteamer"}}}"#, false),
+                ("split-identity", #"{"info":{"outcome":"success"},"result":{"records":[{"processIdentifier":4242},{"bundleIdentifier":"com.elamin.opensteamer"}]}}"#, false),
                 ("malformed", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"processIdentifier":"4242","bundleIdentifier":17}}}"#, false),
-                ("conflicting-pid-alias", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"processIdentifier":4242,"pid":4243,"bundleIdentifier":"com.elamin.AudioStreamer"}}}"#, false),
-                ("conflicting-bundle-alias", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"processIdentifier":4242,"bundleIdentifier":"com.elamin.AudioStreamer","bundleID":"com.elamin.NotAudioStreamer"}}}"#, false),
-                ("malformed-secondary-pid-alias", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"processIdentifier":4242,"pid":"4242","bundleIdentifier":"com.elamin.AudioStreamer"}}}"#, false),
-                ("malformed-secondary-bundle-alias", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"processIdentifier":4242,"bundleIdentifier":"com.elamin.AudioStreamer","bundleID":17}}}"#, false),
-                ("exact-plus-conflicting-candidate", #"{"info":{"outcome":"success"},"result":{"records":[{"processIdentifier":4242,"bundleIdentifier":"com.elamin.AudioStreamer"},{"processIdentifier":4242,"pid":4243,"bundleIdentifier":"com.elamin.AudioStreamer"}]}}"#, false),
-                ("exact-target-plus-wrong-bundle", #"{"info":{"outcome":"success"},"result":{"records":[{"processIdentifier":4242,"bundleIdentifier":"com.elamin.AudioStreamer"},{"processIdentifier":4242,"bundleIdentifier":"com.example.Helper"}]}}"#, false),
-                ("exact-target-plus-wrong-pid", #"{"info":{"outcome":"success"},"result":{"records":[{"processIdentifier":4242,"bundleIdentifier":"com.elamin.AudioStreamer"},{"processIdentifier":777,"bundleIdentifier":"com.elamin.AudioStreamer"}]}}"#, false),
-                ("exact-target-plus-pid-only", #"{"info":{"outcome":"success"},"result":{"records":[{"processIdentifier":4242,"bundleIdentifier":"com.elamin.AudioStreamer"},{"processIdentifier":4242}]}}"#, false),
-                ("exact-target-plus-bundle-only", #"{"info":{"outcome":"success"},"result":{"records":[{"processIdentifier":4242,"bundleIdentifier":"com.elamin.AudioStreamer"},{"bundleIdentifier":"com.elamin.AudioStreamer"}]}}"#, false),
-                ("unrelated-record", #"{"info":{"outcome":"success"},"result":{"records":[{"processIdentifier":4242,"bundleIdentifier":"com.elamin.AudioStreamer"},{"processIdentifier":777,"bundleIdentifier":"com.example.Helper"}]}}"#, true),
-                ("wrong-pid", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"processIdentifier":4243,"bundleIdentifier":"com.elamin.AudioStreamer"}}}"#, false),
+                ("conflicting-pid-alias", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"processIdentifier":4242,"pid":4243,"bundleIdentifier":"com.elamin.opensteamer"}}}"#, false),
+                ("conflicting-bundle-alias", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"processIdentifier":4242,"bundleIdentifier":"com.elamin.opensteamer","bundleID":"com.elamin.NotAudioStreamer"}}}"#, false),
+                ("malformed-secondary-pid-alias", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"processIdentifier":4242,"pid":"4242","bundleIdentifier":"com.elamin.opensteamer"}}}"#, false),
+                ("malformed-secondary-bundle-alias", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"processIdentifier":4242,"bundleIdentifier":"com.elamin.opensteamer","bundleID":17}}}"#, false),
+                ("exact-plus-conflicting-candidate", #"{"info":{"outcome":"success"},"result":{"records":[{"processIdentifier":4242,"bundleIdentifier":"com.elamin.opensteamer"},{"processIdentifier":4242,"pid":4243,"bundleIdentifier":"com.elamin.opensteamer"}]}}"#, false),
+                ("exact-target-plus-wrong-bundle", #"{"info":{"outcome":"success"},"result":{"records":[{"processIdentifier":4242,"bundleIdentifier":"com.elamin.opensteamer"},{"processIdentifier":4242,"bundleIdentifier":"com.example.Helper"}]}}"#, false),
+                ("exact-target-plus-wrong-pid", #"{"info":{"outcome":"success"},"result":{"records":[{"processIdentifier":4242,"bundleIdentifier":"com.elamin.opensteamer"},{"processIdentifier":777,"bundleIdentifier":"com.elamin.opensteamer"}]}}"#, false),
+                ("exact-target-plus-pid-only", #"{"info":{"outcome":"success"},"result":{"records":[{"processIdentifier":4242,"bundleIdentifier":"com.elamin.opensteamer"},{"processIdentifier":4242}]}}"#, false),
+                ("exact-target-plus-bundle-only", #"{"info":{"outcome":"success"},"result":{"records":[{"processIdentifier":4242,"bundleIdentifier":"com.elamin.opensteamer"},{"bundleIdentifier":"com.elamin.opensteamer"}]}}"#, false),
+                ("unrelated-record", #"{"info":{"outcome":"success"},"result":{"records":[{"processIdentifier":4242,"bundleIdentifier":"com.elamin.opensteamer"},{"processIdentifier":777,"bundleIdentifier":"com.example.Helper"}]}}"#, true),
+                ("wrong-pid", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"processIdentifier":4243,"bundleIdentifier":"com.elamin.opensteamer"}}}"#, false),
                 ("wrong-bundle", #"{"info":{"outcome":"success"},"result":{"terminationResult":{"processIdentifier":4242,"bundleIdentifier":"com.elamin.NotAudioStreamer"}}}"#, false),
             ]
 
@@ -2138,6 +2139,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             let inventoryRunnerURL = temporaryDirectory.appendingPathComponent("inventory.zsh")
             try """
             set -u
+            EXPECTED_APP_BUNDLE_IDENTIFIER=com.elamin.opensteamer
             \(inventoryFunctionSource)
             if ! result=$(production_app_pid_from_process_json "$1" "$2"); then
               exit 1
@@ -2147,7 +2149,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             """.write(to: inventoryRunnerURL, atomically: true, encoding: .utf8)
 
             let candidateURL = temporaryDirectory.appendingPathComponent("candidate.json")
-            try #"{"bundleIdentifier":"com.elamin.AudioStreamer","bundleURL":"file:///Applications/opensteamer.app"}"#.write(to: candidateURL, atomically: true, encoding: .utf8)
+            try #"{"bundleIdentifier":"com.elamin.opensteamer","bundleURL":"file:///Applications/opensteamer.app"}"#.write(to: candidateURL, atomically: true, encoding: .utf8)
             let emptyResult = #"{"info":{"outcome":"success"},"result":{}}"#
             let missingCollection = #"{"info":{"outcome":"success"},"result":{"devices":[{"identifier":"device","applications":[]}]}}"#
             let inventoryFixtures: [(name: String, json: String, shouldPass: Bool)] = [
@@ -2206,7 +2208,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
         let candidate = try writeJSON(
             [
-                "bundleIdentifier": "com.elamin.AudioStreamer",
+                "bundleIdentifier": "com.elamin.opensteamer",
                 "bundleVersion": SyntheticPhysicalDevice.expectedBuild,
                 "name": "opensteamer",
                 "url":
@@ -2222,7 +2224,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
                     "runningProcesses": [
                         [
                             "processIdentifier": 4_242,
-                            "bundleIdentifier": "com.elamin.AudioStreamer",
+                            "bundleIdentifier": "com.elamin.opensteamer",
                             "name": "opensteamer",
                             "executable":
                                 "file:///private/var/containers/Bundle/Application/" +
@@ -2256,7 +2258,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
                     "runningProcesses": [
                         [
                             "processIdentifier": "not-a-pid",
-                            "bundleIdentifier": "com.elamin.AudioStreamer",
+                            "bundleIdentifier": "com.elamin.opensteamer",
                             "name": "opensteamer",
                         ],
                     ],
@@ -2271,12 +2273,12 @@ final class PhysicalValidationScriptTests: XCTestCase {
                     "runningProcesses": [
                         [
                             "processIdentifier": 4_242,
-                            "bundleIdentifier": "com.elamin.AudioStreamer",
+                            "bundleIdentifier": "com.elamin.opensteamer",
                             "name": "opensteamer",
                         ],
                         [
                             "processIdentifier": 4_243,
-                            "bundleIdentifier": "com.elamin.AudioStreamer",
+                            "bundleIdentifier": "com.elamin.opensteamer",
                             "name": "opensteamer",
                         ],
                     ],
@@ -2307,7 +2309,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 "info": ["outcome": "success"],
                 "result": [
                     "processIdentifier": 4_242,
-                    "bundleIdentifier": "com.elamin.AudioStreamer",
+                    "bundleIdentifier": "com.elamin.opensteamer",
                 ],
             ],
             name: "termination"

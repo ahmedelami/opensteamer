@@ -444,9 +444,24 @@ The production iOS app and the development Release target both use bundle
 identifier `com.elamin.AudioStreamer`. The physical iPhone was unavailable while
 this migration was prepared.
 
+A separate archive-only `TestFlight` configuration now uses bundle identifier
+`com.elamin.opensteamer`, build `37`, and the production rendezvous endpoint.
+Its guarded upload path rejects the protected bundle identifier and validates
+the completed archive identity before any upload. This side-by-side app has a
+separate container and Keychain scope, so it requires fresh pairing with the new
+Mac host and cannot inherit the protected app's pairing state. No archive was
+uploaded and no physical-iPhone validation occurred. The maintainer reported the
+Apple Developer Program membership renewed on 2026-08-02; signing and App Store
+Connect availability still require live verification before this record can
+claim that build 37 was uploaded.
+
 - Do not install, replace, migrate, launch, reset, re-pair, or modify the
   production app on a physical iPhone.
-- Do not install a development Release or TestFlight build on that iPhone.
+- Do not install a development Release build or any TestFlight build carrying
+  `com.elamin.AudioStreamer` on that iPhone.
+- A future TestFlight install is permitted only when its archive and installed
+  identity are both exactly `com.elamin.opensteamer`; it must remain side by side
+  with the protected app.
 - Use only the simulator or the separate development Debug bundle
   `org.example.AudioStreamer.dev`.
 - Do not claim physical-iPhone audio, microphone forwarding, call behavior,

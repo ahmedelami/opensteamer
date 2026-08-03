@@ -10,7 +10,9 @@
 # the separate source of truth for distribution.
 #
 # Optional environment: `OPENSTEAMER_HOST_*` selects the launch agent, log, retry timing, and
-# churn budget; `OPENSTEAMER_EXPECTED_TEAM_ID` pins host signing; `OPENSTEAMER_UI_TEST_TIMEOUT_SECONDS`,
+# churn budget; `OPENSTEAMER_EXPECTED_APP_BUNDLE_IDENTIFIER` selects the side-by-side TestFlight
+# identity and defaults to `com.elamin.opensteamer`; `OPENSTEAMER_EXPECTED_TEAM_ID` pins host signing;
+# `OPENSTEAMER_UI_TEST_TIMEOUT_SECONDS`,
 # `OPENSTEAMER_AUDIO_ORACLE_DURATION_SECONDS`, and `OPENSTEAMER_DEVICE_*` tune bounded waits.
 # Variables prefixed `OPENSTEAMER_SELF_TEST_` and `OPENSTEAMER_SCRIPT_SELF_TEST` are reserved
 # for deterministic shell regression tests and must be unset for a release run.
@@ -27,6 +29,23 @@
 # failure, or oracle rejection exits nonzero; `run-status.txt` becomes passed only after all three
 # exact proofs succeed.
 set -euo pipefail
+
+SAFE_APP_BUNDLE_IDENTIFIER="com.elamin.opensteamer"
+PROTECTED_APP_BUNDLE_IDENTIFIER="com.elamin.AudioStreamer"
+EXPECTED_APP_BUNDLE_IDENTIFIER=${OPENSTEAMER_EXPECTED_APP_BUNDLE_IDENTIFIER:-${SAFE_APP_BUNDLE_IDENTIFIER}}
+if [[ "${EXPECTED_APP_BUNDLE_IDENTIFIER}" == "${PROTECTED_APP_BUNDLE_IDENTIFIER}" ]]; then
+  echo \
+    "Refusing to validate the protected ${PROTECTED_APP_BUNDLE_IDENTIFIER} app; use the side-by-side TestFlight identity." \
+    >&2
+  exit 2
+fi
+if [[ "${EXPECTED_APP_BUNDLE_IDENTIFIER}" != "${SAFE_APP_BUNDLE_IDENTIFIER}" ]]; then
+  echo \
+    "The TestFlight validator requires the exact side-by-side ${SAFE_APP_BUNDLE_IDENTIFIER} identity." \
+    >&2
+  exit 2
+fi
+export OPENSTEAMER_EXPECTED_APP_BUNDLE_IDENTIFIER="${EXPECTED_APP_BUNDLE_IDENTIFIER}"
 
 SCRIPT_DIR=${0:A:h}
 PROJECT_DIR=${SCRIPT_DIR:h}
@@ -1196,9 +1215,9 @@ function capture_production_candidate() {
   local command_status=$?
   (( command_status == 0 )) || return "${command_status}"
 
-  # Address the installed App Store/TestFlight production application identifier.
+  # Address only the explicitly selected side-by-side App Store/TestFlight application.
   jq -e \
-    --arg bundle "com.elamin.AudioStreamer" \
+    --arg bundle "${EXPECTED_APP_BUNDLE_IDENTIFIER}" \
     --arg build "${EXPECTED_BUILD}" '
     [.result.apps[] | select(.bundleIdentifier == $bundle)] as $matches
     | (($matches | length) == 1) and
@@ -1210,7 +1229,7 @@ function capture_production_candidate() {
   ' "${app_list}" >/dev/null || return $?
 
   jq -S \
-    --arg bundle "com.elamin.AudioStreamer" '
+    --arg bundle "${EXPECTED_APP_BUNDLE_IDENTIFIER}" '
     [.result.apps[] | select(.bundleIdentifier == $bundle)][0]
   ' "${app_list}" > "${candidate}" || return $?
 }
@@ -2609,7 +2628,7 @@ function production_app_pid_from_process_json() {
   local candidate_json=$2
 
   jq -er \
-    --arg bundle "com.elamin.AudioStreamer" \
+    --arg bundle "${EXPECTED_APP_BUNDLE_IDENTIFIER}" \
     --slurpfile candidate "${candidate_json}" '
     def normalized_path:
       if type == "string" then
@@ -2738,8 +2757,9 @@ function capture_raw_probe_production_identity() {
   rm -f "${process_json}" "${evidence_output}" "${temporary}" || return $?
   if [[ -n "${OPENSTEAMER_SELF_TEST_RAW_READINESS:-}" ]]; then
     candidate_json="${RAW_PHASE_DIR}/.raw-probe-self-test-candidate.json"
-    print -r -- \
-      '{"bundleIdentifier":"com.elamin.AudioStreamer","path":"/Applications/opensteamer.app"}' \
+    jq -n \
+      --arg bundle "${EXPECTED_APP_BUNDLE_IDENTIFIER}" \
+      '{bundleIdentifier:$bundle,path:"/Applications/opensteamer.app"}' \
       > "${candidate_json}" || return $?
     fixture_pid=7101
     if [[ "${boundary}" == "completion" ]]; then
@@ -2753,8 +2773,9 @@ function capture_raw_probe_production_identity() {
         && "${fixture_pid}" != *[^0-9]* ]] \
         && (( fixture_pid > 0 )); then
       jq -n \
+        --arg bundle "${EXPECTED_APP_BUNDLE_IDENTIFIER}" \
         --argjson pid "${fixture_pid}" \
-        '{info:{outcome:"success"},result:{processes:[{processIdentifier:$pid,bundleIdentifier:"com.elamin.AudioStreamer",executable:"/Applications/opensteamer.app/opensteamer"}]}}' \
+        '{info:{outcome:"success"},result:{processes:[{processIdentifier:$pid,bundleIdentifier:$bundle,executable:"/Applications/opensteamer.app/opensteamer"}]}}' \
         > "${process_json}" || return $?
     else
       return 3
@@ -2779,7 +2800,7 @@ function capture_raw_probe_production_identity() {
     return 3
   fi
   if jq -e \
-      --arg bundle "com.elamin.AudioStreamer" \
+      --arg bundle "${EXPECTED_APP_BUNDLE_IDENTIFIER}" \
       --argjson process_id "${identity}" '
     (.info.outcome? == "success") and
     ((.result? | type) == "object") and
@@ -2813,7 +2834,7 @@ function capture_raw_probe_production_identity() {
     print -r -- "schema=opensteamer.production-app-probe-boundary.v1"
     print -r -- "boundary=${boundary}"
     print -r -- "nonce=${RAW_READY_NONCE}"
-    print -r -- "bundleIdentifier=com.elamin.AudioStreamer"
+    print -r -- "bundleIdentifier=${EXPECTED_APP_BUNDLE_IDENTIFIER}"
     print -r -- "pid=${identity}"
     print -r -- "observedAtMonotonicNs=${observed_at_ns}"
   } > "${temporary}" || return $?
@@ -2854,7 +2875,7 @@ function validate_production_app_termination_json() {
   local process_id=$2
 
   jq -e \
-    --arg bundle "com.elamin.AudioStreamer" \
+    --arg bundle "${EXPECTED_APP_BUNDLE_IDENTIFIER}" \
     --argjson process_id "${process_id}" '
     def pid_aliases:
       [
@@ -2926,7 +2947,7 @@ function write_production_app_termination_evidence() {
   {
     print -r -- "schema=opensteamer.production-app-termination.v1"
     print -r -- "state=${gate_state}"
-    print -r -- "bundleIdentifier=com.elamin.AudioStreamer"
+    print -r -- "bundleIdentifier=${EXPECTED_APP_BUNDLE_IDENTIFIER}"
     print -r -- "processQuery=structured-devicectl-json"
     if [[ -n "${process_id}" ]]; then
       print -r -- "pid=${process_id}"
@@ -3621,6 +3642,7 @@ import re
 import sys
 
 MAXIMUM = 9_223_372_036_854_775_807
+EXPECTED_APP_BUNDLE_IDENTIFIER = os.environ["OPENSTEAMER_EXPECTED_APP_BUNDLE_IDENTIFIER"]
 
 class NonOverlap(Exception):
     pass
@@ -3689,7 +3711,7 @@ try:
         raise ValueError
     if start["boundary"] != "start" or completion["boundary"] != "completion":
         raise ValueError
-    if start["bundleIdentifier"] != "com.elamin.AudioStreamer" or completion["bundleIdentifier"] != "com.elamin.AudioStreamer":
+    if start["bundleIdentifier"] != EXPECTED_APP_BUNDLE_IDENTIFIER or completion["bundleIdentifier"] != EXPECTED_APP_BUNDLE_IDENTIFIER:
         raise ValueError
     requested = number(request, "requestedAtMonotonicNs")
     resumed = number(readiness, "resumedAtMonotonicNs")
@@ -4756,6 +4778,8 @@ import json
 import os
 import sys
 
+EXPECTED_APP_BUNDLE_IDENTIFIER = os.environ["OPENSTEAMER_EXPECTED_APP_BUNDLE_IDENTIFIER"]
+
 (
     request_path, readiness_path, ui_path, start_path, completion_path,
     observation_path, wait_path, wrapper_path, result_path, nonce, ui_nonce,
@@ -4775,8 +4799,8 @@ def atomic(path, text):
 atomic(request_path, f"schema=opensteamer.raw-session-readiness.v2\nnonce={nonce}\nrequestedAtMonotonicNs={requested}\ncursorOffset=0\ncursorDigest=self-test\n")
 atomic(readiness_path, f"schema=opensteamer.raw-session-readiness.v2\nnonce={nonce}\nrequestedAtMonotonicNs={requested}\nresumedAtMonotonicNs={resumed}\nreadyAtMonotonicNs={ready}\nprobeStartedAtMonotonicNs={probe_start}\nproductionPID=7101\nhostPID=5100\nauthenticatedConnectionCount=1\ncursorOffset=1\ncursorDigest=self-test-ready\n")
 atomic(ui_path, f"schema=opensteamer.raw-ui-runtime.v1\nnonce={ui_nonce}\ncontinuityDurationNs={continuity}\nappPIDAtStart={ui_pid_start}\nappPIDAtEnd={ui_pid_end}\n")
-atomic(start_path, f"schema=opensteamer.production-app-probe-boundary.v1\nboundary=start\nnonce={nonce}\nbundleIdentifier=com.elamin.AudioStreamer\npid=7101\nobservedAtMonotonicNs={start_observed}\n")
-atomic(completion_path, f"schema=opensteamer.production-app-probe-boundary.v1\nboundary=completion\nnonce={nonce}\nbundleIdentifier=com.elamin.AudioStreamer\npid=7101\nobservedAtMonotonicNs={completion_observed}\n")
+atomic(start_path, f"schema=opensteamer.production-app-probe-boundary.v1\nboundary=start\nnonce={nonce}\nbundleIdentifier={EXPECTED_APP_BUNDLE_IDENTIFIER}\npid=7101\nobservedAtMonotonicNs={start_observed}\n")
+atomic(completion_path, f"schema=opensteamer.production-app-probe-boundary.v1\nboundary=completion\nnonce={nonce}\nbundleIdentifier={EXPECTED_APP_BUNDLE_IDENTIFIER}\npid=7101\nobservedAtMonotonicNs={completion_observed}\n")
 atomic(observation_path, f"schema=opensteamer.blackhole-probe-completion-observation.v1\nnonce={nonce}\nprobeEndMonotonicNs={probe_end}\ncompletionObservedAtMonotonicNs={completion_observed}\nstatus=0\nproductionPIDAtCompletion=7101\n")
 atomic(wait_path, f"schema=opensteamer.blackhole-probe-wait.v1\nnonce={nonce}\nwrapperPID=999\nprobeEndMonotonicNs={probe_end}\ncompletionStatus=0\nwaitStatus={wait_status}\n")
 atomic(wrapper_path, f"schema=opensteamer.blackhole-probe-completion.v1\nnonce={nonce}\nprobeStartMonotonicNs={probe_start}\nprobeEndMonotonicNs={probe_end}\nstatus={wrapper_status}\nproductionPIDAtStart=7101\n")
