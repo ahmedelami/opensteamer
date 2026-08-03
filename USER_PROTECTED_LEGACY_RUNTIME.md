@@ -1,6 +1,6 @@
 # User-protected legacy AudioStreamer runtime
 
-Status: **VERSION 19 FULLY ROLLED BACK; ONE VERSION 20 MAC-ONLY CUTOVER AUTHORIZED; LEGACY AND IPHONE REMAIN PROTECTED**\
+Status: **VERSION 20 COMMITTED; NEW HOST ACTIVE; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
 Original preservation direction: **2026-07-25**\
 Mac-only migration authorization recorded: **2026-07-30/31**\
 Version-15 retry authorization recorded: **2026-08-02**\
@@ -8,7 +8,7 @@ Version-16 retry authorization recorded and consumed: **2026-08-02**\
 Version-17 retry authorization recorded and consumed: **2026-08-02**\
 Version-18 retry authorization recorded and consumed: **2026-08-02**\
 Version-19 retry authorization recorded and consumed: **2026-08-02**\
-Version-20 retry authorization recorded: **2026-08-02**
+Version-20 retry authorization recorded and consumed: **2026-08-02**
 
 The user authorized guarded Mac-only cutovers from the running legacy host to
 the validated opensteamer host. Versions 15, 16, 17, 18, and 19 all fully
@@ -16,7 +16,8 @@ rolled back to the untouched legacy host. The user explicitly authorized the
 guarded version-19 Mac-only retry on August 2, 2026; that authorization was
 consumed by the version-19 attempt described below. On August 2, 2026, the user
 explicitly authorized exactly one guarded version-20 Mac-only cutover. That
-single-use authorization does **not** permit moving, renaming,
+attempt committed successfully, consuming the single-use authorization. It did
+**not** permit moving, renaming,
 deleting, replacing, modifying, re-signing, quarantining, or installing over the
 legacy Mac app or plist. It also does not authorize any physical-iPhone operation.
 
@@ -396,7 +397,7 @@ the 3,557-byte build stderr SHA-256 is
 Both deployment-output records are absent because the deployment verifier never
 ran. No physical-iPhone or TestFlight operation occurred.
 
-Controller version 20 is review and inspection-only-preflight code. Its exact
+Controller version 20 committed successfully. Its exact
 eleventh historical guard pins that complete version-19 rollback while
 preserving and revalidating every version-9 through version-18 guard. Its lock
 proof strictly and completely parses the PID and file-descriptor access mode of
@@ -410,14 +411,32 @@ Generation-bound acceptance brackets generation-record revalidation with two
 successful full lock proofs. Malformed records, unexpected write-capable or
 persistent openers, or retry exhaustion fail closed.
 
-The read-only preflight may only inspect pointer state, validate all version-9
-through version-19 tombstones and the sole live legacy host, and prove the
-deterministic version-20 evidence path absent. It must report exactly
+Before execution, the read-only preflight inspected pointer state, validated
+all version-9 through version-19 tombstones and the sole live legacy host, and
+proved the deterministic version-20 evidence path absent. It reported exactly
 `PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18=v19 legacy=sole-ready v20=absent`.
-Version 20 retains the reviewed disk, reserve, signing, installed-MACL, lock,
-and deadline policies. Exactly one guarded version-20 Mac-only cutover is
-authorized. The authorization remains single-use and does not authorize a
-physical-iPhone operation.
+
+The authorized transaction used source commit
+`7b8a019fb7b480a2429af759e0d2d78b82cf77ed` and tree
+`e93a8a8462573a0751efcdf7480b680b283514c0`. It installed and bootstrapped
+the new host as PID `73151`, runs `1`, with generation nonce
+`bc4c7e83ba4735a3fb61962bd6b9b39f055a072c68c582be7599d982f867b14a`
+and canonical lock device/inode `16777230:10835208`. The exact deployment
+oracle passed, and the journal durably records `READY_VERIFIED` followed by
+`COMMITTED`.
+
+The retained 105-byte `active-migration-v20` pointer SHA-256 is
+`30d9ac5e0e0c425c0c819001fee81f80e380148e3ebeeda6ec1c9369df76dc35`.
+The 9,907-byte, 15-line journal SHA-256 is
+`41218e48d72dc72f581dcbf5141b008ac575725936d34677d0559e39db58ec66`;
+the 246-byte success result SHA-256 is
+`00aca5b826c34c30e771ab23a3500733db98eef6953f27f5e658e21dad461fab`;
+and the 6,922,240-byte source archive SHA-256 is
+`a5a94f4a1e3aa21163c7bc51328199a9cf9a85aba1049f7efb38c3a673c1ee4f`.
+The protected legacy executable and plist retain their reviewed hashes, the
+legacy launchd label is disabled and absent, and the new host is the sole
+`CaptureServer` process. No physical-iPhone operation occurred or is claimed.
+The version-20 authorization is consumed.
 
 ## Protected iPhone client
 

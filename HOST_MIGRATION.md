@@ -4,8 +4,8 @@ The user authorized this **Mac-only** migration on July 30/31, 2026 and
 explicitly authorized guarded version-15, version-16, version-17, version-18,
 and version-19 retries on August 2, 2026. All five retries fully rolled back,
 and the user then authorized exactly one guarded version-20 Mac-only cutover.
-The version-19 authorization was consumed; the version-20 authorization is
-single-use.
+The version-19 and version-20 authorizations were consumed; version 20
+committed successfully.
 The legacy app and legacy LaunchAgent plist remain
 byte-for-byte at their existing paths as rollback sources. The Mac-cutover
 authorization does not extend to the protected iPhone bundle, pairing reset, or
@@ -31,21 +31,21 @@ rollback-reachable helpers return errors.
 
 The current controller owns the version-20 active-pointer and journal namespace.
 The retained version-9 through version-19 pointers are never moved, replaced, or
-deleted. If separately authorized, version 20 can proceed only when version 9 is
+deleted. The authorized version-20 transaction could proceed only because version 9 was
 byte-for-byte the reviewed `rolled-back-before-stop` outcome from the August 1
 `/bin/chflags` path failure,
-version 10 is byte-for-byte the reviewed full-restore rollback described below,
-version 11 is byte-for-byte the reviewed post-readiness-timeout full rollback,
-version 12 is byte-for-byte the reviewed pre-stop disk-headroom rollback, version
-13 is byte-for-byte the reviewed deployment-verifier rollback described below,
-14 is byte-for-byte the reviewed tool-path-verifier rollback described below,
-version 15 is byte-for-byte the reviewed fast-marker-checkpoint rollback below,
-version 16 is byte-for-byte the reviewed installed-MACL-verifier rollback below,
-version 17 is byte-for-byte the reviewed status-141 rollback below,
-version 18 is byte-for-byte the reviewed process-start-padding rollback below,
-version 19 is byte-for-byte the reviewed transient-lock-opener rollback below,
-all older pointer residues and hidden cutover paths are absent, and the exact
-untouched legacy service is re-proved live. The corrected controller invokes the
+version 10 was byte-for-byte the reviewed full-restore rollback described below,
+version 11 was byte-for-byte the reviewed post-readiness-timeout full rollback,
+version 12 was byte-for-byte the reviewed pre-stop disk-headroom rollback,
+version 13 was byte-for-byte the reviewed deployment-verifier rollback described below,
+14 was byte-for-byte the reviewed tool-path-verifier rollback described below,
+version 15 was byte-for-byte the reviewed fast-marker-checkpoint rollback below,
+version 16 was byte-for-byte the reviewed installed-MACL-verifier rollback below,
+version 17 was byte-for-byte the reviewed status-141 rollback below,
+version 18 was byte-for-byte the reviewed process-start-padding rollback below,
+version 19 was byte-for-byte the reviewed transient-lock-opener rollback below,
+all older pointer residues and hidden cutover paths were absent, and the exact
+untouched legacy service was re-proved live. The corrected controller invokes the
 existing system tools at their actual absolute paths, including
 `/usr/bin/chflags`, `/usr/bin/cmp`, and `/bin/dd`. Before the legacy-stop
 boundary, it runs the exact embedded deployment-verifier bytes in an isolated
@@ -346,15 +346,23 @@ acceptance brackets generation-record revalidation with two successful full
 lock proofs. Malformed access records, unexpected write-capable openers, a
 persistent extra opener, or exhaustion of the bounded retry fails closed.
 
-Version 20 remains review and inspection-only-preflight code. Its preflight
+Before execution, version 20's inspection-only preflight
 acquires only the inspection transaction lock, validates all eleven historical
 tombstones and the sole live legacy host, and proves the deterministic v20
 evidence path absent without recovering or mutating pointer state. It reports
 exactly
 `PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18=v19 legacy=sole-ready v20=absent`.
-Exactly one guarded version-20 Mac-only cutover is authorized. Ordinary
-legacy-readiness paths retain the bounded 60-second command budget, and the
-deployment proof retains one absolute 180-second deadline.
+The authorized version-20 transaction committed successfully from source commit
+`7b8a019fb7b480a2429af759e0d2d78b82cf77ed` and tree
+`e93a8a8462573a0751efcdf7480b680b283514c0`. The new host reached
+`READY_VERIFIED` and `COMMITTED` as PID `73151`, runs `1`, with nonce
+`bc4c7e83ba4735a3fb61962bd6b9b39f055a072c68c582be7599d982f867b14a`
+and canonical lock `16777230:10835208`. The legacy executable and plist remain
+byte-identical at their protected paths, the legacy label is durably disabled,
+and the new host is the sole `CaptureServer` process. The version-20
+authorization is consumed. Ordinary legacy-readiness paths retain the bounded
+60-second command budget, and the deployment proof retains one absolute
+180-second deadline.
 Every durable state transition is appended to and fsynced in a per-attempt
 journal. A fixed fsynced active-transaction record points to the attempt. A
 later invocation holding the transaction lock deterministically resumes
@@ -520,11 +528,11 @@ historical PID and log-marker fields as evidence only, establishes a fresh
 generation-bound readiness proof, and then revalidates the same exact tombstone
 without removing it. A generation change after that proof is an ordinary
 committed lifecycle event. Pre-journal, failed, and rolled-back tombstones are
-also retained, and automatic reruns fail closed for manual inspection. The sole
-fresh-attempt exception is the narrowly encoded version-20 retry gate for the
-exact reviewed version-9 through version-19 failures described above. If
-separately authorized, it can create one deterministic version-20 evidence path
-and never reuses or mutates any historical transaction.
+also retained, and automatic fresh-attempt reruns fail closed for manual
+inspection. The sole fresh-attempt exception was the narrowly encoded
+version-20 retry gate for the exact reviewed version-9 through version-19
+failures described above. It created one deterministic version-20 evidence path
+without reusing or mutating any historical transaction.
 
 Before legacy can be disabled, version 20 physically preallocates and fsyncs an
 8 MiB owner-only rollback reserve, records its device/inode, and revalidates a
@@ -567,8 +575,7 @@ state, and the production lock namespace before it can run any test command.
 
 ## Invocation
 
-Exactly one version-20 Mac-only execution is authorized. Use only the reviewed
-live execution flag after its read-only preflight passes; do not copy individual
-cutover commands out of the controller or substitute a shared staged app. The
-script performs no iPhone operation, and the authorization is consumed by the
-single attempt regardless of outcome.
+The version-20 execution authorization was consumed by the successful committed
+attempt. Do not invoke the live execution flag again, copy individual cutover
+commands out of the controller, or substitute a shared staged app. The script
+performed no iPhone operation.

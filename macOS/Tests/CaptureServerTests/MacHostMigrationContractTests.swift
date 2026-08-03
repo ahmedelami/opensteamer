@@ -1609,7 +1609,7 @@ final class MacHostMigrationContractTests: XCTestCase {
         XCTAssertFalse(controller.contains("finalize_active_pointer_with_generation_proof"))
     }
 
-    func testV20DocumentationPinsTheEleventhGuardAndInspectionOnlyPreflight() throws {
+    func testV20DocumentationPinsTheCommittedCutover() throws {
         let migrationGuide = try String(
             contentsOf: repositoryRoot.appendingPathComponent("HOST_MIGRATION.md"),
             encoding: .utf8
@@ -1626,27 +1626,28 @@ final class MacHostMigrationContractTests: XCTestCase {
 
         for required in [
             "The current controller owns the version-20 active-pointer and journal namespace.",
-            "version 19 is byte-for-byte the reviewed transient-lock-opener rollback below",
+            "version 19 was byte-for-byte the reviewed transient-lock-opener rollback below",
             "The version-20 design adds an exact eleventh historical guard",
             "PID-only `lsof` interpretation",
             "bounded restart of the complete lock-path",
             "validates all eleven historical",
             exactPreflightOutput,
-            "Exactly one guarded version-20 Mac-only cutover is authorized.",
+            "The authorized version-20 transaction committed successfully",
+            "authorization is consumed.",
             "migrate-opensteamer-host.sh --verify-reviewed-prior-retry-state",
         ] {
             XCTAssertTrue(migrationGuide.contains(required), "Migration guide lacks \(required)")
         }
         for required in [
             "During the second lock-contention probe",
-            "Controller version 20 is review and inspection-only-preflight code.",
+            "Controller version 20 committed successfully.",
             "eleventh historical guard pins that complete version-19 rollback",
             "strictly and completely parses",
             "transient read-only opener",
-            "validate all version-9",
+            "all version-9",
             "through version-19 tombstones",
             exactPreflightOutput,
-            "Exactly one guarded version-20 Mac-only cutover",
+            "The version-20 authorization is consumed.",
         ] {
             XCTAssertTrue(
                 protectedRuntimeGuide.contains(required),
