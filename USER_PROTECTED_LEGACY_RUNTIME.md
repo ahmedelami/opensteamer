@@ -1,18 +1,19 @@
 # User-protected legacy AudioStreamer runtime
 
-Status: **VERSION 18 FULLY ROLLED BACK; VERSION 19 REVIEW/PREFLIGHT ONLY; LEGACY AND IPHONE REMAIN PROTECTED**\
+Status: **VERSION 19 FULLY ROLLED BACK; VERSION 20 REVIEW/PREFLIGHT ONLY; LEGACY AND IPHONE REMAIN PROTECTED**\
 Original preservation direction: **2026-07-25**\
 Mac-only migration authorization recorded: **2026-07-30/31**\
 Version-15 retry authorization recorded: **2026-08-02**\
 Version-16 retry authorization recorded and consumed: **2026-08-02**\
 Version-17 retry authorization recorded and consumed: **2026-08-02**\
-Version-18 retry authorization recorded and consumed: **2026-08-02**
+Version-18 retry authorization recorded and consumed: **2026-08-02**\
+Version-19 retry authorization recorded and consumed: **2026-08-02**
 
 The user authorized guarded Mac-only cutovers from the running legacy host to
-the validated opensteamer host. Versions 15, 16, 17, and 18 all fully rolled
-back to the untouched legacy host. The user explicitly authorized the guarded
-version-18 Mac-only retry on August 2, 2026; that authorization was consumed by
-the version-18 attempt described below. Version 19 is a review and
+the validated opensteamer host. Versions 15, 16, 17, 18, and 19 all fully
+rolled back to the untouched legacy host. The user explicitly authorized the
+guarded version-19 Mac-only retry on August 2, 2026; that authorization was
+consumed by the version-19 attempt described below. Version 20 is a review and
 read-only-preflight design only. A further cutover attempt has not been
 authorized. The prior authorization does **not** permit moving, renaming,
 deleting, replacing, modifying, re-signing, quarantining, or installing over the
@@ -346,18 +347,74 @@ the 4,884-byte deployment stderr SHA-256 is
 `59a06b517d0adb1223bd725fa323ab837d52e2dcd925e6b282941ff9d1f8acf1`.
 No physical-iPhone or TestFlight operation occurred.
 
-Controller version 19 is review and inspection-only-preflight code. Its exact
-tenth historical guard pins that complete version-18 rollback while preserving
-and revalidating every version-9 through version-17 guard. The process-start
-repair uses one canonical, full-consuming parser for every `ps -o lstart=`
-read: it trims only leading and trailing whitespace, preserves internal double
-day padding, and rejects missing, duplicate, empty-only, or malformed records.
+Controller version 19 created one deterministic transaction only after
+byte-validating the complete version-18 rollback and every version-9 through
+version-17 tombstone. The fresh version-19 authorization was consumed on August
+2, 2026. It used source commit
+`ad8fc9550aafc8f396f0ed2763cf6bf2ead2065d` and tree
+`2c54cd942f402ba329d4da56a8e44ff474ebecce`, built and installed the new host,
+and bootstrapped the actual new-host process as PID `15883`. That generation
+wrote nonce
+`116ec64216f66dfff9e8fff655bedf2335ae8c615698297ae5baca8e33bcf014`
+to canonical lock device/inode `16777230:10835208`, but the controller failed
+before journaling `NEW_PID_OBSERVED`.
+
+During the second lock-contention probe, Spotlight's transient `mdworker` PID
+`15928` read-opened the canonical lock file. Version 19's PID-only `lsof`
+parser conflated that read-only metadata opener with an advisory-lock owner.
+The exact console-only failure was
+`shared lock openers changed after the second contention probe: {15883, 15928, 61825}, expected host 15883 and controller 61825`.
+That string is postmortem console evidence; it is not anchored in the immutable
+version-19 evidence tree.
+
+Version 19 then completed exact `FullRestore` rollback through
+`ROLLBACK_STARTED`, `NEW_STOPPED`, `NEW_DESTINATIONS_CLEARED`,
+`LEGACY_REENABLED`, `LEGACY_BOOTSTRAPPED`, `LEGACY_RECOVERED`, and
+`ROLLED_BACK`. The new app, plist, and service are absent. The exact untouched
+legacy host is again the sole host and canonical advisory-lock owner as PID
+`16249`, with its reviewed arguments, hashes, signature, and enabled label. The
+consumed version-19 authorization grants no further attempt.
+
+Its pointer and evidence are retained permanently at
+`/Users/ahmed/Library/Application Support/opensteamer/active-migration-v19` and
+`/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v19-after-v18-1785637636-18044`.
+The 105-byte pointer SHA-256 is
+`9cdfaec20cc9d021e740a01eab6d23b4a3b6d594b86b94ea38bfaf27ee0895a5`;
+the 8,577-byte, 19-line journal SHA-256 is
+`76bfe35484cce970e33fe4dbfcfeab7cebf6f0877b38608805b5daaabbff1248`;
+the 93-byte result SHA-256 is
+`434dea611969ea91d8b873bffe42e4a149f329641fe5111e898b86d66fc3d301`;
+and the 375-byte provenance SHA-256 is
+`9eca722ba0af8832de0eb154745447669865799d95546a5c7f8b2313be37e96a`.
+The 6,860,800-byte source archive SHA-256 is
+`be65913f6ece9d3823be85458507e4dcc0d07885a78d3f62228b474e3058a57d`.
+The 884-byte build stdout SHA-256 is
+`df0cc65f41aca53e3cf44309c9b2eb405cabaae49ce70fcc1b2a67101082023d`;
+the 3,557-byte build stderr SHA-256 is
+`1099f10440ea8fb91a78cdc204bcd83bea9b53ee45aa0fcfc015ea0803273789`.
+Both deployment-output records are absent because the deployment verifier never
+ran. No physical-iPhone or TestFlight operation occurred.
+
+Controller version 20 is review and inspection-only-preflight code. Its exact
+eleventh historical guard pins that complete version-19 rollback while
+preserving and revalidating every version-9 through version-18 guard. Its lock
+proof strictly and completely parses the PID and file-descriptor access mode of
+every `lsof` record instead of treating every opener as a lock holder. A
+transient read-only opener invalidates the sample and may trigger only a bounded
+restart of the complete lock-path, opener-topology, and two-probe contention
+proof within the existing absolute deadline. A successful sample never ignores
+or accepts extra openers: it requires exactly the expected host, plus the
+controller only while the controller's contention descriptor is open.
+Generation-bound acceptance brackets generation-record revalidation with two
+successful full lock proofs. Malformed records, unexpected write-capable or
+persistent openers, or retry exhaustion fail closed.
+
 The read-only preflight may only inspect pointer state, validate all version-9
-through version-18 tombstones and the sole live legacy host, and prove the
-deterministic version-19 evidence path absent. It must report exactly
-`PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18 legacy=sole-ready v19=absent`.
-Version 19 retains the reviewed disk, reserve, signing, installed-MACL, lock,
-and deadline policies. No version-19 cutover is authorized; only its read-only
+through version-19 tombstones and the sole live legacy host, and prove the
+deterministic version-20 evidence path absent. It must report exactly
+`PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18=v19 legacy=sole-ready v20=absent`.
+Version 20 retains the reviewed disk, reserve, signing, installed-MACL, lock,
+and deadline policies. No version-20 cutover is authorized; only its read-only
 preflight may be reviewed or run.
 
 ## Protected iPhone client

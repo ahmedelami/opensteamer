@@ -112,13 +112,13 @@ final class MacHostMigrationContractTests: XCTestCase {
         )
         XCTAssertTrue(
             source.contains(
-                "EXPECTED_CONTROLLER_BINARY_SHA256='310e4c8e76f6518a69413509a0130e6e817b9df17d9ba630febddcac6b933546'"
+                "EXPECTED_CONTROLLER_BINARY_SHA256='6214dbcf6c5aadcb5b4a5b9240c59f900ac45ee42e3c73bd1a7f0e223a3961fa'"
             )
         )
         XCTAssertTrue(source.contains("fresh controller binary differs from the reviewed reproducible postimage"))
         XCTAssertTrue(source.contains("--self-test-reviewed-controller-build"))
         XCTAssertTrue(source.contains("--verify-reviewed-prior-retry-state"))
-        XCTAssertTrue(source.contains(".controller-build-v19.XXXXXX"))
+        XCTAssertTrue(source.contains(".controller-build-v20.XXXXXX"))
         XCTAssertTrue(source.contains("SOURCE_COPY=\"$BUILD_DIR/opensteamer-host-migration-controller.rs\""))
         XCTAssertTrue(source.contains("copy_companion_script"))
         XCTAssertTrue(source.contains("verify_private_companion_script"))
@@ -264,15 +264,15 @@ final class MacHostMigrationContractTests: XCTestCase {
             "verify_retained_active_pointer_after_commit",
             "durable COMMITTED journal record is the sole commit point",
             "self_test_final_generation_active_pointer_boundary",
-            "const ACTIVE_TRANSACTION_NAME: &str = \"active-migration-v19\";",
-            "const ACTIVE_TRANSACTION_PENDING_NAME: &str = \".active-migration-v19.pending\";",
-            "const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = \".active-migration-v19.finalizing\";",
-            "const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = \".active-migration-v19.linearized\";",
-            "const JOURNAL_VERSION: &str = \"OPENSTEAMER_MIGRATION_JOURNAL_V19\";",
-            "const FAKE_JOURNAL_VERSION: &str = \"OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V19\";",
-            "const V19_EVIDENCE_PATH: &str",
-            "parse_v19_active_record",
-            "v19 active pointer selects unreviewed evidence",
+            "const ACTIVE_TRANSACTION_NAME: &str = \"active-migration-v20\";",
+            "const ACTIVE_TRANSACTION_PENDING_NAME: &str = \".active-migration-v20.pending\";",
+            "const ACTIVE_TRANSACTION_FINALIZING_NAME: &str = \".active-migration-v20.finalizing\";",
+            "const ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = \".active-migration-v20.linearized\";",
+            "const JOURNAL_VERSION: &str = \"OPENSTEAMER_MIGRATION_JOURNAL_V20\";",
+            "const FAKE_JOURNAL_VERSION: &str = \"OPENSTEAMER_FAKE_MIGRATION_JOURNAL_V20\";",
+            "const V20_EVIDENCE_PATH: &str",
+            "parse_v20_active_record",
+            "v20 active pointer selects unreviewed evidence",
             "InspectionTransactionLock",
             "inspect_active_pointer_read_only",
             "expected_online_marker_for_generation",
@@ -518,12 +518,54 @@ final class MacHostMigrationContractTests: XCTestCase {
             "PRIOR_V18_SYMLINK_TARGET_MANIFEST_SHA256",
             "PRIOR_V18_STAGED_APP_XATTRS_SHA256",
             "PRIOR_V18_FAILED_APP_XATTRS_SHA256",
+            "validate_prior_v19_rolledback_retry",
+            "validate_prior_v19_rolledback_records",
+            "PriorV19RetryGuard",
+            "PRIOR_V19_ACTIVE_TRANSACTION_NAME",
+            "PRIOR_V19_ACTIVE_TRANSACTION_PENDING_NAME",
+            "PRIOR_V19_ACTIVE_TRANSACTION_FINALIZING_NAME",
+            "PRIOR_V19_ACTIVE_TRANSACTION_LINEARIZED_NAME",
+            "PRIOR_V19_EVIDENCE_PATH",
+            "PRIOR_V19_ACTIVE_RECORD",
+            "PRIOR_V19_ACTIVE_SHA256",
+            "PRIOR_V19_SOURCE_COMMIT",
+            "PRIOR_V19_SOURCE_TREE",
+            "PRIOR_V19_FINAL_JOURNAL_SIZE",
+            "PRIOR_V19_FINAL_JOURNAL_LINES",
+            "PRIOR_V19_FINAL_JOURNAL_SHA256",
+            "PRIOR_V19_PRECUTOVER_JOURNAL_LINE",
+            "PRIOR_V19_NEW_BOOTSTRAPPED_JOURNAL_LINE",
+            "PRIOR_V19_ROLLBACK_JOURNAL_TAIL",
+            "PRIOR_V19_FORBIDDEN_JOURNAL_STATES",
+            "PRIOR_V19_FINAL_RESULT",
+            "PRIOR_V19_FINAL_RESULT_SHA256",
+            "PRIOR_V19_SOURCE_ARCHIVE_SIZE",
+            "PRIOR_V19_SOURCE_ARCHIVE_SHA256",
+            "PRIOR_V19_PROVENANCE",
+            "PRIOR_V19_PROVENANCE_SHA256",
+            "PRIOR_V19_LEGACY_MANIFEST_SHA256",
+            "PRIOR_V19_LEGACY_XATTRS_SHA256",
+            "PRIOR_V19_STAGED_HASHES_SHA256",
+            "PRIOR_V19_SOURCE_EXPORT_MANIFEST_SHA256",
+            "PRIOR_V19_BUILD_STDOUT_SHA256",
+            "PRIOR_V19_BUILD_STDERR_SHA256",
+            "PRIOR_V19_ROLLBACK_RESERVE_SHA256",
+            "PRIOR_V19_ROLLBACK_RESERVE_DEVICE",
+            "PRIOR_V19_ROLLBACK_RESERVE_INODE",
+            "PRIOR_V19_STAGED_EXECUTABLE_SHA256",
+            "PRIOR_V19_STAGED_PLIST_SHA256",
+            "PRIOR_V19_STAGED_APP_MANIFEST_SHA256",
+            "PRIOR_V19_SYMLINK_TARGET_MANIFEST_SHA256",
+            "PRIOR_V19_STAGED_APP_XATTRS_SHA256",
+            "PRIOR_V19_FAILED_APP_XATTRS_SHA256",
+            "require_prior_v19_deployment_records_absent",
             "migration-v14-after-v13-1785637636-18044",
             "migration-v15-after-v14-1785637636-18044",
             "migration-v16-after-v15-1785637636-18044",
             "migration-v17-after-v16-1785637636-18044",
             "migration-v18-after-v17-1785637636-18044",
             "migration-v19-after-v18-1785637636-18044",
+            "migration-v20-after-v19-1785637636-18044",
             "--verify-reviewed-prior-retry-state",
             "prior_fields.extend(prior_v13.journal_fields());",
             "prior_fields.extend(prior_v14.journal_fields());",
@@ -531,9 +573,10 @@ final class MacHostMigrationContractTests: XCTestCase {
             "prior_fields.extend(prior_v16.journal_fields());",
             "prior_fields.extend(prior_v17.journal_fields());",
             "prior_fields.extend(prior_v18.journal_fields());",
-            "PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18 legacy=sole-ready v19=absent",
-            ".opensteamer-disabled-v19-{tag}",
-            ".org.example.opensteamer.worldwide.plist.disabled-v19-{tag}",
+            "prior_fields.extend(prior_v19.journal_fields());",
+            "PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18=v19 legacy=sole-ready v20=absent",
+            ".opensteamer-disabled-v20-{tag}",
+            ".org.example.opensteamer.worldwide.plist.disabled-v20-{tag}",
             "CutoverPreflight",
             "CutoverParentIdentities",
             "require_cutover_hidden_paths_absent",
@@ -615,7 +658,7 @@ final class MacHostMigrationContractTests: XCTestCase {
                 "    \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\";",
             "const PRIOR_V14_FAILED_APP_XATTRS_SHA256: &str =\n" +
                 "    \"b3803dc3d49417c1f401ee004179d08fed3de6471fee88d51ca743c910fffa56\";",
-            "const V19_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v19-after-v18-1785637636-18044\";",
+            "const V20_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v20-after-v19-1785637636-18044\";",
             "b\"zsh:299: no such file or directory: /bin/cmp\\nopensteamer host deployment verification failed: reviewed LaunchAgent bytes differ from checked-in contract\\n\"",
         ]
         for anchor in exactPriorV14Anchors {
@@ -676,7 +719,7 @@ final class MacHostMigrationContractTests: XCTestCase {
                 "    \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\";",
             "const PRIOR_V15_FAILED_APP_XATTRS_SHA256: &str =\n" +
                 "    \"760fdf730af579fa4b0b89a349babb39743944bf9e10b88cc513a263d23cb8b3\";",
-            "const V19_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v19-after-v18-1785637636-18044\";",
+            "const V20_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v20-after-v19-1785637636-18044\";",
         ]
         for anchor in exactPriorV15Anchors {
             XCTAssertTrue(controller.contains(anchor), "Controller lacks exact v15 anchor \(anchor)")
@@ -729,7 +772,7 @@ final class MacHostMigrationContractTests: XCTestCase {
                 "    \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\";",
             "const PRIOR_V16_FAILED_APP_XATTRS_SHA256: &str =\n" +
                 "    \"fc476ba38a5da85548cfbb83d758b4bbc41e2585495c55fb3344a6908b7ccee6\";",
-            "const V19_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v19-after-v18-1785637636-18044\";",
+            "const V20_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v20-after-v19-1785637636-18044\";",
         ]
         for anchor in exactPriorV16Anchors {
             XCTAssertTrue(controller.contains(anchor), "Controller lacks exact v16 anchor \(anchor)")
@@ -804,7 +847,7 @@ final class MacHostMigrationContractTests: XCTestCase {
                 "    \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\";",
             "const PRIOR_V17_FAILED_APP_XATTRS_SHA256: &str =\n" +
                 "    \"4820785b28b99a603cd21d3fd62b8173af84ee7e51231f7586a944f4be21cdfc\";",
-            "const V19_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v19-after-v18-1785637636-18044\";",
+            "const V20_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v20-after-v19-1785637636-18044\";",
         ]
         for anchor in exactPriorV17Anchors {
             XCTAssertTrue(controller.contains(anchor), "Controller lacks exact v17 anchor \(anchor)")
@@ -925,7 +968,7 @@ final class MacHostMigrationContractTests: XCTestCase {
                 "    \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\";",
             "const PRIOR_V18_FAILED_APP_XATTRS_SHA256: &str =\n" +
                 "    \"b0c2e579015f38205979cf3ca99db2274e246a47b01f99c2f9cd46ef340c3f99\";",
-            "const V19_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v19-after-v18-1785637636-18044\";",
+            "const V20_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v20-after-v19-1785637636-18044\";",
         ]
         for anchor in exactPriorV18Anchors {
             XCTAssertTrue(controller.contains(anchor), "Controller lacks exact v18 anchor \(anchor)")
@@ -985,42 +1028,119 @@ final class MacHostMigrationContractTests: XCTestCase {
         ] {
             XCTAssertTrue(priorV18Guard.contains(required), "The exact v18 guard lacks \(required)")
         }
+        let exactPriorV19Anchors = [
+            "const PRIOR_V19_ACTIVE_TRANSACTION_NAME: &str = \"active-migration-v19\";",
+            "const PRIOR_V19_ACTIVE_TRANSACTION_PENDING_NAME: &str = \".active-migration-v19.pending\";",
+            "const PRIOR_V19_ACTIVE_TRANSACTION_FINALIZING_NAME: &str = \".active-migration-v19.finalizing\";",
+            "const PRIOR_V19_ACTIVE_TRANSACTION_LINEARIZED_NAME: &str = \".active-migration-v19.linearized\";",
+            "const PRIOR_V19_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v19-after-v18-1785637636-18044\";",
+            "const PRIOR_V19_ACTIVE_RECORD: &[u8] = b\"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v19-after-v18-1785637636-18044\\n\";",
+            "9cdfaec20cc9d021e740a01eab6d23b4a3b6d594b86b94ea38bfaf27ee0895a5",
+            "const PRIOR_V19_SOURCE_COMMIT: &str = \"ad8fc9550aafc8f396f0ed2763cf6bf2ead2065d\";",
+            "const PRIOR_V19_SOURCE_TREE: &str = \"2c54cd942f402ba329d4da56a8e44ff474ebecce\";",
+            "const PRIOR_V19_FINAL_JOURNAL_SIZE: usize = 8_577;",
+            "const PRIOR_V19_FINAL_JOURNAL_LINES: usize = 19;",
+            "76bfe35484cce970e33fe4dbfcfeab7cebf6f0877b38608805b5daaabbff1248",
+            "rollback_reserve_inode=21610566",
+            "const PRIOR_V19_NEW_BOOTSTRAPPED_JOURNAL_LINE: &[u8] = b\"STATE NEW_BOOTSTRAPPED\\n\";",
+            "const PRIOR_V19_SOURCE_ARCHIVE_SIZE: u64 = 6_860_800;",
+            "be65913f6ece9d3823be85458507e4dcc0d07885a78d3f62228b474e3058a57d",
+            "9eca722ba0af8832de0eb154745447669865799d95546a5c7f8b2313be37e96a",
+            "24acd59fff88632fe2686bdc1ac6077ebd1b7120482ed8bb1bca94c8ab57ef9b",
+            "4a17e36549f35643588e45fa5810b99a75f75db19c473f38200aaffc1e8bd293",
+            "df0cc65f41aca53e3cf44309c9b2eb405cabaae49ce70fcc1b2a67101082023d",
+            "1099f10440ea8fb91a78cdc204bcd83bea9b53ee45aa0fcfc015ea0803273789",
+            "const PRIOR_V19_ROLLBACK_RESERVE_INODE: u64 = 21_610_566;",
+            "116d482fd058d6548b694da67fadde280a27d742b8bf8cb5be386963395510e7",
+            "39f84781f035d29253ca5c515e58aa124330e965f3491c2bcde65fe9234c4f00",
+            "8048a92d04b7928f760bf40d646e11d72dc9b42549fb95131116ac2874dfd511",
+            "const V20_EVIDENCE_PATH: &str = \"/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v20-after-v19-1785637636-18044\";",
+        ]
+        for anchor in exactPriorV19Anchors {
+            XCTAssertTrue(controller.contains(anchor), "Controller lacks exact v19 anchor \(anchor)")
+        }
+        let priorV19RecordValidation = try sourceSection(
+            controller,
+            from: "fn validate_prior_v19_rolledback_records(",
+            to: "fn require_prior_v19_deployment_records_absent("
+        )
+        for required in [
+            "journal.len() != PRIOR_V19_FINAL_JOURNAL_SIZE",
+            "PRIOR_V19_FINAL_JOURNAL_LINES",
+            "sha256_bytes(journal)? != PRIOR_V19_FINAL_JOURNAL_SHA256",
+            "OPENSTEAMER_MIGRATION_JOURNAL_V19",
+            "PRIOR_V19_PRECUTOVER_JOURNAL_LINE",
+            "PRIOR_V19_NEW_BOOTSTRAPPED_JOURNAL_LINE",
+            "PRIOR_V19_ROLLBACK_JOURNAL_TAIL",
+            "PRIOR_V19_FORBIDDEN_JOURNAL_STATES",
+            "result != PRIOR_V19_FINAL_RESULT",
+            "provenance != PRIOR_V19_PROVENANCE",
+        ] {
+            XCTAssertTrue(
+                priorV19RecordValidation.contains(required),
+                "The exact v19 pre-generation rollback validator lacks \(required)"
+            )
+        }
+        let priorV19Guard = try sourceSection(
+            controller,
+            from: "impl PriorV19RetryGuard {",
+            to: "fn validate_prior_v19_rolledback_retry("
+        )
+        for required in [
+            "PRIOR_V19_ACTIVE_RECORD", "PRIOR_V19_ACTIVE_SHA256",
+            "PRIOR_V19_LEGACY_MANIFEST_SHA256", "PRIOR_V19_LEGACY_XATTRS_SHA256",
+            "PRIOR_V19_STAGED_HASHES_SHA256", "PRIOR_V19_SOURCE_EXPORT_MANIFEST_SHA256",
+            "PRIOR_V19_BUILD_STDOUT_SHA256", "PRIOR_V19_BUILD_STDERR_SHA256",
+            "PRIOR_V19_ROLLBACK_RESERVE_SHA256", "PRIOR_V19_ROLLBACK_RESERVE_DEVICE",
+            "PRIOR_V19_ROLLBACK_RESERVE_INODE", "PRIOR_V19_SOURCE_ARCHIVE_SIZE",
+            "PRIOR_V19_SOURCE_ARCHIVE_SHA256", "PRIOR_V19_STAGED_EXECUTABLE_SHA256",
+            "PRIOR_V19_STAGED_PLIST_SHA256", "PRIOR_V19_STAGED_APP_MANIFEST_SHA256",
+            "PRIOR_V19_SYMLINK_TARGET_MANIFEST_SHA256",
+            "PRIOR_V19_STAGED_APP_XATTRS_SHA256", "PRIOR_V19_FAILED_APP_XATTRS_SHA256",
+            "validate_prior_v19_rolledback_records(",
+            "require_prior_v19_deployment_records_absent",
+            "PRIOR_V19_ACTIVE_TRANSACTION_PENDING_NAME",
+            "PRIOR_V19_ACTIVE_TRANSACTION_FINALIZING_NAME",
+            "PRIOR_V19_ACTIVE_TRANSACTION_LINEARIZED_NAME",
+        ] {
+            XCTAssertTrue(priorV19Guard.contains(required), "The exact v19 guard lacks \(required)")
+        }
         let aggregateResidueGuard = try sourceSection(
             controller,
             from: "fn require_all_prior_retry_residues_absent(",
             to: "struct PriorV9RetryGuard"
         )
-        for version in 9...18 {
+        for version in 9...19 {
             XCTAssertTrue(
                 aggregateResidueGuard.contains("\"v\(version)\""),
                 "Aggregate historical residue proof omits v\(version)."
             )
         }
         for required in [
-            "PRIOR_V18_ACTIVE_TRANSACTION_PENDING_NAME",
-            "PRIOR_V18_ACTIVE_TRANSACTION_FINALIZING_NAME",
-            "PRIOR_V18_ACTIVE_TRANSACTION_LINEARIZED_NAME",
-            "Path::new(PRIOR_V18_EVIDENCE_PATH)",
+            "PRIOR_V19_ACTIVE_TRANSACTION_PENDING_NAME",
+            "PRIOR_V19_ACTIVE_TRANSACTION_FINALIZING_NAME",
+            "PRIOR_V19_ACTIVE_TRANSACTION_LINEARIZED_NAME",
+            "Path::new(PRIOR_V19_EVIDENCE_PATH)",
         ] {
             XCTAssertTrue(
                 aggregateResidueGuard.contains(required),
                 "Aggregate historical residue proof lacks \(required)"
             )
         }
-        let v19RollbackHiddenPaths = try sourceSection(
+        let v20RollbackHiddenPaths = try sourceSection(
             controller,
             from: "fn rollback_hidden_paths(",
             to: "fn clear_new_live_destinations("
         )
         for required in [
-            ".opensteamer-disabled-v19-{tag}",
-            ".org.example.opensteamer.worldwide.plist.disabled-v19-{tag}",
+            ".opensteamer-disabled-v20-{tag}",
+            ".org.example.opensteamer.worldwide.plist.disabled-v20-{tag}",
             "layout.install_app_hold()?",
             "layout.install_plist_hold()?",
         ] {
             XCTAssertTrue(
-                v19RollbackHiddenPaths.contains(required),
-                "The v19 rollback namespace lacks \(required)"
+                v20RollbackHiddenPaths.contains(required),
+                "The v20 rollback namespace lacks \(required)"
             )
         }
         XCTAssertTrue(
@@ -1038,17 +1158,19 @@ final class MacHostMigrationContractTests: XCTestCase {
                     "                prior_v16,\n" +
                     "                prior_v17,\n" +
                     "                prior_v18,\n" +
+                    "                prior_v19,\n" +
                     "            )"
             ),
-            "All ten exact historical guards are not passed into the v19 transaction."
+            "All eleven exact historical guards are not passed into the v20 transaction."
         )
         XCTAssertTrue(
             controller.contains(
                 "    prior_v17: PriorV17RetryGuard,\n" +
                     "    prior_v18: PriorV18RetryGuard,\n" +
+                    "    prior_v19: PriorV19RetryGuard,\n" +
                     ") -> Result<()> {"
             ),
-            "The exact prior-v18 guard is not owned by v19 startup."
+            "The exact prior-v19 guard is not owned by v20 startup."
         )
         for (name, type) in [
             ("prior_v9", "PriorV9RetryGuard"),
@@ -1061,6 +1183,7 @@ final class MacHostMigrationContractTests: XCTestCase {
             ("prior_v16", "PriorV16RetryGuard"),
             ("prior_v17", "PriorV17RetryGuard"),
             ("prior_v18", "PriorV18RetryGuard"),
+            ("prior_v19", "PriorV19RetryGuard"),
         ] {
             XCTAssertGreaterThanOrEqual(
                 controller.components(separatedBy: "\(name): &'a \(type),").count - 1,
@@ -1076,81 +1199,88 @@ final class MacHostMigrationContractTests: XCTestCase {
             controller.contains(
                 "            &prior_v17,\n" +
                     "            &prior_v18,\n" +
+                    "            &prior_v19,\n" +
                     "        )"
             ),
-            "The exact prior-v18 guard is not threaded into the v19 transaction."
+            "The exact prior-v19 guard is not threaded into the v20 transaction."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(
-                separatedBy: "prior_v18: &'a PriorV18RetryGuard,"
+                separatedBy: "prior_v19: &'a PriorV19RetryGuard,"
             ).count - 1,
             2,
-            "The exact prior-v18 guard is not retained by the real backend and constructor."
+            "The exact prior-v19 guard is not retained by the real backend and constructor."
         )
         XCTAssertTrue(
             controller.contains(
                 "    prior_v17: &PriorV17RetryGuard,\n" +
                     "    prior_v18: &PriorV18RetryGuard,\n" +
+                    "    prior_v19: &PriorV19RetryGuard,\n" +
                     ") -> Result<()> {"
             ),
-            "The exact prior-v18 guard is not part of the transaction contract."
+            "The exact prior-v19 guard is not part of the transaction contract."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(
-                separatedBy: "validate_prior_v18_rolledback_retry(private_root)?;"
+                separatedBy: "validate_prior_v19_rolledback_retry(private_root)?;"
             ).count - 1,
             2,
-            "The exact prior-v18 guard is not acquired by both preflight and execution."
+            "The exact prior-v19 guard is not acquired by both preflight and execution."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v9.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v9 tombstone is not revalidated throughout v19 startup."
+            "The prior-v9 tombstone is not revalidated throughout v20 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v10.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v10 tombstone is not revalidated throughout v19 startup."
+            "The prior-v10 tombstone is not revalidated throughout v20 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v11.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v11 tombstone is not revalidated throughout v19 startup."
+            "The prior-v11 tombstone is not revalidated throughout v20 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v12.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v12 tombstone is not revalidated throughout v19 startup."
+            "The prior-v12 tombstone is not revalidated throughout v20 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v13.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v13 tombstone is not revalidated throughout v19 startup."
+            "The prior-v13 tombstone is not revalidated throughout v20 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v14.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v14 tombstone is not revalidated throughout v19 startup."
+            "The prior-v14 tombstone is not revalidated throughout v20 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v15.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v15 tombstone is not revalidated throughout v19 startup."
+            "The prior-v15 tombstone is not revalidated throughout v20 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v16.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v16 tombstone is not revalidated throughout v19 startup."
+            "The prior-v16 tombstone is not revalidated throughout v20 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v17.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v17 tombstone is not revalidated throughout v19 startup."
+            "The prior-v17 tombstone is not revalidated throughout v20 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(separatedBy: "prior_v18.revalidate(private_root)?;").count - 1,
             3,
-            "The prior-v18 tombstone is not revalidated throughout v19 startup."
+            "The prior-v18 tombstone is not revalidated throughout v20 startup."
+        )
+        XCTAssertGreaterThanOrEqual(
+            controller.components(separatedBy: "prior_v19.revalidate(private_root)?;").count - 1,
+            3,
+            "The prior-v19 tombstone is not revalidated throughout v20 startup."
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(
@@ -1224,6 +1354,13 @@ final class MacHostMigrationContractTests: XCTestCase {
         )
         XCTAssertGreaterThanOrEqual(
             controller.components(
+                separatedBy: "self.prior_v19.revalidate(self.private_root)?;"
+            ).count - 1,
+            2,
+            "The prior-v19 tombstone is not revalidated at both legacy stop boundaries."
+        )
+        XCTAssertGreaterThanOrEqual(
+            controller.components(
                 separatedBy: "require_all_prior_retry_residues_absent(self.private_root)?;"
             ).count - 1,
             2,
@@ -1234,7 +1371,7 @@ final class MacHostMigrationContractTests: XCTestCase {
                 ") -> Result<()> {\n    require_fresh_retry_disk_headroom()?;\n" +
                     "    let layout = Layout::create(repo)?;"
             ),
-            "The 2 GiB fresh-attempt gate must run before v19 creates its evidence tree."
+            "The 2 GiB fresh-attempt gate must run before v20 creates its evidence tree."
         )
         XCTAssertTrue(
             controller.contains(
@@ -1281,11 +1418,11 @@ final class MacHostMigrationContractTests: XCTestCase {
         )
         let lockHolderProof = try sourceSection(
             controller,
-            from: "fn prove_lock_held_only_by_until(",
-            to: "fn prove_generation_lock_held_only_by_until("
+            from: "fn prove_lock_held_only_by_once(",
+            to: "fn prove_lock_held_only_by_until("
         )
-        XCTAssertTrue(lockHolderProof.contains("holders_after_probe"))
-        XCTAssertTrue(lockHolderProof.contains("holders_after_reprobe"))
+        XCTAssertTrue(lockHolderProof.contains("openers_after_probe"))
+        XCTAssertTrue(lockHolderProof.contains("openers_after_reprobe"))
         XCTAssertTrue(lockHolderProof.contains("expected_openers_after_probe"))
         XCTAssertTrue(
             lockHolderProof.contains(
@@ -1293,14 +1430,22 @@ final class MacHostMigrationContractTests: XCTestCase {
             )
         )
         XCTAssertGreaterThanOrEqual(
-            lockHolderProof.components(separatedBy: "lsof_holders_until(").count - 1,
+            lockHolderProof.components(separatedBy: "lsof_openers_until(").count - 1,
             3,
             "Lock ownership must be re-read after both failed contention probes."
         )
+        let lockHolderRetry = try sourceSection(
+            controller,
+            from: "fn prove_lock_held_only_by_until(",
+            to: "fn prove_generation_lock_held_only_by_until("
+        )
+        XCTAssertTrue(lockHolderRetry.contains("LOCK_OPENER_SETTLE_ATTEMPTS"))
+        XCTAssertTrue(lockHolderRetry.contains("TransientReaders"))
+        XCTAssertTrue(lockHolderRetry.contains("sleep_before_lock_proof_retry(deadline)?"))
         let lockProbeCLI = try sourceSection(
             controller,
             from: "fn probe_lock_cli(",
-            to: "fn lsof_holders_until("
+            to: "fn parse_lsof_openers("
         )
         XCTAssertTrue(lockProbeCLI.contains("runtime != Path::new(LOCK_DIRECTORY)"))
         XCTAssertTrue(lockProbeCLI.contains("lock_path != Path::new(LOCK_FILE)"))
@@ -1312,6 +1457,17 @@ final class MacHostMigrationContractTests: XCTestCase {
         )
         XCTAssertFalse(lockProbeCLI.contains("open_existing_regular"))
         XCTAssertFalse(lockProbeCLI.contains("lsof_holders("))
+        let lsofParser = try sourceSection(
+            controller,
+            from: "fn parse_lsof_openers(",
+            to: "fn validate_logs_precutover()"
+        )
+        XCTAssertTrue(lsofParser.contains("LockFileAccessMode::Read"))
+        XCTAssertTrue(lsofParser.contains("LockFileAccessMode::Write"))
+        XCTAssertTrue(lsofParser.contains("LockFileAccessMode::ReadWrite"))
+        XCTAssertTrue(lsofParser.contains(#"OsStr::new("-F")"#))
+        XCTAssertTrue(lsofParser.contains(#"OsStr::new("paf")"#))
+        XCTAssertFalse(lsofParser.contains(#"OsStr::new("-t")"#))
         let generationLockProof = try sourceSection(
             controller,
             from: "fn prove_generation_lock_held_only_by_until(",
@@ -1453,7 +1609,7 @@ final class MacHostMigrationContractTests: XCTestCase {
         XCTAssertFalse(controller.contains("finalize_active_pointer_with_generation_proof"))
     }
 
-    func testV19DocumentationPinsTheTenthGuardAndInspectionOnlyPreflight() throws {
+    func testV20DocumentationPinsTheEleventhGuardAndInspectionOnlyPreflight() throws {
         let migrationGuide = try String(
             contentsOf: repositoryRoot.appendingPathComponent("HOST_MIGRATION.md"),
             encoding: .utf8
@@ -1465,33 +1621,32 @@ final class MacHostMigrationContractTests: XCTestCase {
             encoding: .utf8
         )
         let exactPreflightOutput =
-            "PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18 " +
-            "legacy=sole-ready v19=absent"
+            "PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18=v19 " +
+            "legacy=sole-ready v20=absent"
 
         for required in [
-            "The current controller owns the version-19 active-pointer and journal namespace.",
-            "version 18 is byte-for-byte the reviewed process-start-padding rollback below",
-            "The version-19 design adds an exact tenth historical guard",
-            "process-start repair",
-            "full-consuming parser",
-            "preserves the internal double space",
-            "validates all ten historical",
+            "The current controller owns the version-20 active-pointer and journal namespace.",
+            "version 19 is byte-for-byte the reviewed transient-lock-opener rollback below",
+            "The version-20 design adds an exact eleventh historical guard",
+            "PID-only `lsof` interpretation",
+            "bounded restart of the complete lock-path",
+            "validates all eleven historical",
             exactPreflightOutput,
-            "No version-19 execution is authorized.",
+            "No version-20 cutover is authorized.",
             "migrate-opensteamer-host.sh --verify-reviewed-prior-retry-state",
         ] {
             XCTAssertTrue(migrationGuide.contains(required), "Migration guide lacks \(required)")
         }
         for required in [
-            "The deployment verifier then rejected the same live generation before",
-            "Controller version 19 is review and inspection-only-preflight code.",
-            "tenth historical guard pins that complete version-18 rollback",
-            "four trailing padding spaces",
-            "Sun Aug  2 16:35:42 2026",
+            "During the second lock-contention probe",
+            "Controller version 20 is review and inspection-only-preflight code.",
+            "eleventh historical guard pins that complete version-19 rollback",
+            "strictly and completely parses",
+            "transient read-only opener",
             "validate all version-9",
-            "through version-18 tombstones",
+            "through version-19 tombstones",
             exactPreflightOutput,
-            "No version-19 cutover",
+            "No version-20 cutover",
         ] {
             XCTAssertTrue(
                 protectedRuntimeGuide.contains(required),
@@ -1527,7 +1682,7 @@ final class MacHostMigrationContractTests: XCTestCase {
         XCTAssertTrue(coordinator.contains("nonce=\\(availabilityMarkerGenerationNonce)"))
     }
 
-    func testV19PreflightReadinessDeadlineAndInstalledMACLContracts() throws {
+    func testV20PreflightReadinessDeadlineAndInstalledMACLContracts() throws {
         let controller = try String(
             contentsOf: repositoryRoot.appendingPathComponent(
                 "macOS/scripts/opensteamer-host-migration-controller.rs"
@@ -1554,30 +1709,30 @@ final class MacHostMigrationContractTests: XCTestCase {
         )
         XCTAssertTrue(preflight.contains("InspectionTransactionLock::acquire()?"))
         XCTAssertTrue(preflight.contains("inspect_active_pointer_read_only(private_root)?"))
-        for version in 9...18 {
+        for version in 9...19 {
             let validator = version == 9
                 ? "validate_prior_v9_prestop_retry(private_root)?;"
                 : "validate_prior_v\(version)_rolledback_retry(private_root)?;"
             XCTAssertTrue(
                 preflight.contains(validator),
-                "Read-only v19 preflight does not acquire the exact v\(version) guard."
+                "Read-only v20 preflight does not acquire the exact v\(version) guard."
             )
             XCTAssertTrue(
                 preflight.contains("prior_v\(version).revalidate(private_root)?;"),
-                "Read-only v19 preflight does not revalidate the exact v\(version) guard."
+                "Read-only v20 preflight does not revalidate the exact v\(version) guard."
             )
         }
         XCTAssertTrue(preflight.contains("require_all_prior_retry_residues_absent(private_root)?;"))
         XCTAssertTrue(preflight.contains("require_fresh_retry_disk_headroom()?;"))
-        XCTAssertTrue(preflight.contains("entry_exists(Path::new(V19_EVIDENCE_PATH))?"))
+        XCTAssertTrue(preflight.contains("entry_exists(Path::new(V20_EVIDENCE_PATH))?"))
         XCTAssertTrue(
             preflight.contains(
-                "PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18 " +
-                    "legacy=sole-ready v19=absent"
+                "PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18=v19 " +
+                    "legacy=sole-ready v20=absent"
             )
         )
         let finalAcceptanceSequence = [
-            "prior_v18.revalidate(private_root)?;",
+            "prior_v19.revalidate(private_root)?;",
             "require_all_prior_retry_residues_absent(private_root)?;",
             "require_fresh_retry_disk_headroom()?;",
             "let acceptance_deadline = deadline_after(LEGACY_READINESS_TIMEOUT)?;",
@@ -1585,17 +1740,17 @@ final class MacHostMigrationContractTests: XCTestCase {
             "verify_legacy_static_until(acceptance_deadline)?;",
             "verify_legacy_disabled_until(false, acceptance_deadline)?;",
             "wait_for_exact_legacy_readiness_until(acceptance_deadline)?;",
-            "if entry_exists(Path::new(V19_EVIDENCE_PATH))? {",
+            "if entry_exists(Path::new(V20_EVIDENCE_PATH))? {",
             "require_before_deadline(acceptance_deadline, \"prior-retry preflight acceptance\")?;",
             "println!(",
-            "\"PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18 " +
-                "legacy=sole-ready v19=absent\"",
+            "\"PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18=v19 " +
+                "legacy=sole-ready v20=absent\"",
         ]
         var acceptanceCursor = preflight.startIndex
         for required in finalAcceptanceSequence {
             let range = try XCTUnwrap(
                 preflight.range(of: required, range: acceptanceCursor..<preflight.endIndex),
-                "Final v19 preflight acceptance sequence lacks \(required)"
+                "Final v20 preflight acceptance sequence lacks \(required)"
             )
             acceptanceCursor = range.upperBound
         }
@@ -1618,7 +1773,7 @@ final class MacHostMigrationContractTests: XCTestCase {
         for required in [
             "ACTIVE_TRANSACTION_NAME", "ACTIVE_TRANSACTION_PENDING_NAME",
             "ACTIVE_TRANSACTION_FINALIZING_NAME", "ACTIVE_TRANSACTION_LINEARIZED_NAME",
-            "parse_v19_active_record",
+            "parse_v20_active_record",
         ] {
             XCTAssertTrue(pointerInspection.contains(required))
         }

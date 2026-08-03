@@ -1,13 +1,13 @@
 # Guarded side-by-side Mac host migration
 
 The user authorized this **Mac-only** migration on July 30/31, 2026 and
-explicitly authorized guarded version-15, version-16, version-17, and version-18
-retries on August 2, 2026. All four retries fully rolled back. The version-18
-authorization was consumed.
+explicitly authorized guarded version-15, version-16, version-17, version-18,
+and version-19 retries on August 2, 2026. All five retries fully rolled back.
+The version-19 authorization was consumed.
 The legacy app and legacy LaunchAgent plist remain
 byte-for-byte at their existing paths as rollback sources. The authorization
 does not extend to a physical iPhone, TestFlight, pairing reset, or cleanup of
-recovery/evidence artifacts. Version 19 is a reviewed, read-only-preflight
+recovery/evidence artifacts. Version 20 is a review, read-only-preflight
 design; a further cutover attempt has not been authorized.
 
 ## Transaction model
@@ -26,9 +26,9 @@ persistent legacy disable, legacy shutdown, lock handoff, side-by-side
 installation, bootstrap, readiness proof, commit, rollback, and crash recovery. Exactly one top-level controller decides process exit;
 rollback-reachable helpers return errors.
 
-The current controller owns the version-19 active-pointer and journal namespace.
-The retained version-9 through version-18 pointers are never moved, replaced, or
-deleted. If separately authorized, version 19 can proceed only when version 9 is
+The current controller owns the version-20 active-pointer and journal namespace.
+The retained version-9 through version-19 pointers are never moved, replaced, or
+deleted. If separately authorized, version 20 can proceed only when version 9 is
 byte-for-byte the reviewed `rolled-back-before-stop` outcome from the August 1
 `/bin/chflags` path failure,
 version 10 is byte-for-byte the reviewed full-restore rollback described below,
@@ -40,6 +40,7 @@ version 15 is byte-for-byte the reviewed fast-marker-checkpoint rollback below,
 version 16 is byte-for-byte the reviewed installed-MACL-verifier rollback below,
 version 17 is byte-for-byte the reviewed status-141 rollback below,
 version 18 is byte-for-byte the reviewed process-start-padding rollback below,
+version 19 is byte-for-byte the reviewed transient-lock-opener rollback below,
 all older pointer residues and hidden cutover paths are absent, and the exact
 untouched legacy service is re-proved live. The corrected controller invokes the
 existing system tools at their actual absolute paths, including
@@ -63,7 +64,7 @@ the pinned directory across every reopen and rename. Recovery from
 path, active-pointer bytes/hash, journal hash and history, provenance
 commit/tree, failure text, hidden-install layout, untouched legacy snapshot,
 disabled/absent legacy service, absent new service/destinations/processes, and
-acquirable shared lock. Version 19 treats any new `CRITICAL_FAILURE` as
+acquirable shared lock. Version 20 treats any new `CRITICAL_FAILURE` as
 fail-closed rather than reusing that historical recovery exception.
 
 Version 11 built, signed, installed, and bootstrapped the new host, then reached
@@ -275,13 +276,80 @@ full-consuming parser. That parser trims only edge whitespace and preserves the 
 used to pad a single-digit day while rejecting missing,
 duplicate, empty-only, or malformed records.
 
-Version 19 remains review and inspection-only-preflight code. Its preflight
-acquires only the inspection transaction lock, validates all ten historical
-tombstones and the sole live legacy host, and proves the deterministic v19
+The authorized version-19 transaction used source commit
+`ad8fc9550aafc8f396f0ed2763cf6bf2ead2065d` and tree
+`2c54cd942f402ba329d4da56a8e44ff474ebecce`. It disabled and stopped the
+legacy service, handed off the canonical lock, installed and bootstrapped the
+new host, and observed the actual new-host process as PID `15883`, with nonce
+`116ec64216f66dfff9e8fff655bedf2335ae8c615698297ae5baca8e33bcf014`
+in lock device/inode `16777230:10835208`. It failed before journaling
+`NEW_PID_OBSERVED`.
+
+During the second lock-contention probe, Spotlight's transient `mdworker`
+process PID `15928` read-opened the canonical lock file. The version-19
+PID-only `lsof` parser treated every process with that file open as a lock
+holder, conflating the read-only metadata opener with the actual advisory-lock
+owner. The exact console-only diagnostic was
+`shared lock openers changed after the second contention probe: {15883, 15928, 61825}, expected host 15883 and controller 61825`.
+That diagnostic is postmortem console evidence, not an artifact anchored in the
+immutable version-19 evidence tree.
+
+Version 19 then completed exact `FullRestore` rollback through
+`ROLLBACK_STARTED`, `NEW_STOPPED`, `NEW_DESTINATIONS_CLEARED`,
+`LEGACY_REENABLED`, `LEGACY_BOOTSTRAPPED`, `LEGACY_RECOVERED`, and
+`ROLLED_BACK`. The new app, plist, and service are absent. The exact untouched
+legacy host is again the sole host and canonical advisory-lock holder as PID
+`16249`, with its reviewed arguments, hashes, signature, and enabled label. The
+consumed version-19 authorization grants no retry.
+
+The retained 105-byte `active-migration-v19` pointer SHA-256 is
+`9cdfaec20cc9d021e740a01eab6d23b4a3b6d594b86b94ea38bfaf27ee0895a5`.
+The evidence directory is
+`migration-v19-after-v18-1785637636-18044`; its 8,577-byte, 19-line journal
+SHA-256 is
+`76bfe35484cce970e33fe4dbfcfeab7cebf6f0877b38608805b5daaabbff1248`.
+The 93-byte result SHA-256 is
+`434dea611969ea91d8b873bffe42e4a149f329641fe5111e898b86d66fc3d301`,
+the 375-byte provenance SHA-256 is
+`9eca722ba0af8832de0eb154745447669865799d95546a5c7f8b2313be37e96a`,
+and the 6,860,800-byte source archive SHA-256 is
+`be65913f6ece9d3823be85458507e4dcc0d07885a78d3f62228b474e3058a57d`.
+The 884-byte build stdout SHA-256 is
+`df0cc65f41aca53e3cf44309c9b2eb405cabaae49ce70fcc1b2a67101082023d`,
+and the 3,557-byte build stderr SHA-256 is
+`1099f10440ea8fb91a78cdc204bcd83bea9b53ee45aa0fcfc015ea0803273789`.
+Deployment stdout and stderr are both absent because the attempt failed before
+the deployment verifier ran. No iPhone or TestFlight action occurred.
+
+The version-20 design adds an exact eleventh historical guard for that complete
+version-19 rollback while preserving every earlier guard. It pins and
+revalidates the v19 pointer, journal, result, provenance, source/export and
+build records, legacy snapshot, rollback-reserve identity, staged and failed
+app/plist manifests, symlink targets, separately anchored xattrs, and the
+required absence of both deployment-output records, together with all forbidden
+historical residues and a fresh proof of the exact sole live legacy host.
+
+Version 20 replaces PID-only `lsof` interpretation with strict, full-consuming
+parsing of each process and file-descriptor access-mode record. The advisory
+lock is still proved by independent nonblocking contention attempts; `lsof`
+describes the complete opener topology rather than independently proving
+`flock` ownership. A transient read-only metadata opener invalidates the whole
+sample and may only trigger a bounded restart of the complete lock-path,
+opener-topology, and two-probe contention proof within the existing absolute
+deadline. Acceptance never filters out or tolerates an extra opener: every
+successful full-proof sample must contain exactly the expected host, plus the
+controller only while its contention descriptor is open. Generation-bound
+acceptance brackets generation-record revalidation with two successful full
+lock proofs. Malformed access records, unexpected write-capable openers, a
+persistent extra opener, or exhaustion of the bounded retry fails closed.
+
+Version 20 remains review and inspection-only-preflight code. Its preflight
+acquires only the inspection transaction lock, validates all eleven historical
+tombstones and the sole live legacy host, and proves the deterministic v20
 evidence path absent without recovering or mutating pointer state. It reports
 exactly
-`PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18 legacy=sole-ready v19=absent`.
-No version-19 cutover is authorized. Ordinary legacy-readiness paths retain the
+`PRIOR_RETRY_STATE_OK v9=v10=v11=v12=v13=v14=v15=v16=v17=v18=v19 legacy=sole-ready v20=absent`.
+No version-20 cutover is authorized. Ordinary legacy-readiness paths retain the
 bounded 60-second command budget, and the deployment proof retains one absolute
 180-second deadline.
 Every durable state transition is appended to and fsynced in a per-attempt
@@ -291,12 +359,12 @@ post-commit verification or rolls back an uncommitted attempt. It never treats a
 stale lock file, journal, staged app, or partially installed destination as a
 reason to abandon recovery.
 
-The pinned launcher also exposes a read-only v19 preflight that compiles and
+The pinned launcher also exposes a read-only v20 preflight that compiles and
 attests the exact reviewed controller, acquires an inspection-only transaction
-lock without rewriting it, verifies all ten historical tombstones and the sole
+lock without rewriting it, verifies all eleven historical tombstones and the sole
 live legacy host, validates the embedded
 deployment verifier's absolute command-path set, and proves the deterministic
-v19 evidence path is absent. Active-pointer inspection never invokes recovery or
+v20 evidence path is absent. Active-pointer inspection never invokes recovery or
 changes a pointer pathname, inode, bytes, or mode:
 
 ```sh
@@ -421,7 +489,7 @@ publication, and final acceptance checks all receive the same absolute
 Final generation acceptance also re-proves that the expected PID still solely
 holds the canonical advisory lock. The read-only retry preflight validates the
 absolute deployment-verifier command paths and their root-owned regular-file
-metadata before any version-19 evidence can be created.
+metadata before any version-20 evidence can be created.
 
 ## Rollback and recovery
 
@@ -450,12 +518,12 @@ generation-bound readiness proof, and then revalidates the same exact tombstone
 without removing it. A generation change after that proof is an ordinary
 committed lifecycle event. Pre-journal, failed, and rolled-back tombstones are
 also retained, and automatic reruns fail closed for manual inspection. The sole
-fresh-attempt exception is the narrowly encoded version-19 retry gate for the
-exact reviewed version-9 through version-18 failures described above. If
-separately authorized, it can create one deterministic version-19 evidence path
+fresh-attempt exception is the narrowly encoded version-20 retry gate for the
+exact reviewed version-9 through version-19 failures described above. If
+separately authorized, it can create one deterministic version-20 evidence path
 and never reuses or mutates any historical transaction.
 
-Before legacy can be disabled, version 19 physically preallocates and fsyncs an
+Before legacy can be disabled, version 20 physically preallocates and fsyncs an
 8 MiB owner-only rollback reserve, records its device/inode, and revalidates a
 minimum 1 GiB of free space after requiring at least 2 GiB before creating the
 fresh evidence tree. One absolute 180-second monotonic deadline bounds the whole
@@ -496,7 +564,7 @@ state, and the production lock namespace before it can run any test command.
 
 ## Invocation
 
-No version-19 execution is authorized. Only the read-only preflight form above
+No version-20 execution is authorized. Only the read-only preflight form above
 may be used during review. Do not pass the live execution flag, copy individual
 cutover commands out of the controller, or substitute a shared staged app. The
 script performs no iPhone operation.
