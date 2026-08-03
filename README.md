@@ -219,7 +219,9 @@ permission. Screen viewing needs Screen Recording permission.
 
 If this Mac previously ran the pre-rebrand persistent host, follow
 [HOST_MIGRATION.md](HOST_MIGRATION.md) before loading the renamed LaunchAgent. The one-time
-bootout prevents two KeepAlive jobs from competing while preserving pairing and privacy grants.
+bootout prevents two KeepAlive jobs from competing while preserving privacy grants and the shared
+runtime exclusion boundary. The protected legacy pairing remains untouched; the new host uses its
+own Keychain service and therefore presents a fresh one-time code for the side-by-side client.
 
 ## Repository layout
 

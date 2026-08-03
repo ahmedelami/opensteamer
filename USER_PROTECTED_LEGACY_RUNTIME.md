@@ -8,7 +8,8 @@ Version-16 retry authorization recorded and consumed: **2026-08-02**\
 Version-17 retry authorization recorded and consumed: **2026-08-02**\
 Version-18 retry authorization recorded and consumed: **2026-08-02**\
 Version-19 retry authorization recorded and consumed: **2026-08-02**\
-Version-20 retry authorization recorded and consumed: **2026-08-02**
+Version-20 retry authorization recorded and consumed: **2026-08-02**\
+Post-v20 new-host pairing-isolation authorization recorded: **2026-08-03**
 
 The user authorized guarded Mac-only cutovers from the running legacy host to
 the validated opensteamer host. Versions 15, 16, 17, 18, and 19 all fully
@@ -46,10 +47,15 @@ and shared lock before stopping it. Successful cutover leaves the label disabled
 across login/reboot; rollback re-enables it before bootstrapping the untouched
 plist. The controller must never mutate either rollback source.
 
-The migration preserves the complete designated requirement, bundle/signature
-identifier, `com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1`
-Keychain service, and
-`com.elamin.AudioStreamer.CaptureServer.runtime` process-lock namespace.
+The committed version-20 migration preserved the complete designated requirement,
+bundle/signature identifier,
+`com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1` Keychain service,
+and `com.elamin.AudioStreamer.CaptureServer.runtime` process-lock namespace. On
+2026-08-03, after the side-by-side TestFlight app could not inherit that pairing,
+the user authorized a scoped update of only the new host to an isolated pairing
+service. That update must never read, migrate, replace, reset, or delete the
+protected legacy service. The shared bundle/signature identity and process-lock
+namespace remain unchanged.
 
 ## New side-by-side Mac host
 
@@ -57,6 +63,13 @@ Keychain service, and
 - LaunchAgent label: `org.example.opensteamer.worldwide`
 - LaunchAgent plist:
   `/Users/ahmed/Library/LaunchAgents/org.example.opensteamer.worldwide.plist`
+- Pairing service after the authorized update:
+  `com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1`
+
+The source update is not deployment evidence. Until a newly signed host is
+verified and launched, the installed version-20 binary remains the active
+postimage and still addresses the protected legacy pairing service. Never run
+its `--reset-worldwide-pairing` option.
 
 Legacy and new hosts must never overlap. Before starting the new host, the
 controller must prove that the legacy job and every legacy `CaptureServer`

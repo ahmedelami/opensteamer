@@ -24,6 +24,8 @@ function initialize_fixture_repository() {
     "$repository/iOS/opensteamer/Sources/App" \
     "$repository/iOS/opensteamer/Sources/Support" \
     "$repository/iOS/opensteamer/Sources/Views" \
+    "$repository/iOS/opensteamer/TestFlightScheme" \
+    "$repository/iOS/opensteamer/scripts" \
     "$repository/macOS/OpensteamerHost" \
     "$repository/macOS/Sources/CaptureServer" \
     "$repository/macOS/scripts" \
@@ -36,6 +38,16 @@ function initialize_fixture_repository() {
   cp "$ROOT_DIR/.gitleaks.toml" "$repository/"
   cp "$ROOT_DIR/Package.swift" "$ROOT_DIR/README.md" "$repository/"
   cp "$ROOT_DIR/iOS/opensteamer/project.yml" "$repository/iOS/opensteamer/"
+  cp \
+    "$ROOT_DIR/iOS/opensteamer/TestFlightExportOptions.plist" \
+    "$repository/iOS/opensteamer/"
+  cp \
+    "$ROOT_DIR/iOS/opensteamer/TestFlightScheme/opensteamerTestFlight.xcscheme" \
+    "$repository/iOS/opensteamer/TestFlightScheme/"
+  cp \
+    "$ROOT_DIR/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+    "$ROOT_DIR/iOS/opensteamer/scripts/restore-archive-only-testflight-scheme.sh" \
+    "$repository/iOS/opensteamer/scripts/"
   cp -R \
     "$ROOT_DIR/iOS/opensteamer/opensteamer.xcodeproj" \
     "$repository/iOS/opensteamer/"
@@ -52,9 +64,13 @@ function initialize_fixture_repository() {
   cp \
     "$ROOT_DIR/macOS/Sources/CaptureServer/Info.plist" \
     "$repository/macOS/Sources/CaptureServer/"
-  print -r -- 'static let legacyPairingService =
-    "com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1"' \
+  print -r -- 'static let opensteamerPairingService =
+    "com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1"' \
     >"$repository/macOS/Sources/CaptureServer/WorldwidePairingStore.swift"
+  print -r -- 'let store = WorldwidePairingStore(
+    dataStore: WorldwideKeychainDataStore()
+)
+fflush(stdout)' >"$repository/macOS/Sources/CaptureServer/CaptureServerMain.swift"
   print -r -- 'static let legacyRuntimeDirectoryName =
     "com.elamin.AudioStreamer.CaptureServer.runtime"' \
     >"$repository/macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift"

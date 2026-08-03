@@ -152,7 +152,7 @@ assert_toml_name() {
   assert_equal "$description" "$expected" "$actual"
 }
 
-for required_tool in awk find node plutil sed sort xmllint; do
+for required_tool in awk find grep node plutil sed sort xmllint; do
   if ! command -v "$required_tool" >/dev/null 2>&1; then
     fail "required validation tool is unavailable: $required_tool"
   fi
@@ -670,8 +670,25 @@ assert_plist_value macOS/Sources/CaptureServer/Info.plist \
 assert_plist_value macOS/Sources/CaptureServer/Info.plist \
   CFBundleName 'opensteamer Capture Server' 'SwiftPM capture-server bundle name'
 assert_literal_count macOS/Sources/CaptureServer/WorldwidePairingStore.swift \
-  '"com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1"' 1 \
-  'preserved macOS pairing Keychain service'
+  '"com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1"' 1 \
+  'isolated opensteamer pairing Keychain service'
+assert_literal_count macOS/Sources/CaptureServer/WorldwidePairingStore.swift \
+  '"com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1"' 0 \
+  'protected legacy pairing Keychain service absence'
+assert_literal_count macOS/Sources/CaptureServer/WorldwidePairingStore.swift \
+  'init(service:' 0 'arbitrary pairing Keychain service initializer absence'
+assert_literal_count macOS/Sources/CaptureServer/CaptureServerMain.swift \
+  'dataStore: WorldwideKeychainDataStore()' 1 \
+  'explicit opensteamer pairing-store composition'
+assert_literal_count macOS/Sources/CaptureServer/CaptureServerMain.swift \
+  'fflush(stdout)' 1 'immediate one-time pairing-code flush'
+if require_directory macOS/Sources; then
+  PROTECTED_PAIRING_SOURCE_MATCHES=$(find "$ROOT/macOS/Sources" -type f -name '*.swift' \
+    -exec grep -lF -- \
+      'com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1' {} + 2>/dev/null || true)
+  [[ -z "$PROTECTED_PAIRING_SOURCE_MATCHES" ]] \
+    || fail 'protected legacy pairing Keychain service appears in macOS runtime source'
+fi
 assert_literal_count macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift \
   '"com.elamin.AudioStreamer.CaptureServer.runtime"' 1 \
   'preserved cross-version runtime lock namespace'

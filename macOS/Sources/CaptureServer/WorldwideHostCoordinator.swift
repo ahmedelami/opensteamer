@@ -73,7 +73,7 @@ actor WorldwideHostCoordinator {
         remoteInputController: MacRemoteInputController,
         iPhoneMicrophoneForwardingPolicy:
             WorldwideIPhoneMicrophoneForwardingPolicy = .enabled,
-        store: WorldwidePairingStore = WorldwidePairingStore(),
+        store: WorldwidePairingStore,
         hostDisplayName: String? = Host.current().localizedName,
         availabilityMarkerProcessIdentifier: Int32 = ProcessInfo.processInfo.processIdentifier,
         availabilityMarkerGenerationNonce: String = String(repeating: "0", count: 64),

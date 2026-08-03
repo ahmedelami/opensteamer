@@ -75,6 +75,13 @@ manual IP addresses, router configuration, or public TCP ports.
   Screen Recording, Accessibility, and Keychain grants. Keep the signed identity stable;
   an obsolete host bundle or a naked executable can bind
   Screen Recording or Accessibility permission to the wrong macOS code identity.
+- Persist the new host's identity and durable iPhone binding only in
+  `com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1`. It must never read,
+  migrate, replace, or delete items in the protected legacy
+  `com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1` service. The bundle
+  identity and shared runtime-lock namespace remain preserved compatibility data;
+  the pairing service is deliberately isolated so the side-by-side TestFlight app
+  can pair without revoking the legacy iPhone's rollback pairing.
 - Worldwide Mac system audio is an independent, send-only Opus track on the same
   peer connection. The production fidelity contract is 48 kHz interleaved Int16
   stereo from ScreenCaptureKit through a custom input-only WebRTC audio device,

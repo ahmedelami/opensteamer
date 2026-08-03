@@ -111,6 +111,9 @@ struct CaptureServerMain {
                     remoteInputController: remoteInputController,
                     iPhoneMicrophoneForwardingPolicy:
                         options.iPhoneMicrophoneForwardingPolicy,
+                    store: WorldwidePairingStore(
+                        dataStore: WorldwideKeychainDataStore()
+                    ),
                     availabilityMarkerProcessIdentifier:
                         ProcessInfo.processInfo.processIdentifier,
                     availabilityMarkerGenerationNonce:
@@ -135,6 +138,7 @@ struct CaptureServerMain {
                     print(invitationCode)
                     print("Enter this code on the iPhone before it expires.")
                     print("")
+                    fflush(stdout)
                 case .paired:
                     logger.info("Worldwide host is available for the paired iPhone")
                 }

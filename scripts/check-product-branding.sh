@@ -105,7 +105,8 @@ is_readme_release_identity_match() {
   content=$(awk -v wanted="$line" 'NR == wanted { print; exit }' "$file_path")
 
   if [[ "$token" == "$FORMER_CAMEL" && \
-    "$content" == "| Production bundle | <code>${PRODUCTION_BUNDLE_ID}</code> |" ]]; then
+    ("$content" == "| Production bundle | <code>${PRODUCTION_BUNDLE_ID}</code> |" || \
+      "$content" == "| Protected legacy Release bundle | <code>${PRODUCTION_BUNDLE_ID}</code>, build \`36\` |") ]]; then
     return 0
   fi
   if [[ "$token" == "${FORMER_CAMEL}.dev" && \
@@ -125,7 +126,7 @@ is_project_yml_production_rendezvous_match() {
       in_target = 0
       in_settings = 0
       in_configs = 0
-      in_release = 0
+      in_production = 0
       allowed = 0
       open_setting = "          OPENSTEAMER_RENDEZVOUS_URL: \"wss://" host "\""
       legacy_setting = "          AUDIOSTREAMER_RENDEZVOUS_URL: \"wss://" host "\""
@@ -136,24 +137,24 @@ is_project_yml_production_rendezvous_match() {
         in_target = 0
         in_settings = 0
         in_configs = 0
-        in_release = 0
+        in_production = 0
       } else if (in_targets && $0 ~ /^  [^[:space:]][^:]*:[[:space:]]*$/) {
         in_target = ($0 == "  opensteamer:")
         in_settings = 0
         in_configs = 0
-        in_release = 0
+        in_production = 0
       } else if (in_target && $0 ~ /^    [^[:space:]][^:]*:[[:space:]]*$/) {
         in_settings = ($0 == "    settings:")
         in_configs = 0
         in_release = 0
       } else if (in_settings && $0 ~ /^      [^[:space:]][^:]*:[[:space:]]*$/) {
         in_configs = ($0 == "      configs:")
-        in_release = 0
+        in_production = 0
       } else if (in_configs && $0 ~ /^        [^[:space:]][^:]*:[[:space:]]*$/) {
-        in_release = ($0 == "        Release:")
+        in_production = ($0 == "        Release:" || $0 == "        TestFlight:")
       }
 
-      if (NR == wanted && in_release && \
+      if (NR == wanted && in_production && \
         ($0 == open_setting || $0 == legacy_setting)) {
         allowed = 1
       }
@@ -168,7 +169,7 @@ is_pbxproj_production_rendezvous_match() {
   local line=$1
 
   awk -v wanted="$line" -v host="$PRODUCTION_RENDEZVOUS_HOST" \
-    -v bundle="$PRODUCTION_BUNDLE_ID" '
+    -v bundle="$PRODUCTION_BUNDLE_ID" -v side_bundle="com.elamin.opensteamer" '
     function trim(value) {
       sub(/^[[:space:]]*/, "", value)
       sub(/[[:space:]]*$/, "", value)
@@ -179,22 +180,27 @@ is_pbxproj_production_rendezvous_match() {
       in_build_settings = 0
       has_endpoint = 0
       has_bundle = 0
-      has_release_name = 0
+      has_production_name = 0
+      is_release = 0
+      is_testflight = 0
       allowed = 0
       open_setting = "OPENSTEAMER_RENDEZVOUS_URL = \"wss://" host "\";"
       legacy_setting = "AUDIOSTREAMER_RENDEZVOUS_URL = \"wss://" host "\";"
-      bundle_setting = "PRODUCT_BUNDLE_IDENTIFIER = " bundle ";"
+      release_bundle_setting = "PRODUCT_BUNDLE_IDENTIFIER = " bundle ";"
+      testflight_bundle_setting = "PRODUCT_BUNDLE_IDENTIFIER = " side_bundle ";"
     }
     {
       text = trim($0)
 
       if (!in_object && \
-        text ~ /^[0-9A-F]+ \/\* (Debug|Release) \*\/ = \{$/) {
+        text ~ /^[0-9A-F]+ \/\* (Debug|Release|TestFlight) \*\/ = \{$/) {
         in_object = 1
         in_build_settings = 0
         has_endpoint = 0
         has_bundle = 0
-        has_release_name = 0
+        has_production_name = 0
+        is_release = (text ~ /\/\* Release \*\//)
+        is_testflight = (text ~ /\/\* TestFlight \*\//)
         next
       }
 
@@ -212,7 +218,8 @@ is_pbxproj_production_rendezvous_match() {
           (text == open_setting || text == legacy_setting)) {
           has_endpoint = 1
         }
-        if (text == bundle_setting) {
+        if ((is_release && text == release_bundle_setting) || \
+          (is_testflight && text == testflight_bundle_setting)) {
           has_bundle = 1
         }
         if (text == "};") {
@@ -221,11 +228,12 @@ is_pbxproj_production_rendezvous_match() {
         next
       }
 
-      if (text == "name = Release;") {
-        has_release_name = 1
+      if ((is_release && text == "name = Release;") || \
+        (is_testflight && text == "name = TestFlight;")) {
+        has_production_name = 1
       }
       if (text == "};") {
-        if (has_endpoint && has_bundle && has_release_name) {
+        if (has_endpoint && has_bundle && has_production_name) {
           allowed = 1
         }
         in_object = 0
@@ -251,6 +259,18 @@ is_production_rendezvous_match() {
       ;;
     iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj)
       is_pbxproj_production_rendezvous_match "$line"
+      ;;
+    iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh)
+      content=$(awk -v wanted="$line" '
+        NR == wanted {
+          sub(/^[[:space:]]+/, "")
+          sub(/[[:space:]]+$/, "")
+          print
+          exit
+        }
+      ' "$file_path")
+      [[ "$content" == \
+        "readonly EXPECTED_RENDEZVOUS_URL=\"wss://${PRODUCTION_RENDEZVOUS_HOST}\"" ]]
       ;;
     HOST_MIGRATION.md)
       content=$(awk -v wanted="$line" '
@@ -299,7 +319,8 @@ is_production_rendezvous_match() {
         "readonly REVIEWED_RENDEZVOUS_URL=\"wss://${PRODUCTION_RENDEZVOUS_HOST}\"" || \
         "$content" == "wss://${PRODUCTION_RENDEZVOUS_HOST}" ]]
       ;;
-    macOS/scripts/opensteamer-host-migration-controller.rs)
+    macOS/scripts/opensteamer-host-migration-controller.rs|\
+      macOS/scripts/opensteamer-host-post-v20-update-controller.rs)
       content=$(awk -v wanted="$line" '
         NR == wanted {
           sub(/^[[:space:]]+/, "")
@@ -373,6 +394,7 @@ is_allowed_legacy_token() {
       iOS/opensteamer/UITests/PairedReconnectPhysicalUITests.swift|\
       iOS/opensteamer/project.yml|\
       iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj|\
+      iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh|\
       iOS/opensteamer/scripts/validate-physical-update-keychain.sh|\
       iOS/opensteamer/scripts/validate-release-pair-baseline.sh|\
       iOS/opensteamer/scripts/validate-testflight-paired-reconnect.sh)
@@ -403,7 +425,8 @@ is_allowed_legacy_token() {
     macOS/Tests/CaptureServerTests/MacHostDeploymentContractTests.swift)
       is_identity_token "$token" || is_rendezvous_fallback_token "$token"
       ;;
-    macOS/scripts/opensteamer-host-migration-controller.rs)
+    macOS/scripts/opensteamer-host-migration-controller.rs|\
+      macOS/scripts/opensteamer-host-post-v20-update-controller.rs)
       [[ "$token" == "$FORMER_LOWER.worldwide" \
         || "$token" == "$FORMER_LOWER.worldwide.plist" ]] || \
         is_identity_token "$token"

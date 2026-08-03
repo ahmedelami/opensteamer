@@ -306,9 +306,13 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <key>CFBundleName</key><string>opensteamer Capture Server</string>
 <key>CFBundleIdentifier</key><string>com.elamin.AudioStreamer.CaptureServer</string>
 </dict></plist>' >"$BASELINE/macOS/Sources/CaptureServer/Info.plist"
-print -r -- 'static let legacyPairingService =
-    "com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1"' \
+print -r -- 'static let opensteamerPairingService =
+    "com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1"' \
   >"$BASELINE/macOS/Sources/CaptureServer/WorldwidePairingStore.swift"
+print -r -- 'let store = WorldwidePairingStore(
+    dataStore: WorldwideKeychainDataStore()
+)
+fflush(stdout)' >"$BASELINE/macOS/Sources/CaptureServer/CaptureServerMain.swift"
 print -r -- 'static let legacyRuntimeDirectoryName =
     "com.elamin.AudioStreamer.CaptureServer.runtime"' \
   >"$BASELINE/macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift"
@@ -596,9 +600,35 @@ require_rejection "$CASE" 'preserved SwiftPM capture-server bundle identifier'
 
 CASE=$(new_case mac-pairing-keychain-service)
 replace_once "$CASE/macOS/Sources/CaptureServer/WorldwidePairingStore.swift" \
-  '"com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1"' \
-  '"org.example.AudioStreamer.CaptureServer.WorldwidePairing.v1"'
-require_rejection "$CASE" 'preserved macOS pairing Keychain service'
+  '"com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1"' \
+  '"com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1"'
+require_rejection "$CASE" 'isolated opensteamer pairing Keychain service'
+
+CASE=$(new_case mac-protected-pairing-keychain-service-added)
+print -r -- 'let forbidden = "com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1"' \
+  >>"$CASE/macOS/Sources/CaptureServer/WorldwidePairingStore.swift"
+require_rejection "$CASE" 'protected legacy pairing Keychain service absence'
+
+CASE=$(new_case mac-protected-pairing-keychain-service-other-source)
+print -r -- 'let forbidden = "com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1"' \
+  >>"$CASE/macOS/Sources/CaptureServer/CaptureServerMain.swift"
+require_rejection "$CASE" 'protected legacy pairing Keychain service appears in macOS runtime source'
+
+CASE=$(new_case mac-pairing-arbitrary-service-initializer)
+print -r -- 'init(service: String) {}' \
+  >>"$CASE/macOS/Sources/CaptureServer/WorldwidePairingStore.swift"
+require_rejection "$CASE" 'arbitrary pairing Keychain service initializer absence'
+
+CASE=$(new_case mac-pairing-explicit-composition)
+replace_once "$CASE/macOS/Sources/CaptureServer/CaptureServerMain.swift" \
+  'dataStore: WorldwideKeychainDataStore()' \
+  'dataStore: LegacyWorldwideKeychainDataStore()'
+require_rejection "$CASE" 'explicit opensteamer pairing-store composition'
+
+CASE=$(new_case mac-pairing-code-flush)
+replace_once "$CASE/macOS/Sources/CaptureServer/CaptureServerMain.swift" \
+  'fflush(stdout)' '/* missing pairing-code flush */'
+require_rejection "$CASE" 'immediate one-time pairing-code flush'
 
 CASE=$(new_case mac-runtime-lock-namespace)
 replace_once "$CASE/macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift" \

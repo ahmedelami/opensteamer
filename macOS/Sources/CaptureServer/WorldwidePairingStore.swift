@@ -22,8 +22,8 @@ struct WorldwidePairingStore: Sendable {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
-    /// Creates a store with deterministic JSON and a Keychain-backed default boundary.
-    init(dataStore: any WorldwidePairingDataStore = WorldwideKeychainDataStore()) {
+    /// Creates a store with deterministic JSON over one explicitly composed persistence boundary.
+    init(dataStore: any WorldwidePairingDataStore) {
         self.dataStore = dataStore
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -119,15 +119,25 @@ struct WorldwidePairingStore: Sendable {
 struct WorldwideKeychainDataStore: WorldwidePairingDataStore {
     static let maximumItemBytes = 64 * 1_024
 
-    // Existing installations already own pairing secrets in this service. Keeping the legacy
-    // value is what makes the opensteamer host an in-place upgrade instead of a newly paired Mac.
-    static let legacyPairingService =
-        "com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1"
+    // The side-by-side iOS app cannot inherit the protected AudioStreamer container. Give the
+    // opensteamer host an equally isolated Keychain boundary so creating or revoking its pairing
+    // can never read, replace, or delete the protected legacy host's durable pairing records.
+    static let opensteamerPairingService =
+        "com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1"
     private let service: String
 
-    init(service: String = Self.legacyPairingService) {
-        self.service = service
+    /// Production composition is fixed to the side-by-side opensteamer namespace.
+    init() {
+        service = Self.opensteamerPairingService
     }
+
+#if DEBUG
+    /// Tests may use only a UUID-suffixed child of the opensteamer namespace, never an arbitrary
+    /// service name that could accidentally address the protected legacy pairing boundary.
+    init(testingServiceID: UUID) {
+        service = "\(Self.opensteamerPairingService).tests.\(testingServiceID.uuidString)"
+    }
+#endif
 
     /// Reads one generic-password item's raw bytes, returning `nil` when absent.
     func data(for account: String) throws -> Data? {
