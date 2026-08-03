@@ -451,6 +451,40 @@ legacy launchd label is disabled and absent, and the new host is the sole
 `CaptureServer` process. No physical-iPhone operation occurred or is claimed.
 The version-20 authorization is consumed.
 
+## Post-version-20 isolated-pairing update attempts
+
+On August 3, 2026, the guarded post-version-20 updater first reached secure
+pairing with the separate `com.elamin.opensteamer` TestFlight app. The retained
+evidence is
+`/Users/ahmed/Library/Application Support/opensteamer/host-updates/post-v20-update-1785751613-90853-adcc3537-1df2-4725-9fe7-41f2f2e35835`.
+Its journal records `INTERACTIVE_READY`, `PAIRING_COMMITTED`,
+`INTERACTIVE_STOPPED`, `V20_HELD`, `NEW_PUBLISHED`, and
+`PERSISTENT_BOOTSTRAPPED`. Final deployment verification then rejected the
+interactively launched staged app because macOS had attached one root
+`com.apple.macl`. Read-only postmortem inspection proved that attribute was
+exactly 72 NUL bytes and that the staged executable still had reviewed SHA-256
+`ae7638a512440bb567d5e07f1067d8e5035bb59951e38c0559a74e4afa1d2e52`.
+The initial automatic rollback encountered asynchronous launchd teardown and
+failed closed. A subsequent invocation of the updater's exact guarded rollback
+path archived the failed new app, restored the byte-identical committed v20 app,
+bootstrapped it, verified it as the sole ready host, and retired the active
+post-v20 pointer. The protected legacy app, plist, and Keychain service were not
+modified.
+
+Source commit `4919107` added a second never-launched, strict-xattr deployment
+reference and one generation-bound 30-second launchd/process drain for rollback.
+Its Rust self-test, Swift migration contract, installed-MACL contract, and two
+independent safety audits passed. A guarded retry using that commit created
+evidence at
+`/Users/ahmed/Library/Application Support/opensteamer/host-updates/post-v20-update-1785753577-2449-71a9da03-8850-49ab-a0e4-8389b84527ab`,
+but its one-time invitation expired before pairing committed. The strengthened
+automatic rollback restored and reverified exact v20 without manual recovery.
+The active host is therefore still committed v20, now PID `6308` at the time of
+this record, with executable SHA-256
+`2d420326dab660e0eee8b0c839aa5fa4da4a792d8d279a682d94eccdc6fee443`.
+No post-version-20 replacement is installed. A future guarded retry requires a
+new one-time code; never reuse either expired code from these attempts.
+
 ## Protected iPhone client
 
 The production iOS app and the development Release target both use bundle
@@ -462,8 +496,10 @@ A separate archive-only `TestFlight` configuration now uses bundle identifier
 Its guarded upload path rejects the protected bundle identifier and validates
 the completed archive identity before any upload. This side-by-side app has a
 separate container and Keychain scope, so it requires fresh pairing with the new
-Mac host and cannot inherit the protected app's pairing state. No physical-iPhone
-validation occurred.
+Mac host and cannot inherit the protected app's pairing state. At upload time no
+physical-iPhone validation had occurred; the later post-version-20 attempt above
+proved only secure pairing, not audio, microphone, call, or full end-to-end
+behavior.
 
 The maintainer reported the Apple Developer Program membership renewed on
 2026-08-02, and renewal propagation was confirmed active on 2026-08-03. An
@@ -482,9 +518,10 @@ App Store Connect finished processing version `0.1.0`, build `37`, and showed it
 in `Testing` state with a 90-day expiry. The automatically distributing internal
 group `opensteamer Internal` was created with that build, and account holder
 `elaminahmed03@gmail.com` was added as its sole invited tester. TestFlight
-availability and invitation do not establish a successful install or any
-physical-iPhone behavior; no physical-device operation or end-to-end claim was
-made.
+availability and invitation alone do not establish physical-iPhone behavior.
+The later guarded pairing commit establishes that the separate client reached
+the isolated host once, but the host update rolled back before physical audio,
+microphone, call, or full end-to-end behavior was validated.
 
 - Do not install, replace, migrate, launch, reset, re-pair, or modify the
   production app on a physical iPhone.
