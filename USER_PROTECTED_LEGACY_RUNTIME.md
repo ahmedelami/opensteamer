@@ -449,16 +449,29 @@ A separate archive-only `TestFlight` configuration now uses bundle identifier
 Its guarded upload path rejects the protected bundle identifier and validates
 the completed archive identity before any upload. This side-by-side app has a
 separate container and Keychain scope, so it requires fresh pairing with the new
-Mac host and cannot inherit the protected app's pairing state. No TestFlight
-build was uploaded and no physical-iPhone validation occurred. The maintainer
-reported the
-Apple Developer Program membership renewed on 2026-08-02. A development-signed
-build-37 archive subsequently completed and passed the exact bundle, build,
-endpoint, Team ID, and signature guards for `com.elamin.opensteamer`. App Store
-Connect's app-record query succeeded with HTTP 200 but returned no record for
-that bundle. Both the Apple Developer account and App Store Connect still report
-the membership as expired, and App Store Connect rejects new-app creation until
-renewal propagation completes.
+Mac host and cannot inherit the protected app's pairing state. No physical-iPhone
+validation occurred.
+
+The maintainer reported the Apple Developer Program membership renewed on
+2026-08-02, and renewal propagation was confirmed active on 2026-08-03. An
+explicit App ID for `com.elamin.opensteamer` and the isolated App Store Connect
+app `opensteamer` (Apple ID `6797410161`) were created without selecting or
+modifying the protected app record. A development-signed build-37 archive passed
+the exact bundle, build, production-endpoint, Team ID, and signature guards and
+was uploaded successfully to App Store Connect at 2026-08-03 02:18 EDT. The
+retained upload evidence is under
+`/private/tmp/opensteamer-testflight-output.0DYPAA`, including
+`upload-renewed.log`; Xcode reported `Upload succeeded` and
+`** EXPORT SUCCEEDED **`. Apple also reported a non-blocking missing-dSYM warning
+for `LiveKitWebRTC.framework`.
+
+App Store Connect finished processing version `0.1.0`, build `37`, and showed it
+in `Testing` state with a 90-day expiry. The automatically distributing internal
+group `opensteamer Internal` was created with that build, and account holder
+`elaminahmed03@gmail.com` was added as its sole invited tester. TestFlight
+availability and invitation do not establish a successful install or any
+physical-iPhone behavior; no physical-device operation or end-to-end claim was
+made.
 
 - Do not install, replace, migrate, launch, reset, re-pair, or modify the
   production app on a physical iPhone.
