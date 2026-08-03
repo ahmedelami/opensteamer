@@ -201,12 +201,20 @@ final class MacHostMigrationContractTests: XCTestCase {
             "const SOURCE_EXPORT_EXECUTABLE_MODE: u32 = 0o700;",
             "verify_reviewed_prebuilt_source(&repo, app, REPOSITORY_EXECUTABLE_MODE)?;",
             "require_regular(&verifier, verifier_mode)?;",
+            "prepare_deployment_reference(layout)?;",
+            "pristine deployment-reference directory",
+            "verify_installed_matches_reference(layout)?;",
+            "post-bootout launch/process topology self-test failed",
+            "service_absence_observation",
+            "wait_for_new_job_bootout",
+            "new LaunchAgent run generation changed after rollback bootout",
+            "cannot revalidate retiring canonical host start identity before the rollback bootout deadline",
         ] {
             XCTAssertTrue(controllerSource.contains(required), "Post-v20 controller lacks \(required)")
         }
         XCTAssertEqual(
             controllerSource.components(separatedBy: "SOURCE_EXPORT_EXECUTABLE_MODE").count - 1,
-            10,
+            13,
             "Every executable consumed from the owner-only source export must use its exact 0700 mode."
         )
         XCTAssertEqual(
@@ -214,6 +222,55 @@ final class MacHostMigrationContractTests: XCTestCase {
             2,
             "Only the initial live-checkout verifier may require repository mode 0755."
         )
+        let update = try sourceSection(
+            controllerSource,
+            from: "fn perform_update(",
+            to: "fn wait_for_interactive_pairing("
+        )
+        let updateSequence = [
+            "prepare_deployment_reference(layout)?;",
+            "journal.record(\n        UpdateState::BuildVerified,",
+            "journal.record(\n        UpdateState::StopInitiated,",
+            "prepare_install_hold(layout)?;",
+            "verify_active_update_pointer(&layout.evidence)?;",
+            "verify_deployment_reference(layout)?;",
+            "bootout_exact_new_job()?;",
+            "spawn_interactive_host(layout)?",
+            "UpdateState::PairingCommitted,",
+            "verify_installed_matches_reference(layout)?;",
+            "&layout.deployment_reference_app,",
+            "UpdateState::ReadyVerified,",
+        ]
+        var updateCursor = update.startIndex
+        for required in updateSequence {
+            let range = try XCTUnwrap(
+                update.range(of: required, range: updateCursor..<update.endIndex),
+                "Post-v20 update ordering lacks \(required)"
+            )
+            updateCursor = range.upperBound
+        }
+        XCTAssertFalse(update.contains("&layout.staged_app,\n        &checkpoint"))
+        XCTAssertTrue(
+            controllerSource.contains(
+                "verify_deployment(\n        &layout.source_export,\n        Path::new(V20_STAGED_APP),"
+            ),
+            "Rollback must keep using the immutable v20 staged reference."
+        )
+        let rollbackBootout = try sourceSection(
+            controllerSource,
+            from: "fn bootout_new_job_if_loaded(",
+            to: "fn bootstrap_exact_new_job("
+        )
+        XCTAssertEqual(
+            rollbackBootout.components(
+                separatedBy: "wait_for_new_job_bootout(&loaded, expected_start.as_deref(), Duration::from_secs(30))?;"
+            ).count - 1,
+            1,
+            "Rollback must use one shared bounded service/process drain."
+        )
+        XCTAssertFalse(rollbackBootout.contains("wait_for_observed_canonical_process_exit"))
+        XCTAssertTrue(rollbackBootout.contains("processes = capture_server_processes()?;"))
+        XCTAssertTrue(rollbackBootout.contains("match process_start(expected_pid)"))
         XCTAssertFalse(controllerSource.contains("delete-generic-password"))
 
         let sourceHashResult = try run(

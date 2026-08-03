@@ -13,6 +13,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::mpsc;
@@ -401,6 +402,8 @@ struct Layout {
     source_export: PathBuf,
     stage_output: PathBuf,
     staged_app: PathBuf,
+    deployment_reference_dir: PathBuf,
+    deployment_reference_app: PathBuf,
     scratch: PathBuf,
     rollback_dir: PathBuf,
     rollback_app: PathBuf,
@@ -416,6 +419,7 @@ struct Layout {
 impl Layout {
     fn new(repo: PathBuf, evidence: PathBuf, nonce: &str) -> Self {
         let stage_output = evidence.join("staged-output");
+        let deployment_reference_dir = evidence.join("deployment-reference");
         let install_hold_root = PathBuf::from(format!(
             "/Applications/.opensteamer-post-v20-install-{nonce}"
         ));
@@ -425,6 +429,8 @@ impl Layout {
             source_export: evidence.join("source-export"),
             staged_app: stage_output.join("opensteamer Host.app"),
             stage_output,
+            deployment_reference_app: deployment_reference_dir.join("opensteamer Host.app"),
+            deployment_reference_dir,
             scratch: evidence.join("swiftpm-scratch"),
             rollback_dir: evidence.join("rollback-v20"),
             rollback_app: evidence.join("rollback-v20/opensteamer Host.app"),
@@ -689,6 +695,7 @@ fn perform_update(
         BuildInput::Fresh => build_and_verify_staged_app(layout)?,
         BuildInput::ReviewedPrebuilt(app) => import_and_verify_prebuilt(layout, app)?,
     }
+    prepare_deployment_reference(layout)?;
     journal.record(
         UpdateState::BuildVerified,
         &[(
@@ -706,6 +713,7 @@ fn perform_update(
         minimum_pre_stop,
         "after staging and immediately before stopping v20",
     )?;
+    verify_deployment_reference(layout)?;
 
     // Reprove every live precondition immediately before stopping the only active host.
     let revalidated = verify_v20_runtime()?;
@@ -731,6 +739,7 @@ fn perform_update(
     prepare_install_hold(layout)?;
     journal.record(UpdateState::InstallHoldVerified, &[])?;
     verify_active_update_pointer(&layout.evidence)?;
+    verify_deployment_reference(layout)?;
     bootout_exact_new_job()?;
     wait_for_no_capture_servers(Duration::from_secs(30))?;
     require_service_absent(NEW_LABEL)?;
@@ -786,7 +795,7 @@ fn perform_update(
         ))
     })?;
     fsync_parent(&layout.install_hold_root)?;
-    verify_installed_matches_stage(layout)?;
+    verify_installed_matches_reference(layout)?;
     journal.record(UpdateState::NewPublished, &[])?;
     drop(lock);
 
@@ -796,7 +805,7 @@ fn perform_update(
     let generation = wait_for_launch_generation(Duration::from_secs(45))?;
     verify_deployment(
         &layout.source_export,
-        &layout.staged_app,
+        &layout.deployment_reference_app,
         &checkpoint,
         &generation,
     )?;
@@ -1177,12 +1186,15 @@ fn layout_from_existing(repo: PathBuf, evidence: PathBuf) -> Result<Layout> {
     let install_hold = install_hold_root.join("opensteamer Host.app");
     require_install_hold_layout(&install_hold_root, &install_hold)?;
     let stage_output = evidence.join("staged-output");
+    let deployment_reference_dir = evidence.join("deployment-reference");
     Ok(Layout {
         repo,
         source_tar: evidence.join("source.tar"),
         source_export: evidence.join("source-export"),
         staged_app: stage_output.join("opensteamer Host.app"),
         stage_output,
+        deployment_reference_app: deployment_reference_dir.join("opensteamer Host.app"),
+        deployment_reference_dir,
         scratch: evidence.join("swiftpm-scratch"),
         rollback_dir: evidence.join("rollback-v20"),
         rollback_app: evidence.join("rollback-v20/opensteamer Host.app"),
@@ -1330,6 +1342,57 @@ fn import_and_verify_prebuilt(layout: &Layout, source: &Path) -> Result<()> {
     Ok(())
 }
 
+fn prepare_deployment_reference(layout: &Layout) -> Result<()> {
+    require_path_absent(
+        &layout.deployment_reference_dir,
+        "pristine deployment-reference directory",
+    )?;
+    verify_staged_app_contract(
+        &layout.source_export,
+        &layout.staged_app,
+        SOURCE_EXPORT_EXECUTABLE_MODE,
+    )?;
+    create_private_directory(&layout.deployment_reference_dir)?;
+    let output = command_output(
+        "/usr/bin/ditto",
+        &[
+            "--noqtn",
+            path_text(&layout.staged_app)?,
+            path_text(&layout.deployment_reference_app)?,
+        ],
+        None,
+    )?;
+    require_output_success(&output, "copy pristine deployment reference")?;
+    verify_deployment_reference(layout)
+}
+
+fn verify_deployment_reference(layout: &Layout) -> Result<()> {
+    require_directory(&layout.deployment_reference_dir, 0o700)?;
+    verify_staged_app_contract(
+        &layout.source_export,
+        &layout.deployment_reference_app,
+        SOURCE_EXPORT_EXECUTABLE_MODE,
+    )?;
+    verify_staged_app_contract(
+        &layout.source_export,
+        &layout.staged_app,
+        SOURCE_EXPORT_EXECUTABLE_MODE,
+    )?;
+    require_tree_equal(&layout.staged_app, &layout.deployment_reference_app)?;
+    let staged_hash = sha256(&layout.staged_app.join("Contents/MacOS/CaptureServer"))?;
+    let reference_hash = sha256(
+        &layout
+            .deployment_reference_app
+            .join("Contents/MacOS/CaptureServer"),
+    )?;
+    if staged_hash != reference_hash {
+        return Err(ControllerError(
+            "pristine deployment reference differs from the staged executable".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn verify_staged_app_contract(repo: &Path, staged_app: &Path, verifier_mode: u32) -> Result<()> {
     verify_bundle(repo, staged_app, false, verifier_mode)?;
 
@@ -1377,7 +1440,7 @@ fn prepare_install_hold(layout: &Layout) -> Result<()> {
         "/usr/bin/ditto",
         &[
             "--noqtn",
-            path_text(&layout.staged_app)?,
+            path_text(&layout.deployment_reference_app)?,
             path_text(&layout.install_hold)?,
         ],
         None,
@@ -1389,7 +1452,7 @@ fn prepare_install_hold(layout: &Layout) -> Result<()> {
         false,
         SOURCE_EXPORT_EXECUTABLE_MODE,
     )?;
-    require_tree_equal(&layout.staged_app, &layout.install_hold)?;
+    require_tree_equal(&layout.deployment_reference_app, &layout.install_hold)?;
     Ok(())
 }
 
@@ -1401,14 +1464,14 @@ fn record_install_hold_name(layout: &Layout) -> Result<()> {
     fsync_parent(&layout.evidence.join("install-hold-name.txt"))
 }
 
-fn verify_installed_matches_stage(layout: &Layout) -> Result<()> {
+fn verify_installed_matches_reference(layout: &Layout) -> Result<()> {
     verify_bundle(
         &layout.source_export,
         Path::new(NEW_APP),
         true,
         SOURCE_EXPORT_EXECUTABLE_MODE,
     )?;
-    require_tree_equal(&layout.staged_app, Path::new(NEW_APP))?;
+    require_tree_equal(&layout.deployment_reference_app, Path::new(NEW_APP))?;
     verify_legacy_sources()?;
     require_legacy_disabled_and_absent()?;
     Ok(())
@@ -1961,10 +2024,17 @@ fn require_service_absent(label: &str) -> Result<()> {
         &["print", &format!("gui/{USER_ID}/{label}")],
         None,
     )?;
+    if service_absence_observation(label, &output)? {
+        return Ok(());
+    }
+    Err(ControllerError(format!(
+        "launchd service remains loaded: {label}"
+    )))
+}
+
+fn service_absence_observation(label: &str, output: &Output) -> Result<bool> {
     if output.status.success() {
-        return Err(ControllerError(format!(
-            "launchd service remains loaded: {label}"
-        )));
+        return Ok(false);
     }
     let code = output.status.code();
     let stdout = decode_utf8(&output.stdout, "launchctl absence stdout")?;
@@ -1977,7 +2047,7 @@ fn require_service_absent(label: &str) -> Result<()> {
             "launchctl did not prove service absence for {label}: status={code:?} diagnostic={stderr:?}"
         )));
     }
-    Ok(())
+    Ok(true)
 }
 
 fn bootout_exact_new_job() -> Result<()> {
@@ -1999,10 +2069,10 @@ fn bootout_new_job_if_loaded(layout: &Layout) -> Result<()> {
     if state.status.success() {
         let loaded =
             parse_loaded_launch_job(decode_utf8(&state.stdout, "rollback launchctl state")?)?;
-        let observed_process = if let Some(pid) = loaded.pid {
+        let expected_start = if let Some(pid) = loaded.pid {
             require_solo_capture_server(Path::new(NEW_EXECUTABLE), pid)?;
             verify_live_process(&layout.source_export, pid, Path::new(NEW_APP))?;
-            Some((pid, process_start(pid)?))
+            Some(process_start(pid)?)
         } else {
             require_no_capture_servers()?;
             None
@@ -2013,47 +2083,124 @@ fn bootout_new_job_if_loaded(layout: &Layout) -> Result<()> {
             None,
         )?;
         require_output_success(&output, "boot out new LaunchAgent during rollback")?;
-        require_service_absent(NEW_LABEL)?;
-        if let Some((pid, start)) = observed_process {
-            wait_for_observed_canonical_process_exit(pid, &start, Duration::from_secs(30))?;
-        } else {
-            require_no_capture_servers()?;
-        }
+        wait_for_new_job_bootout(&loaded, expected_start.as_deref(), Duration::from_secs(30))?;
     } else {
         require_service_absent(NEW_LABEL)?;
     }
     Ok(())
 }
 
-fn wait_for_observed_canonical_process_exit(
-    pid: u32,
-    expected_start: &str,
+fn wait_for_new_job_bootout(
+    expected_job: &LoadedLaunchJob,
+    expected_start: Option<&str>,
     timeout: Duration,
 ) -> Result<()> {
+    if expected_job.pid.is_some() != expected_start.is_some() {
+        return Err(ControllerError(
+            "rollback bootout process identity is internally inconsistent".to_owned(),
+        ));
+    }
     let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        let processes = capture_server_processes()?;
-        if processes.is_empty() {
+    loop {
+        let output = command_output(
+            "/bin/launchctl",
+            &["print", &format!("gui/{USER_ID}/{NEW_LABEL}")],
+            None,
+        )?;
+        let service_absent = service_absence_observation(NEW_LABEL, &output)?;
+        if !service_absent {
+            let loaded = parse_loaded_launch_job(decode_utf8(
+                &output.stdout,
+                "post-bootout launchctl state",
+            )?)?;
+            validate_bootout_launch_sample(&loaded, expected_job)?;
+        }
+
+        let mut processes = capture_server_processes()?;
+        let mut retiring_process_present =
+            validate_bootout_process_sample(&processes, expected_job.pid)?;
+        if retiring_process_present {
+            let expected_pid = expected_job.pid.ok_or_else(|| {
+                ControllerError("rollback retiring PID unexpectedly disappeared".to_owned())
+            })?;
+            let expected_start = expected_start.ok_or_else(|| {
+                ControllerError("rollback lost the retiring process start identity".to_owned())
+            })?;
+            match process_start(expected_pid) {
+                Ok(observed_start) if observed_start == expected_start => {}
+                Ok(_) => {
+                    return Err(ControllerError(
+                        "canonical host PID was reused while rollback waited for bootout"
+                            .to_owned(),
+                    ))
+                }
+                Err(start_error) => {
+                    processes = capture_server_processes()?;
+                    retiring_process_present =
+                        validate_bootout_process_sample(&processes, expected_job.pid)?;
+                    if retiring_process_present {
+                        if Instant::now() >= deadline {
+                            return Err(ControllerError(format!(
+                                "cannot revalidate retiring canonical host start identity before the rollback bootout deadline: {start_error}"
+                            )));
+                        }
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
+                }
+            }
+        }
+
+        if service_absent && !retiring_process_present {
+            require_service_absent(NEW_LABEL)?;
+            require_no_capture_servers()?;
             return Ok(());
         }
-        if processes.len() != 1
-            || processes[0].0 != pid
-            || processes[0].1 != Path::new(NEW_EXECUTABLE)
-        {
-            return Err(ControllerError(format!(
-                "rollback observed an unexpected CaptureServer while canonical host was exiting: {processes:?}"
-            )));
-        }
-        if process_start(pid)? != expected_start {
+        if Instant::now() >= deadline {
             return Err(ControllerError(
-                "canonical host PID was reused while rollback waited for bootout".to_owned(),
+                "new LaunchAgent and process did not drain within the bounded rollback bootout interval"
+                    .to_owned(),
             ));
         }
         thread::sleep(Duration::from_millis(100));
     }
-    Err(ControllerError(format!(
-        "canonical host PID {pid} did not exit within the bounded rollback bootout interval"
-    )))
+}
+
+fn validate_bootout_launch_sample(
+    observed: &LoadedLaunchJob,
+    expected: &LoadedLaunchJob,
+) -> Result<()> {
+    if observed.runs != expected.runs {
+        return Err(ControllerError(
+            "new LaunchAgent run generation changed after rollback bootout".to_owned(),
+        ));
+    }
+    if observed.pid.is_some() && observed.pid != expected.pid {
+        return Err(ControllerError(format!(
+            "new LaunchAgent acquired unexpected PID {:?} after rollback bootout",
+            observed.pid
+        )));
+    }
+    Ok(())
+}
+
+fn validate_bootout_process_sample(
+    processes: &[(u32, PathBuf)],
+    expected_pid: Option<u32>,
+) -> Result<bool> {
+    if processes.is_empty() {
+        return Ok(false);
+    }
+    if expected_pid.is_none()
+        || processes.len() != 1
+        || Some(processes[0].0) != expected_pid
+        || processes[0].1 != Path::new(NEW_EXECUTABLE)
+    {
+        return Err(ControllerError(format!(
+            "rollback observed an unexpected CaptureServer while the new job was draining: {processes:?}"
+        )));
+    }
+    Ok(true)
 }
 
 fn bootstrap_exact_new_job() -> Result<()> {
@@ -3230,6 +3377,7 @@ fn self_test() -> Result<()> {
     if launch.pid != 4242 || launch.runs != 4 {
         return Err(ControllerError("launch parser self-test failed".to_owned()));
     }
+    let running = parse_loaded_launch_job(&launch_fixture)?;
     let waiting_fixture = format!(
         "gui/{USER_ID}/{NEW_LABEL} = {{\n\tpath = {NEW_PLIST}\n\ttype = LaunchAgent\n\tstate = waiting\n\tprogram = {NEW_EXECUTABLE}\n\targuments = {{\n\t\t{NEW_EXECUTABLE}\n\t\t{}\n\t}}\n\truns = 0\n}}\n",
         HOST_ARGUMENTS.join("\n\t\t")
@@ -3246,6 +3394,49 @@ fn self_test() -> Result<()> {
     {
         return Err(ControllerError(
             "rollback launch parser accepted an invalid identity".to_owned(),
+        ));
+    }
+    let absent_output = Output {
+        status: ExitStatus::from_raw(113 << 8),
+        stdout: Vec::new(),
+        stderr: format!(
+            "Bad request.\nCould not find service \"{NEW_LABEL}\" in domain for user gui: {USER_ID}\n"
+        )
+        .into_bytes(),
+    };
+    let loaded_output = Output {
+        status: ExitStatus::from_raw(0),
+        stdout: launch_fixture.as_bytes().to_vec(),
+        stderr: Vec::new(),
+    };
+    let malformed_absent_output = Output {
+        status: ExitStatus::from_raw(113 << 8),
+        stdout: Vec::new(),
+        stderr: b"unreviewed launchctl diagnostic\n".to_vec(),
+    };
+    let expected_path = PathBuf::from(NEW_EXECUTABLE);
+    let wrong_path = PathBuf::from("/private/tmp/unreviewed/CaptureServer");
+    let runs_drift_fixture = launch_fixture.replace("runs = 4", "runs = 5");
+    let runs_drift = parse_loaded_launch_job(&runs_drift_fixture)?;
+    if !service_absence_observation(NEW_LABEL, &absent_output)?
+        || service_absence_observation(NEW_LABEL, &loaded_output)?
+        || service_absence_observation(NEW_LABEL, &malformed_absent_output).is_ok()
+        || validate_bootout_launch_sample(&running, &running).is_err()
+        || validate_bootout_launch_sample(&runs_drift, &running).is_ok()
+        || validate_bootout_launch_sample(&waiting, &running).is_ok()
+        || validate_bootout_process_sample(&[], Some(4242))?
+        || !validate_bootout_process_sample(&[(4242, expected_path.clone())], Some(4242))?
+        || validate_bootout_process_sample(&[(4243, expected_path.clone())], Some(4242)).is_ok()
+        || validate_bootout_process_sample(&[(4242, wrong_path)], Some(4242)).is_ok()
+        || validate_bootout_process_sample(
+            &[(4242, expected_path.clone()), (4243, expected_path.clone())],
+            Some(4242),
+        )
+        .is_ok()
+        || validate_bootout_process_sample(&[(4242, expected_path)], None).is_ok()
+    {
+        return Err(ControllerError(
+            "post-bootout launch/process topology self-test failed".to_owned(),
         ));
     }
     let staged_fixture = Path::new("/private/tmp/opensteamer-selftest/CaptureServer");
