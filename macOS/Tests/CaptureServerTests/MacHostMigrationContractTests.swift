@@ -195,6 +195,8 @@ final class MacHostMigrationContractTests: XCTestCase {
             ".arg(\"--reset-worldwide-pairing\")",
             "com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1",
             "staged pairing namespace is not isolated",
+            "const OFFLINE_LEGACY_REFERENCE_MODE: u32 = 0o500;",
+            "Path::new(OFFLINE_LEGACY_REFERENCE),\n        OFFLINE_LEGACY_REFERENCE_MODE,",
         ] {
             XCTAssertTrue(controllerSource.contains(required), "Post-v20 controller lacks \(required)")
         }

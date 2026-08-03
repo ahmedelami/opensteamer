@@ -54,6 +54,7 @@ const V20_ACTIVE_POINTER: &str =
 const V20_EVIDENCE: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v20-after-v19-1785637636-18044";
 const V20_STAGED_APP: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v20-after-v19-1785637636-18044/staged/opensteamer Host.app";
 const OFFLINE_LEGACY_REFERENCE: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v20-after-v19-1785637636-18044/legacy-snapshot/CaptureServer";
+const OFFLINE_LEGACY_REFERENCE_MODE: u32 = 0o500;
 const ONLINE_LOG: &str = "/var/tmp/opensteamer-worldwide-host.log";
 const REVIEWED_PREBUILT_APP: &str =
     "/private/tmp/opensteamer-pairing-build.IhMOyT/output/opensteamer Host.app";
@@ -1523,7 +1524,10 @@ fn verify_pristine_v20_evidence() -> Result<()> {
         }
     }
     require_directory(Path::new(V20_STAGED_APP), 0o755)?;
-    require_regular(Path::new(OFFLINE_LEGACY_REFERENCE), 0o755)?;
+    require_regular(
+        Path::new(OFFLINE_LEGACY_REFERENCE),
+        OFFLINE_LEGACY_REFERENCE_MODE,
+    )?;
     if sha256(Path::new(OFFLINE_LEGACY_REFERENCE))? != LEGACY_EXECUTABLE_SHA256 {
         return Err(ControllerError(
             "v20 offline legacy reference hash changed".to_owned(),
