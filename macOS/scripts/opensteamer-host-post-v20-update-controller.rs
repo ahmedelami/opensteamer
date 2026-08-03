@@ -55,6 +55,7 @@ const V20_EVIDENCE: &str = "/Users/ahmed/Library/Application Support/opensteamer
 const V20_STAGED_APP: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v20-after-v19-1785637636-18044/staged/opensteamer Host.app";
 const OFFLINE_LEGACY_REFERENCE: &str = "/Users/ahmed/Library/Application Support/opensteamer/migrations/migration-v20-after-v19-1785637636-18044/legacy-snapshot/CaptureServer";
 const OFFLINE_LEGACY_REFERENCE_MODE: u32 = 0o500;
+const SOURCE_EXPORT_EXECUTABLE_MODE: u32 = 0o700;
 const ONLINE_LOG: &str = "/var/tmp/opensteamer-worldwide-host.log";
 const REVIEWED_PREBUILT_APP: &str =
     "/private/tmp/opensteamer-pairing-build.IhMOyT/output/opensteamer Host.app";
@@ -1227,7 +1228,7 @@ fn export_source(layout: &Layout, provenance: &Provenance) -> Result<()> {
         &layout
             .source_export
             .join("macOS/scripts/build-opensteamer-host-app.sh"),
-        0o755,
+        SOURCE_EXPORT_EXECUTABLE_MODE,
     )?;
     let mut record = create_new_private(&layout.evidence.join("provenance.txt"))?;
     writeln!(record, "commit={}", provenance.commit)?;
@@ -1396,7 +1397,7 @@ fn verify_installed_matches_stage(layout: &Layout) -> Result<()> {
 
 fn verify_bundle(repo: &Path, app: &Path, installed: bool) -> Result<()> {
     let verifier = repo.join("macOS/scripts/verify-mac-host-bundle.sh");
-    require_regular(&verifier, 0o755)?;
+    require_regular(&verifier, SOURCE_EXPORT_EXECUTABLE_MODE)?;
     let mut arguments = Vec::new();
     if installed {
         arguments.push("--installed-runtime".to_owned());
@@ -1411,7 +1412,7 @@ fn verify_bundle(repo: &Path, app: &Path, installed: bool) -> Result<()> {
 
 fn verify_live_process(repo: &Path, pid: u32, staged_app: &Path) -> Result<()> {
     let verifier = repo.join("macOS/scripts/verify-live-mac-host-process.sh");
-    require_regular(&verifier, 0o755)?;
+    require_regular(&verifier, SOURCE_EXPORT_EXECUTABLE_MODE)?;
     let staged_executable = staged_app.join("Contents/MacOS/CaptureServer");
     let staged_framework =
         staged_app.join("Contents/Frameworks/LiveKitWebRTC.framework/LiveKitWebRTC");
@@ -1438,7 +1439,7 @@ fn verify_deployment(
     generation: &LaunchGeneration,
 ) -> Result<()> {
     let verifier = repo.join("macOS/scripts/verify-mac-host-deployment.sh");
-    require_regular(&verifier, 0o755)?;
+    require_regular(&verifier, SOURCE_EXPORT_EXECUTABLE_MODE)?;
     let current_binary = env::current_exe()?.canonicalize()?;
     let output = Command::new(&verifier)
         .current_dir(repo)
