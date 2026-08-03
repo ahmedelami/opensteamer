@@ -224,7 +224,8 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
             ("wrong audio unit", rawMicrophoneSender(time: 2, usesRemoteIO: false)),
             ("input bus disabled", rawMicrophoneSender(time: 2, inputBusEnabled: false)),
             ("output bus disabled", rawMicrophoneSender(time: 2, outputBusEnabled: false)),
-            ("category options present", rawMicrophoneSender(time: 2, categoryOptionsAreEmpty: false)),
+            ("category options empty", rawMicrophoneSender(time: 2, categoryOptionsAreEmpty: true)),
+            ("wrong category options", rawMicrophoneSender(time: 2, categoryOptionsAreIPhoneMicrophoneRouting: false)),
             ("wrong route policy", rawMicrophoneSender(time: 2, routeSharingPolicyIsDefault: false)),
             ("output route absent", rawMicrophoneSender(time: 2, hasOutputRoute: false)),
             ("wrong sample rate", rawMicrophoneSender(time: 2, sampleRateIs48k: false)),
@@ -3137,7 +3138,8 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
         usesRemoteIO: Bool = true,
         inputBusEnabled: Bool = true,
         outputBusEnabled: Bool = true,
-        categoryOptionsAreEmpty: Bool = true,
+        categoryOptionsAreEmpty: Bool = false,
+        categoryOptionsAreIPhoneMicrophoneRouting: Bool = true,
         routeSharingPolicyIsDefault: Bool = true,
         hasOutputRoute: Bool = true,
         sampleRateIs48k: Bool = true,
@@ -3184,6 +3186,8 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
             inputBusEnabled: inputBusEnabled,
             outputBusEnabled: outputBusEnabled,
             categoryOptionsAreEmpty: categoryOptionsAreEmpty,
+            categoryOptionsAreIPhoneMicrophoneRouting:
+                categoryOptionsAreIPhoneMicrophoneRouting,
             routeSharingPolicyIsDefault:
                 routeSharingPolicyIsDefault,
             hasOutputRoute: hasOutputRoute,

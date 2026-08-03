@@ -221,7 +221,8 @@ enum WorldwideRawMicrophoneOracleEvaluator {
               sender.usesRemoteIO,
               sender.inputBusEnabled,
               sender.outputBusEnabled,
-              sender.categoryOptionsAreEmpty,
+              !sender.categoryOptionsAreEmpty,
+              sender.categoryOptionsAreIPhoneMicrophoneRouting,
               sender.routeSharingPolicyIsDefault,
               sender.hasOutputRoute,
               sender.sampleRateIs48k,
@@ -836,14 +837,23 @@ struct WorldwideAudioPlayoutOracleSnapshot: Equatable, Sendable {
         _ diagnostics: WebRTCIOSPlayoutDiagnostics
     ) -> Bool {
         let categoryMatchesInputPolicy: Bool
+        let categoryOptionsMatchInputPolicy: Bool
         if diagnostics.inputBusEnabled {
             categoryMatchesInputPolicy =
                 !diagnostics.categoryIsMediaPlayback
                 && diagnostics.categoryIsMediaPlayAndRecord
+            categoryOptionsMatchInputPolicy =
+                !diagnostics.categoryOptionsAreEmpty
+                && diagnostics.categoryOptionsAreIPhoneMicrophoneRouting
+                && !diagnostics.categoryOptionsAreMixWithOthers
         } else {
             categoryMatchesInputPolicy =
                 diagnostics.categoryIsMediaPlayback
                 && !diagnostics.categoryIsMediaPlayAndRecord
+            categoryOptionsMatchInputPolicy =
+                diagnostics.categoryOptionsAreEmpty
+                && !diagnostics.categoryOptionsAreIPhoneMicrophoneRouting
+                && !diagnostics.categoryOptionsAreMixWithOthers
         }
 
         return diagnostics.initialized
@@ -857,7 +867,7 @@ struct WorldwideAudioPlayoutOracleSnapshot: Equatable, Sendable {
             && !diagnostics.explicitResumeRequired
             && categoryMatchesInputPolicy
             && diagnostics.modeIsDefault
-            && diagnostics.categoryOptionsAreEmpty
+            && categoryOptionsMatchInputPolicy
             && diagnostics.routeSharingPolicyIsDefault
             && abs(diagnostics.sampleRate - 48_000) < 1
             && diagnostics.outputIOBufferDuration > 0

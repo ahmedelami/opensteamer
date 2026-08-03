@@ -7428,6 +7428,33 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
                 categoryIsMediaPlayback: false,
                 categoryIsMediaPlayAndRecord: false
             ),
+            "empty-options-also-true": iosPlayoutDiagnostics(
+                callbacks: 10,
+                frames: 4_800,
+                failures: 0,
+                inputBusEnabled: true,
+                categoryIsMediaPlayback: false,
+                categoryIsMediaPlayAndRecord: true,
+                categoryOptionsAreEmpty: true
+            ),
+            "exact-microphone-options-missing": iosPlayoutDiagnostics(
+                callbacks: 10,
+                frames: 4_800,
+                failures: 0,
+                inputBusEnabled: true,
+                categoryIsMediaPlayback: false,
+                categoryIsMediaPlayAndRecord: true,
+                categoryOptionsAreIPhoneMicrophoneRouting: false
+            ),
+            "mix-options-also-true": iosPlayoutDiagnostics(
+                callbacks: 10,
+                frames: 4_800,
+                failures: 0,
+                inputBusEnabled: true,
+                categoryIsMediaPlayback: false,
+                categoryIsMediaPlayAndRecord: true,
+                categoryOptionsAreMixWithOthers: true
+            ),
             "zero-buffer-duration": iosPlayoutDiagnostics(
                 callbacks: 10,
                 frames: 4_800,
@@ -8128,7 +8155,8 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
                 usesRemoteIO: true,
                 inputBusEnabled: true,
                 outputBusEnabled: true,
-                categoryOptionsAreEmpty: true,
+                categoryOptionsAreEmpty: false,
+                categoryOptionsAreIPhoneMicrophoneRouting: true,
                 routeSharingPolicyIsDefault: true,
                 hasOutputRoute: true,
                 sampleRateIs48k: true,
@@ -9075,7 +9103,8 @@ private func iosPlayoutDiagnostics(
     categoryIsMediaPlayback: Bool = true,
     categoryIsMediaPlayAndRecord: Bool = false,
     modeIsDefault: Bool = true,
-    categoryOptionsAreEmpty: Bool = true,
+    categoryOptionsAreEmpty: Bool? = nil,
+    categoryOptionsAreIPhoneMicrophoneRouting: Bool? = nil,
     categoryOptionsAreMixWithOthers: Bool = false,
     routeSharingPolicyIsDefault: Bool = true,
     hasOutputRoute: Bool = true,
@@ -9113,6 +9142,10 @@ private func iosPlayoutDiagnostics(
     lastPeakMagnitude: UInt32? = nil,
     lastPlayoutFrameCount: UInt32? = nil
 ) -> WebRTCIOSPlayoutDiagnostics {
+    let effectiveCategoryOptionsAreEmpty =
+        categoryOptionsAreEmpty ?? !inputBusEnabled
+    let effectiveCategoryOptionsAreIPhoneMicrophoneRouting =
+        categoryOptionsAreIPhoneMicrophoneRouting ?? inputBusEnabled
     let renderedSamples = pcmSampleCount ?? frames.multipliedReportingOverflow(by: 2).partialValue
     let nonzeroSamples = pcmNonzeroSampleCount ?? renderedSamples
     let absoluteSum = pcmAbsoluteSampleSum ?? nonzeroSamples * 1_000
@@ -9132,7 +9165,9 @@ private func iosPlayoutDiagnostics(
         categoryIsMediaPlayback: categoryIsMediaPlayback,
         categoryIsMediaPlayAndRecord: categoryIsMediaPlayAndRecord,
         modeIsDefault: modeIsDefault,
-        categoryOptionsAreEmpty: categoryOptionsAreEmpty,
+        categoryOptionsAreEmpty: effectiveCategoryOptionsAreEmpty,
+        categoryOptionsAreIPhoneMicrophoneRouting:
+            effectiveCategoryOptionsAreIPhoneMicrophoneRouting,
         categoryOptionsAreMixWithOthers: categoryOptionsAreMixWithOthers,
         routeSharingPolicyIsDefault: routeSharingPolicyIsDefault,
         hasOutputRoute: hasOutputRoute,
