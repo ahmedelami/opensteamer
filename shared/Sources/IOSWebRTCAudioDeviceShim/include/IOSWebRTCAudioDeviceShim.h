@@ -56,6 +56,10 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
     bool ownsSessionActivation;
     bool remoteIOCreated;
     bool inputBusEnabled;
+    /// Privacy-minimal live capture-source proof; no port name or UID leaves native code.
+    bool captureRouteIsBuiltInMicrophone;
+    /// Nonzero exact native route-publication epoch; never a route name or identifier.
+    uint64_t captureRouteProofGeneration;
     bool outputBusEnabled;
     bool recoveryRequired;
     bool explicitResumeRequired;
@@ -143,9 +147,22 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
 /// Revocation and the authorized native operation share one lock. Once `revoke` returns, a
 /// recovery block that was queued earlier can no longer begin or continue through this gate. A
 /// successful authorized operation consumes the gate before releasing the lock.
+typedef NS_ENUM(NSInteger, ASIOSStereoPlayoutRecoveryTerminalOutcome) {
+    ASIOSStereoPlayoutRecoveryTerminalOutcomePending = 0,
+    ASIOSStereoPlayoutRecoveryTerminalOutcomeAccepted = 1,
+    ASIOSStereoPlayoutRecoveryTerminalOutcomeRejected = 2,
+    ASIOSStereoPlayoutRecoveryTerminalOutcomeRevoked = 3,
+};
+
 @interface ASIOSStereoPlayoutRecoveryAuthorization : NSObject
 
 @property(nonatomic, readonly, getter=isValid) BOOL valid;
+/// Immutable nonzero identity for this exact authorization instance.
+@property(nonatomic, readonly) uint64_t generation;
+/// Zero while pending; exactly `generation` after a terminal outcome is published.
+@property(nonatomic, readonly) uint64_t terminalGeneration;
+@property(nonatomic, readonly)
+    ASIOSStereoPlayoutRecoveryTerminalOutcome terminalOutcome;
 
 - (void)revoke;
 
@@ -153,6 +170,11 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
 /// lock remains held until the operation returns, making a concurrent `revoke` a synchronous
 /// barrier. Native recovery code uses this immediately around its final side effects.
 - (BOOL)performIfValid:(NS_NOESCAPE dispatch_block_t)operation;
+
+#if DEBUG
+/// Deterministically publishes a native rejection without executing recovery side effects.
+- (BOOL)debugRejectIfValidForTesting;
+#endif
 
 @end
 
@@ -200,6 +222,55 @@ typedef NS_ENUM(NSInteger, ASIOSExpectedRouteChangeDisposition) {
     ASIOSExpectedRouteChangeDispositionConsume = 1,
     ASIOSExpectedRouteChangeDispositionRejectTransaction = 2,
 };
+
+/// Final native ownership of one exact reason-8 AVAudioSession notification.
+///
+/// The Swift lifecycle observer cannot infer this from the reason alone: NotificationCenter may
+/// invoke it before or after the native audio-device observer. The native observer therefore
+/// resolves the exact NSNotification object and this dedicated observer waits asynchronously for
+/// that disposition. Only the first three outcomes suppress Swift's generic route recovery.
+typedef NS_ENUM(NSInteger, ASIOSRouteConfigurationChangeDisposition) {
+    ASIOSRouteConfigurationChangeDispositionConsumed = 0,
+    ASIOSRouteConfigurationChangeDispositionLiveRejectionOwnedByWaiter = 1,
+    ASIOSRouteConfigurationChangeDispositionStaleSuppressed = 2,
+    ASIOSRouteConfigurationChangeDispositionGeneric = 3,
+    ASIOSRouteConfigurationChangeDispositionUninitialized = 4,
+    ASIOSRouteConfigurationChangeDispositionTimedOut = 5,
+};
+
+typedef void (^ASIOSRouteConfigurationChangeDispositionHandler)(
+    ASIOSRouteConfigurationChangeDisposition disposition
+);
+
+typedef void (^ASIOSRouteConfigurationChangeObservationHandler)(
+    ASIOSRouteConfigurationChangeDisposition disposition,
+    uint64_t notificationSequence,
+    uint64_t audioPolicyEpoch
+);
+
+/// Observes reason-8 notifications without losing their Objective-C object identity. Waiting is
+/// nonblocking so a Swift-first NotificationCenter callback cannot prevent the later native
+/// observer from running. The handler may be invoked on an arbitrary non-realtime queue.
+@interface ASIOSRouteConfigurationChangeObserver : NSObject
+
+/// Latest nonzero reason-8 ingress sequence observed by this exact observer instance.
+@property(nonatomic, readonly) uint64_t latestNotificationSequence;
+
+- (instancetype)initWithTimeout:(NSTimeInterval)timeout
+                         handler:
+                             (ASIOSRouteConfigurationChangeObservationHandler)handler
+    NS_DESIGNATED_INITIALIZER
+    NS_SWIFT_NAME(init(timeout:handler:));
+- (instancetype)init NS_UNAVAILABLE;
+
+/// Updates the application policy epoch captured by subsequent reason-8 ingress.
+- (void)updateAudioPolicyEpoch:(uint64_t)audioPolicyEpoch
+    NS_SWIFT_NAME(updateAudioPolicyEpoch(_:));
+
+/// Stops new observations and fences every delayed resolution already waiting for native code.
+- (void)invalidate;
+
+@end
 
 #if DEBUG
 typedef struct ASIOSStereoPlayoutPublicationSnapshot {
@@ -274,6 +345,25 @@ typedef NS_ENUM(NSInteger, ASIOSExpectedRouteChangeTestScenario) {
     ASIOSExpectedRouteChangeTestScenarioConvergedWrongGeneration = 24,
     ASIOSExpectedRouteChangeTestScenarioConvergedPreviousUnseen = 25,
     ASIOSExpectedRouteChangeTestScenarioConvergedExplicitResumeRequired = 26,
+    ASIOSExpectedRouteChangeTestScenarioPreparedExact = 27,
+    ASIOSExpectedRouteChangeTestScenarioPreparedChangedRoute = 28,
+    ASIOSExpectedRouteChangeTestScenarioStartingChangedRoute = 29,
+    ASIOSExpectedRouteChangeTestScenarioStartingWrongOwnership = 30,
+    ASIOSExpectedRouteChangeTestScenarioStartingRecoveryRequired = 31,
+    ASIOSExpectedRouteChangeTestScenarioStartingOldDeviceUnavailable = 32,
+    ASIOSExpectedRouteChangeTestScenarioStartingCategory = 33,
+    ASIOSExpectedRouteChangeTestScenarioStartingChannelMismatch = 34,
+    ASIOSExpectedRouteChangeTestScenarioStartingCoalescedExactRoute = 35,
+    ASIOSExpectedRouteChangeTestScenarioStartingOutputChanged = 36,
+    ASIOSExpectedRouteChangeTestScenarioStartingInactive = 37,
+    ASIOSExpectedRouteChangeTestScenarioStartingWrongGeneration = 38,
+    ASIOSExpectedRouteChangeTestScenarioStartingWrongSystemGeneration = 39,
+    ASIOSExpectedRouteChangeTestScenarioStartingTargetMismatch = 40,
+    ASIOSExpectedRouteChangeTestScenarioStartingPreferredMismatch = 41,
+    ASIOSExpectedRouteChangeTestScenarioStartingExplicitResumeRequired = 42,
+    ASIOSExpectedRouteChangeTestScenarioPendingOutputChanged = 43,
+    ASIOSExpectedRouteChangeTestScenarioConvergedStartSettlementCoalescedExactRoute = 44,
+    ASIOSExpectedRouteChangeTestScenarioConvergedStartSettlementExpired = 45,
 };
 
 /// Drives the real queued recovery boundary without starting playout or touching audio hardware.
@@ -318,6 +408,31 @@ typedef NS_ENUM(NSInteger, ASIOSExpectedRouteChangeTestScenario) {
     debugClassifyExpectedRouteChangeForTesting:
         (ASIOSExpectedRouteChangeTestScenario)scenario
     NS_SWIFT_NAME(debugClassifyExpectedRouteChangeForTesting(_:));
+- (BOOL)debugRemoteIOStartSettlementAcceptsDelayedObservationForTesting;
+- (BOOL)debugSupersededRouteObservationIsSuppressedForTestingWithOldDeviceUnavailable:
+    (BOOL)oldDeviceUnavailable
+    NS_SWIFT_NAME(debugSupersededRouteObservationIsSuppressedForTesting(oldDeviceUnavailable:));
+- (BOOL)debugRetiredSystemGenerationRouteObservationIsSuppressedForTestingWithOldDeviceUnavailable:
+    (BOOL)oldDeviceUnavailable
+    NS_SWIFT_NAME(debugRetiredSystemGenerationRouteObservationIsSuppressedForTesting(oldDeviceUnavailable:));
+- (BOOL)debugRecordedConsumedRouteClosureSchedulesFreshResolutionForTesting;
+- (BOOL)debugRecordedConsumedRouteClosureUsesFreshRouteForTesting;
+- (BOOL)debugNotificationSequenceChangeBlocksFreshRouteReopenForTesting;
+- (BOOL)debugRunningUnpublishedAudioUnitStopInvariantHoldsForTesting;
+- (BOOL)debugRouteEvidenceOwnsMicrophonePublicationClosureForTestingWithRecordedClosure:
+    (BOOL)recordedClosure
+                                                                         inFlightCount:
+                                                                             (NSUInteger)inFlightCount
+    NS_SWIFT_NAME(debugRouteEvidenceOwnsMicrophonePublicationClosureForTesting(recordedClosure:inFlightCount:));
+- (BOOL)debugTrackedCategoryObservationOwnsRouteClosureForTesting;
+- (BOOL)debugUntrackedCategoryObservationAvoidsUnownedRouteClosureForTesting;
+- (BOOL)debugConsumedPublicationQueuesRecordedRouteClosureResolutionForTesting;
+- (BOOL)debugFinalMicrophonePublicationRejectsDelayedRouteIngressForTesting;
+- (BOOL)debugRouteLockedOwnershipSnapshotComparatorForTesting;
+- (BOOL)debugImmutableRouteRejectionSnapshotSurvivesLaterRouteForTesting;
+- (BOOL)debugClearRetiresInFlightExpectedRouteObservationForTesting;
+- (BOOL)debugOldQueuedRouteObservationCannotMutateRearmedTransactionForTesting;
+- (NSString *)debugStructuredRouteTransactionFailureSnapshotForTesting;
 - (void)publishCallbackWithFrameCount:(uint32_t)frameCount
                                  status:(int32_t)status;
 - (void)queueRecoveryWithAuthorization:
@@ -334,10 +449,32 @@ typedef NS_ENUM(NSInteger, ASIOSExpectedRouteChangeTestScenario) {
 - (void)debugMarkInterruptionEndedFailClosedForTesting;
 - (void)debugMarkHealthyPlayoutForTesting;
 - (void)debugMarkRouteLossForTesting;
+- (void)debugAttemptFailureOverwriteForTesting;
 - (void)debugAdvanceSystemAudioGenerationForTesting;
 - (void)debugSetOutputRouteAvailableForTesting:(BOOL)available;
+- (void)debugSetCaptureRouteBuiltInMicrophoneForTesting:(BOOL)isBuiltIn;
 - (void)debugFailNextHostedCallActivationForTesting;
 - (BOOL)runNextQueuedOperation;
+
+@end
+
+/// Deterministic exact-object tests for both NotificationCenter observer orders and bounded
+/// fallback. It never registers an AVAudioSession observer or touches audio hardware.
+@interface ASIOSRouteConfigurationChangeArbitrationTestHarness : NSObject
+
+- (BOOL)debugWaiterFirstResolvesForTesting:
+    (ASIOSRouteConfigurationChangeDisposition)disposition
+    NS_SWIFT_NAME(debugWaiterFirstResolvesForTesting(_:));
+- (BOOL)debugNativeFirstResolvesForTesting:
+    (ASIOSRouteConfigurationChangeDisposition)disposition
+    NS_SWIFT_NAME(debugNativeFirstResolvesForTesting(_:));
+- (BOOL)debugNativeFirstResolverReplacementPreservesDispositionForTesting:
+    (ASIOSRouteConfigurationChangeDisposition)disposition
+    NS_SWIFT_NAME(debugNativeFirstResolverReplacementPreservesDispositionForTesting(_:));
+- (BOOL)debugExactNotificationIdentityRejectsStaleResolutionForTesting;
+- (BOOL)debugTimeoutCompletesExactlyOnceForTesting;
+- (BOOL)debugTimeoutBeforeNativeBindThenLateResolutionCompletesExactlyOnceForTesting;
+- (NSUInteger)debugArbitrationRecordCountForTesting;
 
 @end
 #endif
