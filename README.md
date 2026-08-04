@@ -1,9 +1,9 @@
 # opensteamer
 
 opensteamer pairs an iPhone with an awake Mac and streams Mac system audio,
-optional screen video, narrowly scoped remote input, and an explicitly enabled
-iPhone-microphone uplink over WebRTC. It prefers a direct ICE route and can fall
-back to TURN. An outbound WSS rendezvous service coordinates pairing and
+optional screen video, narrowly scoped remote input, and an automatically enabled
+iPhone-microphone uplink over WebRTC for the authenticated paired Mac. It prefers a direct
+ICE route and can fall back to TURN. An outbound WSS rendezvous service coordinates pairing and
 end-to-end-encrypted signaling; it does not carry plaintext media.
 
 This repository is an advanced prototype, not a hosted service. Its checked-in iOS Release
@@ -22,8 +22,11 @@ passes the unrelated-network and forced-TURN gates described in
 - Optional, explicitly enabled tap, atomic drag, committed text, Backspace, and Return input.
 - One-use invitation bootstrap followed by durable, Keychain-backed device pairing.
 - Fresh signaling and WebRTC keys for every paired-device media connection.
-- Output-only iOS playback by default, with an explicitly authorized 48 kHz mono
-  microphone uplink that uses the same conditional-duplex RemoteIO device.
+- Output-only iOS playback while the media route is being established. Once the
+  authenticated WebRTC peer, ICE route, and control channel are healthy, the app
+  automatically requests the user's microphone permission and enables a 48 kHz mono
+  uplink through the same conditional-duplex RemoteIO device. The user can still turn
+  the microphone off for the current session.
 - BlackHole 2ch output for the first Mac microphone MVP. When the authenticated
   WebRTC peer, ICE route, and control channel are all healthy, opensteamer
   automatically selects BlackHole 2ch as the Mac default input before starting
@@ -61,8 +64,9 @@ firewalls; it relays encrypted DTLS-SRTP media rather than plaintext audio or vi
 
 The Mac must remain powered on, awake, and running the signed host. The project does not
 provide arbitrary Internet wake-up. Force-quitting the iOS app stops background playback.
-During an active iPhone call, opensteamer closes its audio gates rather than accepting
-telephone-quality processing; an authenticated screen/control session may remain connected.
+During an active iPhone call, opensteamer keeps authenticated streamed playback alive in
+output-only mode, temporarily mutes the iPhone microphone uplink, and automatically restores
+the microphone after the call ends and the exact built-in-microphone route is healthy again.
 
 ## Configure before building
 
@@ -100,9 +104,9 @@ The authoritative values for the maintainer build are:
 | Configuration field | Checked-in value |
 | --- | --- |
 | Protected legacy Release bundle | <code>com.elamin.AudioStreamer</code>, build `36` |
-| Side-by-side TestFlight bundle | <code>com.elamin.opensteamer</code>, build `38` |
+| Side-by-side TestFlight bundle | <code>com.elamin.opensteamer</code>, build `41` |
 | Development team | `MSMG8CJLB3` |
-| Marketing version / build | `0.1.0` / `36` |
+| Marketing version | `0.1.0` |
 | Release rendezvous | Both `OPENSTEAMER_RENDEZVOUS_URL` and compatibility `AUDIOSTREAMER_RENDEZVOUS_URL` use the production WSS Worker origin declared in [`project.yml`](iOS/opensteamer/project.yml) |
 | Debug bundle | <code>org.example.AudioStreamer.dev</code> |
 | Debug rendezvous | Both endpoint settings are empty unless explicitly overridden locally |
