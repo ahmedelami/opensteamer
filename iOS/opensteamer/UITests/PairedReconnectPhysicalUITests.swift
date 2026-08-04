@@ -59,6 +59,7 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
     // The validation shell exports the exact side-by-side TestFlight identity. The application
     // object itself is never constructed with caller-controlled input.
     private static let sideBySideAppBundleIdentifier = "com.elamin.opensteamer"
+    private static let guardedPhysicalEvidenceRoot = "/Volumes/t7"
     private let app = XCUIApplication(bundleIdentifier: Self.sideBySideAppBundleIdentifier)
     // Audio diagnostics are published by the one-second WebRTC statistics task, so 1.5 seconds
     // permits one ordinary publication interval without allowing a late burst to launder a stall.
@@ -207,6 +208,15 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
         runtimeAttachment.lifetime = .keepAlways
         add(runtimeAttachment)
 
+        publishRawUIContinuityBoundary(
+            "OPENSTEAMER_RAW_UI_CONTINUITY_COMPLETE_V1",
+            nonce: runtimeNonce
+        )
+        RunLoop.current.run(until: Date().addingTimeInterval(10))
+        publishRawUIContinuityBoundary(
+            "OPENSTEAMER_RAW_UI_TEARDOWN_BEGIN_V1",
+            nonce: runtimeNonce
+        )
         app.buttons["disconnectWorldwide"].tap()
         XCTAssertTrue(
             waitForHostFailureToReturnToSavedPair(timeout: 45)
@@ -218,6 +228,79 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
     }
 
     func testRealConnectedCallRecoveryRotatesOrdinaryAudioPolicyAndRequiresFreshProof() throws {
+        let postCallRuntimeNonce = try XCTUnwrap(
+            ProcessInfo.processInfo.environment[
+                "OPENSTEAMER_POST_CALL_RAW_CONTINUITY_PROOF_NONCE"
+            ]?.trimmingCharacters(in: .whitespacesAndNewlines),
+            "The post-call raw overlap nonce was not propagated into XCTest."
+        )
+        guard postCallRuntimeNonce.range(
+            of: #"^[A-Za-z0-9-]{16,128}$"#,
+            options: .regularExpression
+        ) != nil else {
+            XCTFail("The post-call raw overlap nonce was malformed.")
+            return
+        }
+        let postCallRawContinuityText = try XCTUnwrap(
+            ProcessInfo.processInfo.environment[
+                "OPENSTEAMER_POST_CALL_RAW_CONTINUITY_SECONDS"
+            ]?.trimmingCharacters(in: .whitespacesAndNewlines),
+            "The required post-call raw continuity duration was not propagated into XCTest."
+        )
+        let postCallRawTimeoutText = try XCTUnwrap(
+            ProcessInfo.processInfo.environment[
+                "OPENSTEAMER_POST_CALL_RAW_UI_TIMEOUT_SECONDS"
+            ]?.trimmingCharacters(in: .whitespacesAndNewlines),
+            "The bounded post-call raw UI timeout was not propagated into XCTest."
+        )
+        let callAcousticRequestPath = try XCTUnwrap(
+            ProcessInfo.processInfo.environment[
+                "OPENSTEAMER_CALL_ACOUSTIC_REQUEST_PATH"
+            ]?.trimmingCharacters(in: .whitespacesAndNewlines),
+            "The acoustic acknowledgement request path was not propagated into XCTest."
+        )
+        let callAcousticStatusPath = try XCTUnwrap(
+            ProcessInfo.processInfo.environment[
+                "OPENSTEAMER_CALL_ACOUSTIC_STATUS_PATH"
+            ]?.trimmingCharacters(in: .whitespacesAndNewlines),
+            "The acoustic acknowledgement status path was not propagated into XCTest."
+        )
+        let callAcousticTimeoutText = try XCTUnwrap(
+            ProcessInfo.processInfo.environment[
+                "OPENSTEAMER_CALL_ACOUSTIC_TIMEOUT_SECONDS"
+            ]?.trimmingCharacters(in: .whitespacesAndNewlines),
+            "The acoustic acknowledgement timeout was not propagated into XCTest."
+        )
+        guard let postCallRawContinuitySeconds = UInt64(
+                postCallRawContinuityText
+              ),
+              (30...600).contains(postCallRawContinuitySeconds),
+              let postCallRawTimeoutSeconds = UInt64(
+                postCallRawTimeoutText
+              ),
+              postCallRawTimeoutSeconds > postCallRawContinuitySeconds,
+              postCallRawTimeoutSeconds <= 720,
+              let callAcousticTimeoutSeconds = UInt64(
+                callAcousticTimeoutText
+              ),
+              (1...300).contains(callAcousticTimeoutSeconds),
+              Self.isGuardedT7EvidencePath(callAcousticRequestPath),
+              Self.isGuardedT7EvidencePath(callAcousticStatusPath) else {
+            XCTFail("The post-call raw timing contract was malformed or outside its reviewed bounds.")
+            return
+        }
+        let postCallRawContinuityDuration = TimeInterval(
+            postCallRawContinuitySeconds
+        )
+        let postCallRawTimeoutDuration = TimeInterval(
+            postCallRawTimeoutSeconds
+        )
+        let requiredPostCallContinuityNs =
+            postCallRawContinuitySeconds * 1_000_000_000
+        let callAcousticTimeoutDuration = TimeInterval(
+            callAcousticTimeoutSeconds
+        )
+
         hardLaunch()
         let expectedPairFingerprint = try currentPairFingerprint()
         assertSavedPairIsIdleWithoutHistoricalError(
@@ -371,6 +454,59 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
             "Startup and interruption hosted windows must use distinct audio-policy generations."
         )
 
+        let hostedMarkerRawMicrophone =
+            element("worldwideRawMicrophoneOracle")
+        guard presentationValue == "active",
+              !hasConnectionError,
+              element("worldwideSessionState").value as? String
+                == "Connected",
+              element("worldwideAudioState").value as? String
+                == "Playing — iPhone call may reduce quality",
+              element("worldwideMicrophoneState").value as? String
+                == "Muted — iPhone call active",
+              !hostedMarkerRawMicrophone.exists,
+              interruption.initialSnapshot.origin == .interruption,
+              interruption.finalSnapshot.origin == .interruption,
+              interruption.initialSnapshot.sessionGeneration
+                == interruption.finalSnapshot.sessionGeneration,
+              interruption.finalSnapshot.sessionGeneration
+                == startup.finalSnapshot.sessionGeneration,
+              acceptedRouteValues.contains(interruption.route),
+              startup.finalSnapshot.policyID
+                != interruption.finalSnapshot.policyID,
+              excludedHostedAudioPolicyGenerations.count == 2 else {
+            XCTFail(
+                "Refusing to publish the hosted-call causal marker because the immediately observed UI and oracle state was not the proven connected-call state. Last observation: \(livePlaybackObservation)"
+            )
+            return
+        }
+
+        // Sequence 1 proves hosted-call state immediately before the driver may accept an
+        // acoustic acknowledgement. XCTest then stays in this loop and fails closed on any
+        // ordinary-playback transition until it consumes the exact accepted record and observes
+        // fresh hosted-call advancement after that acceptance.
+        publishHostedCallBoundary(
+            nonce: postCallRuntimeNonce,
+            sequence: 1,
+            acousticToken: "-"
+        )
+        let acceptedAcousticToken = try XCTUnwrap(
+            waitForAcceptedAcousticAcknowledgementWhileHosted(
+                requestPath: callAcousticRequestPath,
+                statusPath: callAcousticStatusPath,
+                nonce: postCallRuntimeNonce,
+                expectedRoute: interruption.route,
+                baseline: interruption.finalSnapshot,
+                timeout: callAcousticTimeoutDuration
+            ),
+            "The exact nonce-bound acoustic acknowledgement was not consumed while interruption-origin hosted playout remained live. Last observation: \(livePlaybackObservation)"
+        )
+        publishHostedCallBoundary(
+            nonce: postCallRuntimeNonce,
+            sequence: 2,
+            acousticToken: acceptedAcousticToken
+        )
+
         let recovered = try XCTUnwrap(
             waitForFreshPostCallOrdinaryPlayback(
                 expectedSessionGeneration:
@@ -460,6 +596,115 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
         recoveredAttachment.lifetime = .keepAlways
         add(recoveredAttachment)
 
+        XCTAssertEqual(
+            element("worldwideMicrophoneState").value as? String,
+            "On",
+            "The iPhone microphone did not automatically reopen after final call recovery."
+        )
+        let postCallRaw = try XCTUnwrap(
+            waitForStableRawIPhoneMicrophone(
+                timeout: postCallRawTimeoutDuration,
+                stableFor: postCallRawContinuityDuration,
+                expectedSessionGeneration:
+                    recovered.finalAudioSnapshot.sessionGeneration
+            ),
+            "Post-call recovery did not establish a fresh density-checked raw microphone sender under the same media session. Last observation: \(liveRawMicrophoneObservation)"
+        )
+        let initialPostCallRaw = postCallRaw.initialSnapshot
+        let finalPostCallRaw = postCallRaw.finalSnapshot
+        let zeroUUID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        XCTAssertEqual(
+            element("worldwideMicrophoneState").value as? String,
+            "On",
+            "The iPhone microphone did not remain On through the post-call raw proof."
+        )
+        XCTAssertEqual(
+            initialPostCallRaw.audioPolicyGeneration,
+            recovered.ordinaryAudioPolicyGeneration
+        )
+        XCTAssertEqual(
+            finalPostCallRaw.audioPolicyGeneration,
+            recovered.ordinaryAudioPolicyGeneration
+        )
+        XCTAssertNotEqual(
+            initialPostCallRaw.transportAuthorizationGeneration,
+            zeroUUID
+        )
+        XCTAssertNotEqual(initialPostCallRaw.windowGeneration, zeroUUID)
+        XCTAssertGreaterThan(initialPostCallRaw.microphonePolicyGeneration, 0)
+        XCTAssertGreaterThan(initialPostCallRaw.recordingGeneration, 0)
+        XCTAssertEqual(
+            initialPostCallRaw.recordingGeneration,
+            initialPostCallRaw.approvedRecordingGeneration
+        )
+        XCTAssertEqual(
+            initialPostCallRaw.transportAuthorizationGeneration,
+            finalPostCallRaw.transportAuthorizationGeneration
+        )
+        XCTAssertEqual(
+            initialPostCallRaw.recordingGeneration,
+            finalPostCallRaw.recordingGeneration
+        )
+        XCTAssertGreaterThanOrEqual(
+            postCallRaw.continuityDurationNs,
+            requiredPostCallContinuityNs
+        )
+
+        let postCallRawAttachment = XCTAttachment(
+            string:
+                "schema=opensteamer.post-call-raw-ui-continuity.v1\n"
+                    + "nonce=\(postCallRuntimeNonce)\n"
+                    + "scope=same production media session after real-call ordinary recovery; downstream BlackHole overlap is proved by the physical driver\n"
+                    + postCallRaw.sampleLog
+        )
+        postCallRawAttachment.name =
+            "Post-call raw iPhone microphone rolling continuity evidence"
+        postCallRawAttachment.lifetime = .keepAlways
+        add(postCallRawAttachment)
+
+        let postCallRuntimeAttachment = XCTAttachment(
+            string:
+                "schema=opensteamer.raw-ui-runtime.v1\n"
+                    + "nonce=\(postCallRuntimeNonce)\n"
+                    + "continuityDurationNs=\(postCallRaw.continuityDurationNs)\n"
+                    + "appPIDAtStart=\(postCallRaw.applicationProcessIDAtStart)\n"
+                    + "appPIDAtEnd=\(postCallRaw.applicationProcessIDAtEnd)\n"
+        )
+        postCallRuntimeAttachment.name =
+            "Post-call raw iPhone microphone runtime overlap evidence"
+        postCallRuntimeAttachment.lifetime = .keepAlways
+        add(postCallRuntimeAttachment)
+
+        let postCallGenerationAttachment = XCTAttachment(
+            string:
+                "schema=opensteamer.post-call-raw-generation.v1\n"
+                    + "nonce=\(postCallRuntimeNonce)\n"
+                    + "sessionGeneration=\(finalPostCallRaw.sessionGeneration.uuidString.lowercased())\n"
+                    + "ordinaryAudioPolicyGeneration=\(recovered.ordinaryAudioPolicyGeneration.uuidString.lowercased())\n"
+                    + "rawAudioPolicyGeneration=\(finalPostCallRaw.audioPolicyGeneration.uuidString.lowercased())\n"
+                    + "transportAuthorizationGeneration=\(finalPostCallRaw.transportAuthorizationGeneration.uuidString.lowercased())\n"
+                    + "windowGeneration=\(finalPostCallRaw.windowGeneration.uuidString.lowercased())\n"
+                    + "microphonePolicyGeneration=\(finalPostCallRaw.microphonePolicyGeneration)\n"
+                    + "recordingGeneration=\(finalPostCallRaw.recordingGeneration)\n"
+                    + "approvedRecordingGeneration=\(finalPostCallRaw.approvedRecordingGeneration)\n"
+                    + "appPIDAtStart=\(postCallRaw.applicationProcessIDAtStart)\n"
+                    + "appPIDAtEnd=\(postCallRaw.applicationProcessIDAtEnd)\n"
+                    + "continuityDurationNs=\(postCallRaw.continuityDurationNs)\n"
+        )
+        postCallGenerationAttachment.name =
+            "Post-call raw microphone generation evidence"
+        postCallGenerationAttachment.lifetime = .keepAlways
+        add(postCallGenerationAttachment)
+
+        publishRawUIContinuityBoundary(
+            "OPENSTEAMER_RAW_UI_CONTINUITY_COMPLETE_V1",
+            nonce: postCallRuntimeNonce
+        )
+        RunLoop.current.run(until: Date().addingTimeInterval(10))
+        publishRawUIContinuityBoundary(
+            "OPENSTEAMER_RAW_UI_TEARDOWN_BEGIN_V1",
+            nonce: postCallRuntimeNonce
+        )
         app.buttons["disconnectWorldwide"].tap()
         XCTAssertTrue(
             waitForHostFailureToReturnToSavedPair(timeout: 45)
@@ -1169,6 +1414,226 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
         }
 
         return nil
+    }
+
+    private func publishRawUIContinuityBoundary(
+        _ boundary: String,
+        nonce: String
+    ) {
+        let line = "\(boundary) nonce=\(nonce)\n"
+        FileHandle.standardOutput.write(Data(line.utf8))
+    }
+
+    private func publishHostedCallBoundary(
+        nonce: String,
+        sequence: Int,
+        acousticToken: String
+    ) {
+        precondition(sequence == 1 || sequence == 2)
+        let line = "OPENSTEAMER_CALL_UI_HOSTED_ACTIVE_V2 nonce=\(nonce) sequence=\(sequence) acousticToken=\(acousticToken)\n"
+        FileHandle.standardOutput.write(Data(line.utf8))
+    }
+
+    /// Keeps the UI test inside the interruption-origin hosted state until it consumes the exact
+    /// driver-published accepted record. A transition to ordinary playback before that point is a
+    /// causal failure, not post-call success. After consuming the record, one fresh advancing
+    /// hosted snapshot is required before sequence 2 can be published.
+    private func waitForAcceptedAcousticAcknowledgementWhileHosted(
+        requestPath: String,
+        statusPath: String,
+        nonce: String,
+        expectedRoute: String,
+        baseline: PhysicalHostedCallPlayoutSnapshot,
+        timeout: TimeInterval
+    ) -> String? {
+        guard timeout.isFinite, timeout > 0,
+              Self.isGuardedT7EvidencePath(requestPath),
+              Self.isGuardedT7EvidencePath(statusPath) else {
+            XCTFail("The acoustic acknowledgement evidence path or timeout was not guarded.")
+            return nil
+        }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        var tracker = PhysicalHostedCallPlayoutContinuityTracker(
+            requiredDuration: 0.25,
+            maximumProgressGap: maximumAudioOracleProgressGap,
+            expectedSessionGeneration: baseline.sessionGeneration,
+            expectedPolicyID: baseline.policyID,
+            expectedOrigin: .interruption,
+            expectedAudioPolicyGeneration: baseline.audioPolicyGeneration,
+            expectedAuthorizationGeneration: baseline.authorizationGeneration,
+            minimumAdvancementObservations: 2
+        )
+        _ = tracker.observe(
+            baseline,
+            at: ProcessInfo.processInfo.systemUptime
+        )
+        var acceptedToken: String?
+        var acceptedAtMonotonicNs: UInt64?
+        var snapshotAtAcceptance: PhysicalHostedCallPlayoutSnapshot?
+        var observedAdvancementAfterAcceptance = false
+
+        while Date() < deadline {
+            guard app.state == .runningForeground, !hasConnectionError else {
+                XCTFail("The app or connection ended before the acoustic acknowledgement completed.")
+                return nil
+            }
+
+            let audioState = element("worldwideAudioState").value as? String
+            let microphoneState = element("worldwideMicrophoneState").value as? String
+            let hostedElement = element("worldwideHostedCallPlayoutOracle")
+            let rawMicrophone = element("worldwideRawMicrophoneOracle")
+            let routeElement = element("worldwideSessionRoute")
+            guard presentationValue == "active",
+                  element("worldwideSessionState").value as? String == "Connected",
+                  audioState == "Playing — iPhone call may reduce quality",
+                  microphoneState == "Muted — iPhone call active",
+                  !rawMicrophone.exists,
+                  routeElement.exists,
+                  routeElement.value as? String == expectedRoute,
+                  hostedElement.exists,
+                  let encoded = hostedElement.value as? String,
+                  let current = PhysicalHostedCallPlayoutSnapshot(
+                    accessibilityValue: encoded
+                  ) else {
+                XCTFail(
+                    "Hosted-call state ended before the acoustic acknowledgement was causally bracketed; ordinary playback cannot satisfy the in-call acknowledgement."
+                )
+                return nil
+            }
+
+            let now = ProcessInfo.processInfo.systemUptime
+            let continuity = tracker.observe(current, at: now)
+            guard continuity != .rejected else {
+                XCTFail("Hosted-call identity or progress changed while awaiting the acoustic acknowledgement.")
+                return nil
+            }
+
+            if acceptedToken == nil,
+               let request = Self.readExactSingleLine(path: requestPath),
+               request.hasPrefix("heard-token=") {
+                let token = String(request.dropFirst("heard-token=".count))
+                guard Self.isEvidenceToken(token),
+                      let status = Self.readExactKeyValueRecord(
+                        path: statusPath,
+                        keys: [
+                            "schema", "nonce", "sequence", "token",
+                            "state", "acceptedAtMonotonicNs",
+                        ]
+                      ),
+                      status["schema"] == "opensteamer.call-acoustic-acknowledgement.v2",
+                      status["nonce"] == nonce,
+                      status["sequence"] == "1",
+                      status["token"] == token,
+                      status["state"] == "accepted",
+                      let acceptedAt = status["acceptedAtMonotonicNs"].flatMap(UInt64.init),
+                      acceptedAt > 0,
+                      String(acceptedAt) == status["acceptedAtMonotonicNs"] else {
+                    RunLoop.current.run(
+                        until: Date().addingTimeInterval(0.05)
+                    )
+                    continue
+                }
+                acceptedToken = token
+                acceptedAtMonotonicNs = acceptedAt
+                snapshotAtAcceptance = current
+            }
+
+            if let acceptedToken, let acceptedAtMonotonicNs,
+               let snapshotAtAcceptance {
+                let nowNs = UInt64(max(1, now * 1_000_000_000))
+                guard nowNs >= acceptedAtMonotonicNs else {
+                    XCTFail("The acoustic acceptance timestamp was from the future.")
+                    return nil
+                }
+                if current != snapshotAtAcceptance,
+                   PhysicalHostedCallPlayoutEvaluator.evaluate(
+                    previous: snapshotAtAcceptance,
+                    current: current
+                   ) == .advancing {
+                    observedAdvancementAfterAcceptance = true
+                }
+                if observedAdvancementAfterAcceptance {
+                    return acceptedToken
+                }
+            }
+
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+
+        return nil
+    }
+
+    private static func isEvidenceToken(_ value: String) -> Bool {
+        (16...128).contains(value.utf8.count)
+            && value.utf8.allSatisfy {
+                ($0 >= 48 && $0 <= 57)
+                    || ($0 >= 65 && $0 <= 90)
+                    || ($0 >= 97 && $0 <= 122)
+                    || $0 == 45
+            }
+    }
+
+    private static func isGuardedT7EvidencePath(_ path: String) -> Bool {
+        guard path.hasPrefix(guardedPhysicalEvidenceRoot + "/"),
+              !path.contains("\n"), !path.contains("\r"),
+              !path.split(separator: "/", omittingEmptySubsequences: false)
+                .contains(where: { $0 == "." || $0 == ".." }) else {
+            return false
+        }
+        let url = URL(fileURLWithPath: path)
+        return url.standardizedFileURL.path == path
+            && url.resolvingSymlinksInPath().path == path
+    }
+
+    private static func readExactSingleLine(path: String) -> String? {
+        guard isGuardedT7EvidencePath(path),
+              let data = FileManager.default.contents(atPath: path),
+              !data.isEmpty, data.count <= 4_096,
+              let text = String(data: data, encoding: .utf8),
+              !text.contains("\r") else {
+            return nil
+        }
+        let normalized = text.hasSuffix("\n")
+            ? String(text.dropLast()) : text
+        guard !normalized.isEmpty, !normalized.contains("\n") else {
+            return nil
+        }
+        return normalized
+    }
+
+    private static func readExactKeyValueRecord(
+        path: String,
+        keys: Set<String>
+    ) -> [String: String]? {
+        guard isGuardedT7EvidencePath(path),
+              let data = FileManager.default.contents(atPath: path),
+              !data.isEmpty, data.count <= 4_096,
+              let text = String(data: data, encoding: .utf8),
+              !text.contains("\r") else {
+            return nil
+        }
+        let normalized = text.hasSuffix("\n")
+            ? String(text.dropLast()) : text
+        let lines = normalized.split(
+            separator: "\n",
+            omittingEmptySubsequences: false
+        )
+        guard lines.count == keys.count else { return nil }
+        var fields: [String: String] = [:]
+        for line in lines {
+            guard let separator = line.firstIndex(of: "="),
+                  separator != line.startIndex else {
+                return nil
+            }
+            let key = String(line[..<separator])
+            let value = String(line[line.index(after: separator)...])
+            guard keys.contains(key), !value.isEmpty,
+                  fields.updateValue(value, forKey: key) == nil else {
+                return nil
+            }
+        }
+        return Set(fields.keys) == keys ? fields : nil
     }
 
     private func waitForStableHostedCallPlayout(
