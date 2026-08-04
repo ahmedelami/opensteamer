@@ -19,19 +19,31 @@
 #
 # Side effects/artifacts: rebuilds/verifies the Mac host; proves raw iPhone microphone forwarding
 # into BlackHole through a UID-pinned acoustic probe; repeatedly restarts the host while proving
-# reconnect/background/screen behavior; then waits for an explicit operator acknowledgement before
-# cold-launching into a real connected Phone or FaceTime call under one stable host PID. It writes
+# reconnect/background/screen behavior; then uses distinct nonce-bound operator acknowledgements
+# to enter and leave a real connected Phone or FaceTime call under one stable host PID. It writes
 # phase-specific result bundles, watchdog markers, authenticated host-log snapshots, screenshots,
 # and oracle evidence under the artifact directory (default
-# `/private/tmp/opensteamer-device-Paired-Reconnect`). The physical-output UID is passed only to the
+# `/Volumes/t7/opensteamer-device-Paired-Reconnect`). The physical-output UID is passed only to the
 # probe process and is never retained. Cleanup stops only processes owned by this run. Every wrong
 # build/signature, device lock/disconnect, host/log discontinuity, timeout, call acknowledgement
 # failure, or oracle rejection exits nonzero; `run-status.txt` becomes passed only after all three
 # exact proofs succeed.
 set -euo pipefail
+umask 077
 
 SAFE_APP_BUNDLE_IDENTIFIER="com.elamin.opensteamer"
 PROTECTED_APP_BUNDLE_IDENTIFIER="com.elamin.AudioStreamer"
+SAFE_HOST_LAUNCH_AGENT_LABEL="org.example.opensteamer.worldwide"
+PROTECTED_HOST_LAUNCH_AGENT_LABEL="com.elamin.audiostreamer.worldwide"
+SAFE_HOST_SERVICE="gui/${UID}/${SAFE_HOST_LAUNCH_AGENT_LABEL}"
+SAFE_HOST_LOG="/var/tmp/opensteamer-worldwide-host.log"
+SAFE_HOST_REVIEWED_LAUNCH_AGENT="${0:A:h:h:h:h}/macOS/LaunchAgents/org.example.opensteamer.worldwide.plist"
+SAFE_HOST_INSTALLED_LAUNCH_AGENT="/Users/ahmed/Library/LaunchAgents/org.example.opensteamer.worldwide.plist"
+SAFE_HOST_EXECUTABLE="/Applications/opensteamer Host.app/Contents/MacOS/CaptureServer"
+REVIEWED_T7_VOLUME_UUID="25E93573-3993-42CC-8EE8-4F7A6C86A2EF"
+REVIEWED_T7_STORE_UUID="CE1B73D9-E28D-40D2-8D37-D81F2C3F1051"
+REVIEWED_PHYSICAL_OUTPUT_UID="BuiltInSpeakerDevice"
+CONTROLLED_HOST_NO_AUDIO_TAPS_CONFIRMATION="controlled-host-no-audio-taps-reviewed"
 EXPECTED_APP_BUNDLE_IDENTIFIER=${OPENSTEAMER_EXPECTED_APP_BUNDLE_IDENTIFIER:-${SAFE_APP_BUNDLE_IDENTIFIER}}
 if [[ "${EXPECTED_APP_BUNDLE_IDENTIFIER}" == "${PROTECTED_APP_BUNDLE_IDENTIFIER}" ]]; then
   echo \
@@ -51,6 +63,28 @@ SCRIPT_DIR=${0:A:h}
 PROJECT_DIR=${SCRIPT_DIR:h}
 REPOSITORY_ROOT=${PROJECT_DIR:h:h}
 source "${SCRIPT_DIR}/physical-validation-helpers.zsh"
+
+# Test seams are process-wide authority. A typo or inherited environment variable must never make
+# a physical release run execute synthetic branches, even when that variable's value is empty.
+function reject_self_test_variables_outside_explicit_self_test() {
+  local variable_name
+  local -a leaked_variables=()
+
+  [[ -n "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" ]] && return 0
+  for variable_name in ${(k)parameters}; do
+    if [[ "${variable_name}" == OPENSTEAMER_SELF_TEST_* ]]; then
+      leaked_variables+=("${variable_name}")
+    fi
+  done
+  if (( ${#leaked_variables[@]} > 0 )); then
+    echo \
+      "Refusing a physical release run with reserved self-test variables present: ${(j:, :)leaked_variables}." \
+      >&2
+    return 2
+  fi
+}
+reject_self_test_variables_outside_explicit_self_test || exit $?
+
 if (( $# < 4 || $# > 5 )) \
     || [[ -z "${1:-}" || -z "${2:-}" || -z "${3:-}" || -z "${4:-}" ]]; then
   echo \
@@ -63,11 +97,115 @@ HARDWARE_UDID=$2
 EXPECTED_BUILD=$3
 PHYSICAL_OUTPUT_UID=$4
 shift 4
-ARTIFACT_DIR=${1:-/private/tmp/opensteamer-device-Paired-Reconnect}
-if [[ "${PHYSICAL_OUTPUT_UID}" == "BlackHole2ch_UID" ]] \
-    || (( ${#PHYSICAL_OUTPUT_UID} > 512 )); then
-  echo "The physical-output UID is invalid." >&2
+ARTIFACT_DIR=${1:-/Volumes/t7/opensteamer-device-Paired-Reconnect}
+if [[ "${PHYSICAL_OUTPUT_UID}" != "${REVIEWED_PHYSICAL_OUTPUT_UID}" ]]; then
+  echo \
+    "The physical-output UID must be the reviewed built-in speaker identity ${REVIEWED_PHYSICAL_OUTPUT_UID}." \
+    >&2
   exit 2
+fi
+
+# This declaration is an operational prerequisite, not cryptographic provenance. HAL metadata and
+# a nonce challenge cannot prove the absence of a hostile same-user audio tap. A production run is
+# valid only on the controlled Mac after the operator has disabled loopback/tap/routing software.
+if [[ -z "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" \
+    && "${OPENSTEAMER_CONTROLLED_HOST_NO_AUDIO_TAPS_ACK:-}" \
+      != "${CONTROLLED_HOST_NO_AUDIO_TAPS_CONFIRMATION}" ]]; then
+  echo \
+    "Set OPENSTEAMER_CONTROLLED_HOST_NO_AUDIO_TAPS_ACK=${CONTROLLED_HOST_NO_AUDIO_TAPS_CONFIRMATION} only after verifying that the controlled Mac has no audio taps or loopback routes." \
+    >&2
+  exit 2
+fi
+
+function require_reviewed_t7_volume_identity() {
+  local volume_uuid
+  local store_identifier
+  local store_uuid
+
+  [[ -d /Volumes/t7 && ! -L /Volumes/t7 ]] || return 1
+  volume_uuid=$(
+    /usr/sbin/diskutil info -plist /Volumes/t7 \
+      | /usr/bin/plutil -extract VolumeUUID raw -o - -
+  ) || return $?
+  store_identifier=$(
+    /usr/sbin/diskutil info -plist /Volumes/t7 \
+      | /usr/bin/plutil -extract APFSPhysicalStores.0.APFSPhysicalStore raw -o - -
+  ) || return $?
+  [[ -n "${store_identifier}" \
+      && "${store_identifier}" != *[^A-Za-z0-9]* ]] || return 1
+  store_uuid=$(
+    /usr/sbin/diskutil info -plist "${store_identifier}" \
+      | /usr/bin/plutil -extract DiskUUID raw -o - -
+  ) || return $?
+  [[ "${volume_uuid}" == "${REVIEWED_T7_VOLUME_UUID}" \
+      && "${store_uuid}" == "${REVIEWED_T7_STORE_UUID}" ]]
+}
+
+# Validate every existing component before creating the private root. Lexical traversal and every
+# symlink are rejected rather than normalized; the final canonical path must therefore be identical
+# to the supplied path. Existing run roots and descendants are owner-only so a later rm -rf cannot
+# be redirected by another local process.
+function prepare_guarded_physical_artifact_directory() {
+  local artifact_path=$1
+  local current="/Volumes/t7"
+  local relative
+  local component
+  local canonical
+  local root_device
+  local metadata
+  local -a components
+
+  [[ -n "${artifact_path}" \
+      && "${artifact_path}" == /Volumes/t7/* \
+      && "${artifact_path}" != *'//'* \
+      && "${artifact_path}" != *$'\n'* \
+      && "${artifact_path}" != *$'\r'* ]] || return 2
+  relative=${artifact_path#/Volumes/t7/}
+  components=("${(@s:/:)relative}")
+  (( ${#components[@]} > 0 )) || return 2
+  for component in "${components[@]}"; do
+    [[ -n "${component}" && "${component}" != "." && "${component}" != ".." ]] \
+      || return 2
+  done
+
+  require_reviewed_t7_volume_identity || return 2
+  metadata=$(/usr/bin/stat -f '%u:%Lp:%HT:%d' /Volumes/t7) || return $?
+  [[ "${metadata}" == "$((UID)):775:Directory:"* ]] || return 2
+  root_device=${metadata##*:}
+  [[ -n "${root_device}" && "${root_device}" != *[^0-9]* ]] || return 2
+
+  for component in "${components[@]}"; do
+    current="${current}/${component}"
+    if [[ -L "${current}" ]]; then
+      return 2
+    fi
+    if [[ -e "${current}" ]]; then
+      [[ -d "${current}" ]] || return 2
+      metadata=$(/usr/bin/stat -f '%u:%Lp:%HT:%d' "${current}") || return $?
+      [[ "${metadata}" == "$((UID)):700:Directory:${root_device}" ]] || return 2
+    fi
+  done
+
+  /bin/mkdir -p "${artifact_path}" || return $?
+  canonical=${artifact_path:A}
+  [[ "${canonical}" == "${artifact_path}" \
+      && ! -L "${artifact_path}" \
+      && "$((UID)):700:Directory:${root_device}" \
+        == "$(/usr/bin/stat -f '%u:%Lp:%HT:%d' "${artifact_path}" 2>/dev/null)" ]] \
+    || return 2
+  require_reviewed_t7_volume_identity || return 2
+  ARTIFACT_DIR_CANONICAL=${canonical}
+}
+
+if [[ -z "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" \
+    || "${OPENSTEAMER_SCRIPT_SELF_TEST}" == artifact-path-* ]]; then
+  if ! prepare_guarded_physical_artifact_directory "${ARTIFACT_DIR}"; then
+    echo \
+      "Physical validation artifacts require a canonical owner-only path on the reviewed T7 volume and store." \
+      >&2
+    exit 2
+  fi
+  ARTIFACT_DIR=${ARTIFACT_DIR_CANONICAL}
 fi
 RAW_PHASE_DIR="${ARTIFACT_DIR}/phase-1-raw-blackhole"
 RECONNECT_PHASE_DIR="${ARTIFACT_DIR}/phase-2-reconnect"
@@ -130,6 +268,8 @@ LEGACY_TESTS_JSON="${ARTIFACT_DIR}/tests.json"
 LEGACY_BUILD_RESULTS_JSON="${ARTIFACT_DIR}/build-results.json"
 LEGACY_ACTIVITIES_JSON="${ARTIFACT_DIR}/activities.json"
 LEGACY_DEVICE_LOCKED_MARKER="${ARTIFACT_DIR}/device-locked-during-test.txt"
+XCODE_TEMP_DIR="${ARTIFACT_DIR}/xcode-tmp"
+XCODE_SOURCE_PACKAGES="/Volumes/t7/opensteamer-source-packages"
 EXPECTED_MODEL="iPhone XR"
 EXPECTED_OS="18.7.9"
 EXPECTED_PLATFORM="iOS"
@@ -144,21 +284,63 @@ EXPECTED_TEST_URL="test://com.apple.xcode/opensteamer/opensteamerUITests/PairedR
 EXPECTED_CALL_TEST_NAME="testRealConnectedCallRecoveryRotatesOrdinaryAudioPolicyAndRequiresFreshProof"
 EXPECTED_CALL_TEST_NODE="PairedReconnectPhysicalUITests/${EXPECTED_CALL_TEST_NAME}()"
 EXPECTED_CALL_TEST_URL="test://com.apple.xcode/opensteamer/opensteamerUITests/PairedReconnectPhysicalUITests/${EXPECTED_CALL_TEST_NAME}"
-HOST_LABEL=${OPENSTEAMER_HOST_LAUNCH_AGENT_LABEL:-org.example.opensteamer.worldwide}
+HOST_LABEL=${OPENSTEAMER_HOST_LAUNCH_AGENT_LABEL:-${SAFE_HOST_LAUNCH_AGENT_LABEL}}
 HOST_SERVICE="gui/${UID}/${HOST_LABEL}"
-HOST_LOG=${OPENSTEAMER_HOST_LOG:-/tmp/opensteamer/worldwide-host.log}
+HOST_LOG=${OPENSTEAMER_HOST_LOG:-${SAFE_HOST_LOG}}
 EXPECTED_MAC_HOST_TEAM_ID=${OPENSTEAMER_EXPECTED_TEAM_ID:-TESTTEAM01}
 MAC_HOST_BUILD_SCRIPT="${REPOSITORY_ROOT}/macOS/scripts/build-opensteamer-host-app.sh"
 MAC_HOST_DEPLOYMENT_VERIFIER="${REPOSITORY_ROOT}/macOS/scripts/verify-mac-host-deployment.sh"
+MAC_HOST_LAUNCH_STATE_VERIFIER="${REPOSITORY_ROOT}/macOS/scripts/verify-mac-host-launch-state.sh"
+HOST_FRESH_STAGED_APP="${REPOSITORY_ROOT}/build/opensteamer Host.app"
+HOST_OFFLINE_LEGACY_REFERENCE="/Applications/AudioStreamer Host.app/Contents/MacOS/CaptureServer"
+HOST_REVIEWED_LAUNCH_AGENT="${REPOSITORY_ROOT}/macOS/LaunchAgents/${HOST_LABEL}.plist"
+HOST_INSTALLED_LAUNCH_AGENT="/Users/ahmed/Library/LaunchAgents/${HOST_LABEL}.plist"
+HOST_EXECUTABLE="${SAFE_HOST_EXECUTABLE}"
+HOST_LOCK_DIRECTORY="/Users/ahmed/Library/Application Support/com.elamin.AudioStreamer.CaptureServer.runtime"
+HOST_LOCK_FILE="${HOST_LOCK_DIRECTORY}/worldwide-host.lock"
 HOST_RESTART_DELAY_SECONDS=${OPENSTEAMER_HOST_RESTART_DELAY_SECONDS:-8}
 HOST_CONNECTION_WAIT_TIMEOUT_SECONDS=${OPENSTEAMER_HOST_CONNECTION_WAIT_TIMEOUT_SECONDS:-90}
 HOST_CHURN_LOCK_ATTEMPTS=${OPENSTEAMER_HOST_CHURN_LOCK_ATTEMPTS:-600}
+
+function require_exact_safe_host_mutation_identity() {
+  [[ "${HOST_LABEL}" == "${SAFE_HOST_LAUNCH_AGENT_LABEL}" \
+      && "${HOST_LABEL}" != "${PROTECTED_HOST_LAUNCH_AGENT_LABEL}" \
+      && "${HOST_SERVICE}" == "${SAFE_HOST_SERVICE}" \
+      && "${HOST_LOG}" == "${SAFE_HOST_LOG}" \
+      && "${HOST_REVIEWED_LAUNCH_AGENT}" \
+        == "${SAFE_HOST_REVIEWED_LAUNCH_AGENT}" \
+      && "${HOST_INSTALLED_LAUNCH_AGENT}" \
+        == "${SAFE_HOST_INSTALLED_LAUNCH_AGENT}" \
+      && "${HOST_EXECUTABLE}" == "${SAFE_HOST_EXECUTABLE}" ]]
+}
+
+if ! require_exact_safe_host_mutation_identity; then
+  echo \
+    "Refusing physical validation because the host launch label, service, executable, plist, or log is not the exact reviewed opensteamer identity." \
+    >&2
+  exit 2
+fi
 UI_TEST_TIMEOUT_SECONDS=${OPENSTEAMER_UI_TEST_TIMEOUT_SECONDS:-900}
 AUDIO_ORACLE_DURATION_SECONDS=${OPENSTEAMER_AUDIO_ORACLE_DURATION_SECONDS:-$((UI_TEST_TIMEOUT_SECONDS + 60))}
 CALL_AUDIO_ORACLE_DURATION_SECONDS=${OPENSTEAMER_CALL_AUDIO_ORACLE_DURATION_SECONDS:-$((UI_TEST_TIMEOUT_SECONDS + 60))}
 BLACKHOLE_PROBE_TIMEOUT_SECONDS=${OPENSTEAMER_BLACKHOLE_PROBE_TIMEOUT_SECONDS:-60}
 CALL_READY_TIMEOUT_SECONDS=${OPENSTEAMER_CALL_READY_TIMEOUT_SECONDS:-180}
+CALL_ACOUSTIC_TIMEOUT_SECONDS=${OPENSTEAMER_CALL_ACOUSTIC_TIMEOUT_SECONDS:-180}
+CALL_END_TIMEOUT_SECONDS=${OPENSTEAMER_CALL_END_TIMEOUT_SECONDS:-90}
 RAW_READY_TIMEOUT_SECONDS=${OPENSTEAMER_RAW_READY_TIMEOUT_SECONDS:-90}
+POST_CALL_RAW_CONTINUITY_SECONDS=${OPENSTEAMER_POST_CALL_RAW_CONTINUITY_SECONDS:-330}
+# This is a hard wall-clock budget from the accepted end-call acknowledgement through raw-route
+# readiness, the deployment verifier's eleven-second stability window, identity capture, and probe
+# launch. Keeping one declared budget makes the conservative same-clock overlap arithmetic auditable.
+POST_CALL_RAW_PRE_PROBE_BUDGET_SECONDS=${OPENSTEAMER_POST_CALL_RAW_PRE_PROBE_BUDGET_SECONDS:-40}
+# The CoreAudio default-route snapshot between the acoustic and end-call acknowledgements is a
+# separate bounded command and therefore has its own contribution to the continuity budget.
+POST_CALL_RAW_INTER_ACK_SNAPSHOT_BUDGET_SECONDS=${OPENSTEAMER_POST_CALL_RAW_INTER_ACK_SNAPSHOT_BUDGET_SECONDS:-4}
+POST_CALL_RAW_REQUIRED_OVERLAP_SECONDS=6
+POST_CALL_RAW_SAFETY_MARGIN_SECONDS=${OPENSTEAMER_POST_CALL_RAW_SAFETY_MARGIN_SECONDS:-10}
+POST_CALL_RAW_UI_TIMEOUT_SLACK_SECONDS=${OPENSTEAMER_POST_CALL_RAW_UI_TIMEOUT_SLACK_SECONDS:-15}
+POST_CALL_RAW_UI_TIMEOUT_SECONDS=0
+POST_CALL_RAW_REQUIRED_CONTINUITY_SECONDS=0
 UI_TEST_TERMINATION_GRACE_SECONDS=5
 DEVICE_COMMAND_TIMEOUT_SECONDS=${OPENSTEAMER_DEVICE_COMMAND_TIMEOUT_SECONDS:-15}
 DEVICE_LOCK_POLL_SECONDS=${OPENSTEAMER_DEVICE_LOCK_POLL_SECONDS:-5}
@@ -188,6 +370,8 @@ RAW_PROBE_OVERLAP_MARKER="${RAW_PHASE_DIR}/physical-blackhole-microphone-overlap
 RAW_PROBE_NON_OVERLAP_MARKER="${RAW_PHASE_DIR}/physical-blackhole-microphone-non-overlap.txt"
 RAW_UI_RUNTIME_ATTACHMENT_PAYLOAD_ID="${RAW_PHASE_DIR}/raw-ui-runtime-attachment-payload-id.txt"
 RAW_UI_RUNTIME_EVIDENCE="${RAW_PHASE_DIR}/raw-ui-runtime-evidence.txt"
+RAW_UI_COMPLETION_OBSERVATION="${RAW_PHASE_DIR}/raw-ui-completion-observation.txt"
+RAW_UI_CAUSAL_STATE_OBSERVATION=""
 RAW_UI_BOUNDS_EVIDENCE="${RAW_PHASE_DIR}/raw-ui-host-bounds.txt"
 RAW_PROBE_PROCESS_START_EVIDENCE="${RAW_PHASE_DIR}/production-app-probe-start.txt"
 RAW_PROBE_PROCESS_COMPLETION_EVIDENCE="${RAW_PHASE_DIR}/production-app-probe-completion.txt"
@@ -219,6 +403,17 @@ CALL_READY_ACKNOWLEDGEMENT="${CALL_PHASE_DIR}/call-ready-acknowledgement.txt"
 CALL_READY_STATUS="${CALL_PHASE_DIR}/call-ready-status.txt"
 CALL_READY_TIMEOUT_MARKER="${CALL_PHASE_DIR}/call-ready-timeout.txt"
 CALL_READY_STALE_MARKER="${CALL_PHASE_DIR}/call-ready-stale-acknowledgement.txt"
+CALL_ACOUSTIC_REQUEST="${CALL_PHASE_DIR}/call-acoustic-request.txt"
+CALL_ACOUSTIC_ACKNOWLEDGEMENT="${CALL_PHASE_DIR}/call-acoustic-acknowledgement.txt"
+CALL_ACOUSTIC_STATUS="${CALL_PHASE_DIR}/call-acoustic-status.txt"
+CALL_ACOUSTIC_TIMEOUT_MARKER="${CALL_PHASE_DIR}/call-acoustic-timeout.txt"
+CALL_ACOUSTIC_STALE_MARKER="${CALL_PHASE_DIR}/call-acoustic-stale-acknowledgement.txt"
+CALL_UI_HOSTED_PRE_ACK_OBSERVATION="${CALL_PHASE_DIR}/call-ui-hosted-pre-acoustic.txt"
+CALL_END_REQUEST="${CALL_PHASE_DIR}/call-end-request.txt"
+CALL_END_ACKNOWLEDGEMENT="${CALL_PHASE_DIR}/call-end-acknowledgement.txt"
+CALL_END_STATUS="${CALL_PHASE_DIR}/call-end-status.txt"
+CALL_END_TIMEOUT_MARKER="${CALL_PHASE_DIR}/call-end-timeout.txt"
+CALL_END_STALE_MARKER="${CALL_PHASE_DIR}/call-end-stale-acknowledgement.txt"
 RECONNECT_MEDIA_CLEANUP_PROOF="${RECONNECT_PHASE_DIR}/phase-cleanup.txt"
 RUN_STATUS="${ARTIFACT_DIR}/run-status.txt"
 RAW_BLACKHOLE_PROBE_SOURCE="${SCRIPT_DIR}/physical-blackhole-microphone-probe.swift"
@@ -231,8 +426,43 @@ RAW_BLACKHOLE_PROBE_DIAGNOSTICS="${RAW_PHASE_DIR}/physical-blackhole-microphone-
 RAW_BLACKHOLE_PROBE_COMPLETION="${RAW_PHASE_DIR}/physical-blackhole-microphone-completion.txt"
 RAW_DEFAULT_INPUT_BEFORE="${RAW_PHASE_DIR}/default-input-before.json"
 RAW_DEFAULT_INPUT_HEALTHY="${RAW_PHASE_DIR}/default-input-healthy.json"
+RAW_DEFAULT_INPUT_DURING=""
 RAW_DEFAULT_INPUT_AFTER="${RAW_PHASE_DIR}/default-input-after.json"
+RAW_DEFAULT_INPUT_LIFECYCLE_EVIDENCE="${RAW_PHASE_DIR}/default-input-lifecycle.txt"
 RAW_APP_DISCONNECT_EVIDENCE="${RAW_PHASE_DIR}/production-app-disconnect.txt"
+CALL_POST_RAW_DIR="${CALL_PHASE_DIR}/post-call-raw-microphone"
+CALL_POST_RAW_HOST_LOG_APPEND_CHUNK="${CALL_POST_RAW_DIR}/host-log-appended.bin"
+CALL_POST_RAW_HOST_LOG_COMPLETED_LINES="${CALL_POST_RAW_DIR}/host-log-completed.txt"
+CALL_POST_RAW_HOST_LOG_PARTIAL_LINE="${CALL_POST_RAW_DIR}/host-log-partial.bin"
+CALL_POST_RAW_READY_REQUEST="${CALL_POST_RAW_DIR}/raw-session-ready-request.txt"
+CALL_POST_RAW_READY_RESUMED_MARKER="${CALL_POST_RAW_DIR}/raw-session-ready-resumed.txt"
+CALL_POST_RAW_READY_EVIDENCE="${CALL_POST_RAW_DIR}/raw-session-ready-evidence.txt"
+CALL_POST_RAW_READY_STATUS="${CALL_POST_RAW_DIR}/raw-session-ready-status.txt"
+CALL_POST_RAW_READY_TIMEOUT_MARKER="${CALL_POST_RAW_DIR}/raw-session-ready-timeout.txt"
+CALL_POST_RAW_READY_STALE_MARKER="${CALL_POST_RAW_DIR}/raw-session-ready-stale-evidence.txt"
+CALL_POST_RAW_PROBE_OVERLAP_MARKER="${CALL_POST_RAW_DIR}/physical-blackhole-microphone-overlap.txt"
+CALL_POST_RAW_PROBE_NON_OVERLAP_MARKER="${CALL_POST_RAW_DIR}/physical-blackhole-microphone-non-overlap.txt"
+CALL_POST_RAW_UI_RUNTIME_ATTACHMENT_PAYLOAD_ID="${CALL_POST_RAW_DIR}/raw-ui-runtime-attachment-payload-id.txt"
+CALL_POST_RAW_UI_RUNTIME_EVIDENCE="${CALL_POST_RAW_DIR}/raw-ui-runtime-evidence.txt"
+CALL_POST_RAW_UI_COMPLETION_OBSERVATION="${CALL_POST_RAW_DIR}/raw-ui-completion-observation.txt"
+CALL_POST_RAW_UI_CAUSAL_STATE_OBSERVATION="${CALL_POST_RAW_DIR}/raw-ui-causal-state-observation.txt"
+CALL_POST_RAW_GENERATION_ATTACHMENT_PAYLOAD_ID="${CALL_POST_RAW_DIR}/raw-ui-generation-attachment-payload-id.txt"
+CALL_POST_RAW_GENERATION_EVIDENCE="${CALL_POST_RAW_DIR}/raw-ui-generation-evidence.txt"
+CALL_POST_RAW_UI_BOUNDS_EVIDENCE="${CALL_POST_RAW_DIR}/raw-ui-host-bounds.txt"
+CALL_POST_RAW_PROBE_PROCESS_START_EVIDENCE="${CALL_POST_RAW_DIR}/production-app-probe-start.txt"
+CALL_POST_RAW_PROBE_PROCESS_COMPLETION_EVIDENCE="${CALL_POST_RAW_DIR}/production-app-probe-completion.txt"
+CALL_POST_RAW_PROBE_COMPLETION_OBSERVATION="${CALL_POST_RAW_DIR}/physical-blackhole-completion-observation.txt"
+CALL_POST_RAW_PROBE_WAIT_EVIDENCE="${CALL_POST_RAW_DIR}/physical-blackhole-wait-evidence.txt"
+CALL_POST_RAW_PROBE_INTERVAL_EVIDENCE="${CALL_POST_RAW_DIR}/physical-blackhole-proof-interval.txt"
+CALL_POST_RAW_PROBE_RESULT="${CALL_POST_RAW_DIR}/physical-blackhole-microphone-result.json"
+CALL_POST_RAW_PROBE_CLEANUP_PROOF="${CALL_POST_RAW_DIR}/physical-blackhole-microphone-cleanup.txt"
+CALL_POST_RAW_PROBE_DIAGNOSTICS="${CALL_POST_RAW_DIR}/physical-blackhole-microphone-diagnostics.txt"
+CALL_POST_RAW_PROBE_COMPLETION="${CALL_POST_RAW_DIR}/physical-blackhole-microphone-completion.txt"
+CALL_POST_RAW_DEFAULT_INPUT_BEFORE="${CALL_POST_RAW_DIR}/default-input-before.json"
+CALL_POST_RAW_DEFAULT_INPUT_HEALTHY="${CALL_POST_RAW_DIR}/default-input-healthy.json"
+CALL_POST_RAW_DEFAULT_INPUT_DURING="${CALL_POST_RAW_DIR}/default-input-during.json"
+CALL_POST_RAW_DEFAULT_INPUT_AFTER="${CALL_POST_RAW_DIR}/default-input-after.json"
+CALL_POST_RAW_DEFAULT_INPUT_LIFECYCLE_EVIDENCE="${CALL_POST_RAW_DIR}/default-input-lifecycle.txt"
 AUDIO_ORACLE_TONE="${RECONNECT_PHASE_DIR}/physical-audio-oracle-tone.wav"
 AUDIO_ORACLE_TONE_LOG="${RECONNECT_PHASE_DIR}/physical-audio-oracle-tone.log"
 AUDIO_ORACLE_TONE_FAILURE_MARKER="${RECONNECT_PHASE_DIR}/physical-audio-oracle-tone-failed.txt"
@@ -250,13 +480,16 @@ XCODEBUILD_PID=""
 XCODEBUILD_GROUP_ISOLATED=0
 XCODEBUILD_GROUP_HANDLE=""
 XCODEBUILD_WATCHDOG_PID=""
+XCODEBUILD_LIVE_STDOUT=""
 BLACKHOLE_PROBE_PID=""
 BLACKHOLE_PROBE_STATUS=""
 BLACKHOLE_PROBE_STARTED_SECONDS=0
+BLACKHOLE_PROBE_STARTED_MONOTONIC_NS=0
+CALL_ACOUSTIC_ACCEPTED_NS=0
+CALL_ACOUSTIC_ACCEPTED_TOKEN=""
 BLACKHOLE_PROBE_NONCE=""
 RAW_PROBE_STARTED_NS=0
 RAW_PROBE_BOUND_PID=""
-RAW_XCODEBUILD_ENDED_NS=0
 HOST_LOG_START_ID=""
 HOST_LOG_START_OFFSET=""
 HOST_LOG_START_DIGEST=""
@@ -266,9 +499,25 @@ RAW_HOST_LOG_START_DIGEST=""
 RAW_READY_NONCE=""
 RAW_READY_REQUESTED_NS=0
 RAW_READY_RESUMED_NS=0
+RAW_PROOF_CONTEXT="phase-1"
+RAW_PROOF_EVENT_PHASE=1
+RAW_PROOF_EVENT_PREFIX=""
+RAW_PROOF_EXPECTED_HOST_PID=""
+RAW_PROOF_REQUIRE_NEW_CONNECTION=1
+RAW_PROOF_WORK_DIR="${RAW_PHASE_DIR}"
 PRODUCTION_PROCESS_QUERY_COUNT=0
 EXPECTED_INITIAL_HOST_PID=""
 CALL_STABLE_HOST_PID=""
+HOST_GENERATION_STATE="${ARTIFACT_DIR}/host-generation.txt"
+HOST_GENERATION_LOG_OFFSET=""
+HOST_GENERATION_LOG_DEVICE=""
+HOST_GENERATION_LOG_INODE=""
+HOST_GENERATION_PID=""
+HOST_GENERATION_RUNS=""
+HOST_GENERATION_PROCESS_START=""
+HOST_GENERATION_NONCE=""
+HOST_GENERATION_LOCK_DEVICE=""
+HOST_GENERATION_LOCK_INODE=""
 RUN_SUCCEEDED=0
 CLEANUP_RUNNING=0
 AUDIO_ORACLE_TONE_PID=""
@@ -276,6 +525,341 @@ SCREEN_ORACLE_PID=""
 ACTIVE_PHASE_STATUS=""
 OPENSTEAMER_CAPTURED_COMMAND_STATUS=0
 OPENSTEAMER_CAPTURED_PHASE_STATUS=0
+PHYSICAL_VALIDATION_ORACLE_SOURCE="${SCRIPT_DIR}/physical-validation-oracle.rs"
+PHYSICAL_VALIDATION_RUSTC="/opt/homebrew/Cellar/rust/1.97.1/bin/rustc"
+PHYSICAL_VALIDATION_RUSTC_DRIVER="/opt/homebrew/Cellar/rust/1.97.1/lib/librustc_driver-1aebdb596416d2c8.dylib"
+PHYSICAL_VALIDATION_RUSTC_SYSROOT="/opt/homebrew/Cellar/rust/1.97.1"
+PHYSICAL_VALIDATION_RUSTC_VERSION="rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)"
+PHYSICAL_VALIDATION_RUSTC_SHA256="d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd"
+PHYSICAL_VALIDATION_RUSTC_DRIVER_SHA256="aa8f5e89644f6d54fd3f1c4d4031bbda10ff750984cede4a75c7addee27e15df"
+PHYSICAL_VALIDATION_ORACLE_BUILD_DIR=""
+PHYSICAL_VALIDATION_ORACLE_SELF_TEST="${ARTIFACT_DIR}/physical-validation-oracle-self-test.txt"
+MIGRATION_CONTROLLER_SOURCE="${REPOSITORY_ROOT}/macOS/scripts/opensteamer-host-post-v20-update-controller.rs"
+MIGRATION_CONTROLLER_SOURCE_SHA256="2dfe9ddec5ea71b206f6462deec0b8be5423e9f23ab30aebc42b8f424dfdab06"
+MIGRATION_CONTROLLER_BINARY_SHA256="0beb8e96aabd059ee5f108dfd05d7d5d99fa52b58f56ab942a31ee8efd33f528"
+OPENSTEAMER_MIGRATION_CONTROLLER_BINARY=""
+
+# XCTest already compiles one current-source oracle for the class. Reuse it only after entering an
+# explicit inert script self-test, then copy it into this process's ordinary private run directory
+# so cleanup and controller-fixture tests never mutate the shared binary. A physical run and the
+# dedicated migration-controller build self-test still take the fresh compiler/self-test path.
+function initialize_exported_physical_validation_oracle_for_self_test() {
+  local exported_oracle=${OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE:-}
+  local exported_parent=${exported_oracle:h}
+  local build_parent="/Volumes/t7"
+  local build_dir
+  local oracle_binary
+  local exported_sha256
+  local copied_sha256
+  local monotonic_ns
+
+  [[ -n "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" \
+      && "${OPENSTEAMER_SCRIPT_SELF_TEST}" \
+        != "migration-controller-lock-probe-build" \
+      && -n "${exported_oracle}" ]] || return 2
+  if [[ ! -d "${build_parent}" || -L "${build_parent}" \
+      || "$(/usr/bin/stat -f '%u:%Lp:%HT' "${build_parent}" 2>/dev/null)" \
+        != "$(/usr/bin/id -u):775:Directory" \
+      || "${exported_parent}" \
+        != /Volumes/t7/opensteamer-physical-validation-tests-* \
+      || ! -d "${exported_parent}" || -L "${exported_parent}" \
+      || "$(/usr/bin/stat -f '%u:%Lp:%HT' "${exported_parent}" 2>/dev/null)" \
+        != "$(/usr/bin/id -u):700:Directory" \
+      || ! -f "${exported_oracle}" || -L "${exported_oracle}" \
+      || ! -x "${exported_oracle}" \
+      || "$(/usr/bin/stat -f '%u:%l:%Lp' "${exported_oracle}" 2>/dev/null)" \
+        != "$(/usr/bin/id -u):1:500" ]]; then
+    echo "The XCTest-exported Rust physical-validation oracle is unsafe." >&2
+    return 1
+  fi
+
+  exported_sha256=$(
+    /usr/bin/shasum -a 256 "${exported_oracle}" \
+      | /usr/bin/awk '{print $1}'
+  ) || return $?
+  [[ "${#exported_sha256}" == 64 \
+      && "${exported_sha256}" != *[^0-9a-f]* ]] || return 1
+
+  build_dir=$(
+    /usr/bin/mktemp -d \
+      "${build_parent}/.opensteamer-physical-validation-oracle.XXXXXX"
+  ) || return $?
+  PHYSICAL_VALIDATION_ORACLE_BUILD_DIR=${build_dir}
+  /bin/chmod 700 "${build_dir}" || return $?
+  if [[ "${build_dir}" != /Volumes/t7/.opensteamer-physical-validation-oracle.* \
+      || -L "${build_dir}" \
+      || "$(/usr/bin/stat -f '%u:%Lp:%HT' "${build_dir}" 2>/dev/null)" \
+        != "$(/usr/bin/id -u):700:Directory" ]]; then
+    echo "The private XCTest Rust-oracle directory is unsafe." >&2
+    return 1
+  fi
+  /bin/mkdir "${build_dir}/tmp" || return $?
+  /bin/chmod 700 "${build_dir}/tmp" || return $?
+  oracle_binary="${build_dir}/physical-validation-oracle"
+  /bin/cp "${exported_oracle}" "${oracle_binary}" || return $?
+  /bin/chmod 500 "${oracle_binary}" || return $?
+  copied_sha256=$(
+    /usr/bin/shasum -a 256 "${oracle_binary}" \
+      | /usr/bin/awk '{print $1}'
+  ) || return $?
+  if [[ "${copied_sha256}" != "${exported_sha256}" \
+      || "$(/usr/bin/stat -f '%u:%l:%Lp' "${oracle_binary}" 2>/dev/null)" \
+        != "$(/usr/bin/id -u):1:500" ]]; then
+    echo "The private XCTest Rust-oracle copy changed." >&2
+    return 1
+  fi
+
+  typeset -gx OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE="${oracle_binary}"
+  monotonic_ns=$(opensteamer_run_physical_validation_oracle monotonic-ns) \
+    || return $?
+  [[ -n "${monotonic_ns}" && "${monotonic_ns}" != *[^0-9]* ]] || return 1
+  opensteamer_write_state \
+    "${PHYSICAL_VALIDATION_ORACLE_SELF_TEST}" \
+    "SELF_TEST_OK physical-validation-oracle"
+}
+
+function initialize_physical_validation_oracle() {
+  local build_parent="/Volumes/t7"
+  local build_dir
+  local source_copy
+  local source_sha256
+  local compiler_sha256
+  local compiler_driver_sha256
+  local oracle_binary
+  local self_test_temporary="${PHYSICAL_VALIDATION_ORACLE_SELF_TEST}.tmp.$$"
+
+  if [[ -n "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" \
+      && "${OPENSTEAMER_SCRIPT_SELF_TEST}" \
+        != "migration-controller-lock-probe-build" \
+      && -n "${OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE:-}" ]]; then
+    initialize_exported_physical_validation_oracle_for_self_test
+    return $?
+  fi
+
+  if [[ ! -d "${build_parent}" || -L "${build_parent}" \
+      || "$(/usr/bin/stat -f '%u:%Lp:%HT' "${build_parent}" 2>/dev/null)" \
+        != "$(/usr/bin/id -u):775:Directory" ]]; then
+    echo "The guarded /Volumes/t7 physical-validation build parent is unavailable or unsafe." >&2
+    return 1
+  fi
+  if [[ ! -f "${PHYSICAL_VALIDATION_RUSTC}" \
+      || -L "${PHYSICAL_VALIDATION_RUSTC}" \
+      || ! -x "${PHYSICAL_VALIDATION_RUSTC}" \
+      || "$(/usr/bin/stat -f '%u:%g:%l:%Lp' "${PHYSICAL_VALIDATION_RUSTC}" 2>/dev/null)" \
+        != "$(/usr/bin/id -u):80:1:555" ]]; then
+    echo "The reviewed Rust compiler metadata changed." >&2
+    return 1
+  fi
+  compiler_sha256=$(
+    /usr/bin/shasum -a 256 "${PHYSICAL_VALIDATION_RUSTC}" \
+      | /usr/bin/awk '{print $1}'
+  ) || return $?
+  if [[ "${compiler_sha256}" != "${PHYSICAL_VALIDATION_RUSTC_SHA256}" \
+      || "$("${PHYSICAL_VALIDATION_RUSTC}" --version)" \
+        != "${PHYSICAL_VALIDATION_RUSTC_VERSION}" \
+      || "$("${PHYSICAL_VALIDATION_RUSTC}" --print sysroot)" \
+        != "${PHYSICAL_VALIDATION_RUSTC_SYSROOT}" ]]; then
+    echo "The reviewed Rust compiler identity changed." >&2
+    return 1
+  fi
+  if [[ ! -f "${PHYSICAL_VALIDATION_RUSTC_DRIVER}" \
+      || -L "${PHYSICAL_VALIDATION_RUSTC_DRIVER}" \
+      || "$(/usr/bin/stat -f '%u:%g:%l:%Lp' "${PHYSICAL_VALIDATION_RUSTC_DRIVER}" 2>/dev/null)" \
+        != "$(/usr/bin/id -u):80:1:444" ]]; then
+    echo "The reviewed Rust compiler driver metadata changed." >&2
+    return 1
+  fi
+  compiler_driver_sha256=$(
+    /usr/bin/shasum -a 256 "${PHYSICAL_VALIDATION_RUSTC_DRIVER}" \
+      | /usr/bin/awk '{print $1}'
+  ) || return $?
+  if [[ "${compiler_driver_sha256}" \
+      != "${PHYSICAL_VALIDATION_RUSTC_DRIVER_SHA256}" ]]; then
+    echo "The reviewed Rust compiler driver identity changed." >&2
+    return 1
+  fi
+  if [[ ! -f "${PHYSICAL_VALIDATION_ORACLE_SOURCE}" \
+      || -L "${PHYSICAL_VALIDATION_ORACLE_SOURCE}" \
+      || "$(/usr/bin/stat -f '%u:%l:%Lp' "${PHYSICAL_VALIDATION_ORACLE_SOURCE}" 2>/dev/null)" \
+        != "$(/usr/bin/id -u):1:644" ]]; then
+    echo "The Rust physical-validation oracle source metadata is unsafe." >&2
+    return 1
+  fi
+  source_sha256=$(
+    /usr/bin/shasum -a 256 "${PHYSICAL_VALIDATION_ORACLE_SOURCE}" \
+      | /usr/bin/awk '{print $1}'
+  ) || return $?
+  if [[ ${#source_sha256} != 64 || "${source_sha256}" == *[^0-9a-f]* ]]; then
+    echo "The Rust physical-validation oracle source hash is malformed." >&2
+    return 1
+  fi
+
+  build_dir=$(
+    /usr/bin/mktemp -d \
+      "${build_parent}/.opensteamer-physical-validation-oracle.XXXXXX"
+  ) || return $?
+  PHYSICAL_VALIDATION_ORACLE_BUILD_DIR=${build_dir}
+  /bin/chmod 700 "${build_dir}" || return $?
+  if [[ "${build_dir}" != /Volumes/t7/.opensteamer-physical-validation-oracle.* \
+      || -L "${build_dir}" \
+      || "$(/usr/bin/stat -f '%u:%Lp:%HT' "${build_dir}" 2>/dev/null)" \
+        != "$(/usr/bin/id -u):700:Directory" ]]; then
+    echo "The private Rust physical-validation build directory is unsafe." >&2
+    return 1
+  fi
+  /bin/mkdir "${build_dir}/tmp" || return $?
+  /bin/chmod 700 "${build_dir}/tmp" || return $?
+  source_copy="${build_dir}/physical-validation-oracle.rs"
+  oracle_binary="${build_dir}/physical-validation-oracle"
+  /bin/cp "${PHYSICAL_VALIDATION_ORACLE_SOURCE}" "${source_copy}" || return $?
+  /bin/chmod 400 "${source_copy}" || return $?
+  if [[ "$(/usr/bin/stat -f '%u:%l:%Lp' "${source_copy}" 2>/dev/null)" \
+      != "$(/usr/bin/id -u):1:400" \
+      || "$(/usr/bin/shasum -a 256 "${source_copy}" | /usr/bin/awk '{print $1}')" \
+        != "${source_sha256}" ]]; then
+    echo "The private Rust physical-validation source copy changed." >&2
+    return 1
+  fi
+  TMPDIR="${build_dir}/tmp" \
+    "${PHYSICAL_VALIDATION_RUSTC}" \
+      --edition=2021 \
+      -D warnings \
+      -C opt-level=2 \
+      --sysroot "${PHYSICAL_VALIDATION_RUSTC_SYSROOT}" \
+      --remap-path-prefix "${REPOSITORY_ROOT}=/reviewed/opensteamer" \
+      --remap-path-prefix "${build_dir}=/reviewed/opensteamer-physical-validation-build" \
+      "${source_copy}" \
+      -o "${oracle_binary}" || return $?
+  /bin/chmod 500 "${oracle_binary}" || return $?
+  if [[ ! -f "${oracle_binary}" || -L "${oracle_binary}" \
+      || "$(/usr/bin/stat -f '%u:%l:%Lp' "${oracle_binary}" 2>/dev/null)" \
+        != "$(/usr/bin/id -u):1:500" ]]; then
+    echo "The compiled Rust physical-validation oracle metadata is unsafe." >&2
+    return 1
+  fi
+  if [[ "$(/usr/bin/shasum -a 256 "${PHYSICAL_VALIDATION_RUSTC}" | /usr/bin/awk '{print $1}')" \
+        != "${PHYSICAL_VALIDATION_RUSTC_SHA256}" \
+      || "$(/usr/bin/shasum -a 256 "${PHYSICAL_VALIDATION_RUSTC_DRIVER}" | /usr/bin/awk '{print $1}')" \
+        != "${PHYSICAL_VALIDATION_RUSTC_DRIVER_SHA256}" \
+      || "$(/usr/bin/shasum -a 256 "${PHYSICAL_VALIDATION_ORACLE_SOURCE}" | /usr/bin/awk '{print $1}')" \
+        != "${source_sha256}" ]]; then
+    echo "A trusted Rust physical-validation compilation input changed during compilation." >&2
+    return 1
+  fi
+  typeset -gx OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE="${oracle_binary}"
+  rm -f "${self_test_temporary}" || return $?
+  if opensteamer_run_physical_validation_oracle self-test \
+      > "${self_test_temporary}" 2>&1; then
+    :
+  else
+    local self_test_status=$?
+    rm -f "${self_test_temporary}"
+    return "${self_test_status}"
+  fi
+  /bin/mv "${self_test_temporary}" \
+    "${PHYSICAL_VALIDATION_ORACLE_SELF_TEST}" || return $?
+  /usr/bin/grep -Fxq \
+    'SELF_TEST_OK physical-validation-oracle' \
+    "${PHYSICAL_VALIDATION_ORACLE_SELF_TEST}"
+}
+
+function validate_migration_controller_binary() {
+  local controller=${OPENSTEAMER_MIGRATION_CONTROLLER_BINARY:-}
+
+  [[ -n "${controller}" \
+      && "${controller}" == /Volumes/t7/.opensteamer-physical-validation-oracle.*/migration-lock-probe \
+      && -f "${controller}" \
+      && ! -L "${controller}" \
+      && -x "${controller}" \
+      && "$(/usr/bin/stat -f '%u:%l:%Lp' "${controller}" 2>/dev/null)" \
+        == "$(/usr/bin/id -u):1:500" \
+      && "$(/usr/bin/shasum -a 256 "${controller}" 2>/dev/null \
+        | /usr/bin/awk '{print $1}')" == "${MIGRATION_CONTROLLER_BINARY_SHA256}" ]]
+}
+
+# The deployment verifier delegates the canonical advisory-lock proof to fresh reviewed Rust.
+# Build that probe once, on T7, only for a real physical run; inert shell self-tests supply their
+# own non-executed fixture path and therefore do not multiply this compile across every test case.
+function initialize_migration_controller_lock_probe() {
+  local build_dir=${PHYSICAL_VALIDATION_ORACLE_BUILD_DIR:-}
+  local controller_build="${build_dir}/controller"
+  local controller_binary="${build_dir}/migration-lock-probe"
+  local source_sha256
+
+  if [[ -z "${build_dir}" \
+      || "${build_dir}" != /Volumes/t7/.opensteamer-physical-validation-oracle.* \
+      || ! -d "${build_dir}" \
+      || -L "${build_dir}" \
+      || "$(/usr/bin/stat -f '%u:%Lp:%HT' "${build_dir}" 2>/dev/null)" \
+        != "$(/usr/bin/id -u):700:Directory" ]]; then
+    echo "The guarded Rust physical-validation build directory is unavailable." >&2
+    return 1
+  fi
+  if [[ ! -f "${MIGRATION_CONTROLLER_SOURCE}" \
+      || -L "${MIGRATION_CONTROLLER_SOURCE}" \
+      || "$(/usr/bin/stat -f '%u:%l:%Lp' "${MIGRATION_CONTROLLER_SOURCE}" 2>/dev/null)" \
+        != "$(/usr/bin/id -u):1:644" ]]; then
+    echo "The reviewed migration lock-probe source metadata is unsafe." >&2
+    return 1
+  fi
+  source_sha256=$(
+    /usr/bin/shasum -a 256 "${MIGRATION_CONTROLLER_SOURCE}" \
+      | /usr/bin/awk '{print $1}'
+  ) || return $?
+  if [[ "${source_sha256}" != "${MIGRATION_CONTROLLER_SOURCE_SHA256}" ]]; then
+    echo "The reviewed migration lock-probe source bytes changed." >&2
+    return 1
+  fi
+
+  TMPDIR="${build_dir}/tmp" \
+    "${PHYSICAL_VALIDATION_RUSTC}" \
+      --edition=2021 \
+      -D warnings \
+      -C opt-level=2 \
+      --sysroot "${PHYSICAL_VALIDATION_RUSTC_SYSROOT}" \
+      --remap-path-prefix "${REPOSITORY_ROOT}=/reviewed/opensteamer-post-v20" \
+      --remap-path-prefix "${build_dir}=/reviewed/opensteamer-post-v20-build" \
+      "${MIGRATION_CONTROLLER_SOURCE}" \
+      -o "${controller_build}" || return $?
+  /bin/chmod 500 "${controller_build}" || return $?
+  /bin/mv "${controller_build}" "${controller_binary}" || return $?
+  OPENSTEAMER_MIGRATION_CONTROLLER_BINARY=${controller_binary}
+  typeset -gx OPENSTEAMER_MIGRATION_CONTROLLER_BINARY
+  if [[ "$(/usr/bin/shasum -a 256 "${PHYSICAL_VALIDATION_RUSTC}" \
+          | /usr/bin/awk '{print $1}')" != "${PHYSICAL_VALIDATION_RUSTC_SHA256}" \
+      || "$(/usr/bin/shasum -a 256 "${PHYSICAL_VALIDATION_RUSTC_DRIVER}" \
+          | /usr/bin/awk '{print $1}')" != "${PHYSICAL_VALIDATION_RUSTC_DRIVER_SHA256}" \
+      || "$(/usr/bin/shasum -a 256 "${MIGRATION_CONTROLLER_SOURCE}" \
+          | /usr/bin/awk '{print $1}')" != "${MIGRATION_CONTROLLER_SOURCE_SHA256}" ]]; then
+    echo "The compiled migration lock probe or a trusted compilation input changed." >&2
+    return 1
+  fi
+  if ! validate_migration_controller_binary; then
+    echo "The compiled migration lock probe did not match the pinned binary identity." >&2
+    return 1
+  fi
+}
+
+function cleanup_physical_validation_oracle() {
+  local build_dir=${PHYSICAL_VALIDATION_ORACLE_BUILD_DIR:-}
+
+  if [[ -z "${build_dir}" ]]; then
+    return 0
+  fi
+  if [[ "${build_dir}" != /Volumes/t7/.opensteamer-physical-validation-oracle.* \
+      || ! -d "${build_dir}" || -L "${build_dir}" \
+      || "$(/usr/bin/stat -f '%u:%Lp:%HT' "${build_dir}" 2>/dev/null)" \
+        != "$(/usr/bin/id -u):700:Directory" ]]; then
+    echo "Refusing to clean an untrusted Rust physical-validation build path." >&2
+    return 1
+  fi
+  /bin/chmod -R u+w "${build_dir}" 2>/dev/null || return $?
+  /bin/rm -rf "${build_dir}" || return $?
+  PHYSICAL_VALIDATION_ORACLE_BUILD_DIR=""
+  unset OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE
+  OPENSTEAMER_MIGRATION_CONTROLLER_BINARY=""
+  unset OPENSTEAMER_MIGRATION_CONTROLLER_BINARY
+}
 
 mkdir -p "${ARTIFACT_DIR}"
 print -r -- "status=running" > "${RUN_STATUS}"
@@ -464,6 +1048,8 @@ function wait_for_blackhole_probe_completion() {
   local completion_fields
   local completion_end_ns
   local completion_status
+  local wait_deadline_ns
+  local bounded_wait_status
   local wait_temporary="${RAW_PROBE_WAIT_EVIDENCE}.tmp.$$"
 
   [[ -n "${probe_pid}" ]] || return 1
@@ -471,6 +1057,13 @@ function wait_for_blackhole_probe_completion() {
   if (( started <= 0 )); then
     started=${SECONDS}
   fi
+  [[ -n "${BLACKHOLE_PROBE_STARTED_MONOTONIC_NS}" \
+      && "${BLACKHOLE_PROBE_STARTED_MONOTONIC_NS}" != *[^0-9]* \
+      && "${timeout_seconds}" != *[^0-9]* ]] || return 3
+  wait_deadline_ns=$((
+    BLACKHOLE_PROBE_STARTED_MONOTONIC_NS + timeout_seconds * 1000000000
+  ))
+  (( wait_deadline_ns > BLACKHOLE_PROBE_STARTED_MONOTONIC_NS )) || return 3
   while [[ ! -s "${RAW_BLACKHOLE_PROBE_COMPLETION}" ]]; do
     if ! opensteamer_process_group_exists "${probe_pid}"; then
       sleep 0.05
@@ -507,7 +1100,29 @@ function wait_for_blackhole_probe_completion() {
     fi
     sleep 0.1
   done
-  opensteamer_wait_for_final_process_status "${probe_pid}" || true
+  if opensteamer_wait_for_final_group_status_until \
+      "${probe_pid}" \
+      "${wait_deadline_ns}" \
+      "${UI_TEST_TERMINATION_GRACE_SECONDS}"; then
+    bounded_wait_status=0
+  else
+    bounded_wait_status=$?
+  fi
+  if (( bounded_wait_status == 124 )); then
+    BLACKHOLE_PROBE_STATUS=124
+    BLACKHOLE_PROBE_PID=""
+    opensteamer_write_state \
+      "${RAW_BLACKHOLE_PROBE_CLEANUP_PROOF}" \
+      "state=wrapper-timed-out-after-completion status=124" || true
+    record_raw_overlap_failure probe-wrapper-timeout-after-completion 124
+    return 124
+  fi
+  if (( bounded_wait_status != 0 )); then
+    BLACKHOLE_PROBE_STATUS=137
+    record_raw_overlap_failure probe-wrapper-wait-indeterminate \
+      "${bounded_wait_status}"
+    return "${bounded_wait_status}"
+  fi
   if ! opensteamer_wait_for_process_group_exit "${probe_pid}" 2; then
     BLACKHOLE_PROBE_STATUS=137
     record_raw_overlap_failure probe-group-survived-exit 137
@@ -704,6 +1319,7 @@ function cleanup_processes() {
   cleanup_xcodebuild
   cleanup_audio_oracle_tone
   cleanup_screen_oracle_challenge
+  cleanup_physical_validation_oracle || true
   rmdir "${HOST_CHURN_LOCK}" 2>/dev/null || true
   CLEANUP_RUNNING=0
   return 0
@@ -758,8 +1374,29 @@ opensteamer_require_positive_integer \
   OPENSTEAMER_CALL_READY_TIMEOUT_SECONDS \
   "${CALL_READY_TIMEOUT_SECONDS}"
 opensteamer_require_positive_integer \
+  OPENSTEAMER_CALL_ACOUSTIC_TIMEOUT_SECONDS \
+  "${CALL_ACOUSTIC_TIMEOUT_SECONDS}"
+opensteamer_require_positive_integer \
+  OPENSTEAMER_CALL_END_TIMEOUT_SECONDS \
+  "${CALL_END_TIMEOUT_SECONDS}"
+opensteamer_require_positive_integer \
   OPENSTEAMER_RAW_READY_TIMEOUT_SECONDS \
   "${RAW_READY_TIMEOUT_SECONDS}"
+opensteamer_require_positive_integer \
+  OPENSTEAMER_POST_CALL_RAW_CONTINUITY_SECONDS \
+  "${POST_CALL_RAW_CONTINUITY_SECONDS}"
+opensteamer_require_positive_integer \
+  OPENSTEAMER_POST_CALL_RAW_PRE_PROBE_BUDGET_SECONDS \
+  "${POST_CALL_RAW_PRE_PROBE_BUDGET_SECONDS}"
+opensteamer_require_positive_integer \
+  OPENSTEAMER_POST_CALL_RAW_INTER_ACK_SNAPSHOT_BUDGET_SECONDS \
+  "${POST_CALL_RAW_INTER_ACK_SNAPSHOT_BUDGET_SECONDS}"
+opensteamer_require_positive_integer \
+  OPENSTEAMER_POST_CALL_RAW_SAFETY_MARGIN_SECONDS \
+  "${POST_CALL_RAW_SAFETY_MARGIN_SECONDS}"
+opensteamer_require_positive_integer \
+  OPENSTEAMER_POST_CALL_RAW_UI_TIMEOUT_SLACK_SECONDS \
+  "${POST_CALL_RAW_UI_TIMEOUT_SLACK_SECONDS}"
 opensteamer_require_positive_integer \
   OPENSTEAMER_DEVICE_COMMAND_TIMEOUT_SECONDS \
   "${DEVICE_COMMAND_TIMEOUT_SECONDS}"
@@ -769,6 +1406,51 @@ opensteamer_require_positive_integer \
 if (( BLACKHOLE_PROBE_TIMEOUT_SECONDS < 8 \
     || BLACKHOLE_PROBE_TIMEOUT_SECONDS > 120 )); then
   echo "OPENSTEAMER_BLACKHOLE_PROBE_TIMEOUT_SECONDS must be between 8 and 120." >&2
+  exit 2
+fi
+if (( ${#CALL_READY_TIMEOUT_SECONDS} > 3 \
+    || CALL_READY_TIMEOUT_SECONDS > 300 )); then
+  echo "OPENSTEAMER_CALL_READY_TIMEOUT_SECONDS must be at most 300." >&2
+  exit 2
+fi
+if (( ${#CALL_ACOUSTIC_TIMEOUT_SECONDS} > 3 \
+    || ${#CALL_END_TIMEOUT_SECONDS} > 3 \
+    || ${#POST_CALL_RAW_CONTINUITY_SECONDS} > 3 \
+    || ${#POST_CALL_RAW_PRE_PROBE_BUDGET_SECONDS} > 2 \
+    || ${#POST_CALL_RAW_INTER_ACK_SNAPSHOT_BUDGET_SECONDS} > 2 \
+    || ${#POST_CALL_RAW_SAFETY_MARGIN_SECONDS} > 3 \
+    || ${#POST_CALL_RAW_UI_TIMEOUT_SLACK_SECONDS} > 3 \
+    || CALL_ACOUSTIC_TIMEOUT_SECONDS > 300 \
+    || CALL_END_TIMEOUT_SECONDS > 300 \
+    || POST_CALL_RAW_CONTINUITY_SECONDS > 600 \
+    || POST_CALL_RAW_PRE_PROBE_BUDGET_SECONDS < 12 \
+    || POST_CALL_RAW_PRE_PROBE_BUDGET_SECONDS > 60 \
+    || POST_CALL_RAW_INTER_ACK_SNAPSHOT_BUDGET_SECONDS < 1 \
+    || POST_CALL_RAW_INTER_ACK_SNAPSHOT_BUDGET_SECONDS > 15 \
+    || POST_CALL_RAW_SAFETY_MARGIN_SECONDS > 120 \
+    || POST_CALL_RAW_UI_TIMEOUT_SLACK_SECONDS > 120 )); then
+  echo "The post-call timing contract is outside its reviewed bounded range." >&2
+  exit 2
+fi
+POST_CALL_RAW_REQUIRED_CONTINUITY_SECONDS=$((
+  CALL_ACOUSTIC_TIMEOUT_SECONDS
+  + CALL_END_TIMEOUT_SECONDS
+  + POST_CALL_RAW_INTER_ACK_SNAPSHOT_BUDGET_SECONDS
+  + POST_CALL_RAW_PRE_PROBE_BUDGET_SECONDS
+  + POST_CALL_RAW_REQUIRED_OVERLAP_SECONDS
+  + POST_CALL_RAW_SAFETY_MARGIN_SECONDS
+))
+POST_CALL_RAW_UI_TIMEOUT_SECONDS=$((
+  POST_CALL_RAW_CONTINUITY_SECONDS
+  + POST_CALL_RAW_UI_TIMEOUT_SLACK_SECONDS
+))
+if (( POST_CALL_RAW_CONTINUITY_SECONDS \
+      < POST_CALL_RAW_REQUIRED_CONTINUITY_SECONDS )); then
+  echo "OPENSTEAMER_POST_CALL_RAW_CONTINUITY_SECONDS must cover the acoustic and end-call timeouts, bounded inter-ack CoreAudio snapshot, bounded pre-probe verifier, six-second probe, and safety margin (minimum ${POST_CALL_RAW_REQUIRED_CONTINUITY_SECONDS})." >&2
+  exit 2
+fi
+if (( POST_CALL_RAW_UI_TIMEOUT_SECONDS >= UI_TEST_TIMEOUT_SECONDS )); then
+  echo "The post-call raw UI timeout must remain below OPENSTEAMER_UI_TEST_TIMEOUT_SECONDS." >&2
   exit 2
 fi
 
@@ -796,6 +1478,9 @@ rm -rf \
   "${HOST_DEPLOYMENT_STDERR}" \
   "${HOST_DEPLOYMENT_RECHECK_STDOUT}" \
   "${HOST_DEPLOYMENT_RECHECK_STDERR}" \
+  "${HOST_GENERATION_STATE}" \
+  "${PHYSICAL_VALIDATION_ORACLE_SELF_TEST}" \
+  "${XCODE_TEMP_DIR}" \
   "${UI_TEST_TIMEOUT_MARKER}" \
   "${DEVICE_LOCKED_MARKER}" \
   "${DEVICE_UNAVAILABLE_MARKER}" \
@@ -838,7 +1523,13 @@ rm -rf \
   "${ARTIFACT_DIR}/cancel-churn-proceed.txt" \
   "${ARTIFACT_DIR}/cancel-churn-action.txt"
 
-mkdir -p "${RAW_PHASE_DIR}" "${RECONNECT_PHASE_DIR}" "${CALL_PHASE_DIR}"
+mkdir -p \
+  "${RAW_PHASE_DIR}" \
+  "${RECONNECT_PHASE_DIR}" \
+  "${CALL_PHASE_DIR}" \
+  "${XCODE_TEMP_DIR}" \
+  "${XCODE_SOURCE_PACKAGES}"
+initialize_physical_validation_oracle
 
 function start_physical_audio_oracle_tone() {
   local tone_path=${1:-${AUDIO_ORACLE_TONE}}
@@ -847,31 +1538,8 @@ function start_physical_audio_oracle_tone() {
   local generation_status
   local group_status
 
-  /usr/bin/python3 - "${tone_path}" "${duration_seconds}" <<'PY'
-import math
-import struct
-import sys
-import wave
-
-path = sys.argv[1]
-duration_seconds = int(sys.argv[2])
-sample_rate = 48_000
-one_second = bytearray()
-for frame in range(sample_rate):
-    high_band = frame >= sample_rate // 2
-    amplitude = 3_000 if high_band else 9_000
-    left_frequency = 8_003 if high_band else 997
-    right_frequency = 11_003 if high_band else 1_499
-    left = int(amplitude * math.sin(2 * math.pi * left_frequency * frame / sample_rate))
-    right = int(amplitude * math.sin(2 * math.pi * right_frequency * frame / sample_rate))
-    one_second.extend(struct.pack("<hh", left, right))
-with wave.open(path, "wb") as output:
-    output.setnchannels(2)
-    output.setsampwidth(2)
-    output.setframerate(sample_rate)
-    for _ in range(duration_seconds):
-        output.writeframesraw(one_second)
-PY
+  opensteamer_run_physical_validation_oracle \
+    wav-tone "${tone_path}" "${duration_seconds}"
   generation_status=$?
   (( generation_status == 0 )) || return "${generation_status}"
 
@@ -895,7 +1563,7 @@ PY
 }
 
 function start_physical_screen_oracle_challenge() {
-  xcrun --sdk macosx swiftc \
+  TMPDIR="${XCODE_TEMP_DIR}" xcrun --sdk macosx swiftc \
     -parse-as-library \
     -framework AppKit \
     "${SCREEN_ORACLE_SOURCE}" \
@@ -1056,13 +1724,8 @@ function validate_direct_attachment_activities_json() {
   shift 2
   local required_names_json
 
-  required_names_json=$(/usr/bin/python3 - "$@" <<'PY'
-import json
-import sys
-
-print(json.dumps(sys.argv[1:]))
-PY
-  )
+  required_names_json=$(opensteamer_run_physical_validation_oracle \
+    argv-json "$@")
   jq -e \
     --arg test_url "${expected_test_url}" \
     --argjson required_names "${required_names_json}" '
@@ -1171,12 +1834,26 @@ function validate_raw_physical_activities_json() {
 }
 
 function validate_call_physical_activities_json() {
+  mkdir -p "${CALL_POST_RAW_DIR}" || return $?
   validate_direct_attachment_activities_json \
     "$1" \
     "${EXPECTED_CALL_TEST_URL}" \
     "Startup connected-call incoming Mac playout continuity evidence" \
     "Interruption-origin incoming Mac playout continuity evidence" \
-    "Fresh ordinary audio proof after final call recovery"
+    "Fresh ordinary audio proof after final call recovery" \
+    "Post-call raw iPhone microphone rolling continuity evidence" \
+    "Post-call raw iPhone microphone runtime overlap evidence" \
+    "Post-call raw microphone generation evidence" || return $?
+  capture_unique_direct_attachment_payload_id \
+    "$1" \
+    "${EXPECTED_CALL_TEST_URL}" \
+    "Post-call raw iPhone microphone runtime overlap evidence" \
+    "${CALL_POST_RAW_UI_RUNTIME_ATTACHMENT_PAYLOAD_ID}" || return $?
+  capture_unique_direct_attachment_payload_id \
+    "$1" \
+    "${EXPECTED_CALL_TEST_URL}" \
+    "Post-call raw microphone generation evidence" \
+    "${CALL_POST_RAW_GENERATION_ATTACHMENT_PAYLOAD_ID}"
 }
 
 function capture_and_validate_device() {
@@ -1293,14 +1970,8 @@ function capture_ui_xcresult_attachment_payload() {
   rm -f "${output}" "${temporary}" || return $?
   [[ -s "${payload_id_file}" ]] || return 3
   payload_id=$(<"${payload_id_file}") || return 3
-  if /usr/bin/python3 - "${payload_id}" <<'PY'
-import re
-import sys
-
-if re.fullmatch(r"0~[A-Za-z0-9_-]+={0,2}", sys.argv[1]) is None:
-    raise SystemExit(3)
-PY
-  then
+  if opensteamer_run_physical_validation_oracle \
+      validate-payload-id "${payload_id}"; then
     :
   else
     rm -f "${output}" "${temporary}"
@@ -1731,23 +2402,329 @@ function current_host_pid() {
     || true
 }
 
-# Bind every replacement launchd PID to the same freshly built code identity.
-# A stable path alone is not proof: an already-running process can keep an old
-# vnode mapped after the installed app at that path is atomically replaced.
+function parse_host_process_start_identity() {
+  /usr/bin/awk '
+    function valid(value, weekday, month, day, hour, minute, second, year) {
+      if (length(value) != 24) return 0
+      weekday=substr(value, 1, 3); month=substr(value, 5, 3)
+      day=substr(value, 9, 2); hour=substr(value, 12, 2)
+      minute=substr(value, 15, 2); second=substr(value, 18, 2)
+      year=substr(value, 21, 4)
+      if (substr(value, 4, 1) != " " || substr(value, 8, 1) != " " ||
+          substr(value, 11, 1) != " " || substr(value, 14, 1) != ":" ||
+          substr(value, 17, 1) != ":" || substr(value, 20, 1) != " ") return 0
+      if (weekday !~ /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)$/ ||
+          month !~ /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/) return 0
+      if (day !~ /^( [1-9]|[12][0-9]|3[01])$/) return 0
+      if (hour !~ /^[0-9][0-9]$/ || hour + 0 > 23 ||
+          minute !~ /^[0-9][0-9]$/ || minute + 0 > 59 ||
+          second !~ /^[0-9][0-9]$/ || second + 0 > 60 ||
+          year !~ /^[0-9][0-9][0-9][0-9]$/) return 0
+      return 1
+    }
+    {
+      value=$0
+      sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value)
+      if (value == "") next
+      records += 1
+      if (!valid(value)) malformed=1
+      parsed=value
+    }
+    END {
+      if (records != 1 || malformed) exit 65
+      print parsed
+    }
+  '
+}
+
+function capture_host_generation_log_checkpoint() {
+  local metadata
+  local revalidated
+  local -a fields
+
+  [[ -f "${HOST_LOG}" && ! -L "${HOST_LOG}" ]] || return 1
+  metadata=$(/usr/bin/stat -f '%u|%l|%Lp|%HT|%d|%i|%z' "${HOST_LOG}") \
+    || return $?
+  fields=("${(@s:|:)metadata}")
+  (( ${#fields[@]} == 7 )) || return 1
+  [[ "${fields[1]}" == "$(/usr/bin/id -u)" \
+      && "${fields[2]}" == 1 \
+      && "${fields[3]}" == 600 \
+      && "${fields[4]}" == "Regular File" \
+      && "${fields[5]}" != *[^0-9]* \
+      && "${fields[6]}" != *[^0-9]* \
+      && "${fields[7]}" != *[^0-9]* ]] || return 1
+  HOST_GENERATION_LOG_DEVICE=${fields[5]}
+  HOST_GENERATION_LOG_INODE=${fields[6]}
+  HOST_GENERATION_LOG_OFFSET=${fields[7]}
+  revalidated=$(/usr/bin/stat -f '%d|%i|%z' "${HOST_LOG}") || return $?
+  fields=("${(@s:|:)revalidated}")
+  (( ${#fields[@]} == 3 )) || return 1
+  [[ "${fields[1]}" == "${HOST_GENERATION_LOG_DEVICE}" \
+      && "${fields[2]}" == "${HOST_GENERATION_LOG_INODE}" \
+      && "${fields[3]}" != *[^0-9]* ]] || return 1
+  (( fields[3] >= HOST_GENERATION_LOG_OFFSET ))
+}
+
+function capture_host_launch_identity() {
+  local launch_state="${ARTIFACT_DIR}/.host-launch-state.$$"
+  local manifest
+  local captured_pid
+  local captured_runs
+
+  /bin/rm -f "${launch_state}" || return $?
+  if /bin/launchctl print "${HOST_SERVICE}" > "${launch_state}" 2>/dev/null; then
+    :
+  else
+    local launch_status=$?
+    /bin/rm -f "${launch_state}"
+    return "${launch_status}"
+  fi
+  manifest=$(
+    "${MAC_HOST_LAUNCH_STATE_VERIFIER}" \
+      "${launch_state}" \
+      "${HOST_EXECUTABLE}" \
+      "${HOST_REVIEWED_LAUNCH_AGENT}" \
+      "${HOST_INSTALLED_LAUNCH_AGENT}"
+  ) || {
+    local manifest_status=$?
+    /bin/rm -f "${launch_state}"
+    return "${manifest_status}"
+  }
+  /bin/rm -f "${launch_state}" || return $?
+  captured_pid=$(print -r -- "${manifest}" | /usr/bin/awk -F= '
+    $1 == "pid" { count += 1; value=$2 }
+    END { if (count != 1 || value !~ /^[1-9][0-9]*$/) exit 65; print value }
+  ') || return $?
+  captured_runs=$(print -r -- "${manifest}" | /usr/bin/awk -F= '
+    $1 == "runs" { count += 1; value=$2 }
+    END { if (count != 1 || value !~ /^[1-9][0-9]*$/) exit 65; print value }
+  ') || return $?
+  OPENSTEAMER_CAPTURED_HOST_PID=${captured_pid}
+  OPENSTEAMER_CAPTURED_HOST_RUNS=${captured_runs}
+}
+
+function capture_host_generation_record() {
+  local expected_host_pid=$1
+  local directory_metadata
+  local lock_metadata
+  local lock_metadata_after
+  local record
+  local prefix
+  local nonce
+  local probe_output
+  local -a fields
+
+  [[ -d "${HOST_LOCK_DIRECTORY}" && ! -L "${HOST_LOCK_DIRECTORY}" ]] || return 1
+  directory_metadata=$(
+    /usr/bin/stat -f '%u|%Lp|%HT' "${HOST_LOCK_DIRECTORY}"
+  ) || return $?
+  [[ "${directory_metadata}" == "$(/usr/bin/id -u)|700|Directory" ]] || return 1
+  [[ -f "${HOST_LOCK_FILE}" && ! -L "${HOST_LOCK_FILE}" ]] || return 1
+  lock_metadata=$(
+    /usr/bin/stat -f '%u|%l|%Lp|%HT|%d|%i|%z' "${HOST_LOCK_FILE}"
+  ) || return $?
+  fields=("${(@s:|:)lock_metadata}")
+  (( ${#fields[@]} == 7 )) || return 1
+  [[ "${fields[1]}" == "$(/usr/bin/id -u)" \
+      && "${fields[2]}" == 1 \
+      && "${fields[3]}" == 600 \
+      && "${fields[4]}" == "Regular File" \
+      && "${fields[5]}" != *[^0-9]* \
+      && "${fields[6]}" != *[^0-9]* \
+      && "${fields[7]}" != *[^0-9]* ]] || return 1
+  (( fields[7] <= 512 )) || return 1
+  record=$(/bin/dd if="${HOST_LOCK_FILE}" bs=513 count=1 2>/dev/null) || return $?
+  lock_metadata_after=$(
+    /usr/bin/stat -f '%u|%l|%Lp|%HT|%d|%i|%z' "${HOST_LOCK_FILE}"
+  ) || return $?
+  [[ "${lock_metadata_after}" == "${lock_metadata}" ]] || return 1
+  prefix=$'OPENSTEAMER_WORLDWIDE_HOST_GENERATION_V1\npid='"${expected_host_pid}"$'\nnonce='
+  [[ "${record}" == "${prefix}"* ]] || return 1
+  nonce=${record#"${prefix}"}
+  [[ ${#nonce} == 64 \
+      && "${nonce}" != *[^0-9a-f]* \
+      && "${nonce}" != *$'\n'* \
+      && "${nonce}" != *$'\r'* ]] || return 1
+  validate_migration_controller_binary || return 1
+  probe_output=$(
+    "${OPENSTEAMER_MIGRATION_CONTROLLER_BINARY}" \
+      --probe-lock \
+      "${HOST_LOCK_DIRECTORY}" \
+      "${HOST_LOCK_FILE}" \
+      "${expected_host_pid}"
+  ) || return $?
+  [[ "${probe_output}" == "lock_holder=${expected_host_pid}" ]] || return 1
+  [[ "$(/usr/bin/stat -f '%d|%i' "${HOST_LOCK_FILE}")" \
+      == "${fields[5]}|${fields[6]}" ]] || return 1
+  OPENSTEAMER_CAPTURED_HOST_NONCE=${nonce}
+  OPENSTEAMER_CAPTURED_HOST_LOCK_DEVICE=${fields[5]}
+  OPENSTEAMER_CAPTURED_HOST_LOCK_INODE=${fields[6]}
+}
+
+function persist_host_generation_snapshot() {
+  local temporary="${HOST_GENERATION_STATE}.tmp.$$"
+
+  {
+    print -r -- "schema=opensteamer.host-generation.v1"
+    print -r -- "log_offset=${HOST_GENERATION_LOG_OFFSET}"
+    print -r -- "log_device=${HOST_GENERATION_LOG_DEVICE}"
+    print -r -- "log_inode=${HOST_GENERATION_LOG_INODE}"
+    print -r -- "pid=${HOST_GENERATION_PID}"
+    print -r -- "runs=${HOST_GENERATION_RUNS}"
+    print -r -- "process_start=${HOST_GENERATION_PROCESS_START}"
+    print -r -- "nonce=${HOST_GENERATION_NONCE}"
+    print -r -- "lock_device=${HOST_GENERATION_LOCK_DEVICE}"
+    print -r -- "lock_inode=${HOST_GENERATION_LOCK_INODE}"
+  } > "${temporary}" || return $?
+  /bin/mv "${temporary}" "${HOST_GENERATION_STATE}"
+}
+
+function bind_host_generation_snapshot() {
+  local expected_host_pid=$1
+  local process_start
+  local process_start_after
+
+  [[ -n "${HOST_GENERATION_LOG_OFFSET}" \
+      && -n "${HOST_GENERATION_LOG_DEVICE}" \
+      && -n "${HOST_GENERATION_LOG_INODE}" ]] || return 1
+  capture_host_launch_identity || return $?
+  [[ "${OPENSTEAMER_CAPTURED_HOST_PID}" == "${expected_host_pid}" ]] || return 1
+  process_start=$(
+    LC_ALL=C /bin/ps -p "${expected_host_pid}" -o lstart= 2>/dev/null \
+      | parse_host_process_start_identity
+  ) || return $?
+  capture_host_generation_record "${expected_host_pid}" || return $?
+  process_start_after=$(
+    LC_ALL=C /bin/ps -p "${expected_host_pid}" -o lstart= 2>/dev/null \
+      | parse_host_process_start_identity
+  ) || return $?
+  [[ "${process_start_after}" == "${process_start}" \
+      && "$(current_host_pid)" == "${expected_host_pid}" ]] || return 1
+
+  HOST_GENERATION_PID=${expected_host_pid}
+  HOST_GENERATION_RUNS=${OPENSTEAMER_CAPTURED_HOST_RUNS}
+  HOST_GENERATION_PROCESS_START=${process_start}
+  HOST_GENERATION_NONCE=${OPENSTEAMER_CAPTURED_HOST_NONCE}
+  HOST_GENERATION_LOCK_DEVICE=${OPENSTEAMER_CAPTURED_HOST_LOCK_DEVICE}
+  HOST_GENERATION_LOCK_INODE=${OPENSTEAMER_CAPTURED_HOST_LOCK_INODE}
+  persist_host_generation_snapshot
+}
+
+function parse_host_generation_snapshot() {
+  /usr/bin/awk -F= '
+    NR == 1 { if ($0 != "schema=opensteamer.host-generation.v1") bad=1; next }
+    NR == 2 { if ($0 !~ /^log_offset=[0-9]+$/) bad=1; else print substr($0, 12); next }
+    NR == 3 { if ($0 !~ /^log_device=[0-9]+$/) bad=1; else print substr($0, 12); next }
+    NR == 4 { if ($0 !~ /^log_inode=[0-9]+$/) bad=1; else print substr($0, 11); next }
+    NR == 5 { if ($0 !~ /^pid=[1-9][0-9]*$/) bad=1; else print substr($0, 5); next }
+    NR == 6 { if ($0 !~ /^runs=[1-9][0-9]*$/) bad=1; else print substr($0, 6); next }
+    NR == 7 { if ($0 !~ /^process_start=/) bad=1; else print substr($0, 15); next }
+    NR == 8 {
+      value=substr($0, 7)
+      if ($0 !~ /^nonce=/ || length(value) != 64 || value !~ /^[0-9a-f]+$/) bad=1
+      else print value
+      next
+    }
+    NR == 9 { if ($0 !~ /^lock_device=[0-9]+$/) bad=1; else print substr($0, 13); next }
+    NR == 10 { if ($0 !~ /^lock_inode=[0-9]+$/) bad=1; else print substr($0, 12); next }
+    NR > 10 { bad=1 }
+    END { if (bad || NR != 10) exit 65 }
+  '
+}
+
+function load_host_generation_snapshot() {
+  local expected_host_pid=$1
+  local parsed
+  local normalized_start
+  local -a values
+
+  [[ -f "${HOST_GENERATION_STATE}" \
+      && ! -L "${HOST_GENERATION_STATE}" \
+      && "$(/usr/bin/stat -f '%u:%l:%Lp' "${HOST_GENERATION_STATE}" 2>/dev/null)" \
+        == "$(/usr/bin/id -u):1:600" ]] || return 1
+  parsed=$(parse_host_generation_snapshot < "${HOST_GENERATION_STATE}") || return $?
+  values=("${(@f)parsed}")
+  (( ${#values[@]} == 9 )) || return 1
+  [[ "${values[4]}" == "${expected_host_pid}" ]] || return 1
+  normalized_start=$(print -r -- "${values[6]}" \
+    | parse_host_process_start_identity) || return $?
+  [[ "${normalized_start}" == "${values[6]}" ]] || return 1
+  HOST_GENERATION_LOG_OFFSET=${values[1]}
+  HOST_GENERATION_LOG_DEVICE=${values[2]}
+  HOST_GENERATION_LOG_INODE=${values[3]}
+  HOST_GENERATION_PID=${values[4]}
+  HOST_GENERATION_RUNS=${values[5]}
+  HOST_GENERATION_PROCESS_START=${values[6]}
+  HOST_GENERATION_NONCE=${values[7]}
+  HOST_GENERATION_LOCK_DEVICE=${values[8]}
+  HOST_GENERATION_LOCK_INODE=${values[9]}
+}
+
+# Bind every initial/replacement launchd PID to the same freshly staged code identity and one
+# pre-start log checkpoint. A stable path alone is not proof: a live process can keep an old vnode
+# mapped after the installed app at that path is atomically replaced.
 function verify_host_deployment_snapshot() {
   local expected_host_pid=$1
   local phase=$2
+  local verifier_timeout_seconds=${3:-}
   local verifier_result
+  local -a verifier_command
 
-  rm -f "${HOST_DEPLOYMENT_RECHECK_STDOUT}" "${HOST_DEPLOYMENT_RECHECK_STDERR}"
-  if OPENSTEAMER_EXPECTED_TEAM_ID="${EXPECTED_MAC_HOST_TEAM_ID}" \
-      OPENSTEAMER_EXPECTED_HOST_PID="${expected_host_pid}" \
-      "${MAC_HOST_DEPLOYMENT_VERIFIER}" \
-      > "${HOST_DEPLOYMENT_RECHECK_STDOUT}" \
-      2> "${HOST_DEPLOYMENT_RECHECK_STDERR}"; then
-    verifier_result=0
+  if [[ -n "${verifier_timeout_seconds}" ]] \
+      && { [[ "${verifier_timeout_seconds}" == *[^0-9]* ]] \
+        || (( verifier_timeout_seconds <= 0 )); }; then
+    return 2
+  fi
+
+  /bin/rm -f "${HOST_DEPLOYMENT_RECHECK_STDOUT}" "${HOST_DEPLOYMENT_RECHECK_STDERR}"
+  if ! load_host_generation_snapshot "${expected_host_pid}" \
+      || [[ ! -d "${HOST_FRESH_STAGED_APP}" \
+        || -L "${HOST_FRESH_STAGED_APP}" \
+        || ! -f "${HOST_OFFLINE_LEGACY_REFERENCE}" \
+        || -L "${HOST_OFFLINE_LEGACY_REFERENCE}" \
+        || ! -f "${HOST_REVIEWED_LAUNCH_AGENT}" \
+        || -L "${HOST_REVIEWED_LAUNCH_AGENT}" ]] \
+      || ! validate_migration_controller_binary; then
+    print -r -- "host generation inputs are incomplete or unsafe" \
+      > "${HOST_DEPLOYMENT_RECHECK_STDERR}"
+    verifier_result=1
   else
-    verifier_result=$?
+    verifier_command=(
+      /usr/bin/env
+      "OPENSTEAMER_EXPECTED_TEAM_ID=${EXPECTED_MAC_HOST_TEAM_ID}"
+      "OPENSTEAMER_MIGRATION_CONTROLLER_BINARY=${OPENSTEAMER_MIGRATION_CONTROLLER_BINARY}"
+      "${MAC_HOST_DEPLOYMENT_VERIFIER}"
+      "${HOST_FRESH_STAGED_APP}" \
+      "${HOST_OFFLINE_LEGACY_REFERENCE}" \
+      "${HOST_REVIEWED_LAUNCH_AGENT}" \
+      "${HOST_GENERATION_LOG_OFFSET}" \
+      "${HOST_GENERATION_LOG_DEVICE}" \
+      "${HOST_GENERATION_LOG_INODE}" \
+      "${HOST_GENERATION_PID}" \
+      "${HOST_GENERATION_RUNS}" \
+      "${HOST_GENERATION_PROCESS_START}" \
+      "${HOST_GENERATION_NONCE}" \
+      "${HOST_GENERATION_LOCK_DEVICE}" \
+      "${HOST_GENERATION_LOCK_INODE}"
+    )
+    if [[ -n "${verifier_timeout_seconds}" ]]; then
+      if opensteamer_run_with_timeout \
+          "${verifier_timeout_seconds}" \
+          "${verifier_command[@]}" \
+          > "${HOST_DEPLOYMENT_RECHECK_STDOUT}" \
+          2> "${HOST_DEPLOYMENT_RECHECK_STDERR}"; then
+        verifier_result=0
+      else
+        verifier_result=$?
+      fi
+    elif "${verifier_command[@]}" \
+        > "${HOST_DEPLOYMENT_RECHECK_STDOUT}" \
+        2> "${HOST_DEPLOYMENT_RECHECK_STDERR}"; then
+      verifier_result=0
+    else
+      verifier_result=$?
+    fi
   fi
 
   {
@@ -1760,40 +2737,59 @@ function verify_host_deployment_snapshot() {
     print -r -- "phase=${phase} expected_pid=${expected_host_pid}"
     cat "${HOST_DEPLOYMENT_RECHECK_STDERR}" 2>/dev/null || true
   } >> "${HOST_DEPLOYMENT_STDERR}"
-  rm -f "${HOST_DEPLOYMENT_RECHECK_STDOUT}" "${HOST_DEPLOYMENT_RECHECK_STDERR}"
+  /bin/rm -f "${HOST_DEPLOYMENT_RECHECK_STDOUT}" "${HOST_DEPLOYMENT_RECHECK_STDERR}"
   return "${verifier_result}"
 }
 
 function kickstart_host_service() {
+  local queued_pid
+  local next_pid
+  local -a queued_pids
+
   if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == host-provenance-* \
       && -n "${OPENSTEAMER_SELF_TEST_HOST_PID_FILE:-}" \
       && -n "${OPENSTEAMER_SELF_TEST_HOST_PID_QUEUE:-}" ]]; then
-    /usr/bin/python3 - \
-        "${OPENSTEAMER_SELF_TEST_HOST_PID_FILE}" \
-        "${OPENSTEAMER_SELF_TEST_HOST_PID_QUEUE}" \
-        "${OPENSTEAMER_SELF_TEST_KICKSTART_EVENTS}" <<'PY'
-import os
-import sys
-
-pid_path, queue_path, events_path = sys.argv[1:]
-with open(queue_path, "r", encoding="utf-8") as queue:
-    values = [line.strip() for line in queue if line.strip()]
-if not values:
-    sys.exit(1)
-next_pid = values.pop(0)
-with open(f"{pid_path}.tmp", "w", encoding="utf-8") as destination:
-    destination.write(f"{next_pid}\n")
-os.replace(f"{pid_path}.tmp", pid_path)
-with open(f"{queue_path}.tmp", "w", encoding="utf-8") as queue:
-    if values:
-        queue.write("\n".join(values) + "\n")
-os.replace(f"{queue_path}.tmp", queue_path)
-with open(events_path, "a", encoding="utf-8") as events:
-    events.write(f"kickstart={next_pid}\n")
-PY
+    while IFS= read -r queued_pid; do
+      [[ -n "${queued_pid}" ]] || continue
+      queued_pids+=("${queued_pid}")
+    done < "${OPENSTEAMER_SELF_TEST_HOST_PID_QUEUE}"
+    (( ${#queued_pids[@]} > 0 )) || return 1
+    next_pid=${queued_pids[1]}
+    print -r -- "${next_pid}" \
+      > "${OPENSTEAMER_SELF_TEST_HOST_PID_FILE}.tmp" || return $?
+    /bin/mv \
+      "${OPENSTEAMER_SELF_TEST_HOST_PID_FILE}.tmp" \
+      "${OPENSTEAMER_SELF_TEST_HOST_PID_FILE}" || return $?
+    print -rl -- "${queued_pids[@]:1}" \
+      > "${OPENSTEAMER_SELF_TEST_HOST_PID_QUEUE}.tmp" || return $?
+    /bin/mv \
+      "${OPENSTEAMER_SELF_TEST_HOST_PID_QUEUE}.tmp" \
+      "${OPENSTEAMER_SELF_TEST_HOST_PID_QUEUE}" || return $?
+    print -r -- "kickstart=${next_pid}" \
+      >> "${OPENSTEAMER_SELF_TEST_KICKSTART_EVENTS}" || return $?
     return
   fi
+  require_exact_safe_host_mutation_identity || return 2
   opensteamer_run_with_timeout 5 launchctl kickstart -k "${HOST_SERVICE}"
+}
+
+function wait_for_replacement_host_pid() {
+  local previous_pid=$1
+  local wait_started=${SECONDS}
+  local replacement_pid
+
+  while (( SECONDS - wait_started < 30 )); do
+    replacement_pid=$(current_host_pid)
+    if [[ -n "${replacement_pid}" \
+        && "${replacement_pid}" != "${previous_pid}" \
+        && "${replacement_pid}" != *[^0-9]* ]] \
+        && (( replacement_pid > 0 )); then
+      print -r -- "${replacement_pid}"
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
 }
 
 function wait_before_host_restart() {
@@ -1861,6 +2857,14 @@ function start_host_churn_worker() {
   local worker_status
   local -a worker_variables=(
     ARTIFACT_DIR
+    SAFE_HOST_LAUNCH_AGENT_LABEL
+    PROTECTED_HOST_LAUNCH_AGENT_LABEL
+    SAFE_HOST_SERVICE
+    SAFE_HOST_LOG
+    SAFE_HOST_REVIEWED_LAUNCH_AGENT
+    SAFE_HOST_INSTALLED_LAUNCH_AGENT
+    SAFE_HOST_EXECUTABLE
+    HOST_LABEL
     HOST_LOG
     HOST_SERVICE
     HOST_STATUS
@@ -1880,6 +2884,26 @@ function start_host_churn_worker() {
     HOST_RESTART_DELAY_SECONDS
     EXPECTED_MAC_HOST_TEAM_ID
     MAC_HOST_DEPLOYMENT_VERIFIER
+    MAC_HOST_LAUNCH_STATE_VERIFIER
+    HOST_FRESH_STAGED_APP
+    HOST_OFFLINE_LEGACY_REFERENCE
+    HOST_REVIEWED_LAUNCH_AGENT
+    HOST_INSTALLED_LAUNCH_AGENT
+    HOST_EXECUTABLE
+    HOST_LOCK_DIRECTORY
+    HOST_LOCK_FILE
+    HOST_GENERATION_STATE
+    HOST_GENERATION_LOG_OFFSET
+    HOST_GENERATION_LOG_DEVICE
+    HOST_GENERATION_LOG_INODE
+    HOST_GENERATION_PID
+    HOST_GENERATION_RUNS
+    HOST_GENERATION_PROCESS_START
+    HOST_GENERATION_NONCE
+    HOST_GENERATION_LOCK_DEVICE
+    HOST_GENERATION_LOCK_INODE
+    MIGRATION_CONTROLLER_BINARY_SHA256
+    OPENSTEAMER_MIGRATION_CONTROLLER_BINARY
     HOST_DEPLOYMENT_RECHECK_STDOUT
     HOST_DEPLOYMENT_RECHECK_STDERR
     HOST_DEPLOYMENT_MANIFEST
@@ -1894,7 +2918,17 @@ function start_host_churn_worker() {
   )
   local -a worker_functions=(
     current_host_pid
+    parse_host_process_start_identity
+    capture_host_generation_log_checkpoint
+    capture_host_launch_identity
+    capture_host_generation_record
+    persist_host_generation_snapshot
+    bind_host_generation_snapshot
+    parse_host_generation_snapshot
+    load_host_generation_snapshot
+    validate_migration_controller_binary
     verify_host_deployment_snapshot
+    require_exact_safe_host_mutation_identity
     kickstart_host_service
     wait_before_host_restart
     write_host_status
@@ -1962,7 +2996,7 @@ function compile_blackhole_probe() {
     "${RAW_BLACKHOLE_PROBE_COMPILE_STDOUT}" \
     "${RAW_BLACKHOLE_PROBE_COMPILE_STDERR}" \
     "${RAW_BLACKHOLE_PROBE_CLEANUP_PROOF}" || return $?
-  if ! xcrun --sdk macosx swiftc \
+  if ! TMPDIR="${XCODE_TEMP_DIR}" xcrun --sdk macosx swiftc \
       "${RAW_BLACKHOLE_PROBE_SOURCE}" \
       -o "${RAW_BLACKHOLE_PROBE_BINARY}" \
       -framework AudioToolbox \
@@ -1977,43 +3011,72 @@ function compile_blackhole_probe() {
 function capture_default_input_snapshot() {
   local output=$1
   local role=$2
+  local timeout_seconds=${3:-}
 
   rm -f "${output}" || return $?
   if [[ -n "${OPENSTEAMER_SELF_TEST_RAW_READINESS:-}" ]]; then
     local observed
     local input_hash
     local is_blackhole=false
+    local input_transport_class=built-in
+    local selection_mode=${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_MODE:-switched}
     observed=$(current_monotonic_time_ns) || return $?
-    case "${role}" in
-      before|after)
+    if [[ "${selection_mode}" == "preselected" ]]; then
+      case "${role}" in
+        before|healthy|after)
+          input_hash=$(printf 'b%.0s' {1..64})
+          is_blackhole=true
+          input_transport_class=virtual
+          ;;
+        *)
+          return 3
+          ;;
+      esac
+    else
+      case "${role}" in
+        before|after)
         input_hash=$(printf 'a%.0s' {1..64})
-        ;;
-      healthy)
-        input_hash=$(printf 'b%.0s' {1..64})
-        is_blackhole=true
-        ;;
-      *)
-        return 3
-        ;;
-    esac
+          ;;
+        healthy)
+          input_hash=$(printf 'b%.0s' {1..64})
+          is_blackhole=true
+          input_transport_class=virtual
+          ;;
+        *)
+          return 3
+          ;;
+      esac
+    fi
     cat > "${output}" <<EOF
 {
   "inputIsCanonicalBlackHole": ${is_blackhole},
+  "inputTransportClass": "${input_transport_class}",
   "inputUIDFingerprint": "${input_hash}",
   "observedAtMonotonicNs": ${observed},
   "outputUIDFingerprint": "$(printf 'c%.0s' {1..64})",
   "role": "${role}",
-  "schema": "opensteamer.default-input-snapshot.v1",
+  "schema": "opensteamer.default-input-snapshot.v2",
   "systemOutputUIDFingerprint": "$(printf 'd%.0s' {1..64})"
 }
 EOF
     return $?
   fi
 
-  "${RAW_BLACKHOLE_PROBE_BINARY}" \
-    snapshot-default-uids \
-    --role "${role}" \
-    --result "${output}"
+  if [[ -n "${timeout_seconds}" ]]; then
+    opensteamer_require_positive_integer \
+      snapshot-timeout-seconds "${timeout_seconds}" || return $?
+    opensteamer_run_with_timeout \
+      "${timeout_seconds}" \
+      "${RAW_BLACKHOLE_PROBE_BINARY}" \
+      snapshot-default-uids \
+      --role "${role}" \
+      --result "${output}"
+  else
+    "${RAW_BLACKHOLE_PROBE_BINARY}" \
+      snapshot-default-uids \
+      --role "${role}" \
+      --result "${output}"
+  fi
 }
 
 function validate_default_input_lifecycle_json() {
@@ -2021,12 +3084,26 @@ function validate_default_input_lifecycle_json() {
   local healthy=$2
   local after=$3
   local probe_start=$4
+  local during=${5:-}
+  local probe_end=${6:-0}
+  local evidence_output=${7:-}
+  local -a snapshots=("${before}" "${healthy}")
+  local selection_mode
+  local transition_exercised
+  local temporary
+
+  if [[ -n "${during}" ]]; then
+    snapshots+=("${during}")
+  fi
+  snapshots+=("${after}")
 
   jq -e -s \
-    --argjson probe_start "${probe_start}" '
+    --argjson probe_start "${probe_start}" \
+    --argjson probe_end "${probe_end}" '
     def exact_keys:
       keys == ([
         "inputIsCanonicalBlackHole",
+        "inputTransportClass",
         "inputUIDFingerprint",
         "observedAtMonotonicNs",
         "outputUIDFingerprint",
@@ -2037,31 +3114,81 @@ function validate_default_input_lifecycle_json() {
     def fingerprint:
       type == "string"
       and test("^[0-9a-f]{64}$");
-    length == 3
+    . as $snapshots
+    | (length == 3 or length == 4)
     and (all(.[]; exact_keys))
-    and (all(.[]; .schema == "opensteamer.default-input-snapshot.v1"))
+    and (all(.[]; .schema == "opensteamer.default-input-snapshot.v2"))
     and (all(.[];
       (.inputUIDFingerprint | fingerprint)
       and (.outputUIDFingerprint | fingerprint)
       and (.systemOutputUIDFingerprint | fingerprint)
+      and (.inputTransportClass
+        | IN("built-in", "virtual", "aggregate", "usb", "bluetooth", "other"))
       and (.observedAtMonotonicNs | type == "number" and . > 0 and floor == .)
     ))
-    and (.[0].role == "before")
-    and (.[1].role == "healthy")
-    and (.[2].role == "after")
-    and (.[0].inputIsCanonicalBlackHole == false)
-    and (.[1].inputIsCanonicalBlackHole == true)
-    and (.[2].inputIsCanonicalBlackHole == false)
-    and (.[0].observedAtMonotonicNs < .[1].observedAtMonotonicNs)
-    and (.[1].observedAtMonotonicNs < $probe_start)
-    and ($probe_start < .[2].observedAtMonotonicNs)
-    and (.[0].inputUIDFingerprint == .[2].inputUIDFingerprint)
-    and (.[0].inputUIDFingerprint != .[1].inputUIDFingerprint)
-    and (.[0].outputUIDFingerprint == .[1].outputUIDFingerprint)
-    and (.[1].outputUIDFingerprint == .[2].outputUIDFingerprint)
-    and (.[0].systemOutputUIDFingerprint == .[1].systemOutputUIDFingerprint)
-    and (.[1].systemOutputUIDFingerprint == .[2].systemOutputUIDFingerprint)
-  ' "${before}" "${healthy}" "${after}" >/dev/null
+    and .[0].role == "before"
+    and .[1].role == "healthy"
+    and .[-1].role == "after"
+    and .[1].inputIsCanonicalBlackHole == true
+    and .[1].inputTransportClass == "virtual"
+    and .[0].observedAtMonotonicNs < .[1].observedAtMonotonicNs
+    and .[1].observedAtMonotonicNs < $probe_start
+    and $probe_start < .[-1].observedAtMonotonicNs
+    and (if .[0].inputIsCanonicalBlackHole then
+      (all(.[]; .inputIsCanonicalBlackHole == true))
+      and (all(.[]; .inputTransportClass == "virtual"))
+      and (all(.[]; .inputUIDFingerprint == $snapshots[0].inputUIDFingerprint))
+    else
+      .[-1].inputIsCanonicalBlackHole == false
+      and .[0].inputUIDFingerprint == .[-1].inputUIDFingerprint
+      and .[0].inputTransportClass == .[-1].inputTransportClass
+      and .[0].inputUIDFingerprint != .[1].inputUIDFingerprint
+    end)
+    and (all(.[]; .outputUIDFingerprint == $snapshots[0].outputUIDFingerprint))
+    and (all(.[]; .systemOutputUIDFingerprint == $snapshots[0].systemOutputUIDFingerprint))
+    and (if length == 4 then
+      .[2].role == "healthy"
+      and .[2].inputIsCanonicalBlackHole == true
+      and .[2].inputUIDFingerprint == .[1].inputUIDFingerprint
+      and $probe_start < .[2].observedAtMonotonicNs
+      and .[2].observedAtMonotonicNs < $probe_end
+      and $probe_start < $probe_end
+      and .[2].observedAtMonotonicNs < .[3].observedAtMonotonicNs
+    else true end)
+  ' "${snapshots[@]}" >/dev/null || return $?
+
+  if jq -e '.inputIsCanonicalBlackHole == true' \
+      "${before}" >/dev/null; then
+    selection_mode=preselected
+    transition_exercised=0
+  else
+    selection_mode=switched
+    transition_exercised=1
+  fi
+  if [[ -n "${evidence_output}" ]]; then
+    temporary="${evidence_output}.tmp.$$"
+    {
+      print -r -- "schema=opensteamer.default-input-lifecycle.v1"
+      print -r -- "selectionMode=${selection_mode}"
+      print -r -- "transitionExercised=${transition_exercised}"
+      print -r -- "restorationExercised=${transition_exercised}"
+    } > "${temporary}" || return $?
+    mv "${temporary}" "${evidence_output}"
+  fi
+}
+
+function validate_default_input_baseline_json() {
+  local snapshot=$1
+
+  jq -e '
+    .schema == "opensteamer.default-input-snapshot.v2"
+    and (.inputIsCanonicalBlackHole | type == "boolean")
+    and (.inputTransportClass
+      | IN("built-in", "virtual", "aggregate", "usb", "bluetooth", "other"))
+    and (if .inputIsCanonicalBlackHole then
+      .inputTransportClass == "virtual"
+    else true end)
+  ' "${snapshot}" >/dev/null
 }
 
 function wait_for_default_input_restoration() {
@@ -2071,8 +3198,15 @@ function wait_for_default_input_restoration() {
     capture_default_input_snapshot \
       "${RAW_DEFAULT_INPUT_AFTER}" after || return $?
     if jq -e \
-        '.inputIsCanonicalBlackHole == false' \
-        "${RAW_DEFAULT_INPUT_AFTER}" >/dev/null; then
+        --slurpfile before "${RAW_DEFAULT_INPUT_BEFORE}" '
+        .schema == "opensteamer.default-input-snapshot.v2"
+        and .inputIsCanonicalBlackHole
+          == $before[0].inputIsCanonicalBlackHole
+        and .inputUIDFingerprint
+          == $before[0].inputUIDFingerprint
+        and .inputTransportClass
+          == $before[0].inputTransportClass
+      ' "${RAW_DEFAULT_INPUT_AFTER}" >/dev/null; then
       return 0
     fi
     sleep 0.05
@@ -2087,109 +3221,11 @@ function start_bounded_blackhole_probe_process() {
   rm -f \
     "${RAW_BLACKHOLE_PROBE_DIAGNOSTICS}" \
     "${RAW_BLACKHOLE_PROBE_COMPLETION}" || return $?
-  opensteamer_exec_in_isolated_process_group /usr/bin/python3 -c '
-import os
-import subprocess
-import sys
-import time
-
-(
-    diagnostic_path, completion_path, runtime_uid, limit_text, nonce,
-    start_text, pid_text, reported_status_text, completion_mode,
-    end_offset_text, *command
-) = sys.argv[1:]
-limit = int(limit_text)
-needle = runtime_uid.encode("utf-8")
-retained = bytearray()
-carry = b""
-leaked = False
-total = 0
-probe_start_ns = int(start_text)
-production_pid = int(pid_text)
-
-try:
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-except OSError:
-    process = None
-    return_code = 127
-    retained.extend(b"diagnostic=probe-launch-failed\n")
-else:
-    assert process.stdout is not None
-    while True:
-        chunk = process.stdout.read(4096)
-        if not chunk:
-            break
-        total += len(chunk)
-        combined = carry + chunk
-        if needle and needle in combined:
-            leaked = True
-        keep = max(0, len(needle) - 1)
-        carry = combined[-keep:] if keep else b""
-        if len(retained) < limit:
-            retained.extend(chunk[: limit - len(retained)])
-    return_code = process.wait()
-    if return_code < 0:
-        return_code = 128 - return_code
-
-if leaked and return_code == 0:
-    return_code = 86
-
-if return_code == 0:
-    try:
-        os.remove(diagnostic_path)
-    except FileNotFoundError:
-        pass
-else:
-    if leaked:
-        payload = b"diagnostic=runtime-uid-output-rejected\n"
-    else:
-        payload = bytes(retained)
-        if total > limit:
-            marker = b"\ndiagnostic=truncated\n"
-            payload = payload[: max(0, limit - len(marker))] + marker
-        if not payload:
-            payload = b"diagnostic=probe-failed-without-output\n"
-    temporary = f"{diagnostic_path}.tmp.{os.getpid()}"
-    with open(temporary, "wb") as destination:
-        destination.write(payload)
-        destination.flush()
-        os.fsync(destination.fileno())
-    os.replace(temporary, diagnostic_path)
-
-if completion_mode == "missing":
-    sys.exit(return_code)
-
-reported_status = (
-    return_code if reported_status_text == "" else int(reported_status_text)
-)
-completion_nonce = (
-    nonce if completion_mode != "nonce-mismatch" else f"{nonce}-mismatch"
-)
-probe_end_ns = (
-    time.clock_gettime_ns(time.CLOCK_MONOTONIC)
-    if end_offset_text == ""
-    else probe_start_ns + int(end_offset_text)
-)
-completion_temporary = f"{completion_path}.tmp.{os.getpid()}"
-with open(completion_temporary, "w", encoding="utf-8") as completion:
-    if completion_mode == "malformed":
-        completion.write("malformed\n")
-    else:
-        completion.write("schema=opensteamer.blackhole-probe-completion.v1\n")
-        completion.write(f"nonce={completion_nonce}\n")
-        completion.write(f"probeStartMonotonicNs={probe_start_ns}\n")
-        completion.write(f"probeEndMonotonicNs={probe_end_ns}\n")
-        completion.write(f"status={reported_status}\n")
-        completion.write(f"productionPIDAtStart={production_pid}\n")
-    completion.flush()
-    os.fsync(completion.fileno())
-os.replace(completion_temporary, completion_path)
-sys.exit(return_code)
-' \
+  opensteamer_exec_in_isolated_process_group \
+    /bin/zsh -c 'kill -STOP $$; exec "$@"' \
+    blackhole-probe-supervisor \
+    "${OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE}" \
+    probe-supervise \
     "${RAW_BLACKHOLE_PROBE_DIAGNOSTICS}" \
     "${RAW_BLACKHOLE_PROBE_COMPLETION}" \
     "${PHYSICAL_OUTPUT_UID}" \
@@ -2197,12 +3233,23 @@ sys.exit(return_code)
     "${RAW_READY_NONCE:-unbound}" \
     "${RAW_PROBE_STARTED_NS:-0}" \
     "${RAW_PROBE_BOUND_PID:-0}" \
-    "${OPENSTEAMER_SELF_TEST_RAW_REPORTED_STATUS:-}" \
+    "${OPENSTEAMER_SELF_TEST_RAW_REPORTED_STATUS:--}" \
     "${OPENSTEAMER_SELF_TEST_RAW_COMPLETION_MODE:-normal}" \
-    "${OPENSTEAMER_SELF_TEST_RAW_PROBE_END_OFFSET_NS:-}" \
+    "${OPENSTEAMER_SELF_TEST_RAW_PROBE_END_OFFSET_NS:--}" \
+    -- \
     "$@" &
   BLACKHOLE_PROBE_PID=$!
   BLACKHOLE_PROBE_STARTED_SECONDS=${SECONDS}
+  BLACKHOLE_PROBE_STARTED_MONOTONIC_NS=$(current_monotonic_time_ns) || {
+    write_status=$?
+    cleanup_blackhole_probe || true
+    return "${write_status}"
+  }
+  [[ "${BLACKHOLE_PROBE_STARTED_MONOTONIC_NS}" != *[^0-9]* \
+      && BLACKHOLE_PROBE_STARTED_MONOTONIC_NS -gt 0 ]] || {
+    cleanup_blackhole_probe || true
+    return 3
+  }
   print -r -- "${BLACKHOLE_PROBE_PID}" \
     > "${ARTIFACT_DIR}/blackhole-probe-leader-pid.txt" || {
       write_status=$?
@@ -2213,6 +3260,18 @@ sys.exit(return_code)
     opensteamer_require_isolated_process_group "${BLACKHOLE_PROBE_PID}" 5
   group_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
   if (( group_status != 0 )); then
+    cleanup_blackhole_probe || true
+    return "${group_status}"
+  fi
+  run_command_capturing_status \
+    opensteamer_wait_for_stopped_process_group "${BLACKHOLE_PROBE_PID}" 5
+  group_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+  if (( group_status != 0 )); then
+    cleanup_blackhole_probe || true
+    return "${group_status}"
+  fi
+  if ! opensteamer_resume_process_group "${BLACKHOLE_PROBE_PID}"; then
+    group_status=$?
     cleanup_blackhole_probe || true
     return "${group_status}"
   fi
@@ -2257,6 +3316,129 @@ function start_blackhole_probe() {
   return 0
 }
 
+function start_isolated_validation_process_capturing_output() {
+  local standard_output=$1
+  local standard_error=$2
+  shift 2
+
+  : > "${standard_output}" || return $?
+  : > "${standard_error}" || return $?
+  opensteamer_start_isolated_validation_process "$@" \
+    > "${standard_output}" 2> "${standard_error}"
+}
+
+function capture_raw_ui_completion_observation_from_log() {
+  local live_output=$1
+  local completion_line="OPENSTEAMER_RAW_UI_CONTINUITY_COMPLETE_V1 nonce=${RAW_READY_NONCE}"
+  local teardown_line="OPENSTEAMER_RAW_UI_TEARDOWN_BEGIN_V1 nonce=${RAW_READY_NONCE}"
+  local observed_at_ns
+  local temporary="${RAW_UI_COMPLETION_OBSERVATION}.tmp.$$"
+
+  [[ -s "${live_output}" ]] || return 1
+  # The ten-second XCTest handshake grace is useful only if the Mac sees completion before the
+  # test announces teardown. Seeing both in one poll is ambiguous and therefore fails closed.
+  /usr/bin/grep -Fxq "${teardown_line}" "${live_output}" && return 9
+  [[ "$(/usr/bin/grep -Fxc "${completion_line}" "${live_output}")" == "1" ]] \
+    || return 1
+  observed_at_ns=$(current_monotonic_time_ns) || return $?
+  [[ -n "${observed_at_ns}" && "${observed_at_ns}" != *[^0-9]* ]] || return 3
+  {
+    print -r -- "schema=opensteamer.raw-ui-completion-observation.v1"
+    print -r -- "nonce=${RAW_READY_NONCE}"
+    print -r -- "observedAtMonotonicNs=${observed_at_ns}"
+  } > "${temporary}" || return $?
+  mv "${temporary}" "${RAW_UI_COMPLETION_OBSERVATION}"
+}
+
+function capture_call_ui_hosted_state_observation_from_log() {
+  local live_output=$1
+  local sequence=$2
+  local acoustic_token=$3
+  local lower_bound_ns=$4
+  local output=$5
+  local marker="OPENSTEAMER_CALL_UI_HOSTED_ACTIVE_V2 nonce=${RAW_READY_NONCE} sequence=${sequence} acousticToken=${acoustic_token}"
+  local marker_count
+  local observed_at_ns
+  local acknowledgement_accepted_ns=0
+  local temporary="${output}.tmp.$$"
+
+  [[ -n "${output}" && -s "${live_output}" \
+      && ( "${sequence}" == "1" || "${sequence}" == "2" ) \
+      && -n "${lower_bound_ns}" \
+      && "${lower_bound_ns}" != *[^0-9]* \
+      && -n "${RAW_READY_RESUMED_NS}" \
+      && "${RAW_READY_RESUMED_NS}" != *[^0-9]* ]] || return 1
+  if [[ "${sequence}" == "1" ]]; then
+    [[ "${acoustic_token}" == "-" \
+        && "${lower_bound_ns}" == "${RAW_READY_RESUMED_NS}" ]] || return 3
+  else
+    [[ -n "${acoustic_token}" \
+        && "${acoustic_token}" != *[^A-Za-z0-9-]* \
+        && "${acoustic_token}" == "${CALL_ACOUSTIC_ACCEPTED_TOKEN}" \
+        && -n "${CALL_ACOUSTIC_ACCEPTED_NS}" \
+        && "${CALL_ACOUSTIC_ACCEPTED_NS}" != *[^0-9]* \
+        && "${lower_bound_ns}" == "${CALL_ACOUSTIC_ACCEPTED_NS}" ]] || return 3
+    acknowledgement_accepted_ns=${CALL_ACOUSTIC_ACCEPTED_NS}
+  fi
+  marker_count=$(/usr/bin/grep -Fxc "${marker}" "${live_output}" 2>/dev/null) \
+    || marker_count=0
+  (( marker_count == 0 )) && return 1
+  (( marker_count == 1 )) || return 9
+  observed_at_ns=$(current_monotonic_time_ns) || return $?
+  [[ -n "${observed_at_ns}" && "${observed_at_ns}" != *[^0-9]* \
+      ]] || return 3
+  (( observed_at_ns > lower_bound_ns )) || return 9
+  {
+    print -r -- "schema=opensteamer.call-ui-hosted-state-observation.v2"
+    print -r -- "nonce=${RAW_READY_NONCE}"
+    print -r -- "state=hosted-call-active"
+    print -r -- "sequence=${sequence}"
+    print -r -- "acousticToken=${acoustic_token}"
+    print -r -- "resumedAtMonotonicNs=${RAW_READY_RESUMED_NS}"
+    print -r -- "acknowledgementAcceptedAtMonotonicNs=${acknowledgement_accepted_ns}"
+    print -r -- "observedAtMonotonicNs=${observed_at_ns}"
+  } > "${temporary}" || return $?
+  mv "${temporary}" "${output}"
+}
+
+function wait_for_nonce_bound_call_ui_hosted_state() {
+  local deadline_ns=$1
+  local live_output=$2
+  local sequence=$3
+  local acoustic_token=$4
+  local lower_bound_ns=$5
+  local output=$6
+  local capture_status
+
+  [[ -n "${output}" ]] || return 3
+  rm -f "${output}" || return $?
+  while acknowledgement_remaining_seconds "${deadline_ns}" >/dev/null; do
+    if [[ -z "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" ]] \
+        && { [[ -z "${XCODEBUILD_PID}" ]] \
+          || ! opensteamer_process_group_exists "${XCODEBUILD_PID}"; }; then
+      return 9
+    fi
+    if capture_call_ui_hosted_state_observation_from_log \
+        "${live_output}" \
+        "${sequence}" \
+        "${acoustic_token}" \
+        "${lower_bound_ns}" \
+        "${output}"; then
+      if acknowledgement_remaining_seconds "${deadline_ns}" >/dev/null; then
+        return 0
+      fi
+      rm -f "${output}" || true
+      break
+    else
+      capture_status=$?
+      (( capture_status == 1 )) || return "${capture_status}"
+    fi
+    sleep 0.05
+  done
+  rm -f "${output}" || true
+  return 1
+}
+
 function run_simple_physical_ui_test() {
   local test_name=$1
   local result_bundle=$2
@@ -2274,12 +3456,16 @@ function run_simple_physical_ui_test() {
   local after_start_hook=${14:-}
   local preserve_derived_data=${15:-0}
   local overlap_completion_marker=${16:-}
+  local before_start_hook=${17:-}
   local xcodebuild_status
   local watchdog_status
   local expected_watchdog_state
   local isolation_status=0
   local hook_status=0
+  local hook_cleanup_status=0
   local xcodebuild_group_pid
+  local xcodebuild_live_stdout="${result_bundle}.live-stdout.txt"
+  local xcodebuild_live_stderr="${result_bundle}.live-stderr.txt"
 
   if [[ -n "${overlap_completion_marker}" ]]; then
     prepare_raw_overlap_contract || return $?
@@ -2305,6 +3491,13 @@ function run_simple_physical_ui_test() {
     rm -f "${stable_host_failure_marker}" || return $?
   fi
 
+  if [[ -n "${before_start_hook}" ]]; then
+    run_command_capturing_status "${before_start_hook}"
+    hook_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+    (( hook_status == 0 )) || return "${hook_status}"
+  fi
+
+  XCODEBUILD_LIVE_STDOUT=${xcodebuild_live_stdout}
   if [[ -n "${OPENSTEAMER_SELF_TEST_ISOLATION_FAILURE_STATUS:-}" ]]; then
     isolation_status=${OPENSTEAMER_SELF_TEST_ISOLATION_FAILURE_STATUS}
   elif [[ -n "${OPENSTEAMER_SELF_TEST_SIMPLE_UI_DURATION:-}" ]]; then
@@ -2317,12 +3510,17 @@ function run_simple_physical_ui_test() {
     isolation_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
   else
     run_command_capturing_status \
-      opensteamer_start_isolated_validation_process xcodebuild "${xcodebuild_action}" \
+      start_isolated_validation_process_capturing_output \
+      "${xcodebuild_live_stdout}" \
+      "${xcodebuild_live_stderr}" \
+      /usr/bin/env TMPDIR="${XCODE_TEMP_DIR}" \
+      xcodebuild "${xcodebuild_action}" \
       -project "${PROJECT_DIR}/opensteamer.xcodeproj" \
       -scheme opensteamerUITests \
       -configuration Debug \
       -destination "platform=iOS,id=${HARDWARE_UDID}" \
       -derivedDataPath "${derived_data}" \
+      -clonedSourcePackagesDirPath "${XCODE_SOURCE_PACKAGES}" \
       -parallel-testing-enabled NO \
       -maximum-parallel-testing-workers 1 \
       -test-timeouts-enabled YES \
@@ -2333,26 +3531,10 @@ function run_simple_physical_ui_test() {
     isolation_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
   fi
   if (( isolation_status != 0 )); then
+    XCODEBUILD_LIVE_STDOUT=""
     return "${isolation_status}"
   fi
   XCODEBUILD_GROUP_HANDLE=${XCODEBUILD_PID}
-
-  if [[ -n "${after_start_hook}" ]]; then
-    run_command_capturing_status "${after_start_hook}"
-    hook_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
-    if (( hook_status != 0 )); then
-      cleanup_blackhole_probe || true
-      opensteamer_terminate_isolated_process_group \
-        "${XCODEBUILD_PID}" "${UI_TEST_TERMINATION_GRACE_SECONDS}"
-      opensteamer_wait_for_final_process_status "${XCODEBUILD_PID}" || true
-      if ! opensteamer_process_group_exists "${XCODEBUILD_PID}"; then
-        XCODEBUILD_GROUP_HANDLE=""
-      fi
-      XCODEBUILD_PID=""
-      XCODEBUILD_GROUP_ISOLATED=0
-      return "${hook_status}"
-    fi
-  fi
   (
     set -e
     opensteamer_write_state "${watchdog_state}" "state=monitoring"
@@ -2360,6 +3542,29 @@ function run_simple_physical_ui_test() {
     lock_poll_started=${SECONDS}
     lock_query_failures=0
     while kill -0 "${XCODEBUILD_PID}" 2>/dev/null; do
+      if [[ -z "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" \
+          && -n "${overlap_completion_marker}" \
+          && ! -s "${RAW_UI_COMPLETION_OBSERVATION}" ]]; then
+        if capture_raw_ui_completion_observation_from_log \
+            "${xcodebuild_live_stdout}"; then
+          :
+        else
+          completion_handshake_status=$?
+          if (( completion_handshake_status != 1 )); then
+            record_raw_overlap_failure \
+              raw-ui-completion-handshake-rejected \
+              "${completion_handshake_status}"
+            print -r -- \
+              "The nonce-bound raw UI completion handshake was rejected before teardown." \
+              > "${watchdog_failure_marker}"
+            opensteamer_terminate_isolated_process_group \
+              "${XCODEBUILD_PID}" "${UI_TEST_TERMINATION_GRACE_SECONDS}"
+            opensteamer_write_state \
+              "${watchdog_state}" "state=raw-ui-completion-failure-handled"
+            exit 0
+          fi
+        fi
+      fi
       if [[ -n "${overlap_completion_marker}" \
           && ! -f "${overlap_completion_marker}" \
           && -s "${RAW_BLACKHOLE_PROBE_COMPLETION}" ]]; then
@@ -2452,14 +3657,24 @@ function run_simple_physical_ui_test() {
   ) &
   XCODEBUILD_WATCHDOG_PID=$!
 
+  if [[ -n "${after_start_hook}" ]]; then
+    run_command_capturing_status "${after_start_hook}"
+    hook_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+    if (( hook_status != 0 )); then
+      cleanup_blackhole_probe || hook_cleanup_status=$?
+      cleanup_xcodebuild || hook_cleanup_status=$?
+      if (( hook_cleanup_status != 0 )); then
+        XCODEBUILD_LIVE_STDOUT=""
+        return 125
+      fi
+      XCODEBUILD_LIVE_STDOUT=""
+      return "${hook_status}"
+    fi
+  fi
+
   xcodebuild_group_pid=${XCODEBUILD_PID}
   opensteamer_wait_for_final_process_status "${XCODEBUILD_PID}"
   xcodebuild_status=${OPENSTEAMER_FINAL_PROCESS_STATUS}
-  RAW_XCODEBUILD_ENDED_NS=$(current_monotonic_time_ns) || {
-    print -r -- "The xcodebuild monotonic end bound could not be captured." \
-      > "${watchdog_failure_marker}"
-    RAW_XCODEBUILD_ENDED_NS=0
-  }
   if ! opensteamer_wait_for_process_group_exit "${XCODEBUILD_PID}" 2; then
     print -r -- \
       "The device xcodebuild process group remained alive after its leader exited." \
@@ -2493,6 +3708,15 @@ function run_simple_physical_ui_test() {
   XCODEBUILD_WATCHDOG_PID=""
   XCODEBUILD_PID=""
   XCODEBUILD_GROUP_ISOLATED=0
+  XCODEBUILD_LIVE_STDOUT=""
+
+  if [[ -z "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" \
+      && -n "${overlap_completion_marker}" \
+      && ! -s "${RAW_UI_COMPLETION_OBSERVATION}" ]]; then
+    print -r -- \
+      "The nonce-bound raw UI completion handshake was not observed before xcodebuild ended." \
+      > "${watchdog_failure_marker}"
+  fi
 
   if [[ -f "${watchdog_failure_marker}" ]]; then
     cat "${watchdog_failure_marker}" >&2
@@ -2733,7 +3957,7 @@ function production_app_pid_from_process_json() {
 
 function capture_raw_probe_production_identity() {
   local boundary=$1
-  local process_json="${RAW_PHASE_DIR}/.raw-probe-${boundary}-processes.json"
+  local process_json="${RAW_PROOF_WORK_DIR}/.raw-probe-${boundary}-processes.json"
   local candidate_json="${CANDIDATE_BEFORE}"
   local evidence_output
   local fixture_pid
@@ -2756,7 +3980,7 @@ function capture_raw_probe_production_identity() {
   temporary="${evidence_output}.tmp.$$"
   rm -f "${process_json}" "${evidence_output}" "${temporary}" || return $?
   if [[ -n "${OPENSTEAMER_SELF_TEST_RAW_READINESS:-}" ]]; then
-    candidate_json="${RAW_PHASE_DIR}/.raw-probe-self-test-candidate.json"
+    candidate_json="${RAW_PROOF_WORK_DIR}/.raw-probe-self-test-candidate.json"
     jq -n \
       --arg bundle "${EXPECTED_APP_BUNDLE_IDENTIFIER}" \
       '{bundleIdentifier:$bundle,path:"/Applications/opensteamer.app"}' \
@@ -3079,7 +4303,12 @@ function fresh_call_ready_token() {
 function wait_for_fresh_call_ready_acknowledgement() {
   local token
   local acknowledgement
-  local wait_started=${SECONDS}
+  local deadline_ns
+  local self_test_query_delay_consumed=0
+  local self_test_post_read_delay_consumed=0
+
+  deadline_ns=$(acknowledgement_deadline_ns \
+    "${CALL_READY_TIMEOUT_SECONDS}") || return $?
 
   rm -f \
     "${CALL_READY_REQUEST}" \
@@ -3103,9 +4332,21 @@ function wait_for_fresh_call_ready_acknowledgement() {
       >&2 || return $?
   fi
 
-  while (( SECONDS - wait_started < CALL_READY_TIMEOUT_SECONDS )); do
+  while acknowledgement_remaining_seconds "${deadline_ns}" >/dev/null; do
+    if (( self_test_query_delay_consumed == 0 )) \
+        && [[ -n "${OPENSTEAMER_SELF_TEST_ACK_QUERY_DELAY_SECONDS:-}" ]]; then
+      sleep "${OPENSTEAMER_SELF_TEST_ACK_QUERY_DELAY_SECONDS}"
+      self_test_query_delay_consumed=1
+      acknowledgement_remaining_seconds "${deadline_ns}" >/dev/null || break
+    fi
     if [[ -f "${CALL_READY_ACKNOWLEDGEMENT}" ]]; then
-      acknowledgement=$(cat "${CALL_READY_ACKNOWLEDGEMENT}" 2>/dev/null) || return $?
+      acknowledgement=$(<"${CALL_READY_ACKNOWLEDGEMENT}") || return $?
+      if (( self_test_post_read_delay_consumed == 0 )) \
+          && [[ -n "${OPENSTEAMER_SELF_TEST_ACK_POST_READ_DELAY_SECONDS:-}" ]]; then
+        sleep "${OPENSTEAMER_SELF_TEST_ACK_POST_READ_DELAY_SECONDS}"
+        self_test_post_read_delay_consumed=1
+      fi
+      acknowledgement_remaining_seconds "${deadline_ns}" >/dev/null || break
       if [[ "${acknowledgement}" == "ready=${token}" ]]; then
         opensteamer_write_state "${CALL_READY_STATUS}" "state=accepted" || return $?
         print -r -- \
@@ -3127,39 +4368,521 @@ function wait_for_fresh_call_ready_acknowledgement() {
   return 1
 }
 
-function reject_runtime_uid_in_retained_artifacts() {
-  /usr/bin/python3 - "${ARTIFACT_DIR}" "${PHYSICAL_OUTPUT_UID}" <<'PY'
-import os
-import sys
+function fresh_call_end_token() {
+  if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == call-end-* \
+      && -n "${OPENSTEAMER_SELF_TEST_CALL_END_TOKEN:-}" ]]; then
+    print -r -- "${OPENSTEAMER_SELF_TEST_CALL_END_TOKEN}"
+    return
+  fi
+  print -r -- \
+    "end-call-$(
+      /usr/bin/uuidgen \
+        | tr '[:upper:]' '[:lower:]'
+    )"
+}
 
-root, value = sys.argv[1:]
-needle = value.encode("utf-8")
-keep = max(0, len(needle) - 1)
-for directory, _, names in os.walk(root):
-    for name in names:
-        path = os.path.join(directory, name)
-        try:
-            with open(path, "rb") as source:
-                carry = b""
-                while True:
-                    chunk = source.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    combined = carry + chunk
-                    if needle in combined:
-                        sys.exit(1)
-                    carry = combined[-keep:] if keep else b""
-        except OSError:
-            sys.exit(1)
-PY
+function fresh_call_acoustic_token() {
+  if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == call-acoustic-* \
+      && -n "${OPENSTEAMER_SELF_TEST_CALL_ACOUSTIC_TOKEN:-}" ]]; then
+    print -r -- "${OPENSTEAMER_SELF_TEST_CALL_ACOUSTIC_TOKEN}"
+    return
+  fi
+  print -r -- \
+    "heard-call-$(
+      /usr/bin/uuidgen \
+        | tr '[:upper:]' '[:lower:]'
+  )"
+}
+
+function acknowledgement_deadline_ns() {
+  local timeout_seconds=$1
+  local started_ns
+  local deadline_ns
+
+  [[ -n "${timeout_seconds}" && "${timeout_seconds}" != *[^0-9]* ]] \
+    || return 2
+  started_ns=$(current_monotonic_time_ns) || return $?
+  [[ -n "${started_ns}" && "${started_ns}" != *[^0-9]* ]] || return 3
+  deadline_ns=$((started_ns + timeout_seconds * 1000000000))
+  (( deadline_ns > started_ns )) || return 3
+  print -r -- "${deadline_ns}"
+}
+
+# Print the positive whole-second budget remaining at an acknowledgement boundary, rounded up so
+# the nested device query cannot exceed the absolute deadline merely because its API accepts only
+# seconds. Absence of output with status 1 means the deadline has already closed.
+function acknowledgement_remaining_seconds() {
+  local deadline_ns=$1
+  local now_ns
+  local remaining_ns
+
+  [[ -n "${deadline_ns}" && "${deadline_ns}" != *[^0-9]* ]] || return 3
+  now_ns=$(current_monotonic_time_ns) || return $?
+  [[ -n "${now_ns}" && "${now_ns}" != *[^0-9]* ]] || return 3
+  (( now_ns < deadline_ns )) || return 1
+  remaining_ns=$((deadline_ns - now_ns))
+  print -r -- $(((remaining_ns + 999999999) / 1000000000))
+}
+
+# The WebRTC/native counters used by XCTest stop before the final iOS mixer, route, DAC, and
+# speaker. This fresh human acknowledgement is therefore a separate physical acceptance boundary,
+# and it must complete while the real call, XCTest, tone, device, and one signed host are live.
+function wait_for_fresh_call_acoustic_acknowledgement() {
+  local token
+  local acknowledgement
+  local deadline_ns=${1:-}
+  local remaining_seconds
+  local query_timeout_seconds
+  local lock_poll_started=${SECONDS}
+  local lock_query_failures=0
+  local lock_result
+  local accepted_record
+  local self_test_query_delay_consumed=0
+  local self_test_post_read_delay_consumed=0
+
+  CALL_ACOUSTIC_ACCEPTED_NS=0
+  CALL_ACOUSTIC_ACCEPTED_TOKEN=""
+
+  if [[ -z "${deadline_ns}" ]]; then
+    deadline_ns=$(acknowledgement_deadline_ns \
+      "${CALL_ACOUSTIC_TIMEOUT_SECONDS}") || return $?
+  else
+    acknowledgement_remaining_seconds "${deadline_ns}" >/dev/null || return 1
+  fi
+
+  /bin/rm -f \
+    "${CALL_ACOUSTIC_REQUEST}" \
+    "${CALL_ACOUSTIC_STATUS}" \
+    "${CALL_ACOUSTIC_TIMEOUT_MARKER}" \
+    "${CALL_ACOUSTIC_STALE_MARKER}" || return $?
+  if [[ -e "${CALL_ACOUSTIC_ACKNOWLEDGEMENT}" ]]; then
+    /bin/rm -f "${CALL_ACOUSTIC_ACKNOWLEDGEMENT}" || return $?
+    opensteamer_write_state \
+      "${CALL_ACOUSTIC_STALE_MARKER}" "state=discarded-before-request" || return $?
+  fi
+  token=$(fresh_call_acoustic_token) || return $?
+  opensteamer_write_state \
+    "${CALL_ACOUSTIC_REQUEST}" "heard-token=${token}" || return $?
+  print -r -- "phase=3 event=call-acoustic-requested" \
+    >> "${PHASE_EVENTS}" || return $?
+  if [[ -z "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" ]]; then
+    print -r -- \
+      "While the real call is still connected, listen at the physical iPhone until the streamed Mac tone is clearly audible, then write exactly 'heard=${token}' to ${CALL_ACOUSTIC_ACKNOWLEDGEMENT}." \
+      >&2 || return $?
+  fi
+  while remaining_seconds=$(acknowledgement_remaining_seconds \
+      "${deadline_ns}"); do
+    if (( self_test_query_delay_consumed == 0 )) \
+        && [[ -n "${OPENSTEAMER_SELF_TEST_ACK_QUERY_DELAY_SECONDS:-}" ]]; then
+      sleep "${OPENSTEAMER_SELF_TEST_ACK_QUERY_DELAY_SECONDS}"
+      self_test_query_delay_consumed=1
+      acknowledgement_remaining_seconds "${deadline_ns}" >/dev/null || break
+    fi
+    if [[ -z "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" ]]; then
+      if [[ -z "${XCODEBUILD_PID}" ]] \
+          || ! opensteamer_process_group_exists "${XCODEBUILD_PID}"; then
+        opensteamer_write_state \
+          "${CALL_ACOUSTIC_STATUS}" "state=ui-ended-before-acknowledgement" || true
+        return 9
+      fi
+      if [[ -z "${AUDIO_ORACLE_TONE_PID}" ]] \
+          || ! opensteamer_process_group_exists "${AUDIO_ORACLE_TONE_PID}"; then
+        opensteamer_write_state \
+          "${CALL_ACOUSTIC_STATUS}" "state=audio-oracle-ended-before-acknowledgement" || true
+        return 7
+      fi
+      if [[ -z "${CALL_STABLE_HOST_PID}" \
+          || "$(current_host_pid)" != "${CALL_STABLE_HOST_PID}" ]]; then
+        opensteamer_write_state \
+          "${CALL_ACOUSTIC_STATUS}" "state=host-changed-before-acknowledgement" || true
+        return 4
+      fi
+      if (( SECONDS - lock_poll_started >= DEVICE_LOCK_POLL_SECONDS )); then
+        lock_poll_started=${SECONDS}
+        remaining_seconds=$(acknowledgement_remaining_seconds \
+          "${deadline_ns}") || break
+        if (( remaining_seconds > 1 )); then
+          query_timeout_seconds=${DEVICE_COMMAND_TIMEOUT_SECONDS}
+          if (( query_timeout_seconds >= remaining_seconds )); then
+            query_timeout_seconds=$((remaining_seconds - 1))
+          fi
+          if opensteamer_device_is_unlocked \
+              "${COREDEVICE_IDENTIFIER}" \
+              "${query_timeout_seconds}" \
+              "${CALL_LOCK_STATE_DURING_TEST}"; then
+            lock_query_failures=0
+          else
+            lock_result=$?
+            if (( lock_result == 5 )); then
+              opensteamer_write_state \
+                "${CALL_ACOUSTIC_STATUS}" "state=device-locked-before-acknowledgement" || true
+              return 5
+            fi
+            lock_query_failures=$((lock_query_failures + 1))
+            if (( lock_query_failures >= 2 )); then
+              opensteamer_write_state \
+                "${CALL_ACOUSTIC_STATUS}" "state=device-unavailable-before-acknowledgement" || true
+              return 6
+            fi
+          fi
+          acknowledgement_remaining_seconds "${deadline_ns}" >/dev/null || break
+        fi
+      fi
+    fi
+    acknowledgement_remaining_seconds "${deadline_ns}" >/dev/null || break
+    if [[ -f "${CALL_ACOUSTIC_ACKNOWLEDGEMENT}" ]]; then
+      acknowledgement=$(<"${CALL_ACOUSTIC_ACKNOWLEDGEMENT}") || return $?
+      if (( self_test_post_read_delay_consumed == 0 )) \
+          && [[ -n "${OPENSTEAMER_SELF_TEST_ACK_POST_READ_DELAY_SECONDS:-}" ]]; then
+        sleep "${OPENSTEAMER_SELF_TEST_ACK_POST_READ_DELAY_SECONDS}"
+        self_test_post_read_delay_consumed=1
+      fi
+      acknowledgement_remaining_seconds "${deadline_ns}" >/dev/null || break
+      if [[ "${acknowledgement}" == "heard=${token}" ]]; then
+        CALL_ACOUSTIC_ACCEPTED_NS=$(current_monotonic_time_ns) || return $?
+        [[ "${CALL_ACOUSTIC_ACCEPTED_NS}" != *[^0-9]* \
+            && CALL_ACOUSTIC_ACCEPTED_NS -lt deadline_ns ]] || break
+        CALL_ACOUSTIC_ACCEPTED_TOKEN=${token}
+        accepted_record="schema=opensteamer.call-acoustic-acknowledgement.v2
+nonce=${RAW_READY_NONCE}
+sequence=1
+token=${token}
+state=accepted
+acceptedAtMonotonicNs=${CALL_ACOUSTIC_ACCEPTED_NS}"
+        opensteamer_write_state \
+          "${CALL_ACOUSTIC_STATUS}" \
+          "${accepted_record}" || return $?
+        print -r -- "phase=3 event=call-acoustic-accepted" \
+          >> "${PHASE_EVENTS}" || return $?
+        return 0
+      fi
+      /bin/rm -f "${CALL_ACOUSTIC_ACKNOWLEDGEMENT}" || return $?
+      opensteamer_write_state \
+        "${CALL_ACOUSTIC_STALE_MARKER}" "state=rejected" || return $?
+    fi
+    sleep 0.1
+  done
+
+  opensteamer_write_state "${CALL_ACOUSTIC_STATUS}" "state=timed-out" || return $?
+  opensteamer_write_state \
+    "${CALL_ACOUSTIC_TIMEOUT_MARKER}" "state=timed-out" || return $?
+  echo "Timed out waiting for the nonce-bound in-call acoustic acknowledgement." >&2
+  return 1
+}
+
+# xcodebuild is already running when this hook executes. The operator must first observe the
+# connected-call hosted-playout proof on the iPhone, then end that call and acknowledge this fresh
+# token. The XCTest process continues concurrently and can accept post-call recovery only after the
+# real call transition; stale files, early test exit, host/tone loss, and device-lock uncertainty
+# all fail closed.
+function wait_for_fresh_call_end_acknowledgement() {
+  local token
+  local acknowledgement
+  local deadline_ns
+  local remaining_seconds
+  local query_timeout_seconds
+  local lock_poll_started=${SECONDS}
+  local lock_query_failures=0
+  local lock_result
+  local self_test_query_delay_consumed=0
+  local self_test_post_read_delay_consumed=0
+
+  deadline_ns=$(acknowledgement_deadline_ns \
+    "${CALL_END_TIMEOUT_SECONDS}") || return $?
+
+  /bin/rm -f \
+    "${CALL_END_REQUEST}" \
+    "${CALL_END_STATUS}" \
+    "${CALL_END_TIMEOUT_MARKER}" \
+    "${CALL_END_STALE_MARKER}" || return $?
+  if [[ -e "${CALL_END_ACKNOWLEDGEMENT}" ]]; then
+    /bin/rm -f "${CALL_END_ACKNOWLEDGEMENT}" || return $?
+    opensteamer_write_state \
+      "${CALL_END_STALE_MARKER}" "state=discarded-before-request" || return $?
+  fi
+  token=$(fresh_call_end_token) || return $?
+  opensteamer_write_state \
+    "${CALL_END_REQUEST}" "end-call-token=${token}" || return $?
+  print -r -- "phase=3 event=call-end-requested" \
+    >> "${PHASE_EVENTS}" || return $?
+  if [[ -z "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" ]]; then
+    print -r -- \
+      "After the iPhone shows sustained connected-call playout, end the real call, then write exactly 'ended=${token}' to ${CALL_END_ACKNOWLEDGEMENT}." \
+      >&2 || return $?
+  fi
+  while remaining_seconds=$(acknowledgement_remaining_seconds \
+      "${deadline_ns}"); do
+    if (( self_test_query_delay_consumed == 0 )) \
+        && [[ -n "${OPENSTEAMER_SELF_TEST_ACK_QUERY_DELAY_SECONDS:-}" ]]; then
+      sleep "${OPENSTEAMER_SELF_TEST_ACK_QUERY_DELAY_SECONDS}"
+      self_test_query_delay_consumed=1
+      acknowledgement_remaining_seconds "${deadline_ns}" >/dev/null || break
+    fi
+    if [[ -z "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" ]]; then
+      if [[ -z "${XCODEBUILD_PID}" ]] \
+          || ! opensteamer_process_group_exists "${XCODEBUILD_PID}"; then
+        opensteamer_write_state \
+          "${CALL_END_STATUS}" "state=ui-ended-before-acknowledgement" || true
+        return 9
+      fi
+      if [[ -z "${AUDIO_ORACLE_TONE_PID}" ]] \
+          || ! opensteamer_process_group_exists "${AUDIO_ORACLE_TONE_PID}"; then
+        opensteamer_write_state \
+          "${CALL_END_STATUS}" "state=audio-oracle-ended-before-acknowledgement" || true
+        return 7
+      fi
+      if [[ -z "${CALL_STABLE_HOST_PID}" \
+          || "$(current_host_pid)" != "${CALL_STABLE_HOST_PID}" ]]; then
+        opensteamer_write_state \
+          "${CALL_END_STATUS}" "state=host-changed-before-acknowledgement" || true
+        return 4
+      fi
+      if (( SECONDS - lock_poll_started >= DEVICE_LOCK_POLL_SECONDS )); then
+        lock_poll_started=${SECONDS}
+        remaining_seconds=$(acknowledgement_remaining_seconds \
+          "${deadline_ns}") || break
+        if (( remaining_seconds > 1 )); then
+          query_timeout_seconds=${DEVICE_COMMAND_TIMEOUT_SECONDS}
+          if (( query_timeout_seconds >= remaining_seconds )); then
+            query_timeout_seconds=$((remaining_seconds - 1))
+          fi
+          if opensteamer_device_is_unlocked \
+              "${COREDEVICE_IDENTIFIER}" \
+              "${query_timeout_seconds}" \
+              "${CALL_LOCK_STATE_DURING_TEST}"; then
+            lock_query_failures=0
+          else
+            lock_result=$?
+            if (( lock_result == 5 )); then
+              opensteamer_write_state \
+                "${CALL_END_STATUS}" "state=device-locked-before-acknowledgement" || true
+              return 5
+            fi
+            lock_query_failures=$((lock_query_failures + 1))
+            if (( lock_query_failures >= 2 )); then
+              opensteamer_write_state \
+                "${CALL_END_STATUS}" "state=device-unavailable-before-acknowledgement" || true
+              return 6
+            fi
+          fi
+          acknowledgement_remaining_seconds "${deadline_ns}" >/dev/null || break
+        fi
+      fi
+    fi
+    acknowledgement_remaining_seconds "${deadline_ns}" >/dev/null || break
+    if [[ -f "${CALL_END_ACKNOWLEDGEMENT}" ]]; then
+      acknowledgement=$(<"${CALL_END_ACKNOWLEDGEMENT}") || return $?
+      if (( self_test_post_read_delay_consumed == 0 )) \
+          && [[ -n "${OPENSTEAMER_SELF_TEST_ACK_POST_READ_DELAY_SECONDS:-}" ]]; then
+        sleep "${OPENSTEAMER_SELF_TEST_ACK_POST_READ_DELAY_SECONDS}"
+        self_test_post_read_delay_consumed=1
+      fi
+      acknowledgement_remaining_seconds "${deadline_ns}" >/dev/null || break
+      if [[ "${acknowledgement}" == "ended=${token}" ]]; then
+        opensteamer_write_state "${CALL_END_STATUS}" "state=accepted" || return $?
+        print -r -- "phase=3 event=call-end-accepted" \
+          >> "${PHASE_EVENTS}" || return $?
+        return 0
+      fi
+      /bin/rm -f "${CALL_END_ACKNOWLEDGEMENT}" || return $?
+      opensteamer_write_state \
+        "${CALL_END_STALE_MARKER}" "state=rejected" || return $?
+    fi
+    sleep 0.1
+  done
+
+  opensteamer_write_state "${CALL_END_STATUS}" "state=timed-out" || return $?
+  opensteamer_write_state \
+    "${CALL_END_TIMEOUT_MARKER}" "state=timed-out" || return $?
+  echo "Timed out waiting for the nonce-bound end-call operator acknowledgement." >&2
+  return 1
+}
+
+function configure_post_call_raw_contract() {
+  [[ -x "${RAW_BLACKHOLE_PROBE_BINARY}" ]] || return 3
+  mkdir -p "${CALL_POST_RAW_DIR}" || return $?
+
+  RAW_READY_TIMEOUT_SECONDS=${POST_CALL_RAW_PRE_PROBE_BUDGET_SECONDS}
+  RAW_PROOF_CONTEXT="post-call"
+  RAW_PROOF_EVENT_PHASE=3
+  RAW_PROOF_EVENT_PREFIX="post-call-"
+  RAW_PROOF_EXPECTED_HOST_PID=${CALL_STABLE_HOST_PID}
+  RAW_PROOF_REQUIRE_NEW_CONNECTION=0
+  RAW_PROOF_WORK_DIR=${CALL_POST_RAW_DIR}
+  RAW_HOST_LOG_APPEND_CHUNK=${CALL_POST_RAW_HOST_LOG_APPEND_CHUNK}
+  RAW_HOST_LOG_COMPLETED_LINES=${CALL_POST_RAW_HOST_LOG_COMPLETED_LINES}
+  RAW_HOST_LOG_PARTIAL_LINE=${CALL_POST_RAW_HOST_LOG_PARTIAL_LINE}
+  RAW_READY_REQUEST=${CALL_POST_RAW_READY_REQUEST}
+  RAW_READY_RESUMED_MARKER=${CALL_POST_RAW_READY_RESUMED_MARKER}
+  RAW_READY_EVIDENCE=${CALL_POST_RAW_READY_EVIDENCE}
+  RAW_READY_STATUS=${CALL_POST_RAW_READY_STATUS}
+  RAW_READY_TIMEOUT_MARKER=${CALL_POST_RAW_READY_TIMEOUT_MARKER}
+  RAW_READY_STALE_MARKER=${CALL_POST_RAW_READY_STALE_MARKER}
+  RAW_PROBE_OVERLAP_MARKER=${CALL_POST_RAW_PROBE_OVERLAP_MARKER}
+  RAW_PROBE_NON_OVERLAP_MARKER=${CALL_POST_RAW_PROBE_NON_OVERLAP_MARKER}
+  RAW_UI_RUNTIME_ATTACHMENT_PAYLOAD_ID=${CALL_POST_RAW_UI_RUNTIME_ATTACHMENT_PAYLOAD_ID}
+  RAW_UI_RUNTIME_EVIDENCE=${CALL_POST_RAW_UI_RUNTIME_EVIDENCE}
+  RAW_UI_COMPLETION_OBSERVATION=${CALL_POST_RAW_UI_COMPLETION_OBSERVATION}
+  RAW_UI_CAUSAL_STATE_OBSERVATION=${CALL_POST_RAW_UI_CAUSAL_STATE_OBSERVATION}
+  RAW_UI_BOUNDS_EVIDENCE=${CALL_POST_RAW_UI_BOUNDS_EVIDENCE}
+  RAW_PROBE_PROCESS_START_EVIDENCE=${CALL_POST_RAW_PROBE_PROCESS_START_EVIDENCE}
+  RAW_PROBE_PROCESS_COMPLETION_EVIDENCE=${CALL_POST_RAW_PROBE_PROCESS_COMPLETION_EVIDENCE}
+  RAW_PROBE_COMPLETION_OBSERVATION=${CALL_POST_RAW_PROBE_COMPLETION_OBSERVATION}
+  RAW_PROBE_WAIT_EVIDENCE=${CALL_POST_RAW_PROBE_WAIT_EVIDENCE}
+  RAW_PROBE_INTERVAL_EVIDENCE=${CALL_POST_RAW_PROBE_INTERVAL_EVIDENCE}
+  RAW_BLACKHOLE_PROBE_RESULT=${CALL_POST_RAW_PROBE_RESULT}
+  RAW_BLACKHOLE_PROBE_CLEANUP_PROOF=${CALL_POST_RAW_PROBE_CLEANUP_PROOF}
+  RAW_BLACKHOLE_PROBE_DIAGNOSTICS=${CALL_POST_RAW_PROBE_DIAGNOSTICS}
+  RAW_BLACKHOLE_PROBE_COMPLETION=${CALL_POST_RAW_PROBE_COMPLETION}
+  RAW_DEFAULT_INPUT_BEFORE=${CALL_POST_RAW_DEFAULT_INPUT_BEFORE}
+  RAW_DEFAULT_INPUT_HEALTHY=${CALL_POST_RAW_DEFAULT_INPUT_HEALTHY}
+  RAW_DEFAULT_INPUT_DURING=${CALL_POST_RAW_DEFAULT_INPUT_DURING}
+  RAW_DEFAULT_INPUT_AFTER=${CALL_POST_RAW_DEFAULT_INPUT_AFTER}
+  RAW_DEFAULT_INPUT_LIFECYCLE_EVIDENCE=${CALL_POST_RAW_DEFAULT_INPUT_LIFECYCLE_EVIDENCE}
+  BLACKHOLE_PROBE_PID=""
+  BLACKHOLE_PROBE_STATUS=""
+}
+
+function arm_post_call_raw_readiness() {
+  local resumed_at_ns
+
+  initialize_raw_session_readiness || return $?
+  resumed_at_ns=$(current_monotonic_time_ns) || return $?
+  if [[ -z "${resumed_at_ns}" || "${resumed_at_ns}" == *[^0-9]* ]] \
+      || (( resumed_at_ns <= RAW_READY_REQUESTED_NS )); then
+    return 3
+  fi
+  RAW_READY_RESUMED_NS=${resumed_at_ns}
+  opensteamer_write_state \
+    "${RAW_READY_RESUMED_MARKER}" \
+    "state=resumed nonce=${RAW_READY_NONCE} resumedAtMonotonicNs=${RAW_READY_RESUMED_NS}" \
+    || return $?
+  print -r -- "phase=3 event=post-call-raw-proof-armed" \
+    >> "${PHASE_EVENTS}"
+}
+
+function run_real_call_operator_and_post_call_probe() {
+  local acoustic_deadline_ns
+
+  # The pre-start hook established the Mac lower bound before this XCTest process existed. Require
+  # a fresh nonce-bound hosted-call marker before either operator acknowledgement can be accepted.
+  # The marker wait and acoustic acknowledgement share one absolute timeout; neither resets it.
+  acoustic_deadline_ns=$(acknowledgement_deadline_ns \
+    "${CALL_ACOUSTIC_TIMEOUT_SECONDS}") || return $?
+  wait_for_nonce_bound_call_ui_hosted_state \
+    "${acoustic_deadline_ns}" \
+    "${XCODEBUILD_LIVE_STDOUT}" \
+    1 \
+    - \
+    "${RAW_READY_RESUMED_NS}" \
+    "${CALL_UI_HOSTED_PRE_ACK_OBSERVATION}" || return $?
+  wait_for_fresh_call_acoustic_acknowledgement \
+    "${acoustic_deadline_ns}" || return $?
+  # XCTest consumes the exact token-bound accepted record while it is still continuously validating
+  # interruption-origin hosted playout, then emits sequence 2. A historical pre-ack marker can never
+  # authorize an acknowledgement heard after the call has already become ordinary.
+  wait_for_nonce_bound_call_ui_hosted_state \
+    "${acoustic_deadline_ns}" \
+    "${XCODEBUILD_LIVE_STDOUT}" \
+    2 \
+    "${CALL_ACOUSTIC_ACCEPTED_TOKEN}" \
+    "${CALL_ACOUSTIC_ACCEPTED_NS}" \
+    "${RAW_UI_CAUSAL_STATE_OBSERVATION}" || return $?
+  capture_default_input_snapshot \
+    "${RAW_DEFAULT_INPUT_BEFORE}" \
+    before \
+    "${POST_CALL_RAW_INTER_ACK_SNAPSHOT_BUDGET_SECONDS}" || return $?
+  validate_default_input_baseline_json \
+    "${RAW_DEFAULT_INPUT_BEFORE}" || return 3
+  wait_for_fresh_call_end_acknowledgement || return $?
+  wait_for_fresh_raw_session_readiness_and_start_probe
+}
+
+function validate_post_call_raw_generation_evidence() {
+  local evidence=${CALL_POST_RAW_GENERATION_EVIDENCE}
+  local nonce
+  local ordinary_policy
+  local raw_policy
+  local microphone_policy
+  local recording
+  local approved
+  local app_start
+  local app_end
+  local runtime_start
+  local runtime_end
+  local runtime_continuity
+  local continuity
+  local required_continuity_ns
+  local uuid_value
+
+  [[ -s "${evidence}" ]] || return 3
+  awk -F= '
+    BEGIN {
+      expected["schema"]=1; expected["nonce"]=1; expected["sessionGeneration"]=1
+      expected["ordinaryAudioPolicyGeneration"]=1; expected["rawAudioPolicyGeneration"]=1
+      expected["transportAuthorizationGeneration"]=1; expected["windowGeneration"]=1
+      expected["microphonePolicyGeneration"]=1; expected["recordingGeneration"]=1
+      expected["approvedRecordingGeneration"]=1; expected["appPIDAtStart"]=1
+      expected["appPIDAtEnd"]=1; expected["continuityDurationNs"]=1
+    }
+    {
+      key=$1; value=substr($0, length(key) + 2)
+      if (!(key in expected) || seen[key]++ || value == "") exit 3
+    }
+    END { if (NR != 13) exit 3; for (key in expected) if (seen[key] != 1) exit 3 }
+  ' "${evidence}" || return 3
+  [[ "$(raw_evidence_value "${evidence}" schema)" \
+      == "opensteamer.post-call-raw-generation.v1" ]] || return 3
+  nonce=$(raw_evidence_value "${evidence}" nonce) || return 3
+  [[ "${nonce}" == "${RAW_READY_NONCE}" ]] || return 3
+  for uuid_value in \
+      "$(raw_evidence_value "${evidence}" sessionGeneration)" \
+      "$(raw_evidence_value "${evidence}" ordinaryAudioPolicyGeneration)" \
+      "$(raw_evidence_value "${evidence}" rawAudioPolicyGeneration)" \
+      "$(raw_evidence_value "${evidence}" transportAuthorizationGeneration)" \
+      "$(raw_evidence_value "${evidence}" windowGeneration)"; do
+    print -r -- "${uuid_value}" \
+      | /usr/bin/grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' \
+      || return 3
+  done
+  ordinary_policy=$(raw_evidence_value "${evidence}" ordinaryAudioPolicyGeneration) || return 3
+  raw_policy=$(raw_evidence_value "${evidence}" rawAudioPolicyGeneration) || return 3
+  [[ "${ordinary_policy}" == "${raw_policy}" ]] || return 3
+  microphone_policy=$(raw_evidence_value "${evidence}" microphonePolicyGeneration) || return 3
+  recording=$(raw_evidence_value "${evidence}" recordingGeneration) || return 3
+  approved=$(raw_evidence_value "${evidence}" approvedRecordingGeneration) || return 3
+  app_start=$(raw_evidence_value "${evidence}" appPIDAtStart) || return 3
+  app_end=$(raw_evidence_value "${evidence}" appPIDAtEnd) || return 3
+  continuity=$(raw_evidence_value "${evidence}" continuityDurationNs) || return 3
+  runtime_start=$(raw_evidence_value "${RAW_UI_RUNTIME_EVIDENCE}" appPIDAtStart) || return 3
+  runtime_end=$(raw_evidence_value "${RAW_UI_RUNTIME_EVIDENCE}" appPIDAtEnd) || return 3
+  runtime_continuity=$(raw_evidence_value \
+    "${RAW_UI_RUNTIME_EVIDENCE}" continuityDurationNs) || return 3
+  required_continuity_ns=$((
+    POST_CALL_RAW_CONTINUITY_SECONDS * 1000000000
+  ))
+  [[ "${microphone_policy}" != *[^0-9]* \
+      && "${recording}" != *[^0-9]* && "${recording}" == "${approved}" \
+      && "${app_start}" != *[^0-9]* && "${app_start}" == "${app_end}" \
+      && "${app_start}" == "${runtime_start}" && "${app_end}" == "${runtime_end}" \
+      && "${continuity}" != *[^0-9]* \
+      && "${runtime_continuity}" != *[^0-9]* \
+      && "${continuity}" == "${runtime_continuity}" ]] || return 3
+  (( microphone_policy > 0 && recording > 0 \
+      && app_start > 0 && continuity >= required_continuity_ns ))
+}
+
+function reject_runtime_uid_in_retained_artifacts() {
+  opensteamer_run_physical_validation_oracle \
+    scan-no-bytes "${ARTIFACT_DIR}" "${PHYSICAL_OUTPUT_UID}"
 }
 
 function current_unix_time_ns() {
-  /usr/bin/python3 -c 'import time; print(time.time_ns())'
+  opensteamer_run_physical_validation_oracle unix-ns
 }
 
 function current_monotonic_time_ns() {
-  /usr/bin/python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC))'
+  opensteamer_run_physical_validation_oracle monotonic-ns
 }
 
 function raw_evidence_value() {
@@ -3180,9 +4903,16 @@ function raw_evidence_value() {
 }
 
 function clear_raw_overlap_success_evidence() {
+  if [[ "${RAW_PROOF_CONTEXT:-}" == "post-call" ]]; then
+    rm -f "${CALL_UI_HOSTED_PRE_ACK_OBSERVATION}" || return $?
+  fi
+  if [[ -n "${RAW_UI_CAUSAL_STATE_OBSERVATION:-}" ]]; then
+    rm -f "${RAW_UI_CAUSAL_STATE_OBSERVATION}" || return $?
+  fi
   rm -f \
     "${RAW_UI_RUNTIME_ATTACHMENT_PAYLOAD_ID}" \
     "${RAW_UI_RUNTIME_EVIDENCE}" \
+    "${RAW_UI_COMPLETION_OBSERVATION}" \
     "${RAW_UI_BOUNDS_EVIDENCE}" \
     "${RAW_PROBE_PROCESS_START_EVIDENCE}" \
     "${RAW_PROBE_PROCESS_COMPLETION_EVIDENCE}" \
@@ -3220,12 +4950,22 @@ function prepare_raw_overlap_contract() {
   fi
   typeset -gx \
     OPENSTEAMER_RAW_CONTINUITY_PROOF_NONCE="${RAW_READY_NONCE}"
+  if [[ "${RAW_PROOF_CONTEXT}" == "post-call" ]]; then
+    typeset -gx \
+      OPENSTEAMER_POST_CALL_RAW_CONTINUITY_PROOF_NONCE="${RAW_READY_NONCE}" \
+      OPENSTEAMER_POST_CALL_RAW_CONTINUITY_SECONDS="${POST_CALL_RAW_CONTINUITY_SECONDS}" \
+      OPENSTEAMER_POST_CALL_RAW_UI_TIMEOUT_SECONDS="${POST_CALL_RAW_UI_TIMEOUT_SECONDS}" \
+      OPENSTEAMER_CALL_ACOUSTIC_REQUEST_PATH="${CALL_ACOUSTIC_REQUEST}" \
+      OPENSTEAMER_CALL_ACOUSTIC_STATUS_PATH="${CALL_ACOUSTIC_STATUS}" \
+      OPENSTEAMER_CALL_ACOUSTIC_TIMEOUT_SECONDS="${CALL_ACOUSTIC_TIMEOUT_SECONDS}"
+  fi
   BLACKHOLE_PROBE_NONCE="${RAW_READY_NONCE}"
   RAW_READY_REQUESTED_NS=0
   RAW_READY_RESUMED_NS=0
   RAW_PROBE_STARTED_NS=0
   RAW_PROBE_BOUND_PID=""
-  RAW_XCODEBUILD_ENDED_NS=0
+  CALL_ACOUSTIC_ACCEPTED_NS=0
+  CALL_ACOUSTIC_ACCEPTED_TOKEN=""
 }
 
 function fresh_raw_ready_nonce() {
@@ -3245,60 +4985,12 @@ function parse_raw_probe_completion_file() {
   local expected_start=${2:-0}
   local expected_pid=${3:-0}
 
-  /usr/bin/python3 - \
+  opensteamer_run_physical_validation_oracle \
+    parse-completion \
     "${RAW_BLACKHOLE_PROBE_COMPLETION}" \
     "${expected_nonce}" \
     "${expected_start}" \
-    "${expected_pid}" <<'PY'
-import pathlib
-import re
-import sys
-
-path, expected_nonce, expected_start_text, expected_pid_text = sys.argv[1:]
-expected = {
-    "schema",
-    "nonce",
-    "probeStartMonotonicNs",
-    "probeEndMonotonicNs",
-    "status",
-    "productionPIDAtStart",
-}
-try:
-    lines = pathlib.Path(path).read_text(encoding="utf-8").splitlines()
-    pairs = [line.split("=", 1) for line in lines]
-    if len(pairs) != len(expected) or any(len(pair) != 2 for pair in pairs):
-        raise ValueError
-    values = dict(pairs)
-    if len(values) != len(pairs) or set(values) != expected:
-        raise ValueError
-    if values["schema"] != "opensteamer.blackhole-probe-completion.v1":
-        raise ValueError
-    if values["nonce"] != expected_nonce:
-        raise ValueError
-    for key in (
-        "probeStartMonotonicNs",
-        "probeEndMonotonicNs",
-        "status",
-        "productionPIDAtStart",
-    ):
-        if re.fullmatch(r"[0-9]+", values[key]) is None:
-            raise ValueError
-    start = int(values["probeStartMonotonicNs"])
-    end = int(values["probeEndMonotonicNs"])
-    status = int(values["status"])
-    production_pid = int(values["productionPIDAtStart"])
-    expected_start = int(expected_start_text)
-    expected_pid = int(expected_pid_text)
-    if start != expected_start or production_pid != expected_pid:
-        raise ValueError
-    if end <= start:
-        raise ValueError
-    if expected_nonce != "unbound" and (start <= 0 or production_pid <= 0):
-        raise ValueError
-except (OSError, UnicodeError, ValueError):
-    sys.exit(3)
-print(f"{end} {status}")
-PY
+    "${expected_pid}"
 }
 
 function capture_raw_probe_completion_observation() {
@@ -3307,13 +4999,34 @@ function capture_raw_probe_completion_observation() {
   local completion_status
   local completion_pid
   local completion_observed_ns
+  local readiness_schema
+  local readiness_nonce
+  local expected_probe_start
+  local expected_production_pid
   local temporary="${RAW_PROBE_COMPLETION_OBSERVATION}.tmp.$$"
 
+  # This function runs in the watchdog subprocess, which was forked before the parent starts the
+  # probe. Bind completion to the atomically published readiness record instead of stale fork-time
+  # shell globals (which are intentionally still zero in the watchdog).
+  readiness_schema=$(raw_evidence_value \
+    "${RAW_READY_EVIDENCE}" schema) || return 3
+  readiness_nonce=$(raw_evidence_value \
+    "${RAW_READY_EVIDENCE}" nonce) || return 3
+  expected_probe_start=$(raw_evidence_value \
+    "${RAW_READY_EVIDENCE}" probeStartedAtMonotonicNs) || return 3
+  expected_production_pid=$(raw_evidence_value \
+    "${RAW_READY_EVIDENCE}" productionPID) || return 3
+  [[ "${readiness_schema}" == "opensteamer.raw-session-readiness.v3" \
+      && "${readiness_nonce}" == "${RAW_READY_NONCE}" \
+      && "${expected_probe_start}" != *[^0-9]* \
+      && "${expected_production_pid}" != *[^0-9]* ]] \
+      && (( expected_probe_start > 0 && expected_production_pid > 0 )) \
+    || return 3
   completion_fields=$(
     parse_raw_probe_completion_file \
       "${RAW_READY_NONCE}" \
-      "${RAW_PROBE_STARTED_NS}" \
-      "${RAW_PROBE_BOUND_PID}"
+      "${expected_probe_start}" \
+      "${expected_production_pid}"
   ) || return 3
   probe_end_ns=${completion_fields%% *}
   completion_status=${completion_fields##* }
@@ -3321,7 +5034,7 @@ function capture_raw_probe_completion_observation() {
     return "${completion_status}"
   fi
   completion_pid=$(capture_raw_probe_production_identity completion) || return $?
-  [[ "${completion_pid}" == "${RAW_PROBE_BOUND_PID}" ]] || return 3
+  [[ "${completion_pid}" == "${expected_production_pid}" ]] || return 3
   completion_observed_ns=$(raw_evidence_value \
     "${RAW_PROBE_PROCESS_COMPLETION_EVIDENCE}" observedAtMonotonicNs) \
     || return 3
@@ -3405,7 +5118,8 @@ function initialize_raw_session_readiness() {
     print -r -- "cursorDigest=${RAW_HOST_LOG_START_DIGEST}"
   } > "${request_temporary}" || return $?
   mv "${request_temporary}" "${RAW_READY_REQUEST}" || return $?
-  print -r -- "phase=1 event=raw-session-readiness-requested" \
+  print -r -- \
+    "phase=${RAW_PROOF_EVENT_PHASE} event=${RAW_PROOF_EVENT_PREFIX}raw-session-readiness-requested" \
     >> "${PHASE_EVENTS}" || return $?
 }
 
@@ -3416,8 +5130,11 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
   local new_connections
   local authenticated_connections=0
   local healthy_boundary_observed=0
+  local blackhole_peer_generation=0
   local ready_at_ns
   local probe_started_at_ns
+  local elapsed_seconds
+  local remaining_verifier_budget
   local evidence_temporary="${RAW_READY_EVIDENCE}.tmp.$$"
   local command_status
 
@@ -3448,7 +5165,7 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
     current_process_id=$(current_host_pid)
     opensteamer_audit_connected_log_lines \
       "${RAW_HOST_LOG_COMPLETED_LINES}" \
-      "${EXPECTED_INITIAL_HOST_PID}" \
+      "${RAW_PROOF_EXPECTED_HOST_PID:-${EXPECTED_INITIAL_HOST_PID}}" \
       "${current_process_id}" || {
         command_status=$?
         opensteamer_write_state \
@@ -3464,6 +5181,24 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
         "Worldwide authenticated media route selected BlackHole default input peerGeneration=[1-9][0-9]* pid=${current_process_id}" \
         "${RAW_HOST_LOG_COMPLETED_LINES}"; then
       healthy_boundary_observed=1
+      if [[ -n "${OPENSTEAMER_SELF_TEST_RAW_READINESS:-}" ]]; then
+        blackhole_peer_generation=1
+      else
+        blackhole_peer_generation=$(
+          /usr/bin/grep -Eo \
+            "Worldwide authenticated media route selected BlackHole default input peerGeneration=[1-9][0-9]* pid=${current_process_id}" \
+            "${RAW_HOST_LOG_COMPLETED_LINES}" \
+            | /usr/bin/sed -E \
+                's/.*peerGeneration=([1-9][0-9]*) pid=.*/\1/' \
+            | /usr/bin/tail -n 1
+        ) || return $?
+        [[ -n "${blackhole_peer_generation}" \
+            && "${blackhole_peer_generation}" != *[^0-9]* \
+            && blackhole_peer_generation -gt 0 ]] || return 3
+      fi
+      if (( RAW_PROOF_REQUIRE_NEW_CONNECTION == 0 )); then
+        authenticated_connections=1
+      fi
       if [[ ! -s "${RAW_DEFAULT_INPUT_HEALTHY}" ]]; then
         capture_default_input_snapshot \
           "${RAW_DEFAULT_INPUT_HEALTHY}" healthy || return $?
@@ -3477,16 +5212,35 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
     if (( authenticated_connections > 0
         && healthy_boundary_observed != 0 )); then
       if [[ -z "${OPENSTEAMER_SELF_TEST_RAW_READINESS:-}" ]]; then
-        verify_host_deployment_snapshot \
-          "${EXPECTED_INITIAL_HOST_PID}" "raw-session-readiness" || return $?
+        if [[ "${RAW_PROOF_CONTEXT}" == "post-call" ]]; then
+          elapsed_seconds=$((SECONDS - wait_started))
+          remaining_verifier_budget=$((
+            RAW_READY_TIMEOUT_SECONDS - elapsed_seconds
+          ))
+          if (( remaining_verifier_budget <= 0 )); then
+            opensteamer_write_state \
+              "${RAW_READY_STATUS}" "state=pre-probe-budget-exhausted" || true
+            return 124
+          fi
+          verify_host_deployment_snapshot \
+            "${RAW_PROOF_EXPECTED_HOST_PID:-${EXPECTED_INITIAL_HOST_PID}}" \
+            "${RAW_PROOF_CONTEXT}-raw-session-readiness" \
+            "${remaining_verifier_budget}" || return $?
+          if (( SECONDS - wait_started >= RAW_READY_TIMEOUT_SECONDS )); then
+            opensteamer_write_state \
+              "${RAW_READY_STATUS}" "state=pre-probe-budget-exhausted" || true
+            return 124
+          fi
+        else
+          verify_host_deployment_snapshot \
+            "${RAW_PROOF_EXPECTED_HOST_PID:-${EXPECTED_INITIAL_HOST_PID}}" \
+            "${RAW_PROOF_CONTEXT}-raw-session-readiness" || return $?
+        fi
       fi
       ready_at_ns=$(current_monotonic_time_ns) || return $?
       if [[ -z "${ready_at_ns}" || "${ready_at_ns}" == *[^0-9]* ]] \
           || (( ready_at_ns <= RAW_READY_RESUMED_NS )); then
         return 3
-      fi
-      if [[ -z "${OPENSTEAMER_SELF_TEST_RAW_READINESS:-}" ]]; then
-        sleep 18
       fi
       if [[ -z "${XCODEBUILD_PID}" ]] \
           || ! opensteamer_process_group_exists "${XCODEBUILD_PID}"; then
@@ -3499,6 +5253,13 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
           production-app-start-identity-invalid "${command_status}"
         return "${command_status}"
       }
+      if [[ "${RAW_PROOF_CONTEXT}" == "post-call" ]] \
+          && (( SECONDS - wait_started >= RAW_READY_TIMEOUT_SECONDS )); then
+        opensteamer_write_state \
+          "${RAW_READY_STATUS}" "state=pre-probe-budget-exhausted" || true
+        record_raw_overlap_failure pre-probe-budget-exhausted 124
+        return 124
+      fi
       RAW_PROBE_BOUND_PID=${production_process_id}
       probe_started_at_ns=$(current_monotonic_time_ns) || {
         command_status=$?
@@ -3519,8 +5280,23 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
         record_raw_overlap_failure probe-launch-failed "${command_status}"
         return "${command_status}"
       fi
+      if [[ "${RAW_PROOF_CONTEXT}" == "post-call" ]] \
+          && (( SECONDS - wait_started >= RAW_READY_TIMEOUT_SECONDS )); then
+        cleanup_blackhole_probe || true
+        opensteamer_write_state \
+          "${RAW_READY_STATUS}" "state=pre-probe-budget-exhausted" || true
+        record_raw_overlap_failure pre-probe-budget-exhausted 124
+        return 124
+      fi
+      if [[ -n "${RAW_DEFAULT_INPUT_DURING}" ]]; then
+        capture_default_input_snapshot \
+          "${RAW_DEFAULT_INPUT_DURING}" healthy || return $?
+        jq -e \
+          '.inputIsCanonicalBlackHole == true' \
+          "${RAW_DEFAULT_INPUT_DURING}" >/dev/null || return 3
+      fi
       {
-        print -r -- "schema=opensteamer.raw-session-readiness.v2"
+        print -r -- "schema=opensteamer.raw-session-readiness.v3"
         print -r -- "nonce=${RAW_READY_NONCE}"
         print -r -- "requestedAtMonotonicNs=${RAW_READY_REQUESTED_NS}"
         print -r -- "resumedAtMonotonicNs=${RAW_READY_RESUMED_NS}"
@@ -3528,6 +5304,7 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
         print -r -- "probeStartedAtMonotonicNs=${probe_started_at_ns}"
         print -r -- "productionPID=${RAW_PROBE_BOUND_PID}"
         print -r -- "hostPID=${current_process_id}"
+        print -r -- "blackHolePeerGeneration=${blackhole_peer_generation}"
         print -r -- "authenticatedConnectionCount=${authenticated_connections}"
         print -r -- "cursorOffset=${RAW_HOST_LOG_START_OFFSET}"
         print -r -- "cursorDigest=${RAW_HOST_LOG_START_DIGEST}"
@@ -3546,9 +5323,11 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
         cleanup_blackhole_probe || true
         return "${command_status}"
       }
-      print -r -- "phase=1 event=raw-session-ready" \
+      print -r -- \
+        "phase=${RAW_PROOF_EVENT_PHASE} event=${RAW_PROOF_EVENT_PREFIX}raw-session-ready" \
         >> "${PHASE_EVENTS}" || return $?
-      print -r -- "phase=1 event=blackhole-probe-started" \
+      print -r -- \
+        "phase=${RAW_PROOF_EVENT_PHASE} event=${RAW_PROOF_EVENT_PREFIX}blackhole-probe-started" \
         >> "${PHASE_EVENTS}" || return $?
       return 0
     fi
@@ -3602,6 +5381,7 @@ function arm_raw_session_readiness_and_start_probe() {
 function validate_and_retain_raw_overlap_evidence() {
   local now_ns
   local validation_status
+  local ui_causal_state="-"
 
   if [[ -z "${RAW_READY_NONCE}" \
       || "${BLACKHOLE_PROBE_NONCE}" != "${RAW_READY_NONCE}" ]]; then
@@ -3613,11 +5393,20 @@ function validate_and_retain_raw_overlap_evidence() {
   else
     now_ns=$(current_monotonic_time_ns) || return $?
   fi
+  if [[ "${RAW_PROOF_CONTEXT}" == "post-call" ]]; then
+    if [[ -z "${RAW_UI_CAUSAL_STATE_OBSERVATION}" \
+        || ! -s "${RAW_UI_CAUSAL_STATE_OBSERVATION}" ]]; then
+      record_raw_overlap_failure missing-ui-causal-state 3
+      return 3
+    fi
+    ui_causal_state=${RAW_UI_CAUSAL_STATE_OBSERVATION}
+  fi
   rm -f \
     "${RAW_UI_BOUNDS_EVIDENCE}" \
     "${RAW_PROBE_INTERVAL_EVIDENCE}" \
     "${RAW_PROBE_OVERLAP_MARKER}" || return $?
-  if /usr/bin/python3 - \
+  if opensteamer_run_physical_validation_oracle \
+      validate-overlap \
       "${RAW_READY_REQUEST}" \
       "${RAW_READY_EVIDENCE}" \
       "${RAW_UI_RUNTIME_EVIDENCE}" \
@@ -3630,151 +5419,12 @@ function validate_and_retain_raw_overlap_evidence() {
       "${RAW_READY_NONCE}" \
       "${RAW_READY_REQUESTED_NS}" \
       "${RAW_READY_RESUMED_NS}" \
-      "${RAW_XCODEBUILD_ENDED_NS}" \
+      "${RAW_UI_COMPLETION_OBSERVATION}" \
+      "${ui_causal_state}" \
       "${RAW_UI_BOUNDS_EVIDENCE}" \
       "${RAW_PROBE_INTERVAL_EVIDENCE}" \
       "${RAW_PROBE_OVERLAP_MARKER}" \
-      "${now_ns}" <<'PY'
-import json
-import os
-import pathlib
-import re
-import sys
-
-MAXIMUM = 9_223_372_036_854_775_807
-EXPECTED_APP_BUNDLE_IDENTIFIER = os.environ["OPENSTEAMER_EXPECTED_APP_BUNDLE_IDENTIFIER"]
-
-class NonOverlap(Exception):
-    pass
-
-def parse(path, expected):
-    lines = pathlib.Path(path).read_text(encoding="utf-8").splitlines()
-    pairs = [line.split("=", 1) for line in lines]
-    if len(pairs) != len(expected) or any(len(pair) != 2 for pair in pairs):
-        raise ValueError
-    values = dict(pairs)
-    if len(values) != len(pairs) or set(values) != set(expected):
-        raise ValueError
-    return values
-
-def number(values, key, positive=True):
-    value = values[key]
-    if re.fullmatch(r"[0-9]+", value) is None:
-        raise ValueError
-    result = int(value)
-    if result > MAXIMUM or (positive and result <= 0):
-        raise ValueError
-    return result
-
-def atomic(path, text):
-    temporary = f"{path}.tmp.{os.getpid()}"
-    with open(temporary, "w", encoding="utf-8") as destination:
-        destination.write(text)
-        destination.flush()
-        os.fsync(destination.fileno())
-    os.replace(temporary, path)
-
-(
-    request_path, readiness_path, ui_path, start_path, completion_path,
-    observation_path, wait_path, wrapper_path, result_path, expected_nonce,
-    requested_text, resumed_text, ended_text, bounds_output, probe_output,
-    verdict_output, now_text,
-) = sys.argv[1:]
-outputs = (bounds_output, probe_output, verdict_output)
-
-try:
-    request = parse(request_path, {"schema", "nonce", "requestedAtMonotonicNs", "cursorOffset", "cursorDigest"})
-    readiness = parse(readiness_path, {"schema", "nonce", "requestedAtMonotonicNs", "resumedAtMonotonicNs", "readyAtMonotonicNs", "probeStartedAtMonotonicNs", "productionPID", "hostPID", "authenticatedConnectionCount", "cursorOffset", "cursorDigest"})
-    ui = parse(ui_path, {"schema", "nonce", "continuityDurationNs", "appPIDAtStart", "appPIDAtEnd"})
-    start = parse(start_path, {"schema", "boundary", "nonce", "bundleIdentifier", "pid", "observedAtMonotonicNs"})
-    completion = parse(completion_path, {"schema", "boundary", "nonce", "bundleIdentifier", "pid", "observedAtMonotonicNs"})
-    observation = parse(observation_path, {"schema", "nonce", "probeEndMonotonicNs", "completionObservedAtMonotonicNs", "status", "productionPIDAtCompletion"})
-    waited = parse(wait_path, {"schema", "nonce", "wrapperPID", "probeEndMonotonicNs", "completionStatus", "waitStatus"})
-    wrapper = parse(wrapper_path, {"schema", "nonce", "probeStartMonotonicNs", "probeEndMonotonicNs", "status", "productionPIDAtStart"})
-    result = json.loads(pathlib.Path(result_path).read_text(encoding="utf-8"))
-    if re.fullmatch(r"[A-Za-z0-9-]{16,128}", expected_nonce) is None:
-        raise ValueError
-    if request["schema"] != "opensteamer.raw-session-readiness.v2" or readiness["schema"] != "opensteamer.raw-session-readiness.v2":
-        raise ValueError
-    if ui["schema"] != "opensteamer.raw-ui-runtime.v1":
-        raise ValueError
-    if start["schema"] != "opensteamer.production-app-probe-boundary.v1" or completion["schema"] != start["schema"]:
-        raise ValueError
-    if observation["schema"] != "opensteamer.blackhole-probe-completion-observation.v1":
-        raise ValueError
-    if waited["schema"] != "opensteamer.blackhole-probe-wait.v1" or wrapper["schema"] != "opensteamer.blackhole-probe-completion.v1":
-        raise ValueError
-    if result.get("schema") != "opensteamer.physical-blackhole-microphone.v1" or result.get("status") != "passed" or result.get("runNonce") != expected_nonce:
-        raise ValueError
-    records = (request, readiness, ui, start, completion, observation, waited, wrapper)
-    if any(record["nonce"] != expected_nonce for record in records):
-        raise ValueError
-    if start["boundary"] != "start" or completion["boundary"] != "completion":
-        raise ValueError
-    if start["bundleIdentifier"] != EXPECTED_APP_BUNDLE_IDENTIFIER or completion["bundleIdentifier"] != EXPECTED_APP_BUNDLE_IDENTIFIER:
-        raise ValueError
-    requested = number(request, "requestedAtMonotonicNs")
-    resumed = number(readiness, "resumedAtMonotonicNs")
-    ready = number(readiness, "readyAtMonotonicNs")
-    probe_start = number(wrapper, "probeStartMonotonicNs")
-    probe_end = number(wrapper, "probeEndMonotonicNs")
-    continuity = number(ui, "continuityDurationNs")
-    xcode_end = int(ended_text)
-    now = int(now_text)
-    expected_requested = int(requested_text)
-    expected_resumed = int(resumed_text)
-    if any(value <= 0 or value > MAXIMUM for value in (xcode_end, now, expected_requested, expected_resumed)):
-        raise ValueError
-    if requested != expected_requested or resumed != expected_resumed:
-        raise ValueError
-    start_pid = number(start, "pid")
-    completion_pid = number(completion, "pid")
-    ui_start_pid = number(ui, "appPIDAtStart")
-    ui_end_pid = number(ui, "appPIDAtEnd")
-    pid_values = {start_pid, completion_pid, ui_start_pid, ui_end_pid, number(readiness, "productionPID"), number(wrapper, "productionPIDAtStart"), number(observation, "productionPIDAtCompletion")}
-    if len(pid_values) != 1:
-        raise ValueError
-    if number(wrapper, "status", positive=False) != 0 or number(observation, "status", positive=False) != 0:
-        raise ValueError
-    if number(waited, "completionStatus", positive=False) != 0 or number(waited, "waitStatus", positive=False) != 0:
-        raise ValueError
-    number(waited, "wrapperPID")
-    number(readiness, "hostPID")
-    number(readiness, "authenticatedConnectionCount")
-    if number(observation, "probeEndMonotonicNs") != probe_end or number(waited, "probeEndMonotonicNs") != probe_end:
-        raise ValueError
-    start_observed = number(start, "observedAtMonotonicNs")
-    completion_observed = number(completion, "observedAtMonotonicNs")
-    if number(observation, "completionObservedAtMonotonicNs") != completion_observed:
-        raise ValueError
-    if number(readiness, "requestedAtMonotonicNs") != requested or number(readiness, "probeStartedAtMonotonicNs") != probe_start:
-        raise ValueError
-    if not (requested < resumed < ready <= start_observed <= probe_start < probe_end <= completion_observed <= xcode_end <= now):
-        raise NonOverlap
-    if continuity < 30_000_000_000 or continuity > xcode_end:
-        raise NonOverlap
-    if resumed > MAXIMUM - continuity:
-        raise NonOverlap
-    latest_start = xcode_end - continuity
-    earliest_end = resumed + continuity
-    if latest_start < resumed or earliest_end > xcode_end or latest_start >= earliest_end:
-        raise NonOverlap
-    if probe_end - probe_start < 6_000_000_000:
-        raise NonOverlap
-    if probe_start < latest_start or probe_end > earliest_end:
-        raise NonOverlap
-    atomic(bounds_output, f"schema=opensteamer.raw-ui-host-bounds.v1\nnonce={expected_nonce}\nresumedAtMonotonicNs={resumed}\nxcodebuildEndedAtMonotonicNs={xcode_end}\ncontinuityDurationNs={continuity}\nlatestPossibleUIStartNs={latest_start}\nearliestPossibleUIEndNs={earliest_end}\nappPID={start_pid}\n")
-    atomic(probe_output, f"schema=opensteamer.blackhole-proof-interval.v1\nnonce={expected_nonce}\nprobeStartMonotonicNs={probe_start}\nprobeEndMonotonicNs={probe_end}\ndurationNs={probe_end - probe_start}\nstatus=0\nproductionPID={start_pid}\n")
-    atomic(verdict_output, f"schema=opensteamer.raw-blackhole-overlap-verdict.v1\nstate=passed\nnonce={expected_nonce}\nproductionPID={start_pid}\nproofDurationNs={probe_end - probe_start}\n")
-except NonOverlap:
-    for output in outputs:
-        pathlib.Path(output).unlink(missing_ok=True)
-    sys.exit(9)
-except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
-    for output in outputs:
-        pathlib.Path(output).unlink(missing_ok=True)
-    sys.exit(3)
-PY
+      "${now_ns}"
   then
     return 0
   else
@@ -3860,8 +5510,8 @@ function run_raw_microphone_blackhole_phase() {
     "${RAW_DEFAULT_INPUT_BEFORE}" before
   critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
   if (( critical_status != 0 )) \
-      || ! jq -e '.inputIsCanonicalBlackHole == false' \
-          "${RAW_DEFAULT_INPUT_BEFORE}" >/dev/null; then
+      || ! validate_default_input_baseline_json \
+          "${RAW_DEFAULT_INPUT_BEFORE}"; then
     fail_phase "${RAW_PHASE_STATUS}" || true
     return 3
   fi
@@ -4043,7 +5693,7 @@ function run_raw_microphone_blackhole_phase() {
     wait_for_default_input_restoration
   critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
   if (( critical_status != 0 )); then
-    echo "The original default input was not restored after disconnect." >&2
+    echo "The original default input baseline was not preserved/restored after disconnect." >&2
     fail_phase "${RAW_PHASE_STATUS}" || true
     return "${critical_status}"
   fi
@@ -4053,10 +5703,13 @@ function run_raw_microphone_blackhole_phase() {
     "${RAW_DEFAULT_INPUT_BEFORE}" \
     "${RAW_DEFAULT_INPUT_HEALTHY}" \
     "${RAW_DEFAULT_INPUT_AFTER}" \
-    "${RAW_PROBE_STARTED_NS}"
+    "${RAW_PROBE_STARTED_NS}" \
+    "" \
+    0 \
+    "${RAW_DEFAULT_INPUT_LIFECYCLE_EVIDENCE}"
   critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
   if (( critical_status != 0 )); then
-    echo "The default-input lifecycle evidence was rejected." >&2
+    echo "The default-input lifecycle evidence (preselected or switched) was rejected." >&2
     fail_phase "${RAW_PHASE_STATUS}" || true
     return "${critical_status}"
   fi
@@ -4073,6 +5726,8 @@ function run_raw_microphone_blackhole_phase() {
 
 function run_real_connected_call_phase() {
   local ui_status=0
+  local probe_status=0
+  local post_call_probe_end_ns=0
   local critical_status=0
 
   begin_phase 3 real-connected-call "${CALL_PHASE_STATUS}" || return $?
@@ -4159,6 +5814,14 @@ function run_real_connected_call_phase() {
     return "${critical_status}"
   fi
 
+  run_command_capturing_status configure_post_call_raw_contract
+  critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+  if (( critical_status != 0 )); then
+    cleanup_audio_oracle_tone || true
+    fail_phase "${CALL_PHASE_STATUS}" || true
+    return "${critical_status}"
+  fi
+
   print -r -- \
     "phase=3 event=xcodebuild-started test=${EXPECTED_CALL_TEST_NAME}" \
     >> "${PHASE_EVENTS}" || {
@@ -4180,8 +5843,29 @@ function run_real_connected_call_phase() {
     "${CALL_LOCK_STATE_DURING_TEST}" \
     "${CALL_AUDIO_ORACLE_FAILURE_MARKER}" \
     "${CALL_STABLE_HOST_FAILURE_MARKER}" \
-    "${CALL_STABLE_HOST_PID}"
+    "${CALL_STABLE_HOST_PID}" \
+    "test" \
+    run_real_call_operator_and_post_call_probe \
+    0 \
+    "${RAW_PROBE_COMPLETION_OBSERVATION}" \
+    arm_post_call_raw_readiness
   ui_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+
+  if (( ui_status == 0 )) \
+      && { ! /usr/bin/grep -Fxq 'state=accepted' "${CALL_ACOUSTIC_STATUS}" \
+        || ! /usr/bin/grep -Fxq 'state=accepted' "${CALL_END_STATUS}"; }; then
+    cleanup_audio_oracle_tone || true
+    fail_phase "${CALL_PHASE_STATUS}" || true
+    return 1
+  fi
+
+  if (( ui_status != 0 )); then
+    cleanup_blackhole_probe || true
+  else
+    run_command_capturing_status \
+      wait_for_blackhole_probe_completion "${BLACKHOLE_PROBE_TIMEOUT_SECONDS}"
+    probe_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+  fi
 
   run_command_capturing_status \
     capture_and_require_unchanged_candidate \
@@ -4199,6 +5883,57 @@ function run_real_connected_call_phase() {
     cleanup_audio_oracle_tone || true
     fail_phase "${CALL_PHASE_STATUS}" || true
     return "${ui_status}"
+  fi
+  if (( probe_status != 0 )) \
+      || [[ -z "${BLACKHOLE_PROBE_STATUS}" \
+          || "${BLACKHOLE_PROBE_STATUS}" == *[^0-9]* ]] \
+      || (( BLACKHOLE_PROBE_STATUS != 0 )); then
+    echo "The post-call physical BlackHole microphone probe failed." >&2
+    cleanup_audio_oracle_tone || true
+    fail_phase "${CALL_PHASE_STATUS}" || true
+    return 7
+  fi
+  post_call_probe_end_ns=$(raw_evidence_value \
+    "${RAW_PROBE_WAIT_EVIDENCE}" probeEndMonotonicNs) || return $?
+  if [[ -z "${post_call_probe_end_ns}" \
+      || "${post_call_probe_end_ns}" == *[^0-9]* ]] \
+      || (( post_call_probe_end_ns <= RAW_PROBE_STARTED_NS )); then
+    cleanup_audio_oracle_tone || true
+    fail_phase "${CALL_PHASE_STATUS}" || true
+    return 3
+  fi
+
+  run_command_capturing_status \
+    validate_blackhole_probe_json \
+    "${RAW_BLACKHOLE_PROBE_RESULT}" \
+    "${BLACKHOLE_PROBE_NONCE}" \
+    "${PHYSICAL_OUTPUT_UID}"
+  critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+  if (( critical_status != 0 )); then
+    cleanup_audio_oracle_tone || true
+    fail_phase "${CALL_PHASE_STATUS}" || true
+    return "${critical_status}"
+  fi
+
+  run_command_capturing_status wait_for_default_input_restoration
+  critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+  if (( critical_status == 0 )); then
+    run_command_capturing_status \
+      validate_default_input_lifecycle_json \
+      "${RAW_DEFAULT_INPUT_BEFORE}" \
+      "${RAW_DEFAULT_INPUT_HEALTHY}" \
+      "${RAW_DEFAULT_INPUT_AFTER}" \
+      "${RAW_PROBE_STARTED_NS}" \
+      "${RAW_DEFAULT_INPUT_DURING}" \
+      "${post_call_probe_end_ns}" \
+      "${RAW_DEFAULT_INPUT_LIFECYCLE_EVIDENCE}"
+    critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+  fi
+  if (( critical_status != 0 )); then
+    echo "The post-call BlackHole preselected/switch lifecycle proof failed." >&2
+    cleanup_audio_oracle_tone || true
+    fail_phase "${CALL_PHASE_STATUS}" || true
+    return "${critical_status}"
   fi
 
   run_command_capturing_status \
@@ -4246,6 +5981,39 @@ function run_real_connected_call_phase() {
     validate_call_physical_activities_json
   critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
   if (( critical_status != 0 )); then
+    cleanup_audio_oracle_tone || true
+    fail_phase "${CALL_PHASE_STATUS}" || true
+    return "${critical_status}"
+  fi
+
+  run_command_capturing_status \
+    capture_ui_xcresult_attachment_payload \
+    "${CALL_RESULT_BUNDLE}" \
+    "${CALL_POST_RAW_UI_RUNTIME_ATTACHMENT_PAYLOAD_ID}" \
+    "${CALL_POST_RAW_UI_RUNTIME_EVIDENCE}"
+  critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+  if (( critical_status == 0 )); then
+    run_command_capturing_status \
+      capture_ui_xcresult_attachment_payload \
+      "${CALL_RESULT_BUNDLE}" \
+      "${CALL_POST_RAW_GENERATION_ATTACHMENT_PAYLOAD_ID}" \
+      "${CALL_POST_RAW_GENERATION_EVIDENCE}"
+    critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+  fi
+  if (( critical_status == 0 )); then
+    run_command_capturing_status validate_post_call_raw_generation_evidence
+    critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+  fi
+  if (( critical_status == 0 )); then
+    run_command_capturing_status validate_and_retain_raw_overlap_evidence
+    critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+  fi
+  if (( critical_status == 0 )); then
+    run_command_capturing_status reject_runtime_uid_in_retained_artifacts
+    critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
+  fi
+  if (( critical_status != 0 )); then
+    echo "The nonce-bound post-call raw sender/BlackHole overlap proof failed." >&2
     cleanup_audio_oracle_tone || true
     fail_phase "${CALL_PHASE_STATUS}" || true
     return "${critical_status}"
@@ -4320,6 +6088,59 @@ function record_audited_host_connections() {
   done < "${HOST_LOG_COMPLETED_LINES}"
 }
 
+function prepare_host_deployment_contract_self_test() {
+  local mode=$1
+  local controller="${PHYSICAL_VALIDATION_ORACLE_BUILD_DIR}/migration-lock-probe"
+  local verifier="${ARTIFACT_DIR}/host-deployment-verifier-fixture.zsh"
+  local staged="${ARTIFACT_DIR}/fresh-staged.app"
+  local offline="${ARTIFACT_DIR}/offline-legacy-reference"
+  local reviewed="${ARTIFACT_DIR}/reviewed-launch-agent.plist"
+  local nonce="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+  /bin/mkdir -p "${staged}" || return $?
+  print -r -- "offline-reference" > "${offline}" || return $?
+  print -r -- "reviewed-plist" > "${reviewed}" || return $?
+  /bin/cp "${OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE}" "${controller}" || return $?
+  /bin/chmod 500 "${controller}" || return $?
+  MIGRATION_CONTROLLER_BINARY_SHA256=$(
+    /usr/bin/shasum -a 256 "${controller}" | /usr/bin/awk '{print $1}'
+  ) || return $?
+  OPENSTEAMER_MIGRATION_CONTROLLER_BINARY=${controller}
+  HOST_FRESH_STAGED_APP=${staged}
+  HOST_OFFLINE_LEGACY_REFERENCE=${offline}
+  HOST_REVIEWED_LAUNCH_AGENT=${reviewed}
+  MAC_HOST_DEPLOYMENT_VERIFIER=${verifier}
+  if [[ "${mode}" == missing ]]; then
+    nonce="malformed"
+  fi
+  {
+    print -r -- '#!/bin/zsh'
+    print -r -- 'set -eu'
+    print -r -- '[[ -n "${OPENSTEAMER_MIGRATION_CONTROLLER_BINARY:-}" ]] || exit 90'
+    print -r -- 'print -r -- "verifier-invoked=true"'
+    print -r -- 'print -r -- "controller=${OPENSTEAMER_MIGRATION_CONTROLLER_BINARY}"'
+    print -r -- 'print -r -- "argc=$#"'
+    print -r -- 'integer argument_index=1'
+    print -r -- 'for argument in "$@"; do'
+    print -r -- '  print -r -- "arg${argument_index}=${argument}"'
+    print -r -- '  argument_index=$((argument_index + 1))'
+    print -r -- 'done'
+  } > "${verifier}" || return $?
+  /bin/chmod 500 "${verifier}" || return $?
+  {
+    print -r -- "schema=opensteamer.host-generation.v1"
+    print -r -- "log_offset=123"
+    print -r -- "log_device=456"
+    print -r -- "log_inode=789"
+    print -r -- "pid=4242"
+    print -r -- "runs=7"
+    print -r -- "process_start=Mon Aug  3 12:34:56 2026"
+    print -r -- "nonce=${nonce}"
+    print -r -- "lock_device=111"
+    print -r -- "lock_inode=222"
+  } > "${HOST_GENERATION_STATE}" || return $?
+}
+
 function run_host_provenance_self_test() {
   local scenario=${OPENSTEAMER_SCRIPT_SELF_TEST#host-provenance-}
   local host_pid_file="${ARTIFACT_DIR}/self-test-host-pid.txt"
@@ -4380,73 +6201,70 @@ function run_host_provenance_self_test() {
   HOST_LOG_START_DIGEST=${OPENSTEAMER_LOG_SNAPSHOT_DIGEST}
   rm -f "${HOST_LOG_APPEND_CHUNK}"
 
-  opensteamer_start_isolated_validation_process /usr/bin/python3 -c '
-import os
-import sys
-import time
+  opensteamer_start_isolated_validation_process /bin/zsh -c '
+scenario=$1
+log_path=$2
+pid_path=$3
+ready_path=$4
 
-scenario, log_path, pid_path, ready_path = sys.argv[1:]
+function append_record() {
+  print -r -- "Worldwide WebRTC peer state: connected pid=$1" >> "${log_path}"
+}
+function wait_for_file() {
+  for poll in {1..400}; do
+    [[ -e "$1" ]] && return 0
+    sleep 0.005
+  done
+  return 31
+}
+function wait_for_pid() {
+  local expected=$1
+  local observed
+  for poll in {1..400}; do
+    observed=$(<"${pid_path}") 2>/dev/null || observed=""
+    [[ "${observed}" == "${expected}" ]] && return 0
+    sleep 0.005
+  done
+  return 32
+}
 
-def append(pid):
-    with open(log_path, "a", encoding="utf-8") as log:
-        log.write(f"Worldwide WebRTC peer state: connected pid={pid}\n")
-        log.flush()
-        os.fsync(log.fileno())
-
-def wait_file(path):
-    deadline = time.monotonic() + 2
-    while not os.path.exists(path) and time.monotonic() < deadline:
-        time.sleep(0.005)
-    if not os.path.exists(path):
-        sys.exit(31)
-
-def wait_pid(expected):
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
-        try:
-            with open(pid_path, "r", encoding="utf-8") as source:
-                if source.read().strip() == expected:
-                    return
-        except FileNotFoundError:
-            pass
-        time.sleep(0.005)
-    sys.exit(32)
-
-if scenario == "batched-malformed":
-    with open(log_path, "a", encoding="utf-8") as log:
-        log.write("Worldwide WebRTC peer state: connected pid=100\n")
-        log.write("Worldwide WebRTC peer state: connected pid=0\n")
-        log.flush()
-        os.fsync(log.fileno())
-elif scenario == "pre-kick-mismatch":
-    append("100")
-    wait_file(ready_path)
-    append("999")
-elif scenario == "same-inode-rewrite":
-    append("100")
-    wait_file(ready_path)
-    with open(log_path, "rb") as source:
-        contents = source.read()
-    if not contents.startswith(b"baseline\n"):
-        sys.exit(33)
-    with open(log_path, "wb") as destination:
-        destination.write(b"Baseline\n" + contents[len(b"baseline\n"):])
-        destination.flush()
-        os.fsync(destination.fileno())
-else:
-    append("100")
-    wait_pid("200")
-    append("200")
-    wait_pid("100" if scenario == "reused-pid" else "300")
-    if scenario != "reused-pid":
-        append("300")
-        wait_pid("400")
-        if scenario == "late-mismatch":
-            append("999")
-        elif scenario == "unique-pids":
-            append("400")
-time.sleep(0.5)
-' "${scenario}" "${HOST_LOG}" "${host_pid_file}" "${pre_kick_ready}"
+case "${scenario}" in
+  batched-malformed)
+    append_record 100
+    append_record 0
+    ;;
+  pre-kick-mismatch)
+    append_record 100
+    wait_for_file "${ready_path}" || exit $?
+    append_record 999
+    ;;
+  same-inode-rewrite)
+    append_record 100
+    wait_for_file "${ready_path}" || exit $?
+    print -rn -- B \
+      | /bin/dd of="${log_path}" bs=1 seek=0 conv=notrunc 2>/dev/null
+    ;;
+  *)
+    append_record 100
+    wait_for_pid 200 || exit $?
+    append_record 200
+    if [[ "${scenario}" == reused-pid ]]; then
+      wait_for_pid 100 || exit $?
+    else
+      wait_for_pid 300 || exit $?
+      append_record 300
+      wait_for_pid 400 || exit $?
+      if [[ "${scenario}" == late-mismatch ]]; then
+        append_record 999
+      elif [[ "${scenario}" == unique-pids ]]; then
+        append_record 400
+      fi
+    fi
+    ;;
+esac
+sleep 0.5
+' host-provenance-writer \
+    "${scenario}" "${HOST_LOG}" "${host_pid_file}" "${pre_kick_ready}"
 
   if ! start_host_churn_worker; then
     return 60
@@ -4680,6 +6498,23 @@ function write_raw_overlap_self_test_fixture() {
       start_observed=24500000000
       completion_observed=31500000000
       ;;
+    delayed-call-end|delayed-call-end-short-continuity)
+      # The resumed lower bound predates both reviewed operator waits: 180 seconds for the
+      # in-call acoustic proof and 90 seconds to end the call. The inter-ack CoreAudio snapshot,
+      # readiness, and bounded verifier then consume reviewed time before the six-second probe. A
+      # 330s UI duration admits this production shape; the short variant must fail closed.
+      ready=282000000000
+      probe_start=292000000000
+      probe_end=298000000000
+      start_observed=291000000000
+      completion_observed=299000000000
+      xcode_end=620000000000
+      now=621000000000
+      continuity=330000000000
+      if [[ "${scenario}" == "delayed-call-end-short-continuity" ]]; then
+        continuity=310000000000
+      fi
+      ;;
     one-ns-short)
       probe_end=15999999999
       completion_observed=16999999999
@@ -4747,65 +6582,64 @@ function write_raw_overlap_self_test_fixture() {
   RAW_READY_RESUMED_NS=${resumed}
   RAW_PROBE_STARTED_NS=${probe_start}
   RAW_PROBE_BOUND_PID=7101
-  RAW_XCODEBUILD_ENDED_NS=${xcode_end}
   BLACKHOLE_PROBE_NONCE="${RAW_READY_NONCE}"
   OPENSTEAMER_SELF_TEST_RAW_NOW_NS=${now}
-  /usr/bin/python3 - \
-    "${RAW_READY_REQUEST}" \
-    "${RAW_READY_EVIDENCE}" \
-    "${RAW_UI_RUNTIME_EVIDENCE}" \
-    "${RAW_PROBE_PROCESS_START_EVIDENCE}" \
-    "${RAW_PROBE_PROCESS_COMPLETION_EVIDENCE}" \
-    "${RAW_PROBE_COMPLETION_OBSERVATION}" \
-    "${RAW_PROBE_WAIT_EVIDENCE}" \
-    "${RAW_BLACKHOLE_PROBE_COMPLETION}" \
-    "${RAW_BLACKHOLE_PROBE_RESULT}" \
-    "${RAW_READY_NONCE}" \
-    "${ui_nonce}" \
-    "${fixture_requested}" \
-    "${resumed}" \
-    "${ready}" \
-    "${probe_start}" \
-    "${probe_end}" \
-    "${continuity}" \
-    "${start_observed}" \
-    "${completion_observed}" \
-    "${ui_pid_start}" \
-    "${ui_pid_end}" \
-    "${wrapper_status}" \
-    "${wait_status}" <<'PY'
-import json
-import os
-import sys
-
-EXPECTED_APP_BUNDLE_IDENTIFIER = os.environ["OPENSTEAMER_EXPECTED_APP_BUNDLE_IDENTIFIER"]
-
-(
-    request_path, readiness_path, ui_path, start_path, completion_path,
-    observation_path, wait_path, wrapper_path, result_path, nonce, ui_nonce,
-    requested, resumed, ready, probe_start, probe_end, continuity,
-    start_observed, completion_observed, ui_pid_start, ui_pid_end,
-    wrapper_status, wait_status,
-) = sys.argv[1:]
-
-def atomic(path, text):
-    temporary = f"{path}.tmp.{os.getpid()}"
-    with open(temporary, "w", encoding="utf-8") as destination:
-        destination.write(text)
-        destination.flush()
-        os.fsync(destination.fileno())
-    os.replace(temporary, path)
-
-atomic(request_path, f"schema=opensteamer.raw-session-readiness.v2\nnonce={nonce}\nrequestedAtMonotonicNs={requested}\ncursorOffset=0\ncursorDigest=self-test\n")
-atomic(readiness_path, f"schema=opensteamer.raw-session-readiness.v2\nnonce={nonce}\nrequestedAtMonotonicNs={requested}\nresumedAtMonotonicNs={resumed}\nreadyAtMonotonicNs={ready}\nprobeStartedAtMonotonicNs={probe_start}\nproductionPID=7101\nhostPID=5100\nauthenticatedConnectionCount=1\ncursorOffset=1\ncursorDigest=self-test-ready\n")
-atomic(ui_path, f"schema=opensteamer.raw-ui-runtime.v1\nnonce={ui_nonce}\ncontinuityDurationNs={continuity}\nappPIDAtStart={ui_pid_start}\nappPIDAtEnd={ui_pid_end}\n")
-atomic(start_path, f"schema=opensteamer.production-app-probe-boundary.v1\nboundary=start\nnonce={nonce}\nbundleIdentifier={EXPECTED_APP_BUNDLE_IDENTIFIER}\npid=7101\nobservedAtMonotonicNs={start_observed}\n")
-atomic(completion_path, f"schema=opensteamer.production-app-probe-boundary.v1\nboundary=completion\nnonce={nonce}\nbundleIdentifier={EXPECTED_APP_BUNDLE_IDENTIFIER}\npid=7101\nobservedAtMonotonicNs={completion_observed}\n")
-atomic(observation_path, f"schema=opensteamer.blackhole-probe-completion-observation.v1\nnonce={nonce}\nprobeEndMonotonicNs={probe_end}\ncompletionObservedAtMonotonicNs={completion_observed}\nstatus=0\nproductionPIDAtCompletion=7101\n")
-atomic(wait_path, f"schema=opensteamer.blackhole-probe-wait.v1\nnonce={nonce}\nwrapperPID=999\nprobeEndMonotonicNs={probe_end}\ncompletionStatus=0\nwaitStatus={wait_status}\n")
-atomic(wrapper_path, f"schema=opensteamer.blackhole-probe-completion.v1\nnonce={nonce}\nprobeStartMonotonicNs={probe_start}\nprobeEndMonotonicNs={probe_end}\nstatus={wrapper_status}\nproductionPIDAtStart=7101\n")
-atomic(result_path, json.dumps({"schema": "opensteamer.physical-blackhole-microphone.v1", "status": "passed", "runNonce": nonce}) + "\n")
-PY
+  opensteamer_write_state "${RAW_READY_REQUEST}" "schema=opensteamer.raw-session-readiness.v2
+nonce=${RAW_READY_NONCE}
+requestedAtMonotonicNs=${fixture_requested}
+cursorOffset=0
+cursorDigest=self-test" || return $?
+  opensteamer_write_state "${RAW_READY_EVIDENCE}" "schema=opensteamer.raw-session-readiness.v3
+nonce=${RAW_READY_NONCE}
+requestedAtMonotonicNs=${fixture_requested}
+resumedAtMonotonicNs=${resumed}
+readyAtMonotonicNs=${ready}
+probeStartedAtMonotonicNs=${probe_start}
+productionPID=7101
+hostPID=5100
+blackHolePeerGeneration=1
+authenticatedConnectionCount=1
+cursorOffset=1
+cursorDigest=self-test-ready" || return $?
+  opensteamer_write_state "${RAW_UI_RUNTIME_EVIDENCE}" "schema=opensteamer.raw-ui-runtime.v1
+nonce=${ui_nonce}
+continuityDurationNs=${continuity}
+appPIDAtStart=${ui_pid_start}
+appPIDAtEnd=${ui_pid_end}" || return $?
+  opensteamer_write_state "${RAW_UI_COMPLETION_OBSERVATION}" "schema=opensteamer.raw-ui-completion-observation.v1
+nonce=${ui_nonce}
+observedAtMonotonicNs=${xcode_end}" || return $?
+  opensteamer_write_state "${RAW_PROBE_PROCESS_START_EVIDENCE}" "schema=opensteamer.production-app-probe-boundary.v1
+boundary=start
+nonce=${RAW_READY_NONCE}
+bundleIdentifier=${EXPECTED_APP_BUNDLE_IDENTIFIER}
+pid=7101
+observedAtMonotonicNs=${start_observed}" || return $?
+  opensteamer_write_state "${RAW_PROBE_PROCESS_COMPLETION_EVIDENCE}" "schema=opensteamer.production-app-probe-boundary.v1
+boundary=completion
+nonce=${RAW_READY_NONCE}
+bundleIdentifier=${EXPECTED_APP_BUNDLE_IDENTIFIER}
+pid=7101
+observedAtMonotonicNs=${completion_observed}" || return $?
+  opensteamer_write_state "${RAW_PROBE_COMPLETION_OBSERVATION}" "schema=opensteamer.blackhole-probe-completion-observation.v1
+nonce=${RAW_READY_NONCE}
+probeEndMonotonicNs=${probe_end}
+completionObservedAtMonotonicNs=${completion_observed}
+status=0
+productionPIDAtCompletion=7101" || return $?
+  opensteamer_write_state "${RAW_PROBE_WAIT_EVIDENCE}" "schema=opensteamer.blackhole-probe-wait.v1
+nonce=${RAW_READY_NONCE}
+wrapperPID=999
+probeEndMonotonicNs=${probe_end}
+completionStatus=0
+waitStatus=${wait_status}" || return $?
+  opensteamer_write_state "${RAW_BLACKHOLE_PROBE_COMPLETION}" "schema=opensteamer.blackhole-probe-completion.v1
+nonce=${RAW_READY_NONCE}
+probeStartMonotonicNs=${probe_start}
+probeEndMonotonicNs=${probe_end}
+status=${wrapper_status}
+productionPIDAtStart=7101" || return $?
+  opensteamer_write_state "${RAW_BLACKHOLE_PROBE_RESULT}" "{\"schema\":\"opensteamer.physical-blackhole-microphone.v1\",\"status\":\"passed\",\"runNonce\":\"${RAW_READY_NONCE}\"}"
 }
 
 function run_legacy_raw_readiness_self_test() {
@@ -4936,11 +6770,13 @@ function run_raw_completion_self_test() {
   OPENSTEAMER_SELF_TEST_HOST_PID_FILE=${host_pid_file}
   OPENSTEAMER_SELF_TEST_RAW_READINESS=1
   EXPECTED_INITIAL_HOST_PID=5100
-  RAW_READY_TIMEOUT_SECONDS=1
-  UI_TEST_TIMEOUT_SECONDS=5
+  RAW_READY_TIMEOUT_SECONDS=3
+  UI_TEST_TIMEOUT_SECONDS=7
   DEVICE_LOCK_POLL_SECONDS=10
   OPENSTEAMER_SELF_TEST_SIMPLE_UI_STATUS=0
-  OPENSTEAMER_SELF_TEST_SIMPLE_UI_DURATION=1.5
+  # The completion record is fsync'd on the reviewed external volume. Keep the inert UI alive
+  # long enough for that durable rename while retaining a strict end-to-end self-test deadline.
+  OPENSTEAMER_SELF_TEST_SIMPLE_UI_DURATION=5
   OPENSTEAMER_SELF_TEST_RAW_PROBE_DURATION=0.1
   case "${scenario}" in
     completion-success)
@@ -4949,7 +6785,7 @@ function run_raw_completion_self_test() {
       OPENSTEAMER_SELF_TEST_RAW_COMPLETION_MODE=nonce-mismatch
       ;;
     completion-inverted)
-      OPENSTEAMER_SELF_TEST_RAW_PROBE_END_OFFSET_NS=-1
+      OPENSTEAMER_SELF_TEST_RAW_PROBE_END_OFFSET_NS=0
       ;;
     completion-nonzero)
       OPENSTEAMER_SELF_TEST_RAW_PROBE_STATUS=17
@@ -5016,7 +6852,7 @@ function run_raw_completion_self_test() {
   case "${scenario}" in
     completion-success)
       (( ui_status == 0 )) || return 102
-      if wait_for_blackhole_probe_completion 2; then
+      if wait_for_blackhole_probe_completion 8; then
         probe_status=0
       else
         probe_status=$?
@@ -5027,7 +6863,7 @@ function run_raw_completion_self_test() {
       ;;
     completion-wait-status-mismatch)
       (( ui_status == 0 )) || return 106
-      if wait_for_blackhole_probe_completion 2; then
+      if wait_for_blackhole_probe_completion 8; then
         return 107
       else
         probe_status=$?
@@ -5109,7 +6945,7 @@ function run_raw_readiness_self_test() {
     overlap_status=$?
   fi
   case "${scenario}" in
-    success|exact-start|exact-end|exact-six)
+    success|exact-start|exact-end|exact-six|delayed-call-end)
       (( overlap_status == 0 )) || return 131
       [[ -s "${RAW_UI_BOUNDS_EVIDENCE}" ]] || return 132
       [[ -s "${RAW_PROBE_INTERVAL_EVIDENCE}" ]] || return 133
@@ -5122,6 +6958,167 @@ function run_raw_readiness_self_test() {
       [[ ! -e "${RAW_PROBE_INTERVAL_EVIDENCE}" ]] || return 138
       [[ ! -e "${RAW_PROBE_OVERLAP_MARKER}" ]] || return 139
       [[ -s "${RAW_PROBE_NON_OVERLAP_MARKER}" ]] || return 140
+      ;;
+  esac
+  opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+}
+
+function run_raw_ui_completion_handshake_self_test() {
+  local scenario=${OPENSTEAMER_SCRIPT_SELF_TEST#raw-ui-completion-handshake-}
+  local live_output="${ARTIFACT_DIR}/synthetic-live-xcodebuild.txt"
+  local completion_status=0
+  local observed_nonce
+  local observed_at_ns
+
+  OPENSTEAMER_SELF_TEST_RAW_READINESS=1
+  prepare_raw_overlap_contract || return $?
+  case "${scenario}" in
+    success)
+      print -r -- \
+        "OPENSTEAMER_RAW_UI_CONTINUITY_COMPLETE_V1 nonce=${RAW_READY_NONCE}" \
+        > "${live_output}" || return $?
+      if capture_raw_ui_completion_observation_from_log "${live_output}"; then
+        completion_status=0
+      else
+        completion_status=$?
+      fi
+      (( completion_status == 0 )) || return 141
+      [[ -s "${RAW_UI_COMPLETION_OBSERVATION}" ]] || return 142
+      observed_nonce=$(raw_evidence_value \
+        "${RAW_UI_COMPLETION_OBSERVATION}" nonce) || return $?
+      observed_at_ns=$(raw_evidence_value \
+        "${RAW_UI_COMPLETION_OBSERVATION}" observedAtMonotonicNs) || return $?
+      [[ "${observed_nonce}" == "${RAW_READY_NONCE}" ]] || return 143
+      [[ "${observed_at_ns}" != *[^0-9]* ]] || return 144
+      (( observed_at_ns > 0 )) || return 145
+      ;;
+    late)
+      {
+        print -r -- \
+          "OPENSTEAMER_RAW_UI_CONTINUITY_COMPLETE_V1 nonce=${RAW_READY_NONCE}"
+        print -r -- \
+          "OPENSTEAMER_RAW_UI_TEARDOWN_BEGIN_V1 nonce=${RAW_READY_NONCE}"
+      } > "${live_output}" || return $?
+      if capture_raw_ui_completion_observation_from_log "${live_output}"; then
+        completion_status=0
+      else
+        completion_status=$?
+      fi
+      (( completion_status == 9 )) || return 146
+      [[ ! -e "${RAW_UI_COMPLETION_OBSERVATION}" ]] || return 147
+      ;;
+    nonce-mismatch)
+      print -r -- \
+        "OPENSTEAMER_RAW_UI_CONTINUITY_COMPLETE_V1 nonce=${RAW_READY_NONCE}-stale" \
+        > "${live_output}" || return $?
+      if capture_raw_ui_completion_observation_from_log "${live_output}"; then
+        completion_status=0
+      else
+        completion_status=$?
+      fi
+      (( completion_status == 1 )) || return 148
+      [[ ! -e "${RAW_UI_COMPLETION_OBSERVATION}" ]] || return 149
+      ;;
+    *)
+      return 150
+      ;;
+  esac
+  opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+}
+
+function run_raw_ui_causal_state_handshake_self_test() {
+  local scenario=${OPENSTEAMER_SCRIPT_SELF_TEST#raw-ui-causal-state-handshake-}
+  local live_output="${ARTIFACT_DIR}/synthetic-causal-live-xcodebuild.txt"
+  local capture_status=0
+
+  OPENSTEAMER_SELF_TEST_RAW_READINESS=1
+  RAW_UI_CAUSAL_STATE_OBSERVATION="${ARTIFACT_DIR}/raw-ui-causal-state-observation.txt"
+  prepare_raw_overlap_contract || return $?
+  RAW_READY_RESUMED_NS=1
+  CALL_ACOUSTIC_ACCEPTED_TOKEN=self-test-acoustic-token
+  CALL_ACOUSTIC_ACCEPTED_NS=2
+  case "${scenario}" in
+    success)
+      print -r -- \
+        "OPENSTEAMER_CALL_UI_HOSTED_ACTIVE_V2 nonce=${RAW_READY_NONCE} sequence=1 acousticToken=-" \
+        > "${live_output}" || return $?
+      capture_call_ui_hosted_state_observation_from_log \
+        "${live_output}" 1 - "${RAW_READY_RESUMED_NS}" \
+        "${CALL_UI_HOSTED_PRE_ACK_OBSERVATION}" \
+        || return 163
+      print -r -- \
+        "OPENSTEAMER_CALL_UI_HOSTED_ACTIVE_V2 nonce=${RAW_READY_NONCE} sequence=2 acousticToken=${CALL_ACOUSTIC_ACCEPTED_TOKEN}" \
+        >> "${live_output}" || return $?
+      capture_call_ui_hosted_state_observation_from_log \
+        "${live_output}" 2 "${CALL_ACOUSTIC_ACCEPTED_TOKEN}" \
+        "${CALL_ACOUSTIC_ACCEPTED_NS}" \
+        "${RAW_UI_CAUSAL_STATE_OBSERVATION}" || return 164
+      [[ "$(raw_evidence_value \
+          "${RAW_UI_CAUSAL_STATE_OBSERVATION}" state)" \
+          == "hosted-call-active" ]] || return 165
+      [[ "$(raw_evidence_value \
+          "${RAW_UI_CAUSAL_STATE_OBSERVATION}" sequence)" \
+          == "2" ]] || return 166
+      [[ "$(raw_evidence_value \
+          "${RAW_UI_CAUSAL_STATE_OBSERVATION}" resumedAtMonotonicNs)" \
+          == "${RAW_READY_RESUMED_NS}" ]] || return 167
+      ;;
+    nonce-mismatch)
+      print -r -- \
+        "OPENSTEAMER_CALL_UI_HOSTED_ACTIVE_V2 nonce=${RAW_READY_NONCE}-stale sequence=1 acousticToken=-" \
+        > "${live_output}" || return $?
+      if capture_call_ui_hosted_state_observation_from_log \
+          "${live_output}" 1 - "${RAW_READY_RESUMED_NS}" \
+          "${CALL_UI_HOSTED_PRE_ACK_OBSERVATION}"; then
+        capture_status=0
+      else
+        capture_status=$?
+      fi
+      (( capture_status == 1 )) || return 168
+      [[ ! -e "${CALL_UI_HOSTED_PRE_ACK_OBSERVATION}" ]] || return 169
+      ;;
+    duplicate)
+      {
+        print -r -- \
+          "OPENSTEAMER_CALL_UI_HOSTED_ACTIVE_V2 nonce=${RAW_READY_NONCE} sequence=1 acousticToken=-"
+        print -r -- \
+          "OPENSTEAMER_CALL_UI_HOSTED_ACTIVE_V2 nonce=${RAW_READY_NONCE} sequence=1 acousticToken=-"
+      } > "${live_output}" || return $?
+      if capture_call_ui_hosted_state_observation_from_log \
+          "${live_output}" 1 - "${RAW_READY_RESUMED_NS}" \
+          "${CALL_UI_HOSTED_PRE_ACK_OBSERVATION}"; then
+        capture_status=0
+      else
+        capture_status=$?
+      fi
+      (( capture_status == 9 )) || return 170
+      [[ ! -e "${CALL_UI_HOSTED_PRE_ACK_OBSERVATION}" ]] || return 171
+      ;;
+    ordinary-before-heard)
+      {
+        print -r -- \
+          "OPENSTEAMER_CALL_UI_HOSTED_ACTIVE_V2 nonce=${RAW_READY_NONCE} sequence=1 acousticToken=-"
+        print -r -- \
+          "OPENSTEAMER_CALL_UI_ORDINARY_BEFORE_ACOUSTIC_V1 nonce=${RAW_READY_NONCE}"
+      } > "${live_output}" || return $?
+      capture_call_ui_hosted_state_observation_from_log \
+        "${live_output}" 1 - "${RAW_READY_RESUMED_NS}" \
+        "${CALL_UI_HOSTED_PRE_ACK_OBSERVATION}" || return 173
+      if capture_call_ui_hosted_state_observation_from_log \
+          "${live_output}" 2 "${CALL_ACOUSTIC_ACCEPTED_TOKEN}" \
+          "${CALL_ACOUSTIC_ACCEPTED_NS}" \
+          "${RAW_UI_CAUSAL_STATE_OBSERVATION}"; then
+        return 174
+      else
+        capture_status=$?
+      fi
+      (( capture_status == 1 )) || return 175
+      [[ ! -e "${RAW_UI_CAUSAL_STATE_OBSERVATION}" ]] || return 176
+      ;;
+    *)
+      return 172
       ;;
   esac
   opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
@@ -5146,7 +7143,7 @@ function run_blackhole_probe_diagnostic_self_test() {
       ;;
     failure)
       start_bounded_blackhole_probe_process \
-        /bin/zsh -c 'print -r -- synthetic-probe-failure >&2; /usr/bin/python3 -c "import sys; sys.stderr.write(\"x\" * 100000)"; exit 17' \
+        /bin/zsh -c 'print -r -- synthetic-probe-failure >&2; /usr/bin/yes x | /usr/bin/head -c 100000 >&2; exit 17' \
         diagnostic-failure || return $?
       if wait_for_blackhole_probe_completion 3; then
         return 118
@@ -5171,6 +7168,21 @@ function run_blackhole_probe_diagnostic_self_test() {
       grep -qx 'diagnostic=runtime-uid-output-rejected' \
         "${RAW_BLACKHOLE_PROBE_DIAGNOSTICS}" || return 123
       ;;
+    wedged-after-completion)
+      OPENSTEAMER_SELF_TEST_RAW_COMPLETION_MODE=wedged-after-completion
+      start_bounded_blackhole_probe_process \
+        /bin/zsh -c 'exit 0' diagnostic-wedged-after-completion || return $?
+      if wait_for_blackhole_probe_completion 1; then
+        return 171
+      else
+        observed_status=$?
+      fi
+      (( observed_status == 124 )) || return 172
+      [[ -z "${BLACKHOLE_PROBE_PID}" ]] || return 173
+      /usr/bin/grep -Fxq \
+        'state=wrapper-timed-out-after-completion status=124' \
+        "${RAW_BLACKHOLE_PROBE_CLEANUP_PROOF}" || return 174
+      ;;
     *)
       return 124
       ;;
@@ -5185,6 +7197,14 @@ if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == critical-failure-* ]]; then
 fi
 if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == raw-readiness-* ]]; then
   run_raw_readiness_self_test
+  exit 0
+fi
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == raw-ui-completion-handshake-* ]]; then
+  run_raw_ui_completion_handshake_self_test
+  exit 0
+fi
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == raw-ui-causal-state-handshake-* ]]; then
+  run_raw_ui_causal_state_handshake_self_test
   exit 0
 fi
 if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == blackhole-probe-diagnostic-* ]]; then
@@ -5214,11 +7234,21 @@ if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "validate-blackhole-probe-json" ]];
   exit 0
 fi
 if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "validate-default-input-lifecycle" ]]; then
-  validate_default_input_lifecycle_json \
-    "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_BEFORE:?missing before fixture}" \
-    "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_HEALTHY:?missing healthy fixture}" \
-    "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_AFTER:?missing after fixture}" \
-    "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_PROBE_START:?missing probe start}"
+  if [[ -n "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_DURING:-}" ]]; then
+    validate_default_input_lifecycle_json \
+      "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_BEFORE:?missing before fixture}" \
+      "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_HEALTHY:?missing healthy fixture}" \
+      "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_AFTER:?missing after fixture}" \
+      "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_PROBE_START:?missing probe start}" \
+      "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_DURING}" \
+      "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_PROBE_END:?missing probe end}"
+  else
+    validate_default_input_lifecycle_json \
+      "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_BEFORE:?missing before fixture}" \
+      "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_HEALTHY:?missing healthy fixture}" \
+      "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_AFTER:?missing after fixture}" \
+      "${OPENSTEAMER_SELF_TEST_DEFAULT_INPUT_PROBE_START:?missing probe start}"
+  fi
   opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
   RUN_SUCCEEDED=1
   exit 0
@@ -5341,6 +7371,41 @@ if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "call-ready-success" ]]; then
   RUN_SUCCEEDED=1
   exit 0
 fi
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "call-ready-late-after-query" \
+    || "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "call-ready-late-after-read" ]]; then
+  OPENSTEAMER_SELF_TEST_CALL_READY_TOKEN="self-test-call-ready-token"
+  if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST}" == "call-ready-late-after-query" ]]; then
+    OPENSTEAMER_SELF_TEST_ACK_QUERY_DELAY_SECONDS=1.2
+  else
+    OPENSTEAMER_SELF_TEST_ACK_POST_READ_DELAY_SECONDS=1.2
+  fi
+  CALL_READY_TIMEOUT_SECONDS=1
+  terminate_production_app_for_call_phase
+  print -r -- \
+    "phase=3 event=production-app-terminated" \
+    >> "${PHASE_EVENTS}"
+  (
+    for ready_poll in {1..200}; do
+      [[ -s "${CALL_READY_REQUEST}" ]] && break
+      sleep 0.01
+    done
+    [[ -s "${CALL_READY_REQUEST}" ]] || exit 151
+    ready_token=$(<"${CALL_READY_REQUEST}")
+    ready_token=${ready_token#ready-token=}
+    opensteamer_write_state \
+      "${CALL_READY_ACKNOWLEDGEMENT}" "ready=${ready_token}"
+  ) &
+  call_ready_writer_pid=$!
+  if wait_for_fresh_call_ready_acknowledgement; then
+    exit 152
+  fi
+  wait "${call_ready_writer_pid}"
+  /usr/bin/grep -Fxq 'state=timed-out' "${CALL_READY_STATUS}" || exit 153
+  ! /usr/bin/grep -Fq 'event=call-ready-accepted' "${PHASE_EVENTS}" || exit 154
+  opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
 if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "call-ready-timeout" ]]; then
   OPENSTEAMER_SELF_TEST_CALL_READY_TOKEN="self-test-call-ready-token"
   CALL_READY_TIMEOUT_SECONDS=1
@@ -5371,6 +7436,217 @@ if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "call-ready-stale" ]]; then
   fi
   grep -qx 'state=discarded-before-request' \
     "${CALL_READY_STALE_MARKER}" || exit 74
+  opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "call-end-success" ]]; then
+  OPENSTEAMER_SELF_TEST_CALL_END_TOKEN="self-test-call-end-token"
+  CALL_END_TIMEOUT_SECONDS=3
+  print -r -- "phase=3 event=connected-call-proof-observed" \
+    >> "${PHASE_EVENTS}"
+  (
+    for end_poll in {1..200}; do
+      [[ -s "${CALL_END_REQUEST}" ]] && break
+      sleep 0.01
+    done
+    [[ -s "${CALL_END_REQUEST}" ]] || exit 75
+    end_token=$(<"${CALL_END_REQUEST}")
+    end_token=${end_token#end-call-token=}
+    opensteamer_write_state \
+      "${CALL_END_ACKNOWLEDGEMENT}" "ended=${end_token}"
+  ) &
+  call_end_writer_pid=$!
+  wait_for_fresh_call_end_acknowledgement
+  wait "${call_end_writer_pid}"
+  opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "call-end-late-after-query" ]]; then
+  OPENSTEAMER_SELF_TEST_CALL_END_TOKEN="self-test-call-end-token"
+  OPENSTEAMER_SELF_TEST_ACK_QUERY_DELAY_SECONDS=1.2
+  CALL_END_TIMEOUT_SECONDS=1
+  print -r -- "phase=3 event=connected-call-proof-observed" \
+    >> "${PHASE_EVENTS}"
+  (
+    for end_poll in {1..200}; do
+      [[ -s "${CALL_END_REQUEST}" ]] && break
+      sleep 0.01
+    done
+    [[ -s "${CALL_END_REQUEST}" ]] || exit 90
+    end_token=$(<"${CALL_END_REQUEST}")
+    end_token=${end_token#end-call-token=}
+    opensteamer_write_state \
+      "${CALL_END_ACKNOWLEDGEMENT}" "ended=${end_token}"
+  ) &
+  call_end_writer_pid=$!
+  if wait_for_fresh_call_end_acknowledgement; then
+    exit 91
+  fi
+  wait "${call_end_writer_pid}"
+  /usr/bin/grep -Fxq 'state=timed-out' "${CALL_END_STATUS}" || exit 92
+  ! /usr/bin/grep -Fq 'event=call-end-accepted' "${PHASE_EVENTS}" || exit 93
+  opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "call-end-late-after-read" ]]; then
+  OPENSTEAMER_SELF_TEST_CALL_END_TOKEN="self-test-call-end-token"
+  OPENSTEAMER_SELF_TEST_ACK_POST_READ_DELAY_SECONDS=1.2
+  CALL_END_TIMEOUT_SECONDS=1
+  print -r -- "phase=3 event=connected-call-proof-observed" \
+    >> "${PHASE_EVENTS}"
+  (
+    for end_poll in {1..200}; do
+      [[ -s "${CALL_END_REQUEST}" ]] && break
+      sleep 0.01
+    done
+    [[ -s "${CALL_END_REQUEST}" ]] || exit 155
+    end_token=$(<"${CALL_END_REQUEST}")
+    end_token=${end_token#end-call-token=}
+    opensteamer_write_state \
+      "${CALL_END_ACKNOWLEDGEMENT}" "ended=${end_token}"
+  ) &
+  call_end_writer_pid=$!
+  if wait_for_fresh_call_end_acknowledgement; then
+    exit 156
+  fi
+  wait "${call_end_writer_pid}"
+  /usr/bin/grep -Fxq 'state=timed-out' "${CALL_END_STATUS}" || exit 157
+  ! /usr/bin/grep -Fq 'event=call-end-accepted' "${PHASE_EVENTS}" || exit 158
+  opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == call-acoustic-* ]]; then
+  RAW_READY_NONCE="self-test-call-acoustic-nonce"
+fi
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "call-acoustic-success" ]]; then
+  OPENSTEAMER_SELF_TEST_CALL_ACOUSTIC_TOKEN="self-test-call-acoustic-token"
+  CALL_ACOUSTIC_TIMEOUT_SECONDS=3
+  (
+    for acoustic_poll in {1..200}; do
+      [[ -s "${CALL_ACOUSTIC_REQUEST}" ]] && break
+      sleep 0.01
+    done
+    [[ -s "${CALL_ACOUSTIC_REQUEST}" ]] || exit 85
+    acoustic_token=$(<"${CALL_ACOUSTIC_REQUEST}")
+    acoustic_token=${acoustic_token#heard-token=}
+    opensteamer_write_state \
+      "${CALL_ACOUSTIC_ACKNOWLEDGEMENT}" "heard=${acoustic_token}"
+  ) &
+  call_acoustic_writer_pid=$!
+  wait_for_fresh_call_acoustic_acknowledgement
+  wait "${call_acoustic_writer_pid}"
+  opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "call-acoustic-late-after-query" ]]; then
+  OPENSTEAMER_SELF_TEST_CALL_ACOUSTIC_TOKEN="self-test-call-acoustic-token"
+  OPENSTEAMER_SELF_TEST_ACK_QUERY_DELAY_SECONDS=1.2
+  CALL_ACOUSTIC_TIMEOUT_SECONDS=1
+  (
+    for acoustic_poll in {1..200}; do
+      [[ -s "${CALL_ACOUSTIC_REQUEST}" ]] && break
+      sleep 0.01
+    done
+    [[ -s "${CALL_ACOUSTIC_REQUEST}" ]] || exit 94
+    acoustic_token=$(<"${CALL_ACOUSTIC_REQUEST}")
+    acoustic_token=${acoustic_token#heard-token=}
+    opensteamer_write_state \
+      "${CALL_ACOUSTIC_ACKNOWLEDGEMENT}" "heard=${acoustic_token}"
+  ) &
+  call_acoustic_writer_pid=$!
+  if wait_for_fresh_call_acoustic_acknowledgement; then
+    exit 95
+  fi
+  wait "${call_acoustic_writer_pid}"
+  /usr/bin/grep -Fxq 'state=timed-out' "${CALL_ACOUSTIC_STATUS}" || exit 96
+  ! /usr/bin/grep -Fq 'event=call-acoustic-accepted' "${PHASE_EVENTS}" || exit 97
+  opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "call-acoustic-late-after-read" ]]; then
+  OPENSTEAMER_SELF_TEST_CALL_ACOUSTIC_TOKEN="self-test-call-acoustic-token"
+  OPENSTEAMER_SELF_TEST_ACK_POST_READ_DELAY_SECONDS=1.2
+  CALL_ACOUSTIC_TIMEOUT_SECONDS=1
+  (
+    for acoustic_poll in {1..200}; do
+      [[ -s "${CALL_ACOUSTIC_REQUEST}" ]] && break
+      sleep 0.01
+    done
+    [[ -s "${CALL_ACOUSTIC_REQUEST}" ]] || exit 159
+    acoustic_token=$(<"${CALL_ACOUSTIC_REQUEST}")
+    acoustic_token=${acoustic_token#heard-token=}
+    opensteamer_write_state \
+      "${CALL_ACOUSTIC_ACKNOWLEDGEMENT}" "heard=${acoustic_token}"
+  ) &
+  call_acoustic_writer_pid=$!
+  if wait_for_fresh_call_acoustic_acknowledgement; then
+    exit 160
+  fi
+  wait "${call_acoustic_writer_pid}"
+  /usr/bin/grep -Fxq 'state=timed-out' "${CALL_ACOUSTIC_STATUS}" || exit 161
+  ! /usr/bin/grep -Fq 'event=call-acoustic-accepted' "${PHASE_EVENTS}" || exit 162
+  opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "call-acoustic-timeout" ]]; then
+  OPENSTEAMER_SELF_TEST_CALL_ACOUSTIC_TOKEN="self-test-call-acoustic-token"
+  CALL_ACOUSTIC_TIMEOUT_SECONDS=1
+  if wait_for_fresh_call_acoustic_acknowledgement; then
+    exit 86
+  fi
+  /usr/bin/grep -Fxq 'state=timed-out' "${CALL_ACOUSTIC_STATUS}" || exit 87
+  opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "call-acoustic-stale" ]]; then
+  OPENSTEAMER_SELF_TEST_CALL_ACOUSTIC_TOKEN="self-test-call-acoustic-token"
+  CALL_ACOUSTIC_TIMEOUT_SECONDS=1
+  opensteamer_write_state \
+    "${CALL_ACOUSTIC_ACKNOWLEDGEMENT}" \
+    "heard=${OPENSTEAMER_SELF_TEST_CALL_ACOUSTIC_TOKEN}"
+  if wait_for_fresh_call_acoustic_acknowledgement; then
+    exit 88
+  fi
+  /usr/bin/grep -Fxq 'state=discarded-before-request' \
+    "${CALL_ACOUSTIC_STALE_MARKER}" || exit 89
+  opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "call-end-timeout" ]]; then
+  OPENSTEAMER_SELF_TEST_CALL_END_TOKEN="self-test-call-end-token"
+  CALL_END_TIMEOUT_SECONDS=1
+  print -r -- "phase=3 event=connected-call-proof-observed" \
+    >> "${PHASE_EVENTS}"
+  if wait_for_fresh_call_end_acknowledgement; then
+    exit 76
+  fi
+  /usr/bin/grep -Fxq 'state=timed-out' "${CALL_END_STATUS}" || exit 77
+  opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "call-end-stale" ]]; then
+  OPENSTEAMER_SELF_TEST_CALL_END_TOKEN="self-test-call-end-token"
+  CALL_END_TIMEOUT_SECONDS=1
+  opensteamer_write_state \
+    "${CALL_END_ACKNOWLEDGEMENT}" \
+    "ended=${OPENSTEAMER_SELF_TEST_CALL_END_TOKEN}"
+  print -r -- "phase=3 event=connected-call-proof-observed" \
+    >> "${PHASE_EVENTS}"
+  if wait_for_fresh_call_end_acknowledgement; then
+    exit 78
+  fi
+  /usr/bin/grep -Fxq 'state=discarded-before-request' \
+    "${CALL_END_STALE_MARKER}" || exit 79
   opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
   RUN_SUCCEEDED=1
   exit 0
@@ -5408,11 +7684,12 @@ if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == call-phase-quiescence-leak-* ]]; th
   elif [[ "${leak_kind}" == "surviving-child" ]]; then
     opensteamer_exec_in_isolated_process_group \
       /bin/zsh -c '
-/usr/bin/python3 -c "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.signal(signal.SIGHUP, signal.SIG_IGN); time.sleep(30)" &
-print -r -- $! > "$1"
+"$1" self-test-ignore-signals "$2" &
 sleep 0.2
 exit 0
-' surviving-child "${ARTIFACT_DIR}/call-phase-leak-child-pid.txt" &
+' surviving-child \
+        "${OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE}" \
+        "${ARTIFACT_DIR}/call-phase-leak-child-pid.txt" &
     leak_pid=$!
     print -r -- "${leak_pid}" \
       > "${ARTIFACT_DIR}/call-phase-leak-pid.txt"
@@ -5623,19 +7900,14 @@ OPENSTEAMER_CANCEL_CHURN_WATCHER
     'trap "exit 0" TERM; while true; do sleep 30; done'
   cancel_churn_validation_pid="${XCODEBUILD_PID}"
 
-  /usr/bin/env python3 - \
+  opensteamer_exec_in_isolated_process_group \
+    /bin/zsh \
     "${churn_watcher_script}" \
     "${HOST_CHURN_LOCK}" \
     "${cancel_churn_validation_pid}" \
     "${churn_ready}" \
     "${churn_proceed}" \
-    "${churn_action}" <<'PYTHON' &
-import os
-import sys
-
-os.setpgid(0, 0)
-os.execv("/bin/zsh", ["/bin/zsh", *sys.argv[1:]])
-PYTHON
+    "${churn_action}" &
   HOST_WATCHER_PID=$!
 
   churn_watcher_pgid=""
@@ -5689,10 +7961,11 @@ PYTHON
 fi
 if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "fast-group-failure" ]]; then
   opensteamer_start_isolated_validation_process /bin/zsh -c '
-    /usr/bin/python3 -c "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.signal(signal.SIGHUP, signal.SIG_IGN); time.sleep(30)" &
-    print -r -- $! > "$1"
+    "$1" self-test-ignore-signals "$2" &
     exit 0
-  ' fast-group "${ARTIFACT_DIR}/fast-group-child-pid.txt"
+  ' fast-group \
+    "${OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE}" \
+    "${ARTIFACT_DIR}/fast-group-child-pid.txt"
   opensteamer_wait_for_final_process_status "${XCODEBUILD_PID}" || true
   function fail_fast_group_self_test() { return 8 }
   fail_fast_group_self_test
@@ -5875,11 +8148,12 @@ function churn_host_after_live_connections() {
     if [[ -f "${HOST_CHURN_STOP_MARKER}" ]] \
         || ! opensteamer_require_same_host_process \
           "${expected_host_pid}" "${previous_pid}" "${replacement_pid}" \
-        || ! audit_new_host_log_records "${expected_host_pid}"; then
+        || ! audit_new_host_log_records "${expected_host_pid}" \
+        || ! capture_host_generation_log_checkpoint; then
       opensteamer_resume_process_group "${XCODEBUILD_PID}" || true
       release_host_churn_lock
       write_host_status failed "${connections}" "${restarts}" \
-        "host or log provenance changed before connected PID ${previous_pid} could be kickstarted"
+        "host, log provenance, or the generation checkpoint changed before connected PID ${previous_pid} could be kickstarted"
       return 1
     fi
     new_connections=${OPENSTEAMER_NEW_HOST_CONNECTIONS}
@@ -5935,10 +8209,11 @@ function churn_host_after_live_connections() {
     fi
 
     if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" != host-provenance-* ]] \
-        && ! verify_host_deployment_snapshot \
-          "${replacement_pid}" "restart-$((restarts + 1))"; then
+        && { ! bind_host_generation_snapshot "${replacement_pid}" \
+          || ! verify_host_deployment_snapshot \
+            "${replacement_pid}" "restart-$((restarts + 1))"; }; then
       write_host_status failed "${connections}" "${restarts}" \
-        "replacement host PID ${replacement_pid} did not match the freshly built signed app"
+        "replacement host PID ${replacement_pid} did not publish one generation-bound freshly built deployment"
       return 1
     fi
 
@@ -5968,9 +8243,50 @@ function churn_host_after_live_connections() {
   done
 }
 
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "migration-controller-lock-probe-build" ]]; then
+  initialize_migration_controller_lock_probe
+  validate_migration_controller_binary
+  opensteamer_write_state \
+    "${ARTIFACT_DIR}/migration-controller-lock-probe-status.txt" \
+    "status=validated sha256=${MIGRATION_CONTROLLER_BINARY_SHA256}"
+  opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
+
+if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == host-deployment-contract-* ]]; then
+  deployment_contract_mode=${OPENSTEAMER_SCRIPT_SELF_TEST#host-deployment-contract-}
+  prepare_host_deployment_contract_self_test "${deployment_contract_mode}"
+  if [[ "${deployment_contract_mode}" == success ]]; then
+    verify_host_deployment_snapshot 4242 self-test-contract || exit 80
+    /usr/bin/grep -Fxq 'verifier-invoked=true' \
+      "${HOST_DEPLOYMENT_MANIFEST}" || exit 81
+  elif [[ "${deployment_contract_mode}" == missing ]]; then
+    if verify_host_deployment_snapshot 4242 self-test-contract-missing; then
+      exit 82
+    fi
+    if /usr/bin/grep -Fq 'verifier-invoked=true' \
+        "${HOST_DEPLOYMENT_MANIFEST}" 2>/dev/null; then
+      exit 83
+    fi
+  else
+    exit 84
+  fi
+  opensteamer_write_state "${RUN_STATUS}" "status=self-test-passed"
+  RUN_SUCCEEDED=1
+  exit 0
+fi
+
 if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == host-provenance-* ]]; then
   run_host_provenance_self_test
   exit 0
+fi
+
+if [[ -n "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" ]]; then
+  echo \
+    "Unknown OPENSTEAMER_SCRIPT_SELF_TEST mode '${OPENSTEAMER_SCRIPT_SELF_TEST}'." \
+    >&2
+  exit 2
 fi
 
 if [[ -z "${OPENSTEAMER_EXPECTED_TEAM_ID:-}" ]]; then
@@ -5986,27 +8302,46 @@ capture_production_candidate "${APP_LIST_BEFORE}" "${CANDIDATE_BEFORE}"
 # Rebuild from this checkout, then bind the physical evidence to that exact signed artifact and
 # live launchd process. A loaded label and PID are insufficient: a legacy app or naked executable
 # can connect while macOS privacy permissions belong to a different code identity.
-if ! "${MAC_HOST_BUILD_SCRIPT}" \
+if ! TMPDIR="${XCODE_TEMP_DIR}" "${MAC_HOST_BUILD_SCRIPT}" \
     > "${HOST_BUILD_STDOUT}" 2> "${HOST_BUILD_STDERR}"; then
   echo "Refusing device reconnect validation: the signed Mac host build failed." >&2
   cat "${HOST_BUILD_STDERR}" >&2
   exit 3
 fi
 if [[ "$(tail -n 1 "${HOST_BUILD_STDOUT}")" \
-    != "${REPOSITORY_ROOT}/build/opensteamer Host.app" ]]; then
+    != "${HOST_FRESH_STAGED_APP}" ]]; then
   echo "Refusing device reconnect validation: the Mac host build returned an unexpected artifact." >&2
   exit 3
 fi
-EXPECTED_INITIAL_HOST_PID=$(current_host_pid)
-if [[ -z "${EXPECTED_INITIAL_HOST_PID}" \
-    || "${EXPECTED_INITIAL_HOST_PID}" == *[^0-9]* ]]; then
+initialize_migration_controller_lock_probe || {
+  echo "Refusing device reconnect validation: the reviewed Rust lock probe could not be built." >&2
+  exit 3
+}
+HOST_PREINITIAL_PID=$(current_host_pid)
+if [[ -z "${HOST_PREINITIAL_PID}" \
+    || "${HOST_PREINITIAL_PID}" == *[^0-9]* ]]; then
   echo "Refusing device reconnect validation: launch agent ${HOST_SERVICE} has no valid running host PID." >&2
   exit 3
 fi
-if ! OPENSTEAMER_EXPECTED_TEAM_ID="${EXPECTED_MAC_HOST_TEAM_ID}" \
-    OPENSTEAMER_EXPECTED_HOST_PID="${EXPECTED_INITIAL_HOST_PID}" \
-    "${MAC_HOST_DEPLOYMENT_VERIFIER}" \
-    > "${HOST_DEPLOYMENT_MANIFEST}" 2> "${HOST_DEPLOYMENT_STDERR}"; then
+# Prove the exact currently loaded opensteamer executable/plists/log/generation against the freshly
+# built reviewed postimage before the first mutating launchctl command. If the installed host is
+# stale or any protected/arbitrary label was selected, validation stops without a kickstart.
+if ! capture_host_generation_log_checkpoint \
+    || ! bind_host_generation_snapshot "${HOST_PREINITIAL_PID}" \
+    || ! verify_host_deployment_snapshot \
+      "${HOST_PREINITIAL_PID}" "pre-initial-kickstart" \
+    || ! capture_host_generation_log_checkpoint \
+    || ! kickstart_host_service; then
+  echo "Refusing device reconnect validation: a fresh generation-bound host checkpoint could not be armed." >&2
+  exit 3
+fi
+EXPECTED_INITIAL_HOST_PID=$(wait_for_replacement_host_pid "${HOST_PREINITIAL_PID}") || {
+  echo "Refusing device reconnect validation: launchd did not publish a fresh initial host generation." >&2
+  exit 3
+}
+if ! bind_host_generation_snapshot "${EXPECTED_INITIAL_HOST_PID}" \
+    || ! verify_host_deployment_snapshot \
+      "${EXPECTED_INITIAL_HOST_PID}" "initial"; then
   echo "Refusing device reconnect validation: the installed/live Mac host does not match the freshly built signed app." >&2
   cat "${HOST_DEPLOYMENT_STDERR}" >&2
   exit 3
@@ -6092,12 +8427,15 @@ fi
 SCREEN_ORACLE_LAST_COUNTER=$(physical_screen_oracle_counter)
 
 run_command_capturing_status \
-  opensteamer_start_isolated_validation_process xcodebuild test \
+  opensteamer_start_isolated_validation_process \
+  /usr/bin/env TMPDIR="${XCODE_TEMP_DIR}" \
+  xcodebuild test \
   -project "${PROJECT_DIR}/opensteamer.xcodeproj" \
   -scheme opensteamerUITests \
   -configuration Debug \
   -destination "platform=iOS,id=${HARDWARE_UDID}" \
   -derivedDataPath "${DERIVED_DATA}" \
+  -clonedSourcePackagesDirPath "${XCODE_SOURCE_PACKAGES}" \
   -parallel-testing-enabled NO \
   -maximum-parallel-testing-workers 1 \
   -test-timeouts-enabled YES \
