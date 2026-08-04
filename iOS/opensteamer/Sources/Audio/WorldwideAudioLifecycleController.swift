@@ -8,19 +8,33 @@ struct AudioSessionCategoryChange: Equatable, Sendable {
     let categoryOptionsRawValue: UInt
     let operationID: UUID?
     let operationIDIsAmbiguous: Bool
+    /// Identity of the retired same-target operation whose tombstone made this notification
+    /// ambiguous. A nil value means ambiguity was not causally bound to one predecessor.
+    let ambiguousPredecessorOperationID: UUID?
+    /// Identity of the retired same-target tombstone that blocked matching the current operation.
+    /// Unlike `ambiguousPredecessorOperationID`, this does not claim that the notification came
+    /// from that retired operation; it only explains why exact current-operation inference was
+    /// intentionally withheld.
+    let blockingTombstoneOperationID: UUID?
 
     init(
         category: String,
         mode: String,
         categoryOptionsRawValue: UInt = 0,
         operationID: UUID? = nil,
-        operationIDIsAmbiguous: Bool = false
+        operationIDIsAmbiguous: Bool = false,
+        ambiguousPredecessorOperationID: UUID? = nil,
+        blockingTombstoneOperationID: UUID? = nil
     ) {
         self.category = category
         self.mode = mode
         self.categoryOptionsRawValue = categoryOptionsRawValue
         self.operationID = operationID
         self.operationIDIsAmbiguous = operationIDIsAmbiguous
+        self.ambiguousPredecessorOperationID =
+            ambiguousPredecessorOperationID
+        self.blockingTombstoneOperationID =
+            blockingTombstoneOperationID
     }
 }
 
@@ -60,6 +74,7 @@ protocol AudioSessionEventMonitoring: AnyObject {
 
     func startObserving()
     func stopObserving()
+    func updateRouteConfigurationChangePolicyEpoch(_ epoch: UInt64)
     func armCategoryChangeOperation(
         _ operationID: UUID,
         category: String,
@@ -92,6 +107,26 @@ struct WorldwideAudioLifecycleSnapshot: Equatable {
     let diagnosticText: String?
 }
 
+/// Unforgeable ownership for one call-end output-only recovery boundary. A replacement call or
+/// lifecycle reset retires the exact UUID, so delayed native diagnostics cannot reopen input.
+struct WorldwidePostCallMicrophoneRecoveryMilestone: Equatable, Sendable {
+    fileprivate let generation: UUID
+}
+
+/// One bounded request to re-prove a category transition whose sole AVAudioSession notification
+/// was blocked by a retired same-target tombstone. The notification never completes the current
+/// operation: this identity is carried through the native diagnostics attempt and is accepted only
+/// while the exact operation, topology generation, and target policy remain current.
+struct WorldwideAudioCategoryProofClaim: Equatable, Sendable {
+    let claimID: UUID
+    let operationID: UUID
+    let operationEpoch: UInt64
+    let microphoneTopologyGeneration: UInt64
+    let category: String
+    let mode: String
+    let categoryOptionsRawValue: UInt
+}
+
 /// Owns only the iPhone playback side of a worldwide session. Screen privacy remains
 /// independent: backgrounding can hide the Mac display while this controller keeps genuine
 /// WebRTC audio playout active under iOS's Background Audio mode.
@@ -105,9 +140,17 @@ final class WorldwideAudioLifecycleController {
     /// Expected playback/playAndRecord topology changes require a fresh
     /// RemoteIO output proof but must not revoke the current microphone.
     var onPlayoutProofRefreshRequested: (() -> Void)?
+    /// A same-target tombstone may withhold notification ownership from the current operation. This
+    /// callback carries the exact current claim through the existing bounded native proof window;
+    /// a proof without this claim cannot resolve that ambiguity.
+    var onAmbiguousCategoryPlayoutProofRefreshRequested:
+        ((WorldwideAudioCategoryProofClaim) -> Void)?
     /// CallKit is a synchronous microphone-ownership boundary only. A bare call
     /// transition does not close incoming playout gates.
     var onCallActivityChanged: ((Bool) -> Void)?
+    /// Call inactivity is published before recovery for privacy ordering. Microphone policy may
+    /// reopen only after the exact call-end native output-only milestone is proven.
+    var onPostCallRecoveryCompleted: (() -> Void)?
     /// Interruptions can precede their matching CallKit transition. This independent callback
     /// retires proof ownership before interruption fencing, without incorrectly classifying every
     /// interruption as a phone call. An exact default interruption may preserve only the
@@ -143,6 +186,8 @@ final class WorldwideAudioLifecycleController {
     private var hostedCallPolicyIsClosedForCurrentInterruption = false
     private var hostedInterruptionEndedAwaitingCallEnd = false
     private var waitsForConnectedCallToEndBeforeRecovery = false
+    private var pendingPostCallMicrophoneRecoveryMilestone:
+        WorldwidePostCallMicrophoneRecoveryMilestone?
     private var requiresExplicitResume = false
     private var mediaServicesAreLost = false
     private var playbackErrorText: String?
@@ -155,16 +200,37 @@ final class WorldwideAudioLifecycleController {
         ExpectedAudioCategoryTransition?
     private var completedAudioCategoryTransition:
         ExpectedAudioCategoryTransition?
+    private struct PendingAmbiguousCategoryProof {
+        let claim: WorldwideAudioCategoryProofClaim
+        let transition: ExpectedAudioCategoryTransition
+    }
+    private var pendingAmbiguousCategoryProof:
+        PendingAmbiguousCategoryProof?
     private var audioOperationEpoch: UInt64 = 0
+    /// Monotonic lifecycle-policy fence captured by native reason-8 notification ingress.
+    private var routeConfigurationChangePolicyEpoch: UInt64 = 0
 
     private static let normalCategoryOptionsRawValue: UInt = 0
+    private static let microphoneCategoryOptionsRawValue =
+        AVAudioSession.CategoryOptions.defaultToSpeaker
+            .union(.allowBluetoothA2DP)
+            .rawValue
     private static let hostedCallCategoryOptionsRawValue =
         AVAudioSession.CategoryOptions.mixWithOthers.rawValue
+
+    private static func ordinaryCategoryOptionsRawValue(
+        microphoneIsEnabled: Bool
+    ) -> UInt {
+        microphoneIsEnabled
+            ? microphoneCategoryOptionsRawValue
+            : normalCategoryOptionsRawValue
+    }
 
     private enum ExpectedAudioCategoryTransitionPurpose: Equatable {
         case topology
         case outputOnlyMicrophone
         case recovery
+        case callPrivacyRollback
         case hostedCall
     }
 
@@ -178,6 +244,7 @@ final class WorldwideAudioLifecycleController {
         let purpose: ExpectedAudioCategoryTransitionPurpose
         let outputOnlyToken: WebRTCIOSOutputOnlyMicrophoneToken?
         let hostedCallPolicyID: UUID?
+        let admissiblePredecessorOperationID: UUID?
     }
 
     private enum HostedCallScope: Equatable {
@@ -268,6 +335,11 @@ final class WorldwideAudioLifecycleController {
         )
     }
 
+    var postCallMicrophoneRecoveryMilestone:
+        WorldwidePostCallMicrophoneRecoveryMilestone? {
+        pendingPostCallMicrophoneRecoveryMilestone
+    }
+
     // MARK: - Session and application lifecycle
 
     func prepare(serverName: String) {
@@ -292,6 +364,7 @@ final class WorldwideAudioLifecycleController {
         hostedCallPolicyIsClosedForCurrentInterruption = false
         hostedInterruptionEndedAwaitingCallEnd = false
         waitsForConnectedCallToEndBeforeRecovery = false
+        pendingPostCallMicrophoneRecoveryMilestone = nil
         requiresExplicitResume = false
         mediaServicesAreLost = false
         playbackErrorText = nil
@@ -463,6 +536,7 @@ final class WorldwideAudioLifecycleController {
         hostedCallPolicyIsClosedForCurrentInterruption = false
         hostedInterruptionEndedAwaitingCallEnd = false
         waitsForConnectedCallToEndBeforeRecovery = false
+        pendingPostCallMicrophoneRecoveryMilestone = nil
         requiresExplicitResume = false
         mediaServicesAreLost = false
         playbackErrorText = nil
@@ -497,6 +571,8 @@ final class WorldwideAudioLifecycleController {
     func beginMicrophoneTopologyTransition(isEnabled: Bool) -> UInt64 {
         guard isPrepared else { return 0 }
         revokeHostedCallPolicy()
+        let predecessorOperationID =
+            currentAudioCategoryTransitionOperationID
         guard cancelExpectedAudioCategoryTransition() else { return 0 }
         let generation = advanceMicrophoneTopologyGeneration()
         microphoneTopologyIsEnabled = isEnabled
@@ -507,9 +583,13 @@ final class WorldwideAudioLifecycleController {
                 : AVAudioSession.Category.playback.rawValue,
             mode: AVAudioSession.Mode.default.rawValue,
             categoryOptionsRawValue:
-                Self.normalCategoryOptionsRawValue,
+                Self.ordinaryCategoryOptionsRawValue(
+                    microphoneIsEnabled: isEnabled
+                ),
             purpose: .topology,
-            outputOnlyToken: nil
+            outputOnlyToken: nil,
+            admissiblePredecessorOperationID:
+                predecessorOperationID
         )
         return generation
     }
@@ -522,6 +602,8 @@ final class WorldwideAudioLifecycleController {
             return nil
         }
         revokeHostedCallPolicy()
+        let predecessorOperationID =
+            currentAudioCategoryTransitionOperationID
         guard
               cancelExpectedAudioCategoryTransition() else {
             return nil
@@ -546,7 +628,9 @@ final class WorldwideAudioLifecycleController {
             categoryOptionsRawValue:
                 Self.normalCategoryOptionsRawValue,
             purpose: .outputOnlyMicrophone,
-            outputOnlyToken: token
+            outputOnlyToken: token,
+            admissiblePredecessorOperationID:
+                predecessorOperationID
         )
         return token
     }
@@ -622,6 +706,67 @@ final class WorldwideAudioLifecycleController {
         )
     }
 
+    /// Retries a call-end recovery that was deferred while this exact output-only native write
+    /// was still executing. Completion during an active call remains observational; call end will
+    /// retire a terminal token itself before arming the fresh UUID-bound recovery operation.
+    func iPhoneMicrophoneOutputOnlyTransitionDidComplete(
+        _ token: WebRTCIOSOutputOnlyMicrophoneToken
+    ) {
+        guard isPrepared,
+              token.state == .succeeded || token.state == .failed else {
+            return
+        }
+        synchronizeLiveCallStateIfNeeded()
+        guard ownsIPhoneMicrophoneOutputOnlyTransition(token) else {
+            return
+        }
+        if isCallActive {
+            guard cancelExpectedAudioCategoryTransition(
+                operationID: token.operationID,
+                purpose: .outputOnlyMicrophone,
+                terminalCleanup: true
+            ) else { return }
+            if isInterrupted {
+                authorizeHostedCallPolicyIfEligible(
+                    admissiblePredecessorOperationID:
+                        token.operationID
+                )
+            } else {
+                _ = installExpectedAudioCategoryTransition(
+                    operationID: UUID(),
+                    category:
+                        AVAudioSession.Category.playback.rawValue,
+                    mode: AVAudioSession.Mode.default.rawValue,
+                    categoryOptionsRawValue:
+                        Self.normalCategoryOptionsRawValue,
+                    purpose: .callPrivacyRollback,
+                    outputOnlyToken: nil,
+                    admissiblePredecessorOperationID:
+                        token.operationID
+                )
+            }
+            publishSnapshot()
+            return
+        }
+        guard pendingPostCallMicrophoneRecoveryMilestone != nil else {
+            _ = cancelExpectedAudioCategoryTransition(
+                operationID: token.operationID,
+                purpose: .outputOnlyMicrophone,
+                terminalCleanup: true
+            )
+            authorizeHostedCallPolicyIfEligible(
+                admissiblePredecessorOperationID:
+                    token.operationID
+            )
+            publishSnapshot()
+            return
+        }
+        recoverPlayback(
+            context:
+                "Audio recovery after microphone teardown and call end failed"
+        )
+    }
+
     @discardableResult
     private func armExpectedAudioCategoryTransition(
         category: String,
@@ -629,6 +774,8 @@ final class WorldwideAudioLifecycleController {
         categoryOptionsRawValue: UInt,
         purpose: ExpectedAudioCategoryTransitionPurpose
     ) -> UUID? {
+        let predecessorOperationID =
+            currentAudioCategoryTransitionOperationID
         guard cancelExpectedAudioCategoryTransition() else {
             return nil
         }
@@ -639,7 +786,9 @@ final class WorldwideAudioLifecycleController {
             mode: mode,
             categoryOptionsRawValue: categoryOptionsRawValue,
             purpose: purpose,
-            outputOnlyToken: nil
+            outputOnlyToken: nil,
+            admissiblePredecessorOperationID:
+                predecessorOperationID
         )
     }
 
@@ -651,9 +800,11 @@ final class WorldwideAudioLifecycleController {
         categoryOptionsRawValue: UInt,
         purpose: ExpectedAudioCategoryTransitionPurpose,
         outputOnlyToken: WebRTCIOSOutputOnlyMicrophoneToken?,
-        hostedCallPolicyID: UUID? = nil
+        hostedCallPolicyID: UUID? = nil,
+        admissiblePredecessorOperationID: UUID? = nil
     ) -> UUID {
         precondition(expectedAudioCategoryTransition == nil)
+        pendingAmbiguousCategoryProof = nil
         completedAudioCategoryTransition = nil
         let operationEpoch = advanceAudioOperationEpoch()
         expectedAudioCategoryTransition = ExpectedAudioCategoryTransition(
@@ -665,7 +816,9 @@ final class WorldwideAudioLifecycleController {
             categoryOptionsRawValue: categoryOptionsRawValue,
             purpose: purpose,
             outputOnlyToken: outputOnlyToken,
-            hostedCallPolicyID: hostedCallPolicyID
+            hostedCallPolicyID: hostedCallPolicyID,
+            admissiblePredecessorOperationID:
+                admissiblePredecessorOperationID
         )
         events.armCategoryChangeOperation(
             operationID,
@@ -691,21 +844,18 @@ final class WorldwideAudioLifecycleController {
                 return false
             }
 
-            if let token =
-                expectedAudioCategoryTransition.outputOnlyToken {
-                switch token.state {
-                case .armed:
-                    token.revoke()
-                case .executing, .succeeded, .failed:
-                    guard terminalCleanup else { return false }
-                case .revoked:
-                    break
-                }
-            }
+            guard retireOutputOnlyTokenIfAdmissible(
+                expectedAudioCategoryTransition.outputOnlyToken,
+                terminalCleanup: terminalCleanup
+            ) else { return false }
 
             events.cancelCategoryChangeOperation(
                 expectedAudioCategoryTransition.operationID
             )
+            if pendingAmbiguousCategoryProof?.transition.operationID
+                == expectedAudioCategoryTransition.operationID {
+                pendingAmbiguousCategoryProof = nil
+            }
             self.expectedAudioCategoryTransition = nil
             completedAudioCategoryTransition = nil
             _ = advanceAudioOperationEpoch()
@@ -722,9 +872,38 @@ final class WorldwideAudioLifecycleController {
         ) else {
             return false
         }
+        guard retireOutputOnlyTokenIfAdmissible(
+            completedAudioCategoryTransition.outputOnlyToken,
+            terminalCleanup: terminalCleanup
+        ) else { return false }
+        if pendingAmbiguousCategoryProof?.transition.operationID
+            == completedAudioCategoryTransition.operationID {
+            pendingAmbiguousCategoryProof = nil
+        }
         self.completedAudioCategoryTransition = nil
         _ = advanceAudioOperationEpoch()
         return true
+    }
+
+    /// An executing token is still inside the native one-shot closure. Neither a synchronous
+    /// category callback nor a reentrant lifecycle boundary may relinquish its ownership until
+    /// `performOnce` has published a terminal result.
+    private func retireOutputOnlyTokenIfAdmissible(
+        _ token: WebRTCIOSOutputOnlyMicrophoneToken?,
+        terminalCleanup: Bool
+    ) -> Bool {
+        guard let token else { return true }
+        switch token.state {
+        case .armed:
+            token.revoke()
+            return true
+        case .executing:
+            return false
+        case .succeeded, .failed:
+            return terminalCleanup
+        case .revoked:
+            return true
+        }
     }
 
     private func audioCategoryTransition(
@@ -743,20 +922,56 @@ final class WorldwideAudioLifecycleController {
         return true
     }
 
-    private func retireExpectedAudioCategoryTransitionForBoundary() {
-        let previousOperationEpoch = audioOperationEpoch
-        _ = cancelExpectedAudioCategoryTransition(
+    private func ownsIPhoneMicrophoneOutputOnlyTransition(
+        _ token: WebRTCIOSOutputOnlyMicrophoneToken
+    ) -> Bool {
+        let transition = expectedAudioCategoryTransition
+            ?? completedAudioCategoryTransition
+        return transition?.purpose == .outputOnlyMicrophone
+            && transition?.operationID == token.operationID
+            && transition?.outputOnlyToken === token
+    }
+
+    private var currentAudioCategoryTransitionOperationID: UUID? {
+        (expectedAudioCategoryTransition
+            ?? completedAudioCategoryTransition)?.operationID
+    }
+
+    @discardableResult
+    private func retireExpectedAudioCategoryTransitionForBoundary() -> Bool {
+        cancelExpectedAudioCategoryTransition(
             terminalCleanup: true
         )
-        if audioOperationEpoch == previousOperationEpoch {
-            completedAudioCategoryTransition = nil
-            _ = advanceAudioOperationEpoch()
-        }
+    }
+
+    private func retireMicrophoneTopologyForCallPrivacyBoundary() {
+        let predecessor = expectedAudioCategoryTransition
+            ?? completedAudioCategoryTransition
+        let markerWasRetired =
+            retireExpectedAudioCategoryTransitionForBoundary()
+        microphoneTopologyIsEnabled = false
+        _ = advanceMicrophoneTopologyGeneration()
+        guard markerWasRetired else { return }
+        _ = installExpectedAudioCategoryTransition(
+            operationID: UUID(),
+            category: AVAudioSession.Category.playback.rawValue,
+            mode: AVAudioSession.Mode.default.rawValue,
+            categoryOptionsRawValue:
+                Self.normalCategoryOptionsRawValue,
+            purpose: .callPrivacyRollback,
+            outputOnlyToken: nil,
+            admissiblePredecessorOperationID:
+                predecessor?.operationID
+        )
     }
 
     private func completeExpectedAudioCategoryTransition(
         _ transition: ExpectedAudioCategoryTransition
     ) {
+        if pendingAmbiguousCategoryProof?.transition.operationID
+            == transition.operationID {
+            pendingAmbiguousCategoryProof = nil
+        }
         expectedAudioCategoryTransition = nil
         completedAudioCategoryTransition = transition
         events.cancelCategoryChangeOperation(
@@ -837,6 +1052,8 @@ final class WorldwideAudioLifecycleController {
             && lhs.purpose == rhs.purpose
             && outputOnlyTokensMatch
             && lhs.hostedCallPolicyID == rhs.hostedCallPolicyID
+            && lhs.admissiblePredecessorOperationID
+                == rhs.admissiblePredecessorOperationID
     }
 
     @discardableResult
@@ -845,6 +1062,7 @@ final class WorldwideAudioLifecycleController {
         if audioOperationEpoch == 0 {
             audioOperationEpoch = 1
         }
+        advanceRouteConfigurationChangePolicyEpoch()
         return audioOperationEpoch
     }
 
@@ -854,7 +1072,18 @@ final class WorldwideAudioLifecycleController {
         if microphoneTopologyGeneration == 0 {
             microphoneTopologyGeneration = 1
         }
+        advanceRouteConfigurationChangePolicyEpoch()
         return microphoneTopologyGeneration
+    }
+
+    private func advanceRouteConfigurationChangePolicyEpoch() {
+        routeConfigurationChangePolicyEpoch &+= 1
+        if routeConfigurationChangePolicyEpoch == 0 {
+            routeConfigurationChangePolicyEpoch = 1
+        }
+        events.updateRouteConfigurationChangePolicyEpoch(
+            routeConfigurationChangePolicyEpoch
+        )
     }
 
     /// Accepts proof from the output-only RemoteIO render-input boundary. Signaling, a decoded
@@ -863,7 +1092,8 @@ final class WorldwideAudioLifecycleController {
     func updateRuntimePlayout(
         isReady: Bool,
         failureMessage: String? = nil,
-        diagnostic: String? = nil
+        diagnostic: String? = nil,
+        categoryProofClaim: WorldwideAudioCategoryProofClaim? = nil
     ) {
         guard isPrepared,
               !isInterrupted,
@@ -871,11 +1101,42 @@ final class WorldwideAudioLifecycleController {
               !requiresExplicitResume,
               !mediaServicesAreLost,
               playback.requiresRuntimePlayoutProof else { return }
+
+        if let pendingAmbiguousCategoryProof {
+            guard let categoryProofClaim,
+                  ambiguousCategoryProofClaim(
+                    categoryProofClaim,
+                    stillOwns: pendingAmbiguousCategoryProof
+                  ) else {
+                // A stale or ordinary proof must never resolve a notification whose ownership was
+                // withheld by a same-target tombstone. The current transition and both media gates
+                // remain closed until its own bounded proof succeeds or reports terminal failure.
+                runtimePlayoutIsReady = false
+                remoteAudioControl?.setEnabled(false)
+                publishSnapshot()
+                return
+            }
+        } else if categoryProofClaim != nil {
+            // The claim's operation retired or was replaced while diagnostics were suspended.
+            // Ignore the stale result without mutating the replacement operation.
+            return
+        }
+
+        let ownsAmbiguousCategoryProof =
+            pendingAmbiguousCategoryProof != nil
+                && categoryProofClaim != nil
         runtimePlayoutIsReady = isReady
         if let failureMessage {
             playbackIsReady = false
             playbackErrorText = failureMessage
             playbackDiagnosticText = diagnostic
+            if ownsAmbiguousCategoryProof {
+                // An exact claimed proof is the only replacement for the withheld category
+                // notification. Its terminal failure must close the native WebRTC device gate as
+                // well as the decoded-track/readiness gates; a second OS notification is neither
+                // required nor allowed to rescue this operation.
+                closePlaybackGatesAndInvalidateProof()
+            }
         } else if isReady {
             playbackIsReady = true
             playbackErrorText = nil
@@ -890,6 +1151,38 @@ final class WorldwideAudioLifecycleController {
         if isPlaying {
             backgroundPlayback.endTransitionTask()
         }
+    }
+
+    private func ambiguousCategoryProofClaim(
+        _ claim: WorldwideAudioCategoryProofClaim,
+        stillOwns pending: PendingAmbiguousCategoryProof
+    ) -> Bool {
+        let transition = pending.transition
+        guard claim == pending.claim,
+              claim.operationID == transition.operationID,
+              claim.operationEpoch == transition.operationEpoch,
+              claim.microphoneTopologyGeneration == transition.generation,
+              claim.category == transition.category,
+              claim.mode == transition.mode,
+              claim.categoryOptionsRawValue
+                == transition.categoryOptionsRawValue,
+              let current = expectedAudioCategoryTransition,
+              audioCategoryTransition(current, exactlyMatches: transition),
+              nativeOperationIsCurrent(transition),
+              expectedCategoryPolicyMatches(
+                transition,
+                change: AudioSessionCategoryChange(
+                    category: claim.category,
+                    mode: claim.mode,
+                    categoryOptionsRawValue:
+                        claim.categoryOptionsRawValue,
+                    operationID: nil
+                )
+              ),
+              outputOnlyTokenIsAdmissible(for: transition) else {
+            return false
+        }
+        return true
     }
 
     /// Fails only the exact hosted-call policy and authorization owned by the current startup or
@@ -969,6 +1262,18 @@ final class WorldwideAudioLifecycleController {
                   transition.categoryOptionsRawValue
                     == Self.hostedCallCategoryOptionsRawValue
             else {
+                return
+            }
+        }
+        if let pendingAmbiguousCategoryProof {
+            guard pendingAmbiguousCategoryProof.claim.operationID
+                    == policyID,
+                  let transition = expectedAudioCategoryTransition,
+                  audioCategoryTransition(
+                    transition,
+                    exactlyMatches:
+                        pendingAmbiguousCategoryProof.transition
+                  ) else {
                 return
             }
         }
@@ -1093,7 +1398,31 @@ final class WorldwideAudioLifecycleController {
     ) {
         guard isPrepared, snapshot != callActivitySnapshot else { return }
 
+        let callWasActive = isCallActive
+        let callBecameActive = snapshot.hasNonEndedCall && !callWasActive
         callActivitySnapshot = snapshot
+        if snapshot.hasNonEndedCall {
+            pendingPostCallMicrophoneRecoveryMilestone = nil
+        } else if callWasActive {
+            pendingPostCallMicrophoneRecoveryMilestone =
+                WorldwidePostCallMicrophoneRecoveryMilestone(
+                    generation: UUID()
+                )
+        }
+
+        if callBecameActive {
+            // Revoke the realtime input authorization synchronously before changing logical
+            // topology or category ownership. Authorization revocation is the privacy boundary;
+            // downlink remains open while the retired native enable settles.
+            onCallActivityChanged?(true)
+            guard isPrepared,
+                  callActivitySnapshot == snapshot else {
+                return
+            }
+            if microphoneTopologyIsEnabled {
+                retireMicrophoneTopologyForCallPrivacyBoundary()
+            }
+        }
         let startupPolicyLost: Bool
         if let policy = hostedCallPolicy,
            !hostedCallIntersectionHolds(policy) {
@@ -1104,9 +1433,15 @@ final class WorldwideAudioLifecycleController {
             startupPolicyLost = false
         }
 
-        // The microphone-facing state is always published before any recovery can reopen an audio
-        // policy. A non-ended call therefore closes or keeps closed microphone ownership first.
-        onCallActivityChanged?(snapshot.hasNonEndedCall)
+        if !callBecameActive {
+            // Call end is still published before any recovery can reopen input. Same-state CallKit
+            // aggregate changes are harmlessly deduplicated by the view-model boundary.
+            onCallActivityChanged?(snapshot.hasNonEndedCall)
+            guard isPrepared,
+                  callActivitySnapshot == snapshot else {
+                return
+            }
+        }
 
         if hostedInterruptionEndedAwaitingCallEnd,
            !snapshot.hasConnectedNonEndedCall {
@@ -1165,6 +1500,15 @@ final class WorldwideAudioLifecycleController {
             return
         }
 
+        if callWasActive, !snapshot.hasNonEndedCall {
+            // A bare CallKit transition does not close downlink, but its end must still rebuild
+            // native output-only policy before the microphone authorization may be recreated.
+            recoverPlayback(
+                context: "Audio recovery after call ended failed"
+            )
+            return
+        }
+
         authorizeHostedCallPolicyIfEligible()
         publishSnapshot()
     }
@@ -1173,6 +1517,8 @@ final class WorldwideAudioLifecycleController {
         reason: AudioSessionInterruptionBeganReason
     ) {
         guard isPrepared else { return }
+        let predecessorOperationID =
+            currentAudioCategoryTransitionOperationID
         revokeHostedCallPolicy()
         hostedCallPolicyWasIssuedForCurrentInterruption = false
         hostedCallPolicyIsClosedForCurrentInterruption = false
@@ -1192,7 +1538,10 @@ final class WorldwideAudioLifecycleController {
         _ = advanceMicrophoneTopologyGeneration()
         publishSnapshot()
         synchronizeLiveCallStateIfNeeded()
-        authorizeHostedCallPolicyIfEligible()
+        authorizeHostedCallPolicyIfEligible(
+            admissiblePredecessorOperationID:
+                predecessorOperationID
+        )
     }
 
     private func interruptionEnded(shouldResume: Bool) {
@@ -1367,6 +1716,14 @@ final class WorldwideAudioLifecycleController {
     private func categoryChanged(_ change: AudioSessionCategoryChange) {
         guard isPrepared else { return }
 
+        if let transition = expectedAudioCategoryTransition,
+           absorbRetiredMicrophoneEnableCategoryChangeIfAdmissible(
+               change,
+               rollbackTransition: transition
+           ) {
+            return
+        }
+
         guard let expectedAudioCategoryTransition,
               expectedAudioCategoryTransition.generation
                 == microphoneTopologyGeneration,
@@ -1402,6 +1759,17 @@ final class WorldwideAudioLifecycleController {
             return
         }
 
+        if let pendingAmbiguousCategoryProof,
+           audioCategoryTransition(
+               pendingAmbiguousCategoryProof.transition,
+               exactlyMatches: expectedAudioCategoryTransition
+           ) {
+            // The claimed native proof exclusively owns completion once a tombstone has withheld
+            // notification ownership. A later inferred callback for the current operation is only
+            // observational; it must not clear the claim or reopen the ordinary proof path.
+            return
+        }
+
         if expectedAudioCategoryTransition.purpose == .hostedCall {
             // AVAudioSession did not carry the policy ID. Even an inferred matching operation is
             // observational only; exact native diagnostics against the authorization remain the
@@ -1419,7 +1787,8 @@ final class WorldwideAudioLifecycleController {
         )
         playbackErrorText = nil
         playbackDiagnosticText = nil
-        if purpose != .hostedCall {
+        if purpose != .hostedCall,
+           purpose != .callPrivacyRollback {
             runtimePlayoutIsReady =
                 !playback.requiresRuntimePlayoutProof
         }
@@ -1431,13 +1800,18 @@ final class WorldwideAudioLifecycleController {
                 }
             case .recovery:
                 break
+            case .callPrivacyRollback:
+                break
             case .hostedCall:
                 break
             }
         }
         publishSnapshot()
         if purpose != .hostedCall {
-            authorizeHostedCallPolicyIfEligible()
+            authorizeHostedCallPolicyIfEligible(
+                admissiblePredecessorOperationID:
+                    expectedAudioCategoryTransition.operationID
+            )
         }
     }
 
@@ -1467,7 +1841,7 @@ final class WorldwideAudioLifecycleController {
             }
             return true
 
-        case .topology, .outputOnlyMicrophone, .recovery:
+        case .topology, .recovery:
             let currentCategory = microphoneTopologyIsEnabled
                 ? AVAudioSession.Category.playAndRecord.rawValue
                 : AVAudioSession.Category.playback.rawValue
@@ -1475,8 +1849,62 @@ final class WorldwideAudioLifecycleController {
                 && change.category == currentCategory
                 && change.mode == AVAudioSession.Mode.default.rawValue
                 && change.categoryOptionsRawValue
+                    == Self.ordinaryCategoryOptionsRawValue(
+                        microphoneIsEnabled:
+                            microphoneTopologyIsEnabled
+                    )
+
+        case .outputOnlyMicrophone:
+            return !microphoneTopologyIsEnabled
+                && transition.hostedCallPolicyID == nil
+                && change.category
+                    == AVAudioSession.Category.playback.rawValue
+                && change.mode == AVAudioSession.Mode.default.rawValue
+                && change.categoryOptionsRawValue
+                    == Self.normalCategoryOptionsRawValue
+
+        case .callPrivacyRollback:
+            return isCallActive
+                && !microphoneTopologyIsEnabled
+                && transition.hostedCallPolicyID == nil
+                && transition.category
+                    == AVAudioSession.Category.playback.rawValue
+                && change.category
+                    == AVAudioSession.Category.playback.rawValue
+                && change.mode == AVAudioSession.Mode.default.rawValue
+                && change.categoryOptionsRawValue
                     == Self.normalCategoryOptionsRawValue
         }
+    }
+
+    private func absorbRetiredMicrophoneEnableCategoryChangeIfAdmissible(
+        _ change: AudioSessionCategoryChange,
+        rollbackTransition: ExpectedAudioCategoryTransition
+    ) -> Bool {
+        guard rollbackTransition.purpose == .callPrivacyRollback,
+              isCallActive,
+              !microphoneTopologyIsEnabled,
+              let predecessorOperationID =
+                rollbackTransition.admissiblePredecessorOperationID,
+              change.category
+                == AVAudioSession.Category.playAndRecord.rawValue,
+              change.mode == AVAudioSession.Mode.default.rawValue,
+              change.categoryOptionsRawValue
+                == Self.microphoneCategoryOptionsRawValue,
+              change.operationID == predecessorOperationID
+                || (change.operationID == nil
+                    && change.operationIDIsAmbiguous
+                    && change.ambiguousPredecessorOperationID
+                        == predecessorOperationID)
+        else {
+            return false
+        }
+
+        // The exact realtime authorization was already revoked before this fence was installed.
+        // This is only the queued notification from that retired native enable; accepting it keeps
+        // downlink live while call-end recovery later proves a real output-only installation.
+        publishSnapshot()
+        return true
     }
 
     private func outputOnlyTokenIsAdmissible(
@@ -1503,9 +1931,19 @@ final class WorldwideAudioLifecycleController {
         _ change: AudioSessionCategoryChange,
         transition: ExpectedAudioCategoryTransition
     ) {
-        runtimePlayoutIsReady = false
+        guard let admissiblePredecessorOperationID =
+                transition.admissiblePredecessorOperationID,
+              change.ambiguousPredecessorOperationID
+                    == admissiblePredecessorOperationID
+                || change.blockingTombstoneOperationID
+                    == admissiblePredecessorOperationID else {
+            failClosedForUnexpectedCategoryChange(change)
+            return
+        }
         switch transition.purpose {
         case .hostedCall:
+            _ = installPendingAmbiguousCategoryProof(for: transition)
+            runtimePlayoutIsReady = false
             // The policy remains pending, but neither native nor decoded-track readiness can open
             // until diagnostics prove the exact authorization.
             playbackIsReady = false
@@ -1513,24 +1951,75 @@ final class WorldwideAudioLifecycleController {
             publishSnapshot()
 
         case .topology, .outputOnlyMicrophone:
+            runtimePlayoutIsReady = false
             guard playback.requiresRuntimePlayoutProof else {
                 failClosedForUnexpectedCategoryChange(change)
                 return
             }
-            if !isInterrupted {
-                onPlayoutProofRefreshRequested?()
+            guard !isInterrupted,
+                  let request =
+                    onAmbiguousCategoryPlayoutProofRefreshRequested else {
+                failClosedForUnexpectedCategoryChange(change)
+                return
             }
+            let claim = installPendingAmbiguousCategoryProof(
+                for: transition
+            )
+            remoteAudioControl?.setEnabled(false)
+            request(claim)
             publishSnapshot()
 
         case .recovery:
+            runtimePlayoutIsReady = false
             guard playback.requiresRuntimePlayoutProof else {
                 failClosedForUnexpectedCategoryChange(change)
                 return
             }
-            // recoverPlayback() requests the exact native recovery only after its synchronously
-            // executing operation passes the post-call identity fence.
+            guard !isInterrupted,
+                  let request =
+                    onAmbiguousCategoryPlayoutProofRefreshRequested else {
+                failClosedForUnexpectedCategoryChange(change)
+                return
+            }
+            let claim = installPendingAmbiguousCategoryProof(
+                for: transition
+            )
+            remoteAudioControl?.setEnabled(false)
+            request(claim)
+            publishSnapshot()
+
+        case .callPrivacyRollback:
+            // A tombstoned same-target rollback notification is observational only. Call end
+            // replaces this fence with an exact native output-only recovery authorization.
             publishSnapshot()
         }
+    }
+
+    private func installPendingAmbiguousCategoryProof(
+        for transition: ExpectedAudioCategoryTransition
+    ) -> WorldwideAudioCategoryProofClaim {
+        if let pending = pendingAmbiguousCategoryProof,
+           audioCategoryTransition(
+            pending.transition,
+            exactlyMatches: transition
+           ) {
+            return pending.claim
+        }
+        let claim = WorldwideAudioCategoryProofClaim(
+            claimID: UUID(),
+            operationID: transition.operationID,
+            operationEpoch: transition.operationEpoch,
+            microphoneTopologyGeneration: transition.generation,
+            category: transition.category,
+            mode: transition.mode,
+            categoryOptionsRawValue:
+                transition.categoryOptionsRawValue
+        )
+        pendingAmbiguousCategoryProof = PendingAmbiguousCategoryProof(
+            claim: claim,
+            transition: transition
+        )
+        return claim
     }
 
     private func failClosedForUnexpectedCategoryChange(
@@ -1572,6 +2061,21 @@ final class WorldwideAudioLifecycleController {
         if !proofAlreadyInvalidated {
             onAudioProofInvalidated?(false)
         }
+        if pendingPostCallMicrophoneRecoveryMilestone != nil,
+           let transition = expectedAudioCategoryTransition
+                ?? completedAudioCategoryTransition,
+           transition.purpose == .outputOnlyMicrophone,
+           let token = transition.outputOnlyToken,
+           token.state == .succeeded || token.state == .failed {
+            guard cancelExpectedAudioCategoryTransition(
+                operationID: transition.operationID,
+                purpose: .outputOnlyMicrophone,
+                terminalCleanup: true
+            ) else {
+                publishSnapshot()
+                return
+            }
+        }
         guard let recoveryOperationID =
             armExpectedAudioCategoryTransition(
             category: microphoneTopologyIsEnabled
@@ -1579,7 +2083,10 @@ final class WorldwideAudioLifecycleController {
                 : AVAudioSession.Category.playback.rawValue,
             mode: AVAudioSession.Mode.default.rawValue,
             categoryOptionsRawValue:
-                Self.normalCategoryOptionsRawValue,
+                Self.ordinaryCategoryOptionsRawValue(
+                    microphoneIsEnabled:
+                        microphoneTopologyIsEnabled
+                ),
             purpose: .recovery
             ) else {
             publishSnapshot()
@@ -1671,6 +2178,30 @@ final class WorldwideAudioLifecycleController {
         remoteAudioControl?.setEnabled(false)
         playbackErrorText = "Screen and control are still available. iOS interrupted or rejected the current audio route. Restore the intended route, then tap Retry Audio."
         playbackDiagnosticText = "\(context): \(error.localizedDescription)"
+    }
+
+    @discardableResult
+    func completePostCallMicrophoneRecovery(
+        _ milestone: WorldwidePostCallMicrophoneRecoveryMilestone
+    ) -> Bool {
+        guard isPrepared else { return false }
+        synchronizeLiveCallStateIfNeeded()
+        guard pendingPostCallMicrophoneRecoveryMilestone
+                == milestone,
+              !isCallActive,
+              !isInterrupted,
+              !requiresExplicitResume,
+              !waitsForConnectedCallToEndBeforeRecovery,
+              !mediaServicesAreLost,
+              hostedCallPolicy == nil,
+              transportIsHealthy,
+              playbackIsReady
+        else {
+            return false
+        }
+        pendingPostCallMicrophoneRecoveryMilestone = nil
+        onPostCallRecoveryCompleted?()
+        return true
     }
 
     private var ownsStartupConnectedCallPolicy: Bool {
@@ -1802,6 +2333,7 @@ final class WorldwideAudioLifecycleController {
             isPrepared,
             hostedCallPolicy == nil,
             expectedAudioCategoryTransition == nil,
+            completedAudioCategoryTransition == nil,
             !isInterrupted,
             callActivitySnapshot.hasConnectedNonEndedCall,
             !mediaServicesAreLost,
@@ -1818,13 +2350,16 @@ final class WorldwideAudioLifecycleController {
         )
     }
 
-    private func authorizeHostedCallPolicyIfEligible() {
+    private func authorizeHostedCallPolicyIfEligible(
+        admissiblePredecessorOperationID: UUID? = nil
+    ) {
         guard
             isPrepared,
             hostedCallPolicy == nil,
             !hostedCallPolicyWasIssuedForCurrentInterruption,
             !hostedCallPolicyIsClosedForCurrentInterruption,
             expectedAudioCategoryTransition == nil,
+            completedAudioCategoryTransition == nil,
             let currentInterruptionEpoch,
             isInterrupted,
             currentInterruptionReason == .default,
@@ -1837,13 +2372,18 @@ final class WorldwideAudioLifecycleController {
         }
 
         issueHostedCallPolicy(
-            scope: .interruption(currentInterruptionEpoch)
+            scope: .interruption(currentInterruptionEpoch),
+            admissiblePredecessorOperationID:
+                admissiblePredecessorOperationID
         )
         hostedCallPolicyWasIssuedForCurrentInterruption =
             hostedCallPolicy != nil
     }
 
-    private func issueHostedCallPolicy(scope: HostedCallScope) {
+    private func issueHostedCallPolicy(
+        scope: HostedCallScope,
+        admissiblePredecessorOperationID: UUID? = nil
+    ) {
         let policyID = UUID()
         let authorization =
             WebRTCIOSHostedCallPlayoutAuthorization(
@@ -1863,7 +2403,9 @@ final class WorldwideAudioLifecycleController {
                 Self.hostedCallCategoryOptionsRawValue,
             purpose: .hostedCall,
             outputOnlyToken: nil,
-            hostedCallPolicyID: policyID
+            hostedCallPolicyID: policyID,
+            admissiblePredecessorOperationID:
+                admissiblePredecessorOperationID
         )
 
         // The native hosted path also requires the default route-sharing policy; that invariant is

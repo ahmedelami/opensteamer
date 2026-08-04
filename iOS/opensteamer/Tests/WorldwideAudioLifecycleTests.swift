@@ -1,4 +1,5 @@
 import AVFAudio
+import Dispatch
 import RemoteSessionCore
 import XCTest
 @testable import opensteamer
@@ -9,6 +10,11 @@ import XCTest
 /// when transport health and fresh RemoteIO evidence satisfy the policy for the current generation.
 @MainActor
 final class WorldwideAudioLifecycleTests: XCTestCase {
+    private static let iPhoneMicrophoneCategoryOptionsRawValue =
+        AVAudioSession.CategoryOptions.defaultToSpeaker
+            .union(.allowBluetoothA2DP)
+            .rawValue
+
     private enum RawMicrophoneReadRevocationBoundary:
         String,
         CaseIterable
@@ -31,6 +37,58 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertFalse(configuration.categoryOptions.contains(.allowAirPlay))
         XCTAssertGreaterThan(configuration.inputNumberOfChannels, 0)
         XCTAssertEqual(configuration.outputNumberOfChannels, 2)
+    }
+
+    func testMicrophoneTopologyCategoryOptionsMatchNativeShimContract() throws {
+        // IOSWebRTCAudioDeviceShim's ASIPhoneMicrophoneCategoryOptions uses this exact union.
+        XCTAssertEqual(
+            Self.iPhoneMicrophoneCategoryOptionsRawValue,
+            0x28
+        )
+
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        fixture.controller.prepare(serverName: "Mac mini")
+
+        fixture.controller.beginMicrophoneTopologyTransition(
+            isEnabled: true
+        )
+        let microphoneChange = try XCTUnwrap(
+            fixture.events.lastArmedCategoryChange
+        )
+        XCTAssertEqual(
+            microphoneChange.category,
+            AVAudioSession.Category.playAndRecord.rawValue
+        )
+        XCTAssertEqual(
+            microphoneChange.categoryOptionsRawValue,
+            Self.iPhoneMicrophoneCategoryOptionsRawValue
+        )
+
+        fixture.events.onEngineConfigurationChanged?()
+        let microphoneRecovery = try XCTUnwrap(
+            fixture.events.lastArmedCategoryChange
+        )
+        XCTAssertEqual(
+            microphoneRecovery.category,
+            AVAudioSession.Category.playAndRecord.rawValue
+        )
+        XCTAssertEqual(
+            microphoneRecovery.categoryOptionsRawValue,
+            Self.iPhoneMicrophoneCategoryOptionsRawValue
+        )
+
+        fixture.controller.beginMicrophoneTopologyTransition(
+            isEnabled: false
+        )
+        let outputOnlyChange = try XCTUnwrap(
+            fixture.events.lastArmedCategoryChange
+        )
+        XCTAssertEqual(
+            outputOnlyChange.category,
+            AVAudioSession.Category.playback.rawValue
+        )
+        XCTAssertEqual(outputOnlyChange.categoryOptionsRawValue, 0)
     }
 
     func testMicrophoneAdmissionFailurePreservesExactNativeRouteEvidence() async throws {
@@ -434,6 +492,12 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         )
         fixture.controller.transportBecameHealthy()
         fixture.controller.updateRuntimePlayout(isReady: true)
+        fixture.controller.beginMicrophoneTopologyTransition(
+            isEnabled: false
+        )
+        let predecessorOperationID = try XCTUnwrap(
+            fixture.events.lastArmedCategoryChange?.operationID
+        )
         fixture.callActivity.setCallSnapshot(
             nonEndedCallCount: 1,
             connectedNonEndedCallCount: 1
@@ -463,7 +527,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
                 mode: hostedChange.mode,
                 categoryOptionsRawValue:
                     hostedChange.categoryOptionsRawValue,
-                operationIDIsAmbiguous: true
+                operationIDIsAmbiguous: true,
+                ambiguousPredecessorOperationID:
+                    predecessorOperationID
             )
         )
         XCTAssertTrue(authorization.isValid)
@@ -1320,6 +1386,1205 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         session.viewModel.toggleIPhoneMicrophone()
         session.viewModel.disconnect()
         await session.peer.close()
+    }
+
+    func testStartupConnectedCallRestoresCachedAutomaticMicrophoneOnlyAfterOrdinaryRecoveryProof()
+        async throws {
+        let fixture = makeFixture(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        let peer = try makeAudioRacePeer()
+        let microphoneCommitted = expectation(
+            description: "post-startup-call microphone committed"
+        )
+        let nativeOutputOnlyRecoveryConsumed = expectation(
+            description: "post-startup-call native output-only recovery consumed"
+        )
+        var enableCount = 0
+        var outputPolicyRecoveryWasEntered = false
+        let isPostCallRecovery = AudioMainActorFlag()
+        let didObservePostCallRecovery = AudioMainActorFlag()
+
+        // Keep the test on the lifecycle boundary: hosted-call proof itself is covered separately.
+        fixture.controller.onHostedCallPlayoutRecoveryRequested = { _ in }
+        viewModel.debugInstallScreenSessionForTests(
+            peer: peer,
+            provenance: .authenticatedPairedCoordinatorHandoff
+        )
+        installProductionShapedIOSRecoveryHarness(
+            on: viewModel,
+            peer: peer
+        ) {
+            guard isPostCallRecovery.value,
+                  !didObservePostCallRecovery.value else { return }
+            didObservePostCallRecovery.value = true
+            XCTAssertEqual(enableCount, 0)
+            nativeOutputOnlyRecoveryConsumed.fulfill()
+        }
+        viewModel.debugCacheIPhoneMicrophonePermissionForTests()
+        viewModel.debugInstallIPhoneMicrophoneNativeHandlers(
+            enable: { _ in
+                enableCount += 1
+            },
+            disable: { _, _ in true }
+        )
+        viewModel.debugInstallIPhoneMicrophoneDidCommitObserver { _ in
+            microphoneCommitted.fulfill()
+        }
+        fixture.playback.onRecover = {
+            outputPolicyRecoveryWasEntered = true
+            XCTAssertEqual(enableCount, 0)
+        }
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(
+            fixture.remoteAudio
+        )
+        fixture.controller.transportBecameHealthy()
+        viewModel.handleAppBecameActive()
+
+        XCTAssertTrue(viewModel.microphoneIntentEnabled)
+        XCTAssertFalse(viewModel.isMicrophoneSending)
+        XCTAssertEqual(
+            viewModel.microphoneStateText,
+            "Muted — iPhone call active"
+        )
+
+        isPostCallRecovery.value = true
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 0,
+            connectedNonEndedCallCount: 0
+        )
+
+        XCTAssertTrue(outputPolicyRecoveryWasEntered)
+        XCTAssertEqual(enableCount, 0)
+        XCTAssertFalse(viewModel.isMicrophoneSending)
+        XCTAssertEqual(fixture.playback.recoverCount, 1)
+
+        await fulfillment(
+            of: [
+                nativeOutputOnlyRecoveryConsumed,
+                microphoneCommitted,
+            ],
+            timeout: 2
+        )
+
+        XCTAssertTrue(didObservePostCallRecovery.value)
+        XCTAssertEqual(enableCount, 1)
+        XCTAssertTrue(viewModel.isMicrophoneSending)
+        XCTAssertEqual(viewModel.microphoneStateText, "On")
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testInterruptionOriginCallEndRestoresCachedAutomaticMicrophoneOnlyAfterOrdinaryRecoveryProof()
+        async throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        let peer = try makeAudioRacePeer()
+        let initialMicrophoneCommitted = expectation(
+            description: "initial automatic microphone committed"
+        )
+        let restoredMicrophoneCommitted = expectation(
+            description: "post-interruption microphone committed"
+        )
+        let nativeOutputOnlyRecoveryConsumed = expectation(
+            description: "post-interruption native output-only recovery consumed"
+        )
+        var enableCount = 0
+        let isPostCallRecovery = AudioMainActorFlag()
+        let didObservePostCallRecovery = AudioMainActorFlag()
+
+        fixture.controller.onHostedCallPlayoutRecoveryRequested = { _ in }
+        viewModel.debugInstallScreenSessionForTests(
+            peer: peer,
+            provenance: .authenticatedPairedCoordinatorHandoff
+        )
+        installProductionShapedIOSRecoveryHarness(
+            on: viewModel,
+            peer: peer
+        ) {
+            guard isPostCallRecovery.value,
+                  !didObservePostCallRecovery.value else { return }
+            didObservePostCallRecovery.value = true
+            XCTAssertEqual(enableCount, 1)
+            nativeOutputOnlyRecoveryConsumed.fulfill()
+        }
+        viewModel.debugCacheIPhoneMicrophonePermissionForTests()
+        viewModel.debugInstallIPhoneMicrophoneNativeHandlers(
+            enable: { _ in
+                enableCount += 1
+            },
+            disable: { _, _ in true }
+        )
+        viewModel.debugInstallIPhoneMicrophoneDidCommitObserver { _ in
+            if enableCount == 1 {
+                initialMicrophoneCommitted.fulfill()
+            } else if enableCount == 2 {
+                restoredMicrophoneCommitted.fulfill()
+            }
+        }
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(
+            fixture.remoteAudio
+        )
+        fixture.controller.transportBecameHealthy()
+        viewModel.handleAppBecameActive()
+        await fulfillment(of: [initialMicrophoneCommitted], timeout: 2)
+
+        XCTAssertTrue(viewModel.isMicrophoneSending)
+        var outputPolicyRecoveryWasEntered = false
+        fixture.playback.onRecover = {
+            outputPolicyRecoveryWasEntered = true
+            XCTAssertEqual(enableCount, 1)
+            let category = fixture.events.lastArmedCategoryChange
+            XCTAssertEqual(
+                category?.category,
+                AVAudioSession.Category.playback.rawValue
+            )
+            XCTAssertEqual(
+                category?.mode,
+                AVAudioSession.Mode.default.rawValue
+            )
+            XCTAssertEqual(category?.categoryOptionsRawValue, 0)
+            XCTAssertTrue(
+                viewModel.debugIOSPlayoutInputPolicyMatchesForTests(
+                    iosPlayoutDiagnostics(
+                        callbacks: 1,
+                        frames: 480,
+                        failures: 0,
+                        inputBusEnabled: false,
+                        categoryIsMediaPlayback: true,
+                        categoryIsMediaPlayAndRecord: false
+                    )
+                )
+            )
+        }
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+
+        XCTAssertFalse(viewModel.isMicrophoneSending)
+        XCTAssertTrue(fixture.playback.nativeAudioEnabled)
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+
+        fixture.events.onInterruptionBegan?(.default)
+        fixture.events.onInterruptionEnded?(true)
+        isPostCallRecovery.value = true
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 0,
+            connectedNonEndedCallCount: 0
+        )
+
+        XCTAssertTrue(outputPolicyRecoveryWasEntered)
+        XCTAssertEqual(enableCount, 1)
+        XCTAssertFalse(viewModel.isMicrophoneSending)
+
+        await fulfillment(
+            of: [
+                nativeOutputOnlyRecoveryConsumed,
+                restoredMicrophoneCommitted,
+            ],
+            timeout: 2
+        )
+
+        XCTAssertTrue(didObservePostCallRecovery.value)
+        XCTAssertEqual(enableCount, 2)
+        XCTAssertTrue(viewModel.isMicrophoneSending)
+        XCTAssertEqual(viewModel.microphoneStateText, "On")
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testStartupConnectedCallRestoresAuthenticatedMicrophoneWithoutInboundAudio()
+        async throws {
+        let fixture = makeFixture(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        let peer = try makeAudioRacePeer()
+        let microphoneCommitted = expectation(
+            description: "mic-only post-call microphone committed"
+        )
+        let nativeOutputOnlyRecoveryConsumed = expectation(
+            description: "mic-only native output-only recovery consumed"
+        )
+        var enableCount = 0
+        var didConsumeOutputOnlyRecovery = false
+        var fullDuplexDiagnosticsOrdinal: UInt64 = 30
+
+        fixture.controller.onHostedCallPlayoutRecoveryRequested = { _ in }
+        viewModel.debugInstallScreenSessionForTests(
+            peer: peer,
+            provenance: .authenticatedPairedCoordinatorHandoff
+        )
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader {
+            requestedPeer in
+            XCTAssertTrue(requestedPeer === peer)
+            let microphoneIsAuthorized =
+                viewModel
+                    .debugIPhoneMicrophoneAuthorizationForTests?
+                    .isValid == true
+            if microphoneIsAuthorized {
+                fullDuplexDiagnosticsOrdinal &+= 1
+                return iosPlayoutDiagnostics(
+                    callbacks: fullDuplexDiagnosticsOrdinal,
+                    frames: fullDuplexDiagnosticsOrdinal * 480,
+                    failures: 0,
+                    inputBusEnabled: true,
+                    categoryIsMediaPlayback: false,
+                    categoryIsMediaPlayAndRecord: true
+                )
+            }
+            // The first consumed post-recovery sample intentionally has no callback/frame
+            // advancement over the baseline. Installed output-only policy, not inbound PCM or a
+            // fresh render callback, is the microphone-admission milestone.
+            return iosPlayoutDiagnostics(
+                callbacks: 20,
+                frames: 9_600,
+                failures: 0
+            )
+        }
+        viewModel.debugInstallIOSPlayoutRecoveryRequester {
+            requestedPeer,
+            authorization in
+            XCTAssertTrue(requestedPeer === peer)
+            if !didConsumeOutputOnlyRecovery {
+                XCTAssertEqual(enableCount, 0)
+                didConsumeOutputOnlyRecovery = true
+                nativeOutputOnlyRecoveryConsumed.fulfill()
+            } else {
+                // Microphone admission rotates the audio policy. If its replacement full-duplex
+                // proof inherits the still-fresh recovery requirement, a second native request is
+                // correct and necessarily occurs only after the microphone enable was issued.
+                XCTAssertEqual(enableCount, 1)
+            }
+            XCTAssertTrue(
+                authorization.performIfValidForTesting {}
+            )
+        }
+        viewModel.debugCacheIPhoneMicrophonePermissionForTests()
+        viewModel.debugInstallIPhoneMicrophoneNativeHandlers(
+            enable: { _ in enableCount += 1 },
+            disable: { _, _ in true }
+        )
+        viewModel.debugInstallIPhoneMicrophoneDidCommitObserver { _ in
+            microphoneCommitted.fulfill()
+        }
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        viewModel.handleAppBecameActive()
+        XCTAssertFalse(viewModel.isRemoteAudioAvailable)
+        XCTAssertFalse(viewModel.isRemoteAudioPlaying)
+        XCTAssertTrue(viewModel.microphoneIntentEnabled)
+
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 0,
+            connectedNonEndedCallCount: 0
+        )
+        XCTAssertEqual(enableCount, 0)
+
+        await fulfillment(
+            of: [
+                nativeOutputOnlyRecoveryConsumed,
+                microphoneCommitted,
+            ],
+            timeout: 2
+        )
+        XCTAssertEqual(enableCount, 1)
+        XCTAssertTrue(viewModel.isMicrophoneSending)
+        XCTAssertFalse(viewModel.isRemoteAudioAvailable)
+        XCTAssertFalse(viewModel.isRemoteAudioPlaying)
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testPostCallMilestoneRejectsNewLiveCallDuringOutputOnlyDiagnostic()
+        async throws {
+        let fixture = makeFixture(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        let peer = try makeAudioRacePeer()
+        var enableCount = 0
+
+        fixture.controller.onHostedCallPlayoutRecoveryRequested = { _ in }
+        viewModel.debugInstallScreenSessionForTests(
+            peer: peer,
+            provenance: .authenticatedPairedCoordinatorHandoff
+        )
+        viewModel.debugCacheIPhoneMicrophonePermissionForTests()
+        viewModel.debugInstallIPhoneMicrophoneNativeHandlers(
+            enable: { _ in enableCount += 1 },
+            disable: { _, _ in true }
+        )
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        viewModel.handleAppBecameActive()
+
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 0,
+            connectedNonEndedCallCount: 0
+        )
+        let milestone = try XCTUnwrap(
+            fixture.controller
+                .postCallMicrophoneRecoveryMilestone
+        )
+        let baseline = iosPlayoutDiagnostics(
+            callbacks: 20,
+            frames: 9_600,
+            failures: 0
+        )
+        let handle = viewModel
+            .debugStartIOSPlayoutProofAttemptForTests(
+                requestRecovery: true,
+                preRecoveryDiagnostics: baseline,
+                expectedPeer: peer,
+                postCallRecoveryMilestone: milestone
+            )
+        let authorization = try XCTUnwrap(
+            viewModel
+                .debugIOSPlayoutRecoveryAuthorizationForTests
+        )
+        XCTAssertTrue(
+            authorization.performIfValidForTesting {}
+        )
+
+        // Simulate CallKit's live aggregate changing before its observer callback reaches the
+        // lifecycle. Completion re-samples it synchronously and rejects the now-stale UUID.
+        fixture.callActivity
+            .stageLiveNonEndedCallCountWithoutCallback(1)
+        XCTAssertFalse(
+            viewModel.debugEvaluateIOSPlayoutDiagnosticsForTests(
+                baseline,
+                handle: handle,
+                source: .polling
+            )
+        )
+
+        XCTAssertNil(
+            fixture.controller
+                .postCallMicrophoneRecoveryMilestone
+        )
+        XCTAssertFalse(
+            fixture.controller.microphoneActivationIsAllowed()
+        )
+        XCTAssertEqual(enableCount, 0)
+        XCTAssertFalse(viewModel.isMicrophoneSending)
+        XCTAssertEqual(
+            viewModel.microphoneStateText,
+            "Muted — iPhone call active"
+        )
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testReplacementProofAttemptCannotCompleteOlderPostCallMilestone()
+        async throws {
+        let fixture = makeFixture(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        let peer = try makeAudioRacePeer()
+        let microphoneCommitted = expectation(
+            description: "replacement milestone microphone committed"
+        )
+        var enableCount = 0
+
+        fixture.controller.onHostedCallPlayoutRecoveryRequested = { _ in }
+        viewModel.debugInstallScreenSessionForTests(
+            peer: peer,
+            provenance: .authenticatedPairedCoordinatorHandoff
+        )
+        viewModel.debugCacheIPhoneMicrophonePermissionForTests()
+        viewModel.debugInstallIPhoneMicrophoneNativeHandlers(
+            enable: { _ in enableCount += 1 },
+            disable: { _, _ in true }
+        )
+        viewModel.debugInstallIPhoneMicrophoneDidCommitObserver {
+            _ in
+            microphoneCommitted.fulfill()
+        }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        viewModel.handleAppBecameActive()
+
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 0,
+            connectedNonEndedCallCount: 0
+        )
+        let olderMilestone = try XCTUnwrap(
+            fixture.controller
+                .postCallMicrophoneRecoveryMilestone
+        )
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 0,
+            connectedNonEndedCallCount: 0
+        )
+        let replacementMilestone = try XCTUnwrap(
+            fixture.controller
+                .postCallMicrophoneRecoveryMilestone
+        )
+        XCTAssertNotEqual(
+            olderMilestone,
+            replacementMilestone
+        )
+
+        let diagnostics = iosPlayoutDiagnostics(
+            callbacks: 40,
+            frames: 19_200,
+            failures: 0
+        )
+        let staleHandle = viewModel
+            .debugStartIOSPlayoutProofAttemptForTests(
+                requestRecovery: true,
+                preRecoveryDiagnostics: diagnostics,
+                expectedPeer: peer,
+                postCallRecoveryMilestone: olderMilestone
+            )
+        let staleAuthorization = try XCTUnwrap(
+            viewModel
+                .debugIOSPlayoutRecoveryAuthorizationForTests
+        )
+        XCTAssertTrue(
+            staleAuthorization.performIfValidForTesting {}
+        )
+        XCTAssertFalse(
+            viewModel.debugEvaluateIOSPlayoutDiagnosticsForTests(
+                diagnostics,
+                handle: staleHandle,
+                source: .polling
+            )
+        )
+        XCTAssertEqual(
+            fixture.controller
+                .postCallMicrophoneRecoveryMilestone,
+            replacementMilestone
+        )
+        XCTAssertEqual(enableCount, 0)
+
+        let replacementHandle = viewModel
+            .debugStartIOSPlayoutProofAttemptForTests(
+                requestRecovery: true,
+                preRecoveryDiagnostics: diagnostics,
+                expectedPeer: peer,
+                postCallRecoveryMilestone:
+                    replacementMilestone
+            )
+        let replacementAuthorization = try XCTUnwrap(
+            viewModel
+                .debugIOSPlayoutRecoveryAuthorizationForTests
+        )
+        XCTAssertTrue(
+            replacementAuthorization
+                .performIfValidForTesting {}
+        )
+        // Completing the exact replacement milestone synchronously starts microphone admission.
+        // A successful admission then starts the production full-duplex playout proof. Give that
+        // replacement proof production-shaped input topology; the otherwise bare race-test peer
+        // can report output-only diagnostics immediately and legitimately suspend the microphone,
+        // racing this milestone-ownership assertion with an unrelated proof failure.
+        installProductionShapedIOSRecoveryHarness(
+            on: viewModel,
+            peer: peer
+        )
+        XCTAssertTrue(
+            viewModel.debugEvaluateIOSPlayoutDiagnosticsForTests(
+                diagnostics,
+                handle: replacementHandle,
+                source: .polling
+            )
+        )
+        await fulfillment(of: [microphoneCommitted], timeout: 2)
+
+        XCTAssertNil(
+            fixture.controller
+                .postCallMicrophoneRecoveryMilestone
+        )
+        XCTAssertEqual(enableCount, 1)
+        XCTAssertTrue(viewModel.isMicrophoneSending)
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testPostCallMilestoneRequiresConsumedAuthorizationAndOutputOnlyPolicyWithoutFreshFrames()
+        async throws {
+        let fixture = makeFixture(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        let peer = try makeAudioRacePeer()
+        let microphoneCommitted = expectation(
+            description: "exact output-only milestone microphone committed"
+        )
+        var enableCount = 0
+
+        fixture.controller.onHostedCallPlayoutRecoveryRequested = { _ in }
+        viewModel.debugInstallScreenSessionForTests(
+            peer: peer,
+            provenance: .authenticatedPairedCoordinatorHandoff
+        )
+        viewModel.debugCacheIPhoneMicrophonePermissionForTests()
+        viewModel.debugInstallIPhoneMicrophoneNativeHandlers(
+            enable: { _ in enableCount += 1 },
+            disable: { _, _ in true }
+        )
+        viewModel.debugInstallIPhoneMicrophoneDidCommitObserver {
+            _ in
+            microphoneCommitted.fulfill()
+        }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        viewModel.handleAppBecameActive()
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 0,
+            connectedNonEndedCallCount: 0
+        )
+
+        let milestone = try XCTUnwrap(
+            fixture.controller
+                .postCallMicrophoneRecoveryMilestone
+        )
+        let outputOnly = iosPlayoutDiagnostics(
+            callbacks: 50,
+            frames: 24_000,
+            failures: 0
+        )
+        let firstHandle = viewModel
+            .debugStartIOSPlayoutProofAttemptForTests(
+                requestRecovery: true,
+                preRecoveryDiagnostics: outputOnly,
+                expectedPeer: peer,
+                postCallRecoveryMilestone: milestone
+            )
+        let firstAuthorization = try XCTUnwrap(
+            viewModel
+                .debugIOSPlayoutRecoveryAuthorizationForTests
+        )
+
+        XCTAssertFalse(
+            viewModel.debugEvaluateIOSPlayoutDiagnosticsForTests(
+                outputOnly,
+                handle: firstHandle,
+                source: .polling
+            ),
+            "Diagnostics cannot complete a still-valid native recovery authorization."
+        )
+        XCTAssertEqual(enableCount, 0)
+        XCTAssertEqual(
+            fixture.controller
+                .postCallMicrophoneRecoveryMilestone,
+            milestone
+        )
+        XCTAssertTrue(
+            firstAuthorization.performIfValidForTesting {}
+        )
+        let wrongCategory = iosPlayoutDiagnostics(
+            callbacks: 50,
+            frames: 24_000,
+            failures: 0,
+            inputBusEnabled: false,
+            categoryIsMediaPlayback: false,
+            categoryIsMediaPlayAndRecord: true
+        )
+        XCTAssertFalse(
+            viewModel.debugEvaluateIOSPlayoutDiagnosticsForTests(
+                wrongCategory,
+                handle: firstHandle,
+                source: .polling
+            )
+        )
+        XCTAssertEqual(enableCount, 0)
+        XCTAssertEqual(
+            fixture.controller
+                .postCallMicrophoneRecoveryMilestone,
+            milestone
+        )
+
+        // A replacement exact attempt may use the still-current milestone. Its first healthy
+        // output-only sample deliberately equals its baseline; no fresh callback/frame or inbound
+        // PCM is required to reopen input.
+        let replacementHandle = viewModel
+            .debugStartIOSPlayoutProofAttemptForTests(
+                requestRecovery: true,
+                preRecoveryDiagnostics: outputOnly,
+                expectedPeer: peer,
+                postCallRecoveryMilestone: milestone
+            )
+        let replacementAuthorization = try XCTUnwrap(
+            viewModel
+                .debugIOSPlayoutRecoveryAuthorizationForTests
+        )
+        XCTAssertTrue(
+            replacementAuthorization
+                .performIfValidForTesting {}
+        )
+        XCTAssertTrue(
+            viewModel.debugEvaluateIOSPlayoutDiagnosticsForTests(
+                outputOnly,
+                handle: replacementHandle,
+                source: .polling
+            )
+        )
+        await fulfillment(of: [microphoneCommitted], timeout: 2)
+
+        XCTAssertEqual(enableCount, 1)
+        XCTAssertTrue(viewModel.isMicrophoneSending)
+        XCTAssertNil(
+            fixture.controller
+                .postCallMicrophoneRecoveryMilestone
+        )
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testRejectedOrRevokedRecoveryCannotConsumePostCallMilestoneFromOldHealthySnapshot()
+        throws {
+        enum TerminalVariant: CaseIterable {
+            case rejected
+            case revoked
+        }
+
+        for variant in TerminalVariant.allCases {
+            let (viewModel, fixture) =
+                makePreparedProofViewModel()
+            fixture.callActivity.setCallSnapshot(
+                nonEndedCallCount: 1,
+                connectedNonEndedCallCount: 1
+            )
+            fixture.callActivity.setCallSnapshot(
+                nonEndedCallCount: 0,
+                connectedNonEndedCallCount: 0
+            )
+            let milestone = try XCTUnwrap(
+                fixture.controller
+                    .postCallMicrophoneRecoveryMilestone
+            )
+            let oldHealthySnapshot = iosPlayoutDiagnostics(
+                callbacks: 77,
+                frames: 36_960,
+                failures: 0
+            )
+            let handle = viewModel
+                .debugStartIOSPlayoutProofAttemptForTests(
+                    requestRecovery: true,
+                    preRecoveryDiagnostics:
+                        oldHealthySnapshot,
+                    postCallRecoveryMilestone: milestone
+                )
+            let authorization = try XCTUnwrap(
+                viewModel
+                    .debugIOSPlayoutRecoveryAuthorizationForTests
+            )
+
+            switch variant {
+            case .rejected:
+                XCTAssertFalse(
+                    authorization.rejectIfValidForTesting()
+                )
+                XCTAssertEqual(
+                    authorization.terminalOutcome,
+                    .rejected
+                )
+            case .revoked:
+                authorization.revoke()
+                XCTAssertEqual(
+                    authorization.terminalOutcome,
+                    .revoked
+                )
+            }
+            XCTAssertEqual(
+                authorization.terminalGeneration,
+                authorization.generation
+            )
+
+            XCTAssertFalse(
+                viewModel.debugEvaluateIOSPlayoutDiagnosticsForTests(
+                    oldHealthySnapshot,
+                    handle: handle,
+                    source: .polling
+                )
+            )
+            XCTAssertEqual(
+                viewModel.debugIOSPlayoutProofState.stage,
+                .awaitingRecoveryAuthorization
+            )
+            XCTAssertEqual(
+                fixture.controller
+                    .postCallMicrophoneRecoveryMilestone,
+                milestone
+            )
+            XCTAssertFalse(viewModel.isMicrophoneSending)
+        }
+    }
+
+    func testPostCallRestoreReconcilesAfterStaleMicrophoneCleanupRetires()
+        async throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        let peer = try makeAudioRacePeer()
+        let firstEnableFailed = expectation(
+            description: "initial enable entered cleanup"
+        )
+        let restoredMicrophoneCommitted = expectation(
+            description: "post-cleanup microphone committed"
+        )
+        let cleanupEntered = expectation(
+            description: "stale microphone cleanup blocked"
+        )
+        let nativeOutputOnlyRecoveryConsumed = expectation(
+            description: "cleanup-race native output-only recovery consumed"
+        )
+        let cleanupGate = AudioNonCooperativeGate<Bool>()
+        var enableCount = 0
+        var cleanupBlockWasEntered = false
+        let isPostCallRecovery = AudioMainActorFlag()
+        let didObservePostCallRecovery = AudioMainActorFlag()
+
+        fixture.controller.onHostedCallPlayoutRecoveryRequested = { _ in }
+        viewModel.debugInstallScreenSessionForTests(
+            peer: peer,
+            provenance: .authenticatedPairedCoordinatorHandoff
+        )
+        installProductionShapedIOSRecoveryHarness(
+            on: viewModel,
+            peer: peer
+        ) {
+            guard isPostCallRecovery.value,
+                  !didObservePostCallRecovery.value else { return }
+            didObservePostCallRecovery.value = true
+            nativeOutputOnlyRecoveryConsumed.fulfill()
+        }
+        viewModel.debugCacheIPhoneMicrophonePermissionForTests()
+        viewModel.debugInstallIPhoneMicrophoneNativeHandlers(
+            enable: { _ in
+                enableCount += 1
+                if enableCount == 1 {
+                    firstEnableFailed.fulfill()
+                    throw TestAudioError.activation
+                }
+            },
+            disable: { authorization, _ in
+                if !cleanupBlockWasEntered, authorization != nil {
+                    cleanupBlockWasEntered = true
+                    cleanupEntered.fulfill()
+                    return await cleanupGate.wait()
+                }
+                return true
+            }
+        )
+        viewModel.debugInstallIPhoneMicrophoneDidCommitObserver { _ in
+            if enableCount == 2 {
+                restoredMicrophoneCommitted.fulfill()
+            }
+        }
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        viewModel.handleAppBecameActive()
+        await fulfillment(
+            of: [firstEnableFailed, cleanupEntered],
+            timeout: 2
+        )
+        XCTAssertTrue(
+            viewModel.isMicrophoneAdmissionCleanupInProgress
+        )
+
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+        fixture.events.onInterruptionBegan?(.default)
+        fixture.events.onInterruptionEnded?(true)
+        isPostCallRecovery.value = true
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 0,
+            connectedNonEndedCallCount: 0
+        )
+
+        XCTAssertEqual(enableCount, 1)
+        XCTAssertTrue(
+            viewModel.isMicrophoneAdmissionCleanupInProgress
+        )
+        await fulfillment(
+            of: [nativeOutputOnlyRecoveryConsumed],
+            timeout: 2
+        )
+        XCTAssertEqual(enableCount, 1)
+        XCTAssertTrue(
+            viewModel.isMicrophoneAdmissionCleanupInProgress
+        )
+        await cleanupGate.open(true)
+        await fulfillment(
+            of: [restoredMicrophoneCommitted],
+            timeout: 2
+        )
+
+        XCTAssertEqual(enableCount, 2)
+        XCTAssertFalse(
+            viewModel.isMicrophoneAdmissionCleanupInProgress
+        )
+        XCTAssertTrue(viewModel.isMicrophoneSending)
+        XCTAssertEqual(viewModel.microphoneStateText, "On")
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testStaleMicrophoneCleanupCannotReenableAfterPermissionDenial()
+        async throws {
+        try await assertStaleMicrophoneCleanupDoesNotReenable(
+            after: .permissionDenial
+        )
+    }
+
+    func testStaleMicrophoneCleanupCannotReenableAfterDisconnect()
+        async throws {
+        try await assertStaleMicrophoneCleanupDoesNotReenable(
+            after: .disconnect
+        )
+    }
+
+    func testCallStartRevokesInFlightMicrophoneBeforeArmingRollbackFence()
+        async throws {
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        let peer = try makeAudioRacePeer()
+        let enableEntered = expectation(
+            description: "in-flight microphone enable entered"
+        )
+        let rollbackFenceArmed = expectation(
+            description: "call privacy rollback fence armed"
+        )
+        let staleEnableWasDisabled = expectation(
+            description: "retired in-flight enable disabled"
+        )
+        let enableGate = AudioNonCooperativeGate<Void>()
+        var capturedAuthorization:
+            WebRTCIOSMicrophoneAuthorization?
+        var commitCount = 0
+
+        viewModel.debugInstallScreenSessionForTests(
+            peer: peer,
+            provenance: .authenticatedPairedCoordinatorHandoff
+        )
+        viewModel.debugCacheIPhoneMicrophonePermissionForTests()
+        viewModel.debugInstallIPhoneMicrophoneNativeHandlers(
+            enable: { authorization in
+                capturedAuthorization = authorization
+                enableEntered.fulfill()
+                await enableGate.wait()
+            },
+            disable: { authorization, outputOnlyToken in
+                XCTAssertTrue(
+                    authorization === capturedAuthorization
+                )
+                XCTAssertNil(outputOnlyToken)
+                staleEnableWasDisabled.fulfill()
+                return true
+            }
+        )
+        viewModel.debugInstallIPhoneMicrophoneDidCommitObserver {
+            _ in
+            commitCount += 1
+        }
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(
+            fixture.remoteAudio
+        )
+        fixture.controller.transportBecameHealthy()
+        viewModel.handleAppBecameActive()
+        await fulfillment(of: [enableEntered], timeout: 2)
+
+        let authorization = try XCTUnwrap(capturedAuthorization)
+        let enableCategoryOperation = try XCTUnwrap(
+            fixture.events.lastArmedCategoryChange
+        )
+        XCTAssertTrue(authorization.isValid)
+        XCTAssertEqual(
+            enableCategoryOperation.category,
+            AVAudioSession.Category.playAndRecord.rawValue
+        )
+        fixture.events.onArmCategoryChangeOperation = {
+            rollbackChange in
+            guard rollbackChange.category
+                    == AVAudioSession.Category.playback.rawValue else {
+                return
+            }
+            XCTAssertFalse(
+                authorization.isValid,
+                "Realtime authorization must retire before logical rollback is armed."
+            )
+            rollbackFenceArmed.fulfill()
+        }
+
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+
+        await fulfillment(of: [rollbackFenceArmed], timeout: 2)
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertNil(
+            viewModel.debugIPhoneMicrophoneAuthorizationForTests
+        )
+        XCTAssertFalse(viewModel.isMicrophoneSending)
+        XCTAssertTrue(fixture.playback.nativeAudioEnabled)
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+
+        // A queued notification from the now-revoked enable is absorbed only by its exact
+        // predecessor fence and cannot close the independent downlink.
+        fixture.events.onCategoryChanged?(
+            AudioSessionCategoryChange(
+                category:
+                    AVAudioSession.Category.playAndRecord.rawValue,
+                mode: AVAudioSession.Mode.default.rawValue,
+                categoryOptionsRawValue:
+                    Self.iPhoneMicrophoneCategoryOptionsRawValue,
+                operationID:
+                    enableCategoryOperation.operationID
+            )
+        )
+        XCTAssertTrue(fixture.playback.nativeAudioEnabled)
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+
+        await enableGate.open(())
+        await fulfillment(
+            of: [staleEnableWasDisabled],
+            timeout: 2
+        )
+        XCTAssertEqual(commitCount, 0)
+        XCTAssertFalse(viewModel.isMicrophoneSending)
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testPassiveForegroundCallResampleRevokesEstablishedMicrophoneBeforeRollbackFence()
+        async throws {
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        let peer = try makeAudioRacePeer()
+        let microphoneCommitted = expectation(
+            description: "established microphone committed"
+        )
+        let rollbackFenceArmed = expectation(
+            description: "passive recovery call rollback armed"
+        )
+        var capturedAuthorization:
+            WebRTCIOSMicrophoneAuthorization?
+        var observedRollback = false
+
+        viewModel.debugInstallScreenSessionForTests(
+            peer: peer,
+            provenance: .authenticatedPairedCoordinatorHandoff
+        )
+        viewModel.debugCacheIPhoneMicrophonePermissionForTests()
+        viewModel.debugInstallIPhoneMicrophoneNativeHandlers(
+            enable: { authorization in
+                capturedAuthorization = authorization
+            },
+            disable: { _, _ in true }
+        )
+        viewModel.debugInstallIPhoneMicrophoneDidCommitObserver {
+            _ in microphoneCommitted.fulfill()
+        }
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(
+            fixture.remoteAudio
+        )
+        fixture.controller.transportBecameHealthy()
+        viewModel.handleAppBecameActive()
+        await fulfillment(of: [microphoneCommitted], timeout: 2)
+
+        let authorization = try XCTUnwrap(capturedAuthorization)
+        XCTAssertTrue(authorization.isValid)
+        XCTAssertTrue(viewModel.isMicrophoneSending)
+
+        viewModel.handleAppBecameInactive()
+        fixture.callActivity
+            .stageLiveNonEndedCallCountWithoutCallback(1)
+        fixture.events.onArmCategoryChangeOperation = {
+            change in
+            guard !observedRollback,
+                  change.category
+                    == AVAudioSession.Category.playback.rawValue else {
+                return
+            }
+            observedRollback = true
+            XCTAssertFalse(
+                authorization.isValid,
+                "Call-start revocation must precede the rollback category fence."
+            )
+            rollbackFenceArmed.fulfill()
+        }
+
+        viewModel.handleAppBecameActive()
+        await fulfillment(of: [rollbackFenceArmed], timeout: 2)
+
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertNil(
+            viewModel.debugIPhoneMicrophoneAuthorizationForTests
+        )
+        XCTAssertFalse(viewModel.isMicrophoneSending)
+        XCTAssertEqual(
+            viewModel.microphoneStateText,
+            "Muted — iPhone call active"
+        )
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testFinalMicrophoneAdmissionCallResamplePreservesRetiredEnableRollbackFence()
+        async throws {
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        let peer = try makeAudioRacePeer()
+        let enableEntered = expectation(
+            description: "final-sampler enable entered"
+        )
+        let rollbackFenceArmed = expectation(
+            description: "final-sampler rollback armed"
+        )
+        let staleEnableWasDisabled = expectation(
+            description: "final-sampler stale enable disabled"
+        )
+        let enableGate = AudioNonCooperativeGate<Void>()
+        var capturedAuthorization:
+            WebRTCIOSMicrophoneAuthorization?
+        var commitCount = 0
+
+        viewModel.debugInstallScreenSessionForTests(
+            peer: peer,
+            provenance: .authenticatedPairedCoordinatorHandoff
+        )
+        viewModel.debugCacheIPhoneMicrophonePermissionForTests()
+        viewModel.debugInstallIPhoneMicrophoneNativeHandlers(
+            enable: { authorization in
+                capturedAuthorization = authorization
+                enableEntered.fulfill()
+                await enableGate.wait()
+                fixture.callActivity
+                    .stageLiveNonEndedCallCountWithoutCallback(1)
+            },
+            disable: { authorization, outputOnlyToken in
+                XCTAssertTrue(
+                    authorization === capturedAuthorization
+                )
+                XCTAssertNil(
+                    outputOnlyToken,
+                    "Reentrant CallKit retirement must retain its rollback fence."
+                )
+                staleEnableWasDisabled.fulfill()
+                return true
+            }
+        )
+        viewModel.debugInstallIPhoneMicrophoneDidCommitObserver {
+            _ in commitCount += 1
+        }
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(
+            fixture.remoteAudio
+        )
+        fixture.controller.transportBecameHealthy()
+        viewModel.handleAppBecameActive()
+        await fulfillment(of: [enableEntered], timeout: 2)
+
+        let authorization = try XCTUnwrap(capturedAuthorization)
+        let enableCategoryOperation = try XCTUnwrap(
+            fixture.events.lastArmedCategoryChange
+        )
+        fixture.events.onArmCategoryChangeOperation = {
+            change in
+            guard change.category
+                    == AVAudioSession.Category.playback.rawValue else {
+                return
+            }
+            XCTAssertFalse(authorization.isValid)
+            rollbackFenceArmed.fulfill()
+        }
+
+        await enableGate.open(())
+        await fulfillment(
+            of: [rollbackFenceArmed, staleEnableWasDisabled],
+            timeout: 2
+        )
+
+        XCTAssertEqual(commitCount, 0)
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertNil(
+            viewModel.debugIPhoneMicrophoneAuthorizationForTests
+        )
+        XCTAssertFalse(viewModel.isMicrophoneSending)
+
+        fixture.events.onCategoryChanged?(
+            AudioSessionCategoryChange(
+                category:
+                    AVAudioSession.Category.playAndRecord.rawValue,
+                mode: AVAudioSession.Mode.default.rawValue,
+                categoryOptionsRawValue:
+                    Self.iPhoneMicrophoneCategoryOptionsRawValue,
+                operationID:
+                    enableCategoryOperation.operationID
+            )
+        )
+        XCTAssertTrue(fixture.playback.nativeAudioEnabled)
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+        XCTAssertNil(fixture.controller.snapshot.errorText)
+
+        viewModel.disconnect()
+        await peer.close()
     }
 
     func testAutomaticMicrophoneStartsOnHealthyTransportWithoutRemoteAudio() async throws {
@@ -2200,6 +3465,10 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         )
         let recordingGeneration: UInt64 = 0xA11C_E001
         var nextSample: UInt64 = 1
+        let captureRouteIsBuiltInMicrophone =
+            AudioLockedValue(true)
+        let captureRouteProofGeneration =
+            AudioLockedValue<UInt64>(13)
         var disableAttemptCount = 0
 
         session.viewModel
@@ -2232,7 +3501,11 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
                 defer { nextSample += 1 }
                 return self.rawMicrophoneSenderStatisticsForTests(
                     sample: nextSample,
-                    recordingGeneration: recordingGeneration
+                    recordingGeneration: recordingGeneration,
+                    captureRouteIsBuiltInMicrophone:
+                        captureRouteIsBuiltInMicrophone.value,
+                    captureRouteProofGeneration:
+                        captureRouteProofGeneration.value
                 )
             }
 
@@ -2277,6 +3550,55 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             PhysicalRawMicrophoneSnapshot(
                 accessibilityValue: accessibilityValue
             )
+        )
+        XCTAssertTrue(accessibilityValue.hasPrefix("v=3|"))
+        XCTAssertTrue(
+            accessibilityValue.contains("|captureBuiltInMic=1")
+        )
+
+        captureRouteIsBuiltInMicrophone.set(false)
+        await session.viewModel
+            .debugRefreshRawMicrophoneOracleForTests(
+                from: session.peer
+            )
+        XCTAssertNil(
+            session.viewModel.worldwideRawMicrophoneOracle,
+            "A non-built-in live capture route must revoke the published raw microphone oracle."
+        )
+
+        captureRouteIsBuiltInMicrophone.set(true)
+        await session.viewModel
+            .debugRefreshRawMicrophoneOracleForTests(
+                from: session.peer
+            )
+        XCTAssertNil(
+            session.viewModel.worldwideRawMicrophoneOracle,
+            "The restored built-in route needs a fresh continuity baseline."
+        )
+        await session.viewModel
+            .debugRefreshRawMicrophoneOracleForTests(
+                from: session.peer
+            )
+        XCTAssertNotNil(
+            session.viewModel.worldwideRawMicrophoneOracle
+        )
+
+        captureRouteProofGeneration.set(14)
+        await session.viewModel
+            .debugRefreshRawMicrophoneOracleForTests(
+                from: session.peer
+            )
+        XCTAssertNil(
+            session.viewModel.worldwideRawMicrophoneOracle,
+            "A fresh exact route proof must retire the prior continuity window even when the built-in route type is unchanged."
+        )
+        await session.viewModel
+            .debugRefreshRawMicrophoneOracleForTests(
+                from: session.peer
+            )
+        XCTAssertNotNil(
+            session.viewModel.worldwideRawMicrophoneOracle,
+            "The rotated exact route proof may publish only after a fresh two-sample continuity window."
         )
         XCTAssertTrue(session.fixture.remoteAudio.isEnabled)
         let audioPolicyGenerationBeforeCall =
@@ -2739,6 +4061,220 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertEqual(callbackCount, 1)
     }
 
+    func testAudioSessionManagerSuppressesOnlyNativeOwnedReasonEightOutcomes() {
+        let manager = AudioSessionManager()
+        let generation = manager.debugObservationGenerationForTests
+        var routeMessages: [String] = []
+        manager.onRouteChanged = {
+            routeMessages.append($0)
+        }
+
+        for disposition: WebRTCRouteConfigurationChangeDisposition in [
+            .consumed,
+            .liveRejectionOwnedByWaiter,
+            .staleSuppressed,
+        ] {
+            manager.debugDeliverRouteConfigurationChangeDispositionForTests(
+                disposition,
+                registeredObservationGeneration: generation
+            )
+        }
+        XCTAssertTrue(routeMessages.isEmpty)
+
+        for disposition: WebRTCRouteConfigurationChangeDisposition in [
+            .generic,
+            .uninitialized,
+            .timedOut,
+        ] {
+            manager.debugDeliverRouteConfigurationChangeDispositionForTests(
+                disposition,
+                registeredObservationGeneration: generation
+            )
+        }
+        XCTAssertEqual(
+            routeMessages,
+            Array(
+                repeating: "Audio route configuration changed",
+                count: 3
+            ),
+            "Generic output-only, unavailable-native, and timeout outcomes each require exactly one ordinary recovery callback."
+        )
+    }
+
+    func testAudioSessionManagerReasonEightFallbackCoversNativeUnavailabilityAndFencesRetiredObserver() {
+        let manager = AudioSessionManager()
+        var callbackCount = 0
+        manager.onRouteChanged = { _ in
+            callbackCount += 1
+        }
+
+        let preInitializationGeneration =
+            manager.debugObservationGenerationForTests
+        manager.debugDeliverRouteConfigurationChangeDispositionForTests(
+            .timedOut,
+            registeredObservationGeneration: preInitializationGeneration
+        )
+        XCTAssertEqual(callbackCount, 1)
+
+        manager.startObserving()
+        let activeGeneration = manager.debugObservationGenerationForTests
+        XCTAssertNotEqual(activeGeneration, preInitializationGeneration)
+        manager.debugDeliverRouteConfigurationChangeDispositionForTests(
+            .uninitialized,
+            registeredObservationGeneration: activeGeneration
+        )
+        XCTAssertEqual(callbackCount, 2)
+
+        manager.stopObserving()
+        manager.debugDeliverRouteConfigurationChangeDispositionForTests(
+            .generic,
+            registeredObservationGeneration: activeGeneration
+        )
+        XCTAssertEqual(
+            callbackCount,
+            2,
+            "A delayed result from the retired observer must not recover after observation stops."
+        )
+    }
+
+    func testAudioSessionManagerFencesDelayedReasonEightFallbackAcrossPolicyRotation() {
+        let manager = AudioSessionManager()
+        var routeCallbackCount = 0
+        manager.onRouteChanged = { _ in
+            routeCallbackCount += 1
+        }
+        manager.startObserving()
+        let observationGeneration =
+            manager.debugObservationGenerationForTests
+
+        manager.updateRouteConfigurationChangePolicyEpoch(41)
+        manager.updateRouteConfigurationChangePolicyEpoch(42)
+        manager.debugDeliverRouteConfigurationChangeDispositionForTests(
+            .timedOut,
+            registeredObservationGeneration: observationGeneration,
+            notificationSequence: 1,
+            audioPolicyEpoch: 41,
+            latestNotificationSequence: 1
+        )
+        XCTAssertEqual(
+            routeCallbackCount,
+            0,
+            "A delayed fallback captured under the retired policy must not recover the replacement policy."
+        )
+
+        manager.debugDeliverRouteConfigurationChangeDispositionForTests(
+            .generic,
+            registeredObservationGeneration: observationGeneration,
+            notificationSequence: 2,
+            audioPolicyEpoch: 42,
+            latestNotificationSequence: 2
+        )
+        XCTAssertEqual(routeCallbackCount, 1)
+
+        manager.debugDeliverRouteConfigurationChangeDispositionForTests(
+            .uninitialized,
+            registeredObservationGeneration: observationGeneration,
+            notificationSequence: 1,
+            audioPolicyEpoch: 42,
+            latestNotificationSequence: 2
+        )
+        XCTAssertEqual(
+            routeCallbackCount,
+            1,
+            "An older suspended delivery must not retire policy after a newer reason-8 ingress."
+        )
+    }
+
+    func testControllerDrivenFreshRecoveryFencesDelayedReasonEightFallback() {
+        let manager = AudioSessionManager()
+        let playback = AudioPlaybackStub()
+        let background = BackgroundPlaybackStub()
+        let callActivity = CallActivityStub()
+        let controller = WorldwideAudioLifecycleController(
+            playback: playback,
+            backgroundPlayback: background,
+            events: manager,
+            callActivity: callActivity
+        )
+        defer { controller.stop() }
+
+        controller.prepare(serverName: "Mac mini")
+        let observationGeneration =
+            manager.debugObservationGenerationForTests
+        let ingressPolicyEpoch =
+            manager.debugRouteConfigurationChangePolicyEpochForTests
+        let recoveriesBeforeFreshPolicy = playback.recoverCount
+
+        // Transport health installs a fresh recovery operation without changing microphone
+        // topology. That operation alone must rotate the reason-8 policy epoch.
+        controller.transportBecameHealthy()
+        let replacementPolicyEpoch =
+            manager.debugRouteConfigurationChangePolicyEpochForTests
+        XCTAssertNotEqual(
+            replacementPolicyEpoch,
+            ingressPolicyEpoch
+        )
+        XCTAssertGreaterThan(
+            playback.recoverCount,
+            recoveriesBeforeFreshPolicy
+        )
+
+        let recoveriesAfterFreshPolicy = playback.recoverCount
+        manager.debugDeliverRouteConfigurationChangeDispositionForTests(
+            .timedOut,
+            registeredObservationGeneration: observationGeneration,
+            notificationSequence: 1,
+            audioPolicyEpoch: ingressPolicyEpoch,
+            latestNotificationSequence: 1
+        )
+        XCTAssertEqual(
+            playback.recoverCount,
+            recoveriesAfterFreshPolicy,
+            "A delayed fallback captured before the controller's replacement recovery must not enter the new policy."
+        )
+
+        manager.debugDeliverRouteConfigurationChangeDispositionForTests(
+            .generic,
+            registeredObservationGeneration: observationGeneration,
+            notificationSequence: 2,
+            audioPolicyEpoch: replacementPolicyEpoch,
+            latestNotificationSequence: 2
+        )
+        XCTAssertEqual(
+            playback.recoverCount,
+            recoveriesAfterFreshPolicy + 1,
+            "The current reason-8 fallback must still perform ordinary route recovery exactly once."
+        )
+    }
+
+    func testAudioSessionManagerOldDeviceLossBypassesReasonEightArbitrationSynchronously() {
+        let manager = AudioSessionManager()
+        var returnedFromDelivery = false
+        var routeMessages: [String] = []
+        manager.onRouteChanged = {
+            XCTAssertFalse(returnedFromDelivery)
+            routeMessages.append($0)
+        }
+
+        manager.debugDeliverOrdinaryRouteChangeSynchronouslyForTests(
+            reasonValue:
+                AVAudioSession.RouteChangeReason
+                    .oldDeviceUnavailable.rawValue
+        )
+        returnedFromDelivery = true
+
+        XCTAssertEqual(
+            routeMessages,
+            ["Audio route changed: device unavailable"]
+        )
+        manager.debugDeliverOrdinaryRouteChangeSynchronouslyForTests(
+            reasonValue:
+                AVAudioSession.RouteChangeReason
+                    .routeConfigurationChange.rawValue
+        )
+        XCTAssertEqual(routeMessages.count, 1)
+    }
+
     func testAudioSessionManagerCategoryOperationRequiresExactOptions() {
         let manager = AudioSessionManager()
         let operationID = UUID()
@@ -2785,6 +4321,8 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         let secondOperationID = UUID()
         var receivedOperationIDs: [UUID?] = []
         var receivedAmbiguity: [Bool] = []
+        var ambiguousPredecessorOperationIDs: [UUID?] = []
+        var blockingTombstoneOperationIDs: [UUID?] = []
         let categoryChange = AudioSessionCategoryChange(
             category: AVAudioSession.Category.playAndRecord.rawValue,
             mode: AVAudioSession.Mode.default.rawValue
@@ -2794,6 +4332,12 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             receivedOperationIDs.append(change.operationID)
             receivedAmbiguity.append(
                 change.operationIDIsAmbiguous
+            )
+            ambiguousPredecessorOperationIDs.append(
+                change.ambiguousPredecessorOperationID
+            )
+            blockingTombstoneOperationIDs.append(
+                change.blockingTombstoneOperationID
             )
             if receivedOperationIDs.count == 1 {
                 manager?.armCategoryChangeOperation(
@@ -2837,6 +4381,15 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             receivedAmbiguity,
             [false, true]
         )
+        XCTAssertEqual(
+            ambiguousPredecessorOperationIDs,
+            [nil, nil],
+            "A notification that entered only after delivery cannot borrow the delivered operation's predecessor identity."
+        )
+        XCTAssertEqual(
+            blockingTombstoneOperationIDs,
+            [nil, firstOperationID]
+        )
 
         let consumedSecondOperationID =
             manager.debugDeliverCategoryChangeSynchronouslyForTests(
@@ -2855,18 +4408,34 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             receivedAmbiguity,
             [false, true, false]
         )
+        XCTAssertEqual(
+            ambiguousPredecessorOperationIDs,
+            [nil, nil, nil]
+        )
+        XCTAssertEqual(
+            blockingTombstoneOperationIDs,
+            [nil, firstOperationID, nil]
+        )
     }
 
-    func testAudioSessionManagerQueuedCancelledNotificationCannotConsumeNewerSameTargetOperation() {
+    func testAudioSessionManagerCancelledPredecessorWithoutIngressCannotClaimUnrelatedSameTargetNotification() {
         let manager = AudioSessionManager()
         let retiredOperationID = UUID()
         let currentOperationID = UUID()
         var receivedOperationIDs: [UUID?] = []
         var receivedAmbiguity: [Bool] = []
+        var ambiguousPredecessorOperationIDs: [UUID?] = []
+        var blockingTombstoneOperationIDs: [UUID?] = []
         manager.onCategoryChanged = {
             receivedOperationIDs.append($0.operationID)
             receivedAmbiguity.append(
                 $0.operationIDIsAmbiguous
+            )
+            ambiguousPredecessorOperationIDs.append(
+                $0.ambiguousPredecessorOperationID
+            )
+            blockingTombstoneOperationIDs.append(
+                $0.blockingTombstoneOperationID
             )
         }
         let change = AudioSessionCategoryChange(
@@ -2900,6 +4469,15 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         )
         XCTAssertEqual(receivedOperationIDs, [nil])
         XCTAssertEqual(receivedAmbiguity, [true])
+        XCTAssertEqual(
+            ambiguousPredecessorOperationIDs,
+            [nil],
+            "No notification had entered before cancellation, so the tombstone cannot lend the retired operation's identity to a later same-target event."
+        )
+        XCTAssertEqual(
+            blockingTombstoneOperationIDs,
+            [retiredOperationID]
+        )
 
         XCTAssertEqual(
             manager.debugDeliverCategoryChangeSynchronouslyForTests(
@@ -2915,6 +4493,485 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             receivedAmbiguity,
             [true, false]
         )
+        XCTAssertEqual(
+            ambiguousPredecessorOperationIDs,
+            [nil, nil]
+        )
+        XCTAssertEqual(
+            blockingTombstoneOperationIDs,
+            [retiredOperationID, nil]
+        )
+    }
+
+    func testAudioSessionManagerIngressBeforeCancellationRetainsExactPredecessorIdentity() {
+        let manager = AudioSessionManager()
+        let retiredOperationID = UUID()
+        let currentOperationID = UUID()
+        var receivedOperationIDs: [UUID?] = []
+        var receivedAmbiguousPredecessors: [UUID?] = []
+        var receivedBlockingTombstones: [UUID?] = []
+        let change = AudioSessionCategoryChange(
+            category: AVAudioSession.Category.playback.rawValue,
+            mode: AVAudioSession.Mode.default.rawValue,
+            categoryOptionsRawValue: 0
+        )
+        manager.onCategoryChanged = {
+            receivedOperationIDs.append($0.operationID)
+            receivedAmbiguousPredecessors.append(
+                $0.ambiguousPredecessorOperationID
+            )
+            receivedBlockingTombstones.append(
+                $0.blockingTombstoneOperationID
+            )
+        }
+
+        manager.updateRouteConfigurationChangePolicyEpoch(10)
+        manager.armCategoryChangeOperation(
+            retiredOperationID,
+            category: change.category,
+            mode: change.mode,
+            categoryOptionsRawValue:
+                change.categoryOptionsRawValue
+        )
+        let queuedRetiredIngress =
+            manager.debugCaptureCategoryChangeIngressForTests()
+        manager.cancelCategoryChangeOperation(retiredOperationID)
+
+        manager.updateRouteConfigurationChangePolicyEpoch(11)
+        manager.armCategoryChangeOperation(
+            currentOperationID,
+            category: change.category,
+            mode: change.mode,
+            categoryOptionsRawValue:
+                change.categoryOptionsRawValue
+        )
+
+        XCTAssertNil(
+            manager.debugDeliverCategoryChangeSynchronouslyForTests(
+                change,
+                ingress: queuedRetiredIngress
+            )
+        )
+        XCTAssertEqual(receivedOperationIDs, [nil])
+        XCTAssertEqual(
+            receivedAmbiguousPredecessors,
+            [retiredOperationID],
+            "Only the notification already admitted in the predecessor's policy epoch may carry its identity across cancellation."
+        )
+        XCTAssertEqual(receivedBlockingTombstones, [retiredOperationID])
+
+        XCTAssertEqual(
+            manager.debugDeliverCategoryChangeSynchronouslyForTests(
+                change
+            ),
+            currentOperationID
+        )
+        XCTAssertEqual(
+            receivedOperationIDs,
+            [nil, currentOperationID]
+        )
+        XCTAssertEqual(
+            receivedAmbiguousPredecessors,
+            [retiredOperationID, nil]
+        )
+        XCTAssertEqual(
+            receivedBlockingTombstones,
+            [retiredOperationID, nil]
+        )
+    }
+
+    func testAmbiguousCategoryEvidenceRequiresExactPredecessorIdentity() throws {
+        for carriesExactPredecessor in [true, false] {
+            let fixture = makeFixture()
+            fixture.playback.requiresRuntimePlayoutProof = true
+            var refreshCount = 0
+            fixture.controller
+                .onAmbiguousCategoryPlayoutProofRefreshRequested = { _ in
+                refreshCount += 1
+            }
+            fixture.controller.prepare(serverName: "Mac mini")
+
+            XCTAssertNotEqual(
+                fixture.controller
+                    .beginMicrophoneTopologyTransition(isEnabled: true),
+                0
+            )
+            let predecessor = try XCTUnwrap(
+                fixture.events.lastArmedCategoryChange?.operationID
+            )
+            XCTAssertNotEqual(
+                fixture.controller
+                    .beginMicrophoneTopologyTransition(isEnabled: false),
+                0
+            )
+            let current = try XCTUnwrap(
+                fixture.events.lastArmedCategoryChange
+            )
+            XCTAssertNotEqual(current.operationID, predecessor)
+            let failClosedCountBeforeDelivery =
+                fixture.playback.prepareManualAudioDisabledCount
+
+            fixture.events.onCategoryChanged?(
+                AudioSessionCategoryChange(
+                    category: current.category,
+                    mode: current.mode,
+                    categoryOptionsRawValue:
+                        current.categoryOptionsRawValue,
+                    operationID: nil,
+                    operationIDIsAmbiguous: true,
+                    ambiguousPredecessorOperationID:
+                        carriesExactPredecessor
+                            ? predecessor
+                            : UUID()
+                )
+            )
+
+            if carriesExactPredecessor {
+                XCTAssertEqual(refreshCount, 1)
+                XCTAssertEqual(
+                    fixture.playback
+                        .prepareManualAudioDisabledCount,
+                    failClosedCountBeforeDelivery
+                )
+                XCTAssertNil(fixture.controller.snapshot.errorText)
+            } else {
+                XCTAssertEqual(refreshCount, 0)
+                XCTAssertEqual(
+                    fixture.playback
+                        .prepareManualAudioDisabledCount,
+                    failClosedCountBeforeDelivery + 1
+                )
+                XCTAssertEqual(
+                    fixture.controller.snapshot.stateText,
+                    "Playback unavailable"
+                )
+            }
+        }
+    }
+
+    func testBlockingTombstoneUsesOneNotificationThenExactClaimedProof() throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+
+        XCTAssertNotEqual(
+            fixture.controller.beginMicrophoneTopologyTransition(
+                isEnabled: true
+            ),
+            0
+        )
+        let predecessor = try XCTUnwrap(
+            fixture.events.lastArmedCategoryChange?.operationID
+        )
+        XCTAssertNotEqual(
+            fixture.controller.beginMicrophoneTopologyTransition(
+                isEnabled: false
+            ),
+            0
+        )
+        let current = try XCTUnwrap(
+            fixture.events.lastArmedCategoryChange
+        )
+        var proofClaim: WorldwideAudioCategoryProofClaim?
+        fixture.controller
+            .onAmbiguousCategoryPlayoutProofRefreshRequested = {
+                proofClaim = $0
+            }
+
+        fixture.events.onCategoryChanged?(
+            AudioSessionCategoryChange(
+                category: current.category,
+                mode: current.mode,
+                categoryOptionsRawValue:
+                    current.categoryOptionsRawValue,
+                operationID: nil,
+                operationIDIsAmbiguous: true,
+                ambiguousPredecessorOperationID: nil,
+                blockingTombstoneOperationID: predecessor
+            )
+        )
+
+        let claim = try XCTUnwrap(proofClaim)
+        XCTAssertEqual(claim.operationID, current.operationID)
+        XCTAssertEqual(claim.category, current.category)
+        XCTAssertEqual(claim.mode, current.mode)
+        XCTAssertEqual(
+            claim.categoryOptionsRawValue,
+            current.categoryOptionsRawValue
+        )
+        XCTAssertTrue(
+            fixture.remoteAudio.isEnabled,
+            "The decoded-track proof aperture stays open so RemoteIO can produce fresh evidence; published playback remains closed."
+        )
+        XCTAssertFalse(fixture.controller.snapshot.isPlaying)
+        XCTAssertNil(fixture.controller.snapshot.errorText)
+        XCTAssertEqual(
+            fixture.events.lastArmedCategoryChange?.operationID,
+            current.operationID
+        )
+
+        fixture.events.onCategoryChanged?(
+            AudioSessionCategoryChange(
+                category: current.category,
+                mode: current.mode,
+                categoryOptionsRawValue:
+                    current.categoryOptionsRawValue,
+                operationID: current.operationID
+            )
+        )
+        XCTAssertEqual(
+            fixture.events.lastArmedCategoryChange?.operationID,
+            current.operationID,
+            "A later exact callback must not retire the transition while its claimed proof is pending."
+        )
+        fixture.controller.updateRuntimePlayout(isReady: true)
+        XCTAssertEqual(
+            fixture.events.lastArmedCategoryChange?.operationID,
+            current.operationID,
+            "The duplicate callback must not reopen ordinary unclaimed proof completion."
+        )
+        XCTAssertFalse(fixture.controller.snapshot.isPlaying)
+
+        let handle = viewModel
+            .debugStartIOSPlayoutProofAttemptForTests(
+                requestRecovery: false,
+                categoryProofClaim: claim
+            )
+        XCTAssertFalse(
+            viewModel.debugEvaluateIOSPlayoutDiagnosticsForTests(
+                iosPlayoutDiagnostics(
+                    callbacks: 1,
+                    frames: 480,
+                    failures: 0
+                ),
+                handle: handle,
+                source: .polling
+            ),
+            "The first exact native sample establishes the claimed proof's fresh counter floor."
+        )
+        XCTAssertTrue(
+            viewModel.debugEvaluateIOSPlayoutDiagnosticsForTests(
+                iosPlayoutDiagnostics(
+                    callbacks: 2,
+                    frames: 960,
+                    failures: 0
+                ),
+                handle: handle,
+                source: .statistics
+            ),
+            "Fresh exact policy and RemoteIO evidence must complete the current transition without another OS notification."
+        )
+
+        XCTAssertNil(fixture.events.lastArmedCategoryChange)
+        XCTAssertNil(fixture.controller.snapshot.errorText)
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+        XCTAssertTrue(fixture.controller.snapshot.isPlaying)
+    }
+
+    func testStaleOrMismatchedCategoryProofCannotResolveReplacement() throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+
+        _ = fixture.controller.beginMicrophoneTopologyTransition(
+            isEnabled: true
+        )
+        let predecessor = try XCTUnwrap(
+            fixture.events.lastArmedCategoryChange?.operationID
+        )
+        _ = fixture.controller.beginMicrophoneTopologyTransition(
+            isEnabled: false
+        )
+        let current = try XCTUnwrap(
+            fixture.events.lastArmedCategoryChange
+        )
+        var staleClaim: WorldwideAudioCategoryProofClaim?
+        fixture.controller
+            .onAmbiguousCategoryPlayoutProofRefreshRequested = {
+                staleClaim = $0
+            }
+        fixture.events.onCategoryChanged?(
+            AudioSessionCategoryChange(
+                category: current.category,
+                mode: current.mode,
+                categoryOptionsRawValue:
+                    current.categoryOptionsRawValue,
+                operationIDIsAmbiguous: true,
+                blockingTombstoneOperationID: predecessor
+            )
+        )
+        let retiredClaim = try XCTUnwrap(staleClaim)
+
+        _ = fixture.controller.beginMicrophoneTopologyTransition(
+            isEnabled: true
+        )
+        let replacement = try XCTUnwrap(
+            fixture.events.lastArmedCategoryChange
+        )
+        let replacementStateBeforeStaleProof =
+            fixture.controller.snapshot
+        let replacementTrackGateBeforeStaleProof =
+            fixture.remoteAudio.isEnabled
+        fixture.controller.updateRuntimePlayout(
+            isReady: true,
+            categoryProofClaim: retiredClaim
+        )
+
+        XCTAssertEqual(
+            fixture.events.lastArmedCategoryChange?.operationID,
+            replacement.operationID
+        )
+        XCTAssertEqual(
+            fixture.remoteAudio.isEnabled,
+            replacementTrackGateBeforeStaleProof
+        )
+        XCTAssertEqual(
+            fixture.controller.snapshot,
+            replacementStateBeforeStaleProof
+        )
+    }
+
+    func testOwnedCategoryProofTimeoutFailsClosedWithoutSecondNotification() throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        fixture.controller.prepare(serverName: "Mac mini")
+
+        _ = fixture.controller.beginMicrophoneTopologyTransition(
+            isEnabled: true
+        )
+        let predecessor = try XCTUnwrap(
+            fixture.events.lastArmedCategoryChange?.operationID
+        )
+        _ = fixture.controller.beginMicrophoneTopologyTransition(
+            isEnabled: false
+        )
+        let current = try XCTUnwrap(
+            fixture.events.lastArmedCategoryChange
+        )
+        var proofClaim: WorldwideAudioCategoryProofClaim?
+        fixture.controller
+            .onAmbiguousCategoryPlayoutProofRefreshRequested = {
+                proofClaim = $0
+            }
+        fixture.events.onCategoryChanged?(
+            AudioSessionCategoryChange(
+                category: current.category,
+                mode: current.mode,
+                categoryOptionsRawValue:
+                    current.categoryOptionsRawValue,
+                operationIDIsAmbiguous: true,
+                blockingTombstoneOperationID: predecessor
+            )
+        )
+        let claim = try XCTUnwrap(proofClaim)
+        let failClosedCount =
+            fixture.playback.prepareManualAudioDisabledCount
+        let handle = viewModel
+            .debugStartIOSPlayoutProofAttemptForTests(
+                requestRecovery: false,
+                categoryProofClaim: claim
+            )
+
+        viewModel.debugTimeoutIOSPlayoutProofForTests(
+            handle: handle
+        )
+
+        XCTAssertEqual(
+            fixture.playback.prepareManualAudioDisabledCount,
+            failClosedCount + 1
+        )
+        XCTAssertEqual(
+            fixture.controller.snapshot.stateText,
+            "Playback unavailable"
+        )
+        XCTAssertFalse(fixture.controller.snapshot.isPlaying)
+    }
+
+    func testClaimedCategoryProofRejectsMismatchedNativePolicyThroughProductionEvaluator()
+        throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(
+            fixture.remoteAudio
+        )
+        fixture.controller.transportBecameHealthy()
+
+        _ = fixture.controller.beginMicrophoneTopologyTransition(
+            isEnabled: true
+        )
+        let predecessor = try XCTUnwrap(
+            fixture.events.lastArmedCategoryChange?.operationID
+        )
+        _ = fixture.controller.beginMicrophoneTopologyTransition(
+            isEnabled: false
+        )
+        let current = try XCTUnwrap(
+            fixture.events.lastArmedCategoryChange
+        )
+        var proofClaim: WorldwideAudioCategoryProofClaim?
+        fixture.controller
+            .onAmbiguousCategoryPlayoutProofRefreshRequested = {
+                proofClaim = $0
+            }
+        fixture.events.onCategoryChanged?(
+            AudioSessionCategoryChange(
+                category: current.category,
+                mode: current.mode,
+                categoryOptionsRawValue:
+                    current.categoryOptionsRawValue,
+                operationIDIsAmbiguous: true,
+                blockingTombstoneOperationID: predecessor
+            )
+        )
+        let claim = try XCTUnwrap(proofClaim)
+        let failClosedCount =
+            fixture.playback.prepareManualAudioDisabledCount
+        let handle = viewModel
+            .debugStartIOSPlayoutProofAttemptForTests(
+                requestRecovery: false,
+                categoryProofClaim: claim
+            )
+
+        XCTAssertTrue(
+            viewModel.debugEvaluateIOSPlayoutDiagnosticsForTests(
+                iosPlayoutDiagnostics(
+                    callbacks: 1,
+                    frames: 480,
+                    failures: 0,
+                    modeIsDefault: false
+                ),
+                handle: handle,
+                source: .polling
+            ),
+            "A fresh counter sample with the wrong current AVAudioSession mode is a terminal claimed-proof failure."
+        )
+
+        XCTAssertNil(fixture.events.lastArmedCategoryChange)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertEqual(
+            fixture.playback.prepareManualAudioDisabledCount,
+            failClosedCount + 1
+        )
+        XCTAssertEqual(
+            fixture.controller.snapshot.stateText,
+            "Playback unavailable"
+        )
+        XCTAssertFalse(fixture.controller.snapshot.isPlaying)
+        XCTAssertNotNil(fixture.controller.snapshot.errorText)
     }
 
     func testHostedRuntimeGateRequiresConsumedClaimAndExactPolicyID() throws {
@@ -3471,7 +5528,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         fixture.events.deliverArmedCategoryChange(
             AudioSessionCategoryChange(
                 category: AVAudioSession.Category.playAndRecord.rawValue,
-                mode: AVAudioSession.Mode.default.rawValue
+                mode: AVAudioSession.Mode.default.rawValue,
+                categoryOptionsRawValue:
+                    Self.iPhoneMicrophoneCategoryOptionsRawValue
             )
         )
 
@@ -3505,6 +5564,57 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         )
     }
 
+    func testMicrophoneTopologyCategoryTransitionRejectsEmptyOptionsWithExactOperationID() throws {
+        let fixture = makeFixture()
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(
+            fixture.remoteAudio
+        )
+        fixture.controller.transportBecameHealthy()
+        let authorization = WebRTCIOSMicrophoneAuthorization()
+        var invalidationCount = 0
+        fixture.controller.onAudioProofInvalidated = {
+            requiresFreshRecovery in
+            XCTAssertTrue(requiresFreshRecovery)
+            invalidationCount += 1
+            authorization.revoke()
+        }
+
+        fixture.controller.beginMicrophoneTopologyTransition(
+            isEnabled: true
+        )
+        let armedChange = try XCTUnwrap(
+            fixture.events.lastArmedCategoryChange
+        )
+        XCTAssertEqual(
+            armedChange.categoryOptionsRawValue,
+            Self.iPhoneMicrophoneCategoryOptionsRawValue
+        )
+
+        fixture.events.onCategoryChanged?(
+            AudioSessionCategoryChange(
+                category:
+                    AVAudioSession.Category.playAndRecord.rawValue,
+                mode: AVAudioSession.Mode.default.rawValue,
+                categoryOptionsRawValue: 0,
+                operationID: armedChange.operationID
+            )
+        )
+
+        XCTAssertEqual(invalidationCount, 1)
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertEqual(
+            fixture.playback.prepareManualAudioDisabledCount,
+            1
+        )
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertEqual(
+            fixture.controller.snapshot.stateText,
+            "Playback unavailable"
+        )
+    }
+
     func testDuplicateExpectedCategoryTransitionFailsClosedAfterOneUse() {
         let fixture = makeFixture()
         fixture.playback.requiresRuntimePlayoutProof = true
@@ -3525,7 +5635,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         }
         let categoryChange = AudioSessionCategoryChange(
             category: AVAudioSession.Category.playAndRecord.rawValue,
-            mode: AVAudioSession.Mode.default.rawValue
+            mode: AVAudioSession.Mode.default.rawValue,
+            categoryOptionsRawValue:
+                Self.iPhoneMicrophoneCategoryOptionsRawValue
         )
 
         fixture.controller.beginMicrophoneTopologyTransition(isEnabled: true)
@@ -3585,7 +5697,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             let categoryChange = AudioSessionCategoryChange(
                 category:
                     AVAudioSession.Category.playAndRecord.rawValue,
-                mode: AVAudioSession.Mode.default.rawValue
+                mode: AVAudioSession.Mode.default.rawValue,
+                categoryOptionsRawValue:
+                    Self.iPhoneMicrophoneCategoryOptionsRawValue
             )
 
             fixture.controller.beginMicrophoneTopologyTransition(
@@ -3777,7 +5891,10 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
 
         fixture.callActivity.setNonEndedCallCount(0)
 
-        XCTAssertEqual(fixture.playback.recoverCount, recoverCountBeforeCall)
+        XCTAssertEqual(
+            fixture.playback.recoverCount,
+            recoverCountBeforeCall + 1
+        )
         XCTAssertTrue(fixture.playback.nativeAudioEnabled)
         XCTAssertTrue(fixture.remoteAudio.isEnabled)
         XCTAssertEqual(fixture.controller.snapshot.stateText, "Playing")
@@ -3858,21 +5975,32 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertTrue(fixture.remoteAudio.isEnabled)
     }
 
-    func testBareCallDoesNotRotateOrRetirePlayoutProof() async throws {
+    func testBareCallEndRotatesProofAndCompletesFreshNativeOutputOnlyRecovery()
+        async throws {
         let fixture = makeFixture()
         fixture.playback.requiresRuntimePlayoutProof = true
         let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
         let peer = try makeAudioRacePeer()
-        viewModel.debugInstallIOSPlayoutDiagnosticsReader { requestedPeer in
-            XCTAssertTrue(requestedPeer === peer)
-            return healthyIOSPlayoutDiagnostics()
-        }
+        let postCallRecoveryConsumed = expectation(
+            description: "bare-call native recovery consumed"
+        )
+        let isPostCallRecovery = AudioMainActorFlag()
+        let didObservePostCallRecovery = AudioMainActorFlag()
 
         fixture.controller.prepare(serverName: "Mac mini")
-        viewModel.debugInstallIOSPlayoutPeerForRaceTests(peer)
         fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
         fixture.controller.transportBecameHealthy()
         fixture.controller.updateRuntimePlayout(isReady: true)
+        viewModel.debugInstallIOSPlayoutPeerForRaceTests(peer)
+        installProductionShapedIOSRecoveryHarness(
+            on: viewModel,
+            peer: peer
+        ) {
+            guard isPostCallRecovery.value,
+                  !didObservePostCallRecovery.value else { return }
+            didObservePostCallRecovery.value = true
+            postCallRecoveryConsumed.fulfill()
+        }
         await viewModel.debugRefreshIOSPlayoutOracleForTests(from: peer)
         let preCallGeneration = viewModel.debugAudioPolicyGeneration
         let preCallOracle = try XCTUnwrap(
@@ -3887,13 +6015,33 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertEqual(viewModel.debugAudioPolicyGeneration, preCallGeneration)
         XCTAssertEqual(viewModel.audioPlayoutOracle, preCallOracle)
 
+        let recoverCountBeforeCallEnd = fixture.playback.recoverCount
+        isPostCallRecovery.value = true
         fixture.callActivity.setNonEndedCallCount(0)
 
-        XCTAssertEqual(viewModel.debugAudioPolicyGeneration, preCallGeneration)
-        XCTAssertEqual(viewModel.audioPlayoutOracle, preCallOracle)
-        XCTAssertEqual(
-            viewModel.audioPlayoutOracle?.audioPolicyGeneration,
+        XCTAssertNotEqual(
+            viewModel.debugAudioPolicyGeneration,
             preCallGeneration
+        )
+        XCTAssertNil(viewModel.audioPlayoutOracle)
+        XCTAssertEqual(
+            fixture.playback.recoverCount,
+            recoverCountBeforeCallEnd + 1
+        )
+        await fulfillment(of: [postCallRecoveryConsumed], timeout: 2)
+        for _ in 0..<40 {
+            if fixture.controller
+                .postCallMicrophoneRecoveryMilestone == nil,
+               fixture.controller.snapshot.isPlaying {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        XCTAssertTrue(didObservePostCallRecovery.value)
+        XCTAssertNil(
+            fixture.controller
+                .postCallMicrophoneRecoveryMilestone
         )
         XCTAssertTrue(fixture.playback.nativeAudioEnabled)
         XCTAssertTrue(fixture.remoteAudio.isEnabled)
@@ -4900,12 +7048,182 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         )
     }
 
+    func testCategoryNotificationAndCallEndInsideOutputOnlyWriteDeferRecoveryUntilTerminalReturn()
+        throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(
+            fixture.remoteAudio
+        )
+        fixture.controller.transportBecameHealthy()
+        let token = try XCTUnwrap(
+            fixture.controller
+                .beginIPhoneMicrophoneOutputOnlyTransition(
+                    ownerEpoch: UUID()
+                )
+        )
+        let recoveryCountBeforeWrite = fixture.playback.recoverCount
+
+        XCTAssertTrue(
+            token.performOnce {
+                fixture.events.deliverArmedCategoryChange(
+                    AudioSessionCategoryChange(
+                        category:
+                            AVAudioSession.Category.playback.rawValue,
+                        mode: AVAudioSession.Mode.default.rawValue
+                    )
+                )
+                fixture.callActivity.setCallSnapshot(
+                    nonEndedCallCount: 1,
+                    connectedNonEndedCallCount: 1
+                )
+                fixture.callActivity.setCallSnapshot(
+                    nonEndedCallCount: 0,
+                    connectedNonEndedCallCount: 0
+                )
+
+                XCTAssertEqual(token.state, .executing)
+                XCTAssertNotNil(
+                    fixture.controller
+                        .postCallMicrophoneRecoveryMilestone
+                )
+                XCTAssertEqual(
+                    fixture.playback.recoverCount,
+                    recoveryCountBeforeWrite,
+                    "Call-end recovery overlapped the still-executing native write."
+                )
+                return true
+            }
+        )
+
+        XCTAssertEqual(token.state, .succeeded)
+        XCTAssertEqual(
+            fixture.playback.recoverCount,
+            recoveryCountBeforeWrite
+        )
+        fixture.controller
+            .iPhoneMicrophoneOutputOnlyTransitionDidComplete(token)
+        XCTAssertEqual(
+            fixture.playback.recoverCount,
+            recoveryCountBeforeWrite + 1
+        )
+    }
+
+    func testPostCallRecoveryRetriesWhenExecutingOutputOnlyTransitionCompletes()
+        async throws {
+        for categoryNotificationArrived in [false, true] {
+            let fixture = makeFixture()
+            fixture.playback.requiresRuntimePlayoutProof = true
+            fixture.controller.prepare(serverName: "Mac mini")
+            fixture.controller.remoteAudioBecameAvailable(
+                fixture.remoteAudio
+            )
+            fixture.controller.transportBecameHealthy()
+            let token = try XCTUnwrap(
+                fixture.controller
+                    .beginIPhoneMicrophoneOutputOnlyTransition(
+                        ownerEpoch: UUID()
+                    )
+            )
+            let releaseNativeWrite = DispatchSemaphore(value: 0)
+            let nativeWriteEntered = expectation(
+                description: "output-only token entered native claim"
+            )
+            let nativeWriteEnteredBox = AudioTestExpectationBox(
+                nativeWriteEntered
+            )
+            let nativeWrite = Task.detached {
+                token.performOnce {
+                    nativeWriteEnteredBox.fulfill()
+                    releaseNativeWrite.wait()
+                    return true
+                }
+            }
+
+            await fulfillment(of: [nativeWriteEntered], timeout: 2)
+            guard token.state == .executing else {
+                releaseNativeWrite.signal()
+                _ = await nativeWrite.value
+                XCTFail("The output-only token never entered its native claim.")
+                continue
+            }
+
+            let recoverCountBeforeCall = fixture.playback.recoverCount
+            fixture.callActivity.setCallSnapshot(
+                nonEndedCallCount: 1,
+                connectedNonEndedCallCount: 1
+            )
+            fixture.callActivity.setCallSnapshot(
+                nonEndedCallCount: 0,
+                connectedNonEndedCallCount: 0
+            )
+            let milestone = try XCTUnwrap(
+                fixture.controller
+                    .postCallMicrophoneRecoveryMilestone
+            )
+            XCTAssertEqual(
+                fixture.playback.recoverCount,
+                recoverCountBeforeCall,
+                "Call-end recovery must wait while the exact native token is executing."
+            )
+
+            releaseNativeWrite.signal()
+            let nativeWriteSucceeded = await nativeWrite.value
+            XCTAssertTrue(nativeWriteSucceeded)
+            XCTAssertEqual(token.state, .succeeded)
+
+            if categoryNotificationArrived {
+                fixture.events.deliverArmedCategoryChange(
+                    AudioSessionCategoryChange(
+                        category:
+                            AVAudioSession.Category.playback.rawValue,
+                        mode: AVAudioSession.Mode.default.rawValue,
+                        categoryOptionsRawValue: 0
+                    )
+                )
+            }
+
+            var recoveryRequestCount = 0
+            fixture.controller.onPlaybackRecoveryRequested = {
+                recoveryRequestCount += 1
+            }
+            fixture.controller
+                .iPhoneMicrophoneOutputOnlyTransitionDidComplete(
+                    token
+                )
+
+            XCTAssertEqual(
+                fixture.playback.recoverCount,
+                recoverCountBeforeCall + 1
+            )
+            XCTAssertEqual(recoveryRequestCount, 1)
+            let recoveryChange = try XCTUnwrap(
+                fixture.events.lastArmedCategoryChange
+            )
+            XCTAssertEqual(
+                recoveryChange.category,
+                AVAudioSession.Category.playback.rawValue
+            )
+            XCTAssertEqual(recoveryChange.categoryOptionsRawValue, 0)
+            XCTAssertTrue(
+                fixture.controller
+                    .completePostCallMicrophoneRecovery(milestone)
+            )
+            XCTAssertNil(
+                fixture.controller
+                    .postCallMicrophoneRecoveryMilestone
+            )
+        }
+    }
+
     func testOutputOnlyCategoryCallbacksFailClosedUnlessExactTokenIsExecutingOrSucceeded() throws {
         enum FailureVariant: CaseIterable {
             case armed
             case wrongID
             case wrongCategory
             case wrongMode
+            case wrongOptions
             case revoked
             case failed
         }
@@ -4926,7 +7244,8 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             case .failed:
                 XCTAssertFalse(token.performOnce { false })
                 XCTAssertEqual(token.state, .failed)
-            case .armed, .wrongID, .wrongCategory, .wrongMode:
+            case .armed, .wrongID, .wrongCategory, .wrongMode,
+                    .wrongOptions:
                 break
             }
 
@@ -4940,11 +7259,17 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
                 variant == .wrongMode
                     ? AVAudioSession.Mode.voiceChat.rawValue
                     : AVAudioSession.Mode.default.rawValue
+            let categoryOptionsRawValue =
+                variant == .wrongOptions
+                    ? Self.iPhoneMicrophoneCategoryOptionsRawValue
+                    : 0
 
             fixture.events.onCategoryChanged?(
                 AudioSessionCategoryChange(
                     category: category,
                     mode: mode,
+                    categoryOptionsRawValue:
+                        categoryOptionsRawValue,
                     operationID: operationID
                 )
             )
@@ -4965,7 +7290,7 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         }
     }
 
-    func testInterruptionRetiresExecutingOutputOnlyMarkerBeforeHostedIssuance() throws {
+    func testInterruptionDefersExecutingOutputOnlyMarkerUntilTerminalCompletion() throws {
         let fixture = makeFixture()
         fixture.playback.requiresRuntimePlayoutProof = true
         fixture.controller.prepare(serverName: "Mac mini")
@@ -4994,12 +7319,17 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         let nativeOperationSucceeded = token.performOnce {
             XCTAssertEqual(token.state, .executing)
             fixture.events.onInterruptionBegan?(.default)
-            XCTAssertNotNil(hostedAuthorization)
+            XCTAssertNil(
+                hostedAuthorization,
+                "Hosted recovery must not overlap the executing output-only write."
+            )
             return true
         }
 
         XCTAssertTrue(nativeOperationSucceeded)
         XCTAssertEqual(token.state, .succeeded)
+        fixture.controller
+            .iPhoneMicrophoneOutputOnlyTransitionDidComplete(token)
         let authorization = try XCTUnwrap(
             hostedAuthorization
         )
@@ -6110,7 +8440,8 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         await peer.close()
     }
 
-    func testStatsReadCanPublishAcrossBareCallStartAndEnd() async throws {
+    func testStatsReadCannotPublishAcrossBareCallEndRecoveryGeneration()
+        async throws {
         let fixture = makeFixture()
         fixture.playback.requiresRuntimePlayoutProof = true
         let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
@@ -6123,6 +8454,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             readStarted.fulfill()
             return await diagnosticsGate.wait()
         }
+        // Isolate the suspended read fence. Native recovery is covered by the production-shaped
+        // bare-call test; this callback intentionally avoids starting a competing diagnostics read.
+        fixture.controller.onPlaybackRecoveryRequested = {}
 
         fixture.controller.prepare(serverName: "Mac mini")
         viewModel.debugInstallIOSPlayoutPeerForRaceTests(peer)
@@ -6140,7 +8474,7 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             preCallGeneration
         )
         fixture.callActivity.setNonEndedCallCount(0)
-        XCTAssertEqual(
+        XCTAssertNotEqual(
             viewModel.debugAudioPolicyGeneration,
             preCallGeneration
         )
@@ -6148,11 +8482,7 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         await fulfillment(of: [readFinished], timeout: 2)
         await refreshTask.value
 
-        let oracle = try XCTUnwrap(viewModel.audioPlayoutOracle)
-        XCTAssertEqual(
-            oracle.audioPolicyGeneration,
-            preCallGeneration
-        )
+        XCTAssertNil(viewModel.audioPlayoutOracle)
         XCTAssertTrue(viewModel.hasActiveSession)
         XCTAssertEqual(fixture.playback.prepareManualAudioDisabledCount, 0)
         XCTAssertTrue(fixture.playback.nativeAudioEnabled)
@@ -8122,7 +10452,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
 
     private func rawMicrophoneSenderStatisticsForTests(
         sample: UInt64,
-        recordingGeneration: UInt64
+        recordingGeneration: UInt64,
+        captureRouteIsBuiltInMicrophone: Bool = true,
+        captureRouteProofGeneration: UInt64 = 13
     ) -> WebRTCIPhoneMicrophoneSenderStatistics {
         let callbacks = sample * 100
         let frames = sample * 48_000
@@ -8154,6 +10486,10 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
                 modeIsDefault: true,
                 usesRemoteIO: true,
                 inputBusEnabled: true,
+                captureRouteIsBuiltInMicrophone:
+                    captureRouteIsBuiltInMicrophone,
+                captureRouteProofGeneration:
+                    captureRouteProofGeneration,
                 outputBusEnabled: true,
                 categoryOptionsAreEmpty: false,
                 categoryOptionsAreIPhoneMicrophoneRouting: true,
@@ -8646,6 +10982,136 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         return (viewModel, fixture)
     }
 
+    private func installProductionShapedIOSRecoveryHarness(
+        on viewModel: WorldwideSessionViewModel,
+        peer: WebRTCPeer,
+        recoveryWasConsumed: @escaping @MainActor () -> Void = {}
+    ) {
+        var diagnosticsOrdinal: UInt64 = 10
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader {
+            requestedPeer in
+            XCTAssertTrue(requestedPeer === peer)
+            diagnosticsOrdinal &+= 1
+            let microphoneIsAuthorized =
+                viewModel
+                    .debugIPhoneMicrophoneAuthorizationForTests?
+                    .isValid == true
+            return iosPlayoutDiagnostics(
+                callbacks: diagnosticsOrdinal,
+                frames: diagnosticsOrdinal * 480,
+                failures: 0,
+                inputBusEnabled: microphoneIsAuthorized,
+                categoryIsMediaPlayback:
+                    !microphoneIsAuthorized,
+                categoryIsMediaPlayAndRecord:
+                    microphoneIsAuthorized
+            )
+        }
+        viewModel.debugInstallIOSPlayoutRecoveryRequester {
+            requestedPeer,
+            authorization in
+            XCTAssertTrue(requestedPeer === peer)
+            XCTAssertTrue(authorization.isValid)
+            XCTAssertTrue(
+                authorization.performIfValidForTesting {}
+            )
+            recoveryWasConsumed()
+        }
+    }
+
+    private enum StaleMicrophoneCleanupTerminalBoundary {
+        case permissionDenial
+        case disconnect
+    }
+
+    private func assertStaleMicrophoneCleanupDoesNotReenable(
+        after boundary: StaleMicrophoneCleanupTerminalBoundary
+    ) async throws {
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        let peer = try makeAudioRacePeer()
+        let firstEnableFailed = expectation(
+            description: "terminal-boundary first enable failed"
+        )
+        let cleanupEntered = expectation(
+            description: "terminal-boundary cleanup entered"
+        )
+        let cleanupReturned = expectation(
+            description: "terminal-boundary cleanup returned"
+        )
+        let cleanupGate = AudioNonCooperativeGate<Bool>()
+        var enableCount = 0
+        var didBlockCleanup = false
+
+        viewModel.debugInstallScreenSessionForTests(
+            peer: peer,
+            provenance: .authenticatedPairedCoordinatorHandoff
+        )
+        viewModel.debugCacheIPhoneMicrophonePermissionForTests()
+        viewModel.debugInstallIPhoneMicrophoneNativeHandlers(
+            enable: { _ in
+                enableCount += 1
+                if enableCount == 1 {
+                    firstEnableFailed.fulfill()
+                    throw TestAudioError.activation
+                }
+            },
+            disable: { authorization, _ in
+                guard !didBlockCleanup,
+                      authorization != nil else {
+                    return true
+                }
+                didBlockCleanup = true
+                cleanupEntered.fulfill()
+                let result = await cleanupGate.wait()
+                cleanupReturned.fulfill()
+                return result
+            }
+        )
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        viewModel.handleAppBecameActive()
+        await fulfillment(
+            of: [firstEnableFailed, cleanupEntered],
+            timeout: 2
+        )
+        XCTAssertTrue(
+            viewModel.isMicrophoneAdmissionCleanupInProgress
+        )
+
+        switch boundary {
+        case .permissionDenial:
+            viewModel.debugDenyIPhoneMicrophonePermissionForTests()
+        case .disconnect:
+            viewModel.disconnect()
+        }
+        XCTAssertFalse(viewModel.microphoneIntentEnabled)
+
+        await cleanupGate.open(true)
+        await fulfillment(of: [cleanupReturned], timeout: 2)
+        for _ in 0..<10
+        where viewModel.isMicrophoneAdmissionCleanupInProgress {
+            await Task.yield()
+        }
+
+        XCTAssertFalse(
+            viewModel.isMicrophoneAdmissionCleanupInProgress
+        )
+        XCTAssertEqual(enableCount, 1)
+        XCTAssertFalse(viewModel.isMicrophoneSending)
+        XCTAssertNil(
+            viewModel.debugIPhoneMicrophoneAuthorizationForTests
+        )
+
+        if case .permissionDenial = boundary {
+            viewModel.disconnect()
+        }
+        await peer.close()
+    }
+
     private var inactiveSnapshot: WorldwideAudioLifecycleSnapshot {
         WorldwideAudioLifecycleSnapshot(
             stateText: "Inactive",
@@ -8720,6 +11186,15 @@ private final class HostedCallRecoveryRecorder {
 @MainActor
 private final class HostedCallDiagnosticsReadGate {
     var isEnabled = false
+}
+
+@MainActor
+private final class AudioMainActorFlag {
+    var value: Bool
+
+    init(_ value: Bool = false) {
+        self.value = value
+    }
 }
 
 private final class HostedCallProofRevocationRecorder: @unchecked Sendable {
@@ -8949,6 +11424,23 @@ private final class AudioLockedValues<Value: Sendable>: @unchecked Sendable {
         lock.withLock {
             storage.append(value)
         }
+    }
+}
+
+private final class AudioLockedValue<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: Value
+
+    init(_ value: Value) {
+        storage = value
+    }
+
+    var value: Value {
+        lock.withLock { storage }
+    }
+
+    func set(_ value: Value) {
+        lock.withLock { storage = value }
     }
 }
 
@@ -9386,6 +11878,7 @@ private final class CrossLayerAudioSessionEventMonitorStub:
 
     func startObserving() {}
     func stopObserving() {}
+    func updateRouteConfigurationChangePolicyEpoch(_ epoch: UInt64) {}
 
     func armCategoryChangeOperation(
         _ operationID: UUID,
@@ -9508,6 +12001,7 @@ private final class AudioSessionEventsStub: AudioSessionEventMonitoring {
     var onMediaServicesReset: (() -> Void)?
     private(set) var startCount = 0
     private(set) var stopCount = 0
+    private(set) var routeConfigurationChangePolicyEpochs: [UInt64] = []
     private struct ArmedCategoryChangeOperation {
         let operationID: UUID
         let category: String
@@ -9518,6 +12012,8 @@ private final class AudioSessionEventsStub: AudioSessionEventMonitoring {
         [ArmedCategoryChangeOperation] = []
     private(set) var armedCategoryChangeOperationIDs:
         [UUID] = []
+    var onArmCategoryChangeOperation:
+        ((AudioSessionCategoryChange) -> Void)?
 
     var lastArmedCategoryChange: AudioSessionCategoryChange? {
         guard let operation = armedCategoryChangeOperations.last
@@ -9544,6 +12040,10 @@ private final class AudioSessionEventsStub: AudioSessionEventMonitoring {
         )
     }
 
+    func updateRouteConfigurationChangePolicyEpoch(_ epoch: UInt64) {
+        routeConfigurationChangePolicyEpochs.append(epoch)
+    }
+
     func armCategoryChangeOperation(
         _ operationID: UUID,
         category: String,
@@ -9563,6 +12063,15 @@ private final class AudioSessionEventsStub: AudioSessionEventMonitoring {
             )
         )
         armedCategoryChangeOperationIDs.append(operationID)
+        onArmCategoryChangeOperation?(
+            AudioSessionCategoryChange(
+                category: category,
+                mode: mode,
+                categoryOptionsRawValue:
+                    categoryOptionsRawValue,
+                operationID: operationID
+            )
+        )
     }
 
     func cancelCategoryChangeOperation(_ operationID: UUID) {

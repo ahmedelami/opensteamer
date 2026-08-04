@@ -167,6 +167,7 @@ struct WebRTCIPhoneMicrophoneSenderStatisticsValidation: Equatable {
     let microphonePolicyGeneration: UInt64
     let recordingGeneration: UInt64
     let approvedRecordingGeneration: UInt64
+    let captureRouteProofGeneration: UInt64
     let authorizationIdentity: ObjectIdentifier
     let senderID: String
     let localTrackID: String
@@ -225,6 +226,9 @@ enum WebRTCIPhoneMicrophoneSenderStatisticsSampler {
                 == current.recordingGeneration,
               diagnostics.approvedRecordingGeneration
                 == current.approvedRecordingGeneration,
+              diagnostics.captureRouteProofGeneration
+                == current.captureRouteProofGeneration,
+              diagnostics.captureRouteProofGeneration > 0,
               diagnostics.senderOwnsMID,
               diagnostics.senderOwnsLocalTrack,
               !diagnostics.transceiverIsStopped,
@@ -243,6 +247,7 @@ enum WebRTCIPhoneMicrophoneSenderStatisticsSampler {
               diagnostics.modeIsDefault,
               diagnostics.usesRemoteIO,
               diagnostics.inputBusEnabled,
+              diagnostics.captureRouteIsBuiltInMicrophone,
               diagnostics.outputBusEnabled,
               !diagnostics.categoryOptionsAreEmpty,
               diagnostics.categoryOptionsAreIPhoneMicrophoneRouting,
@@ -307,6 +312,16 @@ enum WebRTCIPhoneMicrophoneSenderStatisticsSampler {
             )
         }
 
+        if previousBaseline.validation
+            .captureRouteProofGeneration
+            != current.captureRouteProofGeneration {
+            return WebRTCIPhoneMicrophoneSenderStatisticsSamplingResult(
+                statistics: nil,
+                baseline: baseline,
+                requiresAdvancingEvidence: true
+            )
+        }
+
         let previous = previousBaseline.statistics
         guard previousBaseline.validation == current,
               previous.sender.peerEpoch == diagnostics.peerEpoch,
@@ -322,6 +337,8 @@ enum WebRTCIPhoneMicrophoneSenderStatisticsSampler {
                 == diagnostics.recordingGeneration,
               previous.sender.approvedRecordingGeneration
                 == diagnostics.approvedRecordingGeneration,
+              previous.sender.captureRouteProofGeneration
+                == diagnostics.captureRouteProofGeneration,
               previous.collectedAt <= collectedAt,
               diagnostics.realtimeAdmissionCount
                 >= previous.sender.realtimeAdmissionCount,
@@ -500,6 +517,30 @@ private struct WebRTCIPhoneMicrophoneSenderStatisticsReportCapture: Sendable {
 }
 
 #if os(iOS)
+public enum WebRTCIOSPlayoutRecoveryTerminalOutcome: Equatable, Sendable {
+    case pending
+    case accepted
+    case rejected
+    case revoked
+
+    fileprivate init(
+        native: ASIOSStereoPlayoutRecoveryTerminalOutcome
+    ) {
+        switch native {
+        case .pending:
+            self = .pending
+        case .accepted:
+            self = .accepted
+        case .rejected:
+            self = .rejected
+        case .revoked:
+            self = .revoked
+        @unknown default:
+            self = .rejected
+        }
+    }
+}
+
 /// Revocable ownership for one explicit native RemoteIO recovery attempt.
 ///
 /// The Objective-C gate is linearizable: revocation shares the lock held across the final native
@@ -510,6 +551,23 @@ public final class WebRTCIOSPlayoutRecoveryAuthorization: @unchecked Sendable {
     public init() {}
 
     public var isValid: Bool { native.isValid }
+    public var generation: UInt64 { native.generation }
+    public var terminalGeneration: UInt64 {
+        native.terminalGeneration
+    }
+    public var terminalOutcome:
+        WebRTCIOSPlayoutRecoveryTerminalOutcome {
+        WebRTCIOSPlayoutRecoveryTerminalOutcome(
+            native: native.terminalOutcome
+        )
+    }
+
+    /// A terminal generation is the publication fence: after it matches this authorization,
+    /// the immutable outcome can be consumed without treating rejection/revocation as success.
+    public var hasAcceptedTerminalOutcome: Bool {
+        terminalGeneration == generation
+            && terminalOutcome == .accepted
+    }
 
     public func revoke() {
         native.revoke()
@@ -519,6 +577,11 @@ public final class WebRTCIOSPlayoutRecoveryAuthorization: @unchecked Sendable {
     @discardableResult
     public func performIfValidForTesting(_ operation: () -> Void) -> Bool {
         native.performIfValid(operation)
+    }
+
+    @discardableResult
+    public func rejectIfValidForTesting() -> Bool {
+        native.debugRejectIfValidForTesting()
     }
     #endif
 }
@@ -979,6 +1042,8 @@ public final class WebRTCIOSPlayoutPublicationTestHarness: @unchecked Sendable {
 
 /// Lifecycle counters exposed by the test-only queued-recovery harness.
 public struct WebRTCIOSPlayoutRecoveryTestDiagnostics: Equatable, Sendable {
+    public let failureCode: Int
+    public let lastLifecycleStatus: Int32
     public let requestCount: UInt64
     public let authorizationRejectionCount: UInt64
     public let rebuildCount: UInt64
@@ -1000,6 +1065,8 @@ public struct WebRTCIOSPlayoutRecoveryTestDiagnostics: Equatable, Sendable {
     public let sessionActive: Bool
     public let remoteIOCreated: Bool
     public let inputBusEnabled: Bool
+    public let captureRouteIsBuiltInMicrophone: Bool
+    public let captureRouteProofGeneration: UInt64
     public let outputBusEnabled: Bool
     public let recoveryRequired: Bool
     public let explicitResumeRequired: Bool
@@ -1063,6 +1130,25 @@ public enum WebRTCIOSExpectedRouteChangeTestScenario: Int, Sendable {
     case convergedWrongGeneration
     case convergedPreviousUnseen
     case convergedExplicitResumeRequired
+    case preparedExact
+    case preparedChangedRoute
+    case startingChangedRoute
+    case startingWrongOwnership
+    case startingRecoveryRequired
+    case startingOldDeviceUnavailable
+    case startingCategory
+    case startingChannelMismatch
+    case startingCoalescedExactRoute
+    case startingOutputChanged
+    case startingInactive
+    case startingWrongGeneration
+    case startingWrongSystemGeneration
+    case startingTargetMismatch
+    case startingPreferredMismatch
+    case startingExplicitResumeRequired
+    case pendingOutputChanged
+    case convergedStartSettlementCoalescedExactRoute
+    case convergedStartSettlementExpired
 
     fileprivate var native: ASIOSExpectedRouteChangeTestScenario {
         switch self {
@@ -1120,6 +1206,44 @@ public enum WebRTCIOSExpectedRouteChangeTestScenario: Int, Sendable {
             return .convergedPreviousUnseen
         case .convergedExplicitResumeRequired:
             return .convergedExplicitResumeRequired
+        case .preparedExact:
+            return .preparedExact
+        case .preparedChangedRoute:
+            return .preparedChangedRoute
+        case .startingChangedRoute:
+            return .startingChangedRoute
+        case .startingWrongOwnership:
+            return .startingWrongOwnership
+        case .startingRecoveryRequired:
+            return .startingRecoveryRequired
+        case .startingOldDeviceUnavailable:
+            return .startingOldDeviceUnavailable
+        case .startingCategory:
+            return .startingCategory
+        case .startingChannelMismatch:
+            return .startingChannelMismatch
+        case .startingCoalescedExactRoute:
+            return .startingCoalescedExactRoute
+        case .startingOutputChanged:
+            return .startingOutputChanged
+        case .startingInactive:
+            return .startingInactive
+        case .startingWrongGeneration:
+            return .startingWrongGeneration
+        case .startingWrongSystemGeneration:
+            return .startingWrongSystemGeneration
+        case .startingTargetMismatch:
+            return .startingTargetMismatch
+        case .startingPreferredMismatch:
+            return .startingPreferredMismatch
+        case .startingExplicitResumeRequired:
+            return .startingExplicitResumeRequired
+        case .pendingOutputChanged:
+            return .pendingOutputChanged
+        case .convergedStartSettlementCoalescedExactRoute:
+            return .convergedStartSettlementCoalescedExactRoute
+        case .convergedStartSettlementExpired:
+            return .convergedStartSettlementExpired
         }
     }
 }
@@ -1166,6 +1290,8 @@ public final class WebRTCIOSPlayoutRecoveryTestHarness: @unchecked Sendable {
     public var diagnostics: WebRTCIOSPlayoutRecoveryTestDiagnostics {
         let value = native.diagnostics
         return WebRTCIOSPlayoutRecoveryTestDiagnostics(
+            failureCode: Int(value.failureCode.rawValue),
+            lastLifecycleStatus: value.lastLifecycleStatus,
             requestCount: value.recoveryRequestCount,
             authorizationRejectionCount: value.recoveryAuthorizationRejectionCount,
             rebuildCount: value.recoveryRebuildCount,
@@ -1196,6 +1322,10 @@ public final class WebRTCIOSPlayoutRecoveryTestHarness: @unchecked Sendable {
             sessionActive: value.sessionActive,
             remoteIOCreated: value.remoteIOCreated,
             inputBusEnabled: value.inputBusEnabled,
+            captureRouteIsBuiltInMicrophone:
+                value.captureRouteIsBuiltInMicrophone,
+            captureRouteProofGeneration:
+                value.captureRouteProofGeneration,
             outputBusEnabled: value.outputBusEnabled,
             recoveryRequired: value.recoveryRequired,
             explicitResumeRequired: value.explicitResumeRequired,
@@ -1284,6 +1414,126 @@ public final class WebRTCIOSPlayoutRecoveryTestHarness: @unchecked Sendable {
         )
     }
 
+    public func debugRemoteIOStartSettlementAcceptsDelayedObservationForTesting()
+        -> Bool
+    {
+        native.debugRemoteIOStartSettlementAcceptsDelayedObservationForTesting()
+    }
+
+    public func debugSupersededRouteObservationIsSuppressedForTesting(
+        oldDeviceUnavailable: Bool
+    ) -> Bool {
+        native.debugSupersededRouteObservationIsSuppressedForTesting(
+            oldDeviceUnavailable: oldDeviceUnavailable
+        )
+    }
+
+    public func debugRetiredSystemGenerationRouteObservationIsSuppressedForTesting(
+        oldDeviceUnavailable: Bool
+    ) -> Bool {
+        native
+            .debugRetiredSystemGenerationRouteObservationIsSuppressedForTesting(
+                oldDeviceUnavailable: oldDeviceUnavailable
+            )
+    }
+
+    public func debugRecordedConsumedRouteClosureSchedulesFreshResolutionForTesting()
+        -> Bool
+    {
+        native
+            .debugRecordedConsumedRouteClosureSchedulesFreshResolutionForTesting()
+    }
+
+    public func debugRecordedConsumedRouteClosureUsesFreshRouteForTesting()
+        -> Bool
+    {
+        native.debugRecordedConsumedRouteClosureUsesFreshRouteForTesting()
+    }
+
+    public func debugNotificationSequenceChangeBlocksFreshRouteReopenForTesting()
+        -> Bool
+    {
+        native
+            .debugNotificationSequenceChangeBlocksFreshRouteReopenForTesting()
+    }
+
+    public func debugRunningUnpublishedAudioUnitStopInvariantHoldsForTesting()
+        -> Bool
+    {
+        native.debugRunningUnpublishedAudioUnitStopInvariantHoldsForTesting()
+    }
+
+    public func debugRouteEvidenceOwnsMicrophonePublicationClosureForTesting(
+        recordedClosure: Bool,
+        inFlightCount: UInt
+    ) -> Bool {
+        native
+            .debugRouteEvidenceOwnsMicrophonePublicationClosureForTesting(
+                recordedClosure: recordedClosure,
+                inFlightCount: inFlightCount
+            )
+    }
+
+    public func debugTrackedCategoryObservationOwnsRouteClosureForTesting()
+        -> Bool
+    {
+        native.debugTrackedCategoryObservationOwnsRouteClosureForTesting()
+    }
+
+    public func debugUntrackedCategoryObservationAvoidsUnownedRouteClosureForTesting()
+        -> Bool
+    {
+        native
+            .debugUntrackedCategoryObservationAvoidsUnownedRouteClosureForTesting()
+    }
+
+    public func debugConsumedPublicationQueuesRecordedRouteClosureResolutionForTesting()
+        -> Bool
+    {
+        native
+            .debugConsumedPublicationQueuesRecordedRouteClosureResolutionForTesting()
+    }
+
+    public func debugFinalMicrophonePublicationRejectsDelayedRouteIngressForTesting()
+        -> Bool
+    {
+        native
+            .debugFinalMicrophonePublicationRejectsDelayedRouteIngressForTesting()
+    }
+
+    public func debugRouteLockedOwnershipSnapshotComparatorForTesting()
+        -> Bool
+    {
+        native.debugRouteLockedOwnershipSnapshotComparatorForTesting()
+    }
+
+    public func debugImmutableRouteRejectionSnapshotSurvivesLaterRouteForTesting()
+        -> Bool
+    {
+        native
+            .debugImmutableRouteRejectionSnapshotSurvivesLaterRouteForTesting()
+    }
+
+    public func debugClearRetiresInFlightExpectedRouteObservationForTesting()
+        -> Bool
+    {
+        native
+            .debugClearRetiresInFlightExpectedRouteObservationForTesting()
+    }
+
+    public func debugOldQueuedRouteObservationCannotMutateRearmedTransactionForTesting()
+        -> Bool
+    {
+        native
+            .debugOldQueuedRouteObservationCannotMutateRearmedTransactionForTesting()
+    }
+
+    public func debugStructuredRouteTransactionFailureSnapshotForTesting()
+        -> String
+    {
+        native.debugStructuredRouteTransactionFailureSnapshotForTesting()
+    }
+
     public func publishCallback(frameCount: UInt32, status: Int32) {
         native.publishCallback(withFrameCount: frameCount, status: status)
     }
@@ -1330,12 +1580,24 @@ public final class WebRTCIOSPlayoutRecoveryTestHarness: @unchecked Sendable {
         native.debugMarkRouteLossForTesting()
     }
 
+    public func debugAttemptFailureOverwriteForTesting() {
+        native.debugAttemptFailureOverwriteForTesting()
+    }
+
     public func debugAdvanceSystemAudioGenerationForTesting() {
         native.debugAdvanceSystemAudioGenerationForTesting()
     }
 
     public func debugSetOutputRouteAvailableForTesting(_ available: Bool) {
         native.debugSetOutputRouteAvailable(forTesting: available)
+    }
+
+    public func debugSetCaptureRouteBuiltInMicrophoneForTesting(
+        _ isBuiltIn: Bool
+    ) {
+        native.debugSetCaptureRouteBuiltInMicrophone(
+            forTesting: isBuiltIn
+        )
     }
 
     public func debugFailNextHostedCallActivationForTesting() {
@@ -1359,6 +1621,8 @@ public struct WebRTCIOSPlayoutDiagnostics: Sendable {
     public let ownsSessionActivation: Bool
     public let remoteIOCreated: Bool
     public let inputBusEnabled: Bool
+    public let captureRouteIsBuiltInMicrophone: Bool
+    public let captureRouteProofGeneration: UInt64
     public let outputBusEnabled: Bool
     public let recoveryRequired: Bool
     public let explicitResumeRequired: Bool
@@ -1421,6 +1685,8 @@ public struct WebRTCIOSPlayoutDiagnostics: Sendable {
         ownsSessionActivation: Bool,
         remoteIOCreated: Bool,
         inputBusEnabled: Bool,
+        captureRouteIsBuiltInMicrophone: Bool = false,
+        captureRouteProofGeneration: UInt64 = 0,
         outputBusEnabled: Bool,
         recoveryRequired: Bool,
         explicitResumeRequired: Bool,
@@ -1482,6 +1748,10 @@ public struct WebRTCIOSPlayoutDiagnostics: Sendable {
         self.ownsSessionActivation = ownsSessionActivation
         self.remoteIOCreated = remoteIOCreated
         self.inputBusEnabled = inputBusEnabled
+        self.captureRouteIsBuiltInMicrophone =
+            captureRouteIsBuiltInMicrophone
+        self.captureRouteProofGeneration =
+            captureRouteProofGeneration
         self.outputBusEnabled = outputBusEnabled
         self.recoveryRequired = recoveryRequired
         self.explicitResumeRequired = explicitResumeRequired
@@ -3797,6 +4067,10 @@ public actor WebRTCPeer {
             ownsSessionActivation: value.ownsSessionActivation,
             remoteIOCreated: value.remoteIOCreated,
             inputBusEnabled: value.inputBusEnabled,
+            captureRouteIsBuiltInMicrophone:
+                value.captureRouteIsBuiltInMicrophone,
+            captureRouteProofGeneration:
+                value.captureRouteProofGeneration,
             outputBusEnabled: value.outputBusEnabled,
             recoveryRequired: value.recoveryRequired,
             explicitResumeRequired: value.explicitResumeRequired,
@@ -4172,6 +4446,8 @@ public actor WebRTCPeer {
             && native.categoryIsMediaPlayAndRecord
             && native.modeIsDefault
             && native.inputBusEnabled
+            && native.captureRouteIsBuiltInMicrophone
+            && native.captureRouteProofGeneration > 0
             && native.outputBusEnabled
             && !native.categoryOptionsAreEmpty
             && native.categoryOptionsAreIPhoneMicrophoneRouting
@@ -4213,6 +4489,10 @@ public actor WebRTCPeer {
             modeIsDefault: native.modeIsDefault,
             usesRemoteIO: usesRemoteIO,
             inputBusEnabled: native.inputBusEnabled,
+            captureRouteIsBuiltInMicrophone:
+                native.captureRouteIsBuiltInMicrophone,
+            captureRouteProofGeneration:
+                native.captureRouteProofGeneration,
             outputBusEnabled: native.outputBusEnabled,
             categoryOptionsAreEmpty:
                 native.categoryOptionsAreEmpty,
@@ -4300,6 +4580,8 @@ public actor WebRTCPeer {
                         diagnostics.recordingGeneration,
                     approvedRecordingGeneration:
                         diagnostics.approvedRecordingGeneration,
+                    captureRouteProofGeneration:
+                        diagnostics.captureRouteProofGeneration,
                     authorizationIdentity:
                         ObjectIdentifier(authorization),
                     senderID: binding.senderID,

@@ -9,6 +9,34 @@ import XCTest
 /// revocation rules; the physical-device test remains the hardware RemoteIO oracle.
 @MainActor
 final class WebRTCAudioPlaybackSessionTests: XCTestCase {
+    func testRecoveryAuthorizationPublishesExactTerminalOutcomeAndGeneration() {
+        let accepted = WebRTCIOSPlayoutRecoveryAuthorization()
+        let rejected = WebRTCIOSPlayoutRecoveryAuthorization()
+        let revoked = WebRTCIOSPlayoutRecoveryAuthorization()
+
+        XCTAssertNotEqual(accepted.generation, 0)
+        XCTAssertNotEqual(accepted.generation, rejected.generation)
+        XCTAssertEqual(accepted.terminalGeneration, 0)
+        XCTAssertEqual(accepted.terminalOutcome, .pending)
+
+        XCTAssertTrue(accepted.performIfValidForTesting {})
+        XCTAssertEqual(accepted.terminalGeneration, accepted.generation)
+        XCTAssertEqual(accepted.terminalOutcome, .accepted)
+        XCTAssertTrue(accepted.hasAcceptedTerminalOutcome)
+
+        XCTAssertFalse(rejected.rejectIfValidForTesting())
+        XCTAssertEqual(rejected.terminalGeneration, rejected.generation)
+        XCTAssertEqual(rejected.terminalOutcome, .rejected)
+        XCTAssertFalse(rejected.hasAcceptedTerminalOutcome)
+
+        revoked.revoke()
+        XCTAssertEqual(revoked.terminalGeneration, revoked.generation)
+        XCTAssertEqual(revoked.terminalOutcome, .revoked)
+        XCTAssertFalse(revoked.hasAcceptedTerminalOutcome)
+        revoked.revoke()
+        XCTAssertEqual(revoked.terminalOutcome, .revoked)
+    }
+
     func testRecoveryAuthorizationRejectsSideEffectsAfterRevocation() {
         let authorization = WebRTCIOSPlayoutRecoveryAuthorization()
         let counter = LockedInteger()
@@ -188,8 +216,10 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         defer { _ = harness.debugTerminateForTesting() }
 
         harness.debugMarkHealthyPlayoutForTesting()
+        harness.debugSetCaptureRouteBuiltInMicrophoneForTesting(true)
         let before = harness.diagnostics
         XCTAssertFalse(before.inputBusEnabled)
+        XCTAssertFalse(before.captureRouteIsBuiltInMicrophone)
         XCTAssertTrue(before.outputBusEnabled)
         XCTAssertTrue(before.microphoneDeviceGateClosedAndDrained)
         XCTAssertFalse(before.microphoneAuthorizationGatePublished)
@@ -248,8 +278,23 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         )
         XCTAssertFalse(approved.microphoneDeviceGateClosedAndDrained)
         XCTAssertTrue(approved.microphoneAuthorizationGatePublished)
+        XCTAssertTrue(
+            approved.captureRouteIsBuiltInMicrophone,
+            "An approved generation may publish only the privacy-minimal live built-in-mic route proof."
+        )
         XCTAssertTrue(harness.debugBeginRealtimeAdmissionForTesting())
         harness.debugEndRealtimeAdmissionForTesting()
+
+        harness.debugSetCaptureRouteBuiltInMicrophoneForTesting(false)
+        XCTAssertFalse(
+            harness.diagnostics.captureRouteIsBuiltInMicrophone,
+            "A live capture-route mutation must clear the proof without exposing a port identity."
+        )
+        harness.debugSetCaptureRouteBuiltInMicrophoneForTesting(true)
+        XCTAssertFalse(
+            harness.diagnostics.captureRouteIsBuiltInMicrophone,
+            "Returning to the built-in route cannot revive a retired proof without fresh exact publication."
+        )
 
         XCTAssertFalse(
             harness.debugPublishCurrentMicrophoneAuthorizationForTesting(),
@@ -351,6 +396,7 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
             .pendingWrongSystemGeneration,
             .pendingWrongPolicy,
             .pendingMissingFingerprint,
+            .pendingOutputChanged,
         ] {
             XCTAssertEqual(
                 harness.debugClassifyExpectedRouteChangeForTesting(scenario),
@@ -391,6 +437,362 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
                 "Scenario \(scenario.rawValue) was incorrectly consumed."
             )
         }
+    }
+
+    func testRemoteIOStartRouteTransactionAcceptsOnlyExactReasonEightEvidence() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertEqual(
+            harness.debugClassifyExpectedRouteChangeForTesting(.preparedExact),
+            .consume
+        )
+        XCTAssertEqual(
+            harness.debugClassifyExpectedRouteChangeForTesting(
+                .startingCoalescedExactRoute
+            ),
+            .consume,
+            "A delayed/coalesced reason-8 event is harmless only when the complete prepared route remains exact."
+        )
+        XCTAssertEqual(
+            harness.debugClassifyExpectedRouteChangeForTesting(
+                .convergedStartSettlementCoalescedExactRoute
+            ),
+            .consume,
+            "A previous-unseen coalesced reason-8 may be consumed after publication only while the exact native-start settlement claim owns it."
+        )
+        XCTAssertEqual(
+            harness.debugClassifyExpectedRouteChangeForTesting(
+                .convergedStartSettlementExpired
+            ),
+            .unrelated,
+            "An expired native-start claim must not lend provenance to a previous-unseen route event."
+        )
+
+        for scenario: WebRTCIOSExpectedRouteChangeTestScenario in [
+            .preparedChangedRoute,
+            .startingChangedRoute,
+            .startingOutputChanged,
+            .startingWrongOwnership,
+            .startingRecoveryRequired,
+            .startingOldDeviceUnavailable,
+            .startingChannelMismatch,
+            .startingInactive,
+            .startingWrongGeneration,
+            .startingWrongSystemGeneration,
+            .startingTargetMismatch,
+            .startingPreferredMismatch,
+            .startingExplicitResumeRequired,
+        ] {
+            XCTAssertEqual(
+                harness.debugClassifyExpectedRouteChangeForTesting(scenario),
+                .rejectTransaction,
+                "Start-time scenario \(scenario.rawValue) was not rejected."
+            )
+        }
+        XCTAssertEqual(
+            harness.debugClassifyExpectedRouteChangeForTesting(.startingCategory),
+            .unrelated
+        )
+    }
+
+    func testRemoteIOStartSettlementProductionStateIsOneShotAcrossCommit() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertTrue(
+            harness
+                .debugRemoteIOStartSettlementAcceptsDelayedObservationForTesting(),
+            "The production transaction state must retire a claim consumed while Starting at commit (including a synchronous pre-stamp ingress), preserve an unused claim for one exact +250 ms post-commit ingress, and reject replay, expiry, wrong transaction, and the stamp sequence."
+        )
+    }
+
+    func testOnlySupersededReasonEightCanBeAbsorbedByNewerTransaction() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertTrue(
+            harness.debugSupersededRouteObservationIsSuppressedForTesting(
+                oldDeviceUnavailable: false
+            )
+        )
+        XCTAssertFalse(
+            harness.debugSupersededRouteObservationIsSuppressedForTesting(
+                oldDeviceUnavailable: true
+            ),
+            "Physical device loss must always reach explicit-resume policy."
+        )
+    }
+
+    func testOnlyReasonEightFromRetiredSystemAudioGenerationIsSuppressed() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertTrue(
+            harness
+                .debugRetiredSystemGenerationRouteObservationIsSuppressedForTesting(
+                    oldDeviceUnavailable: false
+                )
+        )
+        XCTAssertFalse(
+            harness
+                .debugRetiredSystemGenerationRouteObservationIsSuppressedForTesting(
+                    oldDeviceUnavailable: true
+                ),
+            "A generation change must never hide physical device loss."
+        )
+    }
+
+    func testReasonEightArbitrationSupportsSwiftFirstAndNativeFirstDelivery() {
+        let harness =
+            WebRTCRouteConfigurationChangeArbitrationTestHarness()
+
+        for disposition: WebRTCRouteConfigurationChangeDisposition in [
+            .consumed,
+            .liveRejectionOwnedByWaiter,
+            .staleSuppressed,
+            .generic,
+            .uninitialized,
+        ] {
+            XCTAssertTrue(
+                harness.debugWaiterFirstResolvesForTesting(disposition),
+                "Swift-first arbitration lost disposition \(disposition)."
+            )
+            XCTAssertTrue(
+                harness.debugNativeFirstResolvesForTesting(disposition),
+                "Native-first arbitration lost disposition \(disposition)."
+            )
+        }
+    }
+
+    func testReasonEightNativeFirstDispositionSurvivesResolverReplacement() {
+        let harness =
+            WebRTCRouteConfigurationChangeArbitrationTestHarness()
+
+        for disposition: WebRTCRouteConfigurationChangeDisposition in [
+            .consumed,
+            .staleSuppressed,
+        ] {
+            XCTAssertTrue(
+                harness
+                    .debugNativeFirstResolverReplacementPreservesDispositionForTesting(
+                        disposition
+                    ),
+                "Resolver replacement overwrote exact disposition \(disposition)."
+            )
+        }
+    }
+
+    func testReasonEightArbitrationIsExactAndTimeoutCompletesOnce() {
+        let harness =
+            WebRTCRouteConfigurationChangeArbitrationTestHarness()
+
+        XCTAssertTrue(
+            harness
+                .debugExactNotificationIdentityRejectsStaleResolutionForTesting(),
+            "A replacement notification must not borrow a retired notification's native disposition."
+        )
+        XCTAssertTrue(
+            harness.debugTimeoutCompletesExactlyOnceForTesting(),
+            "A late native resolution after timeout must not deliver a second generic recovery."
+        )
+    }
+
+    func testReasonEightTimeoutBeforeLateNativeBindCompletesOnceAndCleansRecord() {
+        let harness =
+            WebRTCRouteConfigurationChangeArbitrationTestHarness()
+
+        XCTAssertTrue(
+            harness
+                .debugTimeoutBeforeNativeBindThenLateResolutionCompletesExactlyOnceForTesting(),
+            "A late native bind after timeout must neither redeliver nor recreate arbitration state."
+        )
+        XCTAssertEqual(
+            harness.debugArbitrationRecordCountForTesting(),
+            0,
+            "Timeout followed by late native resolution must leave no arbitration records."
+        )
+    }
+
+    func testExplicitResumeFailureRemainsStickyWhileLatched() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        harness.debugMarkRouteLossForTesting()
+        let explicitResume = harness.diagnostics
+        XCTAssertTrue(explicitResume.explicitResumeRequired)
+        XCTAssertEqual(explicitResume.failureCode, 19)
+
+        harness.debugAttemptFailureOverwriteForTesting()
+        let afterOverwriteAttempt = harness.diagnostics
+        XCTAssertTrue(afterOverwriteAttempt.explicitResumeRequired)
+        XCTAssertEqual(afterOverwriteAttempt.failureCode, 19)
+        XCTAssertEqual(
+            afterOverwriteAttempt.lastLifecycleStatus,
+            explicitResume.lastLifecycleStatus
+        )
+    }
+
+    func testRunningButUnpublishedAudioUnitIsStoppedDuringRollback() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertTrue(
+            harness
+                .debugRunningUnpublishedAudioUnitStopInvariantHoldsForTesting()
+        )
+    }
+
+    func testOnlyRouteEvidenceThatClosedTheGateRetainsMicrophonePublicationClosure() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertFalse(
+            harness
+                .debugRouteEvidenceOwnsMicrophonePublicationClosureForTesting(
+                    recordedClosure: false,
+                    inFlightCount: 0
+                )
+        )
+        XCTAssertTrue(
+            harness
+                .debugRouteEvidenceOwnsMicrophonePublicationClosureForTesting(
+                    recordedClosure: true,
+                    inFlightCount: 0
+                )
+        )
+        // An in-flight count cannot fabricate ownership if ingress never
+        // recorded a closure (for example, while playout was stopped).
+        XCTAssertFalse(
+            harness
+                .debugRouteEvidenceOwnsMicrophonePublicationClosureForTesting(
+                    recordedClosure: false,
+                    inFlightCount: 1
+                )
+        )
+        XCTAssertTrue(
+            harness
+                .debugRecordedConsumedRouteClosureSchedulesFreshResolutionForTesting(),
+            "A drained recorded closure must always reach fresh device-queue resolution."
+        )
+    }
+
+    func testCategoryObservationClosesOnlyWhenTrackedResolutionOwnsIt() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertTrue(
+            harness
+                .debugTrackedCategoryObservationOwnsRouteClosureForTesting(),
+            "Category/options evidence racing approval must keep microphone publication closed."
+        )
+        XCTAssertTrue(
+            harness
+                .debugUntrackedCategoryObservationAvoidsUnownedRouteClosureForTesting(),
+            "Output-only or hosted category evidence must not strand gates without a transaction-owned resolver."
+        )
+        XCTAssertTrue(
+            harness
+                .debugConsumedPublicationQueuesRecordedRouteClosureResolutionForTesting(),
+            "A closure drained before commit must remain closed at publication and queue fresh resolution once the transaction is consumed."
+        )
+    }
+
+    func testFinalMicrophonePublicationRejectsDelayedRouteIngressAndUsesSnapshotOwnership() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertTrue(
+            harness
+                .debugFinalMicrophonePublicationRejectsDelayedRouteIngressForTesting(),
+            "Category or route ingress after the final fresh session sample must block microphone gate publication."
+        )
+        XCTAssertTrue(
+            harness
+                .debugRouteLockedOwnershipSnapshotComparatorForTesting(),
+            "Route-locked gate publication must use the atomic ownership snapshot without acquiring the ownership lock."
+        )
+        XCTAssertTrue(
+            harness
+                .debugImmutableRouteRejectionSnapshotSurvivesLaterRouteForTesting(),
+            "Failure diagnostics must retain the redacted immutable ingress that rejected the transaction, not a later live route."
+        )
+    }
+
+    func testClearRetiresInFlightExpectedRouteObservationIdentity() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertTrue(
+            harness
+                .debugClearRetiresInFlightExpectedRouteObservationForTesting()
+        )
+    }
+
+    func testOldQueuedRouteCompletionCannotMutateRearmedTransaction() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertTrue(
+            harness
+                .debugOldQueuedRouteObservationCannotMutateRearmedTransactionForTesting(),
+            "A completion carrying a retired transaction ID must leave the new transaction's state and in-flight count untouched."
+        )
+    }
+
+    func testRecordedClosureResolutionUsesFreshRouteEvidence() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertTrue(
+            harness
+                .debugRecordedConsumedRouteClosureUsesFreshRouteForTesting(),
+            "A recorded consumed closure must resolve from the fresh device-queue route, not the stale final ingress snapshot."
+        )
+    }
+
+    func testNotificationSequenceChangeBlocksFreshRouteReopen() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertTrue(
+            harness
+                .debugNotificationSequenceChangeBlocksFreshRouteReopenForTesting(),
+            "A notification admitted after fresh validation must retain the fail-closed gate instead of reopening it."
+        )
+    }
+
+    func testRouteTransactionFailureSnapshotIsStructuredAndRedactsUIDs() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        let first =
+            harness.debugStructuredRouteTransactionFailureSnapshotForTesting()
+        let second =
+            harness.debugStructuredRouteTransactionFailureSnapshotForTesting()
+
+        XCTAssertEqual(first, second, "Redacted fingerprints must correlate across snapshots.")
+        XCTAssertTrue(first.contains("routeTxn{phase=fresh-reopen state=consumed"))
+        XCTAssertTrue(first.contains("txn=71 expectedTxn=71"))
+        XCTAssertTrue(
+            first.contains(
+                "notification={current=73 baseline=68 required=72 inFlight=0}"
+            )
+        )
+        XCTAssertTrue(
+            first.contains("generation={configuration=11/12 system=41/42}")
+        )
+        XCTAssertTrue(first.contains("ownership={bound=91 current=92}"))
+        XCTAssertTrue(
+            first.contains(
+                "failed=[notificationSequence,configurationGeneration,systemAudioGeneration,ownershipToken]"
+            )
+        )
+        XCTAssertTrue(first.contains("targetInputUID=sha256/128:"))
+        XCTAssertTrue(first.contains("inputUID=sha256/128:"))
+        XCTAssertTrue(first.contains("preferredInputUID=sha256/128:"))
+        XCTAssertFalse(first.contains("PRIVATE-INPUT-UID"))
+        XCTAssertFalse(first.contains("PRIVATE-OUTPUT-UID"))
     }
 
     func testMicrophoneApprovalRejectsZeroWrongStaleRevokedAndRetiredGenerations() {

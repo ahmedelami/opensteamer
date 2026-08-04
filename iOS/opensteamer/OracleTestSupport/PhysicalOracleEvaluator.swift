@@ -27,7 +27,7 @@ private enum PhysicalOracleFields {
 
 /// Strict copy of the privacy-minimal raw-microphone oracle exposed through accessibility.
 struct PhysicalRawMicrophoneSnapshot: Equatable {
-    private static let schemaVersion = 2
+    private static let schemaVersion = 3
     private static let maximumAccessibilityValueBytes = 1_024
 
     let applicationProcessIdentifier: Int32
@@ -64,6 +64,7 @@ struct PhysicalRawMicrophoneSnapshot: Equatable {
                     "paired", "intent", "call", "transportHealthy",
                     "senderOwned", "trackEnabled", "raw", "topology",
                     "deviceOpen", "authorizationOpen", "senderScoped",
+                    "captureBuiltInMic",
                 ],
                 expectedVersion: Self.schemaVersion
               ),
@@ -78,6 +79,7 @@ struct PhysicalRawMicrophoneSnapshot: Equatable {
               fields["deviceOpen"] == "1",
               fields["authorizationOpen"] == "1",
               fields["senderScoped"] == "1",
+              fields["captureBuiltInMic"] == "1",
               let processIdentifierText = fields["pid"],
               let processIdentifier = Int32(processIdentifierText),
               processIdentifier > 0,

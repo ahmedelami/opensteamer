@@ -223,6 +223,8 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
             ("wrong mode", rawMicrophoneSender(time: 2, modeIsDefault: false)),
             ("wrong audio unit", rawMicrophoneSender(time: 2, usesRemoteIO: false)),
             ("input bus disabled", rawMicrophoneSender(time: 2, inputBusEnabled: false)),
+            ("capture route is not built-in microphone", rawMicrophoneSender(time: 2, captureRouteIsBuiltInMicrophone: false)),
+            ("capture route proof generation is zero", rawMicrophoneSender(time: 2, captureRouteProofGeneration: 0)),
             ("output bus disabled", rawMicrophoneSender(time: 2, outputBusEnabled: false)),
             ("category options empty", rawMicrophoneSender(time: 2, categoryOptionsAreEmpty: true)),
             ("wrong category options", rawMicrophoneSender(time: 2, categoryOptionsAreIPhoneMicrophoneRouting: false)),
@@ -323,6 +325,16 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
                 rawMicrophoneSample(
                     time: 2,
                     sender: rawMicrophoneSender(time: 2, microphonePolicyGeneration: 12)
+                )
+            ),
+            (
+                "capture route proof generation",
+                rawMicrophoneSample(
+                    time: 2,
+                    sender: rawMicrophoneSender(
+                        time: 2,
+                        captureRouteProofGeneration: 14
+                    )
                 )
             ),
             (
@@ -529,11 +541,19 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
             validValue + "|\(processIdentifierField)",
             valueWithoutProcessIdentifier,
             validValue + "|packets=999",
-            validValue.replacingOccurrences(of: "v=2", with: "v=1"),
+            validValue.replacingOccurrences(of: "v=3", with: "v=2"),
             validValue.replacingOccurrences(of: "energy=0.5", with: "energy=nan"),
             validValue.replacingOccurrences(of: "recording=13", with: "recording=0"),
             validValue.replacingOccurrences(of: "approved=13", with: "approved=14"),
             validValue.replacingOccurrences(of: "raw=1", with: "raw=0"),
+            validValue.replacingOccurrences(
+                of: "captureBuiltInMic=1",
+                with: "captureBuiltInMic=0"
+            ),
+            validValue
+                .split(separator: "|")
+                .filter { !$0.hasPrefix("captureBuiltInMic=") }
+                .joined(separator: "|"),
             validValue.replacingOccurrences(
                 of: processIdentifierField,
                 with: "pid=0"
@@ -3137,6 +3157,8 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
         modeIsDefault: Bool = true,
         usesRemoteIO: Bool = true,
         inputBusEnabled: Bool = true,
+        captureRouteIsBuiltInMicrophone: Bool = true,
+        captureRouteProofGeneration: UInt64 = 13,
         outputBusEnabled: Bool = true,
         categoryOptionsAreEmpty: Bool = false,
         categoryOptionsAreIPhoneMicrophoneRouting: Bool = true,
@@ -3184,6 +3206,10 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
             modeIsDefault: modeIsDefault,
             usesRemoteIO: usesRemoteIO,
             inputBusEnabled: inputBusEnabled,
+            captureRouteIsBuiltInMicrophone:
+                captureRouteIsBuiltInMicrophone,
+            captureRouteProofGeneration:
+                captureRouteProofGeneration,
             outputBusEnabled: outputBusEnabled,
             categoryOptionsAreEmpty: categoryOptionsAreEmpty,
             categoryOptionsAreIPhoneMicrophoneRouting:

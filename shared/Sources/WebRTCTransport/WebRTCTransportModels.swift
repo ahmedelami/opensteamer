@@ -1031,6 +1031,10 @@ public struct WebRTCIPhoneMicrophoneSenderDiagnostics: Equatable, Sendable {
     public let modeIsDefault: Bool
     public let usesRemoteIO: Bool
     public let inputBusEnabled: Bool
+    /// True only when native live-route diagnostics saw exactly the built-in iPhone microphone.
+    public let captureRouteIsBuiltInMicrophone: Bool
+    /// Ephemeral native exact-route publication generation; rotates across every revalidation.
+    public let captureRouteProofGeneration: UInt64
     public let outputBusEnabled: Bool
     public let categoryOptionsAreEmpty: Bool
     public let categoryOptionsAreIPhoneMicrophoneRouting: Bool

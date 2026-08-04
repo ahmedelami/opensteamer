@@ -220,6 +220,8 @@ enum WorldwideRawMicrophoneOracleEvaluator {
               sender.modeIsDefault,
               sender.usesRemoteIO,
               sender.inputBusEnabled,
+              sender.captureRouteIsBuiltInMicrophone,
+              sender.captureRouteProofGeneration > 0,
               sender.outputBusEnabled,
               !sender.categoryOptionsAreEmpty,
               sender.categoryOptionsAreIPhoneMicrophoneRouting,
@@ -295,7 +297,9 @@ enum WorldwideRawMicrophoneOracleEvaluator {
               previousSender.recordingGeneration
                 == currentSender.recordingGeneration,
               previousSender.approvedRecordingGeneration
-                == currentSender.approvedRecordingGeneration else {
+                == currentSender.approvedRecordingGeneration,
+              previousSender.captureRouteProofGeneration
+                == currentSender.captureRouteProofGeneration else {
             return .bindingChanged
         }
 
@@ -478,7 +482,7 @@ enum WorldwideRawMicrophoneOracleEvaluator {
 
 /// Versioned privacy-minimal accessibility payload emitted only after two coherent exact samples.
 struct WorldwideRawMicrophoneOracleSnapshot: Equatable, Sendable {
-    static let schemaVersion = 2
+    static let schemaVersion = 3
     static let maximumAccessibilityValueBytes = 1_024
 
     let applicationProcessIdentifier: Int32
@@ -492,6 +496,8 @@ struct WorldwideRawMicrophoneOracleSnapshot: Equatable, Sendable {
     let microphonePolicyGeneration: UInt64
     let recordingGeneration: UInt64
     let approvedRecordingGeneration: UInt64
+    let captureRouteIsBuiltInMicrophone: Bool
+    let captureRouteProofGeneration: UInt64
     let realtimeAdmissionCount: UInt64
     let deliveryCallbackCount: UInt64
     let deliveredFrameCount: UInt64
@@ -529,6 +535,10 @@ struct WorldwideRawMicrophoneOracleSnapshot: Equatable, Sendable {
         recordingGeneration = sender.recordingGeneration
         approvedRecordingGeneration =
             sender.approvedRecordingGeneration
+        captureRouteIsBuiltInMicrophone =
+            sender.captureRouteIsBuiltInMicrophone
+        captureRouteProofGeneration =
+            sender.captureRouteProofGeneration
         realtimeAdmissionCount = sender.realtimeAdmissionCount
         deliveryCallbackCount = sender.deliveryCallbackCount
         deliveredFrameCount = sender.deliveredFrameCount
@@ -550,7 +560,7 @@ struct WorldwideRawMicrophoneOracleSnapshot: Equatable, Sendable {
         let durationValue: String =
             totalSamplesDuration.map { String($0) } ?? "missing"
         var fields: [String] = []
-        fields.reserveCapacity(31)
+        fields.reserveCapacity(32)
         fields.append("v=\(Self.schemaVersion)")
         fields.append("pid=\(applicationProcessIdentifier)")
         fields.append("session=\(sessionGeneration.uuidString.lowercased())")
@@ -582,6 +592,7 @@ struct WorldwideRawMicrophoneOracleSnapshot: Equatable, Sendable {
         fields.append("deviceOpen=1")
         fields.append("authorizationOpen=1")
         fields.append("senderScoped=1")
+        fields.append("captureBuiltInMic=1")
         return fields.joined(separator: "|")
     }
 }
@@ -610,10 +621,24 @@ struct WorldwideRawMicrophoneContinuityTracker {
             coherentSampleCount = 1
             return .waiting
         }
-        guard WorldwideRawMicrophoneOracleEvaluator.evaluate(
+        let delta = WorldwideRawMicrophoneOracleEvaluator.evaluate(
             previous: previous,
             current: sample
-        ) == .advancing,
+        )
+        if delta == .bindingChanged,
+           Self.isExactCaptureRouteProofRotation(
+               previous: previous,
+               current: sample
+           ) {
+            // A route notification invalidates the old proof at ingress. The first sample from
+            // the newly validated built-in route is therefore the baseline for a new window,
+            // never evidence for the retired window and never discarded before rebasing.
+            windowGeneration = UUID()
+            self.previous = sample
+            coherentSampleCount = 1
+            return .waiting
+        }
+        guard delta == .advancing,
         coherentSampleCount < UInt64(Int64.max) else {
             reset()
             return .rejected
@@ -630,6 +655,29 @@ struct WorldwideRawMicrophoneContinuityTracker {
             return .rejected
         }
         return .satisfied(snapshot)
+    }
+
+    private static func isExactCaptureRouteProofRotation(
+        previous: WorldwideRawMicrophoneProofSample,
+        current: WorldwideRawMicrophoneProofSample
+    ) -> Bool {
+        let previousSender = previous.statistics.sender
+        let currentSender = current.statistics.sender
+        return previousSender.captureRouteProofGeneration
+                != currentSender.captureRouteProofGeneration
+            && previousSender.peerEpoch == currentSender.peerEpoch
+            && previousSender.bindingGeneration
+                == currentSender.bindingGeneration
+            && previousSender.negotiationEpoch
+                == currentSender.negotiationEpoch
+            && previousSender.trackGeneration
+                == currentSender.trackGeneration
+            && previousSender.microphonePolicyGeneration
+                == currentSender.microphonePolicyGeneration
+            && previousSender.recordingGeneration
+                == currentSender.recordingGeneration
+            && previousSender.approvedRecordingGeneration
+                == currentSender.approvedRecordingGeneration
     }
 
     mutating func reset() {
