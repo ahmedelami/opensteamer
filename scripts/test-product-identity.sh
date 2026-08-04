@@ -584,6 +584,12 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   '-type UDIF'
 require_rejection "$CASE" 'side-by-side TestFlight sparse-image creation'
 
+CASE=$(new_case testflight-archive-action-settings-proof)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'archive -showBuildSettings -json' \
+  'build -showBuildSettings -json'
+require_rejection "$CASE" 'side-by-side TestFlight archive-action settings proof'
+
 CASE=$(new_case testflight-build-image-size)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
   '-size "${TESTFLIGHT_BUILD_IMAGE_SIZE}"' \
@@ -604,7 +610,7 @@ require_rejection "$CASE" 'side-by-side TestFlight encrypted backing image'
 
 CASE=$(new_case testflight-build-image-format)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  'TESTFLIGHT_BUILD_IMAGE_FORMAT="UDSP"' \
+  'TESTFLIGHT_BUILD_IMAGE_FORMAT="SPRS"' \
   'TESTFLIGHT_BUILD_IMAGE_FORMAT="UDRW"'
 require_rejection "$CASE" 'side-by-side TestFlight exact sparse-image format'
 
@@ -1399,6 +1405,22 @@ write_hdiutil_entity_heavy_snapshot() {
   } >"$destination"
 }
 
+write_hdiutil_efi_first_snapshot() {
+  local destination=$1
+  print -r -- '<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>images</key><array><dict>
+<key>image-path</key><string>'"${BEHAVIOR_TARGET_IMAGE}"'</string>
+<key>image-encrypted</key><true/><key>writeable</key><true/>
+<key>system-entities</key><array>
+<dict><key>dev-entry</key><string>/dev/disk777s1</string><key>content-hint</key><string>EFI</string></dict>
+<dict><key>dev-entry</key><string>/dev/disk777s2</string><key>content-hint</key><string>Apple_APFS</string></dict>
+<dict><key>dev-entry</key><string>/dev/disk777</string><key>content-hint</key><string>GUID_partition_scheme</string></dict>
+<dict><key>dev-entry</key><string>/dev/disk778s1</string><key>content-hint</key><string>41504653-0000-11AA-AA11-00306543ECAC</string><key>mount-point</key><string>'"${BEHAVIOR_MOUNT_POINT}"'</string></dict>
+<dict><key>dev-entry</key><string>/dev/disk778</string><key>content-hint</key><string>EF57347C-0000-11AA-AA11-00306543ECAC</string></dict>
+</array></dict></array></dict></plist>' >"$destination"
+}
+
 HDITARGET="$BEHAVIOR_ROOT/hdiutil-target-at-129.plist"
 HDIABSENT="$BEHAVIOR_ROOT/hdiutil-absent-130.plist"
 HDIDUPLICATE="$BEHAVIOR_ROOT/hdiutil-duplicate.plist"
@@ -1407,12 +1429,14 @@ HDISCALAR="$BEHAVIOR_ROOT/hdiutil-scalar.plist"
 HDIMISSINGPATH="$BEHAVIOR_ROOT/hdiutil-missing-path.plist"
 HDIBADENTITIES="$BEHAVIOR_ROOT/hdiutil-bad-entities.plist"
 HDIENTITYHEAVY="$BEHAVIOR_ROOT/hdiutil-entity-at-129.plist"
+HDIEFIFIRST="$BEHAVIOR_ROOT/hdiutil-efi-first.plist"
 HDIMALFORMEDTAIL="$BEHAVIOR_ROOT/hdiutil-malformed-entity-at-129.plist"
 write_hdiutil_snapshot "$HDITARGET" 130 129
 write_hdiutil_snapshot "$HDIABSENT" 130 ''
 write_hdiutil_snapshot "$HDIDUPLICATE" 130 '64,129'
 write_hdiutil_snapshot "$HDIZERO" 0 ''
 write_hdiutil_entity_heavy_snapshot "$HDIENTITYHEAVY"
+write_hdiutil_efi_first_snapshot "$HDIEFIFIRST"
 /bin/cp -- "$HDIENTITYHEAVY" "$HDIMALFORMEDTAIL"
 /usr/bin/plutil -replace images.0.system-entities.1.content-hint \
   -string Apple_APFS "$HDIMALFORMEDTAIL"
@@ -1436,6 +1460,7 @@ SNAP_SCALAR="$HDISCALAR" \
 SNAP_MISSING_PATH="$HDIMISSINGPATH" \
 SNAP_BAD_ENTITIES="$HDIBADENTITIES" \
 SNAP_ENTITY_HEAVY="$HDIENTITYHEAVY" \
+SNAP_EFI_FIRST="$HDIEFIFIRST" \
 SNAP_MALFORMED_TAIL="$HDIMALFORMEDTAIL" \
 /bin/zsh <<'HDITEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
@@ -1487,6 +1512,12 @@ expect_status 0 find_current_attachment_root_device
 [[ "$LAST_OUTPUT" == '/dev/disk900' ]]
 expect_status 0 find_current_attachment_record
 [[ "$LAST_OUTPUT" == '/dev/disk900|/dev/disk900s129|/dev/disk900s129|true|true' ]]
+
+SNAPSHOT=$SNAP_EFI_FIRST
+expect_status 0 find_current_attachment_root_device
+[[ "$LAST_OUTPUT" == '/dev/disk777' ]]
+expect_status 0 find_current_attachment_record
+[[ "$LAST_OUTPUT" == '/dev/disk777|/dev/disk778s1|/dev/disk777s2|true|true' ]]
 
 SNAPSHOT=$SNAP_MALFORMED_TAIL
 expect_status 2 find_current_attachment_root_device

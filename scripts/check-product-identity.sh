@@ -616,7 +616,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'TESTFLIGHT_BUILD_VOLUME_NAME="opensteamer-testflight-build"' 1 \
   'side-by-side TestFlight fixed private volume name'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'TESTFLIGHT_BUILD_IMAGE_FORMAT="UDSP"' 1 \
+  'TESTFLIGHT_BUILD_IMAGE_FORMAT="SPRS"' 1 \
   'side-by-side TestFlight exact sparse-image format'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'APFS_PARTITION_TYPE_UUID="7C3457EF-0000-11AA-AA11-00306543ECAC"' 1 \
@@ -654,6 +654,9 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '-type SPARSE' 1 \
   'side-by-side TestFlight sparse-image creation'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'archive -showBuildSettings -json' 1 \
+  'side-by-side TestFlight archive-action settings proof'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '-fs APFS' 1 \
   'side-by-side TestFlight private APFS creation'

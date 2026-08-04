@@ -38,7 +38,10 @@ readonly TESTFLIGHT_BUILD_ROOT="/Volumes/t7"
 readonly TESTFLIGHT_BUILD_IMAGE_SIZE="64g"
 readonly TESTFLIGHT_BUILD_IMAGE_BASENAME="opensteamer-testflight-build"
 readonly TESTFLIGHT_BUILD_VOLUME_NAME="opensteamer-testflight-build"
-readonly TESTFLIGHT_BUILD_IMAGE_FORMAT="UDSP"
+# hdiutil's public single-file sparse creation mode is called UDSP, while
+# `hdiutil imageinfo -plist` identifies the resulting single-file sparse
+# container with the exact on-disk FourCC `SPRS` on this pinned macOS runtime.
+readonly TESTFLIGHT_BUILD_IMAGE_FORMAT="SPRS"
 readonly APFS_PARTITION_TYPE_UUID="7C3457EF-0000-11AA-AA11-00306543ECAC"
 readonly EXPECTED_TESTFLIGHT_BUILD_ROOT_VOLUME_UUID="25E93573-3993-42CC-8EE8-4F7A6C86A2EF"
 readonly EXPECTED_TESTFLIGHT_BUILD_ROOT_PHYSICAL_STORE_UUID="CE1B73D9-E28D-40D2-8D37-D81F2C3F1051"
@@ -1044,6 +1047,45 @@ function write_and_verify_created_image_info() {
   [[ ${#TESTFLIGHT_BUILD_IMAGE_PARTITION_UUID} == 36 ]]
 }
 
+function unique_guid_root_device_from_entity_array() {
+  local plist=$1
+  local entity_key_path=$2
+  local entity_count
+  entity_count=$(plist_array_count "${plist}" "${entity_key_path}") \
+    || return 2
+  (( entity_count > 0 )) || return 2
+
+  local entity_index
+  local entity_device
+  local entity_hint
+  local entity_mount
+  local root_device=''
+  local root_count=0
+  for (( entity_index = 0; entity_index < entity_count; entity_index += 1 )); do
+    entity_device=$(plist_typed_raw_value \
+      "${plist}" "${entity_key_path}.${entity_index}.dev-entry" string) \
+      || return 2
+    entity_hint=$(plist_typed_raw_value \
+      "${plist}" "${entity_key_path}.${entity_index}.content-hint" string) \
+      || return 2
+    [[ "${entity_device}" == /dev/disk<->* \
+        && -n "${entity_hint}" ]] || return 2
+    if [[ "${entity_hint}" == 'GUID_partition_scheme' ]]; then
+      [[ "${entity_device}" == /dev/disk<-> ]] || return 2
+      root_device=${entity_device}
+      (( root_count += 1 ))
+    fi
+    if ! entity_mount=$(plist_typed_raw_value \
+        "${plist}" "${entity_key_path}.${entity_index}.mount-point" string); then
+      /usr/bin/plutil -type \
+        "${entity_key_path}.${entity_index}.mount-point" "${plist}" \
+        >/dev/null 2>&1 && return 2
+    fi
+  done
+  (( root_count == 1 )) || return 2
+  print -r -- "${root_device}"
+}
+
 function attachment_devices_from_plist() {
   local plist=$1
   local image_prefix=$2
@@ -1053,13 +1095,8 @@ function attachment_devices_from_plist() {
   [[ -z "${image_key_prefix}" ]] \
     || entity_key_path="${image_key_prefix}.system-entities"
   local root_device
-  local root_hint
-  root_device=$(plist_typed_raw_value \
-    "${plist}" "${entity_key_path}.0.dev-entry" string) || return 2
-  root_hint=$(plist_typed_raw_value \
-    "${plist}" "${entity_key_path}.0.content-hint" string) || return 2
-  [[ "${root_device}" == /dev/disk<-> \
-      && "${root_hint}" == 'GUID_partition_scheme' ]] || return 1
+  root_device=$(unique_guid_root_device_from_entity_array \
+    "${plist}" "${entity_key_path}") || return 2
 
   local mounted_device=''
   local mount_count=0
@@ -1108,39 +1145,7 @@ function attachment_root_device_from_plist() {
   local plist=$1
   local image_key_prefix=$2
   local entity_key_path="${image_key_prefix}.system-entities"
-  local entity_count
-  entity_count=$(plist_array_count "${plist}" "${entity_key_path}") \
-    || return 2
-  (( entity_count > 0 )) || return 2
-  local entity_index
-  local entity_device
-  local entity_hint
-  local entity_mount
-  for (( entity_index = 0; entity_index < entity_count; entity_index += 1 )); do
-    entity_device=$(plist_typed_raw_value \
-      "${plist}" "${entity_key_path}.${entity_index}.dev-entry" string) \
-      || return 2
-    entity_hint=$(plist_typed_raw_value \
-      "${plist}" "${entity_key_path}.${entity_index}.content-hint" string) \
-      || return 2
-    [[ "${entity_device}" == /dev/disk<->* \
-        && -n "${entity_hint}" ]] || return 2
-    if ! entity_mount=$(plist_typed_raw_value \
-        "${plist}" "${entity_key_path}.${entity_index}.mount-point" string); then
-      /usr/bin/plutil -type \
-        "${entity_key_path}.${entity_index}.mount-point" "${plist}" \
-        >/dev/null 2>&1 && return 2
-    fi
-  done
-  local root_device
-  local root_hint
-  root_device=$(plist_typed_raw_value \
-    "${plist}" "${entity_key_path}.0.dev-entry" string) || return 2
-  root_hint=$(plist_typed_raw_value \
-    "${plist}" "${entity_key_path}.0.content-hint" string) || return 2
-  [[ "${root_device}" == /dev/disk<-> \
-      && "${root_hint}" == 'GUID_partition_scheme' ]] || return 2
-  print -r -- "${root_device}"
+  unique_guid_root_device_from_entity_array "${plist}" "${entity_key_path}"
 }
 
 function find_current_attachment_record() {
@@ -1835,7 +1840,7 @@ function verify_effective_archive_build_roots() {
   write_private_plist \
     "${destination}" run_pinned_xcodebuild settings \
     "${TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[@]}" \
-    -showBuildSettings -json || return 1
+    archive -showBuildSettings -json || return 1
   local entry_count
   entry_count=$(plist_root_array_count "${destination}") || return 1
   (( entry_count > 0 )) || return 1
