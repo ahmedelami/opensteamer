@@ -11,6 +11,67 @@ import XCTest
 /// required activity must belong to one run, every connection must map to the intended host PID,
 /// and every spawned process group must be reclaimable on success, failure, cancellation, or timeout.
 final class PhysicalValidationScriptTests: XCTestCase {
+    private static let rustOracleSupport: (directory: URL, binary: URL) = {
+        let fileManager = FileManager.default
+        let directory = URL(fileURLWithPath: "/Volumes/t7", isDirectory: true)
+            .appendingPathComponent(
+                "opensteamer-physical-validation-tests-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        let temporaryDirectory = directory.appendingPathComponent("tmp", isDirectory: true)
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = repositoryRoot.appendingPathComponent(
+            "iOS/opensteamer/scripts/physical-validation-oracle.rs"
+        )
+        let binary = directory.appendingPathComponent("physical-validation-oracle")
+
+        try! fileManager.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        precondition(chmod(directory.path, S_IRWXU) == 0)
+        precondition(chmod(temporaryDirectory.path, S_IRWXU) == 0)
+        let compiler = Process()
+        compiler.executableURL = URL(
+            fileURLWithPath: "/opt/homebrew/Cellar/rust/1.97.1/bin/rustc"
+        )
+        compiler.arguments = [
+            "--edition=2021",
+            "-D", "warnings",
+            "-C", "opt-level=2",
+            "--sysroot", "/opt/homebrew/Cellar/rust/1.97.1",
+            source.path,
+            "-o", binary.path,
+        ]
+        var environment = ProcessInfo.processInfo.environment
+        environment["TMPDIR"] = temporaryDirectory.path
+        compiler.environment = environment
+        try! compiler.run()
+        compiler.waitUntilExit()
+        precondition(compiler.terminationStatus == 0)
+        precondition(chmod(binary.path, S_IRUSR | S_IXUSR) == 0)
+        return (directory, binary)
+    }()
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        setenv(
+            "OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE",
+            Self.rustOracleSupport.binary.path,
+            1
+        )
+    }
+
+    override class func tearDown() {
+        unsetenv("OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE")
+        try? FileManager.default.removeItem(at: rustOracleSupport.directory)
+        super.tearDown()
+    }
+
     /// A physical driver and the positional arguments needed to enter its inert self-test mode.
     private typealias PhysicalDriver = (
         relativePath: String,
@@ -21,7 +82,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
         static let coreDeviceIdentifier = "synthetic-coredevice-selector"
         static let hardwareUDID = "synthetic-hardware-udid"
         static let expectedBuild = "self-test-build"
-        static let physicalOutputUID = "synthetic-physical-output-uid"
+        static let physicalOutputUID = "BuiltInSpeakerDevice"
     }
 
     private var repositoryRoot: URL {
@@ -70,6 +131,277 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 }
             ),
         ]
+    }
+
+    func testReconnectDriverAndSharedHelpersHaveNoPythonRuntimeDependency() throws {
+        for relativePath in [
+            "iOS/opensteamer/scripts/validate-testflight-paired-reconnect.sh",
+            "iOS/opensteamer/scripts/physical-validation-helpers.zsh",
+        ] {
+            let source = try String(
+                contentsOf: repositoryRoot.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            XCTAssertFalse(
+                source.lowercased().contains("python"),
+                "\(relativePath) reintroduced an interpreter dependency."
+            )
+        }
+    }
+
+    func testRawMicrophonePhysicalContractRequiresBuiltInCaptureRouteV3() throws {
+        let parser = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "iOS/opensteamer/OracleTestSupport/PhysicalOracleEvaluator.swift"
+            ),
+            encoding: .utf8
+        )
+        let production = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "iOS/opensteamer/Sources/Diagnostics/WorldwidePhysicalOracles.swift"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(parser.contains("private static let schemaVersion = 3"))
+        XCTAssertTrue(parser.contains("fields[\"captureBuiltInMic\"] == \"1\""))
+        XCTAssertTrue(production.contains("fields.append(\"captureBuiltInMic=1\")"))
+        XCTAssertTrue(production.contains("captureRouteProofGeneration"))
+    }
+
+    func testReconnectDriverRejectsReservedSelfTestEnvironmentOutsideSelfTest() throws {
+        let artifactDirectory = URL(
+            fileURLWithPath:
+                "/Volumes/t7/opensteamer-self-test-env-rejection-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: artifactDirectory) }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = [
+            repositoryRoot.appendingPathComponent(
+                "iOS/opensteamer/scripts/validate-testflight-paired-reconnect.sh"
+            ).path,
+            SyntheticPhysicalDevice.coreDeviceIdentifier,
+            SyntheticPhysicalDevice.hardwareUDID,
+            SyntheticPhysicalDevice.expectedBuild,
+            SyntheticPhysicalDevice.physicalOutputUID,
+            artifactDirectory.path,
+        ]
+        var environment = ProcessInfo.processInfo.environment.filter {
+            !$0.key.hasPrefix("OPENSTEAMER_SELF_TEST_")
+                && $0.key != "OPENSTEAMER_SCRIPT_SELF_TEST"
+        }
+        environment["OPENSTEAMER_SELF_TEST_RAW_NOW_NS"] = ""
+        process.environment = environment
+        let standardError = Pipe()
+        process.standardError = standardError
+
+        try process.run()
+        let exited = waitForExit(process, timeout: 3)
+        if !exited {
+            forceStopProcessAndIsolatedGroup(process)
+        }
+        XCTAssertTrue(exited)
+        guard !process.isRunning else { return }
+        let diagnostic = String(
+            decoding: readAvailableData(from: standardError),
+            as: UTF8.self
+        )
+        XCTAssertEqual(process.terminationStatus, 2, diagnostic)
+        XCTAssertTrue(
+            diagnostic.contains("reserved self-test variables present"),
+            diagnostic
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: artifactDirectory.path))
+    }
+
+    func testReconnectDriverRejectsUnsafeArtifactPathsWithoutTouchingOutsideSentinel()
+        throws {
+        let fileManager = FileManager.default
+        let outside = fileManager.temporaryDirectory.appendingPathComponent(
+            "opensteamer-artifact-guard-outside-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let sentinel = outside.appendingPathComponent("sentinel.txt")
+        let t7Prefix = URL(fileURLWithPath: "/Volumes/t7", isDirectory: true)
+            .appendingPathComponent(
+                "opensteamer-artifact-guard-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        let symlink = t7Prefix.appendingPathComponent("linked", isDirectory: true)
+        let wrongMode = t7Prefix.appendingPathComponent("wrong-mode", isDirectory: true)
+        defer {
+            try? fileManager.removeItem(at: t7Prefix)
+            try? fileManager.removeItem(at: outside)
+        }
+        try fileManager.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data("preserve-me\n".utf8).write(to: sentinel)
+        try fileManager.createDirectory(at: t7Prefix, withIntermediateDirectories: true)
+        XCTAssertEqual(chmod(t7Prefix.path, S_IRWXU), 0)
+        try fileManager.createSymbolicLink(
+            at: symlink,
+            withDestinationURL: outside
+        )
+        try fileManager.createDirectory(at: wrongMode, withIntermediateDirectories: true)
+        XCTAssertEqual(chmod(wrongMode.path, 0o755), 0)
+
+        let traversal = URL(
+            fileURLWithPath:
+                "/Volumes/t7/guard/../..\(outside.path)/artifact",
+            isDirectory: true
+        )
+        for (mode, path) in [
+            ("artifact-path-traversal", traversal),
+            ("artifact-path-symlink", symlink.appendingPathComponent("artifact")),
+            ("artifact-path-wrong-mode", wrongMode.appendingPathComponent("artifact")),
+        ] {
+            let result = try runPhysicalDriverSelfTest(
+                physicalDrivers[2],
+                mode: mode,
+                artifactDirectory: path,
+                timeout: 8
+            )
+            XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
+            XCTAssertEqual(result.terminationStatus, 2, result.diagnostic)
+            XCTAssertEqual(
+                try String(contentsOf: sentinel, encoding: .utf8),
+                "preserve-me\n",
+                "\(mode) touched the outside sentinel."
+            )
+        }
+    }
+
+    func testReconnectDriverRejectsProtectedOrArbitraryHostLabelBeforeLaunchctlMutation()
+        throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "opensteamer-host-label-preflight-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let shimDirectory = root.appendingPathComponent("bin", isDirectory: true)
+        let mutationLog = root.appendingPathComponent("launchctl-mutations.txt")
+        let shim = shimDirectory.appendingPathComponent("launchctl")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: shimDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data(
+            "#!/bin/zsh\nprint -r -- mutation >> \"$OPENSTEAMER_LAUNCHCTL_MUTATION_LOG\"\nexit 99\n".utf8
+        ).write(to: shim)
+        XCTAssertEqual(chmod(shim.path, S_IRWXU), 0)
+
+        for label in [
+            "com.elamin.audiostreamer.worldwide",
+            "org.example.arbitrary.worldwide",
+        ] {
+            let result = try runPhysicalDriverSelfTest(
+                physicalDrivers[2],
+                mode: "host-identity-preflight",
+                artifactDirectory: root.appendingPathComponent(UUID().uuidString),
+                timeout: 5,
+                additionalEnvironment: [
+                    "OPENSTEAMER_HOST_LAUNCH_AGENT_LABEL": label,
+                    "OPENSTEAMER_LAUNCHCTL_MUTATION_LOG": mutationLog.path,
+                    "PATH": shimDirectory.path + ":/usr/bin:/bin:/usr/sbin:/sbin",
+                ]
+            )
+            XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
+            XCTAssertEqual(result.terminationStatus, 2, result.diagnostic)
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: mutationLog.path),
+            "An unsafe launch identity reached launchctl."
+        )
+    }
+
+    func testRustPhysicalValidationOracleSelfTestPasses() throws {
+        let process = Process()
+        process.executableURL = Self.rustOracleSupport.binary
+        process.arguments = ["self-test"]
+        let standardOutput = Pipe()
+        let standardError = Pipe()
+        process.standardOutput = standardOutput
+        process.standardError = standardError
+
+        try process.run()
+        let exited = waitForExit(process, timeout: 10)
+        if !exited {
+            forceStopProcessAndIsolatedGroup(process)
+        }
+        XCTAssertTrue(exited, "The Rust physical-validation oracle self-test timed out.")
+        guard !process.isRunning else { return }
+        let output = String(
+            decoding: readAvailableData(from: standardOutput),
+            as: UTF8.self
+        )
+        let error = String(
+            decoding: readAvailableData(from: standardError),
+            as: UTF8.self
+        )
+        XCTAssertEqual(process.terminationStatus, 0, error)
+        XCTAssertEqual(output, "SELF_TEST_OK physical-validation-oracle\n")
+    }
+
+    func testReconnectSelfTestRejectsArbitraryExportedRustOracle() throws {
+        let artifactDirectory = URL(
+            fileURLWithPath:
+                "/Volumes/t7/opensteamer-exported-oracle-rejection-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: artifactDirectory) }
+        let result = try runPhysicalDriverSelfTest(
+            physicalDrivers[2],
+            mode: "raw-readiness-exact-start",
+            artifactDirectory: artifactDirectory,
+            timeout: 5,
+            additionalEnvironment: [
+                "OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE": "/bin/true",
+            ]
+        )
+
+        XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
+        XCTAssertNotEqual(result.terminationStatus, 0, result.diagnostic)
+        XCTAssertTrue(
+            result.standardError.contains(
+                "XCTest-exported Rust physical-validation oracle is unsafe"
+            ),
+            result.diagnostic
+        )
+        XCTAssertEqual(
+            try String(
+                contentsOf: artifactDirectory.appendingPathComponent(
+                    "run-status.txt"
+                ),
+                encoding: .utf8
+            ),
+            "status=failed\n"
+        )
+    }
+
+    func testReconnectDriverBuildsPinnedMigrationLockProbeOnT7() throws {
+        let artifactDirectory = URL(
+            fileURLWithPath:
+                "/Volumes/t7/opensteamer-migration-lock-probe-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: artifactDirectory) }
+        let result = try runPhysicalDriverSelfTest(
+            physicalDrivers[2],
+            mode: "migration-controller-lock-probe-build",
+            artifactDirectory: artifactDirectory,
+            timeout: 10
+        )
+        XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
+        XCTAssertEqual(result.terminationStatus, 0, result.diagnostic)
+        XCTAssertEqual(
+            try String(
+                contentsOf: artifactDirectory.appendingPathComponent(
+                    "migration-controller-lock-probe-status.txt"
+                ),
+                encoding: .utf8
+            ),
+            "status=validated sha256=0beb8e96aabd059ee5f108dfd05d7d5d99fa52b58f56ab942a31ee8efd33f528\n"
+        )
     }
 
     func testUpdateDriverRunsMissingCredentialCasesWithInertApplicationHost() throws {
@@ -269,7 +601,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
         }
     }
 
-    func testDefaultInputLifecycleValidatorRejectsDelayedMissingWrongAndGlobalMutations()
+    func testDefaultInputLifecycleValidatorAcceptsPreselectedOrSwitchedAndRejectsMutations()
         throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(
@@ -300,6 +632,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             time: Int,
             input: String,
             isBlackHole: Bool,
+            inputTransportClass: String? = nil,
             outputFingerprint: String = output,
             systemFingerprint: String = systemOutput
         ) throws -> URL {
@@ -309,7 +642,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             try JSONSerialization.data(
                 withJSONObject: [
                     "schema":
-                        "opensteamer.default-input-snapshot.v1",
+                        "opensteamer.default-input-snapshot.v2",
                     "role": role,
                     "observedAtMonotonicNs": time,
                     "inputUIDFingerprint": input,
@@ -319,6 +652,9 @@ final class PhysicalValidationScriptTests: XCTestCase {
                         systemFingerprint,
                     "inputIsCanonicalBlackHole":
                         isBlackHole,
+                    "inputTransportClass":
+                        inputTransportClass
+                            ?? (isBlackHole ? "virtual" : "built-in"),
                 ],
                 options: [.sortedKeys]
             ).write(to: url)
@@ -326,13 +662,14 @@ final class PhysicalValidationScriptTests: XCTestCase {
         }
 
         func fixtures(
-            mutation: Mutation? = nil
+            mutation: Mutation? = nil,
+            preselected: Bool = false
         ) throws -> (URL, URL, URL) {
             let before = try write(
                 role: "before",
                 time: 1_000,
-                input: prior,
-                isBlackHole: false
+                input: preselected ? blackHole : prior,
+                isBlackHole: preselected
             )
             let healthy = try write(
                 role: "healthy",
@@ -357,18 +694,20 @@ final class PhysicalValidationScriptTests: XCTestCase {
                     ? blackHole
                     : mutation == .wrongRestore
                         ? String(repeating: "9", count: 64)
-                        : prior,
+                        : preselected ? blackHole : prior,
                 isBlackHole:
-                    mutation == .noRestore
+                    mutation == .noRestore || preselected
             )
             return (before, healthy, after)
         }
 
         func run(
-            mutation: Mutation? = nil
+            mutation: Mutation? = nil,
+            preselected: Bool = false
         ) throws -> ZshProbeResult {
             let fixture = try fixtures(
-                mutation: mutation
+                mutation: mutation,
+                preselected: preselected
             )
             return try runPhysicalDriverSelfTest(
                 physicalDrivers[2],
@@ -396,6 +735,16 @@ final class PhysicalValidationScriptTests: XCTestCase {
             valid.terminationStatus,
             0,
             valid.diagnostic
+        )
+        let preselected = try run(preselected: true)
+        XCTAssertTrue(
+            preselected.exitedWithinDeadline,
+            preselected.diagnostic
+        )
+        XCTAssertEqual(
+            preselected.terminationStatus,
+            0,
+            preselected.diagnostic
         )
 
         for mutation in [
@@ -943,6 +1292,9 @@ final class PhysicalValidationScriptTests: XCTestCase {
             "Startup connected-call incoming Mac playout continuity evidence",
             "Interruption-origin incoming Mac playout continuity evidence",
             "Fresh ordinary audio proof after final call recovery",
+            "Post-call raw iPhone microphone rolling continuity evidence",
+            "Post-call raw iPhone microphone runtime overlap evidence",
+            "Post-call raw microphone generation evidence",
         ]
 
         func fixture(
@@ -1923,7 +2275,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
     }
 
     func testFrozenBlackHoleProbeSyntheticCasesHaveExactPassSet() throws {
-        let root = FileManager.default.temporaryDirectory
+        let root = URL(fileURLWithPath: "/Volumes/t7", isDirectory: true)
             .appendingPathComponent("opensteamer-frozen-blackhole-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1981,8 +2333,15 @@ final class PhysicalValidationScriptTests: XCTestCase {
             "stale-nonce",
             "too-few-progress",
             "output-generator",
+            "physical-output-policy",
+            "route-mutation",
+            "digital-delayed-loop",
         ]
-        let passingCases: Set<String> = ["healthy", "output-generator"]
+        let passingCases: Set<String> = [
+            "healthy",
+            "output-generator",
+            "physical-output-policy",
+        ]
         for testCase in cases {
             let resultURL = root.appendingPathComponent("\(testCase).json")
             let process = Process()
@@ -2022,6 +2381,24 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 XCTAssertEqual(process.terminationStatus, 1, diagnostic)
                 XCTAssertEqual(object["status"] as? String, "failed")
             }
+        }
+        let probeSource = try String(contentsOf: source, encoding: .utf8)
+        for requiredPolicyToken in [
+            "BuiltInSpeakerDevice",
+            "kAudioDeviceClassID",
+            "kAudioDeviceTransportTypeBuiltIn",
+            "kAudioAggregateDevicePropertyFullSubDeviceList",
+            "queue_device_changed_during_proof",
+            "default_route_changed_during_proof",
+            "route_identity_changed_during_proof",
+            "controlled_host_no_audio_taps_not_acknowledged",
+            "controlled-host-no-audio-taps-reviewed",
+            "not cryptographic proof",
+        ] {
+            XCTAssertTrue(
+                probeSource.contains(requiredPolicyToken),
+                "The physical-output policy omitted \(requiredPolicyToken)."
+            )
         }
     }
 
@@ -2408,7 +2785,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 physicalDrivers[2],
                 mode: mode,
                 artifactDirectory: artifactDirectory,
-                timeout: 8
+                timeout: 15
             )
             XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
             XCTAssertEqual(result.terminationStatus, 0, result.diagnostic)
@@ -2627,8 +3004,10 @@ final class PhysicalValidationScriptTests: XCTestCase {
             "call-ready-success",
             "call-ready-timeout",
             "call-ready-stale",
+            "call-ready-late-after-query",
+            "call-ready-late-after-read",
         ] {
-            let artifactDirectory = FileManager.default.temporaryDirectory
+            let artifactDirectory = URL(fileURLWithPath: "/Volumes/t7", isDirectory: true)
                 .appendingPathComponent("opensteamer-\(mode)-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: artifactDirectory) }
             let result = try runPhysicalDriverSelfTest(
@@ -2673,6 +3052,222 @@ final class PhysicalValidationScriptTests: XCTestCase {
                         encoding: .utf8
                     ),
                     "state=timed-out\n"
+                )
+            }
+        }
+    }
+
+    func testCallEndAcknowledgementIsFreshBoundedAndAfterConnectedProof() throws {
+        for mode in [
+            "call-end-success",
+            "call-end-timeout",
+            "call-end-stale",
+            "call-end-late-after-query",
+            "call-end-late-after-read",
+        ] {
+            let artifactDirectory = URL(
+                fileURLWithPath:
+                    "/Volumes/t7/opensteamer-\(mode)-\(UUID().uuidString)",
+                isDirectory: true
+            )
+            defer { try? FileManager.default.removeItem(at: artifactDirectory) }
+            let result = try runPhysicalDriverSelfTest(
+                physicalDrivers[2],
+                mode: mode,
+                artifactDirectory: artifactDirectory,
+                timeout: 5
+            )
+            XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
+            XCTAssertEqual(result.terminationStatus, 0, result.diagnostic)
+            let events = try String(
+                contentsOf: artifactDirectory.appendingPathComponent("phase-order.log"),
+                encoding: .utf8
+            )
+            let connectedProof = try XCTUnwrap(
+                events.range(of: "phase=3 event=connected-call-proof-observed")
+            )
+            let request = try XCTUnwrap(
+                events.range(of: "phase=3 event=call-end-requested")
+            )
+            XCTAssertLessThan(connectedProof.lowerBound, request.lowerBound)
+            let status = try String(
+                contentsOf: artifactDirectory.appendingPathComponent(
+                    "phase-3-real-call/call-end-status.txt"
+                ),
+                encoding: .utf8
+            )
+            if mode == "call-end-success" {
+                let accepted = try XCTUnwrap(
+                    events.range(of: "phase=3 event=call-end-accepted")
+                )
+                XCTAssertLessThan(request.lowerBound, accepted.lowerBound)
+                XCTAssertEqual(status, "state=accepted\n")
+            } else {
+                XCTAssertEqual(status, "state=timed-out\n")
+            }
+            if mode == "call-end-stale" {
+                XCTAssertEqual(
+                    try String(
+                        contentsOf: artifactDirectory.appendingPathComponent(
+                            "phase-3-real-call/call-end-stale-acknowledgement.txt"
+                        ),
+                        encoding: .utf8
+                    ),
+                    "state=discarded-before-request\n"
+                )
+            }
+        }
+    }
+
+    func testInCallAcousticAcknowledgementIsFreshBoundedAndDistinct() throws {
+        for mode in [
+            "call-acoustic-success",
+            "call-acoustic-timeout",
+            "call-acoustic-stale",
+            "call-acoustic-late-after-query",
+            "call-acoustic-late-after-read",
+        ] {
+            let artifactDirectory = URL(
+                fileURLWithPath:
+                    "/Volumes/t7/opensteamer-\(mode)-\(UUID().uuidString)",
+                isDirectory: true
+            )
+            defer { try? FileManager.default.removeItem(at: artifactDirectory) }
+            let result = try runPhysicalDriverSelfTest(
+                physicalDrivers[2],
+                mode: mode,
+                artifactDirectory: artifactDirectory,
+                timeout: 5
+            )
+            XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
+            XCTAssertEqual(result.terminationStatus, 0, result.diagnostic)
+            let events = try String(
+                contentsOf: artifactDirectory.appendingPathComponent("phase-order.log"),
+                encoding: .utf8
+            )
+            let request = try XCTUnwrap(
+                events.range(of: "phase=3 event=call-acoustic-requested")
+            )
+            let status = try String(
+                contentsOf: artifactDirectory.appendingPathComponent(
+                    "phase-3-real-call/call-acoustic-status.txt"
+                ),
+                encoding: .utf8
+            )
+            if mode == "call-acoustic-success" {
+                let accepted = try XCTUnwrap(
+                    events.range(of: "phase=3 event=call-acoustic-accepted")
+                )
+                XCTAssertLessThan(request.lowerBound, accepted.lowerBound)
+                let acceptedLines = status.split(separator: "\n").map(String.init)
+                XCTAssertEqual(acceptedLines.count, 6)
+                XCTAssertEqual(
+                    Array(acceptedLines.prefix(5)),
+                    [
+                        "schema=opensteamer.call-acoustic-acknowledgement.v2",
+                        "nonce=self-test-call-acoustic-nonce",
+                        "sequence=1",
+                        "token=self-test-call-acoustic-token",
+                        "state=accepted",
+                    ]
+                )
+                let acceptedAtPrefix = "acceptedAtMonotonicNs="
+                let acceptedAt = try XCTUnwrap(acceptedLines.last)
+                XCTAssertTrue(acceptedAt.hasPrefix(acceptedAtPrefix))
+                XCTAssertGreaterThan(
+                    UInt64(acceptedAt.dropFirst(acceptedAtPrefix.count)) ?? 0,
+                    0
+                )
+            } else {
+                XCTAssertEqual(status, "state=timed-out\n")
+            }
+            if mode == "call-acoustic-stale" {
+                XCTAssertEqual(
+                    try String(
+                        contentsOf: artifactDirectory.appendingPathComponent(
+                            "phase-3-real-call/call-acoustic-stale-acknowledgement.txt"
+                        ),
+                        encoding: .utf8
+                    ),
+                    "state=discarded-before-request\n"
+                )
+            }
+        }
+    }
+
+    func testHostDeploymentVerifierReceivesExactGenerationContract() throws {
+        for mode in [
+            "host-deployment-contract-success",
+            "host-deployment-contract-missing",
+        ] {
+            let artifactDirectory = URL(
+                fileURLWithPath:
+                    "/Volumes/t7/opensteamer-\(mode)-\(UUID().uuidString)",
+                isDirectory: true
+            )
+            defer { try? FileManager.default.removeItem(at: artifactDirectory) }
+            let result = try runPhysicalDriverSelfTest(
+                physicalDrivers[2],
+                mode: mode,
+                artifactDirectory: artifactDirectory,
+                timeout: 8
+            )
+            XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
+            XCTAssertEqual(result.terminationStatus, 0, result.diagnostic)
+            let manifest = try String(
+                contentsOf: artifactDirectory.appendingPathComponent(
+                    "host-deployment.txt"
+                ),
+                encoding: .utf8
+            )
+            if mode.hasSuffix("success") {
+                XCTAssertTrue(manifest.contains("verifier-invoked=true"), manifest)
+                XCTAssertTrue(manifest.contains("argc=12"), manifest)
+                XCTAssertTrue(
+                    manifest.contains(
+                        "arg1=\(artifactDirectory.path)/fresh-staged.app"
+                    ),
+                    manifest
+                )
+                XCTAssertTrue(
+                    manifest.contains(
+                        "arg2=\(artifactDirectory.path)/offline-legacy-reference"
+                    ),
+                    manifest
+                )
+                XCTAssertTrue(
+                    manifest.contains(
+                        "arg3=\(artifactDirectory.path)/reviewed-launch-agent.plist"
+                    ),
+                    manifest
+                )
+                for expected in [
+                    "arg4=123",
+                    "arg5=456",
+                    "arg6=789",
+                    "arg7=4242",
+                    "arg8=7",
+                    "arg9=Mon Aug  3 12:34:56 2026",
+                    "arg10=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "arg11=111",
+                    "arg12=222",
+                ] {
+                    XCTAssertTrue(manifest.contains(expected), manifest)
+                }
+                XCTAssertTrue(manifest.contains("controller=/Volumes/t7/"), manifest)
+            } else {
+                XCTAssertFalse(manifest.contains("verifier-invoked=true"), manifest)
+                let verifierError = try String(
+                    contentsOf: artifactDirectory.appendingPathComponent(
+                        "host-deployment-stderr.txt"
+                    ),
+                    encoding: .utf8
+                )
+                XCTAssertTrue(
+                    verifierError.contains(
+                        "generation inputs are incomplete or unsafe"
+                    ),
+                    verifierError
                 )
             }
         }
@@ -2747,7 +3342,14 @@ final class PhysicalValidationScriptTests: XCTestCase {
             "terminate_production_app_for_call_phase",
             "wait_for_fresh_call_ready_acknowledgement",
             "start_physical_audio_oracle_tone",
+            "configure_post_call_raw_contract",
             "run_simple_physical_ui_test",
+            "run_real_call_operator_and_post_call_probe",
+            "validate_blackhole_probe_json",
+            "validate_default_input_lifecycle_json",
+            "validate_ui_xcresult",
+            "validate_post_call_raw_generation_evidence",
+            "validate_and_retain_raw_overlap_evidence",
         ]
         var remaining = callFunction[...]
         for token in orderedTokens {
@@ -2769,6 +3371,186 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 "testRealConnectedCallRecoveryRotatesOrdinaryAudioPolicyAndRequiresFreshProof"
             )
         )
+
+        let operatorHookStart = try XCTUnwrap(
+            driver.range(of: "function run_real_call_operator_and_post_call_probe()")
+        )
+        let operatorHookEnd = try XCTUnwrap(
+            driver.range(
+                of: "\n}\n\nfunction validate_post_call_raw_generation_evidence()",
+                range: operatorHookStart.upperBound..<driver.endIndex
+            )
+        )
+        let operatorHook = driver[
+            operatorHookStart.lowerBound..<operatorHookEnd.upperBound
+        ]
+        var remainingHook = operatorHook[...]
+        for token in [
+            "wait_for_nonce_bound_call_ui_hosted_state",
+            "wait_for_fresh_call_acoustic_acknowledgement",
+            "wait_for_nonce_bound_call_ui_hosted_state",
+            "capture_default_input_snapshot",
+            "wait_for_fresh_call_end_acknowledgement",
+            "wait_for_fresh_raw_session_readiness_and_start_probe",
+        ] {
+            let range = try XCTUnwrap(remainingHook.range(of: token))
+            remainingHook = remainingHook[range.upperBound...]
+        }
+        XCTAssertTrue(
+            callFunction.contains(
+                "\"${RAW_PROBE_COMPLETION_OBSERVATION}\" \\\n    arm_post_call_raw_readiness"
+            ),
+            "The post-call Mac lower bound must be a pre-XCTest-start hook."
+        )
+        XCTAssertTrue(
+            operatorHook.contains(
+                "POST_CALL_RAW_INTER_ACK_SNAPSHOT_BUDGET_SECONDS"
+            )
+        )
+        let simpleStart = try XCTUnwrap(
+            driver.range(of: "function run_simple_physical_ui_test()")
+        )
+        let simpleEnd = try XCTUnwrap(
+            driver.range(
+                of: "\n}\n\nfunction require_phase_three_quiescence()",
+                range: simpleStart.upperBound..<driver.endIndex
+            )
+        )
+        let simpleFunction = driver[simpleStart.lowerBound..<simpleEnd.lowerBound]
+        let watchdogStarted = try XCTUnwrap(
+            simpleFunction.range(of: "XCODEBUILD_WATCHDOG_PID=$!")
+        )
+        let afterHook = try XCTUnwrap(
+            simpleFunction.range(
+                of: "if [[ -n \"${after_start_hook}\" ]]",
+                range: watchdogStarted.upperBound..<simpleFunction.endIndex
+            )
+        )
+        XCTAssertLessThan(watchdogStarted.lowerBound, afterHook.lowerBound)
+        XCTAssertTrue(callFunction.contains("RAW_PROBE_COMPLETION_OBSERVATION"))
+        XCTAssertTrue(callFunction.contains("CALL_ACOUSTIC_STATUS"))
+    }
+
+    func testRealCallXCTestRequiresPostCallMicGenerationAndDriverOverlap() throws {
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "iOS/opensteamer/UITests/PairedReconnectPhysicalUITests.swift"
+            ),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(
+            source.range(
+                of: "func testRealConnectedCallRecoveryRotatesOrdinaryAudioPolicyAndRequiresFreshProof()"
+            )
+        )
+        let end = try XCTUnwrap(
+            source.range(
+                of: "func testThreeSameProcessHostRestartsThenColdRelaunchPreservePairing()",
+                range: start.upperBound..<source.endIndex
+            )
+        )
+        let callTest = source[start.lowerBound..<end.lowerBound]
+        let hostedMarker = try XCTUnwrap(
+            callTest.range(of: "sequence: 1")
+        )
+        let hostedMarkerGuard = try XCTUnwrap(
+            callTest.range(of: "let hostedMarkerRawMicrophone")
+        )
+        let recoveryWait = try XCTUnwrap(
+            callTest.range(of: "waitForFreshPostCallOrdinaryPlayback")
+        )
+        XCTAssertLessThan(
+            hostedMarkerGuard.lowerBound,
+            hostedMarker.lowerBound
+        )
+        XCTAssertLessThan(hostedMarker.lowerBound, recoveryWait.lowerBound)
+        let acknowledgementWait = try XCTUnwrap(
+            callTest.range(
+                of: "waitForAcceptedAcousticAcknowledgementWhileHosted",
+                range: hostedMarker.upperBound..<callTest.endIndex
+            )
+        )
+        let postAcknowledgementMarker = try XCTUnwrap(
+            callTest.range(
+                of: "sequence: 2",
+                range: acknowledgementWait.upperBound..<callTest.endIndex
+            )
+        )
+        XCTAssertLessThan(
+            hostedMarker.lowerBound,
+            acknowledgementWait.lowerBound
+        )
+        XCTAssertLessThan(
+            acknowledgementWait.lowerBound,
+            postAcknowledgementMarker.lowerBound
+        )
+        XCTAssertLessThan(
+            postAcknowledgementMarker.lowerBound,
+            recoveryWait.lowerBound
+        )
+        let hostedMarkerGuardSource = callTest[
+            hostedMarkerGuard.lowerBound..<hostedMarker.lowerBound
+        ]
+        for token in [
+            "presentationValue == \"active\"",
+            "!hasConnectionError",
+            "worldwideSessionState",
+            "worldwideAudioState",
+            "Playing — iPhone call may reduce quality",
+            "worldwideMicrophoneState",
+            "Muted — iPhone call active",
+            "!hostedMarkerRawMicrophone.exists",
+            "interruption.finalSnapshot.sessionGeneration",
+            "startup.finalSnapshot.sessionGeneration",
+            "acceptedRouteValues.contains(interruption.route)",
+            "return",
+        ] {
+            XCTAssertTrue(
+                hostedMarkerGuardSource.contains(token),
+                "Hosted-state causal marker guard is missing \(token)."
+            )
+        }
+        var remaining = callTest[...]
+        for token in [
+            "waitForFreshPostCallOrdinaryPlayback",
+            "\"On\"",
+            "waitForStableRawIPhoneMicrophone",
+            "stableFor: postCallRawContinuityDuration",
+            "recordingGeneration",
+            "Post-call raw iPhone microphone runtime overlap evidence",
+            "Post-call raw microphone generation evidence",
+            "disconnectWorldwide",
+        ] {
+            let range = try XCTUnwrap(remaining.range(of: token))
+            remaining = remaining[range.upperBound...]
+        }
+        XCTAssertTrue(
+            callTest.contains("OPENSTEAMER_POST_CALL_RAW_CONTINUITY_PROOF_NONCE")
+        )
+        XCTAssertTrue(
+            callTest.contains("OPENSTEAMER_POST_CALL_RAW_CONTINUITY_SECONDS")
+        )
+        XCTAssertTrue(
+            callTest.contains("OPENSTEAMER_POST_CALL_RAW_UI_TIMEOUT_SECONDS")
+        )
+        XCTAssertTrue(callTest.contains("timeout: postCallRawTimeoutDuration"))
+        XCTAssertTrue(
+            callTest.contains("recovered.ordinaryAudioPolicyGeneration")
+        )
+        XCTAssertTrue(
+            callTest.contains("approvedRecordingGeneration")
+        )
+        for token in [
+            "ordinary playback cannot satisfy the in-call acknowledgement",
+            "snapshotAtAcceptance",
+            "opensteamer.call-acoustic-acknowledgement.v2",
+            "OPENSTEAMER_CALL_UI_HOSTED_ACTIVE_V2",
+        ] {
+            XCTAssertTrue(
+                source.contains(token),
+                "Two-stage hosted acoustic handshake is missing \(token)."
+            )
+        }
     }
 
     func testRawPhysicalUIOracleOverlapsExternalProbeForAtLeastSixSeconds() throws {
@@ -2839,6 +3621,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
         XCTAssertFalse(rawTest.contains("timeIntervalSince1970"))
         XCTAssertTrue(rawTest.contains("Production raw iPhone microphone runtime overlap evidence"))
         XCTAssertTrue(rawTest.contains("opensteamer.raw-ui-continuity.v1"))
+        XCTAssertTrue(rawTest.contains("OPENSTEAMER_RAW_UI_CONTINUITY_COMPLETE_V1"))
+        XCTAssertTrue(rawTest.contains("OPENSTEAMER_RAW_UI_TEARDOWN_BEGIN_V1"))
 
         let productionOracleSource = try String(
             contentsOf: repositoryRoot.appendingPathComponent(
@@ -2926,14 +3710,36 @@ final class PhysicalValidationScriptTests: XCTestCase {
         XCTAssertFalse(
             rawFunction.contains("state=probe-exited-while-ui-running")
         )
-        XCTAssertTrue(driver.contains("latestPossibleUIStartNs"))
-        XCTAssertTrue(driver.contains("earliestPossibleUIEndNs"))
-        XCTAssertTrue(driver.contains("probe_start < latest_start"))
-        XCTAssertTrue(driver.contains("probe_end > earliest_end"))
-        XCTAssertTrue(
-            driver.contains("time.clock_gettime_ns(time.CLOCK_MONOTONIC)")
+        let rustOracle = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "iOS/opensteamer/scripts/physical-validation-oracle.rs"
+            ),
+            encoding: .utf8
         )
-        XCTAssertFalse(driver.contains("time.monotonic_ns()"))
+        XCTAssertTrue(rustOracle.contains("latestPossibleUIStartNs"))
+        XCTAssertTrue(rustOracle.contains("earliestPossibleUIEndNs"))
+        XCTAssertTrue(rustOracle.contains("probe_start < latest_start"))
+        XCTAssertTrue(rustOracle.contains("probe_end > earliest_end"))
+        XCTAssertTrue(rustOracle.contains("resumed\n        .checked_add(continuity)"))
+        XCTAssertTrue(rustOracle.contains("uiCompletionObservedAtMonotonicNs"))
+        XCTAssertFalse(rustOracle.contains("xcodebuildEndedAtMonotonicNs"))
+        XCTAssertFalse(driver.contains("sleep 18"))
+        XCTAssertTrue(driver.contains("raw-ui-completion-observation.v1"))
+        XCTAssertTrue(driver.contains("call-ui-hosted-state-observation.v2"))
+        XCTAssertTrue(
+            driver.contains("wait_for_nonce_bound_call_ui_hosted_state")
+        )
+        XCTAssertFalse(driver.contains("RAW_XCODEBUILD_ENDED_NS"))
+        XCTAssertTrue(driver.contains("POST_CALL_RAW_CONTINUITY_SECONDS"))
+        XCTAssertTrue(driver.contains("POST_CALL_RAW_PRE_PROBE_BUDGET_SECONDS"))
+        XCTAssertTrue(
+            driver.contains("POST_CALL_RAW_INTER_ACK_SNAPSHOT_BUDGET_SECONDS")
+        )
+        XCTAssertTrue(
+            driver.contains(
+                "opensteamer_run_physical_validation_oracle monotonic-ns"
+            )
+        )
     }
 
     func testRawReadinessHandshakeRejectsStaleTimeoutAndNonOverlap() throws {
@@ -2945,6 +3751,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
             "raw-readiness-exact-start",
             "raw-readiness-exact-end",
             "raw-readiness-exact-six",
+            "raw-readiness-delayed-call-end",
+            "raw-readiness-delayed-call-end-short-continuity",
             "raw-readiness-one-ns-short",
             "raw-readiness-outside-start",
             "raw-readiness-equal-window",
@@ -2968,15 +3776,18 @@ final class PhysicalValidationScriptTests: XCTestCase {
             "raw-readiness-runner-alive-without-completion",
             "raw-readiness-stale-export",
             "raw-readiness-invalid-export-payload",
+            "raw-ui-completion-handshake-success",
+            "raw-ui-completion-handshake-late",
+            "raw-ui-completion-handshake-nonce-mismatch",
         ] {
-            let artifactDirectory = FileManager.default.temporaryDirectory
+            let artifactDirectory = URL(fileURLWithPath: "/Volumes/t7", isDirectory: true)
                 .appendingPathComponent("opensteamer-\(mode)-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: artifactDirectory) }
             let result = try runPhysicalDriverSelfTest(
                 physicalDrivers[2],
                 mode: mode,
                 artifactDirectory: artifactDirectory,
-                timeout: 8
+                timeout: 15
             )
             let diagnostic = "Mode \(mode): \(result.diagnostic)"
             XCTAssertTrue(result.exitedWithinDeadline, diagnostic)
@@ -2992,6 +3803,114 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 diagnostic
             )
         }
+    }
+
+    func testRawUICausalStateHandshakeIsFreshUniqueAndNonceBound() throws {
+        for mode in [
+            "raw-ui-causal-state-handshake-success",
+            "raw-ui-causal-state-handshake-nonce-mismatch",
+            "raw-ui-causal-state-handshake-duplicate",
+            "raw-ui-causal-state-handshake-ordinary-before-heard",
+        ] {
+            let artifactDirectory = URL(
+                fileURLWithPath:
+                    "/Volumes/t7/opensteamer-\(mode)-\(UUID().uuidString)",
+                isDirectory: true
+            )
+            defer { try? FileManager.default.removeItem(at: artifactDirectory) }
+            let result = try runPhysicalDriverSelfTest(
+                physicalDrivers[2],
+                mode: mode,
+                artifactDirectory: artifactDirectory,
+                timeout: 8
+            )
+            XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
+            XCTAssertEqual(result.terminationStatus, 0, result.diagnostic)
+            XCTAssertEqual(
+                try String(
+                    contentsOf: artifactDirectory.appendingPathComponent(
+                        "run-status.txt"
+                    ),
+                    encoding: .utf8
+                ),
+                "status=self-test-passed\n",
+                result.diagnostic
+            )
+        }
+    }
+
+    func testPostCallTimingContractCoversDelayedAcknowledgementAndRejectsShortWindow() throws {
+        let validArtifacts = URL(fileURLWithPath: "/Volumes/t7", isDirectory: true)
+            .appendingPathComponent(
+                "opensteamer-delayed-call-timing-\(UUID().uuidString)"
+            )
+        let invalidArtifacts = URL(fileURLWithPath: "/Volumes/t7", isDirectory: true)
+            .appendingPathComponent(
+                "opensteamer-short-call-timing-\(UUID().uuidString)"
+            )
+        defer {
+            try? FileManager.default.removeItem(at: validArtifacts)
+            try? FileManager.default.removeItem(at: invalidArtifacts)
+        }
+
+        let valid = try runPhysicalDriverSelfTest(
+            physicalDrivers[2],
+            mode: "raw-readiness-delayed-call-end",
+            artifactDirectory: validArtifacts,
+            timeout: 8
+        )
+        XCTAssertTrue(valid.exitedWithinDeadline, valid.diagnostic)
+        XCTAssertEqual(valid.terminationStatus, 0, valid.diagnostic)
+        let bounds = try String(
+            contentsOf: validArtifacts.appendingPathComponent(
+                "phase-1-raw-blackhole/raw-ui-host-bounds.txt"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(bounds.contains("continuityDurationNs=330000000000"))
+        XCTAssertTrue(bounds.contains("latestPossibleUIStartNs=290000000000"))
+        XCTAssertTrue(bounds.contains("earliestPossibleUIEndNs=331000000000"))
+        let probeSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "iOS/opensteamer/scripts/physical-blackhole-microphone-probe.swift"
+            ),
+            encoding: .utf8
+        )
+        let normalizedProbeSource = probeSource
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        XCTAssertTrue(normalizedProbeSource.contains("static let proofSeconds = 6.0"))
+        XCTAssertTrue(
+            normalizedProbeSource.contains(
+                "var nextEvaluation = challengeStart + Policy.proofSeconds"
+            )
+        )
+        XCTAssertTrue(
+            normalizedProbeSource.contains(
+                "if candidate.status == \"passed\" { break }"
+            )
+        )
+        XCTAssertTrue(
+            normalizedProbeSource.contains(
+                "forcedFailures.append(\"timeout\")"
+            )
+        )
+
+        let invalid = try runPhysicalDriverSelfTest(
+            physicalDrivers[2],
+            mode: "raw-readiness-delayed-call-end",
+            artifactDirectory: invalidArtifacts,
+            timeout: 8,
+            additionalEnvironment: [
+                "OPENSTEAMER_POST_CALL_RAW_CONTINUITY_SECONDS": "329",
+            ]
+        )
+        XCTAssertTrue(invalid.exitedWithinDeadline, invalid.diagnostic)
+        XCTAssertEqual(invalid.terminationStatus, 2, invalid.diagnostic)
+        XCTAssertTrue(
+            invalid.standardError.contains("minimum 330"),
+            invalid.diagnostic
+        )
     }
 
     func testReconnectDriverStartsOneLongLivedDeterministicToneProcess() throws {
@@ -3077,6 +3996,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             "blackhole-probe-diagnostic-success",
             "blackhole-probe-diagnostic-failure",
             "blackhole-probe-diagnostic-uid-leak",
+            "blackhole-probe-diagnostic-wedged-after-completion",
         ] {
             let artifactDirectory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("opensteamer-\(mode)-\(UUID().uuidString)")
@@ -3092,10 +4012,23 @@ final class PhysicalValidationScriptTests: XCTestCase {
             let diagnostics = artifactDirectory.appendingPathComponent(
                 "phase-1-raw-blackhole/physical-blackhole-microphone-diagnostics.txt"
             )
-            if mode.hasSuffix("success") {
+            if mode.hasSuffix("success")
+                || mode.hasSuffix("wedged-after-completion") {
                 XCTAssertFalse(
                     FileManager.default.fileExists(atPath: diagnostics.path)
                 )
+                if mode.hasSuffix("wedged-after-completion") {
+                    let cleanup = try String(
+                        contentsOf: artifactDirectory.appendingPathComponent(
+                            "phase-1-raw-blackhole/physical-blackhole-microphone-cleanup.txt"
+                        ),
+                        encoding: .utf8
+                    )
+                    XCTAssertEqual(
+                        cleanup,
+                        "state=wrapper-timed-out-after-completion status=124\n"
+                    )
+                }
             } else {
                 let data = try Data(contentsOf: diagnostics)
                 XCTAssertLessThanOrEqual(data.count, 65_536)
@@ -3183,7 +4116,11 @@ final class PhysicalValidationScriptTests: XCTestCase {
             physicalDrivers[2],
             mode: "screen-oracle-challenge",
             artifactDirectory: artifactDirectory,
-            timeout: 8
+            // This is only XCTest's outer observation envelope. The driver still enforces its
+            // reviewed five-second process-group, heartbeat, and termination bounds internally.
+            // Account for both pinned Rust/Swift compilations when the complete mutation suite
+            // has just exercised the external build volume.
+            timeout: 20
         )
         XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
         XCTAssertEqual(result.terminationStatus, 0, result.diagnostic)
@@ -3306,10 +4243,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 "\"$offset\" \"$digest\" \"$3\" & snapshot=$!; " +
                 "for poll in {1..200}; do [[ -f \"$4\" ]] && break; sleep 0.01; done; " +
                 "[[ -f \"$4\" ]]; " +
-                "/usr/bin/python3 -c 'import os,sys; p=sys.argv[1]; " +
-                "d=open(p,\"rb\").read(); f=open(p,\"wb\"); " +
-                "f.write(b\"Baseline\\n\" + d[len(b\"baseline\\n\"):]); " +
-                "f.flush(); os.fsync(f.fileno()); f.close()' \"$1\"; " +
+                "print -rn -- B | /bin/dd of=\"$1\" bs=1 seek=0 " +
+                "conv=notrunc 2>/dev/null; " +
                 "print -r -- proceed > \"$5\"; " +
                 "if wait \"$snapshot\"; then exit 91; fi",
             arguments: [
@@ -3648,8 +4583,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
         ready_file=$1
         child_file=$2
         function onterm() {
-          /usr/bin/python3 -c 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.signal(signal.SIGHUP, signal.SIG_IGN); time.sleep(30)' &
-          print -r -- $! > "$child_file"
+          "$OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE" \
+            self-test-ignore-signals "$child_file" &
           exit 0
         }
         trap onterm TERM
@@ -3729,8 +4664,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             .appendingPathComponent("opensteamer-fast-leader-child-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: childPIDFile) }
         let harness = """
-        /usr/bin/python3 -c 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.signal(signal.SIGHUP, signal.SIG_IGN); time.sleep(30)' &
-        print -r -- $! > "$1"
+        "$OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE" self-test-ignore-signals "$1" &
         exit 0
         """
         let leader = Process()
@@ -3980,10 +4914,9 @@ final class PhysicalValidationScriptTests: XCTestCase {
         let result = try runPhysicalValidationHelperProbe(
             "opensteamer_run_with_timeout 0.1 /bin/zsh -c " +
                 "'trap \"exit 0\" TERM; " +
-                "/usr/bin/python3 -c \"import signal,time; " +
-                "signal.signal(signal.SIGTERM, signal.SIG_IGN); " +
-                "signal.signal(signal.SIGHUP, signal.SIG_IGN); time.sleep(30)\" & " +
-                "print -r -- $! > \"$1\"; while true; do sleep 30; done' " +
+                "\"$OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE\" " +
+                "self-test-ignore-signals \"$1\" & " +
+                "while true; do sleep 30; done' " +
                 "timeout-root \"$1\"",
             arguments: [descendantPIDFile.path]
         )
@@ -4000,6 +4933,47 @@ final class PhysicalValidationScriptTests: XCTestCase {
         XCTAssertTrue(
             waitForPIDToDisappear(descendantPID, timeout: 2),
             "The bounded critical command orphaned descendant PID \(descendantPID)."
+        )
+    }
+
+    func testBoundedCriticalCommandRejectsCleanLeaderThatLeavesDescendant() throws {
+        let descendantPIDFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "opensteamer-clean-leader-descendant-\(UUID().uuidString)"
+            )
+        defer {
+            if let text = try? String(
+                contentsOf: descendantPIDFile,
+                encoding: .utf8
+            ),
+               let descendantPID = pid_t(
+                text.trimmingCharacters(in: .whitespacesAndNewlines)
+               ),
+               kill(descendantPID, 0) == 0 {
+                kill(descendantPID, SIGKILL)
+            }
+            try? FileManager.default.removeItem(at: descendantPIDFile)
+        }
+        let result = try runPhysicalValidationHelperProbe(
+            "opensteamer_run_with_timeout 2 /bin/zsh -c " +
+                "'\"$OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE\" " +
+                "self-test-ignore-signals \"$1\" & " +
+                "while [[ ! -s \"$1\" ]]; do sleep 0.01; done; exit 0' " +
+                "clean-leader \"$1\"",
+            arguments: [descendantPIDFile.path]
+        )
+
+        XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
+        XCTAssertEqual(result.terminationStatus, 1, result.diagnostic)
+        let descendantPID = try XCTUnwrap(
+            pid_t(
+                String(contentsOf: descendantPIDFile, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        )
+        XCTAssertTrue(
+            waitForPIDToDisappear(descendantPID, timeout: 2),
+            "A clean leader exit orphaned descendant PID \(descendantPID)."
         )
     }
 
@@ -4021,13 +4995,25 @@ final class PhysicalValidationScriptTests: XCTestCase {
 
     func testEveryPhysicalDriverOverwritesStalePassBeforeCleanupFailure() throws {
         for driver in physicalDrivers {
-            let artifactDirectory = FileManager.default.temporaryDirectory
+            let artifactDirectory = URL(
+                fileURLWithPath: "/Volumes/t7",
+                isDirectory: true
+            )
                 .appendingPathComponent("opensteamer-startup-failure-\(UUID().uuidString)")
             try FileManager.default.createDirectory(
                 at: artifactDirectory,
                 withIntermediateDirectories: true
             )
+            XCTAssertEqual(chmod(artifactDirectory.path, S_IRWXU), 0)
+            let staleName = driver.relativePath.contains("update-keychain")
+                ? "seed-summary.json"
+                : "summary.json"
+            let staleURL = artifactDirectory.appendingPathComponent(staleName)
             defer {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o700],
+                    ofItemAtPath: staleURL.path
+                )
                 try? FileManager.default.setAttributes(
                     [.posixPermissions: 0o700],
                     ofItemAtPath: artifactDirectory.path
@@ -4036,21 +5022,24 @@ final class PhysicalValidationScriptTests: XCTestCase {
             }
             let runStatusURL = artifactDirectory.appendingPathComponent("run-status.txt")
             try Data("status=passed\n".utf8).write(to: runStatusURL)
-            let staleName = driver.relativePath.contains("update-keychain")
-                ? "seed-summary.json"
-                : "summary.json"
-            let staleURL = artifactDirectory.appendingPathComponent(staleName)
-            try Data("stale".utf8).write(to: staleURL)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o500],
-                ofItemAtPath: artifactDirectory.path
+            try FileManager.default.createDirectory(
+                at: staleURL,
+                withIntermediateDirectories: false
             )
+            try Data("stale".utf8).write(
+                to: staleURL.appendingPathComponent("retained.txt")
+            )
+            XCTAssertEqual(chmod(staleURL.path, S_IRUSR | S_IXUSR), 0)
 
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/zsh")
             process.arguments = [
                 repositoryRoot.appendingPathComponent(driver.relativePath).path,
             ] + driver.arguments(artifactDirectory)
+            var environment = ProcessInfo.processInfo.environment
+            environment["OPENSTEAMER_CONTROLLED_HOST_NO_AUDIO_TAPS_ACK"] =
+                "controlled-host-no-audio-taps-reviewed"
+            process.environment = environment
             let standardError = Pipe()
             process.standardError = standardError
             try process.run()
