@@ -5,6 +5,13 @@ import CryptoKit
 import Darwin
 import Dispatch
 private enum Policy { /* A proof window passes only with density 0.85...1.15, two independently advancing progress deltas, callback gaps <=100 ms, no near-silent run >500 ms, >=20% non-silent frames, peak 512..<32760, clipping <0.5%, >=16 symbols, >=80% symbol matches, normalized spectral correlation >=0.60, and a discrimination margin >=0.10. The three defaults must compare equal and must produce zero in-window notifications. */ static let schema = "opensteamer.physical-blackhole-microphone.v1"; static let captureUID = "BlackHole2ch_UID"; static let algorithm = "nonce-splitmix64-frequency-hop-raised-envelope"; static let algorithmVersion = 1; static let sampleRate: Double = 48_000; static let sampleRateInt = 48_000; static let channels = 2; static let proofSeconds = 6.0; static let retentionSeconds = 12.0; static let symbolSeconds = 0.25; static let symbolFrames = 12_000; static let edgeRampFrames = 576; static let frequencies: [Double] = [700, 950, 1_250, 1_650, 2_200, 3_500, 4_300, 5_100]; static let outputAmplitudes: [Double] = [0.16, 0.20, 0.24]; static let bufferFrames = 480; static let bufferCount = 4; static let analysisBlockFrames = 2_880; static let analysisHopFrames = 2_400; static let analysisEdgeGuardSeconds = 0.040; static let minimumLagSeconds = 0.040; static let maximumLagSeconds = 5.0; static let lagStepSeconds = 0.020; static let minimumCandidateSymbols = 8; static let minimumSymbols = 16; static let minimumFrameDensity = 0.85; static let maximumFrameDensity = 1.15; static let maximumCallbackGapMs = 100.0; static let maximumSilentGapMs = 500.0; static let minimumNonSilentRatio = 0.20; static let nonSilentThreshold = 128; static let minimumPeak = 512; static let clippedMagnitude = 32_760; static let maximumClippedRatio = 0.005; static let minimumMatchRatio = 0.80; static let minimumNormalizedCorrelation = 0.60; static let minimumDiscriminationMargin = 0.10; static let progressIntervalSeconds = 0.5; static let evaluationIntervalSeconds = 1.0; static let minimumTimeoutSeconds = 8.0; static let maximumTimeoutSeconds = 120.0; static let maximumFailureReasons = 20; static let maximumProgressRecords = 16 }
+private extension Policy {
+    /// Operational lab prerequisite only. This declaration is not cryptographic acoustic
+    /// provenance; it states that the controlled host was reviewed with no audio taps or digital
+    /// loopback routes before the nonce challenge is accepted.
+    static let controlledHostNoAudioTapsConfirmation =
+        "controlled-host-no-audio-taps-reviewed"
+}
 private struct ProbeError: Error { let code: String }
 private struct AudioFormatEvidence: Codable { let sampleRate: Int; let channels: Int; let signedInt16: Bool; let interleaved: Bool }
 private struct ProgressEvidence: Codable { let elapsedSeconds: Double; let callbackCount: UInt64; let capturedFrameCount: UInt64; let callbackDelta: UInt64; let frameDelta: UInt64; let advancing: Bool }
@@ -30,11 +37,298 @@ private func physicalProbeOutputCallback(_ userData: UnsafeMutableRawPointer?, _
 private enum AudioSupport { static func format() -> AudioStreamBasicDescription { let bytesPerFrame = UInt32(Policy.channels * MemoryLayout<Int16>.size); return AudioStreamBasicDescription(mSampleRate: Policy.sampleRate, mFormatID: kAudioFormatLinearPCM, mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked, mBytesPerPacket: bytesPerFrame, mFramesPerPacket: 1, mBytesPerFrame: bytesPerFrame, mChannelsPerFrame: UInt32(Policy.channels), mBitsPerChannel: 16, mReserved: 0) }; static func pinCurrentDevice(_ uid: String, queue: AudioQueueRef, failureCode: String) throws -> Bool { var value = uid as CFString; let status = withUnsafePointer(to: &value) { AudioQueueSetProperty(queue, kAudioQueueProperty_CurrentDevice, $0, UInt32(MemoryLayout<CFString>.size)) }; guard status == noErr else { throw ProbeError(code: failureCode) }; return currentDevice(queue) == uid }; static func currentDevice(_ queue: AudioQueueRef) -> String? { var value: CFString = "" as CFString; var size = UInt32(MemoryLayout<CFString>.size); let status = withUnsafeMutablePointer(to: &value) { AudioQueueGetProperty(queue, kAudioQueueProperty_CurrentDevice, $0, &size) }; guard status == noErr, size > 0 else { return nil }; let string = value as String; return string.isEmpty ? nil : string }; static func quantize(_ value: Double) -> Int16 { let bounded = max(-0.999969, min(0.999969, value)); return Int16(Int32((bounded * Double(Int16.max)).rounded())) } }
 private final class InputQueueSession { private let context: InputCallbackContext; private var queue: AudioQueueRef?; private var buffers: [AudioQueueBufferRef] = []; private var callbackContextRetain: Unmanaged<InputCallbackContext>?; private var started = false; private(set) var readbackMatches = false; init(store: CaptureStore, failureLatch: QueueFailureLatch) { context = InputCallbackContext(store: store, failureLatch: failureLatch) }; func start(uid: String) throws { guard queue == nil else { return }; readbackMatches = false; started = false; context.activate(); var description = AudioSupport.format(); var created: AudioQueueRef?; let retainedContext = Unmanaged.passRetained(context); let createStatus = AudioQueueNewInput(&description, physicalProbeInputCallback, retainedContext.toOpaque(), nil, nil, 0, &created); guard createStatus == noErr, let created else { context.stopAcceptingAndWait(); retainedContext.release(); throw ProbeError(code: "capture_queue_create_failed") }; callbackContextRetain = retainedContext; queue = created; do { let firstReadback = try AudioSupport.pinCurrentDevice(uid, queue: created, failureCode: "capture_queue_device_set_failed"); guard firstReadback else { throw ProbeError(code: "capture_queue_device_readback_mismatch") }; let byteCount = UInt32(Policy.bufferFrames * Policy.channels * MemoryLayout<Int16>.size); for _ in 0..<Policy.bufferCount { var buffer: AudioQueueBufferRef?; let allocationStatus = AudioQueueAllocateBuffer(created, byteCount, &buffer); guard allocationStatus == noErr, let buffer else { throw ProbeError(code: "capture_queue_buffer_allocation_failed") }; buffers.append(buffer); guard AudioQueueEnqueueBuffer(created, buffer, 0, nil) == noErr else { throw ProbeError(code: "capture_queue_buffer_enqueue_failed") } }; guard AudioQueueStart(created, nil) == noErr else { throw ProbeError(code: "capture_queue_start_failed") }; started = true; readbackMatches = firstReadback && AudioSupport.currentDevice(created) == uid; guard readbackMatches else { throw ProbeError(code: "capture_queue_device_readback_mismatch") } } catch { _ = stop(); throw error } }; func stop() -> Bool { guard let queue else { return true }; context.stopAcceptingAndWait(); var stopStatus: OSStatus = noErr; if started { stopStatus = AudioQueueStop(queue, true); started = false }; context.waitUntilIdle(); let disposeStatus = AudioQueueDispose(queue, true); context.waitUntilIdle(); if disposeStatus == noErr { self.queue = nil; buffers.removeAll(keepingCapacity: false); callbackContextRetain?.release(); callbackContextRetain = nil }; return stopStatus == noErr && disposeStatus == noErr }; deinit { _ = stop() } }
 private final class OutputQueueSession { private let plan: ChallengePlan; private let context: OutputCallbackContext; private let failureLatch: QueueFailureLatch; private var queue: AudioQueueRef?; private var buffers: [AudioQueueBufferRef] = []; private var callbackContextRetain: Unmanaged<OutputCallbackContext>?; private var started = false; private var teardownFailed = false; private(set) var readbackMatches = false; private(set) var startUptime = 0.0; init(plan: ChallengePlan, failureLatch: QueueFailureLatch) { self.plan = plan; self.failureLatch = failureLatch; context = OutputCallbackContext(plan: plan, failureLatch: failureLatch) }; func start(uid: String) throws { guard queue == nil else { return }; readbackMatches = false; startUptime = 0.0; started = false; context.activate(); var description = AudioSupport.format(); var created: AudioQueueRef?; let retainedContext = Unmanaged.passRetained(context); let createStatus = AudioQueueNewOutput(&description, physicalProbeOutputCallback, retainedContext.toOpaque(), nil, nil, 0, &created); failureLatch.record(createStatus); guard createStatus == noErr, let created else { if createStatus == noErr { failureLatch.recordFailure() }; context.stopAcceptingAndWait(); retainedContext.release(); throw ProbeError(code: "physical_output_queue_create_failed") }; callbackContextRetain = retainedContext; queue = created; do { let firstReadback = try AudioSupport.pinCurrentDevice(uid, queue: created, failureCode: "physical_output_queue_device_set_failed"); guard firstReadback else { throw ProbeError(code: "physical_output_queue_device_readback_mismatch") }; let byteCount = UInt32(Policy.bufferFrames * Policy.channels * MemoryLayout<Int16>.size); for _ in 0..<Policy.bufferCount { var buffer: AudioQueueBufferRef?; let allocationStatus = AudioQueueAllocateBuffer(created, byteCount, &buffer); failureLatch.record(allocationStatus); guard allocationStatus == noErr, let buffer else { if allocationStatus == noErr { failureLatch.recordFailure() }; throw ProbeError(code: "physical_output_queue_buffer_allocation_failed") }; buffers.append(buffer); guard context.fill(buffer: buffer) else { throw ProbeError(code: "physical_output_queue_buffer_fill_failed") }; let enqueueStatus = AudioQueueEnqueueBuffer(created, buffer, 0, nil); failureLatch.record(enqueueStatus); guard enqueueStatus == noErr else { throw ProbeError(code: "physical_output_queue_buffer_enqueue_failed") } }; let requestedStartUptime = ProcessInfo.processInfo.systemUptime; let startStatus = AudioQueueStart(created, nil); failureLatch.record(startStatus); guard startStatus == noErr else { throw ProbeError(code: "physical_output_queue_start_failed") }; started = true; startUptime = requestedStartUptime; readbackMatches = firstReadback && AudioSupport.currentDevice(created) == uid; guard readbackMatches else { throw ProbeError(code: "physical_output_queue_device_readback_mismatch") } } catch { _ = stop(); throw error } }; func stop() -> Bool { guard let queue else { return !teardownFailed }; context.stopAcceptingAndWait(); var stopStatus: OSStatus = noErr; if started { stopStatus = AudioQueueStop(queue, true); if stopStatus == noErr { started = false } }; context.waitUntilIdle(); let disposeStatus = AudioQueueDispose(queue, true); context.waitUntilIdle(); if disposeStatus == noErr { started = false; self.queue = nil; buffers.removeAll(keepingCapacity: false); callbackContextRetain?.release(); callbackContextRetain = nil }; if stopStatus != noErr || disposeStatus != noErr { teardownFailed = true }; return !teardownFailed }; deinit { _ = stop() } }
+private extension InputQueueSession {
+    func currentDeviceMatches(_ uid: String) -> Bool {
+        guard let queue else { return false }
+        return AudioSupport.currentDevice(queue) == uid
+    }
+}
+private extension OutputQueueSession {
+    func currentDeviceMatches(_ uid: String) -> Bool {
+        guard let queue else { return false }
+        return AudioSupport.currentDevice(queue) == uid
+    }
+}
 private enum CoreAudioReader { static let systemObject = AudioObjectID(kAudioObjectSystemObject); static func allDevices() throws -> [AudioDeviceID] { var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain); var size: UInt32 = 0; guard AudioObjectGetPropertyDataSize(systemObject, &address, 0, nil, &size) == noErr else { throw ProbeError(code: "core_audio_device_inventory_failed") }; let count = Int(size) / MemoryLayout<AudioDeviceID>.size; guard count > 0 else { return [] }; var devices = Array(repeating: AudioDeviceID(kAudioObjectUnknown), count: count); var readSize = size; let status = devices.withUnsafeMutableBytes { bytes in AudioObjectGetPropertyData(systemObject, &address, 0, nil, &readSize, bytes.baseAddress!) }; guard status == noErr else { throw ProbeError(code: "core_audio_device_inventory_failed") }; return devices.filter { $0 != kAudioObjectUnknown } }; static func uid(_ device: AudioDeviceID) -> String? { var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain); var value: CFString = "" as CFString; var size = UInt32(MemoryLayout<CFString>.size); let status = withUnsafeMutablePointer(to: &value) { AudioObjectGetPropertyData(device, &address, 0, nil, &size, $0) }; guard status == noErr, size > 0 else { return nil }; let string = value as String; return string.isEmpty ? nil : string }; static func channelCount(_ device: AudioDeviceID, scope: AudioObjectPropertyScope) throws -> Int { var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration, mScope: scope, mElement: kAudioObjectPropertyElementMain); var size: UInt32 = 0; guard AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr, size >= UInt32(MemoryLayout<AudioBufferList>.size) else { throw ProbeError(code: "core_audio_channel_inventory_failed") }; let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment); defer { raw.deallocate() }; raw.initializeMemory(as: UInt8.self, repeating: 0, count: Int(size)); var readSize = size; guard AudioObjectGetPropertyData(device, &address, 0, nil, &readSize, raw) == noErr else { throw ProbeError(code: "core_audio_channel_inventory_failed") }; let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self)); return list.reduce(0) { $0 + Int($1.mNumberChannels) } }; static func defaultUID(selector: AudioObjectPropertySelector) throws -> String { var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain); var device = AudioDeviceID(kAudioObjectUnknown); var size = UInt32(MemoryLayout<AudioDeviceID>.size); guard AudioObjectGetPropertyData(systemObject, &address, 0, nil, &size, &device) == noErr, device != kAudioObjectUnknown, let uid = uid(device) else { throw ProbeError(code: "default_device_snapshot_failed") }; return uid } }
-private enum DeviceResolver { static func validate(physicalOutputUID: String) throws -> (capture: Bool, physicalOutput: Bool) { guard physicalOutputUID != Policy.captureUID else { throw ProbeError(code: "physical_output_uid_rejected") }; let devices = try CoreAudioReader.allDevices(); let captureMatches = devices.filter { CoreAudioReader.uid($0) == Policy.captureUID }; guard captureMatches.count == 1 else { throw ProbeError(code: "canonical_capture_device_not_found") }; guard try CoreAudioReader.channelCount(captureMatches[0], scope: kAudioObjectPropertyScopeInput) >= Policy.channels else { throw ProbeError(code: "canonical_capture_device_has_no_usable_input") }; let outputMatches = devices.filter { CoreAudioReader.uid($0) == physicalOutputUID }; guard outputMatches.count == 1 else { throw ProbeError(code: "physical_output_device_not_found") }; guard try CoreAudioReader.channelCount(outputMatches[0], scope: kAudioObjectPropertyScopeOutput) >= Policy.channels else { throw ProbeError(code: "physical_output_device_has_no_usable_output") }; return (true, true) } }
-private struct DefaultSnapshot { let inputUID: String; let outputUID: String; let systemOutputUID: String }
+private extension CoreAudioReader {
+    static func scalarUInt32(
+        _ device: AudioDeviceID,
+        selector: AudioObjectPropertySelector
+    ) throws -> UInt32 {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(
+            device,
+            &address,
+            0,
+            nil,
+            &size,
+            &value
+        ) == noErr,
+        size == UInt32(MemoryLayout<UInt32>.size) else {
+            throw ProbeError(code: "physical_output_device_metadata_unavailable")
+        }
+        return value
+    }
+
+    static func aggregateSubdeviceUIDs(_ device: AudioDeviceID) throws -> [String] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioAggregateDevicePropertyFullSubDeviceList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectHasProperty(device, &address) else { return [] }
+        var value: CFArray = [] as CFArray
+        var size = UInt32(MemoryLayout<CFArray>.size)
+        let status = withUnsafeMutablePointer(to: &value) {
+            AudioObjectGetPropertyData(device, &address, 0, nil, &size, $0)
+        }
+        guard status == noErr,
+              size == UInt32(MemoryLayout<CFArray>.size) else {
+            throw ProbeError(code: "physical_output_subdevice_inventory_failed")
+        }
+        let objects = value as NSArray
+        var identifiers: [String] = []
+        identifiers.reserveCapacity(objects.count)
+        for object in objects {
+            guard let identifier = object as? String, !identifier.isEmpty else {
+                throw ProbeError(code: "physical_output_subdevice_inventory_failed")
+            }
+            identifiers.append(identifier)
+        }
+        return identifiers
+    }
+
+    static func identity(_ device: AudioDeviceID) throws -> DeviceIdentity {
+        guard let deviceUID = uid(device) else {
+            throw ProbeError(code: "core_audio_device_identity_unavailable")
+        }
+        return DeviceIdentity(
+            objectID: device,
+            uid: deviceUID,
+            objectClass: try scalarUInt32(
+                device,
+                selector: kAudioObjectPropertyClass
+            ),
+            transportType: try scalarUInt32(
+                device,
+                selector: kAudioDevicePropertyTransportType
+            ),
+            alive: try scalarUInt32(
+                device,
+                selector: kAudioDevicePropertyDeviceIsAlive
+            ) == 1,
+            inputChannels: try channelCount(
+                device,
+                scope: kAudioObjectPropertyScopeInput
+            ),
+            outputChannels: try channelCount(
+                device,
+                scope: kAudioObjectPropertyScopeOutput
+            ),
+            subdeviceUIDs: try aggregateSubdeviceUIDs(device)
+        )
+    }
+
+    static func defaultTransportClass(
+        selector: AudioObjectPropertySelector
+    ) throws -> String {
+        let defaultDeviceUID = try defaultUID(selector: selector)
+        let matches = try allDevices().filter {
+            uid($0) == defaultDeviceUID
+        }
+        guard matches.count == 1 else {
+            throw ProbeError(code: "default_device_transport_unavailable")
+        }
+        let transport = try scalarUInt32(
+            matches[0],
+            selector: kAudioDevicePropertyTransportType
+        )
+        switch transport {
+        case UInt32(kAudioDeviceTransportTypeBuiltIn):
+            return "built-in"
+        case UInt32(kAudioDeviceTransportTypeVirtual):
+            return "virtual"
+        case UInt32(kAudioDeviceTransportTypeAggregate),
+             UInt32(kAudioDeviceTransportTypeAutoAggregate):
+            return "aggregate"
+        case UInt32(kAudioDeviceTransportTypeUSB):
+            return "usb"
+        case UInt32(kAudioDeviceTransportTypeBluetooth),
+             UInt32(kAudioDeviceTransportTypeBluetoothLE):
+            return "bluetooth"
+        default:
+            return "other"
+        }
+    }
+}
+
+private enum PhysicalOutputPolicy {
+    static let reviewedOutputUID = "BuiltInSpeakerDevice"
+
+    static func rejectionCode(
+        outputUID: String,
+        objectClass: UInt32,
+        transportType: UInt32,
+        subdeviceUIDs: [String]
+    ) -> String? {
+        guard outputUID == reviewedOutputUID else {
+            return "physical_output_uid_not_reviewed_builtin_speaker"
+        }
+        guard objectClass == UInt32(kAudioDeviceClassID) else {
+            return "physical_output_device_class_rejected"
+        }
+        guard subdeviceUIDs.isEmpty else {
+            return "physical_output_composite_device_rejected"
+        }
+        guard transportType == UInt32(kAudioDeviceTransportTypeBuiltIn) else {
+            return "physical_output_transport_rejected"
+        }
+        return nil
+    }
+
+    static func selfTestPasses() -> Bool {
+        let builtIn = UInt32(kAudioDeviceTransportTypeBuiltIn)
+        let device = UInt32(kAudioDeviceClassID)
+        return rejectionCode(
+            outputUID: reviewedOutputUID,
+            objectClass: device,
+            transportType: builtIn,
+            subdeviceUIDs: []
+        ) == nil
+            && rejectionCode(
+                outputUID: "USB-speaker",
+                objectClass: device,
+                transportType: UInt32(kAudioDeviceTransportTypeUSB),
+                subdeviceUIDs: []
+            ) == "physical_output_uid_not_reviewed_builtin_speaker"
+            && rejectionCode(
+                outputUID: reviewedOutputUID,
+                objectClass: device,
+                transportType: UInt32(kAudioDeviceTransportTypeVirtual),
+                subdeviceUIDs: []
+            ) == "physical_output_transport_rejected"
+            && rejectionCode(
+                outputUID: reviewedOutputUID,
+                objectClass: UInt32(kAudioAggregateDeviceClassID),
+                transportType: UInt32(kAudioDeviceTransportTypeAggregate),
+                subdeviceUIDs: [Policy.captureUID]
+            ) == "physical_output_device_class_rejected"
+            && rejectionCode(
+                outputUID: reviewedOutputUID,
+                objectClass: device,
+                transportType: UInt32(kAudioDeviceTransportTypeUnknown),
+                subdeviceUIDs: []
+            ) == "physical_output_transport_rejected"
+    }
+}
+
+private struct DeviceIdentity: Equatable {
+    let objectID: AudioDeviceID
+    let uid: String
+    let objectClass: UInt32
+    let transportType: UInt32
+    let alive: Bool
+    let inputChannels: Int
+    let outputChannels: Int
+    let subdeviceUIDs: [String]
+}
+
+private struct DeviceValidation {
+    let captureIdentity: DeviceIdentity
+    let outputIdentity: DeviceIdentity
+}
+
+private enum DeviceResolver {
+    static func validate(
+        physicalOutputUID: String
+    ) throws -> DeviceValidation {
+        guard physicalOutputUID == PhysicalOutputPolicy.reviewedOutputUID else {
+            throw ProbeError(code: "physical_output_uid_rejected")
+        }
+        let devices = try CoreAudioReader.allDevices()
+        let captureMatches = devices.filter {
+            CoreAudioReader.uid($0) == Policy.captureUID
+        }
+        guard captureMatches.count == 1 else {
+            throw ProbeError(code: "canonical_capture_device_not_found")
+        }
+        let captureIdentity = try CoreAudioReader.identity(captureMatches[0])
+        guard captureIdentity.objectClass == UInt32(kAudioDeviceClassID),
+              captureIdentity.alive,
+              captureIdentity.inputChannels >= Policy.channels else {
+            throw ProbeError(code: "canonical_capture_device_has_no_usable_input")
+        }
+        let outputMatches = devices.filter {
+            CoreAudioReader.uid($0) == physicalOutputUID
+        }
+        guard outputMatches.count == 1 else {
+            throw ProbeError(code: "physical_output_device_not_found")
+        }
+        let outputIdentity = try CoreAudioReader.identity(outputMatches[0])
+        guard outputIdentity.alive,
+              outputIdentity.outputChannels >= Policy.channels else {
+            throw ProbeError(code: "physical_output_device_has_no_usable_output")
+        }
+        if let rejection = PhysicalOutputPolicy.rejectionCode(
+            outputUID: physicalOutputUID,
+            objectClass: outputIdentity.objectClass,
+            transportType: outputIdentity.transportType,
+            subdeviceUIDs: outputIdentity.subdeviceUIDs
+        ) {
+            throw ProbeError(code: rejection)
+        }
+        return DeviceValidation(
+            captureIdentity: captureIdentity,
+            outputIdentity: outputIdentity
+        )
+    }
+}
+private struct DefaultSnapshot: Equatable { let inputUID: String; let outputUID: String; let systemOutputUID: String }
 private final class DefaultDeviceListenerContext: @unchecked Sendable { private let lock = NSLock(); private var notificationTotal = 0; func recordNotification(_ count: Int) { lock.lock(); notificationTotal = min(1_000_000, notificationTotal + max(1, count)); lock.unlock() }; func notificationCount() -> Int { lock.lock(); defer { lock.unlock() }; return notificationTotal } }
 private final class DefaultDeviceGuard: @unchecked Sendable { private let listenerContext = DefaultDeviceListenerContext(); private let listenerQueue = DispatchQueue(label: "opensteamer.physical-blackhole-microphone.default-device-listener"); private var listenerBlock: AudioObjectPropertyListenerBlock?; private var addresses: [AudioObjectPropertyAddress] = []; private var installed = false; func install() throws { guard !installed, listenerBlock == nil else { return }; let context = listenerContext; let block: AudioObjectPropertyListenerBlock = { [context] addressCount, _ in context.recordNotification(Int(addressCount)) }; listenerBlock = block; installed = true; for selector in [kAudioHardwarePropertyDefaultInputDevice, kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDefaultSystemOutputDevice] { var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain); let status = AudioObjectAddPropertyListenerBlock(CoreAudioReader.systemObject, &address, listenerQueue, block); guard status == noErr else { _ = remove(); throw ProbeError(code: "default_device_listener_install_failed") }; addresses.append(address) } }; func snapshot() throws -> DefaultSnapshot { DefaultSnapshot(inputUID: try CoreAudioReader.defaultUID(selector: kAudioHardwarePropertyDefaultInputDevice), outputUID: try CoreAudioReader.defaultUID(selector: kAudioHardwarePropertyDefaultOutputDevice), systemOutputUID: try CoreAudioReader.defaultUID(selector: kAudioHardwarePropertyDefaultSystemOutputDevice)) }; func notificationCount() -> Int { listenerContext.notificationCount() }; func remove() -> Bool { guard installed || !addresses.isEmpty || listenerBlock != nil else { return true }; guard let block = listenerBlock else { return false }; var remaining: [AudioObjectPropertyAddress] = []; remaining.reserveCapacity(addresses.count); for stored in addresses { var address = stored; let status = AudioObjectRemovePropertyListenerBlock(CoreAudioReader.systemObject, &address, listenerQueue, block); if status != noErr { remaining.append(stored) } }; listenerQueue.sync {}; addresses = remaining; installed = !addresses.isEmpty; if !installed { listenerBlock = nil }; return !installed }; deinit { _ = remove() } }
+private enum RouteContinuityValidator {
+    static func failureCode(
+        expectedDevices: DeviceValidation,
+        inputSession: InputQueueSession,
+        outputSession: OutputQueueSession,
+        defaultGuard: DefaultDeviceGuard,
+        expectedDefaults: DefaultSnapshot
+    ) -> String? {
+        guard inputSession.currentDeviceMatches(Policy.captureUID),
+              outputSession.currentDeviceMatches(
+                PhysicalOutputPolicy.reviewedOutputUID
+              ) else {
+            return "queue_device_changed_during_proof"
+        }
+        do {
+            guard try defaultGuard.snapshot() == expectedDefaults else {
+                return "default_route_changed_during_proof"
+            }
+            guard defaultGuard.notificationCount() == 0 else {
+                return "default_change_notification_observed"
+            }
+            let currentDevices = try DeviceResolver.validate(
+                physicalOutputUID:
+                    PhysicalOutputPolicy.reviewedOutputUID
+            )
+            guard currentDevices.captureIdentity
+                    == expectedDevices.captureIdentity,
+                  currentDevices.outputIdentity
+                    == expectedDevices.outputIdentity else {
+                return "route_identity_changed_during_proof"
+            }
+        } catch {
+            return "route_identity_changed_during_proof"
+        }
+        return nil
+    }
+}
 private struct RouteEvidence { var captureUIDMatches: Bool; var physicalOutputValidated: Bool; var challengeNonceMatches: Bool; var captureQueueReadbackMatches: Bool; var physicalOutputQueueReadbackMatches: Bool; var defaultInputEqual: Bool; var defaultOutputEqual: Bool; var defaultSystemOutputEqual: Bool; var defaultNotificationCount: Int }
 private struct SignalStats { let rms: Double; let peak: Int; let clippedRatio: Double; let nonSilentRatio: Double }
 private struct SignalSummary { let channels: [SignalStats]; let nonSilentFrameRatio: Double; let clippedRatio: Double; let longestSilentGapMs: Double }
@@ -46,7 +340,43 @@ private extension Evaluator { static func summarizeSignal(_ samples: [Int16]) ->
 private extension Evaluator { static func spectralObservations(_ samples: [Int16]) -> [SpectralObservation] { let frameCount = samples.count / Policy.channels; guard frameCount >= Policy.analysisBlockFrames else { return [] }; let block = Policy.analysisBlockFrames; let window = (0..<block).map { 0.5 - 0.5 * cos(2.0 * Double.pi * Double($0) / Double(block - 1)) }; let coefficients = Policy.frequencies.map { 2.0 * cos(2.0 * Double.pi * $0 / Policy.sampleRate) }; var observations: [SpectralObservation] = []; for start in stride(from: 0, through: frameCount - block, by: Policy.analysisHopFrames) { var channelPowers = Array(repeating: Array(repeating: 0.0, count: Policy.frequencies.count), count: Policy.channels); var channelRMS = Array(repeating: 0.0, count: Policy.channels); for channel in 0..<Policy.channels { var squareSum = 0.0; for index in 0..<block { let sample = Double(samples[(start + index) * Policy.channels + channel]); squareSum += sample * sample }; channelRMS[channel] = sqrt(squareSum / Double(block)); for frequencyIndex in 0..<Policy.frequencies.count { let coefficient = coefficients[frequencyIndex]; var q1 = 0.0; var q2 = 0.0; for index in 0..<block { let input = Double(samples[(start + index) * Policy.channels + channel]) * window[index] / 32_768.0; let q0 = input + coefficient * q1 - q2; q2 = q1; q1 = q0 }; channelPowers[channel][frequencyIndex] = max(0, q1 * q1 + q2 * q2 - coefficient * q1 * q2) } }; observations.append(SpectralObservation(centerSeconds: Double(start + block / 2) / Policy.sampleRate, powers: channelPowers, rms: channelRMS)) }; return observations } }
 private extension Evaluator { static func pearson(_ first: [Double], _ second: [Double]) -> Double { guard first.count == second.count, first.count >= 3 else { return 0 }; let firstMean = first.reduce(0, +) / Double(first.count); let secondMean = second.reduce(0, +) / Double(second.count); var numerator = 0.0; var firstEnergy = 0.0; var secondEnergy = 0.0; for index in first.indices { let a = first[index] - firstMean; let b = second[index] - secondMean; numerator += a * b; firstEnergy += a * a; secondEnergy += b * b }; let denominator = sqrt(firstEnergy * secondEnergy); return denominator > 1.0e-12 ? max(-1, min(1, numerator / denominator)) : 0 }; static func detect(channel: Int, observations: [SpectralObservation], plan: ChallengePlan, relativeWindowStart: Double) -> ChannelDetection { var best: ChannelDetection?; let stepCount = Int(floor((Policy.maximumLagSeconds - Policy.minimumLagSeconds) / Policy.lagStepSeconds)); for step in 0...stepCount { let lag = Policy.minimumLagSeconds + Double(step) * Policy.lagStepSeconds; var groups: [Int: SymbolAccumulator] = [:]; for observation in observations { let challengeTime = relativeWindowStart + observation.centerSeconds - lag; guard challengeTime >= 0 else { continue }; let symbolIndex = Int(floor(challengeTime / Policy.symbolSeconds)); guard symbolIndex >= 0, symbolIndex < plan.symbols.count else { continue }; let phase = challengeTime - Double(symbolIndex) * Policy.symbolSeconds; guard phase >= Policy.analysisEdgeGuardSeconds, phase <= Policy.symbolSeconds - Policy.analysisEdgeGuardSeconds, observation.powers.count > channel else { continue }; var accumulator = groups[symbolIndex] ?? SymbolAccumulator(); for frequencyIndex in 0..<Policy.frequencies.count { accumulator.powers[frequencyIndex] += observation.powers[channel][frequencyIndex] }; accumulator.rmsSum += observation.rms[channel]; accumulator.count += 1; groups[symbolIndex] = accumulator }; guard groups.count >= Policy.minimumCandidateSymbols else { continue }; let indices = groups.keys.sorted(); var matches = 0; var correlationSum = 0.0; var marginSum = 0.0; var expectedEnvelope: [Double] = []; var observedEnvelope: [Double] = []; for symbolIndex in indices { guard let accumulator = groups[symbolIndex], accumulator.count > 0 else { continue }; let expectedFrequency = plan.symbols[symbolIndex].frequencyIndex; var winner = 0; for frequencyIndex in 1..<accumulator.powers.count where accumulator.powers[frequencyIndex] > accumulator.powers[winner] { winner = frequencyIndex }; if winner == expectedFrequency { matches += 1 }; let expectedPower = accumulator.powers[expectedFrequency]; var alternativePower = 0.0; for frequencyIndex in 0..<accumulator.powers.count where frequencyIndex != expectedFrequency { alternativePower = max(alternativePower, accumulator.powers[frequencyIndex]) }; let denominator = max(1.0e-18, expectedPower + alternativePower); correlationSum += expectedPower / denominator; marginSum += (expectedPower - alternativePower) / denominator; expectedEnvelope.append(log(Policy.outputAmplitudes[plan.symbols[symbolIndex].amplitudeIndex])); observedEnvelope.append(log(max(1.0, accumulator.rmsSum / Double(accumulator.count)))) }; let symbolCount = indices.count; let matchRatio = Double(matches) / Double(symbolCount); let normalizedCorrelation = correlationSum / Double(symbolCount); let discriminationMargin = marginSum / Double(symbolCount); let envelopeCorrelation = pearson(expectedEnvelope, observedEnvelope); let score = matchRatio + 0.25 * max(0, discriminationMargin) + 0.10 * normalizedCorrelation + 0.02 * max(0, envelopeCorrelation); let candidate = ChannelDetection(channel: channel, symbolCount: symbolCount, matchedSymbolCount: matches, matchRatio: matchRatio, normalizedCorrelation: normalizedCorrelation, discriminationMargin: discriminationMargin, envelopeCorrelation: envelopeCorrelation, lagSeconds: lag, score: score); if best == nil || candidate.score > best!.score || (abs(candidate.score - best!.score) < 1.0e-9 && candidate.lagSeconds < best!.lagSeconds) { best = candidate } }; return best ?? .zero(channel: channel) } }
 private extension Evaluator { static func evaluate(runNonce: String, plan: ChallengePlan, challengeStartUptime: Double, window: EvaluationWindow, route: RouteEvidence, forcedFailures: [String]) -> ProbeResult { let frameCount = window.samples.count / Policy.channels; let captureSeconds = Double(frameCount) / Policy.sampleRate; let frameDensity = Double(frameCount) / (Policy.proofSeconds * Policy.sampleRate); let signal = summarizeSignal(window.samples); let maxCallbackGapMs = maximumCallbackGapMs(window); let progress = progressEvidence(window); let spectral = spectralObservations(window.samples); let relativeWindowStart = window.startUptime - challengeStartUptime; let detections = (0..<Policy.channels).map { detect(channel: $0, observations: spectral, plan: plan, relativeWindowStart: relativeWindowStart) }; let best = detections.max { $0.score < $1.score } ?? .zero(channel: 0); let channelEvidence = (0..<Policy.channels).map { channel in let stats = signal.channels[channel]; let detection = detections[channel]; return ChannelEvidence(channel: channel, rms: stats.rms, peak: stats.peak, clippedRatio: stats.clippedRatio, nonSilentRatio: stats.nonSilentRatio, challengeSymbolCount: detection.symbolCount, matchedSymbolCount: detection.matchedSymbolCount, matchRatio: detection.matchRatio, normalizedCorrelation: detection.normalizedCorrelation, discriminationMargin: detection.discriminationMargin, envelopeCorrelation: detection.envelopeCorrelation) }; let bestStats = signal.channels[best.channel]; let recognizedChannel = best.symbolCount > 0 && bestStats.peak >= Policy.minimumPeak && bestStats.nonSilentRatio >= Policy.minimumNonSilentRatio ? best.channel : -1; let aggregatePeak = signal.channels.map(\.peak).max() ?? 0; var reasons: [String] = []; func add(_ code: String) { if reasons.count < Policy.maximumFailureReasons, !reasons.contains(code) { reasons.append(code) } }; for failure in forcedFailures { add(failure) }; if !route.captureUIDMatches { add("capture_uid_mismatch") }; if !route.physicalOutputValidated { add("physical_output_not_validated") }; if !route.challengeNonceMatches || runNonce != plan.nonce { add("stale_or_mismatched_nonce") }; if !route.captureQueueReadbackMatches || !route.physicalOutputQueueReadbackMatches { add("queue_device_readback_mismatch") }; if frameDensity < Policy.minimumFrameDensity || frameDensity > Policy.maximumFrameDensity { add("frame_density_out_of_range") }; if progress.1 < 2 { add("insufficient_progress_observations") }; if maxCallbackGapMs > Policy.maximumCallbackGapMs { add("callback_or_timestamp_stall") }; if signal.longestSilentGapMs > Policy.maximumSilentGapMs { add("long_non_silent_gap") }; if signal.nonSilentFrameRatio < Policy.minimumNonSilentRatio { add("near_silence") }; if aggregatePeak < Policy.minimumPeak { add("peak_too_low") }; if aggregatePeak >= Policy.clippedMagnitude { add("peak_too_high") }; if signal.clippedRatio >= Policy.maximumClippedRatio { add("clipped_pcm") }; if recognizedChannel < 0 { add("no_recognized_channel") }; if best.symbolCount < Policy.minimumSymbols { add("insufficient_challenge_symbols") }; if best.matchRatio < Policy.minimumMatchRatio { add("challenge_symbol_match_low") }; if best.normalizedCorrelation < Policy.minimumNormalizedCorrelation { add("challenge_correlation_low") }; if best.discriminationMargin < Policy.minimumDiscriminationMargin { add("challenge_discrimination_low") }; if !route.defaultInputEqual { add("default_input_changed") }; if !route.defaultOutputEqual { add("default_output_changed") }; if !route.defaultSystemOutputEqual { add("default_system_output_changed") }; if route.defaultNotificationCount != 0 { add("default_change_notification_observed") }; let status = reasons.isEmpty ? "passed" : "failed"; return ProbeResult(schema: Policy.schema, status: status, runNonce: runNonce, challengeAlgorithm: Policy.algorithm, challengeVersion: Policy.algorithmVersion, canonicalCaptureUID: Policy.captureUID, captureUIDMatches: route.captureUIDMatches, physicalOutputValidated: route.physicalOutputValidated, challengeNonceMatches: route.challengeNonceMatches && runNonce == plan.nonce, queueReadbackMatches: route.captureQueueReadbackMatches && route.physicalOutputQueueReadbackMatches, captureQueueReadbackMatches: route.captureQueueReadbackMatches, physicalOutputQueueReadbackMatches: route.physicalOutputQueueReadbackMatches, format: AudioFormatEvidence(sampleRate: Policy.sampleRateInt, channels: Policy.channels, signedInt16: true, interleaved: true), proofWindowSeconds: Policy.proofSeconds, captureSeconds: captureSeconds, callbackCount: UInt64(window.callbackEndTimes.count), capturedFrameCount: UInt64(frameCount), totalCallbackCount: window.totalCallbackCount, totalCapturedFrameCount: window.totalCapturedFrameCount, frameDensity: frameDensity, maxCallbackGapMs: maxCallbackGapMs, longestNonSilentGapMs: signal.longestSilentGapMs, nonSilentFrameRatio: signal.nonSilentFrameRatio, aggregateClippedRatio: signal.clippedRatio, progressObservationCount: window.progress.count, advancingProgressObservationCount: progress.1, progressSnapshots: progress.0, channels: channelEvidence, recognizedChannel: recognizedChannel, symbolCount: best.symbolCount, matchedSymbolCount: best.matchedSymbolCount, matchRatio: best.matchRatio, normalizedCorrelation: best.normalizedCorrelation, discriminationMargin: best.discriminationMargin, envelopeCorrelation: best.envelopeCorrelation, detectedLagMs: best.lagSeconds >= 0 ? best.lagSeconds * 1_000.0 : -1, defaultInputBeforeAfterEqual: route.defaultInputEqual, defaultOutputBeforeAfterEqual: route.defaultOutputEqual, defaultSystemOutputBeforeAfterEqual: route.defaultSystemOutputEqual, defaultChangeNotificationCount: max(0, route.defaultNotificationCount), failureCode: reasons.first ?? "none", failureReasons: reasons) } }
-private enum SyntheticCase: Equatable { case healthy, allZero, nearSilent, wrongNonce, unrelatedPattern, repeatedSymbol, insufficientFrames, longStall, clippedPCM, badPrefixHealthyTail, wrongCaptureUID, wrongReadback, defaultChanged, defaultsRestoredNotification, staleNonce, tooFewProgress, outputGenerator; static func parse(_ value: String) -> SyntheticCase? { switch value { case "healthy": return .healthy; case "all-zero": return .allZero; case "near-silent", "all-zero-near-silent": return .nearSilent; case "wrong-nonce": return .wrongNonce; case "unrelated-pattern": return .unrelatedPattern; case "repeated-symbol", "frozen-symbol": return .repeatedSymbol; case "insufficient-frames": return .insufficientFrames; case "long-stall", "long-callback-stall": return .longStall; case "clipped-pcm": return .clippedPCM; case "bad-prefix-healthy-tail": return .badPrefixHealthyTail; case "wrong-capture-uid": return .wrongCaptureUID; case "wrong-readback", "wrong-capture-uid-readback": return .wrongReadback; case "default-changed": return .defaultChanged; case "defaults-restored-notification": return .defaultsRestoredNotification; case "stale-nonce", "mismatched-nonce": return .staleNonce; case "too-few-progress": return .tooFewProgress; case "output-generator": return .outputGenerator; default: return nil } }; static let usageNames = "healthy|all-zero|near-silent|wrong-nonce|unrelated-pattern|repeated-symbol|insufficient-frames|long-stall|clipped-pcm|bad-prefix-healthy-tail|wrong-capture-uid|wrong-readback|default-changed|defaults-restored-notification|stale-nonce|too-few-progress|output-generator" }
+private enum SyntheticCase: Equatable {
+    case healthy, allZero, nearSilent, wrongNonce, unrelatedPattern
+    case repeatedSymbol, insufficientFrames, longStall, clippedPCM
+    case badPrefixHealthyTail, wrongCaptureUID, wrongReadback
+    case defaultChanged, defaultsRestoredNotification, staleNonce
+    case tooFewProgress, outputGenerator, physicalOutputPolicy
+    case routeMutation, digitalDelayedLoop
+
+    static func parse(_ value: String) -> SyntheticCase? {
+        switch value {
+        case "healthy": return .healthy
+        case "all-zero": return .allZero
+        case "near-silent", "all-zero-near-silent": return .nearSilent
+        case "wrong-nonce": return .wrongNonce
+        case "unrelated-pattern": return .unrelatedPattern
+        case "repeated-symbol", "frozen-symbol": return .repeatedSymbol
+        case "insufficient-frames": return .insufficientFrames
+        case "long-stall", "long-callback-stall": return .longStall
+        case "clipped-pcm": return .clippedPCM
+        case "bad-prefix-healthy-tail": return .badPrefixHealthyTail
+        case "wrong-capture-uid": return .wrongCaptureUID
+        case "wrong-readback", "wrong-capture-uid-readback": return .wrongReadback
+        case "default-changed": return .defaultChanged
+        case "defaults-restored-notification": return .defaultsRestoredNotification
+        case "stale-nonce", "mismatched-nonce": return .staleNonce
+        case "too-few-progress": return .tooFewProgress
+        case "output-generator": return .outputGenerator
+        case "physical-output-policy": return .physicalOutputPolicy
+        case "route-mutation": return .routeMutation
+        case "digital-delayed-loop": return .digitalDelayedLoop
+        default: return nil
+        }
+    }
+
+    static let usageNames =
+        "healthy|all-zero|near-silent|wrong-nonce|unrelated-pattern|repeated-symbol|insufficient-frames|long-stall|clipped-pcm|bad-prefix-healthy-tail|wrong-capture-uid|wrong-readback|default-changed|defaults-restored-notification|stale-nonce|too-few-progress|output-generator|physical-output-policy|route-mutation|digital-delayed-loop"
+}
 private struct SyntheticFixture { let plan: ChallengePlan; let challengeStartUptime: Double; let window: EvaluationWindow; let route: RouteEvidence }
 private enum SyntheticFactory { static func make(test: SyntheticCase, nonce: String) -> SyntheticFixture { let planCount = 128; let expectedPlan = ChallengePlan(nonce: nonce, symbolCount: planCount); var signalPlan = expectedPlan; if test == .wrongNonce { signalPlan = ChallengePlan(nonce: nonce + ":wrong-pattern", symbolCount: planCount) } else if test == .repeatedSymbol { signalPlan = expectedPlan.frozen() }; let windowStart = 10_000.0; let windowEnd = windowStart + Policy.proofSeconds; let challengeStart = windowStart - 0.12; let syntheticLag = 0.28; let onsetFrames = Int((syntheticLag - (windowStart - challengeStart)) * Policy.sampleRate); let totalFrames = Int(Policy.proofSeconds * Policy.sampleRate); let generator = ChallengeGenerator(plan: signalPlan); var noiseGenerator = SplitMix64(seed: ChallengePlan.seed(for: nonce + ":noise")); var samples: [Int16] = []; samples.reserveCapacity(totalFrames * Policy.channels); for frame in 0..<totalFrames { var base = 0.0; if frame >= onsetFrames { if test == .unrelatedPattern { let time = Double(frame - onsetFrames) / Policy.sampleRate; base = 0.19 * sin(2.0 * Double.pi * 1_379.0 * time) + 0.05 * sin(2.0 * Double.pi * 2_731.0 * time) } else { base = generator.nextNormalized() } }; if test == .nearSilent { base *= 0.005 }; let badPrefix = test == .badPrefixHealthyTail && frame < Int(1.2 * Policy.sampleRate); if test == .allZero || badPrefix { samples.append(0); samples.append(0) } else if test == .clippedPCM { let value: Int16 = frame.isMultiple(of: 2) ? 32_767 : -32_767; samples.append(value); samples.append(value) } else { let noise0 = Double(Int64(noiseGenerator.next() % 61) - 30) / 32_767.0; let noise1 = Double(Int64(noiseGenerator.next() % 61) - 30) / 32_767.0; samples.append(AudioSupport.quantize(base * 1.15 + noise0)); samples.append(AudioSupport.quantize(base * 0.90 + noise1)) } }; let availableFrames = test == .insufficientFrames ? Int(Double(totalFrames) * 0.60) : totalFrames; var chunks: [CaptureChunk] = []; var callbackIndex = 0; var frame = 0; var timestampOffset = 0.0; while frame < availableFrames { let count = min(Policy.bufferFrames, availableFrames - frame); let firstSample = frame * Policy.channels; let lastSample = (frame + count) * Policy.channels; if test == .longStall { if callbackIndex == 200 { timestampOffset += 0.25 } else if callbackIndex > 200 && callbackIndex <= 250 { timestampOffset -= 0.005 } }; let end = windowStart + Double(frame + count) / Policy.sampleRate + timestampOffset; chunks.append(CaptureChunk(samples: Array(samples[firstSample..<lastSample]), endUptime: end, frameCount: count)); callbackIndex += 1; frame += count }; var progress: [ProgressObservation] = [ProgressObservation(uptime: windowStart, callbackCount: 0, capturedFrameCount: 0)]; var progressTime = windowStart + Policy.progressIntervalSeconds; while progressTime <= windowEnd + 0.0001 { let eligible = chunks.filter { $0.endUptime <= progressTime }; progress.append(ProgressObservation(uptime: progressTime, callbackCount: UInt64(eligible.count), capturedFrameCount: UInt64(eligible.reduce(0) { $0 + $1.frameCount }))); progressTime += Policy.progressIntervalSeconds }; if test == .tooFewProgress { progress = [ProgressObservation(uptime: windowStart, callbackCount: 0, capturedFrameCount: 0), ProgressObservation(uptime: windowEnd - 0.1, callbackCount: UInt64(chunks.count), capturedFrameCount: UInt64(chunks.reduce(0) { $0 + $1.frameCount }))] }; var route = RouteEvidence(captureUIDMatches: true, physicalOutputValidated: true, challengeNonceMatches: true, captureQueueReadbackMatches: true, physicalOutputQueueReadbackMatches: true, defaultInputEqual: true, defaultOutputEqual: true, defaultSystemOutputEqual: true, defaultNotificationCount: 0); if test == .wrongCaptureUID { route.captureUIDMatches = false }; if test == .wrongReadback { route.captureQueueReadbackMatches = false }; if test == .defaultChanged { route.defaultInputEqual = false }; if test == .defaultsRestoredNotification { route.defaultNotificationCount = 1 }; if test == .staleNonce { route.challengeNonceMatches = false }; let totalCaptured = UInt64(chunks.reduce(0) { $0 + $1.frameCount }); let snapshot = CaptureSnapshot(chunks: chunks, progress: progress, totalCallbackCount: UInt64(chunks.count), totalCapturedFrameCount: totalCaptured); return SyntheticFixture(plan: expectedPlan, challengeStartUptime: challengeStart, window: snapshot.window(endingAt: windowEnd, duration: Policy.proofSeconds), route: route) } }
 private struct RunOptions { let nonce: String; let physicalOutputUID: String; let resultPath: String; let timeout: Double }
@@ -57,8 +387,319 @@ private enum AtomicResultWriter { static func prepare(_ url: URL) throws { let d
 private final class SignalLatch: @unchecked Sendable { private let lock = NSLock(); private var value: Int32 = 0; func record(_ signalNumber: Int32) { lock.lock(); if value == 0 { value = signalNumber }; lock.unlock() }; func current() -> Int32 { lock.lock(); defer { lock.unlock() }; return value } }
 private final class SignalMonitor { private let latch = SignalLatch(); private let queue = DispatchQueue(label: "opensteamer.physical-blackhole-microphone.signal"); private var sources: [any DispatchSourceSignal] = []; init() { for signalNumber in [SIGINT, SIGTERM, SIGHUP] { let capturedSignal = signalNumber; _ = Darwin.signal(capturedSignal, SIG_IGN); let source = DispatchSource.makeSignalSource(signal: capturedSignal, queue: queue); source.setEventHandler { [latch, capturedSignal] in latch.record(capturedSignal) }; source.resume(); sources.append(source) } }; func receivedSignal() -> Int32 { latch.current() }; deinit { for source in sources { source.cancel() } } }
 private enum RealRunner {}
-private extension RealRunner { static func run(_ options: RunOptions, signalMonitor: SignalMonitor) -> ProbeResult { let planSymbols = Int(ceil((options.timeout + Policy.maximumLagSeconds + Policy.proofSeconds + 4.0) / Policy.symbolSeconds)) + Policy.frequencies.count; let plan = ChallengePlan(nonce: options.nonce, symbolCount: planSymbols); let store = CaptureStore(retention: Policy.retentionSeconds); let inputFailure = QueueFailureLatch(); let outputFailure = QueueFailureLatch(); var inputSession: InputQueueSession?; var outputSession: OutputQueueSession?; var defaultGuard: DefaultDeviceGuard?; var beforeDefaults: DefaultSnapshot?; var route = RouteEvidence(captureUIDMatches: false, physicalOutputValidated: false, challengeNonceMatches: true, captureQueueReadbackMatches: false, physicalOutputQueueReadbackMatches: false, defaultInputEqual: false, defaultOutputEqual: false, defaultSystemOutputEqual: false, defaultNotificationCount: 0); var forcedFailures: [String] = []; var selectedEnd = ProcessInfo.processInfo.systemUptime; var challengeStart = selectedEnd; do { let validation = try DeviceResolver.validate(physicalOutputUID: options.physicalOutputUID); route.captureUIDMatches = validation.capture; route.physicalOutputValidated = validation.physicalOutput; let guardObject = DefaultDeviceGuard(); defaultGuard = guardObject; try guardObject.install(); beforeDefaults = try guardObject.snapshot(); let capture = InputQueueSession(store: store, failureLatch: inputFailure); inputSession = capture; try capture.start(uid: Policy.captureUID); route.captureQueueReadbackMatches = capture.readbackMatches; let output = OutputQueueSession(plan: plan, failureLatch: outputFailure); outputSession = output; try output.start(uid: options.physicalOutputUID); route.physicalOutputQueueReadbackMatches = output.readbackMatches; challengeStart = output.startUptime; selectedEnd = challengeStart; store.recordProgress(at: challengeStart); var nextProgress = challengeStart + Policy.progressIntervalSeconds; var nextEvaluation = challengeStart + Policy.proofSeconds; let deadline = challengeStart + options.timeout; while true { let now = ProcessInfo.processInfo.systemUptime; if signalMonitor.receivedSignal() != 0 { forcedFailures.append("interrupted"); selectedEnd = now; break }; if now >= nextProgress { store.recordProgress(at: now); nextProgress = now + Policy.progressIntervalSeconds }; if inputFailure.hasFailure() || outputFailure.hasFailure() { forcedFailures.append("audio_queue_runtime_failure"); selectedEnd = now; break }; if now >= nextEvaluation { let snapshot = store.snapshot(); var provisionalRoute = route; provisionalRoute.defaultInputEqual = true; provisionalRoute.defaultOutputEqual = true; provisionalRoute.defaultSystemOutputEqual = true; provisionalRoute.defaultNotificationCount = guardObject.notificationCount(); let candidateWindow = snapshot.window(endingAt: now, duration: Policy.proofSeconds); let candidate = Evaluator.evaluate(runNonce: options.nonce, plan: plan, challengeStartUptime: challengeStart, window: candidateWindow, route: provisionalRoute, forcedFailures: []); selectedEnd = now; if candidate.status == "passed" { break }; nextEvaluation = now + Policy.evaluationIntervalSeconds }; if now >= deadline { forcedFailures.append("timeout"); selectedEnd = now; break }; Thread.sleep(forTimeInterval: 0.05) } } catch let error as ProbeError { forcedFailures.append(error.code); selectedEnd = ProcessInfo.processInfo.systemUptime } catch { forcedFailures.append("unexpected_runtime_failure"); selectedEnd = ProcessInfo.processInfo.systemUptime }; if let inputSession { route.captureQueueReadbackMatches = inputSession.readbackMatches }; if let outputSession { route.physicalOutputQueueReadbackMatches = outputSession.readbackMatches }; let outputStopped = outputSession?.stop() ?? true; let inputStopped = inputSession?.stop() ?? true; if !outputStopped || !inputStopped { forcedFailures.append("audio_queue_teardown_failure") }; if inputFailure.hasFailure() || outputFailure.hasFailure() { forcedFailures.append("audio_queue_runtime_failure") }; store.recordProgress(at: ProcessInfo.processInfo.systemUptime); if let defaultGuard { Thread.sleep(forTimeInterval: 0.15); if let beforeDefaults { do { let afterDefaults = try defaultGuard.snapshot(); route.defaultInputEqual = beforeDefaults.inputUID == afterDefaults.inputUID; route.defaultOutputEqual = beforeDefaults.outputUID == afterDefaults.outputUID; route.defaultSystemOutputEqual = beforeDefaults.systemOutputUID == afterDefaults.systemOutputUID } catch { forcedFailures.append("default_after_snapshot_failed") } } else { forcedFailures.append("default_before_snapshot_unavailable") }; Thread.sleep(forTimeInterval: 0.05); let listenerRemoved = defaultGuard.remove(); route.defaultNotificationCount = defaultGuard.notificationCount(); if !listenerRemoved { forcedFailures.append("default_device_listener_remove_failed") } } else { forcedFailures.append("default_guard_unavailable") }; let finalWindow = store.snapshot().window(endingAt: selectedEnd, duration: Policy.proofSeconds); return Evaluator.evaluate(runNonce: options.nonce, plan: plan, challengeStartUptime: challengeStart, window: finalWindow, route: route, forcedFailures: forcedFailures) } }
-private enum ProbeProgram { static func main() -> Int32 { let command: ProbeCommand; do { command = try CLI.parse() } catch { FileHandle.standardError.write(Data(CLI.usage.utf8)); return 64 }; switch command { case .run(let options): let resultURL = URL(fileURLWithPath: options.resultPath); do { try AtomicResultWriter.prepare(resultURL); let signalMonitor = SignalMonitor(); let result = RealRunner.run(options, signalMonitor: signalMonitor); try AtomicResultWriter.write(result, to: resultURL); return result.status == "passed" ? 0 : 1 } catch { return 74 }; case .selfTest(let options): let resultURL = URL(fileURLWithPath: options.resultPath); do { try AtomicResultWriter.prepare(resultURL); let fixture = SyntheticFactory.make(test: options.test, nonce: options.nonce); let forcedFailures = options.test == .outputGenerator && !OutputGeneratorSelfTest.passes(nonce: options.nonce) ? ["output_generator_self_test_failed"] : []; let result = Evaluator.evaluate(runNonce: options.nonce, plan: fixture.plan, challengeStartUptime: fixture.challengeStartUptime, window: fixture.window, route: fixture.route, forcedFailures: forcedFailures); try AtomicResultWriter.write(result, to: resultURL); return result.status == "passed" ? 0 : 1 } catch { return 74 } } } }
+private extension RealRunner {
+    static func run(
+        _ options: RunOptions,
+        signalMonitor: SignalMonitor
+    ) -> ProbeResult {
+        let planSymbols = Int(ceil(
+            (options.timeout + Policy.maximumLagSeconds
+                + Policy.proofSeconds + 4.0) / Policy.symbolSeconds
+        )) + Policy.frequencies.count
+        let plan = ChallengePlan(
+            nonce: options.nonce,
+            symbolCount: planSymbols
+        )
+        let store = CaptureStore(retention: Policy.retentionSeconds)
+        let inputFailure = QueueFailureLatch()
+        let outputFailure = QueueFailureLatch()
+        var inputSession: InputQueueSession?
+        var outputSession: OutputQueueSession?
+        var defaultGuard: DefaultDeviceGuard?
+        var beforeDefaults: DefaultSnapshot?
+        var route = RouteEvidence(
+            captureUIDMatches: false,
+            physicalOutputValidated: false,
+            challengeNonceMatches: true,
+            captureQueueReadbackMatches: false,
+            physicalOutputQueueReadbackMatches: false,
+            defaultInputEqual: false,
+            defaultOutputEqual: false,
+            defaultSystemOutputEqual: false,
+            defaultNotificationCount: 0
+        )
+        var forcedFailures: [String] = []
+        var selectedEnd = ProcessInfo.processInfo.systemUptime
+        var challengeStart = selectedEnd
+        var routeObservationCount = 0
+
+        // This is an operational controlled-host prerequisite, not cryptographic proof that a
+        // same-user tap could never have existed. Refuse to open either queue without it.
+        if ProcessInfo.processInfo.environment[
+            "OPENSTEAMER_CONTROLLED_HOST_NO_AUDIO_TAPS_ACK"
+        ] != Policy.controlledHostNoAudioTapsConfirmation {
+            forcedFailures.append(
+                "controlled_host_no_audio_taps_not_acknowledged"
+            )
+        } else {
+            do {
+                let expectedDevices = try DeviceResolver.validate(
+                    physicalOutputUID: options.physicalOutputUID
+                )
+                route.captureUIDMatches = true
+                route.physicalOutputValidated = true
+
+                let guardObject = DefaultDeviceGuard()
+                defaultGuard = guardObject
+                try guardObject.install()
+                let expectedDefaults = try guardObject.snapshot()
+                beforeDefaults = expectedDefaults
+
+                let capture = InputQueueSession(
+                    store: store,
+                    failureLatch: inputFailure
+                )
+                inputSession = capture
+                try capture.start(uid: Policy.captureUID)
+                route.captureQueueReadbackMatches = capture.readbackMatches
+
+                let output = OutputQueueSession(
+                    plan: plan,
+                    failureLatch: outputFailure
+                )
+                outputSession = output
+                try output.start(uid: options.physicalOutputUID)
+                route.physicalOutputQueueReadbackMatches =
+                    output.readbackMatches
+                challengeStart = output.startUptime
+                selectedEnd = challengeStart
+                store.recordProgress(at: challengeStart)
+
+                var nextProgress =
+                    challengeStart + Policy.progressIntervalSeconds
+                var nextEvaluation =
+                    challengeStart + Policy.proofSeconds
+                let deadline = challengeStart + options.timeout
+
+                while true {
+                    let now = ProcessInfo.processInfo.systemUptime
+                    selectedEnd = now
+                    if signalMonitor.receivedSignal() != 0 {
+                        forcedFailures.append("interrupted")
+                        break
+                    }
+                    if now >= nextProgress {
+                        store.recordProgress(at: now)
+                        nextProgress =
+                            now + Policy.progressIntervalSeconds
+                    }
+                    if inputFailure.hasFailure()
+                        || outputFailure.hasFailure() {
+                        forcedFailures.append(
+                            "audio_queue_runtime_failure"
+                        )
+                        break
+                    }
+
+                    if let routeFailure =
+                        RouteContinuityValidator.failureCode(
+                            expectedDevices: expectedDevices,
+                            inputSession: capture,
+                            outputSession: output,
+                            defaultGuard: guardObject,
+                            expectedDefaults: expectedDefaults
+                        ) {
+                        route.captureQueueReadbackMatches =
+                            capture.currentDeviceMatches(
+                                Policy.captureUID
+                            )
+                        route.physicalOutputQueueReadbackMatches =
+                            output.currentDeviceMatches(
+                                PhysicalOutputPolicy.reviewedOutputUID
+                            )
+                        forcedFailures.append(routeFailure)
+                        break
+                    }
+                    routeObservationCount += 1
+
+                    if now >= nextEvaluation {
+                        let snapshot = store.snapshot()
+                        var provisionalRoute = route
+                        provisionalRoute.defaultInputEqual = true
+                        provisionalRoute.defaultOutputEqual = true
+                        provisionalRoute.defaultSystemOutputEqual = true
+                        provisionalRoute.defaultNotificationCount = 0
+                        let candidateWindow = snapshot.window(
+                            endingAt: now,
+                            duration: Policy.proofSeconds
+                        )
+                        let continuityFailures =
+                            routeObservationCount >= 60
+                                ? []
+                                : [
+                                    "insufficient_route_continuity_observations"
+                                ]
+                        let candidate = Evaluator.evaluate(
+                            runNonce: options.nonce,
+                            plan: plan,
+                            challengeStartUptime: challengeStart,
+                            window: candidateWindow,
+                            route: provisionalRoute,
+                            forcedFailures: continuityFailures
+                        )
+                        if candidate.status == "passed" {
+                            break
+                        }
+                        nextEvaluation =
+                            now + Policy.evaluationIntervalSeconds
+                    }
+                    if now >= deadline {
+                        forcedFailures.append("timeout")
+                        break
+                    }
+                    Thread.sleep(forTimeInterval: 0.05)
+                }
+            } catch let error as ProbeError {
+                forcedFailures.append(error.code)
+                selectedEnd = ProcessInfo.processInfo.systemUptime
+            } catch {
+                forcedFailures.append("unexpected_runtime_failure")
+                selectedEnd = ProcessInfo.processInfo.systemUptime
+            }
+        }
+
+        if let inputSession {
+            route.captureQueueReadbackMatches =
+                route.captureQueueReadbackMatches
+                    && inputSession.currentDeviceMatches(
+                        Policy.captureUID
+                    )
+        }
+        if let outputSession {
+            route.physicalOutputQueueReadbackMatches =
+                route.physicalOutputQueueReadbackMatches
+                    && outputSession.currentDeviceMatches(
+                        PhysicalOutputPolicy.reviewedOutputUID
+                    )
+        }
+        let outputStopped = outputSession?.stop() ?? true
+        let inputStopped = inputSession?.stop() ?? true
+        if !outputStopped || !inputStopped {
+            forcedFailures.append("audio_queue_teardown_failure")
+        }
+        if inputFailure.hasFailure() || outputFailure.hasFailure() {
+            forcedFailures.append("audio_queue_runtime_failure")
+        }
+        if routeObservationCount < 60 {
+            forcedFailures.append(
+                "insufficient_route_continuity_observations"
+            )
+        }
+        store.recordProgress(at: ProcessInfo.processInfo.systemUptime)
+        if let defaultGuard {
+            Thread.sleep(forTimeInterval: 0.15)
+            if let beforeDefaults {
+                do {
+                    let afterDefaults = try defaultGuard.snapshot()
+                    route.defaultInputEqual =
+                        beforeDefaults.inputUID
+                            == afterDefaults.inputUID
+                    route.defaultOutputEqual =
+                        beforeDefaults.outputUID
+                            == afterDefaults.outputUID
+                    route.defaultSystemOutputEqual =
+                        beforeDefaults.systemOutputUID
+                            == afterDefaults.systemOutputUID
+                } catch {
+                    forcedFailures.append(
+                        "default_after_snapshot_failed"
+                    )
+                }
+            } else {
+                forcedFailures.append(
+                    "default_before_snapshot_unavailable"
+                )
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+            let listenerRemoved = defaultGuard.remove()
+            route.defaultNotificationCount =
+                defaultGuard.notificationCount()
+            if !listenerRemoved {
+                forcedFailures.append(
+                    "default_device_listener_remove_failed"
+                )
+            }
+        } else {
+            forcedFailures.append("default_guard_unavailable")
+        }
+        let finalWindow = store.snapshot().window(
+            endingAt: selectedEnd,
+            duration: Policy.proofSeconds
+        )
+        return Evaluator.evaluate(
+            runNonce: options.nonce,
+            plan: plan,
+            challengeStartUptime: challengeStart,
+            window: finalWindow,
+            route: route,
+            forcedFailures: forcedFailures
+        )
+    }
+}
+private enum ProbeProgram {
+    static func main() -> Int32 {
+        let command: ProbeCommand
+        do {
+            command = try CLI.parse()
+        } catch {
+            FileHandle.standardError.write(Data(CLI.usage.utf8))
+            return 64
+        }
+        switch command {
+        case .run(let options):
+            let resultURL = URL(fileURLWithPath: options.resultPath)
+            do {
+                try AtomicResultWriter.prepare(resultURL)
+                let signalMonitor = SignalMonitor()
+                let result = RealRunner.run(options, signalMonitor: signalMonitor)
+                try AtomicResultWriter.write(result, to: resultURL)
+                return result.status == "passed" ? 0 : 1
+            } catch {
+                return 74
+            }
+        case .selfTest(let options):
+            let resultURL = URL(fileURLWithPath: options.resultPath)
+            do {
+                try AtomicResultWriter.prepare(resultURL)
+                let fixture = SyntheticFactory.make(test: options.test, nonce: options.nonce)
+                var forcedFailures: [String] = []
+                if options.test == .outputGenerator,
+                   !OutputGeneratorSelfTest.passes(nonce: options.nonce) {
+                    forcedFailures.append("output_generator_self_test_failed")
+                }
+                if options.test == .physicalOutputPolicy,
+                   !PhysicalOutputPolicy.selfTestPasses() {
+                    forcedFailures.append("physical_output_policy_self_test_failed")
+                }
+                if options.test == .routeMutation {
+                    forcedFailures.append(
+                        "route_identity_changed_during_proof"
+                    )
+                }
+                if options.test == .digitalDelayedLoop {
+                    // The waveform is intentionally otherwise valid. It must still fail because
+                    // endpoint metadata cannot cryptographically distinguish a same-user digital
+                    // loop from the reviewed acoustic path.
+                    forcedFailures.append(
+                        "controlled_host_no_audio_taps_not_acknowledged"
+                    )
+                }
+                let result = Evaluator.evaluate(
+                    runNonce: options.nonce,
+                    plan: fixture.plan,
+                    challengeStartUptime: fixture.challengeStartUptime,
+                    window: fixture.window,
+                    route: fixture.route,
+                    forcedFailures: forcedFailures
+                )
+                try AtomicResultWriter.write(result, to: resultURL)
+                return result.status == "passed" ? 0 : 1
+            } catch {
+                return 74
+            }
+        }
+    }
+}
 
 private struct DefaultUIDSnapshotEvidence: Codable {
     let schema: String
@@ -68,6 +709,7 @@ private struct DefaultUIDSnapshotEvidence: Codable {
     let outputUIDFingerprint: String
     let systemOutputUIDFingerprint: String
     let inputIsCanonicalBlackHole: Bool
+    let inputTransportClass: String
 }
 
 private enum DefaultUIDSnapshotProgram {
@@ -96,7 +738,7 @@ private enum DefaultUIDSnapshotProgram {
                 selector: kAudioHardwarePropertyDefaultSystemOutputDevice
             )
             let evidence = DefaultUIDSnapshotEvidence(
-                schema: "opensteamer.default-input-snapshot.v1",
+                schema: "opensteamer.default-input-snapshot.v2",
                 role: role,
                 observedAtMonotonicNs: UInt64(
                     max(
@@ -110,7 +752,12 @@ private enum DefaultUIDSnapshotProgram {
                 systemOutputUIDFingerprint:
                     fingerprint(systemOutputUID),
                 inputIsCanonicalBlackHole:
-                    inputUID == Policy.captureUID
+                    inputUID == Policy.captureUID,
+                inputTransportClass:
+                    try CoreAudioReader.defaultTransportClass(
+                        selector:
+                            kAudioHardwarePropertyDefaultInputDevice
+                    )
             )
             try write(
                 evidence,
