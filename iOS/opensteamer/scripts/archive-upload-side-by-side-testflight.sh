@@ -2784,7 +2784,8 @@ function app_leaf_signing_certificate_sha256() {
       && "${extraction_directory}" -ef "/dev/fd/${extraction_fd}" ]] \
     || return 1
   (
-    cd "/dev/fd/${extraction_fd}" || exit 1
+    cd "${extraction_directory}" || exit 1
+    [[ "." -ef "/dev/fd/${extraction_fd}" ]] || exit 1
     /usr/bin/codesign -d --extract-certificates=certificate \
       "${app_path}" >/dev/null 2>&1
   ) || return 1
@@ -2802,12 +2803,14 @@ function app_leaf_signing_certificate_sha256() {
         && "${certificate_path:t}" == certificate<-> ]] || return 1
     (( certificate_count += 1 ))
   done < <(
-    cd "/dev/fd/${extraction_fd}" || exit 1
+    cd "${extraction_directory}" || exit 1
+    [[ "." -ef "/dev/fd/${extraction_fd}" ]] || exit 1
     /usr/bin/find . -mindepth 1 -maxdepth 1 -type f ! -type l -print0
   )
   (( certificate_count > 0 )) || return 1
   (
-    cd "/dev/fd/${extraction_fd}" || exit 1
+    cd "${extraction_directory}" || exit 1
+    [[ "." -ef "/dev/fd/${extraction_fd}" ]] || exit 1
     [[ -f ./certificate0 && ! -L ./certificate0 ]] || exit 1
     sha256_file ./certificate0
   )
@@ -2825,7 +2828,7 @@ function verify_main_signed_entitlements() {
         "${entitlements}" application-identifier)" \
         == "${EXPECTED_APPLICATION_IDENTIFIER}" \
       && "$(plist_document_raw_value \
-        "${entitlements}" com.apple.developer.team-identifier)" \
+        "${entitlements}" 'com\.apple\.developer\.team-identifier')" \
         == "${EXPECTED_TEAM_ID}" \
       && "$(plist_document_raw_value "${entitlements}" get-task-allow)" \
         == 'true' ]]
@@ -2873,7 +2876,7 @@ function verify_embedded_provisioning_profile() {
         "${profile}" Entitlements.application-identifier)" \
         == "${EXPECTED_TEAM_ID}.*" \
       && "$(plist_document_raw_value \
-        "${profile}" Entitlements.com.apple.developer.team-identifier)" \
+        "${profile}" 'Entitlements.com\.apple\.developer\.team-identifier')" \
         == "${EXPECTED_TEAM_ID}" \
       && "$(plist_document_raw_value \
         "${profile}" Entitlements.get-task-allow)" == 'true' \

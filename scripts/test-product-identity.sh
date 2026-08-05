@@ -1075,15 +1075,30 @@ require_rejection "$CASE" 'side-by-side TestFlight signed entitlement verificati
 
 CASE=$(new_case testflight-profile-team-entitlement)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  'Entitlements.com.apple.developer.team-identifier' \
-  'Entitlements.com.apple.developer.unreviewed-team-identifier'
-require_rejection "$CASE" 'side-by-side TestFlight profile team entitlement verification'
+  'Entitlements.com\.apple\.developer\.team-identifier' \
+  'Entitlements.com.apple.developer.team-identifier'
+require_rejection "$CASE" \
+  'side-by-side TestFlight profile team entitlement literal dotted-key escaping'
+
+CASE=$(new_case testflight-app-team-entitlement)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  "'com\.apple\.developer\.team-identifier'" \
+  "'com.apple.developer.team-identifier'"
+require_rejection "$CASE" \
+  'side-by-side TestFlight app team entitlement literal dotted-key escaping'
 
 CASE=$(new_case testflight-profile-leaf-certificate)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
   'matching_certificate_count == 1' \
   'matching_certificate_count >= 0'
 require_rejection "$CASE" 'side-by-side TestFlight unique leaf-certificate match'
+
+CASE=$(new_case testflight-certificate-directory-object-binding)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    [[ "." -ef "/dev/fd/${extraction_fd}" ]] || exit 1\n    /usr/bin/codesign -d --extract-certificates=certificate' \
+  $'    true\n    /usr/bin/codesign -d --extract-certificates=certificate'
+require_rejection "$CASE" \
+  'side-by-side TestFlight traversable held certificate-directory binding'
 
 CASE=$(new_case testflight-profile-utc-validity)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -1387,6 +1402,67 @@ BEHAVIOR_TARGET_IMAGE='/Volumes/t7/opensteamer-behavior-target.sparseimage'
 BEHAVIOR_MOUNT_POINT='/private/tmp/opensteamer-behavior-mount'
 BEHAVIOR_WRAPPER="$ROOT_DIR/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh"
 mkdir -p "$BEHAVIOR_CONTROL"
+
+DOTTED_KEY_FIXTURE="$BEHAVIOR_ROOT/dotted-entitlement-keys.plist"
+print -r -- '<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>com.apple.developer.team-identifier</key><string>MSMG8CJLB3</string>
+<key>Entitlements</key><dict>
+<key>com.apple.developer.team-identifier</key><string>MSMG8CJLB3</string>
+</dict>
+</dict></plist>' >"$DOTTED_KEY_FIXTURE"
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" DOTTED_KEY_FIXTURE="$DOTTED_KEY_FIXTURE" \
+/bin/zsh <<'DOTTEDKEYTEST'
+source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
+trap - EXIT HUP INT QUIT TERM
+
+typeset document
+document=$(<"$DOTTED_KEY_FIXTURE")
+[[ "$(plist_document_raw_value \
+      "$document" 'com\.apple\.developer\.team-identifier')" \
+      == "$EXPECTED_TEAM_ID" \
+    && "$(plist_document_raw_value \
+      "$document" 'Entitlements.com\.apple\.developer\.team-identifier')" \
+      == "$EXPECTED_TEAM_ID" ]]
+for unescaped_key_path in \
+    com.apple.developer.team-identifier \
+    Entitlements.com.apple.developer.team-identifier; do
+  if plist_document_raw_value \
+      "$document" "$unescaped_key_path" >/dev/null 2>&1; then
+    print -u2 -r -- \
+      "unescaped dotted entitlement key unexpectedly resolved: ${unescaped_key_path}"
+    exit 1
+  fi
+done
+DOTTEDKEYTEST
+
+HELD_DIRECTORY="$BEHAVIOR_ROOT/held-certificate-directory"
+/bin/mkdir -m 700 "$HELD_DIRECTORY"
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" HELD_DIRECTORY="$HELD_DIRECTORY" \
+/bin/zsh <<'HELDDIRECTORYTEST'
+source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
+trap - EXIT HUP INT QUIT TERM
+
+typeset -i held_fd=-1
+sysopen -r -o nofollow -u held_fd "$HELD_DIRECTORY"
+(
+  cd "$HELD_DIRECTORY" || exit 1
+  [[ "." -ef "/dev/fd/${held_fd}" ]] || exit 1
+)
+typeset moved_directory="${HELD_DIRECTORY}.moved"
+/bin/mv -- "$HELD_DIRECTORY" "$moved_directory"
+/bin/mkdir -m 700 "$HELD_DIRECTORY"
+if (
+  cd "$HELD_DIRECTORY" || exit 1
+  [[ "." -ef "/dev/fd/${held_fd}" ]]
+); then
+  print -u2 -r -- 'replacement certificate directory matched the held object'
+  exit 1
+fi
+/bin/rmdir -- "$HELD_DIRECTORY"
+/bin/mv -- "$moved_directory" "$HELD_DIRECTORY"
+exec {held_fd}>&-
+HELDDIRECTORYTEST
 
 write_hdiutil_snapshot() {
   local destination=$1

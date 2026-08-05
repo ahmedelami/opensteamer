@@ -1027,14 +1027,20 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'matching_certificate_count == 1' 1 \
   'side-by-side TestFlight unique leaf-certificate match'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'cd "/dev/fd/${extraction_fd}" || exit 1' 3 \
-  'side-by-side TestFlight descriptor-relative certificate extraction'
+  $'    cd "${extraction_directory}" || exit 1\n    [[ "." -ef "/dev/fd/${extraction_fd}" ]] || exit 1' 3 \
+  'side-by-side TestFlight traversable held certificate-directory binding'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'cd "/dev/fd/${extraction_fd}" || exit 1' 0 \
+  'side-by-side TestFlight rejects non-traversable descriptor-directory chdir'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'TZ=UTC /bin/date' 2 \
   'side-by-side TestFlight UTC provisioning validity parsing'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'Entitlements.com.apple.developer.team-identifier' 1 \
-  'side-by-side TestFlight profile team entitlement verification'
+  'Entitlements.com\.apple\.developer\.team-identifier' 1 \
+  'side-by-side TestFlight profile team entitlement literal dotted-key escaping'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  "'com\.apple\.developer\.team-identifier'" 1 \
+  'side-by-side TestFlight app team entitlement literal dotted-key escaping'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'Entitlements.get-task-allow' 1 \
   'side-by-side TestFlight profile debug entitlement verification'
