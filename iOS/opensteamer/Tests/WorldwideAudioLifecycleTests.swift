@@ -27,6 +27,11 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         case teardown
     }
 
+    private enum PrematureMacHostedCallChallengeOutcome: Equatable {
+        case localSuccess
+        case localFailure
+    }
+
     func testWorldwidePlaybackConfigurationUsesOnlyValidExplicitOptions() {
         let configuration = WebRTCAudioPlaybackSession.playbackConfiguration()
 
@@ -3947,7 +3952,8 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         observer.debugSetLiveSnapshotForTests(
             WorldwideCallActivitySnapshot(
                 nonEndedCallCount: 1,
-                connectedNonEndedCallCount: 0
+                connectedNonEndedCallCount: 0,
+                membershipRevision: 1
             )
         )
         observer.debugDeliverDelegateInvalidationSynchronouslyForTests()
@@ -3956,7 +3962,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             observer.snapshot,
             WorldwideCallActivitySnapshot(
                 nonEndedCallCount: 1,
-                connectedNonEndedCallCount: 0
+                connectedNonEndedCallCount: 0,
+                revision: 1,
+                membershipRevision: 1
             )
         )
         XCTAssertFalse(
@@ -3970,7 +3978,8 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         observer.debugSetLiveSnapshotForTests(
             WorldwideCallActivitySnapshot(
                 nonEndedCallCount: 1,
-                connectedNonEndedCallCount: 0
+                connectedNonEndedCallCount: 0,
+                membershipRevision: 7
             )
         )
         observer.startObserving()
@@ -3983,13 +3992,606 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
 
         let connectedSnapshot = WorldwideCallActivitySnapshot(
             nonEndedCallCount: 1,
-            connectedNonEndedCallCount: 1
+            connectedNonEndedCallCount: 1,
+            revision: 1,
+            membershipRevision: 7
         )
         observer.debugSetLiveSnapshotForTests(connectedSnapshot)
         observer.debugDeliverDelegateInvalidationSynchronouslyForTests()
 
         XCTAssertEqual(observer.snapshot, connectedSnapshot)
         XCTAssertEqual(receivedSnapshots, [connectedSnapshot])
+    }
+
+    func testMacHostedCallRequiresFreshChallengeEchoAfterEveryCallRevision() throws {
+        let fixture = makeFixture()
+        var challenges: [WebRTCMacHostedCallChallenge] = []
+        fixture.controller.onMacHostedCallChallengeChanged = {
+            if let challenge = $0 {
+                challenges.append(challenge)
+            }
+        }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+        let firstChallenge = try XCTUnwrap(challenges.last)
+        XCTAssertFalse(fixture.controller.microphoneActivationIsAllowed())
+
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 1,
+                challengeSequence: firstChallenge.sequence,
+                challengeNonce: firstChallenge.nonce,
+                callEpochNonce:
+                    firstChallenge.callEpochNonce,
+                state: .active
+            )
+        )
+        XCTAssertTrue(fixture.controller.microphoneActivationIsAllowed())
+
+        fixture.callActivity.replaceCallKeepingCurrentAggregate()
+        let replacementChallenge = try XCTUnwrap(challenges.last)
+        XCTAssertNotEqual(replacementChallenge, firstChallenge)
+        XCTAssertNotEqual(
+            replacementChallenge.callEpochNonce,
+            firstChallenge.callEpochNonce
+        )
+        XCTAssertFalse(fixture.controller.microphoneActivationIsAllowed())
+
+        // This response has a newer wire sequence but was sampled for the prior CallKit epoch.
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 2,
+                challengeSequence: firstChallenge.sequence,
+                challengeNonce: firstChallenge.nonce,
+                callEpochNonce:
+                    firstChallenge.callEpochNonce,
+                state: .active
+            )
+        )
+        XCTAssertFalse(fixture.controller.microphoneActivationIsAllowed())
+
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 3,
+                challengeSequence: replacementChallenge.sequence,
+                challengeNonce: replacementChallenge.nonce,
+                callEpochNonce: firstChallenge.callEpochNonce,
+                state: .active
+            )
+        )
+        XCTAssertFalse(fixture.controller.microphoneActivationIsAllowed())
+
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 4,
+                challengeSequence: replacementChallenge.sequence,
+                challengeNonce: replacementChallenge.nonce,
+                callEpochNonce:
+                    replacementChallenge.callEpochNonce,
+                state: .active
+            )
+        )
+        XCTAssertTrue(fixture.controller.microphoneActivationIsAllowed())
+    }
+
+    func testMacHostedCallEvidenceSynchronizesLiveCallReplacementBeforeAdmission()
+        throws {
+        let fixture = makeFixture()
+        var challenges: [WebRTCMacHostedCallChallenge] = []
+        fixture.controller.onMacHostedCallChallengeChanged = {
+            if let challenge = $0 {
+                challenges.append(challenge)
+            }
+        }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+        let firstChallenge = try XCTUnwrap(challenges.last)
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 1,
+                challengeSequence: firstChallenge.sequence,
+                challengeNonce: firstChallenge.nonce,
+                callEpochNonce: firstChallenge.callEpochNonce,
+                state: .active
+            )
+        )
+        XCTAssertTrue(fixture.controller.microphoneActivationIsAllowed())
+
+        fixture.callActivity
+            .stageLiveCallReplacementKeepingCurrentAggregateWithoutCallback()
+        XCTAssertEqual(challenges.last, firstChallenge)
+
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 2,
+                challengeSequence: firstChallenge.sequence,
+                challengeNonce: firstChallenge.nonce,
+                callEpochNonce: firstChallenge.callEpochNonce,
+                state: .active
+            )
+        )
+
+        let replacementChallenge = try XCTUnwrap(challenges.last)
+        XCTAssertNotEqual(replacementChallenge, firstChallenge)
+        XCTAssertNotEqual(
+            replacementChallenge.callEpochNonce,
+            firstChallenge.callEpochNonce
+        )
+        XCTAssertFalse(fixture.controller.microphoneActivationIsAllowed())
+    }
+
+    func testMacHostedCallChallengeWaitsForForwardedAnswerWhenPrematureSendWouldSucceed()
+        async throws {
+        try await assertMacHostedCallChallengeWaitsForForwardedAnswer(
+            prematureOutcome: .localSuccess
+        )
+    }
+
+    func testMacHostedCallChallengeWaitsForForwardedAnswerWhenPrematureSendWouldFail()
+        async throws {
+        try await assertMacHostedCallChallengeWaitsForForwardedAnswer(
+            prematureOutcome: .localFailure
+        )
+    }
+
+    func testMacHostedCallChallengeAutomaticallyRetriesOneLoneFailure()
+        async throws {
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        let peer = try makeAudioRacePeer()
+        viewModel.debugInstallScreenSessionForTests(peer: peer)
+
+        var sendAttemptCount = 0
+        var retryWaitCount = 0
+        viewModel.debugInstallMacHostedCallChallengeAutomaticRetryWaiter {
+            retryWaitCount += 1
+            await Task.yield()
+        }
+        viewModel.debugInstallMacHostedCallChallengeSender {
+            sourcePeer,
+            _ in
+            XCTAssertTrue(sourcePeer === peer)
+            sendAttemptCount += 1
+            if sendAttemptCount == 1 {
+                throw WebRTCTransportError.transportNotHealthy
+            }
+        }
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+        let answerContext = try XCTUnwrap(
+            viewModel.debugMacHostedCallCapabilityRetryContextForTests()
+        )
+        viewModel.debugDeliverMacHostedCallCapabilityNegotiatedForTests(
+            answerContext
+        )
+
+        await viewModel.debugWaitForMacHostedCallChallengeSendForTests()
+        XCTAssertEqual(sendAttemptCount, 2)
+        XCTAssertEqual(retryWaitCount, 1)
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testMacHostedCallChallengeRetryRetiresWhileWaiting()
+        async throws {
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        let peer = try makeAudioRacePeer()
+        viewModel.debugInstallScreenSessionForTests(peer: peer)
+        let retryGate = AudioNonCooperativeGate<Void>()
+        let retryWaitReturned = expectation(
+            description: "retired retry waiter returned"
+        )
+        var sendAttemptCount = 0
+        viewModel.debugInstallMacHostedCallChallengeAutomaticRetryWaiter {
+            await retryGate.wait()
+            retryWaitReturned.fulfill()
+        }
+        viewModel.debugInstallMacHostedCallChallengeSender {
+            sourcePeer,
+            _ in
+            XCTAssertTrue(sourcePeer === peer)
+            sendAttemptCount += 1
+            throw WebRTCTransportError.transportNotHealthy
+        }
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+        let answerContext = try XCTUnwrap(
+            viewModel.debugMacHostedCallCapabilityRetryContextForTests()
+        )
+        viewModel.debugDeliverMacHostedCallCapabilityNegotiatedForTests(
+            answerContext
+        )
+
+        await retryGate.waitUntilBlocked()
+        XCTAssertEqual(sendAttemptCount, 1)
+        viewModel.debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+        await retryGate.open(())
+        await fulfillment(of: [retryWaitReturned], timeout: 2)
+        await Task.yield()
+        XCTAssertEqual(
+            sendAttemptCount,
+            1,
+            "Retiring transport ownership during the delay must suppress the retry."
+        )
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    private func assertMacHostedCallChallengeWaitsForForwardedAnswer(
+        prematureOutcome: PrematureMacHostedCallChallengeOutcome
+    ) async throws {
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        let peer = try makeAudioRacePeer()
+        viewModel.debugInstallScreenSessionForTests(peer: peer)
+
+        let postAnswerSend = expectation(
+            description: "challenge sent after SDP answer"
+        )
+        let answerWasForwarded = AudioMainActorFlag()
+        var attemptedChallenges: [WebRTCMacHostedCallChallenge] = []
+        viewModel.debugInstallMacHostedCallChallengeSender {
+            sourcePeer,
+            challenge in
+            XCTAssertTrue(sourcePeer === peer)
+            attemptedChallenges.append(challenge)
+            guard answerWasForwarded.value else {
+                XCTFail("The challenge lane opened before its ordered answer was forwarded.")
+                if prematureOutcome == .localFailure {
+                    throw WebRTCTransportError.transportNotHealthy
+                }
+                return
+            }
+            postAnswerSend.fulfill()
+        }
+
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+
+        await Task.yield()
+        await viewModel.debugWaitForMacHostedCallChallengeSendForTests()
+        XCTAssertTrue(
+            attemptedChallenges.isEmpty,
+            "Transport health must not launch even a locally successful challenge before the answer boundary."
+        )
+        let answerContext = try XCTUnwrap(
+            viewModel.debugMacHostedCallCapabilityRetryContextForTests()
+        )
+
+        answerWasForwarded.value = true
+        viewModel.debugDeliverMacHostedCallCapabilityNegotiatedForTests(
+            answerContext
+        )
+        await fulfillment(of: [postAnswerSend], timeout: 2)
+        await viewModel.debugWaitForMacHostedCallChallengeSendForTests()
+
+        XCTAssertEqual(attemptedChallenges.count, 1)
+
+        // A duplicate answer notification for the same peer/session/transport binding must not
+        // resend an already successful challenge or invalidate evidence that may now be arriving.
+        viewModel.debugDeliverMacHostedCallCapabilityNegotiatedForTests(
+            answerContext
+        )
+        await viewModel.debugWaitForMacHostedCallChallengeSendForTests()
+        XCTAssertEqual(attemptedChallenges.count, 1)
+
+        // Beginning a replacement offer closes the old answer fence synchronously. A delayed
+        // answer callback from that retired negotiation cannot reopen the challenge lane.
+        viewModel.debugBeginMacHostedCallNegotiationForTests()
+        viewModel.debugDeliverMacHostedCallCapabilityNegotiatedForTests(
+            answerContext
+        )
+        await viewModel.debugWaitForMacHostedCallChallengeSendForTests()
+        XCTAssertEqual(attemptedChallenges.count, 1)
+
+        let replacementAnswerContext = try XCTUnwrap(
+            viewModel.debugMacHostedCallCapabilityRetryContextForTests()
+        )
+        let replacementAnswerSend = expectation(
+            description: "challenge sent after replacement SDP answer"
+        )
+        viewModel.debugInstallMacHostedCallChallengeSender {
+            sourcePeer,
+            challenge in
+            XCTAssertTrue(sourcePeer === peer)
+            attemptedChallenges.append(challenge)
+            replacementAnswerSend.fulfill()
+        }
+        viewModel.debugDeliverMacHostedCallCapabilityNegotiatedForTests(
+            replacementAnswerContext
+        )
+        await fulfillment(of: [replacementAnswerSend], timeout: 2)
+        await viewModel.debugWaitForMacHostedCallChallengeSendForTests()
+        XCTAssertEqual(attemptedChallenges.count, 2)
+        XCTAssertEqual(attemptedChallenges.first, attemptedChallenges.last)
+
+        let recoveredTransportSend = expectation(
+            description: "same-negotiation transport recovery resends challenge"
+        )
+        viewModel.debugInstallMacHostedCallChallengeSender {
+            sourcePeer,
+            challenge in
+            XCTAssertTrue(sourcePeer === peer)
+            attemptedChallenges.append(challenge)
+            recoveredTransportSend.fulfill()
+        }
+        viewModel.debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+        viewModel.debugDeliverMacHostedCallCapabilityNegotiatedForTests(
+            replacementAnswerContext
+        )
+        await viewModel.debugWaitForMacHostedCallChallengeSendForTests()
+        XCTAssertEqual(
+            attemptedChallenges.count,
+            2,
+            "A same-negotiation answer callback must not send while transport is unhealthy."
+        )
+
+        await viewModel
+            .debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        await fulfillment(of: [recoveredTransportSend], timeout: 2)
+        await viewModel.debugWaitForMacHostedCallChallengeSendForTests()
+        XCTAssertEqual(
+            attemptedChallenges.count,
+            3,
+            "Same-SDP ICE recovery must reuse the forwarded-answer fence without another answer."
+        )
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testMacHostedCallAdmissionRequiresExactlyOneConnectedCall() throws {
+        let fixture = makeFixture()
+        var challenges: [WebRTCMacHostedCallChallenge] = []
+        fixture.controller.onMacHostedCallChallengeChanged = {
+            if let challenge = $0 {
+                challenges.append(challenge)
+            }
+        }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        var evidenceSequence: UInt64 = 1
+
+        func publishActiveEvidence() throws {
+            let challenge = try XCTUnwrap(challenges.last)
+            fixture.controller.macHostedCallEvidenceChanged(
+                WebRTCMacHostedCallEvidence(
+                    sequence: evidenceSequence,
+                    challengeSequence: challenge.sequence,
+                    challengeNonce: challenge.nonce,
+                    callEpochNonce:
+                        challenge.callEpochNonce,
+                    state: .active
+                )
+            )
+            evidenceSequence &+= 1
+        }
+
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 0
+        )
+        let ringingChallenge = try XCTUnwrap(challenges.last)
+        try publishActiveEvidence()
+        XCTAssertFalse(fixture.controller.microphoneActivationIsAllowed())
+
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+        let connectedChallenge = try XCTUnwrap(challenges.last)
+        XCTAssertNotEqual(connectedChallenge, ringingChallenge)
+        XCTAssertEqual(
+            connectedChallenge.callEpochNonce,
+            ringingChallenge.callEpochNonce
+        )
+        try publishActiveEvidence()
+        XCTAssertTrue(fixture.controller.microphoneActivationIsAllowed())
+
+        for counts in [(2, 1), (2, 2)] {
+            fixture.callActivity.setCallSnapshot(
+                nonEndedCallCount: counts.0,
+                connectedNonEndedCallCount: counts.1
+            )
+            try publishActiveEvidence()
+            XCTAssertFalse(
+                fixture.controller.microphoneActivationIsAllowed(),
+                "counts=\(counts)"
+            )
+        }
+    }
+
+    func testMacHostedCallTransportLossAndEvidenceRevocationRotateChallenge() throws {
+        let fixture = makeFixture()
+        var challenges: [WebRTCMacHostedCallChallenge] = []
+        fixture.controller.onMacHostedCallChallengeChanged = {
+            if let challenge = $0 {
+                challenges.append(challenge)
+            }
+        }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+        let initialChallenge = try XCTUnwrap(challenges.last)
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 1,
+                challengeSequence: initialChallenge.sequence,
+                challengeNonce: initialChallenge.nonce,
+                callEpochNonce:
+                    initialChallenge.callEpochNonce,
+                state: .active
+            )
+        )
+        XCTAssertTrue(fixture.controller.microphoneActivationIsAllowed())
+
+        fixture.controller.transportBecameUncertain()
+        let recoveryChallenge = try XCTUnwrap(challenges.last)
+        XCTAssertNotEqual(recoveryChallenge, initialChallenge)
+        XCTAssertEqual(
+            recoveryChallenge.callEpochNonce,
+            initialChallenge.callEpochNonce
+        )
+        XCTAssertFalse(fixture.controller.microphoneActivationIsAllowed())
+        fixture.controller.transportBecameHealthy()
+
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 2,
+                challengeSequence: initialChallenge.sequence,
+                challengeNonce: initialChallenge.nonce,
+                callEpochNonce:
+                    initialChallenge.callEpochNonce,
+                state: .active
+            )
+        )
+        XCTAssertFalse(fixture.controller.microphoneActivationIsAllowed())
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 3,
+                challengeSequence: recoveryChallenge.sequence,
+                challengeNonce: recoveryChallenge.nonce,
+                callEpochNonce:
+                    recoveryChallenge.callEpochNonce,
+                state: .active
+            )
+        )
+        XCTAssertTrue(fixture.controller.microphoneActivationIsAllowed())
+
+        fixture.controller.macHostedCallEvidenceChanged(nil)
+        let leaseReplacementChallenge = try XCTUnwrap(challenges.last)
+        XCTAssertNotEqual(leaseReplacementChallenge, recoveryChallenge)
+        XCTAssertEqual(
+            leaseReplacementChallenge.callEpochNonce,
+            recoveryChallenge.callEpochNonce
+        )
+        XCTAssertFalse(fixture.controller.microphoneActivationIsAllowed())
+    }
+
+    func testInterruptionBlocksImmediatelyThenRequiresFreshMacChallengeAfterEnd() throws {
+        let fixture = makeFixture()
+        var currentChallenge: WebRTCMacHostedCallChallenge?
+        fixture.controller.onMacHostedCallChallengeChanged = {
+            currentChallenge = $0
+        }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+        let challenge = try XCTUnwrap(currentChallenge)
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 1,
+                challengeSequence: challenge.sequence,
+                challengeNonce: challenge.nonce,
+                callEpochNonce:
+                    challenge.callEpochNonce,
+                state: .active
+            )
+        )
+        XCTAssertTrue(fixture.controller.microphoneActivationIsAllowed())
+
+        fixture.events.onInterruptionBegan?(.default)
+        XCTAssertNil(currentChallenge)
+        XCTAssertFalse(fixture.controller.microphoneActivationIsAllowed())
+        fixture.events.onInterruptionEnded?(true)
+        let recoveryChallenge = try XCTUnwrap(currentChallenge)
+        XCTAssertNotEqual(recoveryChallenge, challenge)
+        XCTAssertEqual(
+            recoveryChallenge.callEpochNonce,
+            challenge.callEpochNonce
+        )
+
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 2,
+                challengeSequence: challenge.sequence,
+                challengeNonce: challenge.nonce,
+                callEpochNonce:
+                    challenge.callEpochNonce,
+                state: .active
+            )
+        )
+        XCTAssertFalse(fixture.controller.microphoneActivationIsAllowed())
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 3,
+                challengeSequence: recoveryChallenge.sequence,
+                challengeNonce: recoveryChallenge.nonce,
+                callEpochNonce:
+                    recoveryChallenge.callEpochNonce,
+                state: .active
+            )
+        )
+        XCTAssertTrue(fixture.controller.microphoneActivationIsAllowed())
+    }
+
+    func testInterruptionEndingBeforeCallKitDeliveryStillRequiresPostEdgeChallenge() throws {
+        let fixture = makeFixture()
+        var currentChallenge: WebRTCMacHostedCallChallenge?
+        fixture.controller.onMacHostedCallChallengeChanged = {
+            currentChallenge = $0
+        }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+
+        fixture.events.onInterruptionBegan?(.default)
+        fixture.events.onInterruptionEnded?(true)
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+
+        let challenge = try XCTUnwrap(currentChallenge)
+        XCTAssertFalse(fixture.controller.microphoneActivationIsAllowed())
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 1,
+                challengeSequence: challenge.sequence,
+                challengeNonce: challenge.nonce,
+                callEpochNonce:
+                    challenge.callEpochNonce,
+                state: .active
+            )
+        )
+        XCTAssertTrue(fixture.controller.microphoneActivationIsAllowed())
     }
 
     func testAudioSessionManagerMapsInterruptionBeganReasonsExactly() {
@@ -11912,7 +12514,8 @@ private final class CallActivityStub: WorldwideCallActivityObserving {
             nonEndedCallCount: nonEndedCallCount,
             connectedNonEndedCallCount:
                 connectedNonEndedCallCount
-                ?? nonEndedCallCount
+                ?? nonEndedCallCount,
+            membershipRevision: nonEndedCallCount > 0 ? 1 : 0
         )
     }
 
@@ -11937,12 +12540,21 @@ private final class CallActivityStub: WorldwideCallActivityObserving {
 
     func setCallSnapshot(
         nonEndedCallCount: Int,
-        connectedNonEndedCallCount: Int
+        connectedNonEndedCallCount: Int,
+        revision: UInt64? = nil,
+        membershipRevision: UInt64? = nil
     ) {
+        let defaultMembershipRevision =
+            nonEndedCallCount == self.snapshot.nonEndedCallCount
+                ? self.snapshot.membershipRevision
+                : self.snapshot.membershipRevision &+ 1
         let snapshot = WorldwideCallActivitySnapshot(
             nonEndedCallCount: nonEndedCallCount,
             connectedNonEndedCallCount:
-                connectedNonEndedCallCount
+                connectedNonEndedCallCount,
+            revision: revision ?? self.snapshot.revision,
+            membershipRevision:
+                membershipRevision ?? defaultMembershipRevision
         )
         stagedLiveSnapshot = nil
         guard snapshot != self.snapshot else { return }
@@ -11952,10 +12564,36 @@ private final class CallActivityStub: WorldwideCallActivityObserving {
         }
     }
 
+    func replaceCallKeepingCurrentAggregate() {
+        setCallSnapshot(
+            nonEndedCallCount: snapshot.nonEndedCallCount,
+            connectedNonEndedCallCount:
+                snapshot.connectedNonEndedCallCount,
+            revision: snapshot.revision &+ 1,
+            membershipRevision:
+                snapshot.membershipRevision &+ 1
+        )
+    }
+
+    func stageLiveCallReplacementKeepingCurrentAggregateWithoutCallback() {
+        stagedLiveSnapshot = WorldwideCallActivitySnapshot(
+            nonEndedCallCount: snapshot.nonEndedCallCount,
+            connectedNonEndedCallCount:
+                snapshot.connectedNonEndedCallCount,
+            revision: snapshot.revision &+ 1,
+            membershipRevision:
+                snapshot.membershipRevision &+ 1
+        )
+    }
+
     func stageLiveNonEndedCallCountWithoutCallback(_ count: Int) {
         stagedLiveSnapshot = WorldwideCallActivitySnapshot(
             nonEndedCallCount: count,
-            connectedNonEndedCallCount: count
+            connectedNonEndedCallCount: count,
+            membershipRevision:
+                count == snapshot.nonEndedCallCount
+                    ? snapshot.membershipRevision
+                    : snapshot.membershipRevision &+ 1
         )
     }
 }

@@ -265,6 +265,24 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
                 name
             )
         }
+
+        XCTAssertTrue(
+            WorldwideRawMicrophoneOracleEvaluator.hasValidState(
+                rawMicrophoneSample(
+                    time: 2,
+                    callIsActive: true,
+                    macHostedCallEvidenceAdmitted: true
+                )
+            )
+        )
+        XCTAssertFalse(
+            WorldwideRawMicrophoneOracleEvaluator.hasValidState(
+                rawMicrophoneSample(
+                    time: 2,
+                    macHostedCallEvidenceAdmitted: true
+                )
+            )
+        )
     }
 
     func testRawMicrophoneRejectsEveryStaleIdentityAndGenerationReplacement() {
@@ -3254,6 +3272,7 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
         microphoneIntentIsCurrent: Bool = true,
         microphonePermissionGranted: Bool = true,
         callIsActive: Bool = false,
+        macHostedCallEvidenceAdmitted: Bool = false,
         transportIsHealthy: Bool = true,
         sender: WebRTCIPhoneMicrophoneSenderDiagnostics? = nil,
         packetsSent: UInt64? = nil,
@@ -3283,6 +3302,8 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
             microphonePermissionGranted:
                 microphonePermissionGranted,
             callIsActive: callIsActive,
+            macHostedCallEvidenceAdmitted:
+                macHostedCallEvidenceAdmitted,
             transportIsHealthy: transportIsHealthy,
             statistics:
                 WebRTCIPhoneMicrophoneSenderStatistics(
