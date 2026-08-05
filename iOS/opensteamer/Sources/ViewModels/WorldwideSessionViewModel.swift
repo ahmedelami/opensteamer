@@ -56,6 +56,12 @@ struct WorldwideScreenPresentationDebugFixture {
     let authorization: WebRTCInputAuthorization
 }
 
+struct WorldwideMacHostedCallCapabilityRetryDebugContext {
+    let peer: WebRTCPeer
+    let sessionGeneration: UUID
+    let negotiationGeneration: UUID
+}
+
 struct WorldwideIOSPlayoutProofDebugHandle: Equatable, Sendable {
     let proofAttemptID: UUID
     let counterWindowID: UUID
@@ -356,6 +362,23 @@ struct WorldwideIOSHostedCallPlayoutDebugProjection: Equatable {
 /// deliver an input action to the wrong Mac session.
 @MainActor
 final class WorldwideSessionViewModel: ObservableObject {
+    private static let macHostedCallChallengeAutomaticRetryDelay:
+        Duration = .milliseconds(250)
+
+    private struct MacHostedCallAnswerForwardedBinding: Equatable {
+        let peerIdentity: ObjectIdentifier
+        let sessionGeneration: UUID
+        let negotiationGeneration: UUID
+    }
+
+    private struct MacHostedCallChallengeSendBinding: Equatable {
+        let peerIdentity: ObjectIdentifier
+        let sessionGeneration: UUID
+        let transportAuthorizationGeneration: UUID
+        let negotiationGeneration: UUID
+        let challenge: WebRTCMacHostedCallChallenge
+    }
+
     enum MediaSessionProvenance: Equatable, Sendable {
         case unauthenticated
         case authenticatedPairedCoordinatorHandoff
@@ -401,8 +424,10 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var peer: WebRTCPeer? {
         didSet {
             guard oldValue !== peer else { return }
+            beginMacHostedCallNegotiationBoundary()
             transportAuthorizationGeneration = UUID()
             invalidateRawMicrophoneOracle()
+            invalidateMacHostedCallEvidence(notifyLifecycle: false)
             handleIOSHostedCallPeerReplacement(
                 from: oldValue,
                 to: peer
@@ -411,7 +436,14 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
     private var rawMicrophoneContinuityTracker =
         WorldwideRawMicrophoneContinuityTracker()
-    private var transportAuthorizationGeneration = UUID()
+    private var transportAuthorizationGeneration = UUID() {
+        didSet {
+            guard oldValue != transportAuthorizationGeneration else { return }
+            // ICE may recover on the already-forwarded SDP without another offer. Retire sends
+            // tied to the old transport generation while preserving the negotiation proof.
+            retireMacHostedCallChallengeSendAttempt()
+        }
+    }
     private var remoteAudioTrack: WebRTCRemoteAudioTrack?
     private let audioLifecycle: WorldwideAudioLifecycleController
     private var recoveryCoordinator: ICERecoveryCoordinator?
@@ -420,6 +452,22 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var sessionTask: Task<Void, Never>?
     private var peerEventTask: Task<Void, Never>?
     private var audioPlayoutProofTask: Task<Void, Never>?
+    private var macHostedCallEvidenceLeaseTask: Task<Void, Never>?
+    private var macHostedCallChallengeSendTask: Task<Void, Never>?
+    private var macHostedCallChallengeSendAttemptID: UUID?
+    private var macHostedCallChallengeSendBinding:
+        MacHostedCallChallengeSendBinding?
+    private var successfullySentMacHostedCallChallengeBinding:
+        MacHostedCallChallengeSendBinding?
+    /// Rotates before every remote offer and peer/session retirement. Transient ICE recovery keeps
+    /// this generation because the already-forwarded SDP remains authoritative without a new answer.
+    private var macHostedCallNegotiationGeneration = UUID()
+    private var macHostedCallAnswerForwardedBinding:
+        MacHostedCallAnswerForwardedBinding?
+    private var currentMacHostedCallChallenge:
+        WebRTCMacHostedCallChallenge?
+    private var currentMacHostedCallEvidence:
+        WebRTCMacHostedCallEvidence?
     private var audioPlayoutProofTimeoutTask: Task<Void, Never>?
     private var audioPlayoutRecoveryAuthorization: WebRTCIOSPlayoutRecoveryAuthorization?
     private var iosPlayoutProofAttempt: IOSPlayoutProofAttempt?
@@ -463,6 +511,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var microphoneOperationGeneration = UUID()
     private var microphonePermissionGranted = false
     private var microphoneIsBlockedByCall = false
+    private var currentMicrophoneCallDisposition:
+        WorldwideMicrophoneCallDisposition = .inactive
     private var microphoneAwaitsPostCallRecovery = false
     private var applicationIsActive = false
     private var lastHandledApplicationLifecyclePhase: ApplicationLifecyclePhase?
@@ -494,8 +544,12 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var sessionGeneration = UUID() {
         didSet {
             if oldValue != sessionGeneration {
+                beginMacHostedCallNegotiationBoundary()
                 transportAuthorizationGeneration = UUID()
                 invalidateRawMicrophoneOracle()
+                invalidateMacHostedCallEvidence(
+                    notifyLifecycle: false
+                )
                 retireIOSHostedCallPlayoutAttempt()
             }
         }
@@ -603,6 +657,14 @@ final class WorldwideSessionViewModel: ObservableObject {
             WebRTCInputAuthorization
         ) async throws -> UInt64
     )?
+    private var debugMacHostedCallChallengeSender: (
+        @MainActor (
+            WebRTCPeer,
+            WebRTCMacHostedCallChallenge
+        ) async throws -> Void
+    )?
+    private var debugMacHostedCallChallengeAutomaticRetryWaiter:
+        (@MainActor () async -> Void)?
     #endif
 
     init(audioLifecycle: WorldwideAudioLifecycleController = WorldwideAudioLifecycleController()) {
@@ -654,8 +716,13 @@ final class WorldwideSessionViewModel: ObservableObject {
                 categoryProofClaim: claim
             )
         }
-        audioLifecycle.onCallActivityChanged = { [weak self] isActive in
-            self?.callActivityChanged(isActive: isActive)
+        audioLifecycle.onMicrophoneCallDispositionChanged = {
+            [weak self] disposition in
+            self?.microphoneCallDispositionChanged(disposition)
+        }
+        audioLifecycle.onMacHostedCallChallengeChanged = {
+            [weak self] challenge in
+            self?.macHostedCallChallengeChanged(challenge)
         }
         audioLifecycle.onPostCallRecoveryCompleted = { [weak self] in
             self?.postCallAudioRecoveryCompleted()
@@ -2398,6 +2465,10 @@ final class WorldwideSessionViewModel: ObservableObject {
             let isOffer: Bool
             if case .offer = payload {
                 isOffer = true
+                // Close the challenge lane before the peer begins applying a replacement offer.
+                // Native transport callbacks may still look healthy while the peer is suspended
+                // inside setRemoteDescription; only this offer's forwarded answer may reopen it.
+                beginMacHostedCallNegotiationBoundary()
                 if hasHandledRemoteOffer {
                     markTransportUncertain(
                         "Recovering secure media",
@@ -2473,10 +2544,17 @@ final class WorldwideSessionViewModel: ObservableObject {
 
         switch event {
         case .outboundSignal(let payload):
+            // The peer installs the viewer's bidirectional Mac-hosted-call capability
+            // immediately before announcing its answer. Preserve this event-stream order: only
+            // after the answer reaches signaling may the still-current challenge touch the data
+            // channel. Native connected/ICE/data-open callbacks are allowed to arrive earlier.
+            let sourceNegotiationGeneration =
+                macHostedCallNegotiationGeneration
             do {
                 try await signaling.send(payload)
                 guard generation == sessionGeneration,
-                      self.signaling === signaling else {
+                      self.signaling === signaling,
+                      peer === sourcePeer else {
                     return
                 }
                 if case .answer = payload,
@@ -2490,6 +2568,14 @@ final class WorldwideSessionViewModel: ObservableObject {
                         peer: peer,
                         generation: generation,
                         epoch: epoch
+                    )
+                }
+                if case .answer = payload {
+                    macHostedCallAnswerWasForwardedIfCurrent(
+                        sourcePeer: sourcePeer,
+                        sourceGeneration: generation,
+                        sourceNegotiationGeneration:
+                            sourceNegotiationGeneration
                     )
                 }
             } catch {
@@ -2565,6 +2651,17 @@ final class WorldwideSessionViewModel: ObservableObject {
 
         case .inputSessionInvalidated:
             invalidateRemoteInputState()
+
+        case .macHostedCallChallengeReceived:
+            // Only the Mac host receives viewer-originated challenges.
+            break
+
+        case .macHostedCallEvidenceChanged(let evidence):
+            handleMacHostedCallEvidence(
+                evidence,
+                sourcePeer: sourcePeer,
+                sourceGeneration: generation
+            )
 
         case .controlReceived:
             break
@@ -2768,7 +2865,10 @@ final class WorldwideSessionViewModel: ObservableObject {
             authenticatedPairedSession: true,
             microphoneIntentIsCurrent: true,
             microphonePermissionGranted: true,
-            callIsActive: false,
+            callIsActive:
+                currentMicrophoneCallDisposition != .inactive,
+            macHostedCallEvidenceAdmitted:
+                currentMicrophoneCallDisposition == .macHosted,
             transportIsHealthy: true,
             statistics: exactStatistics
         )
@@ -2879,6 +2979,9 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     private func resetPublishedSessionState() {
+        invalidateMacHostedCallEvidence(notifyLifecycle: false)
+        beginMacHostedCallNegotiationBoundary()
+        currentMacHostedCallChallenge = nil
         resetScreenPresentationState(
             rotateQueueGeneration: true,
             clearRequestHistory: true
@@ -2908,6 +3011,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         microphoneIntentEnabled = false
         isMicrophoneSending = false
         microphoneIsBlockedByCall = false
+        currentMicrophoneCallDisposition = .inactive
         microphoneAwaitsPostCallRecovery = false
         automaticMicrophoneEligibleSessionGeneration = nil
         automaticMicrophoneAttemptedSessionGeneration = nil
@@ -2927,26 +3031,334 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     // MARK: - Runtime audio proof
 
-    private func callActivityChanged(isActive: Bool) {
+    private func macHostedCallChallengeChanged(
+        _ challenge: WebRTCMacHostedCallChallenge?
+    ) {
+        if currentMacHostedCallChallenge != challenge {
+            retireMacHostedCallChallengeSendAttempt()
+        }
+        invalidateMacHostedCallEvidence(notifyLifecycle: false)
+        currentMacHostedCallChallenge = challenge
+        sendMacHostedCallChallengeIfPossible()
+    }
+
+    /// Opens the challenge lane only after the ordered answer was successfully forwarded. Merely
+    /// installing the local SDP capability is insufficient: a locally successful data-channel send
+    /// can otherwise overtake signaling and be discarded by a host that has not applied the answer.
+    private func macHostedCallAnswerWasForwardedIfCurrent(
+        sourcePeer: WebRTCPeer,
+        sourceGeneration: UUID,
+        sourceNegotiationGeneration: UUID
+    ) {
+        guard sourceGeneration == sessionGeneration,
+              sourceNegotiationGeneration
+                == macHostedCallNegotiationGeneration,
+              peer === sourcePeer else {
+            return
+        }
+        macHostedCallAnswerForwardedBinding =
+            MacHostedCallAnswerForwardedBinding(
+                peerIdentity: ObjectIdentifier(sourcePeer),
+                sessionGeneration: sourceGeneration,
+                negotiationGeneration:
+                    sourceNegotiationGeneration
+            )
+        sendMacHostedCallChallengeIfPossible()
+    }
+
+    /// Sends only under the exact current peer/session/transport/negotiation generation whose
+    /// answer has already crossed signaling. The peer independently rechecks native health and the
+    /// bidirectional SDP capability before touching the wire.
+    private func sendMacHostedCallChallengeIfPossible() {
+        guard let challenge = currentMacHostedCallChallenge,
+              challenge.isValid,
+              let sourcePeer = peer,
+              isPeerConnected,
+              iceIsConnected,
+              isControlChannelReady,
+              !recoveryProofRequired else {
+            return
+        }
+        let sourceGeneration = sessionGeneration
+        let sourceTransportGeneration =
+            transportAuthorizationGeneration
+        let sourceNegotiationGeneration =
+            macHostedCallNegotiationGeneration
+        let answerBinding = MacHostedCallAnswerForwardedBinding(
+            peerIdentity: ObjectIdentifier(sourcePeer),
+            sessionGeneration: sourceGeneration,
+            negotiationGeneration: sourceNegotiationGeneration
+        )
+        guard macHostedCallAnswerForwardedBinding == answerBinding else {
+            return
+        }
+        let binding = MacHostedCallChallengeSendBinding(
+            peerIdentity: ObjectIdentifier(sourcePeer),
+            sessionGeneration: sourceGeneration,
+            transportAuthorizationGeneration:
+                sourceTransportGeneration,
+            negotiationGeneration: sourceNegotiationGeneration,
+            challenge: challenge
+        )
+        guard successfullySentMacHostedCallChallengeBinding
+                != binding else {
+            return
+        }
+        if macHostedCallChallengeSendTask != nil {
+            if macHostedCallChallengeSendBinding == binding {
+                // Coalesce concurrent lifecycle/health triggers into this bounded two-attempt
+                // operation. Later explicit healthy events may redrive after it has completed.
+                return
+            }
+            retireMacHostedCallChallengeSendAttempt()
+        }
+
+        let attemptID = UUID()
+        macHostedCallChallengeSendAttemptID = attemptID
+        macHostedCallChallengeSendBinding = binding
+        macHostedCallChallengeSendTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var didSend = false
+            defer {
+                if macHostedCallChallengeSendAttemptID == attemptID {
+                    macHostedCallChallengeSendTask = nil
+                    macHostedCallChallengeSendAttemptID = nil
+                    macHostedCallChallengeSendBinding = nil
+                    if didSend {
+                        successfullySentMacHostedCallChallengeBinding = binding
+                    }
+                }
+            }
+
+            for attemptOrdinal in 0...1 {
+                guard macHostedCallChallengeSendIsCurrent(
+                    attemptID: attemptID,
+                    binding: binding,
+                    answerBinding: answerBinding,
+                    sourcePeer: sourcePeer
+                ) else {
+                    return
+                }
+
+                do {
+                    #if DEBUG
+                    if let debugMacHostedCallChallengeSender {
+                        try await debugMacHostedCallChallengeSender(
+                            sourcePeer,
+                            challenge
+                        )
+                    } else {
+                        try await sourcePeer
+                            .requestMacHostedCallEvidenceIfTransportHealthy(
+                                challenge: challenge
+                            )
+                    }
+                    #else
+                    try await sourcePeer
+                        .requestMacHostedCallEvidenceIfTransportHealthy(
+                            challenge: challenge
+                        )
+                    #endif
+                    guard macHostedCallChallengeSendIsCurrent(
+                        attemptID: attemptID,
+                        binding: binding,
+                        answerBinding: answerBinding,
+                        sourcePeer: sourcePeer
+                    ) else {
+                        return
+                    }
+                    didSend = true
+                    return
+                } catch {
+                    guard attemptOrdinal == 0,
+                          macHostedCallChallengeSendIsCurrent(
+                            attemptID: attemptID,
+                            binding: binding,
+                            answerBinding: answerBinding,
+                            sourcePeer: sourcePeer
+                          ),
+                          await waitForMacHostedCallChallengeAutomaticRetry(),
+                          macHostedCallChallengeSendIsCurrent(
+                            attemptID: attemptID,
+                            binding: binding,
+                            answerBinding: answerBinding,
+                            sourcePeer: sourcePeer
+                          ) else {
+                        return
+                    }
+                }
+            }
+        }
+    }
+
+    private func macHostedCallChallengeSendIsCurrent(
+        attemptID: UUID,
+        binding: MacHostedCallChallengeSendBinding,
+        answerBinding: MacHostedCallAnswerForwardedBinding,
+        sourcePeer: WebRTCPeer
+    ) -> Bool {
+        macHostedCallChallengeSendAttemptID == attemptID
+            && macHostedCallChallengeSendBinding == binding
+            && binding.sessionGeneration == sessionGeneration
+            && binding.transportAuthorizationGeneration
+                == transportAuthorizationGeneration
+            && binding.negotiationGeneration
+                == macHostedCallNegotiationGeneration
+            && macHostedCallAnswerForwardedBinding == answerBinding
+            && peer === sourcePeer
+            && binding.peerIdentity == ObjectIdentifier(sourcePeer)
+            && currentMacHostedCallChallenge == binding.challenge
+            && binding.challenge.isValid
+            && successfullySentMacHostedCallChallengeBinding != binding
+            && isPeerConnected
+            && iceIsConnected
+            && isControlChannelReady
+            && !recoveryProofRequired
+    }
+
+    private func waitForMacHostedCallChallengeAutomaticRetry() async -> Bool {
+        #if DEBUG
+        if let debugMacHostedCallChallengeAutomaticRetryWaiter {
+            await debugMacHostedCallChallengeAutomaticRetryWaiter()
+            return !Task.isCancelled
+        }
+        #endif
+        do {
+            try await Task.sleep(
+                for: Self.macHostedCallChallengeAutomaticRetryDelay
+            )
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Retires both a forwarded-answer proof and every send derived from it. Rotating the
+    /// negotiation generation prevents a delayed answer callback from reopening a newer transport.
+    private func beginMacHostedCallNegotiationBoundary() {
+        macHostedCallNegotiationGeneration = UUID()
+        macHostedCallAnswerForwardedBinding = nil
+        retireMacHostedCallChallengeSendAttempt()
+    }
+
+    private func retireMacHostedCallChallengeSendAttempt() {
+        macHostedCallChallengeSendTask?.cancel()
+        macHostedCallChallengeSendTask = nil
+        macHostedCallChallengeSendAttemptID = nil
+        macHostedCallChallengeSendBinding = nil
+        successfullySentMacHostedCallChallengeBinding = nil
+    }
+
+    /// Owns the short evidence lease for one exact peer/session/sequence. One-second host
+    /// heartbeats renew it; silence for 2.5 seconds closes microphone eligibility.
+    private func handleMacHostedCallEvidence(
+        _ evidence: WebRTCMacHostedCallEvidence?,
+        sourcePeer: WebRTCPeer,
+        sourceGeneration: UUID
+    ) {
+        guard sourceGeneration == sessionGeneration,
+              peer === sourcePeer else {
+            return
+        }
+        guard let evidence else {
+            invalidateMacHostedCallEvidence()
+            return
+        }
+        guard let challenge = currentMacHostedCallChallenge,
+              evidence.isValid,
+              evidence.challengeSequence == challenge.sequence,
+              evidence.challengeNonce == challenge.nonce,
+              evidence.callEpochNonce == challenge.callEpochNonce,
+              currentMacHostedCallEvidence.map({
+                  evidence.sequence > $0.sequence
+              }) ?? true else {
+            invalidateMacHostedCallEvidence()
+            return
+        }
+
+        macHostedCallEvidenceLeaseTask?.cancel()
+        macHostedCallEvidenceLeaseTask = nil
+        currentMacHostedCallEvidence = evidence
+        audioLifecycle.macHostedCallEvidenceChanged(evidence)
+
+        guard evidence.state == .active else { return }
+        let expectedSequence = evidence.sequence
+        let expectedChallenge = challenge
+        let expectedTransportGeneration =
+            transportAuthorizationGeneration
+        macHostedCallEvidenceLeaseTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(2_500))
+            } catch {
+                return
+            }
+            guard let self,
+                  sourceGeneration == sessionGeneration,
+                  expectedTransportGeneration
+                    == transportAuthorizationGeneration,
+                  peer === sourcePeer,
+                  currentMacHostedCallChallenge
+                    == expectedChallenge,
+                  currentMacHostedCallEvidence?.sequence
+                    == expectedSequence,
+                  currentMacHostedCallEvidence?.state == .active else {
+                return
+            }
+            invalidateMacHostedCallEvidence()
+        }
+    }
+
+    private func invalidateMacHostedCallEvidence(
+        notifyLifecycle: Bool = true
+    ) {
+        macHostedCallEvidenceLeaseTask?.cancel()
+        macHostedCallEvidenceLeaseTask = nil
+        guard currentMacHostedCallEvidence != nil else { return }
+        currentMacHostedCallEvidence = nil
+        if notifyLifecycle {
+            audioLifecycle.macHostedCallEvidenceChanged(nil)
+        }
+    }
+
+    private func microphoneCallDispositionChanged(
+        _ disposition: WorldwideMicrophoneCallDisposition
+    ) {
+        let previousDisposition = currentMicrophoneCallDisposition
+        let isActive = disposition == .blocked
         if microphoneIsBlockedByCall != isActive {
             invalidateRawMicrophoneOracle()
         }
-        if !isActive {
+        if disposition == .inactive {
             retireIOSHostedCallPlayoutAttempt()
         }
-        guard microphoneIsBlockedByCall != isActive else { return }
+        let dispositionChanged = previousDisposition != disposition
+        currentMicrophoneCallDisposition = disposition
         microphoneIsBlockedByCall = isActive
-        microphoneAwaitsPostCallRecovery = !isActive
+        microphoneAwaitsPostCallRecovery =
+            disposition == .inactive
+                && previousDisposition == .blocked
+        guard dispositionChanged
+                || disposition == .macHosted else {
+            return
+        }
         guard microphoneIntentEnabled else { return }
-        if isActive {
+        switch disposition {
+        case .blocked:
             suspendIPhoneMicrophone(
                 stateText: "Muted — iPhone call active",
                 preserveIntent: true,
                 reprovePlayout: false,
                 performNativeTeardown: false
             )
-        } else {
+        case .inactive:
+            if microphoneAwaitsPostCallRecovery {
+                microphoneStateText = "Paused — restoring microphone"
+            }
+        case .macHosted:
+            retireIOSHostedCallPlayoutAttempt()
+            microphoneAwaitsPostCallRecovery = false
             microphoneStateText = "Paused — restoring microphone"
+            continueIPhoneMicrophoneEnablementIfPossible()
         }
     }
 
@@ -5340,6 +5752,53 @@ final class WorldwideSessionViewModel: ObservableObject {
         debugStatisticsStarter = starter
     }
 
+    func debugInstallMacHostedCallChallengeSender(
+        _ sender: @escaping @MainActor (
+            WebRTCPeer,
+            WebRTCMacHostedCallChallenge
+        ) async throws -> Void
+    ) {
+        debugMacHostedCallChallengeSender = sender
+    }
+
+    func debugInstallMacHostedCallChallengeAutomaticRetryWaiter(
+        _ waiter: @escaping @MainActor () async -> Void
+    ) {
+        debugMacHostedCallChallengeAutomaticRetryWaiter = waiter
+    }
+
+    func debugMacHostedCallCapabilityRetryContextForTests()
+        -> WorldwideMacHostedCallCapabilityRetryDebugContext? {
+        guard let peer else { return nil }
+        return WorldwideMacHostedCallCapabilityRetryDebugContext(
+            peer: peer,
+            sessionGeneration: sessionGeneration,
+            negotiationGeneration:
+                macHostedCallNegotiationGeneration
+        )
+    }
+
+    func debugDeliverMacHostedCallCapabilityNegotiatedForTests(
+        _ context: WorldwideMacHostedCallCapabilityRetryDebugContext
+    ) {
+        macHostedCallAnswerWasForwardedIfCurrent(
+            sourcePeer: context.peer,
+            sourceGeneration: context.sessionGeneration,
+            sourceNegotiationGeneration:
+                context.negotiationGeneration
+        )
+    }
+
+    func debugBeginMacHostedCallNegotiationForTests() {
+        beginMacHostedCallNegotiationBoundary()
+    }
+
+    func debugWaitForMacHostedCallChallengeSendForTests() async {
+        while let task = macHostedCallChallengeSendTask {
+            await task.value
+        }
+    }
+
     /// Keeps production `connect` ownership active without opening a real WebSocket, allowing
     /// reentrancy tests to prove whether a replacement connect is accepted deterministically.
     func debugInstallSessionRunner(_ runner: @escaping @MainActor () async -> Void) {
@@ -6323,6 +6782,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         requiresProof: Bool = false
     ) {
         transportAuthorizationGeneration = UUID()
+        invalidateMacHostedCallEvidence(notifyLifecycle: false)
         retireIOSHostedCallPlayoutAttempt()
         audioLifecycle.transportBecameUncertain()
         suspendIPhoneMicrophone(
@@ -6360,7 +6820,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             return nil
         }
 
+        retireMacHostedCallChallengeSendAttempt()
         retireIOSHostedCallPlayoutAttempt()
+        invalidateMacHostedCallEvidence(notifyLifecycle: false)
         audioLifecycle.transportBecameUncertain()
         suspendIPhoneMicrophone(
             stateText: "Paused — reconnecting",

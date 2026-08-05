@@ -16,8 +16,39 @@ struct WorldwideRawMicrophoneProofSample: Equatable {
     let microphoneIntentIsCurrent: Bool
     let microphonePermissionGranted: Bool
     let callIsActive: Bool
+    let macHostedCallEvidenceAdmitted: Bool
     let transportIsHealthy: Bool
     let statistics: WebRTCIPhoneMicrophoneSenderStatistics
+
+    init(
+        sessionGeneration: UUID,
+        peerIdentity: ObjectIdentifier,
+        transportAuthorizationGeneration: UUID,
+        audioPolicyGeneration: UUID,
+        authorizationIdentity: ObjectIdentifier,
+        authenticatedPairedSession: Bool,
+        microphoneIntentIsCurrent: Bool,
+        microphonePermissionGranted: Bool,
+        callIsActive: Bool,
+        macHostedCallEvidenceAdmitted: Bool = false,
+        transportIsHealthy: Bool,
+        statistics: WebRTCIPhoneMicrophoneSenderStatistics
+    ) {
+        self.sessionGeneration = sessionGeneration
+        self.peerIdentity = peerIdentity
+        self.transportAuthorizationGeneration =
+            transportAuthorizationGeneration
+        self.audioPolicyGeneration = audioPolicyGeneration
+        self.authorizationIdentity = authorizationIdentity
+        self.authenticatedPairedSession = authenticatedPairedSession
+        self.microphoneIntentIsCurrent = microphoneIntentIsCurrent
+        self.microphonePermissionGranted = microphonePermissionGranted
+        self.callIsActive = callIsActive
+        self.macHostedCallEvidenceAdmitted =
+            macHostedCallEvidenceAdmitted
+        self.transportIsHealthy = transportIsHealthy
+        self.statistics = statistics
+    }
 }
 
 enum WorldwideRawMicrophoneRateAssessment: Equatable {
@@ -200,7 +231,8 @@ enum WorldwideRawMicrophoneOracleEvaluator {
               sample.authenticatedPairedSession,
               sample.microphoneIntentIsCurrent,
               sample.microphonePermissionGranted,
-              !sample.callIsActive,
+              sample.callIsActive
+                == sample.macHostedCallEvidenceAdmitted,
               sample.transportIsHealthy,
               sender.senderOwnsMID,
               sender.senderOwnsLocalTrack,
