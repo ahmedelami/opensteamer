@@ -79,6 +79,792 @@ final class SystemAudioCaptureSourceTests: XCTestCase {
         )
     }
 
+    func testProcessTapExclusionsAlwaysContainFeedbackSourcesWithoutDuplicates() {
+        XCTAssertEqual(
+            SystemAudioApplicationExclusionPolicy.excludedBundleIdentifiers(
+                currentBundleIdentifier: "com.elamin.AudioStreamer.CaptureServer"
+            ),
+            [
+                "com.apple.ScreenContinuity",
+                "com.elamin.AudioStreamer.CaptureServer",
+            ]
+        )
+
+        XCTAssertEqual(
+            SystemAudioApplicationExclusionPolicy.excludedBundleIdentifiers(
+                currentBundleIdentifier: "org.example.opensteamer.Host"
+            ),
+            [
+                "com.apple.ScreenContinuity",
+                "com.elamin.AudioStreamer.CaptureServer",
+                "org.example.opensteamer.Host",
+            ]
+        )
+    }
+
+    func testProcessTapStartupRefreshOccursAfterProcessListenerRegistration() {
+        var listenerIsInstalled = false
+        var refreshCount = 0
+
+        CoreAudioProcessTapStartupExclusionFence
+            .installListenerThenRefresh(
+                installListener: {
+                    listenerIsInstalled = true
+                },
+                refreshExclusions: {
+                    XCTAssertTrue(listenerIsInstalled)
+                    refreshCount += 1
+                }
+            )
+
+        XCTAssertEqual(refreshCount, 1)
+    }
+
+    func testProcessTapListenerFailurePolicyFailsClosedBeforeMacOS26() {
+        let registrationFailure = OSStatus(-50)
+
+        XCTAssertFalse(
+            CoreAudioProcessTapProcessListListenerPolicy.permitsCapture(
+                listenerRegistrationStatus: registrationFailure,
+                bundleIdentifierRestorationAvailable: false
+            )
+        )
+        XCTAssertTrue(
+            CoreAudioProcessTapProcessListListenerPolicy.permitsCapture(
+                listenerRegistrationStatus: registrationFailure,
+                bundleIdentifierRestorationAvailable: true
+            )
+        )
+        XCTAssertTrue(
+            CoreAudioProcessTapProcessListListenerPolicy.permitsCapture(
+                listenerRegistrationStatus: noErr,
+                bundleIdentifierRestorationAvailable: false
+            )
+        )
+    }
+
+    func testProcessTapFailedPostListenerRefreshRollsBackAndPermitsRetry() throws {
+        var resourcesArePublished = false
+        var listenerIsInstalled = false
+        var shouldFailRefresh = true
+        var events: [String] = []
+
+        func attemptStartup() throws {
+            try CoreAudioProcessTapStartupTransaction
+                .installListenerPublishAndRefresh(
+                    installListener: {
+                        events.append("install-listener")
+                        listenerIsInstalled = true
+                    },
+                    publishResources: {
+                        events.append("publish-resources")
+                        resourcesArePublished = true
+                    },
+                    refreshExclusions: {
+                        events.append("refresh-exclusions")
+                        if shouldFailRefresh {
+                            throw ProcessTapStartupFixtureError.refreshFailed
+                        }
+                    },
+                    rollbackPublishedResources: {
+                        events.append("rollback")
+                        resourcesArePublished = false
+                        listenerIsInstalled = false
+                    }
+                )
+        }
+
+        XCTAssertThrowsError(try attemptStartup())
+        XCTAssertEqual(
+            events,
+            [
+                "install-listener",
+                "publish-resources",
+                "refresh-exclusions",
+                "rollback",
+            ]
+        )
+        XCTAssertFalse(resourcesArePublished)
+        XCTAssertFalse(listenerIsInstalled)
+
+        shouldFailRefresh = false
+        events.removeAll()
+        try attemptStartup()
+        XCTAssertEqual(
+            events,
+            [
+                "install-listener",
+                "publish-resources",
+                "refresh-exclusions",
+            ]
+        )
+        XCTAssertTrue(resourcesArePublished)
+        XCTAssertTrue(listenerIsInstalled)
+    }
+
+    func testProcessTapControlQueueKeepsInventoryAndApplyIndivisible() {
+        let queues = CoreAudioProcessTapQueueTopology(
+            labelPrefix: "opensteamer.tests.ProcessTapSerialization"
+        )
+        let events = LockedStringEventRecorder()
+        let firstInventoryEntered = DispatchSemaphore(value: 0)
+        let releaseFirstInventory = DispatchSemaphore(value: 0)
+        let secondRefreshAttempted = DispatchSemaphore(value: 0)
+        let secondInventoryEntered = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            queues.syncControl {
+                events.append("first-inventory")
+                firstInventoryEntered.signal()
+                releaseFirstInventory.wait()
+                events.append("first-apply")
+            }
+        }
+        XCTAssertEqual(
+            firstInventoryEntered.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            secondRefreshAttempted.signal()
+            queues.syncControl {
+                events.append("second-inventory")
+                events.append("second-apply")
+                secondInventoryEntered.signal()
+            }
+        }
+        XCTAssertEqual(
+            secondRefreshAttempted.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+        XCTAssertEqual(
+            secondInventoryEntered.wait(
+                timeout: .now() + .milliseconds(50)
+            ),
+            .timedOut,
+            "A newer refresh must not inventory while the prior inventory awaits its apply."
+        )
+
+        releaseFirstInventory.signal()
+        XCTAssertEqual(
+            secondInventoryEntered.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+        XCTAssertEqual(
+            events.snapshot(),
+            [
+                "first-inventory",
+                "first-apply",
+                "second-inventory",
+                "second-apply",
+            ]
+        )
+    }
+
+    func testProcessTapPCMQueueIsIndependentAndDrainFencesCallbacks() {
+        let queues = CoreAudioProcessTapQueueTopology(
+            labelPrefix: "opensteamer.tests.ProcessTapQueueIsolation"
+        )
+        let controlEntered = DispatchSemaphore(value: 0)
+        let releaseControl = DispatchSemaphore(value: 0)
+        let controlFinished = DispatchSemaphore(value: 0)
+
+        queues.controlQueue.async {
+            controlEntered.signal()
+            releaseControl.wait()
+            controlFinished.signal()
+        }
+        XCTAssertEqual(
+            controlEntered.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+
+        let pcmRanWhileControlWasBlocked = DispatchSemaphore(value: 0)
+        queues.ioCallbackQueue.async {
+            pcmRanWhileControlWasBlocked.signal()
+        }
+        XCTAssertEqual(
+            pcmRanWhileControlWasBlocked.wait(
+                timeout: .now() + .seconds(1)
+            ),
+            .success
+        )
+        releaseControl.signal()
+        XCTAssertEqual(
+            controlFinished.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+
+        let callbackEntered = DispatchSemaphore(value: 0)
+        let releaseCallback = DispatchSemaphore(value: 0)
+        queues.ioCallbackQueue.async {
+            callbackEntered.signal()
+            releaseCallback.wait()
+        }
+        XCTAssertEqual(
+            callbackEntered.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+
+        let drainAttempted = DispatchSemaphore(value: 0)
+        let drainReturned = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            drainAttempted.signal()
+            queues.drainIOCallbacks()
+            drainReturned.signal()
+        }
+        XCTAssertEqual(
+            drainAttempted.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+        XCTAssertEqual(
+            drainReturned.wait(timeout: .now() + .milliseconds(50)),
+            .timedOut,
+            "Teardown must wait for an admitted PCM callback to return."
+        )
+        releaseCallback.signal()
+        XCTAssertEqual(
+            drainReturned.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+    }
+
+    func testFaceTimeDuplexPolicyRequiresInputAndOutputOnTheSameAllowedProcess() {
+        let splitEvidence = [
+            makeFaceTimeActivitySnapshot(
+                processObjectID: 101,
+                isRunningInput: true,
+                isRunningOutput: false
+            ),
+            makeFaceTimeActivitySnapshot(
+                processObjectID: 202,
+                isRunningInput: false,
+                isRunningOutput: true
+            ),
+        ]
+
+        XCTAssertEqual(
+            CoreAudioFaceTimeDuplexActivityPolicy
+                .scan(from: splitEvidence),
+            .known(activeProcessObjectIDs: [])
+        )
+
+        let exactEvidence = splitEvidence + [
+            makeFaceTimeActivitySnapshot(
+                processObjectID: 303,
+                isRunningInput: true,
+                isRunningOutput: true
+            ),
+        ]
+        XCTAssertEqual(
+            CoreAudioFaceTimeDuplexActivityPolicy
+                .scan(from: exactEvidence),
+            .known(activeProcessObjectIDs: [303])
+        )
+    }
+
+    func testFaceTimeDuplexPolicyMakesEveryReadOrListenerFailureUnknown() {
+        let incompleteEvidence = [
+            makeFaceTimeActivitySnapshot(
+                processObjectID: 101,
+                hasRunningInputListener: false
+            ),
+            makeFaceTimeActivitySnapshot(
+                processObjectID: 202,
+                hasRunningOutputListener: false
+            ),
+            makeFaceTimeActivitySnapshot(
+                processObjectID: 303,
+                isRunningInput: nil
+            ),
+            makeFaceTimeActivitySnapshot(
+                processObjectID: 404,
+                isRunningOutput: nil
+            ),
+        ]
+
+        for snapshot in incompleteEvidence {
+            XCTAssertEqual(
+                CoreAudioFaceTimeDuplexActivityPolicy
+                    .scan(from: [snapshot]),
+                .unknown
+            )
+        }
+        XCTAssertEqual(
+            CoreAudioFaceTimeDuplexActivityPolicy.scan(from: nil),
+            .unknown
+        )
+    }
+
+    func testFaceTimeDuplexPolicyRequiresAnExactAllowedBundleIdentifier() {
+        let snapshots = [
+            makeFaceTimeActivitySnapshot(
+                processObjectID: 101,
+                bundleIdentifier: "com.apple.FaceTime.helper"
+            ),
+            makeFaceTimeActivitySnapshot(
+                processObjectID: 202,
+                bundleIdentifier: "com.apple.facetime"
+            ),
+            makeFaceTimeActivitySnapshot(
+                processObjectID: 303,
+                bundleIdentifier: "com.apple.FaceTime.FTConversationService"
+            ),
+        ]
+
+        XCTAssertEqual(
+            CoreAudioFaceTimeDuplexActivityPolicy
+                .scan(from: snapshots),
+            .known(activeProcessObjectIDs: [303])
+        )
+        XCTAssertEqual(
+            CoreAudioFaceTimeDuplexActivityPolicy.scan(from: [
+                makeFaceTimeActivitySnapshot(
+                    processObjectID: 101,
+                    bundleIdentifier: nil
+                ),
+            ]),
+            .unknown
+        )
+        XCTAssertEqual(
+            CoreAudioFaceTimeDuplexActivityPolicy.scan(from: [
+                makeFaceTimeActivitySnapshot(
+                    processObjectID: kAudioObjectUnknown
+                ),
+            ]),
+            .unknown
+        )
+    }
+
+    func testFaceTimeEpochBinderRequiresZeroBaselineThenOneExactProcess()
+        throws {
+        let epoch = UUID()
+        let bindingID = UUID()
+        let challenge = makeFaceTimeActivityChallenge(
+            sequence: 1,
+            callEpochNonce: epoch
+        )
+        var binder = CoreAudioFaceTimeCausalEpochBinder()
+
+        let initial = try XCTUnwrap(
+            binder.installChallenge(
+                challenge,
+                authoritativeScan: {
+                    .known(activeProcessObjectIDs: [])
+                },
+                makeCausalBindingID: { bindingID }
+            )
+        )
+        XCTAssertNil(initial.causalBindingID)
+        XCTAssertEqual(binder.phase, .armed)
+
+        let bound = try XCTUnwrap(
+            binder.observe(
+                .known(activeProcessObjectIDs: [101]),
+                makeCausalBindingID: { bindingID }
+            )
+        )
+        XCTAssertEqual(bound.causalBindingID, bindingID)
+        XCTAssertEqual(
+            binder.phase,
+            .bound(processObjectID: 101, causalBindingID: bindingID)
+        )
+
+        let heartbeat = try XCTUnwrap(
+            binder.observe(.known(activeProcessObjectIDs: [101]))
+        )
+        XCTAssertEqual(heartbeat.causalBindingID, bindingID)
+        XCTAssertFalse(heartbeat.didPhaseChange)
+
+        let inactive = try XCTUnwrap(
+            binder.observe(.known(activeProcessObjectIDs: []))
+        )
+        XCTAssertNil(inactive.causalBindingID)
+        XCTAssertEqual(binder.phase, .poisoned)
+
+        let cannotRebind = try XCTUnwrap(
+            binder.observe(.known(activeProcessObjectIDs: [101]))
+        )
+        XCTAssertNil(cannotRebind.causalBindingID)
+        XCTAssertEqual(binder.phase, .poisoned)
+    }
+
+    func testFaceTimeEpochBinderPoisonsUnsafeInitialAndArmedScans() throws {
+        let unsafeInitialScans: [CoreAudioFaceTimeDuplexActivityScan] = [
+            .unknown,
+            .known(activeProcessObjectIDs: [101]),
+            .known(activeProcessObjectIDs: [101, 202]),
+        ]
+        for (index, scan) in unsafeInitialScans.enumerated() {
+            var binder = CoreAudioFaceTimeCausalEpochBinder()
+            let update = try XCTUnwrap(
+                binder.installChallenge(
+                    makeFaceTimeActivityChallenge(
+                        sequence: UInt64(index + 1),
+                        callEpochNonce: UUID()
+                    ),
+                    authoritativeScan: { scan }
+                )
+            )
+            XCTAssertNil(update.causalBindingID)
+            XCTAssertEqual(binder.phase, .poisoned)
+        }
+
+        let unsafeArmedScans: [CoreAudioFaceTimeDuplexActivityScan] = [
+            .unknown,
+            .known(activeProcessObjectIDs: [101, 202]),
+        ]
+        for scan in unsafeArmedScans {
+            var binder = CoreAudioFaceTimeCausalEpochBinder()
+            _ = binder.installChallenge(
+                makeFaceTimeActivityChallenge(
+                    sequence: 1,
+                    callEpochNonce: UUID()
+                ),
+                authoritativeScan: {
+                    .known(activeProcessObjectIDs: [])
+                }
+            )
+            let update = try XCTUnwrap(binder.observe(scan))
+            XCTAssertNil(update.causalBindingID)
+            XCTAssertEqual(binder.phase, .poisoned)
+        }
+    }
+
+    func testFaceTimeEpochBinderPoisonsEveryBoundIdentityMismatch() throws {
+        let invalidBoundScans: [CoreAudioFaceTimeDuplexActivityScan] = [
+            .known(activeProcessObjectIDs: []),
+            .unknown,
+            .known(activeProcessObjectIDs: [202]),
+            .known(activeProcessObjectIDs: [101, 202]),
+        ]
+        for scan in invalidBoundScans {
+            let bindingID = UUID()
+            var binder = CoreAudioFaceTimeCausalEpochBinder()
+            _ = binder.installChallenge(
+                makeFaceTimeActivityChallenge(
+                    sequence: 1,
+                    callEpochNonce: UUID()
+                ),
+                authoritativeScan: {
+                    .known(activeProcessObjectIDs: [])
+                }
+            )
+            _ = binder.observe(
+                .known(activeProcessObjectIDs: [101]),
+                makeCausalBindingID: { bindingID }
+            )
+
+            let update = try XCTUnwrap(binder.observe(scan))
+            XCTAssertNil(update.causalBindingID)
+            XCTAssertEqual(binder.phase, .poisoned)
+            let laterExactProcess = try XCTUnwrap(
+                binder.observe(.known(activeProcessObjectIDs: [101]))
+            )
+            XCTAssertNil(laterExactProcess.causalBindingID)
+        }
+    }
+
+    func testFaceTimeEpochBinderPreservesSameEpochAndIgnoresStaleChallenge()
+        throws {
+        let epoch = UUID()
+        let bindingID = UUID()
+        let first = makeFaceTimeActivityChallenge(
+            sequence: 10,
+            callEpochNonce: epoch
+        )
+        let armedRotation = makeFaceTimeActivityChallenge(
+            sequence: 11,
+            callEpochNonce: epoch
+        )
+        let boundRotation = makeFaceTimeActivityChallenge(
+            sequence: 12,
+            callEpochNonce: epoch
+        )
+        var binder = CoreAudioFaceTimeCausalEpochBinder()
+
+        _ = binder.installChallenge(
+            first,
+            authoritativeScan: {
+                .known(activeProcessObjectIDs: [])
+            }
+        )
+        let stillArmed = try XCTUnwrap(
+            binder.installChallenge(
+                armedRotation,
+                authoritativeScan: {
+                    .known(activeProcessObjectIDs: [])
+                }
+            )
+        )
+        XCTAssertEqual(binder.phase, .armed)
+        XCTAssertNil(stillArmed.causalBindingID)
+
+        _ = binder.observe(
+            .known(activeProcessObjectIDs: [101]),
+            makeCausalBindingID: { bindingID }
+        )
+        let stillBound = try XCTUnwrap(
+            binder.installChallenge(
+                boundRotation,
+                authoritativeScan: {
+                    .known(activeProcessObjectIDs: [101])
+                },
+                makeCausalBindingID: {
+                    XCTFail("A same-process rotation must not mint a new binding")
+                    return UUID()
+                }
+            )
+        )
+        XCTAssertEqual(stillBound.challenge, boundRotation)
+        XCTAssertEqual(stillBound.causalBindingID, bindingID)
+
+        var staleChallengeWasScanned = false
+        let stale = binder.installChallenge(
+            armedRotation,
+            authoritativeScan: {
+                staleChallengeWasScanned = true
+                return .unknown
+            }
+        )
+        XCTAssertNil(stale)
+        XCTAssertFalse(staleChallengeWasScanned)
+        XCTAssertEqual(binder.currentChallenge, boundRotation)
+        XCTAssertEqual(
+            binder.phase,
+            .bound(processObjectID: 101, causalBindingID: bindingID)
+        )
+    }
+
+    func testFaceTimeEpochBinderNewEpochRequiresItsOwnSafeBaseline() throws {
+        let firstEpoch = UUID()
+        let secondEpoch = UUID()
+        let thirdEpoch = UUID()
+        var binder = CoreAudioFaceTimeCausalEpochBinder()
+
+        _ = binder.installChallenge(
+            makeFaceTimeActivityChallenge(
+                sequence: 1,
+                callEpochNonce: firstEpoch
+            ),
+            authoritativeScan: {
+                .known(activeProcessObjectIDs: [])
+            }
+        )
+        _ = binder.observe(.known(activeProcessObjectIDs: [101]))
+
+        let unsafeNewEpoch = try XCTUnwrap(
+            binder.installChallenge(
+                makeFaceTimeActivityChallenge(
+                    sequence: 2,
+                    callEpochNonce: secondEpoch
+                ),
+                authoritativeScan: {
+                    .known(activeProcessObjectIDs: [101])
+                }
+            )
+        )
+        XCTAssertNil(unsafeNewEpoch.causalBindingID)
+        XCTAssertEqual(binder.phase, .poisoned)
+        _ = binder.observe(.known(activeProcessObjectIDs: []))
+        _ = binder.observe(.known(activeProcessObjectIDs: [101]))
+        XCTAssertEqual(binder.phase, .poisoned)
+
+        let safeNewEpoch = try XCTUnwrap(
+            binder.installChallenge(
+                makeFaceTimeActivityChallenge(
+                    sequence: 3,
+                    callEpochNonce: thirdEpoch
+                ),
+                authoritativeScan: {
+                    .known(activeProcessObjectIDs: [])
+                }
+            )
+        )
+        XCTAssertNil(safeNewEpoch.causalBindingID)
+        XCTAssertEqual(binder.phase, .armed)
+        let newBinding = try XCTUnwrap(
+            binder.observe(.known(activeProcessObjectIDs: [202]))
+        )
+        XCTAssertNotNil(newBinding.causalBindingID)
+    }
+
+    func testFaceTimeEpochBinderRevokeClearsBindingAndChallenge() throws {
+        let challenge = makeFaceTimeActivityChallenge(
+            sequence: 1,
+            callEpochNonce: UUID()
+        )
+        var binder = CoreAudioFaceTimeCausalEpochBinder()
+        _ = binder.installChallenge(
+            challenge,
+            authoritativeScan: {
+                .known(activeProcessObjectIDs: [])
+            }
+        )
+        _ = binder.observe(.known(activeProcessObjectIDs: [101]))
+
+        let revoked = binder.revoke()
+        XCTAssertEqual(revoked.challenge, challenge)
+        XCTAssertNil(revoked.causalBindingID)
+        XCTAssertEqual(binder.phase, .noEpoch)
+        XCTAssertNil(binder.currentChallenge)
+        XCTAssertNil(
+            binder.observe(.known(activeProcessObjectIDs: [101]))
+        )
+    }
+
+    func testProcessTapClockPolicyRejectsDuplexDefaultBlackHole() throws {
+        let selected = try XCTUnwrap(
+            CoreAudioProcessTapClockDeviceSelectionPolicy.select(from: [
+                makeClockDeviceSnapshot(
+                    deviceID: 101,
+                    uid: "BlackHole2ch_UID",
+                    isDefaultOutput: true,
+                    inputChannelCount: 2,
+                    outputChannelCount: 2
+                ),
+                makeClockDeviceSnapshot(
+                    deviceID: 202,
+                    uid: "BuiltInSpeakerDevice",
+                    inputChannelCount: 0,
+                    outputChannelCount: 2
+                ),
+            ])
+        )
+
+        XCTAssertEqual(selected.deviceID, 202)
+        XCTAssertEqual(selected.uid, "BuiltInSpeakerDevice")
+        XCTAssertEqual(selected.inputChannelCount, 0)
+    }
+
+    func testProcessTapClockPolicyPrefersSafeDefaultThenStableUID() throws {
+        let safeDefault = makeClockDeviceSnapshot(
+            deviceID: 303,
+            uid: "z-default-output",
+            isDefaultOutput: true,
+            inputChannelCount: 0,
+            outputChannelCount: 2
+        )
+        XCTAssertEqual(
+            CoreAudioProcessTapClockDeviceSelectionPolicy.select(from: [
+                makeClockDeviceSnapshot(
+                    deviceID: 101,
+                    uid: "a-other-output",
+                    inputChannelCount: 0,
+                    outputChannelCount: 2
+                ),
+                safeDefault,
+            ]),
+            safeDefault
+        )
+
+        let stableFallback = try XCTUnwrap(
+            CoreAudioProcessTapClockDeviceSelectionPolicy.select(from: [
+                makeClockDeviceSnapshot(
+                    deviceID: 202,
+                    uid: "z-output",
+                    inputChannelCount: 0,
+                    outputChannelCount: 2
+                ),
+                makeClockDeviceSnapshot(
+                    deviceID: 101,
+                    uid: "a-output",
+                    inputChannelCount: 0,
+                    outputChannelCount: 2
+                ),
+            ])
+        )
+        XCTAssertEqual(stableFallback.uid, "a-output")
+    }
+
+    func testProcessTapClockPolicyFailsClosedWithoutLiveOutputOnlyDevice() {
+        let unsafeDevices = [
+            makeClockDeviceSnapshot(
+                deviceID: 101,
+                uid: "dead-output",
+                isAlive: false,
+                inputChannelCount: 0,
+                outputChannelCount: 2
+            ),
+            makeClockDeviceSnapshot(
+                deviceID: 202,
+                uid: "input-only",
+                inputChannelCount: 2,
+                outputChannelCount: 0
+            ),
+            makeClockDeviceSnapshot(
+                deviceID: 303,
+                uid: "duplex",
+                isDefaultOutput: true,
+                inputChannelCount: 1,
+                outputChannelCount: 2
+            ),
+        ]
+
+        XCTAssertNil(
+            CoreAudioProcessTapClockDeviceSelectionPolicy.select(
+                from: unsafeDevices
+            )
+        )
+    }
+
+    func testProcessTapBufferPolicyAcceptsExactInterleavedStereoFrames() {
+        let format = makeLinearPCMFormat(
+            bytesPerFrame: 8,
+            channels: 2,
+            nonInterleaved: false
+        )
+        withAudioBufferList(byteCounts: [8 * 480]) { list in
+            XCTAssertEqual(
+                CoreAudioProcessTapBufferPolicy.frameCount(
+                    audioBufferList: list,
+                    format: format
+                ),
+                480
+            )
+        }
+    }
+
+    func testProcessTapBufferPolicyAcceptsMatchingPlanarFramesAndRejectsMismatch() {
+        let format = makeLinearPCMFormat(
+            bytesPerFrame: 4,
+            channels: 2,
+            nonInterleaved: true
+        )
+        withAudioBufferList(byteCounts: [4 * 240, 4 * 240]) { list in
+            XCTAssertEqual(
+                CoreAudioProcessTapBufferPolicy.frameCount(
+                    audioBufferList: list,
+                    format: format
+                ),
+                240
+            )
+        }
+        withAudioBufferList(byteCounts: [4 * 240, 4 * 239]) { list in
+            XCTAssertNil(
+                CoreAudioProcessTapBufferPolicy.frameCount(
+                    audioBufferList: list,
+                    format: format
+                )
+            )
+        }
+    }
+
+    func testProcessTapPresentationTimePrefersSourceSampleClock() {
+        var timestamp = AudioTimeStamp()
+        timestamp.mSampleTime = 96_000
+        timestamp.mFlags = .sampleTimeValid
+
+        let result = withUnsafePointer(to: &timestamp) {
+            CoreAudioProcessTapBufferPolicy.presentationTime(
+                inputTime: $0,
+                sampleRate: 48_000
+            )
+        }
+
+        XCTAssertEqual(result.seconds, 2, accuracy: 0.000_000_001)
+    }
+
     func testScreenCaptureRegistrationUsesExactConsumerQueueAndSynchronousCallback() throws {
         let consumer = QueueProbeConsumer()
         let registration = ScreenCaptureAudioSource.makeOutputRegistration(consumer: consumer)
@@ -325,6 +1111,130 @@ final class SystemAudioCaptureSourceTests: XCTestCase {
     private func temporaryURL(name: String) -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("opensteamer-\(UUID().uuidString)-\(name)")
+    }
+}
+
+private func makeLinearPCMFormat(
+    bytesPerFrame: UInt32,
+    channels: UInt32,
+    nonInterleaved: Bool
+) -> AudioStreamBasicDescription {
+    var flags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked
+    if nonInterleaved {
+        flags |= kAudioFormatFlagIsNonInterleaved
+    }
+    return AudioStreamBasicDescription(
+        mSampleRate: 48_000,
+        mFormatID: kAudioFormatLinearPCM,
+        mFormatFlags: flags,
+        mBytesPerPacket: bytesPerFrame,
+        mFramesPerPacket: 1,
+        mBytesPerFrame: bytesPerFrame,
+        mChannelsPerFrame: channels,
+        mBitsPerChannel: 32,
+        mReserved: 0
+    )
+}
+
+private func makeFaceTimeActivityChallenge(
+    sequence: UInt64,
+    nonce: UUID = UUID(),
+    callEpochNonce: UUID
+) -> SystemAudioMacFaceTimeActivityChallenge {
+    SystemAudioMacFaceTimeActivityChallenge(
+        sequence: sequence,
+        nonce: nonce,
+        callEpochNonce: callEpochNonce
+    )
+}
+
+private func makeFaceTimeActivitySnapshot(
+    processObjectID: AudioObjectID,
+    bundleIdentifier: String? = "com.apple.FaceTime",
+    hasRunningInputListener: Bool = true,
+    hasRunningOutputListener: Bool = true,
+    isRunningInput: Bool? = true,
+    isRunningOutput: Bool? = true
+) -> CoreAudioFaceTimeProcessActivitySnapshot {
+    CoreAudioFaceTimeProcessActivitySnapshot(
+        processObjectID: processObjectID,
+        bundleIdentifier: bundleIdentifier,
+        hasRunningInputListener: hasRunningInputListener,
+        hasRunningOutputListener: hasRunningOutputListener,
+        isRunningInput: isRunningInput,
+        isRunningOutput: isRunningOutput
+    )
+}
+
+private func makeClockDeviceSnapshot(
+    deviceID: AudioObjectID,
+    uid: String,
+    isAlive: Bool = true,
+    isDefaultOutput: Bool = false,
+    inputChannelCount: UInt32,
+    outputChannelCount: UInt32
+) -> CoreAudioProcessTapClockDeviceSnapshot {
+    CoreAudioProcessTapClockDeviceSnapshot(
+        deviceID: deviceID,
+        uid: uid,
+        isAlive: isAlive,
+        isDefaultOutput: isDefaultOutput,
+        inputChannelCount: inputChannelCount,
+        outputChannelCount: outputChannelCount
+    )
+}
+
+private func withAudioBufferList(
+    byteCounts: [Int],
+    operation: (UnsafePointer<AudioBufferList>) -> Void
+) {
+    precondition(!byteCounts.isEmpty)
+    let allocationSize = MemoryLayout<AudioBufferList>.size
+        + (byteCounts.count - 1) * MemoryLayout<AudioBuffer>.stride
+    let listStorage = UnsafeMutableRawPointer.allocate(
+        byteCount: allocationSize,
+        alignment: MemoryLayout<AudioBufferList>.alignment
+    )
+    let list = listStorage.bindMemory(to: AudioBufferList.self, capacity: 1)
+    list.pointee.mNumberBuffers = UInt32(byteCounts.count)
+    let buffers = UnsafeMutableAudioBufferListPointer(list)
+    var dataStorage: [UnsafeMutableRawPointer] = []
+    for (index, byteCount) in byteCounts.enumerated() {
+        let data = UnsafeMutableRawPointer.allocate(
+            byteCount: byteCount,
+            alignment: MemoryLayout<Float>.alignment
+        )
+        data.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
+        dataStorage.append(data)
+        buffers[index] = AudioBuffer(
+            mNumberChannels: byteCounts.count == 1 ? 2 : 1,
+            mDataByteSize: UInt32(byteCount),
+            mData: data
+        )
+    }
+    defer {
+        dataStorage.forEach { $0.deallocate() }
+        listStorage.deallocate()
+    }
+    operation(UnsafePointer(list))
+}
+
+private enum ProcessTapStartupFixtureError: Error {
+    case refreshFailed
+}
+
+private final class LockedStringEventRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [String] = []
+
+    func append(_ event: String) {
+        lock.withLock {
+            events.append(event)
+        }
+    }
+
+    func snapshot() -> [String] {
+        lock.withLock { events }
     }
 }
 
