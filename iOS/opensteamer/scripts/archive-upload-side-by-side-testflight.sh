@@ -1275,13 +1275,12 @@ function pin_private_build_directory() {
 }
 
 function verify_pinned_build_directories() {
-  (( ${#TESTFLIGHT_PINNED_BUILD_DIRECTORIES[@]} == 9 )) || return 1
+  (( ${#TESTFLIGHT_PINNED_BUILD_DIRECTORIES[@]} == 8 )) || return 1
   local -a expected_directories=(
     "${TESTFLIGHT_BUILD_TMP_DIRECTORY}"
     "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}"
     "${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}"
     "${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}"
-    "${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}"
     "${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}"
     "${TESTFLIGHT_BUILD_CACHE_DIRECTORY}"
     "${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}"
@@ -1801,7 +1800,7 @@ function verify_pinned_xcodebuild_filesystem_contract() {
       && "${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}" \
         == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/Intermediates" \
       && "${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}" \
-        == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/DSTRoot" \
+        == "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}/Build/Intermediates.noindex/ArchiveIntermediates/${EXPECTED_SCHEME}/InstallationBuildProductsLocation" \
       && "${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}" \
         == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/SharedPrecompiledHeaders" \
       && "${TESTFLIGHT_BUILD_CACHE_DIRECTORY}" \
@@ -1857,6 +1856,12 @@ function verify_effective_archive_build_roots() {
           == "${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}" \
         && "$(build_settings_entry_value "${destination}" "${entry_index}" DSTROOT)" \
           == "${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}" \
+        && "$(build_settings_entry_value "${destination}" "${entry_index}" INSTALL_ROOT)" \
+          == "${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}" \
+        && "$(build_settings_entry_value "${destination}" "${entry_index}" INSTALL_DIR)" \
+          == "${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}/Applications" \
+        && "$(build_settings_entry_value "${destination}" "${entry_index}" TARGET_BUILD_DIR)" \
+          == "${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}/Applications" \
         && "$(build_settings_entry_value "${destination}" "${entry_index}" SHARED_PRECOMPS_DIR)" \
           == "${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}" \
         && "$(build_settings_entry_value "${destination}" "${entry_index}" CACHE_ROOT)" \
@@ -2267,7 +2272,10 @@ function initialize_private_testflight_build_volume() {
   TESTFLIGHT_DERIVED_DATA_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/DerivedData"
   TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/Products"
   TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/Intermediates"
-  TESTFLIGHT_BUILD_DSTROOT_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/DSTRoot"
+  # Xcode's archive action must own this staging root. Overriding DSTROOT,
+  # INSTALL_ROOT, or INSTALL_DIR causes archive assembly to look for a missing
+  # InstallationBuildProductsLocation even after compilation and signing pass.
+  TESTFLIGHT_BUILD_DSTROOT_DIRECTORY="${TESTFLIGHT_DERIVED_DATA_DIRECTORY}/Build/Intermediates.noindex/ArchiveIntermediates/${EXPECTED_SCHEME}/InstallationBuildProductsLocation"
   TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/SharedPrecompiledHeaders"
   TESTFLIGHT_BUILD_CACHE_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/Caches"
   TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/ModuleCache.noindex"
@@ -2279,7 +2287,6 @@ function initialize_private_testflight_build_volume() {
       "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}" \
       "${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}" \
       "${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}" \
-      "${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}" \
       "${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}" \
       "${TESTFLIGHT_BUILD_CACHE_DIRECTORY}" \
       "${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}" \
@@ -2299,7 +2306,6 @@ function initialize_private_testflight_build_volume() {
     -clonedSourcePackagesDirPath "${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}"
     "SYMROOT=${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}"
     "OBJROOT=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}"
-    "DSTROOT=${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}"
     "SHARED_PRECOMPS_DIR=${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}"
     "CACHE_ROOT=${TESTFLIGHT_BUILD_CACHE_DIRECTORY}"
     "MODULE_CACHE_DIR=${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}"
@@ -2312,8 +2318,6 @@ function initialize_private_testflight_build_volume() {
     "PROJECT_DERIVED_FILE_DIR=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}/ProjectDerivedFiles"
     "TEMP_FILES_DIR=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}/TempFiles"
     "INDEX_DATA_STORE_DIR=${TESTFLIGHT_DERIVED_DATA_DIRECTORY}/Index.noindex/DataStore"
-    "INSTALL_ROOT=${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}"
-    "INSTALL_DIR=${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}/Applications"
     "LOCSYMROOT=${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}/LocalizedSymbols"
   )
   TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS_SHA256=$(xcodebuild_pinned_arguments_sha256)
@@ -2327,7 +2331,6 @@ function initialize_private_testflight_build_volume() {
     "DERIVED_DATA_DIR=${TESTFLIGHT_DERIVED_DATA_DIRECTORY}"
     "SYMROOT=${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}"
     "OBJROOT=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}"
-    "DSTROOT=${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}"
     "SHARED_PRECOMPS_DIR=${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}"
     "CACHE_ROOT=${TESTFLIGHT_BUILD_CACHE_DIRECTORY}"
     "CCHROOT=${TESTFLIGHT_BUILD_CACHE_DIRECTORY}"
@@ -2344,8 +2347,6 @@ function initialize_private_testflight_build_volume() {
     "PROJECT_DERIVED_FILE_DIR=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}/ProjectDerivedFiles"
     "TEMP_FILES_DIR=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}/TempFiles"
     "INDEX_DATA_STORE_DIR=${TESTFLIGHT_DERIVED_DATA_DIRECTORY}/Index.noindex/DataStore"
-    "INSTALL_ROOT=${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}"
-    "INSTALL_DIR=${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}/Applications"
     "LOCSYMROOT=${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}/LocalizedSymbols"
     "DWARF_DSYM_FOLDER_PATH=${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}"
     "OBJECT_FILE_DIR=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}/Objects"

@@ -983,6 +983,12 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   $'        DWARF_DSYM_FOLDER_PATH \\'
 require_rejection "$CASE" 'side-by-side TestFlight exhaustive effective writable-root verification'
 
+CASE=$(new_case testflight-xcode-owned-archive-staging)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'TESTFLIGHT_BUILD_DSTROOT_DIRECTORY="${TESTFLIGHT_DERIVED_DATA_DIRECTORY}/Build/Intermediates.noindex/ArchiveIntermediates/${EXPECTED_SCHEME}/InstallationBuildProductsLocation"' \
+  'TESTFLIGHT_BUILD_DSTROOT_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/DSTRoot"'
+require_rejection "$CASE" 'side-by-side TestFlight Xcode-owned archive staging root'
+
 CASE=$(new_case testflight-real-xcode-alias)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
   'EXPECTED_XCODE_ALIAS_PATH="/Applications/Xcode-26.6.0.app"' \
@@ -1934,7 +1940,7 @@ TESTFLIGHT_BUILD_TMP_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/tmp
 TESTFLIGHT_DERIVED_DATA_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/DerivedData
 TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Products
 TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Intermediates
-TESTFLIGHT_BUILD_DSTROOT_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/DSTRoot
+TESTFLIGHT_BUILD_DSTROOT_DIRECTORY=$TESTFLIGHT_DERIVED_DATA_DIRECTORY/Build/Intermediates.noindex/ArchiveIntermediates/$EXPECTED_SCHEME/InstallationBuildProductsLocation
 TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/SharedPrecompiledHeaders
 TESTFLIGHT_BUILD_CACHE_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Caches
 TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/ModuleCache.noindex
@@ -1957,6 +1963,83 @@ if verify_pinned_xcodebuild_filesystem_contract >/dev/null 2>&1; then
   exit 1
 fi
 DIGESTTEST
+
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'ARCHIVEROOTSTEST'
+source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
+trap - EXIT HUP INT QUIT TERM
+
+TESTFLIGHT_CONTROL_DIRECTORY=/Volumes/t7/BuildSandbox/control
+TESTFLIGHT_BUILD_SANDBOX_DIRECTORY=/Volumes/t7/BuildSandbox
+TESTFLIGHT_DERIVED_DATA_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/DerivedData
+TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Products
+TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Intermediates
+TESTFLIGHT_BUILD_DSTROOT_DIRECTORY=$TESTFLIGHT_DERIVED_DATA_DIRECTORY/Build/Intermediates.noindex/ArchiveIntermediates/$EXPECTED_SCHEME/InstallationBuildProductsLocation
+TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/SharedPrecompiledHeaders
+TESTFLIGHT_BUILD_CACHE_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Caches
+TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/ModuleCache.noindex
+TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS=(pinned)
+typeset ROOTS_DSTROOT=$TESTFLIGHT_BUILD_DSTROOT_DIRECTORY
+typeset ROOTS_INSTALL_ROOT=$TESTFLIGHT_BUILD_DSTROOT_DIRECTORY
+typeset ROOTS_INSTALL_DIR=$TESTFLIGHT_BUILD_DSTROOT_DIRECTORY/Applications
+typeset ROOTS_TARGET_BUILD_DIR=$TESTFLIGHT_BUILD_DSTROOT_DIRECTORY/Applications
+
+function write_private_plist() { return 0 }
+function plist_root_array_count() { print -r -- 1 }
+function plist_typed_raw_value() {
+  [[ "$2" == 0.target && "$3" == string ]] || return 1
+  print -r -- opensteamer
+}
+function build_settings_entry_value() {
+  local key=$3
+  case "$key" in
+    SYMROOT) print -r -- "$TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY" ;;
+    OBJROOT) print -r -- "$TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY" ;;
+    DSTROOT) print -r -- "$ROOTS_DSTROOT" ;;
+    INSTALL_ROOT) print -r -- "$ROOTS_INSTALL_ROOT" ;;
+    INSTALL_DIR) print -r -- "$ROOTS_INSTALL_DIR" ;;
+    TARGET_BUILD_DIR) print -r -- "$ROOTS_TARGET_BUILD_DIR" ;;
+    SHARED_PRECOMPS_DIR) print -r -- "$TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY" ;;
+    CACHE_ROOT) print -r -- "$TESTFLIGHT_BUILD_CACHE_DIRECTORY" ;;
+    MODULE_CACHE_DIR|CLANG_MODULE_CACHE_PATH|SWIFT_MODULE_CACHE_PATH)
+      print -r -- "$TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY"
+      ;;
+    PRODUCT_BUNDLE_IDENTIFIER) print -r -- "$EXPECTED_BUNDLE_IDENTIFIER" ;;
+    CURRENT_PROJECT_VERSION) print -r -- "$EXPECTED_BUILD_NUMBER" ;;
+    DEVELOPMENT_TEAM) print -r -- "$EXPECTED_TEAM_ID" ;;
+    CODE_SIGN_STYLE) print -r -- Automatic ;;
+    CODE_SIGN_IDENTITY) print -r -- 'Apple Development' ;;
+    OPENSTEAMER_RENDEZVOUS_URL|AUDIOSTREAMER_RENDEZVOUS_URL)
+      print -r -- "$EXPECTED_RENDEZVOUS_URL"
+      ;;
+    *) print -r -- "$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Derived/$key" ;;
+  esac
+}
+
+verify_effective_archive_build_roots
+ROOTS_DSTROOT=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/DSTRoot
+if verify_effective_archive_build_roots >/dev/null 2>&1; then
+  print -u2 -r -- 'manually overridden archive DSTROOT passed effective-root verification'
+  exit 1
+fi
+ROOTS_DSTROOT=$TESTFLIGHT_BUILD_DSTROOT_DIRECTORY
+ROOTS_INSTALL_ROOT=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/DSTRoot
+if verify_effective_archive_build_roots >/dev/null 2>&1; then
+  print -u2 -r -- 'manually overridden archive INSTALL_ROOT passed effective-root verification'
+  exit 1
+fi
+ROOTS_INSTALL_ROOT=$TESTFLIGHT_BUILD_DSTROOT_DIRECTORY
+ROOTS_INSTALL_DIR=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/DSTRoot/Applications
+if verify_effective_archive_build_roots >/dev/null 2>&1; then
+  print -u2 -r -- 'manually overridden archive INSTALL_DIR passed effective-root verification'
+  exit 1
+fi
+ROOTS_INSTALL_DIR=$TESTFLIGHT_BUILD_DSTROOT_DIRECTORY/Applications
+ROOTS_TARGET_BUILD_DIR=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/DSTRoot/Applications
+if verify_effective_archive_build_roots >/dev/null 2>&1; then
+  print -u2 -r -- 'manually overridden archive TARGET_BUILD_DIR passed effective-root verification'
+  exit 1
+fi
+ARCHIVEROOTSTEST
 
 PROFILE_CONTROL="$BEHAVIOR_ROOT/profile-control"
 PROFILE_PATH="$PROFILE_CONTROL/xcodebuild.sb"

@@ -754,8 +754,17 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '"OBJROOT=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}"' 2 \
   'side-by-side TestFlight pinned intermediate root'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '"DSTROOT=${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}"' 2 \
-  'side-by-side TestFlight pinned install root'
+  '"DSTROOT=${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}"' 0 \
+  'side-by-side TestFlight manual DSTROOT override rejection'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"INSTALL_ROOT=${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}"' 0 \
+  'side-by-side TestFlight manual INSTALL_ROOT override rejection'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"INSTALL_DIR=${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}/Applications"' 0 \
+  'side-by-side TestFlight manual INSTALL_DIR override rejection'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '${TESTFLIGHT_DERIVED_DATA_DIRECTORY}/Build/Intermediates.noindex/ArchiveIntermediates/${EXPECTED_SCHEME}/InstallationBuildProductsLocation' 2 \
+  'side-by-side TestFlight Xcode-owned archive staging root'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '"CACHE_ROOT=${TESTFLIGHT_BUILD_CACHE_DIRECTORY}"' 2 \
   'side-by-side TestFlight pinned Xcode cache root'
