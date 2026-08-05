@@ -748,11 +748,11 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '-clonedSourcePackagesDirPath "${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}"' 1 \
   'side-by-side TestFlight fixed private package cache'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '"SYMROOT=${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}"' 2 \
-  'side-by-side TestFlight pinned product root'
+  '"SYMROOT=${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}"' 0 \
+  'side-by-side TestFlight Xcode-owned product root'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '"OBJROOT=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}"' 2 \
-  'side-by-side TestFlight pinned intermediate root'
+  '"OBJROOT=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}"' 0 \
+  'side-by-side TestFlight Xcode-owned intermediate root'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '"DSTROOT=${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}"' 0 \
   'side-by-side TestFlight manual DSTROOT override rejection'
@@ -775,8 +775,17 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function xcode_archive_staging_value_matches() {' 1 \
   'side-by-side TestFlight alias-resolved archive staging verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function xcode_archive_intermediate_value_matches() {' 1 \
+  'side-by-side TestFlight alias-resolved archive intermediate verification'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   $'    xcode_archive_staging_value_matches \\\n      "${destination}" "${entry_index}" DSTROOT \'\' || return 1\n    xcode_archive_staging_value_matches \\\n      "${destination}" "${entry_index}" INSTALL_ROOT \'\' || return 1\n    xcode_archive_staging_value_matches \\\n      "${destination}" "${entry_index}" INSTALL_DIR /Applications || return 1\n    xcode_archive_staging_value_matches \\\n      "${destination}" "${entry_index}" TARGET_BUILD_DIR /Applications || return 1' 1 \
   'side-by-side TestFlight exact alias-resolved archive staging keys'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    for derived_key in BUILD_DIR BUILD_ROOT SYMROOT; do\n      xcode_archive_intermediate_value_matches \\\n        "${destination}" "${entry_index}" "${derived_key}" \\\n        BuildProductsPath || return 1\n    done' 1 \
+  'side-by-side TestFlight exact Xcode-owned product-root keys'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    for derived_key in OBJROOT PROJECT_TEMP_ROOT; do\n      xcode_archive_intermediate_value_matches \\\n        "${destination}" "${entry_index}" "${derived_key}" \\\n        IntermediateBuildFilesPath || return 1\n    done' 1 \
+  'side-by-side TestFlight exact Xcode-owned intermediate-root keys'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '"CACHE_ROOT=${TESTFLIGHT_BUILD_CACHE_DIRECTORY}"' 2 \
   'side-by-side TestFlight pinned Xcode cache root'
@@ -793,7 +802,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '"TMPDIR=${TESTFLIGHT_BUILD_TMP_DIRECTORY}"' 1 \
   'side-by-side TestFlight encrypted-volume temporary root'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'        BUILT_PRODUCTS_DIR \\\n        CONFIGURATION_BUILD_DIR \\\n        CONFIGURATION_TEMP_DIR \\\n        DERIVED_FILE_DIR \\\n        DERIVED_FILES_DIR \\\n        DERIVED_SOURCES_DIR \\\n        DWARF_DSYM_FOLDER_PATH \\\n        INDEX_DATA_STORE_DIR \\\n        LOCSYMROOT \\\n        OBJECT_FILE_DIR \\\n        OBJECT_FILE_DIR_normal \\\n        PROJECT_DERIVED_DATA_DIR \\\n        PROJECT_DERIVED_FILE_DIR \\\n        PROJECT_TEMP_DIR \\\n        PROJECT_TEMP_ROOT \\\n        REZ_COLLECTOR_DIR \\\n        SHARED_DERIVED_FILE_DIR \\' 1 \
+  $'        CONFIGURATION_TEMP_DIR \\\n        DERIVED_FILE_DIR \\\n        DERIVED_FILES_DIR \\\n        DERIVED_SOURCES_DIR \\\n        INDEX_DATA_STORE_DIR \\\n        LOCSYMROOT \\\n        OBJECT_FILE_DIR \\\n        OBJECT_FILE_DIR_normal \\\n        PROJECT_DERIVED_DATA_DIR \\\n        PROJECT_DERIVED_FILE_DIR \\\n        PROJECT_TEMP_DIR \\\n        REZ_COLLECTOR_DIR \\\n        SHARED_DERIVED_FILE_DIR \\' 1 \
   'side-by-side TestFlight exhaustive effective writable-root verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function verify_pinned_xcodebuild_filesystem_contract() {' 1 \
@@ -870,6 +879,18 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function verify_reviewed_xcode_toolchain_identity() {' 1 \
   'side-by-side TestFlight real-Xcode identity verification'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'typeset -i TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=0' 1 \
+  'side-by-side TestFlight deep Xcode signature state initialization'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function verify_reviewed_xcode_deep_signature() {' 1 \
+  'side-by-side TestFlight isolated deep Xcode signature verification'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function verify_or_reuse_reviewed_xcode_deep_signature() {' 1 \
+  'side-by-side TestFlight process-local deep Xcode signature pin'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1' 1 \
+  'side-by-side TestFlight one-way deep Xcode signature transition'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '/usr/bin/codesign --verify --deep --strict --verbose=4 \' 1 \
   'side-by-side TestFlight full Xcode bundle seal verification'

@@ -160,6 +160,7 @@ typeset TESTFLIGHT_XCODE_VOLUME_DEVICE_IDENTIFIER=""
 typeset TESTFLIGHT_XCODE_VOLUME_PARENT_WHOLE_DISK=""
 typeset TESTFLIGHT_XCODE_PHYSICAL_STORE_IDENTIFIER=""
 typeset TESTFLIGHT_XCODE_PHYSICAL_WHOLE_DISK=""
+typeset -i TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=0
 typeset TESTFLIGHT_IMAGE_DEVICE=""
 typeset TESTFLIGHT_IMAGE_PARTITION_DEVICE=""
 typeset TESTFLIGHT_MOUNTED_DEVICE=""
@@ -831,6 +832,25 @@ function verify_reviewed_xcode_volume_identity() {
         "${disk_info}" RemovableMediaOrExternalDevice)" == 'true' ]]
 }
 
+function verify_reviewed_xcode_deep_signature() {
+  /usr/bin/codesign --verify --deep --strict --verbose=4 \
+    "${EXPECTED_XCODE_REAL_BUNDLE_PATH}" >/dev/null 2>&1
+}
+
+function verify_or_reuse_reviewed_xcode_deep_signature() {
+  case ${TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED} in
+    0)
+      verify_reviewed_xcode_deep_signature || return 1
+      TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1
+      ;;
+    1)
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 function verify_reviewed_xcode_toolchain_identity() {
   local selected_developer_path
   selected_developer_path=$(/usr/bin/xcode-select -p 2>/dev/null) || return 2
@@ -879,8 +899,7 @@ function verify_reviewed_xcode_toolchain_identity() {
         "${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/version.plist" \
         ProductBuildVersion)" == "${EXPECTED_XCODE_BUILD_VERSION}" ]] || return 1
   verify_reviewed_xcode_volume_identity || return $?
-  /usr/bin/codesign --verify --deep --strict --verbose=4 \
-    "${EXPECTED_XCODE_REAL_BUNDLE_PATH}" >/dev/null 2>&1 || return 1
+  verify_or_reuse_reviewed_xcode_deep_signature || return 1
   /usr/bin/codesign --verify --strict --verbose=4 \
     "${EXPECTED_XCODEBUILD_REAL_PATH}" >/dev/null 2>&1 || return 1
   local bundle_metadata
@@ -1755,9 +1774,15 @@ function effective_path_is_inside_build_sandbox() {
   local value
   value=$(build_settings_entry_value \
     "${settings_json}" "${index}" "${key}") || return 1
+  local canonical_value="${value:A}"
   [[ -n "${value}" \
-      && "${value:A}" == "${value}" \
-      && "${value}" == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/"* ]]
+      && "${canonical_value}" == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/"* ]] \
+    || return 1
+  [[ "${value}" == "${canonical_value}" ]] && return 0
+  verify_xcode_tmp_alias_identity || return 1
+  [[ "${value}" == "${XCODE_TMP_ALIAS_ROOT}/"* \
+      && "${PRIVATE_TEMPORARY_ROOT}/${value#${XCODE_TMP_ALIAS_ROOT}/}" \
+        == "${canonical_value}" ]]
 }
 
 function verify_xcode_tmp_alias_identity() {
@@ -1786,6 +1811,26 @@ function xcode_archive_staging_value_matches() {
   value=$(build_settings_entry_value \
     "${settings_json}" "${index}" "${key}") || return 1
   [[ "${value}" == "${alias_expected}" \
+      && "${value:A}" == "${canonical_expected}" ]]
+}
+
+function xcode_archive_intermediate_value_matches() {
+  local settings_json=$1
+  local index=$2
+  local key=$3
+  local suffix=$4
+  verify_xcode_tmp_alias_identity || return 1
+  local canonical_expected="${TESTFLIGHT_DERIVED_DATA_DIRECTORY}/Build/Intermediates.noindex/ArchiveIntermediates/${EXPECTED_SCHEME}/${suffix}"
+  [[ "${canonical_expected}" == "${PRIVATE_TEMPORARY_ROOT}/"* \
+      && "${canonical_expected:A}" == "${canonical_expected}" \
+      && "${canonical_expected}" == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/"* ]] \
+    || return 1
+  local alias_expected="${XCODE_TMP_ALIAS_ROOT}/${canonical_expected#${PRIVATE_TEMPORARY_ROOT}/}"
+  local value
+  value=$(build_settings_entry_value \
+    "${settings_json}" "${index}" "${key}") || return 1
+  [[ ("${value}" == "${canonical_expected}" \
+        || "${value}" == "${alias_expected}") \
       && "${value:A}" == "${canonical_expected}" ]]
 }
 
@@ -1880,11 +1925,7 @@ function verify_effective_archive_build_roots() {
   for (( entry_index = 0; entry_index < entry_count; entry_index += 1 )); do
     target_name=$(plist_typed_raw_value \
       "${destination}" "${entry_index}.target" string) || return 1
-    [[ "$(build_settings_entry_value "${destination}" "${entry_index}" SYMROOT)" \
-          == "${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}" \
-        && "$(build_settings_entry_value "${destination}" "${entry_index}" OBJROOT)" \
-          == "${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}" \
-        && "$(build_settings_entry_value "${destination}" "${entry_index}" SHARED_PRECOMPS_DIR)" \
+    [[ "$(build_settings_entry_value "${destination}" "${entry_index}" SHARED_PRECOMPS_DIR)" \
           == "${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}" \
         && "$(build_settings_entry_value "${destination}" "${entry_index}" CACHE_ROOT)" \
           == "${TESTFLIGHT_BUILD_CACHE_DIRECTORY}" \
@@ -1902,16 +1943,36 @@ function verify_effective_archive_build_roots() {
       "${destination}" "${entry_index}" INSTALL_DIR /Applications || return 1
     xcode_archive_staging_value_matches \
       "${destination}" "${entry_index}" TARGET_BUILD_DIR /Applications || return 1
+    for derived_key in BUILD_DIR BUILD_ROOT SYMROOT; do
+      xcode_archive_intermediate_value_matches \
+        "${destination}" "${entry_index}" "${derived_key}" \
+        BuildProductsPath || return 1
+    done
     for derived_key in \
-        BUILD_DIR \
-        BUILD_ROOT \
         BUILT_PRODUCTS_DIR \
         CONFIGURATION_BUILD_DIR \
+        DWARF_DSYM_FOLDER_PATH; do
+      xcode_archive_intermediate_value_matches \
+        "${destination}" "${entry_index}" "${derived_key}" \
+        "BuildProductsPath/${EXPECTED_CONFIGURATION}-iphoneos" || return 1
+    done
+    xcode_archive_intermediate_value_matches \
+      "${destination}" "${entry_index}" SIGNATURE_METADATA_FOLDER_PATH \
+      BuildProductsPath/Signatures || return 1
+    xcode_archive_intermediate_value_matches \
+      "${destination}" "${entry_index}" \
+      SWIFT_STDLIB_TOOL_UNSIGNED_DESTINATION_DIR \
+      BuildProductsPath/SwiftSupport || return 1
+    for derived_key in OBJROOT PROJECT_TEMP_ROOT; do
+      xcode_archive_intermediate_value_matches \
+        "${destination}" "${entry_index}" "${derived_key}" \
+        IntermediateBuildFilesPath || return 1
+    done
+    for derived_key in \
         CONFIGURATION_TEMP_DIR \
         DERIVED_FILE_DIR \
         DERIVED_FILES_DIR \
         DERIVED_SOURCES_DIR \
-        DWARF_DSYM_FOLDER_PATH \
         INDEX_DATA_STORE_DIR \
         LOCSYMROOT \
         OBJECT_FILE_DIR \
@@ -1919,7 +1980,6 @@ function verify_effective_archive_build_roots() {
         PROJECT_DERIVED_DATA_DIR \
         PROJECT_DERIVED_FILE_DIR \
         PROJECT_TEMP_DIR \
-        PROJECT_TEMP_ROOT \
         REZ_COLLECTOR_DIR \
         SHARED_DERIVED_FILE_DIR \
         TARGET_TEMP_DIR \
@@ -2299,9 +2359,10 @@ function initialize_private_testflight_build_volume() {
   TESTFLIGHT_DERIVED_DATA_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/DerivedData"
   TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/Products"
   TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/Intermediates"
-  # Xcode's archive action must own this staging root. Overriding DSTROOT,
-  # INSTALL_ROOT, or INSTALL_DIR causes archive assembly to look for a missing
-  # InstallationBuildProductsLocation even after compilation and signing pass.
+  # Xcode's archive action must own its product, intermediate, and installation
+  # topology. Overriding SYMROOT, OBJROOT, DSTROOT, INSTALL_ROOT, or INSTALL_DIR
+  # splits compilation from archive finalization and leaves an incomplete archive
+  # even after compilation and signing pass.
   TESTFLIGHT_BUILD_DSTROOT_DIRECTORY="${TESTFLIGHT_DERIVED_DATA_DIRECTORY}/Build/Intermediates.noindex/ArchiveIntermediates/${EXPECTED_SCHEME}/InstallationBuildProductsLocation"
   TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/SharedPrecompiledHeaders"
   TESTFLIGHT_BUILD_CACHE_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/Caches"
@@ -2331,8 +2392,6 @@ function initialize_private_testflight_build_volume() {
     -sdk iphoneos
     -derivedDataPath "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}"
     -clonedSourcePackagesDirPath "${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}"
-    "SYMROOT=${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}"
-    "OBJROOT=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}"
     "SHARED_PRECOMPS_DIR=${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}"
     "CACHE_ROOT=${TESTFLIGHT_BUILD_CACHE_DIRECTORY}"
     "MODULE_CACHE_DIR=${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}"
@@ -2356,8 +2415,6 @@ function initialize_private_testflight_build_volume() {
     "DEVELOPER_DIR=${EXPECTED_XCODE_REAL_DEVELOPER_PATH}"
     "TMPDIR=${TESTFLIGHT_BUILD_TMP_DIRECTORY}"
     "DERIVED_DATA_DIR=${TESTFLIGHT_DERIVED_DATA_DIRECTORY}"
-    "SYMROOT=${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}"
-    "OBJROOT=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}"
     "SHARED_PRECOMPS_DIR=${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}"
     "CACHE_ROOT=${TESTFLIGHT_BUILD_CACHE_DIRECTORY}"
     "CCHROOT=${TESTFLIGHT_BUILD_CACHE_DIRECTORY}"

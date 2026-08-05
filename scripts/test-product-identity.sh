@@ -979,9 +979,21 @@ require_rejection "$CASE" 'side-by-side TestFlight executable PBX action rejecti
 
 CASE=$(new_case testflight-effective-writable-roots)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  $'        DWARF_DSYM_FOLDER_PATH \\\n        INDEX_DATA_STORE_DIR \\' \
-  $'        DWARF_DSYM_FOLDER_PATH \\'
+  $'        DERIVED_SOURCES_DIR \\\n        INDEX_DATA_STORE_DIR \\' \
+  $'        DERIVED_SOURCES_DIR \\'
 require_rejection "$CASE" 'side-by-side TestFlight exhaustive effective writable-root verification'
+
+CASE=$(new_case testflight-manual-symroot-override)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '    -clonedSourcePackagesDirPath "${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}"' \
+  $'    -clonedSourcePackagesDirPath "${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}"\n    "SYMROOT=${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}"'
+require_rejection "$CASE" 'side-by-side TestFlight Xcode-owned product root'
+
+CASE=$(new_case testflight-manual-objroot-override)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '    -clonedSourcePackagesDirPath "${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}"' \
+  $'    -clonedSourcePackagesDirPath "${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}"\n    "OBJROOT=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}"'
+require_rejection "$CASE" 'side-by-side TestFlight Xcode-owned intermediate root'
 
 CASE=$(new_case testflight-xcode-owned-archive-staging)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -1006,6 +1018,12 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   'EXPECTED_XCODEBUILD_SHA256="d508f0e1901151843804e4af512d4587ad0e422039e43e14abf22792360ad3d4"' \
   'EXPECTED_XCODEBUILD_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
 require_rejection "$CASE" 'side-by-side TestFlight reviewed real xcodebuild digest'
+
+CASE=$(new_case testflight-deep-xcode-signature-state)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'typeset -i TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=0' \
+  'typeset -i TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1'
+require_rejection "$CASE" 'side-by-side TestFlight deep Xcode signature state initialization'
 
 CASE=$(new_case testflight-real-xcode-filesystem-device)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -1970,6 +1988,28 @@ if verify_pinned_xcodebuild_filesystem_contract >/dev/null 2>&1; then
 fi
 DIGESTTEST
 
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'DEEPSIGNATURETEST'
+source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
+trap - EXIT HUP INT QUIT TERM
+
+typeset -gi DEEP_SIGNATURE_CALLS=0
+function verify_reviewed_xcode_deep_signature() {
+  (( DEEP_SIGNATURE_CALLS += 1 ))
+}
+
+TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=0
+verify_or_reuse_reviewed_xcode_deep_signature
+verify_or_reuse_reviewed_xcode_deep_signature
+[[ "$DEEP_SIGNATURE_CALLS" == 1 \
+    && "$TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED" == 1 ]]
+
+TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=2
+if verify_or_reuse_reviewed_xcode_deep_signature >/dev/null 2>&1; then
+  print -u2 -r -- 'invalid deep Xcode signature state was reused'
+  exit 1
+fi
+DEEPSIGNATURETEST
+
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'ARCHIVEROOTSTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
 trap - EXIT HUP INT QUIT TERM
@@ -1988,6 +2028,11 @@ typeset ROOTS_DSTROOT="${XCODE_TMP_ALIAS_ROOT}/${TESTFLIGHT_BUILD_DSTROOT_DIRECT
 typeset ROOTS_INSTALL_ROOT=$ROOTS_DSTROOT
 typeset ROOTS_INSTALL_DIR=$ROOTS_DSTROOT/Applications
 typeset ROOTS_TARGET_BUILD_DIR=$ROOTS_DSTROOT/Applications
+typeset ROOTS_ARCHIVE_INTERMEDIATES="${XCODE_TMP_ALIAS_ROOT}/${TESTFLIGHT_DERIVED_DATA_DIRECTORY#${PRIVATE_TEMPORARY_ROOT}/}/Build/Intermediates.noindex/ArchiveIntermediates/$EXPECTED_SCHEME"
+typeset ROOTS_BUILD_PRODUCTS_PATH=$ROOTS_ARCHIVE_INTERMEDIATES/BuildProductsPath
+typeset ROOTS_BUILD_DIR=$ROOTS_BUILD_PRODUCTS_PATH
+typeset ROOTS_SIGNATURE_METADATA_FOLDER_PATH=$ROOTS_BUILD_PRODUCTS_PATH/Signatures
+typeset ROOTS_OBJROOT=$ROOTS_ARCHIVE_INTERMEDIATES/IntermediateBuildFilesPath
 typeset WRONG_ROOTS_DSTROOT="${XCODE_TMP_ALIAS_ROOT}/${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY#${PRIVATE_TEMPORARY_ROOT}/}/DSTRoot"
 
 function write_private_plist() { return 0 }
@@ -1999,8 +2044,18 @@ function plist_typed_raw_value() {
 function build_settings_entry_value() {
   local key=$3
   case "$key" in
-    SYMROOT) print -r -- "$TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY" ;;
-    OBJROOT) print -r -- "$TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY" ;;
+    BUILD_DIR) print -r -- "$ROOTS_BUILD_DIR" ;;
+    BUILD_ROOT|SYMROOT) print -r -- "$ROOTS_BUILD_PRODUCTS_PATH" ;;
+    BUILT_PRODUCTS_DIR|CONFIGURATION_BUILD_DIR|DWARF_DSYM_FOLDER_PATH)
+      print -r -- "$ROOTS_BUILD_PRODUCTS_PATH/$EXPECTED_CONFIGURATION-iphoneos"
+      ;;
+    SIGNATURE_METADATA_FOLDER_PATH)
+      print -r -- "$ROOTS_SIGNATURE_METADATA_FOLDER_PATH"
+      ;;
+    SWIFT_STDLIB_TOOL_UNSIGNED_DESTINATION_DIR)
+      print -r -- "$ROOTS_BUILD_PRODUCTS_PATH/SwiftSupport"
+      ;;
+    OBJROOT|PROJECT_TEMP_ROOT) print -r -- "$ROOTS_OBJROOT" ;;
     DSTROOT) print -r -- "$ROOTS_DSTROOT" ;;
     INSTALL_ROOT) print -r -- "$ROOTS_INSTALL_ROOT" ;;
     INSTALL_DIR) print -r -- "$ROOTS_INSTALL_DIR" ;;
@@ -2023,6 +2078,24 @@ function build_settings_entry_value() {
 }
 
 verify_effective_archive_build_roots
+ROOTS_BUILD_DIR=$WRONG_ROOTS_DSTROOT
+if verify_effective_archive_build_roots >/dev/null 2>&1; then
+  print -u2 -r -- 'split archive BUILD_DIR passed effective-root verification'
+  exit 1
+fi
+ROOTS_BUILD_DIR=$ROOTS_BUILD_PRODUCTS_PATH
+ROOTS_SIGNATURE_METADATA_FOLDER_PATH=$WRONG_ROOTS_DSTROOT/Signatures
+if verify_effective_archive_build_roots >/dev/null 2>&1; then
+  print -u2 -r -- 'split archive signature root passed effective-root verification'
+  exit 1
+fi
+ROOTS_SIGNATURE_METADATA_FOLDER_PATH=$ROOTS_BUILD_PRODUCTS_PATH/Signatures
+ROOTS_OBJROOT=$WRONG_ROOTS_DSTROOT
+if verify_effective_archive_build_roots >/dev/null 2>&1; then
+  print -u2 -r -- 'split archive OBJROOT passed effective-root verification'
+  exit 1
+fi
+ROOTS_OBJROOT=$ROOTS_ARCHIVE_INTERMEDIATES/IntermediateBuildFilesPath
 ROOTS_DSTROOT=$WRONG_ROOTS_DSTROOT
 if verify_effective_archive_build_roots >/dev/null 2>&1; then
   print -u2 -r -- 'manually overridden archive DSTROOT passed effective-root verification'
