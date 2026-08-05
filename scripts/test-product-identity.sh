@@ -1025,6 +1025,12 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   'typeset -i TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1'
 require_rejection "$CASE" 'side-by-side TestFlight deep Xcode signature state initialization'
 
+CASE=$(new_case testflight-fresh-release-xcode-seal)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '    archive|export)' \
+  '    ignored-release-operation)'
+require_rejection "$CASE" 'side-by-side TestFlight fresh pre-release Xcode signature verification'
+
 CASE=$(new_case testflight-real-xcode-filesystem-device)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
   $'  [[ "${TESTFLIGHT_XCODE_BUNDLE_IDENTITY%%:*}" \\\n      == "${TESTFLIGHT_XCODE_VOLUME_ROOT_IDENTITY%%:*}" ]] || return 1' \
@@ -2008,6 +2014,22 @@ if verify_or_reuse_reviewed_xcode_deep_signature >/dev/null 2>&1; then
   print -u2 -r -- 'invalid deep Xcode signature state was reused'
   exit 1
 fi
+
+typeset -gi PINNED_CONTRACT_CALLS=0
+function verify_pinned_xcodebuild_filesystem_contract() {
+  (( PINNED_CONTRACT_CALLS += 1 ))
+}
+function verify_control_directory_identity() { return 0 }
+function verify_archive_exec_destinations() { return 0 }
+function verify_export_exec_destinations() { return 0 }
+function run_with_pinned_xcode_sandbox_profile() { return 0 }
+
+TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1
+run_pinned_xcodebuild settings ignored
+run_pinned_xcodebuild archive ignored
+run_pinned_xcodebuild export ignored
+[[ "$DEEP_SIGNATURE_CALLS" == 3 \
+    && "$PINNED_CONTRACT_CALLS" == 5 ]]
 DEEPSIGNATURETEST
 
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'ARCHIVEROOTSTEST'

@@ -1891,6 +1891,14 @@ function run_pinned_xcodebuild() {
   shift
   verify_pinned_xcodebuild_filesystem_contract || return 1
   case "${destination_contract}" in
+    archive|export)
+      # Settings resolution may reuse the process-local deep seal, but any command
+      # that creates or distributes the release gets a fresh whole-Xcode seal.
+      verify_reviewed_xcode_deep_signature || return 1
+      verify_pinned_xcodebuild_filesystem_contract || return 1
+      ;;
+  esac
+  case "${destination_contract}" in
     settings)
       verify_control_directory_identity || return 1
       ;;

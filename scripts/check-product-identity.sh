@@ -892,6 +892,9 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1' 1 \
   'side-by-side TestFlight one-way deep Xcode signature transition'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    archive|export)\n      # Settings resolution may reuse the process-local deep seal, but any command\n      # that creates or distributes the release gets a fresh whole-Xcode seal.\n      verify_reviewed_xcode_deep_signature || return 1\n      verify_pinned_xcodebuild_filesystem_contract || return 1' 1 \
+  'side-by-side TestFlight fresh pre-release Xcode signature verification'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '/usr/bin/codesign --verify --deep --strict --verbose=4 \' 1 \
   'side-by-side TestFlight full Xcode bundle seal verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
