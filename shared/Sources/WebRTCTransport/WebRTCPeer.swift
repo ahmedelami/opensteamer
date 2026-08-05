@@ -76,6 +76,31 @@ enum WebRTCNativeWrapperIdentity {
     }
 }
 
+/// Acquires the system-audio authorization before the causal-evidence authorization everywhere.
+/// Native inactivity uses the same order while revoking an evidence token, preventing an ABBA
+/// deadlock between a final evidence send and synchronous fail-close revocation.
+enum WebRTCMacHostedCallEvidenceAuthorizationOrder {
+    static func withValidAuthorizations<Result>(
+        audioAuthorization: WebRTCAudioAuthorization,
+        evidenceAuthorization:
+            WebRTCMacHostedCallEvidenceAuthorization,
+        expectedCallEpochNonce: UUID,
+        afterAudioAuthorizationAcquired: () -> Void = {},
+        operation: () throws -> Result
+    ) throws -> Result {
+        try audioAuthorization.withValidAuthorization {
+            afterAudioAuthorizationAcquired()
+            return try evidenceAuthorization.withValidAuthorization {
+                guard evidenceAuthorization.callEpochNonce
+                        == expectedCallEpochNonce else {
+                    throw WebRTCTransportError.transportNotHealthy
+                }
+                return try operation()
+            }
+        }
+    }
+}
+
 enum WebRTCIPhoneMicrophoneTransceiverAdmission {
     static func directionIncludesSending(
         _ direction: LKRTCRtpTransceiverDirection
@@ -2032,6 +2057,24 @@ public actor WebRTCPeer {
     private var receivedInputRequests: [UInt64: WebRTCInputRequestBinding] = [:]
     private var receivedInputRequestOrder: [UInt64] = []
     private var sentInputFeedback: [UInt64: WebRTCInputFeedback] = [:]
+    // The viewer advertises support in its current SDP answer before the host can use the strict
+    // v2 evidence message. Received evidence is sequence-checked within this peer lifetime.
+    private var macHostedCallEvidenceIsNegotiated = false
+    private var nextMacHostedCallEvidenceSequence: UInt64 = 1
+    private var currentSentMacHostedCallChallenge:
+        WebRTCMacHostedCallChallenge?
+    private var highestReceivedMacHostedCallChallenge:
+        WebRTCMacHostedCallChallenge?
+    private var currentReceivedMacHostedCallChallenge:
+        WebRTCMacHostedCallChallenge?
+    private var sentMacHostedCallObservationAuthorization:
+        WebRTCAudioAuthorization?
+    private var sentMacHostedCallObservationChallenge:
+        WebRTCMacHostedCallChallenge?
+    private var highestSentMacHostedCallObservationSequence: UInt64 = 0
+    private var highestReceivedMacHostedCallEvidenceSequence: UInt64?
+    private var currentReceivedMacHostedCallEvidence:
+        WebRTCMacHostedCallEvidence?
 
     /// Builds the native factory, role-appropriate audio device, media tracks, and control lane.
     public init(configuration: WebRTCTransportConfiguration) throws {
@@ -2397,6 +2440,7 @@ public actor WebRTCPeer {
         ensureDelegateEventLoop()
 
         let offerEpoch = nextNegotiationEpoch()
+        resetMacHostedCallEvidenceNegotiation()
         outstandingLocalOfferEpoch = offerEpoch
         hasStarted = true
         localDescriptionIsAnnounced = false
@@ -2440,6 +2484,7 @@ public actor WebRTCPeer {
 
             let isRestartOffer = hasStarted
             let offerEpoch = nextNegotiationEpoch()
+            resetMacHostedCallEvidenceNegotiation()
             applyingRemoteOfferEpoch = offerEpoch
             defer {
                 if applyingRemoteOfferEpoch == offerEpoch {
@@ -2483,6 +2528,14 @@ public actor WebRTCPeer {
                 throw WebRTCTransportError.unexpectedSignal
             }
             hasStarted = true
+            macHostedCallEvidenceIsNegotiated =
+                MacHostedCallEvidenceSDP.peerSupportsEvidence(in: sdp)
+                && MacHostedCallEvidenceSDP.peerSupportsEvidence(
+                    in: answerSDP
+                )
+            // `outboundSignal(.answer)` is the ordered post-capability event consumed by the
+            // viewer. The application may retry its current challenge only after forwarding this
+            // answer; the peer-side transport/capability check remains authoritative.
             try announceLocalDescription(.answer(sdp: answerSDP))
 
         case .answer(let sdp):
@@ -2512,6 +2565,8 @@ public actor WebRTCPeer {
             // A disabled sender stores this request. `enableSystemAudioIfTransportHealthy` applies
             // and verifies it after transport health is proven and immediately before PCM flows.
             try requestRawSystemAudioProcessing()
+            macHostedCallEvidenceIsNegotiated =
+                MacHostedCallEvidenceSDP.peerSupportsEvidence(in: sdp)
             try installRemoteICEUsernameFragments(from: sdp)
             remoteDescriptionIsSet = true
             try await flushRemoteCandidates(expectedEpoch: offerEpoch)
@@ -2570,6 +2625,7 @@ public actor WebRTCPeer {
         ensureDelegateEventLoop()
 
         let offerEpoch = nextNegotiationEpoch()
+        resetMacHostedCallEvidenceNegotiation()
         outstandingLocalOfferEpoch = offerEpoch
         localDescriptionIsAnnounced = false
         remoteDescriptionIsSet = false
@@ -3427,10 +3483,100 @@ public actor WebRTCPeer {
         localAudioTrack?.isEnabled = false
         externalAudioCapturer?.setEnabled(false)
         externalAudioCapturer?.reset()
+        resetSentMacHostedCallObservationState()
         authorization?.revoke()
         if pendingAuthorization !== authorization {
             pendingAuthorization?.revoke()
         }
+    }
+
+    /// Sends one privacy-minimal challenge from the viewer after its local CallKit epoch rotated.
+    /// Bidirectional SDP negotiation prevents this evidence kind from reaching an older host.
+    public func requestMacHostedCallEvidenceIfTransportHealthy(
+        challenge: WebRTCMacHostedCallChallenge
+    ) throws {
+        try ensureOpen()
+        guard role == .viewer,
+              challenge.isValid,
+              macHostedCallEvidenceIsNegotiated,
+              isTransportHealthyForMedia() else {
+            throw WebRTCTransportError.transportNotHealthy
+        }
+        if let current = currentSentMacHostedCallChallenge {
+            guard challenge.sequence > current.sequence
+                    || challenge == current else {
+                throw WebRTCTransportError.transportNotHealthy
+            }
+        }
+
+        let data = try JSONEncoder().encode(
+            ControlChannelMessage.macHostedCallChallenge(challenge)
+        )
+        try delegateProxy.sendControlData(data)
+        currentSentMacHostedCallChallenge = challenge
+        invalidateReceivedMacHostedCallEvidence()
+    }
+
+    /// Sends one fresh Mac-hosted FaceTime evidence heartbeat under the exact live system-audio
+    /// authorization and the exact challenge sampled by the native Core Audio source.
+    public func updateMacHostedCallEvidenceIfTransportHealthy(
+        active: Bool,
+        challenge: WebRTCMacHostedCallChallenge,
+        nativeObservationSequence: UInt64,
+        authorization: WebRTCAudioAuthorization,
+        evidenceAuthorization:
+            WebRTCMacHostedCallEvidenceAuthorization
+    ) throws {
+        try ensureOpen()
+        guard role == .host else {
+            throw WebRTCTransportError.invalidRole
+        }
+        try WebRTCMacHostedCallEvidenceAuthorizationOrder
+            .withValidAuthorizations(
+                audioAuthorization: authorization,
+                evidenceAuthorization: evidenceAuthorization,
+                expectedCallEpochNonce: challenge.callEpochNonce
+            ) {
+                guard activeSystemAudioAuthorization === authorization,
+                      localAudioTrack?.isEnabled == true,
+                      macHostedCallEvidenceIsNegotiated,
+                      challenge.isValid,
+                      currentReceivedMacHostedCallChallenge == challenge,
+                      isTransportHealthyForCapture(),
+                      nextMacHostedCallEvidenceSequence < UInt64.max else {
+                    throw WebRTCTransportError.transportNotHealthy
+                }
+
+                let bindingMatches =
+                    sentMacHostedCallObservationAuthorization === authorization
+                    && sentMacHostedCallObservationChallenge == challenge
+                guard WebRTCMacHostedCallObservationSendPolicy.admits(
+                    observationSequence: nativeObservationSequence,
+                    highestSentSequence:
+                        highestSentMacHostedCallObservationSequence,
+                    bindingMatches: bindingMatches
+                ) else {
+                    throw WebRTCTransportError.transportNotHealthy
+                }
+
+                let evidence = WebRTCMacHostedCallEvidence(
+                    sequence: nextMacHostedCallEvidenceSequence,
+                    challengeSequence: challenge.sequence,
+                    challengeNonce: challenge.nonce,
+                    callEpochNonce: challenge.callEpochNonce,
+                    state: active ? .active : .inactive
+                )
+                let data = try JSONEncoder().encode(
+                    ControlChannelMessage.macHostedCallEvidence(evidence)
+                )
+                try delegateProxy.sendControlData(data)
+                sentMacHostedCallObservationAuthorization =
+                    authorization
+                sentMacHostedCallObservationChallenge = challenge
+                highestSentMacHostedCallObservationSequence =
+                    nativeObservationSequence
+                nextMacHostedCallEvidenceSequence &+= 1
+            }
     }
 
     #if os(macOS)
@@ -4657,11 +4803,13 @@ public actor WebRTCPeer {
             }
         case .peerState(let state):
             if state != .connected {
+                resetMacHostedCallEvidenceTransportState()
                 await failCloseScreenMedia()
             }
             emit(.peerStateChanged(state))
         case .iceState(let state):
             if state != .connected && state != .completed {
+                resetMacHostedCallEvidenceTransportState()
                 await failCloseScreenMedia()
             }
             emit(.iceStateChanged(state))
@@ -4669,6 +4817,7 @@ public actor WebRTCPeer {
             emit(.iceGatheringStateChanged(state))
         case .dataChannelState(let state):
             if state != .open {
+                resetMacHostedCallEvidenceTransportState()
                 await failCloseScreenMedia()
             }
             emit(.dataChannelStateChanged(state))
@@ -4779,6 +4928,7 @@ public actor WebRTCPeer {
     /// gate first, then synchronously close native media and finish the stream.
     private func failClosedForEventDeliveryLoss(_ reason: String) {
         guard !isClosed else { return }
+        resetMacHostedCallEvidenceTransportState()
         suspendSystemAudioForTransportUncertainty()
         forceIPhoneMicrophoneNativeTeardown()
         #if os(iOS)
@@ -4848,11 +4998,107 @@ public actor WebRTCPeer {
                 receiveInputRequest(request)
             case .inputFeedback(let feedback):
                 receiveInputFeedback(feedback)
+            case .macHostedCallChallenge(let challenge):
+                receiveMacHostedCallChallenge(challenge)
+            case .macHostedCallEvidence(let evidence):
+                receiveMacHostedCallEvidence(evidence)
             }
         } catch {
             invalidateInputSession(reason: "Invalid control-channel message.")
+            resetMacHostedCallEvidenceTransportState()
             emit(.diagnosticFailure("Invalid control-channel message."))
         }
+    }
+
+    private func receiveMacHostedCallChallenge(
+        _ challenge: WebRTCMacHostedCallChallenge
+    ) {
+        guard role == .host,
+              macHostedCallEvidenceIsNegotiated,
+              challenge.isValid else {
+            resetMacHostedCallEvidenceTransportState()
+            emit(.diagnosticFailure("Unexpected Mac-hosted call challenge."))
+            return
+        }
+
+        if let highest = highestReceivedMacHostedCallChallenge {
+            if challenge == highest {
+                let isFreshTransportRebind =
+                    currentReceivedMacHostedCallChallenge == nil
+                currentReceivedMacHostedCallChallenge = challenge
+                if isFreshTransportRebind {
+                    emit(.macHostedCallChallengeReceived(challenge))
+                }
+                return
+            }
+            guard challenge.sequence > highest.sequence else {
+                resetMacHostedCallEvidenceTransportState()
+                emit(.diagnosticFailure("Stale Mac-hosted call challenge."))
+                return
+            }
+        }
+
+        highestReceivedMacHostedCallChallenge = challenge
+        currentReceivedMacHostedCallChallenge = challenge
+        emit(.macHostedCallChallengeReceived(challenge))
+    }
+
+    private func receiveMacHostedCallEvidence(
+        _ evidence: WebRTCMacHostedCallEvidence
+    ) {
+        guard role == .viewer,
+              macHostedCallEvidenceIsNegotiated,
+              let challenge = currentSentMacHostedCallChallenge,
+              evidence.matches(challenge) else {
+            invalidateReceivedMacHostedCallEvidence()
+            emit(.diagnosticFailure("Unexpected Mac-hosted call evidence."))
+            return
+        }
+
+        if let highest = highestReceivedMacHostedCallEvidenceSequence {
+            if evidence.sequence == highest,
+               evidence == currentReceivedMacHostedCallEvidence {
+                return
+            }
+            guard evidence.sequence > highest else {
+                invalidateReceivedMacHostedCallEvidence()
+                emit(.diagnosticFailure("Stale Mac-hosted call evidence."))
+                return
+            }
+        }
+
+        highestReceivedMacHostedCallEvidenceSequence = evidence.sequence
+        currentReceivedMacHostedCallEvidence = evidence
+        emit(.macHostedCallEvidenceChanged(evidence))
+    }
+
+    private func invalidateReceivedMacHostedCallEvidence() {
+        guard currentReceivedMacHostedCallEvidence != nil else { return }
+        currentReceivedMacHostedCallEvidence = nil
+        emit(.macHostedCallEvidenceChanged(nil))
+    }
+
+    private func resetMacHostedCallEvidenceNegotiation() {
+        macHostedCallEvidenceIsNegotiated = false
+        highestReceivedMacHostedCallChallenge = nil
+        currentReceivedMacHostedCallChallenge = nil
+        currentSentMacHostedCallChallenge = nil
+        highestReceivedMacHostedCallEvidenceSequence = nil
+        resetSentMacHostedCallObservationState()
+        invalidateReceivedMacHostedCallEvidence()
+    }
+
+    private func resetMacHostedCallEvidenceTransportState() {
+        currentReceivedMacHostedCallChallenge = nil
+        currentSentMacHostedCallChallenge = nil
+        resetSentMacHostedCallObservationState()
+        invalidateReceivedMacHostedCallEvidence()
+    }
+
+    private func resetSentMacHostedCallObservationState() {
+        sentMacHostedCallObservationAuthorization = nil
+        sentMacHostedCallObservationChallenge = nil
+        highestSentMacHostedCallObservationSequence = 0
     }
 
     private func receiveControlRequest(_ request: WebRTCControlRequest) {
@@ -5266,7 +5512,15 @@ public actor WebRTCPeer {
                     )
                     return
                 }
-                let localDescription = Self.applyingProductOpusOfferPolicy(to: description)
+                let productDescription = Self.applyingProductOpusOfferPolicy(
+                    to: description
+                )
+                let localDescription = LKRTCSessionDescription(
+                    type: productDescription.type,
+                    sdp: MacHostedCallEvidenceSDP.advertisingHostSupport(
+                        in: productDescription.sdp as String
+                    )
+                )
                 peerConnection.setLocalDescription(localDescription) { error in
                     if let error {
                         continuation.resume(throwing: WebRTCTransportError.nativeFailure(error.localizedDescription))
@@ -5292,9 +5546,16 @@ public actor WebRTCPeer {
                     )
                     return
                 }
-                let localDescription = Self.applyingProductOpusAnswerPolicy(
+                let productDescription = Self.applyingProductOpusAnswerPolicy(
                     to: description,
                     remoteOfferSDP: remoteOfferSDP
+                )
+                let localDescription = LKRTCSessionDescription(
+                    type: productDescription.type,
+                    sdp: MacHostedCallEvidenceSDP.advertisingViewerSupport(
+                        in: productDescription.sdp as String,
+                        remoteOfferSDP: remoteOfferSDP
+                    )
                 )
                 peerConnection.setLocalDescription(localDescription) { error in
                     if let error {
@@ -6282,6 +6543,7 @@ public actor WebRTCPeer {
 
     private func closeTransport() {
         guard !isClosed else { return }
+        resetMacHostedCallEvidenceTransportState()
         suspendSystemAudioForTransportUncertainty()
         forceIPhoneMicrophoneNativeTeardown()
         #if os(iOS)
@@ -6524,12 +6786,16 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
     case acknowledgement(WebRTCControlAcknowledgement)
     case input(WebRTCInputRequest)
     case inputFeedback(WebRTCInputFeedback)
+    case macHostedCallChallenge(WebRTCMacHostedCallChallenge)
+    case macHostedCallEvidence(WebRTCMacHostedCallEvidence)
 
     private enum Kind: String, Codable {
         case command
         case acknowledgement = "ack"
         case input
         case inputFeedback
+        case macHostedCallChallenge
+        case macHostedCallEvidence
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -6539,6 +6805,8 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
         case acknowledgement
         case input
         case inputFeedback
+        case macHostedCallChallenge
+        case macHostedCallEvidence
     }
 
     init(from decoder: any Decoder) throws {
@@ -6563,6 +6831,20 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
             self = .inputFeedback(
                 try container.decode(WebRTCInputFeedback.self, forKey: .inputFeedback)
             )
+        case .macHostedCallChallenge:
+            self = .macHostedCallChallenge(
+                try container.decode(
+                    WebRTCMacHostedCallChallenge.self,
+                    forKey: .macHostedCallChallenge
+                )
+            )
+        case .macHostedCallEvidence:
+            self = .macHostedCallEvidence(
+                try container.decode(
+                    WebRTCMacHostedCallEvidence.self,
+                    forKey: .macHostedCallEvidence
+                )
+            )
         }
     }
 
@@ -6582,6 +6864,24 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
         case .inputFeedback(let feedback):
             try container.encode(Kind.inputFeedback, forKey: .kind)
             try container.encode(feedback, forKey: .inputFeedback)
+        case .macHostedCallChallenge(let challenge):
+            try container.encode(
+                Kind.macHostedCallChallenge,
+                forKey: .kind
+            )
+            try container.encode(
+                challenge,
+                forKey: .macHostedCallChallenge
+            )
+        case .macHostedCallEvidence(let evidence):
+            try container.encode(
+                Kind.macHostedCallEvidence,
+                forKey: .kind
+            )
+            try container.encode(
+                evidence,
+                forKey: .macHostedCallEvidence
+            )
         }
     }
 }

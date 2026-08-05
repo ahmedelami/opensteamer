@@ -161,9 +161,9 @@ final class WebRTCAudioPCMRenderer: NSObject, LKRTCAudioRenderer, @unchecked Sen
 }
 #endif
 
-/// Feeds ScreenCaptureKit PCM into WebRTC's input-only audio device.
+/// Feeds native macOS system-audio PCM into WebRTC's input-only audio device.
 ///
-/// The production custom device follows ScreenCaptureKit's source clock: each converted hardware
+/// The production custom device follows the native source clock: each converted hardware
 /// callback is synchronously delivered on this one serial queue with its full arbitrary frame
 /// count. WebRTC's native FineAudioBuffer owns 10 ms splitting/accumulation; there is no app-side
 /// recording timer, ring, resampler, jitter buffer, or synthetic silence.
@@ -382,7 +382,7 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Accepts one ScreenCaptureKit audio sample buffer. Conversion and native delivery are
+    /// Accepts one ScreenCaptureKit fallback sample buffer. Conversion and native delivery are
     /// synchronously serialized on the source queue: a slow downstream callback backpressures this
     /// capture callback instead of accumulating an unbounded hidden FIFO and drifting from live.
     public func capture(sampleBuffer: CMSampleBuffer) {
@@ -426,6 +426,50 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
                 presentationTimeStamp: sourcePTS,
                 frameCount: sourceFrameCount,
                 sampleRate: pcmBuffer.format.sampleRate
+            )
+            schedule(pcmBuffer)
+        }
+    }
+
+    /// Accepts one borrowed Core Audio callback buffer without an intermediate PCM copy.
+    /// Conversion and native WebRTC delivery finish before this method returns, so neither the
+    /// AudioBufferList nor any contained data pointer escapes the Core Audio IO callback.
+    public func capture(
+        audioBufferList: UnsafePointer<AudioBufferList>,
+        format streamDescription: AudioStreamBasicDescription,
+        frameCount: UInt32,
+        presentationTime: CMTime
+    ) {
+        guard frameCount > 0,
+              presentationTime.isValid,
+              presentationTime.isNumeric,
+              stereoAudioDevice != nil else {
+            return
+        }
+
+        var streamDescription = streamDescription
+        guard let format = AVAudioFormat(
+                  streamDescription: &streamDescription
+              ),
+              let pcmBuffer = AVAudioPCMBuffer(
+                  pcmFormat: format,
+                  bufferListNoCopy: audioBufferList,
+                  deallocator: nil
+              ),
+              frameCount <= pcmBuffer.frameCapacity else {
+            return
+        }
+        pcmBuffer.frameLength = AVAudioFrameCount(frameCount)
+
+        let epoch = captureEpochLock.withLock { captureEpoch }
+        syncOnQueue {
+            guard captureEpochLock.withLock({ captureEpoch == epoch }) else {
+                return
+            }
+            recordSourceTimeline(
+                presentationTimeStamp: presentationTime,
+                frameCount: Int(frameCount),
+                sampleRate: format.sampleRate
             )
             schedule(pcmBuffer)
         }
@@ -644,7 +688,7 @@ public final class MacExternalAudioCapturer: NSObject, @unchecked Sendable {
             || converter?.outputFormat != targetFormat {
             converter = AVAudioConverter(from: sourceBuffer.format, to: targetFormat)
             // This is a continuous live stream, not an offline file. Avoid adding a priming
-            // delay every time ScreenCaptureKit changes format or capture is re-authorized.
+            // delay every time native capture changes format or is re-authorized.
             converter?.primeMethod = .none
             converterSourceFormat = sourceBuffer.format
         }
