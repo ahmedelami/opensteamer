@@ -1,4 +1,5 @@
 import CaptureCore
+import AudioToolbox
 import CoreMedia
 import Foundation
 import RemoteSessionCore
@@ -36,6 +37,73 @@ enum WorldwideScreenInactiveTransition {
         } catch {
             return .acknowledgement(error)
         }
+    }
+}
+
+/// Rejects callbacks that independent Task scheduling delivered out of native callback order, and
+/// rejects every sample that was taken before the currently installed viewer challenge.
+enum WorldwideMacHostedCallObservationPolicy {
+    static func admits(
+        observationSequence: UInt64,
+        highestAdmittedSequence: UInt64,
+        observationChallenge: SystemAudioMacFaceTimeActivityChallenge?,
+        currentChallenge: WebRTCMacHostedCallChallenge?
+    ) -> Bool {
+        guard observationSequence > highestAdmittedSequence,
+              let observationChallenge,
+              let currentChallenge,
+              currentChallenge.isValid,
+              observationChallenge.sequence == currentChallenge.sequence,
+              observationChallenge.nonce == currentChallenge.nonce,
+              observationChallenge.callEpochNonce
+                == currentChallenge.callEpochNonce else {
+            return false
+        }
+        return true
+    }
+}
+
+/// Selects whether a healthy transport should publish, resume, or create system audio.
+enum WorldwideSystemAudioStartMode: Equatable {
+    case alreadyLive
+    case resumeExisting
+    case startNew
+}
+
+/// Pure ownership policy for the actor's native system-audio source.
+enum WorldwideSystemAudioRecoveryPolicy {
+    static func startMode(
+        isLive: Bool,
+        isPausedForRecovery: Bool,
+        hasSource: Bool,
+        hasSink: Bool,
+        hasValidAuthorization: Bool,
+        peerGenerationMatches: Bool
+    ) -> WorldwideSystemAudioStartMode? {
+        if isLive,
+           !isPausedForRecovery,
+           hasSource,
+           hasSink,
+           hasValidAuthorization,
+           peerGenerationMatches {
+            return .alreadyLive
+        }
+        if !isLive,
+           isPausedForRecovery,
+           hasSource,
+           hasSink,
+           !hasValidAuthorization,
+           peerGenerationMatches {
+            return .resumeExisting
+        }
+        if !isLive,
+           !isPausedForRecovery,
+           !hasSource,
+           !hasSink,
+           !hasValidAuthorization {
+            return .startNew
+        }
+        return nil
     }
 }
 
@@ -370,8 +438,13 @@ actor WorldwideScreenService {
     private var audioSource: SystemAudioCaptureSource?
     private var audioSink: WorldwideSystemAudioSampleSink?
     private var audioAuthorization: WebRTCAudioAuthorization?
+    private var audioPeerGeneration: UInt64?
     private var systemAudioStartInProgress = false
     private var systemAudioIsLive = false
+    private var systemAudioIsPausedForTransportRecovery = false
+    private var macHostedCallChallenge:
+        WebRTCMacHostedCallChallenge?
+    private var highestMacFaceTimeObservationSequence: UInt64 = 0
     private var blackHoleDeviceMonitorEpoch: UUID?
     private lazy var blackHoleDefaultInput =
         WorldwideBlackHoleDefaultInputCoordinator(
@@ -885,6 +958,13 @@ actor WorldwideScreenService {
         case .inputSessionInvalidated(let reason):
             revokeRemoteInputAuthorization()
             logger.info("Worldwide remote input stopped: \(reason)")
+
+        case .macHostedCallChallengeReceived(let challenge):
+            installMacHostedCallChallenge(challenge)
+
+        case .macHostedCallEvidenceChanged:
+            // Only the iPhone viewer receives host-originated call evidence.
+            break
 
         case .controlReceived:
             // Legacy signaling controls deliberately cannot start worldwide capture because they
@@ -1455,9 +1535,8 @@ actor WorldwideScreenService {
     private func stopCaptureForTransportUncertainty(_ reason: String) async {
         // Revoke both media gates before either asynchronous ScreenCaptureKit stop begins.
         revokeCaptureAuthorization()
-        revokeSystemAudioAuthorization()
+        pauseSystemAudioForTransportUncertainty()
         captureSink?.stopForwarding()
-        audioSink?.stopForwarding()
         recordBlackHoleDefaultInputOutcome(
             blackHoleDefaultInput
                 .transportDidBecomeUnhealthy(
@@ -1501,7 +1580,7 @@ actor WorldwideScreenService {
     private func enterRecovery(reason: String) async {
         isRecovering = true
         revokeCaptureAuthorization()
-        revokeSystemAudioAuthorization()
+        pauseSystemAudioForTransportUncertainty()
         recordBlackHoleDefaultInputOutcome(
             blackHoleDefaultInput
                 .transportDidBecomeUnhealthy(
@@ -1524,7 +1603,7 @@ actor WorldwideScreenService {
     @discardableResult
     private func installRecoveryProofBoundary(awaitingAnswer: Bool) -> UInt64 {
         revokeCaptureAuthorization()
-        revokeSystemAudioAuthorization()
+        pauseSystemAudioForTransportUncertainty()
         recordBlackHoleDefaultInputOutcome(
             blackHoleDefaultInput
                 .transportDidBecomeUnhealthy(
@@ -2070,39 +2149,80 @@ actor WorldwideScreenService {
 
     /// Starts 48 kHz stereo system audio behind a revocable transport authorization.
     ///
-    /// WebRTC audio is enabled and revalidated before the callback sink begins forwarding;
-    /// failure resets the external capturer so stale PCM cannot enter a later route.
+    /// Same-peer recovery reuses the exact continuously monitored native source and sink, while
+    /// installing a fresh route authorization before forwarding can reopen.
     private func startSystemAudio() async throws {
-        if systemAudioIsLive,
-           audioSource != nil,
-           let audioAuthorization,
-           audioAuthorization.isValid {
-            return
-        }
         guard !systemAudioStartInProgress,
-              audioSource == nil,
               transportAllowsCapture else {
             throw WorldwideScreenServiceError.transportUnavailable
         }
-        guard let peer, let capturer = peer.externalAudioCapturer else {
+        guard let peer,
+              let capturer = peer.externalAudioCapturer else {
             throw WorldwideScreenServiceError.audioCapturerUnavailable
         }
+        let generation = peerGeneration
+        let mode = WorldwideSystemAudioRecoveryPolicy.startMode(
+            isLive: systemAudioIsLive,
+            isPausedForRecovery:
+                systemAudioIsPausedForTransportRecovery,
+            hasSource: audioSource != nil,
+            hasSink: audioSink != nil,
+            hasValidAuthorization:
+                audioAuthorization?.isValid == true,
+            peerGenerationMatches:
+                audioPeerGeneration == generation
+        )
+        guard let mode else {
+            throw WorldwideScreenServiceError.transportUnavailable
+        }
+        if mode == .alreadyLive { return }
+
         systemAudioStartInProgress = true
+        defer { systemAudioStartInProgress = false }
+
+        if mode == .resumeExisting {
+            guard let source = audioSource,
+                  let sink = audioSink else {
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
+            try await resumeSystemAudio(
+                source: source,
+                sink: sink,
+                peer: peer,
+                capturer: capturer,
+                peerGeneration: generation
+            )
+            return
+        }
 
         let authorization = WebRTCAudioAuthorization()
         let sink = WorldwideSystemAudioSampleSink(
             capturer: capturer,
-            authorization: authorization
-        ) { [weak self] source, message in
-            authorization.revoke()
-            Task {
-                await self?.systemAudioCaptureDidStop(
-                    source: source,
-                    authorization: authorization,
-                    message: message
-                )
+            didObserveMacFaceTimeActivity: {
+                [weak self]
+                source,
+                callbackAuthorization,
+                observation,
+                evidenceAuthorization in
+                Task {
+                    await self?.macFaceTimeActivityDidChange(
+                        source: source,
+                        authorization: callbackAuthorization,
+                        observation: observation,
+                        evidenceAuthorization: evidenceAuthorization
+                    )
+                }
+            },
+            didStop: { [weak self] source, stoppedSink, message in
+                Task {
+                    await self?.systemAudioCaptureDidStop(
+                        source: source,
+                        sink: stoppedSink,
+                        message: message
+                    )
+                }
             }
-        }
+        )
         let source = SystemAudioCaptureSource(
             displayID: displayID,
             consumer: sink,
@@ -2111,14 +2231,22 @@ actor WorldwideScreenService {
         audioSink = sink
         audioSource = source
         audioAuthorization = authorization
+        audioPeerGeneration = generation
+        systemAudioIsPausedForTransportRecovery = false
+        highestMacFaceTimeObservationSequence = 0
 
+        var nativeSourceStarted = false
         do {
             let format = try await source.start()
+            nativeSourceStarted = true
             guard audioSource === source,
+                  audioSink === sink,
                   audioAuthorization === authorization,
                   authorization.isValid,
                   transportAllowsCapture,
-                  self.peer === peer else {
+                  self.peer === peer,
+                  peerGeneration == generation,
+                  audioPeerGeneration == generation else {
                 throw WorldwideScreenServiceError.transportUnavailable
             }
 
@@ -2126,41 +2254,129 @@ actor WorldwideScreenService {
                 authorization: authorization
             )
             guard audioSource === source,
+                  audioSink === sink,
                   audioAuthorization === authorization,
                   authorization.isValid,
                   transportAllowsCapture,
-                  self.peer === peer else {
+                  self.peer === peer,
+                  peerGeneration == generation,
+                  audioPeerGeneration == generation,
+                  sink.beginForwarding(with: authorization),
+                  authorization.isValid else {
                 throw WorldwideScreenServiceError.transportUnavailable
             }
 
-            sink.beginForwarding()
             systemAudioIsLive = true
-            systemAudioStartInProgress = false
+            systemAudioIsPausedForTransportRecovery = false
+            installCurrentMacHostedCallChallenge(on: source)
             logger.info(
                 "Worldwide system audio is live from display \(format.displayID) at " +
                 "\(format.sampleRate) Hz, \(format.channelCount) channels"
             )
         } catch {
-            if audioSource === source {
+            let stillOwnsNativeSource = audioSource === source
+                && audioSink === sink
+                && audioPeerGeneration == generation
+            if nativeSourceStarted, stillOwnsNativeSource {
+                pauseSystemAudioForTransportUncertainty()
+                await peer.suspendSystemAudioForTransportUncertainty()
+                capturer.reset()
+
+                // A healthy event may complete while native startup is suspended. Resume now so
+                // no additional peer event is required to reopen the same source.
+                if transportAllowsCapture,
+                   self.peer === peer,
+                   peerGeneration == generation {
+                    try await resumeSystemAudio(
+                        source: source,
+                        sink: sink,
+                        peer: peer,
+                        capturer: capturer,
+                        peerGeneration: generation
+                    )
+                    return
+                }
+            } else if stillOwnsNativeSource {
                 revokeSystemAudioAuthorization()
                 audioSource = nil
                 audioSink = nil
+                audioPeerGeneration = nil
+                try? await source.stop()
+            } else {
+                authorization.revoke()
+                sink.stopForwarding()
             }
-            sink.stopForwarding()
-            await peer.suspendSystemAudioForTransportUncertainty()
-            capturer.reset()
-            try? await source.stop()
-            systemAudioStartInProgress = false
-            systemAudioIsLive = false
             throw error
         }
     }
 
-    /// Logs the recovery boundary before stopping an installed audio source.
+    /// Reopens the same native source only after the peer accepts a fresh audio capability.
+    private func resumeSystemAudio(
+        source: SystemAudioCaptureSource,
+        sink: WorldwideSystemAudioSampleSink,
+        peer: WebRTCPeer,
+        capturer: MacExternalAudioCapturer,
+        peerGeneration generation: UInt64
+    ) async throws {
+        guard audioSource === source,
+              audioSink === sink,
+              audioPeerGeneration == generation,
+              peerGeneration == generation,
+              self.peer === peer,
+              transportAllowsCapture,
+              audioAuthorization == nil else {
+            throw WorldwideScreenServiceError.transportUnavailable
+        }
+
+        let authorization = WebRTCAudioAuthorization()
+        audioAuthorization = authorization
+        do {
+            try await peer.enableSystemAudioIfTransportHealthy(
+                authorization: authorization
+            )
+            guard audioSource === source,
+                  audioSink === sink,
+                  audioPeerGeneration == generation,
+                  peerGeneration == generation,
+                  self.peer === peer,
+                  audioAuthorization === authorization,
+                  authorization.isValid,
+                  transportAllowsCapture,
+                  sink.beginForwarding(with: authorization),
+                  authorization.isValid else {
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
+            systemAudioIsLive = true
+            systemAudioIsPausedForTransportRecovery = false
+            installCurrentMacHostedCallChallenge(on: source)
+            logger.info(
+                "Worldwide system audio resumed on the recovered route"
+            )
+        } catch {
+            if audioSource === source,
+               audioSink === sink,
+               audioPeerGeneration == generation {
+                pauseSystemAudioForTransportUncertainty()
+            } else {
+                authorization.revoke()
+                sink.stopForwarding()
+            }
+            await peer.suspendSystemAudioForTransportUncertainty()
+            capturer.reset()
+            throw error
+        }
+    }
+
+    /// Recovery closes transport capabilities but keeps native call monitoring continuous.
     private func stopSystemAudioForTransportUncertainty(_ reason: String) async {
-        guard audioSource != nil || audioAuthorization != nil else { return }
-        logger.info("Stopping worldwide system audio because \(reason)")
-        await stopSystemAudio()
+        guard audioSource != nil || audioAuthorization != nil else {
+            return
+        }
+        pauseSystemAudioForTransportUncertainty()
+        logger.info(
+            "Paused worldwide system-audio forwarding because \(reason); " +
+                "native call monitoring remains continuous"
+        )
     }
 
     /// Revokes forwarding, suspends the track, resets buffered PCM, and stops native capture.
@@ -2170,6 +2386,7 @@ actor WorldwideScreenService {
         let sink = audioSink
         audioSource = nil
         audioSink = nil
+        audioPeerGeneration = nil
         sink?.stopForwarding()
         await peer?.suspendSystemAudioForTransportUncertainty()
         peer?.externalAudioCapturer?.reset()
@@ -2181,30 +2398,145 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Installs a viewer nonce only while this actor owns the exact live process-tap source. The
+    /// source performs a new native scan after serially installing the nonce.
+    private func installMacHostedCallChallenge(
+        _ challenge: WebRTCMacHostedCallChallenge
+    ) {
+        guard challenge.isValid,
+              peer != nil else {
+            macHostedCallChallenge = nil
+            return
+        }
+        macHostedCallChallenge = challenge
+        guard let source = audioSource,
+              audioAuthorization?.isValid == true,
+              systemAudioIsLive,
+              transportAllowsCapture else {
+            return
+        }
+        installCurrentMacHostedCallChallenge(on: source)
+    }
+
+    /// Reinstalls the actor's current challenge after a route authorization rollover.
+    private func installCurrentMacHostedCallChallenge(
+        on source: SystemAudioCaptureSource
+    ) {
+        guard let challenge = macHostedCallChallenge,
+              challenge.isValid else {
+            return
+        }
+        _ = source.installMacFaceTimeActivityChallenge(
+            SystemAudioMacFaceTimeActivityChallenge(
+                sequence: challenge.sequence,
+                nonce: challenge.nonce,
+                callEpochNonce: challenge.callEpochNonce
+            )
+        )
+    }
+
+    /// Binds every activity heartbeat to the exact live capture source, authorization, peer,
+    /// challenge, and monotonically stamped native observation before it reaches the wire.
+    private func macFaceTimeActivityDidChange(
+        source: SystemAudioCaptureSource,
+        authorization: WebRTCAudioAuthorization,
+        observation: SystemAudioMacFaceTimeActivityObservation,
+        evidenceAuthorization:
+            WebRTCMacHostedCallEvidenceAuthorization
+    ) async {
+        guard audioSource === source,
+              audioAuthorization === authorization,
+              authorization.isValid,
+              systemAudioIsLive,
+              transportAllowsCapture,
+              let challenge = macHostedCallChallenge,
+              WorldwideMacHostedCallObservationPolicy.admits(
+                  observationSequence:
+                      observation.observationSequence,
+                  highestAdmittedSequence:
+                      highestMacFaceTimeObservationSequence,
+                  observationChallenge: observation.challenge,
+                  currentChallenge: challenge
+              ),
+              let peer,
+              self.peer === peer else {
+            return
+        }
+        highestMacFaceTimeObservationSequence =
+            observation.observationSequence
+        do {
+            try await peer.updateMacHostedCallEvidenceIfTransportHealthy(
+                active: observation.isCausallyBoundActive,
+                challenge: challenge,
+                nativeObservationSequence:
+                    observation.observationSequence,
+                authorization: authorization,
+                evidenceAuthorization: evidenceAuthorization
+            )
+        } catch let error as WebRTCTransportError {
+            switch error {
+            case .transportNotHealthy,
+                 .audioAuthorizationRevoked,
+                 .macHostedCallEvidenceAuthorizationRevoked,
+                 .transportClosed:
+                // A missing heartbeat is intentionally fail-closed on the iPhone.
+                break
+            default:
+                logger.error(
+                    "Mac-hosted call evidence send failed: "
+                        + error.localizedDescription
+                )
+            }
+        } catch {
+            logger.error(
+                "Mac-hosted call evidence send failed: "
+                    + error.localizedDescription
+            )
+        }
+    }
+
     /// Fails the consume-once session when its current native audio source stops unexpectedly.
     private func systemAudioCaptureDidStop(
         source: SystemAudioCaptureSource,
-        authorization: WebRTCAudioAuthorization,
+        sink: WorldwideSystemAudioSampleSink,
         message: String
     ) async {
         guard audioSource === source,
-              audioAuthorization === authorization else { return }
+              audioSink === sink else { return }
         revokeSystemAudioAuthorization()
-        audioSink?.stopForwarding()
         audioSink = nil
         audioSource = nil
+        audioPeerGeneration = nil
         await peer?.suspendSystemAudioForTransportUncertainty()
         peer?.externalAudioCapturer?.reset()
         logger.error("Worldwide system audio stopped unexpectedly: \(message)")
         await stop()
     }
 
+    /// Revokes one route while retaining the exact source/sink and native causal binder.
+    private func pauseSystemAudioForTransportUncertainty() {
+        systemAudioIsLive = false
+        systemAudioIsPausedForTransportRecovery =
+            audioSource != nil
+                && audioSink != nil
+                && audioPeerGeneration == peerGeneration
+        let authorization = audioAuthorization
+        audioAuthorization = nil
+        audioSink?.stopForwarding()
+        authorization?.revoke()
+        peer?.externalAudioCapturer?.reset()
+    }
+
     /// Synchronously closes audio authorization and clears external capturer buffers.
     private func revokeSystemAudioAuthorization() {
         systemAudioIsLive = false
-        audioAuthorization?.revoke()
+        systemAudioIsPausedForTransportRecovery = false
+        macHostedCallChallenge = nil
+        highestMacFaceTimeObservationSequence = 0
+        let authorization = audioAuthorization
         audioAuthorization = nil
         audioSink?.stopForwarding()
+        authorization?.revoke()
         peer?.externalAudioCapturer?.reset()
     }
 
@@ -2308,46 +2640,270 @@ private final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unche
     }
 }
 
-/// Thread-safe, doubly authorized bridge from system-audio callbacks into WebRTC.
-///
-/// Both the lock gate and revocable audio token must remain valid. This lets route
-/// uncertainty stop PCM synchronously even while native ScreenCaptureKit teardown awaits.
-private final class WorldwideSystemAudioSampleSink: SystemAudioSampleConsumer, @unchecked Sendable {
-    private let capturer: MacExternalAudioCapturer
-    private let authorization: WebRTCAudioAuthorization
-    private let didStop: @Sendable (SystemAudioCaptureSource, String) -> Void
+/// Lock-owned callback capability that can be rolled to a fresh transport authorization without
+/// replacing the continuously monitored native source. Audio is always acquired before causal
+/// evidence, matching `WebRTCPeer`'s global authorization order.
+final class WorldwideSystemAudioForwardingGate: @unchecked Sendable {
+    private struct EvidenceTransition {
+        let retired: WebRTCMacHostedCallEvidenceAuthorization?
+        let delivery: WebRTCMacHostedCallEvidenceAuthorization?
+    }
+
     private let lock = NSLock()
     private var isForwarding = false
+    private var isTerminated = false
+    private var authorization: WebRTCAudioAuthorization?
+    private var macHostedCallCausalBindingID: UUID?
+    private var macHostedCallEvidenceAuthorization:
+        WebRTCMacHostedCallEvidenceAuthorization?
+
+    /// Installs one fresh route capability. A prior route must be synchronously paused first.
+    @discardableResult
+    func beginForwarding(
+        with authorization: WebRTCAudioAuthorization
+    ) -> Bool {
+        do {
+            return try authorization.withValidAuthorization {
+                lock.withLock {
+                    if isForwarding,
+                       self.authorization === authorization {
+                        return true
+                    }
+                    guard !isForwarding,
+                          self.authorization == nil,
+                          !isTerminated else {
+                        return false
+                    }
+                    self.authorization = authorization
+                    isForwarding = true
+                    return true
+                }
+            }
+        } catch {
+            return false
+        }
+    }
+
+    /// Closes PCM and evidence synchronously, then revokes the old capabilities in lock order.
+    func stopForwarding() {
+        closeForwarding(terminal: false)
+    }
+
+    /// Permanently closes a gate whose native source has failed.
+    func terminate() {
+        closeForwarding(terminal: true)
+    }
+
+    private func closeForwarding(terminal: Bool) {
+        let retired = lock.withLock {
+            let retired = (
+                authorization,
+                macHostedCallEvidenceAuthorization
+            )
+            isForwarding = false
+            isTerminated = isTerminated || terminal
+            authorization = nil
+            macHostedCallCausalBindingID = nil
+            macHostedCallEvidenceAuthorization = nil
+            return retired
+        }
+        retired.0?.revoke()
+        retired.1?.revoke()
+    }
+
+    var authorizationSnapshot: WebRTCAudioAuthorization? {
+        lock.withLock {
+            guard isForwarding else { return nil }
+            return authorization
+        }
+    }
+
+    /// Rechecks exact token identity under the callback gate after acquiring the audio token.
+    @discardableResult
+    func withCurrentAuthorization(
+        _ candidate: WebRTCAudioAuthorization,
+        operation: () -> Void
+    ) -> Bool {
+        do {
+            return try candidate.withValidAuthorization {
+                lock.withLock {
+                    guard isForwarding,
+                          authorization === candidate else {
+                        return false
+                    }
+                    operation()
+                    return true
+                }
+            }
+        } catch {
+            return false
+        }
+    }
+
+    /// Creates or reuses evidence only for the exact native binding and call epoch sampled.
+    @discardableResult
+    func withEvidenceAuthorization(
+        for observation: SystemAudioMacFaceTimeActivityObservation,
+        operation: (
+            WebRTCAudioAuthorization,
+            WebRTCMacHostedCallEvidenceAuthorization
+        ) -> Void
+    ) -> Bool {
+        guard let candidate = authorizationSnapshot else { return false }
+        do {
+            return try candidate.withValidAuthorization {
+                let transition = lock.withLock { () -> EvidenceTransition in
+                    guard isForwarding,
+                          authorization === candidate else {
+                        return EvidenceTransition(
+                            retired: nil,
+                            delivery: nil
+                        )
+                    }
+                    guard let challenge = observation.challenge,
+                          Self.isValid(challenge) else {
+                        return retireEvidenceLocked()
+                    }
+
+                    if let bindingID = observation.causalBindingID,
+                       macHostedCallCausalBindingID == bindingID,
+                       let current =
+                            macHostedCallEvidenceAuthorization,
+                       current.callEpochNonce
+                            == challenge.callEpochNonce,
+                       current.isValid {
+                        return EvidenceTransition(
+                            retired: nil,
+                            delivery: current
+                        )
+                    }
+
+                    let retired = macHostedCallEvidenceAuthorization
+                    let replacement =
+                        WebRTCMacHostedCallEvidenceAuthorization(
+                            callEpochNonce: challenge.callEpochNonce
+                        )
+                    macHostedCallCausalBindingID =
+                        observation.causalBindingID
+                    // Inactive evidence is one-shot: the next observation replaces it instead of
+                    // reusing it, while retaining it here lets a recovery pause revoke it.
+                    macHostedCallEvidenceAuthorization = replacement
+                    return EvidenceTransition(
+                        retired: retired,
+                        delivery: replacement
+                    )
+                }
+                transition.retired?.revoke()
+                guard let evidenceAuthorization = transition.delivery else {
+                    return false
+                }
+                operation(candidate, evidenceAuthorization)
+                return true
+            }
+        } catch {
+            return false
+        }
+    }
+
+    private func retireEvidenceLocked() -> EvidenceTransition {
+        let retired = macHostedCallEvidenceAuthorization
+        macHostedCallCausalBindingID = nil
+        macHostedCallEvidenceAuthorization = nil
+        return EvidenceTransition(retired: retired, delivery: nil)
+    }
+
+    private static func isValid(
+        _ challenge: SystemAudioMacFaceTimeActivityChallenge
+    ) -> Bool {
+        challenge.sequence > 0
+            && challenge.nonce != zeroUUID
+            && challenge.callEpochNonce != zeroUUID
+    }
+
+    private static let zeroUUID = UUID(
+        uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    )
+}
+
+/// Thread-safe, doubly authorized bridge from system-audio callbacks into WebRTC.
+final class WorldwideSystemAudioSampleSink: SystemAudioSampleConsumer, @unchecked Sendable {
+    private let capturer: MacExternalAudioCapturer
+    private let gate: WorldwideSystemAudioForwardingGate
+    private let didObserveMacFaceTimeActivity:
+        @Sendable (
+            SystemAudioCaptureSource,
+            WebRTCAudioAuthorization,
+            SystemAudioMacFaceTimeActivityObservation,
+            WebRTCMacHostedCallEvidenceAuthorization
+        ) -> Void
+    private let didStop:
+        @Sendable (
+            SystemAudioCaptureSource,
+            WorldwideSystemAudioSampleSink,
+            String
+        ) -> Void
 
     init(
         capturer: MacExternalAudioCapturer,
-        authorization: WebRTCAudioAuthorization,
-        didStop: @escaping @Sendable (SystemAudioCaptureSource, String) -> Void
+        gate: WorldwideSystemAudioForwardingGate =
+            WorldwideSystemAudioForwardingGate(),
+        didObserveMacFaceTimeActivity:
+            @escaping @Sendable (
+                SystemAudioCaptureSource,
+                WebRTCAudioAuthorization,
+                SystemAudioMacFaceTimeActivityObservation,
+                WebRTCMacHostedCallEvidenceAuthorization
+            ) -> Void,
+        didStop:
+            @escaping @Sendable (
+                SystemAudioCaptureSource,
+                WorldwideSystemAudioSampleSink,
+                String
+            ) -> Void
     ) {
         self.capturer = capturer
-        self.authorization = authorization
+        self.gate = gate
+        self.didObserveMacFaceTimeActivity =
+            didObserveMacFaceTimeActivity
         self.didStop = didStop
     }
 
-    /// Opens forwarding after WebRTC has enabled and revalidated its audio track.
-    func beginForwarding() {
-        lock.withLock { isForwarding = true }
+    @discardableResult
+    func beginForwarding(
+        with authorization: WebRTCAudioAuthorization
+    ) -> Bool {
+        gate.beginForwarding(with: authorization)
     }
 
-    /// Closes forwarding synchronously at the transport boundary.
     func stopForwarding() {
-        lock.withLock { isForwarding = false }
+        gate.stopForwarding()
     }
 
-    /// Sends a buffer only while both authorization and forwarding remain active.
     func consumeSystemAudioSample(_ sampleBuffer: CMSampleBuffer) {
-        do {
-            try authorization.withValidAuthorization {
-                guard lock.withLock({ isForwarding }) else { return }
-                capturer.capture(sampleBuffer: sampleBuffer)
-            }
-        } catch {
-            // Revocation is the normal boundary for Hide-independent transport teardown.
+        guard let authorization = gate.authorizationSnapshot else {
+            return
+        }
+        gate.withCurrentAuthorization(authorization) {
+            capturer.capture(sampleBuffer: sampleBuffer)
+        }
+    }
+
+    func consumeSystemAudioFrames(
+        _ audioBufferList: UnsafePointer<AudioBufferList>,
+        format: AudioStreamBasicDescription,
+        frameCount: UInt32,
+        presentationTime: CMTime
+    ) {
+        guard let authorization = gate.authorizationSnapshot else {
+            return
+        }
+        gate.withCurrentAuthorization(authorization) {
+            capturer.capture(
+                audioBufferList: audioBufferList,
+                format: format,
+                frameCount: frameCount,
+                presentationTime: presentationTime
+            )
         }
     }
 
@@ -2355,10 +2911,25 @@ private final class WorldwideSystemAudioSampleSink: SystemAudioSampleConsumer, @
         _ source: SystemAudioCaptureSource,
         didStopWithErrorDescription errorDescription: String
     ) {
-        authorization.revoke()
-        stopForwarding()
+        gate.terminate()
         capturer.reset()
-        didStop(source, errorDescription)
+        didStop(source, self, errorDescription)
+    }
+
+    func systemAudioCaptureSource(
+        _ source: SystemAudioCaptureSource,
+        didObserveMacFaceTimeActivity observation:
+            SystemAudioMacFaceTimeActivityObservation
+    ) {
+        gate.withEvidenceAuthorization(for: observation) {
+            authorization, evidenceAuthorization in
+            didObserveMacFaceTimeActivity(
+                source,
+                authorization,
+                observation,
+                evidenceAuthorization
+            )
+        }
     }
 }
 
