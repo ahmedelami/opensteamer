@@ -817,6 +817,33 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '/usr/bin/env -i' 1 \
   'side-by-side TestFlight empty inherited Xcode environment'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function run_xcodebuild_command_for_destination_contract() {' 1 \
+  'side-by-side TestFlight destination-scoped Xcode sandbox routing'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    resolve)\n      # Xcode\'s package resolver applies its own child sandbox.' 1 \
+  'side-by-side TestFlight native package-sandbox resolution'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    settings|archive|export)\n      run_with_pinned_xcode_sandbox_profile "$@"' 1 \
+  'side-by-side TestFlight release-action protected-path sandbox'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '-packageCachePath "${TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY}"' 1 \
+  'side-by-side TestFlight encrypted SwiftPM package cache'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '-onlyUsePackageVersionsFromResolvedFile' 1 \
+  'side-by-side TestFlight resolved package graph pin'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '-skipPackageUpdates' 1 \
+  'side-by-side TestFlight package update suppression'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function resolve_pinned_package_dependencies() {' 1 \
+  'side-by-side TestFlight one-time native package resolution'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_PACKAGE_MANIFEST_SHA256="9c02a86ef1f8257dcd67af517ba35fca50bba0a94b865fd4dacfe476b9c7ed52"' 1 \
+  'side-by-side TestFlight exact package manifest pin'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_PACKAGE_RESOLVED_SHA256="161213e9507513e41f0acba0d7439fcf633b9d03d78c22b1e4b15fa9f83a01d9"' 1 \
+  'side-by-side TestFlight exact resolved package pin'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '/usr/bin/sandbox-exec -p "${profile_text}"' 1 \
   'side-by-side TestFlight protected-path Xcode sandbox'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
@@ -862,7 +889,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '/usr/bin/xcodebuild' 1 \
   'side-by-side TestFlight sole reviewed real-Xcode path literal'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '"${EXPECTED_XCODEBUILD_REAL_PATH}" "$@"' 1 \
+  $'    "${EXPECTED_XCODEBUILD_REAL_PATH}"\n    "$@"' 1 \
   'side-by-side TestFlight direct pinned real-Xcode invocation'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_XCODE_ALIAS_PATH="/Applications/Xcode-26.6.0.app"' 1 \

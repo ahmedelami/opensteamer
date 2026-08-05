@@ -903,6 +903,43 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   '/usr/bin/env'
 require_rejection "$CASE" 'side-by-side TestFlight protected-path Xcode sandbox'
 
+CASE=$(new_case testflight-native-package-sandbox-resolution)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    resolve)\n      # Xcode\'s package resolver applies its own child sandbox.' \
+  $'    resolve)\n      run_with_pinned_xcode_sandbox_profile "$@"\n      # Xcode\'s package resolver applies its own child sandbox.'
+require_rejection "$CASE" \
+  'side-by-side TestFlight native package-sandbox resolution'
+
+CASE=$(new_case testflight-encrypted-package-cache)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '-packageCachePath "${TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY}"' \
+  '-packageCachePath /Users/ahmed/Library/Caches/org.swift.swiftpm'
+require_rejection "$CASE" 'side-by-side TestFlight encrypted SwiftPM package cache'
+
+CASE=$(new_case testflight-resolved-package-only)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '-onlyUsePackageVersionsFromResolvedFile' \
+  '-disablePackageVersionPinning'
+require_rejection "$CASE" 'side-by-side TestFlight resolved package graph pin'
+
+CASE=$(new_case testflight-package-update-suppression)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '-skipPackageUpdates' \
+  '-allowPackageUpdates'
+require_rejection "$CASE" 'side-by-side TestFlight package update suppression'
+
+CASE=$(new_case testflight-package-manifest-pin)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_PACKAGE_MANIFEST_SHA256="9c02a86ef1f8257dcd67af517ba35fca50bba0a94b865fd4dacfe476b9c7ed52"' \
+  'EXPECTED_PACKAGE_MANIFEST_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
+require_rejection "$CASE" 'side-by-side TestFlight exact package manifest pin'
+
+CASE=$(new_case testflight-package-resolved-pin)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_PACKAGE_RESOLVED_SHA256="161213e9507513e41f0acba0d7439fcf633b9d03d78c22b1e4b15fa9f83a01d9"' \
+  'EXPECTED_PACKAGE_RESOLVED_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
+require_rejection "$CASE" 'side-by-side TestFlight exact resolved package pin'
+
 CASE=$(new_case testflight-xcode-sandbox-profile-consumption)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
   'if sysread -i ${profile_reader_fd} -s 4096 \' \
@@ -1051,8 +1088,8 @@ require_rejection "$CASE" 'side-by-side TestFlight full Xcode bundle seal verifi
 
 CASE=$(new_case testflight-pinned-xcode-entrypoint)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  '"${EXPECTED_XCODEBUILD_REAL_PATH}" "$@"' \
-  '/usr/bin/xcodebuild archive "$@"'
+  $'    "${EXPECTED_XCODEBUILD_REAL_PATH}"\n    "$@"' \
+  $'    /usr/bin/xcodebuild\n    archive\n    "$@"'
 require_rejection "$CASE" 'side-by-side TestFlight direct pinned real-Xcode invocation'
 
 CASE=$(new_case testflight-signal-mask)
@@ -2040,6 +2077,7 @@ function reject_unsafe_build_environment() { return 0 }
 function verify_reviewed_xcode_toolchain_identity() { return 0 }
 function verify_private_build_volume_identity() { return 0 }
 function verify_xcode_sandbox_profile_identity() { return 0 }
+function verify_package_dependency_contract() { return 0 }
 
 TESTFLIGHT_BUILD_SANDBOX_DIRECTORY=/Volumes/t7/BuildSandbox
 TESTFLIGHT_BUILD_TMP_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/tmp
@@ -2050,6 +2088,7 @@ TESTFLIGHT_BUILD_DSTROOT_DIRECTORY=$TESTFLIGHT_DERIVED_DATA_DIRECTORY/Build/Inte
 TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/SharedPrecompiledHeaders
 TESTFLIGHT_BUILD_CACHE_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Caches
 TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/ModuleCache.noindex
+TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/PackageCache
 TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/SourcePackages
 TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS=(one two)
 TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT=('LC_ALL=C' 'PATH=/usr/bin:/bin')
@@ -2098,15 +2137,39 @@ function verify_pinned_xcodebuild_filesystem_contract() {
 function verify_control_directory_identity() { return 0 }
 function verify_archive_exec_destinations() { return 0 }
 function verify_export_exec_destinations() { return 0 }
-function run_with_pinned_xcode_sandbox_profile() { return 0 }
+typeset -gi DESTINATION_COMMAND_CALLS=0
+function run_xcodebuild_command_for_destination_contract() {
+  (( DESTINATION_COMMAND_CALLS += 1 ))
+}
 
 TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1
 run_pinned_xcodebuild settings ignored
 run_pinned_xcodebuild archive ignored
 run_pinned_xcodebuild export ignored
 [[ "$DEEP_SIGNATURE_CALLS" == 3 \
-    && "$PINNED_CONTRACT_CALLS" == 5 ]]
+    && "$PINNED_CONTRACT_CALLS" == 5 \
+    && "$DESTINATION_COMMAND_CALLS" == 3 ]]
 DEEPSIGNATURETEST
+
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'DESTINATIONROUTINGTEST'
+source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
+trap - EXIT HUP INT QUIT TERM
+
+typeset -gi OUTER_SANDBOX_CALLS=0
+function run_with_pinned_xcode_sandbox_profile() {
+  (( OUTER_SANDBOX_CALLS += 1 ))
+  "$@"
+}
+
+run_xcodebuild_command_for_destination_contract resolve \
+  /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true
+[[ "$OUTER_SANDBOX_CALLS" == 0 ]]
+
+run_xcodebuild_command_for_destination_contract settings /usr/bin/true
+run_xcodebuild_command_for_destination_contract archive /usr/bin/true
+run_xcodebuild_command_for_destination_contract export /usr/bin/true
+[[ "$OUTER_SANDBOX_CALLS" == 3 ]]
+DESTINATIONROUTINGTEST
 
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'ARCHIVEROOTSTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
@@ -2121,6 +2184,7 @@ TESTFLIGHT_BUILD_DSTROOT_DIRECTORY=$TESTFLIGHT_DERIVED_DATA_DIRECTORY/Build/Inte
 TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/SharedPrecompiledHeaders
 TESTFLIGHT_BUILD_CACHE_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Caches
 TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/ModuleCache.noindex
+TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/PackageCache
 TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS=(pinned)
 typeset ROOTS_DSTROOT="${XCODE_TMP_ALIAS_ROOT}/${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY#${PRIVATE_TEMPORARY_ROOT}/}"
 typeset ROOTS_INSTALL_ROOT=$ROOTS_DSTROOT

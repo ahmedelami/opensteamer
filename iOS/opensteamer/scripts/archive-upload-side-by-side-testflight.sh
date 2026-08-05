@@ -28,6 +28,7 @@ readonly PROTECTED_MIGRATION_EVIDENCE_DIRECTORY="/Users/ahmed/Library/Applicatio
 
 readonly SCRIPT_DIR=${0:A:h}
 readonly PROJECT_DIR=${SCRIPT_DIR:h}
+readonly REPOSITORY_ROOT=${PROJECT_DIR:h:h}
 readonly PROJECT_PATH="${PROJECT_DIR}/opensteamer.xcodeproj"
 readonly SCHEME_PATH="${PROJECT_PATH}/xcshareddata/xcschemes/${EXPECTED_SCHEME}.xcscheme"
 readonly SCHEME_SOURCE_PATH="${PROJECT_DIR}/TestFlightScheme/${EXPECTED_SCHEME}.xcscheme"
@@ -66,6 +67,10 @@ readonly EXPECTED_XCODEBUILD_CD_HASH="335573a2d481a0021e20d7c8b6e2768e407e0f26"
 readonly EXPECTED_XCODE_INFO_SHA256="224c27a718df1d8b4e785d29d06259e0a9326c424e70d30efab9c587463f719a"
 readonly EXPECTED_XCODE_VERSION_SHA256="951ddf34d65d84d57684bd083ca7deebf8d5722eefb074f3cdf00f8304d5f511"
 readonly EXPECTED_XCODEBUILD_SHA256="d508f0e1901151843804e4af512d4587ad0e422039e43e14abf22792360ad3d4"
+readonly PACKAGE_MANIFEST_PATH="${REPOSITORY_ROOT}/Package.swift"
+readonly PACKAGE_RESOLVED_PATH="${REPOSITORY_ROOT}/Package.resolved"
+readonly EXPECTED_PACKAGE_MANIFEST_SHA256="9c02a86ef1f8257dcd67af517ba35fca50bba0a94b865fd4dacfe476b9c7ed52"
+readonly EXPECTED_PACKAGE_RESOLVED_SHA256="161213e9507513e41f0acba0d7439fcf633b9d03d78c22b1e4b15fa9f83a01d9"
 readonly EXPECTED_APPLICATION_IDENTIFIER="${EXPECTED_TEAM_ID}.${EXPECTED_BUNDLE_IDENTIFIER}"
 readonly PROTECTED_APPLICATION_IDENTIFIER="${EXPECTED_TEAM_ID}.${PROTECTED_BUNDLE_IDENTIFIER}"
 readonly -a REJECTED_BUILD_ENVIRONMENT_VARIABLES=(
@@ -179,6 +184,7 @@ typeset TESTFLIGHT_BUILD_DSTROOT_DIRECTORY=""
 typeset TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY=""
 typeset TESTFLIGHT_BUILD_CACHE_DIRECTORY=""
 typeset TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY=""
+typeset TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY=""
 typeset TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY=""
 typeset -a TESTFLIGHT_PINNED_BUILD_DIRECTORIES=()
 typeset -a TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS=()
@@ -240,6 +246,17 @@ function stat_identity() {
 function sha256_file() {
   /usr/bin/shasum -a 256 "$1" 2>/dev/null \
     | /usr/bin/awk 'NR == 1 && NF == 2 { print $1 }'
+}
+
+function verify_package_dependency_contract() {
+  [[ "${PACKAGE_MANIFEST_PATH:A}" == "${PACKAGE_MANIFEST_PATH}" \
+      && "${PACKAGE_RESOLVED_PATH:A}" == "${PACKAGE_RESOLVED_PATH}" \
+      && -f "${PACKAGE_MANIFEST_PATH}" && ! -L "${PACKAGE_MANIFEST_PATH}" \
+      && -f "${PACKAGE_RESOLVED_PATH}" && ! -L "${PACKAGE_RESOLVED_PATH}" \
+      && "$(sha256_file "${PACKAGE_MANIFEST_PATH}")" \
+        == "${EXPECTED_PACKAGE_MANIFEST_SHA256}" \
+      && "$(sha256_file "${PACKAGE_RESOLVED_PATH}")" \
+        == "${EXPECTED_PACKAGE_RESOLVED_SHA256}" ]]
 }
 
 function archive_info_without_distributions_sha256() {
@@ -1295,7 +1312,7 @@ function pin_private_build_directory() {
 }
 
 function verify_pinned_build_directories() {
-  (( ${#TESTFLIGHT_PINNED_BUILD_DIRECTORIES[@]} == 8 )) || return 1
+  (( ${#TESTFLIGHT_PINNED_BUILD_DIRECTORIES[@]} == 9 )) || return 1
   local -a expected_directories=(
     "${TESTFLIGHT_BUILD_TMP_DIRECTORY}"
     "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}"
@@ -1304,6 +1321,7 @@ function verify_pinned_build_directories() {
     "${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}"
     "${TESTFLIGHT_BUILD_CACHE_DIRECTORY}"
     "${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}"
+    "${TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY}"
     "${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}"
   )
   local record
@@ -1674,6 +1692,7 @@ function cleanup_private_build_volume() {
   TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY=""
   TESTFLIGHT_BUILD_CACHE_DIRECTORY=""
   TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY=""
+  TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY=""
   TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY=""
   TESTFLIGHT_PINNED_BUILD_DIRECTORIES=()
   TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS=()
@@ -1858,6 +1877,7 @@ function verify_pinned_xcodebuild_filesystem_contract() {
   verify_reviewed_xcode_toolchain_identity || return 1
   verify_private_build_volume_identity || return 1
   verify_xcode_sandbox_profile_identity || return 1
+  verify_package_dependency_contract || return 1
   (( ${#TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[@]} > 0 )) || return 1
   (( ${#TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT[@]} > 0 )) || return 1
   [[ "${#TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS_SHA256}" == 64 \
@@ -1882,8 +1902,30 @@ function verify_pinned_xcodebuild_filesystem_contract() {
         == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/Caches" \
       && "${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}" \
         == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/ModuleCache.noindex" \
+      && "${TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY}" \
+        == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/PackageCache" \
       && "${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}" \
         == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/SourcePackages" ]]
+}
+
+function run_xcodebuild_command_for_destination_contract() {
+  local destination_contract=$1
+  shift
+  case "${destination_contract}" in
+    resolve)
+      # Xcode's package resolver applies its own child sandbox. An outer Seatbelt
+      # profile makes that supported child sandbox fail with EPERM. Resolve the
+      # exact Package.resolved graph into the pinned encrypted cache first, while
+      # retaining the scrubbed environment and reviewed Xcode command.
+      "$@"
+      ;;
+    settings|archive|export)
+      run_with_pinned_xcode_sandbox_profile "$@"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 function run_pinned_xcodebuild() {
@@ -1899,7 +1941,7 @@ function run_pinned_xcodebuild() {
       ;;
   esac
   case "${destination_contract}" in
-    settings)
+    resolve|settings)
       verify_control_directory_identity || return 1
       ;;
     archive)
@@ -1912,9 +1954,23 @@ function run_pinned_xcodebuild() {
       return 1
       ;;
   esac
-  run_with_pinned_xcode_sandbox_profile /usr/bin/env -i \
-    "${TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT[@]}" \
-    "${EXPECTED_XCODEBUILD_REAL_PATH}" "$@"
+  local -a pinned_command=(
+    /usr/bin/env -i
+    "${TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT[@]}"
+    "${EXPECTED_XCODEBUILD_REAL_PATH}"
+    "$@"
+  )
+  run_xcodebuild_command_for_destination_contract \
+    "${destination_contract}" "${pinned_command[@]}"
+}
+
+function resolve_pinned_package_dependencies() {
+  verify_package_dependency_contract || return 1
+  run_pinned_xcodebuild resolve \
+    -resolvePackageDependencies \
+    "${TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[@]}" \
+    || return 1
+  verify_pinned_xcodebuild_filesystem_contract
 }
 
 function verify_effective_archive_build_roots() {
@@ -1922,7 +1978,7 @@ function verify_effective_archive_build_roots() {
   write_private_plist \
     "${destination}" run_pinned_xcodebuild settings \
     "${TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[@]}" \
-    archive -showBuildSettings -json || return 1
+    archive -showBuildSettings -json || return 2
   local entry_count
   entry_count=$(plist_root_array_count "${destination}") || return 1
   (( entry_count > 0 )) || return 1
@@ -2375,6 +2431,7 @@ function initialize_private_testflight_build_volume() {
   TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/SharedPrecompiledHeaders"
   TESTFLIGHT_BUILD_CACHE_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/Caches"
   TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/ModuleCache.noindex"
+  TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/PackageCache"
   TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/SourcePackages"
   TESTFLIGHT_PINNED_BUILD_DIRECTORIES=()
   local build_directory
@@ -2386,6 +2443,7 @@ function initialize_private_testflight_build_volume() {
       "${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}" \
       "${TESTFLIGHT_BUILD_CACHE_DIRECTORY}" \
       "${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}" \
+      "${TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY}" \
       "${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}"; do
     pin_private_build_directory \
       "${build_directory}" "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}" \
@@ -2400,6 +2458,9 @@ function initialize_private_testflight_build_volume() {
     -sdk iphoneos
     -derivedDataPath "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}"
     -clonedSourcePackagesDirPath "${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}"
+    -packageCachePath "${TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY}"
+    -onlyUsePackageVersionsFromResolvedFile
+    -skipPackageUpdates
     "SHARED_PRECOMPS_DIR=${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}"
     "CACHE_ROOT=${TESTFLIGHT_BUILD_CACHE_DIRECTORY}"
     "MODULE_CACHE_DIR=${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}"
@@ -3224,8 +3285,15 @@ function archive_side_by_side_app() {
   reserve_archive_exec_destinations \
     || fail "could not atomically reserve archive and log destinations"
   initialize_private_testflight_build_volume
-  verify_effective_archive_build_roots \
-    || fail "effective archive build/cache roots escaped the encrypted build volume"
+  resolve_pinned_package_dependencies \
+    || fail "could not resolve the pinned package graph into the encrypted cache"
+  local effective_roots_status=0
+  verify_effective_archive_build_roots || effective_roots_status=$?
+  if (( effective_roots_status == 2 )); then
+    fail "could not obtain effective archive build settings"
+  elif (( effective_roots_status != 0 )); then
+    fail "effective archive build/cache roots escaped the encrypted build volume"
+  fi
   verify_archive_exec_destinations \
     || fail "reserved archive or log destination changed immediately before archive"
   verify_pinned_xcodebuild_filesystem_contract \
