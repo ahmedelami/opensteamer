@@ -34,6 +34,7 @@ readonly SCHEME_SOURCE_PATH="${PROJECT_DIR}/TestFlightScheme/${EXPECTED_SCHEME}.
 readonly SCHEME_RESTORE_SCRIPT_PATH="${SCRIPT_DIR}/restore-archive-only-testflight-scheme.sh"
 readonly EXPORT_OPTIONS_PATH="${PROJECT_DIR}/TestFlightExportOptions.plist"
 readonly PRIVATE_TEMPORARY_ROOT="/private/tmp"
+readonly XCODE_TMP_ALIAS_ROOT="/tmp"
 readonly TESTFLIGHT_BUILD_ROOT="/Volumes/t7"
 readonly TESTFLIGHT_BUILD_IMAGE_SIZE="64g"
 readonly TESTFLIGHT_BUILD_IMAGE_BASENAME="opensteamer-testflight-build"
@@ -1759,6 +1760,35 @@ function effective_path_is_inside_build_sandbox() {
       && "${value}" == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/"* ]]
 }
 
+function verify_xcode_tmp_alias_identity() {
+  [[ -L "${XCODE_TMP_ALIAS_ROOT}" \
+      && "$(/usr/bin/readlink "${XCODE_TMP_ALIAS_ROOT}" 2>/dev/null)" \
+        == 'private/tmp' \
+      && "${XCODE_TMP_ALIAS_ROOT:A}" == "${PRIVATE_TEMPORARY_ROOT}" \
+      && "$(/usr/bin/stat -f '%u:%g:%Lp:%HT:%Y' \
+        "${XCODE_TMP_ALIAS_ROOT}" 2>/dev/null)" \
+        == '0:0:755:Symbolic Link:private/tmp' ]]
+}
+
+function xcode_archive_staging_value_matches() {
+  local settings_json=$1
+  local index=$2
+  local key=$3
+  local suffix=$4
+  verify_xcode_tmp_alias_identity || return 1
+  local canonical_expected="${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}${suffix}"
+  [[ "${canonical_expected}" == "${PRIVATE_TEMPORARY_ROOT}/"* \
+      && "${canonical_expected:A}" == "${canonical_expected}" \
+      && "${canonical_expected}" == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/"* ]] \
+    || return 1
+  local alias_expected="${XCODE_TMP_ALIAS_ROOT}/${canonical_expected#${PRIVATE_TEMPORARY_ROOT}/}"
+  local value
+  value=$(build_settings_entry_value \
+    "${settings_json}" "${index}" "${key}") || return 1
+  [[ "${value}" == "${alias_expected}" \
+      && "${value:A}" == "${canonical_expected}" ]]
+}
+
 function string_vector_sha256() {
   local argument
   {
@@ -1854,14 +1884,6 @@ function verify_effective_archive_build_roots() {
           == "${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}" \
         && "$(build_settings_entry_value "${destination}" "${entry_index}" OBJROOT)" \
           == "${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}" \
-        && "$(build_settings_entry_value "${destination}" "${entry_index}" DSTROOT)" \
-          == "${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}" \
-        && "$(build_settings_entry_value "${destination}" "${entry_index}" INSTALL_ROOT)" \
-          == "${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}" \
-        && "$(build_settings_entry_value "${destination}" "${entry_index}" INSTALL_DIR)" \
-          == "${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}/Applications" \
-        && "$(build_settings_entry_value "${destination}" "${entry_index}" TARGET_BUILD_DIR)" \
-          == "${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}/Applications" \
         && "$(build_settings_entry_value "${destination}" "${entry_index}" SHARED_PRECOMPS_DIR)" \
           == "${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}" \
         && "$(build_settings_entry_value "${destination}" "${entry_index}" CACHE_ROOT)" \
@@ -1872,6 +1894,14 @@ function verify_effective_archive_build_roots() {
           == "${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}" \
         && "$(build_settings_entry_value "${destination}" "${entry_index}" SWIFT_MODULE_CACHE_PATH)" \
           == "${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}" ]] || return 1
+    xcode_archive_staging_value_matches \
+      "${destination}" "${entry_index}" DSTROOT '' || return 1
+    xcode_archive_staging_value_matches \
+      "${destination}" "${entry_index}" INSTALL_ROOT '' || return 1
+    xcode_archive_staging_value_matches \
+      "${destination}" "${entry_index}" INSTALL_DIR /Applications || return 1
+    xcode_archive_staging_value_matches \
+      "${destination}" "${entry_index}" TARGET_BUILD_DIR /Applications || return 1
     for derived_key in \
         BUILD_DIR \
         BUILD_ROOT \
@@ -1883,8 +1913,6 @@ function verify_effective_archive_build_roots() {
         DERIVED_SOURCES_DIR \
         DWARF_DSYM_FOLDER_PATH \
         INDEX_DATA_STORE_DIR \
-        INSTALL_DIR \
-        INSTALL_ROOT \
         LOCSYMROOT \
         OBJECT_FILE_DIR \
         OBJECT_FILE_DIR_normal \
@@ -1894,7 +1922,6 @@ function verify_effective_archive_build_roots() {
         PROJECT_TEMP_ROOT \
         REZ_COLLECTOR_DIR \
         SHARED_DERIVED_FILE_DIR \
-        TARGET_BUILD_DIR \
         TARGET_TEMP_DIR \
         TEMP_DIR \
         TEMP_FILES_DIR \

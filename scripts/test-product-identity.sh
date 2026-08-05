@@ -989,6 +989,12 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   'TESTFLIGHT_BUILD_DSTROOT_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/DSTRoot"'
 require_rejection "$CASE" 'side-by-side TestFlight Xcode-owned archive staging root'
 
+CASE=$(new_case testflight-xcode-tmp-alias-root)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'readonly XCODE_TMP_ALIAS_ROOT="/tmp"' \
+  'readonly XCODE_TMP_ALIAS_ROOT="/private/tmp"'
+require_rejection "$CASE" 'side-by-side TestFlight pinned Xcode tmp alias root'
+
 CASE=$(new_case testflight-real-xcode-alias)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
   'EXPECTED_XCODE_ALIAS_PATH="/Applications/Xcode-26.6.0.app"' \
@@ -1968,8 +1974,8 @@ WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'ARCHIVEROOTSTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
 trap - EXIT HUP INT QUIT TERM
 
-TESTFLIGHT_CONTROL_DIRECTORY=/Volumes/t7/BuildSandbox/control
-TESTFLIGHT_BUILD_SANDBOX_DIRECTORY=/Volumes/t7/BuildSandbox
+TESTFLIGHT_CONTROL_DIRECTORY=/private/tmp/opensteamer-archive-roots-behavior/control
+TESTFLIGHT_BUILD_SANDBOX_DIRECTORY=/private/tmp/opensteamer-archive-roots-behavior/BuildSandbox
 TESTFLIGHT_DERIVED_DATA_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/DerivedData
 TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Products
 TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Intermediates
@@ -1978,10 +1984,11 @@ TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Share
 TESTFLIGHT_BUILD_CACHE_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Caches
 TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/ModuleCache.noindex
 TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS=(pinned)
-typeset ROOTS_DSTROOT=$TESTFLIGHT_BUILD_DSTROOT_DIRECTORY
-typeset ROOTS_INSTALL_ROOT=$TESTFLIGHT_BUILD_DSTROOT_DIRECTORY
-typeset ROOTS_INSTALL_DIR=$TESTFLIGHT_BUILD_DSTROOT_DIRECTORY/Applications
-typeset ROOTS_TARGET_BUILD_DIR=$TESTFLIGHT_BUILD_DSTROOT_DIRECTORY/Applications
+typeset ROOTS_DSTROOT="${XCODE_TMP_ALIAS_ROOT}/${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY#${PRIVATE_TEMPORARY_ROOT}/}"
+typeset ROOTS_INSTALL_ROOT=$ROOTS_DSTROOT
+typeset ROOTS_INSTALL_DIR=$ROOTS_DSTROOT/Applications
+typeset ROOTS_TARGET_BUILD_DIR=$ROOTS_DSTROOT/Applications
+typeset WRONG_ROOTS_DSTROOT="${XCODE_TMP_ALIAS_ROOT}/${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY#${PRIVATE_TEMPORARY_ROOT}/}/DSTRoot"
 
 function write_private_plist() { return 0 }
 function plist_root_array_count() { print -r -- 1 }
@@ -2016,25 +2023,25 @@ function build_settings_entry_value() {
 }
 
 verify_effective_archive_build_roots
-ROOTS_DSTROOT=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/DSTRoot
+ROOTS_DSTROOT=$WRONG_ROOTS_DSTROOT
 if verify_effective_archive_build_roots >/dev/null 2>&1; then
   print -u2 -r -- 'manually overridden archive DSTROOT passed effective-root verification'
   exit 1
 fi
-ROOTS_DSTROOT=$TESTFLIGHT_BUILD_DSTROOT_DIRECTORY
-ROOTS_INSTALL_ROOT=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/DSTRoot
+ROOTS_DSTROOT="${XCODE_TMP_ALIAS_ROOT}/${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY#${PRIVATE_TEMPORARY_ROOT}/}"
+ROOTS_INSTALL_ROOT=$WRONG_ROOTS_DSTROOT
 if verify_effective_archive_build_roots >/dev/null 2>&1; then
   print -u2 -r -- 'manually overridden archive INSTALL_ROOT passed effective-root verification'
   exit 1
 fi
-ROOTS_INSTALL_ROOT=$TESTFLIGHT_BUILD_DSTROOT_DIRECTORY
-ROOTS_INSTALL_DIR=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/DSTRoot/Applications
+ROOTS_INSTALL_ROOT=$ROOTS_DSTROOT
+ROOTS_INSTALL_DIR=$WRONG_ROOTS_DSTROOT/Applications
 if verify_effective_archive_build_roots >/dev/null 2>&1; then
   print -u2 -r -- 'manually overridden archive INSTALL_DIR passed effective-root verification'
   exit 1
 fi
-ROOTS_INSTALL_DIR=$TESTFLIGHT_BUILD_DSTROOT_DIRECTORY/Applications
-ROOTS_TARGET_BUILD_DIR=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/DSTRoot/Applications
+ROOTS_INSTALL_DIR=$ROOTS_DSTROOT/Applications
+ROOTS_TARGET_BUILD_DIR=$WRONG_ROOTS_DSTROOT/Applications
 if verify_effective_archive_build_roots >/dev/null 2>&1; then
   print -u2 -r -- 'manually overridden archive TARGET_BUILD_DIR passed effective-root verification'
   exit 1

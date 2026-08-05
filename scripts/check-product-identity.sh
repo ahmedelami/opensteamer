@@ -766,6 +766,18 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '${TESTFLIGHT_DERIVED_DATA_DIRECTORY}/Build/Intermediates.noindex/ArchiveIntermediates/${EXPECTED_SCHEME}/InstallationBuildProductsLocation' 2 \
   'side-by-side TestFlight Xcode-owned archive staging root'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'readonly XCODE_TMP_ALIAS_ROOT="/tmp"' 1 \
+  'side-by-side TestFlight pinned Xcode tmp alias root'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function verify_xcode_tmp_alias_identity() {' 1 \
+  'side-by-side TestFlight system tmp alias identity verification'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function xcode_archive_staging_value_matches() {' 1 \
+  'side-by-side TestFlight alias-resolved archive staging verification'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    xcode_archive_staging_value_matches \\\n      "${destination}" "${entry_index}" DSTROOT \'\' || return 1\n    xcode_archive_staging_value_matches \\\n      "${destination}" "${entry_index}" INSTALL_ROOT \'\' || return 1\n    xcode_archive_staging_value_matches \\\n      "${destination}" "${entry_index}" INSTALL_DIR /Applications || return 1\n    xcode_archive_staging_value_matches \\\n      "${destination}" "${entry_index}" TARGET_BUILD_DIR /Applications || return 1' 1 \
+  'side-by-side TestFlight exact alias-resolved archive staging keys'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '"CACHE_ROOT=${TESTFLIGHT_BUILD_CACHE_DIRECTORY}"' 2 \
   'side-by-side TestFlight pinned Xcode cache root'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
@@ -781,7 +793,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '"TMPDIR=${TESTFLIGHT_BUILD_TMP_DIRECTORY}"' 1 \
   'side-by-side TestFlight encrypted-volume temporary root'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'        BUILT_PRODUCTS_DIR \\\n        CONFIGURATION_BUILD_DIR \\\n        CONFIGURATION_TEMP_DIR \\\n        DERIVED_FILE_DIR \\\n        DERIVED_FILES_DIR \\\n        DERIVED_SOURCES_DIR \\\n        DWARF_DSYM_FOLDER_PATH \\\n        INDEX_DATA_STORE_DIR \\\n        INSTALL_DIR \\\n        INSTALL_ROOT \\\n        LOCSYMROOT \\\n        OBJECT_FILE_DIR \\\n        OBJECT_FILE_DIR_normal \\\n        PROJECT_DERIVED_DATA_DIR \\\n        PROJECT_DERIVED_FILE_DIR \\\n        PROJECT_TEMP_DIR \\\n        PROJECT_TEMP_ROOT \\\n        REZ_COLLECTOR_DIR \\\n        SHARED_DERIVED_FILE_DIR \\' 1 \
+  $'        BUILT_PRODUCTS_DIR \\\n        CONFIGURATION_BUILD_DIR \\\n        CONFIGURATION_TEMP_DIR \\\n        DERIVED_FILE_DIR \\\n        DERIVED_FILES_DIR \\\n        DERIVED_SOURCES_DIR \\\n        DWARF_DSYM_FOLDER_PATH \\\n        INDEX_DATA_STORE_DIR \\\n        LOCSYMROOT \\\n        OBJECT_FILE_DIR \\\n        OBJECT_FILE_DIR_normal \\\n        PROJECT_DERIVED_DATA_DIR \\\n        PROJECT_DERIVED_FILE_DIR \\\n        PROJECT_TEMP_DIR \\\n        PROJECT_TEMP_ROOT \\\n        REZ_COLLECTOR_DIR \\\n        SHARED_DERIVED_FILE_DIR \\' 1 \
   'side-by-side TestFlight exhaustive effective writable-root verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function verify_pinned_xcodebuild_filesystem_contract() {' 1 \
