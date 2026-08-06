@@ -30,8 +30,10 @@ passes the unrelated-network and forced-TURN gates described in
 - BlackHole 2ch output for the first Mac microphone MVP. When the authenticated
   WebRTC peer, ICE route, and control channel are all healthy, opensteamer
   automatically selects BlackHole 2ch as the Mac default input before starting
-  system audio. It conditionally restores the prior input after disconnect while
-  leaving the default output and system-output devices unchanged.
+  system audio. It conditionally restores the prior input after disconnect. For
+  authenticated worldwide duplex audio, BlackHole is never permitted to remain an
+  output: worldwide mode first moves only a BlackHole output selector to a
+  validated real output, while healthy output selections remain unchanged.
 - Legacy Bonjour/TCP/PCM tools retained only for trusted-LAN diagnostics.
 
 Automatic input restoration is an in-memory graceful-lifecycle guarantee; a crash,

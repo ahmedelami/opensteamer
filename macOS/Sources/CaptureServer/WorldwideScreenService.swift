@@ -107,6 +107,74 @@ enum WorldwideSystemAudioRecoveryPolicy {
     }
 }
 
+/// Caps invariant mutations while preserving continuous read-only verification.
+struct WorldwideSafeOutputInvariantRetryPolicy: Equatable, Sendable {
+    let maximumFailedAttemptCount: Int
+    let maximumBackoffTickCount: Int
+    let cappedCooldownTickCount: Int
+    private(set) var failedAttemptCount = 0
+    private(set) var backoffTickCount = 0
+    private(set) var cooldownTickCount = 0
+
+    init(
+        maximumFailedAttemptCount: Int = 6,
+        maximumBackoffTickCount: Int = 16,
+        cappedCooldownTickCount: Int = 60
+    ) {
+        self.maximumFailedAttemptCount = max(
+            1,
+            maximumFailedAttemptCount
+        )
+        self.maximumBackoffTickCount = max(
+            1,
+            maximumBackoffTickCount
+        )
+        self.cappedCooldownTickCount = max(
+            1,
+            cappedCooldownTickCount
+        )
+    }
+
+    mutating func shouldAttemptOnCurrentTick() -> Bool {
+        if failedAttemptCount >= maximumFailedAttemptCount {
+            guard cooldownTickCount == 0 else {
+                cooldownTickCount -= 1
+                return false
+            }
+            failedAttemptCount = 0
+            backoffTickCount = 0
+        }
+        guard backoffTickCount == 0 else {
+            backoffTickCount -= 1
+            return false
+        }
+        return true
+    }
+
+    mutating func recordFailure() {
+        guard failedAttemptCount < maximumFailedAttemptCount else {
+            return
+        }
+        failedAttemptCount += 1
+        guard failedAttemptCount < maximumFailedAttemptCount else {
+            backoffTickCount = 0
+            cooldownTickCount = cappedCooldownTickCount
+            return
+        }
+        let shift = min(failedAttemptCount - 1, 30)
+        backoffTickCount = min(
+            1 << shift,
+            maximumBackoffTickCount
+        )
+    }
+
+    mutating func reset() {
+        failedAttemptCount = 0
+        backoffTickCount = 0
+        cooldownTickCount = 0
+    }
+}
+
 /// Minimal lifecycle surface shared by the production AudioQueue sink and deterministic fakes.
 protocol WorldwideIPhoneMicrophoneOutput: AnyObject, Sendable {
     func start() throws
@@ -393,6 +461,42 @@ actor WorldwideScreenService {
             error.localizedDescription
     }
 
+    /// Privacy-safe progress telemetry: no device UID, track ID, nonce, or attempt UUID.
+    nonisolated static func iPhoneMicrophoneForwardingLogMessage(
+        _ snapshot: WorldwideIPhoneMicrophoneForwardingHostSnapshot
+    ) -> String {
+        let progress = snapshot.progress
+        return "Worldwide iPhone microphone forwarding " +
+            "phase=\(snapshot.phase.rawValue) " +
+            "transport=\(snapshot.transportAuthorized) " +
+            "trackAdmitted=\(snapshot.exactTrackAdmitted) " +
+            "queueRunning=\(snapshot.queueRunning) " +
+            "callbacks=\(progress.postStartCallbackCount) " +
+            "pulls=\(progress.successfulPullCount) " +
+            "frames=\(progress.successfulFrameCount) " +
+            "silenceFallbacks=\(progress.silenceFallbackCount) " +
+            "enqueueFailures=\(progress.enqueueFailureCount) " +
+            "failure=\(snapshot.lastFailureCategory?.rawValue ?? "none")"
+    }
+
+    /// Privacy-safe receiver evidence: aggregate RTP/media counters only.
+    nonisolated static func inboundAudioRTPLogMessage(
+        packets: UInt64?,
+        bytes: UInt64?,
+        totalAudioEnergy: Double?,
+        audioLevel: Double?
+    ) -> String {
+        "Worldwide inbound audio RTP packets="
+            + (packets.map { String($0) } ?? "unknown")
+            + " bytes=" + (bytes.map { String($0) } ?? "unknown")
+            + " energy=" + (totalAudioEnergy.map {
+                String(format: "%.6f", $0)
+            } ?? "unknown")
+            + " level=" + (audioLevel.map {
+                String(format: "%.6f", $0)
+            } ?? "unknown")
+    }
+
     private let invitation: RemoteInvitationCode?
     private let signaling: RendezvousSignalingClient
     private let icePolicy: WebRTCICEPolicy
@@ -407,6 +511,8 @@ actor WorldwideScreenService {
         BlackHoleDeviceAvailabilityMonitor()
     private let blackHoleDefaultInputLease =
         BlackHoleDefaultInputLease()
+    private let worldwideSafeOutputInvariant =
+        WorldwideSafeOutputInvariant()
     private let blackHoleAudioRoutingCleanupID =
         UUID()
     private let maximumBlackHoleAudioRoutingCleanupEpisodeCount =
@@ -491,6 +597,10 @@ actor WorldwideScreenService {
     private var activeInputAuthorization: WebRTCInputAuthorization?
     private var isStarted = false
     private var isStopped = false
+    private var safeOutputInvariantNeedsRedrive = false
+    private var safeOutputInvariantVerificationWasFailing = false
+    private var safeOutputInvariantRetryPolicy =
+        WorldwideSafeOutputInvariantRetryPolicy()
 
     /// Fail-closed aggregate gate required before exposing either media source.
     private var transportAllowsCapture: Bool {
@@ -622,6 +732,9 @@ actor WorldwideScreenService {
     func stop() async {
         guard !isStopped else { return }
         isStopped = true
+        safeOutputInvariantNeedsRedrive = false
+        safeOutputInvariantVerificationWasFailing = false
+        safeOutputInvariantRetryPolicy.reset()
 
         shutdownBlackHoleAudioRouting()
         iPhoneMicrophoneForwarding.shutdown()
@@ -773,6 +886,9 @@ actor WorldwideScreenService {
         recordBlackHoleDefaultInputOutcome(
             blackHoleDefaultInput.invalidateCurrentConnection()
         )
+        safeOutputInvariantNeedsRedrive = false
+        safeOutputInvariantVerificationWasFailing = false
+        safeOutputInvariantRetryPolicy.reset()
         peerGeneration &+= 1
         let generation = peerGeneration
         highestRestartRequestID = nil
@@ -985,6 +1101,16 @@ actor WorldwideScreenService {
                         + " bytes=" + (outbound.bytes.map { String($0) } ?? "unknown")
                 )
             }
+            if let inbound = snapshot.inboundAudio {
+                logger.debug(
+                    Self.inboundAudioRTPLogMessage(
+                        packets: inbound.packets,
+                        bytes: inbound.bytes,
+                        totalAudioEnergy: inbound.totalAudioEnergy,
+                        audioLevel: inbound.audioLevel
+                    )
+                )
+            }
             if let remoteInbound = snapshot.remoteInboundAudio {
                 logger.debug(
                     "Worldwide audio remote loss="
@@ -1007,6 +1133,12 @@ actor WorldwideScreenService {
                         + "sourceOverlaps=\(diagnostics.sourceOverlaps)"
                 )
             }
+            logger.debug(
+                Self.iPhoneMicrophoneForwardingLogMessage(
+                    iPhoneMicrophoneForwarding.snapshot()
+                )
+            )
+            await maintainWorldwideSafeOutputInvariant()
 
         case .iceCandidateError(let error):
             logger.error(
@@ -1682,20 +1814,26 @@ actor WorldwideScreenService {
         restartAnswerAppliedEpoch = nil
         recoveryProofRequired = false
         isRecovering = false
-        _ = consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
-        recordBlackHoleDefaultInputOutcome(
-            blackHoleDefaultInput
-                .transportDidBecomeHealthy(
-                    peerGeneration: peerGeneration
-                )
-        )
+        let outputsAreSafe =
+            enforceWorldwideSafeOutputInvariant()
+        if outputsAreSafe {
+            _ = consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
+            recordBlackHoleDefaultInputOutcome(
+                blackHoleDefaultInput
+                    .transportDidBecomeHealthy(
+                        peerGeneration: peerGeneration
+                    )
+            )
+        }
         guard await startSystemAudioOrStopSession() else {
             await recoverFromSystemAudioStartUncertainty(
                 "system audio could not be enabled after route proof"
             )
             return
         }
-        await authorizeIPhoneMicrophoneForwardingIfPossible()
+        if outputsAreSafe {
+            await authorizeIPhoneMicrophoneForwardingIfPossible()
+        }
         await recoveryCoordinator?.iceStateChanged(.connected)
     }
 
@@ -1709,24 +1847,142 @@ actor WorldwideScreenService {
             return false
         }
         isRecovering = false
-        _ = consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
-        recordBlackHoleDefaultInputOutcome(
-            blackHoleDefaultInput
-                .transportDidBecomeHealthy(
-                    peerGeneration: peerGeneration
-                )
-        )
+        let outputsAreSafe =
+            enforceWorldwideSafeOutputInvariant()
+        if outputsAreSafe {
+            _ = consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
+            recordBlackHoleDefaultInputOutcome(
+                blackHoleDefaultInput
+                    .transportDidBecomeHealthy(
+                        peerGeneration: peerGeneration
+                    )
+            )
+        }
         guard await startSystemAudioOrStopSession() else {
             await recoverFromSystemAudioStartUncertainty(
                 "system audio could not be enabled on the healthy route"
             )
             return false
         }
-        await authorizeIPhoneMicrophoneForwardingIfPossible()
+        if outputsAreSafe {
+            await authorizeIPhoneMicrophoneForwardingIfPossible()
+        }
         return true
     }
 
     // MARK: - iPhone microphone to BlackHole
+
+    /// Enforces the worldwide duplex route invariant before acquiring the input-only lease.
+    /// LAN coexistence retains its legacy policy and never reaches this ownership path.
+    private func enforceWorldwideSafeOutputInvariant() -> Bool {
+        guard iPhoneMicrophoneForwardingPolicy == .enabled else {
+            safeOutputInvariantNeedsRedrive = false
+            safeOutputInvariantVerificationWasFailing = false
+            safeOutputInvariantRetryPolicy.reset()
+            return false
+        }
+        do {
+            let result = try worldwideSafeOutputInvariant.enforce()
+            safeOutputInvariantNeedsRedrive = false
+            safeOutputInvariantVerificationWasFailing = false
+            safeOutputInvariantRetryPolicy.reset()
+            if result.changedAnything {
+                logger.info(
+                    "Worldwide audio routing moved BlackHole off the " +
+                        "default output selectors before selecting it " +
+                        "as the iPhone microphone input"
+                )
+            }
+            return true
+        } catch {
+            safeOutputInvariantNeedsRedrive = true
+            safeOutputInvariantRetryPolicy.recordFailure()
+            logger.error(
+                "Worldwide iPhone microphone routing remains disabled " +
+                    "because the safe-output invariant could not be " +
+                    "proven: " + error.localizedDescription
+            )
+            return false
+        }
+    }
+
+    /// Continuously verifies the output invariant. Any unsafe or unprovable route
+    /// synchronously revokes microphone admission and default-input ownership before
+    /// a capped, backed-off mutation attempt can run.
+    private func maintainWorldwideSafeOutputInvariant() async {
+        guard iPhoneMicrophoneForwardingPolicy == .enabled,
+              transportAllowsCapture else {
+            return
+        }
+
+        let verification:
+            WorldwideSafeOutputInvariantVerification
+        do {
+            verification = try worldwideSafeOutputInvariant.verify()
+        } catch {
+            let wasVerificationFailing =
+                safeOutputInvariantVerificationWasFailing
+            safeOutputInvariantVerificationWasFailing = true
+            safeOutputInvariantNeedsRedrive = true
+            revokeWorldwideMicrophoneForUnsafeOutputInvariant()
+            if !wasVerificationFailing {
+                logger.error(
+                    "Worldwide microphone routing was revoked because " +
+                        "the safe-output invariant could not be verified: " +
+                        error.localizedDescription
+                )
+            }
+            return
+        }
+
+        if safeOutputInvariantVerificationWasFailing {
+            safeOutputInvariantVerificationWasFailing = false
+            safeOutputInvariantRetryPolicy.reset()
+        }
+
+        if verification.isSatisfied {
+            safeOutputInvariantRetryPolicy.reset()
+            guard safeOutputInvariantNeedsRedrive else {
+                return
+            }
+            safeOutputInvariantNeedsRedrive = false
+            await resumeWorldwideMicrophoneAfterSafeOutputInvariant()
+            return
+        }
+
+        if verification.changedSincePreviousObservation {
+            safeOutputInvariantRetryPolicy.reset()
+        }
+        safeOutputInvariantNeedsRedrive = true
+        revokeWorldwideMicrophoneForUnsafeOutputInvariant()
+        guard safeOutputInvariantRetryPolicy
+                .shouldAttemptOnCurrentTick(),
+              enforceWorldwideSafeOutputInvariant() else {
+            return
+        }
+        await resumeWorldwideMicrophoneAfterSafeOutputInvariant()
+    }
+
+    private func revokeWorldwideMicrophoneForUnsafeOutputInvariant() {
+        iPhoneMicrophoneForwarding.invalidateTransport()
+        recordBlackHoleDefaultInputOutcome(
+            blackHoleDefaultInput.transportDidBecomeUnhealthy(
+                peerGeneration: peerGeneration
+            )
+        )
+    }
+
+    private func resumeWorldwideMicrophoneAfterSafeOutputInvariant()
+        async {
+        guard transportAllowsCapture else { return }
+        _ = consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
+        recordBlackHoleDefaultInputOutcome(
+            blackHoleDefaultInput.transportDidBecomeHealthy(
+                peerGeneration: peerGeneration
+            )
+        )
+        await authorizeIPhoneMicrophoneForwardingIfPossible()
+    }
 
     private func startIPhoneMicrophoneDeviceMonitoringIfNeeded()
         async {
@@ -1822,6 +2078,10 @@ actor WorldwideScreenService {
         await iPhoneMicrophoneForwarding.updateDeviceSnapshot(
             snapshot
         )
+        if safeOutputInvariantNeedsRedrive {
+            safeOutputInvariantRetryPolicy.reset()
+            await maintainWorldwideSafeOutputInvariant()
+        }
     }
 
     func iPhoneMicrophoneForwardingSnapshot()

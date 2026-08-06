@@ -315,6 +315,11 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
                 after: startMarker,
                 before: endMarker
             )
+            let safeOutputInvariant = try XCTUnwrap(
+                function.range(
+                    of: "enforceWorldwideSafeOutputInvariant()"
+                )
+            )
             let snapshotConsumption = try XCTUnwrap(
                 function.range(
                     of: "consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()"
@@ -322,14 +327,18 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
             )
             let selection = try XCTUnwrap(
                 function.range(
-                    of: "blackHoleDefaultInput\n" +
-                        "                .transportDidBecomeHealthy("
+                    of: ".transportDidBecomeHealthy("
                 )
             )
             let systemAudio = try XCTUnwrap(
                 function.range(
                     of: "guard await startSystemAudioOrStopSession()"
                 )
+            )
+            XCTAssertLessThan(
+                safeOutputInvariant.lowerBound,
+                snapshotConsumption.lowerBound,
+                "BlackHole must be absent from both output defaults before the input-only lease is acquired."
             )
             XCTAssertLessThan(
                 snapshotConsumption.lowerBound,
@@ -456,6 +465,129 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
             releaseCall.lowerBound,
             keyClear.lowerBound,
             "The coordinator must retain the lease generation until restoration reports completion."
+        )
+    }
+
+    func testHealthyStatisticsContinuouslyVerifyAndRevokeBeforeRepair()
+        throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let serviceSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "macOS/Sources/CaptureServer/WorldwideScreenService.swift"
+            ),
+            encoding: .utf8
+        )
+        let statisticsCase = try sourceSlice(
+            in: serviceSource,
+            after: "        case .statistics(let snapshot):",
+            before: "        case .iceCandidateError(let error):"
+        )
+        XCTAssertTrue(
+            statisticsCase.contains(
+                "await maintainWorldwideSafeOutputInvariant()"
+            )
+        )
+
+        let maintenance = try sourceSlice(
+            in: serviceSource,
+            after:
+                "    private func maintainWorldwideSafeOutputInvariant() async {",
+            before:
+                "    private func revokeWorldwideMicrophoneForUnsafeOutputInvariant()"
+        )
+        XCTAssertTrue(
+            maintenance.contains("worldwideSafeOutputInvariant.verify()")
+        )
+        XCTAssertTrue(maintenance.contains("if verification.isSatisfied"))
+        let verificationFailureStart = try XCTUnwrap(
+            maintenance.range(of: "        } catch {")
+        )
+        let verificationRecoveryStart = try XCTUnwrap(
+            maintenance.range(
+                of: "        if safeOutputInvariantVerificationWasFailing {"
+            )
+        )
+        let verificationFailureRange = verificationFailureStart.lowerBound..<verificationRecoveryStart.lowerBound
+        let verificationFailurePath = String(
+            maintenance[verificationFailureRange]
+        )
+        XCTAssertTrue(
+            verificationFailurePath.contains(
+                "safeOutputInvariantVerificationWasFailing = true"
+            )
+        )
+        XCTAssertTrue(
+            verificationFailurePath.contains(
+                "revokeWorldwideMicrophoneForUnsafeOutputInvariant()"
+            )
+        )
+        XCTAssertFalse(
+            verificationFailurePath.contains(
+                "safeOutputInvariantRetryPolicy.recordFailure()"
+            ),
+            "Read-only verifier outages must not consume mutation attempts."
+        )
+        let verificationRecoveryRange = verificationRecoveryStart.lowerBound..<maintenance.endIndex
+        let recoveredReset = try XCTUnwrap(
+            maintenance.range(
+                of: "safeOutputInvariantRetryPolicy.reset()",
+                range: verificationRecoveryRange
+            )
+        )
+        let satisfiedBranch = try XCTUnwrap(
+            maintenance.range(of: "if verification.isSatisfied")
+        )
+        XCTAssertLessThan(
+            recoveredReset.lowerBound,
+            satisfiedBranch.lowerBound,
+            "A recovered verifier must reset a prior cap before handling the same snapshot."
+        )
+        let unsafeStart = try XCTUnwrap(
+            maintenance.range(
+                of: "if verification.changedSincePreviousObservation"
+            )
+        )
+        let unsafePath = String(
+            maintenance[unsafeStart.lowerBound...]
+        )
+        let revocation = try XCTUnwrap(
+            unsafePath.range(
+                of: "revokeWorldwideMicrophoneForUnsafeOutputInvariant()"
+            )
+        )
+        let retryGate = try XCTUnwrap(
+            unsafePath.range(of: ".shouldAttemptOnCurrentTick()")
+        )
+        let enforcement = try XCTUnwrap(
+            unsafePath.range(of: "enforceWorldwideSafeOutputInvariant()")
+        )
+        let resume = try XCTUnwrap(
+            unsafePath.range(
+                of: "await resumeWorldwideMicrophoneAfterSafeOutputInvariant()"
+            )
+        )
+        XCTAssertLessThan(revocation.lowerBound, retryGate.lowerBound)
+        XCTAssertLessThan(retryGate.lowerBound, enforcement.lowerBound)
+        XCTAssertLessThan(enforcement.lowerBound, resume.lowerBound)
+
+        let deviceChange = try sourceSlice(
+            in: serviceSource,
+            after:
+                "    private func blackHoleDeviceAvailabilityDidChange(",
+            before:
+                "    func iPhoneMicrophoneForwardingSnapshot()"
+        )
+        XCTAssertTrue(
+            deviceChange.contains("safeOutputInvariantRetryPolicy.reset()")
+        )
+        XCTAssertTrue(
+            deviceChange.contains(
+                "await maintainWorldwideSafeOutputInvariant()"
+            )
         )
     }
 

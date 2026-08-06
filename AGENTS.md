@@ -137,8 +137,23 @@ manual IP addresses, router configuration, or public TCP ports.
   that same canonical BlackHole endpoint as the macOS default input. This
   connection-level selection must not wait for the remote microphone track, RTP,
   decoded PCM, successful pulls, forwarding readiness, iOS microphone permission,
-  manual microphone state, or call state. Never change the default output or
-  system-output device. The output-device callback must pull into caller-owned
+  manual microphone state, or call state. During authenticated worldwide duplex,
+  canonical BlackHole may be the default input but must not be the default output
+  or default system output. Before acquiring the input lease, enforce that invariant:
+  preserve every healthy non-BlackHole selector, prefer the other current usable
+  non-BlackHole output when replacing BlackHole, and otherwise use the validated
+  built-in speaker. Core Audio provides no atomic compare-and-set for these selectors;
+  use the narrowest immediate comparison plus listener-sequence and readback fencing
+  to reject observable overlap, without claiming an impossible never-overwrite
+  guarantee. This invariant must not run during LAN coexistence and must never
+  address the protected legacy runtime. Continue fenced verification on healthy
+  transport statistics. If the route becomes unsafe or cannot be proven, revoke
+  microphone forwarding and default-input ownership before any repair attempt.
+  Retry mutations with capped backoff; a newly observed route or BlackHole device
+  generation may reset that bounded retry episode. Read-only verification failures
+  must not exhaust the mutation budget. After a cap, permit only a long bounded
+  cooldown probe so unchanged UIDs can recover when their target becomes usable.
+  The output-device callback must pull into caller-owned
   memory without allocation, logging, sleeping, network work, or a contended mutex;
   missing PCM becomes silence. Missing BlackHole degrades only automatic default
   input selection and microphone forwarding.
@@ -172,10 +187,12 @@ manual IP addresses, router configuration, or public TCP ports.
   and successful-frame counts both advance.
 - Worldwide-only release evidence must record the original default-input UID, prove
   BlackHole is the default input at the authenticated peer/ICE/control boundary
-  before track or PCM proof, prove default output and system output never change,
+  before track or PCM proof, prove the safe-output invariant completes before the
+  input lease, then prove default output and system output never change,
   and prove the original input is restored after disconnect. Expected input
-  transition notifications are evidence, not failures; output or system-output
-  mutation remains a failure. Unit progress counters do not prove that host
+  transition notifications are evidence, not failures; any later output or
+  system-output mutation remains a failure. Unit progress counters do not prove
+  that host
   applications can read the forwarded microphone; use a separate physical probe
   that opens BlackHole input by stable UID and recognizes a known remote challenge.
 - Physical audio release validation must observe the RemoteIO render-input PCM, not

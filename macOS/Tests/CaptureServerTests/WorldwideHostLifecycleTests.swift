@@ -28,6 +28,76 @@ final class WorldwideHostLifecycleTests: XCTestCase {
         )
     }
 
+    func testMicrophoneForwardingTelemetryIsProgressOnlyAndPrivacySafe() {
+        let message = WorldwideScreenService
+            .iPhoneMicrophoneForwardingLogMessage(
+                .inactive(policy: .enabled)
+            )
+
+        XCTAssertEqual(
+            message,
+            "Worldwide iPhone microphone forwarding " +
+                "phase=waitingForPeer transport=false " +
+                "trackAdmitted=false queueRunning=false callbacks=0 " +
+                "pulls=0 frames=0 silenceFallbacks=0 " +
+                "enqueueFailures=0 failure=none"
+        )
+        XCTAssertFalse(message.contains("BlackHole2ch_UID"))
+        XCTAssertFalse(message.contains("trackID"))
+        XCTAssertFalse(message.contains("attemptID"))
+        XCTAssertFalse(message.contains("nonce"))
+    }
+
+    func testInboundAudioRTPTelemetryIsAggregateAndPrivacySafe() {
+        let message = WorldwideScreenService.inboundAudioRTPLogMessage(
+            packets: 127,
+            bytes: 48_210,
+            totalAudioEnergy: 0.125,
+            audioLevel: 0.03125
+        )
+
+        XCTAssertEqual(
+            message,
+            "Worldwide inbound audio RTP packets=127 bytes=48210 "
+                + "energy=0.125000 level=0.031250"
+        )
+        XCTAssertFalse(message.contains("BlackHole2ch_UID"))
+        XCTAssertFalse(message.contains("trackID"))
+        XCTAssertFalse(message.contains("device"))
+        XCTAssertFalse(message.contains("nonce"))
+    }
+
+    func testSafeOutputRetryPolicyBacksOffThenProbesAfterCappedCooldown() {
+        var policy = WorldwideSafeOutputInvariantRetryPolicy(
+            maximumFailedAttemptCount: 3,
+            maximumBackoffTickCount: 4,
+            cappedCooldownTickCount: 3
+        )
+
+        XCTAssertTrue(policy.shouldAttemptOnCurrentTick())
+        policy.recordFailure()
+        XCTAssertFalse(policy.shouldAttemptOnCurrentTick())
+        XCTAssertTrue(policy.shouldAttemptOnCurrentTick())
+
+        policy.recordFailure()
+        XCTAssertFalse(policy.shouldAttemptOnCurrentTick())
+        XCTAssertFalse(policy.shouldAttemptOnCurrentTick())
+        XCTAssertTrue(policy.shouldAttemptOnCurrentTick())
+
+        policy.recordFailure()
+        for _ in 0..<3 {
+            XCTAssertFalse(policy.shouldAttemptOnCurrentTick())
+        }
+        XCTAssertEqual(policy.failedAttemptCount, 3)
+        XCTAssertTrue(policy.shouldAttemptOnCurrentTick())
+        XCTAssertEqual(policy.failedAttemptCount, 0)
+
+        policy.recordFailure()
+        policy.reset()
+        XCTAssertEqual(policy.failedAttemptCount, 0)
+        XCTAssertTrue(policy.shouldAttemptOnCurrentTick())
+    }
+
     func testAvailabilityBackoffDoesNotResetForUpgradeFollowedByServerError() {
         var policy = WorldwideAvailabilityRetryPolicy()
 
