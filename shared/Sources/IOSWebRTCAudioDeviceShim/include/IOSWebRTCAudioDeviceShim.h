@@ -366,6 +366,19 @@ typedef NS_ENUM(NSInteger, ASIOSExpectedRouteChangeTestScenario) {
     ASIOSExpectedRouteChangeTestScenarioConvergedStartSettlementExpired = 45,
 };
 
+typedef NS_ENUM(NSInteger, ASIOSExpectedCategoryObservationTestScenario) {
+    ASIOSExpectedCategoryObservationTestScenarioMicrophoneExact = 0,
+    ASIOSExpectedCategoryObservationTestScenarioOutputOnlyExact = 1,
+    ASIOSExpectedCategoryObservationTestScenarioUntracked = 2,
+    ASIOSExpectedCategoryObservationTestScenarioWrongOptions = 3,
+    ASIOSExpectedCategoryObservationTestScenarioWrongMode = 4,
+    ASIOSExpectedCategoryObservationTestScenarioWrongSharingPolicy = 5,
+    ASIOSExpectedCategoryObservationTestScenarioWrongConfigurationGeneration = 6,
+    ASIOSExpectedCategoryObservationTestScenarioWrongSystemAudioGeneration = 7,
+    ASIOSExpectedCategoryObservationTestScenarioSequenceNotAdvanced = 8,
+    ASIOSExpectedCategoryObservationTestScenarioExpired = 9,
+};
+
 /// Drives the real queued recovery boundary without starting playout or touching audio hardware.
 @interface ASIOSStereoPlayoutRecoveryTestHarness : NSObject
 
@@ -408,6 +421,12 @@ typedef NS_ENUM(NSInteger, ASIOSExpectedRouteChangeTestScenario) {
     debugClassifyExpectedRouteChangeForTesting:
         (ASIOSExpectedRouteChangeTestScenario)scenario
     NS_SWIFT_NAME(debugClassifyExpectedRouteChangeForTesting(_:));
+- (BOOL)debugExpectedCategoryObservationIsAbsorbedForTesting:
+    (ASIOSExpectedCategoryObservationTestScenario)scenario
+    NS_SWIFT_NAME(debugExpectedCategoryObservationIsAbsorbedForTesting(_:));
+- (BOOL)debugDriveRetiredExpectedCategoryObservationForTestingWithExactPolicy:
+    (BOOL)exactPolicy
+    NS_SWIFT_NAME(debugDriveRetiredExpectedCategoryObservationForTesting(exactPolicy:));
 - (BOOL)debugRemoteIOStartSettlementAcceptsDelayedObservationForTesting;
 - (BOOL)debugSupersededRouteObservationIsSuppressedForTestingWithOldDeviceUnavailable:
     (BOOL)oldDeviceUnavailable

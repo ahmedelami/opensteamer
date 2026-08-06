@@ -1273,6 +1273,44 @@ public enum WebRTCIOSExpectedRouteChangeTestScenario: Int, Sendable {
     }
 }
 
+public enum WebRTCIOSExpectedCategoryObservationTestScenario: Int, Sendable {
+    case microphoneExact
+    case outputOnlyExact
+    case untracked
+    case wrongOptions
+    case wrongMode
+    case wrongSharingPolicy
+    case wrongConfigurationGeneration
+    case wrongSystemAudioGeneration
+    case sequenceNotAdvanced
+    case expired
+
+    fileprivate var native: ASIOSExpectedCategoryObservationTestScenario {
+        switch self {
+        case .microphoneExact:
+            return .microphoneExact
+        case .outputOnlyExact:
+            return .outputOnlyExact
+        case .untracked:
+            return .untracked
+        case .wrongOptions:
+            return .wrongOptions
+        case .wrongMode:
+            return .wrongMode
+        case .wrongSharingPolicy:
+            return .wrongSharingPolicy
+        case .wrongConfigurationGeneration:
+            return .wrongConfigurationGeneration
+        case .wrongSystemAudioGeneration:
+            return .wrongSystemAudioGeneration
+        case .sequenceNotAdvanced:
+            return .sequenceNotAdvanced
+        case .expired:
+            return .expired
+        }
+    }
+}
+
 /// Drives the real native recovery gate and records the production configuration-operation inputs
 /// deterministically without claiming that Simulator created a hardware RemoteIO instance.
 public final class WebRTCIOSPlayoutRecoveryTestHarness: @unchecked Sendable {
@@ -1436,6 +1474,22 @@ public final class WebRTCIOSPlayoutRecoveryTestHarness: @unchecked Sendable {
             native: native.debugClassifyExpectedRouteChangeForTesting(
                 scenario.native
             )
+        )
+    }
+
+    public func debugExpectedCategoryObservationIsAbsorbedForTesting(
+        _ scenario: WebRTCIOSExpectedCategoryObservationTestScenario
+    ) -> Bool {
+        native.debugExpectedCategoryObservationIsAbsorbedForTesting(
+            scenario.native
+        )
+    }
+
+    public func debugDriveRetiredExpectedCategoryObservationForTesting(
+        exactPolicy: Bool
+    ) -> Bool {
+        native.debugDriveRetiredExpectedCategoryObservationForTesting(
+            exactPolicy: exactPolicy
         )
     }
 

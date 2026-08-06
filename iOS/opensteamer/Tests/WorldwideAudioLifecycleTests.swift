@@ -2060,6 +2060,13 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             replacementAuthorization
                 .performIfValidForTesting {}
         )
+        // Completing the milestone starts the production full-duplex proof. Keep this bare
+        // race-test peer from immediately reporting output-only topology and suspending the
+        // microphone before the committed-state assertion below.
+        installProductionShapedIOSRecoveryHarness(
+            on: viewModel,
+            peer: peer
+        )
         XCTAssertTrue(
             viewModel.debugEvaluateIOSPlayoutDiagnosticsForTests(
                 outputOnly,

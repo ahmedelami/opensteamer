@@ -698,6 +698,76 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         )
     }
 
+    func testExpectedCategoryObservationUsesCapturedTransactionPolicy() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertTrue(
+            harness.debugExpectedCategoryObservationIsAbsorbedForTesting(
+                .microphoneExact
+            ),
+            "The exact playAndRecord/default/40 notification must remain tied to the microphone transaction that authored it."
+        )
+        XCTAssertTrue(
+            harness.debugExpectedCategoryObservationIsAbsorbedForTesting(
+                .outputOnlyExact
+            ),
+            "The exact playback/default/empty notification must remain tied to its output-only transaction."
+        )
+    }
+
+    func testUnexpectedCategoryObservationStillFailsExactPolicyFence() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        for scenario: WebRTCIOSExpectedCategoryObservationTestScenario in [
+            .untracked,
+            .wrongOptions,
+            .wrongMode,
+            .wrongSharingPolicy,
+            .wrongConfigurationGeneration,
+            .wrongSystemAudioGeneration,
+            .sequenceNotAdvanced,
+            .expired,
+        ] {
+            XCTAssertFalse(
+                harness.debugExpectedCategoryObservationIsAbsorbedForTesting(
+                    scenario
+                ),
+                "Unexpected category scenario \(scenario.rawValue) bypassed fail-closed validation."
+            )
+        }
+    }
+
+    func testRetiredExpectedCategoryObservationUsesProductionAsyncPipeline() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertTrue(
+            harness.debugDriveRetiredExpectedCategoryObservationForTesting(
+                exactPolicy: true
+            )
+        )
+        XCTAssertEqual(harness.queuedOperationCount, 0)
+        XCTAssertEqual(harness.diagnostics.failureCode, 0)
+        XCTAssertFalse(harness.diagnostics.recoveryRequired)
+    }
+
+    func testRetiredMismatchedCategoryObservationStillReachesNativeFailClose() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertTrue(
+            harness.debugDriveRetiredExpectedCategoryObservationForTesting(
+                exactPolicy: false
+            )
+        )
+        XCTAssertEqual(harness.queuedOperationCount, 1)
+        XCTAssertTrue(harness.runNextQueuedOperation())
+        XCTAssertEqual(harness.diagnostics.failureCode, 20)
+        XCTAssertTrue(harness.diagnostics.recoveryRequired)
+    }
+
     func testFinalMicrophonePublicationRejectsDelayedRouteIngressAndUsesSnapshotOwnership() {
         let harness = WebRTCIOSPlayoutRecoveryTestHarness()
         defer { _ = harness.debugTerminateForTesting() }

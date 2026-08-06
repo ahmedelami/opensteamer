@@ -1468,6 +1468,7 @@ typedef NS_ENUM(NSUInteger, ASExpectedRouteObservationHandling) {
     ASExpectedRouteObservationHandlingGeneric = 0,
     ASExpectedRouteObservationHandlingConsumed = 1,
     ASExpectedRouteObservationHandlingLiveRejectionOwnedByWaiter = 2,
+    ASExpectedRouteObservationHandlingExpectedCategory = 3,
 };
 
 static ASIOSExpectedRouteChangeDisposition
@@ -1720,6 +1721,9 @@ static BOOL ASFinalMicrophoneRouteValidationIsCurrent(
 @property(nonatomic) BOOL sessionActive;
 @property(nonatomic) BOOL recoveryRequired;
 @property(nonatomic) BOOL explicitResumeRequired;
+@property(nonatomic) BOOL expectedInputRequired;
+@property(nonatomic) uint64_t expectedObserverSequenceBaseline;
+@property(nonatomic) uint64_t expectedDeadlineNanoseconds;
 @property(nonatomic) uint64_t observedAt;
 @property(nonatomic, copy) NSString *previousRouteFingerprint;
 @end
@@ -1804,6 +1808,58 @@ static ASOwnedSessionConfigurationFailure ASOwnedSessionFailureForChannels(
 static AVAudioSessionCategoryOptions ASIPhoneMicrophoneCategoryOptions(void) {
     return AVAudioSessionCategoryOptionDefaultToSpeaker
         | AVAudioSessionCategoryOptionAllowBluetoothA2DP;
+}
+
+/// A category notification can be delivered after the exact native transaction that authored it
+/// has advanced or retired. Validate it against the immutable policy captured at ingress instead
+/// of recomputing policy from later microphone ownership. This is observational only: it neither
+/// proves route convergence nor opens a realtime gate.
+static BOOL ASExpectedCategoryObservationMatchesCapturedPolicy(
+    AVAudioSessionRouteChangeReason reason,
+    BOOL trackedTransaction,
+    ASExpectedMicrophoneRouteChangeState entryState,
+    uint64_t transactionIdentifier,
+    uint64_t entryConfigurationGeneration,
+    uint64_t activeConfigurationGeneration,
+    uint64_t entrySystemAudioGeneration,
+    uint64_t observedSystemAudioGeneration,
+    uint64_t notificationSequence,
+    uint64_t observerSequenceBaseline,
+    uint64_t observedAtNanoseconds,
+    uint64_t deadlineNanoseconds,
+    BOOL inputRequired,
+    NSString *category,
+    NSString *mode,
+    AVAudioSessionCategoryOptions options,
+    AVAudioSessionRouteSharingPolicy sharingPolicy
+) {
+    BOOL entryStateWasLive =
+        entryState == ASExpectedMicrophoneRouteChangeStatePending
+        || entryState == ASExpectedMicrophoneRouteChangeStatePrepared
+        || entryState == ASExpectedMicrophoneRouteChangeStateStarting
+        || entryState == ASExpectedMicrophoneRouteChangeStateConsumed;
+    AVAudioSessionCategory expectedCategory = inputRequired
+        ? AVAudioSessionCategoryPlayAndRecord
+        : AVAudioSessionCategoryPlayback;
+    AVAudioSessionCategoryOptions expectedOptions = inputRequired
+        ? ASIPhoneMicrophoneCategoryOptions()
+        : 0;
+    return reason == AVAudioSessionRouteChangeReasonCategoryChange
+        && trackedTransaction
+        && entryStateWasLive
+        && transactionIdentifier != 0
+        && entryConfigurationGeneration != 0
+        && entryConfigurationGeneration == activeConfigurationGeneration
+        && entrySystemAudioGeneration != 0
+        && entrySystemAudioGeneration == observedSystemAudioGeneration
+        && notificationSequence > observerSequenceBaseline
+        && observedAtNanoseconds != 0
+        && deadlineNanoseconds != 0
+        && observedAtNanoseconds <= deadlineNanoseconds
+        && [category isEqualToString:expectedCategory]
+        && [mode isEqualToString:AVAudioSessionModeDefault]
+        && options == expectedOptions
+        && sharingPolicy == AVAudioSessionRouteSharingPolicyDefault;
 }
 
 static ASAudioPolicyConfiguration ASMakeAudioPolicyConfiguration(
@@ -2369,6 +2425,13 @@ typedef struct ASLifecycleDiagnostics {
     BOOL _debugLastConfiguredInputBusEnabled;
     BOOL _debugLastConfiguredOutputBusEnabled;
     AudioStreamBasicDescription _debugLastConfiguredOutputStreamFormat;
+    NSNotification *_debugExpectedCategoryObservationNotification;
+    NSString *_debugExpectedCategoryObservationCategory;
+    NSString *_debugExpectedCategoryObservationMode;
+    AVAudioSessionCategoryOptions
+        _debugExpectedCategoryObservationOptions;
+    AVAudioSessionRouteSharingPolicy
+        _debugExpectedCategoryObservationSharingPolicy;
 #endif
 }
 @property(atomic, strong, nullable) id<LKRTCAudioDeviceDelegate> delegate;
@@ -2568,6 +2631,8 @@ typedef struct ASLifecycleDiagnostics {
 - (BOOL)debugRemoteIOStartSettlementProductionStateHoldsForTesting;
 - (BOOL)debugConsumedPublicationRetainsRecordedRouteClosureForTesting;
 - (BOOL)debugImmutableRouteRejectionSnapshotSurvivesLaterRouteForTesting;
+- (BOOL)debugDriveRetiredExpectedCategoryObservationForTestingWithExactPolicy:
+    (BOOL)exactPolicy;
 #endif
 - (void)scheduleSystemEvent:(ASSystemAudioEvent)event
                 routeReason:(AVAudioSessionRouteChangeReason)routeReason;
@@ -4212,6 +4277,84 @@ static uint64_t ASAllocatePlayoutRecoveryAuthorizationGeneration(void) {
 - (BOOL)debugRemoteIOStartSettlementAcceptsDelayedObservationForTesting {
     return [self.device
         debugRemoteIOStartSettlementProductionStateHoldsForTesting];
+}
+
+- (BOOL)debugExpectedCategoryObservationIsAbsorbedForTesting:
+    (ASIOSExpectedCategoryObservationTestScenario)scenario {
+    BOOL trackedTransaction = YES;
+    BOOL inputRequired = YES;
+    NSString *category = AVAudioSessionCategoryPlayAndRecord;
+    NSString *mode = AVAudioSessionModeDefault;
+    AVAudioSessionCategoryOptions options =
+        ASIPhoneMicrophoneCategoryOptions();
+    AVAudioSessionRouteSharingPolicy sharingPolicy =
+        AVAudioSessionRouteSharingPolicyDefault;
+    uint64_t activeConfigurationGeneration = 11;
+    uint64_t observedSystemAudioGeneration = 41;
+    uint64_t notificationSequence = 73;
+    uint64_t observedAtNanoseconds = 1000;
+    uint64_t deadlineNanoseconds = 2000;
+
+    switch (scenario) {
+        case ASIOSExpectedCategoryObservationTestScenarioMicrophoneExact:
+            break;
+        case ASIOSExpectedCategoryObservationTestScenarioOutputOnlyExact:
+            inputRequired = NO;
+            category = AVAudioSessionCategoryPlayback;
+            options = 0;
+            break;
+        case ASIOSExpectedCategoryObservationTestScenarioUntracked:
+            trackedTransaction = NO;
+            break;
+        case ASIOSExpectedCategoryObservationTestScenarioWrongOptions:
+            options = AVAudioSessionCategoryOptionDefaultToSpeaker;
+            break;
+        case ASIOSExpectedCategoryObservationTestScenarioWrongMode:
+            mode = AVAudioSessionModeVoiceChat;
+            break;
+        case ASIOSExpectedCategoryObservationTestScenarioWrongSharingPolicy:
+            sharingPolicy = AVAudioSessionRouteSharingPolicyLongFormAudio;
+            break;
+        case ASIOSExpectedCategoryObservationTestScenarioWrongConfigurationGeneration:
+            activeConfigurationGeneration = 12;
+            break;
+        case ASIOSExpectedCategoryObservationTestScenarioWrongSystemAudioGeneration:
+            observedSystemAudioGeneration = 42;
+            break;
+        case ASIOSExpectedCategoryObservationTestScenarioSequenceNotAdvanced:
+            notificationSequence = 72;
+            break;
+        case ASIOSExpectedCategoryObservationTestScenarioExpired:
+            observedAtNanoseconds = 2001;
+            break;
+    }
+
+    return ASExpectedCategoryObservationMatchesCapturedPolicy(
+        AVAudioSessionRouteChangeReasonCategoryChange,
+        trackedTransaction,
+        ASExpectedMicrophoneRouteChangeStatePending,
+        71,
+        11,
+        activeConfigurationGeneration,
+        41,
+        observedSystemAudioGeneration,
+        notificationSequence,
+        72,
+        observedAtNanoseconds,
+        deadlineNanoseconds,
+        inputRequired,
+        category,
+        mode,
+        options,
+        sharingPolicy
+    );
+}
+
+- (BOOL)debugDriveRetiredExpectedCategoryObservationForTestingWithExactPolicy:
+    (BOOL)exactPolicy {
+    return [self.device
+        debugDriveRetiredExpectedCategoryObservationForTestingWithExactPolicy:
+            exactPolicy];
 }
 
 - (BOOL)debugSupersededRouteObservationIsSuppressedForTestingWithOldDeviceUnavailable:
@@ -7078,6 +7221,110 @@ static OSStatus ASRemoteIOInput(
         dispatch_semaphore_signal(newSemaphore);
     }
     return newTransactionWasPreserved;
+}
+
+- (BOOL)debugDriveRetiredExpectedCategoryObservationForTestingWithExactPolicy:
+    (BOOL)exactPolicy {
+    dispatch_semaphore_t evidenceQueueEntered =
+        dispatch_semaphore_create(0);
+    dispatch_semaphore_t releaseEvidenceQueue =
+        dispatch_semaphore_create(0);
+    dispatch_async(_expectedMicrophoneRouteChangeEvidenceQueue, ^{
+        dispatch_semaphore_signal(evidenceQueueEntered);
+        dispatch_semaphore_wait(
+            releaseEvidenceQueue,
+            DISPATCH_TIME_FOREVER
+        );
+    });
+    if (dispatch_semaphore_wait(
+            evidenceQueueEntered,
+            dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)
+        ) != 0) {
+        dispatch_semaphore_signal(releaseEvidenceQueue);
+        return NO;
+    }
+
+    [self clearExpectedMicrophoneRouteChange];
+    atomic_store_explicit(
+        &_activeAudioConfigurationGeneration,
+        11,
+        memory_order_release
+    );
+    atomic_store_explicit(
+        &_systemAudioGeneration,
+        41,
+        memory_order_release
+    );
+
+    NSNotification *notification = [NSNotification
+        notificationWithName:AVAudioSessionRouteChangeNotification
+        object:nil
+        userInfo:@{
+            AVAudioSessionRouteChangeReasonKey:
+                @(AVAudioSessionRouteChangeReasonCategoryChange),
+        }];
+    os_unfair_lock_lock(&_expectedMicrophoneRouteChangeLock);
+    _expectedMicrophoneRouteChangeTransactionIdentifierCounter += 1;
+    if (_expectedMicrophoneRouteChangeTransactionIdentifierCounter == 0) {
+        _expectedMicrophoneRouteChangeTransactionIdentifierCounter = 1;
+    }
+    _expectedMicrophoneRouteChangeTransactionIdentifier =
+        _expectedMicrophoneRouteChangeTransactionIdentifierCounter;
+    _expectedMicrophoneRouteChangeState =
+        ASExpectedMicrophoneRouteChangeStatePending;
+    _expectedMicrophoneRouteChangeConfigurationGeneration = 11;
+    _expectedMicrophoneRouteChangeSystemAudioGeneration = 41;
+    _expectedMicrophoneRouteChangeObserverSequenceBaseline =
+        _routeChangeNotificationSequence;
+    _expectedMicrophoneRouteChangeDeadlineNanoseconds = UINT64_MAX;
+    _expectedMicrophoneRouteChangeInputRequired = YES;
+    _expectedMicrophoneRouteChangeSemaphore =
+        dispatch_semaphore_create(0);
+    _expectedMicrophoneRouteChangeNotificationInFlightCount = 0;
+    _expectedMicrophoneRouteChangeMutationSequence += 1;
+    if (_expectedMicrophoneRouteChangeMutationSequence == 0) {
+        _expectedMicrophoneRouteChangeMutationSequence = 1;
+    }
+    _debugExpectedCategoryObservationNotification = notification;
+    _debugExpectedCategoryObservationCategory =
+        AVAudioSessionCategoryPlayAndRecord;
+    _debugExpectedCategoryObservationMode = AVAudioSessionModeDefault;
+    _debugExpectedCategoryObservationOptions = exactPolicy
+        ? ASIPhoneMicrophoneCategoryOptions()
+        : 0;
+    _debugExpectedCategoryObservationSharingPolicy =
+        AVAudioSessionRouteSharingPolicyDefault;
+    os_unfair_lock_unlock(&_expectedMicrophoneRouteChangeLock);
+
+    [self enqueueExpectedMicrophoneRouteChangeNotification:notification
+                                                   reason:
+                                                       AVAudioSessionRouteChangeReasonCategoryChange
+                                           resolverToken:
+                                               ASInvalidRouteConfigurationChangeResolverToken];
+    os_unfair_lock_lock(&_expectedMicrophoneRouteChangeLock);
+    BOOL overrideWasConsumed =
+        _debugExpectedCategoryObservationNotification == nil;
+    os_unfair_lock_unlock(&_expectedMicrophoneRouteChangeLock);
+
+    // Retire the transaction before the captured observation reaches the
+    // evidence queue, reproducing the delayed ownership race deterministically.
+    [self clearExpectedMicrophoneRouteChange];
+    _wantsRecording = NO;
+    _microphoneAuthorization = nil;
+    _debugHasRecordedAudioPolicyConfiguration = YES;
+    _debugLastConfiguredCategory = AVAudioSessionCategoryPlayAndRecord;
+    _debugLastConfiguredMode = AVAudioSessionModeDefault;
+    _debugLastConfiguredRouteSharingPolicy =
+        AVAudioSessionRouteSharingPolicyDefault;
+    _debugLastConfiguredCategoryOptions =
+        ASIPhoneMicrophoneCategoryOptions();
+    _debugLastConfiguredInputBusEnabled = YES;
+    _debugLastConfiguredOutputBusEnabled = YES;
+    _debugLastConfiguredOutputStreamFormat = _streamFormat;
+
+    dispatch_semaphore_signal(releaseEvidenceQueue);
+    dispatch_sync(_expectedMicrophoneRouteChangeEvidenceQueue, ^{});
+    return overrideWasConsumed;
 }
 
 - (void)debugAdvanceSystemAudioGenerationForTesting {
@@ -11257,6 +11504,23 @@ static OSStatus ASRemoteIOInput(
     snapshot.mode = [session.mode copy];
     snapshot.categoryOptions = session.categoryOptions;
     snapshot.sharingPolicy = session.routeSharingPolicy;
+#if DEBUG
+    if (_debugExpectedCategoryObservationNotification == notification) {
+        snapshot.category =
+            [_debugExpectedCategoryObservationCategory copy];
+        snapshot.mode = [_debugExpectedCategoryObservationMode copy];
+        snapshot.categoryOptions =
+            _debugExpectedCategoryObservationOptions;
+        snapshot.sharingPolicy =
+            _debugExpectedCategoryObservationSharingPolicy;
+        _debugExpectedCategoryObservationNotification = nil;
+        _debugExpectedCategoryObservationCategory = nil;
+        _debugExpectedCategoryObservationMode = nil;
+        _debugExpectedCategoryObservationOptions = 0;
+        _debugExpectedCategoryObservationSharingPolicy =
+            AVAudioSessionRouteSharingPolicyDefault;
+    }
+#endif
     snapshot.inputCount = currentRoute.inputs.count;
     snapshot.outputCount = currentRoute.outputs.count;
     snapshot.inputChannels = session.inputNumberOfChannels;
@@ -11285,6 +11549,12 @@ static OSStatus ASRemoteIOInput(
         &_lifecycle.explicitResumeRequired,
         memory_order_acquire
     );
+    snapshot.expectedInputRequired =
+        _expectedMicrophoneRouteChangeInputRequired;
+    snapshot.expectedObserverSequenceBaseline =
+        _expectedMicrophoneRouteChangeObserverSequenceBaseline;
+    snapshot.expectedDeadlineNanoseconds =
+        _expectedMicrophoneRouteChangeDeadlineNanoseconds;
     snapshot.observedAt = observedAt;
     snapshot.previousRouteFingerprint = previousRoute == nil
         ? nil
@@ -11421,8 +11691,34 @@ static OSStatus ASRemoteIOInput(
     BOOL sessionActive = snapshot.sessionActive;
     BOOL recoveryRequired = snapshot.recoveryRequired;
     BOOL explicitResumeRequired = snapshot.explicitResumeRequired;
+    BOOL expectedInputRequired = snapshot.expectedInputRequired;
+    uint64_t expectedObserverSequenceBaseline =
+        snapshot.expectedObserverSequenceBaseline;
+    uint64_t expectedDeadlineNanoseconds =
+        snapshot.expectedDeadlineNanoseconds;
     uint64_t observedAt = snapshot.observedAt;
     NSString *previousFingerprint = snapshot.previousRouteFingerprint;
+
+    BOOL expectedCategoryObservation =
+        ASExpectedCategoryObservationMatchesCapturedPolicy(
+            reason,
+            trackedTransaction,
+            entryState,
+            transactionIdentifier,
+            entryConfigurationGeneration,
+            activeConfigurationGeneration,
+            entrySystemAudioGeneration,
+            systemAudioGeneration,
+            notificationSequence,
+            expectedObserverSequenceBaseline,
+            observedAt,
+            expectedDeadlineNanoseconds,
+            expectedInputRequired,
+            category,
+            mode,
+            options,
+            sharingPolicy
+        );
 
     ASIOSExpectedRouteChangeDisposition disposition =
         ASIOSExpectedRouteChangeDispositionUnrelated;
@@ -11654,6 +11950,9 @@ static OSStatus ASRemoteIOInput(
     }
     if (liveRouteConfigurationRejectionOwnedByWaiter) {
         return ASExpectedRouteObservationHandlingLiveRejectionOwnedByWaiter;
+    }
+    if (expectedCategoryObservation) {
+        return ASExpectedRouteObservationHandlingExpectedCategory;
     }
     return ASExpectedRouteObservationHandlingGeneric;
 }
