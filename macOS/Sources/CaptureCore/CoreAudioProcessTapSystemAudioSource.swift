@@ -23,17 +23,25 @@ enum CoreAudioFaceTimeDuplexActivityScan: Equatable, Sendable {
 
 /// Pure, fail-closed evidence policy for a Mac-hosted FaceTime call.
 enum CoreAudioFaceTimeDuplexActivityPolicy {
-    static let allowedBundleIdentifiers: Set<String> = [
+    static let preferredMediaServiceBundleIdentifier =
+        "com.apple.avconferenced"
+    static let fallbackBundleIdentifiers: Set<String> = [
         "com.apple.FaceTime.FTConversationService",
         "com.apple.FaceTime",
     ]
+    static let allowedBundleIdentifiers =
+        fallbackBundleIdentifiers.union([
+            preferredMediaServiceBundleIdentifier,
+        ])
 
     static func scan(
         from snapshots: [CoreAudioFaceTimeProcessActivitySnapshot]?
     ) -> CoreAudioFaceTimeDuplexActivityScan {
         guard let snapshots else { return .unknown }
         var seenProcessObjectIDs: Set<AudioObjectID> = []
-        var activeProcessObjectIDs: Set<AudioObjectID> = []
+        var preferredProcessIsPresent = false
+        var preferredActiveProcessObjectIDs: Set<AudioObjectID> = []
+        var fallbackActiveProcessObjectIDs: Set<AudioObjectID> = []
         for snapshot in snapshots {
             guard snapshot.processObjectID != kAudioObjectUnknown,
                   seenProcessObjectIDs.insert(snapshot.processObjectID)
@@ -50,11 +58,30 @@ enum CoreAudioFaceTimeDuplexActivityPolicy {
                   let isRunningOutput = snapshot.isRunningOutput else {
                 return .unknown
             }
-            if isRunningInput && isRunningOutput {
-                activeProcessObjectIDs.insert(snapshot.processObjectID)
+            let isPreferred = bundleIdentifier
+                == preferredMediaServiceBundleIdentifier
+            preferredProcessIsPresent = preferredProcessIsPresent
+                || isPreferred
+            guard isRunningInput && isRunningOutput else { continue }
+            if isPreferred {
+                preferredActiveProcessObjectIDs.insert(
+                    snapshot.processObjectID
+                )
+            } else {
+                fallbackActiveProcessObjectIDs.insert(
+                    snapshot.processObjectID
+                )
             }
         }
-        return .known(activeProcessObjectIDs: activeProcessObjectIDs)
+        // macOS 26 may briefly expose FaceTime itself as duplex before the long-lived media
+        // service owns the call. Once that exact service is in the authoritative inventory, do
+        // not let the legacy fallback bind the epoch during the handoff window. Older systems
+        // that do not expose the service continue to use the exact FaceTime bundle identifiers.
+        return .known(
+            activeProcessObjectIDs: preferredProcessIsPresent
+                ? preferredActiveProcessObjectIDs
+                : fallbackActiveProcessObjectIDs
+        )
     }
 }
 

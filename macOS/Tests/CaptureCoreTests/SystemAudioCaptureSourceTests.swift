@@ -407,15 +407,23 @@ final class SystemAudioCaptureSourceTests: XCTestCase {
                 bundleIdentifier: "com.apple.facetime"
             ),
             makeFaceTimeActivitySnapshot(
+                processObjectID: 203,
+                bundleIdentifier: "com.apple.avconferenced.helper"
+            ),
+            makeFaceTimeActivitySnapshot(
                 processObjectID: 303,
                 bundleIdentifier: "com.apple.FaceTime.FTConversationService"
+            ),
+            makeFaceTimeActivitySnapshot(
+                processObjectID: 304,
+                bundleIdentifier: "com.apple.avconferenced"
             ),
         ]
 
         XCTAssertEqual(
             CoreAudioFaceTimeDuplexActivityPolicy
                 .scan(from: snapshots),
-            .known(activeProcessObjectIDs: [303])
+            .known(activeProcessObjectIDs: [304])
         )
         XCTAssertEqual(
             CoreAudioFaceTimeDuplexActivityPolicy.scan(from: [
@@ -434,6 +442,113 @@ final class SystemAudioCaptureSourceTests: XCTestCase {
             ]),
             .unknown
         )
+    }
+
+    func testFaceTimeDuplexPolicyPrefersPresentMediaServiceOverTemporaryApp() {
+        let temporaryApp = makeFaceTimeActivitySnapshot(
+            processObjectID: 303,
+            bundleIdentifier: "com.apple.FaceTime"
+        )
+        let inactiveMediaService = makeFaceTimeActivitySnapshot(
+            processObjectID: 304,
+            bundleIdentifier: "com.apple.avconferenced",
+            isRunningInput: false,
+            isRunningOutput: false
+        )
+
+        XCTAssertEqual(
+            CoreAudioFaceTimeDuplexActivityPolicy.scan(from: [
+                temporaryApp,
+                inactiveMediaService,
+            ]),
+            .known(activeProcessObjectIDs: [])
+        )
+        XCTAssertEqual(
+            CoreAudioFaceTimeDuplexActivityPolicy.scan(from: [
+                temporaryApp,
+                makeFaceTimeActivitySnapshot(
+                    processObjectID: 304,
+                    bundleIdentifier: "com.apple.avconferenced"
+                ),
+            ]),
+            .known(activeProcessObjectIDs: [304])
+        )
+    }
+
+    func testFaceTimeDuplexPolicyRetainsOlderSystemFallback() {
+        XCTAssertEqual(
+            CoreAudioFaceTimeDuplexActivityPolicy.scan(from: [
+                makeFaceTimeActivitySnapshot(
+                    processObjectID: 303,
+                    bundleIdentifier: "com.apple.FaceTime"
+                ),
+            ]),
+            .known(activeProcessObjectIDs: [303])
+        )
+    }
+
+    func testFaceTimeDuplexPolicyKeepsSameTierCardinalityAmbiguous()
+        throws {
+        let scans = [
+            CoreAudioFaceTimeDuplexActivityPolicy.scan(from: [
+                makeFaceTimeActivitySnapshot(
+                    processObjectID: 301,
+                    bundleIdentifier:
+                        "com.apple.FaceTime.FTConversationService"
+                ),
+                makeFaceTimeActivitySnapshot(
+                    processObjectID: 302,
+                    bundleIdentifier: "com.apple.FaceTime"
+                ),
+            ]),
+            CoreAudioFaceTimeDuplexActivityPolicy.scan(from: [
+                makeFaceTimeActivitySnapshot(
+                    processObjectID: 303,
+                    bundleIdentifier: "com.apple.avconferenced"
+                ),
+                makeFaceTimeActivitySnapshot(
+                    processObjectID: 304,
+                    bundleIdentifier: "com.apple.avconferenced"
+                ),
+            ]),
+        ]
+
+        for scan in scans {
+            guard case .known(let activeProcessObjectIDs) = scan else {
+                return XCTFail("A complete scan must remain known")
+            }
+            XCTAssertEqual(activeProcessObjectIDs.count, 2)
+
+            var binder = CoreAudioFaceTimeCausalEpochBinder()
+            _ = binder.installChallenge(
+                makeFaceTimeActivityChallenge(
+                    sequence: 1,
+                    callEpochNonce: UUID()
+                ),
+                authoritativeScan: {
+                    .known(activeProcessObjectIDs: [])
+                }
+            )
+
+            let update = try XCTUnwrap(binder.observe(scan))
+            XCTAssertNil(update.causalBindingID)
+            XCTAssertEqual(binder.phase, .poisoned)
+        }
+    }
+
+    func testFaceTimeDuplexPolicyKeepsIrrelevantAllowedReadFailureUnknown() {
+        let scan = CoreAudioFaceTimeDuplexActivityPolicy.scan(from: [
+            makeFaceTimeActivitySnapshot(
+                processObjectID: 303,
+                bundleIdentifier: "com.apple.avconferenced"
+            ),
+            makeFaceTimeActivitySnapshot(
+                processObjectID: 304,
+                bundleIdentifier: "com.apple.FaceTime",
+                isRunningOutput: nil
+            ),
+        ])
+        XCTAssertEqual(scan, .unknown)
     }
 
     func testFaceTimeEpochBinderRequiresZeroBaselineThenOneExactProcess()
