@@ -1,6 +1,6 @@
 # User-protected legacy AudioStreamer runtime
 
-Status: **PAIRING-PRESERVING HOST UPDATE V2 COMMITTED; TESTFLIGHT BUILD 42 UPLOADED; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
+Status: **PAIRING-PRESERVING HOST UPDATE V3 COMMITTED; TESTFLIGHT BUILD 42 UPLOADED; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
 Original preservation direction: **2026-07-25**\
 Mac-only migration authorization recorded: **2026-07-30/31**\
 Version-15 retry authorization recorded: **2026-08-02**\
@@ -11,6 +11,7 @@ Version-19 retry authorization recorded and consumed: **2026-08-02**\
 Version-20 retry authorization recorded and consumed: **2026-08-02**\
 Post-v20 new-host pairing-isolation authorization recorded: **2026-08-03**
 Pairing-preserving new-host update authorization recorded and consumed: **2026-08-05**
+Pairing-preserving new-host update v3 authorization recorded and consumed: **2026-08-06**
 
 The user authorized guarded Mac-only cutovers from the running legacy host to
 the validated opensteamer host. Versions 15, 16, 17, 18, and 19 all fully
@@ -557,6 +558,56 @@ and `419eff4f410cfb0bf5e224528fd450c10292f7c1c2448d33e215e929f7c14730`;
 their launchd job remains absent. No protected legacy artifact or pairing
 service was modified, and no physical-iPhone operation was performed by this
 Mac-host transaction.
+
+### Pairing-preserving host update v3
+
+On August 6, 2026, the user authorized exactly one guarded replacement of only
+the active side-by-side new host. The preflight proved that PID `29630` was the
+sole ready host, the committed v1 and v2 evidence was immutable, both isolated
+pairing records were present, the protected legacy job was absent, the source
+tree was clean and pushed, and no v3 attempt existed. It bound the authorization
+to source commit `759dc9285528b778cc434df807cb26b234201bba` and tree
+`f8c12c3c014fbcc523b0e6a2082b6cccd41b8474`.
+
+The one-shot v3 transaction built, verified, stopped, retained, replaced, and
+bootstrapped only `/Applications/opensteamer Host.app`. Its journal records the
+complete ordered path through `BUILD_VERIFIED`, `STOP_INITIATED`,
+`CURRENT_STOPPED`, `CURRENT_HELD`, `NEW_PUBLISHED`,
+`PERSISTENT_BOOTSTRAPPED`, `READY_VERIFIED`, and `COMMITTED`. The committed
+generation is PID `28433`, launchd runs `1`, with nonce
+`2cbad83e5c14a69681975e8b7a051dc7643a9777625c59016deaed59b1d3fec6`.
+Its executable SHA-256 is
+`3ae931ddc06cb9bf303201143c8e1868fad45c0d0db2cb76e6eb9eca55d16181`,
+CDHash `60311a91a4be4fb80c4c0414f134c2289c05240b`, Team ID `MSMG8CJLB3`,
+and identifier `com.elamin.AudioStreamer.CaptureServer`. The unchanged
+LaunchAgent plist SHA-256 is
+`7cdcf2d1517dc9ec1ae49b6fbbaf293c77afd958f697878d44f3b3c8e9c7e550`.
+
+The immutable v3 evidence is
+`/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v3/paired-v3-update-1786018665-19633-6cf5e703-22ae-4268-b3d8-75f35c37589b`.
+The active-pointer SHA-256 is
+`598039b1200c04e828650b780b4745a94a1d3b77cba9dca8525a846f026c9d38`;
+the journal SHA-256 is
+`c836304aba4515a5e81c542a40586cde91d4474a35073206ab2315650c8e7629`,
+the success-result SHA-256 is
+`22127aa5523e3efa468822044100fb2fd1cc5ceb97552377c986b1f5c1a15d77`,
+the provenance SHA-256 is
+`9ad6a3bd4cc9c286fe628e8c189191652c2d5136111411cbc30055c231e49cbd`,
+and the source-archive SHA-256 is
+`f25157d09eb91e1124b403d03f48546c0347cb70bea18f1dd17d6ae84fb17c5f`.
+The build stdout and stderr SHA-256 values are
+`46ab32af32490416df5d9aba72e4bb060a208994f23f894b8e9d37778fed3605`
+and `ff5ab234191bb5b4b2d56e976af25086059f5b351134b9edc10d6e4a7c51db9e`.
+
+The exact committed v2 executable with SHA-256
+`7cc60fc9a1677ff10e17f4a6e09647e502a92b5492db46170567bed98c09f3bc`
+is retained inside the v3 evidence as the rollback source. Both isolated
+pairing accounts remain present without secret retrieval, reset, deletion, or
+re-pairing. The protected legacy executable and plist still match SHA-256
+`1bd5bbe685522f995ee01f52650198753d11344857f883898e29ee7a3f4c80bc`
+and `419eff4f410cfb0bf5e224528fd450c10292f7c1c2448d33e215e929f7c14730`;
+their job remains absent. No protected legacy, physical-iPhone, or TestFlight
+operation occurred.
 
 ## Protected iPhone client
 
