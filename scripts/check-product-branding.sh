@@ -321,7 +321,8 @@ is_production_rendezvous_match() {
       ;;
     macOS/scripts/opensteamer-host-migration-controller.rs|\
       macOS/scripts/opensteamer-host-post-v20-update-controller.rs|\
-      macOS/scripts/opensteamer-host-paired-v2-update-controller.rs)
+      macOS/scripts/opensteamer-host-paired-v2-update-controller.rs|\
+      macOS/scripts/opensteamer-host-paired-v3-update-controller.rs)
       content=$(awk -v wanted="$line" '
         NR == wanted {
           sub(/^[[:space:]]+/, "")
@@ -438,6 +439,7 @@ is_allowed_legacy_token() {
     macOS/scripts/opensteamer-host-migration-controller.rs|\
       macOS/scripts/opensteamer-host-post-v20-update-controller.rs|\
       macOS/scripts/opensteamer-host-paired-v2-update-controller.rs|\
+      macOS/scripts/opensteamer-host-paired-v3-update-controller.rs|\
       macOS/Tests/CaptureServerTests/MacHostMigrationContractTests.swift)
       [[ "$token" == "$FORMER_LOWER.worldwide" \
         || "$token" == "$FORMER_LOWER.worldwide.plist" ]] || \
