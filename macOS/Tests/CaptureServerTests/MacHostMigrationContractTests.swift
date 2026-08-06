@@ -823,6 +823,316 @@ final class MacHostMigrationContractTests: XCTestCase {
         )
     }
 
+    func testPairedV3UpdaterPinsCommittedV2AndRecoversPublicationCrashes() throws {
+        let controller = repositoryRoot.appendingPathComponent(
+            "macOS/scripts/opensteamer-host-paired-v3-update-controller.rs"
+        )
+        let launcher = repositoryRoot.appendingPathComponent(
+            "macOS/scripts/update-opensteamer-host-paired-v3.sh"
+        )
+        let includedV1Controller = repositoryRoot.appendingPathComponent(
+            "macOS/scripts/opensteamer-host-post-v20-update-controller.rs"
+        )
+        let controllerSource = try String(contentsOf: controller, encoding: .utf8)
+        let launcherSource = try String(contentsOf: launcher, encoding: .utf8)
+        let includedV1Source = try String(contentsOf: includedV1Controller, encoding: .utf8)
+
+        for anchor in [
+            "include!(env!(\"OPENSTEAMER_PAIRED_V3_INCLUDED_SOURCE\"));",
+            "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v3",
+            "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v3",
+            "OPENSTEAMER_PAIRED_HOST_UPDATE_V3",
+            ".opensteamer-paired-v3-install-",
+            "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v2",
+            "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v2/paired-v2-update-1785977369-24182-475e6219-114a-4bd9-b9df-c934579faf75",
+            "e83a072333d5976e64bc4905b0d03cb685de4837fe0cb523d9524e88318099dc",
+            "9859ef5c7ca5f65a386d5dca580c2d5b2cd40f44cf759cf15b8a8ffd8d3a57b4",
+            "539c8de1abdf41285b567ab5d3da53df4bf999a026cced58c69567a4406a4fad",
+            "b5a60d25f146a78217a7d354cdf195a5a51c385fe375b5254fd143da81448cfe",
+            "f42627f1938a7b0dfeb0f9861dda66818c43774f4bdf580e262e18002f86e4bb",
+            "f03c04ea0e9e66555e109fa52ee37a9da7b5a92ecf32dc15130169f51b372dab",
+            "9b45d25034827dd2694eac47362fc4ec0a1148880e0cc263c86ba11d5e03e5e5",
+            "7cc60fc9a1677ff10e17f4a6e09647e502a92b5492db46170567bed98c09f3bc",
+            "e503fb26b65b3550404cf5eaff3307fe68ba1e38",
+            "worldwide-host-identity-v1",
+            "worldwide-paired-viewer-v1",
+            "[info] Worldwide paired-device availability is online",
+        ] {
+            XCTAssertTrue(controllerSource.contains(anchor), "Paired-v3 controller lacks \(anchor)")
+        }
+
+        for required in [
+            "verify_committed_v1_baseline",
+            "verify_committed_v2_baseline",
+            "verify_v2_pointer_unchanged",
+            "verify_isolated_pairing_items_present",
+            "verify_paired_v3_git_provenance(&repo, true)",
+            "require_canonical_git_oid",
+            "require_authorized_provenance",
+            "authorized_commit",
+            "authorized_tree",
+            "current clean pushed provenance differs from the explicitly authorized commit/tree",
+            "require_v3_update_root_unused",
+            "prepare_v3_update_root_for_first_attempt",
+            "paired-v3 single-attempt gate accepted failed-before-stop evidence",
+            "paired-v3 single-attempt gate accepted rolled-back evidence",
+            "perform_paired_v3_update",
+            "rollback_to_current_baseline",
+            "verify_paired_v3_runtime",
+            "verify_paired_v3_deployment",
+            "verify_protected_legacy_absent",
+            "verify_optimized_binary_scrub",
+            "source.tar",
+            "deployment-reference",
+            "rollback-current",
+            "rollback-reserve.bin",
+            "STOP_INITIATED",
+            "READY_VERIFIED",
+            "COMMITTED",
+            "ROLLBACK_STARTED",
+            "ROLLED_BACK",
+            "v2 pointer corruption was accepted",
+            "v2 evidence corruption was accepted",
+            "v2 rollback oracle corruption was accepted",
+            "paired-v3 transaction lock allowed concurrent ownership",
+            "publication-boundary crash recovery failed",
+        ] {
+            XCTAssertTrue(controllerSource.contains(required), "Paired-v3 controller lacks \(required)")
+        }
+        for publicationBoundary in [
+            "pre-current-hold",
+            "current-held-pre-new-publish",
+            "new-published-pre-bootstrap",
+            "bootstrapped-pre-ready",
+            "ready-pre-commit",
+        ] {
+            XCTAssertTrue(controllerSource.contains("\"\(publicationBoundary)\""))
+        }
+        XCTAssertGreaterThanOrEqual(
+            controllerSource.components(separatedBy: "verify_v2_pointer_unchanged").count - 1,
+            9,
+            "The v1+v2 historical guard must bracket every destructive boundary."
+        )
+        XCTAssertEqual(
+            includedV1Source.components(separatedBy: "post-v20-host-update.lock").count - 1,
+            1,
+            "Paired-v3 must retain the existing shared transaction-lock namespace exactly."
+        )
+
+        for forbidden in [
+            ".arg(\"--reset-worldwide-pairing\")",
+            "--emit-fresh-worldwide-pairing",
+            "wait_for_interactive_pairing",
+            "spawn_interactive_host",
+            "PairingCommitted",
+            "delete-generic-password",
+            "active-post-v20-host-update-v3",
+            "host-updates/post-v20-update-v3",
+        ] {
+            XCTAssertFalse(
+                controllerSource.contains(forbidden) || launcherSource.contains(forbidden),
+                "Pairing-preserving v3 updater contains forbidden path: \(forbidden)"
+            )
+        }
+
+        let commandDispatch = try sourceSection(
+            controllerSource,
+            from: "fn paired_v3_real_main(",
+            to: "fn verify_optimized_binary_scrub("
+        )
+        let scrub = try XCTUnwrap(commandDispatch.range(of: "verify_optimized_binary_scrub()?;"))
+        let dispatch = try XCTUnwrap(
+            commandDispatch.range(
+                of: "match parse_v3_command(&arguments)?",
+                range: scrub.upperBound..<commandDispatch.endIndex
+            )
+        )
+        XCTAssertLessThan(scrub.lowerBound, dispatch.lowerBound)
+        for mode in ["Preflight", "Execute", "Rollback", "SelfTest", "ProbeLock"] {
+            XCTAssertTrue(commandDispatch.contains("V3Command::\(mode)"))
+        }
+        XCTAssertTrue(
+            commandDispatch.contains(
+                "let provenance = verify_paired_v3_git_provenance(&repo, true)?;"
+            )
+        )
+        XCTAssertTrue(commandDispatch.contains("commit={} tree={}"))
+        XCTAssertTrue(
+            commandDispatch.contains(
+                "[_, mode, repo, authorized_commit, authorized_tree] if mode == V3_EXECUTE_MODE"
+            )
+        )
+        XCTAssertTrue(
+            commandDispatch.contains(
+                "require_canonical_git_oid(authorized_commit, \"authorized commit\")?;"
+            )
+        )
+        var preflightCursor = commandDispatch.startIndex
+        for gate in [
+            "V3Command::Preflight(repo)",
+            "verify_paired_v3_git_provenance(&repo, true)",
+            "require_path_absent(Path::new(V3_ACTIVE_UPDATE)",
+            "require_v3_update_root_unused",
+            "v3=absent commit={} tree={}",
+        ] {
+            let range = try XCTUnwrap(
+                commandDispatch.range(of: gate, range: preflightCursor..<commandDispatch.endIndex)
+            )
+            preflightCursor = range.upperBound
+        }
+
+        let execute = try sourceSection(
+            controllerSource,
+            from: "fn execute_paired_v3_update(",
+            to: "fn perform_paired_v3_update("
+        )
+        var executeCursor = execute.startIndex
+        for gate in [
+            "acquire_update_transaction_lock_at(Path::new(V3_UPDATE_LOCK))",
+            "verify_committed_v2_baseline",
+            "verify_paired_v3_runtime",
+            "verify_isolated_pairing_items_present",
+            "verify_paired_v3_git_provenance(&repo, true)",
+            "require_authorized_provenance(&provenance, authorized_commit, authorized_tree)",
+            "require_path_absent(Path::new(V3_ACTIVE_UPDATE)",
+            "require_v3_update_root_unused",
+            "prepare_v3_update_root_for_first_attempt",
+            "perform_paired_v3_update",
+        ] {
+            let range = try XCTUnwrap(execute.range(of: gate, range: executeCursor..<execute.endIndex))
+            executeCursor = range.upperBound
+        }
+
+        let update = try sourceSection(
+            controllerSource,
+            from: "fn perform_paired_v3_update(",
+            to: "fn rollback_to_current_baseline("
+        )
+        var updateCursor = update.startIndex
+        for gate in [
+            "export_v3_source",
+            "build_and_verify_v3_staged_app",
+            "verify_isolated_pairing_items_present",
+            "verify_v2_pointer_unchanged",
+            "verify_paired_v3_git_provenance(&layout.repo, true)",
+            "require_authorized_provenance",
+            "V3State::StopInitiated",
+            "publish_v3_active_pointer",
+            "verify_v3_active_pointer",
+            "verify_v2_pointer_unchanged",
+            "bootout_exact_new_job",
+            "V3State::NewPublished",
+            "V3State::PersistentBootstrapped",
+            "verify_paired_v3_deployment",
+            "verify_v2_pointer_unchanged",
+            "V3State::ReadyVerified",
+            "V3State::Committed",
+        ] {
+            let range = try XCTUnwrap(update.range(of: gate, range: updateCursor..<update.endIndex))
+            updateCursor = range.upperBound
+        }
+
+        let singleAttemptGate = try sourceSection(
+            controllerSource,
+            from: "fn require_v3_update_root_unused(",
+            to: "fn execute_paired_v3_update("
+        )
+        for required in [
+            "require_v3_update_root_unused_at",
+            "fs::read_dir(root)",
+            "entries.next().transpose()?.is_some()",
+            "already contains retained attempt evidence",
+            "prepare_v3_update_root_for_first_attempt",
+        ] {
+            XCTAssertTrue(singleAttemptGate.contains(required))
+        }
+        XCTAssertFalse(singleAttemptGate.contains("remove_dir"))
+        XCTAssertFalse(singleAttemptGate.contains("remove_file"))
+
+        let committedV2Guard = try sourceSection(
+            controllerSource,
+            from: "fn verify_committed_v2_baseline(",
+            to: "fn verify_current_baseline_oracle_pins("
+        )
+        for required in [
+            "verify_committed_v1_baseline",
+            "COMMITTED_V2_POINTER_SHA256",
+            "COMMITTED_V2_JOURNAL_SHA256",
+            "COMMITTED_V2_RESULT_SHA256",
+            "COMMITTED_V2_PROVENANCE_SHA256",
+            "COMMITTED_V2_SOURCE_ARCHIVE_SHA256",
+            "COMMITTED_V2_BUILD_STDOUT_SHA256",
+            "COMMITTED_V2_BUILD_STDERR_SHA256",
+            "CURRENT_BASELINE_EXECUTABLE_SHA256",
+            "CURRENT_BASELINE_CDHASH",
+            "verify_committed_v1_app_at",
+        ] {
+            XCTAssertTrue(committedV2Guard.contains(required))
+        }
+        for forbiddenMutation in [
+            "OpenOptions::new",
+            "create_new_private",
+            "rename_exclusive",
+            "remove_file",
+            "remove_dir",
+            "set_len",
+        ] {
+            XCTAssertFalse(
+                committedV2Guard.contains(forbiddenMutation),
+                "Committed v2 guard contains a mutation path: \(forbiddenMutation)"
+            )
+        }
+
+        let pairingPreflight = try sourceSection(
+            controllerSource,
+            from: "fn verify_isolated_pairing_items_present(",
+            to: "fn require_root_owned_system_executable("
+        )
+        XCTAssertTrue(pairingPreflight.contains("find-generic-password"))
+        XCTAssertTrue(pairingPreflight.contains("ISOLATED_PAIRING_SERVICE"))
+        XCTAssertFalse(pairingPreflight.contains("PROTECTED_PAIRING_SERVICE"))
+        XCTAssertFalse(pairingPreflight.contains("delete-generic-password"))
+
+        let sourceHashResult = try run(
+            executable: URL(fileURLWithPath: "/usr/bin/shasum"),
+            arguments: ["-a", "256", controller.path]
+        )
+        XCTAssertEqual(sourceHashResult.status, 0, sourceHashResult.diagnostic)
+        let sourceHash = try XCTUnwrap(
+            sourceHashResult.standardOutput.split(whereSeparator: \.isWhitespace).first.map(String.init)
+        )
+        XCTAssertTrue(launcherSource.contains("EXPECTED_SOURCE_SHA256='\(sourceHash)'"))
+
+        let v1HashResult = try run(
+            executable: URL(fileURLWithPath: "/usr/bin/shasum"),
+            arguments: ["-a", "256", includedV1Controller.path]
+        )
+        XCTAssertEqual(v1HashResult.status, 0, v1HashResult.diagnostic)
+        let v1Hash = try XCTUnwrap(
+            v1HashResult.standardOutput.split(whereSeparator: \.isWhitespace).first.map(String.init)
+        )
+        XCTAssertTrue(launcherSource.contains("EXPECTED_V1_CONTROLLER_SOURCE_SHA256='\(v1Hash)'"))
+        XCTAssertTrue(launcherSource.contains("OPENSTEAMER_PAIRED_V3_INCLUDED_SOURCE=\"$INCLUDED_SOURCE\""))
+        XCTAssertTrue(
+            launcherSource.contains(
+                "$EXECUTE_MODE $EXPECTED_REPO <authorized-commit> <authorized-tree>"
+            )
+        )
+        XCTAssertTrue(launcherSource.contains("[ \"$#\" -eq 4 ]"))
+        XCTAssertTrue(launcherSource.contains("\"$CONTROLLER\" \"$@\""))
+        XCTAssertFalse(launcherSource.contains("EXPECTED_BINARY_SHA256='0000000000000000000000000000000000000000000000000000000000000000'"))
+
+        let syntax = try run(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-n", launcher.path])
+        XCTAssertEqual(syntax.status, 0, syntax.diagnostic)
+        let selfTest = try run(executable: launcher, arguments: ["--self-test-paired-v3-host-update"])
+        XCTAssertEqual(selfTest.status, 0, selfTest.diagnostic)
+        XCTAssertEqual(
+            selfTest.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines),
+            "SELF_TEST_OK paired-v3-host-update-controller",
+            selfTest.diagnostic
+        )
+    }
+
     func testMigrationSourcesContainNoForbiddenRuntimeAndUseExclusivePublicationAndDurableDisable() throws {
         let relativePaths = [
             "macOS/scripts/migrate-opensteamer-host.sh",
