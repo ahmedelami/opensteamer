@@ -217,8 +217,48 @@ print -r -- "readonly REVIEWED_RENDEZVOUS_URL=\"${PRODUCTION_URL}\"" \
   >"$HOST_CONTRACTS/macOS/scripts/verify-mac-host-launch-state.sh"
 print -r -- "        \"${PRODUCTION_URL}\".to_owned()," \
   >"$HOST_CONTRACTS/macOS/scripts/opensteamer-host-migration-controller.rs"
+print -r -- "        \"${PRODUCTION_URL}\".to_owned()," \
+  >"$HOST_CONTRACTS/macOS/scripts/opensteamer-host-paired-v2-update-controller.rs"
+print -r -- 'const HOST_IDENTITY: &str = "com.elamin.AudioStreamer.CaptureServer";' \
+  >>"$HOST_CONTRACTS/macOS/scripts/opensteamer-host-paired-v2-update-controller.rs"
+print -r -- 'const LEGACY_LABEL: &str = "com.elamin.audiostreamer.worldwide";' \
+  >>"$HOST_CONTRACTS/macOS/scripts/opensteamer-host-paired-v2-update-controller.rs"
+print -r -- 'XCTAssertEqual(label, "com.elamin.audiostreamer.worldwide")' \
+  >"$HOST_CONTRACTS/macOS/Tests/CaptureServerTests/MacHostMigrationContractTests.swift"
+print -r -- 'XCTAssertEqual(service, "com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1")' \
+  >>"$HOST_CONTRACTS/macOS/Tests/CaptureServerTests/MacHostMigrationContractTests.swift"
 commit_all "$HOST_CONTRACTS"
 "$HOST_CONTRACTS/scripts/check-product-branding.sh" "$HOST_CONTRACTS" >/dev/null
+
+CURRENT_COMPATIBILITY_CONTRACTS="$TEMPORARY_ROOT/current-compatibility-contracts"
+initialize_repository "$CURRENT_COMPATIBILITY_CONTRACTS"
+mkdir -p \
+  "$CURRENT_COMPATIBILITY_CONTRACTS/iOS/opensteamer/scripts" \
+  "$CURRENT_COMPATIBILITY_CONTRACTS/macOS/Sources/CaptureCore" \
+  "$CURRENT_COMPATIBILITY_CONTRACTS/macOS/Tests/CaptureCoreTests" \
+  "$CURRENT_COMPATIBILITY_CONTRACTS/macOS/Tests/CaptureServerTests"
+print -r -- 'PROTECTED_LAUNCH_AGENT="com.elamin.audiostreamer.worldwide.plist"' \
+  >"$CURRENT_COMPATIBILITY_CONTRACTS/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh"
+print -r -- 'PROTECTED_LAUNCH_AGENT="com.elamin.audiostreamer.worldwide"' \
+  >"$CURRENT_COMPATIBILITY_CONTRACTS/iOS/opensteamer/scripts/validate-testflight-paired-reconnect.sh"
+print -r -- 'let host = "com.elamin.AudioStreamer.CaptureServer"' \
+  >"$CURRENT_COMPATIBILITY_CONTRACTS/macOS/Sources/CaptureCore/SystemAudioCaptureSource.swift"
+print -r -- 'XCTAssertEqual(host, "com.elamin.AudioStreamer.CaptureServer")' \
+  >"$CURRENT_COMPATIBILITY_CONTRACTS/macOS/Tests/CaptureCoreTests/SystemAudioCaptureSourceTests.swift"
+print -r -- 'let protected = "com.elamin.audiostreamer.worldwide"' \
+  >"$CURRENT_COMPATIBILITY_CONTRACTS/macOS/Tests/CaptureServerTests/PhysicalValidationScriptTests.swift"
+commit_all "$CURRENT_COMPATIBILITY_CONTRACTS"
+"$CURRENT_COMPATIBILITY_CONTRACTS/scripts/check-product-branding.sh" \
+  "$CURRENT_COMPATIBILITY_CONTRACTS" >/dev/null
+
+PAIRED_V2_WRONG_PATH="$TEMPORARY_ROOT/paired-v2-wrong-path"
+initialize_repository "$PAIRED_V2_WRONG_PATH"
+mkdir -p "$PAIRED_V2_WRONG_PATH/macOS/scripts"
+print -r -- "        \"${PRODUCTION_URL}\".to_owned()," \
+  >"$PAIRED_V2_WRONG_PATH/macOS/scripts/opensteamer-host-paired-v3-update-controller.rs"
+commit_all "$PAIRED_V2_WRONG_PATH"
+require_failure "$PAIRED_V2_WRONG_PATH" \
+  "macOS/scripts/opensteamer-host-paired-v3-update-controller.rs:1:${PRODUCTION_HOST}"
 
 HOST_CONTRACT_WRONG_CONTEXT="$TEMPORARY_ROOT/host-contract-wrong-context"
 initialize_repository "$HOST_CONTRACT_WRONG_CONTEXT"

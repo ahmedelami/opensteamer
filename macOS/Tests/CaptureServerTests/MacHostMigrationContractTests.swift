@@ -304,6 +304,525 @@ final class MacHostMigrationContractTests: XCTestCase {
         )
     }
 
+    func testPairedV2UpdaterPreservesCommittedPairingAndRecoversPublicationCrashes() throws {
+        let controller = repositoryRoot.appendingPathComponent(
+            "macOS/scripts/opensteamer-host-paired-v2-update-controller.rs"
+        )
+        let launcher = repositoryRoot.appendingPathComponent(
+            "macOS/scripts/update-opensteamer-host-paired-v2.sh"
+        )
+        let includedV1Controller = repositoryRoot.appendingPathComponent(
+            "macOS/scripts/opensteamer-host-post-v20-update-controller.rs"
+        )
+        let controllerSource = try String(contentsOf: controller, encoding: .utf8)
+        let launcherSource = try String(contentsOf: launcher, encoding: .utf8)
+        let includedV1Source = try String(contentsOf: includedV1Controller, encoding: .utf8)
+
+        let pairedV2CompatibilityAnchors = [
+            "include!(env!(\"OPENSTEAMER_PAIRED_V2_INCLUDED_SOURCE\"));",
+            "const V2_UPDATE_ROOT: &str =",
+            "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v2",
+            "const V2_ACTIVE_UPDATE: &str =",
+            "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v2",
+            "const V2_UPDATE_LOCK: &str = UPDATE_LOCK;",
+            "const V2_JOURNAL_HEADER: &str = \"OPENSTEAMER_PAIRED_HOST_UPDATE_V2\";",
+            "const HIDDEN_INSTALL_PREFIX: &str = \".opensteamer-paired-v2-install-\";",
+            "const NEW_LAUNCH_AGENT_LABEL: &str = NEW_LABEL;",
+            "const PROTECTED_LEGACY_LAUNCH_AGENT_LABEL: &str = LEGACY_LABEL;",
+            "const REVIEWED_LAUNCH_AGENT_PATH: &str = NEW_PLIST;",
+            "const REVIEWED_LAUNCH_AGENT_SHA256: &str = NEW_PLIST_SHA256;",
+            "/Users/ahmed/Library/Application Support/opensteamer/active-post-v20-host-update-v1",
+            "/Users/ahmed/Library/Application Support/opensteamer/host-updates/post-v20-update-1785755610-30384-e2654f34-367f-4767-93f8-76d27a7e2c10",
+            "f6e76a7d67e424fe319f12ef505d94b6826cc5c36f0415644832c853e9788cdf",
+            "1c6051a9538901c0002b126b373c9476b93aa48c220127358e7e08e2b58d5ff5",
+            "22127aa5523e3efa468822044100fb2fd1cc5ceb97552377c986b1f5c1a15d77",
+            "ff747bc792b4781b709f3650941a28eaba4235b1fdb87a76ed079ad930eb95d1",
+            "7f0fc3bc8efb16958c8c424e159188e2b9fc2b1ee8747f25a0a2261ee7091b9f",
+            "ae7638a512440bb567d5e07f1067d8e5035bb59951e38c0559a74e4afa1d2e52",
+            "468cbff663853fc36f184946194cda0f4e146be9",
+            "02a348a88d25b76ab95d45620d823339212bb53ee0f39bfb3a52f04240d3d745",
+            "0e56403570362c6d59ea86dc10d3cc53d7a5461d4a2f6c78d6e6c86dd13a4b41",
+            "6c4a1598d2b78550202b5d23903f0dd64e117384cd962a2c18c73e74795fe4de",
+            "27c36f8adec05c22216955cb404d6732ceaa6065477e5bb1570f2d41e84db7a9",
+            "7cdcf2d1517dc9ec1ae49b6fbbaf293c77afd958f697878d44f3b3c8e9c7e550",
+            "worldwide-host-identity-v1",
+            "worldwide-paired-viewer-v1",
+            "[info] Worldwide paired-device availability is online",
+        ]
+        for anchor in pairedV2CompatibilityAnchors {
+            XCTAssertTrue(controllerSource.contains(anchor), "Paired-v2 controller lacks \(anchor)")
+        }
+        for inheritedAnchor in [
+            "const UPDATE_LOCK: &str =",
+            "/Users/ahmed/Library/Application Support/opensteamer/post-v20-host-update.lock",
+            "const NEW_LABEL: &str = \"org.example.opensteamer.worldwide\";",
+            "const LEGACY_LABEL: &str = \"com.elamin.audiostreamer.worldwide\";",
+            "const NEW_PLIST: &str = \"/Users/ahmed/Library/LaunchAgents/org.example.opensteamer.worldwide.plist\";",
+            "const NEW_PLIST_SHA256: &str = \"7cdcf2d1517dc9ec1ae49b6fbbaf293c77afd958f697878d44f3b3c8e9c7e550\";",
+            "const ISOLATED_PAIRING_SERVICE: &str = \"com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1\";",
+            "const PROTECTED_PAIRING_SERVICE: &str =",
+            "com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1",
+        ] {
+            XCTAssertTrue(
+                includedV1Source.contains(inheritedAnchor),
+                "Pinned v1 controller lacks inherited compatibility anchor \(inheritedAnchor)"
+            )
+        }
+
+        for required in [
+            "verify_committed_v1_baseline",
+            "verify_isolated_pairing_items_present",
+            "verify_paired_v2_git_provenance(&repo, true)",
+            "perform_paired_v2_update",
+            "rollback_to_current_baseline",
+            "verify_v1_pointer_unchanged",
+            "wait_for_paired_v2_launch_generation",
+            "verify_paired_v2_runtime",
+            "verify_paired_v2_deployment",
+            "verify_protected_legacy_absent",
+            "verify_reviewed_launch_agent_unchanged",
+            "verify_optimized_binary_scrub",
+            "FORBIDDEN_MARKER_HEX",
+            "source.tar",
+            "source-export",
+            "staged-output",
+            "deployment-reference",
+            "rollback-current",
+            "failed-new",
+            "rollback-reserve.bin",
+            "install-hold-name.txt",
+            "journal.log",
+            "result.txt",
+            "provenance.txt",
+            "\"STOP_INITIATED\"",
+            "\"NEW_PUBLISHED\"",
+            "\"PERSISTENT_BOOTSTRAPPED\"",
+            "\"READY_VERIFIED\"",
+            "\"COMMITTED\"",
+            "\"ROLLBACK_STARTED\"",
+            "\"CURRENT_RESTORED\"",
+            "\"CURRENT_BOOTSTRAPPED\"",
+            "\"ROLLED_BACK\"",
+            "v1 pointer corruption was accepted",
+            "v1 evidence corruption was accepted",
+            "paired-v2 transaction lock allowed concurrent ownership",
+            "publication-boundary crash recovery failed",
+            "current isolated baseline rollback restoration failed",
+            "verify-launch-state-oracle-fixture",
+        ] {
+            XCTAssertTrue(controllerSource.contains(required), "Paired-v2 controller lacks \(required)")
+        }
+        for publicationBoundary in [
+            "pre-current-hold",
+            "current-held-pre-new-publish",
+            "new-published-pre-bootstrap",
+            "bootstrapped-pre-ready",
+            "ready-pre-commit",
+        ] {
+            XCTAssertTrue(
+                controllerSource.contains("\"\(publicationBoundary)\""),
+                "Paired-v2 self-test omits publication boundary \(publicationBoundary)"
+            )
+        }
+        XCTAssertTrue(controllerSource.contains("PUBLICATION_BOUNDARY_CASES"))
+        let selfTestDispatch = try sourceSection(
+            controllerSource,
+            from: "fn paired_v2_self_test(",
+            to: "fn verify_self_test_pinned_file("
+        )
+        XCTAssertTrue(selfTestDispatch.contains("paired_v2_dynamic_self_test()?;"))
+        XCTAssertTrue(
+            selfTestDispatch.contains("self_test_publication_boundary_recovery")
+        )
+        XCTAssertTrue(selfTestDispatch.contains("self_test_v1_oracle_pin_mutation"))
+        let publicationMatrix = try sourceSection(
+            controllerSource,
+            from: "struct PublicationBoundaryCase",
+            to: "fn verify_self_test_fixture("
+        )
+        for required in [
+            "for case in PUBLICATION_BOUNDARY_CASES",
+            "self_test_publication_boundary_case(directory, case)",
+            "self_test_checked_rename",
+            "verify_self_test_pinned_file(pointer, pointer_sha256)",
+            "verify_self_test_boundary_topology",
+            "recovered: bool",
+            "Some(BASELINE_BYTES)",
+            "Some(REPLACEMENT_BYTES)",
+        ] {
+            XCTAssertTrue(
+                publicationMatrix.contains(required),
+                "Publication-boundary matrix lacks executed proof \(required)"
+            )
+        }
+
+        XCTAssertGreaterThanOrEqual(
+            controllerSource.components(separatedBy: "verify_v1_pointer_unchanged").count - 1,
+            4,
+            "The committed v1 pointer must be revalidated across every destructive boundary."
+        )
+        XCTAssertEqual(
+            includedV1Source.components(separatedBy: "post-v20-host-update.lock").count - 1,
+            1,
+            "Paired-v2 must use the existing shared transaction-lock namespace exactly."
+        )
+
+        for forbidden in [
+            ".arg(\"--reset-worldwide-pairing\")",
+            "--emit-fresh-worldwide-pairing",
+            "wait_for_interactive_pairing",
+            "spawn_interactive_host",
+            "PairingCommitted",
+            "delete-generic-password",
+            "active-post-v20-host-update-v2",
+            "host-updates/post-v20-update-v2",
+        ] {
+            XCTAssertFalse(
+                controllerSource.contains(forbidden) || launcherSource.contains(forbidden),
+                "Pairing-preserving v2 updater contains forbidden fresh-pairing path: \(forbidden)"
+            )
+        }
+
+        let commandDispatch = try sourceSection(
+            controllerSource,
+            from: "fn paired_v2_real_main(",
+            to: "fn verify_optimized_binary_scrub("
+        )
+        let scrub = try XCTUnwrap(commandDispatch.range(of: "verify_optimized_binary_scrub()?;"))
+        let dispatch = try XCTUnwrap(
+            commandDispatch.range(
+                of: "match parse_v2_command(&arguments)?",
+                range: scrub.upperBound..<commandDispatch.endIndex
+            )
+        )
+        XCTAssertLessThan(scrub.lowerBound, dispatch.lowerBound)
+        for allowedMode in [
+            "V2Command::Preflight",
+            "V2Command::Execute",
+            "V2Command::Rollback",
+            "V2Command::SelfTest",
+            "V2Command::ProbeLock",
+        ] {
+            XCTAssertTrue(commandDispatch.contains(allowedMode))
+        }
+
+        let execute = try sourceSection(
+            controllerSource,
+            from: "fn execute_paired_v2_update(",
+            to: "fn perform_paired_v2_update("
+        )
+        let orderedExecutePreflight = [
+            "acquire_update_transaction_lock_at(Path::new(V2_UPDATE_LOCK))",
+            "verify_committed_v1_baseline",
+            "verify_paired_v2_runtime",
+            "verify_isolated_pairing_items_present",
+            "verify_paired_v2_git_provenance(&repo, true)",
+            "require_path_absent(Path::new(V2_ACTIVE_UPDATE)",
+            "perform_paired_v2_update",
+        ]
+        var executeCursor = execute.startIndex
+        for gate in orderedExecutePreflight {
+            let range = try XCTUnwrap(
+                execute.range(of: gate, range: executeCursor..<execute.endIndex),
+                "Paired-v2 execute preflight ordering lacks \(gate)"
+            )
+            executeCursor = range.upperBound
+        }
+
+        let update = try sourceSection(
+            controllerSource,
+            from: "fn perform_paired_v2_update(",
+            to: "fn rollback_to_current_baseline("
+        )
+        let orderedUpdateGates = [
+            "export_v2_source",
+            "build_and_verify_v2_staged_app",
+            "verify_isolated_pairing_items_present",
+            "verify_v1_pointer_unchanged",
+            "V2State::StopInitiated",
+            "publish_v2_active_pointer",
+            "verify_v2_active_pointer",
+            "verify_isolated_pairing_items_present",
+            "verify_v1_pointer_unchanged",
+            "bootout_exact_new_job",
+            "V2State::NewPublished",
+            "V2State::PersistentBootstrapped",
+            "wait_for_paired_v2_launch_generation",
+            "verify_paired_v2_deployment",
+            "verify_v1_pointer_unchanged",
+            "V2State::ReadyVerified",
+            "V2State::Committed",
+        ]
+        var updateCursor = update.startIndex
+        for gate in orderedUpdateGates {
+            let range = try XCTUnwrap(
+                update.range(of: gate, range: updateCursor..<update.endIndex),
+                "Paired-v2 update ordering lacks \(gate)"
+            )
+            updateCursor = range.upperBound
+        }
+
+        let rollback = try sourceSection(
+            controllerSource,
+            from: "fn rollback_to_current_baseline(",
+            to: "fn verify_paired_v2_runtime("
+        )
+        for required in [
+            "verify_current_baseline_app_at",
+            "V2State::FailedNewArchived",
+            "V2State::CurrentRestored",
+            "V2State::CurrentBootstrapped",
+            "verify_v1_pointer_unchanged",
+        ] {
+            XCTAssertTrue(rollback.contains(required), "Paired-v2 rollback lacks \(required)")
+        }
+
+        let deploymentProof = try sourceSection(
+            controllerSource,
+            from: "fn verify_paired_v2_deployment(",
+            to: "fn verify_committed_v1_baseline("
+        )
+        XCTAssertTrue(
+            deploymentProof.contains(
+                "verify_generation_bound_paired_marker(checkpoint, generation)"
+            )
+        )
+        XCTAssertTrue(
+            deploymentProof.contains(
+                "{PAIRED_AVAILABILITY_MARKER_PREFIX} pid={} nonce={}"
+            )
+        )
+        XCTAssertTrue(
+            deploymentProof.contains(
+                "generation-bound paired-device availability marker is absent"
+            )
+        )
+
+        let committedV1Guard = try sourceSection(
+            controllerSource,
+            from: "fn verify_committed_v1_baseline(",
+            to: "fn verify_v1_pointer_unchanged("
+        )
+        for required in [
+            "COMMITTED_V1_POINTER_SHA256",
+            "COMMITTED_V1_JOURNAL_SHA256",
+            "COMMITTED_V1_RESULT_SHA256",
+            "COMMITTED_V1_PROVENANCE_SHA256",
+            "COMMITTED_V1_SOURCE_ARCHIVE_SHA256",
+            "CURRENT_BASELINE_EXECUTABLE_SHA256",
+            "CURRENT_BASELINE_CDHASH",
+            "verify_current_baseline_oracle_pins",
+        ] {
+            XCTAssertTrue(committedV1Guard.contains(required))
+        }
+        for forbiddenMutation in [
+            "OpenOptions::new",
+            "create_new_private",
+            "rename_exclusive",
+            "remove_file",
+            "remove_dir",
+            "set_len",
+        ] {
+            XCTAssertFalse(
+                committedV1Guard.contains(forbiddenMutation),
+                "Committed v1 guard contains a mutation path: \(forbiddenMutation)"
+            )
+        }
+
+        let baselineOraclePins = try sourceSection(
+            controllerSource,
+            from: "fn verify_current_baseline_oracle_pins(",
+            to: "fn verify_v1_pointer_unchanged("
+        )
+        for required in [
+            "macOS/scripts/verify-mac-host-bundle.sh",
+            "macOS/scripts/verify-live-mac-host-process.sh",
+            "macOS/scripts/verify-mac-host-deployment.sh",
+            "macOS/scripts/verify-mac-host-launch-state.sh",
+            "macOS/LaunchAgents/org.example.opensteamer.worldwide.plist",
+            "CURRENT_BASELINE_VERIFY_BUNDLE_SHA256",
+            "CURRENT_BASELINE_VERIFY_LIVE_PROCESS_SHA256",
+            "CURRENT_BASELINE_VERIFY_DEPLOYMENT_SHA256",
+            "CURRENT_BASELINE_VERIFY_LAUNCH_STATE_SHA256",
+            "CURRENT_BASELINE_LAUNCH_AGENT_SOURCE_SHA256",
+        ] {
+            XCTAssertTrue(
+                baselineOraclePins.contains(required),
+                "Current-baseline oracle pins omit \(required)"
+            )
+        }
+
+        let pairingPreflight = try sourceSection(
+            controllerSource,
+            from: "fn verify_isolated_pairing_items_present(",
+            to: "fn require_root_owned_system_executable("
+        )
+        for required in [
+            "ISOLATED_PAIRING_IDENTITY_ACCOUNT",
+            "ISOLATED_PAIRING_VIEWER_ACCOUNT",
+            "ISOLATED_PAIRING_SERVICE",
+            "find-generic-password",
+        ] {
+            XCTAssertTrue(pairingPreflight.contains(required))
+        }
+        XCTAssertFalse(pairingPreflight.contains("PROTECTED_PAIRING_SERVICE"))
+        XCTAssertFalse(pairingPreflight.contains("delete-generic-password"))
+
+        let runtimePreflight = try sourceSection(
+            controllerSource,
+            from: "fn verify_paired_v2_runtime(",
+            to: "fn verify_paired_v2_git_provenance("
+        )
+        let orderedRuntimeChecks = [
+            "verify_committed_v1_baseline",
+            "verify_protected_legacy_absent",
+            "verify_reviewed_launch_agent_unchanged",
+            "verify_current_baseline_app_at",
+            "require_solo_capture_server",
+            "prove_lock_holder",
+        ]
+        var runtimeCursor = runtimePreflight.startIndex
+        for check in orderedRuntimeChecks {
+            let range = try XCTUnwrap(
+                runtimePreflight.range(of: check, range: runtimeCursor..<runtimePreflight.endIndex),
+                "Paired-v2 runtime preflight ordering lacks \(check)"
+            )
+            runtimeCursor = range.upperBound
+        }
+
+        let sourceHashResult = try run(
+            executable: URL(fileURLWithPath: "/usr/bin/shasum"),
+            arguments: ["-a", "256", controller.path]
+        )
+        XCTAssertEqual(sourceHashResult.status, 0, sourceHashResult.diagnostic)
+        let sourceHash = try XCTUnwrap(
+            sourceHashResult.standardOutput.split(whereSeparator: \.isWhitespace).first.map(String.init)
+        )
+        XCTAssertTrue(
+            launcherSource.contains("EXPECTED_SOURCE_SHA256='\(sourceHash)'"),
+            "Paired-v2 launcher source attestation is stale."
+        )
+        let v1SourceHashResult = try run(
+            executable: URL(fileURLWithPath: "/usr/bin/shasum"),
+            arguments: ["-a", "256", includedV1Controller.path]
+        )
+        XCTAssertEqual(v1SourceHashResult.status, 0, v1SourceHashResult.diagnostic)
+        let v1SourceHash = try XCTUnwrap(
+            v1SourceHashResult.standardOutput
+                .split(whereSeparator: \.isWhitespace)
+                .first
+                .map(String.init)
+        )
+        XCTAssertTrue(
+            launcherSource.contains("EXPECTED_V1_CONTROLLER_SOURCE_SHA256='\(v1SourceHash)'"),
+            "Paired-v2 launcher does not pin the exact immutable v1 input source."
+        )
+
+        var includedLines = includedV1Source.split(
+            separator: "\n",
+            omittingEmptySubsequences: false
+        ).map(String.init)
+        XCTAssertGreaterThan(includedLines.count, 7)
+        for index in 0..<7 {
+            XCTAssertTrue(
+                includedLines[index].hasPrefix("//!"),
+                "Only the seven reviewed leading v1 doc-comment lines may be transformed."
+            )
+            includedLines[index] = "//" + String(includedLines[index].dropFirst(3))
+        }
+        XCTAssertFalse(
+            includedLines.dropFirst(7).contains(where: { $0.hasPrefix("//!") }),
+            "A later inner doc comment would escape the reviewed seven-line transform."
+        )
+        let includedModuleSource = includedLines.joined(separator: "\n")
+        let transformDirectory = makeTemporaryDirectory(prefix: "paired-v2-source-transform")
+        defer { try? FileManager.default.removeItem(at: transformDirectory) }
+        let transformedSource = transformDirectory.appendingPathComponent("included-v1.rs")
+        try Data(includedModuleSource.utf8).write(to: transformedSource)
+        let transformedHashResult = try run(
+            executable: URL(fileURLWithPath: "/usr/bin/shasum"),
+            arguments: ["-a", "256", transformedSource.path]
+        )
+        XCTAssertEqual(transformedHashResult.status, 0, transformedHashResult.diagnostic)
+        let transformedHash = try XCTUnwrap(
+            transformedHashResult.standardOutput
+                .split(whereSeparator: \.isWhitespace)
+                .first
+                .map(String.init)
+        )
+        XCTAssertTrue(
+            launcherSource.contains("EXPECTED_INCLUDED_SOURCE_SHA256='\(transformedHash)'"),
+            "Paired-v2 launcher does not pin the exact private seven-line transform."
+        )
+        var mutatedModuleBytes = Data(includedModuleSource.utf8)
+        mutatedModuleBytes[mutatedModuleBytes.startIndex] ^= 0x01
+        let mutatedSource = transformDirectory.appendingPathComponent("mutated-included-v1.rs")
+        try mutatedModuleBytes.write(to: mutatedSource)
+        let mutatedHashResult = try run(
+            executable: URL(fileURLWithPath: "/usr/bin/shasum"),
+            arguments: ["-a", "256", mutatedSource.path]
+        )
+        XCTAssertEqual(mutatedHashResult.status, 0, mutatedHashResult.diagnostic)
+        let mutatedHash = try XCTUnwrap(
+            mutatedHashResult.standardOutput
+                .split(whereSeparator: \.isWhitespace)
+                .first
+                .map(String.init)
+        )
+        XCTAssertNotEqual(
+            mutatedHash,
+            transformedHash,
+            "A transformed-source mutation escaped the pinned SHA-256 boundary."
+        )
+        XCTAssertTrue(launcherSource.contains("/usr/bin/sed '1,7s#^//!#//#'"))
+        XCTAssertTrue(
+            launcherSource.contains(
+                "OPENSTEAMER_PAIRED_V2_INCLUDED_SOURCE=\"$INCLUDED_SOURCE\""
+            )
+        )
+        XCTAssertFalse(
+            launcherSource.contains(
+                "EXPECTED_INCLUDED_SOURCE_SHA256='0000000000000000000000000000000000000000000000000000000000000000'"
+            ),
+            "Paired-v2 transformed-source pin is still a placeholder."
+        )
+        XCTAssertFalse(
+            launcherSource.contains(
+                "EXPECTED_BINARY_SHA256='0000000000000000000000000000000000000000000000000000000000000000'"
+            ),
+            "Paired-v2 reproducible-binary pin is still a placeholder."
+        )
+        for required in [
+            "EXPECTED_V1_CONTROLLER_SOURCE_SHA256=",
+            "EXPECTED_INCLUDED_SOURCE_SHA256=",
+            "EXPECTED_BINARY_SHA256=",
+            "--verify-paired-v2-host-update-preflight",
+            "--execute-authorized-paired-v2-host-update",
+            "--rollback-authorized-paired-v2-host-update",
+            "--self-test-paired-v2-host-update",
+            "--edition=2021 -D warnings",
+        ] {
+            XCTAssertTrue(launcherSource.contains(required), "Paired-v2 launcher lacks \(required)")
+        }
+
+        let syntax = try run(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-n", launcher.path]
+        )
+        XCTAssertEqual(syntax.status, 0, syntax.diagnostic)
+
+        let selfTest = try run(
+            executable: launcher,
+            arguments: ["--self-test-paired-v2-host-update"]
+        )
+        XCTAssertEqual(selfTest.status, 0, selfTest.diagnostic)
+        XCTAssertEqual(
+            selfTest.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines),
+            "SELF_TEST_OK paired-v2-host-update-controller",
+            selfTest.diagnostic
+        )
+    }
+
     func testMigrationSourcesContainNoForbiddenRuntimeAndUseExclusivePublicationAndDurableDisable() throws {
         let relativePaths = [
             "macOS/scripts/migrate-opensteamer-host.sh",

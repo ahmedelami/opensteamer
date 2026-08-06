@@ -320,7 +320,8 @@ is_production_rendezvous_match() {
         "$content" == "wss://${PRODUCTION_RENDEZVOUS_HOST}" ]]
       ;;
     macOS/scripts/opensteamer-host-migration-controller.rs|\
-      macOS/scripts/opensteamer-host-post-v20-update-controller.rs)
+      macOS/scripts/opensteamer-host-post-v20-update-controller.rs|\
+      macOS/scripts/opensteamer-host-paired-v2-update-controller.rs)
       content=$(awk -v wanted="$line" '
         NR == wanted {
           sub(/^[[:space:]]+/, "")
@@ -395,11 +396,17 @@ is_allowed_legacy_token() {
       iOS/opensteamer/UITests/PairedReconnectPhysicalUITests.swift|\
       iOS/opensteamer/project.yml|\
       iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj|\
-      iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh|\
       iOS/opensteamer/scripts/validate-physical-update-keychain.sh|\
-      iOS/opensteamer/scripts/validate-release-pair-baseline.sh|\
-      iOS/opensteamer/scripts/validate-testflight-paired-reconnect.sh)
+      iOS/opensteamer/scripts/validate-release-pair-baseline.sh)
       is_identity_token "$token" || is_rendezvous_fallback_token "$token"
+      ;;
+    iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh)
+      is_identity_token "$token" || is_rendezvous_fallback_token "$token" || \
+        [[ "$token" == "$FORMER_LOWER.worldwide.plist" ]]
+      ;;
+    iOS/opensteamer/scripts/validate-testflight-paired-reconnect.sh)
+      is_identity_token "$token" || \
+        [[ "$token" == "$FORMER_LOWER.worldwide" ]]
       ;;
     iOS/opensteamer/Sources/Support/Info.plist|\
       iOS/opensteamer/Sources/ViewModels/WorldwideSessionViewModel.swift|\
@@ -410,10 +417,12 @@ is_allowed_legacy_token() {
       is_crypto_token "$token"
       ;;
     macOS/OpensteamerHost/Info.plist|macOS/Sources/CaptureServer/Info.plist|\
+      macOS/Sources/CaptureCore/SystemAudioCaptureSource.swift|\
       macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift|\
       macOS/Sources/CaptureServer/WorldwidePairingStore.swift|\
       macOS/scripts/build-opensteamer-host-app.sh|\
       macOS/scripts/verify-mac-host-bundle.sh|\
+      macOS/Tests/CaptureCoreTests/SystemAudioCaptureSourceTests.swift|\
       macOS/Tests/CaptureServerTests/WorldwideHostProcessLockTests.swift|\
       macOS/Tests/CaptureServerTests/WorldwidePairingStoreTests.swift)
       is_identity_token "$token"
@@ -427,13 +436,16 @@ is_allowed_legacy_token() {
       is_identity_token "$token" || is_rendezvous_fallback_token "$token"
       ;;
     macOS/scripts/opensteamer-host-migration-controller.rs|\
-      macOS/scripts/opensteamer-host-post-v20-update-controller.rs)
+      macOS/scripts/opensteamer-host-post-v20-update-controller.rs|\
+      macOS/scripts/opensteamer-host-paired-v2-update-controller.rs|\
+      macOS/Tests/CaptureServerTests/MacHostMigrationContractTests.swift)
       [[ "$token" == "$FORMER_LOWER.worldwide" \
         || "$token" == "$FORMER_LOWER.worldwide.plist" ]] || \
         is_identity_token "$token"
       ;;
     macOS/Tests/CaptureServerTests/PhysicalValidationScriptTests.swift)
-      [[ "$token" == "$FORMER_CAMEL" ]]
+      [[ "$token" == "$FORMER_CAMEL" \
+        || "$token" == "$FORMER_LOWER.worldwide" ]]
       ;;
     README.md|macOS/Sources/CaptureServer/CaptureServerOptions.swift|\
       macOS/scripts/verify-mac-host-launch-state.sh|\
