@@ -1,6 +1,6 @@
 # User-protected legacy AudioStreamer runtime
 
-Status: **POST-V20 ISOLATED-PAIRING UPDATE COMMITTED; NEW HOST ACTIVE; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
+Status: **PAIRING-PRESERVING HOST UPDATE V2 COMMITTED; TESTFLIGHT BUILD 42 UPLOADED; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
 Original preservation direction: **2026-07-25**\
 Mac-only migration authorization recorded: **2026-07-30/31**\
 Version-15 retry authorization recorded: **2026-08-02**\
@@ -10,6 +10,7 @@ Version-18 retry authorization recorded and consumed: **2026-08-02**\
 Version-19 retry authorization recorded and consumed: **2026-08-02**\
 Version-20 retry authorization recorded and consumed: **2026-08-02**\
 Post-v20 new-host pairing-isolation authorization recorded: **2026-08-03**
+Pairing-preserving new-host update authorization recorded and consumed: **2026-08-05**
 
 The user authorized guarded Mac-only cutovers from the running legacy host to
 the validated opensteamer host. Versions 15, 16, 17, 18, and 19 all fully
@@ -507,6 +508,56 @@ postimage with executable SHA-256
 The protected legacy executable and plist still match their reviewed hashes;
 their label is disabled and absent. No pairing code is reusable.
 
+### Pairing-preserving host update v2
+
+On August 5, 2026, the user authorized one guarded update of only the active
+side-by-side new host. The updater first proved that PID `33447` was the sole
+ready host, the committed v1 pointer and evidence were immutable, both isolated
+pairing records were present, and no v2 transaction existed. It then built only
+from clean pushed source commit
+`e35dd4d54b91fca1d7501b57a585e254f9a55795`, tree
+`145b6f656c3e273e92d0e4eec03280068c0a7257`, and committed the replacement as
+the sole host without resetting or re-pairing. The new generation is PID
+`29630`, launchd runs `1`, with nonce
+`750dafd33be35a258a82bfe778528f8a2fe1971198f3e93826cbc06052f8a87d`.
+The exact generation log records that the paired-device availability service is
+online.
+
+The installed executable SHA-256 is
+`7cc60fc9a1677ff10e17f4a6e09647e502a92b5492db46170567bed98c09f3bc`,
+its CDHash is `e503fb26b65b3550404cf5eaff3307fe68ba1e38`, and the unchanged
+LaunchAgent plist SHA-256 is
+`7cdcf2d1517dc9ec1ae49b6fbbaf293c77afd958f697878d44f3b3c8e9c7e550`.
+The prior isolated-host executable with SHA-256
+`ae7638a512440bb567d5e07f1067d8e5035bb59951e38c0559a74e4afa1d2e52`
+is retained as the exact rollback source. Both
+`worldwide-host-identity-v1` and `worldwide-paired-viewer-v1` remain present in
+the isolated `com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1`
+Keychain service.
+
+The immutable transaction evidence is
+`/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v2/paired-v2-update-1785977369-24182-475e6219-114a-4bd9-b9df-c934579faf75`.
+Its 147-byte active-pointer SHA-256 is
+`e83a072333d5976e64bc4905b0d03cb685de4837fe0cb523d9524e88318099dc`;
+the journal SHA-256 is
+`9859ef5c7ca5f65a386d5dca580c2d5b2cd40f44cf759cf15b8a8ffd8d3a57b4`,
+the success-result SHA-256 is
+`22127aa5523e3efa468822044100fb2fd1cc5ceb97552377c986b1f5c1a15d77`,
+the provenance SHA-256 is
+`539c8de1abdf41285b567ab5d3da53df4bf999a026cced58c69567a4406a4fad`,
+and the source-archive SHA-256 is
+`b5a60d25f146a78217a7d354cdf195a5a51c385fe375b5254fd143da81448cfe`.
+The journal durably ends in `READY_VERIFIED` and `COMMITTED`.
+
+The original v1 active pointer remains byte-identical with SHA-256
+`f6e76a7d67e424fe319f12ef505d94b6826cc5c36f0415644832c853e9788cdf`.
+The protected legacy executable and plist remain byte-identical with SHA-256
+`1bd5bbe685522f995ee01f52650198753d11344857f883898e29ee7a3f4c80bc`
+and `419eff4f410cfb0bf5e224528fd450c10292f7c1c2448d33e215e929f7c14730`;
+their launchd job remains absent. No protected legacy artifact or pairing
+service was modified, and no physical-iPhone operation was performed by this
+Mac-host transaction.
+
 ## Protected iPhone client
 
 The production iOS app and the development Release target both use bundle
@@ -589,6 +640,18 @@ processing at 10:24 EDT, and TestFlight reported build `40` ready to test at
 10:25 EDT. The non-blocking LiveKitWebRTC missing-dSYM warning remains. A fresh
 physical iPhone call and raw-microphone oracle is still required before claiming
 the fix works end to end.
+
+On August 5, 2026, archive-only TestFlight build `42` (`0.1.0`) was produced
+from the FaceTime duplex-audio patch and verified as bundle
+`com.elamin.opensteamer`, Team ID `MSMG8CJLB3`, before upload. The retained
+archive is
+`/private/tmp/opensteamer-testflight-output.CT3TYy/archive-destination.UQ1Ouh/opensteamerTestFlight.xcarchive`.
+Xcode Organizer uploaded it using `TestFlight Internal Only`, reported the
+submission as `Uploaded to Apple`, and showed build number `42`. Apple's only
+reported warning was the existing non-blocking missing dSYM for
+`LiveKitWebRTC.framework`. Upload acceptance does not establish TestFlight
+processing, installation, or physical FaceTime/audio behavior; those still
+require a fresh physical-iPhone test.
 
 - Do not install, replace, migrate, launch, reset, re-pair, or modify the
   production app on a physical iPhone.
