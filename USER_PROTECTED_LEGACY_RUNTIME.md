@@ -1,6 +1,6 @@
 # User-protected legacy AudioStreamer runtime
 
-Status: **PAIRING-PRESERVING HOST UPDATE V3 COMMITTED; TESTFLIGHT BUILD 42 UPLOADED; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
+Status: **PAIRING-PRESERVING HOST UPDATE V3 COMMITTED; V4 HOST UPDATE AND TESTFLIGHT BUILD 44 AUTHORIZED/PENDING; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
 Original preservation direction: **2026-07-25**\
 Mac-only migration authorization recorded: **2026-07-30/31**\
 Version-15 retry authorization recorded: **2026-08-02**\
@@ -12,6 +12,7 @@ Version-20 retry authorization recorded and consumed: **2026-08-02**\
 Post-v20 new-host pairing-isolation authorization recorded: **2026-08-03**
 Pairing-preserving new-host update authorization recorded and consumed: **2026-08-05**
 Pairing-preserving new-host update v3 authorization recorded and consumed: **2026-08-06**
+Pairing-preserving new-host update v4 authorization recorded: **2026-08-09**
 
 The user authorized guarded Mac-only cutovers from the running legacy host to
 the validated opensteamer host. Versions 15, 16, 17, 18, and 19 all fully
@@ -608,6 +609,24 @@ re-pairing. The protected legacy executable and plist still match SHA-256
 and `419eff4f410cfb0bf5e224528fd450c10292f7c1c2448d33e215e929f7c14730`;
 their job remains absent. No protected legacy, physical-iPhone, or TestFlight
 operation occurred.
+
+### Pairing-preserving host update v4 authorization
+
+On August 9, 2026, the user authorized exactly one guarded replacement of only
+the active side-by-side new host with the FaceTime microphone patch. The attempt
+must use a fresh v4 transaction namespace, exact immutable v3 pointer and
+evidence pins, the v3 deployment reference as its rollback source, and a clean
+pushed commit/tree containing required patch commit
+`dde641b0813a3a67a47663f9390dc44fe8c78479`. It must preserve both isolated
+pairing accounts without reading their secret values, resetting, deleting, or
+re-pairing, and must never address the protected legacy app, plist, launchd job,
+or Keychain service. Any retained v4 attempt consumes this authorization; a
+retry would require a fresh versioned updater and new user authorization.
+
+No v4 host operation had occurred when this authorization record was written.
+The separately authorized TestFlight upload must remain the archive-only
+`com.elamin.opensteamer` build 44 and must not install or modify either physical
+iPhone app from this Mac.
 
 ## Protected iPhone client
 

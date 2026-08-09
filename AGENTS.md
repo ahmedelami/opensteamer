@@ -300,6 +300,12 @@ input is physically validated until the matching live-service and interactive-de
 passes succeed, and do not claim "works anywhere" until TURN is active and
 unrelated-network plus forced-TURN physical-device tests pass.
 
+Every pairing-preserving installed-host update must use a fresh one-shot version
+namespace and pin the exact committed predecessor pointer, evidence, rollback app,
+and verification tools. Build only from a clean pushed commit/tree, prove pairing
+through metadata without retrieving secrets, and never reset or re-pair. Once an
+attempt leaves retained evidence, do not reuse that version for a retry.
+
 ## Commits
 
 Release validation must follow [TESTING_ORACLES.md](TESTING_ORACLES.md). A source string, mocked
