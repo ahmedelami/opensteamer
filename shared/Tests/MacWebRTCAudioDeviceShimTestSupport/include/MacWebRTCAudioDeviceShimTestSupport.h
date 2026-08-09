@@ -15,6 +15,23 @@ typedef NS_ENUM(NSInteger, ASMacStereoAudioDeviceHarnessDeliveryBehavior) {
     ASMacStereoAudioDeviceHarnessDeliveryBehaviorReturnSuccessAfterInvalidRender = 3,
 };
 
+typedef NS_ENUM(NSInteger, ASMacStereoAudioDeviceHarnessPlayoutPattern) {
+    ASMacStereoAudioDeviceHarnessPlayoutPatternSilence = 0,
+    ASMacStereoAudioDeviceHarnessPlayoutPatternCorrelatedAlternating = 1,
+    ASMacStereoAudioDeviceHarnessPlayoutPatternAntiCorrelatedAlternating = 2,
+    ASMacStereoAudioDeviceHarnessPlayoutPatternLeftOnlyAlternating = 3,
+    ASMacStereoAudioDeviceHarnessPlayoutPatternClippedDC = 4,
+    ASMacStereoAudioDeviceHarnessPlayoutPatternDCOffsetCorrelatedNoise = 5,
+    ASMacStereoAudioDeviceHarnessPlayoutPatternNearClipping = 6,
+    ASMacStereoAudioDeviceHarnessPlayoutPatternSubThresholdLeft = 7,
+};
+
+/// Test-only mutations of the native playout delegate's returned buffer contract.
+typedef NS_ENUM(NSInteger, ASMacStereoAudioDeviceHarnessPlayoutContractBehavior) {
+    ASMacStereoAudioDeviceHarnessPlayoutContractBehaviorExact = 0,
+    ASMacStereoAudioDeviceHarnessPlayoutContractBehaviorReturnSuccessWithShortBuffer = 1,
+};
+
 /// Exact callback, sample-pattern, and timestamp evidence collected by the test-only delegate.
 typedef struct ASMacStereoAudioDeviceHarnessDiagnostics {
     uint64_t callbackCount;
@@ -62,6 +79,9 @@ typedef struct ASMacStereoAudioDeviceHarnessDiagnostics {
     NS_SWIFT_NAME(deliverStereoSequenceOnNewThread(startingAtFrame:frameCount:));
 
 @property(nonatomic) ASMacStereoAudioDeviceHarnessDeliveryBehavior deliveryBehavior;
+@property(nonatomic) ASMacStereoAudioDeviceHarnessPlayoutPattern playoutPattern;
+@property(nonatomic) ASMacStereoAudioDeviceHarnessPlayoutContractBehavior
+    playoutContractBehavior;
 
 @property(nonatomic, readonly) ASMacStereoAudioDeviceHarnessDiagnostics diagnostics;
 
