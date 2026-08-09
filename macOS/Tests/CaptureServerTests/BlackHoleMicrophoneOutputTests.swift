@@ -1,6 +1,7 @@
 #if os(macOS) && DEBUG
 import AudioToolbox
 import Foundation
+import MacWebRTCAudioDeviceShim
 import XCTest
 @testable import CaptureServer
 
@@ -651,6 +652,523 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
         XCTAssertFalse(
             output.forwardingProgressSnapshot.queueRunning
         )
+    }
+
+    func testPCMContentPublishesOnlyCompletedLatestWindowWithoutLifetimeSmearing()
+        throws {
+        let operations = FakeBlackHoleAudioQueueOperations()
+        var renderedBufferCount = 0
+        let output = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: operations,
+                renderForTesting: { samples, frameCount in
+                    if renderedBufferCount < 100 {
+                        for frame in 0..<frameCount {
+                            let sample: Int16 = frame.isMultiple(of: 2)
+                                ? 16_384
+                                : -16_384
+                            samples[frame * 2] = sample
+                            samples[frame * 2 + 1] = sample
+                        }
+                    } else {
+                        for frame in 0..<frameCount {
+                            let left: Int16
+                            let right: Int16
+                            switch frame % 4 {
+                            case 0:
+                                left = .max
+                                right = 0
+                            case 1:
+                                left = .min
+                                right = 0
+                            case 2:
+                                left = 0
+                                right = .max
+                            default:
+                                left = 0
+                                right = .min
+                            }
+                            samples[frame * 2] = left
+                            samples[frame * 2 + 1] = right
+                        }
+                    }
+                    renderedBufferCount += 1
+                    return true
+                },
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+
+        try output.start()
+        XCTAssertEqual(renderedBufferCount, 3)
+        XCTAssertEqual(
+            output.forwardingProgressSnapshot.pcmContent,
+            .zero,
+            "A partial content window must not be published."
+        )
+
+        let buffer = try XCTUnwrap(operations.allocatedBuffers.first)
+        for _ in 0..<97 {
+            output.debugInvokeRealtimeCallbackForTesting(
+                queue: operations.queue,
+                buffer: buffer
+            )
+        }
+
+        let first = output.forwardingProgressSnapshot.pcmContent
+        XCTAssertGreaterThan(first.lifecycleGeneration, 0)
+        XCTAssertEqual(first.windowSequence, 1)
+        XCTAssertEqual(first.completedWindowCount, 1)
+        XCTAssertEqual(first.completedFrameCount, 48_000)
+        XCTAssertEqual(first.sourceStartFrame, 0)
+        XCTAssertEqual(first.sourceEndFrame, 48_000)
+        XCTAssertEqual(first.windowFrameCount, 48_000)
+        XCTAssertNotEqual(first.windowFingerprint, 0)
+        XCTAssertEqual(first.left.rms, 0.5, accuracy: 0.000_000_001)
+        XCTAssertEqual(
+            first.left.rmsDBFS,
+            20 * log10(0.5),
+            accuracy: 0.000_000_001
+        )
+        XCTAssertEqual(first.left.peak, 0.5, accuracy: 0.000_000_001)
+        XCTAssertEqual(
+            first.left.peakDBFS,
+            20 * log10(0.5),
+            accuracy: 0.000_000_001
+        )
+        XCTAssertEqual(first.left.dc, 0, accuracy: 0.000_000_001)
+        XCTAssertEqual(first.left.zeroFraction, 0)
+        XCTAssertEqual(first.left.clippingFraction, 0)
+        XCTAssertEqual(first.right, first.left)
+        XCTAssertEqual(
+            first.leftRightCorrelation,
+            1,
+            accuracy: 0.000_000_001
+        )
+        XCTAssertEqual(first.sumPower, 0.25, accuracy: 0.000_000_001)
+        XCTAssertEqual(first.differencePower, 0)
+        XCTAssertEqual(first.oneSidedFraction, 0)
+
+        for _ in 0..<99 {
+            output.debugInvokeRealtimeCallbackForTesting(
+                queue: operations.queue,
+                buffer: buffer
+            )
+        }
+        XCTAssertEqual(
+            output.forwardingProgressSnapshot.pcmContent,
+            first,
+            "An incomplete next window must leave the latest completed " +
+                "window visible."
+        )
+
+        output.debugInvokeRealtimeCallbackForTesting(
+            queue: operations.queue,
+            buffer: buffer
+        )
+        let second = output.forwardingProgressSnapshot.pcmContent
+        XCTAssertEqual(second.windowSequence, 2)
+        XCTAssertEqual(second.completedWindowCount, 2)
+        XCTAssertEqual(second.completedFrameCount, 96_000)
+        XCTAssertEqual(second.lifecycleGeneration, first.lifecycleGeneration)
+        XCTAssertEqual(second.sourceStartFrame, 48_000)
+        XCTAssertEqual(second.sourceEndFrame, 96_000)
+        XCTAssertEqual(second.windowFrameCount, 48_000)
+        XCTAssertNotEqual(second.windowFingerprint, first.windowFingerprint)
+
+        let fullScale = 32_768.0
+        let endpointSquareSum =
+            Double(Int64(Int16.max) * Int64(Int16.max))
+            + Double(Int64(Int16.min) * Int64(Int16.min))
+        let expectedRMS = sqrt(endpointSquareSum / 4) / fullScale
+        let expectedDC = -1 / (4 * fullScale)
+        let expectedSumAndDifferencePower =
+            endpointSquareSum / (8 * fullScale * fullScale)
+        for channel in [second.left, second.right] {
+            XCTAssertEqual(
+                channel.rms,
+                expectedRMS,
+                accuracy: 0.000_000_001
+            )
+            XCTAssertEqual(channel.peak, 1, accuracy: 0.000_000_001)
+            XCTAssertEqual(
+                channel.dc,
+                expectedDC,
+                accuracy: 0.000_000_001
+            )
+            XCTAssertEqual(channel.zeroFraction, 0.5)
+            XCTAssertEqual(channel.clippingFraction, 0.5)
+        }
+        XCTAssertEqual(
+            second.leftRightCorrelation,
+            0,
+            accuracy: 0.000_000_001
+        )
+        XCTAssertEqual(
+            second.sumPower,
+            expectedSumAndDifferencePower,
+            accuracy: 0.000_000_001
+        )
+        XCTAssertEqual(
+            second.differencePower,
+            expectedSumAndDifferencePower,
+            accuracy: 0.000_000_001
+        )
+        XCTAssertEqual(second.oneSidedFraction, 1)
+
+        output.stop()
+        XCTAssertEqual(
+            output.forwardingProgressSnapshot.pcmContent,
+            .zero,
+            "A stopped lifecycle must not expose its prior PCM window."
+        )
+
+        try output.start()
+        XCTAssertEqual(
+            output.forwardingProgressSnapshot.pcmContent,
+            .zero,
+            "A replacement queue must not expose the retired lifecycle."
+        )
+        let replacementBuffer = try XCTUnwrap(
+            operations.allocatedBuffers.last
+        )
+        for _ in 0..<97 {
+            output.debugInvokeRealtimeCallbackForTesting(
+                queue: operations.queue,
+                buffer: replacementBuffer
+            )
+        }
+        let replacement = output.forwardingProgressSnapshot.pcmContent
+        XCTAssertNotEqual(
+            replacement.lifecycleGeneration,
+            second.lifecycleGeneration
+        )
+        XCTAssertNotEqual(replacement.windowSequence, second.windowSequence)
+        XCTAssertEqual(replacement.sourceStartFrame, 0)
+        XCTAssertEqual(replacement.sourceEndFrame, 48_000)
+        output.stop()
+    }
+
+    func testPCMContentMeasuresFinalRezeroedSilenceWithoutRetainingDirtyPCM()
+        throws {
+        let operations = FakeBlackHoleAudioQueueOperations()
+        let output = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: operations,
+                renderForTesting: { samples, frameCount in
+                    for frame in 0..<frameCount {
+                        samples[frame * 2] = .max
+                        samples[frame * 2 + 1] = .min
+                    }
+                    return false
+                },
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+
+        try output.start()
+        let buffer = try XCTUnwrap(operations.allocatedBuffers.first)
+        for _ in 0..<97 {
+            output.debugInvokeRealtimeCallbackForTesting(
+                queue: operations.queue,
+                buffer: buffer
+            )
+        }
+
+        let content = output.forwardingProgressSnapshot.pcmContent
+        XCTAssertGreaterThan(content.lifecycleGeneration, 0)
+        XCTAssertEqual(content.windowSequence, 1)
+        XCTAssertEqual(content.completedFrameCount, 48_000)
+        XCTAssertEqual(content.sourceStartFrame, 0)
+        XCTAssertEqual(content.sourceEndFrame, 48_000)
+        XCTAssertEqual(content.windowFrameCount, 48_000)
+        for channel in [content.left, content.right] {
+            XCTAssertEqual(channel.rms, 0)
+            XCTAssertEqual(channel.rmsDBFS, -160)
+            XCTAssertEqual(channel.peak, 0)
+            XCTAssertEqual(channel.peakDBFS, -160)
+            XCTAssertEqual(channel.dc, 0)
+            XCTAssertEqual(channel.zeroFraction, 1)
+            XCTAssertEqual(channel.clippingFraction, 0)
+        }
+        XCTAssertEqual(content.leftRightCorrelation, 0)
+        XCTAssertEqual(content.sumPower, 0)
+        XCTAssertEqual(content.differencePower, 0)
+        XCTAssertEqual(content.oneSidedFraction, 0)
+        output.stop()
+    }
+
+    func testPCMContentUsesCenteredCorrelationAndSharedActivityThresholds()
+        throws {
+        let operations = FakeBlackHoleAudioQueueOperations()
+        var renderedBufferCount = 0
+        let output = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: operations,
+                renderForTesting: { samples, frameCount in
+                    for frame in 0..<frameCount {
+                        let left: Int16
+                        let right: Int16
+                        if renderedBufferCount < 100 {
+                            let variation: Int16 = frame.isMultiple(of: 2)
+                                ? -100
+                                : 100
+                            left = 1_000 + variation
+                            right = 2_000 + variation
+                        } else {
+                            switch frame % 4 {
+                            case 0:
+                                left = 32_760
+                                right = 0
+                            case 1:
+                                left = -32_760
+                                right = 0
+                            case 2:
+                                left = 127
+                                right = 0
+                            default:
+                                left = -127
+                                right = 0
+                            }
+                        }
+                        samples[frame * 2] = left
+                        samples[frame * 2 + 1] = right
+                    }
+                    renderedBufferCount += 1
+                    return true
+                },
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+
+        try output.start()
+        let buffer = try XCTUnwrap(operations.allocatedBuffers.first)
+        for _ in 0..<97 {
+            output.debugInvokeRealtimeCallbackForTesting(
+                queue: operations.queue,
+                buffer: buffer
+            )
+        }
+        let dcBiased = output.forwardingProgressSnapshot.pcmContent
+        XCTAssertEqual(
+            dcBiased.left.dc,
+            1_000.0 / 32_768.0,
+            accuracy: 0.000_000_001
+        )
+        XCTAssertEqual(
+            dcBiased.right.dc,
+            2_000.0 / 32_768.0,
+            accuracy: 0.000_000_001
+        )
+        XCTAssertEqual(
+            dcBiased.leftRightCorrelation,
+            1,
+            accuracy: 0.000_000_001,
+            "Correlation must remove DC before comparing channels."
+        )
+
+        for _ in 0..<100 {
+            output.debugInvokeRealtimeCallbackForTesting(
+                queue: operations.queue,
+                buffer: buffer
+            )
+        }
+        let thresholded = output.forwardingProgressSnapshot.pcmContent
+        XCTAssertEqual(thresholded.left.clippingFraction, 0.5)
+        XCTAssertEqual(thresholded.right.clippingFraction, 0)
+        XCTAssertEqual(
+            thresholded.oneSidedFraction,
+            0.5,
+            "Magnitude 127 is below the shared activity floor, while " +
+                "magnitude 32760 is active and clipped."
+        )
+        output.stop()
+    }
+
+    func testContentFingerprintComparisonRequiresExactCurrentWindowIdentity() {
+        let fingerprint: UInt64 = 0x7b4a_93d2_105e_6fc1
+        let pcm = BlackHoleMicrophoneOutputPCMContentSnapshot(
+            lifecycleGeneration: 4,
+            windowSequence: 9,
+            completedFrameCount: 96_000,
+            sourceStartFrame: 48_000,
+            sourceEndFrame: 96_000,
+            windowFrameCount: 48_000,
+            windowFingerprint: fingerprint,
+            left: .zero,
+            right: .zero,
+            leftRightCorrelationIsValid: false,
+            leftRightCorrelation: 0,
+            sumPower: 0,
+            differencePower: 0,
+            oneSidedFraction: 0
+        )
+        func progress(
+            fingerprint decodedFingerprint: UInt64,
+            start: UInt64 = 48_000,
+            end: UInt64 = 96_000,
+            generation: UInt64 = 7,
+            windowGeneration: UInt64 = 7,
+            boundGeneration: UInt64 = 7,
+            windowFirstRenderCall: UInt64 = 1,
+            boundRenderCallFloor: UInt64 = 0,
+            silenceFallbackCount: UInt64 = 0,
+            enqueueFailureCount: UInt64 = 0
+        ) -> BlackHoleMicrophoneOutputProgressSnapshot {
+            var native = ASMacDecodedPlayoutTelemetrySnapshot()
+            native.playoutGeneration = generation
+            native.hasCompletedWindow = true
+            native.completedWindowSequence = 2
+            native.completedWindowGeneration = windowGeneration
+            native.completedWindowFirstRenderCall =
+                windowFirstRenderCall
+            native.completedWindowLastRenderCall =
+                windowFirstRenderCall + 99
+            native.completedWindowFrameCount = 48_000
+            native.completedWindowSourceStartFrame = start
+            native.completedWindowSourceEndFrame = end
+            native.completedWindowFingerprint = decodedFingerprint
+            return BlackHoleMicrophoneOutputProgressSnapshot(
+                queueRunning: true,
+                postStartCallbackCount: 1,
+                requestedFrameCount: 48_000,
+                successfulPullCount: 1,
+                successfulFrameCount: 48_000,
+                silenceFallbackCount: silenceFallbackCount,
+                silenceFrameCount: 0,
+                enqueueFailureCount: enqueueFailureCount,
+                lastEnqueueStatus: noErr,
+                pcmContent: pcm,
+                decodedContent:
+                    BlackHoleMicrophoneOutputDecodedContentSnapshot(native),
+                boundDecodedPlayoutGeneration: boundGeneration,
+                boundDecodedRenderCallFloor: boundRenderCallFloor
+            )
+        }
+
+        let matching = progress(fingerprint: fingerprint)
+        XCTAssertTrue(matching.contentWindowsAlign)
+        XCTAssertTrue(matching.alignedContentFingerprintsMatch)
+
+        let differentContent = progress(fingerprint: fingerprint ^ 1)
+        XCTAssertTrue(differentContent.contentWindowsAlign)
+        XCTAssertFalse(differentContent.alignedContentFingerprintsMatch)
+
+        XCTAssertFalse(
+            progress(fingerprint: fingerprint, start: 47_999)
+                .contentWindowsAlign
+        )
+        XCTAssertFalse(
+            progress(
+                fingerprint: fingerprint,
+                windowGeneration: 6
+            ).contentWindowsAlign
+        )
+        XCTAssertFalse(
+            progress(
+                fingerprint: fingerprint,
+                generation: 8,
+                windowGeneration: 8
+            ).contentWindowsAlign,
+            "A new decoded playout generation must not align with stale queue-lifetime frame coordinates."
+        )
+        XCTAssertFalse(
+            progress(
+                fingerprint: fingerprint,
+                boundGeneration: 0
+            ).contentWindowsAlign
+        )
+        XCTAssertFalse(
+            progress(
+                fingerprint: fingerprint,
+                windowFirstRenderCall: 100,
+                boundRenderCallFloor: 100
+            ).contentWindowsAlign,
+            "A completed decoded window from before this output lifetime must not align even when its range and fingerprint match."
+        )
+        XCTAssertFalse(
+            progress(
+                fingerprint: fingerprint,
+                silenceFallbackCount: 1
+            ).contentWindowsAlign
+        )
+        XCTAssertFalse(
+            progress(
+                fingerprint: fingerprint,
+                enqueueFailureCount: 1
+            ).contentWindowsAlign
+        )
+    }
+
+    func testStartBindsOnlyDecodedGenerationStableAcrossPriming() throws {
+        let stableBindings =
+            BlackHoleScriptedDecodedBinding([(7, 0), (7, 3)])
+        let stableOperations = FakeBlackHoleAudioQueueOperations()
+        let stableOutput = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: stableOperations,
+                renderForTesting: { _, _ in true },
+                decodedPlayoutBindingForTesting: {
+                    stableBindings.read()
+                },
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+        try stableOutput.start()
+        XCTAssertEqual(
+            stableOutput.boundDecodedPlayoutGenerationForTesting,
+            7
+        )
+        XCTAssertEqual(
+            stableOutput.boundDecodedRenderCallFloorForTesting,
+            0
+        )
+        XCTAssertEqual(stableBindings.readCount, 2)
+        stableOutput.stop()
+
+        let changingBindings =
+            BlackHoleScriptedDecodedBinding([(7, 0), (8, 3)])
+        let changingOperations = FakeBlackHoleAudioQueueOperations()
+        let changingOutput = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: changingOperations,
+                renderForTesting: { _, _ in true },
+                decodedPlayoutBindingForTesting: {
+                    changingBindings.read()
+                },
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+        try changingOutput.start()
+        XCTAssertEqual(
+            changingOutput.boundDecodedPlayoutGenerationForTesting,
+            0,
+            "PCM primed across a decoded restart must never inherit the later generation."
+        )
+        XCTAssertEqual(changingBindings.readCount, 2)
+        changingOutput.stop()
+
+        let failedPrimingBindings =
+            BlackHoleScriptedDecodedBinding([(7, 0), (7, 3)])
+        let failedPrimingOutput = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations:
+                    FakeBlackHoleAudioQueueOperations(),
+                renderForTesting: { _, _ in false },
+                decodedPlayoutBindingForTesting: {
+                    failedPrimingBindings.read()
+                },
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+        try failedPrimingOutput.start()
+        XCTAssertEqual(
+            failedPrimingOutput
+                .boundDecodedPlayoutGenerationForTesting,
+            0,
+            "Fallback silence during priming must prevent decoded/queue content comparison."
+        )
+        failedPrimingOutput.stop()
     }
 
     func testProgressWatchdogToleratesContinuouslyAdvancingSilenceBeforeFirstPCM()
@@ -1613,6 +2131,35 @@ private final class BlackHoleManualMonotonicClock: @unchecked Sendable {
         lock.lock()
         value &+= delta
         lock.unlock()
+    }
+}
+
+private final class BlackHoleScriptedDecodedBinding:
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let values: [(generation: UInt64, renderCallCount: UInt64)]
+    private var index = 0
+
+    init(
+        _ values: [(generation: UInt64, renderCallCount: UInt64)]
+    ) {
+        precondition(!values.isEmpty)
+        self.values = values
+    }
+
+    func read() -> (generation: UInt64, renderCallCount: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+        let value = values[min(index, values.count - 1)]
+        index += 1
+        return value
+    }
+
+    var readCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return index
     }
 }
 
