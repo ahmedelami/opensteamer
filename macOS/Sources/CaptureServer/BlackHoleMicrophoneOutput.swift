@@ -6,6 +6,355 @@ import Foundation
 import MacWebRTCAudioDeviceShim
 import WebRTCTransport
 
+struct BlackHoleMicrophoneOutputPCMChannelContentSnapshot:
+    Equatable,
+    Sendable
+{
+    let rms: Double
+    let rmsDBFS: Double
+    let peak: Double
+    let peakDBFS: Double
+    let dc: Double
+    let zeroFraction: Double
+    let clippingFraction: Double
+
+    static let zero = Self(
+        rms: 0,
+        rmsDBFS: -160,
+        peak: 0,
+        peakDBFS: -160,
+        dc: 0,
+        zeroFraction: 0,
+        clippingFraction: 0
+    )
+}
+
+struct BlackHoleMicrophoneOutputPCMContentSnapshot:
+    Equatable,
+    Sendable
+{
+    static let minimumDBFS = -160.0
+
+    let lifecycleGeneration: UInt64
+    let windowSequence: UInt64
+    let completedFrameCount: UInt64
+    let sourceStartFrame: UInt64
+    let sourceEndFrame: UInt64
+    let windowFrameCount: UInt64
+    /// Non-reversible process-local comparison evidence. Never log this value.
+    let windowFingerprint: UInt64
+    let left: BlackHoleMicrophoneOutputPCMChannelContentSnapshot
+    let right: BlackHoleMicrophoneOutputPCMChannelContentSnapshot
+    let leftRightCorrelationIsValid: Bool
+    let leftRightCorrelation: Double
+    let sumPower: Double
+    let differencePower: Double
+    let oneSidedFraction: Double
+
+    var completedWindowCount: UInt64 { windowSequence }
+
+    static let zero = Self(
+        lifecycleGeneration: 0,
+        windowSequence: 0,
+        completedFrameCount: 0,
+        sourceStartFrame: 0,
+        sourceEndFrame: 0,
+        windowFrameCount: 0,
+        windowFingerprint: 0,
+        left: .zero,
+        right: .zero,
+        leftRightCorrelationIsValid: false,
+        leftRightCorrelation: 0,
+        sumPower: 0,
+        differencePower: 0,
+        oneSidedFraction: 0
+    )
+
+    init(
+        lifecycleGeneration: UInt64,
+        windowSequence: UInt64,
+        completedFrameCount: UInt64,
+        sourceStartFrame: UInt64,
+        sourceEndFrame: UInt64,
+        windowFrameCount: UInt64,
+        windowFingerprint: UInt64,
+        left: BlackHoleMicrophoneOutputPCMChannelContentSnapshot,
+        right: BlackHoleMicrophoneOutputPCMChannelContentSnapshot,
+        leftRightCorrelationIsValid: Bool,
+        leftRightCorrelation: Double,
+        sumPower: Double,
+        differencePower: Double,
+        oneSidedFraction: Double
+    ) {
+        self.lifecycleGeneration = lifecycleGeneration
+        self.windowSequence = windowSequence
+        self.completedFrameCount = completedFrameCount
+        self.sourceStartFrame = sourceStartFrame
+        self.sourceEndFrame = sourceEndFrame
+        self.windowFrameCount = windowFrameCount
+        self.windowFingerprint = windowFingerprint
+        self.left = left
+        self.right = right
+        self.leftRightCorrelationIsValid =
+            leftRightCorrelationIsValid
+        self.leftRightCorrelation = leftRightCorrelation
+        self.sumPower = sumPower
+        self.differencePower = differencePower
+        self.oneSidedFraction = oneSidedFraction
+    }
+
+    fileprivate init(
+        lifecycleGeneration: UInt64,
+        windowSequence: UInt64,
+        completedFrameCount: UInt64,
+        raw: BlackHoleMicrophoneOutputPCMContentRawWindow
+    ) {
+        let frameCount = Double(raw.frameCount)
+        guard frameCount > 0 else {
+            self = .zero
+            return
+        }
+
+        let fullScale = 32_768.0
+        let fullScalePower = fullScale * fullScale
+        let leftRMS = sqrt(
+            Double(raw.leftSquareSum) / frameCount
+        ) / fullScale
+        let rightRMS = sqrt(
+            Double(raw.rightSquareSum) / frameCount
+        ) / fullScale
+        let leftPeak = Double(raw.leftPeak) / fullScale
+        let rightPeak = Double(raw.rightPeak) / fullScale
+        let leftSum = Double(raw.leftSampleSum)
+        let rightSum = Double(raw.rightSampleSum)
+        let centeredLeftPower = max(
+            0,
+            Double(raw.leftSquareSum) - leftSum * leftSum / frameCount
+        )
+        let centeredRightPower = max(
+            0,
+            Double(raw.rightSquareSum) - rightSum * rightSum / frameCount
+        )
+        let centeredCrossPower =
+            Double(raw.leftRightProductSum)
+            - leftSum * rightSum / frameCount
+        let correlationDenominator =
+            sqrt(centeredLeftPower) * sqrt(centeredRightPower)
+        let correlation = correlationDenominator > 0
+            ? Self.clampedCorrelation(
+                centeredCrossPower / correlationDenominator
+            )
+            : 0
+
+        self.lifecycleGeneration = lifecycleGeneration
+        self.windowSequence = windowSequence
+        self.completedFrameCount = completedFrameCount
+        sourceStartFrame = raw.sourceStartFrame
+        sourceEndFrame = raw.sourceEndFrame
+        windowFrameCount = raw.frameCount
+        windowFingerprint = raw.windowFingerprint
+        left = Self.channelSnapshot(
+            rms: leftRMS,
+            peak: leftPeak,
+            sampleSum: raw.leftSampleSum,
+            zeroCount: raw.leftZeroCount,
+            clippingCount: raw.leftClippingCount,
+            frameCount: frameCount,
+            fullScale: fullScale
+        )
+        right = Self.channelSnapshot(
+            rms: rightRMS,
+            peak: rightPeak,
+            sampleSum: raw.rightSampleSum,
+            zeroCount: raw.rightZeroCount,
+            clippingCount: raw.rightClippingCount,
+            frameCount: frameCount,
+            fullScale: fullScale
+        )
+        leftRightCorrelationIsValid = correlationDenominator > 0
+        leftRightCorrelation = correlation
+        sumPower = Double(raw.sumSquareSum)
+            / (4 * frameCount * fullScalePower)
+        differencePower = Double(raw.differenceSquareSum)
+            / (4 * frameCount * fullScalePower)
+        oneSidedFraction = Double(raw.oneSidedFrameCount)
+            / frameCount
+    }
+
+    private static func channelSnapshot(
+        rms: Double,
+        peak: Double,
+        sampleSum: Int64,
+        zeroCount: UInt64,
+        clippingCount: UInt64,
+        frameCount: Double,
+        fullScale: Double
+    ) -> BlackHoleMicrophoneOutputPCMChannelContentSnapshot {
+        BlackHoleMicrophoneOutputPCMChannelContentSnapshot(
+            rms: rms,
+            rmsDBFS: decibelsFullScale(rms),
+            peak: peak,
+            peakDBFS: decibelsFullScale(peak),
+            dc: Double(sampleSum) / (frameCount * fullScale),
+            zeroFraction: Double(zeroCount) / frameCount,
+            clippingFraction: Double(clippingCount) / frameCount
+        )
+    }
+
+    private static func decibelsFullScale(
+        _ amplitude: Double
+    ) -> Double {
+        guard amplitude > 0 else { return minimumDBFS }
+        return max(
+            minimumDBFS,
+            min(0, 20 * log10(amplitude))
+        )
+    }
+
+    private static func clampedCorrelation(
+        _ value: Double
+    ) -> Double {
+        max(-1, min(1, value))
+    }
+}
+
+struct BlackHoleMicrophoneOutputDecodedContentSnapshot:
+    Equatable,
+    Sendable
+{
+    let playoutGeneration: UInt64
+    let renderCallCount: UInt64
+    let nativeSuccessRenderCallCount: UInt64
+    let nativeFailureRenderCallCount: UInt64
+    let exactBufferContractCount: UInt64
+    let bufferContractMismatchCount: UInt64
+    let analyzedFrameCount: UInt64
+    let droppedTelemetryRenderCallCount: UInt64
+    let pendingWindowFrameCount: UInt64
+    let latestRenderCall: UInt64
+    let latestRenderStatus: OSStatus
+    let latestBufferContractWasExact: Bool
+    let hasCompletedWindow: Bool
+    let windowSequence: UInt64
+    let windowGeneration: UInt64
+    let windowFirstRenderCall: UInt64
+    let windowLastRenderCall: UInt64
+    let windowRenderCallCount: UInt64
+    let windowFrameCount: UInt64
+    let windowSourceStartFrame: UInt64
+    let windowSourceEndFrame: UInt64
+    /// Non-reversible process-local comparison evidence. Never log this value.
+    let windowFingerprint: UInt64
+    let left: BlackHoleMicrophoneOutputPCMChannelContentSnapshot
+    let right: BlackHoleMicrophoneOutputPCMChannelContentSnapshot
+    let leftRightCorrelationIsValid: Bool
+    let leftRightCorrelation: Double
+    let sumPower: Double
+    let differencePower: Double
+    let oneSidedFraction: Double
+    let windowIsAllZero: Bool
+    let windowIsLeftOnly: Bool
+    let windowIsRightOnly: Bool
+    let frozenBlockCount: UInt64
+    let longestFrozenBlockRun: UInt64
+
+    static let zero = Self(ASMacDecodedPlayoutTelemetrySnapshot())
+
+    init(_ native: ASMacDecodedPlayoutTelemetrySnapshot) {
+        playoutGeneration = native.playoutGeneration
+        renderCallCount = native.renderCallCount
+        nativeSuccessRenderCallCount =
+            native.nativeSuccessRenderCallCount
+        nativeFailureRenderCallCount =
+            native.nativeFailureRenderCallCount
+        exactBufferContractCount = native.exactBufferContractCount
+        bufferContractMismatchCount =
+            native.bufferContractMismatchCount
+        analyzedFrameCount = native.analyzedFrameCount
+        droppedTelemetryRenderCallCount =
+            native.droppedTelemetryRenderCallCount
+        pendingWindowFrameCount = native.pendingWindowFrameCount
+        latestRenderCall = native.latestRenderCall
+        latestRenderStatus = native.latestRenderStatus
+        latestBufferContractWasExact =
+            native.latestBufferContractWasExact
+        hasCompletedWindow = native.hasCompletedWindow
+        windowSequence = native.completedWindowSequence
+        windowGeneration = native.completedWindowGeneration
+        windowFirstRenderCall = native.completedWindowFirstRenderCall
+        windowLastRenderCall = native.completedWindowLastRenderCall
+        windowRenderCallCount = native.completedWindowRenderCallCount
+        windowFrameCount = native.completedWindowFrameCount
+        windowSourceStartFrame = native.completedWindowSourceStartFrame
+        windowSourceEndFrame = native.completedWindowSourceEndFrame
+        windowFingerprint = native.completedWindowFingerprint
+        if native.hasCompletedWindow {
+            left = Self.channelSnapshot(
+                rms: native.leftRMS,
+                rmsDBFS: Self.boundedDBFS(native.leftRMSDecibelsFS),
+                peak: native.leftPeak,
+                peakDBFS: Self.boundedDBFS(native.leftPeakDecibelsFS),
+                dc: native.leftDC,
+                zeroFraction: native.leftZeroFraction,
+                clippingFraction: native.leftClippingFraction
+            )
+            right = Self.channelSnapshot(
+                rms: native.rightRMS,
+                rmsDBFS: Self.boundedDBFS(native.rightRMSDecibelsFS),
+                peak: native.rightPeak,
+                peakDBFS: Self.boundedDBFS(native.rightPeakDecibelsFS),
+                dc: native.rightDC,
+                zeroFraction: native.rightZeroFraction,
+                clippingFraction: native.rightClippingFraction
+            )
+        } else {
+            left = .zero
+            right = .zero
+        }
+        leftRightCorrelationIsValid =
+            native.leftRightCorrelationIsValid
+        leftRightCorrelation = native.leftRightCorrelation
+        sumPower = native.sumPower
+        differencePower = native.differencePower
+        oneSidedFraction = native.oneSidedFraction
+        windowIsAllZero = native.windowIsAllZero
+        windowIsLeftOnly = native.windowIsLeftOnly
+        windowIsRightOnly = native.windowIsRightOnly
+        frozenBlockCount = native.frozenBlockCount
+        longestFrozenBlockRun = native.longestFrozenBlockRun
+    }
+
+    private static func channelSnapshot(
+        rms: Double,
+        rmsDBFS: Double,
+        peak: Double,
+        peakDBFS: Double,
+        dc: Double,
+        zeroFraction: Double,
+        clippingFraction: Double
+    ) -> BlackHoleMicrophoneOutputPCMChannelContentSnapshot {
+        BlackHoleMicrophoneOutputPCMChannelContentSnapshot(
+            rms: rms,
+            rmsDBFS: rmsDBFS,
+            peak: peak,
+            peakDBFS: peakDBFS,
+            dc: dc,
+            zeroFraction: zeroFraction,
+            clippingFraction: clippingFraction
+        )
+    }
+
+    private static func boundedDBFS(_ value: Double) -> Double {
+        guard value.isFinite else {
+            return BlackHoleMicrophoneOutputPCMContentSnapshot.minimumDBFS
+        }
+        return max(
+            BlackHoleMicrophoneOutputPCMContentSnapshot.minimumDBFS,
+            min(0, value)
+        )
+    }
+}
+
 struct BlackHoleMicrophoneOutputProgressSnapshot:
     Equatable,
     Sendable
@@ -19,6 +368,71 @@ struct BlackHoleMicrophoneOutputProgressSnapshot:
     let silenceFrameCount: UInt64
     let enqueueFailureCount: UInt64
     let lastEnqueueStatus: OSStatus
+    let pcmContent: BlackHoleMicrophoneOutputPCMContentSnapshot
+    let decodedContent:
+        BlackHoleMicrophoneOutputDecodedContentSnapshot
+    let boundDecodedPlayoutGeneration: UInt64
+    let boundDecodedRenderCallFloor: UInt64
+
+    var contentWindowsAlign: Bool {
+        let pcm = pcmContent
+        let decoded = decodedContent
+        return queueRunning
+            && pcm.lifecycleGeneration > 0
+            && pcm.windowSequence > 0
+            && decoded.hasCompletedWindow
+            && boundDecodedPlayoutGeneration > 0
+            && decoded.playoutGeneration
+                == boundDecodedPlayoutGeneration
+            && decoded.windowGeneration == decoded.playoutGeneration
+            && decoded.windowFirstRenderCall
+                > boundDecodedRenderCallFloor
+            && silenceFallbackCount == 0
+            && enqueueFailureCount == 0
+            && pcm.windowFrameCount == 48_000
+            && decoded.windowFrameCount == pcm.windowFrameCount
+            && pcm.sourceStartFrame == decoded.windowSourceStartFrame
+            && pcm.sourceEndFrame == decoded.windowSourceEndFrame
+    }
+
+    var alignedContentFingerprintsMatch: Bool {
+        contentWindowsAlign
+            && pcmContent.windowFingerprint
+                == decodedContent.windowFingerprint
+    }
+
+    init(
+        queueRunning: Bool,
+        postStartCallbackCount: UInt64,
+        requestedFrameCount: UInt64,
+        successfulPullCount: UInt64,
+        successfulFrameCount: UInt64,
+        silenceFallbackCount: UInt64,
+        silenceFrameCount: UInt64,
+        enqueueFailureCount: UInt64,
+        lastEnqueueStatus: OSStatus,
+        pcmContent: BlackHoleMicrophoneOutputPCMContentSnapshot = .zero,
+        decodedContent:
+            BlackHoleMicrophoneOutputDecodedContentSnapshot = .zero,
+        boundDecodedPlayoutGeneration: UInt64 = 0,
+        boundDecodedRenderCallFloor: UInt64 = 0
+    ) {
+        self.queueRunning = queueRunning
+        self.postStartCallbackCount = postStartCallbackCount
+        self.requestedFrameCount = requestedFrameCount
+        self.successfulPullCount = successfulPullCount
+        self.successfulFrameCount = successfulFrameCount
+        self.silenceFallbackCount = silenceFallbackCount
+        self.silenceFrameCount = silenceFrameCount
+        self.enqueueFailureCount = enqueueFailureCount
+        self.lastEnqueueStatus = lastEnqueueStatus
+        self.pcmContent = pcmContent
+        self.decodedContent = decodedContent
+        self.boundDecodedPlayoutGeneration =
+            boundDecodedPlayoutGeneration
+        self.boundDecodedRenderCallFloor =
+            boundDecodedRenderCallFloor
+    }
 
     static let zero = Self(
         queueRunning: false,
@@ -29,19 +443,257 @@ struct BlackHoleMicrophoneOutputProgressSnapshot:
         silenceFallbackCount: 0,
         silenceFrameCount: 0,
         enqueueFailureCount: 0,
-        lastEnqueueStatus: noErr
+        lastEnqueueStatus: noErr,
+        pcmContent: .zero,
+        decodedContent: .zero,
+        boundDecodedPlayoutGeneration: 0,
+        boundDecodedRenderCallFloor: 0
     )
+
+    fileprivate func includingDecodedContent(
+        _ decodedContent:
+            BlackHoleMicrophoneOutputDecodedContentSnapshot,
+        boundDecodedPlayoutGeneration: UInt64,
+        boundDecodedRenderCallFloor: UInt64
+    ) -> Self {
+        Self(
+            queueRunning: queueRunning,
+            postStartCallbackCount: postStartCallbackCount,
+            requestedFrameCount: requestedFrameCount,
+            successfulPullCount: successfulPullCount,
+            successfulFrameCount: successfulFrameCount,
+            silenceFallbackCount: silenceFallbackCount,
+            silenceFrameCount: silenceFrameCount,
+            enqueueFailureCount: enqueueFailureCount,
+            lastEnqueueStatus: lastEnqueueStatus,
+            pcmContent: pcmContent,
+            decodedContent: decodedContent,
+            boundDecodedPlayoutGeneration:
+                boundDecodedPlayoutGeneration,
+            boundDecodedRenderCallFloor:
+                boundDecodedRenderCallFloor
+        )
+    }
+}
+
+private struct BlackHoleMicrophoneOutputPCMContentRawWindow {
+    static let fingerprintOffsetBasis: UInt64 =
+        14_695_981_039_346_656_037
+    static let fingerprintPrime: UInt64 = 1_099_511_628_211
+
+    var sourceStartFrame: UInt64 = 0
+    var sourceEndFrame: UInt64 = 0
+    var frameCount: UInt64 = 0
+    var leftSampleSum: Int64 = 0
+    var rightSampleSum: Int64 = 0
+    var leftSquareSum: UInt64 = 0
+    var rightSquareSum: UInt64 = 0
+    var leftRightProductSum: Int64 = 0
+    var sumSquareSum: UInt64 = 0
+    var differenceSquareSum: UInt64 = 0
+    var leftPeak: UInt64 = 0
+    var rightPeak: UInt64 = 0
+    var leftZeroCount: UInt64 = 0
+    var rightZeroCount: UInt64 = 0
+    var leftClippingCount: UInt64 = 0
+    var rightClippingCount: UInt64 = 0
+    var oneSidedFrameCount: UInt64 = 0
+    var windowFingerprint: UInt64 = fingerprintOffsetBasis
+}
+
+private final class BlackHoleMicrophoneOutputPCMContentStorage:
+    @unchecked Sendable
+{
+    private let reference: ASMacAudioQueuePCMContentRef
+
+    init?() {
+        guard let reference = ASMacAudioQueuePCMContentCreate() else {
+            return nil
+        }
+        self.reference = reference
+    }
+
+    deinit {
+        ASMacAudioQueuePCMContentDestroy(reference)
+    }
+
+    func reset() {
+        ASMacAudioQueuePCMContentReset(reference)
+    }
+
+    @inline(__always)
+    func publish(
+        _ window: BlackHoleMicrophoneOutputPCMContentRawWindow
+    ) {
+        var nativeWindow = ASMacAudioQueuePCMContentRawWindow()
+        nativeWindow.sourceStartFrame = window.sourceStartFrame
+        nativeWindow.sourceEndFrame = window.sourceEndFrame
+        nativeWindow.frameCount = window.frameCount
+        nativeWindow.leftSampleSum = window.leftSampleSum
+        nativeWindow.rightSampleSum = window.rightSampleSum
+        nativeWindow.leftSquareSum = window.leftSquareSum
+        nativeWindow.rightSquareSum = window.rightSquareSum
+        nativeWindow.leftRightProductSum = window.leftRightProductSum
+        nativeWindow.sumSquareSum = window.sumSquareSum
+        nativeWindow.differenceSquareSum = window.differenceSquareSum
+        nativeWindow.leftPeak = window.leftPeak
+        nativeWindow.rightPeak = window.rightPeak
+        nativeWindow.leftZeroCount = window.leftZeroCount
+        nativeWindow.rightZeroCount = window.rightZeroCount
+        nativeWindow.leftClippingCount = window.leftClippingCount
+        nativeWindow.rightClippingCount = window.rightClippingCount
+        nativeWindow.oneSidedFrameCount = window.oneSidedFrameCount
+        nativeWindow.windowFingerprint = window.windowFingerprint
+        ASMacAudioQueuePCMContentPublish(reference, nativeWindow)
+    }
+
+    var snapshot: BlackHoleMicrophoneOutputPCMContentSnapshot {
+        let native = ASMacAudioQueuePCMContentRead(reference)
+        guard native.hasCompletedWindow else { return .zero }
+        let window = native.window
+        return BlackHoleMicrophoneOutputPCMContentSnapshot(
+            lifecycleGeneration: native.lifecycleGeneration,
+            windowSequence: native.windowSequence,
+            completedFrameCount: native.completedFrameCount,
+            raw: BlackHoleMicrophoneOutputPCMContentRawWindow(
+                sourceStartFrame: window.sourceStartFrame,
+                sourceEndFrame: window.sourceEndFrame,
+                frameCount: window.frameCount,
+                leftSampleSum: window.leftSampleSum,
+                rightSampleSum: window.rightSampleSum,
+                leftSquareSum: window.leftSquareSum,
+                rightSquareSum: window.rightSquareSum,
+                leftRightProductSum: window.leftRightProductSum,
+                sumSquareSum: window.sumSquareSum,
+                differenceSquareSum: window.differenceSquareSum,
+                leftPeak: window.leftPeak,
+                rightPeak: window.rightPeak,
+                leftZeroCount: window.leftZeroCount,
+                rightZeroCount: window.rightZeroCount,
+                leftClippingCount: window.leftClippingCount,
+                rightClippingCount: window.rightClippingCount,
+                oneSidedFrameCount: window.oneSidedFrameCount,
+                windowFingerprint: window.windowFingerprint
+            )
+        )
+    }
+}
+
+private struct BlackHoleMicrophoneOutputPCMContentAccumulator {
+    static let targetFrameCount: UInt64 = 48_000
+
+    private var window =
+        BlackHoleMicrophoneOutputPCMContentRawWindow()
+    private var sourceFrame: UInt64 = 0
+
+    @inline(__always)
+    mutating func accumulate(
+        interleavedStereo samples: UnsafePointer<Int16>,
+        frameCount: Int,
+        storage: BlackHoleMicrophoneOutputProgressStorage
+    ) {
+        var sourceFrameIndex = 0
+        while sourceFrameIndex < frameCount {
+            if window.frameCount == 0 {
+                window.sourceStartFrame = sourceFrame
+            }
+            let remainingWindowFrames = Int(
+                Self.targetFrameCount - window.frameCount
+            )
+            let consumedFrameCount = min(
+                remainingWindowFrames,
+                frameCount - sourceFrameIndex
+            )
+            let endFrameIndex = sourceFrameIndex + consumedFrameCount
+            while sourceFrameIndex < endFrameIndex {
+                let sampleIndex = sourceFrameIndex * 2
+                accumulate(
+                    left: Int64(samples[sampleIndex]),
+                    right: Int64(samples[sampleIndex + 1])
+                )
+                sourceFrameIndex += 1
+                sourceFrame &+= 1
+            }
+            window.frameCount += UInt64(consumedFrameCount)
+            window.sourceEndFrame = sourceFrame
+            if window.frameCount == Self.targetFrameCount {
+                storage.publishPCMContent(window)
+                window = BlackHoleMicrophoneOutputPCMContentRawWindow()
+            }
+        }
+    }
+
+    @inline(__always)
+    private mutating func accumulate(
+        left: Int64,
+        right: Int64
+    ) {
+        let leftMagnitude = UInt64(left < 0 ? -left : left)
+        let rightMagnitude = UInt64(right < 0 ? -right : right)
+        let sum = left + right
+        let difference = left - right
+
+        window.leftSampleSum += left
+        window.rightSampleSum += right
+        window.leftSquareSum += UInt64(left * left)
+        window.rightSquareSum += UInt64(right * right)
+        window.leftRightProductSum += left * right
+        window.sumSquareSum += UInt64(sum * sum)
+        window.differenceSquareSum += UInt64(difference * difference)
+        window.leftPeak = max(window.leftPeak, leftMagnitude)
+        window.rightPeak = max(window.rightPeak, rightMagnitude)
+        window.leftZeroCount += left == 0 ? 1 : 0
+        window.rightZeroCount += right == 0 ? 1 : 0
+        window.leftClippingCount += Self.isClipping(leftMagnitude) ? 1 : 0
+        window.rightClippingCount += Self.isClipping(rightMagnitude) ? 1 : 0
+        window.oneSidedFrameCount +=
+            (leftMagnitude >= 128) != (rightMagnitude >= 128)
+            ? 1
+            : 0
+        let leftBits = UInt16(bitPattern: Int16(left))
+        window.windowFingerprint ^= UInt64(leftBits & 0x00ff)
+        window.windowFingerprint &*=
+            BlackHoleMicrophoneOutputPCMContentRawWindow
+                .fingerprintPrime
+        window.windowFingerprint ^= UInt64(leftBits >> 8)
+        window.windowFingerprint &*=
+            BlackHoleMicrophoneOutputPCMContentRawWindow
+                .fingerprintPrime
+        let rightBits = UInt16(bitPattern: Int16(right))
+        window.windowFingerprint ^= UInt64(rightBits & 0x00ff)
+        window.windowFingerprint &*=
+            BlackHoleMicrophoneOutputPCMContentRawWindow
+                .fingerprintPrime
+        window.windowFingerprint ^= UInt64(rightBits >> 8)
+        window.windowFingerprint &*=
+            BlackHoleMicrophoneOutputPCMContentRawWindow
+                .fingerprintPrime
+    }
+
+    @inline(__always)
+    private static func isClipping(
+        _ magnitude: UInt64
+    ) -> Bool {
+        magnitude >= 32_760
+    }
 }
 
 private final class BlackHoleMicrophoneOutputProgressStorage:
     @unchecked Sendable
 {
     let reference: ASMacAudioQueueProgressRef
+    private let pcmContentStorage:
+        BlackHoleMicrophoneOutputPCMContentStorage
 
     init?() {
+        guard let pcmContentStorage =
+                BlackHoleMicrophoneOutputPCMContentStorage() else {
+            return nil
+        }
         guard let reference = ASMacAudioQueueProgressCreate() else {
             return nil
         }
+        self.pcmContentStorage = pcmContentStorage
         self.reference = reference
     }
 
@@ -51,6 +703,13 @@ private final class BlackHoleMicrophoneOutputProgressStorage:
 
     func reset() {
         ASMacAudioQueueProgressReset(reference)
+        pcmContentStorage.reset()
+    }
+
+    /// Must be called only after the callback lifetime has been closed and
+    /// drained, so an outgoing queue cannot republish a retired window.
+    func clearPCMContentAfterCallbackDrain() {
+        pcmContentStorage.reset()
     }
 
     func setQueueRunning(_ queueRunning: Bool) {
@@ -73,6 +732,13 @@ private final class BlackHoleMicrophoneOutputProgressStorage:
         )
     }
 
+    @inline(__always)
+    func publishPCMContent(
+        _ window: BlackHoleMicrophoneOutputPCMContentRawWindow
+    ) {
+        pcmContentStorage.publish(window)
+    }
+
     var snapshot: BlackHoleMicrophoneOutputProgressSnapshot {
         let native = ASMacAudioQueueProgressRead(reference)
         return BlackHoleMicrophoneOutputProgressSnapshot(
@@ -85,7 +751,10 @@ private final class BlackHoleMicrophoneOutputProgressStorage:
             silenceFallbackCount: native.silenceFallbackCount,
             silenceFrameCount: native.silenceFrameCount,
             enqueueFailureCount: native.enqueueFailureCount,
-            lastEnqueueStatus: native.lastEnqueueStatus
+            lastEnqueueStatus: native.lastEnqueueStatus,
+            pcmContent: native.queueRunning
+                ? pcmContentStorage.snapshot
+                : .zero
         )
     }
 }
@@ -190,6 +859,8 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
     private var callbackContextPointer: UnsafeMutableRawPointer?
     private var buffers: [AudioQueueBufferRef] = []
     private var lastDisposeStatus: OSStatus?
+    private var boundDecodedPlayoutGeneration: UInt64?
+    private var boundDecodedRenderCallFloor: UInt64?
     private var runtimeFailureTimer: (any DispatchSourceTimer)?
     private var runtimeFailureGeneration: UInt64 = 0
     private var activeRuntimeFailureGeneration: UInt64?
@@ -215,6 +886,8 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         (@Sendable () -> Void)?
     private let runtimeEnqueueFailurePublicationInterlockForTesting:
         BlackHoleMicrophoneOutputRuntimeEnqueueFailurePublicationInterlock?
+    private let decodedPlayoutBindingForTesting:
+        (() -> (generation: UInt64, renderCallCount: UInt64))?
     #endif
 
     init?(
@@ -249,6 +922,7 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         callbackContextDeinitForTesting = nil
         runtimeEnqueueFailurePublicationInterlockForTesting =
             nil
+        decodedPlayoutBindingForTesting = nil
         #endif
     }
 
@@ -268,6 +942,8 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
             UnsafeMutablePointer<Int16>,
             Int
         ) -> Bool = { _, _ in false },
+        decodedPlayoutBindingForTesting:
+            (() -> (generation: UInt64, renderCallCount: UInt64))? = nil,
         queueDisposalRetainer:
             BlackHoleMicrophoneOutputQueueDisposalRetainer =
                 .shared,
@@ -307,6 +983,8 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
             callbackContextDeinitForTesting
         self.runtimeEnqueueFailurePublicationInterlockForTesting =
             runtimeEnqueueFailurePublicationInterlockForTesting
+        self.decodedPlayoutBindingForTesting =
+            decodedPlayoutBindingForTesting
     }
     #endif
 
@@ -320,12 +998,52 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
 
     var forwardingProgressSnapshot:
         BlackHoleMicrophoneOutputProgressSnapshot {
-        progressStorage.snapshot
+        let progress = progressStorage.snapshot
+        guard progress.queueRunning, let source else { return progress }
+        // Both native snapshot reads and all floating-point derivation happen
+        // on the service/watchdog side, never in the AudioQueue callback.
+        return progress.includingDecodedContent(
+            BlackHoleMicrophoneOutputDecodedContentSnapshot(
+                source.decodedContentTelemetry
+            ),
+            boundDecodedPlayoutGeneration:
+                boundDecodedPlayoutGeneration ?? 0,
+            boundDecodedRenderCallFloor:
+                boundDecodedRenderCallFloor ?? 0
+        )
     }
+
+    private var currentDecodedPlayoutBinding:
+        (generation: UInt64, renderCallCount: UInt64) {
+        #if DEBUG
+        if let decodedPlayoutBindingForTesting {
+            return decodedPlayoutBindingForTesting()
+        }
+        #endif
+        guard let telemetry = source?.decodedContentTelemetry else {
+            return (0, 0)
+        }
+        return (
+            telemetry.playoutGeneration,
+            telemetry.renderCallCount
+        )
+    }
+
+    #if DEBUG
+    var boundDecodedPlayoutGenerationForTesting: UInt64 {
+        boundDecodedPlayoutGeneration ?? 0
+    }
+
+    var boundDecodedRenderCallFloorForTesting: UInt64 {
+        boundDecodedRenderCallFloor ?? 0
+    }
+    #endif
 
     func start() throws {
         guard audioQueue == nil else { return }
 
+        boundDecodedPlayoutGeneration = nil
+        boundDecodedRenderCallFloor = nil
         runtimeFailureLatch.reset()
         progressStorage.reset()
         var format = AudioStreamBasicDescription(
@@ -431,6 +1149,9 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         let byteCount = framesPerBuffer
             * channelCount
             * UInt32(MemoryLayout<Int16>.size)
+        let decodedBindingBeforePriming =
+            currentDecodedPlayoutBinding
+        var allPrimingPullsSucceeded = true
         for _ in 0..<3 {
             let allocation = allocateBuffer(
                 on: queue,
@@ -457,6 +1178,9 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
                 queue: queue,
                 buffer: buffer
             )
+            allPrimingPullsSucceeded =
+                allPrimingPullsSucceeded
+                && primingResult.pullSucceeded
             guard primingResult.enqueueStatus == noErr else {
                 throw BlackHoleMicrophoneOutputError.operation(
                     Self.primeBufferOperation,
@@ -474,6 +1198,29 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
             )
         }
 
+        let decodedBindingAfterStart =
+            currentDecodedPlayoutBinding
+        let minimumRenderCallCount =
+            decodedBindingBeforePriming.renderCallCount
+                .addingReportingOverflow(
+                    UInt64(createdBuffers.count)
+                )
+        if allPrimingPullsSucceeded,
+           !minimumRenderCallCount.overflow,
+           decodedBindingBeforePriming.generation > 0,
+           decodedBindingAfterStart.generation
+            == decodedBindingBeforePriming.generation,
+           decodedBindingAfterStart.renderCallCount
+            >= minimumRenderCallCount.partialValue {
+            boundDecodedPlayoutGeneration =
+                decodedBindingBeforePriming.generation
+            boundDecodedRenderCallFloor =
+                decodedBindingBeforePriming.renderCallCount
+        } else {
+            boundDecodedPlayoutGeneration = nil
+            boundDecodedRenderCallFloor = nil
+        }
+
         audioQueue = queue
         self.callbackContext = callbackContext
         self.callbackContextPointer = callbackContextPointer
@@ -487,6 +1234,8 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
 
     func stop() {
         stopRuntimeFailureMonitoring()
+        boundDecodedPlayoutGeneration = nil
+        boundDecodedRenderCallFloor = nil
         guard let queue = audioQueue,
               let callbackContext,
               let callbackContextPointer else {
@@ -515,6 +1264,7 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         guard let queue else {
             callbackContext.closeCallbacks()
             callbackContext.waitForCallbacks()
+            progressStorage.clearPCMContentAfterCallbackDrain()
             Unmanaged<BlackHoleMicrophoneOutputCallbackContext>
                 .fromOpaque(callbackContextPointer)
                 .release()
@@ -540,6 +1290,7 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
             _ = stopQueue(queue, immediate: true)
         }
         callbackContext.waitForCallbacks()
+        progressStorage.clearPCMContentAfterCallbackDrain()
         let status = disposeQueue(queue, immediate: true)
         lastDisposeStatus = status
         Unmanaged<BlackHoleMicrophoneOutputCallbackContext>
@@ -1037,6 +1788,8 @@ private final class BlackHoleMicrophoneOutputCallbackContext:
     private let runtimeFailureLatch: WebRTCMacAudioQueueRuntimeFailureLatch
     private let channelCount: UInt32
     private let progressStorage: BlackHoleMicrophoneOutputProgressStorage
+    private var pcmContentAccumulator =
+        BlackHoleMicrophoneOutputPCMContentAccumulator()
 
     #if DEBUG
     private let testingAudioQueueOperations:
@@ -1181,6 +1934,11 @@ private final class BlackHoleMicrophoneOutputCallbackContext:
 
         buffer.pointee.mAudioDataByteSize =
             UInt32(frameCount * frameBytes)
+        pcmContentAccumulator.accumulate(
+            interleavedStereo: UnsafePointer(samples),
+            frameCount: frameCount,
+            storage: progressStorage
+        )
         return BlackHoleMicrophoneOutputCallbackResult(
             requestedFrameCount: UInt64(frameCount),
             pullSucceeded: pullSucceeded,
