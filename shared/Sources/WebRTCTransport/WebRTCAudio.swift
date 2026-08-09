@@ -30,6 +30,11 @@ public final class WebRTCMacDecodedAudioSource: @unchecked Sendable {
             frameCount: UInt(frameCount)
         )
     }
+
+    /// Privacy-safe, off-callback scalar evidence from the earliest decoded stereo boundary.
+    public var decodedContentTelemetry: ASMacDecodedPlayoutTelemetrySnapshot {
+        device.decodedPlayoutTelemetry
+    }
 }
 
 /// Lock-free publication boundary between a realtime AudioQueue callback and

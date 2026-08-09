@@ -123,6 +123,82 @@ ASMacAudioQueueProgressRead(
     ASMacAudioQueueProgressRef progress
 );
 
+/// Opaque lock-free publication boundary for the final AudioQueue PCM buffer.
+///
+/// The realtime producer publishes fixed-size scalar aggregates for completed
+/// windows. It never publishes or retains PCM. Reset is valid only after the
+/// outgoing callback lifetime has been closed and drained.
+typedef void *ASMacAudioQueuePCMContentRef;
+
+typedef struct ASMacAudioQueuePCMContentRawWindow {
+    /// Exact half-open source-frame interval represented by this window.
+    uint64_t sourceStartFrame;
+    uint64_t sourceEndFrame;
+    /// Canonical FNV-1a 64 over every interleaved Int16 sample in the window. Each
+    /// sample is reinterpreted as UInt16 and hashed low byte then high byte.
+    uint64_t windowFingerprint;
+    uint64_t frameCount;
+    int64_t leftSampleSum;
+    int64_t rightSampleSum;
+    uint64_t leftSquareSum;
+    uint64_t rightSquareSum;
+    int64_t leftRightProductSum;
+    uint64_t sumSquareSum;
+    uint64_t differenceSquareSum;
+    uint64_t leftPeak;
+    uint64_t rightPeak;
+    uint64_t leftZeroCount;
+    uint64_t rightZeroCount;
+    uint64_t leftClippingCount;
+    uint64_t rightClippingCount;
+    uint64_t oneSidedFrameCount;
+} ASMacAudioQueuePCMContentRawWindow;
+
+typedef struct ASMacAudioQueuePCMContentSnapshot {
+    bool hasCompletedWindow;
+    /// Monotonic publication lifecycle. Reset advances this value and never reuses
+    /// a prior window sequence, so a concurrent reader cannot accept an ABA payload.
+    uint64_t lifecycleGeneration;
+    uint64_t windowSequence;
+    uint64_t completedFrameCount;
+    ASMacAudioQueuePCMContentRawWindow window;
+} ASMacAudioQueuePCMContentSnapshot;
+
+FOUNDATION_EXPORT ASMacAudioQueuePCMContentRef _Nullable
+ASMacAudioQueuePCMContentCreate(void);
+
+FOUNDATION_EXPORT void ASMacAudioQueuePCMContentDestroy(
+    ASMacAudioQueuePCMContentRef content
+);
+
+FOUNDATION_EXPORT void ASMacAudioQueuePCMContentReset(
+    ASMacAudioQueuePCMContentRef content
+);
+
+FOUNDATION_EXPORT void ASMacAudioQueuePCMContentPublish(
+    ASMacAudioQueuePCMContentRef content,
+    ASMacAudioQueuePCMContentRawWindow window
+);
+
+FOUNDATION_EXPORT ASMacAudioQueuePCMContentSnapshot
+ASMacAudioQueuePCMContentRead(
+    ASMacAudioQueuePCMContentRef content
+);
+
+#if DEBUG
+/// Test-only deterministic interlock for proving a read spanning reset/publication cannot accept
+/// an ABA or hybrid payload. The hold applies to the next reader that observes a publication.
+FOUNDATION_EXPORT void ASMacAudioQueuePCMContentHoldReadForTesting(
+    ASMacAudioQueuePCMContentRef content
+);
+FOUNDATION_EXPORT void ASMacAudioQueuePCMContentReleaseReadForTesting(
+    ASMacAudioQueuePCMContentRef content
+);
+FOUNDATION_EXPORT bool ASMacAudioQueuePCMContentReadIsHeldForTesting(
+    ASMacAudioQueuePCMContentRef content
+);
+#endif
+
 /// A lock-consistent cumulative snapshot of the source-clock custom device.
 ///
 /// Every successful input callback is captured Mac PCM. There is no recording timer, ring,
@@ -163,6 +239,89 @@ typedef struct ASMacStereoAudioDeviceDiagnostics {
     uint64_t playoutPullsInFlight;
     uint64_t playoutFenceWaitCount;
 } ASMacStereoAudioDeviceDiagnostics;
+
+/// Privacy-safe decoded-content evidence from the caller-owned stereo playout boundary.
+///
+/// Content-derived fields describe only the latest completed exact 48,000-frame window. An
+/// arbitrary render callback may be divided between adjacent scalar windows while its PCM remains
+/// solely in caller-owned storage for the duration of the callback. Exact render/frame/byte
+/// evidence is cumulative for the device lifetime. The realtime path retains scalar sums and a
+/// non-reversible FNV-1a fingerprint only; RMS, dBFS, fractions, and centered Pearson correlation
+/// are derived by this off-callback snapshot accessor. No PCM is retained.
+typedef struct ASMacDecodedPlayoutTelemetrySnapshot {
+    uint64_t playoutGeneration;
+
+    /// Exact cumulative caller/native contract evidence.
+    uint64_t renderCallCount;
+    uint64_t requestedFrameCount;
+    uint64_t requestedByteCount;
+    uint64_t returnedByteCount;
+    uint64_t nativeSuccessRenderCallCount;
+    uint64_t nativeFailureRenderCallCount;
+    uint64_t exactBufferContractCount;
+    uint64_t bufferContractMismatchCount;
+    uint64_t analyzedRenderCallCount;
+    uint64_t analyzedFrameCount;
+    uint64_t analyzedByteCount;
+    uint64_t droppedTelemetryRenderCallCount;
+    uint64_t pendingWindowFrameCount;
+    uint64_t latestRenderCall;
+    int32_t latestRenderStatus;
+    uint32_t latestRequestedFrameCount;
+    uint32_t latestRequestedByteCount;
+    uint32_t latestReturnedByteCount;
+    bool latestBufferContractWasExact;
+
+    /// Latest completed content window. False until the current playout generation completes one.
+    bool hasCompletedWindow;
+    uint64_t completedWindowSequence;
+    uint64_t completedWindowGeneration;
+    uint64_t completedWindowFirstRenderCall;
+    uint64_t completedWindowLastRenderCall;
+    uint64_t completedWindowRenderCallCount;
+    uint64_t completedWindowFrameCount;
+    uint64_t completedWindowByteCount;
+    /// Exact half-open playout source-frame interval represented by the window.
+    uint64_t completedWindowSourceStartFrame;
+    uint64_t completedWindowSourceEndFrame;
+    /// Canonical FNV-1a 64 over interleaved Int16 sample bytes, low byte then high byte.
+    uint64_t completedWindowFingerprint;
+    double completedWindowDurationSeconds;
+
+    double leftRMS;
+    double rightRMS;
+    double leftRMSDecibelsFS;
+    double rightRMSDecibelsFS;
+    double leftPeak;
+    double rightPeak;
+    double leftPeakDecibelsFS;
+    double rightPeakDecibelsFS;
+    double leftDC;
+    double rightDC;
+    uint64_t leftZeroSampleCount;
+    uint64_t rightZeroSampleCount;
+    double leftZeroFraction;
+    double rightZeroFraction;
+    uint64_t leftClippedSampleCount;
+    uint64_t rightClippedSampleCount;
+    double leftClippingFraction;
+    double rightClippingFraction;
+    bool leftRightCorrelationIsValid;
+    double leftRightCorrelation;
+    double sumPower;
+    double differencePower;
+    uint64_t oneSidedFrameCount;
+    double oneSidedFraction;
+
+    bool windowIsAllZero;
+    bool windowIsLeftOnly;
+    bool windowIsRightOnly;
+    uint64_t allZeroBlockCount;
+    uint64_t leftOnlyBlockCount;
+    uint64_t rightOnlyBlockCount;
+    uint64_t frozenBlockCount;
+    uint64_t longestFrozenBlockRun;
+} ASMacDecodedPlayoutTelemetrySnapshot;
 
 /// Source-clock WebRTC device used by the Mac host.
 ///
@@ -207,9 +366,19 @@ typedef struct ASMacStereoAudioDeviceDiagnostics {
 - (void)releasePlayoutPullsForTesting;
 @property(nonatomic, readonly) BOOL playoutPullIsHeldForTesting;
 - (BOOL)stopPlayoutAndFenceForTesting;
+
+/// Pauses one diagnostics reader immediately after it observes a completed-window publication.
+/// Test-only: allows a reset/new publication to be interleaved deterministically.
+- (void)holdDecodedTelemetryReadsForTesting;
+- (void)releaseDecodedTelemetryReadsForTesting;
+@property(nonatomic, readonly) BOOL decodedTelemetryReadIsHeldForTesting;
 #endif
 
 @property(nonatomic, readonly) ASMacStereoAudioDeviceDiagnostics diagnostics;
+
+/// Reads one consistent completed content window plus monotonic exact contract counters.
+/// Call only from a non-realtime diagnostics context.
+@property(nonatomic, readonly) ASMacDecodedPlayoutTelemetrySnapshot decodedPlayoutTelemetry;
 
 @end
 
