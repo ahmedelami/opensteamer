@@ -499,6 +499,72 @@ actor WorldwideScreenService {
         _ snapshot: WorldwideIPhoneMicrophoneForwardingHostSnapshot
     ) -> String {
         let progress = snapshot.progress
+        let content = progress.pcmContent
+        let decoded = progress.decodedContent
+        let contentScalars = String(
+            format:
+                "pcmLRMS=%.6f pcmLRMSdBFS=%.2f " +
+                "pcmLPeak=%.6f pcmLPeakdBFS=%.2f " +
+                "pcmLDC=%.6f pcmLZeroFraction=%.6f " +
+                "pcmLClippingFraction=%.6f " +
+                "pcmRRMS=%.6f pcmRRMSdBFS=%.2f " +
+                "pcmRPeak=%.6f pcmRPeakdBFS=%.2f " +
+                "pcmRDC=%.6f pcmRZeroFraction=%.6f " +
+                "pcmRClippingFraction=%.6f " +
+                "pcmLRCorrelation=%.6f pcmSumPower=%.6f " +
+                "pcmDifferencePower=%.6f " +
+                "pcmOneSidedFraction=%.6f",
+            content.left.rms,
+            content.left.rmsDBFS,
+            content.left.peak,
+            content.left.peakDBFS,
+            content.left.dc,
+            content.left.zeroFraction,
+            content.left.clippingFraction,
+            content.right.rms,
+            content.right.rmsDBFS,
+            content.right.peak,
+            content.right.peakDBFS,
+            content.right.dc,
+            content.right.zeroFraction,
+            content.right.clippingFraction,
+            content.leftRightCorrelation,
+            content.sumPower,
+            content.differencePower,
+            content.oneSidedFraction
+        )
+        let decodedScalars = String(
+            format:
+                "decLRMS=%.6f decLRMSdBFS=%.2f " +
+                "decLPeak=%.6f decLPeakdBFS=%.2f " +
+                "decLDC=%.6f decLZeroFraction=%.6f " +
+                "decLClippingFraction=%.6f " +
+                "decRRMS=%.6f decRRMSdBFS=%.2f " +
+                "decRPeak=%.6f decRPeakdBFS=%.2f " +
+                "decRDC=%.6f decRZeroFraction=%.6f " +
+                "decRClippingFraction=%.6f " +
+                "decLRCorrelation=%.6f decSumPower=%.6f " +
+                "decDifferencePower=%.6f " +
+                "decOneSidedFraction=%.6f",
+            decoded.left.rms,
+            decoded.left.rmsDBFS,
+            decoded.left.peak,
+            decoded.left.peakDBFS,
+            decoded.left.dc,
+            decoded.left.zeroFraction,
+            decoded.left.clippingFraction,
+            decoded.right.rms,
+            decoded.right.rmsDBFS,
+            decoded.right.peak,
+            decoded.right.peakDBFS,
+            decoded.right.dc,
+            decoded.right.zeroFraction,
+            decoded.right.clippingFraction,
+            decoded.leftRightCorrelation,
+            decoded.sumPower,
+            decoded.differencePower,
+            decoded.oneSidedFraction
+        )
         return "Worldwide iPhone microphone forwarding " +
             "phase=\(snapshot.phase.rawValue) " +
             "transport=\(snapshot.transportAuthorized) " +
@@ -509,6 +575,45 @@ actor WorldwideScreenService {
             "frames=\(progress.successfulFrameCount) " +
             "silenceFallbacks=\(progress.silenceFallbackCount) " +
             "enqueueFailures=\(progress.enqueueFailureCount) " +
+            "pcmLifecycleGeneration=\(content.lifecycleGeneration) " +
+            "pcmWindowSequence=\(content.windowSequence) " +
+            "pcmCompletedFrames=\(content.completedFrameCount) " +
+            "pcmSourceStartFrame=\(content.sourceStartFrame) " +
+            "pcmSourceEndFrame=\(content.sourceEndFrame) " +
+            "pcmWindowFrames=\(content.windowFrameCount) " +
+            "boundDecGeneration=" +
+                "\(progress.boundDecodedPlayoutGeneration) " +
+            "boundDecRenderFloor=" +
+                "\(progress.boundDecodedRenderCallFloor) " +
+            contentScalars + " " +
+            "pcmLRCorrelationValid=" +
+                "\(content.leftRightCorrelationIsValid) " +
+            "decGeneration=\(decoded.playoutGeneration) " +
+            "decCalls=\(decoded.renderCallCount) " +
+            "decAnalyzedFrames=\(decoded.analyzedFrameCount) " +
+            "decDropped=\(decoded.droppedTelemetryRenderCallCount) " +
+            "decContractMismatch=\(decoded.bufferContractMismatchCount) " +
+            "decPendingFrames=\(decoded.pendingWindowFrameCount) " +
+            "decLatestCall=\(decoded.latestRenderCall) " +
+            "decLatestStatus=\(decoded.latestRenderStatus) " +
+            "decLatestExact=\(decoded.latestBufferContractWasExact) " +
+            "decHasWindow=\(decoded.hasCompletedWindow) " +
+            "decWindowSequence=\(decoded.windowSequence) " +
+            "decWindowGeneration=\(decoded.windowGeneration) " +
+            "decSourceStartFrame=\(decoded.windowSourceStartFrame) " +
+            "decSourceEndFrame=\(decoded.windowSourceEndFrame) " +
+            "decWindowFrames=\(decoded.windowFrameCount) " +
+            decodedScalars + " " +
+            "decLRCorrelationValid=" +
+                "\(decoded.leftRightCorrelationIsValid) " +
+            "decAllZero=\(decoded.windowIsAllZero) " +
+            "decLeftOnly=\(decoded.windowIsLeftOnly) " +
+            "decRightOnly=\(decoded.windowIsRightOnly) " +
+            "decFrozenBlocks=\(decoded.frozenBlockCount) " +
+            "decLongestFrozenRun=\(decoded.longestFrozenBlockRun) " +
+            "contentWindowsAlign=\(progress.contentWindowsAlign) " +
+            "contentFingerprintsMatch=" +
+                "\(progress.alignedContentFingerprintsMatch) " +
             "mediaSample=\(snapshot.inboundMediaSampleSequence) " +
             "mediaAdvances=\(snapshot.inboundMediaAdvancementCount) " +
             "mediaStale=\(snapshot.consecutiveStaleInboundMediaSamples) " +

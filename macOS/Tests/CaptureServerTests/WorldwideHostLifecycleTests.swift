@@ -40,13 +40,56 @@ final class WorldwideHostLifecycleTests: XCTestCase {
                 "phase=waitingForPeer transport=false " +
                 "trackAdmitted=false queueRunning=false callbacks=0 " +
                 "pulls=0 frames=0 silenceFallbacks=0 " +
-                "enqueueFailures=0 mediaSample=0 mediaAdvances=0 " +
+                "enqueueFailures=0 pcmLifecycleGeneration=0 " +
+                "pcmWindowSequence=0 pcmCompletedFrames=0 " +
+                "pcmSourceStartFrame=0 pcmSourceEndFrame=0 " +
+                "pcmWindowFrames=0 " +
+                "boundDecGeneration=0 " +
+                "boundDecRenderFloor=0 " +
+                "pcmLRMS=0.000000 pcmLRMSdBFS=-160.00 " +
+                "pcmLPeak=0.000000 pcmLPeakdBFS=-160.00 " +
+                "pcmLDC=0.000000 pcmLZeroFraction=0.000000 " +
+                "pcmLClippingFraction=0.000000 " +
+                "pcmRRMS=0.000000 pcmRRMSdBFS=-160.00 " +
+                "pcmRPeak=0.000000 pcmRPeakdBFS=-160.00 " +
+                "pcmRDC=0.000000 pcmRZeroFraction=0.000000 " +
+                "pcmRClippingFraction=0.000000 " +
+                "pcmLRCorrelation=0.000000 pcmSumPower=0.000000 " +
+                "pcmDifferencePower=0.000000 " +
+                "pcmOneSidedFraction=0.000000 " +
+                "pcmLRCorrelationValid=false " +
+                "decGeneration=0 decCalls=0 decAnalyzedFrames=0 " +
+                "decDropped=0 decContractMismatch=0 " +
+                "decPendingFrames=0 decLatestCall=0 " +
+                "decLatestStatus=0 decLatestExact=false " +
+                "decHasWindow=false decWindowSequence=0 " +
+                "decWindowGeneration=0 decSourceStartFrame=0 " +
+                "decSourceEndFrame=0 decWindowFrames=0 " +
+                "decLRMS=0.000000 decLRMSdBFS=-160.00 " +
+                "decLPeak=0.000000 decLPeakdBFS=-160.00 " +
+                "decLDC=0.000000 decLZeroFraction=0.000000 " +
+                "decLClippingFraction=0.000000 " +
+                "decRRMS=0.000000 decRRMSdBFS=-160.00 " +
+                "decRPeak=0.000000 decRPeakdBFS=-160.00 " +
+                "decRDC=0.000000 decRZeroFraction=0.000000 " +
+                "decRClippingFraction=0.000000 " +
+                "decLRCorrelation=0.000000 decSumPower=0.000000 " +
+                "decDifferencePower=0.000000 " +
+                "decOneSidedFraction=0.000000 " +
+                "decLRCorrelationValid=false decAllZero=false " +
+                "decLeftOnly=false decRightOnly=false " +
+                "decFrozenBlocks=0 decLongestFrozenRun=0 " +
+                "contentWindowsAlign=false " +
+                "contentFingerprintsMatch=false " +
+                "mediaSample=0 mediaAdvances=0 " +
                 "mediaStale=0 mediaFresh=false failure=none"
         )
         XCTAssertFalse(message.contains("BlackHole2ch_UID"))
         XCTAssertFalse(message.contains("trackID"))
         XCTAssertFalse(message.contains("attemptID"))
         XCTAssertFalse(message.contains("nonce"))
+        XCTAssertFalse(message.contains("rawPCM"))
+        XCTAssertFalse(message.contains("windowFingerprint"))
     }
 
     func testInboundAudioRTPTelemetryIsAggregateAndPrivacySafe() {
