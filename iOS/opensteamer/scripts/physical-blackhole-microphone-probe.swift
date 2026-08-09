@@ -35,8 +35,128 @@ private enum OutputGeneratorSelfTest { static func passes(nonce: String) -> Bool
 private final class OutputCallbackContext: @unchecked Sendable { let failureLatch: QueueFailureLatch; private let lifecycle = CallbackLifecycle(); private let generator: ChallengeGenerator; init(plan: ChallengePlan, failureLatch: QueueFailureLatch) { generator = ChallengeGenerator(plan: plan); self.failureLatch = failureLatch }; func activate() { lifecycle.activate() }; func stopAcceptingAndWait() { lifecycle.stopAcceptingAndWait() }; func waitUntilIdle() { lifecycle.waitUntilIdle() }; func fill(buffer: AudioQueueBufferRef) -> Bool { let filled = OutputPCMBufferFiller.fillAudioQueueBuffer(buffer, generator: generator); if !filled { failureLatch.recordFailure() }; return filled }; func handleCallback(buffer: AudioQueueBufferRef, enqueue: () -> OSStatus) { let accepted = lifecycle.begin(); defer { lifecycle.end() }; guard accepted, fill(buffer: buffer) else { return }; failureLatch.record(enqueue()) }; func handle(queue: AudioQueueRef, buffer: AudioQueueBufferRef) { handleCallback(buffer: buffer) { AudioQueueEnqueueBuffer(queue, buffer, 0, nil) } } }
 private func physicalProbeOutputCallback(_ userData: UnsafeMutableRawPointer?, _ queue: AudioQueueRef, _ buffer: AudioQueueBufferRef) { guard let userData else { return }; Unmanaged<OutputCallbackContext>.fromOpaque(userData).takeUnretainedValue().handle(queue: queue, buffer: buffer) }
 private enum AudioSupport { static func format() -> AudioStreamBasicDescription { let bytesPerFrame = UInt32(Policy.channels * MemoryLayout<Int16>.size); return AudioStreamBasicDescription(mSampleRate: Policy.sampleRate, mFormatID: kAudioFormatLinearPCM, mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked, mBytesPerPacket: bytesPerFrame, mFramesPerPacket: 1, mBytesPerFrame: bytesPerFrame, mChannelsPerFrame: UInt32(Policy.channels), mBitsPerChannel: 16, mReserved: 0) }; static func pinCurrentDevice(_ uid: String, queue: AudioQueueRef, failureCode: String) throws -> Bool { var value = uid as CFString; let status = withUnsafePointer(to: &value) { AudioQueueSetProperty(queue, kAudioQueueProperty_CurrentDevice, $0, UInt32(MemoryLayout<CFString>.size)) }; guard status == noErr else { throw ProbeError(code: failureCode) }; return currentDevice(queue) == uid }; static func currentDevice(_ queue: AudioQueueRef) -> String? { var value: CFString = "" as CFString; var size = UInt32(MemoryLayout<CFString>.size); let status = withUnsafeMutablePointer(to: &value) { AudioQueueGetProperty(queue, kAudioQueueProperty_CurrentDevice, $0, &size) }; guard status == noErr, size > 0 else { return nil }; let string = value as String; return string.isEmpty ? nil : string }; static func quantize(_ value: Double) -> Int16 { let bounded = max(-0.999969, min(0.999969, value)); return Int16(Int32((bounded * Double(Int16.max)).rounded())) } }
-private final class InputQueueSession { private let context: InputCallbackContext; private var queue: AudioQueueRef?; private var buffers: [AudioQueueBufferRef] = []; private var callbackContextRetain: Unmanaged<InputCallbackContext>?; private var started = false; private(set) var readbackMatches = false; init(store: CaptureStore, failureLatch: QueueFailureLatch) { context = InputCallbackContext(store: store, failureLatch: failureLatch) }; func start(uid: String) throws { guard queue == nil else { return }; readbackMatches = false; started = false; context.activate(); var description = AudioSupport.format(); var created: AudioQueueRef?; let retainedContext = Unmanaged.passRetained(context); let createStatus = AudioQueueNewInput(&description, physicalProbeInputCallback, retainedContext.toOpaque(), nil, nil, 0, &created); guard createStatus == noErr, let created else { context.stopAcceptingAndWait(); retainedContext.release(); throw ProbeError(code: "capture_queue_create_failed") }; callbackContextRetain = retainedContext; queue = created; do { let firstReadback = try AudioSupport.pinCurrentDevice(uid, queue: created, failureCode: "capture_queue_device_set_failed"); guard firstReadback else { throw ProbeError(code: "capture_queue_device_readback_mismatch") }; let byteCount = UInt32(Policy.bufferFrames * Policy.channels * MemoryLayout<Int16>.size); for _ in 0..<Policy.bufferCount { var buffer: AudioQueueBufferRef?; let allocationStatus = AudioQueueAllocateBuffer(created, byteCount, &buffer); guard allocationStatus == noErr, let buffer else { throw ProbeError(code: "capture_queue_buffer_allocation_failed") }; buffers.append(buffer); guard AudioQueueEnqueueBuffer(created, buffer, 0, nil) == noErr else { throw ProbeError(code: "capture_queue_buffer_enqueue_failed") } }; guard AudioQueueStart(created, nil) == noErr else { throw ProbeError(code: "capture_queue_start_failed") }; started = true; readbackMatches = firstReadback && AudioSupport.currentDevice(created) == uid; guard readbackMatches else { throw ProbeError(code: "capture_queue_device_readback_mismatch") } } catch { _ = stop(); throw error } }; func stop() -> Bool { guard let queue else { return true }; context.stopAcceptingAndWait(); var stopStatus: OSStatus = noErr; if started { stopStatus = AudioQueueStop(queue, true); started = false }; context.waitUntilIdle(); let disposeStatus = AudioQueueDispose(queue, true); context.waitUntilIdle(); if disposeStatus == noErr { self.queue = nil; buffers.removeAll(keepingCapacity: false); callbackContextRetain?.release(); callbackContextRetain = nil }; return stopStatus == noErr && disposeStatus == noErr }; deinit { _ = stop() } }
-private final class OutputQueueSession { private let plan: ChallengePlan; private let context: OutputCallbackContext; private let failureLatch: QueueFailureLatch; private var queue: AudioQueueRef?; private var buffers: [AudioQueueBufferRef] = []; private var callbackContextRetain: Unmanaged<OutputCallbackContext>?; private var started = false; private var teardownFailed = false; private(set) var readbackMatches = false; private(set) var startUptime = 0.0; init(plan: ChallengePlan, failureLatch: QueueFailureLatch) { self.plan = plan; self.failureLatch = failureLatch; context = OutputCallbackContext(plan: plan, failureLatch: failureLatch) }; func start(uid: String) throws { guard queue == nil else { return }; readbackMatches = false; startUptime = 0.0; started = false; context.activate(); var description = AudioSupport.format(); var created: AudioQueueRef?; let retainedContext = Unmanaged.passRetained(context); let createStatus = AudioQueueNewOutput(&description, physicalProbeOutputCallback, retainedContext.toOpaque(), nil, nil, 0, &created); failureLatch.record(createStatus); guard createStatus == noErr, let created else { if createStatus == noErr { failureLatch.recordFailure() }; context.stopAcceptingAndWait(); retainedContext.release(); throw ProbeError(code: "physical_output_queue_create_failed") }; callbackContextRetain = retainedContext; queue = created; do { let firstReadback = try AudioSupport.pinCurrentDevice(uid, queue: created, failureCode: "physical_output_queue_device_set_failed"); guard firstReadback else { throw ProbeError(code: "physical_output_queue_device_readback_mismatch") }; let byteCount = UInt32(Policy.bufferFrames * Policy.channels * MemoryLayout<Int16>.size); for _ in 0..<Policy.bufferCount { var buffer: AudioQueueBufferRef?; let allocationStatus = AudioQueueAllocateBuffer(created, byteCount, &buffer); failureLatch.record(allocationStatus); guard allocationStatus == noErr, let buffer else { if allocationStatus == noErr { failureLatch.recordFailure() }; throw ProbeError(code: "physical_output_queue_buffer_allocation_failed") }; buffers.append(buffer); guard context.fill(buffer: buffer) else { throw ProbeError(code: "physical_output_queue_buffer_fill_failed") }; let enqueueStatus = AudioQueueEnqueueBuffer(created, buffer, 0, nil); failureLatch.record(enqueueStatus); guard enqueueStatus == noErr else { throw ProbeError(code: "physical_output_queue_buffer_enqueue_failed") } }; let requestedStartUptime = ProcessInfo.processInfo.systemUptime; let startStatus = AudioQueueStart(created, nil); failureLatch.record(startStatus); guard startStatus == noErr else { throw ProbeError(code: "physical_output_queue_start_failed") }; started = true; startUptime = requestedStartUptime; readbackMatches = firstReadback && AudioSupport.currentDevice(created) == uid; guard readbackMatches else { throw ProbeError(code: "physical_output_queue_device_readback_mismatch") } } catch { _ = stop(); throw error } }; func stop() -> Bool { guard let queue else { return !teardownFailed }; context.stopAcceptingAndWait(); var stopStatus: OSStatus = noErr; if started { stopStatus = AudioQueueStop(queue, true); if stopStatus == noErr { started = false } }; context.waitUntilIdle(); let disposeStatus = AudioQueueDispose(queue, true); context.waitUntilIdle(); if disposeStatus == noErr { started = false; self.queue = nil; buffers.removeAll(keepingCapacity: false); callbackContextRetain?.release(); callbackContextRetain = nil }; if stopStatus != noErr || disposeStatus != noErr { teardownFailed = true }; return !teardownFailed }; deinit { _ = stop() } }
+private final class InputQueueSession {
+  private let context: InputCallbackContext; private var queue: AudioQueueRef?;
+  private var buffers: [AudioQueueBufferRef] = [];
+  private var callbackContextRetain: Unmanaged<InputCallbackContext>?; private var started = false;
+  private(set) var readbackMatches = false;
+  init(store: CaptureStore, failureLatch: QueueFailureLatch) {
+    context = InputCallbackContext(store: store, failureLatch: failureLatch)
+  };
+  func start(uid: String) throws {
+    guard queue == nil else { return }; readbackMatches = false; started = false;
+    context.activate(); var description = AudioSupport.format(); var created: AudioQueueRef?;
+    let retainedContext = Unmanaged.passRetained(context);
+    let createStatus = AudioQueueNewInput(
+      &description, physicalProbeInputCallback, retainedContext.toOpaque(), nil, nil, 0, &created);
+    guard createStatus == noErr, let created else {
+      context.stopAcceptingAndWait(); retainedContext.release();
+      throw ProbeError(code: "capture_queue_create_failed")
+    }; callbackContextRetain = retainedContext; queue = created;
+    do {
+      let firstReadback = try AudioSupport.pinCurrentDevice(
+        uid, queue: created, failureCode: "capture_queue_device_set_failed");
+      guard firstReadback else { throw ProbeError(code: "capture_queue_device_readback_mismatch") };
+      let byteCount = UInt32(Policy.bufferFrames * Policy.channels * MemoryLayout<Int16>.size);
+      for _ in 0..<Policy.bufferCount {
+        var buffer: AudioQueueBufferRef?;
+        let allocationStatus = AudioQueueAllocateBuffer(created, byteCount, &buffer);
+        guard allocationStatus == noErr, let buffer else {
+          throw ProbeError(code: "capture_queue_buffer_allocation_failed")
+        }; buffers.append(buffer);
+        guard AudioQueueEnqueueBuffer(created, buffer, 0, nil) == noErr else {
+          throw ProbeError(code: "capture_queue_buffer_enqueue_failed")
+        }
+      };
+      guard AudioQueueStart(created, nil) == noErr else {
+        throw ProbeError(code: "capture_queue_start_failed")
+      }; started = true;
+      readbackMatches = firstReadback && AudioSupport.currentDevice(created) == uid;
+      guard readbackMatches else {
+        throw ProbeError(code: "capture_queue_device_readback_mismatch")
+      }
+    } catch { _ = stop(); throw error }
+  };
+  func stop() -> Bool {
+    guard let queue else { return true }; context.stopAcceptingAndWait();
+    var stopStatus: OSStatus = noErr;
+    if started { stopStatus = AudioQueueStop(queue, true); started = false };
+    context.waitUntilIdle(); let disposeStatus = AudioQueueDispose(queue, true);
+    context.waitUntilIdle();
+    // AudioQueueDispose is terminal after it returns, regardless of status.
+    self.queue = nil; buffers.removeAll(keepingCapacity: false); callbackContextRetain?.release();
+    callbackContextRetain = nil;
+    return stopStatus == noErr && disposeStatus == noErr
+  }; deinit { _ = stop() }
+}
+private final class OutputQueueSession {
+  private let plan: ChallengePlan; private let context: OutputCallbackContext;
+  private let failureLatch: QueueFailureLatch; private var queue: AudioQueueRef?;
+  private var buffers: [AudioQueueBufferRef] = [];
+  private var callbackContextRetain: Unmanaged<OutputCallbackContext>?; private var started = false;
+  private var teardownFailed = false; private(set) var readbackMatches = false;
+  private(set) var startUptime = 0.0;
+  init(plan: ChallengePlan, failureLatch: QueueFailureLatch) {
+    self.plan = plan; self.failureLatch = failureLatch;
+    context = OutputCallbackContext(plan: plan, failureLatch: failureLatch)
+  };
+  func start(uid: String) throws {
+    guard queue == nil else { return }; readbackMatches = false; startUptime = 0.0; started = false;
+    context.activate(); var description = AudioSupport.format(); var created: AudioQueueRef?;
+    let retainedContext = Unmanaged.passRetained(context);
+    let createStatus = AudioQueueNewOutput(
+      &description, physicalProbeOutputCallback, retainedContext.toOpaque(), nil, nil, 0, &created);
+    failureLatch.record(createStatus);
+    guard createStatus == noErr, let created else {
+      if createStatus == noErr { failureLatch.recordFailure() }; context.stopAcceptingAndWait();
+      retainedContext.release(); throw ProbeError(code: "physical_output_queue_create_failed")
+    }; callbackContextRetain = retainedContext; queue = created;
+    do {
+      let firstReadback = try AudioSupport.pinCurrentDevice(
+        uid, queue: created, failureCode: "physical_output_queue_device_set_failed");
+      guard firstReadback else {
+        throw ProbeError(code: "physical_output_queue_device_readback_mismatch")
+      }; let byteCount = UInt32(Policy.bufferFrames * Policy.channels * MemoryLayout<Int16>.size);
+      for _ in 0..<Policy.bufferCount {
+        var buffer: AudioQueueBufferRef?;
+        let allocationStatus = AudioQueueAllocateBuffer(created, byteCount, &buffer);
+        failureLatch.record(allocationStatus);
+        guard allocationStatus == noErr, let buffer else {
+          if allocationStatus == noErr { failureLatch.recordFailure() };
+          throw ProbeError(code: "physical_output_queue_buffer_allocation_failed")
+        }; buffers.append(buffer);
+        guard context.fill(buffer: buffer) else {
+          throw ProbeError(code: "physical_output_queue_buffer_fill_failed")
+        }; let enqueueStatus = AudioQueueEnqueueBuffer(created, buffer, 0, nil);
+        failureLatch.record(enqueueStatus);
+        guard enqueueStatus == noErr else {
+          throw ProbeError(code: "physical_output_queue_buffer_enqueue_failed")
+        }
+      }; let requestedStartUptime = ProcessInfo.processInfo.systemUptime;
+      let startStatus = AudioQueueStart(created, nil); failureLatch.record(startStatus);
+      guard startStatus == noErr else {
+        throw ProbeError(code: "physical_output_queue_start_failed")
+      }; started = true; startUptime = requestedStartUptime;
+      readbackMatches = firstReadback && AudioSupport.currentDevice(created) == uid;
+      guard readbackMatches else {
+        throw ProbeError(code: "physical_output_queue_device_readback_mismatch")
+      }
+    } catch { _ = stop(); throw error }
+  };
+  func stop() -> Bool {
+    guard let queue else { return !teardownFailed }; context.stopAcceptingAndWait();
+    var stopStatus: OSStatus = noErr;
+    if started {
+      stopStatus = AudioQueueStop(queue, true); if stopStatus == noErr { started = false }
+    }; context.waitUntilIdle(); let disposeStatus = AudioQueueDispose(queue, true);
+    context.waitUntilIdle();
+    // AudioQueueDispose is terminal after it returns, regardless of status.
+    started = false; self.queue = nil; buffers.removeAll(keepingCapacity: false);
+    callbackContextRetain?.release(); callbackContextRetain = nil;
+    if stopStatus != noErr || disposeStatus != noErr { teardownFailed = true };
+    return !teardownFailed
+  }; deinit { _ = stop() }
+}
 private extension InputQueueSession {
     func currentDeviceMatches(_ uid: String) -> Bool {
         guard let queue else { return false }
@@ -827,7 +947,2023 @@ private enum DefaultUIDSnapshotProgram {
     }
 }
 
+private enum BlackHoleMeasurePolicy {
+    static let schema = "opensteamer.blackhole-input-measurement.v1"
+    static let mode = "analysis-only"
+    static let minimumDurationSeconds = 8.0
+    static let maximumDurationSeconds = 30.0
+    static let telemetryWindowSeconds = 1.0
+    static let telemetryWindowFrames = Policy.sampleRateInt
+    static let maximumTelemetryWindows = 30
+    static let callbackGapThresholdMs = 25.0
+    static let minimumElapsedDurationRatio = 0.95
+    static let minimumCapturedDurationRatio = 0.95
+    static let minimumFrameDensity = 0.95
+    static let maximumFrameDensity = 1.05
+    static let firstCallbackTimeoutSeconds = 2.0
+    static let sampleTimeContinuityToleranceFrames = 0.5
+    static let normalizedSilenceFloorDB = -160.0
+    // Metric ABI: activity is magnitude >= 128 and clipping is magnitude >= 32760.
+    static let activeMagnitude = 128
+    static let clippedMagnitude = 32_760
+    static let maximumFailureReasons = 20
+    static let maximumSpectralObservations = 640
+}
+
+private struct BlackHoleMeasureChannelEvidence: Codable {
+    let channel: Int
+    let rmsNormalized: Double
+    let rmsDBFS: Double
+    let peakNormalized: Double
+    let peakDBFS: Double
+    let dcMeanNormalized: Double
+    let zeroSampleFraction: Double
+    let clippingFraction: Double
+    let activeFrameFraction: Double
+    let repeatedBlockCount: UInt64
+    let longestRepeatedBlockRun: UInt64
+}
+
+private struct BlackHoleMeasureStereoEvidence: Codable {
+    let leftRightCorrelation: Double
+    let channelRMSDifferenceDB: Double
+    let sumRMSNormalized: Double
+    let sumRMSDBFS: Double
+    let differenceRMSNormalized: Double
+    let differenceRMSDBFS: Double
+    let oneSidedFrameFraction: Double
+}
+
+private struct BlackHoleMeasureCadenceEvidence: Codable {
+    let callbackCount: UInt64
+    let frameCount: UInt64
+    let firstCallbackMonotonicNs: UInt64
+    let lastCallbackMonotonicNs: UInt64
+    let minimumCallbackGapMs: Double
+    let meanCallbackGapMs: Double
+    let maximumCallbackGapMs: Double
+    let callbackGapOver25MsCount: UInt64
+    let nonMonotonicCallbackCount: UInt64
+    let sampleTimeValidCount: UInt64
+    let sampleTimeMissingCount: UInt64
+    let firstSampleTime: Double
+    let lastSampleTime: Double
+    let nonMonotonicSampleTimeCount: UInt64
+    let sampleFrameDiscontinuityCount: UInt64
+    let hostTimeValidCount: UInt64
+    let hostTimeMissingCount: UInt64
+    let firstHostTime: UInt64
+    let lastHostTime: UInt64
+    let nonMonotonicHostTimeCount: UInt64
+    let minimumFramesPerCallback: UInt64
+    let maximumFramesPerCallback: UInt64
+}
+
+private struct BlackHoleMeasureWindowEvidence: Codable {
+    let sequence: Int
+    let startMonotonicNs: UInt64
+    let endMonotonicNs: UInt64
+    let sourceStartFrame: UInt64
+    let sourceEndFrame: UInt64
+    let complete: Bool
+    let channels: [BlackHoleMeasureChannelEvidence]
+    let stereo: BlackHoleMeasureStereoEvidence
+    let cadence: BlackHoleMeasureCadenceEvidence
+}
+
+private struct BlackHoleMeasureAggregateEvidence: Codable {
+    let channels: [BlackHoleMeasureChannelEvidence]
+    let stereo: BlackHoleMeasureStereoEvidence
+    let cadence: BlackHoleMeasureCadenceEvidence
+}
+
+private struct BlackHoleTaggedChannelEvidence: Codable {
+    let channel: Int
+    let symbolCount: Int
+    let matchedSymbolCount: Int
+    let matchRatio: Double
+    let normalizedCorrelation: Double
+    let discriminationMargin: Double
+    let envelopeCorrelation: Double
+    let detectedLagMs: Double
+}
+
+private struct BlackHoleTaggedChallengeEvidence: Codable {
+    let enabled: Bool
+    let externallyInjected: Bool
+    let algorithm: String
+    let version: Int
+    let tagFingerprint: String
+    let recognized: Bool
+    let recognizedChannel: Int
+    let channels: [BlackHoleTaggedChannelEvidence]
+}
+
+private struct BlackHoleMeasureResult: Codable {
+    let schema: String
+    let status: String
+    let mode: String
+    let canonicalCaptureUID: String
+    let captureUIDMatches: Bool
+    let queueReadbackMatches: Bool
+    let rawPCMRetained: Bool
+    let rawPCMPersisted: Bool
+    let outputOpened: Bool
+    let defaultsMutated: Bool
+    let format: AudioFormatEvidence
+    let requestedDurationSeconds: Double
+    let elapsedSeconds: Double
+    let capturedAudioSeconds: Double
+    let capturedDurationRatio: Double
+    let frameDensity: Double
+    let measurementStartMonotonicNs: UInt64
+    let measurementEndMonotonicNs: UInt64
+    let callbackCount: UInt64
+    let capturedFrameCount: UInt64
+    let telemetryWindowSeconds: Double
+    let telemetryWindowLimit: Int
+    let telemetryWindows: [BlackHoleMeasureWindowEvidence]
+    let aggregate: BlackHoleMeasureAggregateEvidence
+    let taggedChallenge: BlackHoleTaggedChallengeEvidence
+    let defaultInputBeforeAfterEqual: Bool
+    let defaultOutputBeforeAfterEqual: Bool
+    let defaultSystemOutputBeforeAfterEqual: Bool
+    let defaultChangeNotificationCount: Int
+    let failureCode: String
+    let failureReasons: [String]
+}
+
+private enum BlackHoleMeasureMath {
+    static func normalized(_ sample: Int16) -> Double {
+        Double(sample) / 32_768.0
+    }
+
+    static func dBFS(_ normalizedMagnitude: Double) -> Double {
+        guard normalizedMagnitude.isFinite,
+              normalizedMagnitude > 0 else {
+            return BlackHoleMeasurePolicy.normalizedSilenceFloorDB
+        }
+        return max(
+            BlackHoleMeasurePolicy.normalizedSilenceFloorDB,
+            20.0 * log10(normalizedMagnitude)
+        )
+    }
+
+    static func monotonicNanoseconds(_ uptime: Double) -> UInt64 {
+        UInt64(max(0, min(Double(UInt64.max), uptime * 1_000_000_000.0)))
+    }
+
+    static func hostTimeNanoseconds(_ hostTime: UInt64) -> UInt64 {
+        hostTime == 0 ? 0 : AudioConvertHostTimeToNanos(hostTime)
+    }
+
+    static func hostTimeDeltaMilliseconds(_ delta: UInt64) -> Double {
+        Double(AudioConvertHostTimeToNanos(delta)) / 1_000_000.0
+    }
+}
+
+private struct BlackHoleMeasureCallbackTimestamp {
+    let sampleTime: Double
+    let hostTime: UInt64
+    let sampleTimeValid: Bool
+    let hostTimeValid: Bool
+
+    init(_ timestamp: AudioTimeStamp) {
+        sampleTime = timestamp.mSampleTime
+        hostTime = timestamp.mHostTime
+        sampleTimeValid = timestamp.mFlags.contains(.sampleTimeValid)
+            && timestamp.mSampleTime.isFinite
+        hostTimeValid = timestamp.mFlags.contains(.hostTimeValid)
+            && timestamp.mHostTime != 0
+    }
+
+    init(sampleTime: Double?, hostTime: UInt64?) {
+        self.sampleTime = sampleTime ?? 0
+        self.hostTime = hostTime ?? 0
+        sampleTimeValid = sampleTime?.isFinite == true
+        hostTimeValid = hostTime != nil && hostTime != 0
+    }
+}
+
+private struct BlackHoleMeasureChannelAccumulator {
+    var sampleCount: UInt64 = 0
+    var sampleSum = 0.0
+    var squareSum = 0.0
+    var peakMagnitude = 0
+    var zeroSampleCount: UInt64 = 0
+    var clippedSampleCount: UInt64 = 0
+    var activeSampleCount: UInt64 = 0
+    var repeatedBlockCount: UInt64 = 0
+    var longestRepeatedBlockRun: UInt64 = 0
+
+    mutating func add(_ sample: Int16) {
+        let value = Double(sample)
+        let magnitude = Int(abs(Int32(sample)))
+        sampleCount &+= 1
+        sampleSum += value
+        squareSum += value * value
+        peakMagnitude = max(peakMagnitude, magnitude)
+        if sample == 0 { zeroSampleCount &+= 1 }
+        if magnitude >= BlackHoleMeasurePolicy.clippedMagnitude {
+            clippedSampleCount &+= 1
+        }
+        if magnitude >= BlackHoleMeasurePolicy.activeMagnitude {
+            activeSampleCount &+= 1
+        }
+    }
+
+    mutating func recordRepeatedBlock(_ repeated: Bool, run: UInt64) {
+        guard repeated else { return }
+        repeatedBlockCount &+= 1
+        longestRepeatedBlockRun = max(longestRepeatedBlockRun, run)
+    }
+
+    func evidence(channel: Int) -> BlackHoleMeasureChannelEvidence {
+        let count = Double(sampleCount)
+        let rms = sampleCount > 0
+            ? sqrt(max(0, squareSum / count)) / 32_768.0
+            : 0
+        let peak = Double(peakMagnitude) / 32_768.0
+        return BlackHoleMeasureChannelEvidence(
+            channel: channel,
+            rmsNormalized: rms,
+            rmsDBFS: BlackHoleMeasureMath.dBFS(rms),
+            peakNormalized: peak,
+            peakDBFS: BlackHoleMeasureMath.dBFS(peak),
+            dcMeanNormalized: sampleCount > 0
+                ? (sampleSum / count) / 32_768.0
+                : 0,
+            zeroSampleFraction: sampleCount > 0
+                ? Double(zeroSampleCount) / count
+                : 0,
+            clippingFraction: sampleCount > 0
+                ? Double(clippedSampleCount) / count
+                : 0,
+            activeFrameFraction: sampleCount > 0
+                ? Double(activeSampleCount) / count
+                : 0,
+            repeatedBlockCount: repeatedBlockCount,
+            longestRepeatedBlockRun: longestRepeatedBlockRun
+        )
+    }
+}
+
+private struct BlackHoleMeasureStereoAccumulator {
+    var frameCount: UInt64 = 0
+    var leftSum = 0.0
+    var rightSum = 0.0
+    var leftSquareSum = 0.0
+    var rightSquareSum = 0.0
+    var crossSum = 0.0
+    var sumSquareSum = 0.0
+    var differenceSquareSum = 0.0
+    var oneSidedFrameCount: UInt64 = 0
+
+    mutating func add(left: Int16, right: Int16) {
+        let leftValue = Double(left)
+        let rightValue = Double(right)
+        frameCount &+= 1
+        leftSum += leftValue
+        rightSum += rightValue
+        leftSquareSum += leftValue * leftValue
+        rightSquareSum += rightValue * rightValue
+        crossSum += leftValue * rightValue
+        let sum = (leftValue + rightValue) * 0.5
+        let difference = (leftValue - rightValue) * 0.5
+        sumSquareSum += sum * sum
+        differenceSquareSum += difference * difference
+        let leftActive = abs(Int32(left)) >= BlackHoleMeasurePolicy.activeMagnitude
+        let rightActive = abs(Int32(right)) >= BlackHoleMeasurePolicy.activeMagnitude
+        if leftActive != rightActive { oneSidedFrameCount &+= 1 }
+    }
+
+    func evidence() -> BlackHoleMeasureStereoEvidence {
+        let count = Double(frameCount)
+        let leftEnergy = frameCount > 0
+            ? max(0, leftSquareSum / count)
+            : 0
+        let rightEnergy = frameCount > 0
+            ? max(0, rightSquareSum / count)
+            : 0
+        let leftRMS = sqrt(leftEnergy) / 32_768.0
+        let rightRMS = sqrt(rightEnergy) / 32_768.0
+        let sumRMS = frameCount > 0
+            ? sqrt(max(0, sumSquareSum / count)) / 32_768.0
+            : 0
+        let differenceRMS = frameCount > 0
+            ? sqrt(max(0, differenceSquareSum / count)) / 32_768.0
+            : 0
+        let correlation: Double
+        if frameCount > 1 {
+            let covariance = crossSum - (leftSum * rightSum / count)
+            let leftVariance = max(
+                0,
+                leftSquareSum - (leftSum * leftSum / count)
+            )
+            let rightVariance = max(
+                0,
+                rightSquareSum - (rightSum * rightSum / count)
+            )
+            let denominator = sqrt(leftVariance * rightVariance)
+            correlation = denominator > 1.0e-12
+                ? max(-1, min(1, covariance / denominator))
+                : 0
+        } else {
+            correlation = 0
+        }
+        let leftDB = BlackHoleMeasureMath.dBFS(leftRMS)
+        let rightDB = BlackHoleMeasureMath.dBFS(rightRMS)
+        return BlackHoleMeasureStereoEvidence(
+            leftRightCorrelation: correlation,
+            channelRMSDifferenceDB: abs(leftDB - rightDB),
+            sumRMSNormalized: sumRMS,
+            sumRMSDBFS: BlackHoleMeasureMath.dBFS(sumRMS),
+            differenceRMSNormalized: differenceRMS,
+            differenceRMSDBFS: BlackHoleMeasureMath.dBFS(differenceRMS),
+            oneSidedFrameFraction: frameCount > 0
+                ? Double(oneSidedFrameCount) / count
+                : 0
+        )
+    }
+}
+
+private struct BlackHoleMeasureCadenceAccumulator {
+    private static let longGapHostTicks = AudioConvertNanosToHostTime(
+        UInt64(BlackHoleMeasurePolicy.callbackGapThresholdMs * 1_000_000.0)
+    )
+
+    var callbackCount: UInt64 = 0
+    var frameCount: UInt64 = 0
+    var sampleTimeValidCount: UInt64 = 0
+    var sampleTimeMissingCount: UInt64 = 0
+    var firstSampleTime = 0.0
+    var lastSampleTime = 0.0
+    var nonMonotonicSampleTimeCount: UInt64 = 0
+    var sampleFrameDiscontinuityCount: UInt64 = 0
+    var previousSampleTime: Double?
+    var previousSampleFrameCount = 0
+    var hostTimeValidCount: UInt64 = 0
+    var hostTimeMissingCount: UInt64 = 0
+    var firstHostTime: UInt64 = 0
+    var lastHostTime: UInt64 = 0
+    var nonMonotonicHostTimeCount: UInt64 = 0
+    var previousHostTime: UInt64?
+    var gapCount: UInt64 = 0
+    var gapSumHostTicks: UInt64 = 0
+    var minimumGapHostTicks = UInt64.max
+    var maximumGapHostTicks: UInt64 = 0
+    var longGapCount: UInt64 = 0
+    var minimumFramesPerCallback = UInt64.max
+    var maximumFramesPerCallback: UInt64 = 0
+    var lastCallbackFrameCount: UInt64 = 0
+
+    static func prepare() {
+        _ = longGapHostTicks
+    }
+
+    mutating func record(
+        frameCount callbackFrames: Int,
+        timestamp: BlackHoleMeasureCallbackTimestamp
+    ) {
+        let frames = UInt64(max(0, callbackFrames))
+        callbackCount &+= 1
+        frameCount &+= frames
+        lastCallbackFrameCount = frames
+        minimumFramesPerCallback = min(minimumFramesPerCallback, frames)
+        maximumFramesPerCallback = max(maximumFramesPerCallback, frames)
+
+        if timestamp.sampleTimeValid {
+            sampleTimeValidCount &+= 1
+            if sampleTimeValidCount == 1 {
+                firstSampleTime = timestamp.sampleTime
+            }
+            if let previousSampleTime {
+                if timestamp.sampleTime <= previousSampleTime {
+                    nonMonotonicSampleTimeCount &+= 1
+                }
+                let expected = previousSampleTime
+                    + Double(previousSampleFrameCount)
+                if abs(timestamp.sampleTime - expected)
+                    > BlackHoleMeasurePolicy
+                        .sampleTimeContinuityToleranceFrames {
+                    sampleFrameDiscontinuityCount &+= 1
+                }
+            }
+            lastSampleTime = timestamp.sampleTime
+            previousSampleTime = timestamp.sampleTime
+            previousSampleFrameCount = callbackFrames
+        } else {
+            sampleTimeMissingCount &+= 1
+        }
+
+        if timestamp.hostTimeValid {
+            hostTimeValidCount &+= 1
+            if hostTimeValidCount == 1 {
+                firstHostTime = timestamp.hostTime
+            }
+            if let previousHostTime {
+                if timestamp.hostTime <= previousHostTime {
+                    nonMonotonicHostTimeCount &+= 1
+                } else {
+                    let gap = timestamp.hostTime - previousHostTime
+                    gapCount &+= 1
+                    gapSumHostTicks &+= gap
+                    minimumGapHostTicks = min(minimumGapHostTicks, gap)
+                    maximumGapHostTicks = max(maximumGapHostTicks, gap)
+                    if gap > Self.longGapHostTicks {
+                        longGapCount &+= 1
+                    }
+                }
+            }
+            lastHostTime = timestamp.hostTime
+            previousHostTime = timestamp.hostTime
+        } else {
+            hostTimeMissingCount &+= 1
+        }
+    }
+
+    func evidence() -> BlackHoleMeasureCadenceEvidence {
+        let minimumGapMs = gapCount > 0
+            ? BlackHoleMeasureMath.hostTimeDeltaMilliseconds(
+                minimumGapHostTicks
+            )
+            : 0
+        let maximumGapMs = gapCount > 0
+            ? BlackHoleMeasureMath.hostTimeDeltaMilliseconds(
+                maximumGapHostTicks
+            )
+            : 0
+        let meanGapMs = gapCount > 0
+            ? BlackHoleMeasureMath.hostTimeDeltaMilliseconds(
+                gapSumHostTicks
+            ) / Double(gapCount)
+            : 0
+        return BlackHoleMeasureCadenceEvidence(
+            callbackCount: callbackCount,
+            frameCount: frameCount,
+            firstCallbackMonotonicNs:
+                BlackHoleMeasureMath.hostTimeNanoseconds(firstHostTime),
+            lastCallbackMonotonicNs:
+                BlackHoleMeasureMath.hostTimeNanoseconds(lastHostTime),
+            minimumCallbackGapMs: minimumGapMs,
+            meanCallbackGapMs: meanGapMs,
+            maximumCallbackGapMs: maximumGapMs,
+            callbackGapOver25MsCount: longGapCount,
+            nonMonotonicCallbackCount:
+                nonMonotonicSampleTimeCount &+ nonMonotonicHostTimeCount,
+            sampleTimeValidCount: sampleTimeValidCount,
+            sampleTimeMissingCount: sampleTimeMissingCount,
+            firstSampleTime: firstSampleTime,
+            lastSampleTime: lastSampleTime,
+            nonMonotonicSampleTimeCount: nonMonotonicSampleTimeCount,
+            sampleFrameDiscontinuityCount: sampleFrameDiscontinuityCount,
+            hostTimeValidCount: hostTimeValidCount,
+            hostTimeMissingCount: hostTimeMissingCount,
+            firstHostTime: firstHostTime,
+            lastHostTime: lastHostTime,
+            nonMonotonicHostTimeCount: nonMonotonicHostTimeCount,
+            minimumFramesPerCallback: callbackCount > 0
+                ? minimumFramesPerCallback
+                : 0,
+            maximumFramesPerCallback: maximumFramesPerCallback
+        )
+    }
+
+    var measurementEndMonotonicNs: UInt64 {
+        guard lastHostTime != 0 else { return 0 }
+        let lastStart = BlackHoleMeasureMath.hostTimeNanoseconds(lastHostTime)
+        let duration = UInt64(
+            (Double(lastCallbackFrameCount) / Policy.sampleRate)
+                * 1_000_000_000.0
+        )
+        return lastStart &+ duration
+    }
+}
+
+private struct BlackHoleMeasureWindowAccumulator {
+    var initialized = false
+    var sequence = 0
+    var sourceStartFrame: UInt64 = 0
+    var sourceEndFrame: UInt64 = 0
+    var left = BlackHoleMeasureChannelAccumulator()
+    var right = BlackHoleMeasureChannelAccumulator()
+    var stereo = BlackHoleMeasureStereoAccumulator()
+    var cadence = BlackHoleMeasureCadenceAccumulator()
+
+    mutating func initialize(sequence: Int) {
+        guard !initialized else { return }
+        initialized = true
+        self.sequence = sequence
+        sourceStartFrame = UInt64(
+            sequence * BlackHoleMeasurePolicy.telemetryWindowFrames
+        )
+    }
+
+    mutating func add(left leftSample: Int16, right rightSample: Int16) {
+        left.add(leftSample)
+        right.add(rightSample)
+        stereo.add(left: leftSample, right: rightSample)
+        sourceEndFrame &+= 1
+    }
+
+    mutating func recordCallback(
+        frameCount: Int,
+        timestamp: BlackHoleMeasureCallbackTimestamp,
+        leftRepeated: Bool,
+        rightRepeated: Bool,
+        leftRepeatRun: UInt64,
+        rightRepeatRun: UInt64
+    ) {
+        cadence.record(
+            frameCount: frameCount,
+            timestamp: timestamp
+        )
+        left.recordRepeatedBlock(leftRepeated, run: leftRepeatRun)
+        right.recordRepeatedBlock(rightRepeated, run: rightRepeatRun)
+    }
+
+    func evidence(startMonotonicNs: UInt64) -> BlackHoleMeasureWindowEvidence {
+        let windowStart = startMonotonicNs &+ UInt64(
+            (Double(sourceStartFrame) / Policy.sampleRate)
+                * 1_000_000_000.0
+        )
+        let actualEndFrame = sourceStartFrame + stereo.frameCount
+        let windowEnd = startMonotonicNs &+ UInt64(
+            (Double(actualEndFrame) / Policy.sampleRate)
+                * 1_000_000_000.0
+        )
+        return BlackHoleMeasureWindowEvidence(
+            sequence: sequence,
+            startMonotonicNs:
+                windowStart,
+            endMonotonicNs:
+                windowEnd,
+            sourceStartFrame: sourceStartFrame,
+            sourceEndFrame: actualEndFrame,
+            complete: stereo.frameCount
+                == UInt64(BlackHoleMeasurePolicy.telemetryWindowFrames),
+            channels: [left.evidence(channel: 0), right.evidence(channel: 1)],
+            stereo: stereo.evidence(),
+            cadence: cadence.evidence()
+        )
+    }
+}
+
+private struct BlackHoleFixedSpectralObservation {
+    var centerFrame: UInt64 = 0
+    var leftQ1 = SIMD8<Double>(repeating: 0)
+    var leftQ2 = SIMD8<Double>(repeating: 0)
+    var rightQ1 = SIMD8<Double>(repeating: 0)
+    var rightQ2 = SIMD8<Double>(repeating: 0)
+    var leftSquareSum = 0.0
+    var rightSquareSum = 0.0
+
+    func observation() -> SpectralObservation {
+        var leftPowers = Array(repeating: 0.0, count: 8)
+        var rightPowers = Array(repeating: 0.0, count: 8)
+        for index in 0..<8 {
+            let coefficient = BlackHoleStreamingSpectralAccumulator
+                .coefficient(at: index)
+            leftPowers[index] = max(
+                0,
+                leftQ1[index] * leftQ1[index]
+                    + leftQ2[index] * leftQ2[index]
+                    - coefficient * leftQ1[index] * leftQ2[index]
+            )
+            rightPowers[index] = max(
+                0,
+                rightQ1[index] * rightQ1[index]
+                    + rightQ2[index] * rightQ2[index]
+                    - coefficient * rightQ1[index] * rightQ2[index]
+            )
+        }
+        return SpectralObservation(
+            centerSeconds: Double(centerFrame) / Policy.sampleRate,
+            powers: [leftPowers, rightPowers],
+            rms: [
+                sqrt(
+                    max(
+                        0,
+                        leftSquareSum / Double(Policy.analysisBlockFrames)
+                    )
+                ),
+                sqrt(
+                    max(
+                        0,
+                        rightSquareSum / Double(Policy.analysisBlockFrames)
+                    )
+                ),
+            ]
+        )
+    }
+}
+
+private struct BlackHoleStreamingSpectralAccumulator {
+    private static let coefficients = SIMD8<Double>(
+        2.0 * cos(2.0 * Double.pi * Policy.frequencies[0] / Policy.sampleRate),
+        2.0 * cos(2.0 * Double.pi * Policy.frequencies[1] / Policy.sampleRate),
+        2.0 * cos(2.0 * Double.pi * Policy.frequencies[2] / Policy.sampleRate),
+        2.0 * cos(2.0 * Double.pi * Policy.frequencies[3] / Policy.sampleRate),
+        2.0 * cos(2.0 * Double.pi * Policy.frequencies[4] / Policy.sampleRate),
+        2.0 * cos(2.0 * Double.pi * Policy.frequencies[5] / Policy.sampleRate),
+        2.0 * cos(2.0 * Double.pi * Policy.frequencies[6] / Policy.sampleRate),
+        2.0 * cos(2.0 * Double.pi * Policy.frequencies[7] / Policy.sampleRate)
+    )
+    private static let hannWindow = (0..<Policy.analysisBlockFrames).map {
+        0.5 - 0.5 * cos(
+            2.0 * Double.pi * Double($0)
+                / Double(Policy.analysisBlockFrames - 1)
+        )
+    }
+
+    private(set) var active = false
+    private var startFrame: UInt64 = 0
+    private var localFrame = 0
+    private var leftSquareSum = 0.0
+    private var rightSquareSum = 0.0
+    private var leftQ1 = SIMD8<Double>(repeating: 0)
+    private var leftQ2 = SIMD8<Double>(repeating: 0)
+    private var rightQ1 = SIMD8<Double>(repeating: 0)
+    private var rightQ2 = SIMD8<Double>(repeating: 0)
+
+    mutating func begin(at sourceFrame: UInt64) {
+        active = true
+        startFrame = sourceFrame
+        localFrame = 0
+        leftSquareSum = 0
+        rightSquareSum = 0
+        leftQ1 = .zero
+        leftQ2 = .zero
+        rightQ1 = .zero
+        rightQ2 = .zero
+    }
+
+    static func prepare() {
+        _ = coefficients[0]
+        _ = hannWindow.count
+    }
+
+    static func coefficient(at index: Int) -> Double {
+        coefficients[index]
+    }
+
+    /// Tagged measurement only: the real-time side performs a fixed eight-bin
+    /// Goertzel scalar recurrence per channel and retains only its bounded terminal
+    /// state. Power, RMS, logarithms, correlations, and tag decisions run later,
+    /// after AudioQueue teardown; no PCM is retained.
+    mutating func ingest(
+        left: Int16,
+        right: Int16
+    ) -> BlackHoleFixedSpectralObservation? {
+        guard active else { return nil }
+        let window = Self.hannWindow[localFrame]
+        let normalizedLeft = Double(left) / 32_768.0
+        let normalizedRight = Double(right) / 32_768.0
+        leftSquareSum += normalizedLeft * normalizedLeft
+        rightSquareSum += normalizedRight * normalizedRight
+        for frequencyIndex in 0..<8 {
+            let coefficient = Self.coefficients[frequencyIndex]
+            let nextLeft = normalizedLeft * window
+                + coefficient * leftQ1[frequencyIndex]
+                - leftQ2[frequencyIndex]
+            leftQ2[frequencyIndex] = leftQ1[frequencyIndex]
+            leftQ1[frequencyIndex] = nextLeft
+            let nextRight = normalizedRight * window
+                + coefficient * rightQ1[frequencyIndex]
+                - rightQ2[frequencyIndex]
+            rightQ2[frequencyIndex] = rightQ1[frequencyIndex]
+            rightQ1[frequencyIndex] = nextRight
+        }
+        localFrame += 1
+        guard localFrame == Policy.analysisBlockFrames else { return nil }
+        active = false
+        return BlackHoleFixedSpectralObservation(
+            centerFrame: startFrame
+                + UInt64(Policy.analysisBlockFrames / 2),
+            leftQ1: leftQ1,
+            leftQ2: leftQ2,
+            rightQ1: rightQ1,
+            rightQ2: rightQ2,
+            leftSquareSum: leftSquareSum,
+            rightSquareSum: rightSquareSum
+        )
+    }
+}
+
+private final class BlackHoleScalarMeasurementCollector: @unchecked Sendable {
+    private let collectsTaggedChallenge: Bool
+    private var queueStartMonotonicNs: UInt64 = 0
+    private var windows = Array(
+        repeating: BlackHoleMeasureWindowAccumulator(),
+        count: BlackHoleMeasurePolicy.maximumTelemetryWindows
+    )
+    private var aggregate = BlackHoleMeasureWindowAccumulator()
+    private var totalFrameCount: UInt64 = 0
+    private var totalCallbackCount: UInt64 = 0
+    private var previousBlockFrameCount = 0
+    private var previousLeftHash: UInt64?
+    private var previousRightHash: UInt64?
+    private var leftRepeatRun: UInt64 = 0
+    private var rightRepeatRun: UInt64 = 0
+    private var spectralA = BlackHoleStreamingSpectralAccumulator()
+    private var spectralB = BlackHoleStreamingSpectralAccumulator()
+    private var spectralObservations = Array(
+        repeating: BlackHoleFixedSpectralObservation(),
+        count: BlackHoleMeasurePolicy.maximumSpectralObservations
+    )
+    private var spectralObservationCount = 0
+
+    init(collectsTaggedChallenge: Bool) {
+        self.collectsTaggedChallenge = collectsTaggedChallenge
+        aggregate.initialize(sequence: 0)
+        BlackHoleMeasureCadenceAccumulator.prepare()
+        if collectsTaggedChallenge {
+            BlackHoleStreamingSpectralAccumulator.prepare()
+        }
+    }
+
+    func armForQueueStart(monotonicNs: UInt64) {
+        precondition(totalCallbackCount == 0)
+        queueStartMonotonicNs = monotonicNs
+    }
+
+    func ingest(
+        samples: UnsafeBufferPointer<Int16>,
+        timestamp: BlackHoleMeasureCallbackTimestamp
+    ) {
+        let safeSampleCount = samples.count
+            - samples.count % Policy.channels
+        let callbackFrames = safeSampleCount / Policy.channels
+        guard callbackFrames > 0 else {
+            totalCallbackCount &+= 1
+            aggregate.recordCallback(
+                frameCount: 0,
+                timestamp: timestamp,
+                leftRepeated: false,
+                rightRepeated: false,
+                leftRepeatRun: 0,
+                rightRepeatRun: 0
+            )
+            return
+        }
+
+        var leftHash: UInt64 = 14_695_981_039_346_656_037
+        var rightHash: UInt64 = 14_695_981_039_346_656_037
+        for frame in 0..<callbackFrames {
+            let base = frame * Policy.channels
+            leftHash ^= UInt64(UInt16(bitPattern: samples[base]))
+            leftHash &*= 1_099_511_628_211
+            rightHash ^= UInt64(UInt16(bitPattern: samples[base + 1]))
+            rightHash &*= 1_099_511_628_211
+        }
+        leftHash ^= UInt64(callbackFrames)
+        rightHash ^= UInt64(callbackFrames)
+        let leftRepeated = previousBlockFrameCount == callbackFrames
+            && previousLeftHash == leftHash
+        let rightRepeated = previousBlockFrameCount == callbackFrames
+            && previousRightHash == rightHash
+        leftRepeatRun = leftRepeated ? leftRepeatRun &+ 1 : 0
+        rightRepeatRun = rightRepeated ? rightRepeatRun &+ 1 : 0
+
+        let callbackStartFrame = totalFrameCount
+        for frame in 0..<callbackFrames {
+            let sourceFrame = totalFrameCount
+            let base = frame * Policy.channels
+            let left = samples[base]
+            let right = samples[base + 1]
+            let windowIndex = Int(sourceFrame)
+                / BlackHoleMeasurePolicy.telemetryWindowFrames
+            if windowIndex < windows.count {
+                windows[windowIndex].initialize(sequence: windowIndex)
+                windows[windowIndex].add(left: left, right: right)
+            }
+            aggregate.add(left: left, right: right)
+            ingestSpectral(left: left, right: right, sourceFrame: sourceFrame)
+            totalFrameCount &+= 1
+        }
+
+        let callbackEndFrame = totalFrameCount - 1
+        let firstWindow = Int(callbackStartFrame)
+            / BlackHoleMeasurePolicy.telemetryWindowFrames
+        let lastWindow = Int(callbackEndFrame)
+            / BlackHoleMeasurePolicy.telemetryWindowFrames
+        if firstWindow < windows.count {
+            let firstWindowEnd = UInt64(
+                (firstWindow + 1)
+                    * BlackHoleMeasurePolicy.telemetryWindowFrames
+            )
+            let firstFrames = Int(
+                min(totalFrameCount, firstWindowEnd) - callbackStartFrame
+            )
+            windows[firstWindow].recordCallback(
+                frameCount: firstFrames,
+                timestamp: timestamp,
+                leftRepeated: leftRepeated,
+                rightRepeated: rightRepeated,
+                leftRepeatRun: leftRepeatRun,
+                rightRepeatRun: rightRepeatRun
+            )
+        }
+        if lastWindow != firstWindow, lastWindow < windows.count {
+            let lastWindowStart = UInt64(
+                lastWindow * BlackHoleMeasurePolicy.telemetryWindowFrames
+            )
+            windows[lastWindow].recordCallback(
+                frameCount: Int(totalFrameCount - lastWindowStart),
+                timestamp: timestamp,
+                leftRepeated: false,
+                rightRepeated: false,
+                leftRepeatRun: 0,
+                rightRepeatRun: 0
+            )
+        }
+        aggregate.recordCallback(
+            frameCount: callbackFrames,
+            timestamp: timestamp,
+            leftRepeated: leftRepeated,
+            rightRepeated: rightRepeated,
+            leftRepeatRun: leftRepeatRun,
+            rightRepeatRun: rightRepeatRun
+        )
+        totalCallbackCount &+= 1
+        previousBlockFrameCount = callbackFrames
+        previousLeftHash = leftHash
+        previousRightHash = rightHash
+    }
+
+    func snapshot() -> (
+        windows: [BlackHoleMeasureWindowEvidence],
+        aggregate: BlackHoleMeasureAggregateEvidence,
+        observations: [SpectralObservation],
+        callbackCount: UInt64,
+        frameCount: UInt64,
+        measurementStartMonotonicNs: UInt64,
+        measurementEndMonotonicNs: UInt64
+    ) {
+        let cadence = aggregate.cadence.evidence()
+        let measurementStart = cadence.firstCallbackMonotonicNs != 0
+            ? cadence.firstCallbackMonotonicNs
+            : queueStartMonotonicNs
+        let measurementEnd = aggregate.cadence.measurementEndMonotonicNs
+        let evidence = windows.compactMap { window in
+            window.initialized
+                ? window.evidence(startMonotonicNs: measurementStart)
+                : nil
+        }
+        return (
+            windows: evidence,
+            aggregate: BlackHoleMeasureAggregateEvidence(
+                channels: [
+                    aggregate.left.evidence(channel: 0),
+                    aggregate.right.evidence(channel: 1),
+                ],
+                stereo: aggregate.stereo.evidence(),
+                cadence: cadence
+            ),
+            observations: spectralObservations[..<spectralObservationCount]
+                .map { $0.observation() },
+            callbackCount: totalCallbackCount,
+            frameCount: totalFrameCount,
+            measurementStartMonotonicNs: measurementStart,
+            measurementEndMonotonicNs: measurementEnd
+        )
+    }
+
+    private func ingestSpectral(
+        left: Int16,
+        right: Int16,
+        sourceFrame: UInt64
+    ) {
+        guard collectsTaggedChallenge else { return }
+        if sourceFrame % UInt64(Policy.analysisHopFrames) == 0 {
+            if !spectralA.active {
+                spectralA.begin(at: sourceFrame)
+            } else if !spectralB.active {
+                spectralB.begin(at: sourceFrame)
+            }
+        }
+        if let observation = spectralA.ingest(left: left, right: right) {
+            appendSpectral(observation)
+        }
+        if let observation = spectralB.ingest(left: left, right: right) {
+            appendSpectral(observation)
+        }
+    }
+
+    private func appendSpectral(
+        _ observation: BlackHoleFixedSpectralObservation
+    ) {
+        guard spectralObservationCount
+                < BlackHoleMeasurePolicy.maximumSpectralObservations else {
+            return
+        }
+        spectralObservations[spectralObservationCount] = observation
+        spectralObservationCount += 1
+    }
+}
+
+private final class BlackHoleMeasureLockFreeCallbackGate: @unchecked Sendable {
+    private static let acceptingBit: Int32 = 1 << 30
+    private static let inFlightMask: Int32 = acceptingBit - 1
+    private var state: Int32 = 0
+
+    func activate() {
+        precondition(
+            OSAtomicCompareAndSwap32Barrier(
+                0,
+                Self.acceptingBit,
+                &state
+            )
+        )
+    }
+
+    /// One atomic increment both observes admission and acquires the in-flight
+    /// lease, so teardown cannot miss a callback between a separate check and
+    /// increment. A post-stop callback immediately returns its temporary count.
+    func begin() -> Bool {
+        let admittedState = OSAtomicIncrement32Barrier(&state)
+        guard admittedState & Self.acceptingBit != 0 else {
+            _ = OSAtomicDecrement32Barrier(&state)
+            return false
+        }
+        return true
+    }
+
+    func end() {
+        _ = OSAtomicDecrement32Barrier(&state)
+    }
+
+    func stopAccepting() {
+        while true {
+            let current = OSAtomicAdd32Barrier(0, &state)
+            guard current & Self.acceptingBit != 0 else { return }
+            if OSAtomicCompareAndSwap32Barrier(
+                current,
+                current & ~Self.acceptingBit,
+                &state
+            ) {
+                return
+            }
+        }
+    }
+
+    /// Control-thread-only bounded polling. The AudioQueue callback never waits,
+    /// locks, sleeps, allocates, or invokes this method.
+    func waitUntilIdle() {
+        while OSAtomicAdd32Barrier(0, &state) & Self.inFlightMask != 0 {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+    }
+}
+
+private final class BlackHoleMeasureQueueFailureLatch: @unchecked Sendable {
+    private var failed: Int32 = 0
+
+    func record(_ status: OSStatus) {
+        guard status != noErr else { return }
+        recordFailure()
+    }
+
+    func recordFailure() {
+        _ = OSAtomicCompareAndSwap32Barrier(0, 1, &failed)
+    }
+
+    func hasFailure() -> Bool {
+        OSAtomicAdd32Barrier(0, &failed) != 0
+    }
+}
+
+private enum BlackHoleMeasureInputBufferContract {
+    static let bytesPerFrame =
+        Policy.channels * MemoryLayout<Int16>.size
+
+    static func validatedSamples(
+        in buffer: AudioQueueBufferRef
+    ) -> UnsafeBufferPointer<Int16>? {
+        let byteCount = Int(buffer.pointee.mAudioDataByteSize)
+        let byteCapacity = Int(buffer.pointee.mAudioDataBytesCapacity)
+        guard byteCount > 0,
+              byteCount <= byteCapacity,
+              byteCount.isMultiple(of: bytesPerFrame) else {
+            return nil
+        }
+        let audioData = buffer.pointee.mAudioData
+        return UnsafeBufferPointer(
+            start: audioData.assumingMemoryBound(to: Int16.self),
+            count: byteCount / MemoryLayout<Int16>.size
+        )
+    }
+}
+
+private enum BlackHoleMeasureInputBufferContractSelfTest {
+    static func passes() -> Bool {
+        withBuffer(capacity: 16, byteCount: 16) {
+            BlackHoleMeasureInputBufferContract.validatedSamples(in: $0)?
+                .count == 8
+        }
+            && withBuffer(capacity: 16, byteCount: 0) {
+                BlackHoleMeasureInputBufferContract.validatedSamples(in: $0)
+                    == nil
+            }
+            && withBuffer(capacity: 16, byteCount: 2) {
+                BlackHoleMeasureInputBufferContract.validatedSamples(in: $0)
+                    == nil
+            }
+            && withBuffer(capacity: 16, byteCount: 20) {
+                BlackHoleMeasureInputBufferContract.validatedSamples(in: $0)
+                    == nil
+            }
+    }
+
+    private static func withBuffer<Result>(
+        capacity: UInt32,
+        byteCount: UInt32,
+        _ body: (AudioQueueBufferRef) -> Result
+    ) -> Result {
+        let sampleCapacity = max(
+            1,
+            (Int(capacity) + MemoryLayout<Int16>.stride - 1)
+                / MemoryLayout<Int16>.stride
+        )
+        let samples = UnsafeMutablePointer<Int16>.allocate(
+            capacity: sampleCapacity
+        )
+        samples.initialize(repeating: 0, count: sampleCapacity)
+        defer {
+            samples.deinitialize(count: sampleCapacity)
+            samples.deallocate()
+        }
+        var buffer = AudioQueueBuffer(
+            mAudioDataBytesCapacity: capacity,
+            mAudioData: UnsafeMutableRawPointer(samples),
+            mAudioDataByteSize: byteCount,
+            mUserData: nil,
+            mPacketDescriptionCapacity: 0,
+            mPacketDescriptions: nil,
+            mPacketDescriptionCount: 0
+        )
+        return withUnsafeMutablePointer(to: &buffer, body)
+    }
+}
+
+private final class BlackHoleMeasureInputCallbackContext: @unchecked Sendable {
+    let collector: BlackHoleScalarMeasurementCollector
+    let failureLatch: BlackHoleMeasureQueueFailureLatch
+    private let lifecycle = BlackHoleMeasureLockFreeCallbackGate()
+    private var receivedFirstCallback: Int32 = 0
+
+    init(
+        collector: BlackHoleScalarMeasurementCollector,
+        failureLatch: BlackHoleMeasureQueueFailureLatch
+    ) {
+        self.collector = collector
+        self.failureLatch = failureLatch
+    }
+
+    func activate() { lifecycle.activate() }
+    func stopAccepting() { lifecycle.stopAccepting() }
+    func waitUntilIdle() { lifecycle.waitUntilIdle() }
+    func hasReceivedFirstCallback() -> Bool {
+        OSAtomicAdd32Barrier(0, &receivedFirstCallback) != 0
+    }
+
+    func handle(
+        queue: AudioQueueRef,
+        buffer: AudioQueueBufferRef,
+        timestamp: BlackHoleMeasureCallbackTimestamp
+    ) {
+        guard lifecycle.begin() else { return }
+        defer { lifecycle.end() }
+        guard let samples =
+                BlackHoleMeasureInputBufferContract.validatedSamples(
+                    in: buffer
+                ) else {
+            failureLatch.recordFailure()
+            return
+        }
+        collector.ingest(samples: samples, timestamp: timestamp)
+        _ = OSAtomicCompareAndSwap32Barrier(
+            0,
+            1,
+            &receivedFirstCallback
+        )
+        failureLatch.record(AudioQueueEnqueueBuffer(queue, buffer, 0, nil))
+    }
+}
+
+private func blackHoleMeasureInputCallback(
+    _ userData: UnsafeMutableRawPointer?,
+    _ queue: AudioQueueRef,
+    _ buffer: AudioQueueBufferRef,
+    _ startTime: UnsafePointer<AudioTimeStamp>,
+    _ packetCount: UInt32,
+    _ packetDescriptions: UnsafePointer<AudioStreamPacketDescription>?
+) {
+    guard let userData else { return }
+    Unmanaged<BlackHoleMeasureInputCallbackContext>
+        .fromOpaque(userData)
+        .takeUnretainedValue()
+        .handle(
+            queue: queue,
+            buffer: buffer,
+            timestamp: BlackHoleMeasureCallbackTimestamp(startTime.pointee)
+        )
+}
+
+private final class BlackHoleMeasureInputQueueSession {
+    private let context: BlackHoleMeasureInputCallbackContext
+    private var queue: AudioQueueRef?
+    private var buffers: [AudioQueueBufferRef] = []
+    private var retainedContext:
+        Unmanaged<BlackHoleMeasureInputCallbackContext>?
+    private var started = false
+    private var teardownFailed = false
+    private(set) var readbackMatches = false
+
+    init(
+        collector: BlackHoleScalarMeasurementCollector,
+        failureLatch: BlackHoleMeasureQueueFailureLatch
+    ) {
+        context = BlackHoleMeasureInputCallbackContext(
+            collector: collector,
+            failureLatch: failureLatch
+        )
+    }
+
+    func start() throws {
+        guard queue == nil else { return }
+        context.activate()
+        var description = AudioSupport.format()
+        var created: AudioQueueRef?
+        let retained = Unmanaged.passRetained(context)
+        let createStatus = AudioQueueNewInput(
+            &description,
+            blackHoleMeasureInputCallback,
+            retained.toOpaque(),
+            nil,
+            nil,
+            0,
+            &created
+        )
+        guard createStatus == noErr, let created else {
+            context.stopAccepting()
+            context.waitUntilIdle()
+            retained.release()
+            throw ProbeError(code: "measure_capture_queue_create_failed")
+        }
+        retainedContext = retained
+        queue = created
+        do {
+            let pinned = try AudioSupport.pinCurrentDevice(
+                Policy.captureUID,
+                queue: created,
+                failureCode: "measure_capture_queue_device_set_failed"
+            )
+            guard pinned else {
+                throw ProbeError(
+                    code: "measure_capture_queue_device_readback_mismatch"
+                )
+            }
+            let byteCount = UInt32(
+                Policy.bufferFrames * Policy.channels
+                    * MemoryLayout<Int16>.size
+            )
+            for _ in 0..<Policy.bufferCount {
+                var buffer: AudioQueueBufferRef?
+                guard AudioQueueAllocateBuffer(
+                    created,
+                    byteCount,
+                    &buffer
+                ) == noErr,
+                let buffer else {
+                    throw ProbeError(
+                        code: "measure_capture_queue_buffer_allocation_failed"
+                    )
+                }
+                buffers.append(buffer)
+                guard AudioQueueEnqueueBuffer(created, buffer, 0, nil)
+                        == noErr else {
+                    throw ProbeError(
+                        code: "measure_capture_queue_buffer_enqueue_failed"
+                    )
+                }
+            }
+            let requestedStartUptime = ProcessInfo.processInfo.systemUptime
+            context.collector.armForQueueStart(
+                monotonicNs: BlackHoleMeasureMath.monotonicNanoseconds(
+                    requestedStartUptime
+                )
+            )
+            guard AudioQueueStart(created, nil) == noErr else {
+                throw ProbeError(code: "measure_capture_queue_start_failed")
+            }
+            started = true
+            readbackMatches = currentDeviceMatches()
+            guard readbackMatches else {
+                throw ProbeError(
+                    code: "measure_capture_queue_device_readback_mismatch"
+                )
+            }
+        } catch {
+            _ = stop()
+            throw error
+        }
+    }
+
+    func currentDeviceMatches() -> Bool {
+        guard let queue else { return false }
+        return AudioSupport.currentDevice(queue) == Policy.captureUID
+    }
+
+    func hasReceivedFirstCallback() -> Bool {
+        context.hasReceivedFirstCallback()
+    }
+
+    func stop() -> Bool {
+        guard let queue else { return !teardownFailed }
+        context.stopAccepting()
+        var stopStatus: OSStatus = noErr
+        if started {
+            stopStatus = AudioQueueStop(queue, true)
+            started = false
+        }
+        context.waitUntilIdle()
+        let disposeStatus = AudioQueueDispose(queue, true)
+        context.waitUntilIdle()
+        // AudioQueueDispose is terminal once it returns, including when it
+        // reports an error. Retaining the queue/context would make deinit call
+        // dispose a second time on an already-terminal queue.
+        self.queue = nil
+        buffers.removeAll(keepingCapacity: false)
+        retainedContext?.release()
+        retainedContext = nil
+        if stopStatus != noErr || disposeStatus != noErr {
+            teardownFailed = true
+        }
+        return !teardownFailed
+    }
+
+    deinit { _ = stop() }
+}
+
+private enum CanonicalBlackHoleMeasureResolver {
+    static func validate() throws -> DeviceIdentity {
+        let matches = try CoreAudioReader.allDevices().filter {
+            CoreAudioReader.uid($0) == Policy.captureUID
+        }
+        guard matches.count == 1 else {
+            throw ProbeError(code: "canonical_capture_device_not_found")
+        }
+        let identity = try CoreAudioReader.identity(matches[0])
+        guard identity.objectClass == UInt32(kAudioDeviceClassID),
+              identity.alive,
+              identity.inputChannels >= Policy.channels else {
+            throw ProbeError(code: "canonical_capture_device_has_no_usable_input")
+        }
+        return identity
+    }
+}
+
+private struct BlackHoleMeasureOptions {
+    let durationSeconds: Double
+    let resultPath: String
+    let taggedChallengeNonce: String?
+}
+
+private enum BlackHoleMeasureSyntheticCase: String {
+    case dualMonoTagged = "dual-mono-tagged"
+    case leftOnlyTagged = "left-only-tagged"
+    case antiPhaseTagged = "anti-phase-tagged"
+    case wrongTag = "wrong-tag"
+    case allZero = "all-zero"
+    case dcClipped = "dc-clipped"
+    case dcOffset = "dc-offset"
+    case noise = "noise"
+    case nearClip = "near-clip"
+    case frozenBlocks = "frozen-blocks"
+    case cadenceGap = "cadence-gap"
+    case shortCapture = "short-capture"
+    case startupDelay = "startup-delay"
+    case nonmonotonicSampleTime = "nonmonotonic-sample-time"
+    case nonmonotonicHostTime = "nonmonotonic-host-time"
+    case sampleTimeGap = "sample-time-gap"
+}
+
+private enum BlackHoleMeasureResultBuilder {
+    static func make(
+        options: BlackHoleMeasureOptions,
+        collector: BlackHoleScalarMeasurementCollector,
+        elapsedSeconds: Double,
+        captureUIDMatches: Bool,
+        queueReadbackMatches: Bool,
+        defaults: (
+            inputEqual: Bool,
+            outputEqual: Bool,
+            systemOutputEqual: Bool,
+            notificationCount: Int
+        ),
+        forcedFailures: [String]
+    ) -> BlackHoleMeasureResult {
+        let snapshot = collector.snapshot()
+        let challenge = taggedChallengeEvidence(
+            nonce: options.taggedChallengeNonce,
+            durationSeconds: options.durationSeconds,
+            observations: snapshot.observations
+        )
+        var reasons: [String] = []
+        func add(_ code: String) {
+            if reasons.count < BlackHoleMeasurePolicy.maximumFailureReasons,
+               !reasons.contains(code) {
+                reasons.append(code)
+            }
+        }
+        forcedFailures.forEach(add)
+        let capturedAudioSeconds =
+            Double(snapshot.frameCount) / Policy.sampleRate
+        let capturedDurationRatio = options.durationSeconds > 0
+            ? capturedAudioSeconds / options.durationSeconds
+            : 0
+        let frameDensity = elapsedSeconds > 0
+            ? capturedAudioSeconds / elapsedSeconds
+            : 0
+        if !captureUIDMatches { add("capture_uid_mismatch") }
+        if !queueReadbackMatches { add("queue_device_readback_mismatch") }
+        if snapshot.callbackCount == 0 || snapshot.frameCount == 0 {
+            add("no_audio_callbacks")
+        }
+        if elapsedSeconds
+            < options.durationSeconds
+                * BlackHoleMeasurePolicy.minimumElapsedDurationRatio {
+            add("insufficient_measurement_duration")
+        }
+        if capturedDurationRatio
+            < BlackHoleMeasurePolicy.minimumCapturedDurationRatio {
+            add("insufficient_capture_duration")
+        }
+        if frameDensity < BlackHoleMeasurePolicy.minimumFrameDensity
+            || frameDensity > BlackHoleMeasurePolicy.maximumFrameDensity {
+            add("frame_density_out_of_range")
+        }
+        let cadence = snapshot.aggregate.cadence
+        if cadence.callbackGapOver25MsCount != 0 {
+            add("callback_gap_over_25ms")
+        }
+        if cadence.sampleTimeMissingCount != 0 {
+            add("sample_timestamp_missing")
+        }
+        if cadence.hostTimeMissingCount != 0 {
+            add("host_timestamp_missing")
+        }
+        if cadence.nonMonotonicSampleTimeCount != 0 {
+            add("nonmonotonic_sample_timestamp")
+        }
+        if cadence.nonMonotonicHostTimeCount != 0 {
+            add("nonmonotonic_host_timestamp")
+        }
+        if cadence.sampleFrameDiscontinuityCount != 0 {
+            add("sample_timestamp_discontinuity")
+        }
+        if !defaults.inputEqual { add("default_input_changed") }
+        if !defaults.outputEqual { add("default_output_changed") }
+        if !defaults.systemOutputEqual { add("default_system_output_changed") }
+        if defaults.notificationCount != 0 {
+            add("default_change_notification_observed")
+        }
+        if challenge.enabled, !challenge.recognized {
+            add("tagged_challenge_not_recognized")
+        }
+        let status: String
+        if !reasons.isEmpty {
+            status = "failed"
+        } else if challenge.enabled {
+            status = "passed"
+        } else {
+            status = "completed"
+        }
+        return BlackHoleMeasureResult(
+            schema: BlackHoleMeasurePolicy.schema,
+            status: status,
+            mode: BlackHoleMeasurePolicy.mode,
+            canonicalCaptureUID: Policy.captureUID,
+            captureUIDMatches: captureUIDMatches,
+            queueReadbackMatches: queueReadbackMatches,
+            rawPCMRetained: false,
+            rawPCMPersisted: false,
+            outputOpened: false,
+            defaultsMutated: false,
+            format: AudioFormatEvidence(
+                sampleRate: Policy.sampleRateInt,
+                channels: Policy.channels,
+                signedInt16: true,
+                interleaved: true
+            ),
+            requestedDurationSeconds: options.durationSeconds,
+            elapsedSeconds: max(0, elapsedSeconds),
+            capturedAudioSeconds: capturedAudioSeconds,
+            capturedDurationRatio: capturedDurationRatio,
+            frameDensity: frameDensity,
+            measurementStartMonotonicNs:
+                snapshot.measurementStartMonotonicNs,
+            measurementEndMonotonicNs:
+                snapshot.measurementEndMonotonicNs,
+            callbackCount: snapshot.callbackCount,
+            capturedFrameCount: snapshot.frameCount,
+            telemetryWindowSeconds:
+                BlackHoleMeasurePolicy.telemetryWindowSeconds,
+            telemetryWindowLimit:
+                BlackHoleMeasurePolicy.maximumTelemetryWindows,
+            telemetryWindows: snapshot.windows,
+            aggregate: snapshot.aggregate,
+            taggedChallenge: challenge,
+            defaultInputBeforeAfterEqual: defaults.inputEqual,
+            defaultOutputBeforeAfterEqual: defaults.outputEqual,
+            defaultSystemOutputBeforeAfterEqual: defaults.systemOutputEqual,
+            defaultChangeNotificationCount: max(0, defaults.notificationCount),
+            failureCode: reasons.first ?? "none",
+            failureReasons: reasons
+        )
+    }
+
+    private static func taggedChallengeEvidence(
+        nonce: String?,
+        durationSeconds: Double,
+        observations: [SpectralObservation]
+    ) -> BlackHoleTaggedChallengeEvidence {
+        guard let nonce else {
+            return BlackHoleTaggedChallengeEvidence(
+                enabled: false,
+                externallyInjected: false,
+                algorithm: "none",
+                version: 0,
+                tagFingerprint: "",
+                recognized: false,
+                recognizedChannel: -1,
+                channels: []
+            )
+        }
+        let symbolCount = Int(ceil(
+            (durationSeconds + Policy.maximumLagSeconds + 2.0)
+                / Policy.symbolSeconds
+        )) + Policy.frequencies.count
+        let plan = ChallengePlan(nonce: nonce, symbolCount: symbolCount)
+        let detections = (0..<Policy.channels).map {
+            Evaluator.detect(
+                channel: $0,
+                observations: observations,
+                plan: plan,
+                relativeWindowStart: 0
+            )
+        }
+        let best = detections.max { $0.score < $1.score }
+            ?? .zero(channel: 0)
+        let recognized = best.symbolCount >= Policy.minimumSymbols
+            && best.matchRatio >= Policy.minimumMatchRatio
+            && best.normalizedCorrelation
+                >= Policy.minimumNormalizedCorrelation
+            && best.discriminationMargin
+                >= Policy.minimumDiscriminationMargin
+        let channelEvidence = detections.map {
+            BlackHoleTaggedChannelEvidence(
+                channel: $0.channel,
+                symbolCount: $0.symbolCount,
+                matchedSymbolCount: $0.matchedSymbolCount,
+                matchRatio: $0.matchRatio,
+                normalizedCorrelation: $0.normalizedCorrelation,
+                discriminationMargin: $0.discriminationMargin,
+                envelopeCorrelation: $0.envelopeCorrelation,
+                detectedLagMs: $0.lagSeconds >= 0
+                    ? $0.lagSeconds * 1_000.0
+                    : -1
+            )
+        }
+        return BlackHoleTaggedChallengeEvidence(
+            enabled: true,
+            externallyInjected: true,
+            algorithm: Policy.algorithm,
+            version: Policy.algorithmVersion,
+            tagFingerprint: SHA256.hash(data: Data(nonce.utf8))
+                .map { String(format: "%02x", $0) }
+                .joined(),
+            recognized: recognized,
+            recognizedChannel: recognized ? best.channel : -1,
+            channels: channelEvidence
+        )
+    }
+}
+
+private enum BlackHoleMeasureRunner {
+    static func run(
+        options: BlackHoleMeasureOptions,
+        signalMonitor: SignalMonitor
+    ) -> BlackHoleMeasureResult {
+        let collector = BlackHoleScalarMeasurementCollector(
+            collectsTaggedChallenge: options.taggedChallengeNonce != nil
+        )
+        let failureLatch = BlackHoleMeasureQueueFailureLatch()
+        var session: BlackHoleMeasureInputQueueSession?
+        var defaultGuard: DefaultDeviceGuard?
+        var expectedDefaults: DefaultSnapshot?
+        var expectedIdentity: DeviceIdentity?
+        var captureUIDMatches = false
+        var queueReadbackMatches = false
+        var failures: [String] = []
+        var measurementWallStart: Double?
+
+        do {
+            let identity = try CanonicalBlackHoleMeasureResolver.validate()
+            expectedIdentity = identity
+            captureUIDMatches = true
+            let guardObject = DefaultDeviceGuard()
+            defaultGuard = guardObject
+            try guardObject.install()
+            expectedDefaults = try guardObject.snapshot()
+            let input = BlackHoleMeasureInputQueueSession(
+                collector: collector,
+                failureLatch: failureLatch
+            )
+            session = input
+            try input.start()
+            queueReadbackMatches = input.readbackMatches
+
+            let firstCallbackDeadline = ProcessInfo.processInfo.systemUptime
+                + BlackHoleMeasurePolicy.firstCallbackTimeoutSeconds
+            while !input.hasReceivedFirstCallback(),
+                  ProcessInfo.processInfo.systemUptime < firstCallbackDeadline {
+                if signalMonitor.receivedSignal() != 0 {
+                    failures.append("interrupted")
+                    break
+                }
+                if failureLatch.hasFailure() {
+                    failures.append("audio_queue_runtime_failure")
+                    break
+                }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            if failures.isEmpty, !input.hasReceivedFirstCallback() {
+                failures.append("first_audio_callback_timeout")
+            }
+
+            if failures.isEmpty {
+                let measurementStart = ProcessInfo.processInfo.systemUptime
+                measurementWallStart = measurementStart
+                let deadline = measurementStart + options.durationSeconds
+                while ProcessInfo.processInfo.systemUptime < deadline {
+                    if signalMonitor.receivedSignal() != 0 {
+                        failures.append("interrupted")
+                        break
+                    }
+                    if failureLatch.hasFailure() {
+                        failures.append("audio_queue_runtime_failure")
+                        break
+                    }
+                    guard input.currentDeviceMatches() else {
+                        queueReadbackMatches = false
+                        failures.append(
+                            "queue_device_changed_during_measurement"
+                        )
+                        break
+                    }
+                    guard try guardObject.snapshot()
+                            == expectedDefaults else {
+                        failures.append(
+                            "default_route_changed_during_measurement"
+                        )
+                        break
+                    }
+                    guard guardObject.notificationCount() == 0 else {
+                        failures.append(
+                            "default_change_notification_observed"
+                        )
+                        break
+                    }
+                    guard try CanonicalBlackHoleMeasureResolver.validate()
+                            == identity else {
+                        captureUIDMatches = false
+                        failures.append(
+                            "route_identity_changed_during_measurement"
+                        )
+                        break
+                    }
+                    Thread.sleep(forTimeInterval: 0.05)
+                }
+            }
+        } catch let error as ProbeError {
+            failures.append(error.code)
+        } catch {
+            failures.append("unexpected_runtime_failure")
+        }
+
+        let elapsed = measurementWallStart.map {
+            ProcessInfo.processInfo.systemUptime - $0
+        } ?? 0
+        queueReadbackMatches = queueReadbackMatches
+            && (session?.currentDeviceMatches() ?? false)
+        if session?.stop() == false {
+            failures.append("audio_queue_teardown_failure")
+        }
+        if failureLatch.hasFailure() {
+            failures.append("audio_queue_runtime_failure")
+        }
+        var defaultEvidence = (
+            inputEqual: false,
+            outputEqual: false,
+            systemOutputEqual: false,
+            notificationCount: 0
+        )
+        if let defaultGuard, let expectedDefaults {
+            do {
+                let after = try defaultGuard.snapshot()
+                defaultEvidence.inputEqual =
+                    after.inputUID == expectedDefaults.inputUID
+                defaultEvidence.outputEqual =
+                    after.outputUID == expectedDefaults.outputUID
+                defaultEvidence.systemOutputEqual =
+                    after.systemOutputUID
+                        == expectedDefaults.systemOutputUID
+            } catch {
+                failures.append("default_after_snapshot_failed")
+            }
+            let listenerRemoved = defaultGuard.remove()
+            // Removal synchronously drains the listener queue, so this final
+            // read cannot miss a notification that was already queued at the
+            // measurement/teardown boundary.
+            defaultEvidence.notificationCount =
+                defaultGuard.notificationCount()
+            if !listenerRemoved {
+                failures.append("default_device_listener_remove_failed")
+            }
+        } else {
+            failures.append("default_guard_unavailable")
+        }
+        if let expectedIdentity {
+            do {
+                let finalIdentity =
+                    try CanonicalBlackHoleMeasureResolver.validate()
+                captureUIDMatches = captureUIDMatches
+                    && finalIdentity == expectedIdentity
+            } catch {
+                captureUIDMatches = false
+                failures.append("route_identity_changed_during_measurement")
+            }
+        }
+        return BlackHoleMeasureResultBuilder.make(
+            options: options,
+            collector: collector,
+            elapsedSeconds: elapsed,
+            captureUIDMatches: captureUIDMatches,
+            queueReadbackMatches: queueReadbackMatches,
+            defaults: defaultEvidence,
+            forcedFailures: failures
+        )
+    }
+}
+
+private enum BlackHoleMeasureSyntheticFactory {
+    static func make(
+        test: BlackHoleMeasureSyntheticCase,
+        nonce: String
+    ) -> (BlackHoleMeasureOptions, BlackHoleScalarMeasurementCollector) {
+        let duration = BlackHoleMeasurePolicy.minimumDurationSeconds
+        let startUptime = 10_000.0
+        let startupDelay = test == .startupDelay ? 1.75 : 0
+        let tagged = [
+            BlackHoleMeasureSyntheticCase.dualMonoTagged,
+            .leftOnlyTagged,
+            .antiPhaseTagged,
+            .wrongTag,
+        ].contains(test)
+        let collector = BlackHoleScalarMeasurementCollector(
+            collectsTaggedChallenge: tagged
+        )
+        collector.armForQueueStart(
+            monotonicNs: BlackHoleMeasureMath.monotonicNanoseconds(startUptime)
+        )
+        let options = BlackHoleMeasureOptions(
+            durationSeconds: duration,
+            resultPath: "/dev/null",
+            taggedChallengeNonce: tagged ? nonce : nil
+        )
+        let signalNonce = test == .wrongTag ? nonce + ":wrong" : nonce
+        let plan = ChallengePlan(nonce: signalNonce, symbolCount: 64)
+        let generator = ChallengeGenerator(plan: plan)
+        let totalFrames = test == .shortCapture
+            ? Int(duration * Policy.sampleRate * 0.5)
+            : Int(duration * Policy.sampleRate)
+        let onsetFrames = Int(0.28 * Policy.sampleRate)
+        var callbackStart = 0
+        var timestampOffset = 0.0
+        var callbackIndex = 0
+        var noiseGenerator = SplitMix64(
+            seed: ChallengePlan.seed(for: nonce + ":measure-noise")
+        )
+        while callbackStart < totalFrames {
+            let callbackFrames = min(
+                Policy.bufferFrames,
+                totalFrames - callbackStart
+            )
+            var samples = Array(
+                repeating: Int16(0),
+                count: callbackFrames * Policy.channels
+            )
+            for localFrame in 0..<callbackFrames {
+                let frame = callbackStart + localFrame
+                let base = localFrame * Policy.channels
+                let challengeValue: Int16
+                if frame < onsetFrames {
+                    challengeValue = 0
+                } else {
+                    challengeValue = AudioSupport.quantize(
+                        generator.nextNormalized()
+                    )
+                }
+                switch test {
+                case .dualMonoTagged, .wrongTag:
+                    samples[base] = challengeValue
+                    samples[base + 1] = challengeValue
+                case .leftOnlyTagged:
+                    samples[base] = challengeValue
+                    samples[base + 1] = 0
+                case .antiPhaseTagged:
+                    samples[base] = challengeValue
+                    samples[base + 1] = Int16(
+                        max(
+                            Int32(Int16.min),
+                            min(Int32(Int16.max), -Int32(challengeValue))
+                        )
+                    )
+                case .allZero:
+                    break
+                case .dcClipped:
+                    samples[base] = 32_767
+                    samples[base + 1] = 32_767
+                case .dcOffset:
+                    samples[base] = 4_096
+                    samples[base + 1] = 4_096
+                case .noise:
+                    let left = Int32(noiseGenerator.next() % 12_001) - 6_000
+                    let right = Int32(noiseGenerator.next() % 12_001) - 6_000
+                    samples[base] = Int16(left)
+                    samples[base + 1] = Int16(right)
+                case .nearClip:
+                    let value: Int16 = frame.isMultiple(of: 2)
+                        ? 32_759
+                        : -32_759
+                    samples[base] = value
+                    samples[base + 1] = value
+                case .frozenBlocks:
+                    let phase = Double(localFrame)
+                        * 2.0 * Double.pi * 1_000.0 / Policy.sampleRate
+                    let value = AudioSupport.quantize(0.2 * sin(phase))
+                    samples[base] = value
+                    samples[base + 1] = value
+                case .cadenceGap, .shortCapture, .startupDelay,
+                     .nonmonotonicSampleTime, .nonmonotonicHostTime,
+                     .sampleTimeGap:
+                    let phase = Double(frame)
+                        * 2.0 * Double.pi * 1_379.0 / Policy.sampleRate
+                    let value = AudioSupport.quantize(0.15 * sin(phase))
+                    samples[base] = value
+                    samples[base + 1] = value
+                }
+            }
+            if test == .cadenceGap, callbackStart == 200 * Policy.bufferFrames {
+                timestampOffset += 0.20
+            }
+            var sampleTime = Double(callbackStart)
+            if test == .nonmonotonicSampleTime, callbackIndex == 200 {
+                sampleTime -= Double(Policy.bufferFrames)
+            } else if test == .sampleTimeGap, callbackIndex >= 200 {
+                sampleTime += Double(Policy.bufferFrames)
+            }
+            var callbackStartSeconds = startUptime + startupDelay
+                + Double(callbackStart) / Policy.sampleRate
+                + timestampOffset
+            if test == .nonmonotonicHostTime, callbackIndex == 200 {
+                callbackStartSeconds -= Double(Policy.bufferFrames)
+                    / Policy.sampleRate
+            }
+            let hostTime = AudioConvertNanosToHostTime(
+                BlackHoleMeasureMath.monotonicNanoseconds(
+                    callbackStartSeconds
+                )
+            )
+            samples.withUnsafeBufferPointer {
+                collector.ingest(
+                    samples: $0,
+                    timestamp: BlackHoleMeasureCallbackTimestamp(
+                        sampleTime: sampleTime,
+                        hostTime: hostTime
+                    )
+                )
+            }
+            callbackStart += callbackFrames
+            callbackIndex += 1
+        }
+        return (options, collector)
+    }
+}
+
+private enum BlackHoleMeasureWriter {
+    static func write(_ result: BlackHoleMeasureResult, to url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(
+            atPath: url.path,
+            isDirectory: &isDirectory
+        ) {
+            guard !isDirectory.boolValue else {
+                throw ProbeError(code: "result_path_is_directory")
+            }
+            try FileManager.default.removeItem(at: url)
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let temporary = url.deletingLastPathComponent()
+            .appendingPathComponent(
+                ".\(url.lastPathComponent).\(getpid()).\(UUID().uuidString).tmp"
+            )
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try encoder.encode(result).write(to: temporary)
+        let descriptor = temporary.path.withCString {
+            Darwin.open($0, O_RDONLY)
+        }
+        if descriptor >= 0 {
+            _ = Darwin.fsync(descriptor)
+            _ = Darwin.close(descriptor)
+        }
+        let renameStatus = temporary.path.withCString { source in
+            url.path.withCString { destination in
+                Darwin.rename(source, destination)
+            }
+        }
+        guard renameStatus == 0 else {
+            throw ProbeError(code: "result_atomic_rename_failed")
+        }
+    }
+}
+
+private enum BlackHoleMeasureProgram {
+    static let usage = """
+    Usage:
+      physical-blackhole-microphone-probe measure --duration-seconds <8...30> --result <json-path> [--tagged-challenge-nonce <fresh-nonsecret-token>]
+      physical-blackhole-microphone-probe measure-self-test --case <dual-mono-tagged|left-only-tagged|anti-phase-tagged|wrong-tag|all-zero|dc-clipped|dc-offset|noise|near-clip|frozen-blocks|cadence-gap|short-capture|startup-delay|nonmonotonic-sample-time|nonmonotonic-host-time|sample-time-gap> --nonce <fresh-nonsecret-token> --result <json-path>
+
+    The measure command opens only BlackHole input by its stable UID. It never opens an output queue or mutates any default device. The optional tagged challenge must be injected externally; the nonce itself is not written to the result. Only bounded scalar summaries are retained.
+    """
+
+    static func runIfRequested() -> Int32? {
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        guard let command = arguments.first,
+              command == "measure" || command == "measure-self-test" else {
+            return nil
+        }
+        do {
+            let pairs = try parsePairs(Array(arguments.dropFirst()))
+            switch command {
+            case "measure":
+                let allowedKeys = Set([
+                    "--duration-seconds",
+                    "--result",
+                    "--tagged-challenge-nonce",
+                ])
+                guard Set(pairs.keys).isSubset(of: allowedKeys),
+                      Set(pairs.keys).isSuperset(of: [
+                        "--duration-seconds",
+                        "--result",
+                      ]),
+                      let durationText = pairs["--duration-seconds"],
+                      let duration = Double(durationText),
+                      duration.isFinite,
+                      duration >= BlackHoleMeasurePolicy.minimumDurationSeconds,
+                      duration <= BlackHoleMeasurePolicy.maximumDurationSeconds,
+                      let resultPath = pairs["--result"] else {
+                    throw ProbeError(code: "usage")
+                }
+                try validateResultPath(resultPath)
+                if let nonce = pairs["--tagged-challenge-nonce"] {
+                    try validateNonce(nonce)
+                }
+                let options = BlackHoleMeasureOptions(
+                    durationSeconds: duration,
+                    resultPath: resultPath,
+                    taggedChallengeNonce:
+                        pairs["--tagged-challenge-nonce"]
+                )
+                let result = BlackHoleMeasureRunner.run(
+                    options: options,
+                    signalMonitor: SignalMonitor()
+                )
+                try BlackHoleMeasureWriter.write(
+                    result,
+                    to: URL(fileURLWithPath: resultPath)
+                )
+                return result.status == "failed" ? 1 : 0
+            case "measure-self-test":
+                guard Set(pairs.keys) == Set([
+                    "--case",
+                    "--nonce",
+                    "--result",
+                ]),
+                let caseName = pairs["--case"],
+                let test = BlackHoleMeasureSyntheticCase(rawValue: caseName),
+                let nonce = pairs["--nonce"],
+                let resultPath = pairs["--result"] else {
+                    throw ProbeError(code: "usage")
+                }
+                try validateNonce(nonce)
+                try validateResultPath(resultPath)
+                guard BlackHoleMeasureInputBufferContractSelfTest.passes()
+                        else {
+                    throw ProbeError(
+                        code: "measure_input_buffer_contract_self_test_failed"
+                    )
+                }
+                let fixture = BlackHoleMeasureSyntheticFactory.make(
+                    test: test,
+                    nonce: nonce
+                )
+                let result = BlackHoleMeasureResultBuilder.make(
+                    options: BlackHoleMeasureOptions(
+                        durationSeconds: fixture.0.durationSeconds,
+                        resultPath: resultPath,
+                        taggedChallengeNonce:
+                            fixture.0.taggedChallengeNonce
+                    ),
+                    collector: fixture.1,
+                    elapsedSeconds: fixture.0.durationSeconds,
+                    captureUIDMatches: true,
+                    queueReadbackMatches: true,
+                    defaults: (
+                        inputEqual: true,
+                        outputEqual: true,
+                        systemOutputEqual: true,
+                        notificationCount: 0
+                    ),
+                    forcedFailures: []
+                )
+                try BlackHoleMeasureWriter.write(
+                    result,
+                    to: URL(fileURLWithPath: resultPath)
+                )
+                return result.status == "failed" ? 1 : 0
+            default:
+                throw ProbeError(code: "usage")
+            }
+        } catch let error as ProbeError where error.code == "usage" {
+            FileHandle.standardError.write(Data(usage.utf8))
+            return 64
+        } catch {
+            return 74
+        }
+    }
+
+    private static func parsePairs(
+        _ arguments: [String]
+    ) throws -> [String: String] {
+        guard arguments.count.isMultiple(of: 2) else {
+            throw ProbeError(code: "usage")
+        }
+        var pairs: [String: String] = [:]
+        var index = 0
+        while index < arguments.count {
+            let key = arguments[index]
+            let value = arguments[index + 1]
+            guard key.hasPrefix("--"), pairs[key] == nil, !value.isEmpty else {
+                throw ProbeError(code: "usage")
+            }
+            pairs[key] = value
+            index += 2
+        }
+        return pairs
+    }
+
+    private static func validateNonce(_ nonce: String) throws {
+        guard nonce.utf8.count >= 8, nonce.utf8.count <= 128 else {
+            throw ProbeError(code: "usage")
+        }
+        for byte in nonce.utf8 {
+            let allowed = (byte >= 48 && byte <= 57)
+                || (byte >= 65 && byte <= 90)
+                || (byte >= 97 && byte <= 122)
+                || byte == 45 || byte == 46 || byte == 58 || byte == 95
+            guard allowed else { throw ProbeError(code: "usage") }
+        }
+    }
+
+    private static func validateResultPath(_ path: String) throws {
+        guard !path.isEmpty, path.utf8.count <= 4_096 else {
+            throw ProbeError(code: "usage")
+        }
+    }
+}
+
 if let status = DefaultUIDSnapshotProgram.runIfRequested() {
+    Darwin.exit(status)
+}
+if let status = BlackHoleMeasureProgram.runIfRequested() {
     Darwin.exit(status)
 }
 Darwin.exit(ProbeProgram.main())
