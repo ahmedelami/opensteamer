@@ -13,6 +13,7 @@ Post-v20 new-host pairing-isolation authorization recorded: **2026-08-03**
 Pairing-preserving new-host update authorization recorded and consumed: **2026-08-05**
 Pairing-preserving new-host update v3 authorization recorded and consumed: **2026-08-06**
 Pairing-preserving new-host update v4 authorization recorded and consumed: **2026-08-09**
+Pairing-preserving new-host update v5 authorization recorded and pending: **2026-08-09**
 
 The user authorized guarded Mac-only cutovers from the running legacy host to
 the validated opensteamer host. Versions 15, 16, 17, 18, and 19 all fully
@@ -662,6 +663,21 @@ occurred. The exact v3 app retained at
 `rollback-current/opensteamer Host.app` inside the v4 evidence is the rollback
 source; its executable SHA-256 is
 `3ae931ddc06cb9bf303201143c8e1868fad45c0d0db2cb76e6eb9eca55d16181`.
+
+### Pairing-preserving host update v5 (authorized, not yet executed)
+
+On August 9, 2026, the user explicitly authorized exactly one fresh guarded
+replacement of only the active side-by-side new Mac host so the privacy-safe
+FaceTime microphone telemetry pushed through commit
+`77cfe939813b9b719ca328b6cb0e69196ce3cf2d` can run in the physical call path.
+This authorization does not permit a second v5 attempt, pairing reset,
+re-pairing, Keychain secret retrieval, modification of any protected legacy
+artifact, or installation over either iPhone app. Before consuming it, the
+updater must use a fresh v5 namespace, pin and preserve the exact committed v4
+pointer/evidence and rollback app, build from an exact clean pushed commit/tree,
+and prove both isolated pairing records by metadata only. The authorization is
+pending and no v5 evidence, host replacement, or physical-iPhone operation is
+claimed by this paragraph.
 
 ## Protected iPhone client
 
