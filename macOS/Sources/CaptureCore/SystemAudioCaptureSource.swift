@@ -23,7 +23,8 @@ public struct SystemAudioCaptureFormat: Sendable, Equatable {
 }
 
 /// Native identity of the viewer challenge under which a FaceTime duplex observation was sampled.
-/// The random call epoch remains stable across nonce rotations for the same CallKit membership.
+/// A prospective random epoch may be installed while CallKit is inactive, then remains stable for
+/// the first matching inactive-to-active membership edge. It never contains call identity.
 public struct SystemAudioMacFaceTimeActivityChallenge: Sendable, Equatable {
     public let sequence: UInt64
     public let nonce: UUID
@@ -47,15 +48,19 @@ public struct SystemAudioMacFaceTimeActivityObservation: Sendable, Equatable {
     public let challenge: SystemAudioMacFaceTimeActivityChallenge?
     public let observationSequence: UInt64
     public let causalBindingID: UUID?
+    /// True only while the binder still owns the exact known-empty prospective baseline.
+    public let isCausallyArmed: Bool
 
     public init(
         challenge: SystemAudioMacFaceTimeActivityChallenge?,
         observationSequence: UInt64,
-        causalBindingID: UUID?
+        causalBindingID: UUID?,
+        isCausallyArmed: Bool = false
     ) {
         self.challenge = challenge
         self.observationSequence = observationSequence
         self.causalBindingID = causalBindingID
+        self.isCausallyArmed = isCausallyArmed
     }
 
     public var isCausallyBoundActive: Bool {

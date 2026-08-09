@@ -551,6 +551,157 @@ final class SystemAudioCaptureSourceTests: XCTestCase {
         XCTAssertEqual(scan, .unknown)
     }
 
+    func testFaceTimeInventoryRetryDiscardsFailedAttemptOnlyAfterExactObjectDisappears()
+        throws {
+        var inventories: [[AudioObjectID]] = [
+            [101, 202],
+            [202],
+            [202],
+        ]
+        var attemptedInventories: [[AudioObjectID]] = []
+
+        let result: CoreAudioFaceTimeCompleteInventoryReader
+            .ReadResult<[AudioObjectID]>? =
+            CoreAudioFaceTimeCompleteInventoryReader.read(
+                readInventory: {
+                    try XCTUnwrap(
+                        inventories.isEmpty
+                            ? nil
+                            : inventories.removeFirst()
+                    )
+                },
+                readCompleteAttempt: { inventory in
+                    attemptedInventories.append(inventory)
+                    if inventory.contains(101) {
+                        return .unreadableObject(101)
+                    }
+                    return .complete(inventory)
+                }
+            )
+
+        XCTAssertEqual(result?.value, [202])
+        XCTAssertTrue(try XCTUnwrap(result).requiredRetry)
+        XCTAssertNil(result?.stableValue)
+        XCTAssertEqual(attemptedInventories, [[101, 202], [202]])
+        XCTAssertTrue(inventories.isEmpty)
+    }
+
+    func testFaceTimeInventoryRetryKeepsStillPresentUnreadableObjectUnknown()
+        throws {
+        var inventories: [[AudioObjectID]] = [
+            [101, 202],
+            [101, 202],
+        ]
+        var attemptCount = 0
+
+        let result: CoreAudioFaceTimeCompleteInventoryReader
+            .ReadResult<[AudioObjectID]>? =
+            CoreAudioFaceTimeCompleteInventoryReader.read(
+                readInventory: {
+                    try XCTUnwrap(
+                        inventories.isEmpty
+                            ? nil
+                            : inventories.removeFirst()
+                    )
+                },
+                readCompleteAttempt: { _ in
+                    attemptCount += 1
+                    return .unreadableObject(101)
+                }
+            )
+
+        XCTAssertNil(result)
+        XCTAssertEqual(attemptCount, 1)
+        XCTAssertTrue(inventories.isEmpty)
+    }
+
+    func testFaceTimeInventoryRetryRestartsWhenClosingInventoryChanged()
+        throws {
+        var inventories: [[AudioObjectID]] = [
+            [101],
+            [101, 202],
+            [101, 202],
+        ]
+        var attemptedInventories: [[AudioObjectID]] = []
+
+        let result: CoreAudioFaceTimeCompleteInventoryReader
+            .ReadResult<[AudioObjectID]>? =
+            CoreAudioFaceTimeCompleteInventoryReader.read(
+                readInventory: {
+                    try XCTUnwrap(
+                        inventories.isEmpty
+                            ? nil
+                            : inventories.removeFirst()
+                    )
+                },
+                readCompleteAttempt: { inventory in
+                    attemptedInventories.append(inventory)
+                    return .complete(inventory)
+                }
+            )
+
+        XCTAssertEqual(result?.value, [101, 202])
+        XCTAssertTrue(try XCTUnwrap(result).requiredRetry)
+        XCTAssertNil(result?.stableValue)
+        XCTAssertEqual(attemptedInventories, [[101], [101, 202]])
+    }
+
+    func testFaceTimeInventoryFirstPassStableResultCanAuthorize() throws {
+        var inventories: [[AudioObjectID]] = [
+            [101],
+            [101],
+        ]
+
+        let result: CoreAudioFaceTimeCompleteInventoryReader
+            .ReadResult<[AudioObjectID]>? =
+            CoreAudioFaceTimeCompleteInventoryReader.read(
+                readInventory: {
+                    try XCTUnwrap(
+                        inventories.isEmpty
+                            ? nil
+                            : inventories.removeFirst()
+                    )
+                },
+                readCompleteAttempt: { inventory in
+                    .complete(inventory)
+                }
+            )
+
+        XCTAssertFalse(try XCTUnwrap(result).requiredRetry)
+        XCTAssertEqual(result?.stableValue, [101])
+    }
+
+    func testFaceTimeListenerRemovalRetriesOnlyTheExactFailedSelector() {
+        let input = kAudioProcessPropertyIsRunningInput
+        let output = kAudioProcessPropertyIsRunningOutput
+        var firstRemovalCalls: Set<AudioObjectPropertySelector> = []
+
+        let remaining =
+            CoreAudioFaceTimeProcessListenerRemovalPolicy
+                .remainingSelectors(
+                    installedSelectors: [input, output]
+                ) { selector in
+                    firstRemovalCalls.insert(selector)
+                    return selector == input ? noErr : OSStatus(-1)
+                }
+
+        XCTAssertEqual(firstRemovalCalls, [input, output])
+        XCTAssertEqual(remaining, [output])
+
+        var retryCalls: Set<AudioObjectPropertySelector> = []
+        let finalRemainder =
+            CoreAudioFaceTimeProcessListenerRemovalPolicy
+                .remainingSelectors(
+                    installedSelectors: remaining
+                ) { selector in
+                    retryCalls.insert(selector)
+                    return noErr
+                }
+
+        XCTAssertEqual(retryCalls, [output])
+        XCTAssertTrue(finalRemainder.isEmpty)
+    }
+
     func testFaceTimeEpochBinderRequiresZeroBaselineThenOneExactProcess()
         throws {
         let epoch = UUID()
@@ -571,6 +722,7 @@ final class SystemAudioCaptureSourceTests: XCTestCase {
             )
         )
         XCTAssertNil(initial.causalBindingID)
+        XCTAssertTrue(initial.isCausallyArmed)
         XCTAssertEqual(binder.phase, .armed)
 
         let bound = try XCTUnwrap(
@@ -580,6 +732,7 @@ final class SystemAudioCaptureSourceTests: XCTestCase {
             )
         )
         XCTAssertEqual(bound.causalBindingID, bindingID)
+        XCTAssertFalse(bound.isCausallyArmed)
         XCTAssertEqual(
             binder.phase,
             .bound(processObjectID: 101, causalBindingID: bindingID)
@@ -623,6 +776,12 @@ final class SystemAudioCaptureSourceTests: XCTestCase {
             )
             XCTAssertNil(update.causalBindingID)
             XCTAssertEqual(binder.phase, .poisoned)
+            XCTAssertFalse(
+                CoreAudioFaceTimeChallengeInstallEmissionPolicy.admits(
+                    phase: binder.phase
+                ),
+                "An active or unknown first scan must not masquerade as an inactive preflight acknowledgement."
+            )
         }
 
         let unsafeArmedScans: [CoreAudioFaceTimeDuplexActivityScan] = [
@@ -642,8 +801,39 @@ final class SystemAudioCaptureSourceTests: XCTestCase {
             )
             let update = try XCTUnwrap(binder.observe(scan))
             XCTAssertNil(update.causalBindingID)
+            XCTAssertFalse(
+                update.isCausallyArmed,
+                "An armed-to-poisoned transition must not emit a preflight acknowledgement."
+            )
             XCTAssertEqual(binder.phase, .poisoned)
         }
+    }
+
+    func testFaceTimeChallengeInstallEmissionRequiresArmedOrBoundState() {
+        let bindingID = UUID()
+        XCTAssertFalse(
+            CoreAudioFaceTimeChallengeInstallEmissionPolicy.admits(
+                phase: .noEpoch
+            )
+        )
+        XCTAssertTrue(
+            CoreAudioFaceTimeChallengeInstallEmissionPolicy.admits(
+                phase: .armed
+            )
+        )
+        XCTAssertTrue(
+            CoreAudioFaceTimeChallengeInstallEmissionPolicy.admits(
+                phase: .bound(
+                    processObjectID: 101,
+                    causalBindingID: bindingID
+                )
+            )
+        )
+        XCTAssertFalse(
+            CoreAudioFaceTimeChallengeInstallEmissionPolicy.admits(
+                phase: .poisoned
+            )
+        )
     }
 
     func testFaceTimeEpochBinderPoisonsEveryBoundIdentityMismatch() throws {

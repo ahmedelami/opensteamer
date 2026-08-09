@@ -90,7 +90,122 @@ enum CoreAudioFaceTimeDuplexActivityPolicy {
 struct CoreAudioFaceTimeCausalBindingUpdate: Equatable, Sendable {
     let challenge: SystemAudioMacFaceTimeActivityChallenge?
     let causalBindingID: UUID?
+    let isCausallyArmed: Bool
     let didPhaseChange: Bool
+}
+
+/// Retries a complete Core Audio inventory only when a fresh authoritative inventory proves that
+/// the exact object which failed disappeared. A still-present unreadable object keeps the result
+/// unknown; no partial object set is ever returned.
+enum CoreAudioFaceTimeCompleteInventoryReader {
+    struct ReadResult<Value> {
+        let value: Value
+        let requiredRetry: Bool
+
+        /// Only a first-pass stable inventory may contribute causal call authorization evidence.
+        var stableValue: Value? {
+            requiredRetry ? nil : value
+        }
+    }
+
+    enum AttemptResult<Value> {
+        case complete(Value)
+        case unreadableObject(AudioObjectID)
+    }
+
+    static func read<Value>(
+        maximumAttemptCount: Int = 4,
+        readInventory: () throws -> [AudioObjectID],
+        readCompleteAttempt: ([AudioObjectID]) -> AttemptResult<Value>
+    ) -> ReadResult<Value>? {
+        let attemptLimit = max(1, maximumAttemptCount)
+        var requiredRetry = false
+        var inventory: [AudioObjectID]
+        do {
+            inventory = try readInventory()
+        } catch {
+            return nil
+        }
+
+        for attemptIndex in 0..<attemptLimit {
+            guard isAuthoritative(inventory) else { return nil }
+            switch readCompleteAttempt(inventory) {
+            case .complete(let value):
+                let closingInventory: [AudioObjectID]
+                do {
+                    closingInventory = try readInventory()
+                } catch {
+                    return nil
+                }
+                guard isAuthoritative(closingInventory) else {
+                    return nil
+                }
+                if Set(closingInventory) == Set(inventory) {
+                    return ReadResult(
+                        value: value,
+                        requiredRetry: requiredRetry
+                    )
+                }
+                guard attemptIndex + 1 < attemptLimit else {
+                    return nil
+                }
+                // Inventory changed while the attempt was being read. Discard the entire result and
+                // retry against the fresh complete closing inventory.
+                requiredRetry = true
+                inventory = closingInventory
+            case .unreadableObject(let failedObjectID):
+                guard failedObjectID != kAudioObjectUnknown,
+                      attemptIndex + 1 < attemptLimit else {
+                    return nil
+                }
+                let freshInventory: [AudioObjectID]
+                do {
+                    freshInventory = try readInventory()
+                } catch {
+                    return nil
+                }
+                guard isAuthoritative(freshInventory),
+                      !freshInventory.contains(failedObjectID) else {
+                    return nil
+                }
+                // Discard every value from the failed attempt. The next attempt starts from this
+                // fresh complete inventory rather than accepting a partial prefix from the old one.
+                requiredRetry = true
+                inventory = freshInventory
+            }
+        }
+        return nil
+    }
+
+    private static func isAuthoritative(
+        _ inventory: [AudioObjectID]
+    ) -> Bool {
+        var seen: Set<AudioObjectID> = []
+        for objectID in inventory {
+            guard objectID != kAudioObjectUnknown,
+                  seen.insert(objectID).inserted else {
+                return false
+            }
+        }
+        return true
+    }
+}
+
+/// Retains only selectors whose exact listener removal failed, so a later cleanup never retries a
+/// selector that Core Audio already removed successfully.
+enum CoreAudioFaceTimeProcessListenerRemovalPolicy {
+    static func remainingSelectors(
+        installedSelectors: Set<AudioObjectPropertySelector>,
+        remove: (AudioObjectPropertySelector) -> OSStatus
+    ) -> Set<AudioObjectPropertySelector> {
+        var remaining: Set<AudioObjectPropertySelector> = []
+        for selector in installedSelectors.sorted() {
+            if remove(selector) != noErr {
+                remaining.insert(selector)
+            }
+        }
+        return remaining
+    }
 }
 
 /// Binds one viewer call epoch only when a known-zero baseline is followed by exactly one duplex
@@ -172,6 +287,7 @@ struct CoreAudioFaceTimeCausalEpochBinder: Sendable {
         return CoreAudioFaceTimeCausalBindingUpdate(
             challenge: revokedChallenge,
             causalBindingID: nil,
+            isCausallyArmed: false,
             didPhaseChange: didPhaseChange
         )
     }
@@ -190,8 +306,7 @@ struct CoreAudioFaceTimeCausalEpochBinder: Sendable {
                 return
             case .known(let activeProcessObjectIDs)
                 where activeProcessObjectIDs.count == 1:
-                guard let processObjectID =
-                    activeProcessObjectIDs.first else {
+                guard let processObjectID = activeProcessObjectIDs.first else {
                     phase = .poisoned
                     return
                 }
@@ -225,8 +340,24 @@ struct CoreAudioFaceTimeCausalEpochBinder: Sendable {
         return CoreAudioFaceTimeCausalBindingUpdate(
             challenge: currentChallenge,
             causalBindingID: causalBindingID,
+            isCausallyArmed: phase == .armed,
             didPhaseChange: didPhaseChange
         )
+    }
+}
+
+/// Protocol-v4 install responses are meaningful only for a known-empty armed baseline or an
+/// already causally bound same-epoch challenge. Poisoned/no-epoch state is deliberately silent.
+enum CoreAudioFaceTimeChallengeInstallEmissionPolicy {
+    static func admits(
+        phase: CoreAudioFaceTimeCausalEpochBinder.Phase
+    ) -> Bool {
+        switch phase {
+        case .armed, .bound:
+            return true
+        case .noEpoch, .poisoned:
+            return false
+        }
     }
 }
 
@@ -400,9 +531,29 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
     private var ioProcID: AudioDeviceIOProcID?
     private var isRunning = false
     // Accessed only on queues.controlQueue.
+    private struct FaceTimeProcessListenerRegistration {
+        let listener: AudioObjectPropertyListenerBlock
+        let installedSelectors: Set<AudioObjectPropertySelector>
+
+        var isComplete: Bool {
+            installedSelectors.count == 2
+                && installedSelectors.contains(
+                    kAudioProcessPropertyIsRunningInput
+                )
+                && installedSelectors.contains(
+                    kAudioProcessPropertyIsRunningOutput
+                )
+        }
+    }
+
+    private enum FaceTimeProcessListenerInstallationResult {
+        case complete(FaceTimeProcessListenerRegistration)
+        case failed(retained: FaceTimeProcessListenerRegistration?)
+    }
+
     private var processListListener: AudioObjectPropertyListenerBlock?
     private var faceTimeProcessListeners:
-        [AudioObjectID: AudioObjectPropertyListenerBlock] = [:]
+        [AudioObjectID: FaceTimeProcessListenerRegistration] = [:]
     private var faceTimeCausalEpochBinder =
         CoreAudioFaceTimeCausalEpochBinder()
     private var nextFaceTimeObservationSequence: UInt64 = 1
@@ -511,12 +662,12 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
             faceTimeHeartbeatTimer = nil
 
             var listenerRemovalFailed = false
-            for (processID, listener) in faceTimeProcessListeners {
-                if !Self.removeFaceTimeProcessListeners(
+            for (processID, registration) in faceTimeProcessListeners {
+                if Self.removeFaceTimeProcessListeners(
                     processID: processID,
                     queue: queues.controlQueue,
-                    listener: listener
-                ) {
+                    registration: registration
+                ) != nil {
                     listenerRemovalFailed = true
                 }
             }
@@ -566,8 +717,9 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
         }
     }
 
-    /// Produces known(active exact process IDs) only when the complete process inventory, every
-    /// bundle read, and every required property/listener operation succeeds.
+    /// Produces known(active exact process IDs) only when a complete inventory remains stable across
+    /// the scan and every bundle, running-property, and listener operation succeeds. A failed object
+    /// is discarded only after a fresh authoritative inventory proves that exact identity vanished.
     @available(macOS 14.2, *)
     private func scanFaceTimeDuplexActivity()
         -> CoreAudioFaceTimeDuplexActivityScan {
@@ -579,30 +731,57 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
             return .unknown
         }
 
-        let processObjectIDs: [AudioObjectID]
-        do {
-            processObjectIDs = try Self.audioObjectIDArrayProperty(
-                objectID: AudioObjectID(kAudioObjectSystemObject),
-                selector: kAudioHardwarePropertyProcessObjectList
-            )
-        } catch {
+        let inventoryRead = CoreAudioFaceTimeCompleteInventoryReader.read(
+            readInventory: {
+                try Self.audioObjectIDArrayProperty(
+                    objectID: AudioObjectID(kAudioObjectSystemObject),
+                    selector: kAudioHardwarePropertyProcessObjectList
+                )
+            },
+            readCompleteAttempt: { [self] processObjectIDs in
+                completeFaceTimeProcessActivityAttempt(
+                    processObjectIDs: processObjectIDs
+                )
+            }
+        )
+        guard let inventoryRead else {
             logger.error(
-                "Mac FaceTime process enumeration is unknown: "
-                    + error.localizedDescription
+                "Mac FaceTime process scan is unknown after authoritative inventory retry"
+            )
+            return .unknown
+        }
+        // A retry is useful for reconciling exact listener ownership, but it also proves that this
+        // observation crossed an unreadable or changing process inventory. Never collapse that
+        // uncertainty into a clean authorization baseline; the next independently stable scan may
+        // establish state, while an active epoch remains fail-closed.
+        guard let snapshots = inventoryRead.stableValue else {
+            logger.error(
+                "Mac FaceTime process scan is unknown after inventory churn"
             )
             return .unknown
         }
 
-        var seenProcessObjectIDs: Set<AudioObjectID> = []
+        let scan = CoreAudioFaceTimeDuplexActivityPolicy.scan(
+            from: snapshots
+        )
+        if scan == .unknown {
+            logger.error(
+                "Mac FaceTime process scan is unknown after a complete property read"
+            )
+        }
+        return scan
+    }
+
+    @available(macOS 14.2, *)
+    private func completeFaceTimeProcessActivityAttempt(
+        processObjectIDs: [AudioObjectID]
+    ) -> CoreAudioFaceTimeCompleteInventoryReader.AttemptResult<
+        [CoreAudioFaceTimeProcessActivitySnapshot]
+    > {
+        let authoritativeIDs = Set(processObjectIDs)
         var processIdentities: [(AudioObjectID, String)] = []
+        processIdentities.reserveCapacity(processObjectIDs.count)
         for processObjectID in processObjectIDs {
-            guard processObjectID != kAudioObjectUnknown,
-                  seenProcessObjectIDs.insert(processObjectID).inserted else {
-                logger.error(
-                    "Mac FaceTime process enumeration returned an invalid identity"
-                )
-                return .unknown
-            }
             do {
                 processIdentities.append((
                     processObjectID,
@@ -613,10 +792,10 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
                 ))
             } catch {
                 logger.error(
-                    "Mac FaceTime bundle scan is unknown: "
+                    "Mac FaceTime bundle read raced process inventory: "
                         + error.localizedDescription
                 )
-                return .unknown
+                return .unreadableObject(processObjectID)
             }
         }
 
@@ -629,81 +808,115 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
             }
         )
 
-        var listenerOperationFailed = false
         for processID in Array(faceTimeProcessListeners.keys)
             where !matchingProcessIDs.contains(processID) {
-            guard let listener = faceTimeProcessListeners.removeValue(
-                forKey: processID
-            ) else {
+            guard let registration = faceTimeProcessListeners[processID] else {
                 continue
             }
-            if !Self.removeFaceTimeProcessListeners(
+            let remainingRegistration = Self.removeFaceTimeProcessListeners(
                 processID: processID,
                 queue: queues.controlQueue,
-                listener: listener
-            ) {
-                listenerOperationFailed = true
+                registration: registration
+            )
+            if remainingRegistration == nil
+                || !authoritativeIDs.contains(processID) {
+                // Failed removal from an object proven absent is safe to forget. A failure against
+                // a still-present object remains unknown and retains the listener handle.
+                faceTimeProcessListeners.removeValue(forKey: processID)
+            } else {
+                faceTimeProcessListeners[processID] =
+                    remainingRegistration
+                return .unreadableObject(processID)
             }
         }
 
-        for processID in matchingProcessIDs.sorted()
-            where faceTimeProcessListeners[processID] == nil {
-            if let listener = installFaceTimeProcessListeners(
+        for processID in matchingProcessIDs.sorted() {
+            if let registration = faceTimeProcessListeners[processID],
+               !registration.isComplete {
+                if let remainingRegistration =
+                    Self.removeFaceTimeProcessListeners(
+                    processID: processID,
+                    queue: queues.controlQueue,
+                    registration: registration
+                ) {
+                    faceTimeProcessListeners[processID] =
+                        remainingRegistration
+                    return .unreadableObject(processID)
+                }
+                faceTimeProcessListeners.removeValue(forKey: processID)
+            }
+
+            guard faceTimeProcessListeners[processID] == nil else {
+                continue
+            }
+            switch installFaceTimeProcessListeners(
                 processID: processID
             ) {
-                faceTimeProcessListeners[processID] = listener
-            } else {
-                listenerOperationFailed = true
+            case .complete(let registration):
+                faceTimeProcessListeners[processID] = registration
+            case .failed(let retainedRegistration):
+                if let retainedRegistration {
+                    faceTimeProcessListeners[processID] = retainedRegistration
+                }
+                return .unreadableObject(processID)
             }
         }
-        guard !listenerOperationFailed else {
-            logger.error(
-                "Mac FaceTime process scan is unknown after a listener failure"
-            )
-            return .unknown
-        }
 
-        let snapshots = processIdentities.map { processID, bundleID in
+        var snapshots: [CoreAudioFaceTimeProcessActivitySnapshot] = []
+        snapshots.reserveCapacity(processIdentities.count)
+        for (processID, bundleID) in processIdentities {
             let isAllowed = CoreAudioFaceTimeDuplexActivityPolicy
                 .allowedBundleIdentifiers.contains(bundleID)
-            let hasRequiredListeners = isAllowed
-                && faceTimeProcessListeners[processID] != nil
-            let runningInput = isAllowed
-                ? try? Self.uint32Property(
+            guard isAllowed else {
+                snapshots.append(
+                    CoreAudioFaceTimeProcessActivitySnapshot(
+                        processObjectID: processID,
+                        bundleIdentifier: bundleID,
+                        hasRunningInputListener: false,
+                        hasRunningOutputListener: false,
+                        isRunningInput: nil,
+                        isRunningOutput: nil
+                    )
+                )
+                continue
+            }
+            guard faceTimeProcessListeners[processID]?.isComplete == true else {
+                return .unreadableObject(processID)
+            }
+            do {
+                let runningInput = try Self.uint32Property(
                     objectID: processID,
                     selector: kAudioProcessPropertyIsRunningInput
                 )
-                : nil
-            let runningOutput = isAllowed
-                ? try? Self.uint32Property(
+                let runningOutput = try Self.uint32Property(
                     objectID: processID,
                     selector: kAudioProcessPropertyIsRunningOutput
                 )
-                : nil
-            return CoreAudioFaceTimeProcessActivitySnapshot(
-                processObjectID: processID,
-                bundleIdentifier: bundleID,
-                hasRunningInputListener: hasRequiredListeners,
-                hasRunningOutputListener: hasRequiredListeners,
-                isRunningInput: runningInput.map { $0 != 0 },
-                isRunningOutput: runningOutput.map { $0 != 0 }
-            )
+                snapshots.append(
+                    CoreAudioFaceTimeProcessActivitySnapshot(
+                        processObjectID: processID,
+                        bundleIdentifier: bundleID,
+                        hasRunningInputListener: true,
+                        hasRunningOutputListener: true,
+                        isRunningInput: runningInput != 0,
+                        isRunningOutput: runningOutput != 0
+                    )
+                )
+            } catch {
+                logger.error(
+                    "Mac FaceTime running-state read raced process inventory: "
+                        + error.localizedDescription
+                )
+                return .unreadableObject(processID)
+            }
         }
-        let scan = CoreAudioFaceTimeDuplexActivityPolicy.scan(
-            from: snapshots
-        )
-        if scan == .unknown {
-            logger.error(
-                "Mac FaceTime process scan is unknown after a property read failure"
-            )
-        }
-        return scan
+        return .complete(snapshots)
     }
 
     @available(macOS 14.2, *)
     private func installFaceTimeProcessListeners(
         processID: AudioObjectID
-    ) -> AudioObjectPropertyListenerBlock? {
+    ) -> FaceTimeProcessListenerInstallationResult {
         let listener: AudioObjectPropertyListenerBlock = {
             [weak self] _, _ in
             self?.refreshFaceTimeActivity(emitActiveHeartbeat: false)
@@ -719,9 +932,12 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
             queues.controlQueue,
             listener
         ) == noErr else {
-            return nil
+            return .failed(retained: nil)
         }
 
+        var installedSelectors: Set<AudioObjectPropertySelector> = [
+            kAudioProcessPropertyIsRunningInput
+        ]
         var outputAddress = AudioObjectPropertyAddress(
             mSelector: kAudioProcessPropertyIsRunningOutput,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -733,44 +949,60 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
             queues.controlQueue,
             listener
         ) == noErr else {
-            AudioObjectRemovePropertyListenerBlock(
-                processID,
-                &inputAddress,
-                queues.controlQueue,
-                listener
+            let partial = FaceTimeProcessListenerRegistration(
+                listener: listener,
+                installedSelectors: installedSelectors
             )
-            return nil
+            let remainingRegistration =
+                Self.removeFaceTimeProcessListeners(
+                processID: processID,
+                queue: queues.controlQueue,
+                registration: partial
+            )
+            if remainingRegistration == nil {
+                return .failed(retained: nil)
+            }
+            // Retain the exact block and selector set when rollback itself fails. Later scans may
+            // retry cleanup, but cannot duplicate or silently forget the still-installed listener.
+            return .failed(retained: remainingRegistration)
         }
-        return listener
+        installedSelectors.insert(kAudioProcessPropertyIsRunningOutput)
+        return .complete(
+            FaceTimeProcessListenerRegistration(
+                listener: listener,
+                installedSelectors: installedSelectors
+            )
+        )
     }
 
     @available(macOS 14.2, *)
     private static func removeFaceTimeProcessListeners(
         processID: AudioObjectID,
         queue: DispatchQueue,
-        listener: @escaping AudioObjectPropertyListenerBlock
-    ) -> Bool {
-        var allRemovalsSucceeded = true
-        for selector in [
-            kAudioProcessPropertyIsRunningInput,
-            kAudioProcessPropertyIsRunningOutput,
-        ] {
-            var address = AudioObjectPropertyAddress(
-                mSelector: selector,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            let status = AudioObjectRemovePropertyListenerBlock(
-                processID,
-                &address,
-                queue,
-                listener
-            )
-            if status != noErr {
-                allRemovalsSucceeded = false
-            }
-        }
-        return allRemovalsSucceeded
+        registration: FaceTimeProcessListenerRegistration
+    ) -> FaceTimeProcessListenerRegistration? {
+        let remainingSelectors =
+            CoreAudioFaceTimeProcessListenerRemovalPolicy
+                .remainingSelectors(
+                    installedSelectors: registration.installedSelectors
+                ) { selector in
+                    var address = AudioObjectPropertyAddress(
+                        mSelector: selector,
+                        mScope: kAudioObjectPropertyScopeGlobal,
+                        mElement: kAudioObjectPropertyElementMain
+                    )
+                    return AudioObjectRemovePropertyListenerBlock(
+                        processID,
+                        &address,
+                        queue,
+                        registration.listener
+                    )
+                }
+        guard !remainingSelectors.isEmpty else { return nil }
+        return FaceTimeProcessListenerRegistration(
+            listener: registration.listener,
+            installedSelectors: remainingSelectors
+        )
     }
 
     /// Stamps observations on the native control queue so independently scheduled actor tasks
@@ -788,7 +1020,8 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
             SystemAudioMacFaceTimeActivityObservation(
                 challenge: update.challenge,
                 observationSequence: sequence,
-                causalBindingID: update.causalBindingID
+                causalBindingID: update.causalBindingID,
+                isCausallyArmed: update.isCausallyArmed
             )
         )
     }
@@ -823,6 +1056,11 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
                     return
                 }
                 faceTimeCausalEpochBinder = binder
+                // Protocol v4 emits a distinct prospective-arm acknowledgement only after this
+                // exact epoch installs from a known-empty baseline. An active or unknown first
+                // scan poisons the epoch and therefore remains silent.
+                guard CoreAudioFaceTimeChallengeInstallEmissionPolicy
+                    .admits(phase: binder.phase) else { return }
                 emitFaceTimeActivity(update)
             }
         }
