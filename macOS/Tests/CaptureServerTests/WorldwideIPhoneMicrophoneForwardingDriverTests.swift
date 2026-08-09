@@ -1011,165 +1011,38 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         )
     }
 
-    func testAdvancingSilentQueueAwaitsDelayedFirstPCMWithoutRetiringAttempt()
+    func testFrozenRTPWithSuccessfulZeroFilledPullsRetiresOnlyExactAttempt()
         async {
-        let output = DriverTestOutput(
-            progressSnapshots: [
+        var frozenSourceProgress:
+            [BlackHoleMicrophoneOutputProgressSnapshot] = []
+        for index in 1...12 {
+            let count = UInt64(index)
+            let frames = count * 480
+            frozenSourceProgress.append(
                 progress(
-                    callbacks: 1,
-                    requestedFrames: 480,
-                    successfulPulls: 0,
-                    successfulFrames: 0,
-                    silenceFallbacks: 1,
-                    silenceFrames: 480
-                ),
-                progress(
-                    callbacks: 2,
-                    requestedFrames: 960,
-                    successfulPulls: 0,
-                    successfulFrames: 0,
-                    silenceFallbacks: 2,
-                    silenceFrames: 960
-                ),
-                progress(
-                    callbacks: 3,
-                    requestedFrames: 1_440,
-                    successfulPulls: 1,
-                    successfulFrames: 480,
-                    silenceFallbacks: 2,
-                    silenceFrames: 960
-                ),
-                progress(
-                    callbacks: 4,
-                    requestedFrames: 1_920,
-                    successfulPulls: 2,
-                    successfulFrames: 960,
-                    silenceFallbacks: 2,
-                    silenceFrames: 960
-                ),
-            ]
-        )
-        let factory = DriverTestOutputFactory(outputs: [output])
-        let harness = DriverTestHarness(
-            factory: factory,
-            readinessSampleLimit: 3
-        )
-        let peer = DriverTestPeer()
-        let track = DriverTestTrack()
-        let epoch = UUID()
-
-        await prepare(
-            harness: harness,
-            epoch: epoch,
-            peer: peer,
-            track: track
-        )
-        await harness.authorize(peer: peer, generation: 1)
-        await harness.updateDevice(
-            snapshot(
-                epoch: epoch,
-                generation: 1,
-                available: true
+                    callbacks: count,
+                    requestedFrames: frames,
+                    successfulPulls: count,
+                    successfulFrames: frames,
+                    silenceFallbacks: 0,
+                    silenceFrames: 0
+                )
             )
-        )
-
-        let firstPCM = await harness.snapshot()
-        XCTAssertEqual(firstPCM.phase, .forwardingReady)
-        XCTAssertNil(firstPCM.lastFailureCategory)
-        XCTAssertTrue(track.isEnabled)
-        XCTAssertEqual(output.stopCount, 0)
-        XCTAssertEqual(factory.requestCount, 1)
-        XCTAssertNotNil(firstPCM.currentAttemptID)
-        XCTAssertEqual(firstPCM.progress.successfulFrameCount, 480)
-
-        let continuingPCM = await harness.snapshot()
-        XCTAssertEqual(
-            continuingPCM.currentAttemptID,
-            firstPCM.currentAttemptID
-        )
-        XCTAssertEqual(
-            continuingPCM.phase,
-            .forwardingHealthy
-        )
-        XCTAssertEqual(
-            continuingPCM.progress.successfulFrameCount,
-            960
-        )
-        XCTAssertEqual(output.stopCount, 0)
-    }
-
-    func testDeferredReadyProgressIsFencedToExactAttemptGeneration()
-        async {
+        }
         let first = DriverTestOutput(
-            progressSnapshots: [
-                progress(
-                    callbacks: 1,
-                    requestedFrames: 480,
-                    successfulPulls: 0,
-                    successfulFrames: 0,
-                    silenceFallbacks: 1,
-                    silenceFrames: 480
-                ),
-                progress(
-                    callbacks: 2,
-                    requestedFrames: 960,
-                    successfulPulls: 0,
-                    successfulFrames: 0,
-                    silenceFallbacks: 2,
-                    silenceFrames: 960
-                ),
-                progress(
-                    callbacks: 3,
-                    requestedFrames: 1_440,
-                    successfulPulls: 1,
-                    successfulFrames: 480,
-                    silenceFallbacks: 2,
-                    silenceFrames: 960
-                ),
-            ]
+            progressSnapshots: frozenSourceProgress
         )
         let replacement = DriverTestOutput(
-            progressSnapshots: [
-                progress(
-                    callbacks: 10,
-                    requestedFrames: 4_800,
-                    successfulPulls: 0,
-                    successfulFrames: 0,
-                    silenceFallbacks: 10,
-                    silenceFrames: 4_800
-                ),
-                progress(
-                    callbacks: 11,
-                    requestedFrames: 5_280,
-                    successfulPulls: 0,
-                    successfulFrames: 0,
-                    silenceFallbacks: 11,
-                    silenceFrames: 5_280
-                ),
-                progress(
-                    callbacks: 100,
-                    requestedFrames: 48_000,
-                    successfulPulls: 100,
-                    successfulFrames: 48_000,
-                    silenceFallbacks: 11,
-                    silenceFrames: 5_280
-                ),
-                progress(
-                    callbacks: 101,
-                    requestedFrames: 48_480,
-                    successfulPulls: 101,
-                    successfulFrames: 48_480,
-                    silenceFallbacks: 11,
-                    silenceFrames: 5_280
-                ),
-            ]
+            progressSnapshots: readyProgressSnapshots()
         )
         let factory = DriverTestOutputFactory(
             outputs: [first, replacement]
         )
         let harness = DriverTestHarness(
             factory: factory,
-            readinessSampleLimit: 3
+            maximumAttemptCountPerKey: 2,
+            maximumStaleInboundMediaSamples: 3,
+            automaticallyAdvanceInboundMedia: false
         )
         let peer = DriverTestPeer()
         let track = DriverTestTrack()
@@ -1189,10 +1062,548 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
                 available: true
             )
         )
+        let firstAttemptID = await harness.snapshot().currentAttemptID
+        XCTAssertNotNil(firstAttemptID)
 
-        let staleReady = await harness.snapshot()
-        XCTAssertEqual(staleReady.phase, .forwardingReady)
-        XCTAssertNotNil(staleReady.currentAttemptID)
+        await harness.publishInboundMedia(
+            packets: 38_626,
+            bytes: 2_634_060,
+            jitterBufferEmittedCount: 20_000,
+            totalSamplesReceived: 36_698_880
+        )
+        await harness.publishInboundMedia(
+            packets: 38_627,
+            bytes: 2_634_128,
+            jitterBufferEmittedCount: 20_001,
+            totalSamplesReceived: 36_699_360
+        )
+        let initiallyHealthy = await harness.snapshot()
+        XCTAssertEqual(initiallyHealthy.phase, .forwardingHealthy)
+
+        for _ in 0..<3 {
+            await harness.publishInboundMedia(
+                packets: 38_627,
+                bytes: 2_634_128,
+                jitterBufferEmittedCount: 20_001,
+                totalSamplesReceived: 36_699_360
+            )
+        }
+
+        let retried = await harness.snapshot()
+        XCTAssertEqual(factory.requestCount, 2)
+        XCTAssertEqual(first.stopCount, 1)
+        XCTAssertEqual(replacement.stopCount, 0)
+        XCTAssertNotEqual(retried.currentAttemptID, firstAttemptID)
+        XCTAssertEqual(retried.lastFailureCategory, .sourceMediaStalled)
+        XCTAssertEqual(retried.phase, .awaitingFrames)
+        XCTAssertEqual(retried.inboundMediaAdvancementCount, 0)
+        XCTAssertTrue(track.isEnabled)
+    }
+
+    func testQuietButAdvancingRTPIsHealthyWithoutAmplitudeOrEnergyEvidence()
+        async {
+        let output = DriverTestOutput(
+            progressSnapshots: readyProgressSnapshots()
+        )
+        let factory = DriverTestOutputFactory(outputs: [output])
+        let harness = DriverTestHarness(
+            factory: factory,
+            automaticallyAdvanceInboundMedia: false
+        )
+        let peer = DriverTestPeer()
+        let track = DriverTestTrack()
+        let epoch = UUID()
+
+        await prepare(
+            harness: harness,
+            epoch: epoch,
+            peer: peer,
+            track: track
+        )
+        await harness.authorize(peer: peer, generation: 1)
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+        await harness.publishInboundMedia(
+            packets: 100,
+            bytes: 8_000,
+            jitterBufferEmittedCount: 50,
+            totalSamplesReceived: 48_000
+        )
+        await harness.publishInboundMedia(
+            packets: 101,
+            bytes: 8_080
+        )
+
+        let healthy = await harness.snapshot()
+        XCTAssertEqual(healthy.phase, .forwardingHealthy)
+        XCTAssertTrue(healthy.inboundMediaFresh)
+        XCTAssertEqual(healthy.inboundMediaAdvancementCount, 1)
+        XCTAssertEqual(healthy.consecutiveStaleInboundMediaSamples, 0)
+        XCTAssertTrue(track.isEnabled)
+        XCTAssertEqual(output.stopCount, 0)
+    }
+
+    func testHealthyMediaExpiresWhenStatisticsStopCompletely()
+        async {
+        let watchdog = DriverTestMediaFreshnessWatchdog(now: 10)
+        let output = DriverTestOutput(
+            progressSnapshots: readyProgressSnapshots()
+        )
+        let factory = DriverTestOutputFactory(outputs: [output])
+        let harness = DriverTestHarness(
+            factory: factory,
+            maximumAttemptCountPerKey: 1,
+            mediaFreshnessTimeoutNanoseconds: 100,
+            mediaFreshnessWatchdog: watchdog,
+            automaticallyAdvanceInboundMedia: false
+        )
+        let peer = DriverTestPeer()
+        let track = DriverTestTrack()
+        let epoch = UUID()
+
+        await prepare(
+            harness: harness,
+            epoch: epoch,
+            peer: peer,
+            track: track
+        )
+        await harness.authorize(peer: peer, generation: 1)
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+        await harness.publishInboundMedia(
+            packets: 700,
+            bytes: 56_000
+        )
+        await harness.publishInboundMedia(
+            packets: 701,
+            bytes: 56_080
+        )
+
+        let healthy = await harness.snapshot()
+        XCTAssertEqual(healthy.phase, .forwardingHealthy)
+        let deadlineWasScheduled = await eventually {
+            watchdog.scheduleCount == 1
+        }
+        XCTAssertTrue(deadlineWasScheduled)
+
+        // No further statistics sample is delivered. Freshness must expire
+        // synchronously from monotonic time even before the scheduled wake-up
+        // is delivered, and that wake-up must then retire the exact attempt.
+        watchdog.setNowWithoutDelivering(to: 110)
+        let pastDeadline = await harness.snapshot()
+        XCTAssertEqual(pastDeadline.phase, .awaitingFrames)
+        XCTAssertFalse(pastDeadline.inboundMediaFresh)
+        XCTAssertNotNil(pastDeadline.currentAttemptID)
+        watchdog.deliverDueDeadlines()
+        let didExpire = await eventually {
+            await harness.snapshot().phase == .sourceMediaStalled
+        }
+        XCTAssertTrue(didExpire)
+        let expired = await harness.snapshot()
+        XCTAssertNil(expired.currentAttemptID)
+        XCTAssertFalse(expired.inboundMediaFresh)
+        XCTAssertEqual(factory.requestCount, 1)
+        XCTAssertEqual(output.stopCount, 1)
+        XCTAssertFalse(track.isEnabled)
+    }
+
+    func testRecoveryDeadlinesExhaustBudgetWhenStatisticsStayStopped()
+        async {
+        let watchdog = DriverTestMediaFreshnessWatchdog()
+        let outputs = (0..<3).map { _ in
+            DriverTestOutput(
+                progressSnapshots: readyProgressSnapshots()
+            )
+        }
+        let factory = DriverTestOutputFactory(outputs: outputs)
+        let harness = DriverTestHarness(
+            factory: factory,
+            maximumAttemptCountPerKey: 3,
+            mediaFreshnessTimeoutNanoseconds: 100,
+            mediaFreshnessWatchdog: watchdog,
+            automaticallyAdvanceInboundMedia: false
+        )
+        let peer = DriverTestPeer()
+        let track = DriverTestTrack()
+        let epoch = UUID()
+
+        await prepare(
+            harness: harness,
+            epoch: epoch,
+            peer: peer,
+            track: track
+        )
+        await harness.authorize(peer: peer, generation: 1)
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+        await harness.publishInboundMedia(packets: 750, bytes: 60_000)
+        await harness.publishInboundMedia(packets: 751, bytes: 60_080)
+
+        let firstDeadlineReady = await eventually {
+            watchdog.scheduleCount >= 1
+        }
+        XCTAssertTrue(firstDeadlineReady)
+
+        for (deadline, expectedAttemptCount) in [
+            (UInt64(100), 2),
+            (UInt64(200), 3),
+        ] {
+            watchdog.advance(to: deadline)
+            let replacementReady = await eventually {
+                factory.requestCount == expectedAttemptCount
+                    && watchdog.scheduleCount >= expectedAttemptCount
+            }
+            XCTAssertTrue(replacementReady)
+        }
+
+        watchdog.advance(to: 300)
+        let exhausted = await eventually {
+            let snapshot = await harness.snapshot()
+            return snapshot.phase == .sourceMediaStalled
+                && snapshot.currentAttemptID == nil
+        }
+        XCTAssertTrue(exhausted)
+        XCTAssertEqual(factory.requestCount, 3)
+        XCTAssertEqual(outputs.map(\.stopCount), [1, 1, 1])
+        XCTAssertFalse(track.isEnabled)
+    }
+
+    func testFrozenRTPWithAdvancingConcealmentCountersExhaustsRetryBudget()
+        async {
+        let watchdog = DriverTestMediaFreshnessWatchdog()
+        let outputs = (0..<3).map { _ in
+            DriverTestOutput(
+                progressSnapshots: readyProgressSnapshots()
+            )
+        }
+        let factory = DriverTestOutputFactory(outputs: outputs)
+        let harness = DriverTestHarness(
+            factory: factory,
+            maximumAttemptCountPerKey: 3,
+            maximumStaleInboundMediaSamples: 1,
+            mediaFreshnessTimeoutNanoseconds: 1_000,
+            mediaFreshnessWatchdog: watchdog,
+            automaticallyAdvanceInboundMedia: false
+        )
+        let peer = DriverTestPeer()
+        let track = DriverTestTrack()
+        let epoch = UUID()
+
+        await prepare(
+            harness: harness,
+            epoch: epoch,
+            peer: peer,
+            track: track
+        )
+        await harness.authorize(peer: peer, generation: 1)
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+        await harness.publishInboundMedia(
+            packets: 800,
+            bytes: 64_000,
+            jitterBufferEmittedCount: 400,
+            totalSamplesReceived: 384_000
+        )
+        await harness.publishInboundMedia(
+            packets: 801,
+            bytes: 64_080,
+            jitterBufferEmittedCount: 401,
+            totalSamplesReceived: 384_480
+        )
+        let healthy = await harness.snapshot()
+        XCTAssertEqual(healthy.phase, .forwardingHealthy)
+
+        for increment in UInt64(1)...UInt64(3) {
+            await harness.publishInboundMedia(
+                packets: 801,
+                bytes: 64_080,
+                jitterBufferEmittedCount: 401 + increment,
+                totalSamplesReceived: 384_480 + increment * 480
+            )
+        }
+
+        let exhausted = await harness.snapshot()
+        XCTAssertEqual(factory.requestCount, 3)
+        XCTAssertNil(exhausted.currentAttemptID)
+        XCTAssertEqual(exhausted.phase, .sourceMediaStalled)
+        XCTAssertEqual(
+            exhausted.lastFailureCategory,
+            .sourceMediaStalled
+        )
+        XCTAssertFalse(exhausted.inboundMediaFresh)
+        XCTAssertFalse(track.isEnabled)
+        XCTAssertEqual(outputs.map(\.stopCount), [1, 1, 1])
+        watchdog.advance(to: UInt64.max)
+    }
+
+    func testCancelledAttemptDeadlineCannotRetireHealthyReplacement()
+        async {
+        let watchdog = DriverTestMediaFreshnessWatchdog()
+        let first = DriverTestOutput(
+            progressSnapshots: readyProgressSnapshots()
+        )
+        let replacement = DriverTestOutput(
+            progressSnapshots: readyProgressSnapshots()
+        )
+        let factory = DriverTestOutputFactory(
+            outputs: [first, replacement]
+        )
+        let harness = DriverTestHarness(
+            factory: factory,
+            maximumAttemptCountPerKey: 2,
+            mediaFreshnessTimeoutNanoseconds: 100,
+            mediaFreshnessWatchdog: watchdog,
+            automaticallyAdvanceInboundMedia: false
+        )
+        let peer = DriverTestPeer()
+        let track = DriverTestTrack()
+        let epoch = UUID()
+
+        await prepare(
+            harness: harness,
+            epoch: epoch,
+            peer: peer,
+            track: track
+        )
+        await harness.authorize(peer: peer, generation: 1)
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+        await harness.publishInboundMedia(packets: 900, bytes: 72_000)
+        await harness.publishInboundMedia(packets: 901, bytes: 72_080)
+        let firstAttemptID = await harness.snapshot().currentAttemptID
+        XCTAssertNotNil(firstAttemptID)
+
+        let failureWasHandled =
+            await harness.handleRuntimeFailure(first)
+        XCTAssertTrue(failureWasHandled)
+        watchdog.advance(to: 50)
+        await harness.publishInboundMedia(packets: 902, bytes: 72_160)
+        let healthyReplacement = await harness.snapshot()
+        XCTAssertNotEqual(
+            healthyReplacement.currentAttemptID,
+            firstAttemptID
+        )
+        XCTAssertEqual(healthyReplacement.phase, .forwardingHealthy)
+
+        // This releases the old attempt's deadline but not the replacement's
+        // refreshed deadline at 150. Exact attempt and watchdog-generation
+        // fences must make the old wake-up inert.
+        watchdog.advance(to: 100)
+        try? await Task.sleep(for: .milliseconds(10))
+        let afterStaleWake = await harness.snapshot()
+        XCTAssertEqual(
+            afterStaleWake.currentAttemptID,
+            healthyReplacement.currentAttemptID
+        )
+        XCTAssertEqual(afterStaleWake.phase, .forwardingHealthy)
+        XCTAssertTrue(track.isEnabled)
+        XCTAssertEqual(replacement.stopCount, 0)
+        watchdog.advance(to: UInt64.max)
+    }
+
+    func testStaleSamplesBeforeFirstInboundAdvanceDoNotConsumeRetryBudget()
+        async {
+        let output = DriverTestOutput(
+            progressSnapshots: readyProgressSnapshots()
+        )
+        let factory = DriverTestOutputFactory(outputs: [output])
+        let harness = DriverTestHarness(
+            factory: factory,
+            maximumAttemptCountPerKey: 2,
+            maximumStaleInboundMediaSamples: 2,
+            automaticallyAdvanceInboundMedia: false
+        )
+        let peer = DriverTestPeer()
+        let track = DriverTestTrack()
+        let epoch = UUID()
+
+        await prepare(
+            harness: harness,
+            epoch: epoch,
+            peer: peer,
+            track: track
+        )
+        await harness.authorize(peer: peer, generation: 1)
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+        let attemptID = await harness.snapshot().currentAttemptID
+
+        for _ in 0..<8 {
+            await harness.publishInboundMedia(
+                packets: 400,
+                bytes: 32_000
+            )
+        }
+
+        let waiting = await harness.snapshot()
+        XCTAssertEqual(factory.requestCount, 1)
+        XCTAssertEqual(waiting.currentAttemptID, attemptID)
+        XCTAssertEqual(waiting.phase, .awaitingFrames)
+        XCTAssertEqual(waiting.inboundMediaAdvancementCount, 0)
+        XCTAssertEqual(waiting.consecutiveStaleInboundMediaSamples, 0)
+        XCTAssertFalse(waiting.inboundMediaFresh)
+        XCTAssertNil(waiting.lastFailureCategory)
+        XCTAssertTrue(track.isEnabled)
+        XCTAssertEqual(output.stopCount, 0)
+    }
+
+    func testAdvancingSilentQueueAwaitsDelayedFirstPCMWithoutRetiringAttempt()
+        async {
+        let silentOne = progress(
+            callbacks: 1,
+            requestedFrames: 480,
+            successfulPulls: 0,
+            successfulFrames: 0,
+            silenceFallbacks: 1,
+            silenceFrames: 480
+        )
+        let silentTwo = progress(
+            callbacks: 2,
+            requestedFrames: 960,
+            successfulPulls: 0,
+            successfulFrames: 0,
+            silenceFallbacks: 2,
+            silenceFrames: 960
+        )
+        let firstReady = progress(
+            callbacks: 3,
+            requestedFrames: 1_440,
+            successfulPulls: 1,
+            successfulFrames: 480,
+            silenceFallbacks: 2,
+            silenceFrames: 960
+        )
+        let continuingReady = progress(
+            callbacks: 4,
+            requestedFrames: 1_920,
+            successfulPulls: 2,
+            successfulFrames: 960,
+            silenceFallbacks: 2,
+            silenceFrames: 960
+        )
+        let output = DriverTestOutput(
+            progressSnapshots: [
+                silentOne,
+                silentTwo,
+                firstReady,
+                firstReady,
+                firstReady,
+                continuingReady,
+            ]
+        )
+        let factory = DriverTestOutputFactory(outputs: [output])
+        let harness = DriverTestHarness(
+            factory: factory,
+            automaticallyAdvanceInboundMedia: false
+        )
+        let peer = DriverTestPeer()
+        let track = DriverTestTrack()
+        let epoch = UUID()
+
+        await prepare(
+            harness: harness,
+            epoch: epoch,
+            peer: peer,
+            track: track
+        )
+        await harness.authorize(peer: peer, generation: 1)
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+        XCTAssertEqual(factory.requestCount, 1)
+        XCTAssertEqual(output.stopCount, 0)
+        XCTAssertTrue(track.isEnabled)
+
+        await harness.publishInboundMedia(packets: 700, bytes: 56_000)
+        await harness.publishInboundMedia(packets: 701, bytes: 56_080)
+
+        let oneSinkWatermark = await harness.snapshot()
+        XCTAssertEqual(oneSinkWatermark.phase, .forwardingReady)
+        XCTAssertEqual(oneSinkWatermark.inboundMediaAdvancementCount, 1)
+        XCTAssertFalse(oneSinkWatermark.inboundMediaFresh)
+        XCTAssertEqual(factory.requestCount, 1)
+        XCTAssertEqual(output.stopCount, 0)
+
+        let endToEndHealthy = await harness.snapshot()
+        XCTAssertEqual(endToEndHealthy.phase, .forwardingHealthy)
+        XCTAssertTrue(endToEndHealthy.inboundMediaFresh)
+        XCTAssertTrue(track.isEnabled)
+    }
+
+    func testStaleFreshnessCannotCrossAttemptOrPeerRollover()
+        async {
+        let first = DriverTestOutput(
+            progressSnapshots: readyProgressSnapshots()
+        )
+        let second = DriverTestOutput(
+            progressSnapshots: readyProgressSnapshots()
+        )
+        let third = DriverTestOutput(
+            progressSnapshots: readyProgressSnapshots()
+        )
+        let factory = DriverTestOutputFactory(
+            outputs: [first, second, third]
+        )
+        let harness = DriverTestHarness(
+            factory: factory,
+            automaticallyAdvanceInboundMedia: false
+        )
+        let firstPeer = DriverTestPeer()
+        let firstTrack = DriverTestTrack()
+        let epoch = UUID()
+
+        await prepare(
+            harness: harness,
+            epoch: epoch,
+            peer: firstPeer,
+            track: firstTrack
+        )
+        await harness.authorize(peer: firstPeer, generation: 1)
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+        await harness.publishInboundMedia(packets: 10, bytes: 800)
+        await harness.publishInboundMedia(packets: 11, bytes: 880)
+        let firstAttemptHealthy = await harness.snapshot()
+        XCTAssertEqual(firstAttemptHealthy.phase, .forwardingHealthy)
 
         await harness.updateDevice(
             snapshot(
@@ -1201,56 +1612,58 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
                 available: true
             )
         )
+        let deviceRollover = await harness.snapshot()
+        XCTAssertEqual(deviceRollover.phase, .awaitingFrames)
+        XCTAssertEqual(deviceRollover.inboundMediaAdvancementCount, 0)
+        await harness.publishInboundMedia(packets: 11, bytes: 880)
+        let unchangedWatermark = await harness.snapshot()
+        XCTAssertEqual(unchangedWatermark.phase, .awaitingFrames)
+        await harness.publishInboundMedia(packets: 12, bytes: 960)
+        let advancedWatermark = await harness.snapshot()
+        XCTAssertEqual(advancedWatermark.phase, .forwardingHealthy)
 
-        let replacementReady = await harness.snapshot()
-        XCTAssertEqual(
-            replacementReady.phase,
-            .forwardingReady,
-            "A ready sample retained by the superseded attempt must not make its replacement look healthy."
+        let secondPeer = DriverTestPeer()
+        let secondTrack = DriverTestTrack()
+        await harness.replacePeer(secondPeer, generation: 2)
+        await harness.installTrack(secondTrack)
+        await harness.authorize(peer: secondPeer, generation: 2)
+
+        await harness.publishInboundMedia(
+            packets: 13,
+            bytes: 1_040,
+            peer: firstPeer,
+            generation: 1
         )
-        XCTAssertNotEqual(
-            replacementReady.currentAttemptID,
-            staleReady.currentAttemptID
+        let rejectedOldPeer = await harness.snapshot()
+        XCTAssertEqual(rejectedOldPeer.phase, .awaitingFrames)
+        XCTAssertEqual(rejectedOldPeer.inboundMediaAdvancementCount, 0)
+
+        await harness.publishInboundMedia(
+            packets: 500,
+            bytes: 40_000,
+            peer: secondPeer,
+            generation: 2
         )
-        XCTAssertEqual(
-            replacementReady.currentKey?.deviceGeneration,
-            2
+        let secondPeerBaseline = await harness.snapshot()
+        XCTAssertEqual(secondPeerBaseline.phase, .awaitingFrames)
+        await harness.publishInboundMedia(
+            packets: 501,
+            bytes: 40_080,
+            peer: secondPeer,
+            generation: 2
         )
+        let healthySecondPeer = await harness.snapshot()
+        XCTAssertEqual(healthySecondPeer.phase, .forwardingHealthy)
+        XCTAssertTrue(healthySecondPeer.inboundMediaFresh)
         XCTAssertEqual(first.stopCount, 1)
-        XCTAssertEqual(replacement.stopCount, 0)
-
-        let replacementHealthy = await harness.snapshot()
-        XCTAssertEqual(
-            replacementHealthy.phase,
-            .forwardingHealthy
-        )
-        XCTAssertEqual(
-            replacementHealthy.currentAttemptID,
-            replacementReady.currentAttemptID
-        )
+        XCTAssertEqual(second.stopCount, 1)
+        XCTAssertEqual(third.stopCount, 0)
     }
 
     func testTransientReadinessFailureRetriesSameGeneration()
         async {
         let notReady = DriverTestOutput(
-            progressSnapshots: [
-                progress(
-                    callbacks: 0,
-                    requestedFrames: 0,
-                    successfulPulls: 0,
-                    successfulFrames: 0,
-                    silenceFallbacks: 0,
-                    silenceFrames: 0
-                ),
-                progress(
-                    callbacks: 0,
-                    requestedFrames: 0,
-                    successfulPulls: 0,
-                    successfulFrames: 0,
-                    silenceFallbacks: 0,
-                    silenceFrames: 0
-                ),
-            ]
+            progressSnapshots: [.zero, .zero]
         )
         let ready = DriverTestOutput(
             progressSnapshots: readyProgressSnapshots()
@@ -2526,6 +2939,10 @@ private actor DriverTestHarness {
             DriverTestPeer,
             DriverTestTrack
         >
+    private let automaticallyAdvanceInboundMedia: Bool
+    private var currentPeer: DriverTestPeer?
+    private var currentPeerGeneration: UInt64 = 0
+    private var nextInboundCounter: UInt64 = 100
 
     init(
         policy:
@@ -2534,8 +2951,15 @@ private actor DriverTestHarness {
         readinessGate: DriverSuspensionGate? = nil,
         readinessSampleLimit: Int = 2,
         retryGate: DriverSuspensionGate? = nil,
-        maximumAttemptCountPerKey: Int = 3
+        maximumAttemptCountPerKey: Int = 3,
+        maximumStaleInboundMediaSamples: Int = 3,
+        mediaFreshnessTimeoutNanoseconds: UInt64 = 3_000_000_000,
+        mediaFreshnessWatchdog:
+            DriverTestMediaFreshnessWatchdog? = nil,
+        automaticallyAdvanceInboundMedia: Bool = true
     ) {
+        self.automaticallyAdvanceInboundMedia =
+            automaticallyAdvanceInboundMedia
         driver = WorldwideIPhoneMicrophoneForwardingDriver(
             policy: policy,
             makeOutput: { _, uid in
@@ -2559,6 +2983,30 @@ private actor DriverTestHarness {
                 }
             },
             readinessSampleLimit: readinessSampleLimit,
+            maximumStaleInboundMediaSamples:
+                maximumStaleInboundMediaSamples,
+            mediaFreshnessTimeoutNanoseconds:
+                mediaFreshnessTimeoutNanoseconds,
+            mediaFreshnessNow: {
+                mediaFreshnessWatchdog?.now
+                    ?? DispatchTime.now().uptimeNanoseconds
+            },
+            mediaFreshnessDeadlineSleep: { deadline in
+                if let mediaFreshnessWatchdog {
+                    try await mediaFreshnessWatchdog.sleep(
+                        until: deadline
+                    )
+                } else {
+                    while true {
+                        let now =
+                            DispatchTime.now().uptimeNanoseconds
+                        guard now < deadline else { return }
+                        try await Task.sleep(
+                            nanoseconds: deadline - now
+                        )
+                    }
+                }
+            },
             retrySleep: {
                 if let retryGate {
                     await retryGate.wait()
@@ -2577,6 +3025,8 @@ private actor DriverTestHarness {
         _ peer: DriverTestPeer,
         generation: UInt64
     ) {
+        currentPeer = peer
+        currentPeerGeneration = generation
         driver.replacePeer(
             peer: peer,
             peerGeneration: generation
@@ -2585,6 +3035,7 @@ private actor DriverTestHarness {
 
     func installTrack(_ track: DriverTestTrack) async {
         await driver.installTrack(track)
+        await automaticallyPublishAdvancingInboundMediaIfNeeded()
     }
 
     func authorize(
@@ -2595,6 +3046,7 @@ private actor DriverTestHarness {
             peer: peer,
             peerGeneration: generation
         )
+        await automaticallyPublishAdvancingInboundMediaIfNeeded()
     }
 
     func invalidateTransport() {
@@ -2605,6 +3057,7 @@ private actor DriverTestHarness {
         _ snapshot: BlackHoleDeviceAvailabilitySnapshot
     ) async {
         await driver.updateDeviceSnapshot(snapshot)
+        await automaticallyPublishAdvancingInboundMediaIfNeeded()
     }
 
     func handleRuntimeFailure(
@@ -2613,9 +3066,57 @@ private actor DriverTestHarness {
             WorldwideIPhoneMicrophoneForwardingFailureCategory =
                 .runtimeEnqueueFailed
     ) async -> Bool {
-        await driver.handleRuntimeFailure(
+        let handled = await driver.handleRuntimeFailure(
             from: output,
             category: category
+        )
+        await automaticallyPublishAdvancingInboundMediaIfNeeded()
+        return handled
+    }
+
+    func publishInboundMedia(
+        packets: UInt64?,
+        bytes: UInt64?,
+        jitterBufferEmittedCount: UInt64? = nil,
+        totalSamplesReceived: UInt64? = nil,
+        peer: DriverTestPeer? = nil,
+        generation: UInt64? = nil
+    ) async {
+        guard let sourcePeer = peer ?? currentPeer else { return }
+        await driver.updateInboundMediaFreshness(
+            peer: sourcePeer,
+            peerGeneration: generation ?? currentPeerGeneration,
+            watermark:
+                WorldwideIPhoneMicrophoneInboundMediaWatermark(
+                    packetsReceived: packets,
+                    bytesReceived: bytes,
+                    jitterBufferEmittedCount:
+                        jitterBufferEmittedCount,
+                    totalSamplesReceived: totalSamplesReceived
+                )
+        )
+    }
+
+    private func automaticallyPublishAdvancingInboundMediaIfNeeded()
+        async {
+        guard automaticallyAdvanceInboundMedia,
+              driver.snapshot().exactTrackAdmitted,
+              let currentPeer else {
+            return
+        }
+        nextInboundCounter &+= 1
+        await publishInboundMedia(
+            packets: nextInboundCounter,
+            bytes: nextInboundCounter * 80,
+            peer: currentPeer,
+            generation: currentPeerGeneration
+        )
+        nextInboundCounter &+= 1
+        await publishInboundMedia(
+            packets: nextInboundCounter,
+            bytes: nextInboundCounter * 80,
+            peer: currentPeer,
+            generation: currentPeerGeneration
         )
     }
 
@@ -2880,6 +3381,9 @@ private actor RuntimeDisposalDriverHarness {
             DriverTestPeer,
             DriverTestTrack
         >
+    private var currentPeer: DriverTestPeer?
+    private var currentPeerGeneration: UInt64 = 0
+    private var nextInboundCounter: UInt64 = 1_000
 
     init(
         factory: RuntimeDisposalOutputFactory,
@@ -2948,6 +3452,8 @@ private actor RuntimeDisposalDriverHarness {
         _ peer: DriverTestPeer,
         generation: UInt64
     ) {
+        currentPeer = peer
+        currentPeerGeneration = generation
         driver.replacePeer(
             peer: peer,
             peerGeneration: generation
@@ -2958,6 +3464,7 @@ private actor RuntimeDisposalDriverHarness {
         _ track: DriverTestTrack
     ) async {
         await driver.installTrack(track)
+        await publishAdvancingInboundMediaIfNeeded()
     }
 
     func authorize(
@@ -2968,6 +3475,7 @@ private actor RuntimeDisposalDriverHarness {
             peer: peer,
             peerGeneration: generation
         )
+        await publishAdvancingInboundMediaIfNeeded()
     }
 
     func updateDevice(
@@ -2975,15 +3483,49 @@ private actor RuntimeDisposalDriverHarness {
             BlackHoleDeviceAvailabilitySnapshot
     ) async {
         await driver.updateDeviceSnapshot(snapshot)
+        await publishAdvancingInboundMediaIfNeeded()
     }
 
     func handleRuntimeFailure(
         _ output: BlackHoleMicrophoneOutput
     ) async -> Bool {
-        await driver.handleRuntimeFailure(
+        let handled = await driver.handleRuntimeFailure(
             from: output,
             category:
                 .runtimeProgressStalled
+        )
+        await publishAdvancingInboundMediaIfNeeded()
+        return handled
+    }
+
+    private func publishAdvancingInboundMediaIfNeeded() async {
+        guard driver.snapshot().exactTrackAdmitted,
+              let currentPeer else {
+            return
+        }
+        nextInboundCounter &+= 1
+        await driver.updateInboundMediaFreshness(
+            peer: currentPeer,
+            peerGeneration: currentPeerGeneration,
+            watermark:
+                WorldwideIPhoneMicrophoneInboundMediaWatermark(
+                    packetsReceived: nextInboundCounter,
+                    bytesReceived: nextInboundCounter * 80,
+                    jitterBufferEmittedCount: nil,
+                    totalSamplesReceived: nil
+                )
+        )
+        nextInboundCounter &+= 1
+        await driver.updateInboundMediaFreshness(
+            peer: currentPeer,
+            peerGeneration: currentPeerGeneration,
+            watermark:
+                WorldwideIPhoneMicrophoneInboundMediaWatermark(
+                    packetsReceived: nextInboundCounter,
+                    bytesReceived: nextInboundCounter * 80,
+                    jitterBufferEmittedCount: nil,
+                    totalSamplesReceived: nil
+                )
         )
     }
 
@@ -3308,6 +3850,88 @@ private final class DriverTestTrack: @unchecked Sendable {
         lock.withLock {
             self.enabled = enabled
         }
+    }
+}
+
+private final class DriverTestMediaFreshnessWatchdog:
+    @unchecked Sendable
+{
+    private struct Waiter {
+        let deadline: UInt64
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
+    private let lock = NSLock()
+    private var currentNanoseconds: UInt64
+    private var waiters: [Waiter] = []
+    private var scheduledDeadlineCount = 0
+
+    init(now: UInt64 = 0) {
+        currentNanoseconds = now
+    }
+
+    var now: UInt64 {
+        lock.withLock { currentNanoseconds }
+    }
+
+    func sleep(until deadline: UInt64) async throws {
+        if Task.isCancelled {
+            throw CancellationError()
+        }
+        await withCheckedContinuation { continuation in
+            let resumeImmediately = lock.withLock { () -> Bool in
+                scheduledDeadlineCount += 1
+                guard currentNanoseconds < deadline else {
+                    return true
+                }
+                waiters.append(
+                    Waiter(
+                        deadline: deadline,
+                        continuation: continuation
+                    )
+                )
+                return false
+            }
+            if resumeImmediately {
+                continuation.resume()
+            }
+        }
+        if Task.isCancelled {
+            throw CancellationError()
+        }
+    }
+
+    func advance(to nanoseconds: UInt64) {
+        setNowWithoutDelivering(to: nanoseconds)
+        deliverDueDeadlines()
+    }
+
+    func setNowWithoutDelivering(to nanoseconds: UInt64) {
+        lock.withLock {
+            currentNanoseconds = max(
+                currentNanoseconds,
+                nanoseconds
+            )
+        }
+    }
+
+    func deliverDueDeadlines() {
+        let ready = lock.withLock { () -> [Waiter] in
+            let ready = waiters.filter {
+                $0.deadline <= currentNanoseconds
+            }
+            waiters.removeAll {
+                $0.deadline <= currentNanoseconds
+            }
+            return ready
+        }
+        for waiter in ready {
+            waiter.continuation.resume()
+        }
+    }
+
+    var scheduleCount: Int {
+        lock.withLock { scheduledDeadlineCount }
     }
 }
 

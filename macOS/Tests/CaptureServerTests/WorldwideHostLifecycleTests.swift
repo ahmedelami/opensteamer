@@ -40,7 +40,8 @@ final class WorldwideHostLifecycleTests: XCTestCase {
                 "phase=waitingForPeer transport=false " +
                 "trackAdmitted=false queueRunning=false callbacks=0 " +
                 "pulls=0 frames=0 silenceFallbacks=0 " +
-                "enqueueFailures=0 failure=none"
+                "enqueueFailures=0 mediaSample=0 mediaAdvances=0 " +
+                "mediaStale=0 mediaFresh=false failure=none"
         )
         XCTAssertFalse(message.contains("BlackHole2ch_UID"))
         XCTAssertFalse(message.contains("trackID"))

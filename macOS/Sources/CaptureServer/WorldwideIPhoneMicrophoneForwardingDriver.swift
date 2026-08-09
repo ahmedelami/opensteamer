@@ -31,6 +31,7 @@ enum WorldwideIPhoneMicrophoneForwardingPhase:
     case startFailed
     case admissionFailed
     case readinessFailed
+    case sourceMediaStalled
     case runtimeFailed
     case suppressedForLANCoexistence
     case stopped
@@ -46,6 +47,7 @@ enum WorldwideIPhoneMicrophoneForwardingFailureCategory:
     case startFailed
     case admissionFailed
     case readinessFailed
+    case sourceMediaStalled
     case runtimeEnqueueFailed
     case runtimeProgressStalled
 }
@@ -83,6 +85,10 @@ struct WorldwideIPhoneMicrophoneForwardingHostSnapshot:
     let exactTrackAdmitted: Bool
     let queueRunning: Bool
     let progress: BlackHoleMicrophoneOutputProgressSnapshot
+    let inboundMediaSampleSequence: UInt64
+    let inboundMediaAdvancementCount: UInt64
+    let consecutiveStaleInboundMediaSamples: Int
+    let inboundMediaFresh: Bool
     let lastFailureCategory:
         WorldwideIPhoneMicrophoneForwardingFailureCategory?
 
@@ -109,6 +115,10 @@ struct WorldwideIPhoneMicrophoneForwardingHostSnapshot:
             exactTrackAdmitted: false,
             queueRunning: false,
             progress: .zero,
+            inboundMediaSampleSequence: 0,
+            inboundMediaAdvancementCount: 0,
+            consecutiveStaleInboundMediaSamples: 0,
+            inboundMediaFresh: false,
             lastFailureCategory: nil
         )
     }
@@ -137,6 +147,102 @@ enum WorldwideIPhoneMicrophoneForwardingProgressEvaluator {
     }
 }
 
+struct WorldwideIPhoneMicrophoneInboundMediaWatermark:
+    Equatable,
+    Sendable
+{
+    let packetsReceived: UInt64?
+    let bytesReceived: UInt64?
+    let jitterBufferEmittedCount: UInt64?
+    let totalSamplesReceived: UInt64?
+
+    func isContinuous(
+        from previous: Self?
+    ) -> Bool {
+        guard let previous else { return true }
+        return !Self.regressed(
+            current: packetsReceived,
+            previous: previous.packetsReceived
+        ) && !Self.regressed(
+            current: bytesReceived,
+            previous: previous.bytesReceived
+        ) && !Self.regressed(
+            current: jitterBufferEmittedCount,
+            previous: previous.jitterBufferEmittedCount
+        ) && !Self.regressed(
+            current: totalSamplesReceived,
+            previous: previous.totalSamplesReceived
+        )
+    }
+
+    func advances(
+        from previous: Self?
+    ) -> Bool {
+        guard let previous else { return false }
+        return Self.advanced(
+            current: packetsReceived,
+            previous: previous.packetsReceived
+        ) || Self.advanced(
+            current: bytesReceived,
+            previous: previous.bytesReceived
+        )
+    }
+
+    func preservingMaximums(
+        from previous: Self?
+    ) -> Self {
+        guard let previous else { return self }
+        return Self(
+            packetsReceived: Self.maximum(
+                previous.packetsReceived,
+                packetsReceived
+            ),
+            bytesReceived: Self.maximum(
+                previous.bytesReceived,
+                bytesReceived
+            ),
+            jitterBufferEmittedCount: Self.maximum(
+                previous.jitterBufferEmittedCount,
+                jitterBufferEmittedCount
+            ),
+            totalSamplesReceived: Self.maximum(
+                previous.totalSamplesReceived,
+                totalSamplesReceived
+            )
+        )
+    }
+
+    private static func advanced(
+        current: UInt64?,
+        previous: UInt64?
+    ) -> Bool {
+        guard let current, let previous else { return false }
+        return current > previous
+    }
+
+    private static func regressed(
+        current: UInt64?,
+        previous: UInt64?
+    ) -> Bool {
+        guard let current, let previous else { return false }
+        return current < previous
+    }
+
+    private static func maximum(
+        _ lhs: UInt64?,
+        _ rhs: UInt64?
+    ) -> UInt64? {
+        switch (lhs, rhs) {
+        case (let lhs?, let rhs?):
+            max(lhs, rhs)
+        case (let value?, nil), (nil, let value?):
+            value
+        case (nil, nil):
+            nil
+        }
+    }
+}
+
 /// Actor-owned, generation-keyed driver for the Mac microphone forwarding lane.
 ///
 /// Public methods inherit the caller's actor. Every suspension revalidates the
@@ -160,12 +266,23 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         @Sendable (Track) -> Void
     typealias ReadinessSleep =
         @Sendable () async throws -> Void
+    typealias MonotonicNow = @Sendable () -> UInt64
+    typealias MediaFreshnessDeadlineSleep =
+        @Sendable (_ deadlineNanoseconds: UInt64) async throws -> Void
 
     private struct Candidate {
         let key: WorldwideIPhoneMicrophoneForwardingKey
         let peer: Peer
         let track: Track
         let deviceUID: String
+    }
+
+    private struct InboundMediaSample {
+        let sequence: UInt64
+        let peerGeneration: UInt64
+        let trackGeneration: UInt64
+        let watermark:
+            WorldwideIPhoneMicrophoneInboundMediaWatermark?
     }
 
     private final class Attempt {
@@ -178,11 +295,22 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         var exactTrackAdmitted = false
         var deferredReadyProgress:
             BlackHoleMicrophoneOutputProgressSnapshot?
+        var sinkContinuingHealthProven = false
+        var lastInboundMediaWatermark:
+            WorldwideIPhoneMicrophoneInboundMediaWatermark?
+        var lastInboundMediaSampleSequence: UInt64
+        var inboundMediaAdvancementCount: UInt64 = 0
+        var consecutiveStaleInboundMediaSamples = 0
+        var requiresFreshInboundMediaAdvance: Bool
+        var mediaFreshnessDeadlineNanoseconds: UInt64?
+        var mediaFreshnessWatchdogGeneration: UInt64 = 0
 
         init(
             id: UUID,
             candidate: Candidate,
-            output: any WorldwideIPhoneMicrophoneOutput
+            output: any WorldwideIPhoneMicrophoneOutput,
+            baselineInboundMediaSample: InboundMediaSample?,
+            requiresFreshInboundMediaAdvance: Bool
         ) {
             self.id = id
             key = candidate.key
@@ -190,6 +318,12 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             track = candidate.track
             deviceUID = candidate.deviceUID
             self.output = output
+            lastInboundMediaWatermark =
+                baselineInboundMediaSample?.watermark
+            lastInboundMediaSampleSequence =
+                baselineInboundMediaSample?.sequence ?? 0
+            self.requiresFreshInboundMediaAdvance =
+                requiresFreshInboundMediaAdvance
         }
     }
 
@@ -201,6 +335,11 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     private let readinessSleep: ReadinessSleep
     private let retrySleep: ReadinessSleep
     private let readinessSampleLimit: Int
+    private let maximumStaleInboundMediaSamples: Int
+    private let mediaFreshnessTimeoutNanoseconds: UInt64
+    private let mediaFreshnessNow: MonotonicNow
+    private let mediaFreshnessDeadlineSleep:
+        MediaFreshnessDeadlineSleep
     private let maximumAttemptCountPerKey: Int
     private let makeAttemptID: @Sendable () -> UUID
 
@@ -214,11 +353,14 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     private var transportAuthorized = false
     private var track: Track?
     private var trackGeneration: UInt64 = 0
+    private var inboundMediaSampleSequence: UInt64 = 0
+    private var latestInboundMediaSample: InboundMediaSample?
 
     private var currentAttempt: Attempt?
     private struct AttemptHistory {
         var count: Int
         var mayRetry: Bool
+        var hasObservedInboundMediaAdvance: Bool
     }
 
     private var attemptHistory:
@@ -235,6 +377,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     private var isDriving = false
     private var redriveRequested = false
     private var isStopped = false
+    private var mediaFreshnessWatchdogTask: Task<Void, Never>?
 
     init(
         policy: WorldwideIPhoneMicrophoneForwardingPolicy,
@@ -246,6 +389,21 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             try await Task.sleep(for: .milliseconds(20))
         },
         readinessSampleLimit: Int = 50,
+        maximumStaleInboundMediaSamples: Int = 3,
+        mediaFreshnessTimeoutNanoseconds: UInt64 = 3_000_000_000,
+        mediaFreshnessNow: @escaping MonotonicNow = {
+            DispatchTime.now().uptimeNanoseconds
+        },
+        mediaFreshnessDeadlineSleep:
+            @escaping MediaFreshnessDeadlineSleep = { deadline in
+                while true {
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    guard now < deadline else { return }
+                    try await Task.sleep(
+                        nanoseconds: deadline - now
+                    )
+                }
+            },
         retrySleep: @escaping ReadinessSleep = {
             try await Task.sleep(for: .milliseconds(100))
         },
@@ -262,6 +420,17 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         self.readinessSleep = readinessSleep
         self.retrySleep = retrySleep
         self.readinessSampleLimit = max(2, readinessSampleLimit)
+        self.maximumStaleInboundMediaSamples = max(
+            1,
+            maximumStaleInboundMediaSamples
+        )
+        self.mediaFreshnessTimeoutNanoseconds = max(
+            1,
+            mediaFreshnessTimeoutNanoseconds
+        )
+        self.mediaFreshnessNow = mediaFreshnessNow
+        self.mediaFreshnessDeadlineSleep =
+            mediaFreshnessDeadlineSleep
         self.maximumAttemptCountPerKey = max(
             1,
             maximumAttemptCountPerKey
@@ -270,6 +439,10 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         phase = policy == .suppressedForLANCoexistence
             ? .suppressedForLANCoexistence
             : .waitingForMonitor
+    }
+
+    deinit {
+        mediaFreshnessWatchdogTask?.cancel()
     }
 
     func beginMonitoring(
@@ -346,6 +519,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         track = nil
         self.peer = peer
         self.peerGeneration = peerGeneration
+        latestInboundMediaSample = nil
         transportAuthorized = false
         redriveRequested = true
         updateIneligiblePhase()
@@ -359,6 +533,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         disableCurrentTrack()
         track = nil
         peer = nil
+        latestInboundMediaSample = nil
         transportAuthorized = false
         redriveRequested = true
         updateIneligiblePhase()
@@ -396,6 +571,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     ) {
         guard !isStopped else { return }
         transportAuthorized = false
+        latestInboundMediaSample = nil
         invalidateCurrentAttempt()
         disableCurrentTrack()
         redriveRequested = true
@@ -423,6 +599,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         disableCurrentTrack()
         self.track = track
         trackGeneration = Self.nextNonzero(trackGeneration)
+        latestInboundMediaSample = nil
         disableTrack(track)
         redriveRequested = true
 
@@ -440,8 +617,108 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         invalidateCurrentAttempt()
         disableCurrentTrack()
         track = nil
+        latestInboundMediaSample = nil
         redriveRequested = true
         updateIneligiblePhase()
+    }
+
+    func updateInboundMediaFreshness(
+        isolation: isolated (any Actor)? = #isolation,
+        peer sourcePeer: Peer,
+        peerGeneration sourcePeerGeneration: UInt64,
+        watermark: WorldwideIPhoneMicrophoneInboundMediaWatermark?
+    ) async {
+        guard !isStopped,
+              self.peer === sourcePeer,
+              peerGeneration == sourcePeerGeneration,
+              sourcePeerGeneration > 0 else {
+            return
+        }
+
+        inboundMediaSampleSequence = Self.nextNonzero(
+            inboundMediaSampleSequence
+        )
+        let sample = InboundMediaSample(
+            sequence: inboundMediaSampleSequence,
+            peerGeneration: sourcePeerGeneration,
+            trackGeneration: trackGeneration,
+            watermark: watermark
+        )
+        latestInboundMediaSample = sample
+
+        guard let attempt = currentAttempt,
+              candidateStillOwnsAttempt(attempt),
+              attempt.exactTrackAdmitted,
+              attempt.peer === sourcePeer,
+              attempt.key.peerGeneration == sourcePeerGeneration,
+              sample.trackGeneration == attempt.key.trackGeneration,
+              sample.sequence > attempt.lastInboundMediaSampleSequence else {
+            return
+        }
+
+        let progress = attempt.output.forwardingProgressSnapshot
+        if progress.enqueueFailureCount > 0 {
+            failAttempt(
+                attempt,
+                category: .runtimeEnqueueFailed
+            )
+        } else if !progress.queueRunning {
+            failAttempt(
+                attempt,
+                category: .readinessFailed
+            )
+        } else {
+            promoteDeferredReadinessIfPossible(
+                attempt: attempt,
+                progress: progress
+            )
+            attempt.lastInboundMediaSampleSequence = sample.sequence
+            let hasExactContinuity = sample.watermark?.isContinuous(
+                from: attempt.lastInboundMediaWatermark
+            ) ?? false
+            let didAdvance = hasExactContinuity
+                && (sample.watermark?.advances(
+                    from: attempt.lastInboundMediaWatermark
+                ) ?? false)
+            if hasExactContinuity, let watermark = sample.watermark {
+                attempt.lastInboundMediaWatermark =
+                    watermark.preservingMaximums(
+                        from: attempt.lastInboundMediaWatermark
+                    )
+            }
+
+            if didAdvance {
+                attempt.inboundMediaAdvancementCount =
+                    Self.nextNonzero(
+                        attempt.inboundMediaAdvancementCount
+                    )
+                attempt.consecutiveStaleInboundMediaSamples = 0
+                attempt.requiresFreshInboundMediaAdvance = false
+                markInboundMediaAdvanceObserved(attempt.key)
+                armMediaFreshnessWatchdog(
+                    for: attempt,
+                    isolation: isolation
+                )
+            } else if attempt.inboundMediaAdvancementCount > 0
+                        || attempt.requiresFreshInboundMediaAdvance {
+                attempt.consecutiveStaleInboundMediaSamples += 1
+                if attempt.consecutiveStaleInboundMediaSamples
+                    >= maximumStaleInboundMediaSamples {
+                    failAttempt(
+                        attempt,
+                        category: .sourceMediaStalled
+                    )
+                }
+            }
+
+            if currentAttempt === attempt {
+                updateForwardingPhase(for: attempt)
+            }
+        }
+
+        if redriveRequested {
+            await drive(isolation: isolation)
+        }
     }
 
     @discardableResult
@@ -457,6 +734,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             return false
         }
 
+        cancelMediaFreshnessWatchdog()
         currentAttempt = nil
         if track === attempt.track {
             disableTrack(attempt.track)
@@ -522,6 +800,19 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
                 currentAttempt?.exactTrackAdmitted ?? false,
             queueRunning: progress.queueRunning,
             progress: progress,
+            inboundMediaSampleSequence:
+                currentAttempt?.lastInboundMediaSampleSequence
+                    ?? latestInboundMediaSample?.sequence ?? 0,
+            inboundMediaAdvancementCount:
+                currentAttempt?.inboundMediaAdvancementCount ?? 0,
+            consecutiveStaleInboundMediaSamples:
+                currentAttempt?.consecutiveStaleInboundMediaSamples
+                    ?? 0,
+            inboundMediaFresh:
+                currentAttempt.map {
+                    $0.sinkContinuingHealthProven
+                        && sourceMediaIsFresh(for: $0)
+                } ?? false,
             lastFailureCategory: lastFailureCategory
         )
     }
@@ -608,7 +899,19 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         let attempt = Attempt(
             id: attemptID,
             candidate: candidate,
-            output: output
+            output: output,
+            baselineInboundMediaSample:
+                latestInboundMediaSample.map { sample in
+                    sample.peerGeneration
+                            == candidate.key.peerGeneration
+                        && sample.trackGeneration
+                            == candidate.key.trackGeneration
+                        ? sample
+                        : nil
+                } ?? nil,
+            requiresFreshInboundMediaAdvance:
+                attemptHistory[candidate.key]?
+                    .hasObservedInboundMediaAdvance ?? false
         )
         currentAttempt = attempt
         phase = .starting
@@ -650,7 +953,23 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             return
         }
         attempt.exactTrackAdmitted = true
+        let admissionFloor = latestInboundMediaSample.flatMap { sample in
+            sample.peerGeneration == attempt.key.peerGeneration
+                && sample.trackGeneration == attempt.key.trackGeneration
+                ? sample
+                : nil
+        }
+        attempt.lastInboundMediaWatermark = admissionFloor?.watermark
+        attempt.lastInboundMediaSampleSequence = admissionFloor?.sequence ?? 0
+        attempt.inboundMediaAdvancementCount = 0
+        attempt.consecutiveStaleInboundMediaSamples = 0
         phase = .checkingReadiness
+        if attempt.requiresFreshInboundMediaAdvance {
+            armMediaFreshnessWatchdog(
+                for: attempt,
+                isolation: isolation
+            )
+        }
         await awaitReadiness(
             for: attempt,
             isolation: isolation
@@ -661,14 +980,17 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         for attempt: Attempt,
         isolation: isolated (any Actor)?
     ) async {
-        var previousReadyProgress:
-            BlackHoleMicrophoneOutputProgressSnapshot?
         var previousProgress:
             BlackHoleMicrophoneOutputProgressSnapshot?
 
         for sampleIndex in 0..<readinessSampleLimit {
             guard candidateStillOwnsAttempt(attempt) else {
                 finishSupersededAttempt(attempt)
+                return
+            }
+
+            if attempt.sinkContinuingHealthProven {
+                updateForwardingPhase(for: attempt)
                 return
             }
 
@@ -696,10 +1018,10 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
                 > previousProgress.postStartCallbackCount,
                progress.successfulFrameCount
                 == previousProgress.successfulFrameCount {
-                // A running callback clock with successful enqueues is a
-                // healthy-silent queue. The remote microphone may still be
-                // waiting for permission or its first PCM. Keep this exact
-                // attempt admitted instead of consuming its retry budget.
+                // The queue callback is alive but still zero-filling. Keep
+                // this exact attempt admitted while the source starts; this
+                // state must not consume its retry budget.
+                attempt.deferredReadyProgress = nil
                 phase = .awaitingFrames
                 return
             }
@@ -707,21 +1029,23 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
 
             if WorldwideIPhoneMicrophoneForwardingProgressEvaluator
                 .isReady(progress) {
-                if let previousReadyProgress,
+                if let previous = attempt.deferredReadyProgress,
                    WorldwideIPhoneMicrophoneForwardingProgressEvaluator
                     .provesContinuingHealth(
-                        previous: previousReadyProgress,
+                        previous: previous,
                         current: progress
                     ) {
                     guard candidateStillOwnsAttempt(attempt) else {
                         finishSupersededAttempt(attempt)
                         return
                     }
-                    phase = .forwardingHealthy
+                    attempt.sinkContinuingHealthProven = true
+                    attempt.deferredReadyProgress = progress
+                    updateForwardingPhase(for: attempt)
                     return
                 }
 
-                previousReadyProgress = progress
+                attempt.deferredReadyProgress = progress
                 phase = .forwardingReady
             }
 
@@ -832,8 +1156,15 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         progress: BlackHoleMicrophoneOutputProgressSnapshot
     ) {
         guard currentAttempt === attempt,
-              attempt.exactTrackAdmitted,
-              phase == .awaitingFrames
+              attempt.exactTrackAdmitted else {
+            return
+        }
+        if attempt.sinkContinuingHealthProven {
+            updateForwardingPhase(for: attempt)
+            return
+        }
+        guard phase == .checkingReadiness
+                || phase == .awaitingFrames
                 || phase == .forwardingReady else {
             return
         }
@@ -850,7 +1181,9 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
                 previous: previous,
                 current: progress
             ) {
-            phase = .forwardingHealthy
+            attempt.sinkContinuingHealthProven = true
+            attempt.deferredReadyProgress = progress
+            updateForwardingPhase(for: attempt)
             return
         }
 
@@ -858,8 +1191,149 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         phase = .forwardingReady
     }
 
+    private func updateForwardingPhase(
+        for attempt: Attempt
+    ) {
+        guard currentAttempt === attempt,
+              attempt.exactTrackAdmitted else {
+            return
+        }
+        if attempt.sinkContinuingHealthProven,
+           sourceMediaIsFresh(for: attempt) {
+            phase = .forwardingHealthy
+        } else if attempt.sinkContinuingHealthProven {
+            phase = .awaitingFrames
+        } else if attempt.deferredReadyProgress != nil {
+            phase = .forwardingReady
+        } else {
+            phase = .awaitingFrames
+        }
+    }
+
+    private func sourceMediaIsFresh(
+        for attempt: Attempt
+    ) -> Bool {
+        guard let deadline =
+                attempt.mediaFreshnessDeadlineNanoseconds else {
+            return false
+        }
+        return attempt.inboundMediaAdvancementCount > 0
+            && attempt.consecutiveStaleInboundMediaSamples
+                < maximumStaleInboundMediaSamples
+            && mediaFreshnessNow() < deadline
+    }
+
+    private func armMediaFreshnessWatchdog(
+        for attempt: Attempt,
+        isolation: isolated (any Actor)?
+    ) {
+        precondition(
+            isolation != nil,
+            "The forwarding driver watchdog requires actor ownership."
+        )
+        guard candidateStillOwnsAttempt(attempt),
+              attempt.exactTrackAdmitted else {
+            return
+        }
+
+        cancelMediaFreshnessWatchdog()
+        attempt.mediaFreshnessWatchdogGeneration =
+            Self.nextNonzero(
+                attempt.mediaFreshnessWatchdogGeneration
+            )
+        let deadline = Self.addingClamped(
+            mediaFreshnessNow(),
+            mediaFreshnessTimeoutNanoseconds
+        )
+        attempt.mediaFreshnessDeadlineNanoseconds = deadline
+
+        let attemptID = attempt.id
+        let key = attempt.key
+        let peerIdentity = ObjectIdentifier(attempt.peer)
+        let trackIdentity = ObjectIdentifier(attempt.track)
+        let outputIdentity = ObjectIdentifier(attempt.output)
+        let watchdogGeneration =
+            attempt.mediaFreshnessWatchdogGeneration
+        let deadlineSleep = mediaFreshnessDeadlineSleep
+        let now = mediaFreshnessNow
+
+        mediaFreshnessWatchdogTask = Task { [weak self] in
+            do {
+                while !Task.isCancelled, now() < deadline {
+                    try await deadlineSleep(deadline)
+                }
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self else {
+                return
+            }
+            await self.mediaFreshnessWatchdogDidReachDeadline(
+                isolation: isolation,
+                attemptID: attemptID,
+                key: key,
+                peerIdentity: peerIdentity,
+                trackIdentity: trackIdentity,
+                outputIdentity: outputIdentity,
+                watchdogGeneration: watchdogGeneration,
+                deadlineNanoseconds: deadline
+            )
+        }
+    }
+
+    private func mediaFreshnessWatchdogDidReachDeadline(
+        isolation: isolated (any Actor)?,
+        attemptID: UUID,
+        key: WorldwideIPhoneMicrophoneForwardingKey,
+        peerIdentity: ObjectIdentifier,
+        trackIdentity: ObjectIdentifier,
+        outputIdentity: ObjectIdentifier,
+        watchdogGeneration: UInt64,
+        deadlineNanoseconds: UInt64
+    ) async {
+        guard !isStopped,
+              mediaFreshnessNow() >= deadlineNanoseconds,
+              let attempt = currentAttempt,
+              candidateStillOwnsAttempt(attempt),
+              attempt.exactTrackAdmitted,
+              attempt.id == attemptID,
+              attempt.key == key,
+              ObjectIdentifier(attempt.peer) == peerIdentity,
+              ObjectIdentifier(attempt.track) == trackIdentity,
+              ObjectIdentifier(attempt.output) == outputIdentity,
+              attempt.mediaFreshnessWatchdogGeneration
+                == watchdogGeneration,
+              attempt.mediaFreshnessDeadlineNanoseconds
+                == deadlineNanoseconds else {
+            return
+        }
+
+        // Clear the task before failing so the deadline task does not cancel
+        // itself and poison the bounded retry sleep that follows.
+        mediaFreshnessWatchdogTask = nil
+        attempt.mediaFreshnessDeadlineNanoseconds = nil
+        failAttempt(attempt, category: .sourceMediaStalled)
+        if redriveRequested {
+            await drive(isolation: isolation)
+        }
+    }
+
+    private func cancelMediaFreshnessWatchdog() {
+        mediaFreshnessWatchdogTask?.cancel()
+        mediaFreshnessWatchdogTask = nil
+    }
+
+    private func markInboundMediaAdvanceObserved(
+        _ key: WorldwideIPhoneMicrophoneForwardingKey
+    ) {
+        guard var history = attemptHistory[key] else { return }
+        history.hasObservedInboundMediaAdvance = true
+        attemptHistory[key] = history
+    }
+
     private func invalidateCurrentAttempt() {
         guard let attempt = currentAttempt else { return }
+        cancelMediaFreshnessWatchdog()
         currentAttempt = nil
         if track === attempt.track {
             disableTrack(attempt.track)
@@ -871,6 +1345,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         _ attempt: Attempt
     ) {
         if currentAttempt === attempt {
+            cancelMediaFreshnessWatchdog()
             currentAttempt = nil
         }
 
@@ -896,6 +1371,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             return
         }
 
+        cancelMediaFreshnessWatchdog()
         currentAttempt = nil
         if track === attempt.track {
             disableTrack(attempt.track)
@@ -942,7 +1418,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         } else {
             attemptHistory[key] = AttemptHistory(
                 count: 1,
-                mayRetry: false
+                mayRetry: false,
+                hasObservedInboundMediaAdvance: false
             )
             attemptedKeyOrder.append(key)
         }
@@ -1059,6 +1536,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             .admissionFailed
         case .readinessFailed:
             .readinessFailed
+        case .sourceMediaStalled:
+            .sourceMediaStalled
         case .runtimeEnqueueFailed, .runtimeProgressStalled:
             .runtimeFailed
         }
@@ -1070,8 +1549,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     ) -> Bool {
         switch category {
         case .outputUnavailable, .startFailed,
-             .readinessFailed, .runtimeEnqueueFailed,
-             .runtimeProgressStalled:
+             .readinessFailed, .sourceMediaStalled,
+             .runtimeEnqueueFailed, .runtimeProgressStalled:
             true
         case .monitoringFailed, .admissionFailed:
             false
@@ -1083,6 +1562,14 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     ) -> UInt64 {
         let next = value &+ 1
         return next == 0 ? 1 : next
+    }
+
+    private static func addingClamped(
+        _ lhs: UInt64,
+        _ rhs: UInt64
+    ) -> UInt64 {
+        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? UInt64.max : sum
     }
 }
 
