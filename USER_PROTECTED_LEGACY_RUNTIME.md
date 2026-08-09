@@ -1,6 +1,6 @@
 # User-protected legacy AudioStreamer runtime
 
-Status: **PAIRING-PRESERVING HOST UPDATE V3 COMMITTED; V4 HOST UPDATE AND TESTFLIGHT BUILD 44 AUTHORIZED/PENDING; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
+Status: **PAIRING-PRESERVING HOST UPDATE V4 COMMITTED; TESTFLIGHT BUILD 44 UPLOADED TO APPLE; PROCESSING, INSTALLATION, AND PHYSICAL VALIDATION NOT CLAIMED; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
 Original preservation direction: **2026-07-25**\
 Mac-only migration authorization recorded: **2026-07-30/31**\
 Version-15 retry authorization recorded: **2026-08-02**\
@@ -12,7 +12,7 @@ Version-20 retry authorization recorded and consumed: **2026-08-02**\
 Post-v20 new-host pairing-isolation authorization recorded: **2026-08-03**
 Pairing-preserving new-host update authorization recorded and consumed: **2026-08-05**
 Pairing-preserving new-host update v3 authorization recorded and consumed: **2026-08-06**
-Pairing-preserving new-host update v4 authorization recorded: **2026-08-09**
+Pairing-preserving new-host update v4 authorization recorded and consumed: **2026-08-09**
 
 The user authorized guarded Mac-only cutovers from the running legacy host to
 the validated opensteamer host. Versions 15, 16, 17, 18, and 19 all fully
@@ -610,23 +610,58 @@ and `419eff4f410cfb0bf5e224528fd450c10292f7c1c2448d33e215e929f7c14730`;
 their job remains absent. No protected legacy, physical-iPhone, or TestFlight
 operation occurred.
 
-### Pairing-preserving host update v4 authorization
+### Pairing-preserving host update v4
 
 On August 9, 2026, the user authorized exactly one guarded replacement of only
-the active side-by-side new host with the FaceTime microphone patch. The attempt
-must use a fresh v4 transaction namespace, exact immutable v3 pointer and
-evidence pins, the v3 deployment reference as its rollback source, and a clean
-pushed commit/tree containing required patch commit
-`dde641b0813a3a67a47663f9390dc44fe8c78479`. It must preserve both isolated
-pairing accounts without reading their secret values, resetting, deleting, or
-re-pairing, and must never address the protected legacy app, plist, launchd job,
-or Keychain service. Any retained v4 attempt consumes this authorization; a
-retry would require a fresh versioned updater and new user authorization.
+the active side-by-side new host with the FaceTime microphone patch. The v4
+preflight proved the exact committed v3 pointer and evidence immutable, the v3
+deployment reference valid as the baseline oracle, both isolated pairing
+accounts present by metadata-only lookup, the protected legacy job absent, the
+source clean and pushed, and the fresh v4 namespace absent. The authorization
+was bound to pushed source commit
+`e0fd02808ed8863819902dce854d974db8895d3c`, tree
+`0c0934443a73d7808d3ede612638804148411ea6`, and required FaceTime patch
+commit `dde641b0813a3a67a47663f9390dc44fe8c78479`.
 
-No v4 host operation had occurred when this authorization record was written.
-The separately authorized TestFlight upload must remain the archive-only
-`com.elamin.opensteamer` build 44 and must not install or modify either physical
-iPhone app from this Mac.
+The one-shot transaction built, verified, stopped, retained, replaced, and
+bootstrapped only `/Applications/opensteamer Host.app`. Its journal records the
+complete ordered path through `BUILD_VERIFIED`, `STOP_INITIATED`,
+`CURRENT_STOPPED`, `CURRENT_HELD`, `NEW_PUBLISHED`,
+`PERSISTENT_BOOTSTRAPPED`, `READY_VERIFIED`, and `COMMITTED`. The committed
+generation is PID `42400`, launchd runs `1`, with nonce
+`78f8eb0f385ee181bbf258ea6fe0b59fbb1c68f298955f6807430625d96611ed`.
+Its executable SHA-256 is
+`ce0c1347aa6ddf7ecd290729d8351c65dc1bc43d99416f6a4c17141db7371a4b`,
+CDHash `47ff9ae616f6b0b14880e7e419b00ec6a88193d7`, Team ID `MSMG8CJLB3`,
+and identifier `com.elamin.AudioStreamer.CaptureServer`. The unchanged
+LaunchAgent plist SHA-256 is
+`7cdcf2d1517dc9ec1ae49b6fbbaf293c77afd958f697878d44f3b3c8e9c7e550`.
+
+The immutable v4 evidence is
+`/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v4/paired-v4-update-1786291257-27621-6a237b6f-a9cc-4adb-a48a-129d364f8073`.
+The active-pointer SHA-256 is
+`6c54a9561602a3b7c1a3308792dbc3146644311cab318c89c136e77b0ee27e1b`;
+the journal SHA-256 is
+`4be780a2ee74d0de1ed8ab82eb520fd0216ec6056ff19120f462b26a15950da1`,
+the success-result SHA-256 is
+`22127aa5523e3efa468822044100fb2fd1cc5ceb97552377c986b1f5c1a15d77`,
+the provenance SHA-256 is
+`ff6af9dafbbfc7a579fe8f451d1d095e06d1b7942fbe5ddc2d2efd68517f79bf`,
+and the source-archive SHA-256 is
+`55cc9f4672a3bc7588f1e05ba2899e905853c5e82cde3e4dcd9cc0bd4fd30a27`.
+The build stdout and stderr SHA-256 values are
+`272a0ad16858c224aa26d6a265258c6dd66cb5292a2b742fd645c07f007ed3f1`
+and `771296873efbcb817e1adf937f4b3f2eccd3f871f3fca5e5a0ebac4dee797cc0`.
+
+Both isolated pairing accounts remain present without secret retrieval, reset,
+deletion, or re-pairing. The protected legacy executable and plist retain their
+reviewed hashes, and their launchd job remains absent and disabled. The v4
+authorization is consumed; any retry would require a fresh versioned updater
+and new user authorization. No protected legacy or physical-iPhone operation
+occurred. The exact v3 app retained at
+`rollback-current/opensteamer Host.app` inside the v4 evidence is the rollback
+source; its executable SHA-256 is
+`3ae931ddc06cb9bf303201143c8e1868fad45c0d0db2cb76e6eb9eca55d16181`.
 
 ## Protected iPhone client
 
@@ -635,7 +670,7 @@ identifier `com.elamin.AudioStreamer`. The physical iPhone was unavailable while
 this migration was prepared.
 
 A separate archive-only `TestFlight` configuration now uses bundle identifier
-`com.elamin.opensteamer`, build `40`, and the production rendezvous endpoint.
+`com.elamin.opensteamer`, build `44`, and the production rendezvous endpoint.
 Its guarded upload path rejects the protected bundle identifier and validates
 the completed archive identity before any upload. This side-by-side app has a
 separate container and Keychain scope, so it requires fresh pairing with the new
@@ -722,6 +757,54 @@ reported warning was the existing non-blocking missing dSYM for
 `LiveKitWebRTC.framework`. Upload acceptance does not establish TestFlight
 processing, installation, or physical FaceTime/audio behavior; those still
 require a fresh physical-iPhone test.
+
+On August 9, 2026, the first guarded build-44 attempt archived version `0.1.0` and
+verified bundle `com.elamin.opensteamer`, Team ID `MSMG8CJLB3`, arm64, build
+`44`, and signed CDHash `d131156ea30af867599635524b94f80008daa723`. The
+retained archive is
+`/private/tmp/opensteamer-testflight-output.xEqGvK/archive-destination.sXX7sU/opensteamerTestFlight.xcarchive`.
+The 486,927-byte archive log ends `** ARCHIVE SUCCEEDED **` and has SHA-256
+`86b24b17675e114c38d0c70053f201519dfc5b4f9bc0faf7dd92f27d91195b9c`.
+Xcode then failed before any upload because it could not find an account with
+App Store Connect access for Team `MSMG8CJLB3`; the 334-byte upload log ends
+`Failed to Use Accounts` and `** EXPORT FAILED **` and has SHA-256
+`cdf3764f2253fa44c05e0f2d6b55d79216acb9e2ce16fa1f31b60fead83ee962`.
+That archive contains no successful `Distributions` record. The pre-upload
+account failure left build `44` reusable and performed no protected-app or
+physical-iPhone operation.
+
+A later guarded attempt produced and verified the exact build-44 archive at
+`/private/tmp/opensteamer-testflight-output.t9a6ld/archive-destination.Vr8yid/opensteamerTestFlight.xcarchive`.
+It is version `0.1.0`, bundle `com.elamin.opensteamer`, Team ID `MSMG8CJLB3`,
+arm64, build `44`, and signed CDHash
+`7d7aa8f498f4f3607eb0fd2bad13aa4b571e714c`. Its 486,910-byte archive log
+ends `** ARCHIVE SUCCEEDED **` and has SHA-256
+`bac0f65e81046562ff44488922fb5332401c9198697e2e76cf5256ccfdae366f`.
+The command-line export again stopped at the account gate; its 334-byte failure
+log has SHA-256
+`df5e9e013cbf02ecee8b8dc59474d4b1cfb105b5e60dafe7fc64d236f241f848`.
+After the account was authenticated in pinned Xcode 26.6, Organizer imported
+the same archive to
+`/Users/ahmed/Library/Developer/Xcode/Archives/2026-08-09/opensteamerTestFlight.xcarchive`;
+the source and imported app payloads compared byte-for-byte equal, including
+executable SHA-256
+`e3223133f429cf014d7feb92cbca137ed4390990b0dfdb24a028f61163eeb915`.
+
+Xcode Organizer then used `TestFlight Internal Only` and recorded `Upload
+succeeded` and `Uploaded to Apple` at 2026-08-09 17:58:57 UTC. The imported
+archive's single successful `Distributions` record names Adam ID `6797410161`,
+destination `upload` / `App Store`, Team ID `MSMG8CJLB3`, uploaded build `44`,
+successful preparation and upload events with zero errors, and distribution
+certificate SHA-1 `CEB61B792A7A5848E9E797BB2E44EA2642611A6F`. Its
+2,389-byte `Info.plist` has SHA-256
+`3a4727ef1b4c5ece5c097a23bf8eaac513d1c93595fb7ea7c840c744d9d5aa6b`;
+the 53,167-byte Organizer standard log has SHA-256
+`dbb70de82ed8c796984614083dae6227ae67c28a9374336bf2ca29aa8d832c51`.
+Apple's only reported warning was the existing non-blocking missing dSYM for
+`LiveKitWebRTC.framework`. Upload acceptance does not establish App Store
+Connect processing, TestFlight availability, installation, or physical
+FaceTime/microphone behavior. No protected-app or physical-iPhone operation
+occurred.
 
 - Do not install, replace, migrate, launch, reset, re-pair, or modify the
   production app on a physical iPhone.
