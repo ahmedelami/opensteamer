@@ -2382,6 +2382,260 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 XCTAssertEqual(object["status"] as? String, "failed")
             }
         }
+
+        let measurementCases: [(name: String, status: String, exit: Int32)] = [
+            ("dual-mono-tagged", "passed", 0),
+            ("left-only-tagged", "passed", 0),
+            ("anti-phase-tagged", "passed", 0),
+            ("wrong-tag", "failed", 1),
+            ("all-zero", "completed", 0),
+            ("dc-clipped", "completed", 0),
+            ("dc-offset", "completed", 0),
+            ("noise", "completed", 0),
+            ("near-clip", "completed", 0),
+            ("frozen-blocks", "completed", 0),
+            ("cadence-gap", "failed", 1),
+            ("short-capture", "failed", 1),
+            ("startup-delay", "completed", 0),
+            ("nonmonotonic-sample-time", "failed", 1),
+            ("nonmonotonic-host-time", "failed", 1),
+            ("sample-time-gap", "failed", 1),
+        ]
+        for measurementCase in measurementCases {
+            let nonce = "measure-self-test-nonce"
+            let resultURL = root.appendingPathComponent(
+                "measure-\(measurementCase.name).json"
+            )
+            let process = Process()
+            process.executableURL = binary
+            process.arguments = [
+                "measure-self-test",
+                "--case",
+                measurementCase.name,
+                "--nonce",
+                nonce,
+                "--result",
+                resultURL.path,
+            ]
+            let standardError = Pipe()
+            process.standardError = standardError
+            try process.run()
+            let exited = waitForExit(process, timeout: 30)
+            if !exited {
+                forceStopProcessAndIsolatedGroup(process)
+            }
+            XCTAssertTrue(
+                exited,
+                "BlackHole measure case \(measurementCase.name) timed out."
+            )
+            guard !process.isRunning else {
+                XCTFail(
+                    "BlackHole measure case \(measurementCase.name) survived cleanup."
+                )
+                continue
+            }
+            let diagnostic = String(
+                decoding: readAvailableData(from: standardError),
+                as: UTF8.self
+            )
+            XCTAssertEqual(
+                process.terminationStatus,
+                measurementCase.exit,
+                diagnostic
+            )
+            let data = try Data(contentsOf: resultURL)
+            let object = try JSONSerialization.jsonObject(with: data)
+                as! [String: Any]
+            XCTAssertEqual(
+                object["schema"] as? String,
+                "opensteamer.blackhole-input-measurement.v1"
+            )
+            XCTAssertEqual(object["status"] as? String, measurementCase.status)
+            XCTAssertEqual(object["canonicalCaptureUID"] as? String, "BlackHole2ch_UID")
+            XCTAssertEqual(object["rawPCMRetained"] as? Bool, false)
+            XCTAssertEqual(object["rawPCMPersisted"] as? Bool, false)
+            XCTAssertEqual(object["outputOpened"] as? Bool, false)
+            XCTAssertEqual(object["defaultsMutated"] as? Bool, false)
+            XCTAssertEqual(object["telemetryWindowLimit"] as? Int, 30)
+            let windows = object["telemetryWindows"]
+                as! [[String: Any]]
+            XCTAssertEqual(
+                windows.count,
+                measurementCase.name == "short-capture" ? 4 : 8
+            )
+            XCTAssertLessThanOrEqual(windows.count, 30)
+            XCTAssertFalse(
+                String(decoding: data, as: UTF8.self).contains(nonce),
+                "The measurement artifact persisted its plaintext challenge nonce."
+            )
+
+            let aggregate = object["aggregate"] as! [String: Any]
+            let channels = aggregate["channels"] as! [[String: Any]]
+            let stereo = aggregate["stereo"] as! [String: Any]
+            let cadence = aggregate["cadence"] as! [String: Any]
+            let challenge = object["taggedChallenge"] as! [String: Any]
+            XCTAssertEqual(cadence["sampleTimeMissingCount"] as? Int, 0)
+            XCTAssertEqual(cadence["hostTimeMissingCount"] as? Int, 0)
+            XCTAssertEqual(
+                cadence["sampleTimeValidCount"] as? Int,
+                object["callbackCount"] as? Int
+            )
+            XCTAssertEqual(
+                cadence["hostTimeValidCount"] as? Int,
+                object["callbackCount"] as? Int
+            )
+            switch measurementCase.name {
+            case "dual-mono-tagged":
+                XCTAssertEqual(challenge["recognized"] as? Bool, true)
+                XCTAssertGreaterThan(
+                    stereo["leftRightCorrelation"] as! Double,
+                    0.99
+                )
+                XCTAssertLessThan(
+                    stereo["differenceRMSNormalized"] as! Double,
+                    0.000_001
+                )
+                XCTAssertEqual(stereo["oneSidedFrameFraction"] as? Double, 0)
+            case "left-only-tagged":
+                XCTAssertEqual(challenge["recognized"] as? Bool, true)
+                XCTAssertEqual(challenge["recognizedChannel"] as? Int, 0)
+                XCTAssertGreaterThan(
+                    stereo["oneSidedFrameFraction"] as! Double,
+                    0.90
+                )
+                XCTAssertEqual(channels[1]["rmsNormalized"] as? Double, 0)
+            case "anti-phase-tagged":
+                XCTAssertEqual(challenge["recognized"] as? Bool, true)
+                XCTAssertLessThan(
+                    stereo["leftRightCorrelation"] as! Double,
+                    -0.99
+                )
+                XCTAssertLessThan(
+                    stereo["sumRMSNormalized"] as! Double,
+                    0.000_001
+                )
+                XCTAssertGreaterThan(
+                    stereo["differenceRMSNormalized"] as! Double,
+                    0.05
+                )
+            case "wrong-tag":
+                XCTAssertEqual(challenge["recognized"] as? Bool, false)
+                XCTAssertEqual(
+                    object["failureCode"] as? String,
+                    "tagged_challenge_not_recognized"
+                )
+            case "all-zero":
+                XCTAssertEqual(challenge["enabled"] as? Bool, false)
+                XCTAssertEqual(channels[0]["zeroSampleFraction"] as? Double, 1)
+                XCTAssertEqual(channels[1]["zeroSampleFraction"] as? Double, 1)
+            case "dc-clipped":
+                XCTAssertGreaterThan(
+                    channels[0]["dcMeanNormalized"] as! Double,
+                    0.99
+                )
+                XCTAssertEqual(channels[0]["clippingFraction"] as? Double, 1)
+            case "dc-offset":
+                XCTAssertEqual(
+                    channels[0]["dcMeanNormalized"] as? Double,
+                    0.125
+                )
+                XCTAssertEqual(channels[0]["clippingFraction"] as? Double, 0)
+                XCTAssertEqual(
+                    stereo["leftRightCorrelation"] as? Double,
+                    0,
+                    "Centered Pearson must not report perfect correlation for two constant-DC channels."
+                )
+            case "noise":
+                XCTAssertLessThan(
+                    abs(channels[0]["dcMeanNormalized"] as! Double),
+                    0.001
+                )
+                XCTAssertLessThan(
+                    abs(stereo["leftRightCorrelation"] as! Double),
+                    0.02
+                )
+                XCTAssertEqual(channels[0]["clippingFraction"] as? Double, 0)
+            case "near-clip":
+                XCTAssertEqual(
+                    channels[0]["peakNormalized"] as? Double,
+                    Double(32_759) / 32_768.0
+                )
+                XCTAssertEqual(
+                    channels[0]["clippingFraction"] as? Double,
+                    0,
+                    "Magnitude 32759 is below the inclusive >=32760 clipping boundary."
+                )
+                XCTAssertEqual(channels[0]["activeFrameFraction"] as? Double, 1)
+            case "frozen-blocks":
+                XCTAssertGreaterThan(
+                    channels[0]["repeatedBlockCount"] as! Int,
+                    700
+                )
+                XCTAssertGreaterThan(
+                    channels[0]["longestRepeatedBlockRun"] as! Int,
+                    700
+                )
+            case "cadence-gap":
+                XCTAssertEqual(
+                    cadence["callbackGapOver25MsCount"] as? Int,
+                    1
+                )
+                XCTAssertGreaterThan(
+                    cadence["maximumCallbackGapMs"] as! Double,
+                    200
+                )
+                XCTAssertEqual(
+                    object["failureCode"] as? String,
+                    "callback_gap_over_25ms"
+                )
+            case "short-capture":
+                XCTAssertEqual(object["capturedDurationRatio"] as? Double, 0.5)
+                XCTAssertEqual(object["frameDensity"] as? Double, 0.5)
+                let failures = object["failureReasons"] as! [String]
+                XCTAssertTrue(failures.contains("insufficient_capture_duration"))
+                XCTAssertTrue(failures.contains("frame_density_out_of_range"))
+            case "startup-delay":
+                XCTAssertEqual(object["capturedDurationRatio"] as? Double, 1)
+                XCTAssertEqual(object["frameDensity"] as? Double, 1)
+                XCTAssertEqual(
+                    object["measurementStartMonotonicNs"] as? Int64,
+                    10_001_750_000_000
+                )
+                XCTAssertEqual(
+                    windows.first?["startMonotonicNs"] as? Int64,
+                    10_001_750_000_000
+                )
+            case "nonmonotonic-sample-time":
+                XCTAssertEqual(
+                    cadence["nonMonotonicSampleTimeCount"] as? Int,
+                    1
+                )
+                XCTAssertEqual(
+                    object["failureCode"] as? String,
+                    "nonmonotonic_sample_timestamp"
+                )
+            case "nonmonotonic-host-time":
+                XCTAssertEqual(
+                    cadence["nonMonotonicHostTimeCount"] as? Int,
+                    1
+                )
+                XCTAssertEqual(
+                    object["failureCode"] as? String,
+                    "nonmonotonic_host_timestamp"
+                )
+            case "sample-time-gap":
+                XCTAssertEqual(
+                    cadence["sampleFrameDiscontinuityCount"] as? Int,
+                    1
+                )
+                XCTAssertEqual(
+                    object["failureCode"] as? String,
+                    "sample_timestamp_discontinuity"
+                )
+            default:
+                XCTFail("Unexpected BlackHole measurement self-test case.")
+            }
+        }
         let probeSource = try String(contentsOf: source, encoding: .utf8)
         for requiredPolicyToken in [
             "BuiltInSpeakerDevice",
@@ -2394,12 +2648,54 @@ final class PhysicalValidationScriptTests: XCTestCase {
             "controlled_host_no_audio_taps_not_acknowledged",
             "controlled-host-no-audio-taps-reviewed",
             "not cryptographic proof",
+            "opensteamer.blackhole-input-measurement.v1",
+            "rawPCMRetained",
+            "outputOpened",
+            "defaultsMutated",
+            "tagged-challenge-nonce",
+            "BlackHoleMeasureInputBufferContractSelfTest",
         ] {
             XCTAssertTrue(
                 probeSource.contains(requiredPolicyToken),
                 "The physical-output policy omitted \(requiredPolicyToken)."
             )
         }
+
+        let measureQueueStart = try XCTUnwrap(
+            probeSource.range(
+                of: "private final class BlackHoleMeasureInputQueueSession"
+            )
+        )
+        let measureQueueEnd = try XCTUnwrap(
+            probeSource.range(
+                of: "private enum CanonicalBlackHoleMeasureResolver",
+                range: measureQueueStart.upperBound..<probeSource.endIndex
+            )
+        )
+        let measureQueueSource = probeSource[
+            measureQueueStart.lowerBound..<measureQueueEnd.lowerBound
+        ]
+        XCTAssertTrue(
+            measureQueueSource.contains(
+                "AudioQueueDispose is terminal once it returns"
+            )
+        )
+        XCTAssertFalse(
+            measureQueueSource.contains("if disposeStatus == noErr"),
+            "The measurement queue must not retain and re-dispose a terminal AudioQueue after a failed dispose status."
+        )
+        XCTAssertFalse(
+            probeSource.contains("if disposeStatus == noErr"),
+            "Every probe AudioQueue teardown path must treat dispose as terminal even when Core Audio reports an error."
+        )
+        XCTAssertTrue(
+            measureQueueSource.contains("private var teardownFailed = false")
+        )
+        XCTAssertTrue(
+            measureQueueSource.contains(
+                "guard let queue else { return !teardownFailed }"
+            )
+        )
     }
 
     func testProductionAppTerminationUsesFreshStructuredPIDIdentity() throws {
