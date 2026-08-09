@@ -251,14 +251,14 @@ commit_all "$CURRENT_COMPATIBILITY_CONTRACTS"
 "$CURRENT_COMPATIBILITY_CONTRACTS/scripts/check-product-branding.sh" \
   "$CURRENT_COMPATIBILITY_CONTRACTS" >/dev/null
 
-PAIRED_V4_WRONG_PATH="$TEMPORARY_ROOT/paired-v4-wrong-path"
-initialize_repository "$PAIRED_V4_WRONG_PATH"
-mkdir -p "$PAIRED_V4_WRONG_PATH/macOS/scripts"
+PAIRED_V5_WRONG_PATH="$TEMPORARY_ROOT/paired-v5-wrong-path"
+initialize_repository "$PAIRED_V5_WRONG_PATH"
+mkdir -p "$PAIRED_V5_WRONG_PATH/macOS/scripts"
 print -r -- "        \"${PRODUCTION_URL}\".to_owned()," \
-  >"$PAIRED_V4_WRONG_PATH/macOS/scripts/opensteamer-host-paired-v4-update-controller.rs"
-commit_all "$PAIRED_V4_WRONG_PATH"
-require_failure "$PAIRED_V4_WRONG_PATH" \
-  "macOS/scripts/opensteamer-host-paired-v4-update-controller.rs:1:${PRODUCTION_HOST}"
+  >"$PAIRED_V5_WRONG_PATH/macOS/scripts/opensteamer-host-paired-v5-update-controller.rs"
+commit_all "$PAIRED_V5_WRONG_PATH"
+require_failure "$PAIRED_V5_WRONG_PATH" \
+  "macOS/scripts/opensteamer-host-paired-v5-update-controller.rs:1:${PRODUCTION_HOST}"
 
 HOST_CONTRACT_WRONG_CONTEXT="$TEMPORARY_ROOT/host-contract-wrong-context"
 initialize_repository "$HOST_CONTRACT_WRONG_CONTEXT"
