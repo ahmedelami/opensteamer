@@ -115,6 +115,19 @@ enum WebRTCIPhoneMicrophoneTransceiverAdmission {
         }
     }
 
+    static func directionIncludesReceiving(
+        _ direction: LKRTCRtpTransceiverDirection
+    ) -> Bool {
+        switch direction {
+        case .sendRecv, .recvOnly:
+            return true
+        case .sendOnly, .inactive, .stopped:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
     static func permitsConfiguredSending(
         isStopped: Bool,
         preferredDirection: LKRTCRtpTransceiverDirection
@@ -539,6 +552,42 @@ private struct WebRTCIPhoneMicrophoneSenderStatisticsCapture {
 private struct WebRTCIPhoneMicrophoneSenderStatisticsReportCapture: Sendable {
     let parsed: WebRTCIPhoneMicrophoneOutboundStatistics?
     let callbackCompletedAt: Date
+}
+
+struct WebRTCIPhoneMicrophoneReceiverStatisticsValidation: Equatable, Sendable {
+    let peerEpoch: UUID
+    let negotiationEpoch: UInt64
+    let receiverID: String
+    let remoteTrackID: String
+    let mid: String
+}
+
+enum WebRTCIPhoneMicrophoneReceiverStatisticsSampler {
+    static func evaluate(
+        parsed: WebRTCIPhoneMicrophoneInboundStatistics?,
+        captured: WebRTCIPhoneMicrophoneReceiverStatisticsValidation,
+        current: WebRTCIPhoneMicrophoneReceiverStatisticsValidation?,
+        nativeOwnershipIsCurrent: Bool
+    ) -> WebRTCAudioStatistics? {
+        guard let parsed,
+              let current,
+              nativeOwnershipIsCurrent,
+              captured == current,
+              !current.receiverID.isEmpty,
+              !current.remoteTrackID.isEmpty,
+              !current.mid.isEmpty else {
+            return nil
+        }
+        return parsed.statistics
+    }
+}
+
+private struct WebRTCIPhoneMicrophoneReceiverStatisticsCapture {
+    let transceiver: LKRTCRtpTransceiver
+    let receiver: LKRTCRtpReceiver
+    let receiverTrack: LKRTCAudioTrack
+    let remoteTrack: WebRTCRemoteAudioTrack
+    let validation: WebRTCIPhoneMicrophoneReceiverStatisticsValidation
 }
 
 #if os(iOS)
@@ -3574,7 +3623,7 @@ public actor WebRTCPeer {
     /// Sends one fresh Mac-hosted FaceTime evidence heartbeat under the exact live system-audio
     /// authorization and the exact challenge sampled by the native Core Audio source.
     public func updateMacHostedCallEvidenceIfTransportHealthy(
-        active: Bool,
+        state: WebRTCMacHostedCallEvidence.State,
         challenge: WebRTCMacHostedCallChallenge,
         nativeObservationSequence: UInt64,
         authorization: WebRTCAudioAuthorization,
@@ -3618,7 +3667,7 @@ public actor WebRTCPeer {
                     challengeSequence: challenge.sequence,
                     challengeNonce: challenge.nonce,
                     callEpochNonce: challenge.callEpochNonce,
-                    state: active ? .active : .inactive
+                    state: state
                 )
                 let data = try JSONEncoder().encode(
                     ControlChannelMessage.macHostedCallEvidence(evidence)
@@ -4411,6 +4460,12 @@ public actor WebRTCPeer {
 
     /// Collects and privacy-reduces one native WebRTC statistics report.
     public func statisticsSnapshot() async -> WebRTCStatisticsSnapshot {
+        await collectStatistics(publishEvent: false)
+    }
+
+    private func collectStatistics(
+        publishEvent: Bool
+    ) async -> WebRTCStatisticsSnapshot {
         let nativeSnapshot = await withCheckedContinuation {
             (continuation: CheckedContinuation<WebRTCStatisticsSnapshot, Never>) in
             peerConnection.statistics { report in
@@ -4418,21 +4473,177 @@ public actor WebRTCPeer {
             }
         }
 
-        guard nativeSnapshot.route == nil, let currentRoute else {
-            return nativeSnapshot
+        // The host has more than one audio transceiver. Never let the whole-peer parser's
+        // array-order selection become microphone-health evidence: replace it with a report
+        // requested from, and revalidated against, the exact dedicated native receiver.
+        let receiverReport: (
+            capture: WebRTCIPhoneMicrophoneReceiverStatisticsCapture,
+            parsed: WebRTCIPhoneMicrophoneInboundStatistics?
+        )?
+        if role == .host,
+           let capture =
+            currentIPhoneMicrophoneReceiverStatisticsCapture() {
+            let parsed = await withCheckedContinuation {
+                (
+                    continuation:
+                        CheckedContinuation<
+                            WebRTCIPhoneMicrophoneInboundStatistics?,
+                            Never
+                        >
+                ) in
+                peerConnection.statistics(for: capture.receiver) { report in
+                    continuation.resume(
+                        returning:
+                            WebRTCStatisticsParser
+                                .parseIPhoneMicrophoneReceiver(
+                                    report,
+                                    expectedTrackID:
+                                        capture.validation.remoteTrackID,
+                                    expectedMID: capture.validation.mid
+                                )
+                    )
+                }
+            }
+            receiverReport = (capture, parsed)
+        } else {
+            receiverReport = nil
         }
-        return WebRTCStatisticsSnapshot(
-            collectedAt: nativeSnapshot.collectedAt,
-            route: currentRoute,
-            currentRoundTripTime: nativeSnapshot.currentRoundTripTime,
-            availableOutgoingBitrate: nativeSnapshot.availableOutgoingBitrate,
-            jitter: nativeSnapshot.jitter,
-            outboundVideo: nativeSnapshot.outboundVideo,
-            inboundVideo: nativeSnapshot.inboundVideo,
-            audioSource: nativeSnapshot.audioSource,
-            outboundAudio: nativeSnapshot.outboundAudio,
-            inboundAudio: nativeSnapshot.inboundAudio,
-            remoteInboundAudio: nativeSnapshot.remoteInboundAudio
+
+        let inboundAudio: WebRTCAudioStatistics?
+        if role != .host {
+            inboundAudio = nativeSnapshot.inboundAudio
+        } else if let receiverReport,
+                  let current =
+                    currentIPhoneMicrophoneReceiverStatisticsCapture() {
+            let captured = receiverReport.capture
+            let nativeOwnershipIsCurrent =
+                captured.remoteTrack === current.remoteTrack
+                && WebRTCNativeWrapperIdentity.isSemanticallyEqual(
+                    captured.transceiver,
+                    current.transceiver
+                )
+                && WebRTCNativeWrapperIdentity.isSemanticallyEqual(
+                    captured.receiver,
+                    current.receiver
+                )
+                && WebRTCNativeWrapperIdentity.isSemanticallyEqual(
+                    captured.receiverTrack,
+                    current.receiverTrack
+                )
+            inboundAudio =
+                WebRTCIPhoneMicrophoneReceiverStatisticsSampler
+                    .evaluate(
+                        parsed: receiverReport.parsed,
+                        captured: captured.validation,
+                        current: current.validation,
+                        nativeOwnershipIsCurrent:
+                            nativeOwnershipIsCurrent
+                    )
+        } else {
+            inboundAudio = nil
+        }
+
+        let snapshot: WebRTCStatisticsSnapshot
+        if nativeSnapshot.route != nil || currentRoute == nil {
+            snapshot = replacingInboundAudio(
+                in: nativeSnapshot,
+                with: inboundAudio
+            )
+        } else {
+            snapshot = WebRTCStatisticsSnapshot(
+                collectedAt: nativeSnapshot.collectedAt,
+                route: currentRoute,
+                currentRoundTripTime: nativeSnapshot.currentRoundTripTime,
+                availableOutgoingBitrate: nativeSnapshot.availableOutgoingBitrate,
+                jitter: nativeSnapshot.jitter,
+                outboundVideo: nativeSnapshot.outboundVideo,
+                inboundVideo: nativeSnapshot.inboundVideo,
+                audioSource: nativeSnapshot.audioSource,
+                outboundAudio: nativeSnapshot.outboundAudio,
+                inboundAudio: inboundAudio,
+                remoteInboundAudio: nativeSnapshot.remoteInboundAudio
+            )
+        }
+        if publishEvent, !isClosed {
+            // No suspension is permitted between exact-receiver revalidation and this yield.
+            publishStatistics(snapshot)
+        }
+        return snapshot
+    }
+
+    private func replacingInboundAudio(
+        in snapshot: WebRTCStatisticsSnapshot,
+        with inboundAudio: WebRTCAudioStatistics?
+    ) -> WebRTCStatisticsSnapshot {
+        WebRTCStatisticsSnapshot(
+            collectedAt: snapshot.collectedAt,
+            route: snapshot.route,
+            currentRoundTripTime: snapshot.currentRoundTripTime,
+            availableOutgoingBitrate: snapshot.availableOutgoingBitrate,
+            jitter: snapshot.jitter,
+            outboundVideo: snapshot.outboundVideo,
+            inboundVideo: snapshot.inboundVideo,
+            audioSource: snapshot.audioSource,
+            outboundAudio: snapshot.outboundAudio,
+            inboundAudio: inboundAudio,
+            remoteInboundAudio: snapshot.remoteInboundAudio
+        )
+    }
+
+    private func currentIPhoneMicrophoneReceiverStatisticsCapture()
+        -> WebRTCIPhoneMicrophoneReceiverStatisticsCapture? {
+        guard !isClosed,
+              role == .host,
+              let expectedReceiverID = iPhoneMicrophoneReceiverID,
+              !expectedReceiverID.isEmpty,
+              let remoteTrack = currentRemoteAudioTrack,
+              remoteTrack.logicalLane == .iPhoneMicrophone,
+              remoteTrack.receiverID == expectedReceiverID,
+              !remoteTrack.nativeTrackID.isEmpty else {
+            return nil
+        }
+
+        let matches = peerConnection.transceivers.filter { transceiver in
+            transceiver.mediaType == .audio
+                && (transceiver.receiver.receiverId as String)
+                    == expectedReceiverID
+        }
+        guard matches.count == 1,
+              let transceiver = matches.first,
+              !transceiver.isStopped,
+              WebRTCIPhoneMicrophoneTransceiverAdmission
+                .directionIncludesReceiving(transceiver.direction),
+              let currentDirection =
+                Self.iPhoneMicrophoneCurrentDirection(transceiver),
+              WebRTCIPhoneMicrophoneTransceiverAdmission
+                .directionIncludesReceiving(currentDirection),
+              let mid = transceiver.mid as String?,
+              !mid.isEmpty else {
+            return nil
+        }
+
+        let receiver = transceiver.receiver
+        let receiverID = receiver.receiverId as String
+        guard receiverID == expectedReceiverID,
+              let receiverTrack = receiver.track as? LKRTCAudioTrack,
+              (receiverTrack.trackId as String)
+                == remoteTrack.nativeTrackID else {
+            return nil
+        }
+
+        return WebRTCIPhoneMicrophoneReceiverStatisticsCapture(
+            transceiver: transceiver,
+            receiver: receiver,
+            receiverTrack: receiverTrack,
+            remoteTrack: remoteTrack,
+            validation:
+                WebRTCIPhoneMicrophoneReceiverStatisticsValidation(
+                    peerEpoch: iPhoneMicrophonePeerEpoch,
+                    negotiationEpoch: negotiationEpoch,
+                    receiverID: receiverID,
+                    remoteTrackID: remoteTrack.nativeTrackID,
+                    mid: mid
+                )
         )
     }
 
@@ -4807,10 +5018,18 @@ public actor WebRTCPeer {
                     return
                 }
                 guard let self else { return }
-                let snapshot = await self.statisticsSnapshot()
-                await self.publishStatistics(snapshot)
+                await self.collectAndPublishStatistics()
             }
         }
+    }
+
+    /// Collects, revalidates, and enqueues one statistics event in one actor invocation. Once the
+    /// receiver-scoped callback has been revalidated, there is no suspension before the event is
+    /// yielded. The public event stream's FIFO ordering therefore prevents the host service from
+    /// applying positive media evidence to a later remote-track publication.
+    private func collectAndPublishStatistics() async {
+        guard !isClosed else { return }
+        _ = await collectStatistics(publishEvent: true)
     }
 
     /// Cancels periodic statistics collection without closing transport.

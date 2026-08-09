@@ -206,6 +206,17 @@ final class WorldwideAudioLifecycleController {
     private var nextMacHostedCallChallengeSequence: UInt64 = 1
     private var highestMacHostedCallEvidenceSequence: UInt64 = 0
     private var macHostedCallEvidenceSequenceFloor: UInt64 = 0
+    /// Exact preflight-armed evidence that acknowledged a prospective next-call challenge.
+    /// It never admits input; CallKit must still synchronously prove one connected call.
+    private var armedMacHostedCallPreflightChallenge:
+        WebRTCMacHostedCallChallenge?
+    private var macHostedCallPreflightRetryTask: Task<Void, Never>?
+    private static let macHostedCallPreflightRetryDelay:
+        Duration = .seconds(2)
+    #if DEBUG
+    private var debugMacHostedCallPreflightRetryWaiter:
+        (() async -> Void)?
+    #endif
     private var callEpochHasSeenInterruption = false
     private var publishedMicrophoneCallDisposition:
         WorldwideMicrophoneCallDisposition = .inactive
@@ -395,6 +406,8 @@ final class WorldwideAudioLifecycleController {
         nextMacHostedCallChallengeSequence = 1
         highestMacHostedCallEvidenceSequence = 0
         macHostedCallEvidenceSequenceFloor = 0
+        armedMacHostedCallPreflightChallenge = nil
+        cancelMacHostedCallPreflightRetry()
         callEpochHasSeenInterruption = false
         publishedMicrophoneCallDisposition = .inactive
         currentInterruptionEpoch = nil
@@ -430,6 +443,9 @@ final class WorldwideAudioLifecycleController {
             let challenge =
                 replaceMacHostedCallChallengeForCurrentEpoch()
             publishMicrophoneCallDispositionIfChanged()
+            onMacHostedCallChallengeChanged?(challenge)
+        } else {
+            let challenge = reserveFreshMacHostedCallPreflight()
             onMacHostedCallChallengeChanged?(challenge)
         }
         if isCallActive {
@@ -531,11 +547,31 @@ final class WorldwideAudioLifecycleController {
                 return
             }
             highestMacHostedCallEvidenceSequence = evidence.sequence
-            macHostedCallEvidence = evidence
+            if !callActivitySnapshot.hasNonEndedCall {
+                if evidence.state == .preflightArmed {
+                    macHostedCallEvidence = evidence
+                    armedMacHostedCallPreflightChallenge = challenge
+                    cancelMacHostedCallPreflightRetry()
+                    publishMicrophoneCallDispositionIfChanged()
+                    publishSnapshot()
+                    return
+                }
+
+                // An active transition before live CallKit or an inactive poison/revocation must
+                // not become a future call's proof. Retire the prospective epoch immediately; a
+                // fresh known-empty preflight acknowledgement is required.
+                replacementChallenge = reserveFreshMacHostedCallPreflight()
+                didReplaceChallenge = true
+                scheduleMacHostedCallPreflightRetryIfNeeded()
+            } else {
+                macHostedCallEvidence = evidence
+            }
         } else {
-            replacementChallenge =
-                replaceMacHostedCallChallengeForCurrentEpoch()
+            replacementChallenge = callActivitySnapshot.hasNonEndedCall
+                ? replaceMacHostedCallChallengeForCurrentEpoch()
+                : reserveFreshMacHostedCallPreflight()
             didReplaceChallenge = true
+            scheduleMacHostedCallPreflightRetryIfNeeded()
         }
 
         let currentDisposition = microphoneCallDisposition
@@ -583,6 +619,11 @@ final class WorldwideAudioLifecycleController {
         transportIsHealthy = true
         if callActivitySnapshot.hasNonEndedCall {
             onMacHostedCallChallengeChanged?(macHostedCallChallenge)
+        } else {
+            let challenge = macHostedCallChallenge
+                ?? reserveFreshMacHostedCallPreflight()
+            onMacHostedCallChallengeChanged?(challenge)
+            scheduleMacHostedCallPreflightRetryIfNeeded()
         }
         if previousMicrophoneDisposition == .blocked,
            microphoneCallDisposition == .macHosted {
@@ -610,8 +651,16 @@ final class WorldwideAudioLifecycleController {
         let wasTransportHealthy = transportIsHealthy
         revokeHostedCallPolicy()
         transportIsHealthy = false
-        let challenge =
-            replaceMacHostedCallChallengeForCurrentEpoch()
+        cancelMacHostedCallPreflightRetry()
+        let challenge: WebRTCMacHostedCallChallenge?
+        if callActivitySnapshot.hasNonEndedCall {
+            challenge = replaceMacHostedCallChallengeForCurrentEpoch()
+        } else {
+            clearMacHostedCallChallenge()
+            macHostedCallEpochNonce = nil
+            armedMacHostedCallPreflightChallenge = nil
+            challenge = nil
+        }
         publishMicrophoneCallDispositionIfChanged()
         onMacHostedCallChallengeChanged?(challenge)
 
@@ -676,6 +725,8 @@ final class WorldwideAudioLifecycleController {
         nextMacHostedCallChallengeSequence = 1
         highestMacHostedCallEvidenceSequence = 0
         macHostedCallEvidenceSequenceFloor = 0
+        armedMacHostedCallPreflightChallenge = nil
+        cancelMacHostedCallPreflightRetry()
         callEpochHasSeenInterruption = false
         publishedMicrophoneCallDisposition = .inactive
         currentInterruptionEpoch = nil
@@ -1580,22 +1631,39 @@ final class WorldwideAudioLifecycleController {
             // strictly higher sequence can prove that this exact epoch is hosted on the Mac.
             macHostedCallEvidenceSequenceFloor =
                 highestMacHostedCallEvidenceSequence
-            if callMembershipChanged {
+            let preservesProspectiveEpoch = callBecameActive
+                && macHostedCallChallenge?.isValid == true
+                && macHostedCallEpochNonce
+                    == macHostedCallChallenge?.callEpochNonce
+                && armedMacHostedCallPreflightChallenge
+                    == macHostedCallChallenge
+                && !microphoneInterruptionIsActive
+                && !callEpochHasSeenInterruption
+            cancelMacHostedCallPreflightRetry()
+            armedMacHostedCallPreflightChallenge = nil
+            if callMembershipChanged && !preservesProspectiveEpoch {
                 macHostedCallEpochNonce = UUID()
             }
             callEpochHasSeenInterruption =
                 callEpochHasSeenInterruption
                     || microphoneInterruptionIsActive
-            replacementChallenge =
-                replaceMacHostedCallChallengeForCurrentEpoch()
-            challengeUpdateWasRequired = true
+            macHostedCallEvidence = nil
+            if preservesProspectiveEpoch {
+                // The exact challenge was already installed prospectively. Do not rotate after
+                // CallKit's edge: the Mac may already be observing the duplex transition.
+                replacementChallenge = macHostedCallChallenge
+            } else {
+                replacementChallenge =
+                    replaceMacHostedCallChallengeForCurrentEpoch()
+                challengeUpdateWasRequired = true
+            }
         } else if !snapshot.hasNonEndedCall {
             callEpochHasSeenInterruption = false
-            macHostedCallEpochNonce = nil
             macHostedCallEvidenceSequenceFloor =
                 highestMacHostedCallEvidenceSequence
-            clearMacHostedCallChallenge()
+            replacementChallenge = reserveFreshMacHostedCallPreflight()
             challengeUpdateWasRequired = true
+            scheduleMacHostedCallPreflightRetryIfNeeded()
         }
         publishMicrophoneCallDispositionIfChanged()
         if challengeUpdateWasRequired {
@@ -1734,14 +1802,17 @@ final class WorldwideAudioLifecycleController {
         currentInterruptionReason = reason
         isInterrupted = true
         microphoneInterruptionIsActive = true
+        cancelMacHostedCallPreflightRetry()
         if callActivitySnapshot.hasNonEndedCall {
             callEpochHasSeenInterruption = true
             clearMacHostedCallChallenge()
+        } else {
+            clearMacHostedCallChallenge()
+            macHostedCallEpochNonce = nil
+            armedMacHostedCallPreflightChallenge = nil
         }
         publishMicrophoneCallDispositionIfChanged()
-        if callActivitySnapshot.hasNonEndedCall {
-            onMacHostedCallChallengeChanged?(nil)
-        }
+        onMacHostedCallChallengeChanged?(nil)
         // Close decoded-track and runtime-proof gates before terminally clearing any executing or
         // completed output-only marker. Only an exact default interruption preserves the same
         // initialized manual WebRTC device so the native interruption fence can later consume an
@@ -1766,10 +1837,12 @@ final class WorldwideAudioLifecycleController {
         synchronizeLiveCallStateIfNeeded()
         microphoneInterruptionIsActive = false
         callEpochHasSeenInterruption = false
-        let replacementChallenge =
-            replaceMacHostedCallChallengeForCurrentEpoch()
+        let replacementChallenge = callActivitySnapshot.hasNonEndedCall
+            ? replaceMacHostedCallChallengeForCurrentEpoch()
+            : reserveFreshMacHostedCallPreflight()
         publishMicrophoneCallDispositionIfChanged()
         onMacHostedCallChallengeChanged?(replacementChallenge)
+        scheduleMacHostedCallPreflightRetryIfNeeded()
 
         if hostedInterruptionEndedAwaitingCallEnd {
             publishSnapshot()
@@ -1829,10 +1902,10 @@ final class WorldwideAudioLifecycleController {
 
     private func routeChanged(_ message: String) {
         guard isPrepared else { return }
-        let challenge =
-            replaceMacHostedCallChallengeForCurrentEpoch()
+        let challenge = replaceMacHostedCallChallengeForCurrentState()
         publishMicrophoneCallDispositionIfChanged()
         onMacHostedCallChallengeChanged?(challenge)
+        scheduleMacHostedCallPreflightRetryIfNeeded()
         let requiresPrivateRouteResume =
             message == "Audio route changed: device unavailable"
                 || message
@@ -1874,10 +1947,10 @@ final class WorldwideAudioLifecycleController {
         context: String
     ) {
         guard isPrepared else { return }
-        let challenge =
-            replaceMacHostedCallChallengeForCurrentEpoch()
+        let challenge = replaceMacHostedCallChallengeForCurrentState()
         publishMicrophoneCallDispositionIfChanged()
         onMacHostedCallChallengeChanged?(challenge)
+        scheduleMacHostedCallPreflightRetryIfNeeded()
         let failedStartupPolicy = ownsStartupConnectedCallPolicy
         revokeHostedCallPolicy()
         fenceFailedStartupConnectedCallPolicyUntilCallEnd(
@@ -1899,8 +1972,7 @@ final class WorldwideAudioLifecycleController {
     private func mediaServicesWereLost() {
         guard isPrepared else { return }
         mediaServicesAreLost = true
-        let challenge =
-            replaceMacHostedCallChallengeForCurrentEpoch()
+        let challenge = replaceMacHostedCallChallengeForCurrentState()
         publishMicrophoneCallDispositionIfChanged()
         onMacHostedCallChallengeChanged?(challenge)
         let failedStartupPolicy = ownsStartupConnectedCallPolicy
@@ -1920,10 +1992,10 @@ final class WorldwideAudioLifecycleController {
     private func mediaServicesWereReset() {
         guard isPrepared else { return }
         mediaServicesAreLost = false
-        let challenge =
-            replaceMacHostedCallChallengeForCurrentEpoch()
+        let challenge = replaceMacHostedCallChallengeForCurrentState()
         publishMicrophoneCallDispositionIfChanged()
         onMacHostedCallChallengeChanged?(challenge)
+        scheduleMacHostedCallPreflightRetryIfNeeded()
         let failedStartupPolicy = ownsStartupConnectedCallPolicy
         revokeHostedCallPolicy()
         fenceFailedStartupConnectedCallPolicyUntilCallEnd(
@@ -2518,6 +2590,7 @@ final class WorldwideAudioLifecycleController {
     private func replaceMacHostedCallChallengeForCurrentEpoch()
         -> WebRTCMacHostedCallChallenge? {
         macHostedCallEvidence = nil
+        armedMacHostedCallPreflightChallenge = nil
         guard callActivitySnapshot.hasNonEndedCall,
               let callEpochNonce = macHostedCallEpochNonce,
               !microphoneInterruptionIsActive,
@@ -2535,10 +2608,122 @@ final class WorldwideAudioLifecycleController {
         return challenge
     }
 
+    private func replaceMacHostedCallChallengeForCurrentState()
+        -> WebRTCMacHostedCallChallenge? {
+        callActivitySnapshot.hasNonEndedCall
+            ? replaceMacHostedCallChallengeForCurrentEpoch()
+            : reserveFreshMacHostedCallPreflight()
+    }
+
     private func clearMacHostedCallChallenge() {
         macHostedCallEvidence = nil
         macHostedCallChallenge = nil
+        armedMacHostedCallPreflightChallenge = nil
     }
+
+    /// Reserves a fresh epoch for the next CallKit membership while the phone is connected and
+    /// inactive. The Mac can therefore establish its strict known-empty baseline before FaceTime
+    /// becomes duplex. This carries no microphone authority until live CallKit later proves one
+    /// connected call and active evidence arrives for this exact challenge.
+    private func reserveFreshMacHostedCallPreflight()
+        -> WebRTCMacHostedCallChallenge? {
+        cancelMacHostedCallPreflightRetry()
+        macHostedCallEvidence = nil
+        armedMacHostedCallPreflightChallenge = nil
+        guard isPrepared,
+              !callActivitySnapshot.hasNonEndedCall,
+              !microphoneInterruptionIsActive,
+              !isInterrupted,
+              !mediaServicesAreLost,
+              nextMacHostedCallChallengeSequence < UInt64.max else {
+            macHostedCallChallenge = nil
+            macHostedCallEpochNonce = nil
+            return nil
+        }
+        let epoch = UUID()
+        let challenge = WebRTCMacHostedCallChallenge(
+            sequence: nextMacHostedCallChallengeSequence,
+            callEpochNonce: epoch
+        )
+        nextMacHostedCallChallengeSequence &+= 1
+        macHostedCallEpochNonce = epoch
+        macHostedCallChallenge = challenge
+        return challenge
+    }
+
+    private func scheduleMacHostedCallPreflightRetryIfNeeded() {
+        guard isPrepared,
+              transportIsHealthy,
+              !callActivitySnapshot.hasNonEndedCall,
+              !microphoneInterruptionIsActive,
+              !isInterrupted,
+              !mediaServicesAreLost,
+              let challenge = macHostedCallChallenge,
+              challenge.isValid,
+              armedMacHostedCallPreflightChallenge != challenge,
+              macHostedCallPreflightRetryTask == nil else {
+            return
+        }
+        #if DEBUG
+        let retryWaiter = debugMacHostedCallPreflightRetryWaiter
+        #else
+        let retryWaiter: (() async -> Void)? = nil
+        #endif
+        macHostedCallPreflightRetryTask = Task { @MainActor [weak self, retryWaiter] in
+            guard await Self.waitForMacHostedCallPreflightRetry(
+                debugWaiter: retryWaiter
+            ) else {
+                return
+            }
+            guard let self,
+                  isPrepared,
+                  transportIsHealthy,
+                  !callActivitySnapshot.hasNonEndedCall,
+                  !microphoneInterruptionIsActive,
+                  !isInterrupted,
+                  !mediaServicesAreLost,
+                  macHostedCallChallenge == challenge,
+                  armedMacHostedCallPreflightChallenge != challenge else {
+                return
+            }
+            macHostedCallPreflightRetryTask = nil
+            let replacement = reserveFreshMacHostedCallPreflight()
+            onMacHostedCallChallengeChanged?(replacement)
+            scheduleMacHostedCallPreflightRetryIfNeeded()
+        }
+    }
+
+    private func cancelMacHostedCallPreflightRetry() {
+        macHostedCallPreflightRetryTask?.cancel()
+        macHostedCallPreflightRetryTask = nil
+    }
+
+    private static func waitForMacHostedCallPreflightRetry(
+        debugWaiter: (() async -> Void)?
+    ) async -> Bool {
+        #if DEBUG
+        if let debugWaiter {
+            await debugWaiter()
+            return !Task.isCancelled
+        }
+        #endif
+        do {
+            try await Task.sleep(
+                for: Self.macHostedCallPreflightRetryDelay
+            )
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    #if DEBUG
+    func debugInstallMacHostedCallPreflightRetryWaiter(
+        _ waiter: (() async -> Void)?
+    ) {
+        debugMacHostedCallPreflightRetryWaiter = waiter
+    }
+    #endif
 
     private func hostedCallIntersectionHolds(
         _ policy: HostedCallPolicy

@@ -63,6 +63,39 @@ enum WorldwideMacHostedCallObservationPolicy {
     }
 }
 
+/// Converts only a self-consistent native binder state into the protocol-v3 wire state. Inactive
+/// is deliberately distinct from a known-empty prospective arm acknowledgement.
+enum WorldwideMacHostedCallEvidenceStatePolicy {
+    static func state(
+        isCausallyBoundActive: Bool,
+        isCausallyArmed: Bool
+    ) -> WebRTCMacHostedCallEvidence.State? {
+        switch (isCausallyBoundActive, isCausallyArmed) {
+        case (true, false):
+            return .active
+        case (false, true):
+            return .preflightArmed
+        case (false, false):
+            return .inactive
+        case (true, true):
+            return nil
+        }
+    }
+}
+
+/// Requires the native source and stored viewer challenge to belong to the exact current peer.
+enum WorldwideMacHostedCallPeerGenerationPolicy {
+    static func admits(
+        audioPeerGeneration: UInt64?,
+        challengePeerGeneration: UInt64?,
+        currentPeerGeneration: UInt64
+    ) -> Bool {
+        currentPeerGeneration > 0
+            && audioPeerGeneration == currentPeerGeneration
+            && challengePeerGeneration == currentPeerGeneration
+    }
+}
+
 /// Selects whether a healthy transport should publish, resume, or create system audio.
 enum WorldwideSystemAudioStartMode: Equatable {
     case alreadyLive
@@ -476,6 +509,10 @@ actor WorldwideScreenService {
             "frames=\(progress.successfulFrameCount) " +
             "silenceFallbacks=\(progress.silenceFallbackCount) " +
             "enqueueFailures=\(progress.enqueueFailureCount) " +
+            "mediaSample=\(snapshot.inboundMediaSampleSequence) " +
+            "mediaAdvances=\(snapshot.inboundMediaAdvancementCount) " +
+            "mediaStale=\(snapshot.consecutiveStaleInboundMediaSamples) " +
+            "mediaFresh=\(snapshot.inboundMediaFresh) " +
             "failure=\(snapshot.lastFailureCategory?.rawValue ?? "none")"
     }
 
@@ -550,6 +587,7 @@ actor WorldwideScreenService {
     private var systemAudioIsPausedForTransportRecovery = false
     private var macHostedCallChallenge:
         WebRTCMacHostedCallChallenge?
+    private var macHostedCallChallengePeerGeneration: UInt64?
     private var highestMacFaceTimeObservationSequence: UInt64 = 0
     private var blackHoleDeviceMonitorEpoch: UUID?
     private lazy var blackHoleDefaultInput =
@@ -929,7 +967,11 @@ actor WorldwideScreenService {
         recoveryCoordinator = coordinator
         let events = peer.events
         peerEventTask = Task { [weak self] in
-            await self?.consumePeerEvents(events)
+            await self?.consumePeerEvents(
+                events,
+                sourcePeer: peer,
+                sourcePeerGeneration: generation
+            )
         }
         try await peer.startStatistics()
         try await peer.start()
@@ -937,26 +979,51 @@ actor WorldwideScreenService {
     }
 
     /// Consumes native peer events until normal stop or an unexpected stream end.
-    private func consumePeerEvents(_ events: AsyncStream<WebRTCTransportEvent>) async {
+    private func consumePeerEvents(
+        _ events: AsyncStream<WebRTCTransportEvent>,
+        sourcePeer: WebRTCPeer,
+        sourcePeerGeneration: UInt64
+    ) async {
         for await event in events {
-            guard !isStopped else { return }
+            guard !isStopped,
+                  peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration else {
+                return
+            }
             do {
-                try await handlePeerEvent(event)
+                try await handlePeerEvent(
+                    event,
+                    sourcePeer: sourcePeer,
+                    sourcePeerGeneration: sourcePeerGeneration
+                )
             } catch is CancellationError {
                 return
             } catch {
+                guard peer === sourcePeer,
+                      peerGeneration == sourcePeerGeneration else {
+                    return
+                }
                 logger.error("Worldwide WebRTC session failed: \(error.localizedDescription)")
                 await stop()
                 return
             }
         }
-        guard !Task.isCancelled, !isStopped else { return }
+        guard !Task.isCancelled,
+              !isStopped,
+              peer === sourcePeer,
+              peerGeneration == sourcePeerGeneration else {
+            return
+        }
         logger.error("Worldwide WebRTC event stream ended unexpectedly")
         await stop()
     }
 
     /// Updates transport health, routes protocol requests, and emits sanitized diagnostics.
-    private func handlePeerEvent(_ event: WebRTCTransportEvent) async throws {
+    private func handlePeerEvent(
+        _ event: WebRTCTransportEvent,
+        sourcePeer: WebRTCPeer,
+        sourcePeerGeneration: UInt64
+    ) async throws {
         switch event {
         case .outboundSignal(let payload):
             try await signaling.send(payload)
@@ -1076,7 +1143,11 @@ actor WorldwideScreenService {
             logger.info("Worldwide remote input stopped: \(reason)")
 
         case .macHostedCallChallengeReceived(let challenge):
-            installMacHostedCallChallenge(challenge)
+            installMacHostedCallChallenge(
+                challenge,
+                sourcePeer: sourcePeer,
+                sourcePeerGeneration: sourcePeerGeneration
+            )
 
         case .macHostedCallEvidenceChanged:
             // Only the iPhone viewer receives host-originated call evidence.
@@ -1091,6 +1162,25 @@ actor WorldwideScreenService {
             logger.info("Worldwide WebRTC route: \(route.kind.rawValue)")
 
         case .statistics(let snapshot):
+            let inbound = snapshot.inboundAudio
+            await iPhoneMicrophoneForwarding
+                .updateInboundMediaFreshness(
+                    peer: sourcePeer,
+                    peerGeneration: sourcePeerGeneration,
+                    watermark:
+                        WorldwideIPhoneMicrophoneInboundMediaWatermark(
+                            packetsReceived: inbound?.packets,
+                            bytesReceived: inbound?.bytes,
+                            jitterBufferEmittedCount:
+                                inbound?.jitterBufferEmittedCount,
+                            totalSamplesReceived:
+                                inbound?.totalSamplesReceived
+                        )
+                )
+            guard peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration else {
+                return
+            }
             if let rtt = snapshot.currentRoundTripTime {
                 logger.debug("Worldwide WebRTC RTT: \(Int((rtt * 1_000).rounded())) ms")
             }
@@ -1101,7 +1191,7 @@ actor WorldwideScreenService {
                         + " bytes=" + (outbound.bytes.map { String($0) } ?? "unknown")
                 )
             }
-            if let inbound = snapshot.inboundAudio {
+            if let inbound {
                 logger.debug(
                     Self.inboundAudioRTPLogMessage(
                         packets: inbound.packets,
@@ -1121,7 +1211,7 @@ actor WorldwideScreenService {
                         } ?? "unknown")
                 )
             }
-            if let diagnostics = peer?.externalAudioCapturer?.runtimeDiagnostics() {
+            if let diagnostics = sourcePeer.externalAudioCapturer?.runtimeDiagnostics() {
                 logger.debug(
                     "Worldwide audio queue phase=\(diagnostics.phase) "
                         + "frames=\(diagnostics.queuedFrames) "
@@ -2661,14 +2751,22 @@ actor WorldwideScreenService {
     /// Installs a viewer nonce only while this actor owns the exact live process-tap source. The
     /// source performs a new native scan after serially installing the nonce.
     private func installMacHostedCallChallenge(
-        _ challenge: WebRTCMacHostedCallChallenge
+        _ challenge: WebRTCMacHostedCallChallenge,
+        sourcePeer: WebRTCPeer,
+        sourcePeerGeneration: UInt64
     ) {
-        guard challenge.isValid,
-              peer != nil else {
+        guard peer === sourcePeer,
+              peerGeneration == sourcePeerGeneration,
+              sourcePeerGeneration > 0 else {
+            return
+        }
+        guard challenge.isValid else {
             macHostedCallChallenge = nil
+            macHostedCallChallengePeerGeneration = nil
             return
         }
         macHostedCallChallenge = challenge
+        macHostedCallChallengePeerGeneration = sourcePeerGeneration
         guard let source = audioSource,
               audioAuthorization?.isValid == true,
               systemAudioIsLive,
@@ -2682,7 +2780,14 @@ actor WorldwideScreenService {
     private func installCurrentMacHostedCallChallenge(
         on source: SystemAudioCaptureSource
     ) {
-        guard let challenge = macHostedCallChallenge,
+        guard audioSource === source,
+              WorldwideMacHostedCallPeerGenerationPolicy.admits(
+                  audioPeerGeneration: audioPeerGeneration,
+                  challengePeerGeneration:
+                      macHostedCallChallengePeerGeneration,
+                  currentPeerGeneration: peerGeneration
+              ),
+              let challenge = macHostedCallChallenge,
               challenge.isValid else {
             return
         }
@@ -2709,6 +2814,12 @@ actor WorldwideScreenService {
               authorization.isValid,
               systemAudioIsLive,
               transportAllowsCapture,
+              WorldwideMacHostedCallPeerGenerationPolicy.admits(
+                  audioPeerGeneration: audioPeerGeneration,
+                  challengePeerGeneration:
+                      macHostedCallChallengePeerGeneration,
+                  currentPeerGeneration: peerGeneration
+              ),
               let challenge = macHostedCallChallenge,
               WorldwideMacHostedCallObservationPolicy.admits(
                   observationSequence:
@@ -2724,9 +2835,17 @@ actor WorldwideScreenService {
         }
         highestMacFaceTimeObservationSequence =
             observation.observationSequence
+        guard let evidenceState =
+            WorldwideMacHostedCallEvidenceStatePolicy.state(
+                isCausallyBoundActive:
+                    observation.isCausallyBoundActive,
+                isCausallyArmed: observation.isCausallyArmed
+            ) else {
+            return
+        }
         do {
             try await peer.updateMacHostedCallEvidenceIfTransportHealthy(
-                active: observation.isCausallyBoundActive,
+                state: evidenceState,
                 challenge: challenge,
                 nativeObservationSequence:
                     observation.observationSequence,
@@ -2792,6 +2911,7 @@ actor WorldwideScreenService {
         systemAudioIsLive = false
         systemAudioIsPausedForTransportRecovery = false
         macHostedCallChallenge = nil
+        macHostedCallChallengePeerGeneration = nil
         highestMacFaceTimeObservationSequence = 0
         let authorization = audioAuthorization
         audioAuthorization = nil
@@ -3045,7 +3165,7 @@ final class WorldwideSystemAudioForwardingGate: @unchecked Sendable {
                         )
                     macHostedCallCausalBindingID =
                         observation.causalBindingID
-                    // Inactive evidence is one-shot: the next observation replaces it instead of
+                    // Non-active evidence is one-shot: the next observation replaces it instead of
                     // reusing it, while retaining it here lets a recovery pause revoke it.
                     macHostedCallEvidenceAuthorization = replacement
                     return EvidenceTransition(

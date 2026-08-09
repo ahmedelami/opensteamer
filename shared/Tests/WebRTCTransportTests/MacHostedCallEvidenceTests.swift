@@ -239,7 +239,7 @@ final class MacHostedCallEvidenceTests: XCTestCase {
                 "o=- 1 1 IN IP4 127.0.0.1",
                 "s=-",
                 "t=0 0",
-                "a=x-opensteamer-mac-hosted-call-evidence:3",
+                "a=x-opensteamer-mac-hosted-call-evidence:4",
                 "m=audio 9 UDP/TLS/RTP/SAVPF 111",
                 "a=mid:audio"
             ].joined(separator: "\n")
@@ -260,7 +260,7 @@ final class MacHostedCallEvidenceTests: XCTestCase {
                 let expected = [
                     "v=0",
                     "s=-",
-                    "a=x-opensteamer-mac-hosted-call-evidence:3",
+                    "a=x-opensteamer-mac-hosted-call-evidence:4",
                     "m=audio 9 UDP/TLS/RTP/SAVPF 111",
                     "a=mid:audio"
                 ].joined(separator: separator)
@@ -284,7 +284,7 @@ final class MacHostedCallEvidenceTests: XCTestCase {
             "v=0",
             "s=-",
             "m=audio 9 UDP/TLS/RTP/SAVPF 111",
-            "a=x-opensteamer-mac-hosted-call-evidence:3",
+            "a=x-opensteamer-mac-hosted-call-evidence:4",
             "a=mid:audio"
         ].joined(separator: "\r\n")
 
@@ -298,12 +298,12 @@ final class MacHostedCallEvidenceTests: XCTestCase {
         XCTAssertTrue(MacHostedCallEvidenceSDP.peerSupportsEvidence(in: advertised))
         XCTAssertEqual(
             advertised.components(
-                separatedBy: "a=x-opensteamer-mac-hosted-call-evidence:3"
+                separatedBy: "a=x-opensteamer-mac-hosted-call-evidence:4"
             ).count - 1,
             2
         )
         let attributeRange = try XCTUnwrap(
-            advertised.range(of: "a=x-opensteamer-mac-hosted-call-evidence:3")
+            advertised.range(of: "a=x-opensteamer-mac-hosted-call-evidence:4")
         )
         let mediaRange = try XCTUnwrap(advertised.range(of: "m=audio"))
         XCTAssertLessThan(
@@ -327,7 +327,7 @@ final class MacHostedCallEvidenceTests: XCTestCase {
         XCTAssertEqual(twice, once)
         XCTAssertEqual(
             once.components(
-                separatedBy: "a=x-opensteamer-mac-hosted-call-evidence:3"
+                separatedBy: "a=x-opensteamer-mac-hosted-call-evidence:4"
             ).count - 1,
             1
         )
@@ -336,7 +336,7 @@ final class MacHostedCallEvidenceTests: XCTestCase {
     func testViewerSupportRejectsWrongProtocolVersion() {
         let wrongVersion = [
             "v=0",
-            "a=x-opensteamer-mac-hosted-call-evidence:2",
+            "a=x-opensteamer-mac-hosted-call-evidence:3",
             "m=audio 9 UDP/TLS/RTP/SAVPF 111"
         ].joined(separator: "\n")
 
@@ -346,8 +346,8 @@ final class MacHostedCallEvidenceTests: XCTestCase {
             in: wrongVersion
         )
         XCTAssertTrue(MacHostedCallEvidenceSDP.peerSupportsEvidence(in: advertised))
-        XCTAssertTrue(advertised.contains("a=x-opensteamer-mac-hosted-call-evidence:2"))
         XCTAssertTrue(advertised.contains("a=x-opensteamer-mac-hosted-call-evidence:3"))
+        XCTAssertTrue(advertised.contains("a=x-opensteamer-mac-hosted-call-evidence:4"))
     }
 
     func testEvidenceValidityRequiresCurrentProtocolAndEveryIdentity() {
@@ -495,7 +495,7 @@ final class MacHostedCallEvidenceTests: XCTestCase {
             challengeSequence: challenge.sequence,
             challengeNonce: challenge.nonce,
             callEpochNonce: challenge.callEpochNonce,
-            state: .active
+            state: .preflightArmed
         )
         XCTAssertTrue(matching.matches(challenge))
 
@@ -538,7 +538,7 @@ final class MacHostedCallEvidenceTests: XCTestCase {
             challengeSequence: challenge.sequence,
             challengeNonce: challenge.nonce,
             callEpochNonce: challenge.callEpochNonce,
-            state: .active
+            state: .preflightArmed
         )
         let message = ControlChannelMessage.macHostedCallEvidence(evidence)
 
@@ -552,7 +552,7 @@ final class MacHostedCallEvidenceTests: XCTestCase {
         let encodedEvidence = try XCTUnwrap(
             object["macHostedCallEvidence"] as? [String: Any]
         )
-        XCTAssertEqual(encodedEvidence["protocolVersion"] as? Int, 2)
+        XCTAssertEqual(encodedEvidence["protocolVersion"] as? Int, 3)
         XCTAssertEqual(encodedEvidence["sequence"] as? Int, 42)
         XCTAssertEqual(encodedEvidence["challengeSequence"] as? Int, 7)
         XCTAssertEqual(
@@ -563,7 +563,10 @@ final class MacHostedCallEvidenceTests: XCTestCase {
             encodedEvidence["callEpochNonce"] as? String,
             challenge.callEpochNonce.uuidString
         )
-        XCTAssertEqual(encodedEvidence["state"] as? String, "active")
+        XCTAssertEqual(
+            encodedEvidence["state"] as? String,
+            "preflightArmed"
+        )
         XCTAssertEqual(
             try JSONDecoder().decode(ControlChannelMessage.self, from: data),
             message
@@ -624,7 +627,7 @@ final class MacHostedCallEvidenceTests: XCTestCase {
         let encodedChallenge = try XCTUnwrap(
             object["macHostedCallChallenge"] as? [String: Any]
         )
-        XCTAssertEqual(encodedChallenge["protocolVersion"] as? Int, 2)
+        XCTAssertEqual(encodedChallenge["protocolVersion"] as? Int, 3)
         XCTAssertEqual(
             encodedChallenge["callEpochNonce"] as? String,
             challenge.callEpochNonce.uuidString

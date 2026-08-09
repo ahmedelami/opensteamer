@@ -18,10 +18,11 @@ enum WebRTCMacHostedCallObservationSendPolicy {
 /// Bidirectional capability negotiation for challenge-bound Mac-hosted call evidence.
 ///
 /// A new host advertises in its offer and the viewer echoes only when that exact offer carried the
-/// same version. Version 3 requires the stable CallKit-call epoch identity, so neither side sends
-/// the evidence control kinds to a peer implementing the earlier challenge-only contract.
+/// same version. Version 4 adds a distinct prospectively armed preflight acknowledgement, so
+/// neither side sends the evidence control kinds to a peer implementing the earlier call-only
+/// challenge contract.
 enum MacHostedCallEvidenceSDP {
-    static let currentProtocolVersion = 3
+    static let currentProtocolVersion = 4
     static let attributeName =
         "x-opensteamer-mac-hosted-call-evidence"
     static let attributeLine =

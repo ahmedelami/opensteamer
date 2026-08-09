@@ -459,6 +459,25 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
                     )
             )
         }
+
+        XCTAssertTrue(
+            WebRTCIPhoneMicrophoneTransceiverAdmission
+                .directionIncludesReceiving(.recvOnly)
+        )
+        XCTAssertTrue(
+            WebRTCIPhoneMicrophoneTransceiverAdmission
+                .directionIncludesReceiving(.sendRecv)
+        )
+        for direction in [
+            LKRTCRtpTransceiverDirection.sendOnly,
+            .inactive,
+            .stopped,
+        ] {
+            XCTAssertFalse(
+                WebRTCIPhoneMicrophoneTransceiverAdmission
+                    .directionIncludesReceiving(direction)
+            )
+        }
     }
 
     func testExactIPhoneMicrophoneSenderStatisticsSelectsOnlyItsOutboundRTPAndLinkedSource() throws {
@@ -1547,6 +1566,21 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             return
         }
 
+        let prospectiveCallChallenge = WebRTCMacHostedCallChallenge(
+            sequence: 1,
+            callEpochNonce: UUID()
+        )
+        try await viewer.requestMacHostedCallEvidenceIfTransportHealthy(
+            challenge: prospectiveCallChallenge
+        )
+        await fulfillment(
+            of: [expectations.macHostedCallChallengeReceived],
+            timeout: 2
+        )
+        let receivedCallChallenges =
+            await recorder.macHostedCallChallenges()
+        XCTAssertEqual(receivedCallChallenges, [prospectiveCallChallenge])
+
         let receivedHostIPhoneMicrophoneTrack =
             await recorder.hostIPhoneMicrophoneTrack()
         let hostIPhoneMicrophoneTrack = try XCTUnwrap(
@@ -1808,6 +1842,29 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             authorization: audioAuthorization
         )
         XCTAssertTrue(audioAuthorization.isValid)
+        let callEvidenceAuthorization =
+            WebRTCMacHostedCallEvidenceAuthorization(
+                callEpochNonce:
+                    prospectiveCallChallenge.callEpochNonce
+            )
+        try await host.updateMacHostedCallEvidenceIfTransportHealthy(
+            state: .preflightArmed,
+            challenge: prospectiveCallChallenge,
+            nativeObservationSequence: 1,
+            authorization: audioAuthorization,
+            evidenceAuthorization: callEvidenceAuthorization
+        )
+        await fulfillment(
+            of: [expectations.macHostedCallPreflightArmedReceived],
+            timeout: 2
+        )
+        let allReceivedCallEvidence =
+            await recorder.macHostedCallEvidence()
+        let receivedCallEvidence = try XCTUnwrap(
+            allReceivedCallEvidence.last
+        )
+        XCTAssertTrue(receivedCallEvidence.matches(prospectiveCallChallenge))
+        XCTAssertEqual(receivedCallEvidence.state, .preflightArmed)
         let audioEnabledBeforeShow = await host.isSystemAudioEnabledForTesting
         XCTAssertTrue(audioEnabledBeforeShow)
 
@@ -2710,6 +2767,8 @@ private enum LoopbackMilestone: Hashable, Sendable {
     case recoveryProbeAcknowledged
     case postRestartShowRequestReceived
     case postRestartShowAcknowledged
+    case macHostedCallChallengeReceived
+    case macHostedCallPreflightArmedReceived
 }
 
 /// Per-kind signaling counts used to detect duplicates, omissions, or restart leakage.
@@ -2800,6 +2859,10 @@ private actor LoopbackRecorder {
     private var viewerAnswers: [String] = []
     private var hostCandidates: [RemoteICECandidate] = []
     private var viewerCandidates: [RemoteICECandidate] = []
+    private var receivedMacHostedCallChallenges:
+        [WebRTCMacHostedCallChallenge] = []
+    private var receivedMacHostedCallEvidence:
+        [WebRTCMacHostedCallEvidence] = []
 
     func observe(
         _ event: WebRTCTransportEvent,
@@ -2883,6 +2946,16 @@ private actor LoopbackRecorder {
         case .inputFeedbackReceived(let feedback) where side == .viewer:
             inputFeedback.append(feedback)
             observed.append(.inputFeedbackReceived)
+        case .macHostedCallChallengeReceived(let challenge)
+            where side == .host:
+            receivedMacHostedCallChallenges.append(challenge)
+            observed.append(.macHostedCallChallengeReceived)
+        case .macHostedCallEvidenceChanged(let evidence?)
+            where side == .viewer:
+            receivedMacHostedCallEvidence.append(evidence)
+            if evidence.state == .preflightArmed {
+                observed.append(.macHostedCallPreflightArmedReceived)
+            }
         default:
             break
         }
@@ -2946,6 +3019,14 @@ private actor LoopbackRecorder {
         retainedRemoteAudioTrack
     }
 
+    func macHostedCallChallenges() -> [WebRTCMacHostedCallChallenge] {
+        receivedMacHostedCallChallenges
+    }
+
+    func macHostedCallEvidence() -> [WebRTCMacHostedCallEvidence] {
+        receivedMacHostedCallEvidence
+    }
+
     func snapshot() -> LoopbackSnapshot {
         LoopbackSnapshot(
             milestones: milestones,
@@ -3005,6 +3086,12 @@ private final class LoopbackExpectations: @unchecked Sendable {
     let postRestartShowAcknowledged = XCTestExpectation(
         description: "viewer received a fresh active acknowledgement after restart"
     )
+    let macHostedCallChallengeReceived = XCTestExpectation(
+        description: "host received prospective call challenge"
+    )
+    let macHostedCallPreflightArmedReceived = XCTestExpectation(
+        description: "viewer received preflight-armed evidence"
+    )
     let hostForwarderFinished = XCTestExpectation(description: "host forwarder finished")
     let viewerForwarderFinished = XCTestExpectation(description: "viewer forwarder finished")
 
@@ -3033,6 +3120,10 @@ private final class LoopbackExpectations: @unchecked Sendable {
         case .recoveryProbeAcknowledged: recoveryProbeAcknowledged.fulfill()
         case .postRestartShowRequestReceived: postRestartShowRequestReceived.fulfill()
         case .postRestartShowAcknowledged: postRestartShowAcknowledged.fulfill()
+        case .macHostedCallChallengeReceived:
+            macHostedCallChallengeReceived.fulfill()
+        case .macHostedCallPreflightArmedReceived:
+            macHostedCallPreflightArmedReceived.fulfill()
         }
     }
 }

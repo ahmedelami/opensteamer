@@ -306,16 +306,19 @@ public struct WebRTCControlAcknowledgement: Codable, Equatable, Sendable {
     }
 }
 
-/// Privacy-minimal viewer challenge that causally binds a later Mac process sample to one exact
-/// CallKit epoch. It contains no process, participant, handle, or contact identity.
+/// Privacy-minimal viewer challenge that causally binds a later Mac process sample to one
+/// prospective next-call epoch and then one exact CallKit epoch. It contains no process,
+/// participant, handle, or contact identity.
 public struct WebRTCMacHostedCallChallenge: Codable, Equatable, Sendable {
-    public static let currentProtocolVersion = 2
+    public static let currentProtocolVersion = 3
 
     public let protocolVersion: Int
     public let sequence: UInt64
     public let nonce: UUID
-    /// Stable privacy-random identity for one exact CallKit call object. Challenge nonces may
-    /// rotate during that call; this epoch nonce must not.
+    /// Stable privacy-random identity for one prospectively armed next-call epoch and, once the
+    /// iPhone observes its first inactive-to-active CallKit membership edge, that exact call.
+    /// Challenge nonces may rotate before admission; this epoch nonce must not cross a
+    /// contamination, peer, transport, interruption, or replacement-call boundary.
     public let callEpochNonce: UUID
 
     public init(
@@ -347,10 +350,15 @@ public struct WebRTCMacHostedCallChallenge: Codable, Equatable, Sendable {
 /// process after receiving the echoed viewer challenge. Evidence sequence numbers are monotonic
 /// for one peer lifetime.
 public struct WebRTCMacHostedCallEvidence: Codable, Equatable, Sendable {
-    public static let currentProtocolVersion = 2
+    public static let currentProtocolVersion = 3
 
     public enum State: String, Codable, Sendable {
         case active
+        /// The host installed this exact prospective challenge from a known-empty native
+        /// baseline. It is never microphone authorization by itself.
+        case preflightArmed
+        /// The exact binder is neither prospectively armed nor causally active. This includes a
+        /// poisoned/revoked transition and can never acknowledge a preflight.
         case inactive
     }
 

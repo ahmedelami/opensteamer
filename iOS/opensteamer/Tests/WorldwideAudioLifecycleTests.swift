@@ -4086,6 +4086,190 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertTrue(fixture.controller.microphoneActivationIsAllowed())
     }
 
+    func testMacHostedCallPreflightSurvivesCallKitDeliveryRaceAndAdmitsOnlyAfterLiveCall()
+        throws {
+        let fixture = makeFixture()
+        var challenges: [WebRTCMacHostedCallChallenge] = []
+        fixture.controller.onMacHostedCallChallengeChanged = {
+            if let challenge = $0 {
+                challenges.append(challenge)
+            }
+        }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        let preflight = try XCTUnwrap(challenges.first)
+
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 1,
+                challengeSequence: preflight.sequence,
+                challengeNonce: preflight.nonce,
+                callEpochNonce: preflight.callEpochNonce,
+                state: .preflightArmed
+            )
+        )
+
+        // Model the native Mac duplex edge reaching the phone before CallKit's delegate callback.
+        // Evidence ingress must synchronously read the already-updated live aggregate, preserve the
+        // prospectively installed challenge, and only then evaluate the active evidence.
+        fixture.callActivity.stageLiveNonEndedCallCountWithoutCallback(1)
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 2,
+                challengeSequence: preflight.sequence,
+                challengeNonce: preflight.nonce,
+                callEpochNonce: preflight.callEpochNonce,
+                state: .active
+            )
+        )
+
+        XCTAssertEqual(challenges.last, preflight)
+        XCTAssertTrue(fixture.controller.microphoneActivationIsAllowed())
+    }
+
+    func testMacHostedCallActivePreflightEvidenceWhileLiveCallKitInactiveContaminatesEpoch()
+        throws {
+        let fixture = makeFixture()
+        var challenges: [WebRTCMacHostedCallChallenge] = []
+        fixture.controller.onMacHostedCallChallengeChanged = {
+            if let challenge = $0 {
+                challenges.append(challenge)
+            }
+        }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        let contaminated = try XCTUnwrap(challenges.first)
+
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 1,
+                challengeSequence: contaminated.sequence,
+                challengeNonce: contaminated.nonce,
+                callEpochNonce: contaminated.callEpochNonce,
+                state: .active
+            )
+        )
+        let replacement = try XCTUnwrap(challenges.last)
+        XCTAssertNotEqual(replacement, contaminated)
+        XCTAssertNotEqual(
+            replacement.callEpochNonce,
+            contaminated.callEpochNonce
+        )
+
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+        let postEdgeChallenge = try XCTUnwrap(challenges.last)
+        XCTAssertNotEqual(postEdgeChallenge, contaminated)
+        XCTAssertNotEqual(postEdgeChallenge, replacement)
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 2,
+                challengeSequence: contaminated.sequence,
+                challengeNonce: contaminated.nonce,
+                callEpochNonce: contaminated.callEpochNonce,
+                state: .active
+            )
+        )
+
+        XCTAssertFalse(fixture.controller.microphoneActivationIsAllowed())
+    }
+
+    func testMacHostedCallInactivePoisonEvidenceCannotAcknowledgePreflight()
+        throws {
+        let fixture = makeFixture()
+        var challenges: [WebRTCMacHostedCallChallenge] = []
+        fixture.controller.onMacHostedCallChallengeChanged = {
+            if let challenge = $0 {
+                challenges.append(challenge)
+            }
+        }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        let poisoned = try XCTUnwrap(challenges.first)
+
+        fixture.controller.macHostedCallEvidenceChanged(
+            WebRTCMacHostedCallEvidence(
+                sequence: 1,
+                challengeSequence: poisoned.sequence,
+                challengeNonce: poisoned.nonce,
+                callEpochNonce: poisoned.callEpochNonce,
+                state: .inactive
+            )
+        )
+
+        let replacement = try XCTUnwrap(challenges.last)
+        XCTAssertNotEqual(replacement, poisoned)
+        XCTAssertNotEqual(
+            replacement.callEpochNonce,
+            poisoned.callEpochNonce
+        )
+    }
+
+    func testMacHostedCallUnacknowledgedPreflightRetriesAndCallEdgeFencesRetry()
+        async throws {
+        let fixture = makeFixture()
+        let retryGate = AudioNonCooperativeGate<Void>()
+        fixture.controller.debugInstallMacHostedCallPreflightRetryWaiter {
+            await retryGate.wait()
+        }
+        var challenges: [WebRTCMacHostedCallChallenge] = []
+        fixture.controller.onMacHostedCallChallengeChanged = {
+            if let challenge = $0 {
+                challenges.append(challenge)
+            }
+        }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.transportBecameHealthy()
+        let preflight = try XCTUnwrap(challenges.first)
+        await retryGate.waitUntilBlocked()
+
+        fixture.callActivity.setCallSnapshot(
+            nonEndedCallCount: 1,
+            connectedNonEndedCallCount: 1
+        )
+        let postEdgeChallenges = challenges
+        XCTAssertNotEqual(postEdgeChallenges.last, preflight)
+        await retryGate.open(())
+        await Task.yield()
+
+        XCTAssertEqual(challenges, postEdgeChallenges)
+        XCTAssertFalse(fixture.controller.microphoneActivationIsAllowed())
+    }
+
+    func testMacHostedCallPreflightRetryDoesNotRetainControllerAcrossNoncooperativeWait()
+        async {
+        let playback = AudioPlaybackStub()
+        let background = BackgroundPlaybackStub()
+        let events = AudioSessionEventsStub()
+        let callActivity = CallActivityStub()
+        let retryGate = AudioNonCooperativeGate<Void>()
+        var controller: WorldwideAudioLifecycleController? =
+            WorldwideAudioLifecycleController(
+                playback: playback,
+                backgroundPlayback: background,
+                events: events,
+                callActivity: callActivity
+            )
+        controller?.debugInstallMacHostedCallPreflightRetryWaiter {
+            await retryGate.wait()
+        }
+        controller?.prepare(serverName: "Mac mini")
+        controller?.transportBecameHealthy()
+        await retryGate.waitUntilBlocked()
+
+        let releasedController = { [weak controller] in controller }
+        controller = nil
+        XCTAssertNil(
+            releasedController(),
+            "The self-owned retry task must not promote its weak controller across the wait."
+        )
+
+        await retryGate.open(())
+        await Task.yield()
+    }
+
     func testMacHostedCallEvidenceSynchronizesLiveCallReplacementBeforeAdmission()
         throws {
         let fixture = makeFixture()
