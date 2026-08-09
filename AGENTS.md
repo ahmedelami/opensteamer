@@ -221,6 +221,17 @@ manual IP addresses, router configuration, or public TCP ports.
   full-band output during a call. Calls running on the Mac remain supported. Own at
   most one balanced native activation lease and keep audio diagnostics separate from
   terminal session errors.
+- Mac-hosted FaceTime microphone admission must prospectively arm the exact current peer while
+  iPhone CallKit is inactive, using a privacy-random next-call epoch and a strict authoritative
+  known-empty Mac process baseline. Preserve that exact challenge only across the first inactive
+  to active CallKit membership edge; never enable the microphone while CallKit remains inactive.
+  Only the dedicated preflight-armed evidence state acknowledges that baseline; an inactive
+  poison/revocation state must rotate and continue preflight rather than being treated as an ack.
+  An active Mac observation received while a synchronous live CallKit read is still inactive
+  contaminates that epoch and requires a fresh preflight. Active/unknown first Mac scans remain
+  poisoned and silent, and peer, transport, interruption, call replacement, or teardown boundaries
+  retire the prospective epoch. Continue observing aggregate call counts and revisions only—never
+  call identities, handles, participants, or contacts.
 - Worldwide Show/Hide must use monotonic request IDs and host acknowledgements.
   The iPhone must not claim the screen is live until Mac capture actually starts.
   Screen capture must fail closed on peer/control uncertainty and require a fresh
