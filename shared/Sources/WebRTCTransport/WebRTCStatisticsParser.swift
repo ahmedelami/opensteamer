@@ -13,6 +13,15 @@ struct WebRTCIPhoneMicrophoneOutboundStatistics: Equatable, Sendable {
     let sourceReportWasLinked: Bool
 }
 
+/// Receiver-scoped inbound RTP evidence for the dedicated iPhone microphone lane.
+///
+/// The native receiver passed to `statistics(for:)` is the security boundary. These fields are
+/// intentionally limited to aggregate counters that can establish media progress without
+/// retaining SDP, SSRCs, track identifiers, or any microphone content.
+struct WebRTCIPhoneMicrophoneInboundStatistics: Equatable, Sendable {
+    let statistics: WebRTCAudioStatistics
+}
+
 /// Reduces browser-style native WebRTC statistics into stable product diagnostics.
 enum WebRTCStatisticsParser {
     private enum AudioTotals {
@@ -126,6 +135,74 @@ enum WebRTCStatisticsParser {
             expectedSenderID: expectedSenderID,
             expectedTrackID: expectedTrackID,
             expectedMID: expectedMID
+        )
+    }
+
+    /// Parses only the inbound RTP selected by a native receiver-scoped statistics request.
+    ///
+    /// A receiver-specific report may omit browser-style identifiers. That omission is accepted
+    /// only when the report contains exactly one audio inbound-RTP record. When `mid` or
+    /// `trackIdentifier` is present it must match the captured dedicated receiver exactly. Any
+    /// ambiguity, malformed progress counter, or extra audio inbound stream fails closed.
+    static func parseIPhoneMicrophoneReceiver(
+        _ report: LKRTCStatisticsReport,
+        expectedTrackID: String,
+        expectedMID: String
+    ) -> WebRTCIPhoneMicrophoneInboundStatistics? {
+        parseIPhoneMicrophoneReceiver(
+            records: records(from: report),
+            expectedTrackID: expectedTrackID,
+            expectedMID: expectedMID
+        )
+    }
+
+    static func parseIPhoneMicrophoneReceiver(
+        records: [WebRTCStatisticsRecord],
+        expectedTrackID: String,
+        expectedMID: String
+    ) -> WebRTCIPhoneMicrophoneInboundStatistics? {
+        guard !expectedTrackID.isEmpty,
+              !expectedMID.isEmpty,
+              records.allSatisfy({ !$0.id.isEmpty }),
+              Set(records.map(\.id)).count == records.count else {
+            return nil
+        }
+
+        let inboundAudio = records.filter { record in
+            record.type == "inbound-rtp"
+                && mediaKind(in: record.values) == "audio"
+        }
+        guard inboundAudio.count == 1,
+              let inbound = inboundAudio.first else {
+            return nil
+        }
+
+        for (key, expected) in [
+            ("trackIdentifier", expectedTrackID),
+            ("mid", expectedMID),
+        ] {
+            guard inbound.values[key] != nil else { continue }
+            guard string(key, in: inbound.values) == expected else {
+                return nil
+            }
+        }
+
+        // These are the only counters consumed as microphone-freshness evidence. Reject signed,
+        // fractional, Boolean, overflowing, or otherwise malformed values instead of allowing
+        // NSNumber conversion to manufacture apparent forward progress.
+        for key in [
+            "bytesReceived",
+            "packetsReceived",
+            "jitterBufferEmittedCount",
+            "totalSamplesReceived",
+        ] where inbound.values[key] != nil {
+            guard strictUnsigned(key, in: inbound.values) != nil else {
+                return nil
+            }
+        }
+
+        return WebRTCIPhoneMicrophoneInboundStatistics(
+            statistics: audioStatistics(record: inbound)
         )
     }
 

@@ -5,6 +5,139 @@ import XCTest
 /// Uses platform-neutral records to verify extraction of route, concealment, jitter-buffer,
 /// sender, and remote-inbound evidence without requiring a live connection.
 final class WebRTCStatisticsParserTests: XCTestCase {
+    func testParsesOnlyOneExactReceiverScopedIPhoneMicrophoneInboundRecord() throws {
+        let parsed = WebRTCStatisticsParser.parseIPhoneMicrophoneReceiver(
+            records: [
+                WebRTCStatisticsRecord(
+                    id: "iphone-microphone-inbound",
+                    type: "inbound-rtp",
+                    values: [
+                        "kind": "audio",
+                        "mid": "2",
+                        "trackIdentifier": "iphone-microphone",
+                        "bytesReceived": NSNumber(value: 12_345),
+                        "packetsReceived": NSNumber(value: 321),
+                        "jitterBufferEmittedCount": NSNumber(value: 240),
+                        "totalSamplesReceived": NSNumber(value: 48_000),
+                        "totalAudioEnergy": NSNumber(value: 0.25),
+                        "audioLevel": NSNumber(value: 0.1),
+                    ]
+                ),
+                WebRTCStatisticsRecord(
+                    id: "unrelated-video",
+                    type: "inbound-rtp",
+                    values: [
+                        "kind": "video",
+                        "packetsReceived": NSNumber(value: 999),
+                    ]
+                ),
+            ],
+            expectedTrackID: "iphone-microphone",
+            expectedMID: "2"
+        )
+
+        let statistics = try XCTUnwrap(parsed?.statistics)
+        XCTAssertEqual(statistics.bytes, 12_345)
+        XCTAssertEqual(statistics.packets, 321)
+        XCTAssertEqual(statistics.jitterBufferEmittedCount, 240)
+        XCTAssertEqual(statistics.totalSamplesReceived, 48_000)
+        XCTAssertEqual(statistics.totalAudioEnergy, 0.25)
+        XCTAssertEqual(statistics.audioLevel, 0.1)
+    }
+
+    func testReceiverScopedIPhoneMicrophoneParserFailsClosedOnAmbiguityMismatchAndMalformedProgress() {
+        func record(
+            id: String,
+            mid: String = "2",
+            trackID: String = "iphone-microphone",
+            packets: NSNumber = NSNumber(value: 1)
+        ) -> WebRTCStatisticsRecord {
+            WebRTCStatisticsRecord(
+                id: id,
+                type: "inbound-rtp",
+                values: [
+                    "kind": "audio",
+                    "mid": mid,
+                    "trackIdentifier": trackID,
+                    "packetsReceived": packets,
+                ]
+            )
+        }
+
+        let invalidReports: [[WebRTCStatisticsRecord]] = [
+            [record(id: "wrong-mid", mid: "1")],
+            [record(id: "wrong-track", trackID: "system-audio")],
+            [record(id: "one"), record(id: "two")],
+            [record(id: "fractional", packets: NSNumber(value: 1.5))],
+            [record(id: "negative", packets: NSNumber(value: -1))],
+            [record(id: "duplicate"), record(id: "duplicate")],
+        ]
+
+        for records in invalidReports {
+            XCTAssertNil(
+                WebRTCStatisticsParser.parseIPhoneMicrophoneReceiver(
+                    records: records,
+                    expectedTrackID: "iphone-microphone",
+                    expectedMID: "2"
+                )
+            )
+        }
+    }
+
+    func testReceiverScopedIPhoneMicrophoneSamplerRejectsEveryRolloverBoundary() throws {
+        let peerEpoch = UUID()
+        let captured = WebRTCIPhoneMicrophoneReceiverStatisticsValidation(
+            peerEpoch: peerEpoch,
+            negotiationEpoch: 4,
+            receiverID: "receiver",
+            remoteTrackID: "iphone-microphone",
+            mid: "2"
+        )
+        let parsed = WebRTCIPhoneMicrophoneInboundStatistics(
+            statistics: WebRTCAudioStatistics(packets: 10)
+        )
+
+        XCTAssertEqual(
+            WebRTCIPhoneMicrophoneReceiverStatisticsSampler.evaluate(
+                parsed: parsed,
+                captured: captured,
+                current: captured,
+                nativeOwnershipIsCurrent: true
+            )?.packets,
+            10
+        )
+        XCTAssertNil(
+            WebRTCIPhoneMicrophoneReceiverStatisticsSampler.evaluate(
+                parsed: parsed,
+                captured: captured,
+                current: WebRTCIPhoneMicrophoneReceiverStatisticsValidation(
+                    peerEpoch: peerEpoch,
+                    negotiationEpoch: 5,
+                    receiverID: "receiver",
+                    remoteTrackID: "iphone-microphone",
+                    mid: "2"
+                ),
+                nativeOwnershipIsCurrent: true
+            )
+        )
+        XCTAssertNil(
+            WebRTCIPhoneMicrophoneReceiverStatisticsSampler.evaluate(
+                parsed: parsed,
+                captured: captured,
+                current: captured,
+                nativeOwnershipIsCurrent: false
+            )
+        )
+        XCTAssertNil(
+            WebRTCIPhoneMicrophoneReceiverStatisticsSampler.evaluate(
+                parsed: parsed,
+                captured: captured,
+                current: nil,
+                nativeOwnershipIsCurrent: true
+            )
+        )
+    }
+
     func testParsesInboundAudioConcealmentAndJitterBufferEvidence() throws {
         let snapshot = WebRTCStatisticsParser.parse(records: [
             WebRTCStatisticsRecord(
