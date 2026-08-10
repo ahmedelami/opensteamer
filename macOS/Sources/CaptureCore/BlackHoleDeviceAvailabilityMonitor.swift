@@ -1,24 +1,112 @@
 import CoreAudio
 import Foundation
 
-/// One read-only observation of whether the canonical BlackHole 2ch endpoint exists.
+/// Exact installed endpoint contract for worldwide iPhone microphone routing.
+public enum WorldwideBlackHoleMicrophoneEndpointContract {
+    public static let visibleDefaultInputDeviceUID =
+        "BlackHole2ch_UID"
+    public static let hiddenMirrorSinkDeviceUID =
+        "BlackHole2ch_2_UID"
+    public static let modelUID = "BlackHole2ch_ModelUID"
+    public static let channelCount: UInt32 = 2
+    public static let nominalSampleRate: Double = 48_000
+}
+
+/// One stable Core Audio identity participating in the BlackHole microphone path.
+public struct BlackHoleDeviceEndpointIdentity: Equatable, Sendable {
+    public let deviceID: AudioDeviceID
+    public let deviceUID: String
+
+    public init(
+        deviceID: AudioDeviceID,
+        deviceUID: String
+    ) {
+        self.deviceID = deviceID
+        self.deviceUID = deviceUID
+    }
+}
+
+/// One read-only observation of the exact visible-input/hidden-sink pair.
 public struct BlackHoleDeviceAvailabilitySnapshot: Equatable, Sendable {
     public let monitorEpoch: UUID
     public let deviceGeneration: UInt64
-    public let isAvailable: Bool
-    public let deviceUID: String?
+    /// Exact Core Audio device-list event sequence incorporated by the
+    /// endpoint-pair read that produced this snapshot. Sequence zero is the
+    /// listener-fenced initial inventory; every raw callback advances it
+    /// before any asynchronous refresh work is dispatched.
+    public let acceptedInventoryChangeSequence: UInt64
+    /// Availability is derived from a complete, role-correct pair. It cannot
+    /// be asserted independently by a compatibility caller.
+    public var isAvailable: Bool {
+        guard let defaultInputEndpoint,
+              let hiddenMirrorSinkEndpoint else {
+            return false
+        }
+        return defaultInputEndpoint.deviceID != kAudioObjectUnknown
+            && hiddenMirrorSinkEndpoint.deviceID != kAudioObjectUnknown
+            && defaultInputEndpoint.deviceID
+                != hiddenMirrorSinkEndpoint.deviceID
+            && defaultInputEndpoint.deviceUID
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .visibleDefaultInputDeviceUID
+            && hiddenMirrorSinkEndpoint.deviceUID
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .hiddenMirrorSinkDeviceUID
+    }
 
+    /// Compatibility alias for the visible endpoint selected as default input.
+    public var deviceUID: String? {
+        defaultInputEndpoint?.deviceUID
+    }
+    public let defaultInputEndpoint: BlackHoleDeviceEndpointIdentity?
+    public let hiddenMirrorSinkEndpoint: BlackHoleDeviceEndpointIdentity?
+
+    /// Compatibility initializer for existing callers that only model the
+    /// visible endpoint. Production discovery uses the validated-pair
+    /// initializer below. An unknown object ID explicitly records that the
+    /// compatibility caller did not bind the stable UID to a live identity;
+    /// the legacy `isAvailable` argument cannot assert pair availability.
     public init(
         monitorEpoch: UUID,
         deviceGeneration: UInt64,
-        isAvailable: Bool,
-        deviceUID: String?
+        isAvailable _: Bool,
+        deviceUID: String?,
+        acceptedInventoryChangeSequence: UInt64 = 0
     ) {
         self.monitorEpoch = monitorEpoch
         self.deviceGeneration = deviceGeneration
-        self.isAvailable = isAvailable
-        self.deviceUID = deviceUID
+        self.acceptedInventoryChangeSequence =
+            acceptedInventoryChangeSequence
+        defaultInputEndpoint = deviceUID.map {
+            BlackHoleDeviceEndpointIdentity(
+                deviceID: AudioDeviceID(kAudioObjectUnknown),
+                deviceUID: $0
+            )
+        }
+        hiddenMirrorSinkEndpoint = nil
     }
+
+    /// Creates an available snapshot from the complete pair already validated
+    /// against the installed BlackHole topology.
+    public init(
+        monitorEpoch: UUID,
+        deviceGeneration: UInt64,
+        defaultInputEndpoint: BlackHoleDeviceEndpointIdentity,
+        hiddenMirrorSinkEndpoint: BlackHoleDeviceEndpointIdentity,
+        acceptedInventoryChangeSequence: UInt64 = 0
+    ) {
+        self.monitorEpoch = monitorEpoch
+        self.deviceGeneration = deviceGeneration
+        self.acceptedInventoryChangeSequence =
+            acceptedInventoryChangeSequence
+        self.defaultInputEndpoint = defaultInputEndpoint
+        self.hiddenMirrorSinkEndpoint = hiddenMirrorSinkEndpoint
+    }
+}
+
+struct BlackHoleDeviceEndpointPair: Equatable, Sendable {
+    let defaultInputEndpoint: BlackHoleDeviceEndpointIdentity
+    let hiddenMirrorSinkEndpoint: BlackHoleDeviceEndpointIdentity
 }
 
 /// Result of logically stopping one monitor epoch and removing its exact listener.
@@ -32,6 +120,16 @@ public enum BlackHoleDeviceAvailabilityMonitorStopResult:
 {
     case stopped
     case retryableFailure
+}
+
+/// Outcome of one synchronous exact-pair validation at a healthy media boundary.
+public enum BlackHoleDeviceAvailabilityRevalidationResult:
+    Equatable,
+    Sendable
+{
+    case validated(BlackHoleDeviceAvailabilitySnapshot)
+    case validationFailed
+    case inactive
 }
 
 protocol BlackHoleDeviceAvailabilityListenerCleanupRetaining:
@@ -359,6 +457,8 @@ final class BlackHoleDeviceAvailabilityListenerCleanupRetainer:
 public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
     public typealias Observer =
         @Sendable (BlackHoleDeviceAvailabilitySnapshot) -> Void
+    public typealias UncertaintyObserver =
+        @Sendable (_ monitorEpoch: UUID, _ eventSequence: UInt64) -> Void
 
     typealias InventoryRetryScheduler =
         @Sendable (@escaping @Sendable () -> Void) -> Void
@@ -368,17 +468,57 @@ public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
         let token: UUID
     }
 
+    /// Advances on the dedicated HAL listener queue before inventory refresh is
+    /// dispatched to the monitor queue. Inventory publication compares this
+    /// sequence across the complete endpoint-pair read so a device-list change
+    /// observed during that read is never admitted as one factual generation.
+    private final class InventoryChangeSignal: @unchecked Sendable {
+        private let lock = NSLock()
+        private var sequence: UInt64 = 0
+        private var isActive = true
+
+        /// Serializes active-state revocation with the synchronous uncertainty
+        /// notification. Once `deactivate()` returns, an old registration can
+        /// no longer notify a caller that may already own a replacement gate.
+        @discardableResult
+        func recordAndNotifyIfActive(
+            _ notify: (UInt64) -> Void
+        ) -> Bool {
+            lock.withLock {
+                guard isActive else { return false }
+                sequence &+= 1
+                if sequence == 0 {
+                    sequence = 1
+                }
+                notify(sequence)
+                return true
+            }
+        }
+
+        func snapshot() -> UInt64 {
+            lock.withLock { sequence }
+        }
+
+        func deactivate() {
+            lock.withLock {
+                isActive = false
+            }
+        }
+    }
+
     private struct Registration: @unchecked Sendable {
         let id: UUID
         var address: AudioObjectPropertyAddress
         let queue: DispatchQueue
         let listener: CoreAudioPropertyListenerRegistration
+        let inventoryChangeSignal: InventoryChangeSignal
         let epoch: UUID
     }
 
     private let operations:
         any BlackHoleDeviceAvailabilityMonitoringOperations
     private let callbackQueue: DispatchQueue
+    private let listenerQueue: DispatchQueue
     private let makeEpoch: @Sendable () -> UUID
     private let scheduleInventoryRetry: InventoryRetryScheduler
     private let listenerCleanupRetainer:
@@ -391,6 +531,7 @@ public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
     private var currentEpoch: UUID?
     private var nextDeviceGeneration: UInt64 = 0
     private var lastPublishedGeneration: UInt64 = 0
+    private var lastPublishedInventoryChangeSequence: UInt64?
     private var latestSnapshot: BlackHoleDeviceAvailabilitySnapshot?
     private var inventoryRetry: InventoryRetry?
     private var deferredCleanupIDs: Set<UUID> = []
@@ -399,6 +540,9 @@ public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
     public convenience init() {
         let callbackQueue = DispatchQueue(
             label: "opensteamer.BlackHoleDeviceAvailabilityMonitor"
+        )
+        let listenerQueue = DispatchQueue(
+            label: "opensteamer.BlackHoleDeviceAvailabilityMonitor.listener"
         )
         self.init(
             operations: SystemBlackHoleDeviceAvailabilityOperations(),
@@ -409,7 +553,8 @@ public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
                     deadline: .now() + .milliseconds(100),
                     execute: work
                 )
-            }
+            },
+            listenerQueue: listenerQueue
         )
     }
 
@@ -420,7 +565,8 @@ public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
         makeEpoch: @escaping @Sendable () -> UUID,
         listenerCleanupRetainer:
             any BlackHoleDeviceAvailabilityListenerCleanupRetaining =
-                BlackHoleDeviceAvailabilityListenerCleanupRetainer.shared
+                BlackHoleDeviceAvailabilityListenerCleanupRetainer.shared,
+        listenerQueue: DispatchQueue? = nil
     ) {
         self.init(
             operations: operations,
@@ -433,7 +579,8 @@ public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
                 )
             },
             listenerCleanupRetainer:
-                listenerCleanupRetainer
+                listenerCleanupRetainer,
+            listenerQueue: listenerQueue
         )
     }
 
@@ -446,10 +593,12 @@ public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
             @escaping InventoryRetryScheduler,
         listenerCleanupRetainer:
             any BlackHoleDeviceAvailabilityListenerCleanupRetaining =
-                BlackHoleDeviceAvailabilityListenerCleanupRetainer.shared
+                BlackHoleDeviceAvailabilityListenerCleanupRetainer.shared,
+        listenerQueue: DispatchQueue? = nil
     ) {
         self.operations = operations
         self.callbackQueue = callbackQueue
+        self.listenerQueue = listenerQueue ?? callbackQueue
         self.makeEpoch = makeEpoch
         self.scheduleInventoryRetry =
             scheduleInventoryRetry
@@ -472,6 +621,22 @@ public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
     /// Registers the listener first, then publishes the initial inventory.
     @discardableResult
     public func start(observer: @escaping Observer) throws -> UUID {
+        try start(
+            onUncertain: { _, _ in },
+            observer: observer
+        )
+    }
+
+    /// Registers the raw device-list uncertainty callback before reading the
+    /// initial pair. `onUncertain` runs synchronously on the HAL listener
+    /// queue, before refresh dispatch, so callers can revoke realtime writer
+    /// authorization without waiting for an actor hop. It must remain
+    /// nonblocking and must not reenter this monitor's lifecycle methods.
+    @discardableResult
+    public func start(
+        onUncertain: @escaping UncertaintyObserver,
+        observer: @escaping Observer
+    ) throws -> UUID {
         try onCallbackQueue {
             _ = listenerCleanupRetainer.redriveRetained(
                 maximumAttemptCount: 1
@@ -488,21 +653,30 @@ public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
             currentEpoch = epoch
             nextDeviceGeneration = 0
             lastPublishedGeneration = 0
+            lastPublishedInventoryChangeSequence = nil
             latestSnapshot = nil
             inventoryRetry = nil
             self.observer = observer
 
             var address = Self.devicesAddress
+            let inventoryChangeSignal = InventoryChangeSignal()
             let listener = CoreAudioPropertyListenerRegistration {
-                [weak self] _, _ in
+                [weak self, inventoryChangeSignal] _, _ in
+                guard inventoryChangeSignal.recordAndNotifyIfActive({
+                    eventSequence in
+                    onUncertain(epoch, eventSequence)
+                }) else {
+                    return
+                }
                 self?.devicesDidChange(epoch: epoch)
             }
             let status = operations.addDevicesListener(
                 address: &address,
-                queue: callbackQueue,
+                queue: listenerQueue,
                 listener: listener
             )
             guard status == noErr else {
+                inventoryChangeSignal.deactivate()
                 currentEpoch = nil
                 self.observer = nil
                 throw CaptureError.audioDeviceConfiguration(
@@ -514,8 +688,9 @@ public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
             registration = Registration(
                 id: UUID(),
                 address: address,
-                queue: callbackQueue,
+                queue: listenerQueue,
                 listener: listener,
+                inventoryChangeSignal: inventoryChangeSignal,
                 epoch: epoch
             )
 
@@ -540,6 +715,7 @@ public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
             observer = nil
             nextDeviceGeneration = 0
             lastPublishedGeneration = 0
+            lastPublishedInventoryChangeSequence = nil
             latestSnapshot = nil
             inventoryRetry = nil
 
@@ -553,6 +729,7 @@ public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
                     ? .stopped
                     : .retryableFailure
             }
+            registration.inventoryChangeSignal.deactivate()
             self.registration = nil
             guard removeRegistration(registration) else {
                 retainRegistrationCleanup(registration)
@@ -614,9 +791,11 @@ public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
         observer = nil
         nextDeviceGeneration = 0
         lastPublishedGeneration = 0
+        lastPublishedInventoryChangeSequence = nil
         latestSnapshot = nil
         inventoryRetry = nil
         guard let registration else { return }
+        registration.inventoryChangeSignal.deactivate()
         self.registration = nil
         retainRegistrationCleanup(registration)
         Self.reportDegradedCleanup(
@@ -657,6 +836,36 @@ public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
         }
     }
 
+    /// Synchronously re-resolves and validates both exact endpoints without
+    /// waiting for a global Core Audio device-list notification.
+    ///
+    /// A factual topology change publishes a new generation before this call
+    /// returns. A transient property-read failure is explicit, preserves the
+    /// last factual snapshot for diagnostics, and schedules the same
+    /// token-fenced retry used by callbacks. An inactive monitor performs no
+    /// inventory read.
+    @discardableResult
+    public func revalidateCurrentSnapshot()
+        -> BlackHoleDeviceAvailabilityRevalidationResult {
+        onCallbackQueue {
+            guard let epoch = currentEpoch,
+                  registration?.epoch == epoch else {
+                return .inactive
+            }
+            guard refreshInventory(
+                epoch: epoch,
+                invalidatesPendingRetry: true
+            ) else {
+                return .validationFailed
+            }
+            guard let latestSnapshot,
+                  latestSnapshot.monitorEpoch == epoch else {
+                return .validationFailed
+            }
+            return .validated(latestSnapshot)
+        }
+    }
+
     /// Number of this monitor's exact listener registrations still owned by deferred cleanup.
     public var deferredListenerCleanupCount: Int {
         onCallbackQueue {
@@ -689,54 +898,129 @@ public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
         }
     }
 
+    @discardableResult
     private func refreshInventory(
         epoch: UUID,
         invalidatesPendingRetry: Bool
-    ) {
+    ) -> Bool {
         guard currentEpoch == epoch,
-              registration?.epoch == epoch else {
-            return
+              let registration,
+              registration.epoch == epoch else {
+            return false
         }
 
         if invalidatesPendingRetry {
             inventoryRetry = nil
         }
 
-        let uid: String?
+        drainListenerQueueIfNeeded(registration)
+        let initialInventoryChangeSequence =
+            registration.inventoryChangeSignal.snapshot()
+
+        var resolvedEndpointPair: BlackHoleDeviceEndpointPair?
+        var resolutionError: (any Error)?
         do {
-            uid = try operations.resolveBlackHole2ChannelDeviceUID()
+            resolvedEndpointPair = try operations
+                .resolveBlackHole2ChannelEndpointPair()
         } catch {
-            guard Self.isFactualDeviceAbsence(error) else {
+            resolutionError = error
+        }
+
+        drainListenerQueueIfNeeded(registration)
+        guard registration.inventoryChangeSignal.snapshot()
+                == initialInventoryChangeSequence else {
+            scheduleInventoryRetryIfNeeded(
+                epoch: epoch
+            )
+            return false
+        }
+
+        let endpointPair: BlackHoleDeviceEndpointPair?
+        if let resolutionError {
+            guard Self.isFactualDeviceAbsence(resolutionError) else {
                 scheduleInventoryRetryIfNeeded(
                     epoch: epoch
                 )
-                return
+                return false
             }
-            uid = nil
+            endpointPair = nil
+        } else {
+            guard let resolvedEndpointPair else {
+                scheduleInventoryRetryIfNeeded(
+                    epoch: epoch
+                )
+                return false
+            }
+            endpointPair = resolvedEndpointPair
         }
 
         inventoryRetry = nil
 
-        let isAvailable = uid != nil
+        let isAvailable = endpointPair != nil
+        let inventorySequenceAdvanced =
+            lastPublishedInventoryChangeSequence.map {
+                $0 != initialInventoryChangeSequence
+            } ?? false
         if let latestSnapshot,
            latestSnapshot.isAvailable == isAvailable,
-           latestSnapshot.deviceUID == uid {
-            return
+           latestSnapshot.defaultInputEndpoint
+                == endpointPair?.defaultInputEndpoint,
+           latestSnapshot.hiddenMirrorSinkEndpoint
+                == endpointPair?.hiddenMirrorSinkEndpoint,
+           !inventorySequenceAdvanced {
+            return true
         }
 
         nextDeviceGeneration &+= 1
         if nextDeviceGeneration == 0 {
             nextDeviceGeneration = 1
         }
+        // AudioDeviceID is opaque and may be reused after endpoint
+        // recreation. The device-list signal is therefore part of the
+        // incarnation evidence even when the resolved IDs and properties are
+        // byte-for-byte identical to the preceding snapshot.
+        lastPublishedInventoryChangeSequence =
+            initialInventoryChangeSequence
 
-        publishIfCurrent(
-            BlackHoleDeviceAvailabilitySnapshot(
-                monitorEpoch: epoch,
-                deviceGeneration: nextDeviceGeneration,
-                isAvailable: isAvailable,
-                deviceUID: uid
+        if let endpointPair {
+            publishIfCurrent(
+                BlackHoleDeviceAvailabilitySnapshot(
+                    monitorEpoch: epoch,
+                    deviceGeneration: nextDeviceGeneration,
+                    defaultInputEndpoint:
+                        endpointPair.defaultInputEndpoint,
+                    hiddenMirrorSinkEndpoint:
+                        endpointPair.hiddenMirrorSinkEndpoint,
+                    acceptedInventoryChangeSequence:
+                        initialInventoryChangeSequence
+                )
             )
-        )
+        } else {
+            publishIfCurrent(
+                BlackHoleDeviceAvailabilitySnapshot(
+                    monitorEpoch: epoch,
+                    deviceGeneration: nextDeviceGeneration,
+                    isAvailable: false,
+                    deviceUID: nil,
+                    acceptedInventoryChangeSequence:
+                        initialInventoryChangeSequence
+                )
+            )
+        }
+        return true
+    }
+
+    /// Production registers on a distinct listener queue so callbacks can
+    /// advance the sequence while the monitor queue is resolving properties.
+    /// Tests may deliberately reuse the callback queue to exercise legacy
+    /// synchronous delivery; synchronizing that same queue would deadlock.
+    private func drainListenerQueueIfNeeded(
+        _ registration: Registration
+    ) {
+        guard registration.queue !== callbackQueue else {
+            return
+        }
+        registration.queue.sync {}
     }
 
     private func scheduleInventoryRetryIfNeeded(
@@ -865,13 +1149,418 @@ protocol BlackHoleDeviceAvailabilityMonitoringOperations:
         listener: CoreAudioPropertyListenerRegistration
     ) -> OSStatus
 
-    func resolveBlackHole2ChannelDeviceUID() throws -> String
+    func resolveBlackHole2ChannelEndpointPair() throws
+        -> BlackHoleDeviceEndpointPair
+}
+
+struct BlackHoleDeviceEndpointProperties: Equatable, Sendable {
+    let identity: BlackHoleDeviceEndpointIdentity
+    let modelUID: String
+    let isAlive: Bool
+    let isHidden: Bool
+    let inputChannelCount: UInt32
+    let outputChannelCount: UInt32
+    let nominalSampleRate: Double
+}
+
+protocol BlackHoleDeviceEndpointPropertyReading:
+    AnyObject,
+    Sendable
+{
+    /// Returns nil only when the exact stable UID does not currently resolve.
+    /// Property-read failures throw so the monitor preserves its last factual
+    /// snapshot and schedules a token-fenced retry.
+    func endpointProperties(
+        exactUID: String
+    ) throws -> BlackHoleDeviceEndpointProperties?
+}
+
+struct BlackHoleDeviceEndpointPairResolver: Sendable {
+    let propertyReader:
+        any BlackHoleDeviceEndpointPropertyReading
+
+    private struct EndpointPairObservation: Equatable {
+        let defaultInput: BlackHoleDeviceEndpointProperties?
+        let hiddenMirrorSink: BlackHoleDeviceEndpointProperties?
+    }
+
+    func resolveValidatedPair() throws
+        -> BlackHoleDeviceEndpointPair {
+        let first = try endpointPairObservation()
+        let second = try endpointPairObservation()
+        guard first == second else {
+            throw CaptureError.audioRouteUnhealthy(
+                "the exact BlackHole endpoint pair changed across consecutive validation passes"
+            )
+        }
+        return try validatedPair(from: second)
+    }
+
+    private func endpointPairObservation() throws
+        -> EndpointPairObservation {
+        let defaultInput = try propertyReader.endpointProperties(
+            exactUID:
+                WorldwideBlackHoleMicrophoneEndpointContract
+                    .visibleDefaultInputDeviceUID
+        )
+        let hiddenMirrorSink = try propertyReader.endpointProperties(
+            exactUID:
+                WorldwideBlackHoleMicrophoneEndpointContract
+                    .hiddenMirrorSinkDeviceUID
+        )
+        return EndpointPairObservation(
+            defaultInput: defaultInput,
+            hiddenMirrorSink: hiddenMirrorSink
+        )
+    }
+
+    private func validatedPair(
+        from observation: EndpointPairObservation
+    ) throws
+        -> BlackHoleDeviceEndpointPair {
+        guard let defaultInput = observation.defaultInput else {
+            throw Self.invalidTopology(
+                "the visible default-input endpoint is absent"
+            )
+        }
+        guard let hiddenMirrorSink =
+                observation.hiddenMirrorSink else {
+            throw Self.invalidTopology(
+                "the hidden mirror sink endpoint is absent"
+            )
+        }
+
+        guard defaultInput.identity.deviceID != kAudioObjectUnknown,
+              hiddenMirrorSink.identity.deviceID != kAudioObjectUnknown,
+              defaultInput.identity.deviceID
+                != hiddenMirrorSink.identity.deviceID,
+              defaultInput.identity.deviceUID
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .visibleDefaultInputDeviceUID,
+              hiddenMirrorSink.identity.deviceUID
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .hiddenMirrorSinkDeviceUID,
+              defaultInput.identity.deviceUID
+                != hiddenMirrorSink.identity.deviceUID,
+              defaultInput.modelUID
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .modelUID,
+              hiddenMirrorSink.modelUID
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .modelUID,
+              defaultInput.modelUID == hiddenMirrorSink.modelUID,
+              defaultInput.isAlive,
+              hiddenMirrorSink.isAlive,
+              !defaultInput.isHidden,
+              hiddenMirrorSink.isHidden,
+              defaultInput.inputChannelCount
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .channelCount,
+              defaultInput.outputChannelCount
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .channelCount,
+              hiddenMirrorSink.inputChannelCount
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .channelCount,
+              hiddenMirrorSink.outputChannelCount
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .channelCount,
+              defaultInput.nominalSampleRate
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .nominalSampleRate,
+              hiddenMirrorSink.nominalSampleRate
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .nominalSampleRate else {
+            throw Self.invalidTopology(
+                "the exact endpoint pair does not match the required model, liveness, visibility, channels, sample rate, and distinct-identity contract"
+            )
+        }
+
+        return BlackHoleDeviceEndpointPair(
+            defaultInputEndpoint: defaultInput.identity,
+            hiddenMirrorSinkEndpoint: hiddenMirrorSink.identity
+        )
+    }
+
+    private static func invalidTopology(
+        _ detail: String
+    ) -> CaptureError {
+        CaptureError.audioDeviceNotFound(
+            "validated BlackHole 2ch mirror topology: \(detail)"
+        )
+    }
+}
+
+private final class SystemBlackHoleDeviceEndpointPropertyReader:
+    BlackHoleDeviceEndpointPropertyReading,
+    @unchecked Sendable
+{
+    private let systemObject =
+        AudioObjectID(kAudioObjectSystemObject)
+
+    func endpointProperties(
+        exactUID: String
+    ) throws -> BlackHoleDeviceEndpointProperties? {
+        guard let deviceID = try resolveDeviceID(
+            exactUID: exactUID
+        ) else {
+            return nil
+        }
+
+        return BlackHoleDeviceEndpointProperties(
+            identity: BlackHoleDeviceEndpointIdentity(
+                deviceID: deviceID,
+                deviceUID: try stringProperty(
+                    deviceID,
+                    selector: kAudioDevicePropertyDeviceUID,
+                    operation: "read BlackHole endpoint stable UID"
+                )
+            ),
+            modelUID: try stringProperty(
+                deviceID,
+                selector: kAudioDevicePropertyModelUID,
+                operation: "read BlackHole endpoint model UID"
+            ),
+            isAlive: try uint32Property(
+                deviceID,
+                selector: kAudioDevicePropertyDeviceIsAlive,
+                operation: "read BlackHole endpoint liveness"
+            ) != 0,
+            isHidden: try uint32Property(
+                deviceID,
+                selector: kAudioDevicePropertyIsHidden,
+                operation: "read BlackHole endpoint visibility"
+            ) != 0,
+            inputChannelCount: try channelCount(
+                deviceID,
+                scope: kAudioDevicePropertyScopeInput,
+                operationLabel: "input"
+            ),
+            outputChannelCount: try channelCount(
+                deviceID,
+                scope: kAudioDevicePropertyScopeOutput,
+                operationLabel: "output"
+            ),
+            nominalSampleRate: try doubleProperty(
+                deviceID,
+                selector: kAudioDevicePropertyNominalSampleRate,
+                operation: "read BlackHole endpoint nominal sample rate"
+            )
+        )
+    }
+
+    private func resolveDeviceID(
+        exactUID: String
+    ) throws -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var qualifier: CFString = exactUID as CFString
+        var deviceID = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = withUnsafePointer(to: &qualifier) { pointer in
+            AudioObjectGetPropertyData(
+                systemObject,
+                &address,
+                UInt32(MemoryLayout<CFString>.size),
+                pointer,
+                &size,
+                &deviceID
+            )
+        }
+        guard status == noErr else {
+            throw CaptureError.audioDeviceConfiguration(
+                "translate exact BlackHole endpoint stable UID",
+                status
+            )
+        }
+        guard deviceID != kAudioObjectUnknown else {
+            return nil
+        }
+        return deviceID
+    }
+
+    private func stringProperty(
+        _ deviceID: AudioDeviceID,
+        selector: AudioObjectPropertySelector,
+        operation: String
+    ) throws -> String {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: CFString = "" as CFString
+        var size = UInt32(MemoryLayout<CFString>.size)
+        let status = withUnsafeMutablePointer(to: &value) {
+            AudioObjectGetPropertyData(
+                deviceID,
+                &address,
+                0,
+                nil,
+                &size,
+                $0
+            )
+        }
+        guard status == noErr else {
+            throw CaptureError.audioDeviceConfiguration(
+                operation,
+                status
+            )
+        }
+        return value as String
+    }
+
+    private func uint32Property(
+        _ deviceID: AudioDeviceID,
+        selector: AudioObjectPropertySelector,
+        operation: String
+    ) throws -> UInt32 {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            &size,
+            &value
+        )
+        guard status == noErr else {
+            throw CaptureError.audioDeviceConfiguration(
+                operation,
+                status
+            )
+        }
+        return value
+    }
+
+    private func doubleProperty(
+        _ deviceID: AudioDeviceID,
+        selector: AudioObjectPropertySelector,
+        operation: String
+    ) throws -> Double {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value = 0.0
+        var size = UInt32(MemoryLayout<Double>.size)
+        let status = AudioObjectGetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            &size,
+            &value
+        )
+        guard status == noErr else {
+            throw CaptureError.audioDeviceConfiguration(
+                operation,
+                status
+            )
+        }
+        return value
+    }
+
+    private func channelCount(
+        _ deviceID: AudioDeviceID,
+        scope: AudioObjectPropertyScope,
+        operationLabel: String
+    ) throws -> UInt32 {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: scope,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var byteCount: UInt32 = 0
+        var status = AudioObjectGetPropertyDataSize(
+            deviceID,
+            &address,
+            0,
+            nil,
+            &byteCount
+        )
+        guard status == noErr,
+              byteCount >= UInt32(MemoryLayout<UInt32>.size) else {
+            throw CaptureError.audioDeviceConfiguration(
+                "read BlackHole endpoint \(operationLabel) stream-configuration size",
+                status == noErr ? kAudio_ParamError : status
+            )
+        }
+
+        let storage = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(byteCount),
+            alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        defer { storage.deallocate() }
+
+        status = AudioObjectGetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            &byteCount,
+            storage
+        )
+        guard status == noErr,
+              byteCount >= UInt32(MemoryLayout<UInt32>.size) else {
+            throw CaptureError.audioDeviceConfiguration(
+                "read BlackHole endpoint \(operationLabel) stream configuration",
+                status == noErr ? kAudio_ParamError : status
+            )
+        }
+
+        let bufferCount = Int(storage.load(as: UInt32.self))
+        guard let bufferOffset = MemoryLayout<AudioBufferList>.offset(
+            of: \AudioBufferList.mBuffers
+        ),
+        bufferCount >= 0,
+        bufferCount <= (Int.max - bufferOffset)
+            / MemoryLayout<AudioBuffer>.stride,
+        Int(byteCount) >= bufferOffset
+            + bufferCount * MemoryLayout<AudioBuffer>.stride else {
+            throw CaptureError.audioDeviceConfiguration(
+                "validate BlackHole endpoint \(operationLabel) stream configuration",
+                kAudio_ParamError
+            )
+        }
+
+        let buffers = UnsafeMutableAudioBufferListPointer(
+            storage.assumingMemoryBound(to: AudioBufferList.self)
+        )
+        var total: UInt64 = 0
+        for buffer in buffers {
+            total += UInt64(buffer.mNumberChannels)
+        }
+        guard total <= UInt64(UInt32.max) else {
+            throw CaptureError.audioDeviceConfiguration(
+                "sum BlackHole endpoint \(operationLabel) channels",
+                kAudio_ParamError
+            )
+        }
+        return UInt32(total)
+    }
 }
 
 private final class SystemBlackHoleDeviceAvailabilityOperations:
     BlackHoleDeviceAvailabilityMonitoringOperations,
     @unchecked Sendable
 {
+    private let endpointPairResolver =
+        BlackHoleDeviceEndpointPairResolver(
+            propertyReader:
+                SystemBlackHoleDeviceEndpointPropertyReader()
+        )
+
     func addDevicesListener(
         address: inout AudioObjectPropertyAddress,
         queue: DispatchQueue,
@@ -898,8 +1587,9 @@ private final class SystemBlackHoleDeviceAvailabilityOperations:
         )
     }
 
-    func resolveBlackHole2ChannelDeviceUID() throws -> String {
-        try BlackHoleRouteVerifier.blackHole2ChannelDeviceUID()
+    func resolveBlackHole2ChannelEndpointPair() throws
+        -> BlackHoleDeviceEndpointPair {
+        try endpointPairResolver.resolveValidatedPair()
     }
 }
 
@@ -920,11 +1610,23 @@ protocol BlackHoleDefaultInputLeaseOperations:
     ) -> OSStatus
 
     func currentDefaultInputUID() throws -> String
+    func currentDefaultInputDeviceID() throws -> AudioDeviceID
     func resolveDeviceID(uid: String) throws -> AudioDeviceID
     func compareAndSetDefaultInputDevice(
         _ deviceID: AudioDeviceID,
         expectedCurrentUID: String
     ) -> BlackHoleDefaultInputMutationResult
+}
+
+extension BlackHoleDefaultInputLeaseOperations {
+    /// Compatibility fallback for test operations that model stable UID
+    /// translation but not the Core Audio default-device selector directly.
+    /// The system implementation overrides this with an exact selector read.
+    func currentDefaultInputDeviceID() throws -> AudioDeviceID {
+        try resolveDeviceID(
+            uid: currentDefaultInputUID()
+        )
+    }
 }
 
 enum BlackHoleDefaultInputMutationResult:
@@ -963,6 +1665,60 @@ public enum BlackHoleDefaultInputLeaseReleaseResult:
     case released
     case retryableFailure
     case externallySuperseded
+}
+
+/// One raw notification from the exact default-input selector listener owned by
+/// a lease generation. The callback publishes this event synchronously before
+/// it queues any lease reconciliation work.
+public struct BlackHoleDefaultInputLeaseUncertaintyEvent:
+    Equatable,
+    Sendable
+{
+    public let leaseGeneration: UInt64
+    public let listenerRegistrationID: UUID
+    public let listenerSequence: UInt64
+
+    public init(
+        leaseGeneration: UInt64,
+        listenerRegistrationID: UUID,
+        listenerSequence: UInt64
+    ) {
+        self.leaseGeneration = leaseGeneration
+        self.listenerRegistrationID = listenerRegistrationID
+        self.listenerSequence = listenerSequence
+    }
+}
+
+/// Exact listener and endpoint evidence returned only after two stable UID/ID
+/// reads with no intervening default-input notification.
+public struct BlackHoleDefaultInputLeaseAuthorization:
+    Equatable,
+    Sendable
+{
+    public let leaseGeneration: UInt64
+    public let listenerRegistrationID: UUID
+    public let acceptedListenerSequence: UInt64
+    public let targetEndpoint: BlackHoleDeviceEndpointIdentity
+
+    public init(
+        leaseGeneration: UInt64,
+        listenerRegistrationID: UUID,
+        acceptedListenerSequence: UInt64,
+        targetEndpoint: BlackHoleDeviceEndpointIdentity
+    ) {
+        self.leaseGeneration = leaseGeneration
+        self.listenerRegistrationID = listenerRegistrationID
+        self.acceptedListenerSequence = acceptedListenerSequence
+        self.targetEndpoint = targetEndpoint
+    }
+
+    public func incorporates(
+        _ event: BlackHoleDefaultInputLeaseUncertaintyEvent
+    ) -> Bool {
+        event.leaseGeneration == leaseGeneration
+            && event.listenerRegistrationID == listenerRegistrationID
+            && event.listenerSequence <= acceptedListenerSequence
+    }
 }
 
 protocol BlackHoleDefaultInputLeaseDeferredCleanupRetaining:
@@ -1059,7 +1815,35 @@ public final class BlackHoleDefaultInputLease:
                 maximumAttemptCount
         )
     }
-    public static let canonicalDeviceUID = "BlackHole2ch_UID"
+    public static let canonicalDeviceUID =
+        WorldwideBlackHoleMicrophoneEndpointContract
+            .visibleDefaultInputDeviceUID
+
+    private final class UncertaintyObserver:
+        @unchecked Sendable
+    {
+        private let lock = NSLock()
+        private var handler:
+            (@Sendable (BlackHoleDefaultInputLeaseUncertaintyEvent) -> Void)?
+
+        func setHandler(
+            _ handler:
+                (@Sendable (BlackHoleDefaultInputLeaseUncertaintyEvent) -> Void)?
+        ) {
+            lock.withLock {
+                self.handler = handler
+            }
+        }
+
+        func publish(
+            _ event: BlackHoleDefaultInputLeaseUncertaintyEvent
+        ) {
+            let currentHandler = lock.withLock {
+                handler
+            }
+            currentHandler?(event)
+        }
+    }
 
     private final class ChangeSignal:
         @unchecked Sendable
@@ -1113,6 +1897,7 @@ public final class BlackHoleDefaultInputLease:
     private struct ActiveLease {
         let generation: UInt64
         let targetUID: String
+        let targetDeviceID: AudioDeviceID?
         let registration: Registration
         var restoreUID: String?
         var ownsSelection: Bool
@@ -1122,6 +1907,7 @@ public final class BlackHoleDefaultInputLease:
 
     private struct RetryBaseline {
         let targetUID: String
+        let targetDeviceID: AudioDeviceID?
         let defaultInputUID: String
     }
 
@@ -1464,6 +2250,8 @@ public final class BlackHoleDefaultInputLease:
         any BlackHoleDefaultInputLeaseDeferredCleanupRetaining
     private let deferredCleanupOwner:
         DeferredCleanupOwner
+    private let uncertaintyObserver =
+        UncertaintyObserver()
 
     private var activeLease: ActiveLease? {
         get {
@@ -1590,7 +2378,95 @@ public final class BlackHoleDefaultInputLease:
         onOperationQueue {
             acquireLocked(
                 generation: generation,
-                targetUID: targetUID
+                targetUID: targetUID,
+                expectedTargetDeviceID: nil
+            )
+        }
+    }
+
+    /// Installs the session owner notified at the raw Core Audio callback
+    /// boundary. The handler must remain bounded and nonblocking; production uses
+    /// it to close one lock-free realtime writer gate before queuing actor work.
+    public func setUncertaintyHandler(
+        _ handler:
+            (@Sendable (BlackHoleDefaultInputLeaseUncertaintyEvent) -> Void)?
+    ) {
+        uncertaintyObserver.setHandler(handler)
+    }
+
+    /// Re-proves the exact selected endpoint under the active listener sequence.
+    /// A changed sequence or endpoint terminalizes this lease generation so a
+    /// same-connection retry cannot overwrite an external choice.
+    public func authorizationProof(
+        generation: UInt64,
+        targetEndpoint: BlackHoleDeviceEndpointIdentity
+    ) -> BlackHoleDefaultInputLeaseAuthorization? {
+        onOperationQueue {
+            guard var activeLease,
+                  activeLease.generation == generation,
+                  activeLease.targetUID == targetEndpoint.deviceUID,
+                  activeLease.targetDeviceID == targetEndpoint.deviceID,
+                  !activeLease.targetWasRemoved else {
+                return nil
+            }
+
+            switch currentInputFenceResult(
+                expectedUID: activeLease.targetUID,
+                expectedDeviceID: activeLease.targetDeviceID,
+                expectedSignalSequence:
+                    activeLease.acceptedSignalSequence,
+                registration: activeLease.registration
+            ) {
+            case .matched:
+                return BlackHoleDefaultInputLeaseAuthorization(
+                    leaseGeneration: activeLease.generation,
+                    listenerRegistrationID:
+                        activeLease.registration.id,
+                    acceptedListenerSequence:
+                        activeLease.acceptedSignalSequence,
+                    targetEndpoint: targetEndpoint
+                )
+
+            case .unreadable:
+                return nil
+
+            case .changed:
+                if safelyClassifyTargetRemoval(activeLease) {
+                    activeLease.restoreUID = nil
+                    activeLease.ownsSelection = false
+                    activeLease.targetWasRemoved = true
+                    self.activeLease = nil
+                    clearRetryBaseline(for: generation)
+                    _ = beginDeregistration(
+                        generation: generation,
+                        registration: activeLease.registration,
+                        completion: .released
+                    )
+                } else {
+                    terminalize(
+                        activeLease,
+                        signalSequence:
+                            activeLease.registration.signal.snapshot()
+                    )
+                }
+                return nil
+            }
+        }
+    }
+
+    /// Acquires only the exact visible endpoint proven by the device monitor.
+    /// A stable UID alone is insufficient because Core Audio can recycle that
+    /// UID onto a replacement AudioDeviceID after an inventory generation.
+    public func acquisitionResult(
+        generation: UInt64,
+        targetEndpoint: BlackHoleDeviceEndpointIdentity
+    ) -> BlackHoleDefaultInputLeaseAcquisitionResult {
+        onOperationQueue {
+            acquireLocked(
+                generation: generation,
+                targetUID: targetEndpoint.deviceUID,
+                expectedTargetDeviceID:
+                    targetEndpoint.deviceID
             )
         }
     }
@@ -1644,9 +2520,13 @@ public final class BlackHoleDefaultInputLease:
 
     private func acquireLocked(
         generation: UInt64,
-        targetUID: String
+        targetUID: String,
+        expectedTargetDeviceID: AudioDeviceID?
     ) -> BlackHoleDefaultInputLeaseAcquisitionResult {
-        guard generation > 0, !targetUID.isEmpty else {
+        guard generation > 0,
+              targetUID == Self.canonicalDeviceUID,
+              expectedTargetDeviceID
+                != AudioDeviceID(kAudioObjectUnknown) else {
             return .terminalFailure
         }
 
@@ -1707,6 +2587,17 @@ public final class BlackHoleDefaultInputLease:
         if var activeLease,
            activeLease.generation == generation,
            activeLease.targetUID == targetUID {
+            if let expectedTargetDeviceID,
+               activeLease.targetDeviceID
+                    != expectedTargetDeviceID {
+                terminalize(
+                    activeLease,
+                    signalSequence:
+                        activeLease.registration
+                            .signal.snapshot()
+                )
+                return .terminalFailure
+            }
             if activeLease.targetWasRemoved {
                 self.activeLease = nil
                 clearRetryBaseline(for: generation)
@@ -1720,6 +2611,8 @@ public final class BlackHoleDefaultInputLease:
             } else {
                 switch currentInputFenceResult(
                     expectedUID: targetUID,
+                    expectedDeviceID:
+                        activeLease.targetDeviceID,
                     expectedSignalSequence:
                         activeLease.acceptedSignalSequence,
                     registration: activeLease.registration
@@ -1776,10 +2669,19 @@ public final class BlackHoleDefaultInputLease:
         } catch {
             return .retryableFailure
         }
+        guard previousUID
+                != WorldwideBlackHoleMicrophoneEndpointContract
+                    .hiddenMirrorSinkDeviceUID else {
+            clearRetryBaseline(for: generation)
+            markTerminal(generation)
+            return .terminalFailure
+        }
 
         if let retryBaseline,
            retryBaseline.generation == generation {
             guard retryBaseline.value.targetUID == targetUID,
+                  retryBaseline.value.targetDeviceID
+                    == expectedTargetDeviceID,
                   retryBaseline.value.defaultInputUID
                     == previousUID else {
                 clearRetryBaseline(for: generation)
@@ -1803,6 +2705,8 @@ public final class BlackHoleDefaultInputLease:
             storeRetryBaseline(
                 generation: generation,
                 targetUID: targetUID,
+                targetDeviceID:
+                    expectedTargetDeviceID,
                 defaultInputUID: previousUID
             )
             return .retryableFailure
@@ -1820,6 +2724,8 @@ public final class BlackHoleDefaultInputLease:
             return finishPrewriteFailure(
                 generation: generation,
                 targetUID: targetUID,
+                targetDeviceID:
+                    expectedTargetDeviceID,
                 previousUID: previousUID,
                 registration: registration
             )
@@ -1840,13 +2746,28 @@ public final class BlackHoleDefaultInputLease:
             return finishPrewriteFailure(
                 generation: generation,
                 targetUID: targetUID,
+                targetDeviceID:
+                    expectedTargetDeviceID,
                 previousUID: previousUID,
                 registration: registration
             )
         }
 
+        if let expectedTargetDeviceID,
+           targetDeviceID != expectedTargetDeviceID {
+            terminalizeBeforeWrite(
+                generation: generation,
+                registration: registration
+            )
+            return .terminalFailure
+        }
+
         switch currentInputFenceResult(
             expectedUID: previousUID,
+            expectedDeviceID:
+                previousUID == targetUID
+                    ? expectedTargetDeviceID
+                    : nil,
             expectedSignalSequence: 0,
             registration: registration
         ) {
@@ -1857,6 +2778,8 @@ public final class BlackHoleDefaultInputLease:
             return finishPrewriteFailure(
                 generation: generation,
                 targetUID: targetUID,
+                targetDeviceID:
+                    expectedTargetDeviceID,
                 previousUID: previousUID,
                 registration: registration
             )
@@ -1873,6 +2796,8 @@ public final class BlackHoleDefaultInputLease:
             activeLease = ActiveLease(
                 generation: generation,
                 targetUID: targetUID,
+                targetDeviceID:
+                    expectedTargetDeviceID,
                 registration: registration,
                 restoreUID: nil,
                 ownsSelection: false,
@@ -1886,6 +2811,8 @@ public final class BlackHoleDefaultInputLease:
         activeLease = ActiveLease(
             generation: generation,
             targetUID: targetUID,
+            targetDeviceID:
+                expectedTargetDeviceID,
             registration: registration,
             restoreUID: previousUID,
             ownsSelection: true,
@@ -1897,6 +2824,8 @@ public final class BlackHoleDefaultInputLease:
             deviceID: targetDeviceID,
             expectedCurrentUID: previousUID,
             expectedUID: targetUID,
+            expectedReadbackDeviceID:
+                expectedTargetDeviceID,
             expectedSignalSequence: 0,
             registration: registration
         ) {
@@ -1911,6 +2840,8 @@ public final class BlackHoleDefaultInputLease:
             return finishPrewriteFailure(
                 generation: generation,
                 targetUID: targetUID,
+                targetDeviceID:
+                    expectedTargetDeviceID,
                 previousUID: previousUID,
                 registration: registration
             )
@@ -1944,6 +2875,8 @@ public final class BlackHoleDefaultInputLease:
             return finishPrewriteFailure(
                 generation: generation,
                 targetUID: targetUID,
+                targetDeviceID:
+                    expectedTargetDeviceID,
                 previousUID: previousUID,
                 registration: registration
             )
@@ -1989,10 +2922,18 @@ public final class BlackHoleDefaultInputLease:
     ) throws -> Registration {
         let signal = ChangeSignal()
         let registrationID = UUID()
+        let uncertaintyObserver = uncertaintyObserver
         var address = Self.defaultInputAddress
         let listener = CoreAudioPropertyListenerRegistration {
             [weak self, signal] _, _ in
             let signalSequence = signal.record()
+            uncertaintyObserver.publish(
+                BlackHoleDefaultInputLeaseUncertaintyEvent(
+                    leaseGeneration: generation,
+                    listenerRegistrationID: registrationID,
+                    listenerSequence: signalSequence
+                )
+            )
             self?.operationQueue.async { [weak self] in
                 self?.defaultInputDidChange(
                     generation: generation,
@@ -2262,6 +3203,7 @@ public final class BlackHoleDefaultInputLease:
         deviceID: AudioDeviceID,
         expectedCurrentUID: String,
         expectedUID: String,
+        expectedReadbackDeviceID: AudioDeviceID? = nil,
         expectedSignalSequence: UInt64,
         registration: Registration
     ) -> WriteAndProveResult {
@@ -2369,13 +3311,22 @@ public final class BlackHoleDefaultInputLease:
                     signalSequence: proofSequence
                 )
             }
-            if currentInputFenceResult(
+            let readback = currentInputFenceResult(
                 expectedUID: expectedUID,
+                expectedDeviceID:
+                    expectedReadbackDeviceID,
                 expectedSignalSequence:
                     proofSequence,
                 registration: registration
-            ) == .matched {
+            )
+            if readback == .matched {
                 return .proved(
+                    signalSequence: proofSequence
+                )
+            }
+            if readback == .changed,
+               expectedReadbackDeviceID != nil {
+                return .contentionDetected(
                     signalSequence: proofSequence
                 )
             }
@@ -2553,6 +3504,7 @@ public final class BlackHoleDefaultInputLease:
 
     private func currentInputFenceResult(
         expectedUID: String,
+        expectedDeviceID: AudioDeviceID? = nil,
         expectedSignalSequence: UInt64,
         registration: Registration
     ) -> CurrentInputFenceResult {
@@ -2572,6 +3524,18 @@ public final class BlackHoleDefaultInputLease:
         guard firstUID == expectedUID else {
             return .changed
         }
+        if let expectedDeviceID {
+            let firstDeviceID: AudioDeviceID
+            do {
+                firstDeviceID = try operations
+                    .currentDefaultInputDeviceID()
+            } catch {
+                return .unreadable
+            }
+            guard firstDeviceID == expectedDeviceID else {
+                return .changed
+            }
+        }
 
         drainListenerQueue(registration)
         guard registration.signal.snapshot()
@@ -2588,6 +3552,18 @@ public final class BlackHoleDefaultInputLease:
         }
         guard secondUID == expectedUID else {
             return .changed
+        }
+        if let expectedDeviceID {
+            let secondDeviceID: AudioDeviceID
+            do {
+                secondDeviceID = try operations
+                    .currentDefaultInputDeviceID()
+            } catch {
+                return .unreadable
+            }
+            guard secondDeviceID == expectedDeviceID else {
+                return .changed
+            }
         }
 
         drainListenerQueue(registration)
@@ -2668,6 +3644,7 @@ public final class BlackHoleDefaultInputLease:
     private func finishPrewriteFailure(
         generation: UInt64,
         targetUID: String,
+        targetDeviceID: AudioDeviceID?,
         previousUID: String,
         registration: Registration
     ) -> BlackHoleDefaultInputLeaseAcquisitionResult {
@@ -2715,6 +3692,7 @@ public final class BlackHoleDefaultInputLease:
         storeRetryBaseline(
             generation: generation,
             targetUID: targetUID,
+            targetDeviceID: targetDeviceID,
             defaultInputUID: previousUID
         )
         return .retryableFailure
@@ -2723,12 +3701,14 @@ public final class BlackHoleDefaultInputLease:
     private func storeRetryBaseline(
         generation: UInt64,
         targetUID: String,
+        targetDeviceID: AudioDeviceID?,
         defaultInputUID: String
     ) {
         retryBaseline = (
             generation: generation,
             value: RetryBaseline(
                 targetUID: targetUID,
+                targetDeviceID: targetDeviceID,
                 defaultInputUID: defaultInputUID
             )
         )
@@ -2836,6 +3816,18 @@ private final class
     }
 
     func currentDefaultInputUID() throws -> String {
+        let deviceID = try currentDefaultInputDeviceID()
+        guard let uid = deviceUID(deviceID),
+              !uid.isEmpty else {
+            throw CaptureError.audioDeviceConfiguration(
+                "read default input stable UID",
+                noErr
+            )
+        }
+        return uid
+    }
+
+    func currentDefaultInputDeviceID() throws -> AudioDeviceID {
         var address = AudioObjectPropertyAddress(
             mSelector:
                 kAudioHardwarePropertyDefaultInputDevice,
@@ -2856,15 +3848,13 @@ private final class
             &deviceID
         )
         guard status == noErr,
-              deviceID != kAudioObjectUnknown,
-              let uid = deviceUID(deviceID),
-              !uid.isEmpty else {
+              deviceID != kAudioObjectUnknown else {
             throw CaptureError.audioDeviceConfiguration(
-                "read default input stable UID",
+                "read default input device ID",
                 status
             )
         }
-        return uid
+        return deviceID
     }
 
     func resolveDeviceID(

@@ -41,8 +41,16 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
                 BlackHoleDeviceAvailabilitySnapshot(
                     monitorEpoch: epoch,
                     deviceGeneration: 1,
-                    isAvailable: true,
-                    deviceUID: "BlackHole2ch_UID"
+                    defaultInputEndpoint:
+                        BlackHoleDeviceEndpointIdentity(
+                            deviceID: 79,
+                            deviceUID: "BlackHole2ch_UID"
+                        ),
+                    hiddenMirrorSinkEndpoint:
+                        BlackHoleDeviceEndpointIdentity(
+                            deviceID: 89,
+                            deviceUID: "BlackHole2ch_2_UID"
+                        )
                 ),
             ]
         )
@@ -475,6 +483,169 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         monitor.stop()
     }
 
+    func testRawUncertaintyPrecedesHeldRefreshAndSameIDsRequireFreshProof()
+        throws {
+        let operations = BlackHoleMonitorOperationsFake(
+            lookupResults: [
+                .uid("BlackHole2ch_UID"),
+                .uid("BlackHole2ch_UID"),
+                .uid("BlackHole2ch_UID"),
+            ]
+        )
+        let snapshots = BlackHoleSnapshotLedger()
+        let uncertainties = BlackHoleUncertaintyLedger()
+        let callbackQueue = DispatchQueue(
+            label:
+                "test.BlackHoleDeviceAvailabilityMonitor.held-refresh.callback"
+        )
+        let listenerQueue = DispatchQueue(
+            label:
+                "test.BlackHoleDeviceAvailabilityMonitor.held-refresh.listener"
+        )
+        let epoch = UUID()
+        let monitor = BlackHoleDeviceAvailabilityMonitor(
+            operations: operations,
+            callbackQueue: callbackQueue,
+            makeEpoch: { epoch },
+            listenerQueue: listenerQueue
+        )
+
+        try monitor.start(
+            onUncertain: { observedEpoch, eventSequence in
+                uncertainties.append(
+                    epoch: observedEpoch,
+                    eventSequence: eventSequence
+                )
+            },
+            observer: { snapshots.append($0) }
+        )
+        XCTAssertEqual(
+            snapshots.snapshots.map(\.acceptedInventoryChangeSequence),
+            [0]
+        )
+
+        let callbackQueueHeld = DispatchSemaphore(value: 0)
+        let releaseCallbackQueue = DispatchSemaphore(value: 0)
+        callbackQueue.async {
+            callbackQueueHeld.signal()
+            releaseCallbackQueue.wait()
+        }
+        XCTAssertEqual(
+            callbackQueueHeld.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+
+        operations.emitCurrentListener()
+        XCTAssertEqual(
+            uncertainties.events,
+            [
+                BlackHoleUncertaintyLedger.Event(
+                    epoch: epoch,
+                    eventSequence: 1
+                ),
+            ],
+            "Raw uncertainty must be observable before refresh can run on the held callback queue."
+        )
+        XCTAssertEqual(
+            snapshots.snapshots.map(\.deviceGeneration),
+            [1],
+            "The raw callback must not publish a recycled identity before a complete revalidation."
+        )
+
+        releaseCallbackQueue.signal()
+        callbackQueue.sync {}
+        XCTAssertEqual(
+            snapshots.snapshots.map(\.deviceGeneration),
+            [1, 2]
+        )
+        XCTAssertEqual(
+            snapshots.snapshots.map(\.acceptedInventoryChangeSequence),
+            [0, 1]
+        )
+        XCTAssertEqual(
+            snapshots.snapshots.map {
+                $0.defaultInputEndpoint?.deviceID
+            },
+            [79, 79],
+            "An identical opaque AudioDeviceID after a device-list event is a new incarnation, not reusable proof."
+        )
+
+        operations.emitCurrentListener()
+        callbackQueue.sync {}
+        XCTAssertEqual(
+            uncertainties.events.map(\.eventSequence),
+            [1, 2]
+        )
+        XCTAssertEqual(
+            snapshots.snapshots.map(\.deviceGeneration),
+            [1, 2, 3]
+        )
+        XCTAssertEqual(
+            snapshots.snapshots.map(\.acceptedInventoryChangeSequence),
+            [0, 1, 2]
+        )
+        monitor.stop()
+    }
+
+    func testRetiredListenerCannotPublishUncertaintyIntoReplacementEpoch()
+        throws {
+        let operations = BlackHoleMonitorOperationsFake(
+            lookupResults: [
+                .uid("BlackHole2ch_UID"),
+                .uid("BlackHole2ch_UID"),
+            ]
+        )
+        let uncertainties = BlackHoleUncertaintyLedger()
+        let epochs = [UUID(), UUID()]
+        let epochSource = LockedEpochSource(epochs)
+        let monitor = BlackHoleDeviceAvailabilityMonitor(
+            operations: operations,
+            callbackQueue: DispatchQueue(
+                label:
+                    "test.BlackHoleDeviceAvailabilityMonitor.retired-uncertainty"
+            ),
+            makeEpoch: { epochSource.next() }
+        )
+
+        _ = try monitor.start(
+            onUncertain: { epoch, sequence in
+                uncertainties.append(
+                    epoch: epoch,
+                    eventSequence: sequence
+                )
+            },
+            observer: { _ in }
+        )
+        monitor.stop()
+        _ = try monitor.start(
+            onUncertain: { epoch, sequence in
+                uncertainties.append(
+                    epoch: epoch,
+                    eventSequence: sequence
+                )
+            },
+            observer: { _ in }
+        )
+
+        operations.emitRetiredListener(at: 0)
+        XCTAssertEqual(
+            uncertainties.events,
+            [],
+            "A physically retained callback from a deactivated epoch must not close a replacement session's writer gate."
+        )
+        operations.emitCurrentListener()
+        XCTAssertEqual(
+            uncertainties.events,
+            [
+                BlackHoleUncertaintyLedger.Event(
+                    epoch: epochs[1],
+                    eventSequence: 1
+                ),
+            ]
+        )
+        monitor.stop()
+    }
+
     func testLookupFailureAndDeviceReinstallPublishMonotonicGenerations()
         throws {
         let operations = BlackHoleMonitorOperationsFake(
@@ -515,6 +686,18 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
                 nil,
                 "BlackHole2ch_UID",
             ]
+        )
+        XCTAssertEqual(
+            ledger.snapshots.map {
+                $0.defaultInputEndpoint?.deviceID
+            },
+            [79, nil, 79]
+        )
+        XCTAssertEqual(
+            ledger.snapshots.map {
+                $0.hiddenMirrorSinkEndpoint?.deviceID
+            },
+            [89, nil, 89]
         )
         XCTAssertEqual(operations.defaultDeviceWriteCount, 0)
         monitor.stop()
@@ -565,8 +748,8 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
 
         XCTAssertEqual(
             ledger.snapshots.map(\.deviceGeneration),
-            [1],
-            "A successful retry that resolves the same identity must not synthesize a generation."
+            [1, 2],
+            "A device-list signal is incarnation evidence even when a retry resolves the same IDs and UIDs."
         )
         XCTAssertEqual(
             operations.events.filter {
@@ -755,13 +938,13 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         monitor.stop()
     }
 
-    func testUnchangedIdentityCallbacksDoNotPublishOrAdvanceGeneration()
+    func testDeviceListSignalAdvancesGenerationForIdenticalEndpointIdentity()
         throws {
         let operations = BlackHoleMonitorOperationsFake(
-            lookupResults: Array(
-                repeating: .uid("BlackHole2ch_UID"),
-                count: 513
-            )
+            lookupResults: [
+                .uid("BlackHole2ch_UID"),
+                .uid("BlackHole2ch_UID"),
+            ]
         )
         let ledger = BlackHoleSnapshotLedger()
         let epoch = UUID()
@@ -776,21 +959,743 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         try monitor.start {
             ledger.append($0)
         }
-        for _ in 0..<512 {
-            operations.emitCurrentListener()
-        }
+        operations.emitCurrentListener()
 
-        XCTAssertEqual(ledger.snapshots.count, 1)
+        XCTAssertEqual(ledger.snapshots.count, 2)
         XCTAssertEqual(
             ledger.snapshots.map(\.deviceGeneration),
-            [1]
+            [1, 2],
+            "A replacement can reuse both its stable UID and opaque numeric AudioDeviceID; the observed inventory event must still mint a new generation."
         )
         XCTAssertEqual(
             operations.events.filter { $0 == "inventory" }.count,
-            513
+            2
         )
         XCTAssertEqual(operations.defaultDeviceWriteCount, 0)
         monitor.stop()
+    }
+
+    func testEitherEndpointIdentityChangeAdvancesGeneration()
+        throws {
+        let operations = BlackHoleMonitorOperationsFake(
+            lookupResults: [
+                .endpointPair(
+                    BlackHoleMonitorOperationsFake.endpointPair(
+                        defaultInputDeviceID: 79,
+                        hiddenMirrorSinkDeviceID: 89
+                    )
+                ),
+                .endpointPair(
+                    BlackHoleMonitorOperationsFake.endpointPair(
+                        defaultInputDeviceID: 80,
+                        hiddenMirrorSinkDeviceID: 89
+                    )
+                ),
+                .endpointPair(
+                    BlackHoleMonitorOperationsFake.endpointPair(
+                        defaultInputDeviceID: 80,
+                        hiddenMirrorSinkDeviceID: 90
+                    )
+                ),
+                .endpointPair(
+                    BlackHoleMonitorOperationsFake.endpointPair(
+                        defaultInputDeviceID: 80,
+                        defaultInputDeviceUID:
+                            "BlackHole2ch_UID-replacement",
+                        hiddenMirrorSinkDeviceID: 90
+                    )
+                ),
+                .endpointPair(
+                    BlackHoleMonitorOperationsFake.endpointPair(
+                        defaultInputDeviceID: 80,
+                        defaultInputDeviceUID:
+                            "BlackHole2ch_UID-replacement",
+                        hiddenMirrorSinkDeviceID: 90,
+                        hiddenMirrorSinkDeviceUID:
+                            "BlackHole2ch_2_UID-replacement"
+                    )
+                ),
+            ]
+        )
+        let ledger = BlackHoleSnapshotLedger()
+        let monitor = BlackHoleDeviceAvailabilityMonitor(
+            operations: operations,
+            callbackQueue: DispatchQueue(
+                label:
+                    "test.BlackHoleDeviceAvailabilityMonitor.pair-identity"
+            ),
+            makeEpoch: { UUID() }
+        )
+
+        try monitor.start {
+            ledger.append($0)
+        }
+        for _ in 0..<4 {
+            operations.emitCurrentListener()
+        }
+
+        XCTAssertEqual(
+            ledger.snapshots.map(\.deviceGeneration),
+            [1, 2, 3, 4, 5]
+        )
+        XCTAssertEqual(
+            ledger.snapshots.map {
+                $0.defaultInputEndpoint?.deviceID
+            },
+            [79, 80, 80, 80, 80]
+        )
+        XCTAssertEqual(
+            ledger.snapshots.map {
+                $0.hiddenMirrorSinkEndpoint?.deviceID
+            },
+            [89, 89, 90, 90, 90]
+        )
+        XCTAssertEqual(
+            ledger.snapshots.last?
+                .defaultInputEndpoint?.deviceUID,
+            "BlackHole2ch_UID-replacement"
+        )
+        XCTAssertEqual(
+            ledger.snapshots.last?
+                .hiddenMirrorSinkEndpoint?.deviceUID,
+            "BlackHole2ch_2_UID-replacement"
+        )
+        monitor.stop()
+    }
+
+    func testListenerSequenceRejectsInventoryReadOverlappedByDeviceChange()
+        throws {
+        let initialPair =
+            BlackHoleMonitorOperationsFake.endpointPair(
+                defaultInputDeviceID: 79,
+                hiddenMirrorSinkDeviceID: 89
+            )
+        let overlappedPair =
+            BlackHoleMonitorOperationsFake.endpointPair(
+                defaultInputDeviceID: 80,
+                hiddenMirrorSinkDeviceID: 90
+            )
+        let stableReplacementPair =
+            BlackHoleMonitorOperationsFake.endpointPair(
+                defaultInputDeviceID: 81,
+                hiddenMirrorSinkDeviceID: 91
+            )
+        let operations = BlackHoleMonitorOperationsFake(
+            lookupResults: [
+                .endpointPair(initialPair),
+                .endpointPair(overlappedPair),
+                .endpointPair(stableReplacementPair),
+            ]
+        )
+        let retryScheduler = BlackHoleInventoryRetryScheduler()
+        let ledger = BlackHoleSnapshotLedger()
+        let callbackQueue = DispatchQueue(
+            label:
+                "test.BlackHoleDeviceAvailabilityMonitor.listener-fence.callback"
+        )
+        let listenerQueue = DispatchQueue(
+            label:
+                "test.BlackHoleDeviceAvailabilityMonitor.listener-fence.listener"
+        )
+        let monitor = BlackHoleDeviceAvailabilityMonitor(
+            operations: operations,
+            callbackQueue: callbackQueue,
+            makeEpoch: { UUID() },
+            scheduleInventoryRetry: { work in
+                retryScheduler.schedule(work)
+            },
+            listenerQueue: listenerQueue
+        )
+
+        try monitor.start {
+            ledger.append($0)
+        }
+        operations
+            .emitCurrentListenerDuringNextInventoryResolution()
+
+        XCTAssertEqual(
+            monitor.revalidateCurrentSnapshot(),
+            .validationFailed,
+            "An observed device-list change during inventory must fail the synchronous validation closed."
+        )
+
+        let current = monitor.currentSnapshot()
+        XCTAssertEqual(
+            ledger.snapshots.map {
+                $0.defaultInputEndpoint?.deviceID
+            },
+            [79, 81],
+            "The overlapped pair must never be published as a factual generation."
+        )
+        XCTAssertEqual(
+            ledger.snapshots.map {
+                $0.hiddenMirrorSinkEndpoint?.deviceID
+            },
+            [89, 91]
+        )
+        XCTAssertEqual(current, ledger.snapshots.last)
+        XCTAssertEqual(
+            operations.events.filter { $0 == "inventory" }.count,
+            3
+        )
+
+        retryScheduler.runNext()
+        _ = monitor.currentSnapshot()
+        XCTAssertEqual(
+            operations.events.filter { $0 == "inventory" }.count,
+            3,
+            "The callback refresh must invalidate the retry token created by the overlapped read."
+        )
+        monitor.stop()
+    }
+
+    func testSynchronousRevalidationDetectsHiddenLivenessFailureWithoutDeviceNotification()
+        throws {
+        let operations = BlackHoleMonitorOperationsFake(
+            lookupResults: [
+                .endpointProperties(
+                    defaultInput:
+                        makeDefaultInputEndpointProperties(),
+                    hiddenMirrorSink:
+                        makeHiddenMirrorSinkEndpointProperties()
+                ),
+                .endpointProperties(
+                    defaultInput:
+                        makeDefaultInputEndpointProperties(),
+                    hiddenMirrorSink:
+                        makeHiddenMirrorSinkEndpointProperties(
+                            isAlive: false
+                        )
+                ),
+            ]
+        )
+        let ledger = BlackHoleSnapshotLedger()
+        let monitor = BlackHoleDeviceAvailabilityMonitor(
+            operations: operations,
+            callbackQueue: DispatchQueue(
+                label:
+                    "test.BlackHoleDeviceAvailabilityMonitor.revalidate-hidden-liveness"
+            ),
+            makeEpoch: { UUID() }
+        )
+
+        try monitor.start {
+            ledger.append($0)
+        }
+        let revalidated = monitor.revalidateCurrentSnapshot()
+        guard case .validated(let revalidatedSnapshot) = revalidated else {
+            XCTFail("Expected a factual unavailable revalidation snapshot.")
+            monitor.stop()
+            return
+        }
+
+        XCTAssertEqual(
+            ledger.snapshots.map(\.deviceGeneration),
+            [1, 2]
+        )
+        XCTAssertFalse(revalidatedSnapshot.isAvailable)
+        XCTAssertNil(revalidatedSnapshot.defaultInputEndpoint)
+        XCTAssertNil(revalidatedSnapshot.hiddenMirrorSinkEndpoint)
+        XCTAssertEqual(revalidatedSnapshot, ledger.snapshots.last)
+        XCTAssertEqual(
+            operations.events.filter { $0 == "inventory" }.count,
+            2,
+            "The second inventory read is explicit revalidation, not a listener callback."
+        )
+        monitor.stop()
+    }
+
+    func testSynchronousRevalidationDetectsHiddenTopologyFailureWithoutDeviceNotification()
+        throws {
+        let operations = BlackHoleMonitorOperationsFake(
+            lookupResults: [
+                .endpointProperties(
+                    defaultInput:
+                        makeDefaultInputEndpointProperties(),
+                    hiddenMirrorSink:
+                        makeHiddenMirrorSinkEndpointProperties()
+                ),
+                .endpointProperties(
+                    defaultInput:
+                        makeDefaultInputEndpointProperties(),
+                    hiddenMirrorSink:
+                        makeHiddenMirrorSinkEndpointProperties(
+                            nominalSampleRate: 44_100
+                        )
+                ),
+            ]
+        )
+        let ledger = BlackHoleSnapshotLedger()
+        let monitor = BlackHoleDeviceAvailabilityMonitor(
+            operations: operations,
+            callbackQueue: DispatchQueue(
+                label:
+                    "test.BlackHoleDeviceAvailabilityMonitor.revalidate-hidden-topology"
+            ),
+            makeEpoch: { UUID() }
+        )
+
+        try monitor.start {
+            ledger.append($0)
+        }
+        let revalidated = monitor.revalidateCurrentSnapshot()
+        guard case .validated(let revalidatedSnapshot) = revalidated else {
+            XCTFail("Expected a factual unavailable revalidation snapshot.")
+            monitor.stop()
+            return
+        }
+
+        XCTAssertEqual(
+            ledger.snapshots.map(\.deviceGeneration),
+            [1, 2]
+        )
+        XCTAssertFalse(revalidatedSnapshot.isAvailable)
+        XCTAssertNil(revalidatedSnapshot.deviceUID)
+        XCTAssertEqual(revalidatedSnapshot, ledger.snapshots.last)
+        XCTAssertEqual(
+            operations.events.filter { $0 == "inventory" }.count,
+            2
+        )
+        monitor.stop()
+    }
+
+    func testSynchronousRevalidationDetectsHiddenIdentityReplacementWithoutDeviceNotification()
+        throws {
+        let operations = BlackHoleMonitorOperationsFake(
+            lookupResults: [
+                .endpointProperties(
+                    defaultInput:
+                        makeDefaultInputEndpointProperties(),
+                    hiddenMirrorSink:
+                        makeHiddenMirrorSinkEndpointProperties(
+                            deviceID: 89
+                        )
+                ),
+                .endpointProperties(
+                    defaultInput:
+                        makeDefaultInputEndpointProperties(),
+                    hiddenMirrorSink:
+                        makeHiddenMirrorSinkEndpointProperties(
+                            deviceID: 90
+                        )
+                ),
+            ]
+        )
+        let ledger = BlackHoleSnapshotLedger()
+        let monitor = BlackHoleDeviceAvailabilityMonitor(
+            operations: operations,
+            callbackQueue: DispatchQueue(
+                label:
+                    "test.BlackHoleDeviceAvailabilityMonitor.revalidate-hidden-identity"
+            ),
+            makeEpoch: { UUID() }
+        )
+
+        try monitor.start {
+            ledger.append($0)
+        }
+        let revalidated = monitor.revalidateCurrentSnapshot()
+        guard case .validated(let revalidatedSnapshot) = revalidated else {
+            XCTFail("Expected a factual endpoint replacement snapshot.")
+            monitor.stop()
+            return
+        }
+
+        XCTAssertEqual(
+            ledger.snapshots.map(\.deviceGeneration),
+            [1, 2]
+        )
+        XCTAssertTrue(revalidatedSnapshot.isAvailable)
+        XCTAssertEqual(
+            revalidatedSnapshot.defaultInputEndpoint?.deviceID,
+            79
+        )
+        XCTAssertEqual(
+            revalidatedSnapshot.hiddenMirrorSinkEndpoint?.deviceID,
+            90
+        )
+        XCTAssertEqual(revalidatedSnapshot, ledger.snapshots.last)
+        XCTAssertEqual(
+            operations.events.filter { $0 == "inventory" }.count,
+            2
+        )
+        monitor.stop()
+    }
+
+    func testSynchronousRevalidationReportsTransientFailureInsteadOfReturningStaleAvailability()
+        throws {
+        let operations = BlackHoleMonitorOperationsFake(
+            lookupResults: [
+                .endpointProperties(
+                    defaultInput:
+                        makeDefaultInputEndpointProperties(),
+                    hiddenMirrorSink:
+                        makeHiddenMirrorSinkEndpointProperties()
+                ),
+                .configurationFailure,
+            ]
+        )
+        let retryScheduler = BlackHoleInventoryRetryScheduler()
+        let ledger = BlackHoleSnapshotLedger()
+        let monitor = BlackHoleDeviceAvailabilityMonitor(
+            operations: operations,
+            callbackQueue: DispatchQueue(
+                label:
+                    "test.BlackHoleDeviceAvailabilityMonitor.revalidate-transient-failure"
+            ),
+            makeEpoch: { UUID() },
+            scheduleInventoryRetry: { work in
+                retryScheduler.schedule(work)
+            }
+        )
+
+        try monitor.start {
+            ledger.append($0)
+        }
+
+        XCTAssertEqual(
+            monitor.revalidateCurrentSnapshot(),
+            .validationFailed
+        )
+        XCTAssertEqual(ledger.snapshots.count, 1)
+        XCTAssertTrue(monitor.currentSnapshot()?.isAvailable == true)
+        XCTAssertEqual(retryScheduler.scheduledCount, 1)
+        monitor.stop()
+    }
+
+    func testCompatibilitySnapshotCannotAssertPairAvailability() {
+        let epoch = UUID()
+        let snapshot = BlackHoleDeviceAvailabilitySnapshot(
+            monitorEpoch: epoch,
+            deviceGeneration: 7,
+            isAvailable: true,
+            deviceUID: "BlackHole2ch_UID"
+        )
+
+        XCTAssertFalse(snapshot.isAvailable)
+        XCTAssertEqual(snapshot.deviceUID, "BlackHole2ch_UID")
+        XCTAssertEqual(
+            snapshot.defaultInputEndpoint,
+            BlackHoleDeviceEndpointIdentity(
+                deviceID: AudioDeviceID(kAudioObjectUnknown),
+                deviceUID: "BlackHole2ch_UID"
+            )
+        )
+        XCTAssertNil(snapshot.hiddenMirrorSinkEndpoint)
+    }
+
+    func testEndpointPairResolverAcceptsExactTopology()
+        throws {
+        let defaultInput = makeDefaultInputEndpointProperties()
+        let hiddenMirrorSink =
+            makeHiddenMirrorSinkEndpointProperties()
+        let resolver = BlackHoleDeviceEndpointPairResolver(
+            propertyReader:
+                BlackHoleEndpointPropertyReaderFake(
+                    defaultInput: defaultInput,
+                    hiddenMirrorSink: hiddenMirrorSink
+                )
+        )
+
+        XCTAssertEqual(
+            try resolver.resolveValidatedPair(),
+            BlackHoleDeviceEndpointPair(
+                defaultInputEndpoint: defaultInput.identity,
+                hiddenMirrorSinkEndpoint:
+                    hiddenMirrorSink.identity
+            )
+        )
+    }
+
+    func testEndpointPairResolverRejectsTornPairUntilTwoConsecutivePassesMatch()
+        throws {
+        let firstVisible =
+            makeDefaultInputEndpointProperties(
+                deviceID: 79
+            )
+        let replacementVisible =
+            makeDefaultInputEndpointProperties(
+                deviceID: 80
+            )
+        let replacementHidden =
+            makeHiddenMirrorSinkEndpointProperties(
+                deviceID: 90
+            )
+        let reader =
+            SequencedBlackHoleEndpointPropertyReaderFake(
+                defaultInputs: [
+                    firstVisible,
+                    replacementVisible,
+                    replacementVisible,
+                    replacementVisible,
+                ],
+                hiddenMirrorSinks: Array(
+                    repeating: replacementHidden,
+                    count: 4
+                )
+            )
+        let resolver = BlackHoleDeviceEndpointPairResolver(
+            propertyReader: reader
+        )
+
+        XCTAssertThrowsError(
+            try resolver.resolveValidatedPair()
+        ) { error in
+            guard let captureError = error as? CaptureError,
+                  case .audioRouteUnhealthy = captureError else {
+                return XCTFail(
+                    "A torn consecutive pair produced \(error)"
+                )
+            }
+        }
+        XCTAssertEqual(
+            try resolver.resolveValidatedPair(),
+            BlackHoleDeviceEndpointPair(
+                defaultInputEndpoint:
+                    replacementVisible.identity,
+                hiddenMirrorSinkEndpoint:
+                    replacementHidden.identity
+            ),
+            "Only two consecutive identical full-pair reads may be admitted."
+        )
+        XCTAssertEqual(reader.defaultInputReadCount, 4)
+        XCTAssertEqual(reader.hiddenMirrorSinkReadCount, 4)
+    }
+
+    func testEndpointPairResolverRejectsDistinctInvalidObservationsWithSameGenericReason()
+        throws {
+        let validVisible =
+            makeDefaultInputEndpointProperties()
+        let validHidden =
+            makeHiddenMirrorSinkEndpointProperties()
+        let reader =
+            SequencedBlackHoleEndpointPropertyReaderFake(
+                defaultInputs: [
+                    makeDefaultInputEndpointProperties(
+                        isAlive: false
+                    ),
+                    validVisible,
+                    validVisible,
+                    validVisible,
+                ],
+                hiddenMirrorSinks: [
+                    validHidden,
+                    makeHiddenMirrorSinkEndpointProperties(
+                        outputChannelCount: 1
+                    ),
+                    validHidden,
+                    validHidden,
+                ]
+            )
+        let resolver = BlackHoleDeviceEndpointPairResolver(
+            propertyReader: reader
+        )
+
+        XCTAssertThrowsError(
+            try resolver.resolveValidatedPair()
+        ) { error in
+            guard let captureError = error as? CaptureError,
+                  case .audioRouteUnhealthy = captureError else {
+                return XCTFail(
+                    "Distinct invalid observations produced \(error)"
+                )
+            }
+        }
+        XCTAssertEqual(
+            try resolver.resolveValidatedPair(),
+            BlackHoleDeviceEndpointPair(
+                defaultInputEndpoint: validVisible.identity,
+                hiddenMirrorSinkEndpoint: validHidden.identity
+            ),
+            "Only identical full raw observations may proceed to topology validation."
+        )
+        XCTAssertEqual(reader.defaultInputReadCount, 4)
+        XCTAssertEqual(reader.hiddenMirrorSinkReadCount, 4)
+    }
+
+    func testEndpointPairResolverRejectsEveryInvalidTopology()
+        throws {
+        struct Scenario {
+            let name: String
+            let defaultInput:
+                BlackHoleDeviceEndpointProperties?
+            let hiddenMirrorSink:
+                BlackHoleDeviceEndpointProperties?
+        }
+
+        let scenarios = [
+            Scenario(
+                name: "missing visible endpoint",
+                defaultInput: nil,
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "missing hidden mirror",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(),
+                hiddenMirrorSink: nil
+            ),
+            Scenario(
+                name: "same device identity",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        deviceID: 79
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties(
+                        deviceID: 79
+                    )
+            ),
+            Scenario(
+                name: "wrong visible UID",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        deviceUID: "wrong-visible"
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "wrong hidden UID",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties(
+                        deviceUID: "wrong-hidden"
+                    )
+            ),
+            Scenario(
+                name: "wrong visible model",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        modelUID: "wrong-model"
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "wrong hidden model",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties(
+                        modelUID: "wrong-model"
+                    )
+            ),
+            Scenario(
+                name: "visible endpoint dead",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        isAlive: false
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "hidden endpoint dead",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties(
+                        isAlive: false
+                    )
+            ),
+            Scenario(
+                name: "visible endpoint hidden",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        isHidden: true
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "mirror endpoint visible",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties(
+                        isHidden: false
+                    )
+            ),
+            Scenario(
+                name: "visible input channels",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        inputChannelCount: 1
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "visible output channels",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        outputChannelCount: 1
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "mirror input channels",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties(
+                        inputChannelCount: 1
+                    )
+            ),
+            Scenario(
+                name: "mirror output channels",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties(
+                        outputChannelCount: 1
+                    )
+            ),
+            Scenario(
+                name: "visible sample rate",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        nominalSampleRate: 44_100
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "mirror sample rate",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties(
+                        nominalSampleRate: 44_100
+                    )
+            ),
+        ]
+
+        for scenario in scenarios {
+            let resolver = BlackHoleDeviceEndpointPairResolver(
+                propertyReader:
+                    BlackHoleEndpointPropertyReaderFake(
+                        defaultInput: scenario.defaultInput,
+                        hiddenMirrorSink:
+                            scenario.hiddenMirrorSink
+                    )
+            )
+            XCTAssertThrowsError(
+                try resolver.resolveValidatedPair(),
+                scenario.name
+            ) { error in
+                guard let captureError = error as? CaptureError,
+                      case .audioDeviceNotFound = captureError else {
+                    return XCTFail(
+                        "\(scenario.name) produced \(error)"
+                    )
+                }
+            }
+        }
     }
 
     func testNonIncreasingGenerationAndForeignEpochAreRejected()
@@ -817,8 +1722,16 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
             BlackHoleDeviceAvailabilitySnapshot(
                 monitorEpoch: epoch,
                 deviceGeneration: 3,
-                isAvailable: true,
-                deviceUID: "BlackHole2ch_UID"
+                defaultInputEndpoint:
+                    BlackHoleDeviceEndpointIdentity(
+                        deviceID: 79,
+                        deviceUID: "BlackHole2ch_UID"
+                    ),
+                hiddenMirrorSinkEndpoint:
+                    BlackHoleDeviceEndpointIdentity(
+                        deviceID: 89,
+                        deviceUID: "BlackHole2ch_2_UID"
+                    )
             )
         )
         monitor.publishForTesting(
@@ -850,6 +1763,138 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
 final class BlackHoleDefaultInputLeaseTests:
     XCTestCase
 {
+    func testExactEndpointRejectsSameUIDReplacementBeforeMutation() {
+        let operations = DefaultInputLeaseOperationsFake()
+        let lease = makeLease(operations)
+        let monitoredEndpoint =
+            BlackHoleDeviceEndpointIdentity(
+                deviceID: 2,
+                deviceUID:
+                    BlackHoleDefaultInputLease
+                        .canonicalDeviceUID
+            )
+        operations.replaceDevicePreservingUID(
+            oldDeviceID: 2,
+            newDeviceID: 22
+        )
+
+        XCTAssertEqual(
+            lease.acquisitionResult(
+                generation: 1,
+                targetEndpoint: monitoredEndpoint
+            ),
+            .terminalFailure
+        )
+        XCTAssertEqual(
+            operations.currentUID,
+            "BuiltInMic_UID"
+        )
+        XCTAssertTrue(
+            operations.writtenDeviceIDs.isEmpty
+        )
+        XCTAssertTrue(
+            operations.removedExactRegistration
+        )
+    }
+
+    func testAlreadySelectedEndpointRejectsSameUIDReplacementAfterFreshTranslation() {
+        let operations = DefaultInputLeaseOperationsFake()
+        operations.externalSelect(deviceID: 2)
+        operations.onResolveDeviceID = {
+            [weak operations] uid in
+            guard uid
+                    == BlackHoleDefaultInputLease
+                        .canonicalDeviceUID else {
+                return
+            }
+            operations?.replaceDevicePreservingUID(
+                oldDeviceID: 2,
+                newDeviceID: 22
+            )
+        }
+        let lease = makeLease(operations)
+
+        XCTAssertEqual(
+            lease.acquisitionResult(
+                generation: 1,
+                targetEndpoint:
+                    BlackHoleDeviceEndpointIdentity(
+                        deviceID: 2,
+                        deviceUID:
+                            BlackHoleDefaultInputLease
+                                .canonicalDeviceUID
+                    )
+            ),
+            .terminalFailure
+        )
+        XCTAssertEqual(operations.selectedDeviceID, 22)
+        XCTAssertTrue(
+            operations.writtenDeviceIDs.isEmpty
+        )
+    }
+
+    func testOwnedWriteReadbackRejectsSameUIDReplacement() {
+        let operations = DefaultInputLeaseOperationsFake()
+        operations.onDefaultInputWritten = {
+            [weak operations] deviceID in
+            guard deviceID == 2 else { return }
+            operations?.replaceDevicePreservingUID(
+                oldDeviceID: 2,
+                newDeviceID: 22
+            )
+        }
+        let lease = makeLease(operations)
+
+        XCTAssertEqual(
+            lease.acquisitionResult(
+                generation: 1,
+                targetEndpoint:
+                    BlackHoleDeviceEndpointIdentity(
+                        deviceID: 2,
+                        deviceUID:
+                            BlackHoleDefaultInputLease
+                                .canonicalDeviceUID
+                    )
+            ),
+            .terminalFailure
+        )
+        XCTAssertEqual(operations.selectedDeviceID, 22)
+        XCTAssertEqual(operations.writtenDeviceIDs, [2])
+    }
+
+    func testHiddenMirrorCanNeverBeSelectedByDefaultInputLease() {
+        let operations = DefaultInputLeaseOperationsFake()
+        let lease = makeLease(operations)
+
+        XCTAssertEqual(
+            lease.acquisitionResult(
+                generation: 1,
+                targetUID: "BlackHole2ch_2_UID"
+            ),
+            .terminalFailure
+        )
+        XCTAssertEqual(operations.events, [])
+        XCTAssertEqual(operations.currentUID, "BuiltInMic_UID")
+    }
+
+    func testPreexistingHiddenMirrorDefaultInputFailsClosedWithoutRestorationLease() {
+        let operations = DefaultInputLeaseOperationsFake()
+        operations.externalSelect(deviceID: 4)
+        let lease = makeLease(operations)
+
+        XCTAssertEqual(
+            lease.acquisitionResult(generation: 1),
+            .terminalFailure
+        )
+        XCTAssertEqual(operations.currentUID, "BlackHole2ch_2_UID")
+        XCTAssertEqual(operations.writtenDeviceIDs, [])
+        XCTAssertFalse(operations.events.contains("register"))
+        XCTAssertEqual(
+            lease.acquisitionResult(generation: 1),
+            .terminalFailure
+        )
+    }
+
     func testListenerPrecedesOwnedWriteAndReleaseRestoresPriorUID() {
         let operations = DefaultInputLeaseOperationsFake()
         let lease = makeLease(operations)
@@ -1186,6 +2231,68 @@ final class BlackHoleDefaultInputLeaseTests:
             operations.writtenDeviceIDs,
             writesBeforeRejectedReacquire,
             "A relinquished generation must not issue another default-input write."
+        )
+    }
+
+    func testPostAdmissionExternalHiddenInputSynchronouslyClosesGateAndInvalidatesProof() {
+        let operations = DefaultInputLeaseOperationsFake()
+        let recorder = DefaultInputUncertaintyRecorder()
+        let lease = makeLease(operations)
+        lease.setUncertaintyHandler { event in
+            recorder.record(event)
+        }
+        let endpoint = BlackHoleDeviceEndpointIdentity(
+            deviceID: 2,
+            deviceUID:
+                BlackHoleDefaultInputLease.canonicalDeviceUID
+        )
+
+        XCTAssertEqual(
+            lease.acquisitionResult(
+                generation: 1,
+                targetEndpoint: endpoint
+            ),
+            .acquired
+        )
+        guard let authorization = lease.authorizationProof(
+            generation: 1,
+            targetEndpoint: endpoint
+        ) else {
+            return XCTFail("Expected an exact post-acquisition listener proof")
+        }
+        XCTAssertTrue(
+            recorder.events.contains(where: authorization.incorporates),
+            "The owned-write callback must be incorporated before admission."
+        )
+
+        recorder.reopenGate()
+        operations.externalSelect(deviceID: 4)
+
+        XCTAssertFalse(
+            recorder.gateIsOpen,
+            "The raw external selector callback must synchronously close the writer gate."
+        )
+        let externalEvent = try? XCTUnwrap(recorder.events.last)
+        XCTAssertNotNil(externalEvent)
+        if let externalEvent {
+            XCTAssertFalse(authorization.incorporates(externalEvent))
+        }
+        XCTAssertNil(
+            lease.authorizationProof(
+                generation: 1,
+                targetEndpoint: endpoint
+            ),
+            "A newer exact listener sequence must make the admitted proof unusable."
+        )
+        XCTAssertEqual(
+            lease.release(generation: 1),
+            .externallySuperseded
+        )
+        XCTAssertEqual(operations.currentUID, "BlackHole2ch_2_UID")
+        XCTAssertEqual(
+            operations.writtenDeviceIDs,
+            [2],
+            "Release must not restore over the external hidden-endpoint choice."
         )
     }
 
@@ -1809,6 +2916,7 @@ private final class DefaultInputLeaseOperationsFake:
         1: "BuiltInMic_UID",
         2: "BlackHole2ch_UID",
         3: "USBMic_UID",
+        4: "BlackHole2ch_2_UID",
     ]
     private var currentDeviceID: AudioDeviceID = 1
     private var listener: Listener?
@@ -1857,6 +2965,10 @@ private final class DefaultInputLeaseOperationsFake:
 
     var currentUID: String {
         lock.withLock { uids[currentDeviceID]! }
+    }
+
+    var selectedDeviceID: AudioDeviceID {
+        lock.withLock { currentDeviceID }
     }
 
     var events: [String] {
@@ -1987,6 +3099,23 @@ private final class DefaultInputLeaseOperationsFake:
         }
     }
 
+    func currentDefaultInputDeviceID() throws
+        -> AudioDeviceID {
+        try lock.withLock {
+            eventStorage.append("read-id")
+            if currentReadFailuresRemaining > 0 {
+                currentReadFailuresRemaining -= 1
+                throw BlackHoleDefaultInputFakeError
+                    .injectedReadFailure
+            }
+            guard uids[currentDeviceID] != nil else {
+                throw BlackHoleDefaultInputFakeError
+                    .missingUID
+            }
+            return currentDeviceID
+        }
+    }
+
     func resolveDeviceID(uid: String) throws -> AudioDeviceID {
         let deviceID = try lock.withLock {
             eventStorage.append("resolve:\(uid)")
@@ -2087,6 +3216,26 @@ private final class DefaultInputLeaseOperationsFake:
         }
     }
 
+    /// Models Core Audio replacing an endpoint while preserving its stable UID.
+    /// No default-input notification is emitted because this is an inventory
+    /// transition, which is exactly why the lease must also fence on device ID.
+    func replaceDevicePreservingUID(
+        oldDeviceID: AudioDeviceID,
+        newDeviceID: AudioDeviceID
+    ) {
+        lock.withLock {
+            guard let uid = uids.removeValue(
+                forKey: oldDeviceID
+            ) else {
+                return
+            }
+            uids[newDeviceID] = uid
+            if currentDeviceID == oldDeviceID {
+                currentDeviceID = newDeviceID
+            }
+        }
+    }
+
     private func emit(_ listener: Listener?) {
         guard let listener else { return }
         let beforeCallback = lock.withLock {
@@ -2108,10 +3257,177 @@ private final class DefaultInputLeaseOperationsFake:
 
 }
 
+private final class DefaultInputUncertaintyRecorder:
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var gateOpenStorage = false
+    private var eventStorage:
+        [BlackHoleDefaultInputLeaseUncertaintyEvent] = []
+
+    func record(
+        _ event: BlackHoleDefaultInputLeaseUncertaintyEvent
+    ) {
+        lock.withLock {
+            gateOpenStorage = false
+            eventStorage.append(event)
+        }
+    }
+
+    func reopenGate() {
+        lock.withLock {
+            gateOpenStorage = true
+        }
+    }
+
+    var gateIsOpen: Bool {
+        lock.withLock { gateOpenStorage }
+    }
+
+    var events: [BlackHoleDefaultInputLeaseUncertaintyEvent] {
+        lock.withLock { eventStorage }
+    }
+}
+
 private enum BlackHoleDefaultInputFakeError: Error {
     case missingUID
     case injectedReadFailure
     case injectedResolutionFailure
+}
+
+private final class BlackHoleEndpointPropertyReaderFake:
+    BlackHoleDeviceEndpointPropertyReading,
+    @unchecked Sendable
+{
+    private let defaultInput:
+        BlackHoleDeviceEndpointProperties?
+    private let hiddenMirrorSink:
+        BlackHoleDeviceEndpointProperties?
+
+    init(
+        defaultInput: BlackHoleDeviceEndpointProperties?,
+        hiddenMirrorSink: BlackHoleDeviceEndpointProperties?
+    ) {
+        self.defaultInput = defaultInput
+        self.hiddenMirrorSink = hiddenMirrorSink
+    }
+
+    func endpointProperties(
+        exactUID: String
+    ) throws -> BlackHoleDeviceEndpointProperties? {
+        switch exactUID {
+        case WorldwideBlackHoleMicrophoneEndpointContract
+            .visibleDefaultInputDeviceUID:
+            return defaultInput
+        case WorldwideBlackHoleMicrophoneEndpointContract
+            .hiddenMirrorSinkDeviceUID:
+            return hiddenMirrorSink
+        default:
+            return nil
+        }
+    }
+}
+
+private final class SequencedBlackHoleEndpointPropertyReaderFake:
+    BlackHoleDeviceEndpointPropertyReading,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var defaultInputs:
+        [BlackHoleDeviceEndpointProperties]
+    private var hiddenMirrorSinks:
+        [BlackHoleDeviceEndpointProperties]
+    private var defaultInputReads = 0
+    private var hiddenMirrorSinkReads = 0
+
+    init(
+        defaultInputs: [BlackHoleDeviceEndpointProperties],
+        hiddenMirrorSinks: [BlackHoleDeviceEndpointProperties]
+    ) {
+        self.defaultInputs = defaultInputs
+        self.hiddenMirrorSinks = hiddenMirrorSinks
+    }
+
+    func endpointProperties(
+        exactUID: String
+    ) throws -> BlackHoleDeviceEndpointProperties? {
+        try lock.withLock {
+            switch exactUID {
+            case WorldwideBlackHoleMicrophoneEndpointContract
+                .visibleDefaultInputDeviceUID:
+                guard !defaultInputs.isEmpty else {
+                    throw BlackHoleMonitorLookupError.injected
+                }
+                defaultInputReads += 1
+                return defaultInputs.removeFirst()
+            case WorldwideBlackHoleMicrophoneEndpointContract
+                .hiddenMirrorSinkDeviceUID:
+                guard !hiddenMirrorSinks.isEmpty else {
+                    throw BlackHoleMonitorLookupError.injected
+                }
+                hiddenMirrorSinkReads += 1
+                return hiddenMirrorSinks.removeFirst()
+            default:
+                return nil
+            }
+        }
+    }
+
+    var defaultInputReadCount: Int {
+        lock.withLock { defaultInputReads }
+    }
+
+    var hiddenMirrorSinkReadCount: Int {
+        lock.withLock { hiddenMirrorSinkReads }
+    }
+}
+
+private func makeDefaultInputEndpointProperties(
+    deviceID: AudioDeviceID = 79,
+    deviceUID: String = "BlackHole2ch_UID",
+    modelUID: String = "BlackHole2ch_ModelUID",
+    isAlive: Bool = true,
+    isHidden: Bool = false,
+    inputChannelCount: UInt32 = 2,
+    outputChannelCount: UInt32 = 2,
+    nominalSampleRate: Double = 48_000
+) -> BlackHoleDeviceEndpointProperties {
+    BlackHoleDeviceEndpointProperties(
+        identity: BlackHoleDeviceEndpointIdentity(
+            deviceID: deviceID,
+            deviceUID: deviceUID
+        ),
+        modelUID: modelUID,
+        isAlive: isAlive,
+        isHidden: isHidden,
+        inputChannelCount: inputChannelCount,
+        outputChannelCount: outputChannelCount,
+        nominalSampleRate: nominalSampleRate
+    )
+}
+
+private func makeHiddenMirrorSinkEndpointProperties(
+    deviceID: AudioDeviceID = 89,
+    deviceUID: String = "BlackHole2ch_2_UID",
+    modelUID: String = "BlackHole2ch_ModelUID",
+    isAlive: Bool = true,
+    isHidden: Bool = true,
+    inputChannelCount: UInt32 = 2,
+    outputChannelCount: UInt32 = 2,
+    nominalSampleRate: Double = 48_000
+) -> BlackHoleDeviceEndpointProperties {
+    BlackHoleDeviceEndpointProperties(
+        identity: BlackHoleDeviceEndpointIdentity(
+            deviceID: deviceID,
+            deviceUID: deviceUID
+        ),
+        modelUID: modelUID,
+        isAlive: isAlive,
+        isHidden: isHidden,
+        inputChannelCount: inputChannelCount,
+        outputChannelCount: outputChannelCount,
+        nominalSampleRate: nominalSampleRate
+    )
 }
 
 private final class BlackHoleMonitorOperationsFake:
@@ -2120,6 +3436,11 @@ private final class BlackHoleMonitorOperationsFake:
 {
     enum LookupResult {
         case uid(String)
+        case endpointPair(BlackHoleDeviceEndpointPair)
+        case endpointProperties(
+            defaultInput: BlackHoleDeviceEndpointProperties?,
+            hiddenMirrorSink: BlackHoleDeviceEndpointProperties?
+        )
         case unavailable
         case configurationFailure
         case failure
@@ -2147,6 +3468,7 @@ private final class BlackHoleMonitorOperationsFake:
         [ObjectIdentifier] = []
     private var removalQueueIdentifiersStorage:
         [ObjectIdentifier] = []
+    private var emitListenerDuringNextInventoryResolution = false
     var listenerRemovalFailuresRemaining = 0
 
     init(lookupResults: [LookupResult]) {
@@ -2261,28 +3583,92 @@ private final class BlackHoleMonitorOperationsFake:
         }
     }
 
-    func resolveBlackHole2ChannelDeviceUID() throws -> String {
-        try lock.withLock {
-            eventsStorage.append("inventory")
-            guard !lookupResults.isEmpty else {
-                throw BlackHoleMonitorLookupError.injected
+    func resolveBlackHole2ChannelEndpointPair() throws
+        -> BlackHoleDeviceEndpointPair {
+        let (lookupResult, listenerToEmit):
+            (LookupResult, ListenerRecord?) = try lock.withLock {
+                eventsStorage.append("inventory")
+                guard !lookupResults.isEmpty else {
+                    throw BlackHoleMonitorLookupError.injected
+                }
+                let lookupResult = lookupResults.removeFirst()
+                let listenerToEmit =
+                    emitListenerDuringNextInventoryResolution
+                        ? activeListener
+                        : nil
+                emitListenerDuringNextInventoryResolution = false
+                return (lookupResult, listenerToEmit)
             }
-            switch lookupResults.removeFirst() {
-            case .uid(let uid):
-                return uid
-            case .unavailable:
-                throw CaptureError.audioDeviceNotFound(
-                    "injected factual absence"
-                )
-            case .configurationFailure:
-                throw CaptureError.audioDeviceConfiguration(
-                    "injected strict inventory property read",
-                    OSStatus(-66_301)
-                )
-            case .failure:
-                throw BlackHoleMonitorLookupError.injected
+
+        emit(listenerToEmit)
+        switch lookupResult {
+        case .uid(let uid):
+            return Self.endpointPair(
+                defaultInputDeviceID: 79,
+                defaultInputDeviceUID: uid,
+                hiddenMirrorSinkDeviceID: 89
+            )
+        case .endpointPair(let endpointPair):
+            return endpointPair
+        case .endpointProperties(
+            let defaultInput,
+            let hiddenMirrorSink
+        ):
+            return try BlackHoleDeviceEndpointPairResolver(
+                propertyReader:
+                    BlackHoleEndpointPropertyReaderFake(
+                        defaultInput: defaultInput,
+                        hiddenMirrorSink: hiddenMirrorSink
+                    )
+            ).resolveValidatedPair()
+        case .unavailable:
+            throw CaptureError.audioDeviceNotFound(
+                "injected factual absence"
+            )
+        case .configurationFailure:
+            throw CaptureError.audioDeviceConfiguration(
+                "injected strict inventory property read",
+                OSStatus(-66_301)
+            )
+        case .failure:
+            throw BlackHoleMonitorLookupError.injected
+        }
+    }
+
+    func emitCurrentListenerDuringNextInventoryResolution() {
+        lock.withLock {
+            emitListenerDuringNextInventoryResolution = true
+        }
+    }
+
+    private func emit(_ listener: ListenerRecord?) {
+        guard let listener else { return }
+        listener.queue.sync {
+            var address = listener.address
+            withUnsafePointer(to: &address) {
+                listener.registration.block(1, $0)
             }
         }
+    }
+
+    static func endpointPair(
+        defaultInputDeviceID: AudioDeviceID,
+        defaultInputDeviceUID: String = "BlackHole2ch_UID",
+        hiddenMirrorSinkDeviceID: AudioDeviceID,
+        hiddenMirrorSinkDeviceUID: String = "BlackHole2ch_2_UID"
+    ) -> BlackHoleDeviceEndpointPair {
+        BlackHoleDeviceEndpointPair(
+            defaultInputEndpoint:
+                BlackHoleDeviceEndpointIdentity(
+                    deviceID: defaultInputDeviceID,
+                    deviceUID: defaultInputDeviceUID
+                ),
+            hiddenMirrorSinkEndpoint:
+                BlackHoleDeviceEndpointIdentity(
+                    deviceID: hiddenMirrorSinkDeviceID,
+                    deviceUID: hiddenMirrorSinkDeviceUID
+                )
+        )
     }
 
     func emitCurrentListener() {
@@ -2308,16 +3694,6 @@ private final class BlackHoleMonitorOperationsFake:
             return retiredListeners[index]
         }
         emit(listener)
-    }
-
-    private func emit(_ listener: ListenerRecord?) {
-        guard let listener else { return }
-        listener.queue.sync {
-            var address = listener.address
-            withUnsafePointer(to: &address) {
-                listener.registration.block(1, $0)
-            }
-        }
     }
 
     private static func addressesEqual(
@@ -2350,6 +3726,36 @@ private final class BlackHoleSnapshotLedger:
     }
 
     var snapshots: [BlackHoleDeviceAvailabilitySnapshot] {
+        lock.withLock { storage }
+    }
+}
+
+private final class BlackHoleUncertaintyLedger:
+    @unchecked Sendable
+{
+    struct Event: Equatable {
+        let epoch: UUID
+        let eventSequence: UInt64
+    }
+
+    private let lock = NSLock()
+    private var storage: [Event] = []
+
+    func append(
+        epoch: UUID,
+        eventSequence: UInt64
+    ) {
+        lock.withLock {
+            storage.append(
+                Event(
+                    epoch: epoch,
+                    eventSequence: eventSequence
+                )
+            )
+        }
+    }
+
+    var events: [Event] {
         lock.withLock { storage }
     }
 }
