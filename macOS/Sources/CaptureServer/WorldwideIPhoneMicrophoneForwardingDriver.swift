@@ -73,6 +73,7 @@ struct WorldwideIPhoneMicrophoneForwardingHostSnapshot:
     let monitorEpoch: UUID?
     let deviceGeneration: UInt64
     let deviceUID: String?
+    let sinkDeviceUID: String?
     let deviceAvailable: Bool
     let currentKey: WorldwideIPhoneMicrophoneForwardingKey?
     let lastAttemptedKey: WorldwideIPhoneMicrophoneForwardingKey?
@@ -92,6 +93,12 @@ struct WorldwideIPhoneMicrophoneForwardingHostSnapshot:
     let lastFailureCategory:
         WorldwideIPhoneMicrophoneForwardingFailureCategory?
 
+    var hiddenWriterSelectionProven: Bool {
+        deviceAvailable
+            && sinkDeviceUID != nil
+            && queueRunning
+    }
+
     static func inactive(
         policy: WorldwideIPhoneMicrophoneForwardingPolicy
     ) -> Self {
@@ -103,6 +110,7 @@ struct WorldwideIPhoneMicrophoneForwardingHostSnapshot:
             monitorEpoch: nil,
             deviceGeneration: 0,
             deviceUID: nil,
+            sinkDeviceUID: nil,
             deviceAvailable: false,
             currentKey: nil,
             lastAttemptedKey: nil,
@@ -254,7 +262,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     typealias OutputFactory =
         @Sendable (
             Peer,
-            String
+            BlackHoleDeviceEndpointIdentity
         ) -> (any WorldwideIPhoneMicrophoneOutput)?
     typealias OutputStarter =
         @Sendable (
@@ -274,7 +282,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         let key: WorldwideIPhoneMicrophoneForwardingKey
         let peer: Peer
         let track: Track
-        let deviceUID: String
+        let sinkEndpoint: BlackHoleDeviceEndpointIdentity
     }
 
     private struct InboundMediaSample {
@@ -290,7 +298,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         let key: WorldwideIPhoneMicrophoneForwardingKey
         let peer: Peer
         let track: Track
-        let deviceUID: String
+        let sinkEndpoint: BlackHoleDeviceEndpointIdentity
         let output: any WorldwideIPhoneMicrophoneOutput
         var exactTrackAdmitted = false
         var deferredReadyProgress:
@@ -316,7 +324,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             key = candidate.key
             peer = candidate.peer
             track = candidate.track
-            deviceUID = candidate.deviceUID
+            sinkEndpoint = candidate.sinkEndpoint
             self.output = output
             lastInboundMediaWatermark =
                 baselineInboundMediaSample?.watermark
@@ -785,6 +793,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             deviceGeneration:
                 monitorSnapshot?.deviceGeneration ?? 0,
             deviceUID: monitorSnapshot?.deviceUID,
+            sinkDeviceUID:
+                monitorSnapshot?.hiddenMirrorSinkEndpoint?.deviceUID,
             deviceAvailable:
                 monitorSnapshot?.isAvailable ?? false,
             currentKey: currentAttempt?.key,
@@ -887,7 +897,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
 
         guard let output = makeOutput(
             candidate.peer,
-            candidate.deviceUID
+            candidate.sinkEndpoint
         ) else {
             failWithoutOutput(
                 candidate: candidate,
@@ -1097,8 +1107,18 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
               monitorSnapshot.monitorEpoch == activeMonitorEpoch,
               monitorSnapshot.isAvailable,
               monitorSnapshot.deviceGeneration > 0,
-              let deviceUID = monitorSnapshot.deviceUID,
-              !deviceUID.isEmpty,
+              let defaultInputDeviceUID = monitorSnapshot.deviceUID,
+              !defaultInputDeviceUID.isEmpty,
+              let defaultInputEndpoint = monitorSnapshot
+                .defaultInputEndpoint,
+              defaultInputEndpoint.deviceUID
+                == defaultInputDeviceUID,
+              let sinkEndpoint = monitorSnapshot
+                .hiddenMirrorSinkEndpoint,
+              !sinkEndpoint.deviceUID.isEmpty,
+              sinkEndpoint.deviceUID != defaultInputDeviceUID,
+              sinkEndpoint.deviceID
+                != defaultInputEndpoint.deviceID,
               let peer,
               peerGeneration > 0,
               transportAuthorized,
@@ -1120,7 +1140,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             ),
             peer: peer,
             track: track,
-            deviceUID: deviceUID
+            sinkEndpoint: sinkEndpoint
         )
     }
 
@@ -1132,7 +1152,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
               candidate.key == attempt.key,
               candidate.peer === attempt.peer,
               candidate.track === attempt.track,
-              candidate.deviceUID == attempt.deviceUID else {
+              candidate.sinkEndpoint == attempt.sinkEndpoint else {
             return false
         }
         return true
@@ -1145,7 +1165,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
               current.key == candidate.key,
               current.peer === candidate.peer,
               current.track === candidate.track,
-              current.deviceUID == candidate.deviceUID else {
+              current.sinkEndpoint == candidate.sinkEndpoint else {
             return false
         }
         return true
@@ -1495,7 +1515,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             return
         }
         guard monitorSnapshot.isAvailable,
-              monitorSnapshot.deviceUID != nil else {
+              monitorSnapshot.deviceUID != nil,
+              monitorSnapshot.hiddenMirrorSinkEndpoint != nil else {
             phase = .waitingForDevice
             return
         }
@@ -1579,8 +1600,12 @@ protocol WorldwideBlackHoleDefaultInputLeasing:
 {
     func acquisitionResult(
         generation: UInt64,
-        targetUID: String
+        targetEndpoint: BlackHoleDeviceEndpointIdentity
     ) -> BlackHoleDefaultInputLeaseAcquisitionResult
+    func authorizationProof(
+        generation: UInt64,
+        targetEndpoint: BlackHoleDeviceEndpointIdentity
+    ) -> BlackHoleDefaultInputLeaseAuthorization?
     func release(
         generation: UInt64
     ) -> BlackHoleDefaultInputLeaseReleaseResult
@@ -1601,7 +1626,13 @@ struct WorldwideBlackHoleDefaultInputKey:
     let peerGeneration: UInt64
     let connectionGeneration: UInt64
     let leaseGeneration: UInt64
-    let deviceUID: String
+    let deviceEndpoint: BlackHoleDeviceEndpointIdentity
+    let inputAuthorization:
+        BlackHoleDefaultInputLeaseAuthorization
+
+    var deviceUID: String {
+        deviceEndpoint.deviceUID
+    }
 }
 
 enum WorldwideBlackHoleDefaultInputOutcome:
@@ -1821,7 +1852,58 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         let deviceGeneration: UInt64
         let peerGeneration: UInt64
         let connectionGeneration: UInt64
-        let deviceUID: String
+        let deviceEndpoint: BlackHoleDeviceEndpointIdentity
+    }
+
+    private struct LeaseKey: Equatable {
+        let monitorEpoch: UUID
+        let deviceGeneration: UInt64
+        let peerGeneration: UInt64
+        let connectionGeneration: UInt64
+        let leaseGeneration: UInt64
+        let deviceEndpoint: BlackHoleDeviceEndpointIdentity
+
+        init(
+            monitorEpoch: UUID,
+            deviceGeneration: UInt64,
+            peerGeneration: UInt64,
+            connectionGeneration: UInt64,
+            leaseGeneration: UInt64,
+            deviceEndpoint: BlackHoleDeviceEndpointIdentity
+        ) {
+            self.monitorEpoch = monitorEpoch
+            self.deviceGeneration = deviceGeneration
+            self.peerGeneration = peerGeneration
+            self.connectionGeneration = connectionGeneration
+            self.leaseGeneration = leaseGeneration
+            self.deviceEndpoint = deviceEndpoint
+        }
+
+        init(_ key: WorldwideBlackHoleDefaultInputKey) {
+            self.init(
+                monitorEpoch: key.monitorEpoch,
+                deviceGeneration: key.deviceGeneration,
+                peerGeneration: key.peerGeneration,
+                connectionGeneration: key.connectionGeneration,
+                leaseGeneration: key.leaseGeneration,
+                deviceEndpoint: key.deviceEndpoint
+            )
+        }
+
+        func authorized(
+            by authorization:
+                BlackHoleDefaultInputLeaseAuthorization
+        ) -> WorldwideBlackHoleDefaultInputKey {
+            WorldwideBlackHoleDefaultInputKey(
+                monitorEpoch: monitorEpoch,
+                deviceGeneration: deviceGeneration,
+                peerGeneration: peerGeneration,
+                connectionGeneration: connectionGeneration,
+                leaseGeneration: leaseGeneration,
+                deviceEndpoint: deviceEndpoint,
+                inputAuthorization: authorization
+            )
+        }
     }
 
     private enum ReleaseDisposition {
@@ -1846,7 +1928,7 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
     private var connectionGeneration: UInt64 = 0
     private var nextLeaseGeneration: UInt64 = 0
     private var activeKey: WorldwideBlackHoleDefaultInputKey?
-    private var activeSelectionConfirmed = false
+    private var pendingKey: LeaseKey?
     private var releaseIsPending = false
     private var terminalConnectionGeneration: UInt64?
     private var lastAttemptedIdentity: CandidateIdentity?
@@ -1917,6 +1999,20 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         return .degraded
     }
 
+    func deviceRevalidationDidFail()
+        -> WorldwideBlackHoleDefaultInputOutcome {
+        guard !isStopped else {
+            return .noChange
+        }
+        guard policy == .enabled else {
+            return .suppressed
+        }
+        _ = releaseActiveBounded()
+        monitorSnapshot = nil
+        resetAcquisitionAttempts()
+        return .degraded
+    }
+
     func updateDeviceSnapshot(
         _ snapshot:
             BlackHoleDeviceAvailabilitySnapshot
@@ -1936,23 +2032,13 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
                     > monitorSnapshot.deviceGeneration else {
                 return .noChange
             }
-            if snapshot.isAvailable
-                    == monitorSnapshot.isAvailable,
-               snapshot.deviceUID
-                    == monitorSnapshot.deviceUID {
-                if releaseIsPending {
-                    return outcome(
-                        for: releaseActiveBounded(),
-                        whenNoChange: .noChange
-                    )
-                }
-                return .noChange
-            }
         }
 
         monitorSnapshot = snapshot
         if !snapshot.isAvailable
-            || snapshot.deviceUID == nil {
+            || snapshot.deviceUID == nil
+            || snapshot.defaultInputEndpoint == nil
+            || snapshot.hiddenMirrorSinkEndpoint == nil {
             resetAcquisitionAttempts()
             return outcome(
                 for: releaseActiveBounded(),
@@ -2006,6 +2092,7 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         let ownsPeer =
             healthyPeerGeneration == peerGeneration
                 || activeKey?.peerGeneration == peerGeneration
+                || pendingKey?.peerGeneration == peerGeneration
         guard ownsPeer else {
             return .noChange
         }
@@ -2034,6 +2121,35 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
             return releaseOutcome
         }
         return replacementOutcome
+    }
+
+    /// Consumes a raw exact-listener event after the realtime writer gate has
+    /// already been closed. Only the event incorporated by the current proof is
+    /// stale. Every other event terminalizes this connection generation and
+    /// releases without restoring over the external selector choice.
+    func defaultInputDidBecomeUncertain(
+        _ event: BlackHoleDefaultInputLeaseUncertaintyEvent
+    ) -> WorldwideBlackHoleDefaultInputOutcome {
+        guard !isStopped else {
+            return .noChange
+        }
+        guard policy == .enabled else {
+            return .suppressed
+        }
+        if let authorization = activeKey?.inputAuthorization,
+           authorization.incorporates(event) {
+            return .noChange
+        }
+        guard let connectionGeneration =
+                activeKey?.connectionGeneration
+                    ?? pendingKey?.connectionGeneration else {
+            return .noChange
+        }
+
+        terminalConnectionGeneration = connectionGeneration
+        resetAcquisitionAttempts()
+        _ = releaseActiveBounded()
+        return .degraded
     }
 
     func invalidateCurrentConnection()
@@ -2105,8 +2221,12 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
             return .waitingForMonitor
         }
         guard monitorSnapshot.isAvailable,
-              let deviceUID = monitorSnapshot.deviceUID,
-              !deviceUID.isEmpty else {
+              let deviceEndpoint =
+                monitorSnapshot.defaultInputEndpoint,
+              !deviceEndpoint.deviceUID.isEmpty,
+              monitorSnapshot.deviceUID
+                == deviceEndpoint.deviceUID,
+              monitorSnapshot.hiddenMirrorSinkEndpoint != nil else {
             return .waitingForDevice
         }
         guard let healthyPeerGeneration else {
@@ -2114,7 +2234,8 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         }
         if terminalConnectionGeneration
                 == connectionGeneration,
-           activeKey == nil {
+           activeKey == nil,
+           pendingKey == nil {
             return .degraded
         }
 
@@ -2125,10 +2246,12 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
             peerGeneration: healthyPeerGeneration,
             connectionGeneration:
                 connectionGeneration,
-            deviceUID: deviceUID
+            deviceEndpoint: deviceEndpoint
         )
+        let currentLeaseKey =
+            activeKey.map(LeaseKey.init) ?? pendingKey
         let activeKeyMatchesIdentity =
-            activeKey.map {
+            currentLeaseKey.map {
                 $0.monitorEpoch == identity.monitorEpoch
                     && $0.deviceGeneration
                         == identity.deviceGeneration
@@ -2136,16 +2259,29 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
                         == identity.peerGeneration
                     && $0.connectionGeneration
                         == identity.connectionGeneration
-                    && $0.deviceUID
-                        == identity.deviceUID
+                    && $0.deviceEndpoint
+                        == identity.deviceEndpoint
             } ?? false
-        if activeSelectionConfirmed,
+        if let activeKey,
            activeKeyMatchesIdentity,
            !releaseIsPending {
-            return .noChange
+            let leaseKey = LeaseKey(activeKey)
+            guard let authorization =
+                    authorizationProof(for: leaseKey) else {
+                terminalConnectionGeneration =
+                    activeKey.connectionGeneration
+                resetAcquisitionAttempts()
+                _ = releaseActiveBounded()
+                return .degraded
+            }
+            let refreshedKey = leaseKey.authorized(
+                by: authorization
+            )
+            self.activeKey = refreshedKey
+            return .selected(refreshedKey)
         }
 
-        if activeKey != nil,
+        if currentLeaseKey != nil,
            releaseIsPending
                 || !activeKeyMatchesIdentity {
             let release = releaseActiveBounded()
@@ -2167,14 +2303,14 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
             return .degraded
         }
 
-        let key: WorldwideBlackHoleDefaultInputKey
-        if let activeKey {
-            key = activeKey
+        let key: LeaseKey
+        if let pendingKey {
+            key = pendingKey
         } else {
             nextLeaseGeneration = Self.nextNonzero(
                 nextLeaseGeneration
             )
-            key = WorldwideBlackHoleDefaultInputKey(
+            key = LeaseKey(
                 monitorEpoch: identity.monitorEpoch,
                 deviceGeneration:
                     identity.deviceGeneration,
@@ -2183,10 +2319,10 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
                     identity.connectionGeneration,
                 leaseGeneration:
                     nextLeaseGeneration,
-                deviceUID: identity.deviceUID
+                deviceEndpoint:
+                    identity.deviceEndpoint
             )
-            activeKey = key
-            activeSelectionConfirmed = false
+            pendingKey = key
         }
 
         while acquisitionAttemptCount
@@ -2194,11 +2330,24 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
             acquisitionAttemptCount += 1
             switch lease.acquisitionResult(
                 generation: key.leaseGeneration,
-                targetUID: deviceUID
+                targetEndpoint: deviceEndpoint
             ) {
             case .acquired:
-                activeSelectionConfirmed = true
-                return .selected(key)
+                guard let authorization =
+                        authorizationProof(for: key) else {
+                    terminalConnectionGeneration =
+                        key.connectionGeneration
+                    acquisitionAttemptCount =
+                        maximumAcquisitionAttemptCount
+                    _ = releaseActiveBounded()
+                    return .degraded
+                }
+                let authorizedKey = key.authorized(
+                    by: authorization
+                )
+                pendingKey = nil
+                activeKey = authorizedKey
+                return .selected(authorizedKey)
             case .retryableFailure:
                 continue
             case .terminalFailure:
@@ -2224,16 +2373,17 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
 
     private func releaseActive()
         -> ReleaseDisposition {
-        guard let activeKey else {
+        guard let leaseKey =
+                activeKey.map(LeaseKey.init) ?? pendingKey else {
             releaseIsPending = false
             return .noChange
         }
         switch lease.release(
-            generation: activeKey.leaseGeneration
+            generation: leaseKey.leaseGeneration
         ) {
         case .released:
             self.activeKey = nil
-            activeSelectionConfirmed = false
+            pendingKey = nil
             releaseIsPending = false
             return .released
 
@@ -2243,12 +2393,26 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
 
         case .externallySuperseded:
             self.activeKey = nil
-            activeSelectionConfirmed = false
+            pendingKey = nil
             releaseIsPending = false
             terminalConnectionGeneration =
-                activeKey.connectionGeneration
+                leaseKey.connectionGeneration
             return .externallySuperseded
         }
+    }
+
+    private func authorizationProof(
+        for key: LeaseKey
+    ) -> BlackHoleDefaultInputLeaseAuthorization? {
+        guard let authorization = lease.authorizationProof(
+            generation: key.leaseGeneration,
+            targetEndpoint: key.deviceEndpoint
+        ),
+        authorization.leaseGeneration == key.leaseGeneration,
+        authorization.targetEndpoint == key.deviceEndpoint else {
+            return nil
+        }
+        return authorization
     }
 
     private func releaseActiveBounded()

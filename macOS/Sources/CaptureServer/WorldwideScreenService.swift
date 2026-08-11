@@ -468,11 +468,23 @@ actor WorldwideScreenService {
 
     /// Binds the physical default-input boundary to the exact host process and peer.
     nonisolated static func defaultInputSelectionLogMessage(
+        routingEpoch: String,
         peerGeneration: UInt64,
+        deviceGeneration: UInt64,
         processIdentifier: Int32
     ) -> String {
         "Worldwide authenticated media route selected BlackHole default input " +
-            "peerGeneration=\(peerGeneration) pid=\(processIdentifier)"
+            "routingEpoch=\(routingEpoch) " +
+            "peerGeneration=\(peerGeneration) " +
+            "deviceGeneration=\(deviceGeneration) " +
+            "pid=\(processIdentifier)"
+    }
+
+    /// One nonsecret, privacy-safe identifier for this service's audio-routing evidence.
+    nonisolated static func makeBlackHoleRoutingEpoch() -> String {
+        UUID().uuidString
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
     }
 
     nonisolated static func iPhoneMicrophoneRuntimeFailureCategory(
@@ -492,6 +504,25 @@ actor WorldwideScreenService {
         "iPhone microphone forwarding encountered an output runtime " +
             "failure and ran its bounded restart policy: " +
             error.localizedDescription
+    }
+
+    nonisolated static func hiddenWriterSelectionLogMessage(
+        routingEpoch: String,
+        peerGeneration: UInt64,
+        deviceGeneration: UInt64,
+        selectionProven: Bool,
+        processIdentifier: Int32
+    ) -> String? {
+        guard selectionProven,
+              peerGeneration > 0,
+              deviceGeneration > 0 else {
+            return nil
+        }
+        return "Worldwide iPhone microphone hidden writer selected " +
+            "routingEpoch=\(routingEpoch) " +
+            "peerGeneration=\(peerGeneration) " +
+            "deviceGeneration=\(deviceGeneration) " +
+            "pid=\(processIdentifier)"
     }
 
     /// Privacy-safe progress telemetry: no device UID, track ID, nonce, or attempt UUID.
@@ -567,6 +598,10 @@ actor WorldwideScreenService {
         )
         return "Worldwide iPhone microphone forwarding " +
             "phase=\(snapshot.phase.rawValue) " +
+            "inputEndpointAvailable=\(snapshot.deviceUID != nil) " +
+            "hiddenSinkAvailable=\(snapshot.sinkDeviceUID != nil) " +
+            "hiddenWriterSelectionProven=" +
+                "\(snapshot.hiddenWriterSelectionProven) " +
             "transport=\(snapshot.transportAuthorized) " +
             "trackAdmitted=\(snapshot.exactTrackAdmitted) " +
             "queueRunning=\(snapshot.queueRunning) " +
@@ -655,6 +690,10 @@ actor WorldwideScreenService {
         BlackHoleDefaultInputLease()
     private let worldwideSafeOutputInvariant =
         WorldwideSafeOutputInvariant()
+    private let blackHoleMicrophoneOutputAuthorizationGate =
+        BlackHoleMicrophoneOutputAuthorizationGate()
+    private let blackHoleRoutingEpoch =
+        WorldwideScreenService.makeBlackHoleRoutingEpoch()
     private let blackHoleAudioRoutingCleanupID =
         UUID()
     private let maximumBlackHoleAudioRoutingCleanupEpisodeCount =
@@ -695,6 +734,22 @@ actor WorldwideScreenService {
     private var macHostedCallChallengePeerGeneration: UInt64?
     private var highestMacFaceTimeObservationSequence: UInt64 = 0
     private var blackHoleDeviceMonitorEpoch: UUID?
+    private var safeOutputInvariantMonitoringEpoch:
+        WorldwideSafeOutputInvariantMonitoringEpoch?
+    private var safeOutputInvariantAuthorization:
+        WorldwideSafeOutputInvariantAuthorization?
+    /// Exact endpoint-pair inventory proof incorporated by the admission that
+    /// last opened the realtime writer gate. A delayed actor reconciliation
+    /// may be discarded only when this proof already includes its raw event.
+    private struct BlackHoleEndpointPairAuthorization: Equatable {
+        let monitorEpoch: UUID
+        let deviceGeneration: UInt64
+        let acceptedInventoryChangeSequence: UInt64
+    }
+    private var blackHoleEndpointPairAuthorization:
+        BlackHoleEndpointPairAuthorization?
+    private var blackHoleDefaultInputAuthorization:
+        BlackHoleDefaultInputLeaseAuthorization?
     private lazy var blackHoleDefaultInput =
         WorldwideBlackHoleDefaultInputCoordinator(
             policy: iPhoneMicrophoneForwardingPolicy,
@@ -706,14 +761,18 @@ actor WorldwideScreenService {
             WebRTCRemoteAudioTrack
         >(
             policy: iPhoneMicrophoneForwardingPolicy,
-            makeOutput: { [weak self] peer, deviceUID in
+            makeOutput: { [weak self] peer, hiddenEndpoint in
                 guard let self,
-                      let source = peer.macDecodedAudioSource else {
+                      let source = peer.macDecodedAudioSource,
+                      let authorizationGate =
+                        self.blackHoleMicrophoneOutputAuthorizationGate
+                else {
                     return nil
                 }
                 return BlackHoleMicrophoneOutput(
                     source: source,
-                    deviceUID: deviceUID,
+                    expectedHiddenEndpoint: hiddenEndpoint,
+                    authorizationGate: authorizationGate,
                     runtimeFailureHandler: { [weak self] output, error in
                         Task { [weak self] in
                             await self?.iPhoneMicrophoneOutputDidFail(
@@ -1267,6 +1326,23 @@ actor WorldwideScreenService {
             logger.info("Worldwide WebRTC route: \(route.kind.rawValue)")
 
         case .statistics(let snapshot):
+            guard peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration else {
+                return
+            }
+            let routingAdmission =
+                admitBlackHoleInputWithinSafeOutputFence()
+            if let currentBlackHoleSnapshot =
+                    routingAdmission.snapshot {
+                await iPhoneMicrophoneForwarding.updateDeviceSnapshot(
+                    currentBlackHoleSnapshot
+                )
+                await authorizeIPhoneMicrophoneForwardingIfPossible()
+            }
+            guard peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration else {
+                return
+            }
             let inbound = snapshot.inboundAudio
             await iPhoneMicrophoneForwarding
                 .updateInboundMediaFreshness(
@@ -1328,11 +1404,26 @@ actor WorldwideScreenService {
                         + "sourceOverlaps=\(diagnostics.sourceOverlaps)"
                 )
             }
+            let microphoneSnapshot =
+                iPhoneMicrophoneForwarding.snapshot()
             logger.debug(
                 Self.iPhoneMicrophoneForwardingLogMessage(
-                    iPhoneMicrophoneForwarding.snapshot()
+                    microphoneSnapshot
                 )
             )
+            if let selection = Self.hiddenWriterSelectionLogMessage(
+                routingEpoch: blackHoleRoutingEpoch,
+                peerGeneration:
+                    microphoneSnapshot.peerGeneration,
+                deviceGeneration:
+                    microphoneSnapshot.deviceGeneration,
+                selectionProven:
+                    microphoneSnapshot.hiddenWriterSelectionProven,
+                processIdentifier:
+                    ProcessInfo.processInfo.processIdentifier
+            ) {
+                logger.info(selection)
+            }
             await maintainWorldwideSafeOutputInvariant()
 
         case .iceCandidateError(let error):
@@ -2009,24 +2100,21 @@ actor WorldwideScreenService {
         restartAnswerAppliedEpoch = nil
         recoveryProofRequired = false
         isRecovering = false
-        let outputsAreSafe =
-            enforceWorldwideSafeOutputInvariant()
-        if outputsAreSafe {
-            _ = consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
-            recordBlackHoleDefaultInputOutcome(
-                blackHoleDefaultInput
-                    .transportDidBecomeHealthy(
-                        peerGeneration: peerGeneration
-                    )
-            )
-        }
+        let routingAdmission =
+            admitBlackHoleInputWithinSafeOutputFence()
+        let outputsAreSafe = routingAdmission.outputsAreSafe
+        let currentBlackHoleSnapshot = routingAdmission.snapshot
         guard await startSystemAudioOrStopSession() else {
             await recoverFromSystemAudioStartUncertainty(
                 "system audio could not be enabled after route proof"
             )
             return
         }
-        if outputsAreSafe {
+        if outputsAreSafe,
+           let currentBlackHoleSnapshot {
+            await iPhoneMicrophoneForwarding.updateDeviceSnapshot(
+                currentBlackHoleSnapshot
+            )
             await authorizeIPhoneMicrophoneForwardingIfPossible()
         }
         await recoveryCoordinator?.iceStateChanged(.connected)
@@ -2042,24 +2130,21 @@ actor WorldwideScreenService {
             return false
         }
         isRecovering = false
-        let outputsAreSafe =
-            enforceWorldwideSafeOutputInvariant()
-        if outputsAreSafe {
-            _ = consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
-            recordBlackHoleDefaultInputOutcome(
-                blackHoleDefaultInput
-                    .transportDidBecomeHealthy(
-                        peerGeneration: peerGeneration
-                    )
-            )
-        }
+        let routingAdmission =
+            admitBlackHoleInputWithinSafeOutputFence()
+        let outputsAreSafe = routingAdmission.outputsAreSafe
+        let currentBlackHoleSnapshot = routingAdmission.snapshot
         guard await startSystemAudioOrStopSession() else {
             await recoverFromSystemAudioStartUncertainty(
                 "system audio could not be enabled on the healthy route"
             )
             return false
         }
-        if outputsAreSafe {
+        if outputsAreSafe,
+           let currentBlackHoleSnapshot {
+            await iPhoneMicrophoneForwarding.updateDeviceSnapshot(
+                currentBlackHoleSnapshot
+            )
             await authorizeIPhoneMicrophoneForwardingIfPossible()
         }
         return true
@@ -2067,29 +2152,228 @@ actor WorldwideScreenService {
 
     // MARK: - iPhone microphone to BlackHole
 
-    /// Enforces the worldwide duplex route invariant before acquiring the input-only lease.
+    /// Keeps the exact output listeners registered through input-only admission.
     /// LAN coexistence retains its legacy policy and never reaches this ownership path.
-    private func enforceWorldwideSafeOutputInvariant() -> Bool {
+    private func admitBlackHoleInputWithinSafeOutputFence()
+        -> (
+            outputsAreSafe: Bool,
+            snapshot: BlackHoleDeviceAvailabilitySnapshot?
+        ) {
         guard iPhoneMicrophoneForwardingPolicy == .enabled else {
             safeOutputInvariantNeedsRedrive = false
             safeOutputInvariantVerificationWasFailing = false
             safeOutputInvariantRetryPolicy.reset()
-            return false
+            return (false, nil)
         }
+        guard transportAllowsCapture else {
+            return (false, nil)
+        }
+        guard let monitoringEpoch =
+                safeOutputInvariantMonitoringEpoch,
+              let authorizationGate =
+                blackHoleMicrophoneOutputAuthorizationGate else {
+            return (false, nil)
+        }
+        if safeOutputInvariantNeedsRedrive,
+           !safeOutputInvariantRetryPolicy
+            .shouldAttemptOnCurrentTick() {
+            return (false, nil)
+        }
+
+        var admittedOutcomes:
+            [WorldwideBlackHoleDefaultInputOutcome] = []
+        var defaultInputAdmissionSucceeded = false
+        var admittedDefaultInputAuthorization:
+            BlackHoleDefaultInputLeaseAuthorization?
+        var preMutationOutcome:
+            WorldwideBlackHoleDefaultInputOutcome?
+        var rollbackOutcome:
+            WorldwideBlackHoleDefaultInputOutcome?
+        var gateOpeningPreparation:
+            BlackHoleMicrophoneOutputAuthorizationGate
+                .OpeningPreparation?
         do {
-            let result = try worldwideSafeOutputInvariant.enforce()
+            let transaction = try worldwideSafeOutputInvariant
+                .enforceDuringAdmission(
+                    monitoringEpoch: monitoringEpoch,
+                    beforeFirstMutation: {
+                        authorizationGate.close()
+                        self.safeOutputInvariantAuthorization = nil
+                        self.blackHoleEndpointPairAuthorization = nil
+                        self.blackHoleDefaultInputAuthorization = nil
+                        self.iPhoneMicrophoneForwarding
+                            .invalidateTransport()
+                        let outcome =
+                            self.blackHoleDefaultInput
+                                .transportDidBecomeUnhealthy(
+                                    peerGeneration:
+                                        self.peerGeneration
+                                )
+                        preMutationOutcome = outcome
+                        if outcome == .degraded {
+                            throw WorldwideScreenServiceError
+                                .microphoneInputReleaseUnproved
+                        }
+                    },
+                    admission: { ()
+                        -> BlackHoleDeviceAvailabilitySnapshot? in
+                        // First acquire under a fresh atomic-pair validation.
+                        // Its owned default-input write produces the exact
+                        // listener event that the lease incorporates below.
+                        guard let initialRevalidation =
+                                self.revalidateCurrentBlackHoleDeviceSnapshotForDefaultInput()
+                        else {
+                            return nil
+                        }
+                        admittedOutcomes.append(
+                            initialRevalidation.outcome
+                        )
+                        let initialOutcome = self.blackHoleDefaultInput
+                            .transportDidBecomeHealthy(
+                                peerGeneration:
+                                    self.peerGeneration
+                            )
+                        admittedOutcomes.append(initialOutcome)
+                        guard case .selected = initialOutcome else {
+                            return nil
+                        }
+
+                        // Prepare only after the lease's owned notification has
+                        // been consumed. Then span a final pair validation and
+                        // exact input-listener proof. Any later device, output,
+                        // or input callback closes this generation and prevents
+                        // commit from reopening stale routing.
+                        gateOpeningPreparation =
+                            authorizationGate.prepareToOpen()
+                        guard let finalRevalidation =
+                                self.revalidateCurrentBlackHoleDeviceSnapshotForDefaultInput()
+                        else {
+                            return nil
+                        }
+                        admittedOutcomes.append(
+                            finalRevalidation.outcome
+                        )
+                        let finalOutcome = self.blackHoleDefaultInput
+                            .transportDidBecomeHealthy(
+                                peerGeneration:
+                                    self.peerGeneration
+                            )
+                        admittedOutcomes.append(finalOutcome)
+                        switch finalOutcome {
+                        case .selected(let key)
+                            where key.monitorEpoch
+                                == finalRevalidation.snapshot.monitorEpoch
+                                && key.deviceGeneration
+                                    == finalRevalidation.snapshot.deviceGeneration
+                                && key.peerGeneration == self.peerGeneration
+                                && key.deviceEndpoint
+                                    == finalRevalidation.snapshot.defaultInputEndpoint
+                                && key.inputAuthorization.targetEndpoint
+                                    == finalRevalidation.snapshot.defaultInputEndpoint:
+                            admittedDefaultInputAuthorization =
+                                key.inputAuthorization
+                            defaultInputAdmissionSucceeded = true
+
+                        case .selected, .noChange,
+                             .waitingForMonitor, .waitingForDevice,
+                             .released, .degraded, .suppressed:
+                            defaultInputAdmissionSucceeded = false
+                        }
+                        return finalRevalidation.snapshot
+                    },
+                    rollback: { _ in
+                        authorizationGate.close()
+                        self.safeOutputInvariantAuthorization = nil
+                        self.blackHoleEndpointPairAuthorization = nil
+                        self.blackHoleDefaultInputAuthorization = nil
+                        self.iPhoneMicrophoneForwarding
+                            .invalidateTransport()
+                        rollbackOutcome =
+                            self.blackHoleDefaultInput
+                                .transportDidBecomeUnhealthy(
+                                    peerGeneration:
+                                        self.peerGeneration
+                                )
+                    },
+                    commit: { admittedSnapshot, authorization in
+                        guard let admittedSnapshot,
+                              admittedSnapshot.isAvailable,
+                              defaultInputAdmissionSucceeded,
+                              let admittedDefaultInputAuthorization,
+                              admittedDefaultInputAuthorization.targetEndpoint
+                                == admittedSnapshot.defaultInputEndpoint else {
+                            throw WorldwideScreenServiceError
+                                .microphoneInputAdmissionUnavailable
+                        }
+                        guard let gateOpeningPreparation else {
+                            throw WorldwideScreenServiceError
+                                .microphoneWriterAuthorizationSuperseded
+                        }
+                        guard authorizationGate.open(
+                            preparation: gateOpeningPreparation,
+                            authorization: authorization
+                        ) else {
+                            throw WorldwideScreenServiceError
+                                .microphoneWriterAuthorizationSuperseded
+                        }
+                        self.safeOutputInvariantAuthorization =
+                            authorization
+                        self.blackHoleDefaultInputAuthorization =
+                            admittedDefaultInputAuthorization
+                        self.blackHoleEndpointPairAuthorization =
+                            BlackHoleEndpointPairAuthorization(
+                                monitorEpoch:
+                                    admittedSnapshot.monitorEpoch,
+                                deviceGeneration:
+                                    admittedSnapshot.deviceGeneration,
+                                acceptedInventoryChangeSequence:
+                                    admittedSnapshot
+                                        .acceptedInventoryChangeSequence
+                            )
+                    }
+                )
             safeOutputInvariantNeedsRedrive = false
             safeOutputInvariantVerificationWasFailing = false
             safeOutputInvariantRetryPolicy.reset()
-            if result.changedAnything {
+            if transaction.invariant.changedAnything {
                 logger.info(
                     "Worldwide audio routing moved BlackHole off the " +
                         "default output selectors before selecting it " +
                         "as the iPhone microphone input"
                 )
             }
-            return true
+            if let preMutationOutcome {
+                recordBlackHoleDefaultInputOutcome(
+                    preMutationOutcome
+                )
+            }
+            for outcome in admittedOutcomes {
+                recordBlackHoleDefaultInputOutcome(outcome)
+            }
+            return (true, transaction.admission)
         } catch {
+            authorizationGate.close()
+            safeOutputInvariantAuthorization = nil
+            blackHoleEndpointPairAuthorization = nil
+            blackHoleDefaultInputAuthorization = nil
+            iPhoneMicrophoneForwarding.invalidateTransport()
+            if let preMutationOutcome {
+                recordBlackHoleDefaultInputOutcome(
+                    preMutationOutcome
+                )
+            }
+            if let rollbackOutcome {
+                recordBlackHoleDefaultInputOutcome(
+                    rollbackOutcome
+                )
+            } else {
+                recordBlackHoleDefaultInputOutcome(
+                    blackHoleDefaultInput
+                        .transportDidBecomeUnhealthy(
+                            peerGeneration: peerGeneration
+                        )
+                )
+            }
             safeOutputInvariantNeedsRedrive = true
             safeOutputInvariantRetryPolicy.recordFailure()
             logger.error(
@@ -2097,7 +2381,7 @@ actor WorldwideScreenService {
                     "because the safe-output invariant could not be " +
                     "proven: " + error.localizedDescription
             )
-            return false
+            return (false, nil)
         }
     }
 
@@ -2109,11 +2393,19 @@ actor WorldwideScreenService {
               transportAllowsCapture else {
             return
         }
+        guard let monitoringEpoch =
+                safeOutputInvariantMonitoringEpoch else {
+            safeOutputInvariantNeedsRedrive = true
+            revokeWorldwideMicrophoneForUnsafeOutputInvariant()
+            return
+        }
 
         let verification:
             WorldwideSafeOutputInvariantVerification
         do {
-            verification = try worldwideSafeOutputInvariant.verify()
+            verification = try worldwideSafeOutputInvariant.verify(
+                monitoringEpoch: monitoringEpoch
+            )
         } catch {
             let wasVerificationFailing =
                 safeOutputInvariantVerificationWasFailing
@@ -2150,15 +2442,41 @@ actor WorldwideScreenService {
         }
         safeOutputInvariantNeedsRedrive = true
         revokeWorldwideMicrophoneForUnsafeOutputInvariant()
-        guard safeOutputInvariantRetryPolicy
-                .shouldAttemptOnCurrentTick(),
-              enforceWorldwideSafeOutputInvariant() else {
+        await resumeWorldwideMicrophoneAfterSafeOutputInvariant()
+    }
+
+    /// A selector callback has already closed the lock-free writer gate before
+    /// this actor work is queued. Discard only events superseded by an exact
+    /// listener-sequence authorization; every newer event revokes ownership
+    /// before any repair or suspension point.
+    private func safeOutputInvariantDidBecomeUncertain(
+        epoch: WorldwideSafeOutputInvariantMonitoringEpoch,
+        eventSequence: UInt64
+    ) async {
+        guard !isStopped,
+              safeOutputInvariantMonitoringEpoch == epoch else {
             return
         }
+        if let authorization = safeOutputInvariantAuthorization,
+           authorization.monitoringEpoch == epoch,
+           eventSequence <= authorization.listenerSequence {
+            return
+        }
+
+        safeOutputInvariantAuthorization = nil
+        blackHoleEndpointPairAuthorization = nil
+        blackHoleDefaultInputAuthorization = nil
+        safeOutputInvariantNeedsRedrive = true
+        safeOutputInvariantRetryPolicy.reset()
+        revokeWorldwideMicrophoneForUnsafeOutputInvariant()
         await resumeWorldwideMicrophoneAfterSafeOutputInvariant()
     }
 
     private func revokeWorldwideMicrophoneForUnsafeOutputInvariant() {
+        blackHoleMicrophoneOutputAuthorizationGate?.close()
+        safeOutputInvariantAuthorization = nil
+        blackHoleEndpointPairAuthorization = nil
+        blackHoleDefaultInputAuthorization = nil
         iPhoneMicrophoneForwarding.invalidateTransport()
         recordBlackHoleDefaultInputOutcome(
             blackHoleDefaultInput.transportDidBecomeUnhealthy(
@@ -2170,13 +2488,16 @@ actor WorldwideScreenService {
     private func resumeWorldwideMicrophoneAfterSafeOutputInvariant()
         async {
         guard transportAllowsCapture else { return }
-        _ = consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
-        recordBlackHoleDefaultInputOutcome(
-            blackHoleDefaultInput.transportDidBecomeHealthy(
-                peerGeneration: peerGeneration
+        let routingAdmission =
+            admitBlackHoleInputWithinSafeOutputFence()
+        guard routingAdmission.outputsAreSafe else { return }
+        let currentBlackHoleSnapshot = routingAdmission.snapshot
+        if let currentBlackHoleSnapshot {
+            await iPhoneMicrophoneForwarding.updateDeviceSnapshot(
+                currentBlackHoleSnapshot
             )
-        )
-        await authorizeIPhoneMicrophoneForwardingIfPossible()
+            await authorizeIPhoneMicrophoneForwardingIfPossible()
+        }
     }
 
     private func startIPhoneMicrophoneDeviceMonitoringIfNeeded()
@@ -2201,15 +2522,79 @@ actor WorldwideScreenService {
             return
         }
 
-        do {
-            let epoch = try blackHoleDeviceAvailabilityMonitor.start {
-                [weak self] snapshot in
-                Task { [weak self] in
-                    await self?.blackHoleDeviceAvailabilityDidChange(
-                        snapshot
-                    )
-                }
+        guard let authorizationGate =
+                blackHoleMicrophoneOutputAuthorizationGate else {
+            logger.error(
+                "BlackHole microphone writer authorization is unavailable; " +
+                    "automatic input selection and forwarding remain disabled"
+            )
+            return
+        }
+
+        blackHoleDefaultInputLease.setUncertaintyHandler {
+            [weak self, authorizationGate] event in
+            // This is the raw default-input selector callback. Close the
+            // realtime writer before the lease or actor can reconcile it.
+            authorizationGate.close()
+            Task { [weak self] in
+                await self?
+                    .blackHoleDefaultInputDidBecomeUncertain(event)
             }
+        }
+
+        do {
+            safeOutputInvariantMonitoringEpoch =
+                try worldwideSafeOutputInvariant
+                    .beginSessionMonitoring {
+                        [weak self, authorizationGate]
+                        epoch,
+                        eventSequence in
+                        authorizationGate.close()
+                        Task { [weak self] in
+                            await self?
+                                .safeOutputInvariantDidBecomeUncertain(
+                                    epoch: epoch,
+                                    eventSequence: eventSequence
+                                )
+                        }
+                    }
+        } catch {
+            safeOutputInvariantMonitoringEpoch = nil
+            authorizationGate.close()
+            logger.error(
+                "Safe-output session monitoring is unavailable; " +
+                    "automatic input selection and forwarding remain " +
+                    "disabled: " + error.localizedDescription
+            )
+            return
+        }
+
+        do {
+            let epoch = try blackHoleDeviceAvailabilityMonitor.start(
+                onUncertain: {
+                    [weak self, authorizationGate]
+                    monitorEpoch,
+                    eventSequence in
+                    // This is the raw Core Audio callback boundary. Close
+                    // synchronously before the monitor dispatches refresh or
+                    // either reconciliation Task can reach this actor.
+                    authorizationGate.close()
+                    Task { [weak self] in
+                        await self?
+                            .blackHoleDeviceInventoryDidBecomeUncertain(
+                                monitorEpoch: monitorEpoch,
+                                eventSequence: eventSequence
+                            )
+                    }
+                },
+                observer: { [weak self] snapshot in
+                    Task { [weak self] in
+                        await self?.blackHoleDeviceAvailabilityDidChange(
+                            snapshot
+                        )
+                    }
+                }
+            )
             blackHoleDeviceMonitorEpoch = epoch
             _ = blackHoleDefaultInput.beginMonitoring(
                 epoch: epoch
@@ -2220,6 +2605,7 @@ actor WorldwideScreenService {
             await consumeCurrentBlackHoleDeviceSnapshot()
         } catch {
             blackHoleDeviceMonitorEpoch = nil
+            endSafeOutputInvariantMonitoring()
             recordBlackHoleDefaultInputOutcome(
                 blackHoleDefaultInput.monitoringDidFail()
             )
@@ -2234,29 +2620,73 @@ actor WorldwideScreenService {
 
     private func consumeCurrentBlackHoleDeviceSnapshot()
         async {
-        guard let snapshot =
-                consumeCurrentBlackHoleDeviceSnapshotForDefaultInput() else {
+        let snapshot: BlackHoleDeviceAvailabilitySnapshot?
+        if transportAllowsCapture {
+            snapshot =
+                admitBlackHoleInputWithinSafeOutputFence().snapshot
+        } else {
+            snapshot =
+                consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
+        }
+        guard let snapshot else {
             return
         }
         await iPhoneMicrophoneForwarding.updateDeviceSnapshot(
             snapshot
         )
+        if transportAllowsCapture {
+            await authorizeIPhoneMicrophoneForwardingIfPossible()
+        }
+    }
+
+    private struct RevalidatedBlackHoleDeviceSnapshot {
+        let snapshot: BlackHoleDeviceAvailabilitySnapshot
+        let outcome: WorldwideBlackHoleDefaultInputOutcome
     }
 
     @discardableResult
     private func consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()
         -> BlackHoleDeviceAvailabilitySnapshot? {
-        guard !isStopped,
-              let snapshot =
-                blackHoleDeviceAvailabilityMonitor.currentSnapshot(),
-              snapshot.monitorEpoch == blackHoleDeviceMonitorEpoch else {
+        guard let revalidated =
+                revalidateCurrentBlackHoleDeviceSnapshotForDefaultInput()
+        else {
             return nil
         }
         recordBlackHoleDefaultInputOutcome(
-            blackHoleDefaultInput
-                .updateDeviceSnapshot(snapshot)
+            revalidated.outcome
         )
-        return snapshot
+        return revalidated.snapshot
+    }
+
+    private func revalidateCurrentBlackHoleDeviceSnapshotForDefaultInput()
+        -> RevalidatedBlackHoleDeviceSnapshot? {
+        guard !isStopped else { return nil }
+        switch blackHoleDeviceAvailabilityMonitor
+            .revalidateCurrentSnapshot() {
+        case .validated(let snapshot):
+            guard snapshot.monitorEpoch
+                    == blackHoleDeviceMonitorEpoch else {
+                return nil
+            }
+            return RevalidatedBlackHoleDeviceSnapshot(
+                snapshot: snapshot,
+                outcome: blackHoleDefaultInput
+                    .updateDeviceSnapshot(snapshot)
+            )
+
+        case .validationFailed, .inactive:
+            recordBlackHoleDefaultInputOutcome(
+                blackHoleDefaultInput
+                    .deviceRevalidationDidFail()
+            )
+            iPhoneMicrophoneForwarding.monitoringDidFail()
+            logger.error(
+                "BlackHole endpoint-pair revalidation failed; " +
+                    "automatic input selection and iPhone microphone " +
+                    "forwarding were revoked"
+            )
+            return nil
+        }
     }
 
     private func blackHoleDeviceAvailabilityDidChange(
@@ -2266,17 +2696,64 @@ actor WorldwideScreenService {
               snapshot.monitorEpoch == blackHoleDeviceMonitorEpoch else {
             return
         }
-        recordBlackHoleDefaultInputOutcome(
-            blackHoleDefaultInput
-                .updateDeviceSnapshot(snapshot)
-        )
-        await iPhoneMicrophoneForwarding.updateDeviceSnapshot(
-            snapshot
-        )
+        // The observer crosses into this actor through an unsequenced Task.
+        // Never admit its captured snapshot directly: a newer synchronous
+        // validation failure may already have revoked that same generation.
+        // Re-read the exact pair so only fresh evidence can restore routing.
         if safeOutputInvariantNeedsRedrive {
             safeOutputInvariantRetryPolicy.reset()
-            await maintainWorldwideSafeOutputInvariant()
         }
+        await consumeCurrentBlackHoleDeviceSnapshot()
+    }
+
+    /// The raw callback has already closed the lock-free writer gate. If a
+    /// same-event revalidation committed while this Task waited for the actor,
+    /// its exact sequence supersedes this reconciliation. A newer event always
+    /// revokes the pair proof and must complete a fresh admission.
+    private func blackHoleDeviceInventoryDidBecomeUncertain(
+        monitorEpoch: UUID,
+        eventSequence: UInt64
+    ) async {
+        guard !isStopped,
+              blackHoleDeviceMonitorEpoch == monitorEpoch else {
+            return
+        }
+        if let authorization = blackHoleEndpointPairAuthorization,
+           authorization.monitorEpoch == monitorEpoch,
+           eventSequence
+                <= authorization.acceptedInventoryChangeSequence {
+            return
+        }
+
+        blackHoleEndpointPairAuthorization = nil
+        blackHoleDefaultInputAuthorization = nil
+        safeOutputInvariantNeedsRedrive = true
+        safeOutputInvariantRetryPolicy.reset()
+        revokeWorldwideMicrophoneForUnsafeOutputInvariant()
+        await resumeWorldwideMicrophoneAfterSafeOutputInvariant()
+    }
+
+    /// The exact default-input listener already closed the writer gate at the
+    /// raw callback boundary. Drop only the callback included by the admission
+    /// proof that reopened it. A newer or mismatched event is an external choice:
+    /// stop forwarding, relinquish ownership without restoration, and leave this
+    /// connection terminal instead of automatically selecting over the user.
+    private func blackHoleDefaultInputDidBecomeUncertain(
+        _ event: BlackHoleDefaultInputLeaseUncertaintyEvent
+    ) async {
+        guard !isStopped else { return }
+        if let authorization = blackHoleDefaultInputAuthorization,
+           authorization.incorporates(event) {
+            return
+        }
+
+        blackHoleDefaultInputAuthorization = nil
+        blackHoleEndpointPairAuthorization = nil
+        iPhoneMicrophoneForwarding.invalidateTransport()
+        recordBlackHoleDefaultInputOutcome(
+            blackHoleDefaultInput
+                .defaultInputDidBecomeUncertain(event)
+        )
     }
 
     func iPhoneMicrophoneForwardingSnapshot()
@@ -2297,6 +2774,13 @@ actor WorldwideScreenService {
     }
 
     private func shutdownBlackHoleAudioRouting() {
+        blackHoleMicrophoneOutputAuthorizationGate?.close()
+        safeOutputInvariantAuthorization = nil
+        blackHoleEndpointPairAuthorization = nil
+        blackHoleDefaultInputAuthorization = nil
+        let safeOutputMonitoringEpoch =
+            safeOutputInvariantMonitoringEpoch
+        safeOutputInvariantMonitoringEpoch = nil
         blackHoleDeviceMonitorEpoch = nil
 
         let result =
@@ -2316,6 +2800,7 @@ actor WorldwideScreenService {
             let lease = blackHoleDefaultInputLease
             let monitor =
                 blackHoleDeviceAvailabilityMonitor
+            let invariant = worldwideSafeOutputInvariant
             WorldwideBlackHoleAudioRoutingCleanupRetainer
                 .shared
                 .retain(
@@ -2326,8 +2811,19 @@ actor WorldwideScreenService {
                             != .retryableFailure
                     let monitorCompleted =
                         monitor.stop() == .stopped
-                    return defaultInputCompleted
-                        && monitorCompleted
+                    guard defaultInputCompleted,
+                          monitorCompleted else {
+                        return false
+                    }
+                    if let safeOutputMonitoringEpoch {
+                        // The writer gate was closed before this retained
+                        // cleanup began. Listener-removal failure is itself
+                        // retained by the invariant with the exact identities.
+                        try? invariant.endSessionMonitoring(
+                            epoch: safeOutputMonitoringEpoch
+                        )
+                    }
+                    return true
                 }
             logger.error(
                 "BlackHole audio-routing cleanup remains degraded " +
@@ -2336,11 +2832,45 @@ actor WorldwideScreenService {
                     "is retained for a later explicit lifecycle redrive"
             )
         } else {
+            if let safeOutputMonitoringEpoch {
+                do {
+                    try worldwideSafeOutputInvariant
+                        .endSessionMonitoring(
+                            epoch: safeOutputMonitoringEpoch
+                        )
+                } catch {
+                    logger.error(
+                        "Safe-output listener cleanup remains degraded: " +
+                            error.localizedDescription
+                    )
+                }
+            }
             WorldwideBlackHoleAudioRoutingCleanupRetainer
                 .shared
                 .remove(
                     id: blackHoleAudioRoutingCleanupID
                 )
+        }
+    }
+
+    private func endSafeOutputInvariantMonitoring() {
+        blackHoleMicrophoneOutputAuthorizationGate?.close()
+        safeOutputInvariantAuthorization = nil
+        blackHoleEndpointPairAuthorization = nil
+        blackHoleDefaultInputAuthorization = nil
+        guard let epoch = safeOutputInvariantMonitoringEpoch else {
+            return
+        }
+        safeOutputInvariantMonitoringEpoch = nil
+        do {
+            try worldwideSafeOutputInvariant.endSessionMonitoring(
+                epoch: epoch
+            )
+        } catch {
+            logger.error(
+                "Safe-output listener cleanup remains degraded: " +
+                    error.localizedDescription
+            )
         }
     }
 
@@ -2352,7 +2882,9 @@ actor WorldwideScreenService {
         case .selected(let key):
             logger.info(
                 Self.defaultInputSelectionLogMessage(
+                    routingEpoch: blackHoleRoutingEpoch,
                     peerGeneration: key.peerGeneration,
+                    deviceGeneration: key.deviceGeneration,
                     processIdentifier:
                         ProcessInfo.processInfo
                             .processIdentifier
@@ -2377,6 +2909,7 @@ actor WorldwideScreenService {
             Self.iPhoneMicrophoneRuntimeFailureCategory(
                 for: error
             )
+        await consumeCurrentBlackHoleDeviceSnapshot()
         guard await iPhoneMicrophoneForwarding.handleRuntimeFailure(
             from: output,
             category: category
@@ -3425,6 +3958,9 @@ private enum WorldwideScreenServiceError: LocalizedError {
     case videoCapturerUnavailable
     case audioCapturerUnavailable
     case transportUnavailable
+    case microphoneInputAdmissionUnavailable
+    case microphoneInputReleaseUnproved
+    case microphoneWriterAuthorizationSuperseded
     case nativeScreenStopFailed(any Error)
     case rendezvous(RendezvousServerError)
 
@@ -3440,6 +3976,12 @@ private enum WorldwideScreenServiceError: LocalizedError {
             "The Mac WebRTC system-audio capturer is unavailable."
         case .transportUnavailable:
             "The secure media transport is not healthy enough to expose the screen."
+        case .microphoneInputAdmissionUnavailable:
+            "The visible microphone input lease could not be proven."
+        case .microphoneInputReleaseUnproved:
+            "The visible microphone input lease could not be released before output-route repair."
+        case .microphoneWriterAuthorizationSuperseded:
+            "A newer Mac output-route event superseded microphone writer admission."
         case .nativeScreenStopFailed(let error):
             "The native screen source could not confirm that capture stopped " +
                 "(\(error.localizedDescription))."

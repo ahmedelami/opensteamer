@@ -48,6 +48,41 @@ FOUNDATION_EXPORT void ASMacAudioQueueCallbackLifetimeWaitForCallbacks(
     ASMacAudioQueueCallbackLifetimeRef lifetime
 );
 
+/// Opaque lock-free authorization boundary for hidden-writer PCM.
+///
+/// New gates are closed. `Close` is a synchronous, nonblocking revocation
+/// suitable for a Core Audio property-listener callback. The AudioQueue
+/// callback must observe this gate both before pulling caller PCM and before
+/// publishing its buffer to Core Audio.
+typedef void *ASMacAudioQueueWriterAuthorizationGateRef;
+
+FOUNDATION_EXPORT ASMacAudioQueueWriterAuthorizationGateRef _Nullable
+ASMacAudioQueueWriterAuthorizationGateCreate(void);
+
+FOUNDATION_EXPORT void ASMacAudioQueueWriterAuthorizationGateDestroy(
+    ASMacAudioQueueWriterAuthorizationGateRef gate
+);
+
+/// Captures the current revocation generation for one prospective admission.
+FOUNDATION_EXPORT uint64_t
+ASMacAudioQueueWriterAuthorizationGatePrepareToOpen(
+    ASMacAudioQueueWriterAuthorizationGateRef gate
+);
+
+/// Opens only if no close occurred since `expectedGeneration` was captured.
+FOUNDATION_EXPORT bool ASMacAudioQueueWriterAuthorizationGateOpenIfUnchanged(
+    ASMacAudioQueueWriterAuthorizationGateRef gate,
+    uint64_t expectedGeneration
+);
+
+FOUNDATION_EXPORT void ASMacAudioQueueWriterAuthorizationGateClose(
+    ASMacAudioQueueWriterAuthorizationGateRef gate
+);
+
+FOUNDATION_EXPORT bool ASMacAudioQueueWriterAuthorizationGateIsOpen(
+    ASMacAudioQueueWriterAuthorizationGateRef gate
+);
+
 /// Opaque lock-free boundary for one AudioQueue runtime-failure lifecycle.
 ///
 /// The realtime producer publishes only the first nonzero status. A non-realtime

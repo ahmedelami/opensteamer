@@ -7,6 +7,9 @@ import XCTest
 /// a newer connection, and availability must not begin until the pairing record is durable. These
 /// are regression-critical because process restarts and network reordering exercise both cases.
 final class WorldwideHostLifecycleTests: XCTestCase {
+    private static let routingEpoch =
+        "0123456789abcdef0123456789abcdef"
+
     func testPeerStateLogBindsConnectedEventToExactHostProcess() {
         XCTAssertEqual(
             WorldwideScreenService.peerStateLogMessage(
@@ -20,11 +23,51 @@ final class WorldwideHostLifecycleTests: XCTestCase {
     func testDefaultInputLogBindsHealthyBoundaryToPeerAndHostProcess() {
         XCTAssertEqual(
             WorldwideScreenService.defaultInputSelectionLogMessage(
+                routingEpoch: Self.routingEpoch,
                 peerGeneration: 9,
+                deviceGeneration: 4,
                 processIdentifier: 42_071
             ),
             "Worldwide authenticated media route selected BlackHole " +
-                "default input peerGeneration=9 pid=42071"
+                "default input routingEpoch=\(Self.routingEpoch) " +
+                "peerGeneration=9 " +
+                "deviceGeneration=4 pid=42071"
+        )
+    }
+
+    func testRoutingEpochIsPrivacySafeLowercaseHex() {
+        let epoch = WorldwideScreenService.makeBlackHoleRoutingEpoch()
+
+        XCTAssertEqual(epoch.utf8.count, 32)
+        XCTAssertTrue(
+            epoch.utf8.allSatisfy {
+                ($0 >= 48 && $0 <= 57)
+                    || ($0 >= 97 && $0 <= 102)
+            }
+        )
+    }
+
+    func testHiddenWriterSelectionLogBindsPairToPeerAndHostProcess() {
+        XCTAssertEqual(
+            WorldwideScreenService.hiddenWriterSelectionLogMessage(
+                routingEpoch: Self.routingEpoch,
+                peerGeneration: 9,
+                deviceGeneration: 4,
+                selectionProven: true,
+                processIdentifier: 42_071
+            ),
+            "Worldwide iPhone microphone hidden writer selected " +
+                "routingEpoch=\(Self.routingEpoch) " +
+                "peerGeneration=9 deviceGeneration=4 pid=42071"
+        )
+        XCTAssertNil(
+            WorldwideScreenService.hiddenWriterSelectionLogMessage(
+                routingEpoch: Self.routingEpoch,
+                peerGeneration: 9,
+                deviceGeneration: 4,
+                selectionProven: false,
+                processIdentifier: 42_071
+            )
         )
     }
 
@@ -37,7 +80,9 @@ final class WorldwideHostLifecycleTests: XCTestCase {
         XCTAssertEqual(
             message,
             "Worldwide iPhone microphone forwarding " +
-                "phase=waitingForPeer transport=false " +
+                "phase=waitingForPeer inputEndpointAvailable=false " +
+                "hiddenSinkAvailable=false " +
+                "hiddenWriterSelectionProven=false transport=false " +
                 "trackAdmitted=false queueRunning=false callbacks=0 " +
                 "pulls=0 frames=0 silenceFallbacks=0 " +
                 "enqueueFailures=0 pcmLifecycleGeneration=0 " +
@@ -85,6 +130,7 @@ final class WorldwideHostLifecycleTests: XCTestCase {
                 "mediaStale=0 mediaFresh=false failure=none"
         )
         XCTAssertFalse(message.contains("BlackHole2ch_UID"))
+        XCTAssertFalse(message.contains("BlackHole2ch_2_UID"))
         XCTAssertFalse(message.contains("trackID"))
         XCTAssertFalse(message.contains("attemptID"))
         XCTAssertFalse(message.contains("nonce"))
@@ -106,6 +152,7 @@ final class WorldwideHostLifecycleTests: XCTestCase {
                 + "energy=0.125000 level=0.031250"
         )
         XCTAssertFalse(message.contains("BlackHole2ch_UID"))
+        XCTAssertFalse(message.contains("BlackHole2ch_2_UID"))
         XCTAssertFalse(message.contains("trackID"))
         XCTAssertFalse(message.contains("device"))
         XCTAssertFalse(message.contains("nonce"))

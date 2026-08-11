@@ -315,19 +315,9 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
                 after: startMarker,
                 before: endMarker
             )
-            let safeOutputInvariant = try XCTUnwrap(
+            let routingAdmission = try XCTUnwrap(
                 function.range(
-                    of: "enforceWorldwideSafeOutputInvariant()"
-                )
-            )
-            let snapshotConsumption = try XCTUnwrap(
-                function.range(
-                    of: "consumeCurrentBlackHoleDeviceSnapshotForDefaultInput()"
-                )
-            )
-            let selection = try XCTUnwrap(
-                function.range(
-                    of: ".transportDidBecomeHealthy("
+                    of: "admitBlackHoleInputWithinSafeOutputFence()"
                 )
             )
             let systemAudio = try XCTUnwrap(
@@ -336,18 +326,9 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
                 )
             )
             XCTAssertLessThan(
-                safeOutputInvariant.lowerBound,
-                snapshotConsumption.lowerBound,
-                "BlackHole must be absent from both output defaults before the input-only lease is acquired."
-            )
-            XCTAssertLessThan(
-                snapshotConsumption.lowerBound,
-                selection.lowerBound
-            )
-            XCTAssertLessThan(
-                selection.lowerBound,
+                routingAdmission.lowerBound,
                 systemAudio.lowerBound,
-                "Default-input acquisition must complete before the first system-audio await."
+                "The listener-fenced default-input admission must complete before the first system-audio await."
             )
             XCTAssertFalse(
                 function.contains(
@@ -357,11 +338,176 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
             )
         }
 
+        let admission = try sourceSlice(
+            in: serviceSource,
+            after:
+                "    private func admitBlackHoleInputWithinSafeOutputFence()",
+            before:
+                "    /// Continuously verifies the output invariant."
+        )
+        let safeOutputFence = try XCTUnwrap(
+            admission.range(of: ".enforceDuringAdmission(")
+        )
+        let preMutationHook = try XCTUnwrap(
+            admission.range(of: "beforeFirstMutation: {")
+        )
+        let inputAdmission = try XCTUnwrap(
+            admission.range(of: "admission: { ()")
+        )
+        let transportGate = try XCTUnwrap(
+            admission.range(of: "guard transportAllowsCapture else")
+        )
+        let retryGate = try XCTUnwrap(
+            admission.range(of: ".shouldAttemptOnCurrentTick()")
+        )
+        let initialAdmissionSnapshotConsumption = try XCTUnwrap(
+            admission.range(
+                of: "revalidateCurrentBlackHoleDeviceSnapshotForDefaultInput()"
+            )
+        )
+        let initialSelection = try XCTUnwrap(
+            admission.range(of: ".transportDidBecomeHealthy(")
+        )
+        XCTAssertLessThan(
+            transportGate.lowerBound,
+            retryGate.lowerBound
+        )
+        XCTAssertLessThan(
+            retryGate.lowerBound,
+            safeOutputFence.lowerBound
+        )
+        XCTAssertLessThan(
+            safeOutputFence.lowerBound,
+            preMutationHook.lowerBound
+        )
+        XCTAssertLessThan(
+            preMutationHook.lowerBound,
+            inputAdmission.lowerBound
+        )
+        XCTAssertLessThan(
+            inputAdmission.lowerBound,
+            initialAdmissionSnapshotConsumption.lowerBound
+        )
+        let prepareGate = try XCTUnwrap(
+            admission.range(of: "authorizationGate.prepareToOpen()")
+        )
+        XCTAssertLessThan(
+            inputAdmission.lowerBound,
+            initialAdmissionSnapshotConsumption.lowerBound
+        )
+        XCTAssertLessThan(
+            initialAdmissionSnapshotConsumption.lowerBound,
+            initialSelection.lowerBound
+        )
+        XCTAssertLessThan(initialSelection.lowerBound, prepareGate.lowerBound)
+        let finalSnapshotConsumption = try XCTUnwrap(
+            admission.range(
+                of: "revalidateCurrentBlackHoleDeviceSnapshotForDefaultInput()",
+                range: prepareGate.upperBound..<admission.endIndex
+            )
+        )
+        let finalSelection = try XCTUnwrap(
+            admission.range(
+                of: ".transportDidBecomeHealthy(",
+                range:
+                    finalSnapshotConsumption.upperBound..<admission.endIndex
+            )
+        )
+        XCTAssertLessThan(
+            prepareGate.lowerBound,
+            finalSnapshotConsumption.lowerBound,
+            "The gate preparation must span final pair revalidation."
+        )
+        XCTAssertLessThan(
+            finalSnapshotConsumption.lowerBound,
+            finalSelection.lowerBound
+        )
+
+        let preMutation = try sourceSlice(
+            in: admission,
+            after: "                    beforeFirstMutation: {",
+            before: "                    admission: { ()"
+        )
+        let gateClose = try XCTUnwrap(
+            preMutation.range(of: "authorizationGate.close()")
+        )
+        let forwardingRevoke = try XCTUnwrap(
+            preMutation.range(
+                of: "iPhoneMicrophoneForwarding\n                            .invalidateTransport()"
+            )
+        )
+        let inputRelease = try XCTUnwrap(
+            preMutation.range(
+                of: "blackHoleDefaultInput\n                                .transportDidBecomeUnhealthy("
+            )
+        )
+        XCTAssertLessThan(gateClose.lowerBound, forwardingRevoke.lowerBound)
+        XCTAssertLessThan(forwardingRevoke.lowerBound, inputRelease.lowerBound)
+        XCTAssertTrue(
+            preMutation.contains(
+                "iPhoneMicrophoneForwarding\n                            .invalidateTransport()"
+            )
+        )
+
+        let commit = try sourceSlice(
+            in: admission,
+            after: "                    commit: { admittedSnapshot, authorization in",
+            before: "                )\n            safeOutputInvariantNeedsRedrive = false"
+        )
+        XCTAssertTrue(
+            admission.contains("monitoringEpoch: monitoringEpoch")
+        )
+        let openGate = try XCTUnwrap(
+            commit.range(of: "authorizationGate.open(")
+        )
+        let publishAuthorization = try XCTUnwrap(
+            commit.range(
+                of: "self.safeOutputInvariantAuthorization ="
+            )
+        )
+        XCTAssertLessThan(openGate.lowerBound, publishAuthorization.lowerBound)
+        XCTAssertFalse(
+            commit.contains("authorizationGate.prepareToOpen()"),
+            "Preparing only at commit would let a device event after pair validation reopen stale proof."
+        )
+        let publishPairAuthorization = try XCTUnwrap(
+            commit.range(
+                of: "self.blackHoleEndpointPairAuthorization ="
+            )
+        )
+        XCTAssertLessThan(
+            publishAuthorization.lowerBound,
+            publishPairAuthorization.lowerBound
+        )
+        let publishInputAuthorization = try XCTUnwrap(
+            commit.range(
+                of: "self.blackHoleDefaultInputAuthorization ="
+            )
+        )
+        XCTAssertLessThan(
+            openGate.lowerBound,
+            publishInputAuthorization.lowerBound
+        )
+        XCTAssertTrue(
+            commit.contains("acceptedInventoryChangeSequence")
+        )
+        XCTAssertTrue(
+            preMutation.contains(
+                "blackHoleDefaultInput\n                                .transportDidBecomeUnhealthy("
+            )
+        )
+        XCTAssertTrue(
+            preMutation.contains("if outcome == .degraded")
+        )
+        XCTAssertTrue(
+            preMutation.contains(".microphoneInputReleaseUnproved")
+        )
+
         XCTAssertTrue(
             serviceSource.contains(
-                "blackHoleDeviceAvailabilityMonitor.currentSnapshot()"
+                "blackHoleDeviceAvailabilityMonitor\n            .revalidateCurrentSnapshot()"
             ),
-            "The healthy boundary must consume an already-published monitor generation synchronously."
+            "The healthy boundary must synchronously revalidate and consume the exact endpoint-pair generation."
         )
 
         let monitorStartup = try sourceSlice(
@@ -372,6 +518,78 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
         let forwardingMonitorStart = try XCTUnwrap(
             monitorStartup.range(
                 of: "iPhoneMicrophoneForwarding.beginMonitoring("
+            )
+        )
+        let safeOutputMonitorStart = try XCTUnwrap(
+            monitorStartup.range(of: ".beginSessionMonitoring {")
+        )
+        let defaultInputUncertaintyStart = try XCTUnwrap(
+            monitorStartup.range(
+                of: "blackHoleDefaultInputLease.setUncertaintyHandler"
+            )
+        )
+        let deviceMonitorStart = try XCTUnwrap(
+            monitorStartup.range(
+                of: "blackHoleDeviceAvailabilityMonitor.start"
+            )
+        )
+        let synchronousGateClose = try XCTUnwrap(
+            monitorStartup.range(of: "authorizationGate.close()")
+        )
+        let deferredActorTask = try XCTUnwrap(
+            monitorStartup.range(of: "Task { [weak self] in")
+        )
+        XCTAssertLessThan(
+            defaultInputUncertaintyStart.lowerBound,
+            safeOutputMonitorStart.lowerBound
+        )
+        let defaultInputUncertainty = try sourceSlice(
+            in: monitorStartup,
+            after: "        blackHoleDefaultInputLease.setUncertaintyHandler {",
+            before: "        do {\n            safeOutputInvariantMonitoringEpoch ="
+        )
+        let inputGateClose = try XCTUnwrap(
+            defaultInputUncertainty.range(
+                of: "authorizationGate.close()"
+            )
+        )
+        let inputActorTask = try XCTUnwrap(
+            defaultInputUncertainty.range(
+                of: "Task { [weak self] in"
+            )
+        )
+        XCTAssertLessThan(
+            inputGateClose.lowerBound,
+            inputActorTask.lowerBound
+        )
+        XCTAssertTrue(
+            defaultInputUncertainty.contains(
+                ".blackHoleDefaultInputDidBecomeUncertain(event)"
+            )
+        )
+        XCTAssertLessThan(
+            safeOutputMonitorStart.lowerBound,
+            deviceMonitorStart.lowerBound
+        )
+        XCTAssertLessThan(
+            synchronousGateClose.lowerBound,
+            deferredActorTask.lowerBound
+        )
+        let deviceUncertainty = try sourceSlice(
+            in: monitorStartup,
+            after: "                onUncertain: {",
+            before: "                observer: {"
+        )
+        let deviceGateClose = try XCTUnwrap(
+            deviceUncertainty.range(of: "authorizationGate.close()")
+        )
+        let deviceActorTask = try XCTUnwrap(
+            deviceUncertainty.range(of: "Task { [weak self] in")
+        )
+        XCTAssertLessThan(deviceGateClose.lowerBound, deviceActorTask.lowerBound)
+        XCTAssertTrue(
+            deviceUncertainty.contains(
+                ".blackHoleDeviceInventoryDidBecomeUncertain("
             )
         )
         let initialSnapshotConsumption = try XCTUnwrap(
@@ -396,6 +614,12 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
             ),
             "The initial monitor snapshot must be delivered to forwarding independently of later callbacks."
         )
+        XCTAssertTrue(
+            initialSnapshotConsumer.contains(
+                "await authorizeIPhoneMicrophoneForwardingIfPossible()"
+            ),
+            "A successful healthy revalidation must restore transport authorization after fail-closed revocation."
+        )
 
         let deviceChange = try sourceSlice(
             in: serviceSource,
@@ -406,6 +630,41 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
             deviceChange.contains("await blackHoleDefaultInput"),
             "Forwarding must not await default-input retry coordination."
         )
+        XCTAssertTrue(
+            deviceChange.contains(
+                "await consumeCurrentBlackHoleDeviceSnapshot()"
+            ),
+            "A queued observer callback must obtain fresh exact-pair proof before it can restore routing."
+        )
+        XCTAssertFalse(
+            deviceChange.contains(".updateDeviceSnapshot(snapshot)"),
+            "A delayed pre-failure callback must never directly re-admit its captured generation."
+        )
+
+        let uncertaintyHandler = try sourceSlice(
+            in: serviceSource,
+            after:
+                "    private func blackHoleDeviceInventoryDidBecomeUncertain(",
+            before:
+                "    func iPhoneMicrophoneForwardingSnapshot()"
+        )
+        let acceptedEventFence = try XCTUnwrap(
+            uncertaintyHandler.range(
+                of: "eventSequence\n                <= authorization.acceptedInventoryChangeSequence"
+            )
+        )
+        let revokePairProof = try XCTUnwrap(
+            uncertaintyHandler.range(
+                of: "blackHoleEndpointPairAuthorization = nil"
+            )
+        )
+        let revokeRouting = try XCTUnwrap(
+            uncertaintyHandler.range(
+                of: "revokeWorldwideMicrophoneForUnsafeOutputInvariant()"
+            )
+        )
+        XCTAssertLessThan(acceptedEventFence.lowerBound, revokePairProof.lowerBound)
+        XCTAssertLessThan(revokePairProof.lowerBound, revokeRouting.lowerBound)
 
         let coordinatorSource = try String(
             contentsOf: repositoryRoot.appendingPathComponent(
@@ -468,6 +727,36 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
         )
     }
 
+    func testDeviceInventoryCloseSupersedesPrevalidationGatePreparation()
+        throws {
+        let gate = try XCTUnwrap(
+            BlackHoleMicrophoneOutputAuthorizationGate()
+        )
+        let admitted = gate.prepareToOpen()
+        XCTAssertTrue(gate.openForTesting(preparation: admitted))
+        XCTAssertTrue(gate.isOpen)
+
+        let prevalidationPreparation = gate.prepareToOpen()
+        gate.close()
+
+        XCTAssertFalse(
+            gate.isOpen,
+            "The raw device-list callback must close the realtime writer immediately."
+        )
+        XCTAssertFalse(
+            gate.openForTesting(
+                preparation: prevalidationPreparation
+            ),
+            "A pair proof prepared before the callback must not reopen after revalidation."
+        )
+
+        let freshPreparation = gate.prepareToOpen()
+        XCTAssertTrue(
+            gate.openForTesting(preparation: freshPreparation),
+            "Only a preparation captured after the uncertainty event may reopen the writer."
+        )
+    }
+
     func testHealthyStatisticsContinuouslyVerifyAndRevokeBeforeRepair()
         throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
@@ -491,6 +780,41 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
                 "await maintainWorldwideSafeOutputInvariant()"
             )
         )
+        let originFence = try XCTUnwrap(
+            statisticsCase.range(
+                of: "peerGeneration == sourcePeerGeneration"
+            )
+        )
+        let pairAdmission = try XCTUnwrap(
+            statisticsCase.range(
+                of: "admitBlackHoleInputWithinSafeOutputFence()"
+            )
+        )
+        let forwardingSnapshot = try XCTUnwrap(
+            statisticsCase.range(
+                of: "iPhoneMicrophoneForwarding.snapshot()"
+            )
+        )
+        let forwardingAuthorization = try XCTUnwrap(
+            statisticsCase.range(
+                of: "await authorizeIPhoneMicrophoneForwardingIfPossible()"
+            )
+        )
+        let hiddenWriterMarker = try XCTUnwrap(
+            statisticsCase.range(
+                of: "Self.hiddenWriterSelectionLogMessage("
+            )
+        )
+        let safeOutputMaintenance = try XCTUnwrap(
+            statisticsCase.range(
+                of: "await maintainWorldwideSafeOutputInvariant()"
+            )
+        )
+        XCTAssertLessThan(originFence.lowerBound, pairAdmission.lowerBound)
+        XCTAssertLessThan(pairAdmission.lowerBound, forwardingAuthorization.lowerBound)
+        XCTAssertLessThan(forwardingAuthorization.lowerBound, forwardingSnapshot.lowerBound)
+        XCTAssertLessThan(forwardingSnapshot.lowerBound, hiddenWriterMarker.lowerBound)
+        XCTAssertLessThan(hiddenWriterMarker.lowerBound, safeOutputMaintenance.lowerBound)
 
         let maintenance = try sourceSlice(
             in: serviceSource,
@@ -500,7 +824,9 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
                 "    private func revokeWorldwideMicrophoneForUnsafeOutputInvariant()"
         )
         XCTAssertTrue(
-            maintenance.contains("worldwideSafeOutputInvariant.verify()")
+            maintenance.contains(
+                "worldwideSafeOutputInvariant.verify(\n                monitoringEpoch: monitoringEpoch"
+            )
         )
         XCTAssertTrue(maintenance.contains("if verification.isSatisfied"))
         let verificationFailureStart = try XCTUnwrap(
@@ -559,20 +885,15 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
                 of: "revokeWorldwideMicrophoneForUnsafeOutputInvariant()"
             )
         )
-        let retryGate = try XCTUnwrap(
-            unsafePath.range(of: ".shouldAttemptOnCurrentTick()")
-        )
-        let enforcement = try XCTUnwrap(
-            unsafePath.range(of: "enforceWorldwideSafeOutputInvariant()")
-        )
         let resume = try XCTUnwrap(
             unsafePath.range(
                 of: "await resumeWorldwideMicrophoneAfterSafeOutputInvariant()"
             )
         )
-        XCTAssertLessThan(revocation.lowerBound, retryGate.lowerBound)
-        XCTAssertLessThan(retryGate.lowerBound, enforcement.lowerBound)
-        XCTAssertLessThan(enforcement.lowerBound, resume.lowerBound)
+        XCTAssertLessThan(revocation.lowerBound, resume.lowerBound)
+        XCTAssertFalse(
+            unsafePath.contains("enforceWorldwideSafeOutputInvariant()")
+        )
 
         let deviceChange = try sourceSlice(
             in: serviceSource,
@@ -584,7 +905,7 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
         XCTAssertTrue(
             deviceChange.contains("safeOutputInvariantRetryPolicy.reset()")
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             deviceChange.contains(
                 "await maintainWorldwideSafeOutputInvariant()"
             )

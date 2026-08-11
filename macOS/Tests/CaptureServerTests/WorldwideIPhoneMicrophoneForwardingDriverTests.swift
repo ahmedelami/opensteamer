@@ -8,6 +8,45 @@ import XCTest
 final class WorldwideIPhoneMicrophoneForwardingDriverTests:
     XCTestCase
 {
+    func testVisibleEndpointWithoutHiddenSinkFailsClosed()
+        async {
+        let factory = DriverTestOutputFactory(
+            outputs: [
+                DriverTestOutput(
+                    progressSnapshots: readyProgressSnapshots()
+                ),
+            ]
+        )
+        let harness = DriverTestHarness(factory: factory)
+        let peer = DriverTestPeer()
+        let track = DriverTestTrack()
+        let epoch = UUID()
+
+        await prepare(
+            harness: harness,
+            epoch: epoch,
+            peer: peer,
+            track: track
+        )
+        await harness.authorize(peer: peer, generation: 1)
+        await harness.updateDevice(
+            BlackHoleDeviceAvailabilitySnapshot(
+                monitorEpoch: epoch,
+                deviceGeneration: 1,
+                isAvailable: true,
+                deviceUID: "BlackHole2ch_UID"
+            )
+        )
+
+        let result = await harness.snapshot()
+        XCTAssertEqual(factory.requestCount, 0)
+        XCTAssertFalse(track.isEnabled)
+        XCTAssertEqual(result.phase, .waitingForDevice)
+        XCTAssertEqual(result.deviceUID, "BlackHole2ch_UID")
+        XCTAssertNil(result.sinkDeviceUID)
+        XCTAssertFalse(result.hiddenWriterSelectionProven)
+    }
+
     func testTransientOutputConstructionFailureRetriesSameGenerationAndBecomesHealthy()
         async {
         let retryGate = DriverSuspensionGate()
@@ -71,15 +110,17 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         XCTAssertEqual(
             factory.requestedUIDs,
             [
-                "BlackHole2ch_UID",
-                "BlackHole2ch_UID",
+                "BlackHole2ch_2_UID",
+                "BlackHole2ch_2_UID",
             ]
         )
+        XCTAssertEqual(factory.requestedDeviceIDs, [89, 89])
         XCTAssertEqual(ready.startCount, 1)
         XCTAssertTrue(track.isEnabled)
         XCTAssertEqual(final.phase, .forwardingHealthy)
         XCTAssertTrue(final.exactTrackAdmitted)
         XCTAssertTrue(final.queueRunning)
+        XCTAssertTrue(final.hiddenWriterSelectionProven)
         XCTAssertEqual(
             final.currentKey?.deviceGeneration,
             1
@@ -164,6 +205,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         XCTAssertEqual(final.monitorEpoch, epoch)
         XCTAssertEqual(final.deviceGeneration, 2)
         XCTAssertEqual(final.deviceUID, "BlackHole2ch_UID")
+        XCTAssertEqual(final.sinkDeviceUID, "BlackHole2ch_2_UID")
         XCTAssertEqual(
             final.currentKey?.deviceGeneration,
             2
@@ -174,7 +216,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         )
         XCTAssertEqual(
             factory.requestedUIDs,
-            ["BlackHole2ch_UID", "BlackHole2ch_UID"]
+            ["BlackHole2ch_2_UID", "BlackHole2ch_2_UID"]
         )
 
         await harness.updateDevice(
@@ -343,9 +385,9 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         XCTAssertEqual(
             factory.requestedUIDs,
             [
-                "BlackHole2ch_UID",
-                "BlackHole2ch_UID",
-                "BlackHole2ch_UID",
+                "BlackHole2ch_2_UID",
+                "BlackHole2ch_2_UID",
+                "BlackHole2ch_2_UID",
             ]
         )
         let outputUnavailablePhase = await harness.snapshot().phase
@@ -904,8 +946,14 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
             BlackHoleDeviceAvailabilitySnapshot(
                 monitorEpoch: epoch,
                 deviceGeneration: 1,
-                isAvailable: true,
-                deviceUID: "BlackHole2ch_UID"
+                defaultInputEndpoint: .init(
+                    deviceID: 79,
+                    deviceUID: "BlackHole2ch_UID"
+                ),
+                hiddenMirrorSinkEndpoint: .init(
+                    deviceID: 89,
+                    deviceUID: "BlackHole2ch_2_UID"
+                )
             )
         )
 
@@ -1761,11 +1809,25 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         generation: UInt64,
         available: Bool
     ) -> BlackHoleDeviceAvailabilitySnapshot {
-        BlackHoleDeviceAvailabilitySnapshot(
+        guard available else {
+            return BlackHoleDeviceAvailabilitySnapshot(
+                monitorEpoch: epoch,
+                deviceGeneration: generation,
+                isAvailable: false,
+                deviceUID: nil
+            )
+        }
+        return BlackHoleDeviceAvailabilitySnapshot(
             monitorEpoch: epoch,
             deviceGeneration: generation,
-            isAvailable: available,
-            deviceUID: available ? "BlackHole2ch_UID" : nil
+            defaultInputEndpoint: .init(
+                deviceID: 79,
+                deviceUID: "BlackHole2ch_UID"
+            ),
+            hiddenMirrorSinkEndpoint: .init(
+                deviceID: 89,
+                deviceUID: "BlackHole2ch_2_UID"
+            )
         )
     }
 
@@ -1831,6 +1893,162 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
 final class WorldwideBlackHoleDefaultInputCoordinatorTests:
     XCTestCase
 {
+    func testHiddenSinkIdentityChangeRebindsAtomicPairLease() {
+        let lease = DefaultInputCoordinatorLeaseFake()
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled,
+            lease: lease
+        )
+        let epoch = UUID()
+
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.transportDidBecomeHealthy(peerGeneration: 1)
+        guard case .selected(let first) = coordinator.updateDeviceSnapshot(
+            snapshot(epoch: epoch, generation: 1)
+        ) else {
+            return XCTFail("Expected the validated pair to acquire the visible input lease")
+        }
+
+        let replacement = BlackHoleDeviceAvailabilitySnapshot(
+            monitorEpoch: epoch,
+            deviceGeneration: 2,
+            defaultInputEndpoint: .init(
+                deviceID: 79,
+                deviceUID: "BlackHole2ch_UID"
+            ),
+            hiddenMirrorSinkEndpoint: .init(
+                deviceID: 90,
+                deviceUID: "BlackHole2ch_2_UID"
+            )
+        )
+        guard case .selected(let second) = coordinator
+            .updateDeviceSnapshot(replacement) else {
+            return XCTFail("Expected hidden-sink replacement to rebind the atomic pair")
+        }
+
+        XCTAssertNotEqual(first.leaseGeneration, second.leaseGeneration)
+        XCTAssertEqual(lease.releases, [first.leaseGeneration])
+        XCTAssertEqual(
+            lease.acquisitions.map(\.targetUID),
+            ["BlackHole2ch_UID", "BlackHole2ch_UID"]
+        )
+        XCTAssertEqual(
+            lease.acquisitions.map(\.targetDeviceID),
+            [79, 79]
+        )
+    }
+
+    func testTransientPairRevalidationFailureReleasesAndSameGenerationCanRecover() {
+        let lease = DefaultInputCoordinatorLeaseFake()
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled,
+            lease: lease
+        )
+        let epoch = UUID()
+        let current = snapshot(epoch: epoch, generation: 1)
+
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.transportDidBecomeHealthy(peerGeneration: 1)
+        guard case .selected(let first) = coordinator
+            .updateDeviceSnapshot(current) else {
+            return XCTFail("Expected the initial pair to acquire the lease")
+        }
+
+        XCTAssertEqual(
+            coordinator.deviceRevalidationDidFail(),
+            .degraded
+        )
+        XCTAssertEqual(lease.releases, [first.leaseGeneration])
+
+        guard case .selected(let recovered) = coordinator
+            .updateDeviceSnapshot(current) else {
+            return XCTFail("Expected the same factual generation to recover after fresh validation")
+        }
+        XCTAssertNotEqual(first.leaseGeneration, recovered.leaseGeneration)
+    }
+
+    func testVisibleSameUIDReplacementPassesNewExactIdentityToLease() {
+        let lease = DefaultInputCoordinatorLeaseFake()
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled,
+            lease: lease
+        )
+        let epoch = UUID()
+
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.transportDidBecomeHealthy(peerGeneration: 1)
+        guard case .selected(let first) = coordinator
+            .updateDeviceSnapshot(
+                snapshot(epoch: epoch, generation: 1)
+            ) else {
+            return XCTFail("Expected initial exact visible endpoint selection")
+        }
+
+        let replacement = BlackHoleDeviceAvailabilitySnapshot(
+            monitorEpoch: epoch,
+            deviceGeneration: 2,
+            defaultInputEndpoint: .init(
+                deviceID: 80,
+                deviceUID: "BlackHole2ch_UID"
+            ),
+            hiddenMirrorSinkEndpoint: .init(
+                deviceID: 89,
+                deviceUID: "BlackHole2ch_2_UID"
+            )
+        )
+        guard case .selected(let second) = coordinator
+            .updateDeviceSnapshot(replacement) else {
+            return XCTFail("Expected replacement exact visible endpoint selection")
+        }
+
+        XCTAssertEqual(first.deviceEndpoint.deviceID, 79)
+        XCTAssertEqual(second.deviceEndpoint.deviceID, 80)
+        XCTAssertEqual(
+            lease.acquisitions.map(\.targetDeviceID),
+            [79, 80]
+        )
+        XCTAssertEqual(
+            lease.acquisitions.map(\.targetUID),
+            ["BlackHole2ch_UID", "BlackHole2ch_UID"]
+        )
+        XCTAssertEqual(lease.releases, [first.leaseGeneration])
+    }
+
+    func testHigherPairGenerationRebindsWhenCoreAudioReusesEndpointIDs() {
+        let lease = DefaultInputCoordinatorLeaseFake()
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled,
+            lease: lease
+        )
+        let epoch = UUID()
+
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.transportDidBecomeHealthy(peerGeneration: 1)
+        guard case .selected(let first) = coordinator
+            .updateDeviceSnapshot(
+                snapshot(epoch: epoch, generation: 1)
+            ) else {
+            return XCTFail("Expected the initial pair generation to acquire")
+        }
+
+        guard case .selected(let second) = coordinator
+            .updateDeviceSnapshot(
+                snapshot(epoch: epoch, generation: 2)
+            ) else {
+            return XCTFail(
+                "A listener-proven endpoint reincarnation must rebind even when Core Audio reused both IDs"
+            )
+        }
+
+        XCTAssertNotEqual(first.leaseGeneration, second.leaseGeneration)
+        XCTAssertEqual(first.deviceEndpoint, second.deviceEndpoint)
+        XCTAssertEqual(lease.releases, [first.leaseGeneration])
+        XCTAssertEqual(
+            lease.acquisitions.map(\.targetDeviceID),
+            [79, 79]
+        )
+    }
+
     func testAudioRoutingCleanupPolicyRedrivesBothOwnersAfterOneExhaustedEpisode()
     {
         var defaultInputOutcomes:
@@ -2001,7 +2219,10 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
         }
         XCTAssertEqual(key.peerGeneration, 7)
         XCTAssertEqual(key.deviceGeneration, 1)
+        XCTAssertEqual(key.deviceEndpoint.deviceID, 79)
+        XCTAssertEqual(key.deviceEndpoint.deviceUID, "BlackHole2ch_UID")
         XCTAssertEqual(lease.acquisitions.count, 1)
+        XCTAssertEqual(lease.acquisitions[0].targetDeviceID, 79)
     }
 
     func testConnectionBeforeDeviceSelectsFirstCurrentAvailableGeneration() {
@@ -2359,10 +2580,10 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
 
         XCTAssertEqual(
             coordinator.updateDeviceSnapshot(
-                snapshot(epoch: epoch, generation: 2)
+                snapshot(epoch: epoch, generation: 1)
             ),
             .noChange,
-            "A synthetic generation bump with unchanged identity must remain idempotent."
+            "A duplicate snapshot from the same generation must remain idempotent."
         )
         XCTAssertEqual(lease.acquisitions.count, 3)
 
@@ -2454,7 +2675,7 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
             coordinator.updateDeviceSnapshot(
                 snapshot(epoch: epoch, generation: 2)
             ),
-            .noChange
+            .degraded
         )
         XCTAssertEqual(
             coordinator.transportDidBecomeHealthy(
@@ -2773,12 +2994,12 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
             peerGeneration: 1
         )
 
-        for generation in UInt64(2)...UInt64(512) {
+        for _ in 0..<512 {
             XCTAssertEqual(
                 coordinator.updateDeviceSnapshot(
                     snapshot(
                         epoch: epoch,
-                        generation: generation
+                        generation: 1
                     )
                 ),
                 .noChange
@@ -2787,6 +3008,88 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
 
         XCTAssertEqual(lease.acquisitions.count, 1)
         XCTAssertTrue(lease.releases.isEmpty)
+    }
+
+    func testPostAdmissionExternalDefaultInputEventRevokesAndCannotReassertSameConnection() {
+        let lease = DefaultInputCoordinatorLeaseFake(
+            releaseResults: [.externallySuperseded]
+        )
+        let coordinator =
+            WorldwideBlackHoleDefaultInputCoordinator(
+                policy: .enabled,
+                lease: lease
+            )
+        let epoch = UUID()
+
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(
+            snapshot(epoch: epoch, generation: 1)
+        )
+        guard case .selected(let admitted) =
+                coordinator.transportDidBecomeHealthy(
+                    peerGeneration: 1
+                ) else {
+            return XCTFail("Expected exact default-input admission")
+        }
+
+        guard case .selected(let refreshed) =
+                coordinator.transportDidBecomeHealthy(
+                    peerGeneration: 1
+                ) else {
+            return XCTFail(
+                "The same-key path must return a freshly verified proof"
+            )
+        }
+        XCTAssertEqual(
+            admitted.leaseGeneration,
+            refreshed.leaseGeneration
+        )
+        XCTAssertGreaterThanOrEqual(
+            lease.authorizationProofCallCount,
+            2
+        )
+
+        let incorporatedEvent =
+            BlackHoleDefaultInputLeaseUncertaintyEvent(
+                leaseGeneration: refreshed.leaseGeneration,
+                listenerRegistrationID:
+                    refreshed.inputAuthorization
+                        .listenerRegistrationID,
+                listenerSequence:
+                    refreshed.inputAuthorization
+                        .acceptedListenerSequence
+            )
+        XCTAssertEqual(
+            coordinator.defaultInputDidBecomeUncertain(
+                incorporatedEvent
+            ),
+            .noChange
+        )
+        XCTAssertTrue(lease.releases.isEmpty)
+
+        let externalEvent =
+            BlackHoleDefaultInputLeaseUncertaintyEvent(
+                leaseGeneration: refreshed.leaseGeneration,
+                listenerRegistrationID:
+                    refreshed.inputAuthorization
+                        .listenerRegistrationID,
+                listenerSequence:
+                    refreshed.inputAuthorization
+                        .acceptedListenerSequence + 1
+            )
+        XCTAssertEqual(
+            coordinator.defaultInputDidBecomeUncertain(externalEvent),
+            .degraded
+        )
+        XCTAssertEqual(lease.releases, [refreshed.leaseGeneration])
+        XCTAssertEqual(
+            coordinator.transportDidBecomeHealthy(
+                peerGeneration: 1
+            ),
+            .degraded,
+            "The same connection must not overwrite the external choice."
+        )
+        XCTAssertEqual(lease.acquisitions.count, 1)
     }
 
     func testStalePeerReleaseCannotClearPendingReplacementConnection() {
@@ -2835,12 +3138,18 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
             lease.acquisitions[1].generation
         )
         XCTAssertEqual(
-            coordinator.transportDidBecomeHealthy(
-                peerGeneration: 2
-            ),
-            .noChange,
-            "The replacement must not require or duplicate a second healthy callback."
+            lease.acquisitions.count,
+            2
         )
+        guard case .selected(let refreshed) =
+                coordinator.transportDidBecomeHealthy(
+                    peerGeneration: 2
+                ) else {
+            return XCTFail(
+                "The replacement must return a fresh same-key proof."
+            )
+        }
+        XCTAssertEqual(refreshed.leaseGeneration, key.leaseGeneration)
         XCTAssertEqual(lease.acquisitions.count, 2)
     }
 
@@ -2851,8 +3160,14 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
         BlackHoleDeviceAvailabilitySnapshot(
             monitorEpoch: epoch,
             deviceGeneration: generation,
-            isAvailable: true,
-            deviceUID: "BlackHole2ch_UID"
+            defaultInputEndpoint: .init(
+                deviceID: 79,
+                deviceUID: "BlackHole2ch_UID"
+            ),
+            hiddenMirrorSinkEndpoint: .init(
+                deviceID: 89,
+                deviceUID: "BlackHole2ch_2_UID"
+            )
         )
     }
 }
@@ -2863,7 +3178,15 @@ private final class DefaultInputCoordinatorLeaseFake:
 {
     struct Acquisition {
         let generation: UInt64
-        let targetUID: String
+        let targetEndpoint: BlackHoleDeviceEndpointIdentity
+
+        var targetUID: String {
+            targetEndpoint.deviceUID
+        }
+
+        var targetDeviceID: AudioDeviceID {
+            targetEndpoint.deviceID
+        }
     }
 
     enum Event: Equatable {
@@ -2881,6 +3204,8 @@ private final class DefaultInputCoordinatorLeaseFake:
     private var shutdownResults:
         [BlackHoleDefaultInputLeaseReleaseResult]
     private(set) var shutdownCallCount = 0
+    private var listenerRegistrationIDs: [UInt64: UUID] = [:]
+    private(set) var authorizationProofCallCount = 0
 
     init(
         acquisitionResults:
@@ -2897,19 +3222,39 @@ private final class DefaultInputCoordinatorLeaseFake:
 
     func acquisitionResult(
         generation: UInt64,
-        targetUID: String
+        targetEndpoint: BlackHoleDeviceEndpointIdentity
     ) -> BlackHoleDefaultInputLeaseAcquisitionResult {
         events.append(.acquisition(generation))
         acquisitions.append(
             Acquisition(
                 generation: generation,
-                targetUID: targetUID
+                targetEndpoint: targetEndpoint
             )
         )
         guard !acquisitionResults.isEmpty else {
             return .acquired
         }
         return acquisitionResults.removeFirst()
+    }
+
+    func authorizationProof(
+        generation: UInt64,
+        targetEndpoint: BlackHoleDeviceEndpointIdentity
+    ) -> BlackHoleDefaultInputLeaseAuthorization? {
+        authorizationProofCallCount += 1
+        let registrationID: UUID
+        if let existing = listenerRegistrationIDs[generation] {
+            registrationID = existing
+        } else {
+            registrationID = UUID()
+            listenerRegistrationIDs[generation] = registrationID
+        }
+        return BlackHoleDefaultInputLeaseAuthorization(
+            leaseGeneration: generation,
+            listenerRegistrationID: registrationID,
+            acceptedListenerSequence: 1,
+            targetEndpoint: targetEndpoint
+        )
     }
 
     func release(
@@ -2962,8 +3307,8 @@ private actor DriverTestHarness {
             automaticallyAdvanceInboundMedia
         driver = WorldwideIPhoneMicrophoneForwardingDriver(
             policy: policy,
-            makeOutput: { _, uid in
-                factory.makeOutput(deviceUID: uid)
+            makeOutput: { _, endpoint in
+                factory.makeOutput(endpoint: endpoint)
             },
             startOutput: { output in
                 guard let output = output as? DriverTestOutput else {
@@ -3208,18 +3553,18 @@ private final class DriverTestOutputFactory:
     private let lock = NSLock()
     private var outputs: [DriverTestOutput]
     private var requests = 0
-    private var uids: [String] = []
+    private var endpoints: [BlackHoleDeviceEndpointIdentity] = []
 
     init(outputs: [DriverTestOutput]) {
         self.outputs = outputs
     }
 
     func makeOutput(
-        deviceUID: String
+        endpoint: BlackHoleDeviceEndpointIdentity
     ) -> (any WorldwideIPhoneMicrophoneOutput)? {
         lock.withLock {
             requests += 1
-            uids.append(deviceUID)
+            endpoints.append(endpoint)
             guard !outputs.isEmpty else {
                 return nil
             }
@@ -3238,7 +3583,11 @@ private final class DriverTestOutputFactory:
     }
 
     var requestedUIDs: [String] {
-        lock.withLock { uids }
+        lock.withLock { endpoints.map(\.deviceUID) }
+    }
+
+    var requestedDeviceIDs: [AudioDeviceID] {
+        lock.withLock { endpoints.map(\.deviceID) }
     }
 }
 
@@ -3555,6 +3904,7 @@ private final class
     private var disposeIndex = 0
     private var nextQueueIdentity: UInt = 65_536
     private var queues: [UInt: QueueState] = [:]
+    private var selectedDeviceUIDs: [UInt: String] = [:]
     private var created:
         [UInt] = []
     private var eventStorage:
@@ -3648,11 +3998,33 @@ private final class
         }
     }
 
+    func translateDeviceID(
+        exactUID: String
+    ) -> (status: OSStatus, deviceID: AudioDeviceID?) {
+        guard exactUID
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .hiddenMirrorSinkDeviceUID else {
+            return (kAudio_ParamError, nil)
+        }
+        return (noErr, 89)
+    }
+
     func setCurrentDevice(
         _ uid: String,
         on queue: AudioQueueRef
     ) -> OSStatus {
-        noErr
+        lock.withLock {
+            selectedDeviceUIDs[Self.identity(queue)] = uid
+            return noErr
+        }
+    }
+
+    func currentDeviceUID(
+        on queue: AudioQueueRef
+    ) -> (status: OSStatus, uid: String?) {
+        lock.withLock {
+            (noErr, selectedDeviceUIDs[Self.identity(queue)])
+        }
     }
 
     func allocateBuffer(

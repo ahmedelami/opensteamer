@@ -150,6 +150,129 @@ void ASMacAudioQueueCallbackLifetimeWaitForCallbacks(
     }
 }
 
+static const uint_fast64_t ASMacAudioQueueWriterAuthorizationOpenBit = 1;
+
+typedef struct ASMacAudioQueueWriterAuthorizationGateStorage {
+    /// Bit zero is open/closed; upper bits are the revocation generation.
+    atomic_uint_fast64_t state;
+} ASMacAudioQueueWriterAuthorizationGateStorage;
+
+ASMacAudioQueueWriterAuthorizationGateRef
+ASMacAudioQueueWriterAuthorizationGateCreate(void) {
+    ASMacAudioQueueWriterAuthorizationGateStorage *storage =
+        calloc(
+            1,
+            sizeof(ASMacAudioQueueWriterAuthorizationGateStorage)
+        );
+    if (storage == NULL) {
+        return NULL;
+    }
+
+    atomic_init(&storage->state, 0);
+    return storage;
+}
+
+void ASMacAudioQueueWriterAuthorizationGateDestroy(
+    ASMacAudioQueueWriterAuthorizationGateRef gate
+) {
+    if (gate == NULL) {
+        return;
+    }
+
+    free((ASMacAudioQueueWriterAuthorizationGateStorage *)gate);
+}
+
+uint64_t ASMacAudioQueueWriterAuthorizationGatePrepareToOpen(
+    ASMacAudioQueueWriterAuthorizationGateRef gate
+) {
+    if (gate == NULL) {
+        return UINT64_MAX;
+    }
+
+    ASMacAudioQueueWriterAuthorizationGateStorage *storage =
+        (ASMacAudioQueueWriterAuthorizationGateStorage *)gate;
+    return (uint64_t)(atomic_load_explicit(
+        &storage->state,
+        memory_order_acquire
+    ) >> 1);
+}
+
+bool ASMacAudioQueueWriterAuthorizationGateOpenIfUnchanged(
+    ASMacAudioQueueWriterAuthorizationGateRef gate,
+    uint64_t expectedGeneration
+) {
+    if (gate == NULL || expectedGeneration > (UINT64_MAX >> 1)) {
+        return false;
+    }
+
+    ASMacAudioQueueWriterAuthorizationGateStorage *storage =
+        (ASMacAudioQueueWriterAuthorizationGateStorage *)gate;
+    uint_fast64_t observed = atomic_load_explicit(
+        &storage->state,
+        memory_order_acquire
+    );
+    for (;;) {
+        if ((observed >> 1) != expectedGeneration) {
+            return false;
+        }
+        const uint_fast64_t desired =
+            observed | ASMacAudioQueueWriterAuthorizationOpenBit;
+        if (atomic_compare_exchange_weak_explicit(
+                &storage->state,
+                &observed,
+                desired,
+                memory_order_acq_rel,
+                memory_order_acquire
+            )) {
+            return true;
+        }
+    }
+}
+
+void ASMacAudioQueueWriterAuthorizationGateClose(
+    ASMacAudioQueueWriterAuthorizationGateRef gate
+) {
+    if (gate == NULL) {
+        return;
+    }
+
+    ASMacAudioQueueWriterAuthorizationGateStorage *storage =
+        (ASMacAudioQueueWriterAuthorizationGateStorage *)gate;
+    uint_fast64_t observed = atomic_load_explicit(
+        &storage->state,
+        memory_order_acquire
+    );
+    for (;;) {
+        const uint_fast64_t generation = observed >> 1;
+        const uint_fast64_t nextGeneration = generation + 1;
+        const uint_fast64_t desired = nextGeneration << 1;
+        if (atomic_compare_exchange_weak_explicit(
+                &storage->state,
+                &observed,
+                desired,
+                memory_order_acq_rel,
+                memory_order_acquire
+            )) {
+            return;
+        }
+    }
+}
+
+bool ASMacAudioQueueWriterAuthorizationGateIsOpen(
+    ASMacAudioQueueWriterAuthorizationGateRef gate
+) {
+    if (gate == NULL) {
+        return false;
+    }
+
+    ASMacAudioQueueWriterAuthorizationGateStorage *storage =
+        (ASMacAudioQueueWriterAuthorizationGateStorage *)gate;
+    return (atomic_load_explicit(
+        &storage->state,
+        memory_order_acquire
+    ) & ASMacAudioQueueWriterAuthorizationOpenBit) != 0;
+}
+
 static const uint_fast64_t ASMacAudioQueueFailurePresentBit =
     ((uint_fast64_t)1 << 63);
 static const uint_fast64_t ASMacAudioQueueFailureReportedBit =

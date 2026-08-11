@@ -1,5 +1,7 @@
 #if os(macOS) && DEBUG
 import AudioToolbox
+import CaptureCore
+import Darwin
 import Foundation
 import MacWebRTCAudioDeviceShim
 import XCTest
@@ -14,6 +16,403 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
     private static let callbackStopFailure = OSStatus(-66_205)
     private static let disposeFailure = OSStatus(-66_206)
     private static let progressStallGraceNanoseconds: UInt64 = 100
+
+    func testVisibleEndpointIsRejectedBeforeAnyAudioQueueOperation() {
+        let operations = FakeBlackHoleAudioQueueOperations()
+
+        XCTAssertNil(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: operations,
+                expectedHiddenEndpoint: .init(
+                    deviceID: 79,
+                    deviceUID: "BlackHole2ch_UID"
+                ),
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+        XCTAssertEqual(operations.selectedDeviceUIDs, [])
+        XCTAssertEqual(operations.allocateCallCount, 0)
+        XCTAssertEqual(operations.startCallCount, 0)
+    }
+
+    func testWriterAuthorizationGateStartsClosedAndOutputFailsBeforeQueueCreation()
+        throws {
+        let operations = FakeBlackHoleAudioQueueOperations()
+        let gate = try XCTUnwrap(
+            BlackHoleMicrophoneOutputAuthorizationGate()
+        )
+        let output = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: operations,
+                authorizationGate: gate,
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+
+        XCTAssertFalse(gate.isOpen)
+        XCTAssertThrowsError(try output.start()) { error in
+            XCTAssertEqual(
+                error as? BlackHoleMicrophoneOutputError,
+                .operation(
+                    "authorize hidden BlackHole microphone writer",
+                    kAudio_ParamError
+                )
+            )
+        }
+        XCTAssertEqual(operations.createCallCount, 0)
+        XCTAssertEqual(operations.allocateCallCount, 0)
+        XCTAssertEqual(operations.enqueueCallCount, 0)
+        XCTAssertEqual(operations.startCallCount, 0)
+    }
+
+    func testWriterAuthorizationOpenIsIdempotentForSameHealthyGenerationAndRejectsStalePreparation()
+        throws {
+        let gate = try XCTUnwrap(
+            BlackHoleMicrophoneOutputAuthorizationGate()
+        )
+        let firstPreparation = gate.prepareToOpen()
+
+        XCTAssertTrue(
+            gate.openForTesting(preparation: firstPreparation)
+        )
+        XCTAssertTrue(
+            gate.openForTesting(preparation: firstPreparation),
+            "Repeated healthy admission must remain idempotent."
+        )
+
+        gate.close()
+        XCTAssertFalse(gate.isOpen)
+        XCTAssertFalse(
+            gate.openForTesting(preparation: firstPreparation),
+            "A close must fence a preparation from the prior generation."
+        )
+
+        let secondPreparation = gate.prepareToOpen()
+        XCTAssertTrue(
+            gate.openForTesting(preparation: secondPreparation)
+        )
+        XCTAssertTrue(gate.isOpen)
+    }
+
+    func testClosedWriterGateSkipsPullScrubsBufferAndRetiresItWithoutEnqueue()
+        throws {
+        let operations = FakeBlackHoleAudioQueueOperations()
+        let renderProbe = BlackHoleRenderProbe()
+        let gate = try XCTUnwrap(
+            BlackHoleMicrophoneOutputAuthorizationGate()
+        )
+        let preparation = gate.prepareToOpen()
+        XCTAssertTrue(
+            gate.openForTesting(preparation: preparation)
+        )
+        let output = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: operations,
+                authorizationGate: gate,
+                renderForTesting: { samples, frameCount in
+                    renderProbe.record(frameCount: frameCount)
+                    for index in 0..<(frameCount * 2) {
+                        samples[index] = 1_234
+                    }
+                    return true
+                },
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+
+        try output.start()
+        let renderCountAfterPriming = renderProbe.count
+        let enqueueCountAfterPriming = operations.enqueueCallCount
+        let buffer = try XCTUnwrap(operations.allocatedBuffers.first)
+        memset(
+            buffer.pointee.mAudioData,
+            0x7f,
+            Int(buffer.pointee.mAudioDataBytesCapacity)
+        )
+        gate.close()
+
+        output.debugInvokeRealtimeCallbackForTesting(
+            queue: operations.queue,
+            buffer: buffer
+        )
+
+        XCTAssertEqual(renderProbe.count, renderCountAfterPriming)
+        XCTAssertEqual(
+            operations.enqueueCallCount,
+            enqueueCountAfterPriming,
+            "A closed gate must retire the callback buffer."
+        )
+        XCTAssertEqual(
+            buffer.pointee.mAudioDataByteSize,
+            buffer.pointee.mAudioDataBytesCapacity
+        )
+        let samples = UnsafeBufferPointer(
+            start: buffer.pointee.mAudioData
+                .assumingMemoryBound(to: UInt8.self),
+            count: Int(buffer.pointee.mAudioDataByteSize)
+        )
+        XCTAssertTrue(samples.allSatisfy { $0 == 0 })
+        XCTAssertEqual(
+            output.forwardingProgressSnapshot.successfulPullCount,
+            0
+        )
+        output.stop()
+    }
+
+    func testCloseAfterPullScrubsBufferAndPreventsEnqueue()
+        throws {
+        let operations = FakeBlackHoleAudioQueueOperations()
+        let renderProbe = BlackHoleRenderProbe()
+        let gate = try XCTUnwrap(
+            BlackHoleMicrophoneOutputAuthorizationGate()
+        )
+        let preparation = gate.prepareToOpen()
+        XCTAssertTrue(
+            gate.openForTesting(preparation: preparation)
+        )
+        let interlock =
+            BlackHoleMicrophoneOutputWriterAuthorizationInterlock()
+        let output = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: operations,
+                authorizationGate: gate,
+                writerAuthorizationInterlockForTesting: interlock,
+                renderForTesting: { samples, frameCount in
+                    renderProbe.record(frameCount: frameCount)
+                    for index in 0..<(frameCount * 2) {
+                        samples[index] = 2_345
+                    }
+                    return true
+                },
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+
+        try output.start()
+        let renderCountAfterPriming = renderProbe.count
+        let enqueueCountAfterPriming = operations.enqueueCallCount
+        let context = try XCTUnwrap(
+            output.debugRealtimeCallbackContextForTesting()
+        )
+        let buffer = try XCTUnwrap(operations.allocatedBuffers.first)
+        let invocation = BlackHoleCallbackInvocationBox(
+            context: context,
+            queue: operations.queue,
+            buffer: buffer
+        )
+        let callbackCompleted = DispatchGroup()
+        interlock.armNextCallback()
+        callbackCompleted.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { callbackCompleted.leave() }
+            BlackHoleMicrophoneOutput
+                .debugInvokeRealtimeCallbackWithContextForTesting(
+                    context: invocation.context,
+                    queue: invocation.queue,
+                    buffer: invocation.buffer
+                )
+        }
+        defer {
+            interlock.releaseCallback()
+            callbackCompleted.wait()
+            output.stop()
+        }
+
+        guard interlock.waitUntilCallbackPaused(
+            timeout: .now() + .seconds(1)
+        ) == .success else {
+            XCTFail(
+                "The callback did not reach the final authorization check."
+            )
+            return
+        }
+        XCTAssertEqual(renderProbe.count, renderCountAfterPriming + 1)
+        gate.close()
+        interlock.releaseCallback()
+        callbackCompleted.wait()
+
+        XCTAssertEqual(
+            operations.enqueueCallCount,
+            enqueueCountAfterPriming,
+            "Revoked PCM must never be returned to Core Audio."
+        )
+        let bytes = UnsafeBufferPointer(
+            start: buffer.pointee.mAudioData
+                .assumingMemoryBound(to: UInt8.self),
+            count: Int(buffer.pointee.mAudioDataByteSize)
+        )
+        XCTAssertTrue(bytes.allSatisfy { $0 == 0 })
+        XCTAssertEqual(
+            output.forwardingProgressSnapshot.successfulPullCount,
+            0
+        )
+    }
+
+    func testHiddenMirrorSinkIsSelectedAndReadBackBeforeStartup()
+        throws {
+        let hiddenUID = "BlackHole2ch_2_UID"
+        let operations = FakeBlackHoleAudioQueueOperations(
+            deviceUID: hiddenUID
+        )
+        let output = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: operations,
+                expectedHiddenEndpoint: .init(
+                    deviceID: 89,
+                    deviceUID: hiddenUID
+                ),
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+
+        try output.start()
+
+        XCTAssertEqual(
+            operations.translatedDeviceUIDs,
+            [hiddenUID, hiddenUID]
+        )
+        XCTAssertEqual(operations.selectedDeviceUIDs, [hiddenUID])
+        XCTAssertEqual(operations.allocateCallCount, 3)
+        XCTAssertEqual(operations.startCallCount, 1)
+        output.stop()
+    }
+
+    func testSelectedSinkReadbackMismatchFailsClosedBeforeBuffers()
+        throws {
+        let operations = FakeBlackHoleAudioQueueOperations(
+            currentDeviceUIDOverride: "BlackHole2ch_UID"
+        )
+        let output = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: operations,
+                expectedHiddenEndpoint: .init(
+                    deviceID: 89,
+                    deviceUID: "BlackHole2ch_2_UID"
+                ),
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+
+        XCTAssertThrowsError(try output.start()) { error in
+            XCTAssertEqual(
+                error as? BlackHoleMicrophoneOutputError,
+                .operation(
+                    "verify selected BlackHole sink by UID",
+                    kAudio_ParamError
+                )
+            )
+        }
+        XCTAssertEqual(operations.allocateCallCount, 0)
+        XCTAssertEqual(operations.startCallCount, 0)
+        XCTAssertEqual(operations.disposeCallCount, 1)
+    }
+
+    func testSelectedSinkDriftAfterStartStopsAndDisposesQueue()
+        throws {
+        let hiddenUID = "BlackHole2ch_2_UID"
+        let operations = FakeBlackHoleAudioQueueOperations(
+            currentDeviceUIDSequence: [
+                hiddenUID,
+                "BlackHole2ch_UID",
+            ]
+        )
+        let output = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: operations,
+                expectedHiddenEndpoint: .init(
+                    deviceID: 89,
+                    deviceUID: hiddenUID
+                ),
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+
+        XCTAssertThrowsError(try output.start()) { error in
+            XCTAssertEqual(
+                error as? BlackHoleMicrophoneOutputError,
+                .operation(
+                    "verify selected BlackHole sink by UID",
+                    kAudio_ParamError
+                )
+            )
+        }
+        XCTAssertEqual(operations.allocateCallCount, 3)
+        XCTAssertEqual(operations.startCallCount, 1)
+        XCTAssertEqual(operations.stopCallCount, 1)
+        XCTAssertEqual(operations.disposeCallCount, 1)
+    }
+
+    func testSameUIDReplacementBeforeSelectionFailsBeforeCurrentDeviceMutation()
+        throws {
+        let hiddenUID = "BlackHole2ch_2_UID"
+        let operations = FakeBlackHoleAudioQueueOperations(
+            translatedDeviceIDSequence: [90]
+        )
+        let output = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: operations,
+                expectedHiddenEndpoint: .init(
+                    deviceID: 89,
+                    deviceUID: hiddenUID
+                ),
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+
+        XCTAssertThrowsError(try output.start()) { error in
+            XCTAssertEqual(
+                error as? BlackHoleMicrophoneOutputError,
+                .operation(
+                    "verify hidden BlackHole sink AudioDeviceID",
+                    kAudio_ParamError
+                )
+            )
+        }
+        XCTAssertEqual(operations.translatedDeviceUIDs, [hiddenUID])
+        XCTAssertEqual(operations.selectedDeviceUIDs, [])
+        XCTAssertEqual(operations.allocateCallCount, 0)
+        XCTAssertEqual(operations.startCallCount, 0)
+        XCTAssertEqual(operations.disposeCallCount, 1)
+        XCTAssertFalse(output.forwardingProgressSnapshot.queueRunning)
+    }
+
+    func testSameUIDReplacementAfterStartFailsAndNeverCommitsSelection()
+        throws {
+        let hiddenUID = "BlackHole2ch_2_UID"
+        let operations = FakeBlackHoleAudioQueueOperations(
+            translatedDeviceIDSequence: [89, 90]
+        )
+        let output = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: operations,
+                expectedHiddenEndpoint: .init(
+                    deviceID: 89,
+                    deviceUID: hiddenUID
+                ),
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+
+        XCTAssertThrowsError(try output.start()) { error in
+            XCTAssertEqual(
+                error as? BlackHoleMicrophoneOutputError,
+                .operation(
+                    "verify hidden BlackHole sink AudioDeviceID",
+                    kAudio_ParamError
+                )
+            )
+        }
+        XCTAssertEqual(
+            operations.translatedDeviceUIDs,
+            [hiddenUID, hiddenUID]
+        )
+        XCTAssertEqual(operations.selectedDeviceUIDs, [hiddenUID])
+        XCTAssertEqual(operations.allocateCallCount, 3)
+        XCTAssertEqual(operations.startCallCount, 1)
+        XCTAssertEqual(operations.stopCallCount, 1)
+        XCTAssertEqual(operations.disposeCallCount, 1)
+        XCTAssertFalse(output.forwardingProgressSnapshot.queueRunning)
+    }
 
     func testPrimingFailurePreventsStartCleansExactPartialQueueAndThrowsStatus() throws {
         let operations = FakeBlackHoleAudioQueueOperations(
@@ -41,7 +440,7 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
 
         XCTAssertEqual(
             operations.selectedDeviceUIDs,
-            ["BlackHole2ch_UID"]
+            ["BlackHole2ch_2_UID"]
         )
         XCTAssertEqual(operations.allocateCallCount, 2)
         XCTAssertEqual(operations.enqueueCallCount, 2)
@@ -62,6 +461,89 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
         output.stop()
         XCTAssertEqual(operations.freeBufferCallCount, 0)
         XCTAssertEqual(operations.disposeCallCount, 1)
+    }
+
+    func testStopDuringStartWaitsForLocalQueueCleanupAndLeavesNoActiveQueue()
+        throws {
+        let startInterlock = BlackHoleAudioQueueStartInterlock()
+        let operations = FakeBlackHoleAudioQueueOperations(
+            startQueueInterlock: startInterlock
+        )
+        let startOutcome = BlackHoleOutputStartOutcomeProbe()
+        let startReturned = DispatchSemaphore(value: 0)
+        let stopReturned = DispatchSemaphore(value: 0)
+        let output = try XCTUnwrap(
+            BlackHoleMicrophoneOutput(
+                testingAudioQueueOperations: operations,
+                runtimeFailureHandler: { _, _ in }
+            )
+        )
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { startReturned.signal() }
+            do {
+                try output.start()
+                startOutcome.recordSuccess()
+            } catch {
+                startOutcome.record(error)
+            }
+        }
+        defer { startInterlock.releaseFirstStart() }
+
+        XCTAssertEqual(
+            startInterlock.waitUntilFirstStartEntered(
+                timeout: .now() + .seconds(1)
+            ),
+            .success
+        )
+        DispatchQueue.global(qos: .userInitiated).async {
+            output.stop()
+            stopReturned.signal()
+        }
+        XCTAssertTrue(
+            output.debugWaitForStopRequestDuringStartForTesting(
+                timeout: 1
+            ),
+            "The concurrent stop never fenced the in-progress local queue."
+        )
+        XCTAssertEqual(
+            stopReturned.wait(timeout: .now()),
+            .timedOut,
+            "stop() returned before the started local queue was cleaned up."
+        )
+
+        startInterlock.releaseFirstStart()
+        XCTAssertEqual(
+            startReturned.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+        XCTAssertEqual(
+            stopReturned.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+
+        XCTAssertFalse(startOutcome.didSucceed)
+        XCTAssertEqual(
+            startOutcome.error,
+            .operation(
+                "authorize hidden BlackHole microphone writer",
+                kAudio_ParamError
+            )
+        )
+        XCTAssertEqual(operations.startCallCount, 1)
+        XCTAssertEqual(operations.stopCallCount, 1)
+        XCTAssertEqual(operations.disposeCallCount, 1)
+        XCTAssertEqual(operations.activeAllocationCount, 0)
+        XCTAssertNil(output.debugRealtimeCallbackContextForTesting())
+        XCTAssertFalse(output.forwardingProgressSnapshot.queueRunning)
+
+        try output.start()
+        XCTAssertTrue(output.forwardingProgressSnapshot.queueRunning)
+        XCTAssertEqual(operations.startCallCount, 2)
+        output.stop()
+        XCTAssertEqual(operations.stopCallCount, 2)
+        XCTAssertEqual(operations.disposeCallCount, 2)
+        XCTAssertEqual(operations.activeAllocationCount, 0)
     }
 
     func testAllocationFailureChecksStatusAndCleansOnlyAllocatedBuffers() throws {
@@ -1818,8 +2300,14 @@ private final class FakeBlackHoleAudioQueueOperations:
 
     private let lock = NSLock()
     private let deviceUID: String
+    private let deviceID: AudioDeviceID
+    private let translateDeviceStatuses: [OSStatus]
+    private let translatedDeviceIDSequence: [AudioDeviceID?]
     private let createStatus: OSStatus
     private let setDeviceStatus: OSStatus
+    private let currentDeviceStatus: OSStatus
+    private let currentDeviceUIDOverride: String?
+    private let currentDeviceUIDSequence: [String]
     private let allocateStatuses: [OSStatus]
     private let enqueueStatuses: [OSStatus]
     private let startStatus: OSStatus
@@ -1827,6 +2315,8 @@ private final class FakeBlackHoleAudioQueueOperations:
     private let disposeStatus: OSStatus
     private let disposeStatuses: [OSStatus]
     private let reportedBufferCapacities: [Int: UInt32]
+    private let startQueueInterlock:
+        BlackHoleAudioQueueStartInterlock?
     private var allocations: [FakeAudioQueueBufferAllocation] = []
     private var selectedDeviceUIDsStorage: [String] = []
     private var allocateCallCountStorage = 0
@@ -1837,25 +2327,43 @@ private final class FakeBlackHoleAudioQueueOperations:
     private var disposeCallCountStorage = 0
     private var createCallCountStorage = 0
     private var enqueueAfterDisposeCallCountStorage = 0
+    private var translateDeviceReadCountStorage = 0
+    private var translatedDeviceUIDsStorage: [String] = []
+    private var currentDeviceReadCountStorage = 0
     private var latestQueue: AudioQueueRef =
         OpaquePointer(bitPattern: 0xB10C)!
     private var disposedQueues: Set<UInt> = []
 
     init(
-        deviceUID: String = "BlackHole2ch_UID",
+        deviceUID: String = "BlackHole2ch_2_UID",
+        deviceID: AudioDeviceID = 89,
+        translateDeviceStatuses: [OSStatus] = [],
+        translatedDeviceIDSequence: [AudioDeviceID?] = [],
         createStatus: OSStatus = noErr,
         setDeviceStatus: OSStatus = noErr,
+        currentDeviceStatus: OSStatus = noErr,
+        currentDeviceUIDOverride: String? = nil,
+        currentDeviceUIDSequence: [String] = [],
         allocateStatuses: [OSStatus] = [],
         enqueueStatuses: [OSStatus] = [],
         startStatus: OSStatus = noErr,
         stopStatus: OSStatus = noErr,
         disposeStatus: OSStatus = noErr,
         disposeStatuses: [OSStatus] = [],
-        reportedBufferCapacities: [Int: UInt32] = [:]
+        reportedBufferCapacities: [Int: UInt32] = [:],
+        startQueueInterlock:
+            BlackHoleAudioQueueStartInterlock? = nil
     ) {
         self.deviceUID = deviceUID
+        self.deviceID = deviceID
+        self.translateDeviceStatuses = translateDeviceStatuses
+        self.translatedDeviceIDSequence =
+            translatedDeviceIDSequence
         self.createStatus = createStatus
         self.setDeviceStatus = setDeviceStatus
+        self.currentDeviceStatus = currentDeviceStatus
+        self.currentDeviceUIDOverride = currentDeviceUIDOverride
+        self.currentDeviceUIDSequence = currentDeviceUIDSequence
         self.allocateStatuses = allocateStatuses
         self.enqueueStatuses = enqueueStatuses
         self.startStatus = startStatus
@@ -1863,6 +2371,7 @@ private final class FakeBlackHoleAudioQueueOperations:
         self.disposeStatus = disposeStatus
         self.disposeStatuses = disposeStatuses
         self.reportedBufferCapacities = reportedBufferCapacities
+        self.startQueueInterlock = startQueueInterlock
     }
 
     deinit {
@@ -1876,6 +2385,10 @@ private final class FakeBlackHoleAudioQueueOperations:
 
     var selectedDeviceUIDs: [String] {
         withLock { selectedDeviceUIDsStorage }
+    }
+
+    var translatedDeviceUIDs: [String] {
+        withLock { translatedDeviceUIDsStorage }
     }
 
     var allocateCallCount: Int {
@@ -1933,6 +2446,27 @@ private final class FakeBlackHoleAudioQueueOperations:
         }
     }
 
+    func translateDeviceID(
+        exactUID: String
+    ) -> (status: OSStatus, deviceID: AudioDeviceID?) {
+        withLock {
+            translatedDeviceUIDsStorage.append(exactUID)
+            let index = translateDeviceReadCountStorage
+            translateDeviceReadCountStorage += 1
+            let status = index < translateDeviceStatuses.count
+                ? translateDeviceStatuses[index]
+                : noErr
+            guard status == noErr else {
+                return (status, nil)
+            }
+            let translatedID = index
+                < translatedDeviceIDSequence.count
+                ? translatedDeviceIDSequence[index]
+                : deviceID
+            return (noErr, translatedID)
+        }
+    }
+
     func setCurrentDevice(
         _ uid: String,
         on _: AudioQueueRef
@@ -1940,6 +2474,34 @@ private final class FakeBlackHoleAudioQueueOperations:
         withLock {
             selectedDeviceUIDsStorage.append(uid)
             return setDeviceStatus
+        }
+    }
+
+    func currentDeviceUID(
+        on _: AudioQueueRef
+    ) -> (status: OSStatus, uid: String?) {
+        withLock {
+            guard currentDeviceStatus == noErr else {
+                return (currentDeviceStatus, nil)
+            }
+            let sequenceUID: String?
+            if currentDeviceUIDSequence.isEmpty {
+                sequenceUID = nil
+            } else {
+                let index = min(
+                    currentDeviceReadCountStorage,
+                    currentDeviceUIDSequence.count - 1
+                )
+                sequenceUID = currentDeviceUIDSequence[index]
+            }
+            currentDeviceReadCountStorage += 1
+            return (
+                noErr,
+                sequenceUID
+                    ?? currentDeviceUIDOverride
+                    ?? selectedDeviceUIDsStorage.last
+                    ?? deviceUID
+            )
         }
     }
 
@@ -1999,13 +2561,15 @@ private final class FakeBlackHoleAudioQueueOperations:
     }
 
     func startQueue(_ queue: AudioQueueRef) -> OSStatus {
-        withLock {
+        let status = withLock {
             guard !disposedQueues.contains(Self.identity(queue)) else {
                 return kAudio_ParamError
             }
             startCallCountStorage += 1
             return startStatus
         }
+        startQueueInterlock?.pauseFirstStart()
+        return status
     }
 
     func stopQueue(
@@ -2079,6 +2643,67 @@ private final class FakeBlackHoleAudioQueueOperations:
         lock.lock()
         defer { lock.unlock() }
         return body()
+    }
+}
+
+private final class BlackHoleAudioQueueStartInterlock:
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let firstStartEntered = DispatchSemaphore(value: 0)
+    private let firstStartRelease = DispatchSemaphore(value: 0)
+    private var shouldPauseFirstStart = true
+
+    func pauseFirstStart() {
+        lock.lock()
+        let shouldPause = shouldPauseFirstStart
+        shouldPauseFirstStart = false
+        lock.unlock()
+        guard shouldPause else { return }
+        firstStartEntered.signal()
+        firstStartRelease.wait()
+    }
+
+    func waitUntilFirstStartEntered(
+        timeout: DispatchTime
+    ) -> DispatchTimeoutResult {
+        firstStartEntered.wait(timeout: timeout)
+    }
+
+    func releaseFirstStart() {
+        firstStartRelease.signal()
+    }
+}
+
+private final class BlackHoleOutputStartOutcomeProbe:
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var didSucceedStorage = false
+    private var errorStorage: BlackHoleMicrophoneOutputError?
+
+    var didSucceed: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return didSucceedStorage
+    }
+
+    var error: BlackHoleMicrophoneOutputError? {
+        lock.lock()
+        defer { lock.unlock() }
+        return errorStorage
+    }
+
+    func recordSuccess() {
+        lock.lock()
+        didSucceedStorage = true
+        lock.unlock()
+    }
+
+    func record(_ error: any Error) {
+        lock.lock()
+        errorStorage = error as? BlackHoleMicrophoneOutputError
+        lock.unlock()
     }
 }
 
