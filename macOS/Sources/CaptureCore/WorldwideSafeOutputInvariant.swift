@@ -72,6 +72,32 @@ public struct WorldwideSafeOutputInvariantVerification:
     public let changedSincePreviousObservation: Bool
 }
 
+/// Identifies one exact, session-lifetime pair of Core Audio output listeners.
+public struct WorldwideSafeOutputInvariantMonitoringEpoch:
+    Equatable,
+    Hashable,
+    Sendable
+{
+    public let id: UUID
+
+    fileprivate init(id: UUID = UUID()) {
+        self.id = id
+    }
+}
+
+/// Proof consumed when a caller opens a fail-closed microphone writer gate.
+///
+/// The listener sequence belongs only to `monitoringEpoch`; it must never be
+/// compared across monitoring lifetimes.
+public struct WorldwideSafeOutputInvariantAuthorization:
+    Equatable,
+    Sendable
+{
+    public let monitoringEpoch:
+        WorldwideSafeOutputInvariantMonitoringEpoch
+    public let listenerSequence: UInt64
+}
+
 /// Enforces the worldwide duplex invariant that BlackHole may be the input, never an output.
 ///
 /// When exactly one selector is BlackHole, the other current usable output supplies the preferred
@@ -79,8 +105,18 @@ public struct WorldwideSafeOutputInvariantVerification:
 /// default-input selector is deliberately absent from this type. Core Audio has no atomic
 /// compare-and-set; an exact listener sequence plus readback rejects every observable overlap.
 public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
-    public static let canonicalBlackHoleUID = "BlackHole2ch_UID"
+    public static let canonicalBlackHoleUID =
+        WorldwideBlackHoleMicrophoneEndpointContract
+            .visibleDefaultInputDeviceUID
+    public static let hiddenMirrorBlackHoleUID =
+        WorldwideBlackHoleMicrophoneEndpointContract
+            .hiddenMirrorSinkDeviceUID
     public static let builtInSpeakerUID = "BuiltInSpeakerDevice"
+
+    public static func isForbiddenOutputUID(_ uid: String) -> Bool {
+        uid == canonicalBlackHoleUID
+            || uid == hiddenMirrorBlackHoleUID
+    }
 
     private struct Snapshot: Equatable {
         let outputUID: String
@@ -96,18 +132,19 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
         }
 
         var isSafe: Bool {
-            outputUID != WorldwideSafeOutputInvariant.canonicalBlackHoleUID
-                && systemOutputUID
-                    != WorldwideSafeOutputInvariant.canonicalBlackHoleUID
+            !WorldwideSafeOutputInvariant
+                .isForbiddenOutputUID(outputUID)
+                && !WorldwideSafeOutputInvariant
+                    .isForbiddenOutputUID(systemOutputUID)
         }
 
         var preferredSafeUID: String? {
-            if outputUID
-                != WorldwideSafeOutputInvariant.canonicalBlackHoleUID {
+            if !WorldwideSafeOutputInvariant
+                .isForbiddenOutputUID(outputUID) {
                 return outputUID
             }
-            if systemOutputUID
-                != WorldwideSafeOutputInvariant.canonicalBlackHoleUID {
+            if !WorldwideSafeOutputInvariant
+                .isForbiddenOutputUID(systemOutputUID) {
                 return systemOutputUID
             }
             return nil
@@ -117,12 +154,48 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
     private final class ChangeSignal: @unchecked Sendable {
         private let condition = NSCondition()
         private var count: UInt64 = 0
+        private var onUncertain:
+            (@Sendable (_ eventSequence: UInt64) -> Void)?
+
+        init(
+            onUncertain:
+                (@Sendable (_ eventSequence: UInt64) -> Void)? = nil
+        ) {
+            self.onUncertain = onUncertain
+        }
 
         func record() {
             condition.lock()
-            count &+= 1
-            if count == 0 { count = 1 }
+            let eventSequence = Self.nextNonzero(count)
+            // This callback is deliberately invoked before the sequence is
+            // published. A constant-time, thread-safe writer-gate close can
+            // therefore win against every later authorization commit.
+            onUncertain?(eventSequence)
+            count = eventSequence
             condition.broadcast()
+            condition.unlock()
+        }
+
+        /// Runs the authorization commit under the same lock used by listener
+        /// callbacks. A selector callback either closes the gate and publishes
+        /// a newer sequence first, or runs only after this commit has opened it.
+        func commitIfUnchanged(
+            after expected: UInt64,
+            _ commit: () throws -> Void
+        ) rethrows -> Bool {
+            condition.lock()
+            defer { condition.unlock() }
+            guard count == expected,
+                  onUncertain != nil else {
+                return false
+            }
+            try commit()
+            return true
+        }
+
+        func deactivateUncertaintyCallback() {
+            condition.lock()
+            onUncertain = nil
             condition.unlock()
         }
 
@@ -146,15 +219,96 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
             }
             return true
         }
+
+        private static func nextNonzero(
+            _ value: UInt64
+        ) -> UInt64 {
+            let next = value &+ 1
+            return next == 0 ? 1 : next
+        }
     }
 
     private struct Registration {
         let queue: DispatchQueue
         let signal: ChangeSignal
-        let listeners: [
+        let removalJob: ListenerRemovalJob
+    }
+
+    private struct ActiveSessionMonitoring {
+        let epoch:
+            WorldwideSafeOutputInvariantMonitoringEpoch
+        let registration: Registration
+    }
+
+    /// Owns the exact queue/listener identities until every successful Core
+    /// Audio removal. Successful members are discarded individually; failed
+    /// members remain available to the bounded deferred cleanup redrive.
+    private final class ListenerRemovalJob: @unchecked Sendable {
+        let id = UUID()
+
+        private let operations:
+            any WorldwideSafeOutputInvariantOperations
+        private let queue: DispatchQueue
+        private let lock = NSLock()
+        private var listeners: [
             BlackHoleDefaultOutputKind:
                 CoreAudioPropertyListenerRegistration
         ]
+
+        init(
+            operations:
+                any WorldwideSafeOutputInvariantOperations,
+            queue: DispatchQueue,
+            listeners: [
+                BlackHoleDefaultOutputKind:
+                    CoreAudioPropertyListenerRegistration
+            ]
+        ) {
+            self.operations = operations
+            self.queue = queue
+            self.listeners = listeners
+        }
+
+        func remove(
+            maximumAttemptCount: Int
+        ) -> OSStatus {
+            var firstFailure = noErr
+            for _ in 0..<max(1, maximumAttemptCount) {
+                let status = removeOnce()
+                if status == noErr {
+                    return noErr
+                }
+                if firstFailure == noErr {
+                    firstFailure = status
+                }
+            }
+            return firstFailure
+        }
+
+        func removeOnce() -> OSStatus {
+            lock.lock()
+            defer { lock.unlock() }
+
+            queue.sync {}
+            var firstFailure = noErr
+            for kind in BlackHoleDefaultOutputKind.allCases {
+                guard let listener = listeners[kind] else {
+                    continue
+                }
+                let status = operations.removeDefaultOutputListener(
+                    kind: kind,
+                    queue: queue,
+                    listener: listener
+                )
+                if status == noErr {
+                    listeners[kind] = nil
+                } else if firstFailure == noErr {
+                    firstFailure = status
+                }
+            }
+            queue.sync {}
+            return listeners.isEmpty ? noErr : firstFailure
+        }
     }
 
     private enum WriteProof {
@@ -168,11 +322,16 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
         any WorldwideSafeOutputInvariantOperations
     private let operationQueue: DispatchQueue
     private let listenerQueue: DispatchQueue
+    private let listenerCleanupRetainer:
+        any BlackHoleDeviceAvailabilityListenerCleanupRetaining
     private let proofTimeout: TimeInterval
     private let operationQueueKey = DispatchSpecificKey<UUID>()
     private let operationQueueToken = UUID()
     private let maximumAttemptCount: Int
+    private let maximumListenerRemovalAttemptCount: Int
     private var lastObservedSnapshot: Snapshot?
+    private var activeSessionMonitoring:
+        ActiveSessionMonitoring?
 
     public convenience init() {
         self.init(
@@ -184,7 +343,8 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
                 label: "opensteamer.WorldwideSafeOutputInvariant.listener"
             ),
             proofTimeout: 0.5,
-            maximumAttemptCount: 3
+            maximumAttemptCount: 3,
+            maximumListenerRemovalAttemptCount: 3
         )
     }
 
@@ -196,26 +356,309 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
             label: "opensteamer.WorldwideSafeOutputInvariant.listener.test"
         ),
         proofTimeout: TimeInterval = 0.05,
-        maximumAttemptCount: Int = 3
+        maximumAttemptCount: Int = 3,
+        maximumListenerRemovalAttemptCount: Int = 3,
+        listenerCleanupRetainer:
+            any BlackHoleDeviceAvailabilityListenerCleanupRetaining =
+                BlackHoleDeviceAvailabilityListenerCleanupRetainer.shared
     ) {
         self.operations = operations
         self.operationQueue = operationQueue
         self.listenerQueue = listenerQueue
+        self.listenerCleanupRetainer =
+            listenerCleanupRetainer
         self.proofTimeout = max(0.001, proofTimeout)
         self.maximumAttemptCount = max(1, maximumAttemptCount)
+        self.maximumListenerRemovalAttemptCount = max(
+            1,
+            maximumListenerRemovalAttemptCount
+        )
         operationQueue.setSpecific(
             key: operationQueueKey,
             value: operationQueueToken
         )
     }
 
+    /// Installs one exact listener for each protected output selector and keeps
+    /// those listeners alive until `endSessionMonitoring(epoch:)` succeeds or
+    /// retains their exact identities for deferred cleanup.
+    ///
+    /// `onUncertain` executes synchronously on the Core Audio listener queue,
+    /// under the listener-sequence lock, and before the new sequence is made
+    /// observable. It must be constant-time, thread-safe, and non-reentrant.
+    /// Its first action should close the microphone writer authorization gate;
+    /// actor reconciliation may be queued only after that synchronous close.
+    /// The exact epoch and event sequence let that later actor work reject a
+    /// stale callback already superseded by a newer admission authorization.
+    public func beginSessionMonitoring(
+        onUncertain: @escaping @Sendable (
+            WorldwideSafeOutputInvariantMonitoringEpoch,
+            _ eventSequence: UInt64
+        ) -> Void
+    ) throws -> WorldwideSafeOutputInvariantMonitoringEpoch {
+        try onOperationQueue {
+            guard activeSessionMonitoring == nil else {
+                throw WorldwideSafeOutputInvariantError
+                    .sessionMonitoringAlreadyActive
+            }
+
+            let epoch =
+                WorldwideSafeOutputInvariantMonitoringEpoch()
+            let registration = try installRegistration(
+                onUncertain: { eventSequence in
+                    onUncertain(epoch, eventSequence)
+                }
+            )
+            activeSessionMonitoring = ActiveSessionMonitoring(
+                epoch: epoch,
+                registration: registration
+            )
+            return epoch
+        }
+    }
+
+    /// Removes the exact session-lifetime listeners. The caller must close the
+    /// writer gate and release default-input ownership before invoking this.
+    /// A failed bounded removal is retained with the same listener identities
+    /// for autonomous cleanup and is reported as an error.
+    public func endSessionMonitoring(
+        epoch: WorldwideSafeOutputInvariantMonitoringEpoch
+    ) throws {
+        try onOperationQueue {
+            guard let activeSessionMonitoring else {
+                throw WorldwideSafeOutputInvariantError
+                    .sessionMonitoringInactive
+            }
+            guard activeSessionMonitoring.epoch == epoch else {
+                throw WorldwideSafeOutputInvariantError
+                    .sessionMonitoringEpochMismatch
+            }
+
+            self.activeSessionMonitoring = nil
+            activeSessionMonitoring.registration.signal
+                .deactivateUncertaintyCallback()
+            let removalStatus = removeRegistration(
+                activeSessionMonitoring.registration
+            )
+            guard removalStatus == noErr else {
+                retainFailedRemoval(
+                    activeSessionMonitoring.registration
+                )
+                throw WorldwideSafeOutputInvariantError
+                    .listenerRemovalFailed(
+                        status: removalStatus
+                    )
+            }
+        }
+    }
+
     /// Returns only after both output selectors are known not to reference BlackHole.
     public func enforce()
         throws -> WorldwideSafeOutputInvariantResult {
         try onOperationQueue {
-            try withRegistration { registration in
+            if let activeSessionMonitoring {
+                let snapshot = try fencedSnapshot(
+                    registration:
+                        activeSessionMonitoring.registration
+                )
+                guard snapshot.isSafe else {
+                    throw WorldwideSafeOutputInvariantError
+                        .sessionRepairRequiresAdmissionFence
+                }
+                lastObservedSnapshot = snapshot
+                return WorldwideSafeOutputInvariantResult(
+                    changedDefaultOutput: false,
+                    changedDefaultSystemOutput: false
+                )
+            }
+            return try withRegistration { registration in
                 try enforceLocked(registration: registration)
             }
+        }
+    }
+
+    /// Keeps both output-selector listeners installed across one synchronous
+    /// default-input admission attempt.
+    ///
+    /// Core Audio does not provide a transaction spanning the output and input
+    /// selectors. This is the narrowest observable fence: establish a stable,
+    /// safe output snapshot, perform the input-only admission while the exact
+    /// listeners remain registered, validate their sequence through exact
+    /// removal, and require one final stable safe snapshot after removal.
+    ///
+    /// `beforeFirstMutation` runs at most once, immediately before the first
+    /// output mutation and while both exact listeners are installed. A caller
+    /// can use it to revoke input ownership before this invariant repairs an
+    /// unsafe output route. `rollback` runs for any failed post-admission proof,
+    /// including a teardown-time route change or listener-removal failure.
+    public func enforceDuringAdmission<T>(
+        beforeFirstMutation: () throws -> Void = {},
+        admission: () -> T,
+        rollback: (T) -> Void
+    ) throws -> (
+        invariant: WorldwideSafeOutputInvariantResult,
+        admission: T
+    ) {
+        try onOperationQueue {
+            if let activeSessionMonitoring {
+                let transaction = try
+                    enforceDuringActiveAdmissionLocked(
+                        active: activeSessionMonitoring,
+                        beforeFirstMutation:
+                            beforeFirstMutation,
+                        admission: admission,
+                        rollback: rollback,
+                        commit: { _, _ in }
+                    )
+                return (
+                    invariant: transaction.invariant,
+                    admission: transaction.admission
+                )
+            }
+
+            let registration = try installRegistration()
+            let preparation = Result { () throws -> (
+                WorldwideSafeOutputInvariantResult,
+                Snapshot
+            ) in
+                let invariant = try enforceLocked(
+                    registration: registration,
+                    beforeFirstMutation: beforeFirstMutation
+                )
+                let snapshot = try fencedSnapshot(
+                    registration: registration
+                )
+                guard snapshot.isSafe else {
+                    throw WorldwideSafeOutputInvariantError
+                        .didNotConverge
+                }
+                self.lastObservedSnapshot = snapshot
+                return (invariant, snapshot)
+            }
+            guard case .success(
+                let (invariant, admittedSnapshot)
+            ) = preparation else {
+                guard case .failure(let error) = preparation else {
+                    preconditionFailure("unreachable Result state")
+                }
+                try finishFailedRegistration(
+                    registration,
+                    preserving: error
+                )
+            }
+
+            let admittedSequence = registration.signal.snapshot()
+            let admittedValue = admission()
+            var removalWasAttempted = false
+
+            do {
+                drainListenerQueue(registration)
+                guard registration.signal.snapshot()
+                        == admittedSequence else {
+                    throw WorldwideSafeOutputInvariantError
+                        .observableContention
+                }
+                let completedSnapshot = try fencedSnapshot(
+                    registration: registration
+                )
+                guard registration.signal.snapshot()
+                        == admittedSequence,
+                      completedSnapshot == admittedSnapshot,
+                      completedSnapshot.isSafe else {
+                    throw WorldwideSafeOutputInvariantError
+                        .observableContention
+                }
+
+                let removalSequence =
+                    registration.signal.snapshot()
+                removalWasAttempted = true
+                let removalStatus = removeRegistration(
+                    registration
+                )
+                if removalStatus != noErr {
+                    retainFailedRemoval(registration)
+                    throw WorldwideSafeOutputInvariantError
+                        .listenerRemovalFailed(
+                            status: removalStatus
+                        )
+                }
+                guard registration.signal.snapshot()
+                        == removalSequence else {
+                    throw WorldwideSafeOutputInvariantError
+                        .observableContention
+                }
+
+                let postRemovalSnapshot =
+                    try stableSnapshotWithoutListeners()
+                guard postRemovalSnapshot.isSafe,
+                      postRemovalSnapshot
+                        == completedSnapshot else {
+                    throw WorldwideSafeOutputInvariantError
+                        .observableContention
+                }
+                lastObservedSnapshot = postRemovalSnapshot
+                return (
+                    invariant: invariant,
+                    admission: admittedValue
+                )
+            } catch {
+                rollback(admittedValue)
+                guard !removalWasAttempted else {
+                    throw error
+                }
+                try finishFailedRegistration(
+                    registration,
+                    preserving: error
+                )
+            }
+        }
+    }
+
+    /// Performs input admission and its writer-gate authorization under the
+    /// exact session-lifetime listener pair.
+    ///
+    /// `commit` is invoked only after the admitted output snapshot has been
+    /// proven stable and safe. It runs under the same lock as the listener
+    /// callback: an overlapping callback either closes the gate first and
+    /// prevents this commit, or closes it immediately after this commit.
+    /// `beforeFirstMutation` must synchronously close the writer gate, revoke
+    /// forwarding, and release default-input ownership; it runs once before
+    /// any invariant-owned output repair and does not fabricate a listener
+    /// event or queue reconciliation work. Throw when release cannot be
+    /// proven; the invariant then performs no compare-and-set mutation.
+    public func enforceDuringAdmission<T>(
+        monitoringEpoch:
+            WorldwideSafeOutputInvariantMonitoringEpoch,
+        beforeFirstMutation: () throws -> Void = {},
+        admission: () -> T,
+        rollback: (T) -> Void,
+        commit: (
+            T,
+            WorldwideSafeOutputInvariantAuthorization
+        ) throws -> Void
+    ) throws -> (
+        invariant: WorldwideSafeOutputInvariantResult,
+        admission: T,
+        authorization:
+            WorldwideSafeOutputInvariantAuthorization
+    ) {
+        try onOperationQueue {
+            guard let activeSessionMonitoring else {
+                throw WorldwideSafeOutputInvariantError
+                    .sessionMonitoringInactive
+            }
+            guard activeSessionMonitoring.epoch
+                    == monitoringEpoch else {
+                throw WorldwideSafeOutputInvariantError
+                    .sessionMonitoringEpochMismatch
+            }
+            return try enforceDuringActiveAdmissionLocked(
+                active: activeSessionMonitoring,
+                beforeFirstMutation: beforeFirstMutation,
+                admission: admission,
+                rollback: rollback,
+                commit: commit
+            )
         }
     }
 
@@ -223,26 +666,170 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
     public func verify()
         throws -> WorldwideSafeOutputInvariantVerification {
         try onOperationQueue {
-            try withRegistration { registration in
-                let current = try fencedSnapshot(
-                    registration: registration
+            if let activeSessionMonitoring {
+                return try verifyLocked(
+                    registration:
+                        activeSessionMonitoring.registration
                 )
-                let changed = lastObservedSnapshot.map {
-                    $0 != current
-                } ?? true
-                lastObservedSnapshot = current
-                return WorldwideSafeOutputInvariantVerification(
-                    isSatisfied: current.isSafe,
-                    changedSincePreviousObservation: changed
-                )
+            }
+            return try withRegistration { registration in
+                try verifyLocked(registration: registration)
             }
         }
     }
 
-    private func enforceLocked(registration: Registration)
-        throws -> WorldwideSafeOutputInvariantResult {
+    /// Verifies through the exact session registration and rejects a stale
+    /// epoch instead of silently creating a new listener pair.
+    public func verify(
+        monitoringEpoch:
+            WorldwideSafeOutputInvariantMonitoringEpoch
+    ) throws -> WorldwideSafeOutputInvariantVerification {
+        try onOperationQueue {
+            guard let activeSessionMonitoring else {
+                throw WorldwideSafeOutputInvariantError
+                    .sessionMonitoringInactive
+            }
+            guard activeSessionMonitoring.epoch
+                    == monitoringEpoch else {
+                throw WorldwideSafeOutputInvariantError
+                    .sessionMonitoringEpochMismatch
+            }
+            return try verifyLocked(
+                registration:
+                    activeSessionMonitoring.registration
+            )
+        }
+    }
+
+    private func enforceDuringActiveAdmissionLocked<T>(
+        active: ActiveSessionMonitoring,
+        beforeFirstMutation: () throws -> Void,
+        admission: () -> T,
+        rollback: (T) -> Void,
+        commit: (
+            T,
+            WorldwideSafeOutputInvariantAuthorization
+        ) throws -> Void
+    ) throws -> (
+        invariant: WorldwideSafeOutputInvariantResult,
+        admission: T,
+        authorization:
+            WorldwideSafeOutputInvariantAuthorization
+    ) {
+        let registration = active.registration
+        let invariant = try enforceLocked(
+            registration: registration,
+            beforeFirstMutation: beforeFirstMutation
+        )
+        let admittedSnapshot = try fencedSnapshot(
+            registration: registration
+        )
+        guard admittedSnapshot.isSafe else {
+            throw WorldwideSafeOutputInvariantError
+                .didNotConverge
+        }
+        lastObservedSnapshot = admittedSnapshot
+
+        let admittedSequence = registration.signal.snapshot()
+        let admittedValue = admission()
+        do {
+            drainListenerQueue(registration)
+            guard registration.signal.snapshot()
+                    == admittedSequence else {
+                throw WorldwideSafeOutputInvariantError
+                    .observableContention
+            }
+            let completedSnapshot = try fencedSnapshot(
+                registration: registration
+            )
+            guard registration.signal.snapshot()
+                    == admittedSequence,
+                  completedSnapshot == admittedSnapshot,
+                  completedSnapshot.isSafe else {
+                throw WorldwideSafeOutputInvariantError
+                    .observableContention
+            }
+
+            let authorization =
+                WorldwideSafeOutputInvariantAuthorization(
+                    monitoringEpoch: active.epoch,
+                    listenerSequence: admittedSequence
+                )
+            let committed = try registration.signal
+                .commitIfUnchanged(
+                    after: admittedSequence
+                ) {
+                    try commit(
+                        admittedValue,
+                        authorization
+                    )
+                }
+            guard committed else {
+                throw WorldwideSafeOutputInvariantError
+                    .observableContention
+            }
+
+            // The listener remains installed. This readback rejects any
+            // notification queued immediately after the commit; its callback
+            // has already synchronously revoked the new authorization.
+            drainListenerQueue(registration)
+            guard registration.signal.snapshot()
+                    == admittedSequence else {
+                throw WorldwideSafeOutputInvariantError
+                    .observableContention
+            }
+            let committedSnapshot = try fencedSnapshot(
+                registration: registration
+            )
+            guard registration.signal.snapshot()
+                    == admittedSequence,
+                  committedSnapshot == completedSnapshot,
+                  committedSnapshot.isSafe else {
+                throw WorldwideSafeOutputInvariantError
+                    .observableContention
+            }
+
+            lastObservedSnapshot = committedSnapshot
+            return (
+                invariant: invariant,
+                admission: admittedValue,
+                authorization: authorization
+            )
+        } catch {
+            rollback(admittedValue)
+            throw error
+        }
+    }
+
+    private func verifyLocked(
+        registration: Registration
+    ) throws -> WorldwideSafeOutputInvariantVerification {
+        let current = try fencedSnapshot(
+            registration: registration
+        )
+        let changed = lastObservedSnapshot.map {
+            $0 != current
+        } ?? true
+        lastObservedSnapshot = current
+        return WorldwideSafeOutputInvariantVerification(
+            isSatisfied: current.isSafe,
+            changedSincePreviousObservation: changed
+        )
+    }
+
+    private func enforceLocked(
+        registration: Registration,
+        beforeFirstMutation: () throws -> Void = {}
+    ) throws -> WorldwideSafeOutputInvariantResult {
         var changedDefaultOutput = false
         var changedDefaultSystemOutput = false
+        var preparedForMutation = false
+
+        let prepareForMutation = { () throws -> Void in
+            guard !preparedForMutation else { return }
+            preparedForMutation = true
+            try beforeFirstMutation()
+        }
 
         for _ in 0..<maximumAttemptCount {
             let before = try fencedSnapshot(
@@ -263,12 +850,17 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
 
             var shouldRetry = false
             for kind in BlackHoleDefaultOutputKind.allCases
-                where before.uid(for: kind) == Self.canonicalBlackHoleUID {
-                switch writeAndProve(
+                where Self.isForbiddenOutputUID(
+                    before.uid(for: kind)
+                ) {
+                let unsafeUID = before.uid(for: kind)
+                switch try writeAndProve(
                     deviceID: safeDeviceID,
                     kind: kind,
-                    expectedUID: safeUID,
-                    registration: registration
+                    expectedCurrentUID: unsafeUID,
+                    replacementUID: safeUID,
+                    registration: registration,
+                    prepareForMutation: prepareForMutation
                 ) {
                 case .proved:
                     switch kind {
@@ -354,8 +946,13 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
         return (Self.builtInSpeakerUID, deviceID)
     }
 
-    private func installRegistration() throws -> Registration {
-        let signal = ChangeSignal()
+    private func installRegistration(
+        onUncertain:
+            (@Sendable (_ eventSequence: UInt64) -> Void)? = nil
+    ) throws -> Registration {
+        let signal = ChangeSignal(
+            onUncertain: onUncertain
+        )
         var installed: [
             BlackHoleDefaultOutputKind:
                 CoreAudioPropertyListenerRegistration
@@ -372,12 +969,18 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
                 listener: listener
             )
             guard status == noErr else {
-                for (installedKind, installedListener) in installed {
-                    _ = operations.removeDefaultOutputListener(
-                        kind: installedKind,
-                        queue: listenerQueue,
-                        listener: installedListener
+                signal.deactivateUncertaintyCallback()
+                if !installed.isEmpty {
+                    let partialRegistration = makeRegistration(
+                        signal: signal,
+                        listeners: installed
                     )
+                    if removeRegistration(partialRegistration)
+                        != noErr {
+                        retainFailedRemoval(
+                            partialRegistration
+                        )
+                    }
                 }
                 throw WorldwideSafeOutputInvariantError
                     .listenerRegistrationFailed(
@@ -388,10 +991,27 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
             installed[kind] = listener
         }
 
-        return Registration(
-            queue: listenerQueue,
+        return makeRegistration(
             signal: signal,
             listeners: installed
+        )
+    }
+
+    private func makeRegistration(
+        signal: ChangeSignal,
+        listeners: [
+            BlackHoleDefaultOutputKind:
+                CoreAudioPropertyListenerRegistration
+        ]
+    ) -> Registration {
+        Registration(
+            queue: listenerQueue,
+            signal: signal,
+            removalJob: ListenerRemovalJob(
+                operations: operations,
+                queue: listenerQueue,
+                listeners: listeners
+            )
         )
     }
 
@@ -404,6 +1024,7 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
         }
         let removalStatus = removeRegistration(registration)
         guard removalStatus == noErr else {
+            retainFailedRemoval(registration)
             throw WorldwideSafeOutputInvariantError
                 .listenerRemovalFailed(status: removalStatus)
         }
@@ -414,35 +1035,80 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
         _ registration: Registration
     ) -> OSStatus {
         drainListenerQueue(registration)
-        var firstFailure = noErr
-        for kind in BlackHoleDefaultOutputKind.allCases {
-            guard let listener = registration.listeners[kind] else {
-                continue
-            }
-            let status = operations.removeDefaultOutputListener(
-                kind: kind,
-                queue: registration.queue,
-                listener: listener
-            )
-            if status != noErr, firstFailure == noErr {
-                firstFailure = status
-            }
-        }
+        let status = registration.removalJob.remove(
+            maximumAttemptCount:
+                maximumListenerRemovalAttemptCount
+        )
         drainListenerQueue(registration)
-        return firstFailure
+        return status
+    }
+
+    private func retainFailedRemoval(
+        _ registration: Registration
+    ) {
+        let removalJob = registration.removalJob
+        listenerCleanupRetainer.retain(
+            id: removalJob.id
+        ) {
+            removalJob.removeOnce() == noErr
+        }
+    }
+
+    private func finishFailedRegistration(
+        _ registration: Registration,
+        preserving error: Error
+    ) throws -> Never {
+        let removalStatus = removeRegistration(registration)
+        guard removalStatus == noErr else {
+            retainFailedRemoval(registration)
+            throw WorldwideSafeOutputInvariantError
+                .listenerRemovalFailed(status: removalStatus)
+        }
+        throw error
+    }
+
+    /// A final double-read after exact listener removal. There is no Core Audio
+    /// transaction that can cover this boundary, so success requires two equal,
+    /// independently read safe selector snapshots.
+    private func stableSnapshotWithoutListeners()
+        throws -> Snapshot {
+        let first = try snapshot()
+        let second = try snapshot()
+        guard first == second,
+              second.isSafe else {
+            throw WorldwideSafeOutputInvariantError
+                .observableContention
+        }
+        return second
     }
 
     private func writeAndProve(
         deviceID: AudioDeviceID,
         kind: BlackHoleDefaultOutputKind,
-        expectedUID: String,
-        registration: Registration
-    ) -> WriteProof {
+        expectedCurrentUID: String,
+        replacementUID: String,
+        registration: Registration,
+        prepareForMutation: () throws -> Void
+    ) throws -> WriteProof {
         drainListenerQueue(registration)
         let before = registration.signal.snapshot()
         guard outputFenceMatches(
             kind: kind,
-            expectedUID: Self.canonicalBlackHoleUID,
+            expectedUID: expectedCurrentUID,
+            sequence: before,
+            registration: registration
+        ) else {
+            return .retryable
+        }
+
+        try prepareForMutation()
+        drainListenerQueue(registration)
+        guard registration.signal.snapshot() == before else {
+            return .observableContention
+        }
+        guard outputFenceMatches(
+            kind: kind,
+            expectedUID: expectedCurrentUID,
             sequence: before,
             registration: registration
         ) else {
@@ -452,7 +1118,7 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
         let mutation = operations.compareAndSetDefaultOutputDevice(
             deviceID,
             kind: kind,
-            expectedCurrentUID: Self.canonicalBlackHoleUID
+            expectedCurrentUID: expectedCurrentUID
         )
         switch mutation {
         case .currentOutputMismatch, .readFailed:
@@ -483,7 +1149,7 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
             }
             if outputFenceMatches(
                 kind: kind,
-                expectedUID: expectedUID,
+                expectedUID: replacementUID,
                 sequence: observed,
                 registration: registration
             ) {
@@ -554,6 +1220,10 @@ enum WorldwideSafeOutputInvariantError:
     case mutationUnproved
     case observableContention
     case didNotConverge
+    case sessionMonitoringAlreadyActive
+    case sessionMonitoringInactive
+    case sessionMonitoringEpochMismatch
+    case sessionRepairRequiresAdmissionFence
 
     var errorDescription: String? {
         switch self {
@@ -573,6 +1243,15 @@ enum WorldwideSafeOutputInvariantError:
                 + "admission is deferred."
         case .didNotConverge:
             "The worldwide safe-output invariant did not converge."
+        case .sessionMonitoringAlreadyActive:
+            "A worldwide safe-output monitoring session is already active."
+        case .sessionMonitoringInactive:
+            "No worldwide safe-output monitoring session is active."
+        case .sessionMonitoringEpochMismatch:
+            "The worldwide safe-output monitoring epoch is stale."
+        case .sessionRepairRequiresAdmissionFence:
+            "An active worldwide microphone session may repair outputs only "
+                + "inside the admission fence."
         }
     }
 }
@@ -644,7 +1323,8 @@ private final class SystemWorldwideSafeOutputInvariantOperations:
     }
 
     func resolveUsableOutputDeviceID(uid: String) throws -> AudioDeviceID {
-        guard uid != WorldwideSafeOutputInvariant.canonicalBlackHoleUID
+        guard !WorldwideSafeOutputInvariant
+                .isForbiddenOutputUID(uid)
         else {
             throw WorldwideSafeOutputInvariantError
                 .safeOutputUnavailable
