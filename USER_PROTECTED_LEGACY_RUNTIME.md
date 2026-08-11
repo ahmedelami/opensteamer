@@ -1,6 +1,6 @@
 # User-protected legacy AudioStreamer runtime
 
-Status: **PAIRING-PRESERVING HOST UPDATE V6 AUTHORIZED AND PENDING; V5 REMAINS COMMITTED; TESTFLIGHT BUILD 44 UPLOADED TO APPLE; PHYSICAL VALIDATION NOT CLAIMED; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
+Status: **PAIRING-PRESERVING HOST UPDATE V6 COMMITTED; HIDDEN-WRITER HOST READY FOR THE NEXT PHYSICAL CALL; TESTFLIGHT BUILD 44 UPLOADED TO APPLE; PHYSICAL VALIDATION NOT CLAIMED; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
 Original preservation direction: **2026-07-25**\
 Mac-only migration authorization recorded: **2026-07-30/31**\
 Version-15 retry authorization recorded: **2026-08-02**\
@@ -14,7 +14,7 @@ Pairing-preserving new-host update authorization recorded and consumed: **2026-0
 Pairing-preserving new-host update v3 authorization recorded and consumed: **2026-08-06**
 Pairing-preserving new-host update v4 authorization recorded and consumed: **2026-08-09**
 Pairing-preserving new-host update v5 authorization recorded and consumed: **2026-08-09**
-Pairing-preserving new-host update v6 authorization recorded: **2026-08-10**
+Pairing-preserving new-host update v6 authorization recorded and consumed: **2026-08-10**
 
 The user authorized guarded Mac-only cutovers from the running legacy host to
 the validated opensteamer host. Versions 15, 16, 17, 18, and 19 all fully
@@ -727,18 +727,69 @@ build or operate the physical iPhone; build `44` remains the intended
 side-by-side client. Physical FaceTime microphone behavior remains unvalidated
 until the next call, and the consumed v5 authorization grants no retry.
 
-### Pairing-preserving host update v6 authorization
+### Pairing-preserving host update v6
 
 On August 10, 2026, the user explicitly authorized exactly one fresh guarded
 replacement of only the active side-by-side new Mac host to deploy the
 hidden-writer BlackHole endpoint separation and its fail-closed routing fences.
-The authorization is limited to a new v6 one-shot transaction built from a
-clean, pushed source revision containing hidden-writer anchor commit
-`c9502b38ccd278eb03aa913851a643b08c44d5c6`. It does not authorize reuse of
-the consumed v5 updater, a second v6 attempt, pairing reset, modification of the
-protected legacy app or plist, or any physical-iPhone operation. Until the v6
-preflight and transaction commit, v5 remains the sole authorized live host and
-this v6 authorization remains pending.
+The preflight proved v1 through v5 immutable, both isolated pairing accounts
+present by metadata-only lookup, the protected legacy job absent, the source
+clean and pushed, and the fresh v6 namespace absent. It bound the transaction to
+source commit `e8771daf2fb666c4515f8fa613fbe9f7997f0f88`, tree
+`205c379540e9e033ede4fdea86ed4954a82747ee`, and hidden-writer ancestor
+`c9502b38ccd278eb03aa913851a643b08c44d5c6`.
+
+The one-shot transaction built, verified, stopped, retained, replaced, and
+bootstrapped only `/Applications/opensteamer Host.app`. Its journal records the
+complete ordered path through `BUILD_VERIFIED`, `STOP_INITIATED`,
+`INSTALL_HOLD_VERIFIED`, `CURRENT_STOPPED`, `CURRENT_HELD`, `NEW_PUBLISHED`,
+`PERSISTENT_BOOTSTRAPPED`, `READY_VERIFIED`, and `COMMITTED`. The committed
+generation is PID `58067`, launchd runs `1`, with nonce
+`d487c3d7020269c12dedaa2274eac704955b71922c7f8e0e7fff13f5b7670fc0`.
+Its executable SHA-256 is
+`63d55477ca440dd3feb27f68959b479a2292e6accc635d159674c6b420b60de6`,
+CDHash `1d7b50e8bf2cc907244f950049b167a8f252473e`, Team ID `MSMG8CJLB3`,
+and identifier `com.elamin.AudioStreamer.CaptureServer`. The app `Info.plist`
+SHA-256 is
+`baf587e758aa65d8dd7896913f820aef55208c6731b00b76da05590151b80337`,
+and the unchanged LaunchAgent plist SHA-256 is
+`7cdcf2d1517dc9ec1ae49b6fbbaf293c77afd958f697878d44f3b3c8e9c7e550`.
+
+The immutable v6 evidence is
+`/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v6/paired-v6-update-1786412787-39578-728d9781-2b79-4d10-a220-8a48c1f6f716`.
+The active-pointer SHA-256 is
+`0efc073d72f216f5e9e32d149a65b56058b3443e512d55103b5301c69a1fb9e0`;
+the journal SHA-256 is
+`0786549ef4d6e83928784e52cd44689c757a9ff92a7a659a437b112f9cc84802`,
+the success-result SHA-256 is
+`22127aa5523e3efa468822044100fb2fd1cc5ceb97552377c986b1f5c1a15d77`,
+the provenance SHA-256 is
+`7430adc7efc43649de191af0b43ea2e246481bee70b89b5a40ac760940b18518`,
+and the source-archive SHA-256 is
+`f54819c36e28a1bd1f5833ee819920065f006697f27ead76e15809653d38bcf2`.
+The install-hold record, build stdout, and build stderr SHA-256 values are
+`d39ee0bf39d6d409135e548e9b2b6eadd05e21539998e177649df947918b7d99`,
+`6be403da0c16fc9cc8e401620fbfbd25ec8aa0cfba3db0115b40534df18cd34f`,
+and `24f478dcec7ff8679238177c5d219cf90b1684c8edf8e9c155bd7c114edf3802`.
+
+The exact v5 executable is retained inside the v6 evidence at
+`rollback-current/opensteamer Host.app` with SHA-256
+`2cb98599725f1a8c658b9a8afc38b50fabe252168292e27505af88cbecf2d205`
+and CDHash `92ad981f78d75d63d7a857c677bc73fdfc004da6`. The v5 active pointer
+remains byte-identical with SHA-256
+`291c5a5f6a1fcf71cd32e5c15f95da212a73d59d8d030c46ece930cde5e4c7a8`.
+Both isolated pairing accounts remain present without secret retrieval, reset,
+deletion, or re-pairing. The protected legacy executable and plist retain
+SHA-256 `1bd5bbe685522f995ee01f52650198753d11344857f883898e29ee7a3f4c80bc`
+and `419eff4f410cfb0bf5e224528fd450c10292f7c1c2448d33e215e929f7c14730`;
+their job remains absent and disabled.
+
+This transaction performed no TestFlight upload or physical-iPhone operation;
+side-by-side TestFlight build `44` remains the intended client. The hidden
+writer route is installed and ready for a new physical call, but far-end
+FaceTime microphone behavior remains unvalidated until that call. The one-shot
+v6 authorization is consumed; any retry requires a fresh versioned updater and
+new user authorization.
 
 ## Protected iPhone client
 
