@@ -130,38 +130,60 @@ manual IP addresses, router configuration, or public TCP ports.
   retains healthy audio; an actual interruption, private-route loss, uncertainty, or
   disconnect still mutes the native remote track. Never auto-resume when iOS omits
   `shouldResume`, and never promise playback after force-quit.
-- The Mac microphone uplink MVP must target an already-installed BlackHole 2ch
-  device by its stable Core Audio UID. Feed decoded `iphone-microphone` playout to
-  BlackHole's output side. At the first current-generation authenticated
+- The Mac microphone uplink MVP must target the already-installed BlackHole 2ch
+  visible-input/hidden-writer pair by their distinct stable Core Audio UIDs. Keep
+  `BlackHole2ch_UID` as the visible endpoint selected for FaceTime and the macOS
+  default input. Feed decoded `iphone-microphone` playout only to the hidden
+  `BlackHole2ch_2_UID` output side, and require exact AudioQueue current-device
+  readback both before and after start. At the first current-generation authenticated
   peer/ICE/control healthy boundary, before awaiting system-audio startup, select
   that same canonical BlackHole endpoint as the macOS default input. This
   connection-level selection must not wait for the remote microphone track, RTP,
   decoded PCM, successful pulls, forwarding readiness, iOS microphone permission,
   manual microphone state, or call state. During authenticated worldwide duplex,
-  canonical BlackHole may be the default input but must not be the default output
-  or default system output. Before acquiring the input lease, enforce that invariant:
-  preserve every healthy non-BlackHole selector, prefer the other current usable
-  non-BlackHole output when replacing BlackHole, and otherwise use the validated
+  visible BlackHole may be the default input, but neither the visible nor hidden
+  endpoint may be the default output or default system output; the hidden endpoint
+  must never be selected as any default. Before acquiring the input lease, enforce
+  that invariant: preserve every healthy non-BlackHole selector, prefer the other
+  current usable non-BlackHole output when replacing either BlackHole endpoint, and
+  otherwise use the validated
   built-in speaker. Core Audio provides no atomic compare-and-set for these selectors;
   use the narrowest immediate comparison plus listener-sequence and readback fencing
   to reject observable overlap, without claiming an impossible never-overwrite
   guarantee. This invariant must not run during LAN coexistence and must never
-  address the protected legacy runtime. Continue fenced verification on healthy
-  transport statistics. If the route becomes unsafe or cannot be proven, revoke
-  microphone forwarding and default-input ownership before any repair attempt.
+  address the protected legacy runtime. Keep the exact default-output and
+  system-output listeners installed for the complete microphone-routing session,
+  from before the first ownership attempt until after the writer gate is closed and
+  default-input release completes. A delivered selector notification must first close
+  one lock-free writer gate synchronously, before queuing actor reconciliation; the
+  AudioQueue must check that gate before startup, before pulling PCM, and immediately
+  before enqueue. Reopen only inside the same listener-sequence admission commit, and
+  reject queued callbacks already superseded by that exact authorization sequence.
+  Continue supplementary fenced verification on healthy transport statistics. If the
+  route becomes unsafe or cannot be proven, revoke microphone forwarding and prove
+  default-input ownership released before any repair write; an unproved release leaves
+  the gate closed and forbids repair.
   Retry mutations with capped backoff; a newly observed route or BlackHole device
   generation may reset that bounded retry episode. Read-only verification failures
   must not exhaust the mutation budget. After a cap, permit only a long bounded
   cooldown probe so unchanged UIDs can recover when their target becomes usable.
   The output-device callback must pull into caller-owned
   memory without allocation, logging, sleeping, network work, or a contended mutex;
-  missing PCM becomes silence. Missing BlackHole degrades only automatic default
-  input selection and microphone forwarding.
-- Discover BlackHole 2ch through a read-only Core Audio device-list monitor. Register
-  the exact global/main `kAudioHardwarePropertyDevices` listener before the initial
-  inventory read, bind every forwarding attempt to the monitor epoch and device
-  generation, and select the monitored stable UID directly on the output AudioQueue.
-  A separate generation-keyed default-input lease may consume that monitor snapshot.
+  missing PCM becomes silence. Core Audio selector notification is asynchronous and
+  AudioQueue enqueue has no conditional transaction, so describe the gate as the
+  earliest public-API fail-close boundary; never claim it can retract an already
+  in-flight HAL buffer. Missing BlackHole degrades only automatic default input
+  selection and microphone forwarding.
+- Discover and validate the complete BlackHole 2ch endpoint pair through a read-only
+  Core Audio monitor. Register the exact global/main
+  `kAudioHardwarePropertyDevices` listener before the initial inventory read, resolve
+  the hidden endpoint by exact UID because it is absent from normal enumeration, and
+  reconcile both endpoint identities and topology on healthy media boundaries. Require
+  distinct device identities, the shared expected model UID, visible/hidden flags,
+  alive state, two input and output channels, and 48 kHz. Bind every forwarding attempt
+  and default-input lease to the atomic pair generation. A partial or stale pair is
+  unavailable. Select only the hidden monitored UID on the output AudioQueue; a
+  separate generation-keyed default-input lease consumes only the visible UID.
   It must register the exact default-input listener before writing, resolve devices
   by stable UID, save the prior default-input UID before its first owned write, and
   require bounded listener plus readback proof rather than treating `noErr` as
@@ -186,15 +208,19 @@ manual IP addresses, router configuration, or public TCP ports.
   Continuing health requires two bounded lock-free progress snapshots whose callback
   and successful-frame counts both advance.
 - Worldwide-only release evidence must record the original default-input UID, prove
-  BlackHole is the default input at the authenticated peer/ICE/control boundary
-  before track or PCM proof, prove the safe-output invariant completes before the
-  input lease, then prove default output and system output never change,
+  visible BlackHole is the default input at the authenticated peer/ICE/control
+  boundary before track or PCM proof, prove the safe-output invariant completes
+  before the input lease, then require a current host-PID, peer-generation, and
+  atomic-pair-generation marker proving the hidden writer passed both AudioQueue
+  current-device readbacks. Prove default output and system output never change,
+  and that the hidden endpoint never becomes any default,
   and prove the original input is restored after disconnect. Expected input
   transition notifications are evidence, not failures; any later output or
   system-output mutation remains a failure. Unit progress counters do not prove
   that host
   applications can read the forwarded microphone; use a separate physical probe
-  that opens BlackHole input by stable UID and recognizes a known remote challenge.
+  that opens the visible BlackHole input by stable UID and recognizes a known remote
+  challenge. The probe must not capture from the hidden writer endpoint.
 - Physical audio release validation must observe the RemoteIO render-input PCM, not
   merely RTP statistics or callback clocks. This is the last app-observable pre-system-output
   boundary; it does not prove what the later iOS mixer, route processing, DAC, or speaker emits.

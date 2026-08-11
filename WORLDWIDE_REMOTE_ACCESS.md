@@ -75,8 +75,11 @@ input bus 1, and send a separate 48 kHz mono Opus track with stable ID
 `iphone-microphone`. VoiceProcessingIO and voice/chat modes are not used.
 
 The Mac offers that second audio transceiver as recvOnly and accepts only the
-`iphone-microphone` track. Its decoded PCM is written to an explicitly selected
-BlackHole 2ch device by stable UID.
+`iphone-microphone` track. Its decoded PCM is written only to the installed hidden
+BlackHole mirror `BlackHole2ch_2_UID`; the output AudioQueue must read back that
+exact current-device UID before and after start. The design leaves the distinct
+visible `BlackHole2ch_UID` input for FaceTime and other Mac clients; only a fresh
+physical call can prove that the target client adopted and transmitted that route.
 
 Independently of remote-track arrival, the first current-generation authenticated
 peer/ICE/control healthy boundary acquires a connection-level default-input lease.
@@ -84,18 +87,37 @@ Before `WorldwideScreenService` awaits system-audio startup, that lease selects 
 canonical installed `BlackHole2ch_UID` endpoint as the macOS default input. It does
 not wait for an `iphone-microphone` callback, RTP, decoded PCM, successful pulls,
 forwarding readiness, iOS microphone permission, the manual microphone switch, or
-iPhone call state. The default output and system-output devices are never changed.
+iPhone call state. Already-safe default output and system-output devices are
+preserved; if either selector points at a visible or hidden BlackHole endpoint,
+the safe-output invariant repairs it to an eligible physical output before the
+input lease is acquired.
+
+The two output-selector listeners remain installed for that entire routing
+session. Their callback closes a lock-free hidden-writer gate before scheduling
+actor work. Queue startup, PCM pull, and enqueue all fail closed on that gate; a
+fresh listener-sequence admission commit is the only path that reopens it. A queued
+callback whose sequence was already incorporated into that commit cannot later
+revoke the replacement admission. Before repairing an unsafe output, the host also
+requires proven release of the visible-input lease. Healthy statistics still perform
+an additional readback, but they are not the primary notification path. Core Audio
+notifications and AudioQueue enqueue are separate public APIs, so one buffer already
+in flight at the HAL boundary cannot be retracted; the gate closes the earliest
+observable subsequent work without claiming atomic selector/enqueue behavior.
 
 BlackHole discovery is read-only. The host registers a Core Audio device-list
-listener before its initial inventory read and publishes an epoch plus a monotonic
-device generation. The connection-level input coordinator supports both orderings:
+listener before its initial inventory read, resolves the hidden endpoint by exact UID,
+and publishes an epoch plus a monotonic atomic-pair generation. It requires distinct
+visible/hidden identities, the expected shared model UID, alive and visibility flags,
+2-in/2-out topology, and 48 kHz; healthy media boundaries reconcile the pair even when
+the hidden endpoint is absent from normal enumeration. The connection-level input
+coordinator supports both orderings:
 an available snapshot may precede connection health, or the healthy connection may
 wait for the first current snapshot that makes BlackHole available. Each output
 attempt remains separately bound to its exact monitor snapshot, peer generation,
 transport-authorization epoch, and remote-track generation.
 
 Before its first owned input write, the lease saves the prior default-input stable
-UID. It installs the exact default-input listener before writing and requires
+UID. It can target only the visible endpoint. It installs the exact default-input listener before writing and requires
 bounded notification plus stable-UID readback proof. On transport uncertainty,
 disconnect, peer replacement, device removal, startup failure, or graceful
 shutdown, restoration is initiated synchronously. The prior UID is resolved fresh
@@ -112,7 +134,8 @@ output. A later device or transport generation can retry once without allowing
 stale completions to affect a replacement.
 
 AudioQueue startup alone is not considered ready. A forwarding snapshot reports the
-policy, phase, device and transport generations, exact admission state, and lock-free
+policy, phase, visible-input/hidden-writer availability, writer-selection proof,
+device and transport generations, exact admission state, and lock-free
 post-start callback progress. Readiness requires a successful decoded pull; continuing
 health requires two bounded observations with advancing callback and successful-frame
 counts. These counters prove forwarding activity, not nonzero acoustic content.
@@ -189,7 +212,9 @@ dependencies.
 Worldwide-only BlackHole acceptance must record the original default input before
 connection, prove BlackHole is the default input at the authenticated
 peer/ICE/control boundary before remote-track or PCM proof, prove the default output
-and system-output UIDs remain unchanged, and prove the original input is restored
+and system-output UIDs remain unchanged, prove neither BlackHole endpoint becomes an
+output default, require a current PID/peer/pair-generation hidden-writer readback marker,
+and prove the original input is restored
 after disconnect. Expected default-input notifications around selection and
 restoration must not fail the oracle. It must also open BlackHole's input side by
 stable UID, drive a known time-varying remote microphone challenge, and independently

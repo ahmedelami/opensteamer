@@ -27,13 +27,18 @@ passes the unrelated-network and forced-TURN gates described in
   automatically requests the user's microphone permission and enables a 48 kHz mono
   uplink through the same conditional-duplex RemoteIO device. The user can still turn
   the microphone off for the current session.
-- BlackHole 2ch output for the first Mac microphone MVP. When the authenticated
+- An atomic BlackHole 2ch visible-input/hidden-writer pair for the first Mac
+  microphone MVP. The host writes decoded iPhone PCM only to the hidden mirror
+  while the intended FaceTime route reads the visible endpoint. That separation
+  remains a physical-call experiment until a far-end listener confirms it. When the authenticated
   WebRTC peer, ICE route, and control channel are all healthy, opensteamer
   automatically selects BlackHole 2ch as the Mac default input before starting
   system audio. It conditionally restores the prior input after disconnect. For
-  authenticated worldwide duplex audio, BlackHole is never permitted to remain an
-  output: worldwide mode first moves only a BlackHole output selector to a
-  validated real output, while healthy output selections remain unchanged.
+  authenticated worldwide duplex audio, neither BlackHole endpoint is permitted to
+  remain an output: worldwide mode first moves only a BlackHole output selector to a
+  validated real output, while healthy output selections remain unchanged. Exact
+  session-lifetime output listeners close a lock-free writer gate on every delivered
+  selector change; only a fresh fenced admission can reopen it.
 - Legacy Bonjour/TCP/PCM tools retained only for trusted-LAN diagnostics.
 
 Automatic input restoration is an in-memory graceful-lifecycle guarantee; a crash,
