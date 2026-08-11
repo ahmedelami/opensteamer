@@ -1,6 +1,6 @@
 # User-protected legacy AudioStreamer runtime
 
-Status: **PAIRING-PRESERVING HOST UPDATE V5 COMMITTED; TELEMETRY HOST READY FOR THE NEXT PHYSICAL CALL; TESTFLIGHT BUILD 44 UPLOADED TO APPLE; PHYSICAL VALIDATION NOT CLAIMED; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
+Status: **PAIRING-PRESERVING HOST UPDATE V6 AUTHORIZED AND PENDING; V5 REMAINS COMMITTED; TESTFLIGHT BUILD 44 UPLOADED TO APPLE; PHYSICAL VALIDATION NOT CLAIMED; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
 Original preservation direction: **2026-07-25**\
 Mac-only migration authorization recorded: **2026-07-30/31**\
 Version-15 retry authorization recorded: **2026-08-02**\
@@ -14,6 +14,7 @@ Pairing-preserving new-host update authorization recorded and consumed: **2026-0
 Pairing-preserving new-host update v3 authorization recorded and consumed: **2026-08-06**
 Pairing-preserving new-host update v4 authorization recorded and consumed: **2026-08-09**
 Pairing-preserving new-host update v5 authorization recorded and consumed: **2026-08-09**
+Pairing-preserving new-host update v6 authorization recorded: **2026-08-10**
 
 The user authorized guarded Mac-only cutovers from the running legacy host to
 the validated opensteamer host. Versions 15, 16, 17, 18, and 19 all fully
@@ -725,6 +726,19 @@ fingerprint value. This Mac-host transaction did not upload another TestFlight
 build or operate the physical iPhone; build `44` remains the intended
 side-by-side client. Physical FaceTime microphone behavior remains unvalidated
 until the next call, and the consumed v5 authorization grants no retry.
+
+### Pairing-preserving host update v6 authorization
+
+On August 10, 2026, the user explicitly authorized exactly one fresh guarded
+replacement of only the active side-by-side new Mac host to deploy the
+hidden-writer BlackHole endpoint separation and its fail-closed routing fences.
+The authorization is limited to a new v6 one-shot transaction built from a
+clean, pushed source revision containing hidden-writer anchor commit
+`c9502b38ccd278eb03aa913851a643b08c44d5c6`. It does not authorize reuse of
+the consumed v5 updater, a second v6 attempt, pairing reset, modification of the
+protected legacy app or plist, or any physical-iPhone operation. Until the v6
+preflight and transaction commit, v5 remains the sole authorized live host and
+this v6 authorization remains pending.
 
 ## Protected iPhone client
 
