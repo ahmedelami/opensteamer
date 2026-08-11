@@ -324,6 +324,10 @@ UI_TEST_TIMEOUT_SECONDS=${OPENSTEAMER_UI_TEST_TIMEOUT_SECONDS:-900}
 AUDIO_ORACLE_DURATION_SECONDS=${OPENSTEAMER_AUDIO_ORACLE_DURATION_SECONDS:-$((UI_TEST_TIMEOUT_SECONDS + 60))}
 CALL_AUDIO_ORACLE_DURATION_SECONDS=${OPENSTEAMER_CALL_AUDIO_ORACLE_DURATION_SECONDS:-$((UI_TEST_TIMEOUT_SECONDS + 60))}
 BLACKHOLE_PROBE_TIMEOUT_SECONDS=${OPENSTEAMER_BLACKHOLE_PROBE_TIMEOUT_SECONDS:-60}
+RAW_CONTINUITY_REVALIDATION_TIMEOUT_SECONDS=${OPENSTEAMER_RAW_CONTINUITY_REVALIDATION_TIMEOUT_SECONDS:-8}
+RAW_CONTINUITY_MAX_LOG_DELTA_BYTES=1048576
+RAW_CONTINUITY_MAX_PARTIAL_BYTES=65536
+RAW_CONTINUITY_MAX_EVIDENCE_BYTES=8192
 CALL_READY_TIMEOUT_SECONDS=${OPENSTEAMER_CALL_READY_TIMEOUT_SECONDS:-180}
 CALL_ACOUSTIC_TIMEOUT_SECONDS=${OPENSTEAMER_CALL_ACOUSTIC_TIMEOUT_SECONDS:-180}
 CALL_END_TIMEOUT_SECONDS=${OPENSTEAMER_CALL_END_TIMEOUT_SECONDS:-90}
@@ -366,6 +370,11 @@ RAW_READY_EVIDENCE="${RAW_PHASE_DIR}/raw-session-ready-evidence.txt"
 RAW_READY_STATUS="${RAW_PHASE_DIR}/raw-session-ready-status.txt"
 RAW_READY_TIMEOUT_MARKER="${RAW_PHASE_DIR}/raw-session-ready-timeout.txt"
 RAW_READY_STALE_MARKER="${RAW_PHASE_DIR}/raw-session-ready-stale-evidence.txt"
+RAW_READY_CONTINUITY_EVIDENCE="${RAW_PHASE_DIR}/raw-session-continuity-evidence.txt"
+RAW_READY_CONTINUITY_ARMED_MARKER="${RAW_PHASE_DIR}/raw-session-continuity-armed.txt"
+RAW_READY_CONTINUITY_LOG_APPEND_CHUNK="${RAW_PHASE_DIR}/raw-session-continuity-log-appended.bin"
+RAW_READY_CONTINUITY_LOG_COMPLETED_LINES="${RAW_PHASE_DIR}/raw-session-continuity-log-completed.txt"
+RAW_READY_CONTINUITY_LOG_PARTIAL_LINE="${RAW_PHASE_DIR}/raw-session-continuity-log-partial.bin"
 RAW_PROBE_OVERLAP_MARKER="${RAW_PHASE_DIR}/physical-blackhole-microphone-overlap.txt"
 RAW_PROBE_NON_OVERLAP_MARKER="${RAW_PHASE_DIR}/physical-blackhole-microphone-non-overlap.txt"
 RAW_UI_RUNTIME_ATTACHMENT_PAYLOAD_ID="${RAW_PHASE_DIR}/raw-ui-runtime-attachment-payload-id.txt"
@@ -440,6 +449,11 @@ CALL_POST_RAW_READY_EVIDENCE="${CALL_POST_RAW_DIR}/raw-session-ready-evidence.tx
 CALL_POST_RAW_READY_STATUS="${CALL_POST_RAW_DIR}/raw-session-ready-status.txt"
 CALL_POST_RAW_READY_TIMEOUT_MARKER="${CALL_POST_RAW_DIR}/raw-session-ready-timeout.txt"
 CALL_POST_RAW_READY_STALE_MARKER="${CALL_POST_RAW_DIR}/raw-session-ready-stale-evidence.txt"
+CALL_POST_RAW_READY_CONTINUITY_EVIDENCE="${CALL_POST_RAW_DIR}/raw-session-continuity-evidence.txt"
+CALL_POST_RAW_READY_CONTINUITY_ARMED_MARKER="${CALL_POST_RAW_DIR}/raw-session-continuity-armed.txt"
+CALL_POST_RAW_READY_CONTINUITY_LOG_APPEND_CHUNK="${CALL_POST_RAW_DIR}/raw-session-continuity-log-appended.bin"
+CALL_POST_RAW_READY_CONTINUITY_LOG_COMPLETED_LINES="${CALL_POST_RAW_DIR}/raw-session-continuity-log-completed.txt"
+CALL_POST_RAW_READY_CONTINUITY_LOG_PARTIAL_LINE="${CALL_POST_RAW_DIR}/raw-session-continuity-log-partial.bin"
 CALL_POST_RAW_PROBE_OVERLAP_MARKER="${CALL_POST_RAW_DIR}/physical-blackhole-microphone-overlap.txt"
 CALL_POST_RAW_PROBE_NON_OVERLAP_MARKER="${CALL_POST_RAW_DIR}/physical-blackhole-microphone-non-overlap.txt"
 CALL_POST_RAW_UI_RUNTIME_ATTACHMENT_PAYLOAD_ID="${CALL_POST_RAW_DIR}/raw-ui-runtime-attachment-payload-id.txt"
@@ -1155,6 +1169,10 @@ function wait_for_blackhole_probe_completion() {
         nonzero-probe-completion "${completion_status}"
       return "${completion_status}"
     fi
+    [[ -s "${RAW_READY_CONTINUITY_EVIDENCE}" ]] || {
+      record_raw_overlap_failure missing-post-probe-route-continuity 3
+      return 3
+    }
     {
       print -r -- "schema=opensteamer.blackhole-probe-wait.v1"
       print -r -- "nonce=${RAW_READY_NONCE}"
@@ -1371,6 +1389,9 @@ opensteamer_require_positive_integer \
   OPENSTEAMER_BLACKHOLE_PROBE_TIMEOUT_SECONDS \
   "${BLACKHOLE_PROBE_TIMEOUT_SECONDS}"
 opensteamer_require_positive_integer \
+  OPENSTEAMER_RAW_CONTINUITY_REVALIDATION_TIMEOUT_SECONDS \
+  "${RAW_CONTINUITY_REVALIDATION_TIMEOUT_SECONDS}"
+opensteamer_require_positive_integer \
   OPENSTEAMER_CALL_READY_TIMEOUT_SECONDS \
   "${CALL_READY_TIMEOUT_SECONDS}"
 opensteamer_require_positive_integer \
@@ -1406,6 +1427,11 @@ opensteamer_require_positive_integer \
 if (( BLACKHOLE_PROBE_TIMEOUT_SECONDS < 8 \
     || BLACKHOLE_PROBE_TIMEOUT_SECONDS > 120 )); then
   echo "OPENSTEAMER_BLACKHOLE_PROBE_TIMEOUT_SECONDS must be between 8 and 120." >&2
+  exit 2
+fi
+if (( RAW_CONTINUITY_REVALIDATION_TIMEOUT_SECONDS < 2 \
+    || RAW_CONTINUITY_REVALIDATION_TIMEOUT_SECONDS > 8 )); then
+  echo "OPENSTEAMER_RAW_CONTINUITY_REVALIDATION_TIMEOUT_SECONDS must be between 2 and 8." >&2
   exit 2
 fi
 if (( ${#CALL_READY_TIMEOUT_SECONDS} > 3 \
@@ -3049,13 +3075,16 @@ function capture_default_input_snapshot() {
     fi
     cat > "${output}" <<EOF
 {
+  "defaultOutputIsForbiddenBlackHole": false,
+  "defaultSystemOutputIsForbiddenBlackHole": false,
   "inputIsCanonicalBlackHole": ${is_blackhole},
+  "inputIsHiddenMirrorBlackHole": false,
   "inputTransportClass": "${input_transport_class}",
   "inputUIDFingerprint": "${input_hash}",
   "observedAtMonotonicNs": ${observed},
   "outputUIDFingerprint": "$(printf 'c%.0s' {1..64})",
   "role": "${role}",
-  "schema": "opensteamer.default-input-snapshot.v2",
+  "schema": "opensteamer.default-input-snapshot.v3",
   "systemOutputUIDFingerprint": "$(printf 'd%.0s' {1..64})"
 }
 EOF
@@ -3102,7 +3131,10 @@ function validate_default_input_lifecycle_json() {
     --argjson probe_end "${probe_end}" '
     def exact_keys:
       keys == ([
+        "defaultOutputIsForbiddenBlackHole",
+        "defaultSystemOutputIsForbiddenBlackHole",
         "inputIsCanonicalBlackHole",
+        "inputIsHiddenMirrorBlackHole",
         "inputTransportClass",
         "inputUIDFingerprint",
         "observedAtMonotonicNs",
@@ -3117,11 +3149,14 @@ function validate_default_input_lifecycle_json() {
     . as $snapshots
     | (length == 3 or length == 4)
     and (all(.[]; exact_keys))
-    and (all(.[]; .schema == "opensteamer.default-input-snapshot.v2"))
+    and (all(.[]; .schema == "opensteamer.default-input-snapshot.v3"))
     and (all(.[];
       (.inputUIDFingerprint | fingerprint)
       and (.outputUIDFingerprint | fingerprint)
       and (.systemOutputUIDFingerprint | fingerprint)
+      and .inputIsHiddenMirrorBlackHole == false
+      and .defaultOutputIsForbiddenBlackHole == false
+      and .defaultSystemOutputIsForbiddenBlackHole == false
       and (.inputTransportClass
         | IN("built-in", "virtual", "aggregate", "usb", "bluetooth", "other"))
       and (.observedAtMonotonicNs | type == "number" and . > 0 and floor == .)
@@ -3181,8 +3216,11 @@ function validate_default_input_baseline_json() {
   local snapshot=$1
 
   jq -e '
-    .schema == "opensteamer.default-input-snapshot.v2"
+    .schema == "opensteamer.default-input-snapshot.v3"
     and (.inputIsCanonicalBlackHole | type == "boolean")
+    and .inputIsHiddenMirrorBlackHole == false
+    and .defaultOutputIsForbiddenBlackHole == false
+    and .defaultSystemOutputIsForbiddenBlackHole == false
     and (.inputTransportClass
       | IN("built-in", "virtual", "aggregate", "usb", "bluetooth", "other"))
     and (if .inputIsCanonicalBlackHole then
@@ -3199,7 +3237,7 @@ function wait_for_default_input_restoration() {
       "${RAW_DEFAULT_INPUT_AFTER}" after || return $?
     if jq -e \
         --slurpfile before "${RAW_DEFAULT_INPUT_BEFORE}" '
-        .schema == "opensteamer.default-input-snapshot.v2"
+        .schema == "opensteamer.default-input-snapshot.v3"
         and .inputIsCanonicalBlackHole
           == $before[0].inputIsCanonicalBlackHole
         and .inputUIDFingerprint
@@ -4718,6 +4756,11 @@ function configure_post_call_raw_contract() {
   RAW_READY_STATUS=${CALL_POST_RAW_READY_STATUS}
   RAW_READY_TIMEOUT_MARKER=${CALL_POST_RAW_READY_TIMEOUT_MARKER}
   RAW_READY_STALE_MARKER=${CALL_POST_RAW_READY_STALE_MARKER}
+  RAW_READY_CONTINUITY_EVIDENCE=${CALL_POST_RAW_READY_CONTINUITY_EVIDENCE}
+  RAW_READY_CONTINUITY_ARMED_MARKER=${CALL_POST_RAW_READY_CONTINUITY_ARMED_MARKER}
+  RAW_READY_CONTINUITY_LOG_APPEND_CHUNK=${CALL_POST_RAW_READY_CONTINUITY_LOG_APPEND_CHUNK}
+  RAW_READY_CONTINUITY_LOG_COMPLETED_LINES=${CALL_POST_RAW_READY_CONTINUITY_LOG_COMPLETED_LINES}
+  RAW_READY_CONTINUITY_LOG_PARTIAL_LINE=${CALL_POST_RAW_READY_CONTINUITY_LOG_PARTIAL_LINE}
   RAW_PROBE_OVERLAP_MARKER=${CALL_POST_RAW_PROBE_OVERLAP_MARKER}
   RAW_PROBE_NON_OVERLAP_MARKER=${CALL_POST_RAW_PROBE_NON_OVERLAP_MARKER}
   RAW_UI_RUNTIME_ATTACHMENT_PAYLOAD_ID=${CALL_POST_RAW_UI_RUNTIME_ATTACHMENT_PAYLOAD_ID}
@@ -4902,6 +4945,531 @@ function raw_evidence_value() {
   ' "${evidence_file}"
 }
 
+# These local wrappers are exclusive to post-probe continuity. They retain only a bounded suffix
+# and share one absolute monotonic deadline across prefix authentication and line reconstruction.
+function capture_bounded_raw_continuity_log_snapshot() {
+  local log_path=$1
+  local expected_identity=$2
+  local prior_offset=$3
+  local prior_digest=$4
+  local appended_output=$5
+  local deadline_ns=$6
+  local metadata
+  local -a metadata_lines
+
+  rm -f "${appended_output}" || return $?
+  if ! metadata=$(opensteamer_run_physical_validation_oracle \
+      log-snapshot-bounded \
+      "${log_path}" \
+      "${expected_identity:--}" \
+      "${prior_offset}" \
+      "${prior_digest}" \
+      "${appended_output}" \
+      "${deadline_ns}" \
+      "${RAW_CONTINUITY_MAX_LOG_DELTA_BYTES}"); then
+    rm -f "${appended_output}" || true
+    return 1
+  fi
+  metadata_lines=("${(@f)metadata}")
+  if (( ${#metadata_lines[@]} != 4 )) \
+      || [[ -z "${metadata_lines[1]}" \
+          || "${metadata_lines[2]}" == *[^0-9]* \
+          || "${metadata_lines[3]}" == *[^0-9a-f]* \
+          || ${#metadata_lines[3]} != 64 \
+          || ( "${metadata_lines[4]}" != "0" \
+            && "${metadata_lines[4]}" != "1" ) ]]; then
+    rm -f "${appended_output}" || true
+    return 1
+  fi
+  OPENSTEAMER_LOG_SNAPSHOT_ID=${metadata_lines[1]}
+  OPENSTEAMER_LOG_SNAPSHOT_OFFSET=${metadata_lines[2]}
+  OPENSTEAMER_LOG_SNAPSHOT_DIGEST=${metadata_lines[3]}
+  OPENSTEAMER_LOG_SNAPSHOT_ENDS_WITH_NEWLINE=${metadata_lines[4]}
+}
+
+function split_bounded_raw_continuity_log_lines() {
+  local appended_input=$1
+  local partial_state=$2
+  local completed_output=$3
+  local deadline_ns=$4
+
+  opensteamer_run_physical_validation_oracle \
+    split-lines-bounded \
+    "${appended_input}" \
+    "${partial_state}" \
+    "${completed_output}" \
+    "${deadline_ns}" \
+    "${RAW_CONTINUITY_MAX_LOG_DELTA_BYTES}" \
+    "${RAW_CONTINUITY_MAX_PARTIAL_BYTES}"
+}
+
+function raw_continuity_require_before_deadline() {
+  local deadline_ns=$1
+  local current_ns
+
+  current_ns=$(current_monotonic_time_ns) || return $?
+  [[ -n "${current_ns}" && "${current_ns}" != *[^0-9]* ]] \
+      && (( current_ns < deadline_ns ))
+}
+
+# Reject every transport, route, writer, or forwarding transition that contradicts the tuple
+# frozen at probe launch. Positive observations are counted only after the wrapper completion has
+# been parsed and a fresh authenticated log checkpoint has been armed.
+function audit_raw_session_continuity_lines() {
+  local completed_lines=$1
+  local expected_host_pid=$2
+  local expected_routing_epoch=$3
+  local expected_peer_generation=$4
+  local expected_device_generation=$5
+  local accept_positive_observations=$6
+  local line
+  local expected_peer_state="Worldwide WebRTC peer state: connected pid=${expected_host_pid}"
+  local expected_route="Worldwide authenticated media route selected BlackHole default input routingEpoch=${expected_routing_epoch} peerGeneration=${expected_peer_generation} deviceGeneration=${expected_device_generation} pid=${expected_host_pid}"
+  local expected_writer="Worldwide iPhone microphone hidden writer selected routingEpoch=${expected_routing_epoch} peerGeneration=${expected_peer_generation} deviceGeneration=${expected_device_generation} pid=${expected_host_pid}"
+  local healthy_forwarding="Worldwide iPhone microphone forwarding phase=forwardingHealthy inputEndpointAvailable=true hiddenSinkAvailable=true hiddenWriterSelectionProven=true transport=true trackAdmitted=true queueRunning=true "
+  local progress_fields
+  local callback_count
+  local pull_count
+  local frame_count
+  local remaining_fields
+
+  while IFS= read -r line; do
+    if [[ "${line}" == *"Worldwide WebRTC peer state: "* ]]; then
+      [[ "${line}" == *"${expected_peer_state}" ]] || return 4
+    fi
+    if [[ "${line}" == *"Worldwide authenticated media route selected BlackHole default input routingEpoch="* ]]; then
+      [[ "${line}" == *"${expected_route}" ]] || return 4
+    fi
+    if [[ "${line}" == *"Worldwide iPhone microphone hidden writer selected routingEpoch="* ]]; then
+      [[ "${line}" == *"${expected_writer}" ]] || return 4
+      if (( accept_positive_observations != 0 )); then
+        RAW_CONTINUITY_CURRENT_WRITER_OBSERVATIONS=$((
+          RAW_CONTINUITY_CURRENT_WRITER_OBSERVATIONS + 1
+        ))
+      fi
+    fi
+    if [[ "${line}" == *"Worldwide iPhone microphone forwarding phase="* ]]; then
+      [[ "${line}" == *"${healthy_forwarding}"* ]] || return 4
+      if (( accept_positive_observations != 0 )); then
+        progress_fields=$(
+          print -r -- "${line}" \
+            | /usr/bin/sed -E \
+                's/.* callbacks=([0-9]+) pulls=([0-9]+) frames=([0-9]+).*/\1 \2 \3/'
+        ) || return $?
+        callback_count=${progress_fields%% *}
+        remaining_fields=${progress_fields#* }
+        pull_count=${remaining_fields%% *}
+        frame_count=${remaining_fields##* }
+        [[ -n "${callback_count}" \
+            && "${callback_count}" != *[^0-9]* \
+            && -n "${pull_count}" \
+            && "${pull_count}" != *[^0-9]* \
+            && -n "${frame_count}" \
+            && "${frame_count}" != *[^0-9]* ]] || return 4
+        if [[ -z "${RAW_CONTINUITY_LAST_CALLBACK_COUNT}" ]]; then
+          RAW_CONTINUITY_FIRST_CALLBACK_COUNT=${callback_count}
+          RAW_CONTINUITY_FIRST_PULL_COUNT=${pull_count}
+          RAW_CONTINUITY_FIRST_FRAME_COUNT=${frame_count}
+          RAW_CONTINUITY_LAST_CALLBACK_COUNT=${callback_count}
+          RAW_CONTINUITY_LAST_PULL_COUNT=${pull_count}
+          RAW_CONTINUITY_LAST_FRAME_COUNT=${frame_count}
+          RAW_CONTINUITY_CURRENT_AUTHORIZATION_OBSERVATIONS=1
+        elif (( callback_count < RAW_CONTINUITY_LAST_CALLBACK_COUNT \
+            || pull_count < RAW_CONTINUITY_LAST_PULL_COUNT \
+            || frame_count < RAW_CONTINUITY_LAST_FRAME_COUNT )); then
+          return 4
+        elif (( callback_count > RAW_CONTINUITY_LAST_CALLBACK_COUNT \
+            && pull_count > RAW_CONTINUITY_LAST_PULL_COUNT \
+            && frame_count > RAW_CONTINUITY_LAST_FRAME_COUNT )); then
+          RAW_CONTINUITY_LAST_CALLBACK_COUNT=${callback_count}
+          RAW_CONTINUITY_LAST_PULL_COUNT=${pull_count}
+          RAW_CONTINUITY_LAST_FRAME_COUNT=${frame_count}
+          RAW_CONTINUITY_CURRENT_AUTHORIZATION_OBSERVATIONS=$((
+            RAW_CONTINUITY_CURRENT_AUTHORIZATION_OBSERVATIONS + 1
+          ))
+        fi
+      fi
+    fi
+    if [[ "${line}" == *"Worldwide microphone routing was revoked because "* \
+        || "${line}" == *"iPhone microphone forwarding encountered an output runtime failure"* ]]; then
+      return 4
+    fi
+  done < "${completed_lines}"
+}
+
+function cleanup_raw_session_continuity_scratch() {
+  rm -f \
+    "${RAW_READY_CONTINUITY_LOG_APPEND_CHUNK}" \
+    "${RAW_READY_CONTINUITY_LOG_COMPLETED_LINES}" \
+    "${RAW_READY_CONTINUITY_LOG_PARTIAL_LINE}"
+}
+
+# The physical probe can succeed from buffers admitted before a route change. Re-read the exact
+# append-only host-log suffix after completion, reject any intervening contradiction, then require
+# two new current healthy-forwarding snapshots and matching hidden-writer selections under the same
+# host PID/routing epoch/peer generation/device generation. The single absolute monotonic deadline
+# bounds the complete post-completion observation window.
+function revalidate_raw_session_continuity_after_probe() {
+  local probe_end_ns=$1
+  local readiness_schema
+  local expected_nonce
+  local expected_host_pid
+  local expected_routing_epoch
+  local expected_peer_generation
+  local expected_device_generation
+  local cursor_identity
+  local start_cursor_offset
+  local start_cursor_digest
+  local start_cursor_partial_bytes
+  local start_cursor_partial_digest
+  local cursor_offset
+  local cursor_digest
+  local observed_cursor_partial_bytes
+  local observed_cursor_partial_digest
+  local current_process_id
+  local revalidation_started_ns
+  local revalidation_deadline_ns
+  local observed_at_ns
+  local final_drain_completed_at_ns
+  local maximum_wait_ns
+  local readiness_bytes
+  local evidence_temporary="${RAW_READY_CONTINUITY_EVIDENCE}.tmp.$$"
+  local command_status
+
+  [[ -n "${probe_end_ns}" && "${probe_end_ns}" != *[^0-9]* ]] \
+      && (( probe_end_ns > 0 )) || return 3
+  maximum_wait_ns=$((
+    RAW_CONTINUITY_REVALIDATION_TIMEOUT_SECONDS * 1000000000
+  ))
+  revalidation_started_ns=$(current_monotonic_time_ns) || return $?
+  [[ -n "${revalidation_started_ns}" \
+      && "${revalidation_started_ns}" != *[^0-9]* ]] \
+      && (( revalidation_started_ns > probe_end_ns )) || return 3
+  revalidation_deadline_ns=$((revalidation_started_ns + maximum_wait_ns))
+  (( revalidation_deadline_ns > revalidation_started_ns )) || return 3
+
+  # Establish the only post-completion deadline before parsing, hashing, copying, or authenticating
+  # any evidence. The readiness record itself is also size-bounded before awk sees it.
+  [[ -f "${RAW_READY_EVIDENCE}" && ! -L "${RAW_READY_EVIDENCE}" ]] \
+    || return 3
+  readiness_bytes=$(/usr/bin/stat -f '%z' "${RAW_READY_EVIDENCE}") \
+    || return $?
+  [[ -n "${readiness_bytes}" && "${readiness_bytes}" != *[^0-9]* ]] \
+      && (( readiness_bytes > 0 \
+        && readiness_bytes <= RAW_CONTINUITY_MAX_EVIDENCE_BYTES )) \
+    || return 3
+  raw_continuity_require_before_deadline "${revalidation_deadline_ns}" \
+    || return 124
+  readiness_schema=$(raw_evidence_value "${RAW_READY_EVIDENCE}" schema) \
+    || return 3
+  expected_nonce=$(raw_evidence_value "${RAW_READY_EVIDENCE}" nonce) \
+    || return 3
+  expected_host_pid=$(raw_evidence_value "${RAW_READY_EVIDENCE}" hostPID) \
+    || return 3
+  expected_routing_epoch=$(raw_evidence_value \
+    "${RAW_READY_EVIDENCE}" blackHoleRoutingEpoch) || return 3
+  expected_peer_generation=$(raw_evidence_value \
+    "${RAW_READY_EVIDENCE}" blackHolePeerGeneration) || return 3
+  expected_device_generation=$(raw_evidence_value \
+    "${RAW_READY_EVIDENCE}" blackHoleDeviceGeneration) || return 3
+  cursor_identity=$(raw_evidence_value \
+    "${RAW_READY_EVIDENCE}" cursorIdentity) || return 3
+  start_cursor_offset=$(raw_evidence_value \
+    "${RAW_READY_EVIDENCE}" cursorOffset) || return 3
+  start_cursor_digest=$(raw_evidence_value \
+    "${RAW_READY_EVIDENCE}" cursorDigest) || return 3
+  start_cursor_partial_bytes=$(raw_evidence_value \
+    "${RAW_READY_EVIDENCE}" cursorPartialBytes) || return 3
+  start_cursor_partial_digest=$(raw_evidence_value \
+    "${RAW_READY_EVIDENCE}" cursorPartialDigest) || return 3
+  [[ "${readiness_schema}" == "opensteamer.raw-session-readiness.v5" \
+      && "${expected_nonce}" == "${RAW_READY_NONCE}" \
+      && -n "${cursor_identity}" \
+      && -n "${expected_host_pid}" \
+      && "${expected_host_pid}" != *[^0-9]* \
+      && -n "${expected_routing_epoch}" \
+      && ${#expected_routing_epoch} -eq 32 \
+      && "${expected_routing_epoch}" != *[^0-9a-f]* \
+      && -n "${expected_peer_generation}" \
+      && "${expected_peer_generation}" != *[^0-9]* \
+      && -n "${expected_device_generation}" \
+      && "${expected_device_generation}" != *[^0-9]* \
+      && -n "${start_cursor_offset}" \
+      && "${start_cursor_offset}" != *[^0-9]* \
+      && ${#start_cursor_digest} -eq 64 \
+      && "${start_cursor_digest}" != *[^0-9a-f]* \
+      && -n "${start_cursor_partial_bytes}" \
+      && "${start_cursor_partial_bytes}" != *[^0-9]* \
+      && ${#start_cursor_partial_digest} -eq 64 \
+      && "${start_cursor_partial_digest}" != *[^0-9a-f]* \
+      && start_cursor_partial_bytes -le RAW_CONTINUITY_MAX_PARTIAL_BYTES ]] \
+      && (( expected_host_pid > 0 \
+        && expected_peer_generation > 0 \
+        && expected_device_generation > 0 )) || return 3
+
+  raw_continuity_require_before_deadline "${revalidation_deadline_ns}" \
+    || return 124
+  rm -f \
+    "${RAW_READY_CONTINUITY_EVIDENCE}" \
+    "${RAW_READY_CONTINUITY_ARMED_MARKER}" \
+    "${evidence_temporary}" || return $?
+  cleanup_raw_session_continuity_scratch || return $?
+  [[ -f "${RAW_HOST_LOG_PARTIAL_LINE}" \
+      && ! -L "${RAW_HOST_LOG_PARTIAL_LINE}" ]] || return 3
+  observed_cursor_partial_bytes=$(
+    /usr/bin/stat -f '%z' "${RAW_HOST_LOG_PARTIAL_LINE}"
+  ) || return $?
+  [[ -n "${observed_cursor_partial_bytes}" \
+      && "${observed_cursor_partial_bytes}" != *[^0-9]* ]] \
+      && (( observed_cursor_partial_bytes <= RAW_CONTINUITY_MAX_PARTIAL_BYTES )) \
+    || return 3
+  raw_continuity_require_before_deadline "${revalidation_deadline_ns}" \
+    || return 124
+  observed_cursor_partial_digest=$(
+    /usr/bin/shasum -a 256 "${RAW_HOST_LOG_PARTIAL_LINE}" \
+      | /usr/bin/awk '{print $1}'
+  ) || return $?
+  [[ "${observed_cursor_partial_bytes}" == "${start_cursor_partial_bytes}" \
+      && "${observed_cursor_partial_digest}" \
+        == "${start_cursor_partial_digest}" ]] || return 4
+  /bin/cp \
+    "${RAW_HOST_LOG_PARTIAL_LINE}" \
+    "${RAW_READY_CONTINUITY_LOG_PARTIAL_LINE}" || return $?
+  raw_continuity_require_before_deadline "${revalidation_deadline_ns}" \
+    || return 124
+  cursor_offset=${start_cursor_offset}
+  cursor_digest=${start_cursor_digest}
+  current_process_id=$(current_host_pid)
+  [[ "${current_process_id}" == "${expected_host_pid}" ]] || return 4
+
+  # First consume the complete launch-to-completion suffix. A positive record in this suffix is
+  # not sufficient: acceptance requires a separate observation after this checkpoint.
+  if ! capture_bounded_raw_continuity_log_snapshot \
+      "${HOST_LOG}" \
+      "${cursor_identity}" \
+      "${cursor_offset}" \
+      "${cursor_digest}" \
+      "${RAW_READY_CONTINUITY_LOG_APPEND_CHUNK}" \
+      "${revalidation_deadline_ns}" \
+      || ! split_bounded_raw_continuity_log_lines \
+        "${RAW_READY_CONTINUITY_LOG_APPEND_CHUNK}" \
+        "${RAW_READY_CONTINUITY_LOG_PARTIAL_LINE}" \
+        "${RAW_READY_CONTINUITY_LOG_COMPLETED_LINES}" \
+        "${revalidation_deadline_ns}" \
+      || ! opensteamer_audit_connected_log_lines \
+        "${RAW_READY_CONTINUITY_LOG_COMPLETED_LINES}" \
+        "${expected_host_pid}" \
+        "${current_process_id}" \
+      || ! audit_raw_session_continuity_lines \
+        "${RAW_READY_CONTINUITY_LOG_COMPLETED_LINES}" \
+        "${expected_host_pid}" \
+        "${expected_routing_epoch}" \
+        "${expected_peer_generation}" \
+        "${expected_device_generation}" \
+        0; then
+    command_status=4
+    cleanup_raw_session_continuity_scratch || true
+    return "${command_status}"
+  fi
+  cursor_offset=${OPENSTEAMER_LOG_SNAPSHOT_OFFSET}
+  cursor_digest=${OPENSTEAMER_LOG_SNAPSHOT_DIGEST}
+  rm -f \
+    "${RAW_READY_CONTINUITY_LOG_APPEND_CHUNK}" \
+    "${RAW_READY_CONTINUITY_LOG_COMPLETED_LINES}" || return $?
+  raw_continuity_require_before_deadline "${revalidation_deadline_ns}" \
+    || return 124
+  opensteamer_write_state \
+    "${RAW_READY_CONTINUITY_ARMED_MARKER}" \
+    "state=armed nonce=${expected_nonce} revalidationStartedAtMonotonicNs=${revalidation_started_ns}" \
+    || return $?
+
+  RAW_CONTINUITY_CURRENT_WRITER_OBSERVATIONS=0
+  RAW_CONTINUITY_CURRENT_AUTHORIZATION_OBSERVATIONS=0
+  RAW_CONTINUITY_FIRST_CALLBACK_COUNT=""
+  RAW_CONTINUITY_FIRST_PULL_COUNT=""
+  RAW_CONTINUITY_FIRST_FRAME_COUNT=""
+  RAW_CONTINUITY_LAST_CALLBACK_COUNT=""
+  RAW_CONTINUITY_LAST_PULL_COUNT=""
+  RAW_CONTINUITY_LAST_FRAME_COUNT=""
+  while true; do
+    observed_at_ns=$(current_monotonic_time_ns) || return $?
+    [[ -n "${observed_at_ns}" \
+        && "${observed_at_ns}" != *[^0-9]* ]] || return 3
+    if (( observed_at_ns >= revalidation_deadline_ns )); then
+      cleanup_raw_session_continuity_scratch || true
+      return 124
+    fi
+    current_process_id=$(current_host_pid)
+    if [[ "${current_process_id}" != "${expected_host_pid}" ]]; then
+      cleanup_raw_session_continuity_scratch || true
+      return 4
+    fi
+    if ! capture_bounded_raw_continuity_log_snapshot \
+        "${HOST_LOG}" \
+        "${cursor_identity}" \
+        "${cursor_offset}" \
+        "${cursor_digest}" \
+        "${RAW_READY_CONTINUITY_LOG_APPEND_CHUNK}" \
+        "${revalidation_deadline_ns}" \
+        || ! split_bounded_raw_continuity_log_lines \
+          "${RAW_READY_CONTINUITY_LOG_APPEND_CHUNK}" \
+          "${RAW_READY_CONTINUITY_LOG_PARTIAL_LINE}" \
+          "${RAW_READY_CONTINUITY_LOG_COMPLETED_LINES}" \
+          "${revalidation_deadline_ns}" \
+        || ! opensteamer_audit_connected_log_lines \
+          "${RAW_READY_CONTINUITY_LOG_COMPLETED_LINES}" \
+          "${expected_host_pid}" \
+          "${current_process_id}" \
+        || ! audit_raw_session_continuity_lines \
+          "${RAW_READY_CONTINUITY_LOG_COMPLETED_LINES}" \
+          "${expected_host_pid}" \
+          "${expected_routing_epoch}" \
+          "${expected_peer_generation}" \
+          "${expected_device_generation}" \
+          1; then
+      command_status=4
+      cleanup_raw_session_continuity_scratch || true
+      return "${command_status}"
+    fi
+    cursor_offset=${OPENSTEAMER_LOG_SNAPSHOT_OFFSET}
+    cursor_digest=${OPENSTEAMER_LOG_SNAPSHOT_DIGEST}
+    observed_cursor_partial_bytes=$(
+      /usr/bin/stat -f '%z' "${RAW_READY_CONTINUITY_LOG_PARTIAL_LINE}"
+    ) || return $?
+    [[ -n "${observed_cursor_partial_bytes}" \
+        && "${observed_cursor_partial_bytes}" != *[^0-9]* ]] \
+        && (( observed_cursor_partial_bytes <= RAW_CONTINUITY_MAX_PARTIAL_BYTES )) \
+      || return 3
+    raw_continuity_require_before_deadline "${revalidation_deadline_ns}" \
+      || return 124
+    observed_cursor_partial_digest=$(
+      /usr/bin/shasum -a 256 "${RAW_READY_CONTINUITY_LOG_PARTIAL_LINE}" \
+        | /usr/bin/awk '{print $1}'
+    ) || return $?
+    [[ -n "${observed_cursor_partial_bytes}" \
+        && "${observed_cursor_partial_bytes}" != *[^0-9]* \
+        && ${#observed_cursor_partial_digest} -eq 64 \
+        && "${observed_cursor_partial_digest}" != *[^0-9a-f]* ]] \
+      || return 3
+    rm -f \
+      "${RAW_READY_CONTINUITY_LOG_APPEND_CHUNK}" \
+      "${RAW_READY_CONTINUITY_LOG_COMPLETED_LINES}" || return $?
+    if (( RAW_CONTINUITY_CURRENT_WRITER_OBSERVATIONS >= 2 \
+        && RAW_CONTINUITY_CURRENT_AUTHORIZATION_OBSERVATIONS >= 2 \
+        && observed_cursor_partial_bytes == 0 )); then
+      current_process_id=$(current_host_pid)
+      [[ "${current_process_id}" == "${expected_host_pid}" ]] || return 4
+      # The claimed observation time is sampled before one final authenticated drain. Any
+      # transition appended at or before this instant must therefore be present in the retained
+      # end cursor and is audited before publication.
+      observed_at_ns=$(current_monotonic_time_ns) || return $?
+      [[ -n "${observed_at_ns}" \
+          && "${observed_at_ns}" != *[^0-9]* ]] \
+          && (( observed_at_ns > revalidation_started_ns \
+            && observed_at_ns < revalidation_deadline_ns )) || return 124
+      if ! capture_bounded_raw_continuity_log_snapshot \
+          "${HOST_LOG}" \
+          "${cursor_identity}" \
+          "${cursor_offset}" \
+          "${cursor_digest}" \
+          "${RAW_READY_CONTINUITY_LOG_APPEND_CHUNK}" \
+          "${revalidation_deadline_ns}" \
+          || ! split_bounded_raw_continuity_log_lines \
+            "${RAW_READY_CONTINUITY_LOG_APPEND_CHUNK}" \
+            "${RAW_READY_CONTINUITY_LOG_PARTIAL_LINE}" \
+            "${RAW_READY_CONTINUITY_LOG_COMPLETED_LINES}" \
+            "${revalidation_deadline_ns}" \
+          || ! opensteamer_audit_connected_log_lines \
+            "${RAW_READY_CONTINUITY_LOG_COMPLETED_LINES}" \
+            "${expected_host_pid}" \
+            "${current_process_id}" \
+          || ! audit_raw_session_continuity_lines \
+            "${RAW_READY_CONTINUITY_LOG_COMPLETED_LINES}" \
+            "${expected_host_pid}" \
+            "${expected_routing_epoch}" \
+            "${expected_peer_generation}" \
+            "${expected_device_generation}" \
+            1; then
+        cleanup_raw_session_continuity_scratch || true
+        return 4
+      fi
+      cursor_offset=${OPENSTEAMER_LOG_SNAPSHOT_OFFSET}
+      cursor_digest=${OPENSTEAMER_LOG_SNAPSHOT_DIGEST}
+      observed_cursor_partial_bytes=$(
+        /usr/bin/stat -f '%z' "${RAW_READY_CONTINUITY_LOG_PARTIAL_LINE}"
+      ) || return $?
+      [[ "${observed_cursor_partial_bytes}" == "0" ]] || return 4
+      observed_cursor_partial_digest=$(
+        /usr/bin/shasum -a 256 "${RAW_READY_CONTINUITY_LOG_PARTIAL_LINE}" \
+          | /usr/bin/awk '{print $1}'
+      ) || return $?
+      [[ "${observed_cursor_partial_digest}" \
+          == "$(opensteamer_empty_sha256)" ]] || return 4
+      rm -f \
+        "${RAW_READY_CONTINUITY_LOG_APPEND_CHUNK}" \
+        "${RAW_READY_CONTINUITY_LOG_COMPLETED_LINES}" || return $?
+      current_process_id=$(current_host_pid)
+      [[ "${current_process_id}" == "${expected_host_pid}" ]] || return 4
+      final_drain_completed_at_ns=$(current_monotonic_time_ns) || return $?
+      [[ -n "${final_drain_completed_at_ns}" \
+          && "${final_drain_completed_at_ns}" != *[^0-9]* ]] \
+          && (( final_drain_completed_at_ns > observed_at_ns \
+            && final_drain_completed_at_ns < revalidation_deadline_ns )) \
+        || return 124
+      {
+        print -r -- "schema=opensteamer.raw-session-continuity.v2"
+        print -r -- "nonce=${expected_nonce}"
+        print -r -- "probeEndMonotonicNs=${probe_end_ns}"
+        print -r -- \
+          "revalidationStartedAtMonotonicNs=${revalidation_started_ns}"
+        print -r -- "observedAtMonotonicNs=${observed_at_ns}"
+        print -r -- \
+          "finalDrainCompletedAtMonotonicNs=${final_drain_completed_at_ns}"
+        print -r -- "maximumWaitNs=${maximum_wait_ns}"
+        print -r -- "hostPID=${expected_host_pid}"
+        print -r -- "blackHoleRoutingEpoch=${expected_routing_epoch}"
+        print -r -- \
+          "blackHolePeerGeneration=${expected_peer_generation}"
+        print -r -- \
+          "blackHoleDeviceGeneration=${expected_device_generation}"
+        print -r -- "hiddenWriterSelectionProven=true"
+        print -r -- "transportAuthorized=true"
+        print -r -- "trackAdmitted=true"
+        print -r -- "queueRunning=true"
+        print -r -- \
+          "writerSelectionObservationCount=${RAW_CONTINUITY_CURRENT_WRITER_OBSERVATIONS}"
+        print -r -- \
+          "authorizationObservationCount=${RAW_CONTINUITY_CURRENT_AUTHORIZATION_OBSERVATIONS}"
+        print -r -- \
+          "firstCallbackCount=${RAW_CONTINUITY_FIRST_CALLBACK_COUNT}"
+        print -r -- "lastCallbackCount=${RAW_CONTINUITY_LAST_CALLBACK_COUNT}"
+        print -r -- "firstPullCount=${RAW_CONTINUITY_FIRST_PULL_COUNT}"
+        print -r -- "lastPullCount=${RAW_CONTINUITY_LAST_PULL_COUNT}"
+        print -r -- "firstFrameCount=${RAW_CONTINUITY_FIRST_FRAME_COUNT}"
+        print -r -- "lastFrameCount=${RAW_CONTINUITY_LAST_FRAME_COUNT}"
+        print -r -- "startCursorIdentity=${cursor_identity}"
+        print -r -- "startCursorOffset=${start_cursor_offset}"
+        print -r -- "startCursorDigest=${start_cursor_digest}"
+        print -r -- \
+          "startCursorPartialBytes=${start_cursor_partial_bytes}"
+        print -r -- \
+          "startCursorPartialDigest=${start_cursor_partial_digest}"
+        print -r -- "endCursorOffset=${cursor_offset}"
+        print -r -- "endCursorDigest=${cursor_digest}"
+        print -r -- \
+          "endCursorPartialBytes=${observed_cursor_partial_bytes}"
+        print -r -- \
+          "endCursorPartialDigest=${observed_cursor_partial_digest}"
+      } > "${evidence_temporary}" || return $?
+      mv "${evidence_temporary}" "${RAW_READY_CONTINUITY_EVIDENCE}" \
+        || return $?
+      cleanup_raw_session_continuity_scratch || return $?
+      return 0
+    fi
+    sleep 0.05
+  done
+}
+
 function clear_raw_overlap_success_evidence() {
   if [[ "${RAW_PROOF_CONTEXT:-}" == "post-call" ]]; then
     rm -f "${CALL_UI_HOSTED_PRE_ACK_OBSERVATION}" || return $?
@@ -4918,6 +5486,11 @@ function clear_raw_overlap_success_evidence() {
     "${RAW_PROBE_PROCESS_COMPLETION_EVIDENCE}" \
     "${RAW_PROBE_COMPLETION_OBSERVATION}" \
     "${RAW_PROBE_WAIT_EVIDENCE}" \
+    "${RAW_READY_CONTINUITY_EVIDENCE}" \
+    "${RAW_READY_CONTINUITY_ARMED_MARKER}" \
+    "${RAW_READY_CONTINUITY_LOG_APPEND_CHUNK}" \
+    "${RAW_READY_CONTINUITY_LOG_COMPLETED_LINES}" \
+    "${RAW_READY_CONTINUITY_LOG_PARTIAL_LINE}" \
     "${RAW_PROBE_INTERVAL_EVIDENCE}" \
     "${RAW_PROBE_OVERLAP_MARKER}" \
     "${RAW_BLACKHOLE_PROBE_COMPLETION}"
@@ -5003,6 +5576,7 @@ function capture_raw_probe_completion_observation() {
   local readiness_nonce
   local expected_probe_start
   local expected_production_pid
+  local continuity_status
   local temporary="${RAW_PROBE_COMPLETION_OBSERVATION}.tmp.$$"
 
   # This function runs in the watchdog subprocess, which was forked before the parent starts the
@@ -5016,7 +5590,7 @@ function capture_raw_probe_completion_observation() {
     "${RAW_READY_EVIDENCE}" probeStartedAtMonotonicNs) || return 3
   expected_production_pid=$(raw_evidence_value \
     "${RAW_READY_EVIDENCE}" productionPID) || return 3
-  [[ "${readiness_schema}" == "opensteamer.raw-session-readiness.v3" \
+  [[ "${readiness_schema}" == "opensteamer.raw-session-readiness.v5" \
       && "${readiness_nonce}" == "${RAW_READY_NONCE}" \
       && "${expected_probe_start}" != *[^0-9]* \
       && "${expected_production_pid}" != *[^0-9]* ]] \
@@ -5042,6 +5616,14 @@ function capture_raw_probe_completion_observation() {
       || "${completion_observed_ns}" == *[^0-9]* ]] \
       || (( completion_observed_ns < probe_end_ns )); then
     return 3
+  fi
+  # This watchdog still overlaps the live XCTest/app session. Prove the exact host/writer tuple
+  # now; the parent intentionally does not defer this check until XCTest has disconnected.
+  if revalidate_raw_session_continuity_after_probe "${probe_end_ns}"; then
+    :
+  else
+    continuity_status=$?
+    return "${continuity_status}"
   fi
   {
     print -r -- \
@@ -5069,6 +5651,11 @@ function initialize_raw_session_readiness() {
     "${RAW_READY_STATUS}" \
     "${RAW_READY_TIMEOUT_MARKER}" \
     "${RAW_READY_STALE_MARKER}" \
+    "${RAW_READY_CONTINUITY_EVIDENCE}" \
+    "${RAW_READY_CONTINUITY_ARMED_MARKER}" \
+    "${RAW_READY_CONTINUITY_LOG_APPEND_CHUNK}" \
+    "${RAW_READY_CONTINUITY_LOG_COMPLETED_LINES}" \
+    "${RAW_READY_CONTINUITY_LOG_PARTIAL_LINE}" \
     "${RAW_HOST_LOG_APPEND_CHUNK}" \
     "${RAW_HOST_LOG_COMPLETED_LINES}" \
     "${RAW_HOST_LOG_PARTIAL_LINE}" || return $?
@@ -5111,9 +5698,10 @@ function initialize_raw_session_readiness() {
     return 3
   fi
   {
-    print -r -- "schema=opensteamer.raw-session-readiness.v2"
+    print -r -- "schema=opensteamer.raw-session-readiness.v3"
     print -r -- "nonce=${RAW_READY_NONCE}"
     print -r -- "requestedAtMonotonicNs=${RAW_READY_REQUESTED_NS}"
+    print -r -- "cursorIdentity=${RAW_HOST_LOG_START_ID}"
     print -r -- "cursorOffset=${RAW_HOST_LOG_START_OFFSET}"
     print -r -- "cursorDigest=${RAW_HOST_LOG_START_DIGEST}"
   } > "${request_temporary}" || return $?
@@ -5130,11 +5718,21 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
   local new_connections
   local authenticated_connections=0
   local healthy_boundary_observed=0
+  local hidden_writer_selection_observed=0
+  local blackhole_routing_epoch=""
   local blackhole_peer_generation=0
+  local blackhole_device_generation=0
+  local next_blackhole_routing_epoch=""
+  local next_blackhole_peer_generation=0
+  local next_blackhole_device_generation=0
+  local healthy_route_line
+  local healthy_route_pattern
   local ready_at_ns
   local probe_started_at_ns
   local elapsed_seconds
   local remaining_verifier_budget
+  local cursor_partial_bytes
+  local cursor_partial_digest
   local evidence_temporary="${RAW_READY_EVIDENCE}.tmp.$$"
   local command_status
 
@@ -5177,25 +5775,53 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
     authenticated_connections=$(( authenticated_connections
         + new_connections
     ))
-    if [[ -n "${OPENSTEAMER_SELF_TEST_RAW_READINESS:-}" && "${new_connections}" -gt 0 ]] || grep -Eq \
-        "Worldwide authenticated media route selected BlackHole default input peerGeneration=[1-9][0-9]* pid=${current_process_id}" \
+    healthy_route_pattern="Worldwide authenticated media route selected BlackHole default input routingEpoch=[0-9a-f]{32} peerGeneration=[1-9][0-9]* deviceGeneration=[1-9][0-9]* pid=${current_process_id}$"
+    if grep -Eq "${healthy_route_pattern}" \
         "${RAW_HOST_LOG_COMPLETED_LINES}"; then
       healthy_boundary_observed=1
-      if [[ -n "${OPENSTEAMER_SELF_TEST_RAW_READINESS:-}" ]]; then
-        blackhole_peer_generation=1
-      else
-        blackhole_peer_generation=$(
-          /usr/bin/grep -Eo \
-            "Worldwide authenticated media route selected BlackHole default input peerGeneration=[1-9][0-9]* pid=${current_process_id}" \
-            "${RAW_HOST_LOG_COMPLETED_LINES}" \
-            | /usr/bin/sed -E \
-                's/.*peerGeneration=([1-9][0-9]*) pid=.*/\1/' \
-            | /usr/bin/tail -n 1
-        ) || return $?
-        [[ -n "${blackhole_peer_generation}" \
-            && "${blackhole_peer_generation}" != *[^0-9]* \
-            && blackhole_peer_generation -gt 0 ]] || return 3
+      healthy_route_line=$(
+        /usr/bin/grep -Eo "${healthy_route_pattern}" \
+          "${RAW_HOST_LOG_COMPLETED_LINES}" \
+          | /usr/bin/tail -n 1
+      ) || return $?
+      next_blackhole_routing_epoch=$(
+        print -r -- "${healthy_route_line}" \
+          | /usr/bin/sed -E \
+              's/.*routingEpoch=([0-9a-f]{32}) peerGeneration=.*/\1/'
+      ) || return $?
+      next_blackhole_peer_generation=$(
+        print -r -- "${healthy_route_line}" \
+          | /usr/bin/sed -E \
+              's/.*peerGeneration=([1-9][0-9]*) deviceGeneration=.*/\1/'
+      ) || return $?
+      next_blackhole_device_generation=$(
+        print -r -- "${healthy_route_line}" \
+          | /usr/bin/sed -E \
+              's/.*deviceGeneration=([1-9][0-9]*) pid=.*/\1/'
+      ) || return $?
+      [[ ${#next_blackhole_routing_epoch} -eq 32 \
+          && "${next_blackhole_routing_epoch}" != *[^0-9a-f]* \
+          && -n "${next_blackhole_peer_generation}" \
+          && "${next_blackhole_peer_generation}" != *[^0-9]* \
+          && next_blackhole_peer_generation -gt 0 \
+          && -n "${next_blackhole_device_generation}" \
+          && "${next_blackhole_device_generation}" != *[^0-9]* \
+          && next_blackhole_device_generation -gt 0 ]] || return 3
+      if [[ -n "${blackhole_routing_epoch}" ]] \
+          && (( blackhole_peer_generation > 0 \
+          && blackhole_device_generation > 0 )); then
+        if [[ "${blackhole_routing_epoch}" \
+              != "${next_blackhole_routing_epoch}" ]] \
+            || (( blackhole_peer_generation \
+                    != next_blackhole_peer_generation \
+                || blackhole_device_generation \
+                    != next_blackhole_device_generation )); then
+          hidden_writer_selection_observed=0
+        fi
       fi
+      blackhole_routing_epoch=${next_blackhole_routing_epoch}
+      blackhole_peer_generation=${next_blackhole_peer_generation}
+      blackhole_device_generation=${next_blackhole_device_generation}
       if (( RAW_PROOF_REQUIRE_NEW_CONNECTION == 0 )); then
         authenticated_connections=1
       fi
@@ -5203,14 +5829,25 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
         capture_default_input_snapshot \
           "${RAW_DEFAULT_INPUT_HEALTHY}" healthy || return $?
         jq -e \
-          '.inputIsCanonicalBlackHole == true' \
+          '.inputIsCanonicalBlackHole == true
+          and .inputIsHiddenMirrorBlackHole == false
+          and .defaultOutputIsForbiddenBlackHole == false
+          and .defaultSystemOutputIsForbiddenBlackHole == false' \
           "${RAW_DEFAULT_INPUT_HEALTHY}" >/dev/null || return 3
       fi
+    fi
+    if [[ -n "${blackhole_routing_epoch}" ]] \
+        && (( blackhole_peer_generation > 0 \
+        && blackhole_device_generation > 0 )) && grep -Eq \
+        "Worldwide iPhone microphone hidden writer selected routingEpoch=${blackhole_routing_epoch} peerGeneration=${blackhole_peer_generation} deviceGeneration=${blackhole_device_generation} pid=${current_process_id}$" \
+        "${RAW_HOST_LOG_COMPLETED_LINES}"; then
+      hidden_writer_selection_observed=1
     fi
     RAW_HOST_LOG_START_OFFSET=${OPENSTEAMER_LOG_SNAPSHOT_OFFSET}
     RAW_HOST_LOG_START_DIGEST=${OPENSTEAMER_LOG_SNAPSHOT_DIGEST}
     if (( authenticated_connections > 0
-        && healthy_boundary_observed != 0 )); then
+        && healthy_boundary_observed != 0
+        && hidden_writer_selection_observed != 0 )); then
       if [[ -z "${OPENSTEAMER_SELF_TEST_RAW_READINESS:-}" ]]; then
         if [[ "${RAW_PROOF_CONTEXT}" == "post-call" ]]; then
           elapsed_seconds=$((SECONDS - wait_started))
@@ -5292,11 +5929,27 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
         capture_default_input_snapshot \
           "${RAW_DEFAULT_INPUT_DURING}" healthy || return $?
         jq -e \
-          '.inputIsCanonicalBlackHole == true' \
+          '.inputIsCanonicalBlackHole == true
+          and .inputIsHiddenMirrorBlackHole == false
+          and .defaultOutputIsForbiddenBlackHole == false
+          and .defaultSystemOutputIsForbiddenBlackHole == false' \
           "${RAW_DEFAULT_INPUT_DURING}" >/dev/null || return 3
       fi
+      [[ -f "${RAW_HOST_LOG_PARTIAL_LINE}" \
+          && ! -L "${RAW_HOST_LOG_PARTIAL_LINE}" ]] || return 3
+      cursor_partial_bytes=$(
+        /usr/bin/stat -f '%z' "${RAW_HOST_LOG_PARTIAL_LINE}"
+      ) || return $?
+      cursor_partial_digest=$(
+        /usr/bin/shasum -a 256 "${RAW_HOST_LOG_PARTIAL_LINE}" \
+          | /usr/bin/awk '{print $1}'
+      ) || return $?
+      [[ -n "${cursor_partial_bytes}" \
+          && "${cursor_partial_bytes}" != *[^0-9]* \
+          && ${#cursor_partial_digest} -eq 64 \
+          && "${cursor_partial_digest}" != *[^0-9a-f]* ]] || return 3
       {
-        print -r -- "schema=opensteamer.raw-session-readiness.v3"
+        print -r -- "schema=opensteamer.raw-session-readiness.v5"
         print -r -- "nonce=${RAW_READY_NONCE}"
         print -r -- "requestedAtMonotonicNs=${RAW_READY_REQUESTED_NS}"
         print -r -- "resumedAtMonotonicNs=${RAW_READY_RESUMED_NS}"
@@ -5304,10 +5957,15 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
         print -r -- "probeStartedAtMonotonicNs=${probe_started_at_ns}"
         print -r -- "productionPID=${RAW_PROBE_BOUND_PID}"
         print -r -- "hostPID=${current_process_id}"
+        print -r -- "blackHoleRoutingEpoch=${blackhole_routing_epoch}"
         print -r -- "blackHolePeerGeneration=${blackhole_peer_generation}"
+        print -r -- "blackHoleDeviceGeneration=${blackhole_device_generation}"
         print -r -- "authenticatedConnectionCount=${authenticated_connections}"
+        print -r -- "cursorIdentity=${RAW_HOST_LOG_START_ID}"
         print -r -- "cursorOffset=${RAW_HOST_LOG_START_OFFSET}"
         print -r -- "cursorDigest=${RAW_HOST_LOG_START_DIGEST}"
+        print -r -- "cursorPartialBytes=${cursor_partial_bytes}"
+        print -r -- "cursorPartialDigest=${cursor_partial_digest}"
       } > "${evidence_temporary}" || {
         command_status=$?
         cleanup_blackhole_probe || true
@@ -5424,7 +6082,8 @@ function validate_and_retain_raw_overlap_evidence() {
       "${RAW_UI_BOUNDS_EVIDENCE}" \
       "${RAW_PROBE_INTERVAL_EVIDENCE}" \
       "${RAW_PROBE_OVERLAP_MARKER}" \
-      "${now_ns}"
+      "${now_ns}" \
+      "${RAW_READY_CONTINUITY_EVIDENCE}"
   then
     return 0
   else
@@ -6482,6 +7141,13 @@ function write_raw_overlap_self_test_fixture() {
   local ui_pid_end=7101
   local wrapper_status=0
   local wait_status=0
+  local continuity_routing_epoch="0123456789abcdef0123456789abcdef"
+  local continuity_peer_generation=1
+  local continuity_device_generation=1
+  local continuity_host_pid=5100
+  local continuity_writer_proven=true
+  local continuity_revalidation_started
+  local continuity_observed
 
   case "${scenario}" in
     success|exact-six)
@@ -6573,6 +7239,21 @@ function write_raw_overlap_self_test_fixture() {
     wait-status-mismatch)
       wait_status=17
       ;;
+    continuity-routing-epoch-change)
+      continuity_routing_epoch="fedcba9876543210fedcba9876543210"
+      ;;
+    continuity-peer-generation-change)
+      continuity_peer_generation=2
+      ;;
+    continuity-device-generation-change)
+      continuity_device_generation=2
+      ;;
+    continuity-host-pid-change)
+      continuity_host_pid=5101
+      ;;
+    continuity-writer-revoked)
+      continuity_writer_proven=false
+      ;;
     *)
       return 100
       ;;
@@ -6584,12 +7265,20 @@ function write_raw_overlap_self_test_fixture() {
   RAW_PROBE_BOUND_PID=7101
   BLACKHOLE_PROBE_NONCE="${RAW_READY_NONCE}"
   OPENSTEAMER_SELF_TEST_RAW_NOW_NS=${now}
-  opensteamer_write_state "${RAW_READY_REQUEST}" "schema=opensteamer.raw-session-readiness.v2
+  if [[ "${scenario}" == "overflow" ]]; then
+    continuity_revalidation_started=${completion_observed}
+    continuity_observed=${completion_observed}
+  else
+    continuity_revalidation_started=$((completion_observed + 1))
+    continuity_observed=$((completion_observed + 2))
+  fi
+  opensteamer_write_state "${RAW_READY_REQUEST}" "schema=opensteamer.raw-session-readiness.v3
 nonce=${RAW_READY_NONCE}
 requestedAtMonotonicNs=${fixture_requested}
+cursorIdentity=self-test-log-identity
 cursorOffset=0
-cursorDigest=self-test" || return $?
-  opensteamer_write_state "${RAW_READY_EVIDENCE}" "schema=opensteamer.raw-session-readiness.v3
+cursorDigest=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" || return $?
+  opensteamer_write_state "${RAW_READY_EVIDENCE}" "schema=opensteamer.raw-session-readiness.v5
 nonce=${RAW_READY_NONCE}
 requestedAtMonotonicNs=${fixture_requested}
 resumedAtMonotonicNs=${resumed}
@@ -6597,10 +7286,15 @@ readyAtMonotonicNs=${ready}
 probeStartedAtMonotonicNs=${probe_start}
 productionPID=7101
 hostPID=5100
+blackHoleRoutingEpoch=0123456789abcdef0123456789abcdef
 blackHolePeerGeneration=1
+blackHoleDeviceGeneration=1
 authenticatedConnectionCount=1
+cursorIdentity=self-test-log-identity
 cursorOffset=1
-cursorDigest=self-test-ready" || return $?
+cursorDigest=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+cursorPartialBytes=0
+cursorPartialDigest=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" || return $?
   opensteamer_write_state "${RAW_UI_RUNTIME_EVIDENCE}" "schema=opensteamer.raw-ui-runtime.v1
 nonce=${ui_nonce}
 continuityDurationNs=${continuity}
@@ -6639,6 +7333,38 @@ probeStartMonotonicNs=${probe_start}
 probeEndMonotonicNs=${probe_end}
 status=${wrapper_status}
 productionPIDAtStart=7101" || return $?
+  opensteamer_write_state "${RAW_READY_CONTINUITY_EVIDENCE}" "schema=opensteamer.raw-session-continuity.v2
+nonce=${RAW_READY_NONCE}
+probeEndMonotonicNs=${probe_end}
+revalidationStartedAtMonotonicNs=${continuity_revalidation_started}
+observedAtMonotonicNs=${continuity_observed}
+finalDrainCompletedAtMonotonicNs=$((continuity_observed + 1))
+maximumWaitNs=8000000000
+hostPID=${continuity_host_pid}
+blackHoleRoutingEpoch=${continuity_routing_epoch}
+blackHolePeerGeneration=${continuity_peer_generation}
+blackHoleDeviceGeneration=${continuity_device_generation}
+hiddenWriterSelectionProven=${continuity_writer_proven}
+transportAuthorized=true
+trackAdmitted=true
+queueRunning=true
+writerSelectionObservationCount=2
+authorizationObservationCount=2
+firstCallbackCount=1
+lastCallbackCount=2
+firstPullCount=1
+lastPullCount=2
+firstFrameCount=480
+lastFrameCount=960
+startCursorIdentity=self-test-log-identity
+startCursorOffset=1
+startCursorDigest=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+startCursorPartialBytes=0
+startCursorPartialDigest=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+endCursorOffset=2
+endCursorDigest=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+endCursorPartialBytes=0
+endCursorPartialDigest=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" || return $?
   opensteamer_write_state "${RAW_BLACKHOLE_PROBE_RESULT}" "{\"schema\":\"opensteamer.physical-blackhole-microphone.v1\",\"status\":\"passed\",\"runNonce\":\"${RAW_READY_NONCE}\"}"
 }
 
@@ -6762,7 +7488,10 @@ function run_legacy_raw_readiness_self_test() {
 function run_raw_completion_self_test() {
   local scenario=$1
   local host_pid_file="${ARTIFACT_DIR}/raw-readiness-host-pid.txt"
+  local routing_epoch="0123456789abcdef0123456789abcdef"
+  local replacement_routing_epoch="fedcba9876543210fedcba9876543210"
   local writer_pid=""
+  local writer_status=0
   local ui_status=0
   local probe_status=0
 
@@ -6771,6 +7500,7 @@ function run_raw_completion_self_test() {
   OPENSTEAMER_SELF_TEST_RAW_READINESS=1
   EXPECTED_INITIAL_HOST_PID=5100
   RAW_READY_TIMEOUT_SECONDS=3
+  RAW_CONTINUITY_REVALIDATION_TIMEOUT_SECONDS=2
   UI_TEST_TIMEOUT_SECONDS=7
   DEVICE_LOCK_POLL_SECONDS=10
   OPENSTEAMER_SELF_TEST_SIMPLE_UI_STATUS=0
@@ -6780,6 +7510,8 @@ function run_raw_completion_self_test() {
   OPENSTEAMER_SELF_TEST_RAW_PROBE_DURATION=0.1
   case "${scenario}" in
     completion-success)
+      ;;
+    completion-missing-hidden-writer|completion-mismatched-hidden-writer-generation|completion-mismatched-hidden-writer-peer-generation|completion-mismatched-hidden-writer-routing-epoch|completion-mismatched-hidden-writer-pid|completion-stale-hidden-writer-after-pair-change|completion-stale-hidden-writer-after-routing-epoch-change|completion-post-launch-device-generation-change|completion-post-launch-peer-generation-change|completion-post-launch-routing-epoch-change|completion-post-launch-writer-revoked|completion-post-launch-disconnect)
       ;;
     completion-nonce-mismatch)
       OPENSTEAMER_SELF_TEST_RAW_COMPLETION_MODE=nonce-mismatch
@@ -6819,10 +7551,95 @@ function run_raw_completion_self_test() {
       sleep 0.01
     done
     [[ -s "${RAW_READY_RESUMED_MARKER}" ]] || exit 101
-    print -r -- "Worldwide WebRTC peer state: connected pid=5100" \
-      >> "${HOST_LOG}"
-    print -r -- "Worldwide authenticated media route selected BlackHole default input peerGeneration=1 pid=5100" \
-      >> "${HOST_LOG}"
+    if [[ "${scenario}" == "completion-stale-hidden-writer-after-pair-change" ]]; then
+      print -r -- "Worldwide authenticated media route selected BlackHole default input routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
+        >> "${HOST_LOG}"
+      print -r -- "Worldwide iPhone microphone hidden writer selected routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
+        >> "${HOST_LOG}"
+      sleep 0.2
+      print -r -- "Worldwide WebRTC peer state: connected pid=5100" \
+        >> "${HOST_LOG}"
+      print -r -- "Worldwide authenticated media route selected BlackHole default input routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=2 pid=5100" \
+        >> "${HOST_LOG}"
+    elif [[ "${scenario}" == "completion-stale-hidden-writer-after-routing-epoch-change" ]]; then
+      print -r -- "Worldwide authenticated media route selected BlackHole default input routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
+        >> "${HOST_LOG}"
+      print -r -- "Worldwide iPhone microphone hidden writer selected routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
+        >> "${HOST_LOG}"
+      sleep 0.2
+      print -r -- "Worldwide WebRTC peer state: connected pid=5100" \
+        >> "${HOST_LOG}"
+      print -r -- "Worldwide authenticated media route selected BlackHole default input routingEpoch=${replacement_routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
+        >> "${HOST_LOG}"
+    else
+      print -r -- "Worldwide WebRTC peer state: connected pid=5100" \
+        >> "${HOST_LOG}"
+      print -r -- "Worldwide authenticated media route selected BlackHole default input routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
+        >> "${HOST_LOG}"
+      if [[ "${scenario}" != "completion-missing-hidden-writer" ]]; then
+        if [[ "${scenario}" == "completion-mismatched-hidden-writer-generation" ]]; then
+          print -r -- "Worldwide iPhone microphone hidden writer selected routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=2 pid=5100" \
+            >> "${HOST_LOG}"
+        elif [[ "${scenario}" == "completion-mismatched-hidden-writer-peer-generation" ]]; then
+          print -r -- "Worldwide iPhone microphone hidden writer selected routingEpoch=${routing_epoch} peerGeneration=2 deviceGeneration=1 pid=5100" \
+            >> "${HOST_LOG}"
+        elif [[ "${scenario}" == "completion-mismatched-hidden-writer-routing-epoch" ]]; then
+          print -r -- "Worldwide iPhone microphone hidden writer selected routingEpoch=${replacement_routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
+            >> "${HOST_LOG}"
+        elif [[ "${scenario}" == "completion-mismatched-hidden-writer-pid" ]]; then
+          print -r -- "Worldwide iPhone microphone hidden writer selected routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=51000" \
+            >> "${HOST_LOG}"
+        else
+          print -r -- "Worldwide iPhone microphone hidden writer selected routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
+            >> "${HOST_LOG}"
+        fi
+      fi
+    fi
+    case "${scenario}" in
+      completion-success|completion-wait-status-mismatch|completion-post-launch-device-generation-change|completion-post-launch-peer-generation-change|completion-post-launch-routing-epoch-change|completion-post-launch-writer-revoked|completion-post-launch-disconnect)
+        for continuity_poll in {1..1000}; do
+          [[ -s "${RAW_READY_CONTINUITY_ARMED_MARKER}" ]] && break
+          sleep 0.01
+        done
+        [[ -s "${RAW_READY_CONTINUITY_ARMED_MARKER}" ]] || exit 102
+        case "${scenario}" in
+          completion-success|completion-wait-status-mismatch)
+            for continuity_sample in 1 2; do
+              print -r -- "Worldwide iPhone microphone forwarding phase=forwardingHealthy inputEndpointAvailable=true hiddenSinkAvailable=true hiddenWriterSelectionProven=true transport=true trackAdmitted=true queueRunning=true callbacks=${continuity_sample} pulls=${continuity_sample} frames=$((continuity_sample * 480)) silenceFallbacks=0" \
+                >> "${HOST_LOG}"
+              print -r -- "Worldwide iPhone microphone hidden writer selected routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
+                >> "${HOST_LOG}"
+              sleep 0.05
+            done
+            ;;
+          completion-post-launch-device-generation-change)
+            print -r -- "Worldwide authenticated media route selected BlackHole default input routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=2 pid=5100" \
+              >> "${HOST_LOG}"
+            ;;
+          completion-post-launch-peer-generation-change)
+            print -r -- "Worldwide authenticated media route selected BlackHole default input routingEpoch=${routing_epoch} peerGeneration=2 deviceGeneration=1 pid=5100" \
+              >> "${HOST_LOG}"
+            ;;
+          completion-post-launch-routing-epoch-change)
+            print -r -- "Worldwide authenticated media route selected BlackHole default input routingEpoch=${replacement_routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
+              >> "${HOST_LOG}"
+            ;;
+          completion-post-launch-writer-revoked)
+            print -r -- \
+              "Worldwide iPhone microphone forwarding phase=forwardingHealthy inputEndpointAvailable=true hiddenSinkAvailable=true hiddenWriterSelectionProven=true transport=true trackAdmitted=true queueRunning=true callbacks=1 pulls=1 frames=480 silenceFallbacks=0"$'\n'\
+"Worldwide iPhone microphone hidden writer selected routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100"$'\n'\
+"Worldwide iPhone microphone forwarding phase=forwardingHealthy inputEndpointAvailable=true hiddenSinkAvailable=true hiddenWriterSelectionProven=true transport=true trackAdmitted=true queueRunning=true callbacks=2 pulls=2 frames=960 silenceFallbacks=0"$'\n'\
+"Worldwide iPhone microphone hidden writer selected routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100"$'\n'\
+"Worldwide iPhone microphone forwarding phase=waitingForTransport inputEndpointAvailable=true hiddenSinkAvailable=true hiddenWriterSelectionProven=false transport=false trackAdmitted=false queueRunning=false callbacks=2 pulls=2 frames=960 silenceFallbacks=0" \
+              >> "${HOST_LOG}"
+            ;;
+          completion-post-launch-disconnect)
+            print -r -- "Worldwide WebRTC peer state: disconnected pid=5100" \
+              >> "${HOST_LOG}"
+            ;;
+        esac
+        ;;
+    esac
   ) &
   writer_pid=$!
 
@@ -6847,8 +7664,15 @@ function run_raw_completion_self_test() {
   else
     ui_status=$?
   fi
-  wait "${writer_pid}" || return $?
-
+  if /bin/kill -0 "${writer_pid}" 2>/dev/null; then
+    /bin/kill -TERM "${writer_pid}" 2>/dev/null || true
+  fi
+  if wait "${writer_pid}"; then
+    writer_status=0
+  else
+    writer_status=$?
+  fi
+  writer_pid=""
   case "${scenario}" in
     completion-success)
       (( ui_status == 0 )) || return 102
@@ -6860,6 +7684,7 @@ function run_raw_completion_self_test() {
       (( probe_status == 0 )) || return 103
       [[ -s "${RAW_PROBE_COMPLETION_OBSERVATION}" ]] || return 104
       [[ -s "${RAW_PROBE_WAIT_EVIDENCE}" ]] || return 105
+      [[ -s "${RAW_READY_CONTINUITY_EVIDENCE}" ]] || return 106
       ;;
     completion-wait-status-mismatch)
       (( ui_status == 0 )) || return 106
@@ -6873,10 +7698,20 @@ function run_raw_completion_self_test() {
     runner-alive-without-completion)
       (( ui_status == 9 )) || return 109
       ;;
+    completion-missing-hidden-writer|completion-mismatched-hidden-writer-generation|completion-mismatched-hidden-writer-peer-generation|completion-mismatched-hidden-writer-routing-epoch|completion-mismatched-hidden-writer-pid|completion-stale-hidden-writer-after-pair-change|completion-stale-hidden-writer-after-routing-epoch-change)
+      (( ui_status == 124 )) || return 112
+      grep -qx 'state=timed-out' "${RAW_READY_TIMEOUT_MARKER}" || return 113
+      ;;
+    completion-post-launch-device-generation-change|completion-post-launch-peer-generation-change|completion-post-launch-routing-epoch-change|completion-post-launch-writer-revoked|completion-post-launch-disconnect)
+      (( ui_status == 7 )) || return 114
+      [[ ! -e "${RAW_READY_CONTINUITY_EVIDENCE}" ]] || return 117
+      [[ -s "${RAW_PROBE_NON_OVERLAP_MARKER}" ]] || return 118
+      ;;
     completion-nonce-mismatch|completion-inverted|completion-nonzero|completion-malformed|completion-absent-pid|completion-changed-pid)
       (( ui_status == 7 )) || return 110
       ;;
   esac
+  (( writer_status == 0 || writer_status == 143 )) || return "${writer_status}"
 
   cleanup_blackhole_probe || true
   cleanup_xcodebuild || true

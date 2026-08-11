@@ -60,9 +60,11 @@ fn usage() -> &'static str {
        unix-ns\n\
        monotonic-ns\n\
        parse-completion PATH EXPECTED_NONCE EXPECTED_START_NS EXPECTED_PID\n\
-       validate-overlap REQUEST READINESS UI START COMPLETION OBSERVATION WAIT WRAPPER RESULT NONCE REQUESTED_NS RESUMED_NS UI_COMPLETION UI_CAUSAL_STATE|- BOUNDS_OUT PROBE_OUT VERDICT_OUT NOW_NS\n\
+       validate-overlap REQUEST READINESS UI START COMPLETION OBSERVATION WAIT WRAPPER RESULT NONCE REQUESTED_NS RESUMED_NS UI_COMPLETION UI_CAUSAL_STATE|- BOUNDS_OUT PROBE_OUT VERDICT_OUT NOW_NS CONTINUITY\n\
        log-snapshot LOG EXPECTED_ID|- PRIOR_OFFSET PRIOR_SHA256 APPENDED_OUT\n\
+       log-snapshot-bounded LOG EXPECTED_ID|- PRIOR_OFFSET PRIOR_SHA256 APPENDED_OUT DEADLINE_NS MAX_APPEND_BYTES\n\
        split-lines APPENDED PARTIAL_STATE COMPLETED_OUT\n\
+       split-lines-bounded APPENDED PARTIAL_STATE COMPLETED_OUT DEADLINE_NS MAX_TOTAL_BYTES MAX_PARTIAL_BYTES\n\
        run-timeout TIMEOUT_SECONDS COMMAND [ARG ...]\n\
        process-group-state PROCESS_GROUP_ID\n\
        isolated-exec COMMAND [ARG ...]\n\
@@ -88,7 +90,9 @@ fn main() {
         "parse-completion" => command_parse_completion(&remaining),
         "validate-overlap" => command_validate_overlap(&remaining),
         "log-snapshot" => command_log_snapshot(&remaining),
+        "log-snapshot-bounded" => command_log_snapshot_bounded(&remaining),
         "split-lines" => command_split_lines(&remaining),
+        "split-lines-bounded" => command_split_lines_bounded(&remaining),
         "run-timeout" => command_run_timeout(&remaining),
         "process-group-state" => command_process_group_state(&remaining),
         "isolated-exec" => command_isolated_exec(&remaining),
@@ -478,6 +482,10 @@ impl Sha256 {
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut digest = Sha256::new();
     digest.update(bytes);
+    sha256_state_hex(digest)
+}
+
+fn sha256_state_hex(digest: Sha256) -> String {
     digest
         .finish()
         .iter()
@@ -602,6 +610,203 @@ fn command_log_snapshot(args: &[OsString]) -> Result<(), i32> {
     Err(INVALID)
 }
 
+// Continuity certification runs while the physical XCTest session is still alive. This bounded
+// variant authenticates the complete consumed prefix without allocating the complete host log,
+// retains at most `maximum_append_bytes`, and shares the caller's absolute monotonic deadline.
+// A large/churning/no-newline log therefore fails closed instead of extending the claimed window.
+fn command_log_snapshot_bounded(args: &[OsString]) -> Result<(), i32> {
+    let values = exact_args(args, 7)?;
+    let expected_identity = match values[1] {
+        "" | "-" => None,
+        value => Some(value),
+    };
+    let prior_offset = parse_decimal_u64(values[2], false)?;
+    let prior_digest = values[3];
+    if prior_digest.len() != 64
+        || !prior_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(2);
+    }
+    let deadline_ns = parse_decimal_u64(values[5], true)?;
+    let maximum_append_bytes = parse_decimal_u64(values[6], true)?;
+    if maximum_append_bytes > 16 * 1024 * 1024 {
+        return Err(2);
+    }
+    let log_path = Path::new(values[0]);
+    let output_path = Path::new(values[4]);
+    let temporary = temporary_path(output_path);
+    let _ = fs::remove_file(output_path);
+    let _ = fs::remove_file(&temporary);
+    let mut last_reason = String::from("bounded log snapshot did not stabilize");
+
+    for _ in 0..20 {
+        if monotonic_ns()? >= deadline_ns {
+            let _ = fs::remove_file(&temporary);
+            return Err(124);
+        }
+        let file = match File::open(log_path) {
+            Ok(file) => file,
+            Err(error) => {
+                last_reason = format!("could not open log: {error}");
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+        };
+        let before = match file.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                last_reason = format!("could not stat opened log: {error}");
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+        };
+        let identity = format!("{}:{}", before.dev(), before.ino());
+        if expected_identity.is_some_and(|expected| expected != identity) {
+            eprintln!("log path identity changed");
+            return Err(INVALID);
+        }
+        let length = before.size();
+        if length < prior_offset {
+            eprintln!("log became shorter than the consumed byte offset");
+            return Err(INVALID);
+        }
+        if length - prior_offset > maximum_append_bytes {
+            eprintln!("bounded log delta exceeds the retained-byte limit");
+            return Err(INVALID);
+        }
+
+        let _ = fs::remove_file(&temporary);
+        let mut appended = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| {
+                eprintln!("could not create bounded append snapshot: {error}");
+                1
+            })?;
+        let mut full_digest = Sha256::new();
+        let mut prefix_digest = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        let mut offset = 0u64;
+        let mut stable = true;
+        let mut last_byte = None;
+        while offset < length {
+            if monotonic_ns()? >= deadline_ns {
+                let _ = fs::remove_file(&temporary);
+                return Err(124);
+            }
+            let remaining = usize::try_from((length - offset).min(buffer.len() as u64))
+                .map_err(|_| INVALID)?;
+            let count = match file.read_at(&mut buffer[..remaining], offset) {
+                Ok(0) => {
+                    last_reason = String::from("short read from opened log");
+                    stable = false;
+                    break;
+                }
+                Ok(count) => count,
+                Err(error) => {
+                    last_reason = format!("could not read opened log: {error}");
+                    stable = false;
+                    break;
+                }
+            };
+            let bytes = &buffer[..count];
+            last_byte = bytes.last().copied();
+            full_digest.update(bytes);
+            if offset < prior_offset {
+                let prefix_count = usize::try_from((prior_offset - offset).min(count as u64))
+                    .map_err(|_| INVALID)?;
+                prefix_digest.update(&bytes[..prefix_count]);
+            }
+            let append_start = if offset < prior_offset {
+                usize::try_from((prior_offset - offset).min(count as u64))
+                    .map_err(|_| INVALID)?
+            } else {
+                0
+            };
+            if append_start < count {
+                appended.write_all(&bytes[append_start..]).map_err(|error| {
+                    eprintln!("could not write bounded append snapshot: {error}");
+                    1
+                })?;
+            }
+            offset = offset.checked_add(count as u64).ok_or(INVALID)?;
+        }
+        if !stable {
+            drop(appended);
+            let _ = fs::remove_file(&temporary);
+            thread::sleep(Duration::from_millis(10));
+            continue;
+        }
+        appended.sync_all().map_err(|error| {
+            eprintln!("could not sync bounded append snapshot: {error}");
+            1
+        })?;
+        let after = match file.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                last_reason = format!("could not restat opened log: {error}");
+                drop(appended);
+                let _ = fs::remove_file(&temporary);
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+        };
+        let path_after = match fs::metadata(log_path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                last_reason = format!("could not restat log path: {error}");
+                drop(appended);
+                let _ = fs::remove_file(&temporary);
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+        };
+        if metadata_version(&before) != metadata_version(&after) {
+            last_reason = String::from("opened log changed during bounded snapshot");
+            drop(appended);
+            let _ = fs::remove_file(&temporary);
+            thread::sleep(Duration::from_millis(10));
+            continue;
+        }
+        if (path_after.dev(), path_after.ino()) != (after.dev(), after.ino()) {
+            last_reason = String::from("log path changed during bounded snapshot");
+            drop(appended);
+            let _ = fs::remove_file(&temporary);
+            thread::sleep(Duration::from_millis(10));
+            continue;
+        }
+        if sha256_state_hex(prefix_digest) != prior_digest {
+            drop(appended);
+            let _ = fs::remove_file(&temporary);
+            eprintln!("consumed log prefix digest changed");
+            return Err(INVALID);
+        }
+        let digest = sha256_state_hex(full_digest);
+        drop(appended);
+        if monotonic_ns()? >= deadline_ns {
+            let _ = fs::remove_file(&temporary);
+            return Err(124);
+        }
+        fs::rename(&temporary, output_path).map_err(|error| {
+            let _ = fs::remove_file(&temporary);
+            eprintln!("could not publish bounded append snapshot: {error}");
+            1
+        })?;
+        println!("{identity}");
+        println!("{length}");
+        println!("{digest}");
+        println!("{}", u8::from(last_byte.map_or(true, |byte| byte == b'\n')));
+        return Ok(());
+    }
+    let _ = fs::remove_file(output_path);
+    let _ = fs::remove_file(&temporary);
+    eprintln!("{last_reason}");
+    Err(INVALID)
+}
+
 fn metadata_version(metadata: &fs::Metadata) -> (u64, u64, u64, i64, i64, i64, i64) {
     (
         metadata.dev(),
@@ -637,6 +842,82 @@ fn command_split_lines(args: &[OsString]) -> Result<(), i32> {
         eprintln!("could not split completed log lines: {error}");
         1
     })
+}
+
+fn command_split_lines_bounded(args: &[OsString]) -> Result<(), i32> {
+    let values = exact_args(args, 6)?;
+    let deadline_ns = parse_decimal_u64(values[3], true)?;
+    let maximum_total_bytes = parse_usize(values[4], true)?;
+    let maximum_partial_bytes = parse_usize(values[5], true)?;
+    if maximum_total_bytes > 16 * 1024 * 1024
+        || maximum_partial_bytes > maximum_total_bytes
+    {
+        return Err(2);
+    }
+    split_lines_bounded(
+        Path::new(values[0]),
+        Path::new(values[1]),
+        Path::new(values[2]),
+        deadline_ns,
+        maximum_total_bytes,
+        maximum_partial_bytes,
+    )
+}
+
+fn read_regular_file_bounded(path: &Path, maximum_bytes: usize) -> Result<Vec<u8>, i32> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| INVALID)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(INVALID);
+    }
+    let length = usize::try_from(metadata.len()).map_err(|_| INVALID)?;
+    if length > maximum_bytes {
+        return Err(INVALID);
+    }
+    let contents = fs::read(path).map_err(|_| INVALID)?;
+    if contents.len() > maximum_bytes {
+        return Err(INVALID);
+    }
+    Ok(contents)
+}
+
+fn split_lines_bounded(
+    appended: &Path,
+    partial_state: &Path,
+    completed: &Path,
+    deadline_ns: u64,
+    maximum_total_bytes: usize,
+    maximum_partial_bytes: usize,
+) -> Result<(), i32> {
+    if monotonic_ns()? >= deadline_ns {
+        return Err(124);
+    }
+    let mut payload = if partial_state.exists() {
+        read_regular_file_bounded(partial_state, maximum_partial_bytes)?
+    } else {
+        Vec::new()
+    };
+    let remaining = maximum_total_bytes
+        .checked_sub(payload.len())
+        .ok_or(INVALID)?;
+    let appended_bytes = read_regular_file_bounded(appended, remaining)?;
+    payload.extend_from_slice(&appended_bytes);
+    let (complete_bytes, partial_bytes) = match payload.iter().rposition(|byte| *byte == b'\n') {
+        Some(boundary) => (&payload[..=boundary], &payload[boundary + 1..]),
+        None => (&[][..], payload.as_slice()),
+    };
+    if partial_bytes.len() > maximum_partial_bytes || monotonic_ns()? >= deadline_ns {
+        return Err(if partial_bytes.len() > maximum_partial_bytes {
+            INVALID
+        } else {
+            124
+        });
+    }
+    atomic_write(completed, complete_bytes).map_err(|_| 1)?;
+    atomic_write(partial_state, partial_bytes).map_err(|_| 1)?;
+    if monotonic_ns()? >= deadline_ns {
+        return Err(124);
+    }
+    Ok(())
 }
 
 fn split_lines(appended: &Path, partial_state: &Path, completed: &Path) -> io::Result<()> {
@@ -1242,7 +1523,7 @@ fn record_number(values: &BTreeMap<String, String>, key: &str, positive: bool) -
 }
 
 fn command_validate_overlap(args: &[OsString]) -> Result<(), i32> {
-    let values = exact_args(args, 18)?;
+    let values = exact_args(args, 19)?;
     let outputs = [
         Path::new(values[14]),
         Path::new(values[15]),
@@ -1282,6 +1563,7 @@ fn validate_overlap(values: &[&str]) -> Result<(String, String, String), i32> {
             "schema",
             "nonce",
             "requestedAtMonotonicNs",
+            "cursorIdentity",
             "cursorOffset",
             "cursorDigest",
         ],
@@ -1297,10 +1579,52 @@ fn validate_overlap(values: &[&str]) -> Result<(String, String, String), i32> {
             "probeStartedAtMonotonicNs",
             "productionPID",
             "hostPID",
+            "blackHoleRoutingEpoch",
             "blackHolePeerGeneration",
+            "blackHoleDeviceGeneration",
             "authenticatedConnectionCount",
+            "cursorIdentity",
             "cursorOffset",
             "cursorDigest",
+            "cursorPartialBytes",
+            "cursorPartialDigest",
+        ],
+    )?;
+    let continuity_record = parse_exact_record(
+        Path::new(values[18]),
+        &[
+            "schema",
+            "nonce",
+            "probeEndMonotonicNs",
+            "revalidationStartedAtMonotonicNs",
+            "observedAtMonotonicNs",
+            "finalDrainCompletedAtMonotonicNs",
+            "maximumWaitNs",
+            "hostPID",
+            "blackHoleRoutingEpoch",
+            "blackHolePeerGeneration",
+            "blackHoleDeviceGeneration",
+            "hiddenWriterSelectionProven",
+            "transportAuthorized",
+            "trackAdmitted",
+            "queueRunning",
+            "writerSelectionObservationCount",
+            "authorizationObservationCount",
+            "firstCallbackCount",
+            "lastCallbackCount",
+            "firstPullCount",
+            "lastPullCount",
+            "firstFrameCount",
+            "lastFrameCount",
+            "startCursorIdentity",
+            "startCursorOffset",
+            "startCursorDigest",
+            "startCursorPartialBytes",
+            "startCursorPartialDigest",
+            "endCursorOffset",
+            "endCursorDigest",
+            "endCursorPartialBytes",
+            "endCursorPartialDigest",
         ],
     )?;
     let ui = parse_exact_record(
@@ -1401,8 +1725,9 @@ fn validate_overlap(values: &[&str]) -> Result<(String, String, String), i32> {
     }
     let expected_bundle =
         env::var("OPENSTEAMER_EXPECTED_APP_BUNDLE_IDENTIFIER").map_err(|_| INVALID)?;
-    if request["schema"] != "opensteamer.raw-session-readiness.v2"
-        || readiness["schema"] != "opensteamer.raw-session-readiness.v3"
+    if request["schema"] != "opensteamer.raw-session-readiness.v3"
+        || readiness["schema"] != "opensteamer.raw-session-readiness.v5"
+        || continuity_record["schema"] != "opensteamer.raw-session-continuity.v2"
         || ui["schema"] != "opensteamer.raw-ui-runtime.v1"
         || ui_completion["schema"] != "opensteamer.raw-ui-completion-observation.v1"
         || start["schema"] != "opensteamer.production-app-probe-boundary.v1"
@@ -1417,9 +1742,54 @@ fn validate_overlap(values: &[&str]) -> Result<(String, String, String), i32> {
     {
         return Err(INVALID);
     }
+    let routing_epoch = &readiness["blackHoleRoutingEpoch"];
+    if routing_epoch.len() != 32
+        || !routing_epoch
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(INVALID);
+    }
+    if continuity_record["blackHoleRoutingEpoch"].as_str() != routing_epoch.as_str()
+        || continuity_record["hiddenWriterSelectionProven"] != "true"
+        || continuity_record["transportAuthorized"] != "true"
+        || continuity_record["trackAdmitted"] != "true"
+        || continuity_record["queueRunning"] != "true"
+        || request["cursorIdentity"].is_empty()
+        || readiness["cursorIdentity"].is_empty()
+        || request["cursorIdentity"] != readiness["cursorIdentity"]
+        || continuity_record["startCursorIdentity"].as_str()
+            != readiness["cursorIdentity"].as_str()
+        || continuity_record["startCursorDigest"].as_str()
+            != readiness["cursorDigest"].as_str()
+        || continuity_record["startCursorPartialDigest"].as_str()
+            != readiness["cursorPartialDigest"].as_str()
+        || continuity_record["endCursorPartialDigest"]
+            != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    {
+        return Err(INVALID);
+    }
+    for digest in [
+        &request["cursorDigest"],
+        &readiness["cursorDigest"],
+        &readiness["cursorPartialDigest"],
+        &continuity_record["startCursorDigest"],
+        &continuity_record["startCursorPartialDigest"],
+        &continuity_record["endCursorDigest"],
+        &continuity_record["endCursorPartialDigest"],
+    ] {
+        if digest.len() != 64
+            || !digest.bytes().all(|byte| {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+            })
+        {
+            return Err(INVALID);
+        }
+    }
     for record in [
         &request,
         &readiness,
+        &continuity_record,
         &ui,
         &start,
         &completion,
@@ -1496,9 +1866,52 @@ fn validate_overlap(values: &[&str]) -> Result<(String, String, String), i32> {
         return Err(INVALID);
     }
     record_number(&waited, "wrapperPID", true)?;
-    record_number(&readiness, "hostPID", true)?;
-    record_number(&readiness, "blackHolePeerGeneration", true)?;
+    let host_pid = record_number(&readiness, "hostPID", true)?;
+    let peer_generation =
+        record_number(&readiness, "blackHolePeerGeneration", true)?;
+    let device_generation =
+        record_number(&readiness, "blackHoleDeviceGeneration", true)?;
     record_number(&readiness, "authenticatedConnectionCount", true)?;
+    let request_cursor_offset = record_number(&request, "cursorOffset", false)?;
+    let start_cursor_offset = record_number(&readiness, "cursorOffset", false)?;
+    let end_cursor_offset = record_number(&continuity_record, "endCursorOffset", false)?;
+    let start_cursor_partial_bytes =
+        record_number(&readiness, "cursorPartialBytes", false)?;
+    let first_callback_count =
+        record_number(&continuity_record, "firstCallbackCount", false)?;
+    let last_callback_count =
+        record_number(&continuity_record, "lastCallbackCount", true)?;
+    let first_pull_count = record_number(&continuity_record, "firstPullCount", false)?;
+    let last_pull_count = record_number(&continuity_record, "lastPullCount", true)?;
+    let first_frame_count = record_number(&continuity_record, "firstFrameCount", false)?;
+    let last_frame_count = record_number(&continuity_record, "lastFrameCount", true)?;
+    if request_cursor_offset > start_cursor_offset
+        || (request_cursor_offset == start_cursor_offset
+            && request["cursorDigest"] != readiness["cursorDigest"])
+        || record_number(&continuity_record, "hostPID", true)? != host_pid
+        || record_number(&continuity_record, "blackHolePeerGeneration", true)? != peer_generation
+        || record_number(&continuity_record, "blackHoleDeviceGeneration", true)? != device_generation
+        || record_number(&continuity_record, "startCursorOffset", false)? != start_cursor_offset
+        || record_number(&continuity_record, "startCursorPartialBytes", false)?
+            != start_cursor_partial_bytes
+        || record_number(&continuity_record, "endCursorPartialBytes", false)? != 0
+        || record_number(
+            &continuity_record,
+            "writerSelectionObservationCount",
+            true,
+        )? < 2
+        || record_number(
+            &continuity_record,
+            "authorizationObservationCount",
+            true,
+        )? < 2
+        || last_callback_count <= first_callback_count
+        || last_pull_count <= first_pull_count
+        || last_frame_count <= first_frame_count
+        || end_cursor_offset <= start_cursor_offset
+    {
+        return Err(INVALID);
+    }
     if record_number(&observation, "probeEndMonotonicNs", true)? != probe_end
         || record_number(&waited, "probeEndMonotonicNs", true)? != probe_end
     {
@@ -1512,13 +1925,39 @@ fn validate_overlap(values: &[&str]) -> Result<(String, String, String), i32> {
     {
         return Err(INVALID);
     }
+    let continuity_probe_end =
+        record_number(&continuity_record, "probeEndMonotonicNs", true)?;
+    let revalidation_started =
+        record_number(&continuity_record, "revalidationStartedAtMonotonicNs", true)?;
+    let continuity_observed =
+        record_number(&continuity_record, "observedAtMonotonicNs", true)?;
+    let final_drain_completed = record_number(
+        &continuity_record,
+        "finalDrainCompletedAtMonotonicNs",
+        true,
+    )?;
+    let maximum_wait = record_number(&continuity_record, "maximumWaitNs", true)?;
+    let revalidation_duration = final_drain_completed
+        .checked_sub(revalidation_started)
+        .ok_or(NON_OVERLAP)?;
+    if continuity_probe_end != probe_end
+        || maximum_wait < 2_000_000_000
+        || maximum_wait > 8_000_000_000
+        || revalidation_duration == 0
+        || revalidation_duration > maximum_wait
+    {
+        return Err(INVALID);
+    }
     if !(requested < resumed
         && resumed < ready
         && ready <= start_observed
         && start_observed <= probe_start
         && probe_start < probe_end
         && probe_end <= completion_observed
-        && completion_observed <= ui_completion_observed
+        && completion_observed < revalidation_started
+        && revalidation_started < continuity_observed
+        && continuity_observed < final_drain_completed
+        && final_drain_completed <= ui_completion_observed
         && ui_completion_observed <= now)
     {
         return Err(NON_OVERLAP);
@@ -2179,13 +2618,49 @@ fn run_self_test(root: &Path) -> Result<(), i32> {
     let ui_causal_state = root.join("ui-causal-state.txt");
     let early_ui_causal_state = root.join("early-ui-causal-state.txt");
     let late_ui_completion = root.join("late-ui-completion.txt");
+    let invalid_routing_epoch_readiness = root.join("invalid-routing-epoch-readiness.txt");
+    let invalid_device_generation_readiness = root.join("invalid-device-generation-readiness.txt");
+    let continuity = root.join("continuity.txt");
+    let changed_epoch_continuity = root.join("changed-epoch-continuity.txt");
+    let changed_device_generation_continuity =
+        root.join("changed-device-generation-continuity.txt");
+    let revoked_writer_continuity = root.join("revoked-writer-continuity.txt");
     let result = root.join("result.json");
-    atomic_write(&request, format!("schema=opensteamer.raw-session-readiness.v2\nnonce={nonce}\nrequestedAtMonotonicNs=1000000000\ncursorOffset=0\ncursorDigest=abc\n").as_bytes()).map_err(|_| 1)?;
+    atomic_write(&request, format!("schema=opensteamer.raw-session-readiness.v3\nnonce={nonce}\nrequestedAtMonotonicNs=1000000000\ncursorIdentity=self-test-log-identity\ncursorOffset=0\ncursorDigest=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n").as_bytes()).map_err(|_| 1)?;
     // Production-shaped post-call timing: the Mac resumed bound predates both the 180-second
     // acoustic acknowledgement and 90-second end-call acknowledgement. Readiness then arrives
     // after bounded verifier work, and the 330-second iPhone duration still yields a conservative
     // six-second same-clock intersection.
-    atomic_write(&readiness, format!("schema=opensteamer.raw-session-readiness.v3\nnonce={nonce}\nrequestedAtMonotonicNs=1000000000\nresumedAtMonotonicNs=2000000000\nreadyAtMonotonicNs=283000000000\nprobeStartedAtMonotonicNs=293000000000\nproductionPID=42\nhostPID=99\nblackHolePeerGeneration=1\nauthenticatedConnectionCount=1\ncursorOffset=0\ncursorDigest=abc\n").as_bytes()).map_err(|_| 1)?;
+    let readiness_fixture = |routing_epoch: &str, device_generation: u64| {
+        format!(
+            "schema=opensteamer.raw-session-readiness.v5\n\
+             nonce={nonce}\nrequestedAtMonotonicNs=1000000000\n\
+             resumedAtMonotonicNs=2000000000\nreadyAtMonotonicNs=283000000000\n\
+             probeStartedAtMonotonicNs=293000000000\nproductionPID=42\nhostPID=99\n\
+             blackHoleRoutingEpoch={routing_epoch}\nblackHolePeerGeneration=1\n\
+             blackHoleDeviceGeneration={device_generation}\n\
+             authenticatedConnectionCount=1\ncursorIdentity=self-test-log-identity\n\
+             cursorOffset=1\n\
+             cursorDigest=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
+             cursorPartialBytes=0\n\
+             cursorPartialDigest=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n"
+        )
+    };
+    atomic_write(
+        &readiness,
+        readiness_fixture("0123456789abcdef0123456789abcdef", 1).as_bytes(),
+    )
+    .map_err(|_| 1)?;
+    atomic_write(
+        &invalid_routing_epoch_readiness,
+        readiness_fixture("0123456789ABCDEF0123456789ABCDEF", 1).as_bytes(),
+    )
+    .map_err(|_| 1)?;
+    atomic_write(
+        &invalid_device_generation_readiness,
+        readiness_fixture("0123456789abcdef0123456789abcdef", 0).as_bytes(),
+    )
+    .map_err(|_| 1)?;
     atomic_write(&ui, format!("schema=opensteamer.raw-ui-runtime.v1\nnonce={nonce}\ncontinuityDurationNs=330000000000\nappPIDAtStart=42\nappPIDAtEnd=42\n").as_bytes()).map_err(|_| 1)?;
     atomic_write(&start, format!("schema=opensteamer.production-app-probe-boundary.v1\nboundary=start\nnonce={nonce}\nbundleIdentifier=com.elamin.opensteamer\npid=42\nobservedAtMonotonicNs=292000000000\n").as_bytes()).map_err(|_| 1)?;
     atomic_write(&process_completion, format!("schema=opensteamer.production-app-probe-boundary.v1\nboundary=completion\nnonce={nonce}\nbundleIdentifier=com.elamin.opensteamer\npid=42\nobservedAtMonotonicNs=300000000000\n").as_bytes()).map_err(|_| 1)?;
@@ -2196,6 +2671,53 @@ fn run_self_test(root: &Path) -> Result<(), i32> {
     atomic_write(&ui_causal_state, format!("schema=opensteamer.call-ui-hosted-state-observation.v2\nnonce={nonce}\nstate=hosted-call-active\nsequence=2\nacousticToken=call-acoustic-123456789\nresumedAtMonotonicNs=2000000000\nacknowledgementAcceptedAtMonotonicNs=2500000000\nobservedAtMonotonicNs=3000000000\n").as_bytes()).map_err(|_| 1)?;
     atomic_write(&early_ui_causal_state, format!("schema=opensteamer.call-ui-hosted-state-observation.v2\nnonce={nonce}\nstate=hosted-call-active\nsequence=2\nacousticToken=call-acoustic-123456789\nresumedAtMonotonicNs=2000000000\nacknowledgementAcceptedAtMonotonicNs=2000000000\nobservedAtMonotonicNs=3000000000\n").as_bytes()).map_err(|_| 1)?;
     atomic_write(&late_ui_completion, format!("schema=opensteamer.raw-ui-completion-observation.v1\nnonce={nonce}\nobservedAtMonotonicNs=631000000000\n").as_bytes()).map_err(|_| 1)?;
+    let continuity_fixture =
+        |routing_epoch: &str, device_generation: u64, writer_proven: bool| {
+            format!(
+                "schema=opensteamer.raw-session-continuity.v2\nnonce={nonce}\n\
+                 probeEndMonotonicNs=299000000000\n\
+                 revalidationStartedAtMonotonicNs=300100000000\n\
+                 observedAtMonotonicNs=300200000000\n\
+                 finalDrainCompletedAtMonotonicNs=300300000000\nmaximumWaitNs=8000000000\n\
+                 hostPID=99\nblackHoleRoutingEpoch={routing_epoch}\n\
+                 blackHolePeerGeneration=1\n\
+                 blackHoleDeviceGeneration={device_generation}\n\
+                 hiddenWriterSelectionProven={writer_proven}\n\
+                 transportAuthorized=true\ntrackAdmitted=true\nqueueRunning=true\n\
+                 writerSelectionObservationCount=2\nauthorizationObservationCount=2\n\
+                 firstCallbackCount=1\nlastCallbackCount=2\n\
+                 firstPullCount=1\nlastPullCount=2\n\
+                 firstFrameCount=480\nlastFrameCount=960\n\
+                 startCursorIdentity=self-test-log-identity\nstartCursorOffset=1\n\
+                 startCursorDigest=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
+                 startCursorPartialBytes=0\n\
+                 startCursorPartialDigest=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
+                 endCursorOffset=2\n\
+                 endCursorDigest=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n\
+                 endCursorPartialBytes=0\n\
+                 endCursorPartialDigest=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n"
+            )
+        };
+    atomic_write(
+        &continuity,
+        continuity_fixture("0123456789abcdef0123456789abcdef", 1, true).as_bytes(),
+    )
+    .map_err(|_| 1)?;
+    atomic_write(
+        &changed_epoch_continuity,
+        continuity_fixture("fedcba9876543210fedcba9876543210", 1, true).as_bytes(),
+    )
+    .map_err(|_| 1)?;
+    atomic_write(
+        &changed_device_generation_continuity,
+        continuity_fixture("0123456789abcdef0123456789abcdef", 2, true).as_bytes(),
+    )
+    .map_err(|_| 1)?;
+    atomic_write(
+        &revoked_writer_continuity,
+        continuity_fixture("0123456789abcdef0123456789abcdef", 1, false).as_bytes(),
+    )
+    .map_err(|_| 1)?;
     atomic_write(&result, format!(r#"{{"schema":"opensteamer.physical-blackhole-microphone.v1","status":"passed","runNonce":"{nonce}"}}"#).as_bytes()).map_err(|_| 1)?;
     env::set_var(
         "OPENSTEAMER_EXPECTED_APP_BUNDLE_IDENTIFIER",
@@ -2223,6 +2745,7 @@ fn run_self_test(root: &Path) -> Result<(), i32> {
         probe_output.to_str().ok_or(1)?,
         verdict_output.to_str().ok_or(1)?,
         "622000000000",
+        continuity.to_str().ok_or(1)?,
     ];
     let (bounds, interval, verdict) = validate_overlap(&overlap_values)?;
     require(
@@ -2235,6 +2758,18 @@ fn run_self_test(root: &Path) -> Result<(), i32> {
         "causal probe interval",
     )?;
     require(verdict.contains("state=passed"), "causal overlap verdict")?;
+    let mut invalid_routing_epoch_values = overlap_values;
+    invalid_routing_epoch_values[1] = invalid_routing_epoch_readiness.to_str().ok_or(1)?;
+    require(
+        validate_overlap(&invalid_routing_epoch_values) == Err(INVALID),
+        "routing epoch must be exactly 32 lowercase hexadecimal characters",
+    )?;
+    let mut invalid_device_generation_values = overlap_values;
+    invalid_device_generation_values[1] = invalid_device_generation_readiness.to_str().ok_or(1)?;
+    require(
+        validate_overlap(&invalid_device_generation_values) == Err(INVALID),
+        "BlackHole device generation must be positive",
+    )?;
     let mut non_overlap_values = overlap_values;
     non_overlap_values[12] = late_ui_completion.to_str().ok_or(1)?;
     non_overlap_values[17] = "632000000000";
@@ -2247,6 +2782,25 @@ fn run_self_test(root: &Path) -> Result<(), i32> {
     require(
         validate_overlap(&invalid_causal_values) == Err(NON_OVERLAP),
         "UI causal state must be observed strictly after the Mac lower bound",
+    )?;
+    let mut changed_epoch_values = overlap_values;
+    changed_epoch_values[18] = changed_epoch_continuity.to_str().ok_or(1)?;
+    require(
+        validate_overlap(&changed_epoch_values) == Err(INVALID),
+        "post-probe routing epoch change is rejected",
+    )?;
+    let mut changed_device_generation_values = overlap_values;
+    changed_device_generation_values[18] =
+        changed_device_generation_continuity.to_str().ok_or(1)?;
+    require(
+        validate_overlap(&changed_device_generation_values) == Err(INVALID),
+        "post-probe endpoint reincarnation is rejected",
+    )?;
+    let mut revoked_writer_values = overlap_values;
+    revoked_writer_values[18] = revoked_writer_continuity.to_str().ok_or(1)?;
+    require(
+        validate_overlap(&revoked_writer_values) == Err(INVALID),
+        "post-probe writer revocation is rejected",
     )?;
 
     let leak_diagnostic = root.join("leak-diagnostic.txt");

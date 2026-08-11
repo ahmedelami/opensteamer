@@ -4,7 +4,7 @@ import CoreAudio
 import CryptoKit
 import Darwin
 import Dispatch
-private enum Policy { /* A proof window passes only with density 0.85...1.15, two independently advancing progress deltas, callback gaps <=100 ms, no near-silent run >500 ms, >=20% non-silent frames, peak 512..<32760, clipping <0.5%, >=16 symbols, >=80% symbol matches, normalized spectral correlation >=0.60, and a discrimination margin >=0.10. The three defaults must compare equal and must produce zero in-window notifications. */ static let schema = "opensteamer.physical-blackhole-microphone.v1"; static let captureUID = "BlackHole2ch_UID"; static let algorithm = "nonce-splitmix64-frequency-hop-raised-envelope"; static let algorithmVersion = 1; static let sampleRate: Double = 48_000; static let sampleRateInt = 48_000; static let channels = 2; static let proofSeconds = 6.0; static let retentionSeconds = 12.0; static let symbolSeconds = 0.25; static let symbolFrames = 12_000; static let edgeRampFrames = 576; static let frequencies: [Double] = [700, 950, 1_250, 1_650, 2_200, 3_500, 4_300, 5_100]; static let outputAmplitudes: [Double] = [0.16, 0.20, 0.24]; static let bufferFrames = 480; static let bufferCount = 4; static let analysisBlockFrames = 2_880; static let analysisHopFrames = 2_400; static let analysisEdgeGuardSeconds = 0.040; static let minimumLagSeconds = 0.040; static let maximumLagSeconds = 5.0; static let lagStepSeconds = 0.020; static let minimumCandidateSymbols = 8; static let minimumSymbols = 16; static let minimumFrameDensity = 0.85; static let maximumFrameDensity = 1.15; static let maximumCallbackGapMs = 100.0; static let maximumSilentGapMs = 500.0; static let minimumNonSilentRatio = 0.20; static let nonSilentThreshold = 128; static let minimumPeak = 512; static let clippedMagnitude = 32_760; static let maximumClippedRatio = 0.005; static let minimumMatchRatio = 0.80; static let minimumNormalizedCorrelation = 0.60; static let minimumDiscriminationMargin = 0.10; static let progressIntervalSeconds = 0.5; static let evaluationIntervalSeconds = 1.0; static let minimumTimeoutSeconds = 8.0; static let maximumTimeoutSeconds = 120.0; static let maximumFailureReasons = 20; static let maximumProgressRecords = 16 }
+private enum Policy { /* A proof window passes only with density 0.85...1.15, two independently advancing progress deltas, callback gaps <=100 ms, no near-silent run >500 ms, >=20% non-silent frames, peak 512..<32760, clipping <0.5%, >=16 symbols, >=80% symbol matches, normalized spectral correlation >=0.60, and a discrimination margin >=0.10. The three defaults must compare equal and must produce zero in-window notifications. */ static let schema = "opensteamer.physical-blackhole-microphone.v1"; static let captureUID = "BlackHole2ch_UID"; static let hiddenMirrorUID = "BlackHole2ch_2_UID"; static let algorithm = "nonce-splitmix64-frequency-hop-raised-envelope"; static let algorithmVersion = 1; static let sampleRate: Double = 48_000; static let sampleRateInt = 48_000; static let channels = 2; static let proofSeconds = 6.0; static let retentionSeconds = 12.0; static let symbolSeconds = 0.25; static let symbolFrames = 12_000; static let edgeRampFrames = 576; static let frequencies: [Double] = [700, 950, 1_250, 1_650, 2_200, 3_500, 4_300, 5_100]; static let outputAmplitudes: [Double] = [0.16, 0.20, 0.24]; static let bufferFrames = 480; static let bufferCount = 4; static let analysisBlockFrames = 2_880; static let analysisHopFrames = 2_400; static let analysisEdgeGuardSeconds = 0.040; static let minimumLagSeconds = 0.040; static let maximumLagSeconds = 5.0; static let lagStepSeconds = 0.020; static let minimumCandidateSymbols = 8; static let minimumSymbols = 16; static let minimumFrameDensity = 0.85; static let maximumFrameDensity = 1.15; static let maximumCallbackGapMs = 100.0; static let maximumSilentGapMs = 500.0; static let minimumNonSilentRatio = 0.20; static let nonSilentThreshold = 128; static let minimumPeak = 512; static let clippedMagnitude = 32_760; static let maximumClippedRatio = 0.005; static let minimumMatchRatio = 0.80; static let minimumNormalizedCorrelation = 0.60; static let minimumDiscriminationMargin = 0.10; static let progressIntervalSeconds = 0.5; static let evaluationIntervalSeconds = 1.0; static let minimumTimeoutSeconds = 8.0; static let maximumTimeoutSeconds = 120.0; static let maximumFailureReasons = 20; static let maximumProgressRecords = 16 }
 private extension Policy {
     /// Operational lab prerequisite only. This declaration is not cryptographic acoustic
     /// provenance; it states that the controlled host was reviewed with no audio taps or digital
@@ -410,8 +410,35 @@ private enum DeviceResolver {
     }
 }
 private struct DefaultSnapshot: Equatable { let inputUID: String; let outputUID: String; let systemOutputUID: String }
+private enum DefaultRouteSafety {
+    static func failureCode(_ snapshot: DefaultSnapshot) -> String? {
+        switch snapshot.outputUID {
+        case Policy.captureUID:
+            return "default_output_is_canonical_blackhole"
+        case Policy.hiddenMirrorUID:
+            return "default_output_is_hidden_mirror_blackhole"
+        default:
+            break
+        }
+        switch snapshot.systemOutputUID {
+        case Policy.captureUID:
+            return "default_system_output_is_canonical_blackhole"
+        case Policy.hiddenMirrorUID:
+            return "default_system_output_is_hidden_mirror_blackhole"
+        default:
+            return nil
+        }
+    }
+}
 private final class DefaultDeviceListenerContext: @unchecked Sendable { private let lock = NSLock(); private var notificationTotal = 0; func recordNotification(_ count: Int) { lock.lock(); notificationTotal = min(1_000_000, notificationTotal + max(1, count)); lock.unlock() }; func notificationCount() -> Int { lock.lock(); defer { lock.unlock() }; return notificationTotal } }
 private final class DefaultDeviceGuard: @unchecked Sendable { private let listenerContext = DefaultDeviceListenerContext(); private let listenerQueue = DispatchQueue(label: "opensteamer.physical-blackhole-microphone.default-device-listener"); private var listenerBlock: AudioObjectPropertyListenerBlock?; private var addresses: [AudioObjectPropertyAddress] = []; private var installed = false; func install() throws { guard !installed, listenerBlock == nil else { return }; let context = listenerContext; let block: AudioObjectPropertyListenerBlock = { [context] addressCount, _ in context.recordNotification(Int(addressCount)) }; listenerBlock = block; installed = true; for selector in [kAudioHardwarePropertyDefaultInputDevice, kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDefaultSystemOutputDevice] { var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain); let status = AudioObjectAddPropertyListenerBlock(CoreAudioReader.systemObject, &address, listenerQueue, block); guard status == noErr else { _ = remove(); throw ProbeError(code: "default_device_listener_install_failed") }; addresses.append(address) } }; func snapshot() throws -> DefaultSnapshot { DefaultSnapshot(inputUID: try CoreAudioReader.defaultUID(selector: kAudioHardwarePropertyDefaultInputDevice), outputUID: try CoreAudioReader.defaultUID(selector: kAudioHardwarePropertyDefaultOutputDevice), systemOutputUID: try CoreAudioReader.defaultUID(selector: kAudioHardwarePropertyDefaultSystemOutputDevice)) }; func notificationCount() -> Int { listenerContext.notificationCount() }; func remove() -> Bool { guard installed || !addresses.isEmpty || listenerBlock != nil else { return true }; guard let block = listenerBlock else { return false }; var remaining: [AudioObjectPropertyAddress] = []; remaining.reserveCapacity(addresses.count); for stored in addresses { var address = stored; let status = AudioObjectRemovePropertyListenerBlock(CoreAudioReader.systemObject, &address, listenerQueue, block); if status != noErr { remaining.append(stored) } }; listenerQueue.sync {}; addresses = remaining; installed = !addresses.isEmpty; if !installed { listenerBlock = nil }; return !installed }; deinit { _ = remove() } }
+private struct RouteContinuityObservation {
+    let inputQueueMatches: Bool
+    let outputQueueMatches: Bool
+    let defaults: DefaultSnapshot
+    let defaultNotificationCount: Int
+    let devices: DeviceValidation
+}
 private enum RouteContinuityValidator {
     static func failureCode(
         expectedDevices: DeviceValidation,
@@ -427,26 +454,196 @@ private enum RouteContinuityValidator {
             return "queue_device_changed_during_proof"
         }
         do {
-            guard try defaultGuard.snapshot() == expectedDefaults else {
-                return "default_route_changed_during_proof"
-            }
-            guard defaultGuard.notificationCount() == 0 else {
-                return "default_change_notification_observed"
-            }
+            let currentDefaults = try defaultGuard.snapshot()
             let currentDevices = try DeviceResolver.validate(
                 physicalOutputUID:
                     PhysicalOutputPolicy.reviewedOutputUID
             )
-            guard currentDevices.captureIdentity
-                    == expectedDevices.captureIdentity,
-                  currentDevices.outputIdentity
-                    == expectedDevices.outputIdentity else {
-                return "route_identity_changed_during_proof"
-            }
+            return failureCode(
+                expectedDevices: expectedDevices,
+                expectedDefaults: expectedDefaults,
+                observation: RouteContinuityObservation(
+                    inputQueueMatches: true,
+                    outputQueueMatches: true,
+                    defaults: currentDefaults,
+                    defaultNotificationCount:
+                        defaultGuard.notificationCount(),
+                    devices: currentDevices
+                )
+            )
         } catch {
             return "route_identity_changed_during_proof"
         }
+    }
+
+    /// Shared by the live probe and deterministic fake sequences. Keeping policy here means the
+    /// self-test exercises the production decision path rather than manufacturing a failure code.
+    static func failureCode(
+        expectedDevices: DeviceValidation,
+        expectedDefaults: DefaultSnapshot,
+        observation: RouteContinuityObservation
+    ) -> String? {
+        guard observation.inputQueueMatches,
+              observation.outputQueueMatches else {
+            return "queue_device_changed_during_proof"
+        }
+        if let unsafeDefault = DefaultRouteSafety.failureCode(
+            observation.defaults
+        ) {
+            return unsafeDefault
+        }
+        guard observation.defaults == expectedDefaults else {
+            return "default_route_changed_during_proof"
+        }
+        guard observation.defaultNotificationCount == 0 else {
+            return "default_change_notification_observed"
+        }
+        guard observation.devices.captureIdentity
+                == expectedDevices.captureIdentity,
+              observation.devices.outputIdentity
+                == expectedDevices.outputIdentity else {
+            return "route_identity_changed_during_proof"
+        }
         return nil
+    }
+}
+private enum SyntheticRouteMutation: Equatable {
+    case identity
+    case defaultOutputCanonicalBlackHole
+    case defaultOutputHiddenMirrorBlackHole
+    case defaultSystemOutputCanonicalBlackHole
+    case defaultSystemOutputHiddenMirrorBlackHole
+
+    var expectedFailureCode: String {
+        switch self {
+        case .identity:
+            return "route_identity_changed_during_proof"
+        case .defaultOutputCanonicalBlackHole:
+            return "default_output_is_canonical_blackhole"
+        case .defaultOutputHiddenMirrorBlackHole:
+            return "default_output_is_hidden_mirror_blackhole"
+        case .defaultSystemOutputCanonicalBlackHole:
+            return "default_system_output_is_canonical_blackhole"
+        case .defaultSystemOutputHiddenMirrorBlackHole:
+            return "default_system_output_is_hidden_mirror_blackhole"
+        }
+    }
+}
+private enum RouteContinuitySelfTest {
+    static func failureCode(
+        for mutation: SyntheticRouteMutation
+    ) -> String {
+        let capture = DeviceIdentity(
+            objectID: 101,
+            uid: Policy.captureUID,
+            objectClass: UInt32(kAudioDeviceClassID),
+            transportType: UInt32(kAudioDeviceTransportTypeVirtual),
+            alive: true,
+            inputChannels: Policy.channels,
+            outputChannels: 0,
+            subdeviceUIDs: []
+        )
+        let output = DeviceIdentity(
+            objectID: 202,
+            uid: PhysicalOutputPolicy.reviewedOutputUID,
+            objectClass: UInt32(kAudioDeviceClassID),
+            transportType: UInt32(kAudioDeviceTransportTypeBuiltIn),
+            alive: true,
+            inputChannels: 0,
+            outputChannels: Policy.channels,
+            subdeviceUIDs: []
+        )
+        let expectedDevices = DeviceValidation(
+            captureIdentity: capture,
+            outputIdentity: output
+        )
+        let safeDefaults = DefaultSnapshot(
+            inputUID: "BuiltInMicrophoneDevice",
+            outputUID: PhysicalOutputPolicy.reviewedOutputUID,
+            systemOutputUID: PhysicalOutputPolicy.reviewedOutputUID
+        )
+        let healthy = RouteContinuityObservation(
+            inputQueueMatches: true,
+            outputQueueMatches: true,
+            defaults: safeDefaults,
+            defaultNotificationCount: 0,
+            devices: expectedDevices
+        )
+
+        var mutatedDefaults = safeDefaults
+        var mutatedDevices = expectedDevices
+        switch mutation {
+        case .identity:
+            mutatedDevices = DeviceValidation(
+                captureIdentity: DeviceIdentity(
+                    objectID: capture.objectID + 1,
+                    uid: capture.uid,
+                    objectClass: capture.objectClass,
+                    transportType: capture.transportType,
+                    alive: capture.alive,
+                    inputChannels: capture.inputChannels,
+                    outputChannels: capture.outputChannels,
+                    subdeviceUIDs: capture.subdeviceUIDs
+                ),
+                outputIdentity: output
+            )
+        case .defaultOutputCanonicalBlackHole:
+            mutatedDefaults = DefaultSnapshot(
+                inputUID: safeDefaults.inputUID,
+                outputUID: Policy.captureUID,
+                systemOutputUID: safeDefaults.systemOutputUID
+            )
+        case .defaultOutputHiddenMirrorBlackHole:
+            mutatedDefaults = DefaultSnapshot(
+                inputUID: safeDefaults.inputUID,
+                outputUID: Policy.hiddenMirrorUID,
+                systemOutputUID: safeDefaults.systemOutputUID
+            )
+        case .defaultSystemOutputCanonicalBlackHole:
+            mutatedDefaults = DefaultSnapshot(
+                inputUID: safeDefaults.inputUID,
+                outputUID: safeDefaults.outputUID,
+                systemOutputUID: Policy.captureUID
+            )
+        case .defaultSystemOutputHiddenMirrorBlackHole:
+            mutatedDefaults = DefaultSnapshot(
+                inputUID: safeDefaults.inputUID,
+                outputUID: safeDefaults.outputUID,
+                systemOutputUID: Policy.hiddenMirrorUID
+            )
+        }
+
+        let expectedFailure = mutation.expectedFailureCode
+        if mutation != .identity,
+           DefaultRouteSafety.failureCode(mutatedDefaults)
+                != expectedFailure {
+            return "default_route_safety_self_test_failed"
+        }
+        let sequence = [
+            healthy,
+            RouteContinuityObservation(
+                inputQueueMatches: true,
+                outputQueueMatches: true,
+                defaults: mutatedDefaults,
+                defaultNotificationCount: 0,
+                devices: mutatedDevices
+            ),
+        ]
+        var observedFailure: String?
+        for observation in sequence {
+            if let failure = RouteContinuityValidator.failureCode(
+                expectedDevices: expectedDevices,
+                expectedDefaults: safeDefaults,
+                observation: observation
+            ) {
+                observedFailure = failure
+                break
+            }
+        }
+        guard observedFailure == expectedFailure else {
+            return "route_continuity_self_test_failed"
+        }
+        return expectedFailure
     }
 }
 private struct RouteEvidence { var captureUIDMatches: Bool; var physicalOutputValidated: Bool; var challengeNonceMatches: Bool; var captureQueueReadbackMatches: Bool; var physicalOutputQueueReadbackMatches: Bool; var defaultInputEqual: Bool; var defaultOutputEqual: Bool; var defaultSystemOutputEqual: Bool; var defaultNotificationCount: Int }
@@ -467,6 +664,10 @@ private enum SyntheticCase: Equatable {
     case defaultChanged, defaultsRestoredNotification, staleNonce
     case tooFewProgress, outputGenerator, physicalOutputPolicy
     case routeMutation, digitalDelayedLoop
+    case defaultOutputCanonicalBlackHole
+    case defaultOutputHiddenMirrorBlackHole
+    case defaultSystemOutputCanonicalBlackHole
+    case defaultSystemOutputHiddenMirrorBlackHole
 
     static func parse(_ value: String) -> SyntheticCase? {
         switch value {
@@ -490,12 +691,37 @@ private enum SyntheticCase: Equatable {
         case "physical-output-policy": return .physicalOutputPolicy
         case "route-mutation": return .routeMutation
         case "digital-delayed-loop": return .digitalDelayedLoop
+        case "default-output-canonical-blackhole":
+            return .defaultOutputCanonicalBlackHole
+        case "default-output-hidden-mirror-blackhole":
+            return .defaultOutputHiddenMirrorBlackHole
+        case "default-system-output-canonical-blackhole":
+            return .defaultSystemOutputCanonicalBlackHole
+        case "default-system-output-hidden-mirror-blackhole":
+            return .defaultSystemOutputHiddenMirrorBlackHole
         default: return nil
         }
     }
 
     static let usageNames =
-        "healthy|all-zero|near-silent|wrong-nonce|unrelated-pattern|repeated-symbol|insufficient-frames|long-stall|clipped-pcm|bad-prefix-healthy-tail|wrong-capture-uid|wrong-readback|default-changed|defaults-restored-notification|stale-nonce|too-few-progress|output-generator|physical-output-policy|route-mutation|digital-delayed-loop"
+        "healthy|all-zero|near-silent|wrong-nonce|unrelated-pattern|repeated-symbol|insufficient-frames|long-stall|clipped-pcm|bad-prefix-healthy-tail|wrong-capture-uid|wrong-readback|default-changed|defaults-restored-notification|stale-nonce|too-few-progress|output-generator|physical-output-policy|route-mutation|digital-delayed-loop|default-output-canonical-blackhole|default-output-hidden-mirror-blackhole|default-system-output-canonical-blackhole|default-system-output-hidden-mirror-blackhole"
+
+    var routeMutation: SyntheticRouteMutation? {
+        switch self {
+        case .routeMutation:
+            return .identity
+        case .defaultOutputCanonicalBlackHole:
+            return .defaultOutputCanonicalBlackHole
+        case .defaultOutputHiddenMirrorBlackHole:
+            return .defaultOutputHiddenMirrorBlackHole
+        case .defaultSystemOutputCanonicalBlackHole:
+            return .defaultSystemOutputCanonicalBlackHole
+        case .defaultSystemOutputHiddenMirrorBlackHole:
+            return .defaultSystemOutputHiddenMirrorBlackHole
+        default:
+            return nil
+        }
+    }
 }
 private struct SyntheticFixture { let plan: ChallengePlan; let challengeStartUptime: Double; let window: EvaluationWindow; let route: RouteEvidence }
 private enum SyntheticFactory { static func make(test: SyntheticCase, nonce: String) -> SyntheticFixture { let planCount = 128; let expectedPlan = ChallengePlan(nonce: nonce, symbolCount: planCount); var signalPlan = expectedPlan; if test == .wrongNonce { signalPlan = ChallengePlan(nonce: nonce + ":wrong-pattern", symbolCount: planCount) } else if test == .repeatedSymbol { signalPlan = expectedPlan.frozen() }; let windowStart = 10_000.0; let windowEnd = windowStart + Policy.proofSeconds; let challengeStart = windowStart - 0.12; let syntheticLag = 0.28; let onsetFrames = Int((syntheticLag - (windowStart - challengeStart)) * Policy.sampleRate); let totalFrames = Int(Policy.proofSeconds * Policy.sampleRate); let generator = ChallengeGenerator(plan: signalPlan); var noiseGenerator = SplitMix64(seed: ChallengePlan.seed(for: nonce + ":noise")); var samples: [Int16] = []; samples.reserveCapacity(totalFrames * Policy.channels); for frame in 0..<totalFrames { var base = 0.0; if frame >= onsetFrames { if test == .unrelatedPattern { let time = Double(frame - onsetFrames) / Policy.sampleRate; base = 0.19 * sin(2.0 * Double.pi * 1_379.0 * time) + 0.05 * sin(2.0 * Double.pi * 2_731.0 * time) } else { base = generator.nextNormalized() } }; if test == .nearSilent { base *= 0.005 }; let badPrefix = test == .badPrefixHealthyTail && frame < Int(1.2 * Policy.sampleRate); if test == .allZero || badPrefix { samples.append(0); samples.append(0) } else if test == .clippedPCM { let value: Int16 = frame.isMultiple(of: 2) ? 32_767 : -32_767; samples.append(value); samples.append(value) } else { let noise0 = Double(Int64(noiseGenerator.next() % 61) - 30) / 32_767.0; let noise1 = Double(Int64(noiseGenerator.next() % 61) - 30) / 32_767.0; samples.append(AudioSupport.quantize(base * 1.15 + noise0)); samples.append(AudioSupport.quantize(base * 0.90 + noise1)) } }; let availableFrames = test == .insufficientFrames ? Int(Double(totalFrames) * 0.60) : totalFrames; var chunks: [CaptureChunk] = []; var callbackIndex = 0; var frame = 0; var timestampOffset = 0.0; while frame < availableFrames { let count = min(Policy.bufferFrames, availableFrames - frame); let firstSample = frame * Policy.channels; let lastSample = (frame + count) * Policy.channels; if test == .longStall { if callbackIndex == 200 { timestampOffset += 0.25 } else if callbackIndex > 200 && callbackIndex <= 250 { timestampOffset -= 0.005 } }; let end = windowStart + Double(frame + count) / Policy.sampleRate + timestampOffset; chunks.append(CaptureChunk(samples: Array(samples[firstSample..<lastSample]), endUptime: end, frameCount: count)); callbackIndex += 1; frame += count }; var progress: [ProgressObservation] = [ProgressObservation(uptime: windowStart, callbackCount: 0, capturedFrameCount: 0)]; var progressTime = windowStart + Policy.progressIntervalSeconds; while progressTime <= windowEnd + 0.0001 { let eligible = chunks.filter { $0.endUptime <= progressTime }; progress.append(ProgressObservation(uptime: progressTime, callbackCount: UInt64(eligible.count), capturedFrameCount: UInt64(eligible.reduce(0) { $0 + $1.frameCount }))); progressTime += Policy.progressIntervalSeconds }; if test == .tooFewProgress { progress = [ProgressObservation(uptime: windowStart, callbackCount: 0, capturedFrameCount: 0), ProgressObservation(uptime: windowEnd - 0.1, callbackCount: UInt64(chunks.count), capturedFrameCount: UInt64(chunks.reduce(0) { $0 + $1.frameCount }))] }; var route = RouteEvidence(captureUIDMatches: true, physicalOutputValidated: true, challengeNonceMatches: true, captureQueueReadbackMatches: true, physicalOutputQueueReadbackMatches: true, defaultInputEqual: true, defaultOutputEqual: true, defaultSystemOutputEqual: true, defaultNotificationCount: 0); if test == .wrongCaptureUID { route.captureUIDMatches = false }; if test == .wrongReadback { route.captureQueueReadbackMatches = false }; if test == .defaultChanged { route.defaultInputEqual = false }; if test == .defaultsRestoredNotification { route.defaultNotificationCount = 1 }; if test == .staleNonce { route.challengeNonceMatches = false }; let totalCaptured = UInt64(chunks.reduce(0) { $0 + $1.frameCount }); let snapshot = CaptureSnapshot(chunks: chunks, progress: progress, totalCallbackCount: UInt64(chunks.count), totalCapturedFrameCount: totalCaptured); return SyntheticFixture(plan: expectedPlan, challengeStartUptime: challengeStart, window: snapshot.window(endingAt: windowEnd, duration: Policy.proofSeconds), route: route) } }
@@ -564,6 +790,11 @@ private extension RealRunner {
                 try guardObject.install()
                 let expectedDefaults = try guardObject.snapshot()
                 beforeDefaults = expectedDefaults
+                if let unsafeDefault = DefaultRouteSafety.failureCode(
+                    expectedDefaults
+                ) {
+                    throw ProbeError(code: unsafeDefault)
+                }
 
                 let capture = InputQueueSession(
                     store: store,
@@ -711,6 +942,11 @@ private extension RealRunner {
             if let beforeDefaults {
                 do {
                     let afterDefaults = try defaultGuard.snapshot()
+                    if let unsafeDefault = DefaultRouteSafety.failureCode(
+                        afterDefaults
+                    ) {
+                        forcedFailures.append(unsafeDefault)
+                    }
                     route.defaultInputEqual =
                         beforeDefaults.inputUID
                             == afterDefaults.inputUID
@@ -791,9 +1027,11 @@ private enum ProbeProgram {
                    !PhysicalOutputPolicy.selfTestPasses() {
                     forcedFailures.append("physical_output_policy_self_test_failed")
                 }
-                if options.test == .routeMutation {
+                if let routeMutation = options.test.routeMutation {
                     forcedFailures.append(
-                        "route_identity_changed_during_proof"
+                        RouteContinuitySelfTest.failureCode(
+                            for: routeMutation
+                        )
                     )
                 }
                 if options.test == .digitalDelayedLoop {
@@ -829,6 +1067,9 @@ private struct DefaultUIDSnapshotEvidence: Codable {
     let outputUIDFingerprint: String
     let systemOutputUIDFingerprint: String
     let inputIsCanonicalBlackHole: Bool
+    let inputIsHiddenMirrorBlackHole: Bool
+    let defaultOutputIsForbiddenBlackHole: Bool
+    let defaultSystemOutputIsForbiddenBlackHole: Bool
     let inputTransportClass: String
 }
 
@@ -858,7 +1099,7 @@ private enum DefaultUIDSnapshotProgram {
                 selector: kAudioHardwarePropertyDefaultSystemOutputDevice
             )
             let evidence = DefaultUIDSnapshotEvidence(
-                schema: "opensteamer.default-input-snapshot.v2",
+                schema: "opensteamer.default-input-snapshot.v3",
                 role: role,
                 observedAtMonotonicNs: UInt64(
                     max(
@@ -873,6 +1114,14 @@ private enum DefaultUIDSnapshotProgram {
                     fingerprint(systemOutputUID),
                 inputIsCanonicalBlackHole:
                     inputUID == Policy.captureUID,
+                inputIsHiddenMirrorBlackHole:
+                    inputUID == Policy.hiddenMirrorUID,
+                defaultOutputIsForbiddenBlackHole:
+                    outputUID == Policy.captureUID
+                        || outputUID == Policy.hiddenMirrorUID,
+                defaultSystemOutputIsForbiddenBlackHole:
+                    systemOutputUID == Policy.captureUID
+                        || systemOutputUID == Policy.hiddenMirrorUID,
                 inputTransportClass:
                     try CoreAudioReader.defaultTransportClass(
                         selector:

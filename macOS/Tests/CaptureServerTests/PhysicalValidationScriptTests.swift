@@ -619,6 +619,9 @@ final class PhysicalValidationScriptTests: XCTestCase {
             case wrongRestore
             case outputChanged
             case systemOutputChanged
+            case hiddenDefaultInput
+            case forbiddenDefaultOutput
+            case forbiddenSystemOutput
         }
 
         let prior = String(repeating: "a", count: 64)
@@ -634,7 +637,10 @@ final class PhysicalValidationScriptTests: XCTestCase {
             isBlackHole: Bool,
             inputTransportClass: String? = nil,
             outputFingerprint: String = output,
-            systemFingerprint: String = systemOutput
+            systemFingerprint: String = systemOutput,
+            inputIsHiddenMirrorBlackHole: Bool = false,
+            defaultOutputIsForbiddenBlackHole: Bool = false,
+            defaultSystemOutputIsForbiddenBlackHole: Bool = false
         ) throws -> URL {
             let url = root.appendingPathComponent(
                 "\(role)-\(UUID().uuidString).json"
@@ -642,7 +648,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             try JSONSerialization.data(
                 withJSONObject: [
                     "schema":
-                        "opensteamer.default-input-snapshot.v2",
+                        "opensteamer.default-input-snapshot.v3",
                     "role": role,
                     "observedAtMonotonicNs": time,
                     "inputUIDFingerprint": input,
@@ -652,6 +658,12 @@ final class PhysicalValidationScriptTests: XCTestCase {
                         systemFingerprint,
                     "inputIsCanonicalBlackHole":
                         isBlackHole,
+                    "inputIsHiddenMirrorBlackHole":
+                        inputIsHiddenMirrorBlackHole,
+                    "defaultOutputIsForbiddenBlackHole":
+                        defaultOutputIsForbiddenBlackHole,
+                    "defaultSystemOutputIsForbiddenBlackHole":
+                        defaultSystemOutputIsForbiddenBlackHole,
                     "inputTransportClass":
                         inputTransportClass
                             ?? (isBlackHole ? "virtual" : "built-in"),
@@ -669,7 +681,17 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 role: "before",
                 time: 1_000,
                 input: preselected ? blackHole : prior,
-                isBlackHole: preselected
+                isBlackHole: preselected,
+                inputTransportClass:
+                    mutation == .hiddenDefaultInput
+                        ? "virtual"
+                        : nil,
+                inputIsHiddenMirrorBlackHole:
+                    mutation == .hiddenDefaultInput,
+                defaultOutputIsForbiddenBlackHole:
+                    mutation == .forbiddenDefaultOutput,
+                defaultSystemOutputIsForbiddenBlackHole:
+                    mutation == .forbiddenSystemOutput
             )
             let healthy = try write(
                 role: "healthy",
@@ -685,7 +707,11 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 systemFingerprint:
                     mutation == .systemOutputChanged
                         ? String(repeating: "f", count: 64)
-                        : systemOutput
+                        : systemOutput,
+                defaultOutputIsForbiddenBlackHole:
+                    mutation == .forbiddenDefaultOutput,
+                defaultSystemOutputIsForbiddenBlackHole:
+                    mutation == .forbiddenSystemOutput
             )
             let after = try write(
                 role: "after",
@@ -696,7 +722,17 @@ final class PhysicalValidationScriptTests: XCTestCase {
                         ? String(repeating: "9", count: 64)
                         : preselected ? blackHole : prior,
                 isBlackHole:
-                    mutation == .noRestore || preselected
+                    mutation == .noRestore || preselected,
+                inputTransportClass:
+                    mutation == .hiddenDefaultInput
+                        ? "virtual"
+                        : nil,
+                inputIsHiddenMirrorBlackHole:
+                    mutation == .hiddenDefaultInput,
+                defaultOutputIsForbiddenBlackHole:
+                    mutation == .forbiddenDefaultOutput,
+                defaultSystemOutputIsForbiddenBlackHole:
+                    mutation == .forbiddenSystemOutput
             )
             return (before, healthy, after)
         }
@@ -753,6 +789,9 @@ final class PhysicalValidationScriptTests: XCTestCase {
             .wrongRestore,
             .outputChanged,
             .systemOutputChanged,
+            .hiddenDefaultInput,
+            .forbiddenDefaultOutput,
+            .forbiddenSystemOutput,
         ] {
             let rejected = try run(mutation: mutation)
             XCTAssertTrue(
@@ -2335,12 +2374,28 @@ final class PhysicalValidationScriptTests: XCTestCase {
             "output-generator",
             "physical-output-policy",
             "route-mutation",
+            "default-output-canonical-blackhole",
+            "default-output-hidden-mirror-blackhole",
+            "default-system-output-canonical-blackhole",
+            "default-system-output-hidden-mirror-blackhole",
             "digital-delayed-loop",
         ]
         let passingCases: Set<String> = [
             "healthy",
             "output-generator",
             "physical-output-policy",
+        ]
+        let expectedRouteFailureCodes = [
+            "route-mutation":
+                "route_identity_changed_during_proof",
+            "default-output-canonical-blackhole":
+                "default_output_is_canonical_blackhole",
+            "default-output-hidden-mirror-blackhole":
+                "default_output_is_hidden_mirror_blackhole",
+            "default-system-output-canonical-blackhole":
+                "default_system_output_is_canonical_blackhole",
+            "default-system-output-hidden-mirror-blackhole":
+                "default_system_output_is_hidden_mirror_blackhole",
         ]
         for testCase in cases {
             let resultURL = root.appendingPathComponent("\(testCase).json")
@@ -2380,6 +2435,14 @@ final class PhysicalValidationScriptTests: XCTestCase {
             } else {
                 XCTAssertEqual(process.terminationStatus, 1, diagnostic)
                 XCTAssertEqual(object["status"] as? String, "failed")
+                if let expectedFailure =
+                    expectedRouteFailureCodes[testCase] {
+                    XCTAssertEqual(
+                        object["failureCode"] as? String,
+                        expectedFailure,
+                        "\(testCase) bypassed the production route validator."
+                    )
+                }
             }
         }
 
@@ -2695,6 +2758,91 @@ final class PhysicalValidationScriptTests: XCTestCase {
             measureQueueSource.contains(
                 "guard let queue else { return !teardownFailed }"
             )
+        )
+    }
+
+    func testBlackHoleProbeEnforcesSemanticDefaultSafetyAcrossEveryPhase()
+        throws {
+        let probeSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "iOS/opensteamer/scripts/physical-blackhole-microphone-probe.swift"
+            ),
+            encoding: .utf8
+        )
+        let realRunnerStart = try XCTUnwrap(
+            probeSource.range(of: "private extension RealRunner")
+        )
+        let realRunnerEnd = try XCTUnwrap(
+            probeSource.range(
+                of: "private enum ProbeProgram",
+                range: realRunnerStart.upperBound..<probeSource.endIndex
+            )
+        )
+        let realRunner = probeSource[
+            realRunnerStart.lowerBound..<realRunnerEnd.lowerBound
+        ]
+
+        let baselineSnapshot = try XCTUnwrap(
+            realRunner.range(
+                of: "let expectedDefaults = try guardObject.snapshot()"
+            )
+        )
+        let baselineSafety = try XCTUnwrap(
+            realRunner.range(
+                of: "DefaultRouteSafety.failureCode(",
+                range: baselineSnapshot.upperBound..<realRunner.endIndex
+            )
+        )
+        let firstQueueOpen = try XCTUnwrap(
+            realRunner.range(
+                of: "let capture = InputQueueSession(",
+                range: baselineSnapshot.upperBound..<realRunner.endIndex
+            )
+        )
+        XCTAssertLessThan(
+            baselineSafety.lowerBound,
+            firstQueueOpen.lowerBound,
+            "The baseline defaults must be rejected before either AudioQueue can open."
+        )
+        XCTAssertTrue(
+            realRunner.contains("RouteContinuityValidator.failureCode("),
+            "The live proof loop stopped invoking the production continuity validator."
+        )
+
+        let finalSnapshot = try XCTUnwrap(
+            realRunner.range(of: "let afterDefaults = try defaultGuard.snapshot()")
+        )
+        XCTAssertNotNil(
+            realRunner.range(
+                of: "DefaultRouteSafety.failureCode(",
+                range: finalSnapshot.upperBound..<realRunner.endIndex
+            ),
+            "Final default-route evidence lost its semantic BlackHole safety check."
+        )
+
+        let continuityCoreStart = try XCTUnwrap(
+            probeSource.range(
+                of: "/// Shared by the live probe and deterministic fake sequences."
+            )
+        )
+        let continuityCoreEnd = try XCTUnwrap(
+            probeSource.range(
+                of: "private enum SyntheticRouteMutation",
+                range: continuityCoreStart.upperBound..<probeSource.endIndex
+            )
+        )
+        let continuityCore = probeSource[
+            continuityCoreStart.lowerBound..<continuityCoreEnd.lowerBound
+        ]
+        XCTAssertTrue(
+            continuityCore.contains(
+                "DefaultRouteSafety.failureCode(\n            observation.defaults"
+            ),
+            "Continuity observations must reject unsafe defaults even when identity is unchanged."
+        )
+        XCTAssertTrue(
+            probeSource.contains("RouteContinuitySelfTest.failureCode("),
+            "The route-mutation fixtures no longer exercise the production validator core."
         )
     }
 
@@ -4039,6 +4187,52 @@ final class PhysicalValidationScriptTests: XCTestCase {
     }
 
     func testRawReadinessHandshakeRejectsStaleTimeoutAndNonOverlap() throws {
+        let driver = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                physicalDrivers[2].relativePath
+            ),
+            encoding: .utf8
+        )
+        let rustOracle = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "iOS/opensteamer/scripts/physical-validation-oracle.rs"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(
+            driver.contains(
+                "Worldwide iPhone microphone hidden writer selected routingEpoch=${blackhole_routing_epoch} peerGeneration=${blackhole_peer_generation} deviceGeneration=${blackhole_device_generation} pid=${current_process_id}"
+            )
+        )
+        XCTAssertTrue(driver.contains("opensteamer.raw-session-readiness.v5"))
+        XCTAssertTrue(driver.contains("opensteamer.raw-session-continuity.v2"))
+        XCTAssertTrue(
+            driver.contains(
+                "blackHoleRoutingEpoch=${blackhole_routing_epoch}"
+            )
+        )
+        XCTAssertTrue(
+            driver.contains(
+                "blackHoleDeviceGeneration=${blackhole_device_generation}"
+            )
+        )
+        XCTAssertTrue(
+            rustOracle.contains(
+                "readiness[\"schema\"] != \"opensteamer.raw-session-readiness.v5\""
+            )
+        )
+        XCTAssertTrue(
+            rustOracle.contains(
+                "continuity_record[\"schema\"] != \"opensteamer.raw-session-continuity.v2\""
+            )
+        )
+        XCTAssertTrue(rustOracle.contains("\"blackHoleRoutingEpoch\""))
+        XCTAssertTrue(rustOracle.contains("\"blackHoleDeviceGeneration\""))
+        XCTAssertTrue(
+            driver.contains(
+                "hidden_writer_selection_observed != 0"
+            )
+        )
         for mode in [
             "raw-readiness-success",
             "raw-readiness-stale",
@@ -4062,6 +4256,18 @@ final class PhysicalValidationScriptTests: XCTestCase {
             "raw-readiness-status-mismatch",
             "raw-readiness-wait-status-mismatch",
             "raw-readiness-completion-success",
+            "raw-readiness-completion-missing-hidden-writer",
+            "raw-readiness-completion-mismatched-hidden-writer-generation",
+            "raw-readiness-completion-mismatched-hidden-writer-peer-generation",
+            "raw-readiness-completion-mismatched-hidden-writer-routing-epoch",
+            "raw-readiness-completion-mismatched-hidden-writer-pid",
+            "raw-readiness-completion-stale-hidden-writer-after-pair-change",
+            "raw-readiness-completion-stale-hidden-writer-after-routing-epoch-change",
+            "raw-readiness-completion-post-launch-device-generation-change",
+            "raw-readiness-completion-post-launch-peer-generation-change",
+            "raw-readiness-completion-post-launch-routing-epoch-change",
+            "raw-readiness-completion-post-launch-writer-revoked",
+            "raw-readiness-completion-post-launch-disconnect",
             "raw-readiness-completion-nonce-mismatch",
             "raw-readiness-completion-inverted",
             "raw-readiness-completion-nonzero",
