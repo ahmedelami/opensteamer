@@ -119,6 +119,39 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             "arguments.push(path_text(output)?);",
             "if let Some(directory) = source_directory {",
             "command.current_dir(directory);",
+            "let result = command",
+            ".output()?;",
+            #"require_output_success(&result, "compile exact paired-v7 Swift probe")?;"#,
+            "let compiled_output_is_exact = |metadata: &fs::Metadata, expected_mode: u32|",
+            "metadata.file_type().is_file()",
+            "!metadata.file_type().is_symlink()",
+            "metadata.uid() == USER_ID",
+            "metadata.nlink() == 1",
+            "metadata.permissions().mode() & 0o7777 == expected_mode",
+            "let named_before = fs::symlink_metadata(output)?;",
+            "if !compiled_output_is_exact(&named_before, 0o700)",
+            "let compiled_output = OpenOptions::new()",
+            ".read(true)",
+            ".write(true)",
+            ".custom_flags(O_NOFOLLOW)",
+            ".open(output)?;",
+            "let descriptor_before = compiled_output.metadata()?;",
+            "if !compiled_output_is_exact(&descriptor_before, 0o700)",
+            "descriptor_before.dev() != named_before.dev()",
+            "descriptor_before.ino() != named_before.ino()",
+            "descriptor_before.len() != named_before.len()",
+            "compiled_output.set_permissions(fs::Permissions::from_mode(0o755))?;",
+            "let descriptor_after = compiled_output.metadata()?;",
+            "let named_after = fs::symlink_metadata(output)?;",
+            "if !compiled_output_is_exact(&descriptor_after, 0o755)",
+            "!compiled_output_is_exact(&named_after, 0o755)",
+            "descriptor_before.dev() != descriptor_after.dev()",
+            "descriptor_before.ino() != descriptor_after.ino()",
+            "descriptor_before.len() != descriptor_after.len()",
+            "descriptor_before.dev() != named_after.dev()",
+            "descriptor_before.ino() != named_after.ino()",
+            "descriptor_before.len() != named_after.len()",
+            "Ok(())",
         ]
         let mirrorCompileTokens = [
             "compile_swift(",
@@ -154,6 +187,10 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             && build.components(separatedBy: "-disable-sil-perf-optzns").count - 1 == 1
             && build.components(separatedBy: "-disable-incremental-llvm-codegen").count - 1 == 1
             && build.components(separatedBy: "-reproducible").count - 1 == 1
+            && build.components(
+                separatedBy: "compiled_output.set_permissions(fs::Permissions::from_mode(0o755))?;"
+            ).count - 1 == 1
+            && !build.contains("fs::set_permissions(output,")
     }
 
     private func hasPinnedProductionXcodeTrustContract(_ controller: String) -> Bool {
@@ -889,7 +926,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         }
 
         let launcherTokens = [
-            "EXPECTED_BINARY_SHA256='e234e757edcaf1b6b3e6ca482a2d75434f4f7b6ca6c00e7426c4e4f0746a741f'",
+            "EXPECTED_BINARY_SHA256='8d58bdee98d18620b82c84b8f37023839f9608acae4fd4a6247e1712105b0278'",
             "CONTROLLER_BINARY_SHA256=$(/usr/bin/shasum -a 256 \"$CONTROLLER\"",
             "[ \"$CONTROLLER_BINARY_SHA256\" = \"$EXPECTED_BINARY_SHA256\" ]",
             "compiled paired-v7 controller differs from the reviewed binary hash",
@@ -1157,12 +1194,12 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         XCTAssertTrue(launcher.contains("RELEASE_PIN_STATUS='PINNED_FINAL_REVIEW'"))
         XCTAssertTrue(
             launcher.contains(
-                "EXPECTED_SOURCE_SHA256='9c6b6cfbad128fe6a4886c68e0ef6202ffe3df3208eb74ddcbdcf354735a77b4'"
+                "EXPECTED_SOURCE_SHA256='472469623cc7bb44ce1db337c994ed00f6d339182da87efa392233a7acfc4ac1'"
             )
         )
         XCTAssertTrue(
             launcher.contains(
-                "EXPECTED_BINARY_SHA256='e234e757edcaf1b6b3e6ca482a2d75434f4f7b6ca6c00e7426c4e4f0746a741f'"
+                "EXPECTED_BINARY_SHA256='8d58bdee98d18620b82c84b8f37023839f9608acae4fd4a6247e1712105b0278'"
             )
         )
         let exactControllerReleasePins = [
@@ -2064,6 +2101,52 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             controller.replacingOccurrences(
                 of: "            None,\n            &layout.default_route_guardian,",
                 with: "            Some(mirror_source_parent),\n            &layout.default_route_guardian,"
+            ),
+            controller.replacingOccurrences(
+                of: "            compiled_output.set_permissions(fs::Permissions::from_mode(0o755))?;\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "compiled_output.set_permissions(fs::Permissions::from_mode(0o755))?;",
+                with: "compiled_output.set_permissions(fs::Permissions::from_mode(0o700))?;"
+            ),
+            controller.replacingOccurrences(
+                of: "compiled_output.set_permissions(fs::Permissions::from_mode(0o755))?;",
+                with: "fs::set_permissions(output, fs::Permissions::from_mode(0o755))?;"
+            ),
+            controller.replacingOccurrences(
+                of: "            if !compiled_output_is_exact(&named_before, 0o700) {\n",
+                with: "            if !compiled_output_is_exact(&named_before, 0o755) {\n"
+            ),
+            controller.replacingOccurrences(
+                of: "                .custom_flags(O_NOFOLLOW)\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "                || descriptor_before.len() != named_before.len()\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "                || descriptor_before.len() != descriptor_after.len()\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "                || descriptor_before.len() != named_after.len()\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "                || !compiled_output_is_exact(&named_after, 0o755)\n",
+                with: ""
+            ),
+            swappingFirst(
+                "let descriptor_before = compiled_output.metadata()?;",
+                with: "compiled_output.set_permissions(fs::Permissions::from_mode(0o755))?;",
+                in: controller
+            ),
+            swappingFirst(
+                #"require_output_success(&result, "compile exact paired-v7 Swift probe")?;"#,
+                with: "compiled_output.set_permissions(fs::Permissions::from_mode(0o755))?;",
+                in: controller
             ),
         ]
         for (index, mutant) in mutants.enumerated() {

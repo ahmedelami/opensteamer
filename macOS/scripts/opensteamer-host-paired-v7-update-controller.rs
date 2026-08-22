@@ -6231,7 +6231,56 @@ pub(crate) mod paired_v7 {
                 .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
                 .env("DEVELOPER_DIR", PINNED_XCODE_DEVELOPER_DIR)
                 .output()?;
-            require_output_success(&result, "compile exact paired-v7 Swift probe")
+            require_output_success(&result, "compile exact paired-v7 Swift probe")?;
+
+            let compiled_output_is_exact = |metadata: &fs::Metadata, expected_mode: u32| {
+                metadata.file_type().is_file()
+                    && !metadata.file_type().is_symlink()
+                    && metadata.uid() == USER_ID
+                    && metadata.nlink() == 1
+                    && metadata.permissions().mode() & 0o7777 == expected_mode
+            };
+            let named_before = fs::symlink_metadata(output)?;
+            if !compiled_output_is_exact(&named_before, 0o700) {
+                return Err(ControllerError(format!(
+                    "compiled paired-v7 Swift probe has unsafe initial metadata: {}",
+                    output.display()
+                )));
+            }
+            let compiled_output = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(O_NOFOLLOW)
+                .open(output)?;
+            let descriptor_before = compiled_output.metadata()?;
+            if !compiled_output_is_exact(&descriptor_before, 0o700)
+                || descriptor_before.dev() != named_before.dev()
+                || descriptor_before.ino() != named_before.ino()
+                || descriptor_before.len() != named_before.len()
+            {
+                return Err(ControllerError(format!(
+                    "compiled paired-v7 Swift probe changed before mode normalization: {}",
+                    output.display()
+                )));
+            }
+            compiled_output.set_permissions(fs::Permissions::from_mode(0o755))?;
+            let descriptor_after = compiled_output.metadata()?;
+            let named_after = fs::symlink_metadata(output)?;
+            if !compiled_output_is_exact(&descriptor_after, 0o755)
+                || !compiled_output_is_exact(&named_after, 0o755)
+                || descriptor_before.dev() != descriptor_after.dev()
+                || descriptor_before.ino() != descriptor_after.ino()
+                || descriptor_before.len() != descriptor_after.len()
+                || descriptor_before.dev() != named_after.dev()
+                || descriptor_before.ino() != named_after.ino()
+                || descriptor_before.len() != named_after.len()
+            {
+                return Err(ControllerError(format!(
+                    "compiled paired-v7 Swift probe changed during mode normalization: {}",
+                    output.display()
+                )));
+            }
+            Ok(())
         };
         compile_swift(
             MIRROR_SOURCE_BASENAME,
