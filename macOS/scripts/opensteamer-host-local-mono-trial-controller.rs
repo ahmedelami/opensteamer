@@ -7534,7 +7534,7 @@ fn mirror_result_contract_program() -> &'static str {
     r#"import json,sys
 v=json.load(open(sys.argv[1],encoding='utf-8'))
 assert v['schema']=='opensteamer.virtual-microphone-mirror-loopback.v2'
-assert v['status']=='passed' and v['mode']=='real' and v['realQueuePathImplemented'] is True
+assert v['status']=='passed' and v['mode']=='real-dual-audioqueue' and v['realQueuePathImplemented'] is True
 assert v['lifecycle']['requiredStartOrders']==['visible-first','hidden-first']
 assert [x['startOrder'] for x in v['lifecycle']['cycles']]==['visible-first','hidden-first']
 assert all(x['quiescentBefore'] and x['quiescentAfter'] and x['nearZeroSharedClock'] and x['timelinesAdvanced'] and x['queuesStoppedAndDisposed'] for x in v['lifecycle']['cycles'])

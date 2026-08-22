@@ -999,7 +999,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             let rootVerification = try? functionBody(
                 controller,
                 beginningWith: "fn verify_root_controller_identity()",
-                endingBefore: "fn require_retry_3_root_operation_trust("
+                endingBefore: "fn require_retry_4_root_operation_trust("
             ),
             let proxyVerification = try? functionBody(
                 controller,
@@ -1010,12 +1010,24 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             return false
         }
 
-        let launcherTokens = [
-            "EXPECTED_BINARY_SHA256='0e70c2f4b9be266b793ad307a51be9c7c798b37c15abd83f2235d132439938e9'",
-            "CONTROLLER_BINARY_SHA256=$(/usr/bin/shasum -a 256 \"$CONTROLLER\"",
-            "[ \"$CONTROLLER_BINARY_SHA256\" = \"$EXPECTED_BINARY_SHA256\" ]",
-            "compiled paired-v7 controller differs from the reviewed binary hash",
-        ]
+        let launcherTokens = controller.contains("active-paired-host-update-v7-retry-4")
+            ? [
+                "RELEASE_PIN_STATUS='PINNED_FINAL_REVIEW'",
+                "EXPECTED_SOURCE_SHA256='081212e20d74ae2c823eb8eab317259bc4899eae0e09c8f19e600d71d4f625e3'",
+                "EXPECTED_BINARY_SHA256='70d1f444c0cb4db90cec6ec18edbd81e1a9285ae068f5f53aeb28027303b7de5'",
+                "CONTROLLER_BINARY_SHA256=$(/usr/bin/shasum -a 256 \"$CONTROLLER\"",
+                "[ \"$CONTROLLER_BINARY_SHA256\" = \"$EXPECTED_BINARY_SHA256\" ]",
+                "compiled paired-v7 controller differs from the reviewed binary hash",
+                "--remap-path-prefix \"$EXPECTED_REPO=/reviewed/opensteamer-paired-v7\"",
+                "--remap-path-prefix \"$BUILD_DIR=/reviewed/opensteamer-paired-v7-build\"",
+                "\"$SOURCE\" -o \"$CONTROLLER\"",
+            ]
+            : [
+                "EXPECTED_BINARY_SHA256='0e70c2f4b9be266b793ad307a51be9c7c798b37c15abd83f2235d132439938e9'",
+                "CONTROLLER_BINARY_SHA256=$(/usr/bin/shasum -a 256 \"$CONTROLLER\"",
+                "[ \"$CONTROLLER_BINARY_SHA256\" = \"$EXPECTED_BINARY_SHA256\" ]",
+                "compiled paired-v7 controller differs from the reviewed binary hash",
+            ]
         let stableIdentityTokens = [
             ".custom_flags(O_NOFOLLOW)",
             "metadata.nlink() == 1",
@@ -1058,6 +1070,16 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
 
     private func hasTwoCommitV7ReleaseCycleContract(_ controller: String) -> Bool {
         guard
+            let requiredReleasePathDeclaration = try? functionBody(
+                controller,
+                beginningWith: "    const REQUIRED_RELEASE_DIFF_PATHS",
+                endingBefore: "    const RELEASE_ONLY_PATH_ALLOWLIST"
+            ),
+            let releaseOnlyPathDeclaration = try? functionBody(
+                controller,
+                beginningWith: "    const RELEASE_ONLY_PATH_ALLOWLIST",
+                endingBefore: "    #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]\n    enum V7State"
+            ),
             let inputSelection = try? functionBody(
                 controller,
                 beginningWith: "fn functional_input_path(",
@@ -1087,16 +1109,44 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                 controller,
                 beginningWith: "fn verify_candidate_manifest_provenance(",
                 endingBefore: "fn materialize_reviewed_production_driver("
+            ),
+            let releaseSelfTest = try? functionBody(
+                controller,
+                beginningWith: "    fn self_test_release_cycle_contract",
+                endingBefore: "    fn self_test_partial_install_hold_recovery"
             )
         else {
             return false
         }
 
         let sourceTokens = [
-            "const REQUIRED_RELEASE_DIFF_PATHS: [&str; 2]",
-            "const RELEASE_ONLY_PATH_ALLOWLIST: [&str; 9]",
+            "const REQUIRED_RELEASE_DIFF_PATHS: [&str; 6]",
+            "const RELEASE_ONLY_PATH_ALLOWLIST: [&str; 12]",
             "const EXPECTED_FUNCTIONAL_INPUTS_SHA256: &str",
+            "const EXPECTED_FUNCTIONAL_INPUT_COUNT: usize = 134;",
             "self_test_release_cycle_contract()?;",
+        ]
+        let requiredReleasePaths = [
+            "iOS/opensteamer/scripts/physical-blackhole-microphone-probe.swift",
+            "macOS/Tests/CaptureServerTests/PhysicalValidationScriptTests.swift",
+            "macOS/Tests/CaptureServerTests/V7DriverHostUpdateContractTests.swift",
+            "macOS/scripts/opensteamer-host-local-mono-trial-controller.rs",
+            "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs",
+            "macOS/scripts/update-opensteamer-host-paired-v7.sh",
+        ]
+        let releaseOnlyPaths = [
+            "AGENTS.md",
+            "README.md",
+            "TESTING_ORACLES.md",
+            "USER_PROTECTED_LEGACY_RUNTIME.md",
+            "WORLDWIDE_REMOTE_ACCESS.md",
+            "iOS/opensteamer/scripts/physical-blackhole-microphone-probe.swift",
+            "macOS/Tests/CaptureServerTests/PhysicalValidationScriptTests.swift",
+            "macOS/Tests/CaptureServerTests/V7DriverHostUpdateContractTests.swift",
+            "macOS/VirtualAudioDriver/README.md",
+            "macOS/scripts/opensteamer-host-local-mono-trial-controller.rs",
+            "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs",
+            "macOS/scripts/update-opensteamer-host-paired-v7.sh",
         ]
         let enumerationTokens = [
             #"&["ls-tree", "-r", "-z", "--full-tree", commit, "--"]"#,
@@ -1124,7 +1174,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             "candidate.tree != resolved_candidate_tree",
             "candidate.commit == release_commit || !candidate_is_ancestor",
             "!RELEASE_ONLY_PATH_ALLOWLIST.contains(&path.as_str())",
-            "REQUIRED_RELEASE_DIFF_PATHS",
+            ".ne(REQUIRED_RELEASE_DIFF_PATHS.iter().copied())",
             "source_inputs.is_empty() || source_inputs != release_inputs",
             "actual != expected_functional_inputs_sha256",
         ]
@@ -1139,6 +1189,8 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             "validate_release_cycle_evidence(",
         ]
         return sourceTokens.allSatisfy(controller.contains)
+            && containsOrdered(requiredReleasePaths, in: requiredReleasePathDeclaration)
+            && containsOrdered(releaseOnlyPaths, in: releaseOnlyPathDeclaration)
             && inputSelection.contains("RELEASE_ONLY_PATH_ALLOWLIST.contains(&path)")
             && inputSelection.contains(#"path.starts_with("macOS/Sources/")"#)
             && inputSelection.contains(#"path.starts_with("macOS/VirtualAudioDriver/")"#)
@@ -1147,6 +1199,12 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             && pathTokens.allSatisfy(changedPaths.contains)
             && validationTokens.allSatisfy(validator.contains)
             && verificationTokens.allSatisfy(verifier.contains)
+            && releaseSelfTest.contains("missing_path.remove(0);")
+            && releaseSelfTest.contains("allowlisted_extra_path.push(\"README.md\".to_owned());")
+            && releaseSelfTest.contains("missing_path.remove(0);\n        if validate_release_cycle_evidence(")
+            && releaseSelfTest.contains("allowlisted_extra_path.sort();\n        if validate_release_cycle_evidence(")
+            && releaseSelfTest.contains("release-cycle missing-diff-path mutant was accepted")
+            && releaseSelfTest.contains("release-cycle allowlisted extra-diff-path mutant was accepted")
     }
 
     private func hasRebootStableRollbackReserveDeviceContract(_ controller: String) -> Bool {
@@ -4228,6 +4286,996 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             && !controller.contains("bootstrap_root_owned_v7_recovery_controller")
     }
 
+    private func hasRetry4TerminalNamespaceAndRootV3Contract(
+        controller: String,
+        launcher: String,
+        localMonoController: String
+    ) -> Bool {
+        guard
+            let rootState = try? functionBody(
+                controller,
+                beginningWith: "    fn read_root_driver_state",
+                endingBefore: "    fn expected_driver_nodes"
+            ),
+            let noPending = try? functionBody(
+                controller,
+                beginningWith: "    fn require_no_v7_pending_pointers",
+                endingBefore: "    fn require_exact_retained_v7_top_level"
+            ),
+            let terminalBoundary = try? functionBody(
+                controller,
+                beginningWith: "    fn require_terminal_retry_3_runtime_boundary",
+                endingBefore: "    fn read_root_controller_identity_records_via_sudo"
+            ),
+            let terminalLogPrefix = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_retry_3_log_prefix(",
+                endingBefore: "    fn require_exact_retry_3_log_prefixes"
+            ),
+            let terminalLogPrefixMappings = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_retry_3_log_prefixes",
+                endingBefore: "    fn require_terminal_retry_3_runtime_boundary"
+            ),
+            let terminalEvidence = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_terminal_retry_3_evidence",
+                endingBefore: "    fn require_exact_retained_probe_directory"
+            ),
+            let retainedFile = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_retained_file",
+                endingBefore: "    fn require_exact_retained_failure_file"
+            ),
+            let retainedFailureFile = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_retained_failure_file",
+                endingBefore: "    fn require_exact_retained_empty_directory"
+            ),
+            let retainedEmptyDirectory = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_retained_empty_directory",
+                endingBefore: "    fn require_exact_terminal_retry_3_probe_directory"
+            ),
+            let terminalProbeDirectory = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_terminal_retry_3_probe_directory",
+                endingBefore: "    fn require_exact_terminal_retry_3_recovery_binding"
+            ),
+            let terminalRecoveryBinding = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_terminal_retry_3_recovery_binding",
+                endingBefore: "    fn require_exact_terminal_retry_3_evidence"
+            ),
+            let retry2Probes = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_recovered_retry_2_probes",
+                endingBefore: "    fn require_exact_recovered_retry_2_evidence"
+            ),
+            let admission = try? functionBody(
+                controller,
+                beginningWith: "    fn require_v7_retry_admission_ready",
+                endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum RetryV7PointerExpectation"
+            ),
+            let rootNames = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_v7_root_names",
+                endingBefore: "    fn require_exact_v7_retained_quartet"
+            ),
+            let retainedQuartet = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_v7_retained_quartet",
+                endingBefore: "    fn require_exact_v7_root_quintet"
+            ),
+            let rootQuintet = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_v7_root_quintet",
+                endingBefore: "    fn require_retry_v7_pointer_expectation"
+            ),
+            let pointerExpectation = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retry_v7_pointer_expectation",
+                endingBefore: "    fn require_current_retry_v7_layout"
+            ),
+            let currentLayout = try? functionBody(
+                controller,
+                beginningWith: "    fn require_current_retry_v7_layout",
+                endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum Retry2RecoveryState"
+            ),
+            let pendingRetirement = try? functionBody(
+                controller,
+                beginningWith: "    fn retire_exact_retry_v7_pending_pointer_after_parent_crash",
+                endingBefore: "    fn uid_proxy_complete_host_crash_rollback"
+            ),
+            let rootStage = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retry_4_root_v3_stage_via_sudo",
+                endingBefore: "    fn retry_4_root_support_names"
+            ),
+            let exactControllerBytes = try? functionBody(
+                controller,
+                beginningWith: "    fn exact_controller_bytes",
+                endingBefore: "    fn is_root_v3_install_residue_name"
+            ),
+            let residueName = try? functionBody(
+                controller,
+                beginningWith: "    fn is_root_v3_install_residue_name",
+                endingBefore: "    fn retire_root_v3_install_residues"
+            ),
+            let residueRetirement = try? functionBody(
+                controller,
+                beginningWith: "    fn retire_root_v3_install_residues",
+                endingBefore: "    fn sudo_root_v3_prefix_file"
+            ),
+            let rootPrefixFile = try? functionBody(
+                controller,
+                beginningWith: "    fn sudo_root_v3_prefix_file",
+                endingBefore: "    fn require_retry_4_root_v3_stage_via_sudo"
+            ),
+            let residueLsof = try? functionBody(
+                controller,
+                beginningWith: "    fn require_no_openers_root_file",
+                endingBefore: "    fn require_no_extended_attributes_root"
+            ),
+            let rootSupportNames = try? functionBody(
+                controller,
+                beginningWith: "    fn retry_4_root_support_names",
+                endingBefore: "    fn require_retry_4_root_support_parent("
+            ),
+            let rootSupport = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retry_4_root_support_parent(",
+                endingBefore: "    fn require_retry_4_root_support_parent_via_sudo"
+            ),
+            let sudoRootSupport = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retry_4_root_support_parent_via_sudo",
+                endingBefore: "    fn require_retry_4_transaction_parent_via_sudo"
+            ),
+            let directTransactionParent = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_retry_4_transaction_parent_names",
+                endingBefore: "    fn require_retained_retry_2_root_tombstone"
+            ),
+            let exactRootTransactionChildren = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_root_transaction_children",
+                endingBefore: "    fn require_exact_retry_4_transaction_parent_names"
+            ),
+            let retry2Tombstone = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retained_retry_2_root_tombstone(require_product_absent",
+                endingBefore: "    fn require_retained_retry_3_root_tombstone"
+            ),
+            let sudoTransactionParent = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retry_4_transaction_parent_via_sudo",
+                endingBefore: "    fn sudo_require_exact_incident_stat"
+            ),
+            let retry3Tombstone = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retained_retry_3_root_tombstone",
+                endingBefore: "    fn root_attest_retry_2_safe_state"
+            ),
+            let retry2SudoTombstone = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retained_retry_2_root_tombstone_via_sudo",
+                endingBefore: "    fn require_same_retry_4_live_boundary"
+            ),
+            let retry3SudoTombstone = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retry_3_restored_root_via_sudo",
+                endingBefore: "    fn require_exact_retry_3_log_prefix("
+            ),
+            let liveBoundaryComparison = try? functionBody(
+                controller,
+                beginningWith: "    fn require_same_retry_4_live_boundary",
+                endingBefore: "    fn prove_retry_4_live_runtime_and_root_tombstones"
+            ),
+            let liveBoundaryProof = try? functionBody(
+                controller,
+                beginningWith: "    fn prove_retry_4_live_runtime_and_root_tombstones",
+                endingBefore: "    fn require_retry_3_restored_root_via_sudo"
+            ),
+            let rootPublisher = try? functionBody(
+                controller,
+                beginningWith: "    fn publish_root_controller",
+                endingBefore: "    fn require_root_v3_support_topology"
+            ),
+            let rootBootstrap = try? functionBody(
+                controller,
+                beginningWith: "    fn bootstrap_root_controller_identity",
+                endingBefore: "    fn publish_root_controller"
+            ),
+            let directRootIdentityRecords = try? functionBody(
+                controller,
+                beginningWith: "    fn read_root_controller_identity_records()",
+                endingBefore: "    fn require_root_controller_identity_binding"
+            ),
+            let rootIdentityBinding = try? functionBody(
+                controller,
+                beginningWith: "    fn require_root_controller_identity_binding",
+                endingBefore: "    fn require_proxy_controller_identity_binding"
+            ),
+            let proxyIdentityBinding = try? functionBody(
+                controller,
+                beginningWith: "    fn require_proxy_controller_identity_binding",
+                endingBefore: "    fn create_or_verify_root_sealed"
+            ),
+            let sudoRootIdentityRecords = try? functionBody(
+                controller,
+                beginningWith: "    fn read_root_controller_identity_records_via_sudo",
+                endingBefore: "    fn read_root_recovery_controller_identity_records_via_sudo"
+            ),
+            let rootTopology = try? functionBody(
+                controller,
+                beginningWith: "    fn require_root_v3_support_topology",
+                endingBefore: "    fn create_or_repair_root_recovery_sealed"
+            ),
+            let sealedRepair = try? functionBody(
+                controller,
+                beginningWith: "    fn create_or_repair_root_recovery_sealed",
+                endingBefore: "    fn verify_root_controller_identity"
+            ),
+            let rootControllerIdentity = try? functionBody(
+                controller,
+                beginningWith: "    fn verify_root_controller_identity",
+                endingBefore: "    fn require_retry_4_root_operation_trust"
+            ),
+            let uidBootstrap = try? functionBody(
+                controller,
+                beginningWith: "    fn bootstrap_root_owned_v7_controller_for_prepare",
+                endingBefore: "    fn verify_root_owned_v7_controller_for_restore"
+            ),
+            let rootAdmission = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retry_4_root_admission_via_sudo",
+                endingBefore: "    fn spawn_bounded_line_reader"
+            ),
+            let rootTrust = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retry_4_root_operation_trust",
+                endingBefore: "    fn finish_retry_4_root_operation"
+            ),
+            let finish = try? functionBody(
+                controller,
+                beginningWith: "    fn finish_retry_4_root_operation",
+                endingBefore: "    fn verify_root_recovery_controller_identity"
+            ),
+            let rootPrepare = try? functionBody(
+                controller,
+                beginningWith: "    fn root_driver_prepare",
+                endingBefore: "    fn root_driver_publish_reload"
+            ),
+            let broker = try? functionBody(
+                controller,
+                beginningWith: "    impl RootDriverBrokerClient",
+                endingBefore: "    impl Drop for RootDriverBrokerClient"
+            ),
+            let execute = try? functionBody(
+                controller,
+                beginningWith: "    fn execute_paired_v7_update",
+                endingBefore: "    fn perform_paired_v7_update"
+            ),
+            let perform = try? functionBody(
+                controller,
+                beginningWith: "    fn perform_paired_v7_update",
+                endingBefore: "    fn rollback_existing_paired_v7_update"
+            ),
+            let releaseInputs = try? functionBody(
+                controller,
+                beginningWith: "    fn functional_input_path",
+                endingBefore: "    fn require_canonical_release_path"
+            ),
+            let commandEnum = try? functionBody(
+                controller,
+                beginningWith: "    enum V7Command",
+                endingBefore: "    impl V7Layout"
+            ),
+            let main = try? functionBody(
+                controller,
+                beginningWith: "    fn paired_v7_real_main",
+                endingBefore: "    fn parse_v7_command"
+            ),
+            let parser = try? functionBody(
+                controller,
+                beginningWith: "    fn parse_v7_command",
+                endingBefore: "    fn require_canonical_git_oid"
+            ),
+            let cliSelfTest = try? functionBody(
+                controller,
+                beginningWith: "    fn verify_v7_cli_surface",
+                endingBefore: "    fn self_test_production_identity_parser"
+            )
+        else {
+            return false
+        }
+
+        let exactPins = [
+            "const V7_ACTIVE_UPDATE: &str =\n        \"/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-4\";",
+            "const RETRY_3_V7_ACTIVE_UPDATE: &str =\n        \"/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-3\";",
+            #"const RETRY_3_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-3.pending-";"#,
+            #"const RETRY_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-4.pending-";"#,
+            "const RETAINED_FAILED_V7_ROOT_NLINK: u64 = 6;",
+            "const RETAINED_FAILED_V7_ROOT_SIZE: u64 = 192;",
+            "const RETRY_4_V7_ROOT_NLINK: u64 = 7;",
+            "const RETRY_4_V7_ROOT_SIZE: u64 = 224;",
+            "const RECOVERY_RETRY_3_EVIDENCE_INODE: u64 = 27_828_068;",
+            "const RECOVERY_RETRY_3_TERMINAL_EVIDENCE_NLINK: u64 = 23;",
+            "const RECOVERY_RETRY_3_TERMINAL_EVIDENCE_SIZE: u64 = 736;",
+            "const RECOVERY_RETRY_3_RECOVERY_JOURNAL_INODE: u64 = 27_848_659;",
+            "const RECOVERY_RETRY_3_RECOVERY_JOURNAL_SIZE: u64 = 3_592;",
+            #""9730a817df066c0cbaae2ff6ad09c1b4c68ce524717d5fa416fe0e178629d34a";"#,
+            "const RECOVERY_RETRY_3_RECOVERY_RESULT_INODE: u64 = 27_849_743;",
+            "const RECOVERY_RETRY_3_RECOVERY_RESULT_SIZE: u64 = 286;",
+            #""7d9943072ebc43b1c7ab236b2c0cfba984e3b573400b9d844842724c655bb16c";"#,
+            "const RECOVERY_RETRY_3_POINTER_INODE: u64 = 27_832_813;",
+            "const RECOVERY_RETRY_3_POINTER_SIZE: u64 = 155;",
+            #""efbe37925571f60f5ad898c7046dbd85d8e31d4bad9af603c57745928bf7059e";"#,
+            "const ROOT_V7_SUPPORT_DIRECTORY: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7-v3\";",
+            #"const ROOT_V7_CONTROLLER_PUBLISH_MODE: &str = "--root-publish-controller-identity-v7-v3";"#,
+            #""--root-bootstrap-controller-identity-v7-v3";"#,
+            "const RETRY_4_ROOT_SUPPORT_PARENT_NLINK: u64 = 8;",
+            "const RETRY_4_ROOT_SUPPORT_PARENT_LENGTH: u64 = 256;",
+            "const RETAINED_ROOT_V7_TRANSACTION_PARENT_NLINK: u64 = 4;",
+            "const RETAINED_ROOT_V7_TRANSACTION_PARENT_LENGTH: u64 = 128;",
+            "const RECOVERY_RETRY_3_ROOT_TRANSACTION_INODE: u64 = 27_832_701;",
+            "const RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_INODE: u64 = 27_832_673;",
+            #""5feb2414a70b55ebac702916850cfb2b35f5d51a70ea63ae9ca00d67ba10bb04";"#,
+            "const RECOVERY_RETRY_2_MIRROR_PROBE_SHA256: &str =\n        \"13f6209ebb6a388f296c62ae4cfa5ce153b24e8a78d0ef45091b0aa30bc27b4b\";",
+            "const EXPECTED_MIRROR_PROBE_BINARY_SHA256: &str =\n        \"b344eb24cde4ab1881b065e2ef0aa208aef12dbdd31fea7259eabc5ad5b6abaf\";",
+            "const EXPECTED_FUNCTIONAL_INPUTS_SHA256: &str =\n        \"6201d2ba57d50217246b151a623303658a587bab57ee484f3c85e5a34a4a9e28\";",
+            "const EXPECTED_FUNCTIONAL_INPUT_COUNT: usize = 134;",
+            "const RELEASE_ONLY_PATH_ALLOWLIST: [&str; 12]",
+        ]
+        let terminalEvidenceTokens = [
+            "let expected_device = verified_data_volume_device()?;",
+            "Path::new(RECOVERY_RETRY_3_EVIDENCE)",
+            "metadata.nlink() == RECOVERY_RETRY_3_TERMINAL_EVIDENCE_NLINK",
+            "metadata.len() == RECOVERY_RETRY_3_TERMINAL_EVIDENCE_SIZE",
+            "RECOVERY_RETRY_3_RECOVERY_JOURNAL_BYTES,",
+            "RECOVERY_RETRY_3_RECOVERY_RESULT_BYTES,",
+            "history.state != V7State::CriticalFailure",
+            "history.terminal_critical_predecessor != Some(V7State::CurrentRestored)",
+            "require_exact_terminal_retry_3_recovery_binding()?;",
+            "(\"retry-3-recovery-journal.txt\", false)",
+            "(\"retry-3-recovery-result.txt\", false)",
+            "(\"retired-active-pointer.txt\", false)",
+            "actual != expected",
+            "evidence_before.dev() != evidence_after.dev()",
+            "layout.nonce != RECOVERY_RETRY_3_NONCE",
+        ]
+        let terminalRetry3HelperSHA256 = [
+            sha256Hex(retainedFile),
+            sha256Hex(retainedFailureFile),
+            sha256Hex(retainedEmptyDirectory),
+            sha256Hex(terminalProbeDirectory),
+            sha256Hex(terminalRecoveryBinding),
+            sha256Hex(terminalEvidence),
+        ]
+        let expectedTerminalRetry3HelperSHA256 = [
+            "a356ab4839e724868bad6deafc6aa65480b829e815e139f6688ce50a7b94076d",
+            "56d146d88bc25cae964e8b58cb7f893ff4de157a016b9eb0dea2936bae6af0cd",
+            "ccdcb712af4d443bb7f9d6491bf877c8f6cfb6dff477e1d792f182c31317ea0a",
+            "dd3298461d1dcfa98fc7ff00770f78fca23780badd7a4718a385e7785af67add",
+            "5f441a140f9f424c03617bf48ccabfe56516eead5a4703cbccb15442589bcb74",
+            "f1dfc004b4db830b5f81386522afd6374cc2a12c059f9360cf4cb8df29abcf58",
+        ]
+        let frozenRetry4SafetyHelperSHA256 = [
+            sha256Hex(noPending),
+            sha256Hex(terminalBoundary),
+            sha256Hex(admission),
+            sha256Hex(pointerExpectation),
+            sha256Hex(currentLayout),
+            sha256Hex(rootPrefixFile),
+            sha256Hex(rootStage),
+            sha256Hex(rootSupportNames),
+            sha256Hex(rootSupport),
+            sha256Hex(sudoRootSupport),
+            sha256Hex(directTransactionParent),
+            sha256Hex(sudoTransactionParent),
+            sha256Hex(retry3Tombstone),
+            sha256Hex(liveBoundaryComparison),
+            sha256Hex(liveBoundaryProof),
+            sha256Hex(rootBootstrap),
+            sha256Hex(rootPublisher),
+            sha256Hex(rootTopology),
+            sha256Hex(sealedRepair),
+            sha256Hex(uidBootstrap),
+            sha256Hex(rootAdmission),
+            sha256Hex(broker),
+        ]
+        let expectedFrozenRetry4SafetyHelperSHA256 = [
+            "1a519ca18833c25e00b8a9b759d684b076aafec8979a80796fe10b5d6cdad8f9",
+            "d0d9738d12910e02ac4530f263203ed92f21e7f2b11fb8b9441be986c2dd09c8",
+            "9ebe4fdb044dd5dc31cf8d3ecababac09301920b4e044d8ff1e8ae6c4e99633f",
+            "f19f1c69665a5a54b361e9b8c05be086cb653f307b266c68aba1a01990e638dd",
+            "e5e4f54ae778e8045f90deddfd6b0256c3617f6fa86dab97d07b9be3a79bc9f8",
+            "08434cbe9997df5730fc1d8dc52283e9387d9fb55ac8d43391258b2f27e59a61",
+            "b7b9bfdbcfeee69907000e03afbbfb8dfd2a755cb6c0da7f26037db5bbf1c65e",
+            "0f922cd93aba8d0dcfd8ecc166f8b1b26ee68931067b309e42ed636c3aca2a92",
+            "2a00355aef4765ed2b8d14610319c96821b9c44fcbcb5ed502d8112258ffc4b4",
+            "313dfc3714c90e99c4430ac34f21fb36755b3522befcb2bb74b6911195d60109",
+            "71f4fe832fb6d3580dc791bec53d16ceb284188fb97cb56542ed2ee379e3c22c",
+            "b99b4492f78573971833a0da494d8c93408c58508fea18dc71f31da17b564764",
+            "05fb677574c26af3718eb85eae2094418d90000a97b3fb93d8c08ccd5a270330",
+            "85d240b11ce26ad63f992aec1ae1e030c615b4f3492420fdc863bf39bd9532d1",
+            "43a4c45641ff86d387bb577d729267e60b726fd772f11a34e240f64762b4237c",
+            "392f07995ea841e531d0a6bb93e99dc65d4df48ec26aa37c65a1ecbf9e0d197c",
+            "e2834f98bc61b0f940b5efc74c42b71cdf8dfd8909a2da0348b34da72ec34b69",
+            "d55213575c0eea4710aba236d488b78b55392dca5e244b23af1f4be7ddd646ac",
+            "b5fe5c6c1f9bf10adb75911380aaf04bd869863d55b3008a060ae9c93577b3d8",
+            "f58109c6b6999b56e6f22f7136ac2079f94569daebab0b5598a64c955601c711",
+            "794765c8acda6aa890120943eded375e306367447b96a34c8d6d860ee9af5ca3",
+            "681bbbd01dc3c438a64096050a9de0b6c01b0cded39f7286562639936b3d40d3",
+        ]
+        let frozenRetry4CallThroughSHA256 = [
+            sha256Hex(terminalLogPrefix),
+            sha256Hex(terminalLogPrefixMappings),
+            sha256Hex(retry2Tombstone),
+            sha256Hex(retry2SudoTombstone),
+            sha256Hex(retry3SudoTombstone),
+            sha256Hex(exactRootTransactionChildren),
+            sha256Hex(residueRetirement),
+            sha256Hex(residueLsof),
+            sha256Hex(directRootIdentityRecords),
+            sha256Hex(rootIdentityBinding),
+            sha256Hex(proxyIdentityBinding),
+            sha256Hex(sudoRootIdentityRecords),
+            sha256Hex(rootControllerIdentity),
+            sha256Hex(rootTrust),
+            sha256Hex(finish),
+            sha256Hex(rootNames),
+            sha256Hex(retainedQuartet),
+            sha256Hex(rootQuintet),
+        ]
+        let expectedFrozenRetry4CallThroughSHA256 = [
+            "7990c87f8b17707d085a70391befb78d9a9c084704f8118ec90aa30ee7d53895",
+            "0ffe3db5793690bf5f013a37f7acaab758ff207258cc41f6ea424304367b8352",
+            "3b5ac268962cbf758cb18debcb154ef3926cef5b09f6fa734af9ba51eaaf9b26",
+            "4f285b845572b98f8a3262e8abab78d8d4d39b8dcbd1d1f4b85973972405895f",
+            "15357f8bd85b9777ce6c6c842c4ff84f2111c4229853b92e00559a3782e84eeb",
+            "db2196c461160a038e6b5f20d6c9f373646be5c6badbcd45c09a11db8cc12670",
+            "70485abe19f385de14ff9d779052a3b544c3f4ddd7d20eb9d370d500791d82b8",
+            "eba1e005e27b872f051a1abb0618d100521ceba27b579b5702bed7145494bed1",
+            "8efbd54ee6c4915f3720da766ad12cef58745765182082cbcdf8d688063c466c",
+            "0e4e869b18cd6a232f003f02645d7a10447ea8daa0af40d091e492665ebe87bd",
+            "bdc244123d2a628a1761660099da4ad68d49b3b377c19d679a74f865f8981db5",
+            "7f68730fb47d58773c5bfa17d3e1f4227d0e446f5755f01b61d2bc56d2835e82",
+            "edebbc0bbd719c5d7f442fe7647c6a2dd126f30d440142ae42ffd8a1bbb4d70c",
+            "df7cfbd30ec1a5ebbc108eca7c51a7e5fffa752dd42fb22342daa3f296a75315",
+            "6aeca0538ba555d9f37c4703f5a19bfc49f29112af9e644dcf59f160594b0380",
+            "018921ecfedc0cf00f1cbb92e2493b0c308bbca2c8a9c5ceda68116ed8295cfd",
+            "47a69187571a59e004d47683990ed86a5865f7da42d31c8125b840fd5cc477bb",
+            "30326e4036fe47e4e5d0d6b7ac28fd3be69abbd209c2bb765327fa2b3e49eab9",
+        ]
+        let noPendingTokens = [
+            "require_directory(private_root, 0o700)?;",
+            "let before = fs::symlink_metadata(private_root)?;",
+            "for entry in fs::read_dir(private_root)?",
+            "if name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)",
+            "|| name.starts_with(RETRY_1_V7_PENDING_PREFIX)",
+            "|| name.starts_with(RETRY_2_V7_PENDING_PREFIX)",
+            "|| name.starts_with(RETRY_3_V7_PENDING_PREFIX)",
+            "|| name.starts_with(RETRY_V7_PENDING_PREFIX)",
+            "let after = fs::symlink_metadata(private_root)?;",
+            "if before.dev() != after.dev()",
+            "|| before.ino() != after.ino()",
+            "|| before.permissions().mode() & 0o7777 != 0o700",
+            "|| after.permissions().mode() & 0o7777 != 0o700",
+        ]
+        let terminalBoundaryTokens = [
+            "require_path_absent(\n            Path::new(RETRY_3_V7_ACTIVE_UPDATE),\n            \"terminal retry-3 active pointer\",\n        )?;",
+            "require_path_absent(\n            Path::new(RECOVERY_RETRY_3_RECOVERY_JOURNAL_PENDING),\n            \"terminal retry-3 pending recovery journal\",\n        )?;",
+            "require_path_absent(\n            Path::new(RECOVERY_RETRY_3_RECOVERY_RESULT_PENDING),\n            \"terminal retry-3 pending recovery result\",\n        )?;",
+            "require_exact_retry_3_log_prefixes()",
+        ]
+        let stageTokens = [
+            "Retry4RootV3Stage::Absent",
+            "Retry4RootV3Stage::Empty",
+            "Retry4RootV3Stage::Pending",
+            "Retry4RootV3Stage::Controller",
+            "Retry4RootV3Stage::PinPrefix",
+            "Retry4RootV3Stage::RecordsPrefix",
+            "Retry4RootV3Stage::Sealed",
+            "require_retry_4_root_support_parent_via_sudo(false)?;",
+            "require_retry_4_root_support_parent_via_sudo(true)?;",
+            "[\".opensteamer-v7-controller.pending\"]",
+            "[\"opensteamer-v7-controller\"]",
+            "[\"controller-binary.sha256\", \"opensteamer-v7-controller\"]",
+            "sudo_root_v3_prefix_file(",
+            "controller_identity_journal_at(",
+            "published_identity.as_ref()",
+            "support_after != support_before",
+            "listing_after.stdout != listing.stdout",
+            "is_root_v3_install_residue_name(name)",
+            "residue_names.len() > 8",
+            "exact_controller_bytes(",
+            "fields[2] != \"1\"",
+            "!matches!(fields[3], \"0500\" | \"0600\")",
+            "fields[5] != RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE.to_string()",
+            "fields[8] != \"0\"",
+            "expected_bytes.starts_with(&output.stdout)",
+            "sudo_retained_root_recovery_v1_stat(&path)? != before",
+            "support_after != support_before",
+            "listing_after.stdout != listing.stdout",
+            "residue_names.is_empty()",
+            "pin_complete",
+            "journal_complete",
+        ]
+        let sealedStageConjunction =
+            "if stage == Retry4RootV3Stage::RecordsPrefix\n" +
+            "            && residue_names.is_empty()\n" +
+            "            && pin_complete\n" +
+            "            && journal_complete\n" +
+            "        {"
+        let exactControllerBytesTokens = [
+            ".custom_flags(O_NOFOLLOW | 0x0100_0000)",
+            "require_descriptor_close_on_exec(&file, \"normal root V3 controller bytes\")?;",
+            "bytes.len() as u64 != expected.length",
+            "sha256_bytes(&bytes)? != expected.sha256",
+            "before.dev() != named_after.dev()",
+            "before.ino() != named_after.ino()",
+            "before.len() != named_after.len()",
+        ]
+        let residueNameTokens = [
+            #"name.strip_prefix("INS@")"#,
+            "suffix.len() == 6",
+            "byte.is_ascii_alphanumeric()",
+        ]
+        let residueRetirementTokens = [
+            "executable != Path::new(ROOT_V7_CONTROLLER_PENDING)",
+            "executable != Path::new(ROOT_V7_CONTROLLER)",
+            "is_root_v3_install_residue_name(name)",
+            "residues.len() > 8",
+            "require_no_openers_root_file(&residue)?;",
+            ".custom_flags(O_NOFOLLOW | 0x0100_0000)",
+            "require_descriptor_close_on_exec(&file, \"normal root V3 install residue\")?;",
+            "metadata.uid() == 0",
+            "metadata.gid() == 0",
+            "metadata.nlink() == 1",
+            "matches!(metadata.permissions().mode() & 0o7777, 0o500 | 0o600)",
+            "metadata.dev() == RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE",
+            "metadata.len() <= controller.length",
+            "metadata.st_flags() == 0",
+            "expected_bytes.starts_with(&bytes)",
+            "bytes.len() as u64 != before.len()",
+            "!metadata_is_exact(&after)",
+            "!metadata_is_exact(&named_after)",
+            "let named_immediate = fs::symlink_metadata(&residue)?;",
+            "!metadata_is_exact(&named_immediate)",
+            "after.dev() != named_immediate.dev()",
+            "after.ino() != named_immediate.ino()",
+            "after.len() != named_immediate.len()",
+            "fs::remove_file(&residue)?;",
+            "fsync_parent(&residue)?;",
+            "require_path_absent(&residue, \"retired normal root V3 install residue\")?;",
+            "drop(file);",
+        ]
+        let residueLsofTokens = [
+            "Path::new(\"/usr/sbin/lsof\")",
+            "0o755",
+            "EXPECTED_LSOF_SHA256",
+            "command_output(\"/usr/sbin/lsof\", &[\"--\", path_text(path)?], None)?;",
+            "if output.status.code() != Some(1)",
+            "|| !output.stdout.is_empty()",
+            "|| !output.stderr.is_empty()",
+        ]
+        let rootPrefixFileTokens = [
+            "let read_stat = || sudo_retained_root_recovery_v1_stat(path);",
+            "let before = read_stat()?;",
+            "let output = sudo_output(&[\"-n\", \"/bin/cat\", path_text(path)?])?;",
+            "if !output.stderr.is_empty()",
+            "|| !expected.as_bytes().starts_with(&output.stdout)",
+            "|| output.stdout.len() > expected.len()",
+            "|| read_stat()? != before",
+        ]
+        let supportTokens = [
+            "RETRY_4_ROOT_SUPPORT_PARENT_NLINK",
+            "RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_NLINK",
+            "RETRY_4_ROOT_SUPPORT_PARENT_LENGTH",
+            "RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_LENGTH",
+            "if names.iter().map(String::as_str).ne(retry_4_root_support_names(v3_present))",
+            "before.dev() != after.dev()",
+            "before.ino() != after.ino()",
+            "before.nlink() != after.nlink()",
+            "before.len() != after.len()",
+        ]
+        let sudoSupportTokens = [
+            "let expected_stat = format!(",
+            "0:0:{expected_nlink}:0755:Directory:{}:{}:{expected_length}:0",
+            "let expected_listing = format!(\"{}\\n\", retry_4_root_support_names(v3_present).join(\"\\n\"));",
+            "let stat = sudo_retained_root_recovery_v1_stat(parent)?;",
+            "if stat != expected_stat",
+            "let listing = sudo_output(&[\"-n\", \"/bin/ls\", \"-1A\", path_text(parent)?])?;",
+            "if !listing.stderr.is_empty() || listing.stdout != expected_listing.as_bytes()",
+            "let before = read()?;",
+            "let after = read()?;",
+            "if before != after",
+        ]
+        let transactionTokens = [
+            "Path::new(RECOVERY_RETRY_2_ROOT_TRANSACTION)",
+            "Path::new(RECOVERY_RETRY_3_ROOT_TRANSACTION)",
+            "RETAINED_ROOT_V7_TRANSACTION_PARENT_NLINK",
+            "RETAINED_ROOT_V7_TRANSACTION_PARENT_LENGTH",
+            "let expected_nlink = if current.is_some()",
+            "RETAINED_ROOT_V7_TRANSACTION_PARENT_NLINK + 1",
+            "if current.is_some() { 32 } else { 0 }",
+            "actual != expected",
+        ]
+        let sudoTransactionTokens = [
+            "Path::new(RECOVERY_RETRY_2_ROOT_TRANSACTION)",
+            "Path::new(RECOVERY_RETRY_3_ROOT_TRANSACTION)",
+            "let expected_nlink = RETAINED_ROOT_V7_TRANSACTION_PARENT_NLINK",
+            "if current.is_some() { 1 } else { 0 }",
+            "let expected_length = RETAINED_ROOT_V7_TRANSACTION_PARENT_LENGTH",
+            "if current.is_some() { 32 } else { 0 }",
+            "RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE",
+            "RETAINED_ROOT_V7_TRANSACTION_PARENT_INODE",
+            "current == retained_retry_2",
+            "current == retained_retry_3",
+            "expected_names.join(\"\\n\")",
+            "if parent_stat != expected_parent",
+            "listing.stdout != expected_listing.as_bytes()",
+            "if before != after",
+        ]
+        let retry2SudoTokens = [
+            "Path::new(RECOVERY_RETRY_2_ROOT_TRANSACTION)",
+            "layout.root != transaction",
+            "require_retry_4_root_support_parent_via_sudo(v3_present)?;",
+            "require_retry_4_transaction_parent_via_sudo(current)",
+            "RECOVERY_RETRY_2_ROOT_STATE",
+            "Some(RECOVERY_RETRY_2_ROOT_FAILED_DRIVER_INODE)",
+            "Some(EXPECTED_PRODUCTION_DRIVER_TREE_SHA256)",
+            "Some(EXPECTED_PRODUCTION_DRIVER_PACKAGE_SHA256)",
+            "OpensteamerVirtualMicrophone-v7.pkg\\nfailed-v7-product-driver.node\\nstate.txt\\n",
+            "sudo_read_exact_incident_text(",
+            "RECOVERY_RETRY_2_ROOT_STATE_SHA256",
+            "EXPECTED_PRODUCTION_DRIVER_EXECUTABLE_SHA256",
+            "prove retained retry-2 transaction has no xattrs",
+            "if !xattrs.stdout.is_empty() || !xattrs.stderr.is_empty()",
+            "sudo_output(&[\"-n\", \"/usr/sbin/lsof\", \"+D\", path_text(transaction)?])?;",
+            "openers.status.code() != Some(1)",
+            "|| !openers.stdout.is_empty()",
+            "|| !openers.stderr.is_empty()",
+            "attest_transaction()?;",
+            "attest_transaction()?;",
+            "attest_immutable_sets()",
+        ]
+        let liveBoundaryTokens = [
+            "let host_before = verify_paired_v7_runtime()?;",
+            "let core_audio_before = read_core_audio_generation_root()?;",
+            "require_retained_retry_2_root_tombstone_via_sudo(v3_present, current, true)?;",
+            "require_retry_3_restored_root_via_sudo(v3_present, current, true)?;",
+            "let core_audio_after = read_core_audio_generation_root()?;",
+            "let host_after = verify_paired_v7_runtime()?;",
+            "require_same_retry_4_live_boundary(",
+        ]
+        let liveBoundaryComparisonTokens = [
+            "if before_host.pid != after_host.pid",
+            "before_host.runs != after_host.runs",
+            "before_host.process_start != after_host.process_start",
+            "before_host.nonce != after_host.nonce",
+            "before_host.lock_device != after_host.lock_device",
+            "before_host.lock_inode != after_host.lock_inode",
+            "before_core_audio != after_core_audio",
+        ]
+        let publisherTokens = [
+            "env::current_exe()? != Path::new(ROOT_V7_CONTROLLER_PENDING)",
+            "require_retry_4_root_support_parent(true)?;",
+            "require_exact_retry_4_transaction_parent_names(None)?;",
+            "require_retained_retry_2_root_tombstone(true)?;",
+            "require_retained_retry_3_root_tombstone(true)?;",
+            "retire_root_v3_install_residues()?;",
+            "require_root_v3_support_topology(&[&[\".opensteamer-v7-controller.pending\"]])?;",
+            ".custom_flags(O_NOFOLLOW)",
+            "descriptor.sync_all()?;",
+            "rename_exclusive(",
+            "fsync_parent(Path::new(ROOT_V7_CONTROLLER))?;",
+            "if pending != published",
+            "require_root_v3_support_topology(&[&[\"opensteamer-v7-controller\"]])?;",
+            "ROOT_V7_CONTROLLER_V3_PUBLISHED",
+        ]
+        let bootstrapTokens = [
+            "env::current_exe()? != Path::new(ROOT_V7_CONTROLLER)",
+            "require_retry_4_root_support_parent(true)?;",
+            "require_exact_retry_4_transaction_parent_names(None)?;",
+            "require_retained_retry_2_root_tombstone(true)?;",
+            "require_retained_retry_3_root_tombstone(true)?;",
+            "retire_root_v3_install_residues()?;",
+            "create_or_repair_root_recovery_sealed(",
+            "Path::new(ROOT_V7_CONTROLLER_PIN)",
+            "Path::new(ROOT_V7_CONTROLLER_IDENTITY_JOURNAL)",
+            "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V3",
+            "read_root_controller_identity_records()? != identity",
+            "ROOT_V7_CONTROLLER_V3_IDENTITY_SEALED",
+        ]
+        let uidBootstrapTokens = [
+            "require_retry_4_transaction_parent_via_sudo(None)?;",
+            "let mut stage = require_retry_4_root_v3_stage_via_sudo(&before)?;",
+            "if stage == Retry4RootV3Stage::Absent",
+            "require_or_create_root_directory(Path::new(ROOT_V7_SUPPORT_DIRECTORY), \"700\")?;",
+            "stage != Retry4RootV3Stage::Empty",
+            "Retry4RootV3Stage::Pending => (false, true)",
+            "\"-S\",",
+            "ROOT_V7_CONTROLLER_PENDING,",
+            "ROOT_V7_CONTROLLER_PUBLISH_MODE,",
+            "ROOT_V7_CONTROLLER_V3_PUBLISHED\\n",
+            "ROOT_V7_CONTROLLER_BOOTSTRAP_MODE",
+            "ROOT_V7_CONTROLLER_V3_IDENTITY_SEALED\\n",
+            "!= Retry4RootV3Stage::Sealed",
+            "if before != after",
+            "sealed.sha256 != after.sha256 || sealed.length != after.length",
+            "require_retry_4_root_support_parent_via_sudo(true)?;",
+            "PreparedRootV3Identity {",
+            "uid_controller: after,",
+            "sealed_root_controller: sealed,",
+        ]
+        let executeTokens = [
+            "require_v7_retry_admission_ready()?;",
+            "require_retry_4_root_admission_via_sudo()?;",
+            "authenticate_v7_privileged_boundary()?;",
+            "let prepared_root_controller = bootstrap_root_owned_v7_controller_for_prepare()?;",
+            "require_v7_retry_admission_ready()?;",
+            "let nonce = new_nonce()?;",
+            "\"paired-v7-update-retry-4-{}-{}-{}\"",
+            "unix_seconds()?",
+            "std::process::id()",
+            "nonce",
+            "require_v7_retry_admission_ready()?;",
+            "create_private_directory(&evidence)?;",
+            "require_current_retry_v7_layout(",
+            "&prepared_root_controller,",
+        ]
+        let brokerTokens = [
+            "prepared: &PreparedRootV3Identity",
+            "let controller_identity = verify_uid501_controller_against_root_pin()?;",
+            "if controller_identity != prepared.uid_controller",
+            "require_retry_4_root_v3_stage_via_sudo(&controller_identity)?",
+            "!= Retry4RootV3Stage::Sealed",
+            "let sealed_root_controller = read_root_controller_identity_records_via_sudo()?;",
+            "sealed_root_controller != prepared.sealed_root_controller",
+            "sealed root controller V3 inode changed after pre-evidence bootstrap",
+        ]
+        let pointerExpectationTokens = [
+            "RetryV7PointerExpectation::Absent => {\n                require_path_absent(Path::new(V7_ACTIVE_UPDATE), \"retry paired-v7 pointer\")\n            }",
+            "RetryV7PointerExpectation::Present => verify_update_pointer_at(",
+            "Path::new(V7_ACTIVE_UPDATE)",
+            "evidence",
+            "Path::new(V7_UPDATE_ROOT)",
+        ]
+        let currentLayoutTokens = [
+            "let root_before = fs::symlink_metadata(root)?;",
+            "let retry_metadata = fs::symlink_metadata(evidence)?;",
+            "if !root_before.file_type().is_dir()",
+            "|| root_before.file_type().is_symlink()",
+            "|| root_before.uid() != USER_ID",
+            "|| root_before.gid() != RETAINED_FAILED_V7_ATTEMPT_GID",
+            "|| root_before.permissions().mode() & 0o7777 != 0o700",
+            "|| root_before.dev() != data_volume_device",
+            "|| root_before.ino() != RETAINED_FAILED_V7_ROOT_INODE",
+            "|| root_before.nlink() != RETRY_4_V7_ROOT_NLINK",
+            "|| root_before.len() != RETRY_4_V7_ROOT_SIZE",
+            "|| root_before.st_flags() != 0",
+            "|| retry_metadata.file_type().is_symlink()",
+            "|| !retry_metadata.file_type().is_dir()",
+            "|| retry_metadata.uid() != USER_ID",
+            "|| retry_metadata.gid() != RETAINED_FAILED_V7_ATTEMPT_GID",
+            "|| retry_metadata.permissions().mode() & 0o7777 != 0o700",
+            "|| retry_metadata.dev() != data_volume_device",
+            "|| retry_metadata.ino() == 0",
+            "|| retry_metadata.ino() == RECOVERY_RETRY_3_EVIDENCE_INODE",
+            "|| retry_metadata.nlink() < 2",
+            "|| retry_metadata.st_flags() != 0",
+            "let root_after = fs::symlink_metadata(root)?;",
+            "let retry_after = fs::symlink_metadata(evidence)?;",
+            "if !root_after.file_type().is_dir()",
+            "|| root_after.uid() != USER_ID",
+            "|| root_after.nlink() != RETRY_4_V7_ROOT_NLINK",
+            "|| retry_after.uid() != USER_ID",
+            "|| retry_after.permissions().mode() & 0o7777 != 0o700",
+            "|| root_before.dev() != root_after.dev()",
+            "|| retry_metadata.dev() != retry_after.dev()",
+            "|| retry_metadata.st_flags() != retry_after.st_flags()",
+        ]
+        let rootPrepareTokens = [
+            "require_retry_4_root_operation_trust(None, true)?;",
+            "prepare_root_transaction_parent()?;",
+            "require_retry_4_root_operation_trust(None, true)?;",
+            "RetryV7PointerExpectation::Absent",
+            "require_path_absent(&layout.root, \"root v7 driver transaction\")?;",
+            "fs::create_dir(&layout.root)?;",
+            "require_retry_4_root_operation_trust(Some(&layout.root), true)?;",
+        ]
+        let admissionActivePointerCall =
+            "require_path_absent(Path::new(V7_ACTIVE_UPDATE), \"retry-4 paired-v7 pointer\")?;"
+        let rootAdmissionStableGuard =
+            "if uid_after != uid_before || stage_after != stage_before {"
+        let sealedRepairTokens = [
+            "let before = file.metadata()?;",
+            "let named_before = fs::symlink_metadata(path)?;",
+            "if before.dev() != named_before.dev()",
+            "|| before.ino() != named_before.ino()",
+            "|| before.len() != named_before.len()",
+            "if !expected.as_bytes().starts_with(&bytes)",
+            "file.set_len(0)?;",
+            "file.write_all(expected.as_bytes())?;",
+            "file.sync_all()?;",
+            "fsync_parent(path)?;",
+            "read_root_sealed_utf8(path, 1_024)? != expected",
+        ]
+        let cliTokens = [
+            "RootControllerPublish",
+            "ROOT_V7_CONTROLLER_PUBLISH_MODE",
+            "Ok(V7Command::RootControllerPublish)",
+            "V7Command::RootControllerPublish => publish_root_controller()",
+            "ROOT_V7_CONTROLLER_PUBLISH_MODE.to_owned()",
+            "Ok(V7Command::RootControllerPublish)",
+        ]
+        let forbiddenRetry3Writers = [
+            "Retry3RecoveryJournal",
+            "recover_retry_3_critical_failure",
+            "publish_retry_3_recovery_result",
+            "repair_exact_retry_3_log_mode",
+            "reset_retry_3_pending_result_before_generation_publish",
+            "V7_RECOVER_RETRY_3_MODE",
+            "RecoverRetry3",
+        ]
+        let releaseOnlyPaths = [
+            "iOS/opensteamer/scripts/physical-blackhole-microphone-probe.swift",
+            "macOS/Tests/CaptureServerTests/PhysicalValidationScriptTests.swift",
+            "macOS/scripts/opensteamer-host-local-mono-trial-controller.rs",
+        ]
+        let rootSetNames = [
+            "driver-transactions-v7",
+            "privileged-v7",
+            "privileged-v7-recovery-retry-2",
+            "privileged-v7-recovery-retry-2-v2",
+            "privileged-v7-v2",
+            "privileged-v7-v3",
+        ]
+        return exactPins.allSatisfy(controller.contains)
+            && rootState.contains("mode: 0o040755,")
+            && terminalEvidenceTokens.allSatisfy(terminalEvidence.contains)
+            && terminalRetry3HelperSHA256 == expectedTerminalRetry3HelperSHA256
+            && frozenRetry4SafetyHelperSHA256 == expectedFrozenRetry4SafetyHelperSHA256
+            && frozenRetry4CallThroughSHA256 == expectedFrozenRetry4CallThroughSHA256
+            && !terminalEvidence.contains("require_exact_v7_retained_quartet")
+            && !terminalEvidence.contains("require_exact_v7_root_quintet")
+            && !terminalEvidence.contains("require_no_v7_pending_pointers")
+            && !terminalEvidence.contains("require_exact_retry_3_log_prefixes")
+            && containsOrdered(noPendingTokens, in: noPending)
+            && containsOrdered(terminalBoundaryTokens, in: terminalBoundary)
+            && retry2Probes.contains("RECOVERY_RETRY_2_MIRROR_PROBE_SHA256")
+            && !retry2Probes.contains("EXPECTED_MIRROR_PROBE_BINARY_SHA256")
+            && [
+                "FIRST_ATTEMPT_V7_PENDING_PREFIX",
+                "RETRY_1_V7_PENDING_PREFIX",
+                "RETRY_2_V7_PENDING_PREFIX",
+                "RETRY_3_V7_PENDING_PREFIX",
+                "RETRY_V7_PENDING_PREFIX",
+            ].allSatisfy(noPending.contains)
+            && containsOrdered(
+                [
+                    "Path::new(RETRY_3_V7_ACTIVE_UPDATE)",
+                    "require_no_v7_pending_pointers()?;",
+                    "require_exact_v7_retained_quartet(root, data_volume_device)?;",
+                    "require_terminal_retry_3_runtime_boundary()?;",
+                    "require_exact_terminal_retry_3_evidence()?;",
+                    "require_terminal_retry_3_runtime_boundary()?;",
+                    "require_exact_v7_retained_quartet(root, data_volume_device)",
+                ],
+                in: admission
+            )
+            && [
+                "RETAINED_FAILED_V7_ATTEMPT_NAME",
+                "RETAINED_FAILED_V7_RETRY_1_NAME",
+                "RECOVERY_RETRY_2_NAME",
+                "RECOVERY_RETRY_3_NAME",
+            ].allSatisfy(retainedQuartet.contains)
+            && retainedQuartet.contains("metadata.nlink() != RETAINED_FAILED_V7_ROOT_NLINK")
+            && retainedQuartet.contains("metadata.len() != RETAINED_FAILED_V7_ROOT_SIZE")
+            && [
+                "RETAINED_FAILED_V7_ATTEMPT_NAME",
+                "RETAINED_FAILED_V7_RETRY_1_NAME",
+                "RECOVERY_RETRY_2_NAME",
+                "RECOVERY_RETRY_3_NAME",
+                "current_name",
+            ].allSatisfy(rootQuintet.contains)
+            && rootNames.contains("actual != expected")
+            && rootNames.contains("root_before.nlink() != root_after.nlink()")
+            && pointerExpectation.contains("Path::new(RETRY_3_V7_ACTIVE_UPDATE)")
+            && pointerExpectation.contains("Path::new(V7_ACTIVE_UPDATE)")
+            && containsOrdered(pointerExpectationTokens, in: pointerExpectation)
+            && currentLayout.contains(#".strip_prefix("paired-v7-update-retry-4-")"#)
+            && currentLayout.contains("evidence.to_str() == Some(RECOVERY_RETRY_3_EVIDENCE)")
+            && currentLayout.contains("retry_metadata.ino() == RECOVERY_RETRY_3_EVIDENCE_INODE")
+            && currentLayout.components(separatedBy: "require_exact_v7_root_quintet").count - 1 == 3
+            && currentLayout.components(separatedBy: "require_terminal_retry_3_runtime_boundary").count - 1 == 2
+            && currentLayout.components(separatedBy: "require_exact_terminal_retry_3_evidence").count - 1 == 1
+            && containsOrdered(currentLayoutTokens, in: currentLayout)
+            && pendingRetirement.contains("RETRY_3_V7_PENDING_PREFIX")
+            && pendingRetirement.contains("RETRY_V7_PENDING_PREFIX")
+            && stageTokens.allSatisfy(rootStage.contains)
+            && rootStage.contains(sealedStageConjunction)
+            && exactControllerBytesTokens.allSatisfy(exactControllerBytes.contains)
+            && residueNameTokens.allSatisfy(residueName.contains)
+            && containsOrdered(residueRetirementTokens, in: residueRetirement)
+            && containsOrdered(residueLsofTokens, in: residueLsof)
+            && containsOrdered(rootPrefixFileTokens, in: rootPrefixFile)
+            && rootSetNames.allSatisfy(rootSupportNames.contains)
+            && containsOrdered(supportTokens, in: rootSupport)
+            && containsOrdered(sudoSupportTokens, in: sudoRootSupport)
+            && transactionTokens.allSatisfy(directTransactionParent.contains)
+            && containsOrdered(sudoTransactionTokens, in: sudoTransactionParent)
+            && retry3Tombstone.contains("RECOVERY_RETRY_3_ROOT_TRANSACTION_INODE")
+            && retry3Tombstone.contains("RECOVERY_RETRY_3_ROOT_STATE_SHA256")
+            && retry3Tombstone.contains("RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_INODE")
+            && retry3Tombstone.contains("verify_root_production_driver(&layout.failed)?;")
+            && retry3Tombstone.contains("require_no_extended_attributes_root(transaction)?;")
+            && retry3Tombstone.contains("require_no_openers_root(transaction)?;")
+            && retry2SudoTokens.allSatisfy(retry2SudoTombstone.contains)
+            && retry2SudoTombstone.components(separatedBy: "attest_transaction()?;").count - 1 == 2
+            && containsOrdered(liveBoundaryComparisonTokens, in: liveBoundaryComparison)
+            && containsOrdered(liveBoundaryTokens, in: liveBoundaryProof)
+            && containsOrdered(publisherTokens, in: rootPublisher)
+            && bootstrapTokens.allSatisfy(rootBootstrap.contains)
+            && rootTopology.contains("expected_sets.is_empty()")
+            && rootTopology.contains("actual.iter().map(String::as_str).eq(names)")
+            && rootTopology.contains("metadata.nlink() == expected_nlink")
+            && rootTopology.contains("metadata.len() == expected_length")
+            && sealedRepair.contains("expected.len() > 1_024")
+            && containsOrdered(sealedRepairTokens, in: sealedRepair)
+            && containsOrdered(uidBootstrapTokens, in: uidBootstrap)
+            && uidBootstrap.components(separatedBy: "prove_retry_4_live_runtime_and_root_tombstones").count - 1 == 3
+            && !uidBootstrap.contains("attest_retry_2_root_safe_state_via_sudo")
+            && rootAdmission.components(separatedBy: "require_retained_root_normal_v1_via_sudo()?;").count - 1 == 2
+            && rootAdmission.components(separatedBy: "require_retained_root_normal_v2_via_sudo()?;").count - 1 == 2
+            && rootAdmission.components(separatedBy: "require_retry_4_transaction_parent_via_sudo(None)?;").count - 1 == 2
+            && rootAdmission.components(separatedBy: "require_retry_4_root_v3_stage_via_sudo").count - 1 == 2
+            && rootAdmission.components(separatedBy: "prove_retry_4_live_runtime_and_root_tombstones").count - 1 == 2
+            && !rootAdmission.contains("attest_retry_2_root_safe_state_via_sudo")
+            && rootAdmission.contains(rootAdmissionStableGuard)
+            && rootTrust.contains("verify_root_controller_identity()?;")
+            && rootTrust.contains("require_exact_retry_4_transaction_parent_names(current)?;")
+            && rootTrust.contains("require_retained_retry_2_root_tombstone(require_product_absent)?;")
+            && rootTrust.contains("require_retained_retry_3_root_tombstone(require_product_absent)?;")
+            && finish.contains("operation.is_ok() && success_requires_product_absent")
+            && finish.contains("root retry-4 operation failed and its post-operation trust proof also failed")
+            && containsOrdered(rootPrepareTokens, in: rootPrepare)
+            && containsOrdered(executeTokens, in: execute)
+            && execute.components(separatedBy: "require_v7_retry_admission_ready()?;").count - 1 == 4
+            && admission.contains(admissionActivePointerCall)
+            && containsOrdered(brokerTokens, in: broker)
+            && !broker.contains("bootstrap_root_owned_v7_controller_for_prepare")
+            && !broker.contains("publish_root_controller")
+            && perform.contains("RootDriverBrokerClient::start(layout, prepared_root_controller)?;")
+            && !perform.contains("bootstrap_root_owned_v7_controller_for_prepare")
+            && commandEnum.contains(cliTokens[0])
+            && parser.contains(cliTokens[1])
+            && parser.contains(cliTokens[2])
+            && main.contains(cliTokens[3])
+            && cliSelfTest.contains(cliTokens[4])
+            && cliSelfTest.components(separatedBy: cliTokens[5]).count - 1 == 1
+            && forbiddenRetry3Writers.allSatisfy { !controller.contains($0) }
+            && !launcher.contains("RECOVER_RETRY_3")
+            && !launcher.contains("retry-3-critical-failure")
+            && controller.contains(#"const RELEASE_PIN_STATUS: &str = "PINNED_FINAL_REVIEW";"#)
+            && launcher.contains("RELEASE_PIN_STATUS='PINNED_FINAL_REVIEW'")
+            && launcher.contains("EXPECTED_SOURCE_SHA256='081212e20d74ae2c823eb8eab317259bc4899eae0e09c8f19e600d71d4f625e3'")
+            && launcher.contains("EXPECTED_BINARY_SHA256='70d1f444c0cb4db90cec6ec18edbd81e1a9285ae068f5f53aeb28027303b7de5'")
+            && launcher.contains("*PIN_AFTER_FINAL_REVIEW*)")
+            && launcher.contains(#""$EXECUTE_MODE"|"$RECOVER_RETRY_2_MODE")"#)
+            && releaseOnlyPaths.allSatisfy(controller.contains)
+            && releaseInputs.contains("RELEASE_ONLY_PATH_ALLOWLIST.contains(&path)")
+            && controller.contains(#"v['mode']=='real-dual-audioqueue'"#)
+            && localMonoController.contains(#"v['mode']=='real-dual-audioqueue'"#)
+            && !execute.contains("local-mono")
+            && !perform.contains("local-mono")
+            && !launcher.contains("local-mono")
+            && hasTwoCommitV7ReleaseCycleContract(controller)
+    }
+
     private func hasRetry3IncidentRecoveryContract(
         controller: String,
         launcher: String
@@ -5202,6 +6250,977 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs"
         )
         let launcher = try source("macOS/scripts/update-opensteamer-host-paired-v7.sh")
+        if controller.contains("active-paired-host-update-v7-retry-4") {
+            let localMonoController = try source(
+                "macOS/scripts/opensteamer-host-local-mono-trial-controller.rs"
+            )
+            XCTAssertTrue(
+                hasRetry4TerminalNamespaceAndRootV3Contract(
+                    controller: controller,
+                    launcher: launcher,
+                    localMonoController: localMonoController
+                )
+            )
+            var orphanReuseMutant = replacingInFunction(
+                controller,
+                beginningWith: "    fn require_v7_retry_admission_ready",
+                endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum RetryV7PointerExpectation",
+                target: "        require_exact_v7_retained_quartet(root, data_volume_device)?;\n",
+                replacement: ""
+            )
+            orphanReuseMutant = replacingInFunction(
+                orphanReuseMutant,
+                beginningWith: "    fn require_v7_retry_admission_ready",
+                endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum RetryV7PointerExpectation",
+                target: "        require_exact_v7_retained_quartet(root, data_volume_device)\n",
+                replacement: "        Ok(())\n"
+            )
+            orphanReuseMutant = replacingInFunction(
+                orphanReuseMutant,
+                beginningWith: "    fn execute_paired_v7_update",
+                endingBefore: "    fn perform_paired_v7_update",
+                target: "        let nonce = new_nonce()?;\n        let evidence = PathBuf::from(V7_UPDATE_ROOT).join(format!(\n            \"paired-v7-update-retry-4-{}-{}-{}\",\n            unix_seconds()?,\n            std::process::id(),\n            nonce\n        ));\n",
+                replacement: "        let nonce = \"00000000-0000-4000-8000-000000000000\".to_owned();\n        let evidence = PathBuf::from(V7_UPDATE_ROOT).join(\n            \"paired-v7-update-retry-4-1-1-00000000-0000-4000-8000-000000000000\",\n        );\n"
+            )
+            orphanReuseMutant = replacingInFunction(
+                orphanReuseMutant,
+                beginningWith: "    fn execute_paired_v7_update",
+                endingBefore: "    fn perform_paired_v7_update",
+                target: "        create_private_directory(&evidence)?;\n",
+                replacement: "        require_directory(&evidence, 0o700)?;\n"
+            )
+
+            var partialRootReuseMutant = replacingInFunction(
+                controller,
+                beginningWith: "    fn root_driver_prepare",
+                endingBefore: "    fn root_driver_publish_reload",
+                target: "        require_retry_4_root_operation_trust(None, true)?;\n",
+                replacement: ""
+            )
+            partialRootReuseMutant = replacingInFunction(
+                partialRootReuseMutant,
+                beginningWith: "    fn root_driver_prepare",
+                endingBefore: "    fn root_driver_publish_reload",
+                target: "        require_retry_4_root_operation_trust(None, true)?;\n",
+                replacement: ""
+            )
+            partialRootReuseMutant = replacingInFunction(
+                partialRootReuseMutant,
+                beginningWith: "    fn root_driver_prepare",
+                endingBefore: "    fn root_driver_publish_reload",
+                target: "        prepare_root_transaction_parent()?;\n",
+                replacement: ""
+            )
+            partialRootReuseMutant = replacingInFunction(
+                partialRootReuseMutant,
+                beginningWith: "    fn root_driver_prepare",
+                endingBefore: "    fn root_driver_publish_reload",
+                target: "        require_path_absent(&layout.root, \"root v7 driver transaction\")?;\n",
+                replacement: ""
+            )
+            partialRootReuseMutant = replacingInFunction(
+                partialRootReuseMutant,
+                beginningWith: "    fn root_driver_prepare",
+                endingBefore: "    fn root_driver_publish_reload",
+                target: "        fs::create_dir(&layout.root)?;\n",
+                replacement: "        fs::create_dir_all(&layout.root)?;\n"
+            )
+            let retry4Mutants = [
+                orphanReuseMutant,
+                partialRootReuseMutant,
+                controller.replacingOccurrences(
+                    of: "active-paired-host-update-v7-retry-4\";",
+                    with: "active-paired-host-update-v7-retry-3\";"
+                ),
+                controller.replacingOccurrences(
+                    of: "active-paired-host-update-v7-retry-4.pending-",
+                    with: "active-paired-host-update-v7-retry-3.pending-"
+                ),
+                controller.replacingOccurrences(
+                    of: "const RETAINED_FAILED_V7_ROOT_NLINK: u64 = 6;",
+                    with: "const RETAINED_FAILED_V7_ROOT_NLINK: u64 = 5;"
+                ),
+                controller.replacingOccurrences(
+                    of: "const RETRY_4_V7_ROOT_NLINK: u64 = 7;",
+                    with: "const RETRY_4_V7_ROOT_NLINK: u64 = 6;"
+                ),
+                controller.replacingOccurrences(
+                    of: "const RETRY_4_V7_ROOT_SIZE: u64 = 224;",
+                    with: "const RETRY_4_V7_ROOT_SIZE: u64 = 192;"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_no_v7_pending_pointers",
+                    endingBefore: "    fn require_exact_retained_v7_top_level",
+                    target: "                || name.starts_with(RETRY_3_V7_PENDING_PREFIX)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_no_v7_pending_pointers",
+                    endingBefore: "    fn require_exact_retained_v7_top_level",
+                    target: "            if name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)\n",
+                    replacement: "            if false && name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_terminal_retry_3_runtime_boundary",
+                    endingBefore: "    fn read_root_controller_identity_records_via_sudo",
+                    target: "        require_path_absent(\n            Path::new(RETRY_3_V7_ACTIVE_UPDATE),\n            \"terminal retry-3 active pointer\",\n        )?;\n",
+                    replacement: "        let _ = Path::new(RETRY_3_V7_ACTIVE_UPDATE);\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_terminal_retry_3_runtime_boundary",
+                    endingBefore: "    fn read_root_controller_identity_records_via_sudo",
+                    target: "        require_path_absent(\n            Path::new(RECOVERY_RETRY_3_RECOVERY_JOURNAL_PENDING),\n            \"terminal retry-3 pending recovery journal\",\n        )?;\n",
+                    replacement: "        let _ = Path::new(RECOVERY_RETRY_3_RECOVERY_JOURNAL_PENDING);\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_v7_pointer_expectation",
+                    endingBefore: "    fn require_current_retry_v7_layout",
+                    target: "            RetryV7PointerExpectation::Absent => {\n                require_path_absent(Path::new(V7_ACTIVE_UPDATE), \"retry paired-v7 pointer\")\n            }\n",
+                    replacement: "            RetryV7PointerExpectation::Absent => Ok(()),\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_v7_pointer_expectation",
+                    endingBefore: "    fn require_current_retry_v7_layout",
+                    target: "        require_path_absent(\n            Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE),\n            \"retained first-attempt paired-v7 pointer\",\n        )?;\n",
+                    replacement: "        let _ = Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE);\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_v7_pointer_expectation",
+                    endingBefore: "    fn require_current_retry_v7_layout",
+                    target: "        require_path_absent(\n            Path::new(RETRY_3_V7_ACTIVE_UPDATE),\n            \"retained retry-3 paired-v7 pointer\",\n        )?;\n",
+                    replacement: "        let _ = Path::new(RETRY_3_V7_ACTIVE_UPDATE);\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_v7_retry_admission_ready",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum RetryV7PointerExpectation",
+                    target: "        require_path_absent(Path::new(V7_ACTIVE_UPDATE), \"retry-4 paired-v7 pointer\")?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_v7_retry_admission_ready",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum RetryV7PointerExpectation",
+                    target: "        require_exact_v7_retained_quartet(root, data_volume_device)?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_v7_retry_admission_ready",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum RetryV7PointerExpectation",
+                    target: "        require_exact_terminal_retry_3_evidence()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_terminal_retry_3_evidence",
+                    endingBefore: "    fn require_exact_retained_probe_directory",
+                    target: "            || !metadata_is_exact(&evidence_before)\n",
+                    replacement: "            || false && !metadata_is_exact(&evidence_before)\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_terminal_retry_3_evidence",
+                    endingBefore: "    fn require_exact_retained_probe_directory",
+                    target: "        if actual != expected {\n",
+                    replacement: "        if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retained_file",
+                    endingBefore: "    fn require_exact_retained_failure_file",
+                    target: "            || sha256_bytes(&bytes)? != expected_sha256\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_current_retry_v7_layout",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum Retry2RecoveryState",
+                    target: #".strip_prefix("paired-v7-update-retry-4-")"#,
+                    replacement: #".strip_prefix("paired-v7-update-retry-3-")"#
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_current_retry_v7_layout",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum Retry2RecoveryState",
+                    target: "            || evidence.to_str() == Some(RECOVERY_RETRY_3_EVIDENCE)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_current_retry_v7_layout",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum Retry2RecoveryState",
+                    target: "            || retry_metadata.uid() != USER_ID\n",
+                    replacement: "            || false && retry_metadata.uid() != USER_ID\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_current_retry_v7_layout",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum Retry2RecoveryState",
+                    target: "        validate_v7_nonce(nonce)?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_current_retry_v7_layout",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum Retry2RecoveryState",
+                    target: "        if timestamp.filter(|value| *value > 0).is_none()\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_current_retry_v7_layout",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum Retry2RecoveryState",
+                    target: "            || retry_metadata.ino() != retry_after.ino()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_v7_root_quintet",
+                    endingBefore: "    fn require_retry_v7_pointer_expectation",
+                    target: "                RETAINED_FAILED_V7_RETRY_1_NAME,\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn execute_paired_v7_update",
+                    endingBefore: "    fn perform_paired_v7_update",
+                    target: "        create_private_directory(&evidence)?;\n",
+                    replacement: "        require_directory(&evidence, 0o700)?;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn root_driver_prepare",
+                    endingBefore: "    fn root_driver_publish_reload",
+                    target: "        require_path_absent(&layout.root, \"root v7 driver transaction\")?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn root_driver_prepare",
+                    endingBefore: "    fn root_driver_publish_reload",
+                    target: "        fs::create_dir(&layout.root)?;\n",
+                    replacement: "        fs::create_dir_all(&layout.root)?;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_4_transaction_parent_names",
+                    endingBefore: "    fn require_retained_retry_2_root_tombstone",
+                    target: "        if actual != expected {\n",
+                    replacement: "        if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn is_root_v3_install_residue_name",
+                    endingBefore: "    fn retire_root_v3_install_residues",
+                    target: "name.strip_prefix(\"INS@\")",
+                    replacement: "name.strip_prefix(\"INS\")"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn is_root_v3_install_residue_name",
+                    endingBefore: "    fn retire_root_v3_install_residues",
+                    target: "suffix.len() == 6",
+                    replacement: "suffix.len() == 5"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_root_v3_stage_via_sudo",
+                    endingBefore: "    fn retry_4_root_support_names",
+                    target: "        if residue_names.len() > 8 {\n",
+                    replacement: "        if residue_names.len() > 9 {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_root_v3_stage_via_sudo",
+                    endingBefore: "    fn retry_4_root_support_names",
+                    target: "            && residue_names.is_empty()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_root_v3_stage_via_sudo",
+                    endingBefore: "    fn retry_4_root_support_names",
+                    target: "            && residue_names.is_empty()\n",
+                    replacement: "            || residue_names.is_empty()\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_root_v3_stage_via_sudo",
+                    endingBefore: "    fn retry_4_root_support_names",
+                    target: "                || !expected_bytes.starts_with(&output.stdout)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_root_v3_stage_via_sudo",
+                    endingBefore: "    fn retry_4_root_support_names",
+                    target: "        if support_fields.len() != 9\n",
+                    replacement: "        if false && support_fields.len() != 9\n"
+                ),
+                replacingLastInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_root_v3_stage_via_sudo",
+                    endingBefore: "    fn retry_4_root_support_names",
+                    target: "                || fields[2] != \"1\"\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_root_v3_stage_via_sudo",
+                    endingBefore: "    fn retry_4_root_support_names",
+                    target: "            [\"opensteamer-v7-controller\"] => Retry4RootV3Stage::Controller,\n",
+                    replacement: "            [\"controller-binary.sha256\"] => Retry4RootV3Stage::Controller,\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn sudo_root_v3_prefix_file",
+                    endingBefore: "    fn require_retry_4_root_v3_stage_via_sudo",
+                    target: "            || read_stat()? != before\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn sudo_root_v3_prefix_file",
+                    endingBefore: "    fn require_retry_4_root_v3_stage_via_sudo",
+                    target: "            || fields[2] != \"1\"\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_no_openers_root_file",
+                    endingBefore: "    fn require_no_extended_attributes_root",
+                    target: "&[\"--\", path_text(path)?]",
+                    replacement: "&[\"+D\", path_text(path)?]"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_no_openers_root_file",
+                    endingBefore: "    fn require_no_extended_attributes_root",
+                    target: "        if output.status.code() != Some(1)\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn retire_root_v3_install_residues",
+                    endingBefore: "    fn sudo_root_v3_prefix_file",
+                    target: "                .custom_flags(O_NOFOLLOW | 0x0100_0000)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn retire_root_v3_install_residues",
+                    endingBefore: "    fn sudo_root_v3_prefix_file",
+                    target: "            require_descriptor_close_on_exec(&file, \"normal root V3 install residue\")?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn retire_root_v3_install_residues",
+                    endingBefore: "    fn sudo_root_v3_prefix_file",
+                    target: "                    && metadata.nlink() == 1\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn retire_root_v3_install_residues",
+                    endingBefore: "    fn sudo_root_v3_prefix_file",
+                    target: "                    && metadata.dev() == RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn retire_root_v3_install_residues",
+                    endingBefore: "    fn sudo_root_v3_prefix_file",
+                    target: "            if !expected_bytes.starts_with(&bytes)\n",
+                    replacement: "            if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn retire_root_v3_install_residues",
+                    endingBefore: "    fn sudo_root_v3_prefix_file",
+                    target: "                || after.ino() != named_immediate.ino()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn retire_root_v3_install_residues",
+                    endingBefore: "    fn sudo_root_v3_prefix_file",
+                    target: "            fsync_parent(&residue)?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_retry_2_root_tombstone_via_sudo",
+                    endingBefore: "    fn require_same_retry_4_live_boundary",
+                    target: "        attest_transaction()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_retry_2_root_tombstone_via_sudo",
+                    endingBefore: "    fn require_same_retry_4_live_boundary",
+                    target: "            if !xattrs.stdout.is_empty() || !xattrs.stderr.is_empty() {\n",
+                    replacement: "            if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_retry_2_root_tombstone_via_sudo",
+                    endingBefore: "    fn require_same_retry_4_live_boundary",
+                    target: "            if openers.status.code() != Some(1)\n",
+                    replacement: "            if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn prove_retry_4_live_runtime_and_root_tombstones",
+                    endingBefore: "    fn require_retry_3_restored_root_via_sudo",
+                    target: "        require_retained_retry_2_root_tombstone_via_sudo(v3_present, current, true)?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn prove_retry_4_live_runtime_and_root_tombstones",
+                    endingBefore: "    fn require_retry_3_restored_root_via_sudo",
+                    target: "        require_retry_3_restored_root_via_sudo(v3_present, current, true)?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_same_retry_4_live_boundary",
+                    endingBefore: "    fn prove_retry_4_live_runtime_and_root_tombstones",
+                    target: "            || before_host.nonce != after_host.nonce\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_same_retry_4_live_boundary",
+                    endingBefore: "    fn prove_retry_4_live_runtime_and_root_tombstones",
+                    target: "        if before_host.pid != after_host.pid\n",
+                    replacement: "        if false && before_host.pid != after_host.pid\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_same_retry_4_live_boundary",
+                    endingBefore: "    fn prove_retry_4_live_runtime_and_root_tombstones",
+                    target: "        if before_host.pid != after_host.pid\n",
+                    replacement: "        if before_host.pid != after_host.pid && false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn bootstrap_root_owned_v7_controller_for_prepare",
+                    endingBefore: "    fn verify_root_owned_v7_controller_for_restore",
+                    target: "                \"-S\",\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn bootstrap_root_owned_v7_controller_for_prepare",
+                    endingBefore: "    fn verify_root_owned_v7_controller_for_restore",
+                    target: "        if require_retry_4_root_v3_stage_via_sudo(&before)? != Retry4RootV3Stage::Sealed {\n",
+                    replacement: "        if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn bootstrap_root_owned_v7_controller_for_prepare",
+                    endingBefore: "    fn verify_root_owned_v7_controller_for_restore",
+                    target: "            sealed_root_controller: sealed,\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    impl RootDriverBrokerClient",
+                    endingBefore: "    impl Drop for RootDriverBrokerClient",
+                    target: "            if controller_identity != prepared.uid_controller\n",
+                    replacement: "            if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    impl RootDriverBrokerClient",
+                    endingBefore: "    impl Drop for RootDriverBrokerClient",
+                    target: "            if controller_identity != prepared.uid_controller\n",
+                    replacement: "            if false && controller_identity != prepared.uid_controller\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    impl RootDriverBrokerClient",
+                    endingBefore: "    impl Drop for RootDriverBrokerClient",
+                    target: "            if controller_identity != prepared.uid_controller\n",
+                    replacement: "            if controller_identity != prepared.uid_controller && false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    impl RootDriverBrokerClient",
+                    endingBefore: "    impl Drop for RootDriverBrokerClient",
+                    target: "            if sealed_root_controller != prepared.sealed_root_controller {\n",
+                    replacement: "            if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    impl RootDriverBrokerClient",
+                    endingBefore: "    impl Drop for RootDriverBrokerClient",
+                    target: "            if sealed_root_controller != prepared.sealed_root_controller {\n",
+                    replacement: "            if sealed_root_controller != prepared.sealed_root_controller && false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_root_controller",
+                    endingBefore: "    fn require_root_v3_support_topology",
+                    target: "        descriptor.sync_all()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_root_controller",
+                    endingBefore: "    fn require_root_v3_support_topology",
+                    target: "        rename_exclusive(\n",
+                    replacement: "        fs::rename(\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_root_controller",
+                    endingBefore: "    fn require_root_v3_support_topology",
+                    target: "        fsync_parent(Path::new(ROOT_V7_CONTROLLER))?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_root_controller",
+                    endingBefore: "    fn require_root_v3_support_topology",
+                    target: "        descriptor.sync_all()?;\n        require_path_absent(Path::new(ROOT_V7_CONTROLLER), \"root controller V3\")?;\n        rename_exclusive(\n            Path::new(ROOT_V7_CONTROLLER_PENDING),\n            Path::new(ROOT_V7_CONTROLLER),\n        )?;\n",
+                    replacement: "        require_path_absent(Path::new(ROOT_V7_CONTROLLER), \"root controller V3\")?;\n        rename_exclusive(\n            Path::new(ROOT_V7_CONTROLLER_PENDING),\n            Path::new(ROOT_V7_CONTROLLER),\n        )?;\n        descriptor.sync_all()?;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_root_controller",
+                    endingBefore: "    fn require_root_v3_support_topology",
+                    target: "        if pending != published\n",
+                    replacement: "        if false && pending != published\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_root_controller",
+                    endingBefore: "    fn require_root_v3_support_topology",
+                    target: "        if pending != published\n",
+                    replacement: "        if pending != published && false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_root_controller",
+                    endingBefore: "    fn require_root_v3_support_topology",
+                    target: "            || before.ino() != after.ino()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn bootstrap_root_controller_identity",
+                    endingBefore: "    fn publish_root_controller",
+                    target: "        require_root_v3_support_topology(&[\n            &[\"controller-binary.sha256\", \"opensteamer-v7-controller\"],\n            &[\n                \"controller-binary.sha256\",\n                \"controller-identity.log\",\n                \"opensteamer-v7-controller\",\n            ],\n        ])?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_root_v3_support_topology",
+                    endingBefore: "    fn create_or_repair_root_recovery_sealed",
+                    target: "                && metadata.uid() == 0\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn create_or_repair_root_recovery_sealed",
+                    endingBefore: "    fn verify_root_controller_identity",
+                    target: "        file.sync_all()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn create_or_repair_root_recovery_sealed",
+                    endingBefore: "    fn verify_root_controller_identity",
+                    target: "        if !expected.as_bytes().starts_with(&bytes) {\n",
+                    replacement: "        if false && !expected.as_bytes().starts_with(&bytes) {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn create_or_repair_root_recovery_sealed",
+                    endingBefore: "    fn verify_root_controller_identity",
+                    target: "            || before.ino() != named_before.ino()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn create_or_repair_root_recovery_sealed",
+                    endingBefore: "    fn verify_root_controller_identity",
+                    target: "                    || metadata.nlink() != 1\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_root_support_parent(",
+                    endingBefore: "    fn require_retry_4_root_support_parent_via_sudo",
+                    target: "        if names.iter().map(String::as_str).ne(retry_4_root_support_names(v3_present)) {\n",
+                    replacement: "        if false && names.iter().map(String::as_str).ne(retry_4_root_support_names(v3_present)) {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_root_support_parent(",
+                    endingBefore: "    fn require_retry_4_root_support_parent_via_sudo",
+                    target: "                && metadata.uid() == 0\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_root_support_parent_via_sudo",
+                    endingBefore: "    fn require_retry_4_transaction_parent_via_sudo",
+                    target: "        if before != after {\n",
+                    replacement: "        if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_root_support_parent_via_sudo",
+                    endingBefore: "    fn require_retry_4_transaction_parent_via_sudo",
+                    target: "            if stat != expected_stat {\n",
+                    replacement: "            if false && stat != expected_stat {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_root_support_parent_via_sudo",
+                    endingBefore: "    fn require_retry_4_transaction_parent_via_sudo",
+                    target: "            if !listing.stderr.is_empty() || listing.stdout != expected_listing.as_bytes() {\n",
+                    replacement: "            if false && (!listing.stderr.is_empty() || listing.stdout != expected_listing.as_bytes()) {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_transaction_parent_via_sudo",
+                    endingBefore: "    fn sudo_require_exact_incident_stat",
+                    target: "            if parent_stat != expected_parent {\n",
+                    replacement: "            if false && parent_stat != expected_parent {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_transaction_parent_via_sudo",
+                    endingBefore: "    fn sudo_require_exact_incident_stat",
+                    target: "            if !listing.stderr.is_empty() || listing.stdout != expected_listing.as_bytes() {\n",
+                    replacement: "            if false && (!listing.stderr.is_empty() || listing.stdout != expected_listing.as_bytes()) {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_4_transaction_parent_names",
+                    endingBefore: "    fn require_retained_retry_2_root_tombstone",
+                    target: "                && metadata.uid() == 0\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_retry_3_root_tombstone",
+                    endingBefore: "    fn root_attest_retry_2_safe_state",
+                    target: "        if prior.present\n",
+                    replacement: "        if false && prior.present\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_root_admission_via_sudo",
+                    endingBefore: "    fn spawn_bounded_line_reader",
+                    target: "        require_retained_root_normal_v2_via_sudo()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_root_admission_via_sudo",
+                    endingBefore: "    fn spawn_bounded_line_reader",
+                    target: "        if uid_after != uid_before || stage_after != stage_before {\n",
+                    replacement: "        if false && (uid_after != uid_before || stage_after != stage_before) {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_root_admission_via_sudo",
+                    endingBefore: "    fn spawn_bounded_line_reader",
+                    target: "        let (host_before, core_audio_before) = prove_retry_4_live_runtime_and_root_tombstones(\n",
+                    replacement: "        let (host_before, core_audio_before) = attest_retry_2_root_safe_state_via_sudo().map(|core| (verify_paired_v7_runtime().unwrap(), core))?;\n        let _discarded = (\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_log_prefix(",
+                    endingBefore: "    fn require_exact_retry_3_log_prefixes",
+                    target: "            || sha256_bytes(&prefix)? != expected_prefix_sha256\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_log_prefixes",
+                    endingBefore: "    fn require_terminal_retry_3_runtime_boundary",
+                    target: "            Path::new(RECOVERY_RETRY_3_STDERR_LOG),\n",
+                    replacement: "            Path::new(RECOVERY_RETRY_3_STDOUT_LOG),\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_restored_root_via_sudo",
+                    endingBefore: "    fn require_exact_retry_3_log_prefix(",
+                    target: "        require_retained_root_normal_v2_via_sudo()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_retry_2_root_tombstone(require_product_absent",
+                    endingBefore: "    fn require_retained_retry_3_root_tombstone",
+                    target: "        if prior.present\n",
+                    replacement: "        if false && prior.present\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_root_transaction_children",
+                    endingBefore: "    fn require_exact_retry_4_transaction_parent_names",
+                    target: "        if names\n            != [\n",
+                    replacement: "        if false && names\n            != [\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_no_openers_root_file",
+                    endingBefore: "    fn require_no_extended_attributes_root",
+                    target: "        if output.status.code() != Some(1)\n",
+                    replacement: "        if output.status.code() != Some(1) && false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn retire_root_v3_install_residues",
+                    endingBefore: "    fn sudo_root_v3_prefix_file",
+                    target: "            if !expected_bytes.starts_with(&bytes)\n",
+                    replacement: "            if !expected_bytes.starts_with(&bytes) && false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_root_controller_identity_binding",
+                    endingBefore: "    fn require_proxy_controller_identity_binding",
+                    target: "        if actual != sealed {\n",
+                    replacement: "        if actual != sealed && false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_proxy_controller_identity_binding",
+                    endingBefore: "    fn create_or_verify_root_sealed",
+                    target: "        if actual.sha256 != sealed.sha256 || actual.length != sealed.length {\n",
+                    replacement: "        if (actual.sha256 != sealed.sha256 || actual.length != sealed.length) && false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_root_controller_identity_records()",
+                    endingBefore: "    fn require_root_controller_identity_binding",
+                    target: "        if identity.sha256 != digest {\n",
+                    replacement: "        if identity.sha256 != digest && false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_root_controller_identity_records_via_sudo",
+                    endingBefore: "    fn read_root_recovery_controller_identity_records_via_sudo",
+                    target: "        if identity.sha256 != digest {\n",
+                    replacement: "        if identity.sha256 != digest && false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn verify_root_controller_identity",
+                    endingBefore: "    fn require_retry_4_root_operation_trust",
+                    target: "        if executable != Path::new(ROOT_V7_CONTROLLER) {\n",
+                    replacement: "        if executable != Path::new(ROOT_V7_CONTROLLER) && false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn finish_retry_4_root_operation",
+                    endingBefore: "    fn verify_root_recovery_controller_identity",
+                    target: "            operation.is_ok() && success_requires_product_absent,\n",
+                    replacement: "            operation.is_ok() && success_requires_product_absent && false,\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_4_root_operation_trust",
+                    endingBefore: "    fn finish_retry_4_root_operation",
+                    target: "        require_retained_retry_3_root_tombstone(require_product_absent)?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_v7_root_names",
+                    endingBefore: "    fn require_exact_v7_retained_quartet",
+                    target: "        if expected.windows(2).any(|pair| pair[0] == pair[1]) || actual != expected {\n",
+                    replacement: "        if expected.windows(2).any(|pair| pair[0] == pair[1]) || actual != expected && false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_v7_retained_quartet",
+                    endingBefore: "    fn require_exact_v7_root_quintet",
+                    target: "            || metadata.nlink() != RETAINED_FAILED_V7_ROOT_NLINK\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_recovered_retry_2_probes",
+                    endingBefore: "    fn require_exact_recovered_retry_2_evidence",
+                    target: "                RECOVERY_RETRY_2_MIRROR_PROBE_SHA256,\n",
+                    replacement: "                EXPECTED_MIRROR_PROBE_BINARY_SHA256,\n"
+                ),
+                controller.replacingOccurrences(
+                    of: #"v['mode']=='real-dual-audioqueue'"#,
+                    with: #"v['mode']=='real'"#
+                ),
+                controller.replacingOccurrences(
+                    of: "const RELEASE_ONLY_PATH_ALLOWLIST: [&str; 12]",
+                    with: "const RELEASE_ONLY_PATH_ALLOWLIST: [&str; 11]"
+                ),
+                controller.replacingOccurrences(
+                    of: "const EXPECTED_FUNCTIONAL_INPUT_COUNT: usize = 134;",
+                    with: "const EXPECTED_FUNCTIONAL_INPUT_COUNT: usize = 135;"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_root_driver_state",
+                    endingBefore: "    fn expected_driver_nodes",
+                    target: "            mode: 0o040755,\n",
+                    replacement: "            mode: 0,\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_root_driver_state",
+                    endingBefore: "    fn expected_driver_nodes",
+                    target: "            mode: 0o040755,\n",
+                    replacement: "            mode: 0o0755,\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    const REQUIRED_RELEASE_DIFF_PATHS",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]\n    enum V7State",
+                    target: "        \"macOS/Tests/CaptureServerTests/V7DriverHostUpdateContractTests.swift\",\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    const REQUIRED_RELEASE_DIFF_PATHS",
+                    endingBefore: "    const RELEASE_ONLY_PATH_ALLOWLIST",
+                    target: "        \"macOS/Tests/CaptureServerTests/V7DriverHostUpdateContractTests.swift\",\n",
+                    replacement: "        \"README.md\",\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    const REQUIRED_RELEASE_DIFF_PATHS",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]\n    enum V7State",
+                    target: "        \"AGENTS.md\",\n",
+                    replacement: "        \"Package.swift\",\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn validate_release_cycle_evidence",
+                    endingBefore: "    fn read_candidate_source_binding",
+                    target: "                .ne(REQUIRED_RELEASE_DIFF_PATHS.iter().copied())\n",
+                    replacement: "                .eq(REQUIRED_RELEASE_DIFF_PATHS.iter().copied())\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn self_test_release_cycle_contract",
+                    endingBefore: "    fn self_test_partial_install_hold_recovery",
+                    target: "        missing_path.remove(0);\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn self_test_release_cycle_contract",
+                    endingBefore: "    fn self_test_partial_install_hold_recovery",
+                    target: "        allowlisted_extra_path.push(\"README.md\".to_owned());\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn self_test_release_cycle_contract",
+                    endingBefore: "    fn self_test_partial_install_hold_recovery",
+                    target: "        missing_path.remove(0);\n        if validate_release_cycle_evidence(\n",
+                    replacement: "        missing_path.remove(0);\n        if false && validate_release_cycle_evidence(\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn self_test_release_cycle_contract",
+                    endingBefore: "    fn self_test_partial_install_hold_recovery",
+                    target: "        allowlisted_extra_path.sort();\n        if validate_release_cycle_evidence(\n",
+                    replacement: "        allowlisted_extra_path.sort();\n        if false && validate_release_cycle_evidence(\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn functional_input_path",
+                    endingBefore: "    fn require_canonical_release_path",
+                    target: "        if RELEASE_ONLY_PATH_ALLOWLIST.contains(&path) {\n",
+                    replacement: "        if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    impl RootDriverBrokerClient",
+                    endingBefore: "    impl Drop for RootDriverBrokerClient",
+                    target: "            let controller_identity = verify_uid501_controller_against_root_pin()?;\n",
+                    replacement: "            let _ = bootstrap_root_owned_v7_controller_for_prepare()?;\n            let controller_identity = verify_uid501_controller_against_root_pin()?;\n"
+                ),
+                controller + "\nfn recover_retry_3_critical_failure() {}\n",
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn parse_v7_command",
+                    endingBefore: "    fn require_canonical_git_oid",
+                    target: "            [_, mode] if mode == ROOT_V7_CONTROLLER_PUBLISH_MODE => {\n                Ok(V7Command::RootControllerPublish)\n            }\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn paired_v7_real_main",
+                    endingBefore: "    fn parse_v7_command",
+                    target: "            V7Command::RootControllerPublish => publish_root_controller(),\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn verify_v7_cli_surface",
+                    endingBefore: "    fn self_test_production_identity_parser",
+                    target: "            vec![executable.clone(), ROOT_V7_CONTROLLER_PUBLISH_MODE.to_owned()],\n",
+                    replacement: ""
+                ),
+            ]
+            for (index, mutant) in retry4Mutants.enumerated() {
+                XCTAssertNotEqual(mutant, controller, "retry4 mutant \(index) was inert")
+                XCTAssertFalse(
+                    hasRetry4TerminalNamespaceAndRootV3Contract(
+                        controller: mutant,
+                        launcher: launcher,
+                        localMonoController: localMonoController
+                    ),
+                    "retry4 contract accepted mutant \(index)"
+                )
+            }
+            let retry4LauncherMutants = [
+                launcher + "\nRECOVER_RETRY_3_MODE='--recover-authorized-paired-v7-retry-3-critical-failure'\n",
+                launcher + "\n# local-mono must remain unreachable from retry4\nLOCAL_MONO_MODE='local-mono'\n",
+            ]
+            for (index, mutant) in retry4LauncherMutants.enumerated() {
+                XCTAssertNotEqual(mutant, launcher, "retry4 launcher mutant \(index) was inert")
+                XCTAssertFalse(
+                    hasRetry4TerminalNamespaceAndRootV3Contract(
+                        controller: controller,
+                        launcher: mutant,
+                        localMonoController: localMonoController
+                    ),
+                    "retry4 contract accepted launcher mutant \(index)"
+                )
+            }
+            let localModeMutant = localMonoController.replacingOccurrences(
+                of: #"v['mode']=='real-dual-audioqueue'"#,
+                with: #"v['mode']=='real'"#
+            )
+            XCTAssertNotEqual(localModeMutant, localMonoController)
+            XCTAssertFalse(
+                hasRetry4TerminalNamespaceAndRootV3Contract(
+                    controller: controller,
+                    launcher: launcher,
+                    localMonoController: localModeMutant
+                )
+            )
+            return
+        }
         if controller.contains("active-paired-host-update-v7-retry-3") {
             XCTAssertTrue(hasRetry3TerminalNamespaceContract(controller))
             XCTAssertTrue(hasRetry3RootV2Contract(controller))
@@ -7349,6 +9368,61 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         let controller = try source(
             "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs"
         )
+        if controller.contains("active-paired-host-update-v7-retry-4") {
+            let launcher = try source("macOS/scripts/update-opensteamer-host-paired-v7.sh")
+            let localMonoController = try source(
+                "macOS/scripts/opensteamer-host-local-mono-trial-controller.rs"
+            )
+            XCTAssertTrue(
+                hasRetry4TerminalNamespaceAndRootV3Contract(
+                    controller: controller,
+                    launcher: launcher,
+                    localMonoController: localMonoController
+                )
+            )
+            let retry4NamespaceMutants = [
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_current_retry_v7_layout",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum Retry2RecoveryState",
+                    target: #".strip_prefix("paired-v7-update-retry-4-")"#,
+                    replacement: #".strip_prefix("paired-v7-update-retry-3-")"#
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_v7_root_quintet",
+                    endingBefore: "    fn require_retry_v7_pointer_expectation",
+                    target: "                RECOVERY_RETRY_3_NAME,\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_v7_pointer_expectation",
+                    endingBefore: "    fn require_current_retry_v7_layout",
+                    target: "        require_path_absent(\n            Path::new(RETRY_3_V7_ACTIVE_UPDATE),\n            \"retained retry-3 paired-v7 pointer\",\n        )?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_no_v7_pending_pointers",
+                    endingBefore: "    fn require_exact_retained_v7_top_level",
+                    target: "                || name.starts_with(RETRY_3_V7_PENDING_PREFIX)\n",
+                    replacement: ""
+                ),
+            ]
+            for (index, mutant) in retry4NamespaceMutants.enumerated() {
+                XCTAssertNotEqual(mutant, controller, "retry4 namespace mutant \(index) was inert")
+                XCTAssertFalse(
+                    hasRetry4TerminalNamespaceAndRootV3Contract(
+                        controller: mutant,
+                        launcher: launcher,
+                        localMonoController: localMonoController
+                    ),
+                    "retry4 namespace contract accepted mutant \(index)"
+                )
+            }
+            return
+        }
         if controller.contains("paired-v7-update-retry-3-") {
             XCTAssertTrue(hasRetry3TerminalNamespaceContract(controller))
             let retry3NamespaceMutants = [
@@ -7926,6 +10000,45 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         )
         let launcher = try source("macOS/scripts/update-opensteamer-host-paired-v7.sh")
 
+        if controller.contains("active-paired-host-update-v7-retry-4") {
+            for pin in [
+                "6201d2ba57d50217246b151a623303658a587bab57ee484f3c85e5a34a4a9e28",
+                "87e20a8b18e6abc4db2dbf5e55e1e3d5ad754f4b9ed5138d681e42969fb34d10",
+                "b344eb24cde4ab1881b065e2ef0aa208aef12dbdd31fea7259eabc5ad5b6abaf",
+                "13f6209ebb6a388f296c62ae4cfa5ce153b24e8a78d0ef45091b0aa30bc27b4b",
+            ] {
+                XCTAssertTrue(controller.contains(pin), "missing retry4 release pin: \(pin)")
+            }
+            XCTAssertTrue(controller.contains("const EXPECTED_FUNCTIONAL_INPUT_COUNT: usize = 134;"))
+            XCTAssertTrue(hasTwoCommitV7ReleaseCycleContract(controller))
+            if controller.contains(#"const RELEASE_PIN_STATUS: &str = "PIN_AFTER_FINAL_REVIEW";"#) {
+                XCTAssertTrue(launcher.contains("RELEASE_PIN_STATUS='PIN_AFTER_FINAL_REVIEW'"))
+                XCTAssertTrue(launcher.contains("EXPECTED_SOURCE_SHA256='PIN_AFTER_FINAL_REVIEW'"))
+                XCTAssertTrue(launcher.contains("EXPECTED_BINARY_SHA256='PIN_AFTER_FINAL_REVIEW'"))
+            } else {
+                XCTAssertTrue(
+                    controller.contains(#"const RELEASE_PIN_STATUS: &str = "PINNED_FINAL_REVIEW";"#)
+                )
+                XCTAssertTrue(launcher.contains("RELEASE_PIN_STATUS='PINNED_FINAL_REVIEW'"))
+                XCTAssertTrue(
+                    hasExactLauncherSourcePinContract(
+                        controller: controller,
+                        launcher: launcher,
+                        expectedSHA256: sha256Hex(controller)
+                    )
+                )
+                XCTAssertNotNil(
+                    launcher.range(
+                        of: #"EXPECTED_BINARY_SHA256='[0-9a-f]{64}'"#,
+                        options: .regularExpression
+                    )
+                )
+                XCTAssertTrue(launcher.contains("*PIN_AFTER_FINAL_REVIEW*)"))
+            }
+            XCTAssertFalse(controller.contains("--local-uncommitted-trial"))
+            return
+        }
+
         XCTAssertTrue(
             controller.contains(#"const RELEASE_PIN_STATUS: &str = "PINNED_FINAL_REVIEW";"#)
         )
@@ -8115,17 +10228,26 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             )
         }
 
-        let launcherMutant = launcher.replacingOccurrences(
-            of: "[ \"$CONTROLLER_BINARY_SHA256\" = \"$EXPECTED_BINARY_SHA256\" ]",
-            with: "true"
-        )
-        XCTAssertNotEqual(launcherMutant, launcher)
-        XCTAssertFalse(
-            hasRootSealedV7ControllerIdentityContract(
-                controller: controller,
-                launcher: launcherMutant
+        let launcherMutants = [
+            launcher.replacingOccurrences(
+                of: "[ \"$CONTROLLER_BINARY_SHA256\" = \"$EXPECTED_BINARY_SHA256\" ]",
+                with: "true"
+            ),
+            launcher.replacingOccurrences(
+                of: "\"$SOURCE\" -o \"$CONTROLLER\"",
+                with: "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs -o \"$CONTROLLER\""
+            ),
+        ]
+        for (index, launcherMutant) in launcherMutants.enumerated() {
+            XCTAssertNotEqual(launcherMutant, launcher, "launcher identity mutant \(index) was inert")
+            XCTAssertFalse(
+                hasRootSealedV7ControllerIdentityContract(
+                    controller: controller,
+                    launcher: launcherMutant
+                ),
+                "launcher identity contract accepted mutant \(index)"
             )
-        )
+        }
     }
 
     func testV7ReleaseCycleBindsStrictDescendantAllowlistAndFunctionalInputs() throws {
@@ -8134,7 +10256,81 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         )
         XCTAssertTrue(hasTwoCommitV7ReleaseCycleContract(controller))
 
+        var requiredPathOrderMutant = replacingInFunction(
+            controller,
+            beginningWith: "    const REQUIRED_RELEASE_DIFF_PATHS",
+            endingBefore: "    const RELEASE_ONLY_PATH_ALLOWLIST",
+            target: "        \"macOS/Tests/CaptureServerTests/PhysicalValidationScriptTests.swift\",\n",
+            replacement: "        __REQUIRED_PATH_SWAP__\n"
+        )
+        requiredPathOrderMutant = replacingInFunction(
+            requiredPathOrderMutant,
+            beginningWith: "    const REQUIRED_RELEASE_DIFF_PATHS",
+            endingBefore: "    const RELEASE_ONLY_PATH_ALLOWLIST",
+            target: "        \"macOS/Tests/CaptureServerTests/V7DriverHostUpdateContractTests.swift\",\n",
+            replacement: "        \"macOS/Tests/CaptureServerTests/PhysicalValidationScriptTests.swift\",\n"
+        ).replacingOccurrences(
+            of: "        __REQUIRED_PATH_SWAP__\n",
+            with: "        \"macOS/Tests/CaptureServerTests/V7DriverHostUpdateContractTests.swift\",\n"
+        )
         let mutants = [
+            requiredPathOrderMutant,
+            replacingInFunction(
+                controller,
+                beginningWith: "    const REQUIRED_RELEASE_DIFF_PATHS",
+                endingBefore: "    const RELEASE_ONLY_PATH_ALLOWLIST",
+                target: "        \"macOS/Tests/CaptureServerTests/V7DriverHostUpdateContractTests.swift\",\n",
+                replacement: ""
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "    const REQUIRED_RELEASE_DIFF_PATHS",
+                endingBefore: "    const RELEASE_ONLY_PATH_ALLOWLIST",
+                target: "        \"macOS/Tests/CaptureServerTests/V7DriverHostUpdateContractTests.swift\",\n",
+                replacement: "        \"README.md\",\n"
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "    const RELEASE_ONLY_PATH_ALLOWLIST",
+                endingBefore: "    #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]\n    enum V7State",
+                target: "        \"AGENTS.md\",\n",
+                replacement: "        \"Package.swift\",\n"
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "    fn validate_release_cycle_evidence",
+                endingBefore: "    fn read_candidate_source_binding",
+                target: "                .ne(REQUIRED_RELEASE_DIFF_PATHS.iter().copied())\n",
+                replacement: "                .eq(REQUIRED_RELEASE_DIFF_PATHS.iter().copied())\n"
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "    fn self_test_release_cycle_contract",
+                endingBefore: "    fn self_test_partial_install_hold_recovery",
+                target: "        missing_path.remove(0);\n",
+                replacement: ""
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "    fn self_test_release_cycle_contract",
+                endingBefore: "    fn self_test_partial_install_hold_recovery",
+                target: "        allowlisted_extra_path.push(\"README.md\".to_owned());\n",
+                replacement: ""
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "    fn self_test_release_cycle_contract",
+                endingBefore: "    fn self_test_partial_install_hold_recovery",
+                target: "        missing_path.remove(0);\n        if validate_release_cycle_evidence(\n",
+                replacement: "        missing_path.remove(0);\n        if false && validate_release_cycle_evidence(\n"
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "    fn self_test_release_cycle_contract",
+                endingBefore: "    fn self_test_partial_install_hold_recovery",
+                target: "        allowlisted_extra_path.sort();\n        if validate_release_cycle_evidence(\n",
+                replacement: "        allowlisted_extra_path.sort();\n        if false && validate_release_cycle_evidence(\n"
+            ),
             controller.replacingOccurrences(
                 of: "candidate.commit == release_commit || !candidate_is_ancestor",
                 with: "candidate.commit == release_commit"
@@ -8184,7 +10380,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         )
         assertOrdered(
             [
-                "RootDriverBrokerClient::start(layout)",
+                "RootDriverBrokerClient::start(layout, prepared_root_controller)",
                 "V7State::DriverPrepared",
                 "V7State::StopInitiated",
                 "V7State::CurrentStopped",

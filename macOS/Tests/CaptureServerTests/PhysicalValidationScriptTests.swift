@@ -2757,6 +2757,10 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 "nonmonotonic_host_timestamp"
             ),
             (
+                "transient-host-scheduling-jitter", "60", "passed", 0,
+                "none"
+            ),
+            (
                 "host-time-mismatch", "60", "failed", 1,
                 "host_sample_clock_mismatch"
             ),
@@ -3347,6 +3351,60 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 timestamps["alignedEvidenceAvailable"] as? Bool,
                 pcm["comparisonAvailable"] as? Bool
             )
+            if mirrorCase.name == "transient-host-scheduling-jitter" {
+                XCTAssertEqual(
+                    timestamps["hostDeltaMismatchCount"] as? Int,
+                    2
+                )
+                XCTAssertEqual(
+                    timestamps["maximumHostDeltaErrorNs"] as? Int,
+                    7_000_000
+                )
+                XCTAssertEqual(
+                    timestamps["nonMonotonicHostTimeCount"] as? Int,
+                    0
+                )
+                XCTAssertEqual(
+                    timestamps["nonMonotonicSampleTimeCount"] as? Int,
+                    0
+                )
+                XCTAssertEqual(
+                    timestamps["sampleFrameDiscontinuityCount"] as? Int,
+                    0
+                )
+                XCTAssertEqual(
+                    timestamps["measuredSourceSampleRate"] as! Double,
+                    48_000,
+                    accuracy: 0.000_001
+                )
+                XCTAssertEqual(
+                    timestamps["sourceSampleRateMatches"] as? Bool,
+                    true
+                )
+                XCTAssertEqual(failureReasons, [])
+            } else if mirrorCase.name == "host-time-mismatch" {
+                XCTAssertEqual(
+                    timestamps["hostDeltaMismatchCount"] as? Int,
+                    1
+                )
+                XCTAssertEqual(
+                    timestamps["maximumHostDeltaErrorNs"] as? Int,
+                    5_000_000
+                )
+                XCTAssertEqual(
+                    timestamps["sourceSampleRateMatches"] as? Bool,
+                    false
+                )
+                XCTAssertEqual(
+                    timestamps["measuredSourceSampleRate"] as! Double,
+                    47_879.699_248_120_3,
+                    accuracy: 0.000_000_001
+                )
+                XCTAssertEqual(
+                    failureReasons,
+                    ["host_sample_clock_mismatch"]
+                )
+            }
             let projection = timestamps["projection"] as! [String: Any]
             XCTAssertEqual(
                 projection["schema"] as? String,

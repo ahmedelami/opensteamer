@@ -4479,8 +4479,10 @@ private enum MirrorLoopbackEvaluator {
             if timestampEvidence.nonMonotonicHostTimeCount != 0 {
                 add("nonmonotonic_host_timestamp")
             }
-            if timestampEvidence.hostDeltaMismatchCount != 0
-                || !timestampEvidence.sourceSampleRateMatches {
+            // AudioQueue callback host cadence reflects delivery scheduling,
+            // so its 1 ms residual threshold is retained as telemetry. The
+            // end-to-end sample/host slope owns the source clock verdict.
+            if !timestampEvidence.sourceSampleRateMatches {
                 add("host_sample_clock_mismatch")
             }
             if timestampEvidence.timestampFrameCount
@@ -4948,6 +4950,8 @@ private enum MirrorLoopbackSyntheticCase: String, CaseIterable {
     case sampleTimeRegression = "sample-time-regression"
     case sampleTimeGap = "sample-time-gap"
     case hostTimeRegression = "host-time-regression"
+    case transientHostSchedulingJitter =
+        "transient-host-scheduling-jitter"
     case hostTimeMismatch = "host-time-mismatch"
     case format
     case fractionalFormat = "fractional-format"
@@ -5343,6 +5347,8 @@ private enum MirrorLoopbackSyntheticFactory {
         case .hostTimeRegression:
             fixture.timestamps[10].hostTimeNs =
                 fixture.timestamps[9].hostTimeNs - 1
+        case .transientHostSchedulingJitter:
+            fixture.timestamps[10].hostTimeNs += 7_000_000
         case .hostTimeMismatch:
             for index in 10..<fixture.timestamps.count {
                 fixture.timestamps[index].hostTimeNs += 5_000_000

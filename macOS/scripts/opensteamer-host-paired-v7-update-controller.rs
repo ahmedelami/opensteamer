@@ -27,33 +27,32 @@ pub(crate) mod paired_v7 {
     const V7_ROLLBACK_MODE: &str = "--rollback-authorized-paired-v7-host-update";
     const V7_RECOVER_RETRY_2_MODE: &str =
         "--recover-authorized-paired-v7-retry-2-critical-failure";
-    const V7_RECOVER_RETRY_3_MODE: &str =
-        "--recover-authorized-paired-v7-retry-3-critical-failure";
     const V7_SELF_TEST_MODE: &str = "--self-test-paired-v7-host-update";
     const V7_EXPECTED_REPO: &str = "/Users/ahmed/Documents/Codex/opensteamer";
 
     const V7_UPDATE_ROOT: &str =
         "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7";
     const V7_ACTIVE_UPDATE: &str =
-        "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-3";
+        "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-4";
     const FIRST_ATTEMPT_V7_ACTIVE_UPDATE: &str =
         "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7";
     const RETRY_1_V7_ACTIVE_UPDATE: &str =
         "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-1";
     const RETRY_2_V7_ACTIVE_UPDATE: &str =
         "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-2";
+    const RETRY_3_V7_ACTIVE_UPDATE: &str =
+        "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-3";
     const FIRST_ATTEMPT_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7.pending-";
     const RETRY_1_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-1.pending-";
     const RETRY_2_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-2.pending-";
-    const RETRY_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-3.pending-";
+    const RETRY_3_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-3.pending-";
+    const RETRY_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-4.pending-";
     const RECOVERY_RETRY_3_NAME: &str =
         "paired-v7-update-retry-3-1787392225-87409-09602523-891e-4822-bf48-650a3b7f9637";
     const RECOVERY_RETRY_3_EVIDENCE: &str =
         "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-3-1787392225-87409-09602523-891e-4822-bf48-650a3b7f9637";
     const RECOVERY_RETRY_3_NONCE: &str = "09602523-891e-4822-bf48-650a3b7f9637";
     const RECOVERY_RETRY_3_EVIDENCE_INODE: u64 = 27_828_068;
-    const RECOVERY_RETRY_3_EVIDENCE_NLINK: u64 = 20;
-    const RECOVERY_RETRY_3_EVIDENCE_SIZE: u64 = 640;
     const RECOVERY_RETRY_3_POINTER_INODE: u64 = 27_832_813;
     const RECOVERY_RETRY_3_POINTER_SIZE: u64 = 155;
     const RECOVERY_RETRY_3_POINTER_SHA256: &str =
@@ -154,6 +153,76 @@ pub(crate) mod paired_v7 {
     const RECOVERY_RETRY_3_RECOVERY_JOURNAL_PENDING: &str = "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-3-1787392225-87409-09602523-891e-4822-bf48-650a3b7f9637/.retry-3-recovery-journal.txt.pending";
     const RECOVERY_RETRY_3_RECOVERY_RESULT: &str = "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-3-1787392225-87409-09602523-891e-4822-bf48-650a3b7f9637/retry-3-recovery-result.txt";
     const RECOVERY_RETRY_3_RECOVERY_RESULT_PENDING: &str = "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-3-1787392225-87409-09602523-891e-4822-bf48-650a3b7f9637/.retry-3-recovery-result.txt.pending";
+    const RECOVERY_RETRY_3_TERMINAL_EVIDENCE_NLINK: u64 = 23;
+    const RECOVERY_RETRY_3_TERMINAL_EVIDENCE_SIZE: u64 = 736;
+    const RECOVERY_RETRY_3_RECOVERY_JOURNAL_INODE: u64 = 27_848_659;
+    const RECOVERY_RETRY_3_RECOVERY_JOURNAL_SIZE: u64 = 3_592;
+    const RECOVERY_RETRY_3_RECOVERY_JOURNAL_SHA256: &str =
+        "9730a817df066c0cbaae2ff6ad09c1b4c68ce524717d5fa416fe0e178629d34a";
+    const RECOVERY_RETRY_3_RECOVERY_COMMIT: &str =
+        "94251469a1b475fd4483bcde386453a98b4f936e";
+    const RECOVERY_RETRY_3_RECOVERY_TREE: &str =
+        "5cd3fa4651777edb6fe2907f6859992289473ce1";
+    const RECOVERY_RETRY_3_RECOVERY_JOURNAL_BYTES: &str = r#"OPENSTEAMER_PAIRED_HOST_RECOVERY_V7_RETRY_3
+STATE SAFE_RUNTIME_PROVEN recovery_commit=94251469a1b475fd4483bcde386453a98b4f936e recovery_tree=5cd3fa4651777edb6fe2907f6859992289473ce1 recovery_journal_inode=27848659 evidence_inode=27828068 active_pointer_inode=27832813 active_pointer_sha256=efbe37925571f60f5ad898c7046dbd85d8e31d4bad9af603c57745928bf7059e failure_journal_inode=27828075 failure_journal_size=593 failure_journal_sha256=d76c64d82bb7ba94dd067cf9c60a327e161377dce778850906fcddfb65aee1ad failure_result_inode=27833303 failure_result_size=208 failure_result_sha256=ce55694655fb8f1231d36ee80817abe67bc75e848f848be4d932504725f940ac provenance_inode=27828503 provenance_size=736 provenance_sha256=48602df91eb002ae6c996b1f743e3a4a38d73274ead7d1fa9c2f6b427ddca04e driver_record_inode=27832682 driver_record_size=1193 driver_record_sha256=148a9e96a4dc72f3936359b3b7c726e351197508a26b41b965cf98f51dc9dd62 install_hold_name_inode=27828076 install_hold_name_size=82 install_hold_name_sha256=38b0e7d1444e5eed1c9d5064a97a7c6395c0e2ce56b0c8c84ca67ddd87959790 reserve_inode=27832809 reserve_length=0 reserve_blocks=0 reserve_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 rollback_current_inode=27828073 archived_hold_inode=27832378 archived_app_inode=27832379 archived_executable_inode=27832384 archived_executable_size=6090624 archived_executable_sha256=741e07fcb07cd207a8664e59f7684751bd6b3066e9ba601ea0563557640fbfbc guardian_inode=27832356 guardian_size=286968 guardian_sha256=53ee0ce919f1b61c9d66a95d3ec8b417fba85df9f925fd24146d70b663fa995c stdout_inode=27131806 stdout_size=18713 stdout_sha256=afb8ac5fc5893694378d0472957c52b4ba239f9853e8001accf21394f5c28045 stderr_inode=27131807 stderr_size=9310 stderr_sha256=ed48b41850a21cf525f14ad834d54e0dab96ae59387052212cf80797390d49c0 root_transaction_inode=27832701 root_state_inode=27832718 root_state_sha256=ee133b1fe60f19e262081eb3eef6c290f03414b49533e6514b71901dfc854f55 root_failed_inode=27832705 root_failed_executable_inode=27832710 root_failed_executable_size=169856 root_failed_executable_sha256=ca6efc2627be0e83e591b66187820cbc7a34d8dfd7cbf2818788e1589d496866 root_package_inode=27832716 root_package_sha256=e2b13dde169a7994a50b819e414212e884136b0ab0c40c482531b8f8dc2a3f45 normal_v2_support_inode=27832673 normal_v2_controller_inode=27832674 normal_v2_controller_sha256=5feb2414a70b55ebac702916850cfb2b35f5d51a70ea63ae9ca00d67ba10bb04 normal_v2_pin_inode=27832678 normal_v2_pin_sha256=9e4b0b87814c6669afc6d572f705d6ab9c049fe8ab239daa528c23dcb0458e32 normal_v2_journal_inode=27832679 normal_v2_journal_sha256=5b298fdd84ded3e5b130bf26d2238f62460047695cc1aa0d0a617b95fa665fb4 v6_executable_sha256=63d55477ca440dd3feb27f68959b479a2292e6accc635d159674c6b420b60de6 critical_predecessor=CURRENT_RESTORED coreaudio_pid=20004 coreaudio_runs=4 stdout_initial_mode=0600 stderr_initial_mode=0600
+STATE LOGS_REPAIRED stdout_inode=27131806 stdout_mode=0600 stdout_size=18713 stdout_sha256=afb8ac5fc5893694378d0472957c52b4ba239f9853e8001accf21394f5c28045 stderr_inode=27131807 stderr_mode=0600 stderr_size=9310 stderr_sha256=ed48b41850a21cf525f14ad834d54e0dab96ae59387052212cf80797390d49c0
+STATE LAUNCH_ARMED stdout_device=16777229 stdout_inode=27131806 stdout_offset=18713
+STATE RECOVERED_V6 result_inode=27849743 result_size=286 result_sha256=7d9943072ebc43b1c7ab236b2c0cfba984e3b573400b9d844842724c655bb16c pid=41008 runs=1 process_start_sha256=e6dade0233b6d1ded2fb61b4be064283ef292d806fdacefe67ef452cf359c46f nonce=d6f614f9c06d73525682266295daddf84ad73b2f9b13a8e3c3df011dbc686e56 lock_device=16777229 lock_inode=10835208
+"#;
+    const RECOVERY_RETRY_3_RECOVERY_RESULT_INODE: u64 = 27_849_743;
+    const RECOVERY_RETRY_3_RECOVERY_RESULT_SIZE: u64 = 286;
+    const RECOVERY_RETRY_3_RECOVERY_RESULT_SHA256: &str =
+        "7d9943072ebc43b1c7ab236b2c0cfba984e3b573400b9d844842724c655bb16c";
+    const RECOVERY_RETRY_3_RECOVERED_V6_PID: u32 = 41_008;
+    const RECOVERY_RETRY_3_RECOVERED_V6_RUNS: u64 = 1;
+    const RECOVERY_RETRY_3_RECOVERED_V6_PROCESS_START_SHA256: &str =
+        "e6dade0233b6d1ded2fb61b4be064283ef292d806fdacefe67ef452cf359c46f";
+    const RECOVERY_RETRY_3_RECOVERED_V6_NONCE: &str =
+        "d6f614f9c06d73525682266295daddf84ad73b2f9b13a8e3c3df011dbc686e56";
+    const RECOVERY_RETRY_3_RECOVERED_V6_LOCK_DEVICE: u64 = 16_777_229;
+    const RECOVERY_RETRY_3_RECOVERED_V6_LOCK_INODE: u64 = 10_835_208;
+    const RECOVERY_RETRY_3_RECOVERY_RESULT_BYTES: &str = r#"OPENSTEAMER_PAIRED_HOST_RECOVERY_RESULT_V7_RETRY_3
+result=recovered-v6
+pid=41008
+runs=1
+process_start_sha256=e6dade0233b6d1ded2fb61b4be064283ef292d806fdacefe67ef452cf359c46f
+nonce=d6f614f9c06d73525682266295daddf84ad73b2f9b13a8e3c3df011dbc686e56
+lock_device=16777229
+lock_inode=10835208
+"#;
+    const RECOVERY_RETRY_3_SOURCE_TAR_INODE: u64 = 27_828_078;
+    const RECOVERY_RETRY_3_SOURCE_TAR_SIZE: u64 = 13_137_920;
+    const RECOVERY_RETRY_3_SOURCE_TAR_SHA256: &str =
+        "32dbb60480d8f88aa175d6a39ec8a2282bdbe358031520e51ac1998201b41cc5";
+    const RECOVERY_RETRY_3_FUNCTIONAL_INPUTS_INODE: u64 = 27_828_502;
+    const RECOVERY_RETRY_3_FUNCTIONAL_INPUTS_SIZE: u64 = 22_759;
+    const RECOVERY_RETRY_3_FUNCTIONAL_INPUTS_SHA256: &str =
+        "63b6e3d18aa314da544c61be81a078ffd3a14343a774a99c477f44bbce02ae09";
+    const RECOVERY_RETRY_3_PROBES_INODE: u64 = 27_832_308;
+    const RECOVERY_RETRY_3_PROBES_NLINK: u64 = 10;
+    const RECOVERY_RETRY_3_PROBES_SIZE: u64 = 320;
+    const RECOVERY_RETRY_3_PUBLIC_PROBE_INODE: u64 = 27_832_370;
+    const RECOVERY_RETRY_3_PUBLIC_PROBE_SIZE: u64 = 154_912;
+    const RECOVERY_RETRY_3_PUBLIC_PROBE_SHA256: &str =
+        "0ec9e1a0cc5f253cc569134ce2be024a7f3ae6ad211fa7d20fe6436c0bac84c8";
+    const RECOVERY_RETRY_3_MIRROR_PROBE_INODE: u64 = 27_832_351;
+    const RECOVERY_RETRY_3_MIRROR_PROBE_SIZE: u64 = 1_096_944;
+    const RECOVERY_RETRY_3_MIRROR_PROBE_SHA256: &str =
+        "13f6209ebb6a388f296c62ae4cfa5ce153b24e8a78d0ef45091b0aa30bc27b4b";
+    const RECOVERY_RETRY_3_GUARDIAN_SELF_TEST_INODE: u64 = 27_832_375;
+    const RECOVERY_RETRY_3_GUARDIAN_SELF_TEST_SIZE: u64 = 122;
+    const RECOVERY_RETRY_3_GUARDIAN_SELF_TEST_SHA256: &str =
+        "035e3cd9c881c75f101aed88f749c730cff5293c3ca04dfb88f7c14fef84275d";
+    const RECOVERY_RETRY_3_MIRROR_SELF_TEST_INODE: u64 = 27_832_374;
+    const RECOVERY_RETRY_3_MIRROR_SELF_TEST_SIZE: u64 = 10_311;
+    const RECOVERY_RETRY_3_MIRROR_SELF_TEST_SHA256: &str =
+        "d48e8874963174cdb386f965cfe05836163d2de3b923e19e450f7d3a416ce1cb";
+    const RECOVERY_RETRY_3_MIRROR_RESULT_INODE: u64 = 27_833_021;
+    const RECOVERY_RETRY_3_MIRROR_RESULT_SIZE: u64 = 10_355;
+    const RECOVERY_RETRY_3_MIRROR_RESULT_SHA256: &str =
+        "2dff80662a908e137442ceb0bf5b2b9caf3f3bd1b6c7f0203b2c1268bdee1c9b";
+    const RECOVERY_RETRY_3_MIRROR_STDOUT_INODE: u64 = 27_833_001;
+    const RECOVERY_RETRY_3_MIRROR_STDERR_INODE: u64 = 27_833_002;
     const RECOVERY_RETRY_3_STDOUT_LOG: &str = "/var/tmp/opensteamer-worldwide-host.log";
     const RECOVERY_RETRY_3_STDOUT_INODE: u64 = 27_131_806;
     const RECOVERY_RETRY_3_STDOUT_SIZE: u64 = 18_713;
@@ -170,10 +239,10 @@ pub(crate) mod paired_v7 {
         "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-1787367704-92913-bba21548-458c-4d31-bd0a-eccdb282c02a";
     const RETAINED_FAILED_V7_ATTEMPT_GID: u32 = 20;
     const RETAINED_FAILED_V7_ROOT_INODE: u64 = 27_737_655;
-    const RETAINED_FAILED_V7_ROOT_NLINK: u64 = 5;
-    const RETAINED_FAILED_V7_ROOT_SIZE: u64 = 160;
-    const RETRY_3_V7_ROOT_NLINK: u64 = 6;
-    const RETRY_3_V7_ROOT_SIZE: u64 = 192;
+    const RETAINED_FAILED_V7_ROOT_NLINK: u64 = 6;
+    const RETAINED_FAILED_V7_ROOT_SIZE: u64 = 192;
+    const RETRY_4_V7_ROOT_NLINK: u64 = 7;
+    const RETRY_4_V7_ROOT_SIZE: u64 = 224;
     const RETAINED_FAILED_V7_ATTEMPT_INODE: u64 = 27_737_656;
     const RETAINED_FAILED_V7_RESULT_INODE: u64 = 27_744_003;
     const RETAINED_FAILED_V7_RESULT_SHA256: &str =
@@ -330,6 +399,8 @@ pub(crate) mod paired_v7 {
         "035e3cd9c881c75f101aed88f749c730cff5293c3ca04dfb88f7c14fef84275d";
     const RECOVERY_RETRY_2_MIRROR_PROBE_INODE: u64 = 27_776_683;
     const RECOVERY_RETRY_2_MIRROR_PROBE_SIZE: u64 = 1_096_944;
+    const RECOVERY_RETRY_2_MIRROR_PROBE_SHA256: &str =
+        "13f6209ebb6a388f296c62ae4cfa5ce153b24e8a78d0ef45091b0aa30bc27b4b";
     const RECOVERY_RETRY_2_MIRROR_SELF_TEST_INODE: u64 = 27_776_731;
     const RECOVERY_RETRY_2_MIRROR_SELF_TEST_SIZE: u64 = 10_310;
     const RECOVERY_RETRY_2_MIRROR_SELF_TEST_SHA256: &str =
@@ -413,7 +484,8 @@ pub(crate) mod paired_v7 {
     const EXPECTED_PRODUCTION_DRIVER_CANDIDATE_MANIFEST_SHA256: &str =
         "88c842ec87374b6cbf1f5de32ae7788e15cf42f81fcb9213952ea8338a11f1a1";
     const EXPECTED_FUNCTIONAL_INPUTS_SHA256: &str =
-        "fdef1da4413f66d5f066c86b0eba709b55c74b1f72b29dac8d62e991a2343ca6";
+        "6201d2ba57d50217246b151a623303658a587bab57ee484f3c85e5a34a4a9e28";
+    const EXPECTED_FUNCTIONAL_INPUT_COUNT: usize = 134;
     const EXPECTED_PRODUCTION_DRIVER_TREE_SHA256: &str =
         "f32e870ed639fedd90ea63d3434727d72e5c030fccc4d3c6cf9bda1ae003ce49";
     const EXPECTED_PRODUCTION_DRIVER_EXECUTABLE_SHA256: &str =
@@ -421,9 +493,9 @@ pub(crate) mod paired_v7 {
     const EXPECTED_PRODUCTION_DRIVER_PACKAGE_SHA256: &str =
         "e2b13dde169a7994a50b819e414212e884136b0ab0c40c482531b8f8dc2a3f45";
     const EXPECTED_MIRROR_PROBE_SOURCE_SHA256: &str =
-        "3c6baf8474bd5f2ed807f74bd910a9e057bfcf384e54f6b66aadeb1634554383";
+        "87e20a8b18e6abc4db2dbf5e55e1e3d5ad754f4b9ed5138d681e42969fb34d10";
     const EXPECTED_MIRROR_PROBE_BINARY_SHA256: &str =
-        "13f6209ebb6a388f296c62ae4cfa5ce153b24e8a78d0ef45091b0aa30bc27b4b";
+        "b344eb24cde4ab1881b065e2ef0aa208aef12dbdd31fea7259eabc5ad5b6abaf";
     const EXPECTED_PUBLIC_VPIO_PROBE_BUILDER_SHA256: &str =
         "88a8a3d7cced350337e6624d010efc0c061d9f23ed1ce8e72f626494c14f1b2d";
     const EXPECTED_PUBLIC_VPIO_PROBE_SOURCE_SHA256: &str =
@@ -444,17 +516,27 @@ pub(crate) mod paired_v7 {
         "290731edd02baf42ca40f43f11f74d75271617a46393184cb4d0d566a147257e";
     const EXPECTED_INSTALLER_SIGNATURE_PARSER_SHA256: &str =
         "25293a4c83b5c6a6e1c95a95388d596f56057e5c5a54add0756017cfc6b0deac";
-    const ROOT_V7_SUPPORT_DIRECTORY: &str =
+    const RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_DIRECTORY: &str =
         "/Library/Application Support/opensteamer/privileged-v7-v2";
-    const ROOT_V7_CONTROLLER: &str =
+    const RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER: &str =
         "/Library/Application Support/opensteamer/privileged-v7-v2/opensteamer-v7-controller";
-    const ROOT_V7_CONTROLLER_PENDING: &str =
+    const RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_PENDING: &str =
         "/Library/Application Support/opensteamer/privileged-v7-v2/.opensteamer-v7-controller.pending";
-    const ROOT_V7_CONTROLLER_PIN: &str =
+    const RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_PIN: &str =
         "/Library/Application Support/opensteamer/privileged-v7-v2/controller-binary.sha256";
-    const ROOT_V7_CONTROLLER_IDENTITY_JOURNAL: &str =
+    const RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_IDENTITY_JOURNAL: &str =
         "/Library/Application Support/opensteamer/privileged-v7-v2/controller-identity.log";
-    const ROOT_V7_CONTROLLER_PUBLISH_MODE: &str = "--root-publish-controller-identity-v7-v2";
+    const ROOT_V7_SUPPORT_DIRECTORY: &str =
+        "/Library/Application Support/opensteamer/privileged-v7-v3";
+    const ROOT_V7_CONTROLLER: &str =
+        "/Library/Application Support/opensteamer/privileged-v7-v3/opensteamer-v7-controller";
+    const ROOT_V7_CONTROLLER_PENDING: &str =
+        "/Library/Application Support/opensteamer/privileged-v7-v3/.opensteamer-v7-controller.pending";
+    const ROOT_V7_CONTROLLER_PIN: &str =
+        "/Library/Application Support/opensteamer/privileged-v7-v3/controller-binary.sha256";
+    const ROOT_V7_CONTROLLER_IDENTITY_JOURNAL: &str =
+        "/Library/Application Support/opensteamer/privileged-v7-v3/controller-identity.log";
+    const ROOT_V7_CONTROLLER_PUBLISH_MODE: &str = "--root-publish-controller-identity-v7-v3";
     const RETAINED_ROOT_V7_NORMAL_V2_DEVICE: u64 = 16_777_229;
     const RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_INODE: u64 = 27_832_673;
     const RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_NLINK: u64 = 5;
@@ -520,6 +602,8 @@ pub(crate) mod paired_v7 {
     const RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_INODE: u64 = 27_777_167;
     const RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_NLINK: u64 = 7;
     const RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_LENGTH: u64 = 224;
+    const RETRY_4_ROOT_SUPPORT_PARENT_NLINK: u64 = 8;
+    const RETRY_4_ROOT_SUPPORT_PARENT_LENGTH: u64 = 256;
     const RECOVERY_RETRY_3_ROOT_TRANSACTION: &str =
         "/Library/Application Support/opensteamer/driver-transactions-v7/transaction-09602523-891e-4822-bf48-650a3b7f9637";
     const RECOVERY_RETRY_3_ROOT_DEVICE: u64 = 16_777_229;
@@ -550,7 +634,7 @@ pub(crate) mod paired_v7 {
     const RECOVERY_RETRY_3_ROOT_PACKAGE_INODE: u64 = 27_832_716;
     const RECOVERY_RETRY_3_ROOT_PACKAGE_SIZE: u64 = 54_515;
     const ROOT_V7_CONTROLLER_BOOTSTRAP_MODE: &str =
-        "--root-bootstrap-controller-identity-v7-v2";
+        "--root-bootstrap-controller-identity-v7-v3";
     const RETAINED_ROOT_V7_V1_SUPPORT_DIRECTORY: &str =
         "/Library/Application Support/opensteamer/privileged-v7";
     const RETAINED_ROOT_V7_V1_CONTROLLER: &str =
@@ -601,8 +685,8 @@ pub(crate) mod paired_v7 {
     const RETAINED_ROOT_V7_RECOVERY_V2_JOURNAL: &str = "OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V2\ncontroller_path=/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2/opensteamer-v7-recovery-controller\ncontroller_device=16777229\ncontroller_inode=27807655\ncontroller_length=1438232\ncontroller_sha256=4ce57b2affe12fca36c4b1bc5d1425d78355bbe5153ab99053a9ddf1ae71c31d\n";
     const RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE: u64 = 16_777_229;
     const RETAINED_ROOT_V7_TRANSACTION_PARENT_INODE: u64 = 27_777_175;
-    const RETAINED_ROOT_V7_TRANSACTION_PARENT_NLINK: u64 = 3;
-    const RETAINED_ROOT_V7_TRANSACTION_PARENT_LENGTH: u64 = 96;
+    const RETAINED_ROOT_V7_TRANSACTION_PARENT_NLINK: u64 = 4;
+    const RETAINED_ROOT_V7_TRANSACTION_PARENT_LENGTH: u64 = 128;
     const MAX_V7_CONTROLLER_BYTES: u64 = 64 * 1_024 * 1_024;
     const ROOT_BROKER_DEADMAN_SECONDS: u64 = 75;
     const RECOVERY_RETRY_2_ROOT_CONTROLLER_SHA256: &str =
@@ -932,18 +1016,25 @@ pub(crate) mod paired_v7 {
         "7beb049226ada83e97afba3e60089469d0eeeef6";
     const EXPECTED_SOURCE_BRANCH: &str = "agent/auto-select-iphone-microphone";
     const EXPECTED_REMOTE: &str = "https://github.com/ahmedelami/opensteamer.git";
-    const REQUIRED_RELEASE_DIFF_PATHS: [&str; 2] = [
+    const REQUIRED_RELEASE_DIFF_PATHS: [&str; 6] = [
+        "iOS/opensteamer/scripts/physical-blackhole-microphone-probe.swift",
+        "macOS/Tests/CaptureServerTests/PhysicalValidationScriptTests.swift",
+        "macOS/Tests/CaptureServerTests/V7DriverHostUpdateContractTests.swift",
+        "macOS/scripts/opensteamer-host-local-mono-trial-controller.rs",
         "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs",
         "macOS/scripts/update-opensteamer-host-paired-v7.sh",
     ];
-    const RELEASE_ONLY_PATH_ALLOWLIST: [&str; 9] = [
+    const RELEASE_ONLY_PATH_ALLOWLIST: [&str; 12] = [
         "AGENTS.md",
         "README.md",
         "TESTING_ORACLES.md",
         "USER_PROTECTED_LEGACY_RUNTIME.md",
         "WORLDWIDE_REMOTE_ACCESS.md",
+        "iOS/opensteamer/scripts/physical-blackhole-microphone-probe.swift",
+        "macOS/Tests/CaptureServerTests/PhysicalValidationScriptTests.swift",
         "macOS/Tests/CaptureServerTests/V7DriverHostUpdateContractTests.swift",
         "macOS/VirtualAudioDriver/README.md",
+        "macOS/scripts/opensteamer-host-local-mono-trial-controller.rs",
         "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs",
         "macOS/scripts/update-opensteamer-host-paired-v7.sh",
     ];
@@ -1230,11 +1321,6 @@ pub(crate) mod paired_v7 {
             authorized_commit: String,
             authorized_tree: String,
         },
-        RecoverRetry3 {
-            repo: String,
-            authorized_commit: String,
-            authorized_tree: String,
-        },
         Rollback(String),
         SelfTest,
         ProbeLock {
@@ -1484,7 +1570,7 @@ pub(crate) mod paired_v7 {
                 let generation = verify_paired_v7_runtime()?;
                 verify_isolated_pairing_items_present()?;
                 require_v7_retry_admission_ready()?;
-                require_retry_3_root_admission_via_sudo()?;
+                require_retry_4_root_admission_via_sudo()?;
                 require_v7_retry_admission_ready()?;
                 println!(
                     "PAIRED_V7_UPDATE_PREFLIGHT_OK pid={} runs={} baseline=sole-ready pairing=preserved v1=immutable v2=immutable v3=immutable v4=immutable v5=immutable v6=immutable v7=absent source_commit={} source_tree={} release_commit={} release_tree={} functional_inputs_sha256={}",
@@ -1512,15 +1598,6 @@ pub(crate) mod paired_v7 {
                 authorized_commit,
                 authorized_tree,
             } => recover_retry_2_critical_failure(
-                canonical_repo(&repo)?,
-                &authorized_commit,
-                &authorized_tree,
-            ),
-            V7Command::RecoverRetry3 {
-                repo,
-                authorized_commit,
-                authorized_tree,
-            } => recover_retry_3_critical_failure(
                 canonical_repo(&repo)?,
                 &authorized_commit,
                 &authorized_tree,
@@ -1600,17 +1677,6 @@ pub(crate) mod paired_v7 {
                 require_canonical_git_oid(authorized_commit, "authorized recovery commit")?;
                 require_canonical_git_oid(authorized_tree, "authorized recovery tree")?;
                 Ok(V7Command::RecoverRetry2 {
-                    repo: repo.clone(),
-                    authorized_commit: authorized_commit.clone(),
-                    authorized_tree: authorized_tree.clone(),
-                })
-            }
-            [_, mode, repo, authorized_commit, authorized_tree]
-                if mode == V7_RECOVER_RETRY_3_MODE =>
-            {
-                require_canonical_git_oid(authorized_commit, "authorized retry-3 recovery commit")?;
-                require_canonical_git_oid(authorized_tree, "authorized retry-3 recovery tree")?;
-                Ok(V7Command::RecoverRetry3 {
                     repo: repo.clone(),
                     authorized_commit: authorized_commit.clone(),
                     authorized_tree: authorized_tree.clone(),
@@ -1705,8 +1771,7 @@ pub(crate) mod paired_v7 {
                 })
             }
             _ => Err(ControllerError(format!(
-                "usage: {} {V7_PREFLIGHT_MODE} <canonical-repo>\n       {} {V7_EXECUTE_MODE} <canonical-repo> <authorized-commit> <authorized-tree>\n       {} {V7_RECOVER_RETRY_2_MODE} <canonical-repo> <authorized-commit> <authorized-tree>\n       {} {V7_RECOVER_RETRY_3_MODE} <canonical-repo> <authorized-commit> <authorized-tree>\n       {} {V7_ROLLBACK_MODE} <canonical-repo>\n       {} {V7_SELF_TEST_MODE}\n       {} {PROBE_LOCK_MODE} <runtime-dir> <lock-file> <pid>",
-                arguments.first().map_or("controller", String::as_str),
+                "usage: {} {V7_PREFLIGHT_MODE} <canonical-repo>\n       {} {V7_EXECUTE_MODE} <canonical-repo> <authorized-commit> <authorized-tree>\n       {} {V7_RECOVER_RETRY_2_MODE} <canonical-repo> <authorized-commit> <authorized-tree>\n       {} {V7_ROLLBACK_MODE} <canonical-repo>\n       {} {V7_SELF_TEST_MODE}\n       {} {PROBE_LOCK_MODE} <runtime-dir> <lock-file> <pid>",
                 arguments.first().map_or("controller", String::as_str),
                 arguments.first().map_or("controller", String::as_str),
                 arguments.first().map_or("controller", String::as_str),
@@ -1774,12 +1839,13 @@ pub(crate) mod paired_v7 {
             FIRST_ATTEMPT_V7_ACTIVE_UPDATE,
             RETRY_1_V7_ACTIVE_UPDATE,
             RETRY_2_V7_ACTIVE_UPDATE,
+            RETRY_3_V7_ACTIVE_UPDATE,
             V7_ACTIVE_UPDATE,
             FIRST_ATTEMPT_V7_PENDING_PREFIX,
             RETRY_1_V7_PENDING_PREFIX,
             RETRY_2_V7_PENDING_PREFIX,
+            RETRY_3_V7_PENDING_PREFIX,
             RETRY_V7_PENDING_PREFIX,
-            V7_RECOVER_RETRY_3_MODE,
             RECOVERY_RETRY_3_NAME,
             RECOVERY_RETRY_3_EVIDENCE,
             RECOVERY_RETRY_3_NONCE,
@@ -1799,8 +1865,23 @@ pub(crate) mod paired_v7 {
             RECOVERY_RETRY_3_GUARDIAN_SHA256,
             RECOVERY_RETRY_3_RECOVERY_JOURNAL,
             RECOVERY_RETRY_3_RECOVERY_JOURNAL_PENDING,
+            RECOVERY_RETRY_3_RECOVERY_JOURNAL_SHA256,
+            RECOVERY_RETRY_3_RECOVERY_JOURNAL_BYTES,
+            RECOVERY_RETRY_3_RECOVERY_COMMIT,
+            RECOVERY_RETRY_3_RECOVERY_TREE,
             RECOVERY_RETRY_3_RECOVERY_RESULT,
             RECOVERY_RETRY_3_RECOVERY_RESULT_PENDING,
+            RECOVERY_RETRY_3_RECOVERY_RESULT_SHA256,
+            RECOVERY_RETRY_3_RECOVERY_RESULT_BYTES,
+            RECOVERY_RETRY_3_RECOVERED_V6_PROCESS_START_SHA256,
+            RECOVERY_RETRY_3_RECOVERED_V6_NONCE,
+            RECOVERY_RETRY_3_SOURCE_TAR_SHA256,
+            RECOVERY_RETRY_3_FUNCTIONAL_INPUTS_SHA256,
+            RECOVERY_RETRY_3_PUBLIC_PROBE_SHA256,
+            RECOVERY_RETRY_3_MIRROR_PROBE_SHA256,
+            RECOVERY_RETRY_3_GUARDIAN_SELF_TEST_SHA256,
+            RECOVERY_RETRY_3_MIRROR_SELF_TEST_SHA256,
+            RECOVERY_RETRY_3_MIRROR_RESULT_SHA256,
             RECOVERY_RETRY_3_STDOUT_LOG,
             RECOVERY_RETRY_3_STDOUT_SHA256,
             RECOVERY_RETRY_3_STDERR_LOG,
@@ -1833,6 +1914,7 @@ pub(crate) mod paired_v7 {
             RECOVERY_RETRY_2_FUNCTIONAL_INPUTS_SHA256,
             RECOVERY_RETRY_2_INSTALL_HOLD_NAME_SHA256,
             RECOVERY_RETRY_2_GUARDIAN_SELF_TEST_SHA256,
+            RECOVERY_RETRY_2_MIRROR_PROBE_SHA256,
             RECOVERY_RETRY_2_MIRROR_SELF_TEST_SHA256,
             RECOVERY_RETRY_2_INSTALL_HOLD_EXECUTABLE_SHA256,
             RECOVERY_RETRY_2_ARCHIVED_INSTALL_HOLD,
@@ -1898,9 +1980,10 @@ pub(crate) mod paired_v7 {
         let numeric_pins = [
             COMMITTED_V5_RESERVE_INODE,
             COMMITTED_V6_RESERVE_INODE,
+            EXPECTED_FUNCTIONAL_INPUT_COUNT as u64,
             RECOVERY_RETRY_3_EVIDENCE_INODE,
-            RECOVERY_RETRY_3_EVIDENCE_NLINK,
-            RECOVERY_RETRY_3_EVIDENCE_SIZE,
+            RECOVERY_RETRY_3_TERMINAL_EVIDENCE_NLINK,
+            RECOVERY_RETRY_3_TERMINAL_EVIDENCE_SIZE,
             RECOVERY_RETRY_3_POINTER_INODE,
             RECOVERY_RETRY_3_POINTER_SIZE,
             RECOVERY_RETRY_3_JOURNAL_INODE,
@@ -1922,6 +2005,33 @@ pub(crate) mod paired_v7 {
             RECOVERY_RETRY_3_GUARDIAN_SIZE,
             RECOVERY_RETRY_3_ROLLBACK_CURRENT_INODE,
             RECOVERY_RETRY_3_RESERVE_INODE,
+            RECOVERY_RETRY_3_RECOVERY_JOURNAL_INODE,
+            RECOVERY_RETRY_3_RECOVERY_JOURNAL_SIZE,
+            RECOVERY_RETRY_3_RECOVERY_RESULT_INODE,
+            RECOVERY_RETRY_3_RECOVERY_RESULT_SIZE,
+            RECOVERY_RETRY_3_RECOVERED_V6_PID as u64,
+            RECOVERY_RETRY_3_RECOVERED_V6_RUNS,
+            RECOVERY_RETRY_3_RECOVERED_V6_LOCK_DEVICE,
+            RECOVERY_RETRY_3_RECOVERED_V6_LOCK_INODE,
+            RECOVERY_RETRY_3_SOURCE_TAR_INODE,
+            RECOVERY_RETRY_3_SOURCE_TAR_SIZE,
+            RECOVERY_RETRY_3_FUNCTIONAL_INPUTS_INODE,
+            RECOVERY_RETRY_3_FUNCTIONAL_INPUTS_SIZE,
+            RECOVERY_RETRY_3_PROBES_INODE,
+            RECOVERY_RETRY_3_PROBES_NLINK,
+            RECOVERY_RETRY_3_PROBES_SIZE,
+            RECOVERY_RETRY_3_PUBLIC_PROBE_INODE,
+            RECOVERY_RETRY_3_PUBLIC_PROBE_SIZE,
+            RECOVERY_RETRY_3_MIRROR_PROBE_INODE,
+            RECOVERY_RETRY_3_MIRROR_PROBE_SIZE,
+            RECOVERY_RETRY_3_GUARDIAN_SELF_TEST_INODE,
+            RECOVERY_RETRY_3_GUARDIAN_SELF_TEST_SIZE,
+            RECOVERY_RETRY_3_MIRROR_SELF_TEST_INODE,
+            RECOVERY_RETRY_3_MIRROR_SELF_TEST_SIZE,
+            RECOVERY_RETRY_3_MIRROR_RESULT_INODE,
+            RECOVERY_RETRY_3_MIRROR_RESULT_SIZE,
+            RECOVERY_RETRY_3_MIRROR_STDOUT_INODE,
+            RECOVERY_RETRY_3_MIRROR_STDERR_INODE,
             RECOVERY_RETRY_3_STDOUT_INODE,
             RECOVERY_RETRY_3_STDOUT_SIZE,
             RECOVERY_RETRY_3_STDERR_INODE,
@@ -1939,6 +2049,8 @@ pub(crate) mod paired_v7 {
             RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_INODE,
             RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_NLINK,
             RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_LENGTH,
+            RETRY_4_ROOT_SUPPORT_PARENT_NLINK,
+            RETRY_4_ROOT_SUPPORT_PARENT_LENGTH,
             RECOVERY_RETRY_3_ROOT_DEVICE,
             RECOVERY_RETRY_3_ROOT_TRANSACTION_INODE,
             RECOVERY_RETRY_3_ROOT_TRANSACTION_NLINK,
@@ -1964,8 +2076,8 @@ pub(crate) mod paired_v7 {
             RETAINED_FAILED_V7_ROOT_INODE,
             RETAINED_FAILED_V7_ROOT_NLINK,
             RETAINED_FAILED_V7_ROOT_SIZE,
-            RETRY_3_V7_ROOT_NLINK,
-            RETRY_3_V7_ROOT_SIZE,
+            RETRY_4_V7_ROOT_NLINK,
+            RETRY_4_V7_ROOT_SIZE,
             RECOVERY_RETRY_2_EVIDENCE_NLINK,
             RECOVERY_RETRY_2_EVIDENCE_SIZE,
             RECOVERY_RETRY_2_FAILED_NEW_INODE,
@@ -2174,6 +2286,61 @@ pub(crate) mod paired_v7 {
                 64,
             ),
             (
+                "terminal retry-3 recovery journal SHA-256",
+                RECOVERY_RETRY_3_RECOVERY_JOURNAL_SHA256,
+                64,
+            ),
+            (
+                "terminal retry-3 recovery result SHA-256",
+                RECOVERY_RETRY_3_RECOVERY_RESULT_SHA256,
+                64,
+            ),
+            (
+                "terminal retry-3 source archive SHA-256",
+                RECOVERY_RETRY_3_SOURCE_TAR_SHA256,
+                64,
+            ),
+            (
+                "terminal retry-3 functional inputs SHA-256",
+                RECOVERY_RETRY_3_FUNCTIONAL_INPUTS_SHA256,
+                64,
+            ),
+            (
+                "terminal retry-3 public probe SHA-256",
+                RECOVERY_RETRY_3_PUBLIC_PROBE_SHA256,
+                64,
+            ),
+            (
+                "terminal retry-3 retained mirror probe SHA-256",
+                RECOVERY_RETRY_3_MIRROR_PROBE_SHA256,
+                64,
+            ),
+            (
+                "terminal retry-3 guardian self-test SHA-256",
+                RECOVERY_RETRY_3_GUARDIAN_SELF_TEST_SHA256,
+                64,
+            ),
+            (
+                "terminal retry-3 mirror self-test SHA-256",
+                RECOVERY_RETRY_3_MIRROR_SELF_TEST_SHA256,
+                64,
+            ),
+            (
+                "terminal retry-3 mirror result SHA-256",
+                RECOVERY_RETRY_3_MIRROR_RESULT_SHA256,
+                64,
+            ),
+            (
+                "terminal retry-3 recovered v6 process-start SHA-256",
+                RECOVERY_RETRY_3_RECOVERED_V6_PROCESS_START_SHA256,
+                64,
+            ),
+            (
+                "terminal retry-3 recovered v6 nonce",
+                RECOVERY_RETRY_3_RECOVERED_V6_NONCE,
+                64,
+            ),
+            (
                 "retry-3 stdout prefix SHA-256",
                 RECOVERY_RETRY_3_STDOUT_SHA256,
                 64,
@@ -2271,6 +2438,11 @@ pub(crate) mod paired_v7 {
             (
                 "terminal retry-2 guardian self-test SHA-256",
                 RECOVERY_RETRY_2_GUARDIAN_SELF_TEST_SHA256,
+                64,
+            ),
+            (
+                "terminal retry-2 retained mirror probe SHA-256",
+                RECOVERY_RETRY_2_MIRROR_PROBE_SHA256,
                 64,
             ),
             (
@@ -2406,6 +2578,14 @@ pub(crate) mod paired_v7 {
         require_canonical_git_oid(
             RECOVERY_RETRY_2_RECOVERY_TREE,
             "terminal retry-2 recovery tree",
+        )?;
+        require_canonical_git_oid(
+            RECOVERY_RETRY_3_RECOVERY_COMMIT,
+            "terminal retry-3 recovery commit",
+        )?;
+        require_canonical_git_oid(
+            RECOVERY_RETRY_3_RECOVERY_TREE,
+            "terminal retry-3 recovery tree",
         )?;
         require_canonical_git_oid(
             REQUIRED_REPO_OWNED_DRIVER_PATCH_COMMIT,
@@ -2728,6 +2908,23 @@ pub(crate) mod paired_v7 {
     }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
+    struct PreparedRootV3Identity {
+        uid_controller: ControllerBinaryIdentity,
+        sealed_root_controller: ControllerBinaryIdentity,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Retry4RootV3Stage {
+        Absent,
+        Empty,
+        Pending,
+        Controller,
+        PinPrefix,
+        RecordsPrefix,
+        Sealed,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
     struct CandidateSourceBinding {
         commit: String,
         tree: String,
@@ -2776,30 +2973,32 @@ pub(crate) mod paired_v7 {
         })
     }
 
-    fn retry_3_root_layout(nonce: &str) -> Result<RootDriverLayout> {
+    fn retry_4_root_layout(nonce: &str) -> Result<RootDriverLayout> {
         validate_v7_nonce(nonce)?;
-        if nonce == RECOVERY_RETRY_2_NONCE {
+        if nonce == RECOVERY_RETRY_2_NONCE || nonce == RECOVERY_RETRY_3_NONCE {
             return Err(ControllerError(
-                "retry-3 root mode rejected the retained retry-2 nonce".to_owned(),
+                "retry-4 root mode rejected a retained retry-2/retry-3 nonce".to_owned(),
             ));
         }
         let layout = root_driver_layout(nonce)?;
         if layout.root == Path::new(RECOVERY_RETRY_2_ROOT_TRANSACTION)
+            || layout.root == Path::new(RECOVERY_RETRY_3_ROOT_TRANSACTION)
             || layout.root.parent() != Some(Path::new(ROOT_V7_TRANSACTION_PARENT))
         {
             return Err(ControllerError(
-                "retry-3 root transaction escaped its disjoint direct child".to_owned(),
+                "retry-4 root transaction escaped its disjoint direct child".to_owned(),
             ));
         }
         Ok(layout)
     }
 
-    fn require_existing_retry_3_root_layout(nonce: &str) -> Result<RootDriverLayout> {
-        let layout = retry_3_root_layout(nonce)?;
-        require_exact_retry_3_transaction_parent_names(Some(&layout.root))?;
+    fn require_existing_retry_4_root_layout(nonce: &str) -> Result<RootDriverLayout> {
+        let layout = retry_4_root_layout(nonce)?;
+        require_exact_retry_4_transaction_parent_names(Some(&layout.root))?;
         require_root_private_directory(&layout.root)?;
         require_retained_retry_2_root_tombstone(false)?;
-        require_exact_retry_3_transaction_parent_names(Some(&layout.root))?;
+        require_retained_retry_3_root_tombstone(false)?;
+        require_exact_retry_4_transaction_parent_names(Some(&layout.root))?;
         Ok(layout)
     }
 
@@ -2911,7 +3110,7 @@ pub(crate) mod paired_v7 {
         controller_identity_journal_at(
             identity,
             ROOT_V7_CONTROLLER,
-            "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V2",
+            "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V3",
         )
     }
 
@@ -2930,7 +3129,7 @@ pub(crate) mod paired_v7 {
         parse_controller_identity_journal_at(
             text,
             ROOT_V7_CONTROLLER,
-            "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V2",
+            "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V3",
         )
     }
 
@@ -3034,7 +3233,7 @@ pub(crate) mod paired_v7 {
             Path::new(ROOT_V7_CONTROLLER_PIN),
             Path::new(ROOT_V7_CONTROLLER_IDENTITY_JOURNAL),
             ROOT_V7_CONTROLLER,
-            "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V2",
+            "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V3",
         )
     }
 
@@ -3121,10 +3320,15 @@ pub(crate) mod paired_v7 {
         require_retained_root_normal_v1()?;
         require_retained_root_recovery_v1()?;
         require_retained_root_recovery_v2()?;
-        require_exact_retry_3_transaction_parent_names(None)?;
+        require_retained_root_normal_v2()?;
+        require_retry_4_root_support_parent(true)?;
+        require_exact_retry_4_transaction_parent_names(None)?;
         require_retained_retry_2_root_tombstone(true)?;
+        require_retained_retry_3_root_tombstone(true)?;
+        fsync_parent(Path::new(ROOT_V7_SUPPORT_DIRECTORY))?;
         require_root_private_directory(Path::new(ROOT_V7_SUPPORT_DIRECTORY))?;
-        require_root_v2_support_topology(&[
+        retire_root_v3_install_residues()?;
+        require_root_v3_support_topology(&[
             &["opensteamer-v7-controller"],
             &["controller-binary.sha256", "opensteamer-v7-controller"],
             &[
@@ -3143,7 +3347,7 @@ pub(crate) mod paired_v7 {
             Path::new(ROOT_V7_CONTROLLER_PIN),
             &format!("{}\n", identity.sha256),
         )?;
-        require_root_v2_support_topology(&[
+        require_root_v3_support_topology(&[
             &["controller-binary.sha256", "opensteamer-v7-controller"],
             &[
                 "controller-binary.sha256",
@@ -3156,7 +3360,7 @@ pub(crate) mod paired_v7 {
             &controller_identity_journal_at(
                 &identity,
                 ROOT_V7_CONTROLLER,
-                "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V2",
+                "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V3",
             ),
         )?;
         if read_root_controller_identity_records()? != identity {
@@ -3165,7 +3369,7 @@ pub(crate) mod paired_v7 {
                     .to_owned(),
             ));
         }
-        require_root_v2_support_topology(&[&[
+        require_root_v3_support_topology(&[&[
             "controller-binary.sha256",
             "controller-identity.log",
             "opensteamer-v7-controller",
@@ -3173,9 +3377,12 @@ pub(crate) mod paired_v7 {
         require_retained_root_normal_v1()?;
         require_retained_root_recovery_v1()?;
         require_retained_root_recovery_v2()?;
-        require_exact_retry_3_transaction_parent_names(None)?;
+        require_retained_root_normal_v2()?;
+        require_retry_4_root_support_parent(true)?;
+        require_exact_retry_4_transaction_parent_names(None)?;
         require_retained_retry_2_root_tombstone(true)?;
-        println!("ROOT_V7_CONTROLLER_V2_IDENTITY_SEALED");
+        require_retained_retry_3_root_tombstone(true)?;
+        println!("ROOT_V7_CONTROLLER_V3_IDENTITY_SEALED");
         Ok(())
     }
 
@@ -3184,16 +3391,21 @@ pub(crate) mod paired_v7 {
             || env::current_exe()? != Path::new(ROOT_V7_CONTROLLER_PENDING)
         {
             return Err(ControllerError(
-                "root controller V2 publication escaped its fixed pending path".to_owned(),
+                "root controller V3 publication escaped its fixed pending path".to_owned(),
             ));
         }
         require_retained_root_normal_v1()?;
         require_retained_root_recovery_v1()?;
         require_retained_root_recovery_v2()?;
-        require_exact_retry_3_transaction_parent_names(None)?;
+        require_retained_root_normal_v2()?;
+        require_retry_4_root_support_parent(true)?;
+        require_exact_retry_4_transaction_parent_names(None)?;
         require_retained_retry_2_root_tombstone(true)?;
+        require_retained_retry_3_root_tombstone(true)?;
+        fsync_parent(Path::new(ROOT_V7_SUPPORT_DIRECTORY))?;
         require_root_private_directory(Path::new(ROOT_V7_SUPPORT_DIRECTORY))?;
-        require_root_v2_support_topology(&[&[".opensteamer-v7-controller.pending"]])?;
+        retire_root_v3_install_residues()?;
+        require_root_v3_support_topology(&[&[".opensteamer-v7-controller.pending"]])?;
         let pending = stable_controller_binary_identity(
             Path::new(ROOT_V7_CONTROLLER_PENDING),
             0,
@@ -3206,7 +3418,7 @@ pub(crate) mod paired_v7 {
             .open(ROOT_V7_CONTROLLER_PENDING)?;
         let before = descriptor.metadata()?;
         descriptor.sync_all()?;
-        require_path_absent(Path::new(ROOT_V7_CONTROLLER), "root controller V2")?;
+        require_path_absent(Path::new(ROOT_V7_CONTROLLER), "root controller V3")?;
         rename_exclusive(
             Path::new(ROOT_V7_CONTROLLER_PENDING),
             Path::new(ROOT_V7_CONTROLLER),
@@ -3225,23 +3437,26 @@ pub(crate) mod paired_v7 {
             || before.len() != after.len()
         {
             return Err(ControllerError(
-                "root controller V2 publication lost its descriptor-bound identity".to_owned(),
+                "root controller V3 publication lost its descriptor-bound identity".to_owned(),
             ));
         }
-        require_root_v2_support_topology(&[&["opensteamer-v7-controller"]])?;
+        require_root_v3_support_topology(&[&["opensteamer-v7-controller"]])?;
         require_retained_root_normal_v1()?;
         require_retained_root_recovery_v1()?;
         require_retained_root_recovery_v2()?;
-        require_exact_retry_3_transaction_parent_names(None)?;
+        require_retained_root_normal_v2()?;
+        require_retry_4_root_support_parent(true)?;
+        require_exact_retry_4_transaction_parent_names(None)?;
         require_retained_retry_2_root_tombstone(true)?;
-        println!("ROOT_V7_CONTROLLER_V2_PUBLISHED");
+        require_retained_retry_3_root_tombstone(true)?;
+        println!("ROOT_V7_CONTROLLER_V3_PUBLISHED");
         Ok(())
     }
 
-    fn require_root_v2_support_topology(expected_sets: &[&[&str]]) -> Result<()> {
+    fn require_root_v3_support_topology(expected_sets: &[&[&str]]) -> Result<()> {
         if expected_sets.is_empty() {
             return Err(ControllerError(
-                "normal root V2 topology proof omitted its expected state".to_owned(),
+                "normal root V3 topology proof omitted its expected state".to_owned(),
             ));
         }
         let support = Path::new(ROOT_V7_SUPPORT_DIRECTORY);
@@ -3252,11 +3467,11 @@ pub(crate) mod paired_v7 {
             let name = entry
                 .file_name()
                 .to_str()
-                .ok_or_else(|| ControllerError("normal root V2 child is not UTF-8".to_owned()))?
+                .ok_or_else(|| ControllerError("normal root V3 child is not UTF-8".to_owned()))?
                 .to_owned();
             if !entry.file_type()?.is_file() || entry.path() != support.join(&name) {
                 return Err(ControllerError(
-                    "normal root V2 support contains an unsafe child".to_owned(),
+                    "normal root V3 support contains an unsafe child".to_owned(),
                 ));
             }
             actual.push(name);
@@ -3269,7 +3484,7 @@ pub(crate) mod paired_v7 {
         });
         if !matches_expected {
             return Err(ControllerError(
-                "normal root V2 support child set is not one reviewed crash state".to_owned(),
+                "normal root V3 support child set is not one reviewed crash state".to_owned(),
             ));
         }
         let expected_nlink = 2 + actual.len() as u64;
@@ -3294,7 +3509,7 @@ pub(crate) mod paired_v7 {
             || before.len() != after.len()
         {
             return Err(ControllerError(
-                "normal root V2 support changed during exact topology proof".to_owned(),
+                "normal root V3 support changed during exact topology proof".to_owned(),
             ));
         }
         Ok(())
@@ -3383,7 +3598,9 @@ pub(crate) mod paired_v7 {
         require_retained_root_normal_v1()?;
         require_retained_root_recovery_v1()?;
         require_retained_root_recovery_v2()?;
-        require_root_v2_support_topology(&[&[
+        require_retained_root_normal_v2()?;
+        require_retry_4_root_support_parent(true)?;
+        require_root_v3_support_topology(&[&[
             "controller-binary.sha256",
             "controller-identity.log",
             "opensteamer-v7-controller",
@@ -3392,10 +3609,13 @@ pub(crate) mod paired_v7 {
         let sealed = read_root_controller_identity_records()?;
         require_root_controller_identity_binding(&actual, &sealed)?;
         require_retained_retry_2_root_tombstone(false)?;
+        require_retained_retry_3_root_tombstone(false)?;
         require_retained_root_normal_v1()?;
         require_retained_root_recovery_v1()?;
         require_retained_root_recovery_v2()?;
-        require_root_v2_support_topology(&[&[
+        require_retained_root_normal_v2()?;
+        require_retry_4_root_support_parent(true)?;
+        require_root_v3_support_topology(&[&[
             "controller-binary.sha256",
             "controller-identity.log",
             "opensteamer-v7-controller",
@@ -3403,22 +3623,24 @@ pub(crate) mod paired_v7 {
         Ok(actual)
     }
 
-    fn require_retry_3_root_operation_trust(
+    fn require_retry_4_root_operation_trust(
         current: Option<&Path>,
         require_product_absent: bool,
     ) -> Result<()> {
         verify_root_controller_identity()?;
-        require_exact_retry_3_transaction_parent_names(current)?;
+        require_exact_retry_4_transaction_parent_names(current)?;
         require_retained_retry_2_root_tombstone(require_product_absent)?;
+        require_retained_retry_3_root_tombstone(require_product_absent)?;
+        require_retry_4_root_support_parent(true)?;
         Ok(())
     }
 
-    fn finish_retry_3_root_operation<T>(
+    fn finish_retry_4_root_operation<T>(
         layout: &RootDriverLayout,
         operation: Result<T>,
         success_requires_product_absent: bool,
     ) -> Result<T> {
-        let post = require_retry_3_root_operation_trust(
+        let post = require_retry_4_root_operation_trust(
             Some(&layout.root),
             operation.is_ok() && success_requires_product_absent,
         );
@@ -3427,7 +3649,7 @@ pub(crate) mod paired_v7 {
             (Err(primary), Ok(())) => Err(primary),
             (Ok(_), Err(post)) => Err(post),
             (Err(primary), Err(post)) => Err(ControllerError(format!(
-                "root retry-3 operation failed and its post-operation trust proof also failed: primary={primary}; post={post}"
+                "root retry-4 operation failed and its post-operation trust proof also failed: primary={primary}; post={post}"
             ))),
         }
     }
@@ -4080,9 +4302,10 @@ pub(crate) mod paired_v7 {
             .file_name()
             .and_then(|value| value.to_str())
             .ok_or_else(|| ControllerError("paired-v7 evidence name is not UTF-8".to_owned()))?;
-        if !evidence_name.starts_with("paired-v7-update-retry-3-")
+        if !evidence_name.starts_with("paired-v7-update-retry-4-")
             || !evidence_name.ends_with(nonce)
             || evidence_name == RECOVERY_RETRY_2_NAME
+            || evidence_name == RECOVERY_RETRY_3_NAME
         {
             return Err(ControllerError(
                 "root driver artifact path is not bound to the transaction nonce".to_owned(),
@@ -4096,17 +4319,17 @@ pub(crate) mod paired_v7 {
     }
 
     fn root_driver_prepare(nonce: &str, staged_driver: &Path, staged_package: &Path) -> Result<()> {
-        let layout = retry_3_root_layout(nonce)?;
-        require_retry_3_root_operation_trust(None, true)?;
+        let layout = retry_4_root_layout(nonce)?;
+        require_retry_4_root_operation_trust(None, true)?;
         prepare_root_transaction_parent()?;
         require_exact_staged_driver_artifacts(nonce, staged_driver, staged_package)?;
         let evidence = staged_driver
             .parent()
             .and_then(Path::parent)
             .ok_or_else(|| {
-                ControllerError("retry-3 root prepare omitted its evidence parent".to_owned())
+                ControllerError("retry-4 root prepare omitted its evidence parent".to_owned())
             })?;
-        require_retry_3_root_operation_trust(None, true)?;
+        require_retry_4_root_operation_trust(None, true)?;
         require_current_retry_v7_layout(
             evidence,
             Some(nonce),
@@ -4117,7 +4340,7 @@ pub(crate) mod paired_v7 {
         let operation = (|| -> Result<(RootNodeIdentity, RootNodeIdentity)> {
             fs::set_permissions(&layout.root, fs::Permissions::from_mode(0o700))?;
             require_root_private_directory(&layout.root)?;
-            require_retry_3_root_operation_trust(Some(&layout.root), true)?;
+            require_retry_4_root_operation_trust(Some(&layout.root), true)?;
             let prior = root_node_identity(Path::new(PRODUCT_DRIVER_CANONICAL_PATH))?;
             let copy = command_output(
                 "/usr/bin/ditto",
@@ -4172,7 +4395,7 @@ pub(crate) mod paired_v7 {
             )?;
             Ok((prior, hold))
         })();
-        let (prior, hold) = finish_retry_3_root_operation(&layout, operation, true)?;
+        let (prior, hold) = finish_retry_4_root_operation(&layout, operation, true)?;
         println!(
             "ROOT_V7_DRIVER_PREPARED root={} prior={} prior_device={} prior_inode={} hold_device={} hold_inode={}",
             layout.root.display(),
@@ -4186,8 +4409,8 @@ pub(crate) mod paired_v7 {
     }
 
     fn root_driver_publish_reload(nonce: &str) -> Result<()> {
-        let layout = require_existing_retry_3_root_layout(nonce)?;
-        require_retry_3_root_operation_trust(Some(&layout.root), true)?;
+        let layout = require_existing_retry_4_root_layout(nonce)?;
+        require_retry_4_root_operation_trust(Some(&layout.root), true)?;
         let operation = (|| -> Result<()> {
             require_no_host_process_for_root_driver_mutation()?;
             let (prior, hold) = read_root_driver_state(&layout)?;
@@ -4234,14 +4457,14 @@ pub(crate) mod paired_v7 {
             }
             Ok(())
         })();
-        finish_retry_3_root_operation(&layout, operation, false)?;
+        finish_retry_4_root_operation(&layout, operation, false)?;
         println!("ROOT_V7_DRIVER_PUBLISHED root={}", layout.root.display());
         Ok(())
     }
 
     fn root_driver_rollback_reload(nonce: &str) -> Result<()> {
-        let layout = require_existing_retry_3_root_layout(nonce)?;
-        require_retry_3_root_operation_trust(Some(&layout.root), false)?;
+        let layout = require_existing_retry_4_root_layout(nonce)?;
+        require_retry_4_root_operation_trust(Some(&layout.root), false)?;
         let operation = (|| -> Result<()> {
             require_no_host_process_for_root_driver_mutation()?;
             let (prior, hold) = read_root_driver_state(&layout)?;
@@ -4286,14 +4509,14 @@ pub(crate) mod paired_v7 {
             reload_core_audio_root()?;
             Ok(())
         })();
-        finish_retry_3_root_operation(&layout, operation, true)?;
+        finish_retry_4_root_operation(&layout, operation, true)?;
         println!("ROOT_V7_DRIVER_ROLLED_BACK root={}", layout.root.display());
         Ok(())
     }
 
     fn root_driver_restore_or_abandon_existing(nonce: &str) -> Result<()> {
-        let layout = require_existing_retry_3_root_layout(nonce)?;
-        require_retry_3_root_operation_trust(Some(&layout.root), false)?;
+        let layout = require_existing_retry_4_root_layout(nonce)?;
+        require_retry_4_root_operation_trust(Some(&layout.root), false)?;
         let (prior, hold) = read_root_driver_state(&layout)?;
         let canonical = root_node_identity(Path::new(PRODUCT_DRIVER_CANONICAL_PATH))?;
         let held = root_node_identity(&layout.hold)?;
@@ -4326,7 +4549,7 @@ pub(crate) mod paired_v7 {
         }
         if canonical == prior && abandoned_is_hold {
             verify_root_production_driver(&layout.abandoned)?;
-            require_retry_3_root_operation_trust(Some(&layout.root), true)?;
+            require_retry_4_root_operation_trust(Some(&layout.root), true)?;
             println!(
                 "ROOT_V7_DRIVER_PREPARE_ALREADY_ABANDONED root={}",
                 layout.root.display()
@@ -4340,8 +4563,8 @@ pub(crate) mod paired_v7 {
     }
 
     fn root_driver_verify_existing_restore_ready(nonce: &str) -> Result<()> {
-        let layout = require_existing_retry_3_root_layout(nonce)?;
-        require_retry_3_root_operation_trust(Some(&layout.root), false)?;
+        let layout = require_existing_retry_4_root_layout(nonce)?;
+        require_retry_4_root_operation_trust(Some(&layout.root), false)?;
         let (prior, hold) = read_root_driver_state(&layout)?;
         let locations = [
             Path::new(PRODUCT_DRIVER_CANONICAL_PATH),
@@ -4386,7 +4609,7 @@ pub(crate) mod paired_v7 {
             "ROOT_V7_DRIVER_RESTORE_READY root={}",
             layout.root.display()
         );
-        require_retry_3_root_operation_trust(Some(&layout.root), false)?;
+        require_retry_4_root_operation_trust(Some(&layout.root), false)?;
         Ok(())
     }
 
@@ -4439,8 +4662,8 @@ pub(crate) mod paired_v7 {
     }
 
     fn root_driver_abandon_prepare(nonce: &str) -> Result<()> {
-        let layout = require_existing_retry_3_root_layout(nonce)?;
-        require_retry_3_root_operation_trust(Some(&layout.root), true)?;
+        let layout = require_existing_retry_4_root_layout(nonce)?;
+        require_retry_4_root_operation_trust(Some(&layout.root), true)?;
         let operation = (|| -> Result<()> {
             let (prior, hold) = read_root_driver_state(&layout)?;
             if root_node_identity(Path::new(PRODUCT_DRIVER_CANONICAL_PATH))? != prior {
@@ -4459,7 +4682,7 @@ pub(crate) mod paired_v7 {
             fsync_parent(&layout.abandoned)?;
             Ok(())
         })();
-        finish_retry_3_root_operation(&layout, operation, true)?;
+        finish_retry_4_root_operation(&layout, operation, true)?;
         println!(
             "ROOT_V7_DRIVER_PREPARE_ABANDONED root={}",
             layout.root.display()
@@ -4468,8 +4691,8 @@ pub(crate) mod paired_v7 {
     }
 
     fn root_driver_verify_commit_ready(nonce: &str) -> Result<()> {
-        let layout = require_existing_retry_3_root_layout(nonce)?;
-        require_retry_3_root_operation_trust(Some(&layout.root), false)?;
+        let layout = require_existing_retry_4_root_layout(nonce)?;
+        require_retry_4_root_operation_trust(Some(&layout.root), false)?;
         let (prior, hold) = read_root_driver_state(&layout)?;
         let canonical = root_node_identity(Path::new(PRODUCT_DRIVER_CANONICAL_PATH))?;
         if !canonical.present || canonical.device != hold.device || canonical.inode != hold.inode {
@@ -4488,7 +4711,7 @@ pub(crate) mod paired_v7 {
             }
         }
         println!("ROOT_V7_DRIVER_COMMIT_READY root={}", layout.root.display());
-        require_retry_3_root_operation_trust(Some(&layout.root), false)?;
+        require_retry_4_root_operation_trust(Some(&layout.root), false)?;
         Ok(())
     }
 
@@ -4501,7 +4724,7 @@ pub(crate) mod paired_v7 {
 
     fn root_driver_broker(nonce: &str, staged_driver: &Path, staged_package: &Path) -> Result<()> {
         verify_root_controller_identity()?;
-        retry_3_root_layout(nonce)?;
+        retry_4_root_layout(nonce)?;
         root_driver_prepare(nonce, staged_driver, staged_package)?;
         println!("ROOT_V7_BROKER_READY nonce={nonce}");
         std::io::stdout().flush()?;
@@ -5415,6 +5638,31 @@ pub(crate) mod paired_v7 {
         )
     }
 
+    fn require_retained_root_normal_v2() -> Result<()> {
+        require_retained_root_controller_set(
+            "normal-v2",
+            RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_DIRECTORY,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_PENDING,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_PIN,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_IDENTITY_JOURNAL,
+            RETAINED_ROOT_V7_NORMAL_V2_DEVICE,
+            RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_INODE,
+            RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_NLINK,
+            RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_LENGTH,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_INODE,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_LENGTH,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_SHA256,
+            RETAINED_ROOT_V7_NORMAL_V2_PIN_INODE,
+            RETAINED_ROOT_V7_NORMAL_V2_PIN_SHA256,
+            RETAINED_ROOT_V7_NORMAL_V2_PIN,
+            RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_INODE,
+            RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_LENGTH,
+            RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_SHA256,
+            RETAINED_ROOT_V7_NORMAL_V2_JOURNAL,
+        )
+    }
+
     fn require_retained_root_recovery_v2() -> Result<()> {
         require_retained_root_controller_set(
             "recovery-v2",
@@ -5482,7 +5730,7 @@ pub(crate) mod paired_v7 {
         Ok(())
     }
 
-    fn require_exact_retry_3_transaction_parent_names(current: Option<&Path>) -> Result<()> {
+    fn require_exact_retry_4_transaction_parent_names(current: Option<&Path>) -> Result<()> {
         let parent = Path::new(ROOT_V7_TRANSACTION_PARENT);
         let before = fs::symlink_metadata(parent)?;
         let expected_nlink = if current.is_some() {
@@ -5506,19 +5754,30 @@ pub(crate) mod paired_v7 {
         };
         if !metadata_is_exact(&before) {
             return Err(ControllerError(
-                "retry-3 root transaction parent identity changed".to_owned(),
+                "retry-4 root transaction parent identity changed".to_owned(),
             ));
         }
-        let retained = Path::new(RECOVERY_RETRY_2_ROOT_TRANSACTION);
-        let mut expected = vec![retained
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| ControllerError("retained root transaction name is invalid".to_owned()))?
-            .to_owned()];
+        let retained_retry_2 = Path::new(RECOVERY_RETRY_2_ROOT_TRANSACTION);
+        let retained_retry_3 = Path::new(RECOVERY_RETRY_3_ROOT_TRANSACTION);
+        let retained_name = |path: &Path| -> Result<String> {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    ControllerError("retained root transaction name is invalid".to_owned())
+                })
+        };
+        let mut expected = vec![
+            retained_name(retained_retry_2)?,
+            retained_name(retained_retry_3)?,
+        ];
         if let Some(current) = current {
-            if current.parent() != Some(parent) || current == retained {
+            if current.parent() != Some(parent)
+                || current == retained_retry_2
+                || current == retained_retry_3
+            {
                 return Err(ControllerError(
-                    "retry-3 root transaction is not one disjoint direct child".to_owned(),
+                    "retry-4 root transaction is not one disjoint direct child".to_owned(),
                 ));
             }
             expected.push(
@@ -5526,7 +5785,7 @@ pub(crate) mod paired_v7 {
                     .file_name()
                     .and_then(|name| name.to_str())
                     .ok_or_else(|| {
-                        ControllerError("retry-3 root transaction name is invalid".to_owned())
+                        ControllerError("retry-4 root transaction name is invalid".to_owned())
                     })?
                     .to_owned(),
             );
@@ -5555,8 +5814,7 @@ pub(crate) mod paired_v7 {
         actual.sort_unstable();
         if actual != expected {
             return Err(ControllerError(
-                "root transaction parent does not contain the exact retry-2/retry-3 set"
-                    .to_owned(),
+                "root transaction parent does not contain the exact retained retry-2/retry-3 and current retry-4 set".to_owned(),
             ));
         }
         let after = fs::symlink_metadata(parent)?;
@@ -5568,7 +5826,7 @@ pub(crate) mod paired_v7 {
             || before.st_flags() != after.st_flags()
         {
             return Err(ControllerError(
-                "root transaction parent changed during exact retry-3 proof".to_owned(),
+                "root transaction parent changed during exact retry-4 proof".to_owned(),
             ));
         }
         Ok(())
@@ -5660,6 +5918,124 @@ pub(crate) mod paired_v7 {
         Ok(())
     }
 
+    fn require_retained_retry_3_root_tombstone(require_product_absent: bool) -> Result<()> {
+        let data_volume_device = verified_data_volume_device()?;
+        let transaction = Path::new(RECOVERY_RETRY_3_ROOT_TRANSACTION);
+        let transaction_metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == 0
+                && metadata.gid() == 0
+                && metadata.nlink() == RECOVERY_RETRY_3_ROOT_TRANSACTION_NLINK
+                && metadata.permissions().mode() & 0o7777 == 0o700
+                && metadata.dev() == data_volume_device
+                && metadata.ino() == RECOVERY_RETRY_3_ROOT_TRANSACTION_INODE
+                && metadata.len() == RECOVERY_RETRY_3_ROOT_TRANSACTION_LENGTH
+                && metadata.st_flags() == 0
+        };
+        let transaction_before = fs::symlink_metadata(transaction)?;
+        if !transaction_metadata_is_exact(&transaction_before) {
+            return Err(ControllerError(
+                "retained retry-3 root transaction identity changed".to_owned(),
+            ));
+        }
+        require_exact_root_transaction_children(transaction)?;
+        let layout = root_driver_layout(RECOVERY_RETRY_3_NONCE)?;
+        if layout.root != transaction {
+            return Err(ControllerError(
+                "retained retry-3 root transaction lost its nonce binding".to_owned(),
+            ));
+        }
+        if require_product_absent {
+            require_path_absent(
+                Path::new(PRODUCT_DRIVER_CANONICAL_PATH),
+                "canonical product driver before retry-4 root preparation",
+            )?;
+        }
+        for path in [&layout.hold, &layout.prior, &layout.abandoned] {
+            require_path_absent(path, "non-tombstone retained retry-3 root node")?;
+        }
+        let failed_metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == 0
+                && metadata.gid() == 0
+                && metadata.nlink() == RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_NLINK
+                && metadata.permissions().mode() & 0o7777 == 0o755
+                && metadata.dev() == data_volume_device
+                && metadata.ino() == RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_INODE
+                && metadata.len() == RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_LENGTH
+                && metadata.st_flags() == 0
+        };
+        let failed_before = fs::symlink_metadata(&layout.failed)?;
+        if !failed_metadata_is_exact(&failed_before) {
+            return Err(ControllerError(
+                "retained retry-3 failed-driver tombstone identity changed".to_owned(),
+            ));
+        }
+        verify_root_production_driver(&layout.failed)?;
+        let (prior, hold) = read_root_driver_state(&layout)?;
+        let failed_identity = root_node_identity(&layout.failed)?;
+        if prior.present
+            || hold.device != data_volume_device
+            || hold.inode != RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_INODE
+            || failed_identity.device != hold.device
+            || failed_identity.inode != hold.inode
+            || failed_identity.mode != 0o040755
+            || failed_identity.kind != "directory"
+        {
+            return Err(ControllerError(
+                "retained retry-3 root state lost its exact failed-driver binding".to_owned(),
+            ));
+        }
+        require_exact_root_regular_identity(
+            &layout.state,
+            data_volume_device,
+            RECOVERY_RETRY_3_ROOT_STATE_INODE,
+            0o600,
+            RECOVERY_RETRY_3_ROOT_STATE_LENGTH,
+            RECOVERY_RETRY_3_ROOT_STATE_SHA256,
+        )?;
+        if read_root_bounded_utf8(&layout.state, 4_096)? != RECOVERY_RETRY_3_ROOT_STATE {
+            return Err(ControllerError(
+                "retained retry-3 root state bytes changed".to_owned(),
+            ));
+        }
+        require_exact_root_regular_identity(
+            &layout.package,
+            data_volume_device,
+            RECOVERY_RETRY_3_ROOT_PACKAGE_INODE,
+            0o400,
+            RECOVERY_RETRY_3_ROOT_PACKAGE_SIZE,
+            EXPECTED_PRODUCTION_DRIVER_PACKAGE_SHA256,
+        )?;
+        verify_root_production_package(&layout.package)?;
+        require_no_extended_attributes_root(transaction)?;
+        require_no_openers_root(transaction)?;
+        let failed_after = fs::symlink_metadata(&layout.failed)?;
+        let transaction_after = fs::symlink_metadata(transaction)?;
+        if !failed_metadata_is_exact(&failed_after)
+            || !transaction_metadata_is_exact(&transaction_after)
+            || failed_before.dev() != failed_after.dev()
+            || failed_before.ino() != failed_after.ino()
+            || failed_before.nlink() != failed_after.nlink()
+            || failed_before.len() != failed_after.len()
+            || failed_before.permissions().mode() != failed_after.permissions().mode()
+            || failed_before.st_flags() != failed_after.st_flags()
+            || transaction_before.dev() != transaction_after.dev()
+            || transaction_before.ino() != transaction_after.ino()
+            || transaction_before.nlink() != transaction_after.nlink()
+            || transaction_before.len() != transaction_after.len()
+            || transaction_before.permissions().mode() != transaction_after.permissions().mode()
+            || transaction_before.st_flags() != transaction_after.st_flags()
+        {
+            return Err(ControllerError(
+                "retained retry-3 root tombstone changed during exact proof".to_owned(),
+            ));
+        }
+        require_exact_root_transaction_children(transaction)
+    }
+
     fn require_no_openers_root(path: &Path) -> Result<()> {
         require_pinned_system_binary(
             Path::new("/usr/sbin/lsof"),
@@ -5673,6 +6049,25 @@ pub(crate) mod paired_v7 {
         {
             return Err(ControllerError(format!(
                 "recovery path has an opener or ambiguous lsof result: {}",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    fn require_no_openers_root_file(path: &Path) -> Result<()> {
+        require_pinned_system_binary(
+            Path::new("/usr/sbin/lsof"),
+            0o755,
+            EXPECTED_LSOF_SHA256,
+        )?;
+        let output = command_output("/usr/sbin/lsof", &["--", path_text(path)?], None)?;
+        if output.status.code() != Some(1)
+            || !output.stdout.is_empty()
+            || !output.stderr.is_empty()
+        {
+            return Err(ControllerError(format!(
+                "recovery file has an opener or ambiguous lsof result: {}",
                 path.display()
             )));
         }
@@ -5699,6 +6094,7 @@ pub(crate) mod paired_v7 {
         require_retained_root_normal_v1()?;
         require_retained_root_recovery_v1()?;
         require_retained_root_recovery_v2()?;
+        require_retained_root_normal_v2()?;
         verify_root_recovery_controller_identity()?;
         let data_volume_device = verified_data_volume_device()?;
         let old_controller = stable_controller_binary_identity(
@@ -5826,6 +6222,7 @@ pub(crate) mod paired_v7 {
         require_retained_root_normal_v1()?;
         require_retained_root_recovery_v1()?;
         require_retained_root_recovery_v2()?;
+        require_retained_root_normal_v2()?;
         println!(
             "ROOT_V7_RETRY_2_SAFE_STATE coreaudiod_pid={} coreaudiod_runs={} transaction_inode={} failed_driver_inode={}",
             generation.pid,
@@ -6442,11 +6839,11 @@ pub(crate) mod paired_v7 {
     fn require_retained_root_normal_v2_via_sudo() -> Result<()> {
         require_retained_root_controller_set_via_sudo(
             "normal-v2",
-            ROOT_V7_SUPPORT_DIRECTORY,
-            ROOT_V7_CONTROLLER,
-            ROOT_V7_CONTROLLER_PENDING,
-            ROOT_V7_CONTROLLER_PIN,
-            ROOT_V7_CONTROLLER_IDENTITY_JOURNAL,
+            RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_DIRECTORY,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_PENDING,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_PIN,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_IDENTITY_JOURNAL,
             RETAINED_ROOT_V7_NORMAL_V2_DEVICE,
             RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_INODE,
             RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_NLINK,
@@ -6491,10 +6888,628 @@ pub(crate) mod paired_v7 {
         )
     }
 
-    fn require_retry_3_transaction_parent_via_sudo(current: Option<&Path>) -> Result<()> {
+    fn exact_controller_bytes(
+        path: &Path,
+        expected: &ControllerBinaryIdentity,
+        expected_uid: u32,
+        expected_gid: Option<u32>,
+        expected_mode: u32,
+    ) -> Result<Vec<u8>> {
+        let actual = stable_controller_binary_identity(
+            path,
+            expected_uid,
+            expected_gid,
+            expected_mode,
+        )?;
+        if &actual != expected {
+            return Err(ControllerError(format!(
+                "controller bytes do not match their prepared identity: {}",
+                path.display()
+            )));
+        }
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NOFOLLOW | 0x0100_0000)
+            .open(path)?;
+        require_descriptor_close_on_exec(&file, "normal root V3 controller bytes")?;
+        let before = file.metadata()?;
+        let named_before = fs::symlink_metadata(path)?;
+        if before.dev() != expected.device
+            || before.ino() != expected.inode
+            || before.len() != expected.length
+            || before.dev() != named_before.dev()
+            || before.ino() != named_before.ino()
+            || before.len() != named_before.len()
+        {
+            return Err(ControllerError(
+                "normal root V3 controller identity changed before bounded read".to_owned(),
+            ));
+        }
+        let mut bytes = Vec::with_capacity(before.len() as usize);
+        Read::by_ref(&mut file)
+            .take(MAX_V7_CONTROLLER_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        let after = file.metadata()?;
+        let named_after = fs::symlink_metadata(path)?;
+        if bytes.len() as u64 != expected.length
+            || sha256_bytes(&bytes)? != expected.sha256
+            || before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.len() != after.len()
+            || before.dev() != named_after.dev()
+            || before.ino() != named_after.ino()
+            || before.len() != named_after.len()
+            || stable_controller_binary_identity(
+                path,
+                expected_uid,
+                expected_gid,
+                expected_mode,
+            )? != *expected
+        {
+            return Err(ControllerError(
+                "normal root V3 controller bytes or identity changed during bounded read"
+                    .to_owned(),
+            ));
+        }
+        Ok(bytes)
+    }
+
+    fn is_root_v3_install_residue_name(name: &str) -> bool {
+        name.strip_prefix("INS@").is_some_and(|suffix| {
+            suffix.len() == 6 && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+    }
+
+    fn retire_root_v3_install_residues() -> Result<()> {
+        let executable = env::current_exe()?;
+        if executable != Path::new(ROOT_V7_CONTROLLER_PENDING)
+            && executable != Path::new(ROOT_V7_CONTROLLER)
+        {
+            return Err(ControllerError(
+                "normal root V3 install-residue retirement escaped a fixed controller path"
+                    .to_owned(),
+            ));
+        }
+        let controller = stable_controller_binary_identity(&executable, 0, Some(0), 0o500)?;
+        let expected_bytes = exact_controller_bytes(&executable, &controller, 0, Some(0), 0o500)?;
+        let support = Path::new(ROOT_V7_SUPPORT_DIRECTORY);
+        let mut residues = Vec::new();
+        for entry in fs::read_dir(support)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_str().ok_or_else(|| {
+                ControllerError("normal root V3 child is not UTF-8".to_owned())
+            })?;
+            if is_root_v3_install_residue_name(name) {
+                if entry.path() != support.join(name) {
+                    return Err(ControllerError(
+                        "normal root V3 install residue is not a direct child".to_owned(),
+                    ));
+                }
+                residues.push(entry.path());
+            }
+        }
+        if residues.len() > 8 {
+            return Err(ControllerError(
+                "normal root V3 has too many interrupted-install residues".to_owned(),
+            ));
+        }
+        residues.sort();
+        for residue in residues {
+            require_no_openers_root_file(&residue)?;
+            let mut file = OpenOptions::new()
+                .read(true)
+                .custom_flags(O_NOFOLLOW | 0x0100_0000)
+                .open(&residue)?;
+            require_descriptor_close_on_exec(&file, "normal root V3 install residue")?;
+            let metadata_is_exact = |metadata: &fs::Metadata| {
+                metadata.file_type().is_file()
+                    && !metadata.file_type().is_symlink()
+                    && metadata.uid() == 0
+                    && metadata.gid() == 0
+                    && metadata.nlink() == 1
+                    && matches!(metadata.permissions().mode() & 0o7777, 0o500 | 0o600)
+                    && metadata.dev() == RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE
+                    && metadata.len() <= controller.length
+                    && metadata.st_flags() == 0
+            };
+            let before = file.metadata()?;
+            let named_before = fs::symlink_metadata(&residue)?;
+            if !metadata_is_exact(&before)
+                || !metadata_is_exact(&named_before)
+                || before.dev() != named_before.dev()
+                || before.ino() != named_before.ino()
+                || before.len() != named_before.len()
+            {
+                return Err(ControllerError(format!(
+                    "normal root V3 install residue metadata is unsafe: {}",
+                    residue.display()
+                )));
+            }
+            let mut bytes = Vec::with_capacity(before.len() as usize);
+            Read::by_ref(&mut file)
+                .take(controller.length + 1)
+                .read_to_end(&mut bytes)?;
+            let after = file.metadata()?;
+            let named_after = fs::symlink_metadata(&residue)?;
+            if !expected_bytes.starts_with(&bytes)
+                || bytes.len() as u64 != before.len()
+                || !metadata_is_exact(&after)
+                || !metadata_is_exact(&named_after)
+                || before.dev() != after.dev()
+                || before.ino() != after.ino()
+                || before.len() != after.len()
+                || before.dev() != named_after.dev()
+                || before.ino() != named_after.ino()
+                || before.len() != named_after.len()
+            {
+                return Err(ControllerError(format!(
+                    "normal root V3 install residue bytes or identity changed: {}",
+                    residue.display()
+                )));
+            }
+            let named_immediate = fs::symlink_metadata(&residue)?;
+            if !metadata_is_exact(&named_immediate)
+                || after.dev() != named_immediate.dev()
+                || after.ino() != named_immediate.ino()
+                || after.len() != named_immediate.len()
+            {
+                return Err(ControllerError(format!(
+                    "normal root V3 install residue changed immediately before retirement: {}",
+                    residue.display()
+                )));
+            }
+            fs::remove_file(&residue)?;
+            fsync_parent(&residue)?;
+            require_path_absent(&residue, "retired normal root V3 install residue")?;
+            drop(file);
+        }
+        Ok(())
+    }
+
+    fn sudo_root_v3_prefix_file(path: &Path, expected: &str, label: &str) -> Result<bool> {
+        if expected.is_empty() || expected.len() > 1_024 || !expected.ends_with('\n') {
+            return Err(ControllerError(format!(
+                "normal root V3 {label} expected bytes are not exact and bounded"
+            )));
+        }
+        let read_stat = || sudo_retained_root_recovery_v1_stat(path);
+        let before = read_stat()?;
+        let fields: Vec<&str> = before.split(':').collect();
+        if fields.len() != 9
+            || fields[0] != "0"
+            || fields[1] != "0"
+            || fields[2] != "1"
+            || !matches!(fields[3], "0400" | "0600")
+            || fields[4] != "Regular File"
+            || fields[5] != RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE.to_string()
+            || fields[6].parse::<u64>().ok().filter(|inode| *inode > 0).is_none()
+            || fields[7]
+                .parse::<usize>()
+                .ok()
+                .filter(|length| *length <= expected.len())
+                .is_none()
+            || fields[8] != "0"
+        {
+            return Err(ControllerError(format!(
+                "normal root V3 {label} prefix metadata is unsafe"
+            )));
+        }
+        let output = sudo_output(&["-n", "/bin/cat", path_text(path)?])?;
+        require_output_success(&output, "read normal root V3 sealed-record prefix")?;
+        if !output.stderr.is_empty()
+            || !expected.as_bytes().starts_with(&output.stdout)
+            || output.stdout.len() > expected.len()
+            || read_stat()? != before
+        {
+            return Err(ControllerError(format!(
+                "normal root V3 {label} prefix bytes or identity changed"
+            )));
+        }
+        Ok(fields[3] == "0400" && output.stdout == expected.as_bytes())
+    }
+
+    fn require_retry_4_root_v3_stage_via_sudo(
+        expected_controller: &ControllerBinaryIdentity,
+    ) -> Result<Retry4RootV3Stage> {
+        for (path, mode) in [
+            ("/bin/cat", 0o755),
+            ("/usr/bin/stat", 0o755),
+            ("/usr/bin/shasum", 0o755),
+        ] {
+            require_fixed_system_binary(Path::new(path), mode)?;
+        }
+        require_pinned_system_binary(Path::new("/bin/ls"), 0o755, EXPECTED_LS_SHA256)?;
+        if expected_controller.device != RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE
+            || expected_controller.length == 0
+            || expected_controller.length > MAX_V7_CONTROLLER_BYTES
+        {
+            return Err(ControllerError(
+                "UID501 controller identity cannot bind a normal root V3 crash state".to_owned(),
+            ));
+        }
+        let support = Path::new(ROOT_V7_SUPPORT_DIRECTORY);
+        if sudo_stat(support)?.is_none() {
+            require_retry_4_root_support_parent_via_sudo(false)?;
+            return Ok(Retry4RootV3Stage::Absent);
+        }
+        require_retry_4_root_support_parent_via_sudo(true)?;
+        let support_before = sudo_retained_root_recovery_v1_stat(support)?;
+        let listing = sudo_output(&["-n", "/bin/ls", "-1A", ROOT_V7_SUPPORT_DIRECTORY])?;
+        require_output_success(&listing, "enumerate normal root V3 crash topology")?;
+        if !listing.stderr.is_empty()
+            || listing.stdout.contains(&0)
+            || listing.stdout.contains(&b'\r')
+        {
+            return Err(ControllerError(
+                "normal root V3 crash topology listing is not exact and quiet".to_owned(),
+            ));
+        }
+        let listing_text = decode_utf8(&listing.stdout, "normal root V3 support listing")?;
+        let names: Vec<&str> = listing_text.lines().collect();
+        if (!listing_text.is_empty() && !listing_text.ends_with('\n'))
+            || names.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Err(ControllerError(
+                "normal root V3 support listing is not canonical".to_owned(),
+            ));
+        }
+        let mut canonical_names = Vec::new();
+        let mut residue_names = Vec::new();
+        for name in &names {
+            if is_root_v3_install_residue_name(name) {
+                residue_names.push(*name);
+            } else {
+                canonical_names.push(*name);
+            }
+        }
+        if residue_names.len() > 8 {
+            return Err(ControllerError(
+                "normal root V3 has too many interrupted-install residues".to_owned(),
+            ));
+        }
+        let current = env::current_exe()?;
+        let expected_bytes = exact_controller_bytes(
+            &current,
+            expected_controller,
+            USER_ID,
+            None,
+            0o500,
+        )?;
+        for name in &residue_names {
+            let path = support.join(name);
+            let before = sudo_retained_root_recovery_v1_stat(&path)?;
+            let fields: Vec<&str> = before.split(':').collect();
+            let length = fields
+                .get(7)
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|length| *length <= expected_bytes.len());
+            if fields.len() != 9
+                || fields[0] != "0"
+                || fields[1] != "0"
+                || fields[2] != "1"
+                || !matches!(fields[3], "0500" | "0600")
+                || fields[4] != "Regular File"
+                || fields[5] != RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE.to_string()
+                || fields[6].parse::<u64>().ok().filter(|inode| *inode > 0).is_none()
+                || length.is_none()
+                || fields[8] != "0"
+            {
+                return Err(ControllerError(format!(
+                    "normal root V3 install residue metadata is unsafe: {}",
+                    path.display()
+                )));
+            }
+            let output = sudo_output(&["-n", "/bin/cat", path_text(&path)?])?;
+            require_output_success(&output, "read interrupted normal root V3 install residue")?;
+            if !output.stderr.is_empty()
+                || !expected_bytes.starts_with(&output.stdout)
+                || output.stdout.len() != length.unwrap_or_default()
+                || sudo_retained_root_recovery_v1_stat(&path)? != before
+            {
+                return Err(ControllerError(format!(
+                    "normal root V3 install residue bytes or identity changed: {}",
+                    path.display()
+                )));
+            }
+        }
+        let stage = match canonical_names.as_slice() {
+            [] => Retry4RootV3Stage::Empty,
+            [".opensteamer-v7-controller.pending"] => Retry4RootV3Stage::Pending,
+            ["opensteamer-v7-controller"] => Retry4RootV3Stage::Controller,
+            ["controller-binary.sha256", "opensteamer-v7-controller"] => {
+                Retry4RootV3Stage::PinPrefix
+            }
+            [
+                "controller-binary.sha256",
+                "controller-identity.log",
+                "opensteamer-v7-controller",
+            ] => Retry4RootV3Stage::RecordsPrefix,
+            _ => {
+                return Err(ControllerError(
+                    "normal root V3 support is not one reviewed crash state".to_owned(),
+                ))
+            }
+        };
+        let support_fields: Vec<&str> = support_before.split(':').collect();
+        let expected_children = names.len() as u64;
+        if support_fields.len() != 9
+            || support_fields[0] != "0"
+            || support_fields[1] != "0"
+            || support_fields[2] != (2 + expected_children).to_string()
+            || support_fields[3] != "0700"
+            || support_fields[4] != "Directory"
+            || support_fields[5] != RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE.to_string()
+            || support_fields[6]
+                .parse::<u64>()
+                .ok()
+                .filter(|inode| *inode > 0)
+                .is_none()
+            || support_fields[7] != (64 + 32 * expected_children).to_string()
+            || support_fields[8] != "0"
+        {
+            return Err(ControllerError(
+                "normal root V3 support metadata is not one exact crash state".to_owned(),
+            ));
+        }
+        let require_controller = |path: &Path, label: &str| -> Result<ControllerBinaryIdentity> {
+            let before = sudo_retained_root_recovery_v1_stat(path)?;
+            let fields: Vec<&str> = before.split(':').collect();
+            if fields.len() != 9
+                || fields[0] != "0"
+                || fields[1] != "0"
+                || fields[2] != "1"
+                || fields[3] != "0500"
+                || fields[4] != "Regular File"
+                || fields[5] != RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE.to_string()
+                || fields[6].parse::<u64>().ok().filter(|inode| *inode > 0).is_none()
+                || fields[7] != expected_controller.length.to_string()
+                || fields[8] != "0"
+            {
+                return Err(ControllerError(format!(
+                    "normal root V3 {label} metadata differs from the UID501 controller"
+                )));
+            }
+            let inode = fields[6].parse::<u64>().map_err(|_| {
+                ControllerError(format!("normal root V3 {label} inode is malformed"))
+            })?;
+            let hash = sudo_output(&[
+                "-n",
+                "/usr/bin/shasum",
+                "-a",
+                "256",
+                path_text(path)?,
+            ])?;
+            require_output_success(&hash, "hash normal root V3 controller crash state")?;
+            if !hash.stderr.is_empty()
+                || parse_shasum_output(
+                    decode_utf8(&hash.stdout, "normal root V3 controller shasum")?,
+                    path_text(path)?,
+                )? != expected_controller.sha256
+                || sudo_retained_root_recovery_v1_stat(path)? != before
+            {
+                return Err(ControllerError(format!(
+                    "normal root V3 {label} bytes or identity changed"
+                )));
+            }
+            Ok(ControllerBinaryIdentity {
+                device: RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE,
+                inode,
+                length: expected_controller.length,
+                sha256: expected_controller.sha256.clone(),
+            })
+        };
+        let published_identity = if stage == Retry4RootV3Stage::Pending {
+            require_controller(Path::new(ROOT_V7_CONTROLLER_PENDING), "pending controller")?;
+            None
+        } else if matches!(
+            stage,
+            Retry4RootV3Stage::Controller
+                | Retry4RootV3Stage::PinPrefix
+                | Retry4RootV3Stage::RecordsPrefix
+        ) {
+            Some(require_controller(
+                Path::new(ROOT_V7_CONTROLLER),
+                "published controller",
+            )?)
+        } else {
+            None
+        };
+        let expected_pin = format!("{}\n", expected_controller.sha256);
+        let expected_journal = published_identity.as_ref().map(|identity| {
+            controller_identity_journal_at(
+                identity,
+                ROOT_V7_CONTROLLER,
+                "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V3",
+            )
+        });
+        let pin_complete = if matches!(
+            stage,
+            Retry4RootV3Stage::PinPrefix | Retry4RootV3Stage::RecordsPrefix
+        ) {
+            sudo_root_v3_prefix_file(
+                Path::new(ROOT_V7_CONTROLLER_PIN),
+                &expected_pin,
+                "digest pin",
+            )?
+        } else {
+            false
+        };
+        let journal_complete = if stage == Retry4RootV3Stage::RecordsPrefix {
+            sudo_root_v3_prefix_file(
+                Path::new(ROOT_V7_CONTROLLER_IDENTITY_JOURNAL),
+                expected_journal.as_deref().ok_or_else(|| {
+                    ControllerError(
+                        "normal root V3 identity journal lacks its published controller binding"
+                            .to_owned(),
+                    )
+                })?,
+                "identity journal",
+            )?
+        } else {
+            false
+        };
+        let support_after = sudo_retained_root_recovery_v1_stat(support)?;
+        let listing_after = sudo_output(&["-n", "/bin/ls", "-1A", ROOT_V7_SUPPORT_DIRECTORY])?;
+        require_output_success(&listing_after, "repeat normal root V3 crash topology")?;
+        if support_after != support_before
+            || listing_after.stdout != listing.stdout
+            || !listing_after.stderr.is_empty()
+        {
+            return Err(ControllerError(
+                "normal root V3 crash topology changed during exact proof".to_owned(),
+            ));
+        }
+        require_retry_4_root_support_parent_via_sudo(true)?;
+        if stage == Retry4RootV3Stage::RecordsPrefix
+            && residue_names.is_empty()
+            && pin_complete
+            && journal_complete
+        {
+            Ok(Retry4RootV3Stage::Sealed)
+        } else {
+            Ok(stage)
+        }
+    }
+
+    fn retry_4_root_support_names(v3_present: bool) -> Vec<&'static str> {
+        let mut names = vec![
+            "driver-transactions-v7",
+            "privileged-v7",
+            "privileged-v7-recovery-retry-2",
+            "privileged-v7-recovery-retry-2-v2",
+            "privileged-v7-v2",
+        ];
+        if v3_present {
+            names.push("privileged-v7-v3");
+        }
+        names.sort_unstable();
+        names
+    }
+
+    fn require_retry_4_root_support_parent(v3_present: bool) -> Result<()> {
+        let parent = Path::new(RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT);
+        let expected_nlink = if v3_present {
+            RETRY_4_ROOT_SUPPORT_PARENT_NLINK
+        } else {
+            RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_NLINK
+        };
+        let expected_length = if v3_present {
+            RETRY_4_ROOT_SUPPORT_PARENT_LENGTH
+        } else {
+            RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_LENGTH
+        };
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == 0
+                && metadata.gid() == 0
+                && metadata.nlink() == expected_nlink
+                && metadata.permissions().mode() & 0o7777 == 0o755
+                && metadata.dev() == RECOVERY_RETRY_3_ROOT_DEVICE
+                && metadata.ino() == RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_INODE
+                && metadata.len() == expected_length
+                && metadata.st_flags() == 0
+        };
+        let read = || -> Result<(fs::Metadata, Vec<String>)> {
+            let metadata = fs::symlink_metadata(parent)?;
+            if !metadata_is_exact(&metadata) {
+                return Err(ControllerError(
+                    "retry-4 root support parent identity changed".to_owned(),
+                ));
+            }
+            let mut names = Vec::new();
+            for entry in fs::read_dir(parent)? {
+                let entry = entry?;
+                let name = entry
+                    .file_name()
+                    .to_str()
+                    .ok_or_else(|| {
+                        ControllerError("root support child is not UTF-8".to_owned())
+                    })?
+                    .to_owned();
+                if !entry.file_type()?.is_dir() || entry.path() != parent.join(&name) {
+                    return Err(ControllerError(
+                        "root support parent contains an unsafe child".to_owned(),
+                    ));
+                }
+                names.push(name);
+            }
+            names.sort_unstable();
+            Ok((metadata, names))
+        };
+        let (before, names) = read()?;
+        if names.iter().map(String::as_str).ne(retry_4_root_support_names(v3_present)) {
+            return Err(ControllerError(
+                "root support parent does not contain the exact retained/V3 set".to_owned(),
+            ));
+        }
+        let (after, names_after) = read()?;
+        if names != names_after
+            || before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.nlink() != after.nlink()
+            || before.len() != after.len()
+            || before.permissions().mode() != after.permissions().mode()
+            || before.st_flags() != after.st_flags()
+        {
+            return Err(ControllerError(
+                "root support parent changed during exact retry-4 proof".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_retry_4_root_support_parent_via_sudo(v3_present: bool) -> Result<()> {
+        require_pinned_system_binary(Path::new("/bin/ls"), 0o755, EXPECTED_LS_SHA256)?;
+        let parent = Path::new(RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT);
+        let expected_nlink = if v3_present {
+            RETRY_4_ROOT_SUPPORT_PARENT_NLINK
+        } else {
+            RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_NLINK
+        };
+        let expected_length = if v3_present {
+            RETRY_4_ROOT_SUPPORT_PARENT_LENGTH
+        } else {
+            RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_LENGTH
+        };
+        let expected_stat = format!(
+            "0:0:{expected_nlink}:0755:Directory:{}:{}:{expected_length}:0",
+            RECOVERY_RETRY_3_ROOT_DEVICE,
+            RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_INODE,
+        );
+        let expected_listing = format!("{}\n", retry_4_root_support_names(v3_present).join("\n"));
+        let read = || -> Result<String> {
+            let stat = sudo_retained_root_recovery_v1_stat(parent)?;
+            if stat != expected_stat {
+                return Err(ControllerError(
+                    "sudo root support parent metadata differs from retry-4 pins".to_owned(),
+                ));
+            }
+            let listing = sudo_output(&["-n", "/bin/ls", "-1A", path_text(parent)?])?;
+            require_output_success(&listing, "enumerate exact retry-4 root support parent")?;
+            if !listing.stderr.is_empty() || listing.stdout != expected_listing.as_bytes() {
+                return Err(ControllerError(
+                    "sudo root support parent child set is not exact".to_owned(),
+                ));
+            }
+            Ok(stat)
+        };
+        let before = read()?;
+        let after = read()?;
+        if before != after {
+            return Err(ControllerError(
+                "sudo root support parent changed during retry-4 proof".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_retry_4_transaction_parent_via_sudo(current: Option<&Path>) -> Result<()> {
         require_pinned_system_binary(Path::new("/bin/ls"), 0o755, EXPECTED_LS_SHA256)?;
         let parent = Path::new(ROOT_V7_TRANSACTION_PARENT);
-        let retained = Path::new(RECOVERY_RETRY_2_ROOT_TRANSACTION);
+        let retained_retry_2 = Path::new(RECOVERY_RETRY_2_ROOT_TRANSACTION);
+        let retained_retry_3 = Path::new(RECOVERY_RETRY_3_ROOT_TRANSACTION);
         let expected_nlink = RETAINED_ROOT_V7_TRANSACTION_PARENT_NLINK
             + if current.is_some() { 1 } else { 0 };
         let expected_length = RETAINED_ROOT_V7_TRANSACTION_PARENT_LENGTH
@@ -6504,15 +7519,25 @@ pub(crate) mod paired_v7 {
             RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE,
             RETAINED_ROOT_V7_TRANSACTION_PARENT_INODE,
         );
-        let mut expected_names = vec![retained
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| ControllerError("retained root transaction name is invalid".to_owned()))?
-            .to_owned()];
+        let retained_name = |path: &Path| -> Result<String> {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    ControllerError("retained root transaction name is invalid".to_owned())
+                })
+        };
+        let mut expected_names = vec![
+            retained_name(retained_retry_2)?,
+            retained_name(retained_retry_3)?,
+        ];
         if let Some(current) = current {
-            if current.parent() != Some(parent) || current == retained {
+            if current.parent() != Some(parent)
+                || current == retained_retry_2
+                || current == retained_retry_3
+            {
                 return Err(ControllerError(
-                    "sudo retry-3 root transaction is not a disjoint direct child".to_owned(),
+                    "sudo retry-4 root transaction is not a disjoint direct child".to_owned(),
                 ));
             }
             expected_names.push(
@@ -6531,7 +7556,7 @@ pub(crate) mod paired_v7 {
             let parent_stat = sudo_retained_root_recovery_v1_stat(parent)?;
             if parent_stat != expected_parent {
                 return Err(ControllerError(
-                    "root transaction parent metadata differs from retry-3 admission pins"
+                    "root transaction parent metadata differs from retry-4 admission pins"
                         .to_owned(),
                 ));
             }
@@ -6541,7 +7566,7 @@ pub(crate) mod paired_v7 {
                 "-1A",
                 ROOT_V7_TRANSACTION_PARENT,
             ])?;
-            require_output_success(&listing, "enumerate exact retry-3 root transactions")?;
+            require_output_success(&listing, "enumerate exact retry-4 root transactions")?;
             if !listing.stderr.is_empty() || listing.stdout != expected_listing.as_bytes() {
                 return Err(ControllerError(
                     "root transaction parent child set is not exact".to_owned(),
@@ -6553,7 +7578,7 @@ pub(crate) mod paired_v7 {
         let after = read()?;
         if before != after {
             return Err(ControllerError(
-                "root transaction parent changed during sudo retry-3 proof".to_owned(),
+                "root transaction parent changed during sudo retry-4 proof".to_owned(),
             ));
         }
         Ok(())
@@ -6618,7 +7643,309 @@ pub(crate) mod paired_v7 {
         sudo_require_exact_incident_stat(path, expected_stat)
     }
 
-    fn require_retry_3_restored_root_via_sudo() -> Result<()> {
+    fn require_retained_retry_2_root_tombstone_via_sudo(
+        v3_present: bool,
+        current: Option<&Path>,
+        require_product_absent: bool,
+    ) -> Result<()> {
+        for (path, mode) in [
+            ("/bin/cat", 0o755),
+            ("/bin/ls", 0o755),
+            ("/usr/bin/stat", 0o755),
+            ("/usr/bin/shasum", 0o755),
+        ] {
+            require_fixed_system_binary(Path::new(path), mode)?;
+        }
+        require_pinned_system_binary(Path::new("/usr/bin/xattr"), 0o755, EXPECTED_XATTR_SHA256)?;
+        require_pinned_system_binary(Path::new("/usr/sbin/lsof"), 0o755, EXPECTED_LSOF_SHA256)?;
+
+        let transaction = Path::new(RECOVERY_RETRY_2_ROOT_TRANSACTION);
+        let layout = root_driver_layout(RECOVERY_RETRY_2_NONCE)?;
+        if layout.root != transaction {
+            return Err(ControllerError(
+                "retained retry-2 root transaction is not nonce-bound".to_owned(),
+            ));
+        }
+        let attest_immutable_sets = || -> Result<()> {
+            require_retry_4_root_support_parent_via_sudo(v3_present)?;
+            require_retained_root_normal_v1_via_sudo()?;
+            require_retained_root_recovery_v1_via_sudo()?;
+            require_retained_root_recovery_v2_via_sudo()?;
+            require_retained_root_normal_v2_via_sudo()?;
+            require_retry_4_transaction_parent_via_sudo(current)
+        };
+        attest_immutable_sets()?;
+
+        let attest_transaction = || -> Result<()> {
+            let expected_transaction = format!(
+                "0:0:5:0700:Directory:{}:{}:160:0",
+                RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE,
+                RECOVERY_RETRY_2_ROOT_TRANSACTION_INODE,
+            );
+            let expected_failed = format!(
+                "0:0:3:0755:Directory:{}:{}:96:0",
+                RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE,
+                RECOVERY_RETRY_2_ROOT_FAILED_DRIVER_INODE,
+            );
+            let expected_state = format!(
+                "0:0:1:0600:Regular File:{}:{}:{}:0",
+                RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE,
+                RECOVERY_RETRY_2_ROOT_STATE_INODE,
+                RECOVERY_RETRY_2_ROOT_STATE.len(),
+            );
+            let expected_package = format!(
+                "0:0:1:0400:Regular File:{}:{}:54515:0",
+                RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE,
+                RECOVERY_RETRY_2_ROOT_PACKAGE_INODE,
+            );
+            let state_fields: std::collections::BTreeMap<&str, &str> =
+                RECOVERY_RETRY_2_ROOT_STATE
+                    .lines()
+                    .map(|line| {
+                        line.split_once('=').ok_or_else(|| {
+                            ControllerError(
+                                "retained retry-2 pinned root-state line is malformed".to_owned(),
+                            )
+                        })
+                    })
+                    .collect::<Result<_>>()?;
+            if state_fields.get("prior_present").copied() != Some("0")
+                || state_fields.get("prior_device").copied() != Some("0")
+                || state_fields.get("prior_inode").copied() != Some("0")
+                || state_fields.get("prior_mode").copied() != Some("0")
+                || state_fields.get("prior_kind").copied() != Some("absent")
+                || state_fields
+                    .get("hold_device")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    != Some(RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE)
+                || state_fields
+                    .get("hold_inode")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    != Some(RECOVERY_RETRY_2_ROOT_FAILED_DRIVER_INODE)
+                || state_fields.get("hold_tree_sha256").copied()
+                    != Some(EXPECTED_PRODUCTION_DRIVER_TREE_SHA256)
+                || state_fields.get("package_sha256").copied()
+                    != Some(EXPECTED_PRODUCTION_DRIVER_PACKAGE_SHA256)
+            {
+                return Err(ControllerError(
+                    "retained retry-2 root state lost its exact failed-driver binding".to_owned(),
+                ));
+            }
+            sudo_require_exact_incident_stat(transaction, &expected_transaction)?;
+            sudo_require_exact_incident_listing(
+                transaction,
+                "OpensteamerVirtualMicrophone-v7.pkg\nfailed-v7-product-driver.node\nstate.txt\n",
+            )?;
+            if require_product_absent
+                && sudo_stat(Path::new(PRODUCT_DRIVER_CANONICAL_PATH))?.is_some()
+            {
+                return Err(ControllerError(
+                    "retained retry-2 canonical product unexpectedly exists".to_owned(),
+                ));
+            }
+            for absent in [layout.hold.as_path(), layout.prior.as_path(), layout.abandoned.as_path()] {
+                if sudo_stat(absent)?.is_some() {
+                    return Err(ControllerError(format!(
+                        "retained retry-2 non-tombstone path unexpectedly exists: {}",
+                        absent.display()
+                    )));
+                }
+            }
+            sudo_require_exact_incident_stat(&layout.failed, &expected_failed)?;
+            sudo_read_exact_incident_text(
+                &layout.state,
+                &expected_state,
+                RECOVERY_RETRY_2_ROOT_STATE_SHA256,
+                RECOVERY_RETRY_2_ROOT_STATE,
+            )?;
+            sudo_require_exact_incident_stat(&layout.package, &expected_package)?;
+            sudo_require_exact_incident_hash(
+                &layout.package,
+                EXPECTED_PRODUCTION_DRIVER_PACKAGE_SHA256,
+            )?;
+
+            let contents = layout.failed.join("Contents");
+            let macos = contents.join("MacOS");
+            let resources = contents.join("Resources");
+            let localized = resources.join("en.lproj");
+            let signature = contents.join("_CodeSignature");
+            for (directory, listing) in [
+                (layout.failed.as_path(), "Contents\n"),
+                (
+                    contents.as_path(),
+                    "Info.plist\nMacOS\nResources\n_CodeSignature\n",
+                ),
+                (macos.as_path(), "OpensteamerVirtualMicrophone\n"),
+                (
+                    resources.as_path(),
+                    "APPLE_SAMPLE_LICENSE.txt\nen.lproj\n",
+                ),
+                (localized.as_path(), "Localizable.strings\n"),
+                (signature.as_path(), "CodeResources\n"),
+            ] {
+                let before = sudo_retained_root_recovery_v1_stat(directory)?;
+                let fields: Vec<&str> = before.split(':').collect();
+                if fields.len() != 9
+                    || fields[0] != "0"
+                    || fields[1] != "0"
+                    || fields[2].parse::<u64>().ok().filter(|value| *value >= 2).is_none()
+                    || fields[3] != "0755"
+                    || fields[4] != "Directory"
+                    || fields[5] != RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE.to_string()
+                    || fields[6].parse::<u64>().ok().filter(|value| *value > 0).is_none()
+                    || fields[7].parse::<u64>().ok().filter(|value| *value >= 64).is_none()
+                    || fields[8] != "0"
+                {
+                    return Err(ControllerError(format!(
+                        "retained retry-2 failed-driver directory metadata changed: {}",
+                        directory.display()
+                    )));
+                }
+                sudo_require_exact_incident_listing(directory, listing)?;
+                if sudo_retained_root_recovery_v1_stat(directory)? != before {
+                    return Err(ControllerError(format!(
+                        "retained retry-2 failed-driver directory changed during listing: {}",
+                        directory.display()
+                    )));
+                }
+            }
+            for (path, mode, hash) in [
+                (
+                    contents.join("Info.plist"),
+                    "0644",
+                    "6e2fa0980cd27498ffe1075bcd439e61fcb0b6d38827ca2dadc3a7d6872e84e1",
+                ),
+                (
+                    signature.join("CodeResources"),
+                    "0644",
+                    "92c1b53f174dd64d1835fa9b2ecbddd84eac815ad43bbe231090d214b1cc9731",
+                ),
+                (
+                    macos.join("OpensteamerVirtualMicrophone"),
+                    "0755",
+                    EXPECTED_PRODUCTION_DRIVER_EXECUTABLE_SHA256,
+                ),
+                (
+                    resources.join("APPLE_SAMPLE_LICENSE.txt"),
+                    "0644",
+                    "63202ae6ab294069b6f77114f0cce8f35531bbb75355f1d96c8db68f949acdc5",
+                ),
+                (
+                    localized.join("Localizable.strings"),
+                    "0644",
+                    "4798181065dbb851f0de518be396d6d4f8a465158923adf16bbf91bcb826a166",
+                ),
+            ] {
+                let before = sudo_retained_root_recovery_v1_stat(&path)?;
+                let fields: Vec<&str> = before.split(':').collect();
+                if fields.len() != 9
+                    || fields[0] != "0"
+                    || fields[1] != "0"
+                    || fields[2] != "1"
+                    || fields[3] != mode
+                    || fields[4] != "Regular File"
+                    || fields[5] != RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE.to_string()
+                    || fields[6].parse::<u64>().ok().filter(|value| *value > 0).is_none()
+                    || fields[7].parse::<u64>().ok().filter(|value| *value > 0).is_none()
+                    || fields[8] != "0"
+                {
+                    return Err(ControllerError(format!(
+                        "retained retry-2 failed-driver file metadata changed: {}",
+                        path.display()
+                    )));
+                }
+                sudo_require_exact_incident_hash(&path, hash)?;
+                if sudo_retained_root_recovery_v1_stat(&path)? != before {
+                    return Err(ControllerError(format!(
+                        "retained retry-2 failed-driver file changed during hash: {}",
+                        path.display()
+                    )));
+                }
+            }
+            let xattrs = sudo_output(&["-n", "/usr/bin/xattr", "-lr", path_text(transaction)?])?;
+            require_output_success(&xattrs, "prove retained retry-2 transaction has no xattrs")?;
+            if !xattrs.stdout.is_empty() || !xattrs.stderr.is_empty() {
+                return Err(ControllerError(
+                    "retained retry-2 root transaction contains extended attributes".to_owned(),
+                ));
+            }
+            let openers = sudo_output(&["-n", "/usr/sbin/lsof", "+D", path_text(transaction)?])?;
+            if openers.status.code() != Some(1)
+                || !openers.stdout.is_empty()
+                || !openers.stderr.is_empty()
+            {
+                return Err(ControllerError(
+                    "retained retry-2 root transaction has an opener or ambiguous lsof result"
+                        .to_owned(),
+                ));
+            }
+            sudo_require_exact_incident_stat(transaction, &expected_transaction)?;
+            sudo_require_exact_incident_listing(
+                transaction,
+                "OpensteamerVirtualMicrophone-v7.pkg\nfailed-v7-product-driver.node\nstate.txt\n",
+            )?;
+            sudo_read_exact_incident_text(
+                &layout.state,
+                &expected_state,
+                RECOVERY_RETRY_2_ROOT_STATE_SHA256,
+                RECOVERY_RETRY_2_ROOT_STATE,
+            )?;
+            sudo_require_exact_incident_stat(&layout.package, &expected_package)?;
+            sudo_require_exact_incident_hash(
+                &layout.package,
+                EXPECTED_PRODUCTION_DRIVER_PACKAGE_SHA256,
+            )
+        };
+        attest_transaction()?;
+        attest_transaction()?;
+        attest_immutable_sets()
+    }
+
+    fn require_same_retry_4_live_boundary(
+        before_host: &LaunchGeneration,
+        before_core_audio: CoreAudioGeneration,
+        after_host: &LaunchGeneration,
+        after_core_audio: CoreAudioGeneration,
+    ) -> Result<()> {
+        if before_host.pid != after_host.pid
+            || before_host.runs != after_host.runs
+            || before_host.process_start != after_host.process_start
+            || before_host.nonce != after_host.nonce
+            || before_host.lock_device != after_host.lock_device
+            || before_host.lock_inode != after_host.lock_inode
+            || before_core_audio != after_core_audio
+        {
+            return Err(ControllerError(
+                "v6 or Core Audio generation changed across retry-4 root attestation".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn prove_retry_4_live_runtime_and_root_tombstones(
+        v3_present: bool,
+        current: Option<&Path>,
+    ) -> Result<(LaunchGeneration, CoreAudioGeneration)> {
+        let host_before = verify_paired_v7_runtime()?;
+        let core_audio_before = read_core_audio_generation_root()?;
+        require_retained_retry_2_root_tombstone_via_sudo(v3_present, current, true)?;
+        require_retry_3_restored_root_via_sudo(v3_present, current, true)?;
+        let core_audio_after = read_core_audio_generation_root()?;
+        let host_after = verify_paired_v7_runtime()?;
+        require_same_retry_4_live_boundary(
+            &host_before,
+            core_audio_before,
+            &host_after,
+            core_audio_after,
+        )?;
+        Ok((host_after, core_audio_after))
+    }
+
+    fn require_retry_3_restored_root_via_sudo(
+        v3_present: bool,
+        current: Option<&Path>,
+        require_product_absent: bool,
+    ) -> Result<()> {
         for (path, mode) in [
             ("/bin/cat", 0o755),
             ("/bin/ls", 0o755),
@@ -6638,21 +7965,12 @@ pub(crate) mod paired_v7 {
             ));
         }
         let attest_immutable_sets = || -> Result<()> {
-            sudo_require_exact_incident_stat(
-                Path::new(RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT),
-                &format!(
-                    "0:0:{}:0755:Directory:{}:{}:{}:0",
-                    RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_NLINK,
-                    RECOVERY_RETRY_3_ROOT_DEVICE,
-                    RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_INODE,
-                    RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_LENGTH,
-                ),
-            )?;
+            require_retry_4_root_support_parent_via_sudo(v3_present)?;
             require_retained_root_normal_v1_via_sudo()?;
             require_retained_root_recovery_v1_via_sudo()?;
             require_retained_root_recovery_v2_via_sudo()?;
             require_retained_root_normal_v2_via_sudo()?;
-            require_retry_3_transaction_parent_via_sudo(Some(transaction))
+            require_retry_4_transaction_parent_via_sudo(current)
         };
         attest_immutable_sets()?;
 
@@ -6721,12 +8039,13 @@ pub(crate) mod paired_v7 {
                 transaction,
                 "OpensteamerVirtualMicrophone-v7.pkg\nfailed-v7-product-driver.node\nstate.txt\n",
             )?;
-            for absent in [
-                Path::new(PRODUCT_DRIVER_CANONICAL_PATH),
-                layout.hold.as_path(),
-                layout.prior.as_path(),
-                layout.abandoned.as_path(),
-            ] {
+            if require_product_absent && sudo_stat(Path::new(PRODUCT_DRIVER_CANONICAL_PATH))?.is_some()
+            {
+                return Err(ControllerError(
+                    "retry-3 restored root canonical product unexpectedly exists".to_owned(),
+                ));
+            }
+            for absent in [layout.hold.as_path(), layout.prior.as_path(), layout.abandoned.as_path()] {
                 if sudo_stat(absent)?.is_some() {
                     return Err(ControllerError(format!(
                         "retry-3 restored root path unexpectedly exists: {}",
@@ -6866,179 +8185,15 @@ pub(crate) mod paired_v7 {
             )
         };
         attest_transaction()?;
-        verify_exact_retry_3_product_endpoints_absent(&V7Layout::new(
-            PathBuf::from(V7_EXPECTED_REPO),
-            PathBuf::from(RECOVERY_RETRY_3_EVIDENCE),
-            RECOVERY_RETRY_3_NONCE,
-        ))?;
+        if require_product_absent {
+            verify_exact_retry_3_product_endpoints_absent(&V7Layout::new(
+                PathBuf::from(V7_EXPECTED_REPO),
+                PathBuf::from(RECOVERY_RETRY_3_EVIDENCE),
+                RECOVERY_RETRY_3_NONCE,
+            ))?;
+        }
         attest_transaction()?;
         attest_immutable_sets()
-    }
-
-    fn require_retry_3_log_has_no_openers(path: &Path) -> Result<()> {
-        require_pinned_system_binary(
-            Path::new("/usr/sbin/lsof"),
-            0o755,
-            EXPECTED_LSOF_SHA256,
-        )?;
-        let output = command_output(
-            "/usr/sbin/lsof",
-            &["-n", "-Fpcufa", "--", path_text(path)?],
-            None,
-        )?;
-        if output.status.code() != Some(1)
-            || !output.stdout.is_empty()
-            || !output.stderr.is_empty()
-        {
-            return Err(ControllerError(format!(
-                "retry-3 recovery log has an opener or ambiguous lsof result: {}",
-                path.display()
-            )));
-        }
-        Ok(())
-    }
-
-    fn require_exact_retry_3_log(
-        path: &Path,
-        expected_inode: u64,
-        expected_length: u64,
-        expected_sha256: &str,
-        expected_mode: u32,
-    ) -> Result<()> {
-        if !matches!(expected_mode, 0o600 | 0o644) {
-            return Err(ControllerError(
-                "retry-3 recovery log expected mode is outside the incident contract".to_owned(),
-            ));
-        }
-        let expected_device = verified_data_volume_device()?;
-        require_retry_3_log_has_no_openers(path)?;
-        let metadata_is_exact = |metadata: &fs::Metadata| {
-            metadata.file_type().is_file()
-                && !metadata.file_type().is_symlink()
-                && metadata.uid() == USER_ID
-                && metadata.gid() == 0
-                && metadata.nlink() == 1
-                && metadata.permissions().mode() & 0o7777 == expected_mode
-                && metadata.dev() == expected_device
-                && metadata.ino() == expected_inode
-                && metadata.len() == expected_length
-                && metadata.st_flags() == 0
-        };
-        let named_before = fs::symlink_metadata(path)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(O_NOFOLLOW | 0x0100_0000)
-            .open(path)?;
-        require_descriptor_close_on_exec(&file, "retry-3 exact recovery log")?;
-        let descriptor_before = file.metadata()?;
-        if !metadata_is_exact(&named_before)
-            || !metadata_is_exact(&descriptor_before)
-            || descriptor_before.dev() != named_before.dev()
-            || descriptor_before.ino() != named_before.ino()
-            || descriptor_before.len() != named_before.len()
-        {
-            return Err(ControllerError(format!(
-                "retry-3 recovery log identity changed: {}",
-                path.display()
-            )));
-        }
-        let mut bytes = Vec::with_capacity(expected_length as usize);
-        Read::by_ref(&mut file)
-            .take(expected_length + 1)
-            .read_to_end(&mut bytes)?;
-        let descriptor_after = file.metadata()?;
-        let named_after = fs::symlink_metadata(path)?;
-        if bytes.len() as u64 != expected_length
-            || sha256_bytes(&bytes)? != expected_sha256
-            || !metadata_is_exact(&descriptor_after)
-            || !metadata_is_exact(&named_after)
-            || descriptor_before.dev() != descriptor_after.dev()
-            || descriptor_before.ino() != descriptor_after.ino()
-            || descriptor_before.len() != descriptor_after.len()
-            || descriptor_before.dev() != named_after.dev()
-            || descriptor_before.ino() != named_after.ino()
-            || descriptor_before.len() != named_after.len()
-        {
-            return Err(ControllerError(format!(
-                "retry-3 recovery log bytes or identity changed: {}",
-                path.display()
-            )));
-        }
-        drop(file);
-        require_retry_3_log_has_no_openers(path)
-    }
-
-    fn require_exact_retry_3_logs(expected_mode: u32) -> Result<()> {
-        require_exact_retry_3_log(
-            Path::new(RECOVERY_RETRY_3_STDOUT_LOG),
-            RECOVERY_RETRY_3_STDOUT_INODE,
-            RECOVERY_RETRY_3_STDOUT_SIZE,
-            RECOVERY_RETRY_3_STDOUT_SHA256,
-            expected_mode,
-        )?;
-        require_exact_retry_3_log(
-            Path::new(RECOVERY_RETRY_3_STDERR_LOG),
-            RECOVERY_RETRY_3_STDERR_INODE,
-            RECOVERY_RETRY_3_STDERR_SIZE,
-            RECOVERY_RETRY_3_STDERR_SHA256,
-            expected_mode,
-        )
-    }
-
-    fn require_exact_retry_3_log_admission_mode(
-        path: &Path,
-        expected_inode: u64,
-        expected_length: u64,
-        expected_sha256: &str,
-    ) -> Result<u32> {
-        let mode = fs::symlink_metadata(path)?.permissions().mode() & 0o7777;
-        if !matches!(mode, 0o600 | 0o644) {
-            return Err(ControllerError(format!(
-                "retry-3 recovery log is neither the exact pre-repair nor repaired mode: {}",
-                path.display()
-            )));
-        }
-        require_exact_retry_3_log(
-            path,
-            expected_inode,
-            expected_length,
-            expected_sha256,
-            mode,
-        )?;
-        Ok(mode)
-    }
-
-    fn require_exact_retry_3_log_admission_modes() -> Result<Retry3IncidentLogModes> {
-        Ok(Retry3IncidentLogModes {
-            stdout: require_exact_retry_3_log_admission_mode(
-                Path::new(RECOVERY_RETRY_3_STDOUT_LOG),
-                RECOVERY_RETRY_3_STDOUT_INODE,
-                RECOVERY_RETRY_3_STDOUT_SIZE,
-                RECOVERY_RETRY_3_STDOUT_SHA256,
-            )?,
-            stderr: require_exact_retry_3_log_admission_mode(
-                Path::new(RECOVERY_RETRY_3_STDERR_LOG),
-                RECOVERY_RETRY_3_STDERR_INODE,
-                RECOVERY_RETRY_3_STDERR_SIZE,
-                RECOVERY_RETRY_3_STDERR_SHA256,
-            )?,
-        })
-    }
-
-    fn require_retry_3_log_resume_modes(
-        admitted: Retry3IncidentLogModes,
-    ) -> Result<Retry3IncidentLogModes> {
-        let actual = require_exact_retry_3_log_admission_modes()?;
-        let monotonic = |before: u32, now: u32| before == now || (before == 0o644 && now == 0o600);
-        if !monotonic(admitted.stdout, actual.stdout)
-            || !monotonic(admitted.stderr, actual.stderr)
-        {
-            return Err(ControllerError(
-                "retry-3 recovery log mode moved outside the admitted monotonic repair path"
-                    .to_owned(),
-            ));
-        }
-        Ok(actual)
     }
 
     fn require_exact_retry_3_log_prefix(
@@ -7118,247 +8273,20 @@ pub(crate) mod paired_v7 {
         )
     }
 
-    fn require_exact_retry_3_offline_log_prefixes() -> Result<()> {
-        for path in [
-            Path::new(RECOVERY_RETRY_3_STDOUT_LOG),
-            Path::new(RECOVERY_RETRY_3_STDERR_LOG),
-        ] {
-            require_retry_3_log_has_no_openers(path)?;
-        }
-        require_exact_retry_3_log_prefixes()?;
-        for path in [
-            Path::new(RECOVERY_RETRY_3_STDOUT_LOG),
-            Path::new(RECOVERY_RETRY_3_STDERR_LOG),
-        ] {
-            require_retry_3_log_has_no_openers(path)?;
-        }
-        Ok(())
-    }
-
-    fn repair_exact_retry_3_log_mode(
-        path: &Path,
-        expected_inode: u64,
-        expected_length: u64,
-        expected_sha256: &str,
-    ) -> Result<()> {
-        let expected_device = verified_data_volume_device()?;
-        require_retry_3_log_has_no_openers(path)?;
-        let metadata_is_exact = |metadata: &fs::Metadata, mode: u32| {
-            metadata.file_type().is_file()
-                && !metadata.file_type().is_symlink()
-                && metadata.uid() == USER_ID
-                && metadata.gid() == 0
-                && metadata.nlink() == 1
-                && metadata.permissions().mode() & 0o7777 == mode
-                && metadata.dev() == expected_device
-                && metadata.ino() == expected_inode
-                && metadata.len() == expected_length
-                && metadata.st_flags() == 0
-        };
-        let named_before = fs::symlink_metadata(path)?;
-        let before_mode = named_before.permissions().mode() & 0o7777;
-        if !matches!(before_mode, 0o600 | 0o644)
-            || !metadata_is_exact(&named_before, before_mode)
-        {
-            return Err(ControllerError(format!(
-                "retry-3 recovery log pre-repair identity changed: {}",
-                path.display()
-            )));
-        }
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(O_NOFOLLOW | 0x0100_0000)
-            .open(path)?;
-        require_descriptor_close_on_exec(&file, "retry-3 recovery log")?;
-        let descriptor_before = file.metadata()?;
-        if !metadata_is_exact(&descriptor_before, before_mode)
-            || descriptor_before.dev() != named_before.dev()
-            || descriptor_before.ino() != named_before.ino()
-            || descriptor_before.len() != named_before.len()
-        {
-            return Err(ControllerError(format!(
-                "retry-3 recovery log changed while opening: {}",
-                path.display()
-            )));
-        }
-        let mut before_bytes = Vec::with_capacity(expected_length as usize);
-        Read::by_ref(&mut file)
-            .take(expected_length + 1)
-            .read_to_end(&mut before_bytes)?;
-        if before_bytes.len() as u64 != expected_length
-            || sha256_bytes(&before_bytes)? != expected_sha256
-        {
-            return Err(ControllerError(format!(
-                "retry-3 recovery log bytes differ from the incident pin: {}",
-                path.display()
-            )));
-        }
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        file.sync_all()?;
-        let descriptor_after = file.metadata()?;
-        let named_after = fs::symlink_metadata(path)?;
-        if !metadata_is_exact(&descriptor_after, 0o600)
-            || !metadata_is_exact(&named_after, 0o600)
-            || descriptor_before.dev() != descriptor_after.dev()
-            || descriptor_before.ino() != descriptor_after.ino()
-            || descriptor_before.len() != descriptor_after.len()
-            || descriptor_before.dev() != named_after.dev()
-            || descriptor_before.ino() != named_after.ino()
-            || descriptor_before.len() != named_after.len()
-        {
-            return Err(ControllerError(format!(
-                "retry-3 recovery log lost its descriptor-bound identity: {}",
-                path.display()
-            )));
-        }
-        file.seek(SeekFrom::Start(0))?;
-        let mut after_bytes = Vec::with_capacity(expected_length as usize);
-        Read::by_ref(&mut file)
-            .take(expected_length + 1)
-            .read_to_end(&mut after_bytes)?;
-        if after_bytes != before_bytes || sha256_bytes(&after_bytes)? != expected_sha256 {
-            return Err(ControllerError(format!(
-                "retry-3 recovery log bytes changed during descriptor chmod: {}",
-                path.display()
-            )));
-        }
-        drop(file);
-        require_retry_3_log_has_no_openers(path)
-    }
-
-    fn repair_exact_retry_3_logs() -> Result<()> {
-        repair_exact_retry_3_log_mode(
-            Path::new(RECOVERY_RETRY_3_STDOUT_LOG),
-            RECOVERY_RETRY_3_STDOUT_INODE,
-            RECOVERY_RETRY_3_STDOUT_SIZE,
-            RECOVERY_RETRY_3_STDOUT_SHA256,
+    fn require_terminal_retry_3_runtime_boundary() -> Result<()> {
+        require_path_absent(
+            Path::new(RETRY_3_V7_ACTIVE_UPDATE),
+            "terminal retry-3 active pointer",
         )?;
-        repair_exact_retry_3_log_mode(
-            Path::new(RECOVERY_RETRY_3_STDERR_LOG),
-            RECOVERY_RETRY_3_STDERR_INODE,
-            RECOVERY_RETRY_3_STDERR_SIZE,
-            RECOVERY_RETRY_3_STDERR_SHA256,
-        )
-    }
-
-    fn require_retry_3_exact_v6_offline() -> Result<()> {
-        verify_committed_v6_baseline()?;
-        verify_current_baseline_app_at(Path::new(NEW_APP), true)?;
-        verify_reviewed_launch_agent_unchanged()?;
-        require_service_absent(NEW_LAUNCH_AGENT_LABEL)?;
-        require_no_capture_servers()?;
-        verify_isolated_pairing_items_present()?;
-        verify_v5_pointer_unchanged()?;
-        verify_protected_legacy_absent()?;
-        acquire_unowned_shared_lock().map(drop)
-    }
-
-    fn require_retry_3_core_audio_generation(
-        actual: CoreAudioGeneration,
-        expected: Option<CoreAudioGeneration>,
-    ) -> Result<CoreAudioGeneration> {
-        if expected.is_some_and(|expected| expected != actual) {
-            return Err(ControllerError(
-                "coreaudiod generation differs from the retry-3 recovery admission".to_owned(),
-            ));
-        }
-        Ok(actual)
-    }
-
-    fn prove_retry_3_offline_safe_runtime(
-        layout: &V7Layout,
-        expected_core_audio: Option<CoreAudioGeneration>,
-    ) -> Result<CoreAudioGeneration> {
-        require_retry_3_restored_root_via_sudo()?;
-        verify_exact_retry_3_product_endpoints_absent(layout)?;
-        let core_audio_before = read_core_audio_generation_root()?;
-        require_retry_3_exact_v6_offline()?;
-        let core_audio_after = read_core_audio_generation_root()?;
-        verify_exact_retry_3_product_endpoints_absent(layout)?;
-        require_retry_3_restored_root_via_sudo()?;
-        if core_audio_before != core_audio_after {
-            return Err(ControllerError(
-                "coreaudiod generation changed during retry-3 offline recovery proof".to_owned(),
-            ));
-        }
-        require_retry_3_core_audio_generation(core_audio_before, expected_core_audio)
-    }
-
-    fn retry_3_recovery_checkpoint() -> LogCheckpoint {
-        LogCheckpoint {
-            offset: RECOVERY_RETRY_3_STDOUT_SIZE,
-            device: RETAINED_ROOT_V7_NORMAL_V2_DEVICE,
-            inode: RECOVERY_RETRY_3_STDOUT_INODE,
-        }
-    }
-
-    fn prove_retry_3_online_safe_runtime(
-        layout: &V7Layout,
-        expected_generation: &Retry3RecoveredGeneration,
-        expected_core_audio: CoreAudioGeneration,
-    ) -> Result<LaunchGeneration> {
-        require_exact_retry_3_log_prefixes()?;
-        require_retry_3_restored_root_via_sudo()?;
-        verify_exact_retry_3_product_endpoints_absent(layout)?;
-        let core_audio_before = read_core_audio_generation_root()?;
-        let generation = verify_paired_v7_runtime()?;
-        require_retry_3_generation_matches(&generation, expected_generation)?;
-        verify_current_baseline_oracle_pins()?;
-        verify_deployment(
-            Path::new(CURRENT_BASELINE_SOURCE_EXPORT),
-            Path::new(CURRENT_BASELINE_APP),
-            &retry_3_recovery_checkpoint(),
-            &generation,
+        require_path_absent(
+            Path::new(RECOVERY_RETRY_3_RECOVERY_JOURNAL_PENDING),
+            "terminal retry-3 pending recovery journal",
         )?;
-        verify_isolated_pairing_items_present()?;
-        verify_v5_pointer_unchanged()?;
-        let core_audio_after = read_core_audio_generation_root()?;
-        verify_exact_retry_3_product_endpoints_absent(layout)?;
-        require_retry_3_restored_root_via_sudo()?;
-        require_exact_retry_3_log_prefixes()?;
-        if core_audio_before != core_audio_after {
-            return Err(ControllerError(
-                "coreaudiod generation changed during retry-3 recovered-v6 proof".to_owned(),
-            ));
-        }
-        require_retry_3_core_audio_generation(core_audio_before, Some(expected_core_audio))?;
-        let final_generation = verify_paired_v7_runtime()?;
-        require_retry_3_generation_matches(&final_generation, expected_generation)?;
-        Ok(final_generation)
-    }
-
-    fn retry_3_v6_service_is_absent() -> Result<bool> {
-        let state = command_output(
-            "/bin/launchctl",
-            &["print", &format!("gui/{USER_ID}/{NEW_LAUNCH_AGENT_LABEL}")],
-            None,
+        require_path_absent(
+            Path::new(RECOVERY_RETRY_3_RECOVERY_RESULT_PENDING),
+            "terminal retry-3 pending recovery result",
         )?;
-        if service_absence_observation(NEW_LAUNCH_AGENT_LABEL, &state)? {
-            return Ok(true);
-        }
-        require_output_success(&state, "inspect retry-3 recovery v6 launch service")?;
-        Ok(false)
-    }
-
-    fn launch_or_resume_retry_3_v6(
-        layout: &V7Layout,
-        expected_core_audio: CoreAudioGeneration,
-    ) -> Result<LaunchGeneration> {
-        if retry_3_v6_service_is_absent()? {
-            require_exact_retry_3_offline_log_prefixes()?;
-            prove_retry_3_offline_safe_runtime(layout, Some(expected_core_audio))?;
-            reset_retry_3_pending_result_before_generation_publish()?;
-            require_exact_retry_3_critical_failure_evidence(
-                RetryV7PointerExpectation::Present,
-            )?;
-            prove_retry_3_offline_safe_runtime(layout, Some(expected_core_audio))?;
-            require_exact_retry_3_offline_log_prefixes()?;
-            bootstrap_exact_new_job()?;
-        }
-        let generation = wait_for_paired_v7_launch_generation(Duration::from_secs(45))?;
-        let expected = retry_3_recovered_generation(&generation)?;
-        prove_retry_3_online_safe_runtime(layout, &expected, expected_core_audio)
+        require_exact_retry_3_log_prefixes()
     }
 
     fn read_root_controller_identity_records_via_sudo() -> Result<ControllerBinaryIdentity> {
@@ -7374,7 +8302,7 @@ pub(crate) mod paired_v7 {
         let identity = parse_controller_identity_journal_at(
             &journal,
             ROOT_V7_CONTROLLER,
-            "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V2",
+            "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V3",
         )?;
         if identity.sha256 != digest {
             return Err(ControllerError(
@@ -7463,7 +8391,7 @@ pub(crate) mod paired_v7 {
         Ok(())
     }
 
-    fn bootstrap_root_owned_v7_controller_for_prepare() -> Result<ControllerBinaryIdentity> {
+    fn bootstrap_root_owned_v7_controller_for_prepare() -> Result<PreparedRootV3Identity> {
         for (path, mode) in [
             ("/bin/cat", 0o755),
             ("/usr/bin/install", 0o755),
@@ -7475,23 +8403,43 @@ pub(crate) mod paired_v7 {
         require_retained_root_normal_v1_via_sudo()?;
         require_retained_root_recovery_v1_via_sudo()?;
         require_retained_root_recovery_v2_via_sudo()?;
-        require_retry_3_transaction_parent_via_sudo(None)?;
-        attest_retry_2_root_safe_state_via_sudo()?;
+        require_retained_root_normal_v2_via_sudo()?;
+        require_retry_4_transaction_parent_via_sudo(None)?;
         let current = env::current_exe()?;
         let before = verified_uid501_controller_identity()?;
-        let root_parent = Path::new("/Library/Application Support/opensteamer");
-        require_or_create_root_directory(root_parent, "755")?;
-        require_or_create_root_directory(Path::new(ROOT_V7_SUPPORT_DIRECTORY), "700")?;
-        let (stage_required, publish_required) = match (
-            sudo_stat(Path::new(ROOT_V7_CONTROLLER))?,
-            sudo_stat(Path::new(ROOT_V7_CONTROLLER_PENDING))?,
-        ) {
-            (None, None) => (true, true),
-            (None, Some(value)) if value == "0:0:1:500:Regular File" => (false, true),
-            (Some(value), None) if value == "0:0:1:500:Regular File" => (false, false),
-            _ => {
+        let mut stage = require_retry_4_root_v3_stage_via_sudo(&before)?;
+        let (host_before, core_audio_before) = prove_retry_4_live_runtime_and_root_tombstones(
+            stage != Retry4RootV3Stage::Absent,
+            None,
+        )?;
+        if stage == Retry4RootV3Stage::Absent {
+            require_or_create_root_directory(Path::new(ROOT_V7_SUPPORT_DIRECTORY), "700")?;
+            stage = require_retry_4_root_v3_stage_via_sudo(&before)?;
+            if stage != Retry4RootV3Stage::Empty {
                 return Err(ControllerError(
-                    "normal root controller V2 final/pending topology is opaque".to_owned(),
+                    "new normal root controller V3 support did not enter the exact empty state"
+                        .to_owned(),
+                ));
+            }
+            let (host_after_create, core_audio_after_create) =
+                prove_retry_4_live_runtime_and_root_tombstones(true, None)?;
+            require_same_retry_4_live_boundary(
+                &host_before,
+                core_audio_before,
+                &host_after_create,
+                core_audio_after_create,
+            )?;
+        }
+        let (stage_required, publish_required) = match stage {
+            Retry4RootV3Stage::Empty => (true, true),
+            Retry4RootV3Stage::Pending => (false, true),
+            Retry4RootV3Stage::Controller
+            | Retry4RootV3Stage::PinPrefix
+            | Retry4RootV3Stage::RecordsPrefix
+            | Retry4RootV3Stage::Sealed => (false, false),
+            Retry4RootV3Stage::Absent => {
+                return Err(ControllerError(
+                    "normal root controller V3 support disappeared after creation".to_owned(),
                 ))
             }
         };
@@ -7505,13 +8453,22 @@ pub(crate) mod paired_v7 {
                 "wheel",
                 "-m",
                 "0500",
+                "-S",
                 path_text(&current)?,
                 ROOT_V7_CONTROLLER_PENDING,
             ])?;
-            require_output_success(&output, "stage exact normal root controller V2")?;
+            require_output_success(&output, "stage exact normal root controller V3")?;
             if !output.stdout.is_empty() || !output.stderr.is_empty() {
                 return Err(ControllerError(
-                    "normal root controller V2 staging emitted output".to_owned(),
+                    "normal root controller V3 staging emitted output".to_owned(),
+                ));
+            }
+            if require_retry_4_root_v3_stage_via_sudo(&before)?
+                != Retry4RootV3Stage::Pending
+            {
+                return Err(ControllerError(
+                    "normal root controller V3 staging did not enter the exact pending state"
+                        .to_owned(),
                 ));
             }
         }
@@ -7523,15 +8480,15 @@ pub(crate) mod paired_v7 {
                 "256",
                 ROOT_V7_CONTROLLER_PENDING,
             ])?;
-            require_output_success(&pending_hash, "hash staged normal root controller V2")?;
+            require_output_success(&pending_hash, "hash staged normal root controller V3")?;
             if parse_shasum_output(
-                decode_utf8(&pending_hash.stdout, "normal root V2 pending shasum")?,
+                decode_utf8(&pending_hash.stdout, "normal root V3 pending shasum")?,
                 ROOT_V7_CONTROLLER_PENDING,
             )? != before.sha256
                 || !pending_hash.stderr.is_empty()
             {
                 return Err(ControllerError(
-                    "normal root controller V2 pending bytes changed".to_owned(),
+                    "normal root controller V3 pending bytes changed".to_owned(),
                 ));
             }
             let publish = sudo_output(&[
@@ -7539,12 +8496,20 @@ pub(crate) mod paired_v7 {
                 ROOT_V7_CONTROLLER_PENDING,
                 ROOT_V7_CONTROLLER_PUBLISH_MODE,
             ])?;
-            require_output_success(&publish, "atomically publish normal root controller V2")?;
-            if publish.stdout != b"ROOT_V7_CONTROLLER_V2_PUBLISHED\n"
+            require_output_success(&publish, "atomically publish normal root controller V3")?;
+            if publish.stdout != b"ROOT_V7_CONTROLLER_V3_PUBLISHED\n"
                 || !publish.stderr.is_empty()
             {
                 return Err(ControllerError(
-                    "normal root controller V2 publication omitted its exact marker".to_owned(),
+                    "normal root controller V3 publication omitted its exact marker".to_owned(),
+                ));
+            }
+            if require_retry_4_root_v3_stage_via_sudo(&before)?
+                != Retry4RootV3Stage::Controller
+            {
+                return Err(ControllerError(
+                    "normal root controller V3 publication did not enter the exact controller-only state"
+                        .to_owned(),
                 ));
             }
         }
@@ -7565,11 +8530,17 @@ pub(crate) mod paired_v7 {
         let bootstrap = sudo_output(&["-n", ROOT_V7_CONTROLLER, ROOT_V7_CONTROLLER_BOOTSTRAP_MODE])?;
         require_output_success(&bootstrap, "seal root-owned v7 controller identity")?;
         if decode_utf8(&bootstrap.stdout, "root controller identity bootstrap stdout")?
-            != "ROOT_V7_CONTROLLER_V2_IDENTITY_SEALED\n"
+            != "ROOT_V7_CONTROLLER_V3_IDENTITY_SEALED\n"
             || !bootstrap.stderr.is_empty()
         {
             return Err(ControllerError(
                 "root controller identity bootstrap omitted its exact marker".to_owned(),
+            ));
+        }
+        if require_retry_4_root_v3_stage_via_sudo(&before)? != Retry4RootV3Stage::Sealed {
+            return Err(ControllerError(
+                "normal root controller V3 identity bootstrap did not reach the exact sealed state"
+                    .to_owned(),
             ));
         }
         let after = verified_uid501_controller_identity()?;
@@ -7589,9 +8560,21 @@ pub(crate) mod paired_v7 {
         require_retained_root_normal_v1_via_sudo()?;
         require_retained_root_recovery_v1_via_sudo()?;
         require_retained_root_recovery_v2_via_sudo()?;
-        require_retry_3_transaction_parent_via_sudo(None)?;
-        attest_retry_2_root_safe_state_via_sudo()?;
-        Ok(after)
+        require_retained_root_normal_v2_via_sudo()?;
+        require_retry_4_transaction_parent_via_sudo(None)?;
+        let (host_after, core_audio_after) =
+            prove_retry_4_live_runtime_and_root_tombstones(true, None)?;
+        require_same_retry_4_live_boundary(
+            &host_before,
+            core_audio_before,
+            &host_after,
+            core_audio_after,
+        )?;
+        require_retry_4_root_support_parent_via_sudo(true)?;
+        Ok(PreparedRootV3Identity {
+            uid_controller: after,
+            sealed_root_controller: sealed,
+        })
     }
 
     fn verify_root_owned_v7_controller_for_restore(
@@ -7608,6 +8591,7 @@ pub(crate) mod paired_v7 {
         require_retained_root_normal_v1_via_sudo()?;
         require_retained_root_recovery_v1_via_sudo()?;
         require_retained_root_recovery_v2_via_sudo()?;
+        require_retained_root_normal_v2_via_sudo()?;
         require_current_retry_v7_layout(
             &layout.evidence,
             Some(&layout.nonce),
@@ -7616,18 +8600,21 @@ pub(crate) mod paired_v7 {
         let expected_root = root_driver_layout(&layout.nonce)?.root;
         if layout.evidence.parent().and_then(Path::to_str) != Some(V7_UPDATE_ROOT)
             || expected_root == Path::new(RECOVERY_RETRY_2_ROOT_TRANSACTION)
+            || expected_root == Path::new(RECOVERY_RETRY_3_ROOT_TRANSACTION)
         {
             return Err(ControllerError(
-                "retry-3 restore escaped its disjoint evidence/root transaction".to_owned(),
+                "retry-4 restore escaped its disjoint evidence/root transaction".to_owned(),
             ));
         }
-        require_retry_3_transaction_parent_via_sudo(Some(&expected_root))?;
+        require_retry_4_transaction_parent_via_sudo(Some(&expected_root))?;
+        require_retry_4_root_support_parent_via_sudo(true)?;
+        require_retry_3_restored_root_via_sudo(true, Some(&expected_root), false)?;
         let before = verified_uid501_controller_identity()?;
         let hash = sudo_output(&["-n", "/usr/bin/shasum", "-a", "256", ROOT_V7_CONTROLLER])?;
-        require_output_success(&hash, "hash existing normal root controller V2")?;
+        require_output_success(&hash, "hash existing normal root controller V3")?;
         if !hash.stderr.is_empty()
             || parse_shasum_output(
-                decode_utf8(&hash.stdout, "existing normal root V2 shasum")?,
+                decode_utf8(&hash.stdout, "existing normal root V3 shasum")?,
                 ROOT_V7_CONTROLLER,
             )? != before.sha256
             || sudo_stat(Path::new(ROOT_V7_CONTROLLER))?.as_deref()
@@ -7635,19 +8622,22 @@ pub(crate) mod paired_v7 {
             || sudo_stat(Path::new(ROOT_V7_CONTROLLER_PENDING))?.is_some()
         {
             return Err(ControllerError(
-                "existing normal root controller V2 differs from reviewed bytes".to_owned(),
+                "existing normal root controller V3 differs from reviewed bytes".to_owned(),
             ));
         }
         let sealed = read_root_controller_identity_records_via_sudo()?;
         if sealed.sha256 != before.sha256 || sealed.length != before.length {
             return Err(ControllerError(
-                "existing normal root V2 seal differs from UID501 bytes".to_owned(),
+                "existing normal root V3 seal differs from UID501 bytes".to_owned(),
             ));
         }
         require_retained_root_normal_v1_via_sudo()?;
         require_retained_root_recovery_v1_via_sudo()?;
         require_retained_root_recovery_v2_via_sudo()?;
-        require_retry_3_transaction_parent_via_sudo(Some(&expected_root))?;
+        require_retained_root_normal_v2_via_sudo()?;
+        require_retry_4_transaction_parent_via_sudo(Some(&expected_root))?;
+        require_retry_4_root_support_parent_via_sudo(true)?;
+        require_retry_3_restored_root_via_sudo(true, Some(&expected_root), false)?;
         require_current_retry_v7_layout(
             &layout.evidence,
             Some(&layout.nonce),
@@ -7660,6 +8650,7 @@ pub(crate) mod paired_v7 {
         require_retained_root_normal_v1_via_sudo()?;
         require_retained_root_recovery_v1_via_sudo()?;
         require_retained_root_recovery_v2_via_sudo()?;
+        require_retained_root_normal_v2_via_sudo()?;
         let output = sudo_output(&[
             "-n",
             ROOT_V7_RECOVERY_CONTROLLER,
@@ -7681,32 +8672,46 @@ pub(crate) mod paired_v7 {
         require_retained_root_normal_v1_via_sudo()?;
         require_retained_root_recovery_v1_via_sudo()?;
         require_retained_root_recovery_v2_via_sudo()?;
+        require_retained_root_normal_v2_via_sudo()?;
         Ok(CoreAudioGeneration {
             pid: RECOVERY_RETRY_2_COREAUDIO_PID,
             runs: RECOVERY_RETRY_2_COREAUDIO_RUNS,
         })
     }
 
-    fn require_retry_3_root_admission_via_sudo() -> Result<()> {
+    fn require_retry_4_root_admission_via_sudo() -> Result<()> {
         authenticate_v7_privileged_boundary()?;
+        let uid_before = verified_uid501_controller_identity()?;
         require_retained_root_normal_v1_via_sudo()?;
         require_retained_root_recovery_v1_via_sudo()?;
         require_retained_root_recovery_v2_via_sudo()?;
-        require_retry_3_transaction_parent_via_sudo(None)?;
-        if sudo_stat(Path::new(ROOT_V7_SUPPORT_DIRECTORY))?.is_some() {
-            return Err(ControllerError(
-                "disjoint retry-3 normal root controller V2 support already exists".to_owned(),
-            ));
-        }
-        attest_retry_2_root_safe_state_via_sudo()?;
+        require_retained_root_normal_v2_via_sudo()?;
+        require_retry_4_transaction_parent_via_sudo(None)?;
+        let stage_before = require_retry_4_root_v3_stage_via_sudo(&uid_before)?;
+        let (host_before, core_audio_before) = prove_retry_4_live_runtime_and_root_tombstones(
+            stage_before != Retry4RootV3Stage::Absent,
+            None,
+        )?;
         require_retained_root_normal_v1_via_sudo()?;
         require_retained_root_recovery_v1_via_sudo()?;
         require_retained_root_recovery_v2_via_sudo()?;
-        require_retry_3_transaction_parent_via_sudo(None)?;
-        if sudo_stat(Path::new(ROOT_V7_SUPPORT_DIRECTORY))?.is_some() {
+        require_retained_root_normal_v2_via_sudo()?;
+        require_retry_4_transaction_parent_via_sudo(None)?;
+        let uid_after = verified_uid501_controller_identity()?;
+        let stage_after = require_retry_4_root_v3_stage_via_sudo(&uid_after)?;
+        let (host_after, core_audio_after) = prove_retry_4_live_runtime_and_root_tombstones(
+            stage_after != Retry4RootV3Stage::Absent,
+            None,
+        )?;
+        require_same_retry_4_live_boundary(
+            &host_before,
+            core_audio_before,
+            &host_after,
+            core_audio_after,
+        )?;
+        if uid_after != uid_before || stage_after != stage_before {
             return Err(ControllerError(
-                "disjoint retry-3 normal root controller V2 support appeared during admission"
-                    .to_owned(),
+                "normal root controller V3 crash state changed during retry-4 admission".to_owned(),
             ));
         }
         Ok(())
@@ -7967,9 +8972,9 @@ pub(crate) mod paired_v7 {
             .and_then(|value| value.to_str())
             .ok_or_else(|| ControllerError("paired-v7 retry leaf name is not UTF-8".to_owned()))?;
         let suffix = name
-            .strip_prefix("paired-v7-update-retry-3-")
+            .strip_prefix("paired-v7-update-retry-4-")
             .ok_or_else(|| {
-                ControllerError("paired-v7 pending recovery leaf is not retry-3".to_owned())
+                ControllerError("paired-v7 pending recovery leaf is not retry-4".to_owned())
             })?;
         if suffix.len() <= 37 || suffix.as_bytes()[suffix.len() - 37] != b'-' {
             return Err(ControllerError(
@@ -8076,6 +9081,10 @@ pub(crate) mod paired_v7 {
             Path::new(RETRY_2_V7_ACTIVE_UPDATE),
             "retained retry-2 paired-v7 pointer",
         )?;
+        require_path_absent(
+            Path::new(RETRY_3_V7_ACTIVE_UPDATE),
+            "retained retry-3 paired-v7 pointer",
+        )?;
         require_path_absent(Path::new(V7_ACTIVE_UPDATE), "retry paired-v7 pointer")?;
         let pending = PathBuf::from(format!(
             "{V7_ACTIVE_UPDATE}.pending-{expected_main_pid}"
@@ -8097,6 +9106,7 @@ pub(crate) mod paired_v7 {
             if name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)
                 || name.starts_with(RETRY_1_V7_PENDING_PREFIX)
                 || name.starts_with(RETRY_2_V7_PENDING_PREFIX)
+                || name.starts_with(RETRY_3_V7_PENDING_PREFIX)
                 || name.starts_with(RETRY_V7_PENDING_PREFIX)
             {
                 if name != pending_name || entry.path().to_str() != pending.to_str() {
@@ -8963,9 +9973,28 @@ pub(crate) mod paired_v7 {
     }
 
     impl RootDriverBrokerClient {
-        fn start(layout: &V7Layout) -> Result<Self> {
+        fn start(
+            layout: &V7Layout,
+            prepared: &PreparedRootV3Identity,
+        ) -> Result<Self> {
             authenticate_v7_privileged_boundary()?;
-            let controller_identity = bootstrap_root_owned_v7_controller_for_prepare()?;
+            let controller_identity = verify_uid501_controller_against_root_pin()?;
+            if controller_identity != prepared.uid_controller
+                || require_retry_4_root_v3_stage_via_sudo(&controller_identity)?
+                    != Retry4RootV3Stage::Sealed
+            {
+                return Err(ControllerError(
+                    "normal root controller V3 identity changed after pre-evidence bootstrap"
+                        .to_owned(),
+                ));
+            }
+            let sealed_root_controller = read_root_controller_identity_records_via_sudo()?;
+            if sealed_root_controller != prepared.sealed_root_controller {
+                return Err(ControllerError(
+                    "sealed root controller V3 inode changed after pre-evidence bootstrap"
+                        .to_owned(),
+                ));
+            }
             let mut record = create_new_private(&layout.driver_transaction_record)?;
             writeln!(record, "schema=opensteamer.driver-transaction-evidence.v7")?;
             writeln!(record, "nonce={}", layout.nonce)?;
@@ -9504,71 +10533,240 @@ pub(crate) mod paired_v7 {
         Ok(())
     }
 
-    fn require_exact_retry_3_critical_failure_evidence(
-        pointer_expectation: RetryV7PointerExpectation,
-    ) -> Result<V7Layout> {
-        let expected_device = verified_data_volume_device()?;
-        let evidence = Path::new(RECOVERY_RETRY_3_EVIDENCE);
-        require_current_retry_v7_layout(
-            evidence,
-            Some(RECOVERY_RETRY_3_NONCE),
-            pointer_expectation,
-        )?;
-        let recovery_journal_exists =
-            path_exists_without_follow(Path::new(RECOVERY_RETRY_3_RECOVERY_JOURNAL))?;
-        let recovery_journal_pending_exists = path_exists_without_follow(Path::new(
-            RECOVERY_RETRY_3_RECOVERY_JOURNAL_PENDING,
-        ))?;
-        let recovery_result_exists =
-            path_exists_without_follow(Path::new(RECOVERY_RETRY_3_RECOVERY_RESULT))?;
-        let recovery_result_pending_exists = path_exists_without_follow(Path::new(
-            RECOVERY_RETRY_3_RECOVERY_RESULT_PENDING,
-        ))?;
-        let retired_pointer = evidence.join("retired-active-pointer.txt");
-        let retired_pointer_exists = path_exists_without_follow(&retired_pointer)?;
-        if recovery_journal_exists && recovery_journal_pending_exists {
-            return Err(ControllerError(
-                "retry-3 final and pending recovery journals both exist".to_owned(),
-            ));
-        }
-        if (recovery_result_exists || recovery_result_pending_exists) && !recovery_journal_exists {
-            return Err(ControllerError(
-                "retry-3 recovery result exists without its durable recovery journal".to_owned(),
-            ));
-        }
-        if recovery_result_exists && recovery_result_pending_exists {
-            return Err(ControllerError(
-                "retry-3 final and pending recovery results both exist".to_owned(),
-            ));
-        }
-        if retired_pointer_exists && (!recovery_journal_exists || !recovery_result_exists) {
-            return Err(ControllerError(
-                "retry-3 pointer retired before durable recovery evidence existed".to_owned(),
-            ));
-        }
-        let optional_children = u64::from(recovery_journal_exists)
-            + u64::from(recovery_journal_pending_exists)
-            + u64::from(recovery_result_exists)
-            + u64::from(recovery_result_pending_exists)
-            + u64::from(retired_pointer_exists);
-        let expected_nlink = RECOVERY_RETRY_3_EVIDENCE_NLINK + optional_children;
-        let expected_length = RECOVERY_RETRY_3_EVIDENCE_SIZE
-            .checked_add(optional_children.checked_mul(32).ok_or_else(|| {
-                ControllerError("retry-3 recovery evidence child count overflowed".to_owned())
-            })?)
-            .ok_or_else(|| {
-                ControllerError("retry-3 recovery evidence length overflowed".to_owned())
-            })?;
+    fn require_exact_terminal_retry_3_probe_directory(
+        evidence: &Path,
+        expected_device: u64,
+    ) -> Result<()> {
+        let probes = evidence.join("probes");
         let metadata_is_exact = |metadata: &fs::Metadata| {
             metadata.file_type().is_dir()
                 && !metadata.file_type().is_symlink()
                 && metadata.uid() == USER_ID
                 && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
-                && metadata.nlink() == expected_nlink
+                && metadata.nlink() == RECOVERY_RETRY_3_PROBES_NLINK
+                && metadata.permissions().mode() & 0o7777 == 0o700
+                && metadata.dev() == expected_device
+                && metadata.ino() == RECOVERY_RETRY_3_PROBES_INODE
+                && metadata.len() == RECOVERY_RETRY_3_PROBES_SIZE
+                && metadata.st_flags() == 0
+        };
+        let before = fs::symlink_metadata(&probes)?;
+        if !metadata_is_exact(&before) {
+            return Err(ControllerError(
+                "terminal retry-3 probe directory identity changed".to_owned(),
+            ));
+        }
+        let expected: std::collections::BTreeMap<&str, (u64, u32, u64, &str)> = [
+            (
+                "guardian-self-test.json",
+                (
+                    RECOVERY_RETRY_3_GUARDIAN_SELF_TEST_INODE,
+                    0o600,
+                    RECOVERY_RETRY_3_GUARDIAN_SELF_TEST_SIZE,
+                    RECOVERY_RETRY_3_GUARDIAN_SELF_TEST_SHA256,
+                ),
+            ),
+            (
+                "mirror-loopback-self-test.json",
+                (
+                    RECOVERY_RETRY_3_MIRROR_SELF_TEST_INODE,
+                    0o600,
+                    RECOVERY_RETRY_3_MIRROR_SELF_TEST_SIZE,
+                    RECOVERY_RETRY_3_MIRROR_SELF_TEST_SHA256,
+                ),
+            ),
+            (
+                "mirror-loopback.json",
+                (
+                    RECOVERY_RETRY_3_MIRROR_RESULT_INODE,
+                    0o600,
+                    RECOVERY_RETRY_3_MIRROR_RESULT_SIZE,
+                    RECOVERY_RETRY_3_MIRROR_RESULT_SHA256,
+                ),
+            ),
+            (
+                "mirror-loopback.stderr",
+                (
+                    RECOVERY_RETRY_3_MIRROR_STDERR_INODE,
+                    0o600,
+                    0,
+                    RECOVERY_RETRY_2_RELEASED_RESERVE_SHA256,
+                ),
+            ),
+            (
+                "mirror-loopback.stdout",
+                (
+                    RECOVERY_RETRY_3_MIRROR_STDOUT_INODE,
+                    0o600,
+                    0,
+                    RECOVERY_RETRY_2_RELEASED_RESERVE_SHA256,
+                ),
+            ),
+            (
+                "opensteamer-public-vpio-probe",
+                (
+                    RECOVERY_RETRY_3_PUBLIC_PROBE_INODE,
+                    0o755,
+                    RECOVERY_RETRY_3_PUBLIC_PROBE_SIZE,
+                    RECOVERY_RETRY_3_PUBLIC_PROBE_SHA256,
+                ),
+            ),
+            (
+                "opensteamer-v7-default-route-guardian",
+                (
+                    RECOVERY_RETRY_3_GUARDIAN_INODE,
+                    0o755,
+                    RECOVERY_RETRY_3_GUARDIAN_SIZE,
+                    RECOVERY_RETRY_3_GUARDIAN_SHA256,
+                ),
+            ),
+            (
+                "physical-virtual-microphone-probe",
+                (
+                    RECOVERY_RETRY_3_MIRROR_PROBE_INODE,
+                    0o755,
+                    RECOVERY_RETRY_3_MIRROR_PROBE_SIZE,
+                    RECOVERY_RETRY_3_MIRROR_PROBE_SHA256,
+                ),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let mut actual = std::collections::BTreeMap::new();
+        for entry in fs::read_dir(&probes)? {
+            let entry = entry?;
+            let name = entry
+                .file_name()
+                .to_str()
+                .ok_or_else(|| ControllerError("retry-3 probe name is not UTF-8".to_owned()))?
+                .to_owned();
+            if entry.path() != probes.join(&name)
+                || !entry.file_type()?.is_file()
+                || actual.insert(name, ()).is_some()
+            {
+                return Err(ControllerError(
+                    "terminal retry-3 probe topology is unsafe".to_owned(),
+                ));
+            }
+        }
+        if actual.keys().map(String::as_str).ne(expected.keys().copied()) {
+            return Err(ControllerError(
+                "terminal retry-3 probe name/type set changed".to_owned(),
+            ));
+        }
+        for (name, (inode, mode, length, sha256)) in expected {
+            require_exact_retained_file(
+                &probes.join(name),
+                expected_device,
+                inode,
+                mode,
+                length,
+                sha256,
+            )?;
+        }
+        let after = fs::symlink_metadata(&probes)?;
+        if !metadata_is_exact(&after)
+            || before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.nlink() != after.nlink()
+            || before.len() != after.len()
+            || before.permissions().mode() != after.permissions().mode()
+            || before.st_flags() != after.st_flags()
+        {
+            return Err(ControllerError(
+                "terminal retry-3 probe directory changed during proof".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_exact_terminal_retry_3_recovery_binding() -> Result<()> {
+        let expected_result = format!(
+            concat!(
+                "OPENSTEAMER_PAIRED_HOST_RECOVERY_RESULT_V7_RETRY_3\n",
+                "result=recovered-v6\n",
+                "pid={}\n",
+                "runs={}\n",
+                "process_start_sha256={}\n",
+                "nonce={}\n",
+                "lock_device={}\n",
+                "lock_inode={}\n"
+            ),
+            RECOVERY_RETRY_3_RECOVERED_V6_PID,
+            RECOVERY_RETRY_3_RECOVERED_V6_RUNS,
+            RECOVERY_RETRY_3_RECOVERED_V6_PROCESS_START_SHA256,
+            RECOVERY_RETRY_3_RECOVERED_V6_NONCE,
+            RECOVERY_RETRY_3_RECOVERED_V6_LOCK_DEVICE,
+            RECOVERY_RETRY_3_RECOVERED_V6_LOCK_INODE,
+        );
+        if RECOVERY_RETRY_3_RECOVERY_RESULT_BYTES != expected_result {
+            return Err(ControllerError(
+                "terminal retry-3 recovery result pins no longer bind the exact recovered v6 generation"
+                    .to_owned(),
+            ));
+        }
+        let expected_terminal = format!(
+            concat!(
+                "STATE RECOVERED_V6 result_inode={} result_size={} result_sha256={} ",
+                "pid={} runs={} process_start_sha256={} nonce={} lock_device={} lock_inode={}\n"
+            ),
+            RECOVERY_RETRY_3_RECOVERY_RESULT_INODE,
+            RECOVERY_RETRY_3_RECOVERY_RESULT_SIZE,
+            RECOVERY_RETRY_3_RECOVERY_RESULT_SHA256,
+            RECOVERY_RETRY_3_RECOVERED_V6_PID,
+            RECOVERY_RETRY_3_RECOVERED_V6_RUNS,
+            RECOVERY_RETRY_3_RECOVERED_V6_PROCESS_START_SHA256,
+            RECOVERY_RETRY_3_RECOVERED_V6_NONCE,
+            RECOVERY_RETRY_3_RECOVERED_V6_LOCK_DEVICE,
+            RECOVERY_RETRY_3_RECOVERED_V6_LOCK_INODE,
+        );
+        let mut lines = RECOVERY_RETRY_3_RECOVERY_JOURNAL_BYTES.lines();
+        if lines.next() != Some("OPENSTEAMER_PAIRED_HOST_RECOVERY_V7_RETRY_3") {
+            return Err(ControllerError(
+                "terminal retry-3 recovery journal header pin changed".to_owned(),
+            ));
+        }
+        let safe = lines.next().ok_or_else(|| {
+            ControllerError("terminal retry-3 recovery safety record is absent".to_owned())
+        })?;
+        if !safe.starts_with(&format!(
+            "STATE SAFE_RUNTIME_PROVEN recovery_commit={} recovery_tree={} ",
+            RECOVERY_RETRY_3_RECOVERY_COMMIT, RECOVERY_RETRY_3_RECOVERY_TREE,
+        )) || !safe.contains(" critical_predecessor=CURRENT_RESTORED ")
+            || !safe.ends_with(" coreaudio_pid=20004 coreaudio_runs=4 stdout_initial_mode=0600 stderr_initial_mode=0600")
+            || lines.next()
+                != Some(
+                    "STATE LOGS_REPAIRED stdout_inode=27131806 stdout_mode=0600 stdout_size=18713 stdout_sha256=afb8ac5fc5893694378d0472957c52b4ba239f9853e8001accf21394f5c28045 stderr_inode=27131807 stderr_mode=0600 stderr_size=9310 stderr_sha256=ed48b41850a21cf525f14ad834d54e0dab96ae59387052212cf80797390d49c0",
+                )
+            || lines.next()
+                != Some(
+                    "STATE LAUNCH_ARMED stdout_device=16777229 stdout_inode=27131806 stdout_offset=18713",
+                )
+            || lines.next() != Some(expected_terminal.trim_end_matches('\n'))
+            || lines.next().is_some()
+            || !RECOVERY_RETRY_3_RECOVERY_JOURNAL_BYTES.ends_with('\n')
+        {
+            return Err(ControllerError(
+                "terminal retry-3 recovery journal/result semantic binding changed".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_exact_terminal_retry_3_evidence() -> Result<V7Layout> {
+        let expected_device = verified_data_volume_device()?;
+        let evidence = Path::new(RECOVERY_RETRY_3_EVIDENCE);
+        let retired_pointer = evidence.join("retired-active-pointer.txt");
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.nlink() == RECOVERY_RETRY_3_TERMINAL_EVIDENCE_NLINK
                 && metadata.permissions().mode() & 0o7777 == 0o700
                 && metadata.dev() == expected_device
                 && metadata.ino() == RECOVERY_RETRY_3_EVIDENCE_INODE
-                && metadata.len() == expected_length
+                && metadata.len() == RECOVERY_RETRY_3_TERMINAL_EVIDENCE_SIZE
                 && metadata.st_flags() == 0
         };
         let evidence_before = fs::symlink_metadata(evidence)?;
@@ -9580,18 +10778,8 @@ pub(crate) mod paired_v7 {
                 "retry-3 critical evidence root identity changed".to_owned(),
             ));
         }
-        let pointer_path = match pointer_expectation {
-            RetryV7PointerExpectation::Present => {
-                require_path_absent(&retired_pointer, "retry-3 retired pointer before recovery")?;
-                Path::new(V7_ACTIVE_UPDATE)
-            }
-            RetryV7PointerExpectation::Absent => {
-                require_path_absent(Path::new(V7_ACTIVE_UPDATE), "retired retry-3 active pointer")?;
-                retired_pointer.as_path()
-            }
-        };
         let pointer = require_exact_retained_file(
-            pointer_path,
+            &retired_pointer,
             expected_device,
             RECOVERY_RETRY_3_POINTER_INODE,
             0o600,
@@ -9639,6 +10827,20 @@ pub(crate) mod paired_v7 {
                 RECOVERY_RETRY_3_INSTALL_HOLD_NAME,
                 RECOVERY_RETRY_3_INSTALL_HOLD_NAME_SHA256,
             ),
+            (
+                evidence.join("retry-3-recovery-journal.txt"),
+                RECOVERY_RETRY_3_RECOVERY_JOURNAL_INODE,
+                RECOVERY_RETRY_3_RECOVERY_JOURNAL_SIZE,
+                RECOVERY_RETRY_3_RECOVERY_JOURNAL_BYTES,
+                RECOVERY_RETRY_3_RECOVERY_JOURNAL_SHA256,
+            ),
+            (
+                evidence.join("retry-3-recovery-result.txt"),
+                RECOVERY_RETRY_3_RECOVERY_RESULT_INODE,
+                RECOVERY_RETRY_3_RECOVERY_RESULT_SIZE,
+                RECOVERY_RETRY_3_RECOVERY_RESULT_BYTES,
+                RECOVERY_RETRY_3_RECOVERY_RESULT_SHA256,
+            ),
         ] {
             if bytes.len() as u64 != length {
                 return Err(ControllerError(format!(
@@ -9657,6 +10859,24 @@ pub(crate) mod paired_v7 {
                     .to_owned(),
             ));
         }
+        require_exact_terminal_retry_3_recovery_binding()?;
+        require_exact_retained_file(
+            &evidence.join("source.tar"),
+            expected_device,
+            RECOVERY_RETRY_3_SOURCE_TAR_INODE,
+            0o600,
+            RECOVERY_RETRY_3_SOURCE_TAR_SIZE,
+            RECOVERY_RETRY_3_SOURCE_TAR_SHA256,
+        )?;
+        require_exact_retained_file(
+            &evidence.join("functional-inputs.txt"),
+            expected_device,
+            RECOVERY_RETRY_3_FUNCTIONAL_INPUTS_INODE,
+            0o600,
+            RECOVERY_RETRY_3_FUNCTIONAL_INPUTS_SIZE,
+            RECOVERY_RETRY_3_FUNCTIONAL_INPUTS_SHA256,
+        )?;
+        require_exact_terminal_retry_3_probe_directory(evidence, expected_device)?;
         require_exact_retained_file(
             &evidence.join("rollback-reserve.bin"),
             expected_device,
@@ -9755,7 +10975,7 @@ pub(crate) mod paired_v7 {
                 "retry-3 failed-new archive changed during proof".to_owned(),
             ));
         }
-        let allowed: std::collections::BTreeMap<&str, bool> = [
+        let expected: std::collections::BTreeMap<String, bool> = [
             ("build.stderr", false),
             ("build.stdout", false),
             ("deployment-reference", true),
@@ -9768,8 +10988,6 @@ pub(crate) mod paired_v7 {
             ("production-driver-v7", true),
             ("provenance.txt", false),
             ("result.txt", false),
-            (".retry-3-recovery-result.txt.pending", false),
-            (".retry-3-recovery-journal.txt.pending", false),
             ("retry-3-recovery-journal.txt", false),
             ("retry-3-recovery-result.txt", false),
             ("retired-active-pointer.txt", false),
@@ -9781,6 +10999,7 @@ pub(crate) mod paired_v7 {
             ("swiftpm-scratch", true),
         ]
         .into_iter()
+        .map(|(name, is_directory)| (name.to_owned(), is_directory))
         .collect();
         let mut actual = std::collections::BTreeMap::new();
         for entry in fs::read_dir(evidence)? {
@@ -9791,7 +11010,7 @@ pub(crate) mod paired_v7 {
             })?;
             let file_type = entry.file_type()?;
             let is_directory = file_type.is_dir();
-            let expected_directory = allowed.get(name).copied();
+            let expected_directory = expected.get(name).copied();
             if expected_directory.is_none()
                 || file_type.is_symlink()
                 || (expected_directory == Some(true) && !file_type.is_dir())
@@ -9803,50 +11022,10 @@ pub(crate) mod paired_v7 {
                 ));
             }
         }
-        for required in [
-            "build.stderr",
-            "build.stdout",
-            "deployment-reference",
-            "driver-transaction-record.txt",
-            "failed-new",
-            "functional-inputs.txt",
-            "install-hold-name.txt",
-            "journal.log",
-            "probes",
-            "production-driver-v7",
-            "provenance.txt",
-            "result.txt",
-            "rollback-current",
-            "rollback-reserve.bin",
-            "source-export",
-            "source.tar",
-            "staged-output",
-            "swiftpm-scratch",
-        ] {
-            if !actual.contains_key(required) {
-                return Err(ControllerError(
-                    "retry-3 evidence omitted a required failure child".to_owned(),
-                ));
-            }
-        }
-        for (name, expected_present) in [
-            ("retry-3-recovery-journal.txt", recovery_journal_exists),
-            (
-                ".retry-3-recovery-journal.txt.pending",
-                recovery_journal_pending_exists,
-            ),
-            ("retry-3-recovery-result.txt", recovery_result_exists),
-            (
-                ".retry-3-recovery-result.txt.pending",
-                recovery_result_pending_exists,
-            ),
-            ("retired-active-pointer.txt", retired_pointer_exists),
-        ] {
-            if actual.contains_key(name) != expected_present {
-                return Err(ControllerError(format!(
-                    "retry-3 recovery evidence child presence changed: {name}"
-                )));
-            }
+        if actual != expected {
+            return Err(ControllerError(
+                "terminal retry-3 evidence does not contain the exact 21-child set".to_owned(),
+            ));
         }
         let evidence_after = fs::symlink_metadata(evidence)?;
         if !metadata_is_exact(&evidence_after)
@@ -10059,6 +11238,7 @@ pub(crate) mod paired_v7 {
             if name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)
                 || name.starts_with(RETRY_1_V7_PENDING_PREFIX)
                 || name.starts_with(RETRY_2_V7_PENDING_PREFIX)
+                || name.starts_with(RETRY_3_V7_PENDING_PREFIX)
                 || name.starts_with(RETRY_V7_PENDING_PREFIX)
             {
                 return Err(ControllerError(format!(
@@ -10656,7 +11836,7 @@ pub(crate) mod paired_v7 {
                 RECOVERY_RETRY_2_MIRROR_PROBE_INODE,
                 0o755,
                 RECOVERY_RETRY_2_MIRROR_PROBE_SIZE,
-                EXPECTED_MIRROR_PROBE_BINARY_SHA256,
+                RECOVERY_RETRY_2_MIRROR_PROBE_SHA256,
             ),
         ] {
             require_exact_retained_file(
@@ -10879,7 +12059,11 @@ pub(crate) mod paired_v7 {
             Path::new(RETRY_2_V7_ACTIVE_UPDATE),
             "retained retry-2 paired-v7 pointer",
         )?;
-        require_path_absent(Path::new(V7_ACTIVE_UPDATE), "retry-3 paired-v7 pointer")?;
+        require_path_absent(
+            Path::new(RETRY_3_V7_ACTIVE_UPDATE),
+            "retained retry-3 paired-v7 pointer",
+        )?;
+        require_path_absent(Path::new(V7_ACTIVE_UPDATE), "retry-4 paired-v7 pointer")?;
         require_no_v7_pending_pointers()?;
         require_path_absent(
             Path::new(RETAINED_FAILED_V7_INSTALL_HOLD),
@@ -10889,17 +12073,16 @@ pub(crate) mod paired_v7 {
             Path::new(RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD),
             "retained retry-1 paired-v7 install hold",
         )?;
-        require_path_absent(
-            Path::new(ROOT_V7_SUPPORT_DIRECTORY),
-            "disjoint retry-3 normal root controller V2 support directory",
-        )?;
         let data_volume_device = verified_data_volume_device()?;
         let root = Path::new(V7_UPDATE_ROOT);
-        require_exact_v7_retained_triplet(root, data_volume_device)?;
+        require_exact_v7_retained_quartet(root, data_volume_device)?;
+        require_terminal_retry_3_runtime_boundary()?;
         require_exact_retained_v7_evidence(data_volume_device)?;
         require_exact_retained_retry_1_v7_evidence(data_volume_device)?;
         require_exact_recovered_retry_2_evidence(data_volume_device)?;
-        require_exact_v7_retained_triplet(root, data_volume_device)
+        require_exact_terminal_retry_3_evidence()?;
+        require_terminal_retry_3_runtime_boundary()?;
+        require_exact_v7_retained_quartet(root, data_volume_device)
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -10999,13 +12182,14 @@ pub(crate) mod paired_v7 {
         Ok(())
     }
 
-    fn require_exact_v7_retained_triplet(root: &Path, expected_device: u64) -> Result<()> {
+    fn require_exact_v7_retained_quartet(root: &Path, expected_device: u64) -> Result<()> {
         require_exact_v7_root_names(
             root,
             &[
                 RETAINED_FAILED_V7_ATTEMPT_NAME,
                 RETAINED_FAILED_V7_RETRY_1_NAME,
                 RECOVERY_RETRY_2_NAME,
+                RECOVERY_RETRY_3_NAME,
             ],
         )?;
         let metadata = fs::symlink_metadata(root)?;
@@ -11019,19 +12203,20 @@ pub(crate) mod paired_v7 {
             || metadata.st_flags() != 0
         {
             return Err(ControllerError(
-                "paired-v7 retained triplet root identity changed".to_owned(),
+                "paired-v7 retained quartet root identity changed".to_owned(),
             ));
         }
         Ok(())
     }
 
-    fn require_exact_v7_root_quartet(root: &Path, current_name: &str) -> Result<()> {
+    fn require_exact_v7_root_quintet(root: &Path, current_name: &str) -> Result<()> {
         require_exact_v7_root_names(
             root,
             &[
                 RETAINED_FAILED_V7_ATTEMPT_NAME,
                 RETAINED_FAILED_V7_RETRY_1_NAME,
                 RECOVERY_RETRY_2_NAME,
+                RECOVERY_RETRY_3_NAME,
                 current_name,
             ],
         )
@@ -11052,6 +12237,10 @@ pub(crate) mod paired_v7 {
         require_path_absent(
             Path::new(RETRY_2_V7_ACTIVE_UPDATE),
             "retained retry-2 paired-v7 pointer",
+        )?;
+        require_path_absent(
+            Path::new(RETRY_3_V7_ACTIVE_UPDATE),
+            "retained retry-3 paired-v7 pointer",
         )?;
         require_no_v7_pending_pointers()?;
         match expectation {
@@ -11076,9 +12265,9 @@ pub(crate) mod paired_v7 {
             .and_then(|value| value.to_str())
             .ok_or_else(|| ControllerError("paired-v7 retry leaf name is not UTF-8".to_owned()))?;
         let suffix = name
-            .strip_prefix("paired-v7-update-retry-3-")
+            .strip_prefix("paired-v7-update-retry-4-")
             .ok_or_else(|| {
-                ControllerError("paired-v7 retry leaf escaped its fixed retry-3 shape".to_owned())
+                ControllerError("paired-v7 retry leaf escaped its fixed retry-4 shape".to_owned())
             })?;
         if suffix.len() <= 37 || suffix.as_bytes()[suffix.len() - 37] != b'-' {
             return Err(ControllerError(
@@ -11115,9 +12304,11 @@ pub(crate) mod paired_v7 {
             || evidence.to_str() == Some(RETAINED_FAILED_V7_ATTEMPT)
             || evidence.to_str() == Some(RETAINED_FAILED_V7_RETRY_1)
             || evidence.to_str() == Some(RECOVERY_RETRY_2_EVIDENCE)
+            || evidence.to_str() == Some(RECOVERY_RETRY_3_EVIDENCE)
             || name == RETAINED_FAILED_V7_ATTEMPT_NAME
             || name == RETAINED_FAILED_V7_RETRY_1_NAME
             || name == RECOVERY_RETRY_2_NAME
+            || name == RECOVERY_RETRY_3_NAME
         {
             return Err(ControllerError(
                 "paired-v7 retry leaf is not one exact direct non-retained child".to_owned(),
@@ -11133,8 +12324,8 @@ pub(crate) mod paired_v7 {
             || root_before.permissions().mode() & 0o7777 != 0o700
             || root_before.dev() != data_volume_device
             || root_before.ino() != RETAINED_FAILED_V7_ROOT_INODE
-            || root_before.nlink() != RETRY_3_V7_ROOT_NLINK
-            || root_before.len() != RETRY_3_V7_ROOT_SIZE
+            || root_before.nlink() != RETRY_4_V7_ROOT_NLINK
+            || root_before.len() != RETRY_4_V7_ROOT_SIZE
             || root_before.st_flags() != 0
             || retry_metadata.file_type().is_symlink()
             || !retry_metadata.file_type().is_dir()
@@ -11147,6 +12338,7 @@ pub(crate) mod paired_v7 {
             || retry_metadata.ino() == RETAINED_FAILED_V7_ATTEMPT_INODE
             || retry_metadata.ino() == RETAINED_FAILED_V7_RETRY_1_INODE
             || retry_metadata.ino() == RECOVERY_RETRY_2_EVIDENCE_INODE
+            || retry_metadata.ino() == RECOVERY_RETRY_3_EVIDENCE_INODE
             || retry_metadata.nlink() < 2
             || retry_metadata.st_flags() != 0
         {
@@ -11154,12 +12346,15 @@ pub(crate) mod paired_v7 {
                 "paired-v7 current retry namespace metadata is unsafe".to_owned(),
             ));
         }
-        require_exact_v7_root_quartet(root, name)?;
+        require_exact_v7_root_quintet(root, name)?;
         require_exact_retained_v7_evidence(data_volume_device)?;
         require_exact_retained_retry_1_v7_evidence(data_volume_device)?;
         require_exact_recovered_retry_2_evidence(data_volume_device)?;
+        require_terminal_retry_3_runtime_boundary()?;
+        require_exact_terminal_retry_3_evidence()?;
+        require_terminal_retry_3_runtime_boundary()?;
         require_retry_v7_pointer_expectation(evidence, pointer_expectation)?;
-        require_exact_v7_root_quartet(root, name)?;
+        require_exact_v7_root_quintet(root, name)?;
         let root_after = fs::symlink_metadata(root)?;
         let retry_after = fs::symlink_metadata(evidence)?;
         if !root_after.file_type().is_dir()
@@ -11167,8 +12362,8 @@ pub(crate) mod paired_v7 {
             || root_after.uid() != USER_ID
             || root_after.gid() != RETAINED_FAILED_V7_ATTEMPT_GID
             || root_after.permissions().mode() & 0o7777 != 0o700
-            || root_after.nlink() != RETRY_3_V7_ROOT_NLINK
-            || root_after.len() != RETRY_3_V7_ROOT_SIZE
+            || root_after.nlink() != RETRY_4_V7_ROOT_NLINK
+            || root_after.len() != RETRY_4_V7_ROOT_SIZE
             || retry_after.file_type().is_symlink()
             || !retry_after.file_type().is_dir()
             || retry_after.uid() != USER_ID
@@ -11194,7 +12389,7 @@ pub(crate) mod paired_v7 {
             ));
         }
         require_retry_v7_pointer_expectation(evidence, pointer_expectation)?;
-        require_exact_v7_root_quartet(root, name)?;
+        require_exact_v7_root_quintet(root, name)?;
         Ok(())
     }
 
@@ -11386,1210 +12581,6 @@ pub(crate) mod paired_v7 {
         retry_2_recovery_transition_record(state)
             .map(|(_, next)| next.as_bytes().starts_with(tail))
             .unwrap_or(false)
-    }
-
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum Retry3RecoveryState {
-        SafeRuntimeProven,
-        LogsRepaired,
-        LaunchArmed,
-        RecoveredV6,
-    }
-
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    struct Retry3IncidentLogModes {
-        stdout: u32,
-        stderr: u32,
-    }
-
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    struct Retry3RecoveryAdmission {
-        core_audio: CoreAudioGeneration,
-        log_modes: Retry3IncidentLogModes,
-    }
-
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    struct ParsedRetry3RecoveryJournal {
-        state: Retry3RecoveryState,
-        recovery_commit: String,
-        recovery_tree: String,
-        admission: Retry3RecoveryAdmission,
-        terminal: Option<Retry3RecoveryResultBinding>,
-    }
-
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    struct Retry3RecoveredGeneration {
-        pid: u32,
-        runs: u64,
-        process_start_sha256: String,
-        nonce: String,
-        lock_device: u64,
-        lock_inode: u64,
-    }
-
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    struct Retry3RecoveryResultBinding {
-        inode: u64,
-        size: u64,
-        sha256: String,
-        generation: Retry3RecoveredGeneration,
-    }
-
-    struct Retry3RecoveryJournal {
-        path: PathBuf,
-        file: File,
-        state: Retry3RecoveryState,
-        recovery_commit: String,
-        recovery_tree: String,
-        journal_inode: u64,
-        admission: Retry3RecoveryAdmission,
-        terminal: Option<Retry3RecoveryResultBinding>,
-    }
-
-    fn retry_3_recovered_generation(
-        generation: &LaunchGeneration,
-    ) -> Result<Retry3RecoveredGeneration> {
-        Ok(Retry3RecoveredGeneration {
-            pid: generation.pid,
-            runs: generation.runs,
-            process_start_sha256: sha256_bytes(generation.process_start.as_bytes())?,
-            nonce: generation.nonce.clone(),
-            lock_device: generation.lock_device,
-            lock_inode: generation.lock_inode,
-        })
-    }
-
-    fn require_retry_3_generation_matches(
-        generation: &LaunchGeneration,
-        expected: &Retry3RecoveredGeneration,
-    ) -> Result<()> {
-        if retry_3_recovered_generation(generation)? != *expected {
-            return Err(ControllerError(
-                "retry-3 recovered v6 generation changed after its durable result".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn retry_3_recovery_safe_record(
-        commit: &str,
-        tree: &str,
-        journal_inode: u64,
-        admission: Retry3RecoveryAdmission,
-    ) -> String {
-        format!(
-            "STATE SAFE_RUNTIME_PROVEN recovery_commit={commit} recovery_tree={tree} recovery_journal_inode={journal_inode} evidence_inode={} active_pointer_inode={} active_pointer_sha256={} failure_journal_inode={} failure_journal_size={} failure_journal_sha256={} failure_result_inode={} failure_result_size={} failure_result_sha256={} provenance_inode={} provenance_size={} provenance_sha256={} driver_record_inode={} driver_record_size={} driver_record_sha256={} install_hold_name_inode={} install_hold_name_size={} install_hold_name_sha256={} reserve_inode={} reserve_length=0 reserve_blocks=0 reserve_sha256={} rollback_current_inode={} archived_hold_inode={} archived_app_inode={} archived_executable_inode={} archived_executable_size={} archived_executable_sha256={} guardian_inode={} guardian_size={} guardian_sha256={} stdout_inode={} stdout_size={} stdout_sha256={} stderr_inode={} stderr_size={} stderr_sha256={} root_transaction_inode={} root_state_inode={} root_state_sha256={} root_failed_inode={} root_failed_executable_inode={} root_failed_executable_size={} root_failed_executable_sha256={} root_package_inode={} root_package_sha256={} normal_v2_support_inode={} normal_v2_controller_inode={} normal_v2_controller_sha256={} normal_v2_pin_inode={} normal_v2_pin_sha256={} normal_v2_journal_inode={} normal_v2_journal_sha256={} v6_executable_sha256={} critical_predecessor=CURRENT_RESTORED coreaudio_pid={} coreaudio_runs={} stdout_initial_mode={:04o} stderr_initial_mode={:04o}\n",
-            RECOVERY_RETRY_3_EVIDENCE_INODE,
-            RECOVERY_RETRY_3_POINTER_INODE,
-            RECOVERY_RETRY_3_POINTER_SHA256,
-            RECOVERY_RETRY_3_JOURNAL_INODE,
-            RECOVERY_RETRY_3_JOURNAL_SIZE,
-            RECOVERY_RETRY_3_JOURNAL_SHA256,
-            RECOVERY_RETRY_3_RESULT_INODE,
-            RECOVERY_RETRY_3_RESULT_SIZE,
-            RECOVERY_RETRY_3_RESULT_SHA256,
-            RECOVERY_RETRY_3_PROVENANCE_INODE,
-            RECOVERY_RETRY_3_PROVENANCE_SIZE,
-            RECOVERY_RETRY_3_PROVENANCE_SHA256,
-            RECOVERY_RETRY_3_DRIVER_RECORD_INODE,
-            RECOVERY_RETRY_3_DRIVER_RECORD_SIZE,
-            RECOVERY_RETRY_3_DRIVER_RECORD_SHA256,
-            RECOVERY_RETRY_3_INSTALL_HOLD_NAME_INODE,
-            RECOVERY_RETRY_3_INSTALL_HOLD_NAME_SIZE,
-            RECOVERY_RETRY_3_INSTALL_HOLD_NAME_SHA256,
-            RECOVERY_RETRY_3_RESERVE_INODE,
-            RECOVERY_RETRY_2_RELEASED_RESERVE_SHA256,
-            RECOVERY_RETRY_3_ROLLBACK_CURRENT_INODE,
-            RECOVERY_RETRY_3_ARCHIVE_INODE,
-            RECOVERY_RETRY_3_ARCHIVE_APP_INODE,
-            RECOVERY_RETRY_3_ARCHIVE_EXECUTABLE_INODE,
-            RECOVERY_RETRY_3_ARCHIVE_EXECUTABLE_SIZE,
-            RECOVERY_RETRY_3_ARCHIVE_EXECUTABLE_SHA256,
-            RECOVERY_RETRY_3_GUARDIAN_INODE,
-            RECOVERY_RETRY_3_GUARDIAN_SIZE,
-            RECOVERY_RETRY_3_GUARDIAN_SHA256,
-            RECOVERY_RETRY_3_STDOUT_INODE,
-            RECOVERY_RETRY_3_STDOUT_SIZE,
-            RECOVERY_RETRY_3_STDOUT_SHA256,
-            RECOVERY_RETRY_3_STDERR_INODE,
-            RECOVERY_RETRY_3_STDERR_SIZE,
-            RECOVERY_RETRY_3_STDERR_SHA256,
-            RECOVERY_RETRY_3_ROOT_TRANSACTION_INODE,
-            RECOVERY_RETRY_3_ROOT_STATE_INODE,
-            RECOVERY_RETRY_3_ROOT_STATE_SHA256,
-            RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_INODE,
-            RECOVERY_RETRY_3_ROOT_FAILED_EXECUTABLE_INODE,
-            RECOVERY_RETRY_3_ROOT_FAILED_EXECUTABLE_SIZE,
-            EXPECTED_PRODUCTION_DRIVER_EXECUTABLE_SHA256,
-            RECOVERY_RETRY_3_ROOT_PACKAGE_INODE,
-            EXPECTED_PRODUCTION_DRIVER_PACKAGE_SHA256,
-            RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_INODE,
-            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_INODE,
-            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_SHA256,
-            RETAINED_ROOT_V7_NORMAL_V2_PIN_INODE,
-            RETAINED_ROOT_V7_NORMAL_V2_PIN_SHA256,
-            RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_INODE,
-            RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_SHA256,
-            CURRENT_BASELINE_EXECUTABLE_SHA256,
-            admission.core_audio.pid,
-            admission.core_audio.runs,
-            admission.log_modes.stdout,
-            admission.log_modes.stderr,
-        )
-    }
-
-    fn retry_3_recovery_result_text(generation: &Retry3RecoveredGeneration) -> String {
-        format!(
-            "OPENSTEAMER_PAIRED_HOST_RECOVERY_RESULT_V7_RETRY_3\nresult=recovered-v6\npid={}\nruns={}\nprocess_start_sha256={}\nnonce={}\nlock_device={}\nlock_inode={}\n",
-            generation.pid,
-            generation.runs,
-            generation.process_start_sha256,
-            generation.nonce,
-            generation.lock_device,
-            generation.lock_inode,
-        )
-    }
-
-    fn retry_3_recovery_transition_record(
-        state: Retry3RecoveryState,
-        terminal: Option<&Retry3RecoveryResultBinding>,
-    ) -> Result<(Retry3RecoveryState, String)> {
-        match state {
-            Retry3RecoveryState::SafeRuntimeProven => Ok((
-                Retry3RecoveryState::LogsRepaired,
-                format!(
-                    "STATE LOGS_REPAIRED stdout_inode={} stdout_mode=0600 stdout_size={} stdout_sha256={} stderr_inode={} stderr_mode=0600 stderr_size={} stderr_sha256={}\n",
-                    RECOVERY_RETRY_3_STDOUT_INODE,
-                    RECOVERY_RETRY_3_STDOUT_SIZE,
-                    RECOVERY_RETRY_3_STDOUT_SHA256,
-                    RECOVERY_RETRY_3_STDERR_INODE,
-                    RECOVERY_RETRY_3_STDERR_SIZE,
-                    RECOVERY_RETRY_3_STDERR_SHA256,
-                ),
-            )),
-            Retry3RecoveryState::LogsRepaired => Ok((
-                Retry3RecoveryState::LaunchArmed,
-                format!(
-                    "STATE LAUNCH_ARMED stdout_device={} stdout_inode={} stdout_offset={}\n",
-                    RETAINED_ROOT_V7_NORMAL_V2_DEVICE,
-                    RECOVERY_RETRY_3_STDOUT_INODE,
-                    RECOVERY_RETRY_3_STDOUT_SIZE,
-                ),
-            )),
-            Retry3RecoveryState::LaunchArmed => {
-                let terminal = terminal.ok_or_else(|| {
-                    ControllerError(
-                        "retry-3 terminal recovery transition lacks its exact result binding"
-                            .to_owned(),
-                    )
-                })?;
-                let generation = &terminal.generation;
-                Ok((
-                    Retry3RecoveryState::RecoveredV6,
-                    format!(
-                        "STATE RECOVERED_V6 result_inode={} result_size={} result_sha256={} pid={} runs={} process_start_sha256={} nonce={} lock_device={} lock_inode={}\n",
-                        terminal.inode,
-                        terminal.size,
-                        terminal.sha256,
-                        generation.pid,
-                        generation.runs,
-                        generation.process_start_sha256,
-                        generation.nonce,
-                        generation.lock_device,
-                        generation.lock_inode,
-                    ),
-                ))
-            }
-            Retry3RecoveryState::RecoveredV6 => Err(ControllerError(
-                "retry-3 recovery journal has no state after RECOVERED_V6".to_owned(),
-            )),
-        }
-    }
-
-    fn parse_retry_3_recovery_terminal(line: &str) -> Result<Retry3RecoveryResultBinding> {
-        let fields: Vec<&str> = line.split_ascii_whitespace().collect();
-        if fields.len() != 11 || fields[0] != "STATE" || fields[1] != "RECOVERED_V6" {
-            return Err(ControllerError(
-                "retry-3 recovery terminal record has the wrong schema".to_owned(),
-            ));
-        }
-        let value = |index: usize, prefix: &str| -> Result<&str> {
-            fields[index].strip_prefix(prefix).ok_or_else(|| {
-                ControllerError("retry-3 recovery terminal field is malformed".to_owned())
-            })
-        };
-        let parse_u64 = |index: usize, prefix: &str| -> Result<u64> {
-            value(index, prefix)?
-                .parse::<u64>()
-                .map_err(|_| ControllerError("retry-3 recovery number is malformed".to_owned()))
-        };
-        let inode = parse_u64(2, "result_inode=")?;
-        let size = parse_u64(3, "result_size=")?;
-        let sha256 = value(4, "result_sha256=")?.to_owned();
-        let pid = parse_positive_u32(value(5, "pid=")?, "retry-3 recovered v6 PID")?;
-        let runs = parse_u64(6, "runs=")?;
-        let process_start_sha256 = value(7, "process_start_sha256=")?.to_owned();
-        let nonce = value(8, "nonce=")?.to_owned();
-        let lock_device = parse_u64(9, "lock_device=")?;
-        let lock_inode = parse_u64(10, "lock_inode=")?;
-        require_canonical_lower_hex(&sha256, 64, "retry-3 recovery result hash")?;
-        require_canonical_lower_hex(
-            &process_start_sha256,
-            64,
-            "retry-3 recovered v6 process-start hash",
-        )?;
-        require_canonical_lower_hex(&nonce, 64, "retry-3 recovered v6 nonce")?;
-        if inode == 0 || size == 0 || size > 2_048 || runs == 0 || lock_device == 0 || lock_inode == 0
-        {
-            return Err(ControllerError(
-                "retry-3 recovery terminal numeric field is outside its exact domain".to_owned(),
-            ));
-        }
-        let binding = Retry3RecoveryResultBinding {
-            inode,
-            size,
-            sha256,
-            generation: Retry3RecoveredGeneration {
-                pid,
-                runs,
-                process_start_sha256,
-                nonce,
-                lock_device,
-                lock_inode,
-            },
-        };
-        let (_, expected) = retry_3_recovery_transition_record(
-            Retry3RecoveryState::LaunchArmed,
-            Some(&binding),
-        )?;
-        if expected.trim_end_matches('\n') != line {
-            return Err(ControllerError(
-                "retry-3 recovery terminal record did not round-trip exactly".to_owned(),
-            ));
-        }
-        Ok(binding)
-    }
-
-    fn retry_3_recovery_safe_value<'a>(fields: &[&'a str], prefix: &str) -> Result<&'a str> {
-        let mut matches = fields
-            .iter()
-            .filter_map(|field| field.strip_prefix(prefix));
-        let value = matches.next().ok_or_else(|| {
-            ControllerError(format!(
-                "retry-3 recovery safety record omitted {prefix}"
-            ))
-        })?;
-        if matches.next().is_some() {
-            return Err(ControllerError(format!(
-                "retry-3 recovery safety record repeats {prefix}"
-            )));
-        }
-        Ok(value)
-    }
-
-    fn parse_retry_3_recovery_journal(
-        text: &str,
-        journal_inode: u64,
-    ) -> Result<ParsedRetry3RecoveryJournal> {
-        if !text.ends_with('\n') {
-            return Err(ControllerError(
-                "retry-3 recovery journal is not newline-terminated".to_owned(),
-            ));
-        }
-        let mut lines = text.lines();
-        if lines.next() != Some("OPENSTEAMER_PAIRED_HOST_RECOVERY_V7_RETRY_3") {
-            return Err(ControllerError(
-                "retry-3 recovery journal header is malformed".to_owned(),
-            ));
-        }
-        let safe = lines.next().ok_or_else(|| {
-            ControllerError("retry-3 recovery journal omitted its safety record".to_owned())
-        })?;
-        let safe_fields: Vec<&str> = safe.split_ascii_whitespace().collect();
-        if safe_fields.len() < 5
-            || safe_fields[0] != "STATE"
-            || safe_fields[1] != "SAFE_RUNTIME_PROVEN"
-        {
-            return Err(ControllerError(
-                "retry-3 recovery safety record has the wrong schema".to_owned(),
-            ));
-        }
-        let recovery_commit = safe_fields[2]
-            .strip_prefix("recovery_commit=")
-            .ok_or_else(|| ControllerError("retry-3 recovery commit is malformed".to_owned()))?;
-        let recovery_tree = safe_fields[3]
-            .strip_prefix("recovery_tree=")
-            .ok_or_else(|| ControllerError("retry-3 recovery tree is malformed".to_owned()))?;
-        require_canonical_git_oid(recovery_commit, "retry-3 recorded recovery commit")?;
-        require_canonical_git_oid(recovery_tree, "retry-3 recorded recovery tree")?;
-        let core_audio_pid = parse_positive_u32(
-            retry_3_recovery_safe_value(&safe_fields, "coreaudio_pid=")?,
-            "retry-3 admitted coreaudiod PID",
-        )?;
-        let core_audio_runs = retry_3_recovery_safe_value(&safe_fields, "coreaudio_runs=")?
-            .parse::<u64>()
-            .ok()
-            .filter(|runs| *runs > 0)
-            .ok_or_else(|| {
-                ControllerError("retry-3 admitted coreaudiod runs is malformed".to_owned())
-            })?;
-        let parse_log_mode = |prefix: &str| -> Result<u32> {
-            match retry_3_recovery_safe_value(&safe_fields, prefix)? {
-                "0600" => Ok(0o600),
-                "0644" => Ok(0o644),
-                _ => Err(ControllerError(
-                    "retry-3 admitted log mode is outside the exact incident set".to_owned(),
-                )),
-            }
-        };
-        let admission = Retry3RecoveryAdmission {
-            core_audio: CoreAudioGeneration {
-                pid: core_audio_pid,
-                runs: core_audio_runs,
-            },
-            log_modes: Retry3IncidentLogModes {
-                stdout: parse_log_mode("stdout_initial_mode=")?,
-                stderr: parse_log_mode("stderr_initial_mode=")?,
-            },
-        };
-        if format!("{safe}\n")
-            != retry_3_recovery_safe_record(
-                recovery_commit,
-                recovery_tree,
-                journal_inode,
-                admission,
-            )
-        {
-            return Err(ControllerError(
-                "retry-3 recovery safety record pins changed".to_owned(),
-            ));
-        }
-        let mut state = Retry3RecoveryState::SafeRuntimeProven;
-        let mut terminal = None;
-        for line in lines {
-            match state {
-                Retry3RecoveryState::SafeRuntimeProven
-                | Retry3RecoveryState::LogsRepaired => {
-                    let (next, expected) = retry_3_recovery_transition_record(state, None)?;
-                    if expected.trim_end_matches('\n') != line {
-                        return Err(ControllerError(
-                            "retry-3 recovery transition record is malformed".to_owned(),
-                        ));
-                    }
-                    state = next;
-                }
-                Retry3RecoveryState::LaunchArmed => {
-                    let binding = parse_retry_3_recovery_terminal(line)?;
-                    state = Retry3RecoveryState::RecoveredV6;
-                    terminal = Some(binding);
-                }
-                Retry3RecoveryState::RecoveredV6 => {
-                    return Err(ControllerError(
-                        "retry-3 recovery journal contains trailing records".to_owned(),
-                    ));
-                }
-            }
-        }
-        Ok(ParsedRetry3RecoveryJournal {
-            state,
-            recovery_commit: recovery_commit.to_owned(),
-            recovery_tree: recovery_tree.to_owned(),
-            admission,
-            terminal,
-        })
-    }
-
-    fn validate_retry_3_recovery_journal_file(path: &Path, file: &File) -> Result<u64> {
-        let expected_device = verified_data_volume_device()?;
-        let descriptor = file.metadata()?;
-        let named = fs::symlink_metadata(path)?;
-        let metadata_is_exact = |metadata: &fs::Metadata| {
-            metadata.file_type().is_file()
-                && !metadata.file_type().is_symlink()
-                && metadata.uid() == USER_ID
-                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
-                && metadata.nlink() == 1
-                && metadata.permissions().mode() & 0o7777 == 0o600
-                && metadata.dev() == expected_device
-                && metadata.len() <= 32_768
-                && metadata.st_flags() == 0
-        };
-        if !metadata_is_exact(&descriptor)
-            || !metadata_is_exact(&named)
-            || descriptor.dev() != named.dev()
-            || descriptor.ino() != named.ino()
-            || descriptor.len() != named.len()
-        {
-            return Err(ControllerError(
-                "retry-3 recovery journal descriptor identity is unsafe".to_owned(),
-            ));
-        }
-        Ok(descriptor.ino())
-    }
-
-    impl Retry3RecoveryJournal {
-        fn initial_text(
-            commit: &str,
-            tree: &str,
-            journal_inode: u64,
-            admission: Retry3RecoveryAdmission,
-        ) -> String {
-            format!(
-                "OPENSTEAMER_PAIRED_HOST_RECOVERY_V7_RETRY_3\n{}",
-                retry_3_recovery_safe_record(commit, tree, journal_inode, admission)
-            )
-        }
-
-        fn create_or_publish(
-            path: &Path,
-            pending_path: &Path,
-            commit: &str,
-            tree: &str,
-            admission: Retry3RecoveryAdmission,
-        ) -> Result<Self> {
-            require_canonical_git_oid(commit, "retry-3 recovery journal commit")?;
-            require_canonical_git_oid(tree, "retry-3 recovery journal tree")?;
-            require_path_absent(path, "retry-3 recovery journal before atomic publication")?;
-            let create = OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .mode(0o600)
-                .custom_flags(O_NOFOLLOW | 0x0100_0000)
-                .open(pending_path);
-            let mut file = match create {
-                Ok(file) => file,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .custom_flags(O_NOFOLLOW | 0x0100_0000)
-                        .open(pending_path)?
-                }
-                Err(error) => return Err(error.into()),
-            };
-            require_descriptor_close_on_exec(&file, "pending retry-3 recovery journal")?;
-            let journal_inode =
-                validate_retry_3_recovery_journal_file(pending_path, &file)?;
-            let text = Self::initial_text(commit, tree, journal_inode, admission);
-            let existing_length = file.metadata()?.len();
-            let mut existing = Vec::with_capacity(existing_length as usize);
-            Read::by_ref(&mut file)
-                .take(32_769)
-                .read_to_end(&mut existing)?;
-            if existing.len() as u64 != existing_length
-                || existing.len() > text.len()
-                || !text.as_bytes().starts_with(&existing)
-            {
-                return Err(ControllerError(
-                    "pending retry-3 recovery journal is not an exact initial-record prefix"
-                        .to_owned(),
-                ));
-            }
-            let before_write_inode =
-                validate_retry_3_recovery_journal_file(pending_path, &file)?;
-            if before_write_inode != journal_inode || file.metadata()?.len() != existing_length {
-                return Err(ControllerError(
-                    "pending retry-3 recovery journal changed before durable repair".to_owned(),
-                ));
-            }
-            file.set_len(0)?;
-            file.seek(SeekFrom::Start(0))?;
-            file.write_all(text.as_bytes())?;
-            file.sync_all()?;
-            fsync_parent(pending_path)?;
-            let pending_inode =
-                validate_retry_3_recovery_journal_file(pending_path, &file)?;
-            if pending_inode != journal_inode || file.metadata()?.len() != text.len() as u64 {
-                return Err(ControllerError(
-                    "pending retry-3 recovery journal changed after durable repair".to_owned(),
-                ));
-            }
-            file.seek(SeekFrom::Start(0))?;
-            let mut reread = Vec::with_capacity(text.len());
-            Read::by_ref(&mut file)
-                .take(text.len() as u64 + 1)
-                .read_to_end(&mut reread)?;
-            if reread != text.as_bytes() {
-                return Err(ControllerError(
-                    "pending retry-3 recovery journal differs after durable repair".to_owned(),
-                ));
-            }
-            require_path_absent(path, "retry-3 recovery journal publication target")?;
-            rename_exclusive(pending_path, path)?;
-            fsync_parent(path)?;
-            require_path_absent(
-                pending_path,
-                "published retry-3 pending recovery journal",
-            )?;
-            let published_inode = validate_retry_3_recovery_journal_file(path, &file)?;
-            if published_inode != journal_inode || file.metadata()?.len() != text.len() as u64 {
-                return Err(ControllerError(
-                    "published retry-3 recovery journal lost its descriptor identity".to_owned(),
-                ));
-            }
-            let parsed = parse_retry_3_recovery_journal(&text, journal_inode)?;
-            if parsed.state != Retry3RecoveryState::SafeRuntimeProven
-                || parsed.recovery_commit != commit
-                || parsed.recovery_tree != tree
-                || parsed.admission != admission
-                || parsed.terminal.is_some()
-            {
-                return Err(ControllerError(
-                    "new retry-3 recovery journal did not reparse exactly".to_owned(),
-                ));
-            }
-            file.seek(SeekFrom::End(0))?;
-            Ok(Self {
-                path: path.to_path_buf(),
-                file,
-                state: parsed.state,
-                recovery_commit: parsed.recovery_commit,
-                recovery_tree: parsed.recovery_tree,
-                journal_inode,
-                admission: parsed.admission,
-                terminal: None,
-            })
-        }
-
-        fn open(
-            path: &Path,
-            expected_commit: &str,
-            expected_tree: &str,
-            expected_terminal: Option<&Retry3RecoveryResultBinding>,
-        ) -> Result<Self> {
-            require_canonical_git_oid(expected_commit, "expected retry-3 recovery commit")?;
-            require_canonical_git_oid(expected_tree, "expected retry-3 recovery tree")?;
-            let mut file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .custom_flags(O_NOFOLLOW | 0x0100_0000)
-                .open(path)?;
-            require_descriptor_close_on_exec(&file, "retry-3 recovery journal")?;
-            let journal_inode = validate_retry_3_recovery_journal_file(path, &file)?;
-            let length = file.metadata()?.len();
-            let mut bytes = Vec::with_capacity(length as usize);
-            Read::by_ref(&mut file).take(32_769).read_to_end(&mut bytes)?;
-            if bytes.len() as u64 != length {
-                return Err(ControllerError(
-                    "retry-3 recovery journal bounded read changed".to_owned(),
-                ));
-            }
-            let post_read_inode = validate_retry_3_recovery_journal_file(path, &file)?;
-            if post_read_inode != journal_inode || file.metadata()?.len() != length {
-                return Err(ControllerError(
-                    "retry-3 recovery journal changed during bounded read".to_owned(),
-                ));
-            }
-            let complete_length = bytes
-                .iter()
-                .rposition(|byte| *byte == b'\n')
-                .map_or(0, |index| index + 1);
-            let complete_text = std::str::from_utf8(&bytes[..complete_length]).map_err(|_| {
-                ControllerError("retry-3 recovery journal is not UTF-8".to_owned())
-            })?;
-            let parsed = parse_retry_3_recovery_journal(complete_text, journal_inode)?;
-            if complete_length != bytes.len() {
-                let tail = &bytes[complete_length..];
-                let next = retry_3_recovery_transition_record(parsed.state, expected_terminal)?.1;
-                if tail.is_empty()
-                    || tail.contains(&b'\n')
-                    || tail.contains(&b'\r')
-                    || !next.as_bytes().starts_with(tail)
-                {
-                    return Err(ControllerError(
-                        "retry-3 recovery journal has an implausible torn transition".to_owned(),
-                    ));
-                }
-                validate_retry_3_recovery_journal_file(path, &file)?;
-                file.set_len(complete_length as u64)?;
-                file.sync_all()?;
-                let after_truncate_inode =
-                    validate_retry_3_recovery_journal_file(path, &file)?;
-                let after_truncate = file.metadata()?;
-                if after_truncate_inode != journal_inode
-                    || after_truncate.len() != complete_length as u64
-                {
-                    return Err(ControllerError(
-                        "retry-3 recovery journal identity changed during torn-tail repair"
-                            .to_owned(),
-                    ));
-                }
-            }
-            if parsed.recovery_commit != expected_commit
-                || parsed.recovery_tree != expected_tree
-            {
-                return Err(ControllerError(
-                    "retry-3 recovery journal source binding changed".to_owned(),
-                ));
-            }
-            match (parsed.terminal.as_ref(), expected_terminal) {
-                (Some(recorded), Some(expected)) if recorded == expected => {}
-                (None, Some(_)) if parsed.state == Retry3RecoveryState::LaunchArmed => {}
-                (None, None) => {}
-                _ => {
-                    return Err(ControllerError(
-                        "retry-3 recovery journal terminal/result binding changed".to_owned(),
-                    ))
-                }
-            }
-            if expected_terminal.is_some()
-                && !matches!(
-                    parsed.state,
-                    Retry3RecoveryState::LaunchArmed | Retry3RecoveryState::RecoveredV6
-                )
-            {
-                return Err(ControllerError(
-                    "retry-3 recovery result appeared before launch was durably armed".to_owned(),
-                ));
-            }
-            let final_inode = validate_retry_3_recovery_journal_file(path, &file)?;
-            let final_metadata = file.metadata()?;
-            let expected_final_length = if complete_length != bytes.len() {
-                complete_length as u64
-            } else {
-                length
-            };
-            if final_inode != journal_inode || final_metadata.len() != expected_final_length {
-                return Err(ControllerError(
-                    "retry-3 recovery journal identity changed during open".to_owned(),
-                ));
-            }
-            file.seek(SeekFrom::End(0))?;
-            Ok(Self {
-                path: path.to_path_buf(),
-                file,
-                state: parsed.state,
-                recovery_commit: parsed.recovery_commit,
-                recovery_tree: parsed.recovery_tree,
-                journal_inode,
-                admission: parsed.admission,
-                terminal: parsed.terminal,
-            })
-        }
-
-        fn record(
-            &mut self,
-            next: Retry3RecoveryState,
-            terminal: Option<&Retry3RecoveryResultBinding>,
-        ) -> Result<()> {
-            let (expected, record) = retry_3_recovery_transition_record(self.state, terminal)?;
-            if next != expected {
-                return Err(ControllerError(
-                    "retry-3 recovery journal transition is invalid".to_owned(),
-                ));
-            }
-            let before_append_inode =
-                validate_retry_3_recovery_journal_file(&self.path, &self.file)?;
-            let prior_length = self.file.metadata()?.len();
-            if before_append_inode != self.journal_inode
-                || self.file.seek(SeekFrom::End(0))? != prior_length
-            {
-                return Err(ControllerError(
-                    "retry-3 recovery journal changed before append".to_owned(),
-                ));
-            }
-            let immediate_inode =
-                validate_retry_3_recovery_journal_file(&self.path, &self.file)?;
-            if immediate_inode != self.journal_inode || self.file.metadata()?.len() != prior_length {
-                return Err(ControllerError(
-                    "retry-3 recovery journal changed immediately before append".to_owned(),
-                ));
-            }
-            if let Err(error) = self
-                .file
-                .write_all(record.as_bytes())
-                .and_then(|_| self.file.sync_all())
-            {
-                self.file.set_len(prior_length)?;
-                self.file.sync_all()?;
-                return Err(ControllerError(format!(
-                    "cannot durably append retry-3 recovery journal: {error}"
-                )));
-            }
-            validate_retry_3_recovery_journal_file(&self.path, &self.file)?;
-            self.state = expected;
-            self.terminal = terminal.cloned();
-            let reopened = Self::open(
-                &self.path,
-                &self.recovery_commit,
-                &self.recovery_tree,
-                self.terminal.as_ref(),
-            )?;
-            if reopened.state != self.state
-                || reopened.journal_inode != self.journal_inode
-                || reopened.admission != self.admission
-                || reopened.terminal != self.terminal
-            {
-                return Err(ControllerError(
-                    "retry-3 recovery journal append did not reparse exactly".to_owned(),
-                ));
-            }
-            Ok(())
-        }
-    }
-
-    fn require_terminal_retry_3_recovery_journal(
-        path: &Path,
-        expected_commit: &str,
-        expected_tree: &str,
-        expected_terminal: &Retry3RecoveryResultBinding,
-    ) -> Result<Retry3RecoveryAdmission> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(O_NOFOLLOW | 0x0100_0000)
-            .open(path)?;
-        require_descriptor_close_on_exec(&file, "terminal retry-3 recovery journal")?;
-        let inode = validate_retry_3_recovery_journal_file(path, &file)?;
-        let length = file.metadata()?.len();
-        let mut bytes = Vec::with_capacity(length as usize);
-        Read::by_ref(&mut file).take(32_769).read_to_end(&mut bytes)?;
-        let after = file.metadata()?;
-        let named_after = fs::symlink_metadata(path)?;
-        let validated_after_inode = validate_retry_3_recovery_journal_file(path, &file)?;
-        if bytes.len() as u64 != length
-            || after.ino() != inode
-            || validated_after_inode != inode
-            || after.len() != length
-            || after.dev() != named_after.dev()
-            || after.ino() != named_after.ino()
-            || after.len() != named_after.len()
-        {
-            return Err(ControllerError(
-                "terminal retry-3 recovery journal changed during read-only proof".to_owned(),
-            ));
-        }
-        let text = String::from_utf8(bytes)
-            .map_err(|_| ControllerError("terminal retry-3 journal is not UTF-8".to_owned()))?;
-        let parsed = parse_retry_3_recovery_journal(&text, inode)?;
-        if parsed.state != Retry3RecoveryState::RecoveredV6
-            || parsed.recovery_commit != expected_commit
-            || parsed.recovery_tree != expected_tree
-            || parsed.terminal.as_ref() != Some(expected_terminal)
-        {
-            return Err(ControllerError(
-                "terminal retry-3 recovery journal/result binding changed".to_owned(),
-            ));
-        }
-        Ok(parsed.admission)
-    }
-
-    fn parse_retry_3_recovery_result(text: &str) -> Result<Retry3RecoveredGeneration> {
-        if !text.ends_with('\n') {
-            return Err(ControllerError(
-                "retry-3 recovery result is not newline-terminated".to_owned(),
-            ));
-        }
-        let lines: Vec<&str> = text.lines().collect();
-        if lines.len() != 8
-            || lines[0] != "OPENSTEAMER_PAIRED_HOST_RECOVERY_RESULT_V7_RETRY_3"
-            || lines[1] != "result=recovered-v6"
-        {
-            return Err(ControllerError(
-                "retry-3 recovery result schema changed".to_owned(),
-            ));
-        }
-        let field = |index: usize, prefix: &str| -> Result<&str> {
-            lines[index].strip_prefix(prefix).ok_or_else(|| {
-                ControllerError("retry-3 recovery result field is malformed".to_owned())
-            })
-        };
-        let parse_u64 = |index: usize, prefix: &str| -> Result<u64> {
-            field(index, prefix)?
-                .parse::<u64>()
-                .map_err(|_| ControllerError("retry-3 recovery result number is malformed".to_owned()))
-        };
-        let generation = Retry3RecoveredGeneration {
-            pid: parse_positive_u32(field(2, "pid=")?, "retry-3 recovery result PID")?,
-            runs: parse_u64(3, "runs=")?,
-            process_start_sha256: field(4, "process_start_sha256=")?.to_owned(),
-            nonce: field(5, "nonce=")?.to_owned(),
-            lock_device: parse_u64(6, "lock_device=")?,
-            lock_inode: parse_u64(7, "lock_inode=")?,
-        };
-        require_canonical_lower_hex(
-            &generation.process_start_sha256,
-            64,
-            "retry-3 recovery result process-start hash",
-        )?;
-        require_canonical_lower_hex(&generation.nonce, 64, "retry-3 recovery result nonce")?;
-        if generation.runs == 0 || generation.lock_device == 0 || generation.lock_inode == 0 {
-            return Err(ControllerError(
-                "retry-3 recovery result numeric field is outside its exact domain".to_owned(),
-            ));
-        }
-        if retry_3_recovery_result_text(&generation) != text {
-            return Err(ControllerError(
-                "retry-3 recovery result did not round-trip exactly".to_owned(),
-            ));
-        }
-        Ok(generation)
-    }
-
-    fn is_plausible_retry_3_recovery_result_prefix(bytes: &[u8]) -> bool {
-        if bytes.len() > 2_048 || bytes.contains(&b'\r') || bytes.contains(&0) {
-            return false;
-        }
-        if bytes.is_empty() {
-            return true;
-        }
-        let Ok(text) = std::str::from_utf8(bytes) else {
-            return false;
-        };
-        let newline_terminated = text.ends_with('\n');
-        let mut lines: Vec<&str> = text.split('\n').collect();
-        if newline_terminated {
-            lines.pop();
-        }
-        if lines.len() > 8 || lines.is_empty() {
-            return false;
-        }
-        let fixed = [
-            "OPENSTEAMER_PAIRED_HOST_RECOVERY_RESULT_V7_RETRY_3",
-            "result=recovered-v6",
-        ];
-        let prefixes = [
-            "pid=",
-            "runs=",
-            "process_start_sha256=",
-            "nonce=",
-            "lock_device=",
-            "lock_inode=",
-        ];
-        for (index, line) in lines.iter().enumerate() {
-            let complete = newline_terminated || index + 1 < lines.len();
-            if index < fixed.len() {
-                if (complete && *line != fixed[index])
-                    || (!complete && !fixed[index].starts_with(line))
-                {
-                    return false;
-                }
-                continue;
-            }
-            let prefix = prefixes[index - fixed.len()];
-            if !complete && prefix.starts_with(line) {
-                continue;
-            }
-            let Some(value) = line.strip_prefix(prefix) else {
-                return false;
-            };
-            let hash = matches!(index, 4 | 5);
-            if hash {
-                if value.len() > 64
-                    || !value
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-                    || (complete && value.len() != 64)
-                {
-                    return false;
-                }
-            } else if value.is_empty()
-                || !value.bytes().all(|byte| byte.is_ascii_digit())
-                || (complete && value.parse::<u64>().ok().filter(|value| *value > 0).is_none())
-            {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn reset_retry_3_pending_result_before_generation_publish() -> Result<()> {
-        let pending = Path::new(RECOVERY_RETRY_3_RECOVERY_RESULT_PENDING);
-        require_path_absent(
-            Path::new(RECOVERY_RETRY_3_RECOVERY_RESULT),
-            "retry-3 final result before absent-generation pending repair",
-        )?;
-        if !path_exists_without_follow(pending)? {
-            return Ok(());
-        }
-        let expected_device = verified_data_volume_device()?;
-        let metadata_is_exact = |metadata: &fs::Metadata| {
-            metadata.file_type().is_file()
-                && !metadata.file_type().is_symlink()
-                && metadata.uid() == USER_ID
-                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
-                && metadata.nlink() == 1
-                && metadata.permissions().mode() & 0o7777 == 0o600
-                && metadata.dev() == expected_device
-                && metadata.len() <= 2_048
-                && metadata.st_flags() == 0
-        };
-        let named_before = fs::symlink_metadata(pending)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(O_NOFOLLOW | 0x0100_0000)
-            .open(pending)?;
-        require_descriptor_close_on_exec(&file, "retry-3 stale pending recovery result")?;
-        let descriptor_before = file.metadata()?;
-        if !metadata_is_exact(&named_before)
-            || !metadata_is_exact(&descriptor_before)
-            || descriptor_before.dev() != named_before.dev()
-            || descriptor_before.ino() != named_before.ino()
-            || descriptor_before.len() != named_before.len()
-        {
-            return Err(ControllerError(
-                "retry-3 stale pending result identity is unsafe".to_owned(),
-            ));
-        }
-        let mut bytes = Vec::with_capacity(descriptor_before.len() as usize);
-        Read::by_ref(&mut file).take(2_049).read_to_end(&mut bytes)?;
-        let descriptor_read = file.metadata()?;
-        let named_read = fs::symlink_metadata(pending)?;
-        if bytes.len() as u64 != descriptor_before.len()
-            || !is_plausible_retry_3_recovery_result_prefix(&bytes)
-            || !metadata_is_exact(&descriptor_read)
-            || !metadata_is_exact(&named_read)
-            || descriptor_before.dev() != descriptor_read.dev()
-            || descriptor_before.ino() != descriptor_read.ino()
-            || descriptor_before.len() != descriptor_read.len()
-            || descriptor_before.dev() != named_read.dev()
-            || descriptor_before.ino() != named_read.ino()
-            || descriptor_before.len() != named_read.len()
-        {
-            return Err(ControllerError(
-                "retry-3 stale pending result is not an exact plausible prefix".to_owned(),
-            ));
-        }
-        file.set_len(0)?;
-        file.sync_all()?;
-        fsync_parent(pending)?;
-        let descriptor_after = file.metadata()?;
-        let named_after = fs::symlink_metadata(pending)?;
-        if !metadata_is_exact(&descriptor_after)
-            || !metadata_is_exact(&named_after)
-            || descriptor_after.len() != 0
-            || named_after.len() != 0
-            || descriptor_before.dev() != descriptor_after.dev()
-            || descriptor_before.ino() != descriptor_after.ino()
-            || descriptor_before.dev() != named_after.dev()
-            || descriptor_before.ino() != named_after.ino()
-        {
-            return Err(ControllerError(
-                "retry-3 stale pending result lost identity during reset".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn read_retry_3_recovery_result(path: &Path) -> Result<Retry3RecoveryResultBinding> {
-        let expected_device = verified_data_volume_device()?;
-        let named_before = fs::symlink_metadata(path)?;
-        let metadata_is_exact = |metadata: &fs::Metadata| {
-            metadata.file_type().is_file()
-                && !metadata.file_type().is_symlink()
-                && metadata.uid() == USER_ID
-                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
-                && metadata.nlink() == 1
-                && metadata.permissions().mode() & 0o7777 == 0o600
-                && metadata.dev() == expected_device
-                && metadata.len() > 0
-                && metadata.len() <= 2_048
-                && metadata.st_flags() == 0
-        };
-        if !metadata_is_exact(&named_before) {
-            return Err(ControllerError(
-                "retry-3 recovery result metadata is unsafe".to_owned(),
-            ));
-        }
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(O_NOFOLLOW | 0x0100_0000)
-            .open(path)?;
-        require_descriptor_close_on_exec(&file, "retry-3 recovery result")?;
-        let descriptor_before = file.metadata()?;
-        if !metadata_is_exact(&descriptor_before)
-            || descriptor_before.dev() != named_before.dev()
-            || descriptor_before.ino() != named_before.ino()
-            || descriptor_before.len() != named_before.len()
-        {
-            return Err(ControllerError(
-                "retry-3 recovery result changed while opening".to_owned(),
-            ));
-        }
-        let mut bytes = Vec::with_capacity(descriptor_before.len() as usize);
-        Read::by_ref(&mut file).take(2_049).read_to_end(&mut bytes)?;
-        let descriptor_after = file.metadata()?;
-        let named_after = fs::symlink_metadata(path)?;
-        if bytes.len() as u64 != descriptor_before.len()
-            || !metadata_is_exact(&descriptor_after)
-            || !metadata_is_exact(&named_after)
-            || descriptor_before.dev() != descriptor_after.dev()
-            || descriptor_before.ino() != descriptor_after.ino()
-            || descriptor_before.len() != descriptor_after.len()
-            || descriptor_before.dev() != named_after.dev()
-            || descriptor_before.ino() != named_after.ino()
-            || descriptor_before.len() != named_after.len()
-        {
-            return Err(ControllerError(
-                "retry-3 recovery result changed during its bounded read".to_owned(),
-            ));
-        }
-        let text = String::from_utf8(bytes.clone()).map_err(|_| {
-            ControllerError("retry-3 recovery result is not UTF-8".to_owned())
-        })?;
-        Ok(Retry3RecoveryResultBinding {
-            inode: descriptor_before.ino(),
-            size: descriptor_before.len(),
-            sha256: sha256_bytes(&bytes)?,
-            generation: parse_retry_3_recovery_result(&text)?,
-        })
-    }
-
-    fn publish_retry_3_recovery_result(
-        generation: &LaunchGeneration,
-    ) -> Result<Retry3RecoveryResultBinding> {
-        let expected_generation = retry_3_recovered_generation(generation)?;
-        let expected = retry_3_recovery_result_text(&expected_generation);
-        let final_path = Path::new(RECOVERY_RETRY_3_RECOVERY_RESULT);
-        let pending = Path::new(RECOVERY_RETRY_3_RECOVERY_RESULT_PENDING);
-        match (
-            path_exists_without_follow(final_path)?,
-            path_exists_without_follow(pending)?,
-        ) {
-            (true, true) => {
-                return Err(ControllerError(
-                    "retry-3 final and pending recovery results both exist".to_owned(),
-                ))
-            }
-            (true, false) => {
-                let binding = read_retry_3_recovery_result(final_path)?;
-                if binding.generation != expected_generation {
-                    return Err(ControllerError(
-                        "retry-3 preexisting recovery result names another generation".to_owned(),
-                    ));
-                }
-                fsync_parent(final_path)?;
-                let sealed = read_retry_3_recovery_result(final_path)?;
-                if sealed != binding {
-                    return Err(ControllerError(
-                        "retry-3 preexisting recovery result changed while sealing its directory entry"
-                            .to_owned(),
-                    ));
-                }
-                return Ok(sealed);
-            }
-            _ => {}
-        }
-
-        let created = !path_exists_without_follow(pending)?;
-        let mut file = if created {
-            OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .mode(0o600)
-                .custom_flags(O_NOFOLLOW | 0x0100_0000)
-                .open(pending)?
-        } else {
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .custom_flags(O_NOFOLLOW | 0x0100_0000)
-                .open(pending)?
-        };
-        require_descriptor_close_on_exec(&file, "retry-3 pending recovery result")?;
-        let expected_device = verified_data_volume_device()?;
-        let metadata_is_exact = |metadata: &fs::Metadata| {
-            metadata.file_type().is_file()
-                && !metadata.file_type().is_symlink()
-                && metadata.uid() == USER_ID
-                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
-                && metadata.nlink() == 1
-                && metadata.permissions().mode() & 0o7777 == 0o600
-                && metadata.dev() == expected_device
-                && metadata.len() <= expected.len() as u64
-                && metadata.st_flags() == 0
-        };
-        let descriptor_before = file.metadata()?;
-        let named_before = fs::symlink_metadata(pending)?;
-        if !metadata_is_exact(&descriptor_before)
-            || !metadata_is_exact(&named_before)
-            || descriptor_before.dev() != named_before.dev()
-            || descriptor_before.ino() != named_before.ino()
-            || descriptor_before.len() != named_before.len()
-        {
-            return Err(ControllerError(
-                "retry-3 pending recovery result identity is unsafe".to_owned(),
-            ));
-        }
-        let mut current = Vec::with_capacity(descriptor_before.len() as usize);
-        Read::by_ref(&mut file)
-            .take(expected.len() as u64 + 1)
-            .read_to_end(&mut current)?;
-        if current.len() as u64 != descriptor_before.len()
-            || !expected.as_bytes().starts_with(&current)
-        {
-            return Err(ControllerError(
-                "retry-3 pending recovery result is not an exact stable prefix".to_owned(),
-            ));
-        }
-        let descriptor_read = file.metadata()?;
-        let named_read = fs::symlink_metadata(pending)?;
-        if !metadata_is_exact(&descriptor_read)
-            || !metadata_is_exact(&named_read)
-            || descriptor_read.dev() != descriptor_before.dev()
-            || descriptor_read.ino() != descriptor_before.ino()
-            || descriptor_read.len() != descriptor_before.len()
-            || descriptor_read.dev() != named_read.dev()
-            || descriptor_read.ino() != named_read.ino()
-            || descriptor_read.len() != named_read.len()
-        {
-            return Err(ControllerError(
-                "retry-3 pending recovery result changed before durable repair".to_owned(),
-            ));
-        }
-        if current != expected.as_bytes() {
-            file.set_len(0)?;
-            file.seek(SeekFrom::Start(0))?;
-            file.write_all(expected.as_bytes())?;
-            file.sync_all()?;
-        }
-        let descriptor_ready = file.metadata()?;
-        let named_ready = fs::symlink_metadata(pending)?;
-        if !metadata_is_exact(&descriptor_ready)
-            || !metadata_is_exact(&named_ready)
-            || descriptor_ready.len() != expected.len() as u64
-            || descriptor_ready.dev() != descriptor_before.dev()
-            || descriptor_ready.ino() != descriptor_before.ino()
-            || descriptor_ready.dev() != named_ready.dev()
-            || descriptor_ready.ino() != named_ready.ino()
-            || descriptor_ready.len() != named_ready.len()
-            || path_exists_without_follow(final_path)?
-        {
-            return Err(ControllerError(
-                "retry-3 pending recovery result changed before publication".to_owned(),
-            ));
-        }
-        file.sync_all()?;
-        fsync_parent(pending)?;
-        rename_exclusive(pending, final_path)?;
-        fsync_parent(final_path)?;
-        let final_named = fs::symlink_metadata(final_path)?;
-        let descriptor_after = file.metadata()?;
-        if !metadata_is_exact(&descriptor_after)
-            || !metadata_is_exact(&final_named)
-            || descriptor_after.len() != expected.len() as u64
-            || descriptor_ready.dev() != descriptor_after.dev()
-            || descriptor_ready.ino() != descriptor_after.ino()
-            || descriptor_ready.len() != descriptor_after.len()
-            || descriptor_after.dev() != final_named.dev()
-            || descriptor_after.ino() != final_named.ino()
-            || descriptor_after.len() != final_named.len()
-            || path_exists_without_follow(pending)?
-        {
-            return Err(ControllerError(
-                "retry-3 recovery result lost identity during exclusive publication".to_owned(),
-            ));
-        }
-        drop(file);
-        let binding = read_retry_3_recovery_result(final_path)?;
-        if binding.generation != expected_generation {
-            return Err(ControllerError(
-                "retry-3 published recovery result failed its generation binding".to_owned(),
-            ));
-        }
-        Ok(binding)
     }
 
     fn require_exact_retry_2_install_hold_at(path: &Path, layout: &V7Layout) -> Result<()> {
@@ -12923,270 +12914,6 @@ pub(crate) mod paired_v7 {
         Ok(())
     }
 
-    fn recover_retry_3_critical_failure(
-        repo: PathBuf,
-        authorized_commit: &str,
-        authorized_tree: &str,
-    ) -> Result<()> {
-        require_canonical_git_oid(authorized_commit, "authorized retry-3 recovery commit")?;
-        require_canonical_git_oid(authorized_tree, "authorized retry-3 recovery tree")?;
-        verify_machine_contract()?;
-        let provenance = verify_paired_v7_git_provenance(&repo, true)?;
-        require_authorized_provenance(&provenance, authorized_commit, authorized_tree)?;
-        let transaction_lock = acquire_update_transaction_lock_at(Path::new(V7_UPDATE_LOCK))?;
-        require_descriptor_close_on_exec(
-            &transaction_lock.file,
-            "retry-3 incident recovery transaction lock",
-        )?;
-        verify_committed_v6_baseline()?;
-        verify_current_baseline_app_at(Path::new(NEW_APP), true)?;
-        require_no_v7_pending_pointers()?;
-
-        let pointer_expectation = if path_exists_without_follow(Path::new(V7_ACTIVE_UPDATE))? {
-            RetryV7PointerExpectation::Present
-        } else {
-            RetryV7PointerExpectation::Absent
-        };
-        let layout =
-            require_exact_retry_3_critical_failure_evidence(pointer_expectation)?;
-        authenticate_v7_privileged_boundary()?;
-
-        let journal_path = Path::new(RECOVERY_RETRY_3_RECOVERY_JOURNAL);
-        let journal_pending_path = Path::new(RECOVERY_RETRY_3_RECOVERY_JOURNAL_PENDING);
-        let result_path = Path::new(RECOVERY_RETRY_3_RECOVERY_RESULT);
-        let result_pending = Path::new(RECOVERY_RETRY_3_RECOVERY_RESULT_PENDING);
-        let journal_exists = path_exists_without_follow(journal_path)?;
-        if journal_exists {
-            fsync_parent(journal_path)?;
-        }
-        if !journal_exists {
-            if pointer_expectation != RetryV7PointerExpectation::Present {
-                return Err(ControllerError(
-                    "retry-3 pointer retired before a durable incident recovery journal existed"
-                        .to_owned(),
-                ));
-            }
-            require_path_absent(journal_path, "retry-3 recovery journal before admission")?;
-            require_path_absent(result_path, "retry-3 recovery result before admission")?;
-            require_path_absent(result_pending, "retry-3 pending recovery result before admission")?;
-            require_path_absent(
-                &layout.evidence.join("retired-active-pointer.txt"),
-                "retry-3 retired pointer before admission",
-            )?;
-            let initial_log_modes = require_exact_retry_3_log_admission_modes()?;
-            let admitted_core_audio = prove_retry_3_offline_safe_runtime(&layout, None)?;
-            require_exact_retry_3_critical_failure_evidence(
-                RetryV7PointerExpectation::Present,
-            )?;
-            if require_exact_retry_3_log_admission_modes()? != initial_log_modes {
-                return Err(ControllerError(
-                    "retry-3 recovery log modes changed during initial admission".to_owned(),
-                ));
-            }
-            prove_retry_3_offline_safe_runtime(&layout, Some(admitted_core_audio))?;
-            Retry3RecoveryJournal::create_or_publish(
-                journal_path,
-                journal_pending_path,
-                authorized_commit,
-                authorized_tree,
-                Retry3RecoveryAdmission {
-                    core_audio: admitted_core_audio,
-                    log_modes: initial_log_modes,
-                },
-            )?;
-            require_exact_retry_3_critical_failure_evidence(
-                RetryV7PointerExpectation::Present,
-            )?;
-        }
-
-        let existing_result = if path_exists_without_follow(result_path)? {
-            Some(read_retry_3_recovery_result(result_path)?)
-        } else {
-            None
-        };
-
-        if pointer_expectation == RetryV7PointerExpectation::Absent {
-            let terminal = existing_result.as_ref().ok_or_else(|| {
-                ControllerError(
-                    "retry-3 pointer retired without its exact recovery result".to_owned(),
-                )
-            })?;
-            require_path_absent(result_pending, "terminal retry-3 pending recovery result")?;
-            let admission = require_terminal_retry_3_recovery_journal(
-                journal_path,
-                authorized_commit,
-                authorized_tree,
-                terminal,
-            )?;
-            let generation = wait_for_paired_v7_launch_generation(Duration::from_secs(45))?;
-            require_retry_3_generation_matches(&generation, &terminal.generation)?;
-            prove_retry_3_online_safe_runtime(
-                &layout,
-                &terminal.generation,
-                admission.core_audio,
-            )?;
-            require_exact_retry_3_critical_failure_evidence(
-                RetryV7PointerExpectation::Absent,
-            )?;
-            println!(
-                "PAIRED_V7_RETRY_3_RECOVERED_V6_VERIFIED evidence={} pid={} original_failure=immutable root_tombstones=retained pairing=preserved",
-                layout.evidence.display(),
-                generation.pid,
-            );
-            return Ok(());
-        }
-
-        let mut recovery_journal = Retry3RecoveryJournal::open(
-            journal_path,
-            authorized_commit,
-            authorized_tree,
-            existing_result.as_ref(),
-        )?;
-        let admitted_core_audio = recovery_journal.admission.core_audio;
-        if recovery_journal.state == Retry3RecoveryState::SafeRuntimeProven {
-            require_path_absent(result_path, "retry-3 result before log repair")?;
-            require_path_absent(result_pending, "retry-3 pending result before log repair")?;
-            require_retry_3_log_resume_modes(recovery_journal.admission.log_modes)?;
-            prove_retry_3_offline_safe_runtime(&layout, Some(admitted_core_audio))?;
-            repair_exact_retry_3_logs()?;
-            require_exact_retry_3_logs(0o600)?;
-            prove_retry_3_offline_safe_runtime(&layout, Some(admitted_core_audio))?;
-            require_exact_retry_3_critical_failure_evidence(
-                RetryV7PointerExpectation::Present,
-            )?;
-            recovery_journal.record(Retry3RecoveryState::LogsRepaired, None)?;
-        }
-        if recovery_journal.state == Retry3RecoveryState::LogsRepaired {
-            require_path_absent(result_path, "retry-3 result before launch intent")?;
-            require_path_absent(result_pending, "retry-3 pending result before launch intent")?;
-            require_exact_retry_3_logs(0o600)?;
-            prove_retry_3_offline_safe_runtime(&layout, Some(admitted_core_audio))?;
-            require_exact_retry_3_logs(0o600)?;
-            let checkpoint = capture_log_checkpoint()?;
-            if checkpoint.offset != RECOVERY_RETRY_3_STDOUT_SIZE
-                || checkpoint.device != RETAINED_ROOT_V7_NORMAL_V2_DEVICE
-                || checkpoint.inode != RECOVERY_RETRY_3_STDOUT_INODE
-            {
-                return Err(ControllerError(
-                    "retry-3 log checkpoint differs from the exact repaired incident log"
-                        .to_owned(),
-                ));
-            }
-            require_exact_retry_3_critical_failure_evidence(
-                RetryV7PointerExpectation::Present,
-            )?;
-            recovery_journal.record(Retry3RecoveryState::LaunchArmed, None)?;
-        }
-        if recovery_journal.state == Retry3RecoveryState::LaunchArmed {
-            let mut generation = if let Some(binding) = existing_result.as_ref() {
-                let generation = wait_for_paired_v7_launch_generation(Duration::from_secs(45))?;
-                require_retry_3_generation_matches(&generation, &binding.generation)?;
-                prove_retry_3_online_safe_runtime(
-                    &layout,
-                    &binding.generation,
-                    admitted_core_audio,
-                )?
-            } else {
-                launch_or_resume_retry_3_v6(&layout, admitted_core_audio)?
-            };
-            if existing_result.is_none() {
-                reset_retry_3_pending_result_before_generation_publish()?;
-                require_exact_retry_3_critical_failure_evidence(
-                    RetryV7PointerExpectation::Present,
-                )?;
-                let expected_generation = retry_3_recovered_generation(&generation)?;
-                generation = prove_retry_3_online_safe_runtime(
-                    &layout,
-                    &expected_generation,
-                    admitted_core_audio,
-                )?;
-            }
-            let binding = publish_retry_3_recovery_result(&generation)?;
-            require_retry_3_generation_matches(&generation, &binding.generation)?;
-            require_path_absent(result_pending, "published retry-3 pending recovery result")?;
-            require_exact_retry_3_critical_failure_evidence(
-                RetryV7PointerExpectation::Present,
-            )?;
-            prove_retry_3_online_safe_runtime(
-                &layout,
-                &binding.generation,
-                admitted_core_audio,
-            )?;
-            recovery_journal.record(Retry3RecoveryState::RecoveredV6, Some(&binding))?;
-        }
-
-        if recovery_journal.state != Retry3RecoveryState::RecoveredV6 {
-            return Err(ControllerError(
-                "retry-3 recovery did not reach its exact terminal state".to_owned(),
-            ));
-        }
-        let terminal = recovery_journal.terminal.clone().ok_or_else(|| {
-            ControllerError("retry-3 terminal recovery journal lacks a result binding".to_owned())
-        })?;
-        let result = read_retry_3_recovery_result(result_path)?;
-        if result != terminal {
-            return Err(ControllerError(
-                "retry-3 terminal journal and recovery result disagree".to_owned(),
-            ));
-        }
-        require_path_absent(result_pending, "terminal retry-3 pending recovery result")?;
-        let generation = wait_for_paired_v7_launch_generation(Duration::from_secs(45))?;
-        require_retry_3_generation_matches(&generation, &terminal.generation)?;
-        prove_retry_3_online_safe_runtime(
-            &layout,
-            &terminal.generation,
-            admitted_core_audio,
-        )?;
-        require_exact_retry_3_critical_failure_evidence(
-            RetryV7PointerExpectation::Present,
-        )?;
-        let open_admission = recovery_journal.admission;
-        drop(recovery_journal);
-        let terminal_admission = require_terminal_retry_3_recovery_journal(
-            journal_path,
-            authorized_commit,
-            authorized_tree,
-            &terminal,
-        )?;
-        if terminal_admission != open_admission {
-            return Err(ControllerError(
-                "retry-3 terminal recovery admission changed before pointer retirement"
-                    .to_owned(),
-            ));
-        }
-        retire_v7_active_pointer(&layout)?;
-        require_exact_retry_3_critical_failure_evidence(
-            RetryV7PointerExpectation::Absent,
-        )?;
-        let retired_admission = require_terminal_retry_3_recovery_journal(
-            journal_path,
-            authorized_commit,
-            authorized_tree,
-            &terminal,
-        )?;
-        if retired_admission != terminal_admission {
-            return Err(ControllerError(
-                "retry-3 terminal recovery admission changed after pointer retirement".to_owned(),
-            ));
-        }
-        if read_retry_3_recovery_result(result_path)? != terminal {
-            return Err(ControllerError(
-                "retry-3 recovery result changed after pointer retirement".to_owned(),
-            ));
-        }
-        prove_retry_3_online_safe_runtime(
-            &layout,
-            &terminal.generation,
-            retired_admission.core_audio,
-        )?;
-        println!(
-            "PAIRED_V7_RETRY_3_RECOVERED_V6 evidence={} pid={} original_failure=immutable root_tombstones=retained pairing=preserved",
-            layout.evidence.display(),
-            generation.pid,
-        );
-        Ok(())
-    }
-
     fn execute_paired_v7_update(
         repo: PathBuf,
         authorized_commit: &str,
@@ -13208,7 +12935,10 @@ pub(crate) mod paired_v7 {
         let initial_generation = verify_paired_v7_runtime()?;
         verify_isolated_pairing_items_present()?;
         require_v7_retry_admission_ready()?;
-        require_retry_3_root_admission_via_sudo()?;
+        require_retry_4_root_admission_via_sudo()?;
+        require_v7_retry_admission_ready()?;
+        authenticate_v7_privileged_boundary()?;
+        let prepared_root_controller = bootstrap_root_owned_v7_controller_for_prepare()?;
         require_v7_retry_admission_ready()?;
         require_available_bytes(
             Path::new(PRIVATE_ROOT),
@@ -13218,7 +12948,7 @@ pub(crate) mod paired_v7 {
 
         let nonce = new_nonce()?;
         let evidence = PathBuf::from(V7_UPDATE_ROOT).join(format!(
-            "paired-v7-update-retry-3-{}-{}-{}",
+            "paired-v7-update-retry-4-{}-{}-{}",
             unix_seconds()?,
             std::process::id(),
             nonce
@@ -13242,6 +12972,7 @@ pub(crate) mod paired_v7 {
             &provenance,
             &release_cycle,
             &initial_generation,
+            &prepared_root_controller,
             authorized_commit,
             authorized_tree,
         );
@@ -13334,6 +13065,7 @@ pub(crate) mod paired_v7 {
         provenance: &Provenance,
         release_cycle: &ReleaseCycleEvidence,
         initial_generation: &LaunchGeneration,
+        prepared_root_controller: &PreparedRootV3Identity,
         authorized_commit: &str,
         authorized_tree: &str,
     ) -> Result<()> {
@@ -13414,7 +13146,7 @@ pub(crate) mod paired_v7 {
             Some(&layout.nonce),
             RetryV7PointerExpectation::Absent,
         )?;
-        let mut broker = RootDriverBrokerClient::start(layout)?;
+        let mut broker = RootDriverBrokerClient::start(layout, prepared_root_controller)?;
         journal.record(V7State::DriverPrepared, &[])?;
 
         require_current_retry_v7_layout(
@@ -14297,9 +14029,10 @@ pub(crate) mod paired_v7 {
                 require_canonical_release_path(path, "candidate-to-release allowlist").is_err()
                     || !RELEASE_ONLY_PATH_ALLOWLIST.contains(&path.as_str())
             })
-            || REQUIRED_RELEASE_DIFF_PATHS
+            || changed_paths
                 .iter()
-                .any(|required| !changed_paths.iter().any(|path| path == required))
+                .map(String::as_str)
+                .ne(REQUIRED_RELEASE_DIFF_PATHS.iter().copied())
         {
             return Err(ControllerError(
                 "candidate-to-release path set is not the exact reviewed release-only allowlist"
@@ -14450,6 +14183,14 @@ pub(crate) mod paired_v7 {
         let changed_paths = release_changed_paths(repo, &candidate.commit, &provenance.commit)?;
         let source_inputs = canonical_functional_inputs_from_git(repo, &candidate.commit)?;
         let release_inputs = canonical_functional_inputs_from_git(repo, &provenance.commit)?;
+        if source_inputs.len() != EXPECTED_FUNCTIONAL_INPUT_COUNT
+            || release_inputs.len() != EXPECTED_FUNCTIONAL_INPUT_COUNT
+        {
+            return Err(ControllerError(
+                "canonical functional-input manifest count differs from its reviewed release pin"
+                    .to_owned(),
+            ));
+        }
         let functional_inputs_sha256 = validate_release_cycle_evidence(
             &candidate,
             &provenance.commit,
@@ -14915,7 +14656,7 @@ pub(crate) mod paired_v7 {
             r#"import json,sys
 v=json.load(open(sys.argv[1],encoding='utf-8'))
 assert v['schema']=='opensteamer.virtual-microphone-mirror-loopback.v2'
-assert v['status']=='passed' and v['mode']=='real' and v['realQueuePathImplemented'] is True
+assert v['status']=='passed' and v['mode']=='real-dual-audioqueue' and v['realQueuePathImplemented'] is True
 assert v['lifecycle']['requiredStartOrders']==['visible-first','hidden-first']
 assert [x['startOrder'] for x in v['lifecycle']['cycles']]==['visible-first','hidden-first']
 assert all(x['quiescentBefore'] and x['quiescentAfter'] and x['nearZeroSharedClock'] and x['timelinesAdvanced'] and x['queuesStoppedAndDisposed'] for x in v['lifecycle']['cycles'])
@@ -17382,13 +17123,6 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
             ],
             vec![
                 executable.clone(),
-                V7_RECOVER_RETRY_3_MODE.to_owned(),
-                repo.clone(),
-                authorized_commit.clone(),
-                authorized_tree.clone(),
-            ],
-            vec![
-                executable.clone(),
                 V7_ROLLBACK_MODE.to_owned(),
                 repo.clone(),
             ],
@@ -17407,14 +17141,10 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
                 parse_v7_command(&allowed[2]),
                 Ok(V7Command::RecoverRetry2 { .. })
             )
+            || !matches!(parse_v7_command(&allowed[3]), Ok(V7Command::Rollback(_)))
+            || !matches!(parse_v7_command(&allowed[4]), Ok(V7Command::SelfTest))
             || !matches!(
-                parse_v7_command(&allowed[3]),
-                Ok(V7Command::RecoverRetry3 { .. })
-            )
-            || !matches!(parse_v7_command(&allowed[4]), Ok(V7Command::Rollback(_)))
-            || !matches!(parse_v7_command(&allowed[5]), Ok(V7Command::SelfTest))
-            || !matches!(
-                parse_v7_command(&allowed[6]),
+                parse_v7_command(&allowed[5]),
                 Ok(V7Command::ProbeLock { .. })
             )
         {
@@ -17429,9 +17159,10 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
         let staged_driver = format!("{staged_root}/{PRODUCT_DRIVER_NAME}");
         let staged_package = format!("{staged_root}/OpensteamerVirtualMicrophone-v7.pkg");
         let retry_evidence =
-            format!("{V7_UPDATE_ROOT}/paired-v7-update-retry-3-1-41-{nonce}");
+            format!("{V7_UPDATE_ROOT}/paired-v7-update-retry-4-1-41-{nonce}");
         let parent_start_sha256 = "e".repeat(64);
         let internal = [
+            vec![executable.clone(), ROOT_V7_CONTROLLER_PUBLISH_MODE.to_owned()],
             vec![
                 executable.clone(),
                 ROOT_V7_CONTROLLER_BOOTSTRAP_MODE.to_owned(),
@@ -17470,21 +17201,24 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
         ];
         if !matches!(
             parse_v7_command(&internal[0]),
-            Ok(V7Command::RootControllerBootstrap)
+            Ok(V7Command::RootControllerPublish)
         ) || !matches!(
             parse_v7_command(&internal[1]),
-            Ok(V7Command::RootRecoveryAttest)
+            Ok(V7Command::RootControllerBootstrap)
         ) || !matches!(
             parse_v7_command(&internal[2]),
-            Ok(V7Command::RootDriverBroker { .. })
+            Ok(V7Command::RootRecoveryAttest)
         ) || !matches!(
             parse_v7_command(&internal[3]),
-            Ok(V7Command::UIDDriverBrokerProxy { .. })
+            Ok(V7Command::RootDriverBroker { .. })
         ) || !matches!(
             parse_v7_command(&internal[4]),
-            Ok(V7Command::RootDriverRestoreBroker { .. })
+            Ok(V7Command::UIDDriverBrokerProxy { .. })
         ) || !matches!(
             parse_v7_command(&internal[5]),
+            Ok(V7Command::RootDriverRestoreBroker { .. })
+        ) || !matches!(
+            parse_v7_command(&internal[6]),
             Ok(V7Command::UIDDriverRestoreProxy { .. })
         ) {
             return Err(ControllerError(
@@ -18264,16 +17998,15 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
             ));
         }
 
-        let mut extra_path = changed_paths.clone();
-        extra_path.push("macOS/Sources/CaptureServer/main.swift".to_owned());
-        extra_path.sort();
+        let mut missing_path = changed_paths.clone();
+        missing_path.remove(0);
         if validate_release_cycle_evidence(
             &candidate,
             &release_commit,
             &release_tree,
             &candidate.tree,
             true,
-            &extra_path,
+            &missing_path,
             &source_inputs,
             &release_inputs,
             &expected,
@@ -18281,7 +18014,28 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
         .is_ok()
         {
             return Err(ControllerError(
-                "release-cycle extra-diff-path mutant was accepted".to_owned(),
+                "release-cycle missing-diff-path mutant was accepted".to_owned(),
+            ));
+        }
+
+        let mut allowlisted_extra_path = changed_paths.clone();
+        allowlisted_extra_path.push("README.md".to_owned());
+        allowlisted_extra_path.sort();
+        if validate_release_cycle_evidence(
+            &candidate,
+            &release_commit,
+            &release_tree,
+            &candidate.tree,
+            true,
+            &allowlisted_extra_path,
+            &source_inputs,
+            &release_inputs,
+            &expected,
+        )
+        .is_ok()
+        {
+            return Err(ControllerError(
+                "release-cycle allowlisted extra-diff-path mutant was accepted".to_owned(),
             ));
         }
 
