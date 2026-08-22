@@ -110,6 +110,16 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             "if mirror_source.file_name().and_then(|name| name.to_str())",
             "!= Some(MIRROR_SOURCE_BASENAME)",
         ]
+        let guardianValidationTokens = [
+            "let guardian_source = require_exported_pinned_file(",
+            "\"macOS/VirtualAudioDriver/Probes/V7DefaultRouteGuardian.swift\"",
+            "EXPECTED_DEFAULT_ROUTE_GUARDIAN_SOURCE_SHA256,",
+            "const GUARDIAN_SOURCE_BASENAME: &str = \"V7DefaultRouteGuardian.swift\";",
+            "let guardian_source_parent = guardian_source.parent().ok_or_else(",
+            "require_directory(guardian_source_parent, 0o700)?;",
+            "if guardian_source.file_name().and_then(|name| name.to_str())",
+            "!= Some(GUARDIAN_SOURCE_BASENAME)",
+        ]
         let compileClosureTokens = [
             "let compile_swift = |source_argument: &str,",
             "source_directory: Option<&Path>,",
@@ -169,20 +179,25 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             "\"-framework\",",
             "\"CoreAudio\",",
         ]
+        let guardianCompileTokens = [
+            "compile_swift(",
+            "GUARDIAN_SOURCE_BASENAME,",
+            "Some(guardian_source_parent),",
+            "&layout.default_route_guardian,",
+            "&[],",
+        ]
         return containsOrdered(validationTokens, in: build)
+            && containsOrdered(guardianValidationTokens, in: build)
             && containsOrdered(compileClosureTokens, in: build)
             && build.contains("\"-O\",")
             && !build.contains("\"-Onone\",")
             && containsOrdered(mirrorCompileTokens, in: build)
             && !build.contains("path_text(&mirror_source)?")
-            && containsOrdered(
-                [
-                    "compile_swift(\n            path_text(&guardian_source)?,",
-                    "None,",
-                    "&layout.default_route_guardian,",
-                    "&[],",
-                ],
-                in: build
+            && containsOrdered(guardianCompileTokens, in: build)
+            && !build.contains("path_text(&guardian_source)?")
+            && controller.contains(
+                "const EXPECTED_DEFAULT_ROUTE_GUARDIAN_BINARY_SHA256: &str =\n"
+                    + "        \"307136582f85087ab7f8b846a49b428de9fb87d2726071e7e3ea4b3112d90b8b\";"
             )
             && build.components(separatedBy: "-disable-sil-perf-optzns").count - 1 == 1
             && build.components(separatedBy: "-disable-incremental-llvm-codegen").count - 1 == 1
@@ -926,7 +941,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         }
 
         let launcherTokens = [
-            "EXPECTED_BINARY_SHA256='8d58bdee98d18620b82c84b8f37023839f9608acae4fd4a6247e1712105b0278'",
+            "EXPECTED_BINARY_SHA256='3ab723168c7dfd3ae86502998fd63462a306dbfe10faca46faca8e49250326c0'",
             "CONTROLLER_BINARY_SHA256=$(/usr/bin/shasum -a 256 \"$CONTROLLER\"",
             "[ \"$CONTROLLER_BINARY_SHA256\" = \"$EXPECTED_BINARY_SHA256\" ]",
             "compiled paired-v7 controller differs from the reviewed binary hash",
@@ -1182,6 +1197,1098 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             && containsOrdered(v6Tokens, in: v6Verification)
     }
 
+    private func hasEvidencePreservingRetryNamespaceContract(_ controller: String) -> Bool {
+        let retainedRoot =
+            #"/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7"#
+        let retryPointer =
+            #"/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-1"#
+        let firstAttemptPointer =
+            #"/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7"#
+        let retainedName =
+            "paired-v7-update-1787367704-92913-bba21548-458c-4d31-bd0a-eccdb282c02a"
+        let retainedPath = retainedRoot + "/" + retainedName
+        guard
+            controller.contains(
+                "const V7_UPDATE_ROOT: &str =\n        \"" + retainedRoot + "\";"
+            ),
+            controller.contains(
+                "const V7_ACTIVE_UPDATE: &str =\n        \"" + retryPointer + "\";"
+            ),
+            controller.contains(
+                "const FIRST_ATTEMPT_V7_ACTIVE_UPDATE: &str =\n        \""
+                    + firstAttemptPointer + "\";"
+            ),
+            controller.contains(
+                "const RETAINED_FAILED_V7_ATTEMPT_NAME: &str =\n        \""
+                    + retainedName + "\";"
+            ),
+            controller.contains(
+                "const RETAINED_FAILED_V7_ATTEMPT: &str =\n        \""
+                    + retainedPath + "\";"
+            ),
+            !controller.contains("paired-host-updates-v7-retry-1"),
+            let singleChild = try? functionBody(
+                controller,
+                beginningWith: "fn require_exact_single_private_directory_child_at(",
+                endingBefore: "fn require_exact_retained_file("
+            ),
+            let exactFile = try? functionBody(
+                controller,
+                beginningWith: "fn require_exact_retained_file(",
+                endingBefore: "fn require_exact_retained_failure_file("
+            ),
+            let exactFailureFile = try? functionBody(
+                controller,
+                beginningWith: "fn require_exact_retained_failure_file(",
+                endingBefore: "fn require_exact_retained_empty_directory("
+            ),
+            let emptyDirectory = try? functionBody(
+                controller,
+                beginningWith: "fn require_exact_retained_empty_directory(",
+                endingBefore: "fn require_exact_retained_probe_directory("
+            ),
+            let probes = try? functionBody(
+                controller,
+                beginningWith: "fn require_exact_retained_probe_directory(",
+                endingBefore: "fn require_no_v7_pending_pointers()"
+            ),
+            let pendingScan = try? functionBody(
+                controller,
+                beginningWith: "fn require_no_v7_pending_pointers()",
+                endingBefore: "fn require_exact_retained_v7_top_level("
+            ),
+            let topLevel = try? functionBody(
+                controller,
+                beginningWith: "fn require_exact_retained_v7_top_level(",
+                endingBefore: "fn require_exact_retained_v7_evidence("
+            ),
+            let retainedEvidence = try? functionBody(
+                controller,
+                beginningWith: "fn require_exact_retained_v7_evidence(",
+                endingBefore: "fn require_v7_retry_admission_ready()"
+            ),
+            let admission = try? functionBody(
+                controller,
+                beginningWith: "fn require_v7_retry_admission_ready()",
+                endingBefore: "enum RetryV7PointerExpectation"
+            ),
+            let rootPair = try? functionBody(
+                controller,
+                beginningWith: "fn require_exact_v7_root_pair(",
+                endingBefore: "fn require_retry_v7_pointer_expectation("
+            ),
+            let pointerExpectation = try? functionBody(
+                controller,
+                beginningWith: "fn require_retry_v7_pointer_expectation(",
+                endingBefore: "fn require_current_retry_v7_layout("
+            ),
+            let currentRetry = try? functionBody(
+                controller,
+                beginningWith: "fn require_current_retry_v7_layout(",
+                endingBefore: "fn execute_paired_v7_update("
+            ),
+            let main = try? functionBody(
+                controller,
+                beginningWith: "fn paired_v7_real_main()",
+                endingBefore: "fn parse_v7_command("
+            ),
+            let parseCommand = try? functionBody(
+                controller,
+                beginningWith: "fn parse_v7_command(",
+                endingBefore: "fn require_canonical_git_oid("
+            ),
+            let execute = try? functionBody(
+                controller,
+                beginningWith: "fn execute_paired_v7_update(",
+                endingBefore: "fn perform_paired_v7_update("
+            ),
+            let perform = try? functionBody(
+                controller,
+                beginningWith: "fn perform_paired_v7_update(",
+                endingBefore: "fn rollback_existing_paired_v7_update("
+            ),
+            let pendingLeafPID = try? functionBody(
+                controller,
+                beginningWith: "fn require_retry_v7_leaf_main_pid(",
+                endingBefore: "fn open_exact_retry_v7_pending_pointer("
+            ),
+            let pendingFile = try? functionBody(
+                controller,
+                beginningWith: "fn open_exact_retry_v7_pending_pointer(",
+                endingBefore: "fn retire_exact_retry_v7_pending_pointer_after_parent_crash("
+            ),
+            let pendingRecovery = try? functionBody(
+                controller,
+                beginningWith: "fn retire_exact_retry_v7_pending_pointer_after_parent_crash(",
+                endingBefore: "fn uid_proxy_complete_host_crash_rollback("
+            ),
+            let crashRecovery = try? functionBody(
+                controller,
+                beginningWith: "fn uid_proxy_complete_host_crash_rollback(",
+                endingBefore: "fn uid501_driver_broker_proxy("
+            ),
+            let restoreLayout = try? functionBody(
+                controller,
+                beginningWith: "fn existing_v7_layout_for_restore_proxy(",
+                endingBefore: "fn uid_restore_proxy_abort("
+            ),
+            let restoreProxy = try? functionBody(
+                controller,
+                beginningWith: "fn uid501_driver_restore_proxy(",
+                endingBefore: "struct RootExistingDriverRestoreClient"
+            ),
+            let restoreClient = try? functionBody(
+                controller,
+                beginningWith: "impl RootExistingDriverRestoreClient",
+                endingBefore: "impl Drop for RootExistingDriverRestoreClient"
+            ),
+            let pointerTokens = try? functionBody(
+                controller,
+                beginningWith: "impl RetryV7PointerExpectation",
+                endingBefore: "fn require_exact_v7_root_pair("
+            ),
+            let rollback = try? functionBody(
+                controller,
+                beginningWith: "fn rollback_existing_paired_v7_update(",
+                endingBefore: "fn rollback_to_current_baseline("
+            ),
+            let rollbackBaseline = try? functionBody(
+                controller,
+                beginningWith: "fn rollback_to_current_baseline(",
+                endingBefore: "fn v7_layout_from_existing("
+            ),
+            let pointerOperations = try? functionBody(
+                controller,
+                beginningWith: "fn publish_v7_active_pointer(",
+                endingBefore: "fn path_exists_without_follow("
+            )
+        else {
+            return false
+        }
+        let exactPins = [
+            "active-paired-host-update-v7.pending-",
+            "active-paired-host-update-v7-retry-1.pending-",
+            "const RETAINED_FAILED_V7_ROOT_INODE: u64 = 27_737_655;",
+            "const RETAINED_FAILED_V7_ATTEMPT_INODE: u64 = 27_737_656;",
+            "const RETAINED_FAILED_V7_RESULT_INODE: u64 = 27_744_003;",
+            "a2c6cc1df53d424a97cf6aca55672b7eeb39a6d528aa63315c1e878ab429adc4",
+            "result=failed-before-stop\\ndiagnostic=required file has unsafe type/owner/link-count/mode:",
+            "probes/physical-virtual-microphone-probe\\n\";",
+            "const RETAINED_FAILED_V7_JOURNAL_INODE: u64 = 27_737_659;",
+            "cdc94d9d88b6e12e41f485c217f9f88bbfc5621f226079501ee94b8512b80c3a",
+            "STATE SOURCE_EXPORTED commit=1ec63de7b4f6721cf7b04b7445f54f0e33f8b3a0 tree=c343c0bac2d77036e7f3a78dacc3cbf48e83b7ee initial_pid=873",
+            "const RETAINED_FAILED_V7_PROVENANCE_INODE: u64 = 27_738_087;",
+            "b2205b990a7dc7773a8f65730179566a91999315e6769112b682070d3fbb7dc6",
+            "functional_source_commit=7beb049226ada83e97afba3e60089469d0eeeef6",
+            "functional_source_tree=60e2df01afe1b4c09362b8e1b55efa709f23a748",
+            "authorized_release_commit=1ec63de7b4f6721cf7b04b7445f54f0e33f8b3a0",
+            "authorized_release_tree=c343c0bac2d77036e7f3a78dacc3cbf48e83b7ee",
+            "upstream=origin/agent/auto-select-iphone-microphone",
+            "remote=https://github.com/ahmedelami/opensteamer.git",
+            "functional_input_evidence_sha256=73a01a709f6a78b768696ac4105128a6b22de5ae3a46512980b8d77ea6370967",
+            "source_archive_sha256=11d5a102b43e46856bd3b8a055e026bbc7a8c04365ad28cadb711eb4ac7de74d",
+            "/Applications/.opensteamer-paired-v7-install-bba21548-458c-4d31-bd0a-eccdb282c02a",
+            "const RETAINED_FAILED_V7_SOURCE_TAR_INODE: u64 = 27_737_662;",
+            "const RETAINED_FAILED_V7_SOURCE_TAR_SIZE: u64 = 12_584_960;",
+            "11d5a102b43e46856bd3b8a055e026bbc7a8c04365ad28cadb711eb4ac7de74d",
+            "const RETAINED_FAILED_V7_FUNCTIONAL_INPUTS_INODE: u64 = 27_738_086;",
+            "const RETAINED_FAILED_V7_FUNCTIONAL_INPUTS_SIZE: u64 = 22_759;",
+            "73a01a709f6a78b768696ac4105128a6b22de5ae3a46512980b8d77ea6370967",
+            "const RETAINED_FAILED_V7_INSTALL_HOLD_NAME_INODE: u64 = 27_737_660;",
+            "const RETAINED_FAILED_V7_INSTALL_HOLD_NAME_SIZE: u64 = 82;",
+            "faab67bc8d4008d4d01734876654c7935e7aaf3af98610402c7927f80d699e28",
+            "const RETAINED_FAILED_V7_PROBES_INODE: u64 = 27_743_975;",
+            "const RETAINED_FAILED_V7_PUBLIC_PROBE_INODE: u64 = 27_743_999;",
+            "const RETAINED_FAILED_V7_PUBLIC_PROBE_SIZE: u64 = 154_912;",
+            "0ec9e1a0cc5f253cc569134ce2be024a7f3ae6ad211fa7d20fe6436c0bac84c8",
+            "const RETAINED_FAILED_V7_GUARDIAN_INODE: u64 = 27_743_985;",
+            "const RETAINED_FAILED_V7_GUARDIAN_SIZE: u64 = 286_968;",
+            "a59c39bfc198546729a430e7cdbfd19d982e30697c7e67e3a4bd72ca49304e1e",
+            "const RETAINED_FAILED_V7_MIRROR_PROBE_INODE: u64 = 27_743_981;",
+            "const RETAINED_FAILED_V7_MIRROR_PROBE_SIZE: u64 = 1_096_944;",
+            "13f6209ebb6a388f296c62ae4cfa5ce153b24e8a78d0ef45091b0aa30bc27b4b",
+            "const RETAINED_FAILED_V7_FAILED_NEW_INODE: u64 = 27_737_658;",
+            "const RETAINED_FAILED_V7_ROLLBACK_CURRENT_INODE: u64 = 27_737_657;",
+        ]
+        let singleChildTokens = [
+            "expected_name.is_empty() || expected_name.contains('/')",
+            "require_directory(root, 0o700)?;",
+            "let root_before = fs::symlink_metadata(root)?;",
+            "let mut entries = fs::read_dir(root)",
+            "let entry = entries.next().transpose()?.ok_or_else(",
+            "if entries.next().transpose()?.is_some()",
+            "if entry.file_name().to_str() != Some(expected_name)",
+            "let expected = root.join(expected_name);",
+            "entry.path().as_os_str() != expected.as_os_str()",
+            "require_directory(&expected, 0o700)?;",
+            "let root_after = fs::symlink_metadata(root)?;",
+            "root_before.dev() != root_after.dev()",
+            "root_before.ino() != root_after.ino()",
+            "Ok(expected)",
+        ]
+        let exactFileTokens = [
+            "expected_mode: u32,",
+            "expected_length: u64,",
+            "expected_length > 16 * 1_024 * 1_024",
+            "metadata.file_type().is_file()",
+            "!metadata.file_type().is_symlink()",
+            "metadata.uid() == USER_ID",
+            "metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID",
+            "metadata.nlink() == 1",
+            "metadata.permissions().mode() & 0o7777 == expected_mode",
+            "metadata.dev() == expected_device",
+            "metadata.ino() == expected_inode",
+            "metadata.len() == expected_length",
+            "metadata.st_flags() == 0",
+            "let named_before = fs::symlink_metadata(path)?;",
+            "let mut file = OpenOptions::new()",
+            ".read(true)",
+            ".custom_flags(O_NOFOLLOW)",
+            ".open(path)?;",
+            "let descriptor_before = file.metadata()?;",
+            "descriptor_before.dev() != named_before.dev()",
+            "descriptor_before.ino() != named_before.ino()",
+            "descriptor_before.len() != named_before.len()",
+            "Read::by_ref(&mut file)",
+            ".take(expected_length + 1)",
+            "let descriptor_after = file.metadata()?;",
+            "let named_after = fs::symlink_metadata(path)?;",
+            "bytes.len() as u64 != expected_length",
+            "sha256_bytes(&bytes)? != expected_sha256",
+            "descriptor_before.dev() != descriptor_after.dev()",
+            "descriptor_before.ino() != descriptor_after.ino()",
+            "descriptor_before.len() != descriptor_after.len()",
+            "descriptor_before.dev() != named_after.dev()",
+            "descriptor_before.ino() != named_after.ino()",
+            "descriptor_before.len() != named_after.len()",
+        ]
+        let retainedEvidenceTokens = [
+            "let root = Path::new(V7_UPDATE_ROOT);",
+            "let retained = Path::new(RETAINED_FAILED_V7_ATTEMPT);",
+            "retained.parent().and_then(Path::to_str) != Some(V7_UPDATE_ROOT)",
+            "let root_before = fs::symlink_metadata(root)?;",
+            "let retained_before = fs::symlink_metadata(retained)?;",
+            "Path::new(RETAINED_FAILED_V7_INSTALL_HOLD),",
+            #"&retained.join("rollback-reserve.bin"),"#,
+            #"&retained.join("driver-transaction-record.txt"),"#,
+            "require_exact_retained_v7_top_level(retained)?;",
+            #"&retained.join("result.txt"),"#,
+            "RETAINED_FAILED_V7_RESULT_INODE,",
+            #"&retained.join("journal.log"),"#,
+            "RETAINED_FAILED_V7_JOURNAL_INODE,",
+            #"&retained.join("provenance.txt"),"#,
+            "RETAINED_FAILED_V7_PROVENANCE_INODE,",
+            #"&retained.join("source.tar"),"#,
+            "RETAINED_FAILED_V7_SOURCE_TAR_INODE,",
+            #"&retained.join("functional-inputs.txt"),"#,
+            "RETAINED_FAILED_V7_FUNCTIONAL_INPUTS_INODE,",
+            #"&retained.join("install-hold-name.txt"),"#,
+            "RETAINED_FAILED_V7_INSTALL_HOLD_NAME_INODE,",
+            "require_exact_retained_probe_directory(retained, expected_device)?;",
+            #"&retained.join("failed-new"),"#,
+            "RETAINED_FAILED_V7_FAILED_NEW_INODE,",
+            #"&retained.join("rollback-current"),"#,
+            "RETAINED_FAILED_V7_ROLLBACK_CURRENT_INODE,",
+            "require_exact_retained_v7_top_level(retained)?;",
+            "let retained_after = fs::symlink_metadata(retained)?;",
+            "let root_after = fs::symlink_metadata(root)?;",
+            "root_before.ino() != root_after.ino()",
+            "retained_before.ino() != retained_after.ino()",
+        ]
+        let admissionTokens = [
+            "Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE),",
+            "\"retained first-attempt paired-v7 pointer\",",
+            #"require_path_absent(Path::new(V7_ACTIVE_UPDATE), "retry paired-v7 pointer")?;"#,
+            "require_no_v7_pending_pointers()?;",
+            "Path::new(RETAINED_FAILED_V7_INSTALL_HOLD),",
+            "Path::new(ROOT_V7_SUPPORT_DIRECTORY),",
+            "Path::new(ROOT_V7_TRANSACTION_PARENT),",
+            "let data_volume_device = verified_data_volume_device()?;",
+            "let root = Path::new(V7_UPDATE_ROOT);",
+            "require_exact_single_private_directory_child_at(",
+            "RETAINED_FAILED_V7_ATTEMPT_NAME,",
+            "require_exact_retained_v7_evidence(data_volume_device)?;",
+            "require_exact_single_private_directory_child_at(",
+            "RETAINED_FAILED_V7_ATTEMPT_NAME,",
+            ".to_str()",
+            "!= Some(RETAINED_FAILED_V7_ATTEMPT)",
+        ]
+        return exactPins.allSatisfy(controller.contains)
+            && containsOrdered(singleChildTokens, in: singleChild)
+            && containsOrdered(exactFileTokens, in: exactFile)
+            && containsOrdered(
+                [
+                    "let bytes = require_exact_retained_file(",
+                    "0o600,",
+                    "expected_bytes.len() as u64,",
+                    "expected_sha256,",
+                    "bytes.as_slice() != expected_bytes.as_bytes()",
+                ],
+                in: exactFailureFile
+            )
+            && containsOrdered(
+                [
+                    "metadata.file_type().is_dir()",
+                    "metadata.nlink() == 2",
+                    "metadata.permissions().mode() & 0o7777 == 0o700",
+                    "metadata.ino() == expected_inode",
+                    "fs::read_dir(path)?.next().transpose()?.is_some()",
+                    "let after = fs::symlink_metadata(path)?;",
+                    "before.ino() != after.ino()",
+                ],
+                in: emptyDirectory
+            )
+            && [
+                "opensteamer-public-vpio-probe",
+                "opensteamer-v7-default-route-guardian",
+                "physical-virtual-microphone-probe",
+                "metadata.nlink() == 5",
+                "RETAINED_FAILED_V7_PROBES_INODE",
+                "if !entry.file_type()?.is_file()",
+                "actual.sort_unstable();",
+                "RETAINED_FAILED_V7_PUBLIC_PROBE_INODE",
+                "RETAINED_FAILED_V7_GUARDIAN_INODE",
+                "RETAINED_FAILED_V7_MIRROR_PROBE_INODE",
+                "let after = fs::symlink_metadata(&probes)?;",
+                "before.ino() != after.ino()",
+            ].allSatisfy(probes.contains)
+            && containsOrdered(
+                [
+                    "let private_root = Path::new(PRIVATE_ROOT);",
+                    "require_directory(private_root, 0o700)?;",
+                    "for entry in fs::read_dir(private_root)?",
+                    "name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)",
+                    "name.starts_with(RETRY_V7_PENDING_PREFIX)",
+                    "let after = fs::symlink_metadata(private_root)?;",
+                    "before.dev() != after.dev()",
+                    "before.ino() != after.ino()",
+                ],
+                in: pendingScan
+            )
+            && [
+                "D:deployment-reference", "D:failed-new", "D:probes",
+                "D:production-driver-v7", "D:rollback-current", "D:source-export",
+                "D:staged-output", "D:swiftpm-scratch", "F:build.stderr",
+                "F:build.stdout", "F:functional-inputs.txt", "F:install-hold-name.txt",
+                "F:journal.log", "F:provenance.txt", "F:result.txt", "F:source.tar",
+            ].allSatisfy(topLevel.contains)
+            && containsOrdered(
+                [
+                    "let file_type = entry.file_type()?;",
+                    "if file_type.is_dir()",
+                    "else if file_type.is_file()",
+                    "actual.push(format!(\"{kind}:{name}\"));",
+                    "actual.sort_unstable();",
+                    "actual.len() != EXPECTED.len()",
+                    ".ne(EXPECTED.iter().copied())",
+                    "let after = fs::symlink_metadata(retained)?;",
+                ],
+                in: topLevel
+            )
+            && containsOrdered(retainedEvidenceTokens, in: retainedEvidence)
+            && containsOrdered(admissionTokens, in: admission)
+            && containsOrdered(
+                [
+                    #".strip_prefix("paired-v7-update-retry-1-")"#,
+                    "suffix.as_bytes()[suffix.len() - 37] != b'-'",
+                    "let nonce = &nonce_with_separator[1..];",
+                    "validate_v7_nonce(nonce)?;",
+                    "expected_nonce.is_some_and(|expected| expected != nonce)",
+                    "let (timestamp_text, pid_text) = numeric.split_once('-')",
+                    "value.to_string() != timestamp_text",
+                    "value.to_string() != pid_text",
+                    "let root = Path::new(V7_UPDATE_ROOT);",
+                    "let expected_evidence = root.join(name);",
+                    "evidence.to_str() != expected_evidence.to_str()",
+                    "evidence.parent().and_then(Path::to_str) != Some(V7_UPDATE_ROOT)",
+                    "evidence.to_str() == Some(RETAINED_FAILED_V7_ATTEMPT)",
+                    "let data_volume_device = verified_data_volume_device()?;",
+                    "let retry_metadata = fs::symlink_metadata(evidence)?;",
+                    "retry_metadata.dev() != data_volume_device",
+                    "retry_metadata.ino() == RETAINED_FAILED_V7_ATTEMPT_INODE",
+                    "retry_metadata.nlink() < 2",
+                    "require_exact_v7_root_pair(root, name)?;",
+                    "require_exact_retained_v7_evidence(data_volume_device)?;",
+                    "require_retry_v7_pointer_expectation(evidence, pointer_expectation)?;",
+                    "require_exact_v7_root_pair(root, name)?;",
+                    "let root_after = fs::symlink_metadata(root)?;",
+                    "let retry_after = fs::symlink_metadata(evidence)?;",
+                    "root_before.dev() != root_after.dev()",
+                    "root_before.ino() != root_after.ino()",
+                    "retry_metadata.dev() != retry_after.dev()",
+                    "retry_metadata.ino() != retry_after.ino()",
+                    "retry_metadata.nlink() != retry_after.nlink()",
+                    "retry_metadata.len() != retry_after.len()",
+                    "require_retry_v7_pointer_expectation(evidence, pointer_expectation)?;",
+                    "require_exact_v7_root_pair(root, name)?;",
+                ],
+                in: currentRetry
+            )
+            && containsOrdered(
+                [
+                    "for entry in fs::read_dir(root)?",
+                    "if !entry.file_type()?.is_dir()",
+                    "actual.sort_unstable();",
+                    "RETAINED_FAILED_V7_ATTEMPT_NAME.to_owned()",
+                    "current_name.to_owned()",
+                    "if actual != expected",
+                ],
+                in: rootPair
+            )
+            && containsOrdered(
+                [
+                    "Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE),",
+                    "require_no_v7_pending_pointers()?;",
+                    "RetryV7PointerExpectation::Absent",
+                    "require_path_absent(Path::new(V7_ACTIVE_UPDATE),",
+                    "RetryV7PointerExpectation::Present",
+                    "verify_update_pointer_at(",
+                    "Path::new(V7_ACTIVE_UPDATE),",
+                    "evidence,",
+                    "Path::new(V7_UPDATE_ROOT),",
+                ],
+                in: pointerExpectation
+            )
+            && main.components(
+                separatedBy: "require_v7_retry_admission_ready()?;"
+            ).count - 1 == 1
+            && execute.components(
+                separatedBy: "require_v7_retry_admission_ready()?;"
+            ).count - 1 == 2
+            && containsOrdered(
+                [
+                    "require_v7_retry_admission_ready()?;",
+                    "let evidence = PathBuf::from(V7_UPDATE_ROOT).join(format!(",
+                    "\"paired-v7-update-retry-1-{}-{}-{}\"",
+                    "require_v7_retry_admission_ready()?;",
+                    "create_private_directory(&evidence)?;",
+                    "require_current_retry_v7_layout(",
+                    "&evidence,",
+                    "Some(&nonce),",
+                    "RetryV7PointerExpectation::Absent,",
+                ],
+                in: execute
+            )
+            && containsOrdered(
+                [
+                    "let active_pointer_exists =",
+                    "path_exists_without_follow(Path::new(V7_ACTIVE_UPDATE))?;",
+                    "let pointer_absent_before_stop = !active_pointer_exists",
+                    "matches!(journal.state, V7State::StopInitiated | V7State::RolledBack);",
+                    "let crossed_stop = v7_crossed_stop_without_durable_commit(journal.state)",
+                    "&& !pointer_absent_before_stop;",
+                    "let rollback_pointer_expectation = if active_pointer_exists",
+                    "RetryV7PointerExpectation::Present",
+                    "retire_exact_retry_v7_pending_pointer_after_parent_crash(",
+                    "std::process::id(),",
+                    "RetryV7PointerExpectation::Absent",
+                    "match rollback_to_current_baseline(",
+                    "rollback_pointer_expectation,",
+                    "if rollback_pointer_expectation == RetryV7PointerExpectation::Present",
+                    "retire_v7_active_pointer(&layout)?;",
+                    "require_current_retry_v7_layout(",
+                    "RetryV7PointerExpectation::Absent,",
+                ],
+                in: execute
+            )
+            && perform.components(
+                separatedBy: "require_current_retry_v7_layout("
+            ).count - 1 == 5
+            && containsOrdered(
+                [
+                    "require_current_retry_v7_layout(",
+                    "let boundary_provenance = verify_paired_v7_git_provenance",
+                    "require_current_retry_v7_layout(",
+                    "let mut broker = RootDriverBrokerClient::start(layout)?;",
+                    "journal.record(V7State::DriverPrepared, &[])?;",
+                    "require_current_retry_v7_layout(",
+                    "let final_generation = verify_paired_v7_runtime()?;",
+                    "require_current_retry_v7_layout(",
+                    "let transaction = (|| -> Result<LaunchGeneration>",
+                ],
+                in: perform
+            )
+            && containsOrdered(
+                [
+                    "if let Err(error) = broker.prepare_commit()",
+                    "return rollback_ready_commit_failure(error, &mut broker, journal);",
+                    "if let Err(error) = require_current_retry_v7_layout(",
+                    "&layout.evidence,",
+                    "Some(&layout.nonce),",
+                    "RetryV7PointerExpectation::Present,",
+                    "return rollback_ready_commit_failure(error, &mut broker, journal);",
+                    "if let Err(error) = journal.record(V7State::Committed, &[])",
+                ],
+                in: perform
+            )
+            && containsOrdered(
+                [
+                    "expected_main_pid == 0",
+                    #".strip_prefix("paired-v7-update-retry-1-")"#,
+                    "suffix.as_bytes()[suffix.len() - 37] != b'-'",
+                    "validate_v7_nonce(&nonce_with_separator[1..])?;",
+                    "let (timestamp_text, pid_text) = numeric.split_once('-')",
+                    "let pid = pid_text.parse::<u32>().ok();",
+                    "let expected_path = format!(\"{V7_UPDATE_ROOT}/{name}\");",
+                    "pid != Some(expected_main_pid)",
+                    "pid_text != expected_main_pid.to_string()",
+                    "evidence.to_str() != Some(expected_path.as_str())",
+                    "evidence.parent().and_then(Path::to_str) != Some(V7_UPDATE_ROOT)",
+                ],
+                in: pendingLeafPID
+            )
+            && containsOrdered(
+                [
+                    "let expected_bytes = format!(\"{}\\n\", evidence.display());",
+                    "metadata.file_type().is_file()",
+                    "!metadata.file_type().is_symlink()",
+                    "metadata.uid() == USER_ID",
+                    "metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID",
+                    "metadata.nlink() == 1",
+                    "metadata.permissions().mode() & 0o7777 == 0o600",
+                    "metadata.dev() == expected_device",
+                    "metadata.len() == expected_bytes.len() as u64",
+                    "let named_before = fs::symlink_metadata(path)?;",
+                    ".custom_flags(O_NOFOLLOW)",
+                    "let descriptor_before = file.metadata()?;",
+                    "Read::by_ref(&mut file)",
+                    ".take(expected_bytes.len() as u64 + 1)",
+                    "bytes.as_slice() != expected_bytes.as_bytes()",
+                    "descriptor_before.ino() != descriptor_after.ino()",
+                    "descriptor_before.ino() != named_after.ino()",
+                    "Ok((file, descriptor_before))",
+                ],
+                in: pendingFile
+            )
+            && containsOrdered(
+                [
+                    "Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE),",
+                    "require_path_absent(Path::new(V7_ACTIVE_UPDATE),",
+                    "{V7_ACTIVE_UPDATE}.pending-{expected_main_pid}",
+                    "let root_before = fs::symlink_metadata(private_root)?;",
+                    "for entry in fs::read_dir(private_root)?",
+                    "name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)",
+                    "name.starts_with(RETRY_V7_PENDING_PREFIX)",
+                    "if name != pending_name || entry.path().to_str() != pending.to_str()",
+                    "unexpected paired-v7 pending pointer blocks crash recovery",
+                    "let root_after_scan = fs::symlink_metadata(private_root)?;",
+                    #"let retired = evidence.join("retired-pending-active-pointer.txt");"#,
+                    "if found_expected_pending && retired_exists",
+                    "if !found_expected_pending && !retired_exists",
+                    "require_no_v7_pending_pointers()?;",
+                    "require_retry_v7_leaf_main_pid(evidence, expected_main_pid)?;",
+                    "let data_volume_device = verified_data_volume_device()?;",
+                    "open_exact_retry_v7_pending_pointer(source, evidence, data_volume_device)?;",
+                    "rename_exclusive(&pending, &retired)?;",
+                    "fsync_parent(&pending)?;",
+                    "fsync_parent(&retired)?;",
+                    "let descriptor_after = file.metadata()?;",
+                    "let retired_after = fs::symlink_metadata(&retired)?;",
+                    "retired_after.uid() != USER_ID",
+                    "retired_after.nlink() != 1",
+                    "retired_after.permissions().mode() & 0o7777 != 0o600",
+                    "descriptor_before.ino() != retired_after.ino()",
+                    "require_path_absent(&pending,",
+                    "require_no_v7_pending_pointers()",
+                ],
+                in: pendingRecovery
+            )
+            && crashRecovery.components(
+                separatedBy: "require_current_retry_v7_layout("
+            ).count - 1 == 2
+            && crashRecovery.components(
+                separatedBy: "if pointer_expectation == RetryV7PointerExpectation::Present"
+            ).count - 1 == 2
+            && crashRecovery.contains("RetryV7PointerExpectation::Absent")
+            && crashRecovery.contains("RetryV7PointerExpectation::Present")
+            && containsOrdered(
+                [
+                    "let active_pointer_exists = path_exists_without_follow",
+                    "let pointer_expectation = if active_pointer_exists",
+                    "RetryV7PointerExpectation::Present",
+                    "retire_exact_retry_v7_pending_pointer_after_parent_crash(",
+                    "&layout.evidence,",
+                    "expected_main_pid,",
+                    "RetryV7PointerExpectation::Absent",
+                    "require_current_retry_v7_layout(",
+                    "pointer_expectation,",
+                    "if pointer_expectation == RetryV7PointerExpectation::Present",
+                    "verify_v7_active_pointer(&layout.evidence)?;",
+                    "let transaction_lock = acquire_crash_recovery_transaction_lock()?;",
+                    "journal.state != V7State::DriverRestored",
+                    "rollback_to_current_baseline(",
+                    "pointer_expectation,",
+                    "write_result(",
+                    "if pointer_expectation == RetryV7PointerExpectation::Present",
+                    "retire_v7_active_pointer(layout)",
+                    "require_current_retry_v7_layout(",
+                    "RetryV7PointerExpectation::Absent,",
+                ],
+                in: crashRecovery
+            )
+            && controller.components(
+                separatedBy: "uid_proxy_complete_host_crash_rollback(&layout, parent_pid)?;"
+            ).count - 1 == 3
+            && containsOrdered(
+                [
+                    "V7Command::UIDDriverRestoreProxy {",
+                    "nonce,",
+                    "evidence,",
+                    "pointer_expectation,",
+                    "parent_pid,",
+                    "parent_start_sha256,",
+                    "uid501_driver_restore_proxy(",
+                    "&nonce,",
+                    "Path::new(&evidence),",
+                    "pointer_expectation,",
+                    "parent_pid,",
+                    "&parent_start_sha256,",
+                ],
+                in: main
+            )
+            && containsOrdered(
+                [
+                    "evidence: &Path,",
+                    "pointer_expectation: RetryV7PointerExpectation,",
+                    "if pointer_expectation == RetryV7PointerExpectation::Present",
+                    "let active_evidence =",
+                    "read_update_pointer_at(Path::new(V7_ACTIVE_UPDATE), Path::new(V7_UPDATE_ROOT))?;",
+                    "active_evidence.to_str() != evidence.to_str()",
+                    "require_current_retry_v7_layout(",
+                    "evidence,",
+                    "Some(nonce),",
+                    "pointer_expectation,",
+                    "v7_layout_from_existing(PathBuf::from(V7_EXPECTED_REPO), evidence.to_path_buf())?;",
+                ],
+                in: restoreLayout
+            )
+            && containsOrdered(
+                [
+                    "evidence,",
+                    "pointer_expectation,",
+                    "parent_pid,",
+                    "RetryV7PointerExpectation::from_token(pointer_expectation)?;",
+                    "evidence: evidence.clone(),",
+                    "pointer_expectation,",
+                ],
+                in: parseCommand
+            )
+            && containsOrdered(
+                [
+                    "fn token(self) -> &'static str",
+                    "Self::Absent => \"absent\"",
+                    "Self::Present => \"present\"",
+                    "fn from_token(token: &str) -> Result<Self>",
+                    "\"absent\" => Ok(Self::Absent)",
+                    "\"present\" => Ok(Self::Present)",
+                ],
+                in: pointerTokens
+            )
+            && containsOrdered(
+                [
+                    "evidence: &Path,",
+                    "pointer_expectation: RetryV7PointerExpectation,",
+                    "require_exact_broker_parent(parent_pid, parent_start_sha256)?;",
+                    "existing_v7_layout_for_restore_proxy(nonce, evidence, pointer_expectation)?;",
+                ],
+                in: restoreProxy
+            )
+            && containsOrdered(
+                [
+                    "pointer_expectation: RetryV7PointerExpectation,",
+                    "let evidence = path_text(&layout.evidence)?;",
+                    "let pointer_expectation_token = pointer_expectation.token();",
+                    "\"--uid501-driver-restore-proxy-v7\"",
+                    "&layout.nonce,",
+                    "evidence,",
+                    "pointer_expectation_token,",
+                    "&parent_pid_text,",
+                    "&parent_start_sha256,",
+                ],
+                in: restoreClient
+            )
+            && rollback.contains(
+                "read_update_pointer_at(Path::new(V7_ACTIVE_UPDATE), Path::new(V7_UPDATE_ROOT))?;"
+            )
+            && rollback.components(
+                separatedBy: "require_current_retry_v7_layout("
+            ).count - 1 == 2
+            && containsOrdered(
+                [
+                    "read_update_pointer_at(Path::new(V7_ACTIVE_UPDATE), Path::new(V7_UPDATE_ROOT))?;",
+                    "require_current_retry_v7_layout(",
+                    "RetryV7PointerExpectation::Present,",
+                    "let layout = v7_layout_from_existing(repo, evidence)?;",
+                    "require_current_retry_v7_layout(",
+                    "Some(&layout.nonce),",
+                ],
+                in: rollback
+            )
+            && rollback.contains("RetryV7PointerExpectation::Present,")
+            && rollbackBaseline.components(
+                separatedBy: "require_current_retry_v7_layout("
+            ).count - 1 == 2
+            && containsOrdered(
+                [
+                    "pointer_expectation: RetryV7PointerExpectation,",
+                    "journal.require_healthy()?;",
+                    "require_current_retry_v7_layout(",
+                    "Some(&layout.nonce),",
+                    "pointer_expectation,",
+                    "RootExistingDriverRestoreClient::start(",
+                    "layout,",
+                    "pointer_expectation,",
+                    "if layout.rollback_reserve.exists()",
+                    "require_current_retry_v7_layout(",
+                    "Some(&layout.nonce),",
+                    "pointer_expectation,",
+                    "bootout_paired_v7_job_if_loaded(layout)?;",
+                ],
+                in: rollbackBaseline
+            )
+            && containsOrdered(
+                [
+                    "require_current_retry_v7_layout(",
+                    "RetryV7PointerExpectation::Absent,",
+                    "format!(\"{V7_ACTIVE_UPDATE}.pending-{}\", std::process::id())",
+                    #"require_path_absent(Path::new(V7_ACTIVE_UPDATE), "active paired-v7 pointer")?;"#,
+                    "rename_exclusive(&pending, Path::new(V7_ACTIVE_UPDATE))?;",
+                    "fsync_parent(Path::new(V7_ACTIVE_UPDATE))?;",
+                    "require_current_retry_v7_layout(",
+                    "RetryV7PointerExpectation::Present,",
+                    "fn verify_v7_active_pointer",
+                    "require_current_retry_v7_layout(",
+                    "RetryV7PointerExpectation::Present,",
+                    "fn retire_v7_active_pointer",
+                    "let pointer_expectation = if path_exists_without_follow",
+                    "require_current_retry_v7_layout(",
+                    "retire_update_pointer_at(",
+                    "require_current_retry_v7_layout(",
+                    "&layout.evidence,",
+                    "RetryV7PointerExpectation::Absent,",
+                ],
+                in: pointerOperations
+            )
+    }
+
+    func testV7RetryNamespacePreservesPriorFailedEvidenceAndRejectsMutants() throws {
+        let controller = try source(
+            "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs"
+        )
+        XCTAssertTrue(hasEvidencePreservingRetryNamespaceContract(controller))
+
+        let retainedRoot =
+            "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7"
+        let retryPointer =
+            "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-1"
+        let firstAttemptPointer =
+            "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7"
+        let mutants = [
+            controller.replacingOccurrences(
+                of: "        \"\(retainedRoot)\";\n    const V7_ACTIVE_UPDATE",
+                with: "        \"\(retainedRoot)-retry-1\";\n    const V7_ACTIVE_UPDATE"
+            ),
+            controller.replacingOccurrences(of: retryPointer, with: firstAttemptPointer),
+            controller.replacingOccurrences(
+                of: "        \"\(firstAttemptPointer)\";\n    const FIRST_ATTEMPT_V7_PENDING_PREFIX",
+                with: "        \"\(retryPointer)\";\n    const FIRST_ATTEMPT_V7_PENDING_PREFIX"
+            ),
+            controller.replacingOccurrences(
+                of: "paired-v7-update-1787367704-92913-bba21548-458c-4d31-bd0a-eccdb282c02a",
+                with: "paired-v7-update-1787367704-92913-wrong-attempt"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_ATTEMPT_INODE: u64 = 27_737_656;",
+                with: "const RETAINED_FAILED_V7_ATTEMPT_INODE: u64 = 27_737_657;"
+            ),
+            controller.replacingOccurrences(
+                of: "a2c6cc1df53d424a97cf6aca55672b7eeb39a6d528aa63315c1e878ab429adc4",
+                with: "b2c6cc1df53d424a97cf6aca55672b7eeb39a6d528aa63315c1e878ab429adc4"
+            ),
+            controller.replacingOccurrences(
+                of: "result=failed-before-stop\\ndiagnostic=",
+                with: "result=rolled-back\\ndiagnostic="
+            ),
+            controller.replacingOccurrences(
+                of: "cdc94d9d88b6e12e41f485c217f9f88bbfc5621f226079501ee94b8512b80c3a",
+                with: "ddc94d9d88b6e12e41f485c217f9f88bbfc5621f226079501ee94b8512b80c3a"
+            ),
+            controller.replacingOccurrences(
+                of: "commit=1ec63de7b4f6721cf7b04b7445f54f0e33f8b3a0",
+                with: "commit=8a42a04e63a87890757e6eca1201de1aad3ad36c"
+            ),
+            controller.replacingOccurrences(
+                of: "tree=c343c0bac2d77036e7f3a78dacc3cbf48e83b7ee",
+                with: "tree=0000000000000000000000000000000000000000"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_SOURCE_TAR_INODE: u64 = 27_737_662;",
+                with: "const RETAINED_FAILED_V7_SOURCE_TAR_INODE: u64 = 27_737_663;"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_SOURCE_TAR_SIZE: u64 = 12_584_960;",
+                with: "const RETAINED_FAILED_V7_SOURCE_TAR_SIZE: u64 = 12_584_961;"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_FUNCTIONAL_INPUTS_INODE: u64 = 27_738_086;",
+                with: "const RETAINED_FAILED_V7_FUNCTIONAL_INPUTS_INODE: u64 = 27_738_087;"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_INSTALL_HOLD_NAME_INODE: u64 = 27_737_660;",
+                with: "const RETAINED_FAILED_V7_INSTALL_HOLD_NAME_INODE: u64 = 27_737_661;"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_PROBES_INODE: u64 = 27_743_975;",
+                with: "const RETAINED_FAILED_V7_PROBES_INODE: u64 = 27_743_976;"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_PUBLIC_PROBE_INODE: u64 = 27_743_999;",
+                with: "const RETAINED_FAILED_V7_PUBLIC_PROBE_INODE: u64 = 27_744_000;"
+            ),
+            controller.replacingOccurrences(
+                of: "a59c39bfc198546729a430e7cdbfd19d982e30697c7e67e3a4bd72ca49304e1e",
+                with: "b59c39bfc198546729a430e7cdbfd19d982e30697c7e67e3a4bd72ca49304e1e"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_FAILED_NEW_INODE: u64 = 27_737_658;",
+                with: "const RETAINED_FAILED_V7_FAILED_NEW_INODE: u64 = 27_737_659;"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_ROLLBACK_CURRENT_INODE: u64 = 27_737_657;",
+                with: "const RETAINED_FAILED_V7_ROLLBACK_CURRENT_INODE: u64 = 27_737_658;"
+            ),
+            controller.replacingOccurrences(
+                of: "            Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE),\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "        require_path_absent(Path::new(V7_ACTIVE_UPDATE), \"retry paired-v7 pointer\")?;\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "        if entries.next().transpose()?.is_some() {\n",
+                with: "        if entries.next().transpose()?.is_none() {\n"
+            ),
+            controller.replacingOccurrences(
+                of: "            .custom_flags(O_NOFOLLOW)\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "&retained.join(\"result.txt\")",
+                with: "&retained.join(\"other.txt\")"
+            ),
+            controller.replacingOccurrences(
+                of: "b2205b990a7dc7773a8f65730179566a91999315e6769112b682070d3fbb7dc6",
+                with: "c2205b990a7dc7773a8f65730179566a91999315e6769112b682070d3fbb7dc6"
+            ),
+            controller.replacingOccurrences(
+                of: "upstream=origin/agent/auto-select-iphone-microphone",
+                with: "upstream=origin/main"
+            ),
+            controller.replacingOccurrences(
+                of: "D:production-driver-v7",
+                with: "F:production-driver-v7"
+            ),
+            controller.replacingOccurrences(
+                of: "        require_no_v7_pending_pointers()?;\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "            Path::new(RETAINED_FAILED_V7_INSTALL_HOLD),\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "            &retained.join(\"rollback-reserve.bin\"),\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "            &retained.join(\"driver-transaction-record.txt\"),\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "            Path::new(ROOT_V7_SUPPORT_DIRECTORY),\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "            Path::new(ROOT_V7_TRANSACTION_PARENT),\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "rename_exclusive(&pending, Path::new(V7_ACTIVE_UPDATE))?;",
+                with: "rename_exclusive(&pending, Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE))?;"
+            ),
+            controller.replacingOccurrences(
+                of: "paired-v7-update-retry-1-{}-{}-{}",
+                with: "paired-v7-update-{}-{}-{}"
+            ),
+            controller.replacingOccurrences(
+                of: "            || evidence.parent().and_then(Path::to_str) != Some(V7_UPDATE_ROOT)\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "            || evidence.to_str() == Some(RETAINED_FAILED_V7_ATTEMPT)\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "            RetryV7PointerExpectation::Present => verify_update_pointer_at(\n                Path::new(V7_ACTIVE_UPDATE),\n                evidence,\n                Path::new(V7_UPDATE_ROOT),\n            ),",
+                with: "            RetryV7PointerExpectation::Present => verify_update_pointer_at(\n                Path::new(V7_ACTIVE_UPDATE),\n                Path::new(RETAINED_FAILED_V7_ATTEMPT),\n                Path::new(V7_UPDATE_ROOT),\n            ),"
+            ),
+            controller.replacingOccurrences(
+                of: "        if actual != expected {\n",
+                with: "        if false {\n"
+            ),
+            controller.replacingOccurrences(
+                of: "        require_exact_retained_v7_evidence(data_volume_device)?;\n        require_retry_v7_pointer_expectation(evidence, pointer_expectation)?;",
+                with: "        require_retry_v7_pointer_expectation(evidence, pointer_expectation)?;"
+            ),
+            controller.replacingOccurrences(
+                of: "            || retry_metadata.ino() != retry_after.ino()\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "        create_private_directory(&evidence)?;\n        require_current_retry_v7_layout(",
+                with: "        create_private_directory(&evidence)?;\n        let _omitted_retry_layout = ("
+            ),
+            controller.replacingOccurrences(
+                of: "        let boundary_provenance = verify_paired_v7_git_provenance(&layout.repo, true)?;",
+                with: "        let boundary_provenance = verify_paired_v7_git_provenance(&layout.repo, true)?; // require_current_retry_v7_layout omitted"
+            ).replacingOccurrences(
+                of: "        require_current_retry_v7_layout(\n            &layout.evidence,\n            Some(&layout.nonce),\n            RetryV7PointerExpectation::Absent,\n        )?;\n        let boundary_provenance",
+                with: "        let boundary_provenance"
+            ),
+            controller.replacingOccurrences(
+                of: "        require_current_retry_v7_layout(\n            &layout.evidence,\n            Some(&layout.nonce),\n            RetryV7PointerExpectation::Absent,\n        )?;\n        let mut broker = RootDriverBrokerClient::start(layout)?;",
+                with: "        let mut broker = RootDriverBrokerClient::start(layout)?;"
+            ),
+            controller.replacingOccurrences(
+                of: "        journal.record(V7State::DriverPrepared, &[])?;\n\n        require_current_retry_v7_layout(",
+                with: "        journal.record(V7State::DriverPrepared, &[])?;\n\n        let _omitted_post_broker_layout = ("
+            ),
+            controller.replacingOccurrences(
+                of: "        let transaction = (|| -> Result<LaunchGeneration> {",
+                with: "        let transaction = (|| -> Result<LaunchGeneration> { // require_current_retry_v7_layout omitted"
+            ).replacingOccurrences(
+                of: "        require_current_retry_v7_layout(\n            &layout.evidence,\n            Some(&layout.nonce),\n            RetryV7PointerExpectation::Absent,\n        )?;\n        let transaction",
+                with: "        let transaction"
+            ),
+            controller.replacingOccurrences(
+                of: "        require_current_retry_v7_layout(\n            evidence,\n            Some(nonce),\n            pointer_expectation,\n        )?;\n        let layout =\n            v7_layout_from_existing(PathBuf::from(V7_EXPECTED_REPO), evidence.to_path_buf())?;",
+                with: "        let layout =\n            v7_layout_from_existing(PathBuf::from(V7_EXPECTED_REPO), evidence.to_path_buf())?;"
+            ),
+            controller.replacingOccurrences(
+                of: "        require_current_retry_v7_layout(\n            &evidence,\n            None,\n            RetryV7PointerExpectation::Present,\n        )?;\n        let layout = v7_layout_from_existing(repo, evidence)?;",
+                with: "        let layout = v7_layout_from_existing(repo, evidence)?;"
+            ),
+            controller.replacingOccurrences(
+                of: "    fn verify_v7_active_pointer(expected_evidence: &Path) -> Result<()> {\n        require_current_retry_v7_layout(",
+                with: "    fn verify_v7_active_pointer(expected_evidence: &Path) -> Result<()> {\n        verify_update_pointer_at("
+            ),
+            controller.replacingOccurrences(
+                of: "        require_current_retry_v7_layout(\n            &layout.evidence,\n            Some(&layout.nonce),\n            pointer_expectation,\n        )?;\n        retire_update_pointer_at(",
+                with: "        retire_update_pointer_at("
+            ),
+            controller.replacingOccurrences(
+                of: "            retire_exact_retry_v7_pending_pointer_after_parent_crash(\n                &layout.evidence,\n                expected_main_pid,\n            )?;\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "{V7_ACTIVE_UPDATE}.pending-{expected_main_pid}",
+                with: "{V7_ACTIVE_UPDATE}.pending-{}"
+            ),
+            controller.replacingOccurrences(
+                of: "            || pid != Some(expected_main_pid)\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "            if name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)\n                || name.starts_with(RETRY_V7_PENDING_PREFIX)\n",
+                with: "            if name.starts_with(RETRY_V7_PENDING_PREFIX)\n"
+            ),
+            controller.replacingOccurrences(
+                of: "                if name != pending_name || entry.path().to_str() != pending.to_str() {\n",
+                with: "                if false {\n"
+            ),
+            controller.replacingOccurrences(
+                of: "        let expected_bytes = format!(\"{}\\n\", evidence.display());",
+                with: "        let expected_bytes = format!(\"{}\\n\", RETAINED_FAILED_V7_ATTEMPT);"
+            ),
+            controller.replacingOccurrences(
+                of: "            rename_exclusive(&pending, &retired)?;\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "            || descriptor_before.ino() != retired_after.ino()\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "                        uid_proxy_complete_host_crash_rollback(&layout, parent_pid)?;",
+                with: "                        uid_proxy_complete_host_crash_rollback(&layout, std::process::id())?;"
+            ),
+            controller.replacingOccurrences(
+                of: "        if let Err(error) = require_current_retry_v7_layout(\n            &layout.evidence,\n            Some(&layout.nonce),\n            RetryV7PointerExpectation::Present,\n        ) {\n            return rollback_ready_commit_failure(error, &mut broker, journal);\n        }\n        if let Err(error) = journal.record(V7State::Committed, &[]) {",
+                with: "        if let Err(error) = journal.record(V7State::Committed, &[]) {"
+            ),
+            controller.replacingOccurrences(
+                of: "matches!(journal.state, V7State::StopInitiated | V7State::RolledBack);",
+                with: "matches!(journal.state, V7State::StopInitiated | V7State::RollbackStarted | V7State::RolledBack);"
+            ),
+            controller.replacingOccurrences(
+                of: "matches!(journal.state, V7State::StopInitiated | V7State::RolledBack);",
+                with: "matches!(journal.state, V7State::StopInitiated | V7State::DriverRestored | V7State::RolledBack);"
+            ),
+            controller.replacingOccurrences(
+                of: "                    retire_exact_retry_v7_pending_pointer_after_parent_crash(\n                        &layout.evidence,\n                        std::process::id(),\n                    )?;\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "        pointer_expectation: RetryV7PointerExpectation,\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "            if active_evidence.to_str() != evidence.to_str() {\n",
+                with: "            if false {\n"
+            ),
+            controller.replacingOccurrences(
+                of: "                    RetryV7PointerExpectation::from_token(pointer_expectation)?;",
+                with: "                    RetryV7PointerExpectation::Present;"
+            ),
+            controller.replacingOccurrences(
+                of: "existing_v7_layout_for_restore_proxy(nonce, evidence, pointer_expectation)?;",
+                with: "existing_v7_layout_for_restore_proxy(\n                nonce,\n                evidence,\n                RetryV7PointerExpectation::Present,\n            )?;"
+            ),
+            controller.replacingOccurrences(
+                of: "                    evidence,\n                    pointer_expectation_token,\n",
+                with: "                    path_text(Path::new(RETAINED_FAILED_V7_ATTEMPT))?,\n                    pointer_expectation_token,\n"
+            ),
+            controller.replacingOccurrences(
+                of: "            Some(RootExistingDriverRestoreClient::start(\n                layout,\n                pointer_expectation,\n            )?)",
+                with: "            Some(RootExistingDriverRestoreClient::start(\n                layout,\n                RetryV7PointerExpectation::Present,\n            )?)"
+            ),
+            controller.replacingOccurrences(
+                of: "                Path::new(&evidence),\n                pointer_expectation,\n                parent_pid,",
+                with: "                Path::new(RETAINED_FAILED_V7_ATTEMPT),\n                pointer_expectation,\n                parent_pid,"
+            ),
+            controller.replacingOccurrences(
+                of: "                Path::new(&evidence),\n                pointer_expectation,\n                parent_pid,",
+                with: "                Path::new(&evidence),\n                RetryV7PointerExpectation::Present,\n                parent_pid,"
+            ),
+            controller.replacingOccurrences(
+                of: "        rollback_to_current_baseline(\n            layout,\n            &mut journal,\n            &transaction_lock,\n            pointer_expectation,\n        )?;",
+                with: "        if pointer_expectation == RetryV7PointerExpectation::Present {\n            rollback_to_current_baseline(\n                layout,\n                &mut journal,\n                &transaction_lock,\n                pointer_expectation,\n            )?;\n        }"
+            ),
+            controller.replacingOccurrences(
+                of: "        rollback_to_current_baseline(\n            layout,\n            &mut journal,\n            &transaction_lock,\n            pointer_expectation,\n        )?;",
+                with: "        rollback_to_current_baseline(\n            layout,\n            &mut journal,\n            &transaction_lock,\n            RetryV7PointerExpectation::Present,\n        )?;"
+            ),
+        ]
+        for (index, mutant) in mutants.enumerated() {
+            XCTAssertNotEqual(mutant, controller, "retry namespace mutant \(index) was inert")
+            XCTAssertFalse(
+                hasEvidencePreservingRetryNamespaceContract(mutant),
+                "retry namespace source contract accepted mutant \(index)"
+            )
+        }
+    }
+
     func testV7RemainsProductionOnlyAndHasExactFinalReleasePins() throws {
         let controller = try source(
             "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs"
@@ -1194,12 +2301,12 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         XCTAssertTrue(launcher.contains("RELEASE_PIN_STATUS='PINNED_FINAL_REVIEW'"))
         XCTAssertTrue(
             launcher.contains(
-                "EXPECTED_SOURCE_SHA256='472469623cc7bb44ce1db337c994ed00f6d339182da87efa392233a7acfc4ac1'"
+                "EXPECTED_SOURCE_SHA256='4369fe922fa1a26e8445613c461056d4f931098b6837f8caae46c512d6181ff0'"
             )
         )
         XCTAssertTrue(
             launcher.contains(
-                "EXPECTED_BINARY_SHA256='8d58bdee98d18620b82c84b8f37023839f9608acae4fd4a6247e1712105b0278'"
+                "EXPECTED_BINARY_SHA256='3ab723168c7dfd3ae86502998fd63462a306dbfe10faca46faca8e49250326c0'"
             )
         )
         let exactControllerReleasePins = [
@@ -1221,7 +2328,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             "4ec4cf52b5bb79eae45b6965e97912f23041a3d879b3814b67763caded0548dd",
             "0ec9e1a0cc5f253cc569134ce2be024a7f3ae6ad211fa7d20fe6436c0bac84c8",
             "f152ef8d05eed29c5918666be31821e5ef6e325351d2fcf4ad5f8b83987e299c",
-            "b69c5d4d71db35d871a5e561c33fb2a0303ecec48a411ee8e41aa963987018bb",
+            "307136582f85087ab7f8b846a49b428de9fb87d2726071e7e3ea4b3112d90b8b",
             "91e1da8c84d47f05dd4dc19a84418a946238b1e411cf09d0dd3fb275babc88d5",
             "290731edd02baf42ca40f43f11f74d75271617a46393184cb4d0d566a147257e",
             "25293a4c83b5c6a6e1c95a95388d596f56057e5c5a54add0756017cfc6b0deac",
@@ -2099,8 +3206,28 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                 with: "            &mirror_source,\n"
             ),
             controller.replacingOccurrences(
-                of: "            None,\n            &layout.default_route_guardian,",
+                of: "        require_directory(guardian_source_parent, 0o700)?;\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "GUARDIAN_SOURCE_BASENAME,\n            Some(guardian_source_parent),",
+                with: "path_text(&guardian_source)?,\n            None,"
+            ),
+            controller.replacingOccurrences(
+                of: "const GUARDIAN_SOURCE_BASENAME: &str = \"V7DefaultRouteGuardian.swift\";",
+                with: "const GUARDIAN_SOURCE_BASENAME: &str = \"OtherGuardian.swift\";"
+            ),
+            controller.replacingOccurrences(
+                of: "            Some(guardian_source_parent),\n            &layout.default_route_guardian,",
                 with: "            Some(mirror_source_parent),\n            &layout.default_route_guardian,"
+            ),
+            controller.replacingOccurrences(
+                of: "            &layout.default_route_guardian,\n            &[],",
+                with: "            &layout.default_route_guardian,\n            &[\"-Xlinker\", \"-reproducible\"],"
+            ),
+            controller.replacingOccurrences(
+                of: "307136582f85087ab7f8b846a49b428de9fb87d2726071e7e3ea4b3112d90b8b",
+                with: "b69c5d4d71db35d871a5e561c33fb2a0303ecec48a411ee8e41aa963987018bb"
             ),
             controller.replacingOccurrences(
                 of: "            compiled_output.set_permissions(fs::Permissions::from_mode(0o755))?;\n",

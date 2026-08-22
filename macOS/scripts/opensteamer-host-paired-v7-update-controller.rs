@@ -31,7 +31,62 @@ pub(crate) mod paired_v7 {
     const V7_UPDATE_ROOT: &str =
         "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7";
     const V7_ACTIVE_UPDATE: &str =
+        "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-1";
+    const FIRST_ATTEMPT_V7_ACTIVE_UPDATE: &str =
         "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7";
+    const FIRST_ATTEMPT_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7.pending-";
+    const RETRY_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-1.pending-";
+    const RETAINED_FAILED_V7_ATTEMPT_NAME: &str =
+        "paired-v7-update-1787367704-92913-bba21548-458c-4d31-bd0a-eccdb282c02a";
+    const RETAINED_FAILED_V7_ATTEMPT: &str =
+        "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-1787367704-92913-bba21548-458c-4d31-bd0a-eccdb282c02a";
+    const RETAINED_FAILED_V7_ATTEMPT_GID: u32 = 20;
+    const RETAINED_FAILED_V7_ROOT_INODE: u64 = 27_737_655;
+    const RETAINED_FAILED_V7_ATTEMPT_INODE: u64 = 27_737_656;
+    const RETAINED_FAILED_V7_RESULT_INODE: u64 = 27_744_003;
+    const RETAINED_FAILED_V7_RESULT_SHA256: &str =
+        "a2c6cc1df53d424a97cf6aca55672b7eeb39a6d528aa63315c1e878ab429adc4";
+    const RETAINED_FAILED_V7_RESULT: &str =
+        "result=failed-before-stop\ndiagnostic=required file has unsafe type/owner/link-count/mode: /Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-1787367704-92913-bba21548-458c-4d31-bd0a-eccdb282c02a/probes/physical-virtual-microphone-probe\n";
+    const RETAINED_FAILED_V7_JOURNAL_INODE: u64 = 27_737_659;
+    const RETAINED_FAILED_V7_JOURNAL_SHA256: &str =
+        "cdc94d9d88b6e12e41f485c217f9f88bbfc5621f226079501ee94b8512b80c3a";
+    const RETAINED_FAILED_V7_JOURNAL: &str =
+        "OPENSTEAMER_PAIRED_HOST_UPDATE_V7\nSTATE BEGUN\nSTATE SOURCE_EXPORTED commit=1ec63de7b4f6721cf7b04b7445f54f0e33f8b3a0 tree=c343c0bac2d77036e7f3a78dacc3cbf48e83b7ee initial_pid=873\n";
+    const RETAINED_FAILED_V7_PROVENANCE_INODE: u64 = 27_738_087;
+    const RETAINED_FAILED_V7_PROVENANCE_SHA256: &str =
+        "b2205b990a7dc7773a8f65730179566a91999315e6769112b682070d3fbb7dc6";
+    const RETAINED_FAILED_V7_PROVENANCE: &str =
+        "commit=1ec63de7b4f6721cf7b04b7445f54f0e33f8b3a0\ntree=c343c0bac2d77036e7f3a78dacc3cbf48e83b7ee\nfunctional_source_commit=7beb049226ada83e97afba3e60089469d0eeeef6\nfunctional_source_tree=60e2df01afe1b4c09362b8e1b55efa709f23a748\nauthorized_release_commit=1ec63de7b4f6721cf7b04b7445f54f0e33f8b3a0\nauthorized_release_tree=c343c0bac2d77036e7f3a78dacc3cbf48e83b7ee\nupstream=origin/agent/auto-select-iphone-microphone\nremote=https://github.com/ahmedelami/opensteamer.git\nfunctional_inputs_sha256=fdef1da4413f66d5f066c86b0eba709b55c74b1f72b29dac8d62e991a2343ca6\nfunctional_input_evidence_sha256=73a01a709f6a78b768696ac4105128a6b22de5ae3a46512980b8d77ea6370967\nsource_archive_sha256=11d5a102b43e46856bd3b8a055e026bbc7a8c04365ad28cadb711eb4ac7de74d\n";
+    const RETAINED_FAILED_V7_SOURCE_TAR_INODE: u64 = 27_737_662;
+    const RETAINED_FAILED_V7_SOURCE_TAR_SIZE: u64 = 12_584_960;
+    const RETAINED_FAILED_V7_SOURCE_TAR_SHA256: &str =
+        "11d5a102b43e46856bd3b8a055e026bbc7a8c04365ad28cadb711eb4ac7de74d";
+    const RETAINED_FAILED_V7_FUNCTIONAL_INPUTS_INODE: u64 = 27_738_086;
+    const RETAINED_FAILED_V7_FUNCTIONAL_INPUTS_SIZE: u64 = 22_759;
+    const RETAINED_FAILED_V7_FUNCTIONAL_INPUTS_SHA256: &str =
+        "73a01a709f6a78b768696ac4105128a6b22de5ae3a46512980b8d77ea6370967";
+    const RETAINED_FAILED_V7_INSTALL_HOLD_NAME_INODE: u64 = 27_737_660;
+    const RETAINED_FAILED_V7_INSTALL_HOLD_NAME_SIZE: u64 = 82;
+    const RETAINED_FAILED_V7_INSTALL_HOLD_NAME_SHA256: &str =
+        "faab67bc8d4008d4d01734876654c7935e7aaf3af98610402c7927f80d699e28";
+    const RETAINED_FAILED_V7_PROBES_INODE: u64 = 27_743_975;
+    const RETAINED_FAILED_V7_PUBLIC_PROBE_INODE: u64 = 27_743_999;
+    const RETAINED_FAILED_V7_PUBLIC_PROBE_SIZE: u64 = 154_912;
+    const RETAINED_FAILED_V7_PUBLIC_PROBE_SHA256: &str =
+        "0ec9e1a0cc5f253cc569134ce2be024a7f3ae6ad211fa7d20fe6436c0bac84c8";
+    const RETAINED_FAILED_V7_GUARDIAN_INODE: u64 = 27_743_985;
+    const RETAINED_FAILED_V7_GUARDIAN_SIZE: u64 = 286_968;
+    const RETAINED_FAILED_V7_GUARDIAN_SHA256: &str =
+        "a59c39bfc198546729a430e7cdbfd19d982e30697c7e67e3a4bd72ca49304e1e";
+    const RETAINED_FAILED_V7_MIRROR_PROBE_INODE: u64 = 27_743_981;
+    const RETAINED_FAILED_V7_MIRROR_PROBE_SIZE: u64 = 1_096_944;
+    const RETAINED_FAILED_V7_MIRROR_PROBE_SHA256: &str =
+        "13f6209ebb6a388f296c62ae4cfa5ce153b24e8a78d0ef45091b0aa30bc27b4b";
+    const RETAINED_FAILED_V7_FAILED_NEW_INODE: u64 = 27_737_658;
+    const RETAINED_FAILED_V7_ROLLBACK_CURRENT_INODE: u64 = 27_737_657;
+    const RETAINED_FAILED_V7_INSTALL_HOLD: &str =
+        "/Applications/.opensteamer-paired-v7-install-bba21548-458c-4d31-bd0a-eccdb282c02a";
     const V7_UPDATE_LOCK: &str = UPDATE_LOCK;
     const V7_JOURNAL_HEADER: &str = "OPENSTEAMER_PAIRED_HOST_UPDATE_V7";
     const HIDDEN_INSTALL_PREFIX: &str = ".opensteamer-paired-v7-install-";
@@ -94,7 +149,7 @@ pub(crate) mod paired_v7 {
     const EXPECTED_DEFAULT_ROUTE_GUARDIAN_SOURCE_SHA256: &str =
         "f152ef8d05eed29c5918666be31821e5ef6e325351d2fcf4ad5f8b83987e299c";
     const EXPECTED_DEFAULT_ROUTE_GUARDIAN_BINARY_SHA256: &str =
-        "b69c5d4d71db35d871a5e561c33fb2a0303ecec48a411ee8e41aa963987018bb";
+        "307136582f85087ab7f8b846a49b428de9fb87d2726071e7e3ea4b3112d90b8b";
     const EXPECTED_PRODUCTION_DRIVER_BUILDER_SHA256: &str =
         "91e1da8c84d47f05dd4dc19a84418a946238b1e411cf09d0dd3fb275babc88d5";
     const EXPECTED_PRODUCTION_DRIVER_VERIFIER_SHA256: &str =
@@ -732,6 +787,8 @@ pub(crate) mod paired_v7 {
         },
         UIDDriverRestoreProxy {
             nonce: String,
+            evidence: String,
+            pointer_expectation: RetryV7PointerExpectation,
             parent_pid: u32,
             parent_start_sha256: String,
         },
@@ -947,8 +1004,7 @@ pub(crate) mod paired_v7 {
                 verify_committed_v6_baseline()?;
                 let generation = verify_paired_v7_runtime()?;
                 verify_isolated_pairing_items_present()?;
-                require_path_absent(Path::new(V7_ACTIVE_UPDATE), "active paired-v7 pointer")?;
-                require_v7_update_root_unused()?;
+                require_v7_retry_admission_ready()?;
                 println!(
                     "PAIRED_V7_UPDATE_PREFLIGHT_OK pid={} runs={} baseline=sole-ready pairing=preserved v1=immutable v2=immutable v3=immutable v4=immutable v5=immutable v6=immutable v7=absent source_commit={} source_tree={} release_commit={} release_tree={} functional_inputs_sha256={}",
                     generation.pid,
@@ -1009,9 +1065,17 @@ pub(crate) mod paired_v7 {
             V7Command::RootDriverRestoreBroker { nonce } => root_driver_restore_broker(&nonce),
             V7Command::UIDDriverRestoreProxy {
                 nonce,
+                evidence,
+                pointer_expectation,
                 parent_pid,
                 parent_start_sha256,
-            } => uid501_driver_restore_proxy(&nonce, parent_pid, &parent_start_sha256),
+            } => uid501_driver_restore_proxy(
+                &nonce,
+                Path::new(&evidence),
+                pointer_expectation,
+                parent_pid,
+                &parent_start_sha256,
+            ),
         }
     }
 
@@ -1083,10 +1147,20 @@ pub(crate) mod paired_v7 {
                     parent_start_sha256: parent_start_sha256.clone(),
                 })
             }
-            [_, mode, nonce, parent_pid, parent_start_sha256]
+            [
+                _,
+                mode,
+                nonce,
+                evidence,
+                pointer_expectation,
+                parent_pid,
+                parent_start_sha256,
+            ]
                 if mode == "--uid501-driver-restore-proxy-v7" =>
             {
                 validate_v7_nonce(nonce)?;
+                let pointer_expectation =
+                    RetryV7PointerExpectation::from_token(pointer_expectation)?;
                 let parent_pid = parse_positive_u32(parent_pid, "v7 restore parent PID")?;
                 require_canonical_lower_hex(
                     parent_start_sha256,
@@ -1095,6 +1169,8 @@ pub(crate) mod paired_v7 {
                 )?;
                 Ok(V7Command::UIDDriverRestoreProxy {
                     nonce: nonce.clone(),
+                    evidence: evidence.clone(),
+                    pointer_expectation,
                     parent_pid,
                     parent_start_sha256: parent_start_sha256.clone(),
                 })
@@ -3840,37 +3916,235 @@ pub(crate) mod paired_v7 {
         )))
     }
 
-    fn uid_proxy_complete_host_crash_rollback(layout: &V7Layout) -> Result<()> {
+    fn require_retry_v7_leaf_main_pid(evidence: &Path, expected_main_pid: u32) -> Result<()> {
+        if expected_main_pid == 0 {
+            return Err(ControllerError(
+                "paired-v7 pending-pointer recovery main PID is zero".to_owned(),
+            ));
+        }
+        let name = evidence
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| ControllerError("paired-v7 retry leaf name is not UTF-8".to_owned()))?;
+        let suffix = name
+            .strip_prefix("paired-v7-update-retry-1-")
+            .ok_or_else(|| {
+                ControllerError("paired-v7 pending recovery leaf is not retry-1".to_owned())
+            })?;
+        if suffix.len() <= 37 || suffix.as_bytes()[suffix.len() - 37] != b'-' {
+            return Err(ControllerError(
+                "paired-v7 pending recovery leaf omitted its nonce".to_owned(),
+            ));
+        }
+        let (numeric, nonce_with_separator) = suffix.split_at(suffix.len() - 37);
+        validate_v7_nonce(&nonce_with_separator[1..])?;
+        let (timestamp_text, pid_text) = numeric.split_once('-').ok_or_else(|| {
+            ControllerError("paired-v7 pending recovery leaf omitted timestamp or PID".to_owned())
+        })?;
+        let timestamp = timestamp_text.parse::<u64>().ok();
+        let pid = pid_text.parse::<u32>().ok();
+        let expected_path = format!("{V7_UPDATE_ROOT}/{name}");
+        if timestamp.filter(|value| *value > 0).is_none()
+            || timestamp.is_some_and(|value| value.to_string() != timestamp_text)
+            || pid != Some(expected_main_pid)
+            || pid_text != expected_main_pid.to_string()
+            || evidence.to_str() != Some(expected_path.as_str())
+            || evidence.parent().and_then(Path::to_str) != Some(V7_UPDATE_ROOT)
+        {
+            return Err(ControllerError(
+                "paired-v7 pending pointer PID is not bound to its exact direct retry leaf"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn open_exact_retry_v7_pending_pointer(
+        path: &Path,
+        evidence: &Path,
+        expected_device: u64,
+    ) -> Result<(File, fs::Metadata)> {
+        let expected_bytes = format!("{}\n", evidence.display());
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.nlink() == 1
+                && metadata.permissions().mode() & 0o7777 == 0o600
+                && metadata.dev() == expected_device
+                && metadata.len() == expected_bytes.len() as u64
+                && metadata.st_flags() == 0
+        };
+        let named_before = fs::symlink_metadata(path)?;
+        if !metadata_is_exact(&named_before) {
+            return Err(ControllerError(format!(
+                "paired-v7 recoverable pending pointer metadata is unsafe: {}",
+                path.display()
+            )));
+        }
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NOFOLLOW)
+            .open(path)?;
+        let descriptor_before = file.metadata()?;
+        if !metadata_is_exact(&descriptor_before)
+            || descriptor_before.dev() != named_before.dev()
+            || descriptor_before.ino() != named_before.ino()
+            || descriptor_before.len() != named_before.len()
+        {
+            return Err(ControllerError(
+                "paired-v7 pending pointer changed before descriptor binding".to_owned(),
+            ));
+        }
+        let mut bytes = Vec::with_capacity(expected_bytes.len());
+        Read::by_ref(&mut file)
+            .take(expected_bytes.len() as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        let descriptor_after = file.metadata()?;
+        let named_after = fs::symlink_metadata(path)?;
+        if bytes.as_slice() != expected_bytes.as_bytes()
+            || !metadata_is_exact(&descriptor_after)
+            || !metadata_is_exact(&named_after)
+            || descriptor_before.dev() != descriptor_after.dev()
+            || descriptor_before.ino() != descriptor_after.ino()
+            || descriptor_before.len() != descriptor_after.len()
+            || descriptor_before.dev() != named_after.dev()
+            || descriptor_before.ino() != named_after.ino()
+            || descriptor_before.len() != named_after.len()
+        {
+            return Err(ControllerError(
+                "paired-v7 recoverable pending pointer bytes or identity changed".to_owned(),
+            ));
+        }
+        Ok((file, descriptor_before))
+    }
+
+    fn retire_exact_retry_v7_pending_pointer_after_parent_crash(
+        evidence: &Path,
+        expected_main_pid: u32,
+    ) -> Result<()> {
+        require_path_absent(
+            Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE),
+            "retained first-attempt paired-v7 pointer",
+        )?;
+        require_path_absent(Path::new(V7_ACTIVE_UPDATE), "retry paired-v7 pointer")?;
+        let pending = PathBuf::from(format!(
+            "{V7_ACTIVE_UPDATE}.pending-{expected_main_pid}"
+        ));
+        let pending_name = pending
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| ControllerError("paired-v7 pending pointer name is not UTF-8".to_owned()))?;
+        let private_root = Path::new(PRIVATE_ROOT);
+        require_directory(private_root, 0o700)?;
+        let root_before = fs::symlink_metadata(private_root)?;
+        let mut found_expected_pending = false;
+        for entry in fs::read_dir(private_root)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_str().ok_or_else(|| {
+                ControllerError("private opensteamer entry name is not UTF-8".to_owned())
+            })?;
+            if name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)
+                || name.starts_with(RETRY_V7_PENDING_PREFIX)
+            {
+                if name != pending_name || entry.path().to_str() != pending.to_str() {
+                    return Err(ControllerError(format!(
+                        "unexpected paired-v7 pending pointer blocks crash recovery: {name}"
+                    )));
+                }
+                if found_expected_pending {
+                    return Err(ControllerError(
+                        "duplicate paired-v7 pending pointer blocks crash recovery".to_owned(),
+                    ));
+                }
+                found_expected_pending = true;
+            }
+        }
+        let root_after_scan = fs::symlink_metadata(private_root)?;
+        if root_before.dev() != root_after_scan.dev()
+            || root_before.ino() != root_after_scan.ino()
+            || root_before.permissions().mode() & 0o7777 != 0o700
+            || root_after_scan.permissions().mode() & 0o7777 != 0o700
+        {
+            return Err(ControllerError(
+                "private opensteamer root changed during pending recovery scan".to_owned(),
+            ));
+        }
+        let retired = evidence.join("retired-pending-active-pointer.txt");
+        let retired_exists = path_exists_without_follow(&retired)?;
+        if found_expected_pending && retired_exists {
+            return Err(ControllerError(
+                "paired-v7 pending and retired-pending pointers both exist".to_owned(),
+            ));
+        }
+        if !found_expected_pending && !retired_exists {
+            require_no_v7_pending_pointers()?;
+            return Ok(());
+        }
+
+        require_retry_v7_leaf_main_pid(evidence, expected_main_pid)?;
+        let data_volume_device = verified_data_volume_device()?;
+        let source = if found_expected_pending { &pending } else { &retired };
+        let (file, descriptor_before) =
+            open_exact_retry_v7_pending_pointer(source, evidence, data_volume_device)?;
+        if found_expected_pending {
+            require_path_absent(&retired, "retired paired-v7 pending pointer")?;
+            rename_exclusive(&pending, &retired)?;
+            fsync_parent(&pending)?;
+            fsync_parent(&retired)?;
+        }
+        let descriptor_after = file.metadata()?;
+        let retired_after = fs::symlink_metadata(&retired)?;
+        if !retired_after.file_type().is_file()
+            || retired_after.file_type().is_symlink()
+            || retired_after.uid() != USER_ID
+            || retired_after.gid() != RETAINED_FAILED_V7_ATTEMPT_GID
+            || retired_after.nlink() != 1
+            || retired_after.permissions().mode() & 0o7777 != 0o600
+            || retired_after.st_flags() != 0
+            || descriptor_before.dev() != descriptor_after.dev()
+            || descriptor_before.ino() != descriptor_after.ino()
+            || descriptor_before.len() != descriptor_after.len()
+            || descriptor_before.dev() != retired_after.dev()
+            || descriptor_before.ino() != retired_after.ino()
+            || descriptor_before.len() != retired_after.len()
+        {
+            return Err(ControllerError(
+                "retired paired-v7 pending pointer lost its descriptor-bound identity".to_owned(),
+            ));
+        }
+        require_path_absent(&pending, "retired paired-v7 pending pointer source")?;
+        require_no_v7_pending_pointers()
+    }
+
+    fn uid_proxy_complete_host_crash_rollback(
+        layout: &V7Layout,
+        expected_main_pid: u32,
+    ) -> Result<()> {
         verify_committed_v6_baseline()?;
         verify_isolated_pairing_items_present()?;
         verify_v5_pointer_unchanged()?;
         let active_pointer_exists = path_exists_without_follow(Path::new(V7_ACTIVE_UPDATE))?;
-        if !active_pointer_exists {
-            // STOP_INITIATED is journaled immediately before pointer publication and no host
-            // stop occurs before publication. Thus an absent pointer proves that the exact v6
-            // generation must still be live; do not manufacture or retire a pointer here.
-            if layout.rollback_reserve.exists() {
-                release_rollback_reserve(&layout.rollback_reserve)?;
-            }
-            archive_v7_install_hold_root(layout)?;
-            verify_paired_v7_runtime()?;
-            let mut journal = V7Journal::open(&layout.journal)?;
-            if journal.state != V7State::DriverRestored {
-                return Err(ControllerError(
-                    "pointer-absent crash recovery did not begin after driver restoration"
-                        .to_owned(),
-                ));
-            }
-            journal.record(V7State::RolledBack, &[])?;
-            write_result(
-                &layout.result,
-                "rolled-back-recovered",
-                Some("detached UID501 proxy recovered a main-process-group loss before pointer publication"),
+        let pointer_expectation = if active_pointer_exists {
+            RetryV7PointerExpectation::Present
+        } else {
+            retire_exact_retry_v7_pending_pointer_after_parent_crash(
+                &layout.evidence,
+                expected_main_pid,
             )?;
-            return Ok(());
-        }
+            RetryV7PointerExpectation::Absent
+        };
 
-        verify_v7_active_pointer(&layout.evidence)?;
+        require_current_retry_v7_layout(
+            &layout.evidence,
+            Some(&layout.nonce),
+            pointer_expectation,
+        )?;
+        if pointer_expectation == RetryV7PointerExpectation::Present {
+            verify_v7_active_pointer(&layout.evidence)?;
+        }
         let transaction_lock = acquire_crash_recovery_transaction_lock()?;
         let mut journal = V7Journal::open(&layout.journal)?;
         if journal.state != V7State::DriverRestored {
@@ -3878,13 +4152,26 @@ pub(crate) mod paired_v7 {
                 "detached UID501 crash recovery did not begin after driver restoration".to_owned(),
             ));
         }
-        rollback_to_current_baseline(layout, &mut journal, &transaction_lock)?;
+        rollback_to_current_baseline(
+            layout,
+            &mut journal,
+            &transaction_lock,
+            pointer_expectation,
+        )?;
         write_result(
             &layout.result,
             "rolled-back-recovered",
             Some("detached UID501 proxy recovered a main-process-group loss"),
         )?;
-        retire_v7_active_pointer(layout)
+        if pointer_expectation == RetryV7PointerExpectation::Present {
+            retire_v7_active_pointer(layout)
+        } else {
+            require_current_retry_v7_layout(
+                &layout.evidence,
+                Some(&layout.nonce),
+                RetryV7PointerExpectation::Absent,
+            )
+        }
     }
 
     fn uid501_driver_broker_proxy(
@@ -3996,7 +4283,7 @@ pub(crate) mod paired_v7 {
                     }
                     uid_proxy_finish_driver_rollback(&layout, begun)?;
                     if begun && !exact_parent_survives {
-                        uid_proxy_complete_host_crash_rollback(&layout)?;
+                        uid_proxy_complete_host_crash_rollback(&layout, parent_pid)?;
                         return Ok(());
                     }
                     return Err(ControllerError(
@@ -4031,7 +4318,7 @@ pub(crate) mod paired_v7 {
                     }
                     uid_proxy_finish_driver_rollback(&layout, begun)?;
                     if begun && !exact_parent_survives {
-                        uid_proxy_complete_host_crash_rollback(&layout)?;
+                        uid_proxy_complete_host_crash_rollback(&layout, parent_pid)?;
                         return Ok(());
                     }
                     return Err(ControllerError(
@@ -4090,13 +4377,31 @@ pub(crate) mod paired_v7 {
         }
     }
 
-    fn existing_v7_layout_for_restore_proxy(nonce: &str) -> Result<V7Layout> {
-        let evidence =
-            read_update_pointer_at(Path::new(V7_ACTIVE_UPDATE), Path::new(V7_UPDATE_ROOT))?;
-        let layout = v7_layout_from_existing(PathBuf::from(V7_EXPECTED_REPO), evidence)?;
+    fn existing_v7_layout_for_restore_proxy(
+        nonce: &str,
+        evidence: &Path,
+        pointer_expectation: RetryV7PointerExpectation,
+    ) -> Result<V7Layout> {
+        if pointer_expectation == RetryV7PointerExpectation::Present {
+            let active_evidence =
+                read_update_pointer_at(Path::new(V7_ACTIVE_UPDATE), Path::new(V7_UPDATE_ROOT))?;
+            if active_evidence.to_str() != evidence.to_str() {
+                return Err(ControllerError(
+                    "restore proxy evidence differs from the exact active v7 transaction"
+                        .to_owned(),
+                ));
+            }
+        }
+        require_current_retry_v7_layout(
+            evidence,
+            Some(nonce),
+            pointer_expectation,
+        )?;
+        let layout =
+            v7_layout_from_existing(PathBuf::from(V7_EXPECTED_REPO), evidence.to_path_buf())?;
         if layout.nonce != nonce {
             return Err(ControllerError(
-                "restore proxy nonce differs from the exact active v7 transaction".to_owned(),
+                "restore proxy nonce differs from the exact current v7 transaction".to_owned(),
             ));
         }
         Ok(layout)
@@ -4146,6 +4451,8 @@ pub(crate) mod paired_v7 {
 
     fn uid501_driver_restore_proxy(
         nonce: &str,
+        evidence: &Path,
+        pointer_expectation: RetryV7PointerExpectation,
         parent_pid: u32,
         parent_start_sha256: &str,
     ) -> Result<()> {
@@ -4156,7 +4463,8 @@ pub(crate) mod paired_v7 {
         }
         let _controller_identity = verify_uid501_controller_against_root_pin()?;
         require_exact_broker_parent(parent_pid, parent_start_sha256)?;
-        let layout = existing_v7_layout_for_restore_proxy(nonce)?;
+        let layout =
+            existing_v7_layout_for_restore_proxy(nonce, evidence, pointer_expectation)?;
         let mut root = Command::new("/usr/bin/sudo")
             .args([
                 "-n",
@@ -4235,7 +4543,7 @@ pub(crate) mod paired_v7 {
                         &root_responses,
                     )?;
                     if !exact_parent_survives {
-                        uid_proxy_complete_host_crash_rollback(&layout)?;
+                        uid_proxy_complete_host_crash_rollback(&layout, parent_pid)?;
                         return Ok(());
                     }
                     return Err(ControllerError(
@@ -4316,17 +4624,24 @@ pub(crate) mod paired_v7 {
     }
 
     impl RootExistingDriverRestoreClient {
-        fn start(layout: &V7Layout) -> Result<Self> {
+        fn start(
+            layout: &V7Layout,
+            pointer_expectation: RetryV7PointerExpectation,
+        ) -> Result<Self> {
             authenticate_v7_privileged_boundary()?;
             let _controller_identity = bootstrap_root_owned_v7_controller()?;
             let current = env::current_exe()?;
             let parent_pid = std::process::id();
             let parent_start_sha256 = parent_process_identity_sha256(parent_pid)?;
             let parent_pid_text = parent_pid.to_string();
+            let evidence = path_text(&layout.evidence)?;
+            let pointer_expectation_token = pointer_expectation.token();
             let mut child = Command::new(&current)
                 .args([
                     "--uid501-driver-restore-proxy-v7",
                     &layout.nonce,
+                    evidence,
+                    pointer_expectation_token,
                     &parent_pid_text,
                     &parent_start_sha256,
                 ])
@@ -4785,51 +5100,746 @@ pub(crate) mod paired_v7 {
         }
     }
 
-    fn require_v7_update_root_unused() -> Result<()> {
-        require_v7_update_root_unused_at(Path::new(V7_UPDATE_ROOT))
-    }
-
-    fn require_v7_update_root_unused_at(root: &Path) -> Result<()> {
-        match fs::symlink_metadata(root) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => {
-                return Err(ControllerError(format!(
-                    "cannot inspect paired-v7 update root {}: {error}",
-                    root.display()
-                )))
-            }
-            Ok(_) => require_directory(root, 0o700)?,
+    fn require_exact_single_private_directory_child_at(
+        root: &Path,
+        expected_name: &str,
+    ) -> Result<PathBuf> {
+        if expected_name.is_empty() || expected_name.contains('/') {
+            return Err(ControllerError(
+                "retained paired-v7 attempt name is not one exact path component".to_owned(),
+            ));
         }
+        require_directory(root, 0o700)?;
+        let root_before = fs::symlink_metadata(root)?;
         let mut entries = fs::read_dir(root).map_err(|error| {
             ControllerError(format!(
                 "cannot enumerate paired-v7 update root {}: {error}",
                 root.display()
             ))
         })?;
+        let entry = entries.next().transpose()?.ok_or_else(|| {
+            ControllerError("retained paired-v7 failed attempt is absent".to_owned())
+        })?;
         if entries.next().transpose()?.is_some() {
             return Err(ControllerError(
-                "paired-v7 update root already contains retained attempt evidence; a second attempt is not authorized"
+                "paired-v7 update root contains an unexpected additional attempt".to_owned(),
+            ));
+        }
+        if entry.file_name().to_str() != Some(expected_name) {
+            return Err(ControllerError(
+                "paired-v7 update root does not contain the exact retained failed attempt"
+                    .to_owned(),
+            ));
+        }
+        let expected = root.join(expected_name);
+        if entry.path().as_os_str() != expected.as_os_str() {
+            return Err(ControllerError(
+                "retained paired-v7 failed attempt escaped its exact root".to_owned(),
+            ));
+        }
+        require_directory(&expected, 0o700)?;
+        let root_after = fs::symlink_metadata(root)?;
+        if root_before.dev() != root_after.dev()
+            || root_before.ino() != root_after.ino()
+            || root_before.permissions().mode() & 0o7777 != 0o700
+            || root_after.permissions().mode() & 0o7777 != 0o700
+        {
+            return Err(ControllerError(
+                "paired-v7 update root changed during exact enumeration".to_owned(),
+            ));
+        }
+        Ok(expected)
+    }
+
+    fn require_exact_retained_file(
+        path: &Path,
+        expected_device: u64,
+        expected_inode: u64,
+        expected_mode: u32,
+        expected_length: u64,
+        expected_sha256: &str,
+    ) -> Result<Vec<u8>> {
+        if expected_length > 16 * 1_024 * 1_024 {
+            return Err(ControllerError(format!(
+                "retained paired-v7 file pin exceeds its fixed read bound: {}",
+                path.display()
+            )));
+        }
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.nlink() == 1
+                && metadata.permissions().mode() & 0o7777 == expected_mode
+                && metadata.dev() == expected_device
+                && metadata.ino() == expected_inode
+                && metadata.len() == expected_length
+                && metadata.st_flags() == 0
+        };
+        let named_before = fs::symlink_metadata(path)?;
+        if !metadata_is_exact(&named_before) {
+            return Err(ControllerError(format!(
+                "retained paired-v7 failure file metadata changed: {}",
+                path.display()
+            )));
+        }
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NOFOLLOW)
+            .open(path)?;
+        let descriptor_before = file.metadata()?;
+        if !metadata_is_exact(&descriptor_before)
+            || descriptor_before.dev() != named_before.dev()
+            || descriptor_before.ino() != named_before.ino()
+            || descriptor_before.len() != named_before.len()
+        {
+            return Err(ControllerError(format!(
+                "retained paired-v7 failure file changed before its exact read: {}",
+                path.display()
+            )));
+        }
+        let mut bytes = Vec::with_capacity(expected_length as usize);
+        Read::by_ref(&mut file)
+            .take(expected_length + 1)
+            .read_to_end(&mut bytes)?;
+        let descriptor_after = file.metadata()?;
+        let named_after = fs::symlink_metadata(path)?;
+        if bytes.len() as u64 != expected_length
+            || sha256_bytes(&bytes)? != expected_sha256
+            || !metadata_is_exact(&descriptor_after)
+            || !metadata_is_exact(&named_after)
+            || descriptor_before.dev() != descriptor_after.dev()
+            || descriptor_before.ino() != descriptor_after.ino()
+            || descriptor_before.len() != descriptor_after.len()
+            || descriptor_before.dev() != named_after.dev()
+            || descriptor_before.ino() != named_after.ino()
+            || descriptor_before.len() != named_after.len()
+        {
+            return Err(ControllerError(format!(
+                "retained paired-v7 failure file bytes or identity changed: {}",
+                path.display()
+            )));
+        }
+        Ok(bytes)
+    }
+
+    fn require_exact_retained_failure_file(
+        path: &Path,
+        expected_device: u64,
+        expected_inode: u64,
+        expected_bytes: &str,
+        expected_sha256: &str,
+    ) -> Result<()> {
+        let bytes = require_exact_retained_file(
+            path,
+            expected_device,
+            expected_inode,
+            0o600,
+            expected_bytes.len() as u64,
+            expected_sha256,
+        )?;
+        if bytes.as_slice() != expected_bytes.as_bytes() {
+            return Err(ControllerError(format!(
+                "retained paired-v7 failure file exact bytes changed: {}",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    fn require_exact_retained_empty_directory(
+        path: &Path,
+        expected_device: u64,
+        expected_inode: u64,
+    ) -> Result<()> {
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.nlink() == 2
+                && metadata.permissions().mode() & 0o7777 == 0o700
+                && metadata.dev() == expected_device
+                && metadata.ino() == expected_inode
+                && metadata.st_flags() == 0
+        };
+        let before = fs::symlink_metadata(path)?;
+        if !metadata_is_exact(&before) || fs::read_dir(path)?.next().transpose()?.is_some() {
+            return Err(ControllerError(format!(
+                "retained paired-v7 directory is not the exact empty directory: {}",
+                path.display()
+            )));
+        }
+        let after = fs::symlink_metadata(path)?;
+        if !metadata_is_exact(&after)
+            || before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.nlink() != after.nlink()
+        {
+            return Err(ControllerError(format!(
+                "retained paired-v7 empty directory changed during enumeration: {}",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    fn require_exact_retained_probe_directory(
+        retained: &Path,
+        expected_device: u64,
+    ) -> Result<()> {
+        const EXPECTED_NAMES: [&str; 3] = [
+            "opensteamer-public-vpio-probe",
+            "opensteamer-v7-default-route-guardian",
+            "physical-virtual-microphone-probe",
+        ];
+        let probes = retained.join("probes");
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.nlink() == 5
+                && metadata.permissions().mode() & 0o7777 == 0o700
+                && metadata.dev() == expected_device
+                && metadata.ino() == RETAINED_FAILED_V7_PROBES_INODE
+                && metadata.st_flags() == 0
+        };
+        let before = fs::symlink_metadata(&probes)?;
+        if !metadata_is_exact(&before) {
+            return Err(ControllerError(
+                "retained paired-v7 probe directory metadata changed".to_owned(),
+            ));
+        }
+        let mut actual = Vec::new();
+        for entry in fs::read_dir(&probes)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_str().ok_or_else(|| {
+                ControllerError("retained paired-v7 probe name is not UTF-8".to_owned())
+            })?;
+            if !entry.file_type()?.is_file()
+                || entry.path().to_str()
+                    != probes.join(name).to_str()
+            {
+                return Err(ControllerError(format!(
+                    "retained paired-v7 probe has unsafe type or path: {name}"
+                )));
+            }
+            actual.push(name.to_owned());
+        }
+        actual.sort_unstable();
+        if actual.iter().map(String::as_str).ne(EXPECTED_NAMES) {
+            return Err(ControllerError(
+                "retained paired-v7 probe name/type set changed".to_owned(),
+            ));
+        }
+        require_exact_retained_file(
+            &probes.join("opensteamer-public-vpio-probe"),
+            expected_device,
+            RETAINED_FAILED_V7_PUBLIC_PROBE_INODE,
+            0o755,
+            RETAINED_FAILED_V7_PUBLIC_PROBE_SIZE,
+            RETAINED_FAILED_V7_PUBLIC_PROBE_SHA256,
+        )?;
+        require_exact_retained_file(
+            &probes.join("opensteamer-v7-default-route-guardian"),
+            expected_device,
+            RETAINED_FAILED_V7_GUARDIAN_INODE,
+            0o700,
+            RETAINED_FAILED_V7_GUARDIAN_SIZE,
+            RETAINED_FAILED_V7_GUARDIAN_SHA256,
+        )?;
+        require_exact_retained_file(
+            &probes.join("physical-virtual-microphone-probe"),
+            expected_device,
+            RETAINED_FAILED_V7_MIRROR_PROBE_INODE,
+            0o700,
+            RETAINED_FAILED_V7_MIRROR_PROBE_SIZE,
+            RETAINED_FAILED_V7_MIRROR_PROBE_SHA256,
+        )?;
+        let after = fs::symlink_metadata(&probes)?;
+        if !metadata_is_exact(&after)
+            || before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.nlink() != after.nlink()
+        {
+            return Err(ControllerError(
+                "retained paired-v7 probe directory changed during verification".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_no_v7_pending_pointers() -> Result<()> {
+        let private_root = Path::new(PRIVATE_ROOT);
+        require_directory(private_root, 0o700)?;
+        let before = fs::symlink_metadata(private_root)?;
+        for entry in fs::read_dir(private_root)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_str().ok_or_else(|| {
+                ControllerError("private opensteamer entry name is not UTF-8".to_owned())
+            })?;
+            if name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)
+                || name.starts_with(RETRY_V7_PENDING_PREFIX)
+            {
+                return Err(ControllerError(format!(
+                    "stale paired-v7 pending pointer is present: {name}"
+                )));
+            }
+        }
+        let after = fs::symlink_metadata(private_root)?;
+        if before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.permissions().mode() & 0o7777 != 0o700
+            || after.permissions().mode() & 0o7777 != 0o700
+        {
+            return Err(ControllerError(
+                "private opensteamer root changed during pending-pointer scan".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_exact_retained_v7_top_level(retained: &Path) -> Result<()> {
+        const EXPECTED: [&str; 16] = [
+            "D:deployment-reference",
+            "D:failed-new",
+            "D:probes",
+            "D:production-driver-v7",
+            "D:rollback-current",
+            "D:source-export",
+            "D:staged-output",
+            "D:swiftpm-scratch",
+            "F:build.stderr",
+            "F:build.stdout",
+            "F:functional-inputs.txt",
+            "F:install-hold-name.txt",
+            "F:journal.log",
+            "F:provenance.txt",
+            "F:result.txt",
+            "F:source.tar",
+        ];
+        let before = fs::symlink_metadata(retained)?;
+        let mut actual = Vec::new();
+        for entry in fs::read_dir(retained)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_str().ok_or_else(|| {
+                ControllerError("retained paired-v7 entry name is not UTF-8".to_owned())
+            })?;
+            let file_type = entry.file_type()?;
+            let kind = if file_type.is_dir() {
+                "D"
+            } else if file_type.is_file() {
+                "F"
+            } else {
+                return Err(ControllerError(format!(
+                    "retained paired-v7 top-level entry has unsafe type: {name}"
+                )));
+            };
+            actual.push(format!("{kind}:{name}"));
+        }
+        actual.sort_unstable();
+        if actual.len() != EXPECTED.len()
+            || actual
+                .iter()
+                .map(String::as_str)
+                .ne(EXPECTED.iter().copied())
+        {
+            return Err(ControllerError(
+                "retained paired-v7 top-level name/type set changed".to_owned(),
+            ));
+        }
+        let after = fs::symlink_metadata(retained)?;
+        if before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.permissions().mode() & 0o7777 != 0o700
+            || after.permissions().mode() & 0o7777 != 0o700
+        {
+            return Err(ControllerError(
+                "retained paired-v7 attempt changed during top-level enumeration".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_exact_retained_v7_evidence(expected_device: u64) -> Result<()> {
+        let root = Path::new(V7_UPDATE_ROOT);
+        let retained = Path::new(RETAINED_FAILED_V7_ATTEMPT);
+        let root_metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.permissions().mode() & 0o7777 == 0o700
+                && metadata.dev() == expected_device
+                && metadata.ino() == RETAINED_FAILED_V7_ROOT_INODE
+                && metadata.st_flags() == 0
+        };
+        let retained_metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.nlink() >= 2
+                && metadata.permissions().mode() & 0o7777 == 0o700
+                && metadata.dev() == expected_device
+                && metadata.ino() == RETAINED_FAILED_V7_ATTEMPT_INODE
+                && metadata.st_flags() == 0
+        };
+        if retained.to_str() != Some(RETAINED_FAILED_V7_ATTEMPT)
+            || retained.parent().and_then(Path::to_str) != Some(V7_UPDATE_ROOT)
+            || retained.file_name().and_then(|name| name.to_str())
+                != Some(RETAINED_FAILED_V7_ATTEMPT_NAME)
+        {
+            return Err(ControllerError(
+                "retained paired-v7 failed attempt path is not byte-exact".to_owned(),
+            ));
+        }
+        let root_before = fs::symlink_metadata(root)?;
+        let retained_before = fs::symlink_metadata(retained)?;
+        if !root_metadata_is_exact(&root_before)
+            || !retained_metadata_is_exact(&retained_before)
+        {
+            return Err(ControllerError(
+                "retained paired-v7 failure evidence metadata changed".to_owned(),
+            ));
+        }
+        require_path_absent(
+            Path::new(RETAINED_FAILED_V7_INSTALL_HOLD),
+            "retained first-attempt paired-v7 install hold",
+        )?;
+        require_path_absent(
+            &retained.join("rollback-reserve.bin"),
+            "retained first-attempt rollback reserve",
+        )?;
+        require_path_absent(
+            &retained.join("driver-transaction-record.txt"),
+            "retained first-attempt driver transaction record",
+        )?;
+        require_exact_retained_v7_top_level(retained)?;
+        require_exact_retained_failure_file(
+            &retained.join("result.txt"),
+            expected_device,
+            RETAINED_FAILED_V7_RESULT_INODE,
+            RETAINED_FAILED_V7_RESULT,
+            RETAINED_FAILED_V7_RESULT_SHA256,
+        )?;
+        require_exact_retained_failure_file(
+            &retained.join("journal.log"),
+            expected_device,
+            RETAINED_FAILED_V7_JOURNAL_INODE,
+            RETAINED_FAILED_V7_JOURNAL,
+            RETAINED_FAILED_V7_JOURNAL_SHA256,
+        )?;
+        require_exact_retained_failure_file(
+            &retained.join("provenance.txt"),
+            expected_device,
+            RETAINED_FAILED_V7_PROVENANCE_INODE,
+            RETAINED_FAILED_V7_PROVENANCE,
+            RETAINED_FAILED_V7_PROVENANCE_SHA256,
+        )?;
+        require_exact_retained_file(
+            &retained.join("source.tar"),
+            expected_device,
+            RETAINED_FAILED_V7_SOURCE_TAR_INODE,
+            0o600,
+            RETAINED_FAILED_V7_SOURCE_TAR_SIZE,
+            RETAINED_FAILED_V7_SOURCE_TAR_SHA256,
+        )?;
+        require_exact_retained_file(
+            &retained.join("functional-inputs.txt"),
+            expected_device,
+            RETAINED_FAILED_V7_FUNCTIONAL_INPUTS_INODE,
+            0o600,
+            RETAINED_FAILED_V7_FUNCTIONAL_INPUTS_SIZE,
+            RETAINED_FAILED_V7_FUNCTIONAL_INPUTS_SHA256,
+        )?;
+        require_exact_retained_file(
+            &retained.join("install-hold-name.txt"),
+            expected_device,
+            RETAINED_FAILED_V7_INSTALL_HOLD_NAME_INODE,
+            0o600,
+            RETAINED_FAILED_V7_INSTALL_HOLD_NAME_SIZE,
+            RETAINED_FAILED_V7_INSTALL_HOLD_NAME_SHA256,
+        )?;
+        require_exact_retained_probe_directory(retained, expected_device)?;
+        require_exact_retained_empty_directory(
+            &retained.join("failed-new"),
+            expected_device,
+            RETAINED_FAILED_V7_FAILED_NEW_INODE,
+        )?;
+        require_exact_retained_empty_directory(
+            &retained.join("rollback-current"),
+            expected_device,
+            RETAINED_FAILED_V7_ROLLBACK_CURRENT_INODE,
+        )?;
+        require_exact_retained_v7_top_level(retained)?;
+        let retained_after = fs::symlink_metadata(retained)?;
+        let root_after = fs::symlink_metadata(root)?;
+        if !root_metadata_is_exact(&root_after)
+            || !retained_metadata_is_exact(&retained_after)
+            || root_before.dev() != root_after.dev()
+            || root_before.ino() != root_after.ino()
+            || root_before.nlink() != root_after.nlink()
+            || root_before.permissions().mode() & 0o7777
+                != root_after.permissions().mode() & 0o7777
+            || retained_before.dev() != retained_after.dev()
+            || retained_before.ino() != retained_after.ino()
+            || retained_before.nlink() != retained_after.nlink()
+            || retained_before.permissions().mode() & 0o7777
+                != retained_after.permissions().mode() & 0o7777
+        {
+            return Err(ControllerError(
+                "retained paired-v7 failure evidence changed during persistent verification"
                     .to_owned(),
             ));
         }
         Ok(())
     }
 
-    fn prepare_v7_update_root_for_first_attempt() -> Result<()> {
+    fn require_v7_retry_admission_ready() -> Result<()> {
+        require_path_absent(
+            Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE),
+            "retained first-attempt paired-v7 pointer",
+        )?;
+        require_path_absent(Path::new(V7_ACTIVE_UPDATE), "retry paired-v7 pointer")?;
+        require_no_v7_pending_pointers()?;
+        require_path_absent(
+            Path::new(RETAINED_FAILED_V7_INSTALL_HOLD),
+            "retained first-attempt paired-v7 install hold",
+        )?;
+        require_path_absent(
+            Path::new(ROOT_V7_SUPPORT_DIRECTORY),
+            "retained first-attempt root support directory",
+        )?;
+        require_path_absent(
+            Path::new(ROOT_V7_TRANSACTION_PARENT),
+            "retained first-attempt root transaction directory",
+        )?;
+        let data_volume_device = verified_data_volume_device()?;
         let root = Path::new(V7_UPDATE_ROOT);
-        match fs::symlink_metadata(root) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                create_private_directory(root)?;
-            }
-            Err(error) => {
-                return Err(ControllerError(format!(
-                    "cannot inspect paired-v7 update root {}: {error}",
-                    root.display()
-                )))
-            }
-            Ok(_) => {}
+        let retained = require_exact_single_private_directory_child_at(
+            root,
+            RETAINED_FAILED_V7_ATTEMPT_NAME,
+        )?;
+        require_exact_retained_v7_evidence(data_volume_device)?;
+        if retained.to_str() != Some(RETAINED_FAILED_V7_ATTEMPT)
+            || require_exact_single_private_directory_child_at(
+                root,
+                RETAINED_FAILED_V7_ATTEMPT_NAME,
+            )?
+            .to_str()
+                != Some(RETAINED_FAILED_V7_ATTEMPT)
+        {
+            return Err(ControllerError(
+                "retained paired-v7 namespace changed during retry admission".to_owned(),
+            ));
         }
-        require_v7_update_root_unused_at(root)
+        Ok(())
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum RetryV7PointerExpectation {
+        Absent,
+        Present,
+    }
+
+    impl RetryV7PointerExpectation {
+        fn token(self) -> &'static str {
+            match self {
+                Self::Absent => "absent",
+                Self::Present => "present",
+            }
+        }
+
+        fn from_token(token: &str) -> Result<Self> {
+            match token {
+                "absent" => Ok(Self::Absent),
+                "present" => Ok(Self::Present),
+                _ => Err(ControllerError(
+                    "v7 restore pointer expectation is not canonical".to_owned(),
+                )),
+            }
+        }
+    }
+
+    fn require_exact_v7_root_pair(root: &Path, current_name: &str) -> Result<()> {
+        let mut actual = Vec::new();
+        for entry in fs::read_dir(root)? {
+            let entry = entry?;
+            let entry_name = entry.file_name();
+            let entry_name = entry_name.to_str().ok_or_else(|| {
+                ControllerError("paired-v7 retry namespace entry is not UTF-8".to_owned())
+            })?;
+            let expected_path = root.join(entry_name);
+            if !entry.file_type()?.is_dir()
+                || entry.path().to_str() != expected_path.to_str()
+            {
+                return Err(ControllerError(
+                    "paired-v7 retry namespace contains a non-directory or non-exact child"
+                        .to_owned(),
+                ));
+            }
+            actual.push(entry_name.to_owned());
+        }
+        actual.sort_unstable();
+        let mut expected = vec![
+            RETAINED_FAILED_V7_ATTEMPT_NAME.to_owned(),
+            current_name.to_owned(),
+        ];
+        expected.sort_unstable();
+        if actual != expected {
+            return Err(ControllerError(
+                "paired-v7 retry namespace is not the exact retained-plus-current pair"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_retry_v7_pointer_expectation(
+        evidence: &Path,
+        expectation: RetryV7PointerExpectation,
+    ) -> Result<()> {
+        require_path_absent(
+            Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE),
+            "retained first-attempt paired-v7 pointer",
+        )?;
+        require_no_v7_pending_pointers()?;
+        match expectation {
+            RetryV7PointerExpectation::Absent => {
+                require_path_absent(Path::new(V7_ACTIVE_UPDATE), "retry paired-v7 pointer")
+            }
+            RetryV7PointerExpectation::Present => verify_update_pointer_at(
+                Path::new(V7_ACTIVE_UPDATE),
+                evidence,
+                Path::new(V7_UPDATE_ROOT),
+            ),
+        }
+    }
+
+    fn require_current_retry_v7_layout(
+        evidence: &Path,
+        expected_nonce: Option<&str>,
+        pointer_expectation: RetryV7PointerExpectation,
+    ) -> Result<()> {
+        let name = evidence
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| ControllerError("paired-v7 retry leaf name is not UTF-8".to_owned()))?;
+        let suffix = name
+            .strip_prefix("paired-v7-update-retry-1-")
+            .ok_or_else(|| {
+                ControllerError("paired-v7 retry leaf escaped its fixed retry-1 shape".to_owned())
+            })?;
+        if suffix.len() <= 37 || suffix.as_bytes()[suffix.len() - 37] != b'-' {
+            return Err(ControllerError(
+                "paired-v7 retry leaf omitted its canonical nonce".to_owned(),
+            ));
+        }
+        let (numeric, nonce_with_separator) = suffix.split_at(suffix.len() - 37);
+        let nonce = &nonce_with_separator[1..];
+        validate_v7_nonce(nonce)?;
+        if expected_nonce.is_some_and(|expected| expected != nonce) {
+            return Err(ControllerError(
+                "paired-v7 retry leaf nonce differs from its transaction binding".to_owned(),
+            ));
+        }
+        let (timestamp_text, pid_text) = numeric.split_once('-').ok_or_else(|| {
+            ControllerError("paired-v7 retry leaf omitted its timestamp or PID".to_owned())
+        })?;
+        let timestamp = timestamp_text.parse::<u64>().ok();
+        let pid = pid_text.parse::<u32>().ok();
+        if timestamp.filter(|value| *value > 0).is_none()
+            || pid.filter(|value| *value > 0).is_none()
+            || timestamp.is_some_and(|value| value.to_string() != timestamp_text)
+            || pid.is_some_and(|value| value.to_string() != pid_text)
+            || pid_text.contains('-')
+        {
+            return Err(ControllerError(
+                "paired-v7 retry leaf timestamp or PID is not canonical".to_owned(),
+            ));
+        }
+        let root = Path::new(V7_UPDATE_ROOT);
+        let expected_evidence = root.join(name);
+        if evidence.to_str() != expected_evidence.to_str()
+            || evidence.parent().and_then(Path::to_str) != Some(V7_UPDATE_ROOT)
+            || evidence.to_str() == Some(RETAINED_FAILED_V7_ATTEMPT)
+            || name == RETAINED_FAILED_V7_ATTEMPT_NAME
+        {
+            return Err(ControllerError(
+                "paired-v7 retry leaf is not one exact direct non-retained child".to_owned(),
+            ));
+        }
+        let data_volume_device = verified_data_volume_device()?;
+        let root_before = fs::symlink_metadata(root)?;
+        let retry_metadata = fs::symlink_metadata(evidence)?;
+        if !root_before.file_type().is_dir()
+            || root_before.file_type().is_symlink()
+            || root_before.uid() != USER_ID
+            || root_before.gid() != RETAINED_FAILED_V7_ATTEMPT_GID
+            || root_before.permissions().mode() & 0o7777 != 0o700
+            || root_before.dev() != data_volume_device
+            || root_before.ino() != RETAINED_FAILED_V7_ROOT_INODE
+            || root_before.st_flags() != 0
+            || retry_metadata.file_type().is_symlink()
+            || !retry_metadata.file_type().is_dir()
+            || retry_metadata.uid() != USER_ID
+            || retry_metadata.gid() != RETAINED_FAILED_V7_ATTEMPT_GID
+            || retry_metadata.permissions().mode() & 0o7777 != 0o700
+            || retry_metadata.dev() != data_volume_device
+            || retry_metadata.ino() == 0
+            || retry_metadata.ino() == RETAINED_FAILED_V7_ROOT_INODE
+            || retry_metadata.ino() == RETAINED_FAILED_V7_ATTEMPT_INODE
+            || retry_metadata.nlink() < 2
+            || retry_metadata.st_flags() != 0
+        {
+            return Err(ControllerError(
+                "paired-v7 current retry namespace metadata is unsafe".to_owned(),
+            ));
+        }
+        require_exact_v7_root_pair(root, name)?;
+        require_exact_retained_v7_evidence(data_volume_device)?;
+        require_retry_v7_pointer_expectation(evidence, pointer_expectation)?;
+        require_exact_v7_root_pair(root, name)?;
+        let root_after = fs::symlink_metadata(root)?;
+        let retry_after = fs::symlink_metadata(evidence)?;
+        if !root_after.file_type().is_dir()
+            || root_after.file_type().is_symlink()
+            || root_after.uid() != USER_ID
+            || root_after.gid() != RETAINED_FAILED_V7_ATTEMPT_GID
+            || root_after.permissions().mode() & 0o7777 != 0o700
+            || retry_after.file_type().is_symlink()
+            || !retry_after.file_type().is_dir()
+            || retry_after.uid() != USER_ID
+            || retry_after.gid() != RETAINED_FAILED_V7_ATTEMPT_GID
+            || retry_after.permissions().mode() & 0o7777 != 0o700
+            || root_before.dev() != root_after.dev()
+            || root_before.ino() != root_after.ino()
+            || root_before.nlink() != root_after.nlink()
+            || root_before.permissions().mode() & 0o7777
+                != root_after.permissions().mode() & 0o7777
+            || root_before.st_flags() != root_after.st_flags()
+            || retry_metadata.dev() != retry_after.dev()
+            || retry_metadata.ino() != retry_after.ino()
+            || retry_metadata.nlink() != retry_after.nlink()
+            || retry_metadata.len() != retry_after.len()
+            || retry_metadata.permissions().mode() & 0o7777
+                != retry_after.permissions().mode() & 0o7777
+            || retry_metadata.st_flags() != retry_after.st_flags()
+        {
+            return Err(ControllerError(
+                "paired-v7 retry namespace was renamed or replaced during persistent proof"
+                    .to_owned(),
+            ));
+        }
+        require_retry_v7_pointer_expectation(evidence, pointer_expectation)?;
+        require_exact_v7_root_pair(root, name)?;
+        Ok(())
     }
 
     fn execute_paired_v7_update(
@@ -4852,8 +5862,7 @@ pub(crate) mod paired_v7 {
         verify_committed_v6_baseline()?;
         let initial_generation = verify_paired_v7_runtime()?;
         verify_isolated_pairing_items_present()?;
-        require_path_absent(Path::new(V7_ACTIVE_UPDATE), "active paired-v7 pointer")?;
-        require_v7_update_root_unused()?;
+        require_v7_retry_admission_ready()?;
         require_available_bytes(
             Path::new(PRIVATE_ROOT),
             2 * 1_024 * 1_024 * 1_024,
@@ -4862,13 +5871,18 @@ pub(crate) mod paired_v7 {
 
         let nonce = new_nonce()?;
         let evidence = PathBuf::from(V7_UPDATE_ROOT).join(format!(
-            "paired-v7-update-{}-{}-{}",
+            "paired-v7-update-retry-1-{}-{}-{}",
             unix_seconds()?,
             std::process::id(),
             nonce
         ));
-        prepare_v7_update_root_for_first_attempt()?;
+        require_v7_retry_admission_ready()?;
         create_private_directory(&evidence)?;
+        require_current_retry_v7_layout(
+            &evidence,
+            Some(&nonce),
+            RetryV7PointerExpectation::Absent,
+        )?;
         let layout = V7Layout::new(repo, evidence, &nonce);
         create_private_directory(&layout.rollback_dir)?;
         create_private_directory(&layout.failed_dir)?;
@@ -4898,16 +5912,10 @@ pub(crate) mod paired_v7 {
                     );
                     return Ok(());
                 }
-                let pointer_absent_before_stop = matches!(
-                    journal.state,
-                    V7State::StopInitiated
-                        | V7State::RollbackStarted
-                        | V7State::DriverRestored
-                        | V7State::RolledBack
-                ) && matches!(
-                    fs::symlink_metadata(V7_ACTIVE_UPDATE),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound
-                );
+                let active_pointer_exists =
+                    path_exists_without_follow(Path::new(V7_ACTIVE_UPDATE))?;
+                let pointer_absent_before_stop = !active_pointer_exists
+                    && matches!(journal.state, V7State::StopInitiated | V7State::RolledBack);
                 let crossed_stop = v7_crossed_stop_without_durable_commit(journal.state)
                     && !pointer_absent_before_stop;
                 if !crossed_stop {
@@ -4922,11 +5930,32 @@ pub(crate) mod paired_v7 {
                     );
                     return Err(primary);
                 }
-                verify_v7_active_pointer(&layout.evidence)?;
-                match rollback_to_current_baseline(&layout, &mut journal, &transaction_lock) {
+                let rollback_pointer_expectation = if active_pointer_exists {
+                    RetryV7PointerExpectation::Present
+                } else {
+                    retire_exact_retry_v7_pending_pointer_after_parent_crash(
+                        &layout.evidence,
+                        std::process::id(),
+                    )?;
+                    RetryV7PointerExpectation::Absent
+                };
+                match rollback_to_current_baseline(
+                    &layout,
+                    &mut journal,
+                    &transaction_lock,
+                    rollback_pointer_expectation,
+                ) {
                     Ok(()) => {
                         write_result(&layout.result, "rolled-back", Some(&primary.to_string()))?;
-                        retire_v7_active_pointer(&layout)?;
+                        if rollback_pointer_expectation == RetryV7PointerExpectation::Present {
+                            retire_v7_active_pointer(&layout)?;
+                        } else {
+                            require_current_retry_v7_layout(
+                                &layout.evidence,
+                                Some(&layout.nonce),
+                                RetryV7PointerExpectation::Absent,
+                            )?;
+                        }
                         Err(ControllerError(format!(
                             "update failed and exact current isolated baseline was restored; evidence={}: {primary}",
                             layout.evidence.display()
@@ -5007,6 +6036,11 @@ pub(crate) mod paired_v7 {
             ));
         }
 
+        require_current_retry_v7_layout(
+            &layout.evidence,
+            Some(&layout.nonce),
+            RetryV7PointerExpectation::Absent,
+        )?;
         let boundary_provenance = verify_paired_v7_git_provenance(&layout.repo, true)?;
         require_authorized_provenance(&boundary_provenance, authorized_commit, authorized_tree)?;
         if boundary_provenance.commit != provenance.commit
@@ -5028,8 +6062,19 @@ pub(crate) mod paired_v7 {
             ));
         }
 
+        require_current_retry_v7_layout(
+            &layout.evidence,
+            Some(&layout.nonce),
+            RetryV7PointerExpectation::Absent,
+        )?;
         let mut broker = RootDriverBrokerClient::start(layout)?;
         journal.record(V7State::DriverPrepared, &[])?;
+
+        require_current_retry_v7_layout(
+            &layout.evidence,
+            Some(&layout.nonce),
+            RetryV7PointerExpectation::Absent,
+        )?;
 
         verify_v7_deployment_reference(layout)?;
         verify_isolated_pairing_items_present()?;
@@ -5047,6 +6092,11 @@ pub(crate) mod paired_v7 {
             ));
         }
 
+        require_current_retry_v7_layout(
+            &layout.evidence,
+            Some(&layout.nonce),
+            RetryV7PointerExpectation::Absent,
+        )?;
         let transaction = (|| -> Result<LaunchGeneration> {
             broker.ping()?;
             let reserve = allocate_rollback_reserve(&layout.rollback_reserve, 8 * 1_024 * 1_024)?;
@@ -5191,6 +6241,13 @@ pub(crate) mod paired_v7 {
         if let Err(error) = broker.prepare_commit() {
             return rollback_ready_commit_failure(error, &mut broker, journal);
         }
+        if let Err(error) = require_current_retry_v7_layout(
+            &layout.evidence,
+            Some(&layout.nonce),
+            RetryV7PointerExpectation::Present,
+        ) {
+            return rollback_ready_commit_failure(error, &mut broker, journal);
+        }
         if let Err(error) = journal.record(V7State::Committed, &[]) {
             return rollback_ready_commit_failure(error, &mut broker, journal);
         }
@@ -5221,7 +6278,17 @@ pub(crate) mod paired_v7 {
         verify_committed_v6_baseline()?;
         let evidence =
             read_update_pointer_at(Path::new(V7_ACTIVE_UPDATE), Path::new(V7_UPDATE_ROOT))?;
+        require_current_retry_v7_layout(
+            &evidence,
+            None,
+            RetryV7PointerExpectation::Present,
+        )?;
         let layout = v7_layout_from_existing(repo, evidence)?;
+        require_current_retry_v7_layout(
+            &layout.evidence,
+            Some(&layout.nonce),
+            RetryV7PointerExpectation::Present,
+        )?;
         let mut journal = V7Journal::open(&layout.journal)?;
         if journal.state == V7State::RolledBack {
             verify_paired_v7_runtime()?;
@@ -5231,7 +6298,12 @@ pub(crate) mod paired_v7 {
             println!("PAIRED_V7_HOST_UPDATE_ALREADY_ROLLED_BACK");
             return Ok(());
         }
-        rollback_to_current_baseline(&layout, &mut journal, &transaction_lock)?;
+        rollback_to_current_baseline(
+            &layout,
+            &mut journal,
+            &transaction_lock,
+            RetryV7PointerExpectation::Present,
+        )?;
         write_result(&layout.result, "rolled-back-by-explicit-request", None)?;
         retire_v7_active_pointer(&layout)?;
         println!(
@@ -5245,9 +6317,14 @@ pub(crate) mod paired_v7 {
         layout: &V7Layout,
         journal: &mut V7Journal,
         _transaction_lock: &UpdateTransactionLock,
+        pointer_expectation: RetryV7PointerExpectation,
     ) -> Result<()> {
         journal.require_healthy()?;
-        verify_v7_active_pointer(&layout.evidence)?;
+        require_current_retry_v7_layout(
+            &layout.evidence,
+            Some(&layout.nonce),
+            pointer_expectation,
+        )?;
         verify_v5_pointer_unchanged()?;
         verify_isolated_pairing_items_present()?;
         if journal.state == V7State::RolledBack {
@@ -5268,7 +6345,10 @@ pub(crate) mod paired_v7 {
         let mut driver_restore = if driver_already_restored {
             None
         } else {
-            Some(RootExistingDriverRestoreClient::start(layout)?)
+            Some(RootExistingDriverRestoreClient::start(
+                layout,
+                pointer_expectation,
+            )?)
         };
         let already_rolling_back = matches!(
             journal.state,
@@ -5285,7 +6365,11 @@ pub(crate) mod paired_v7 {
             release_rollback_reserve(&layout.rollback_reserve)?;
         }
 
-        verify_v7_active_pointer(&layout.evidence)?;
+        require_current_retry_v7_layout(
+            &layout.evidence,
+            Some(&layout.nonce),
+            pointer_expectation,
+        )?;
         verify_v5_pointer_unchanged()?;
         verify_isolated_pairing_items_present()?;
         bootout_paired_v7_job_if_loaded(layout)?;
@@ -6178,6 +7262,19 @@ pub(crate) mod paired_v7 {
             0o600,
             EXPECTED_DEFAULT_ROUTE_GUARDIAN_SOURCE_SHA256,
         )?;
+        const GUARDIAN_SOURCE_BASENAME: &str = "V7DefaultRouteGuardian.swift";
+        let guardian_source_parent = guardian_source.parent().ok_or_else(|| {
+            ControllerError("paired-v7 guardian source has no validated parent".to_owned())
+        })?;
+        require_directory(guardian_source_parent, 0o700)?;
+        if guardian_source.file_name().and_then(|name| name.to_str())
+            != Some(GUARDIAN_SOURCE_BASENAME)
+        {
+            return Err(ControllerError(
+                "paired-v7 guardian source basename changed after absolute-path validation"
+                    .to_owned(),
+            ));
+        }
         let public_builder = require_exported_pinned_file(
             layout,
             "macOS/VirtualAudioDriver/scripts/build-public-vpio-probe.sh",
@@ -6300,8 +7397,8 @@ pub(crate) mod paired_v7 {
             ],
         )?;
         compile_swift(
-            path_text(&guardian_source)?,
-            None,
+            GUARDIAN_SOURCE_BASENAME,
+            Some(guardian_source_parent),
             &layout.default_route_guardian,
             &[],
         )?;
@@ -8397,7 +9494,11 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
     }
 
     fn publish_v7_active_pointer(evidence: &Path) -> Result<()> {
-        require_descendant(Path::new(V7_UPDATE_ROOT), evidence)?;
+        require_current_retry_v7_layout(
+            evidence,
+            None,
+            RetryV7PointerExpectation::Absent,
+        )?;
         let pending = PathBuf::from(format!("{V7_ACTIVE_UPDATE}.pending-{}", std::process::id()));
         require_path_absent(&pending, "pending paired-v7 pointer")?;
         require_path_absent(Path::new(V7_ACTIVE_UPDATE), "active paired-v7 pointer")?;
@@ -8405,22 +9506,42 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
         writeln!(file, "{}", evidence.display())?;
         file.sync_all()?;
         rename_exclusive(&pending, Path::new(V7_ACTIVE_UPDATE))?;
-        fsync_parent(Path::new(V7_ACTIVE_UPDATE))
+        fsync_parent(Path::new(V7_ACTIVE_UPDATE))?;
+        require_current_retry_v7_layout(
+            evidence,
+            None,
+            RetryV7PointerExpectation::Present,
+        )
     }
 
     fn verify_v7_active_pointer(expected_evidence: &Path) -> Result<()> {
-        verify_update_pointer_at(
-            Path::new(V7_ACTIVE_UPDATE),
+        require_current_retry_v7_layout(
             expected_evidence,
-            Path::new(V7_UPDATE_ROOT),
+            None,
+            RetryV7PointerExpectation::Present,
         )
     }
 
     fn retire_v7_active_pointer(layout: &V7Layout) -> Result<()> {
+        let pointer_expectation = if path_exists_without_follow(Path::new(V7_ACTIVE_UPDATE))? {
+            RetryV7PointerExpectation::Present
+        } else {
+            RetryV7PointerExpectation::Absent
+        };
+        require_current_retry_v7_layout(
+            &layout.evidence,
+            Some(&layout.nonce),
+            pointer_expectation,
+        )?;
         retire_update_pointer_at(
             Path::new(V7_ACTIVE_UPDATE),
             &layout.evidence,
             Path::new(V7_UPDATE_ROOT),
+        )?;
+        require_current_retry_v7_layout(
+            &layout.evidence,
+            Some(&layout.nonce),
+            RetryV7PointerExpectation::Absent,
         )
     }
 
@@ -8829,6 +9950,8 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
             format!("{V7_UPDATE_ROOT}/paired-v7-update-1-1-{nonce}/production-driver-v7");
         let staged_driver = format!("{staged_root}/{PRODUCT_DRIVER_NAME}");
         let staged_package = format!("{staged_root}/OpensteamerVirtualMicrophone-v7.pkg");
+        let retry_evidence =
+            format!("{V7_UPDATE_ROOT}/paired-v7-update-retry-1-1-41-{nonce}");
         let parent_start_sha256 = "e".repeat(64);
         let internal = [
             vec![
@@ -8860,6 +9983,8 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
                 executable.clone(),
                 "--uid501-driver-restore-proxy-v7".to_owned(),
                 nonce.to_owned(),
+                retry_evidence.clone(),
+                RetryV7PointerExpectation::Absent.token().to_owned(),
                 "41".to_owned(),
                 parent_start_sha256.clone(),
             ],
@@ -8951,6 +10076,17 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
                 executable.clone(),
                 "--uid501-driver-restore-proxy-v7".to_owned(),
                 nonce.to_owned(),
+                retry_evidence.clone(),
+                "unknown".to_owned(),
+                "41".to_owned(),
+                parent_start_sha256.clone(),
+            ],
+            vec![
+                executable.clone(),
+                "--uid501-driver-restore-proxy-v7".to_owned(),
+                nonce.to_owned(),
+                retry_evidence,
+                RetryV7PointerExpectation::Present.token().to_owned(),
                 "0".to_owned(),
                 parent_start_sha256.clone(),
             ],
@@ -9405,30 +10541,63 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
         drop(first);
         drop(acquire_update_transaction_lock_at(&transaction_lock)?);
 
-        let failed_attempt_root = directory.join("failed-attempt-root");
-        require_v7_update_root_unused_at(&failed_attempt_root)?;
-        fs::create_dir(&failed_attempt_root)?;
-        fs::set_permissions(&failed_attempt_root, fs::Permissions::from_mode(0o700))?;
-        require_v7_update_root_unused_at(&failed_attempt_root)?;
-        let failed_attempt = failed_attempt_root.join("failed-before-stop-evidence");
-        fs::create_dir(&failed_attempt)?;
-        fs::set_permissions(&failed_attempt, fs::Permissions::from_mode(0o700))?;
-        if require_v7_update_root_unused_at(&failed_attempt_root).is_ok() {
+        let empty_attempt_root = directory.join("empty-attempt-root");
+        fs::create_dir(&empty_attempt_root)?;
+        fs::set_permissions(&empty_attempt_root, fs::Permissions::from_mode(0o700))?;
+        if require_exact_single_private_directory_child_at(
+            &empty_attempt_root,
+            "retained-failed-attempt",
+        )
+        .is_ok()
+        {
             return Err(ControllerError(
-                "paired-v7 single-attempt gate accepted failed-before-stop evidence".to_owned(),
+                "paired-v7 retry gate accepted an absent retained attempt".to_owned(),
             ));
         }
 
-        let rolled_back_root = directory.join("rolled-back-attempt-root");
-        fs::create_dir(&rolled_back_root)?;
-        fs::set_permissions(&rolled_back_root, fs::Permissions::from_mode(0o700))?;
-        require_v7_update_root_unused_at(&rolled_back_root)?;
-        let rolled_back_attempt = rolled_back_root.join("rolled-back-evidence");
-        fs::create_dir(&rolled_back_attempt)?;
-        fs::set_permissions(&rolled_back_attempt, fs::Permissions::from_mode(0o700))?;
-        if require_v7_update_root_unused_at(&rolled_back_root).is_ok() {
+        let exact_attempt_root = directory.join("exact-attempt-root");
+        fs::create_dir(&exact_attempt_root)?;
+        fs::set_permissions(&exact_attempt_root, fs::Permissions::from_mode(0o700))?;
+        let exact_attempt = exact_attempt_root.join("retained-failed-attempt");
+        fs::create_dir(&exact_attempt)?;
+        fs::set_permissions(&exact_attempt, fs::Permissions::from_mode(0o700))?;
+        if require_exact_single_private_directory_child_at(
+            &exact_attempt_root,
+            "retained-failed-attempt",
+        )? != exact_attempt
+        {
             return Err(ControllerError(
-                "paired-v7 single-attempt gate accepted rolled-back evidence".to_owned(),
+                "paired-v7 retry gate changed the exact retained attempt path".to_owned(),
+            ));
+        }
+        let extra_attempt = exact_attempt_root.join("unexpected-second-attempt");
+        fs::create_dir(&extra_attempt)?;
+        fs::set_permissions(&extra_attempt, fs::Permissions::from_mode(0o700))?;
+        if require_exact_single_private_directory_child_at(
+            &exact_attempt_root,
+            "retained-failed-attempt",
+        )
+        .is_ok()
+        {
+            return Err(ControllerError(
+                "paired-v7 retry gate accepted an unexpected additional attempt".to_owned(),
+            ));
+        }
+
+        let wrong_attempt_root = directory.join("wrong-attempt-root");
+        fs::create_dir(&wrong_attempt_root)?;
+        fs::set_permissions(&wrong_attempt_root, fs::Permissions::from_mode(0o700))?;
+        let wrong_attempt = wrong_attempt_root.join("different-failed-attempt");
+        fs::create_dir(&wrong_attempt)?;
+        fs::set_permissions(&wrong_attempt, fs::Permissions::from_mode(0o700))?;
+        if require_exact_single_private_directory_child_at(
+            &wrong_attempt_root,
+            "retained-failed-attempt",
+        )
+        .is_ok()
+        {
+            return Err(ControllerError(
+                "paired-v7 retry gate accepted the wrong retained attempt".to_owned(),
             ));
         }
 
