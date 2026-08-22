@@ -915,7 +915,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   $'    resolve)\n      # Xcode\'s package resolver applies its own child sandbox.' 1 \
   'side-by-side TestFlight native package-sandbox resolution'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'    settings|archive|export)\n      run_with_pinned_xcode_sandbox_profile "$@"' 1 \
+  $'    settings|archive|export)\n      run_with_pinned_xcode_sandbox_profile "${destination_contract}" "$@"' 1 \
   'side-by-side TestFlight release-action protected-path sandbox'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '-packageCachePath "${TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY}"' 1 \
@@ -936,7 +936,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_PACKAGE_RESOLVED_SHA256="161213e9507513e41f0acba0d7439fcf633b9d03d78c22b1e4b15fa9f83a01d9"' 1 \
   'side-by-side TestFlight exact resolved package pin'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '/usr/bin/sandbox-exec -p "${profile_text}"' 1 \
+  '/usr/bin/sandbox-exec -p "${effective_profile_text}"' 1 \
   'side-by-side TestFlight protected-path Xcode sandbox'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'if sysread -i ${profile_reader_fd} -s 4096 \' 1 \
@@ -993,6 +993,57 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_XCODEBUILD_SHA256="d508f0e1901151843804e4af512d4587ad0e422039e43e14abf22792360ad3d4"' 1 \
   'side-by-side TestFlight reviewed real xcodebuild digest'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH="${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/SharedFrameworks/DVTITunesSoftware.framework/Versions/A/XPCServices/com.apple.dt.Xcode.ITunesSoftwareService.xpc"' 1 \
+  'side-by-side TestFlight exact Xcode distribution-service bundle path'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH="${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH}/Contents/MacOS/com.apple.dt.Xcode.ITunesSoftwareService"' 1 \
+  'side-by-side TestFlight exact Xcode distribution-service executable path'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_CD_HASH="0a6b7f28d14e95f3a9273a61c7433b278b4998d2"' 1 \
+  'side-by-side TestFlight exact Xcode distribution-service signature identity'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_SHA256="090e23f877a26bb2d67eb7ba9444e914e39c722ab81d9ab7168ae3b445422b5b"' 1 \
+  'side-by-side TestFlight exact Xcode distribution-service metadata digest'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_SHA256="b45900e24d9f6ed0f468203db455a8baf78fe78c4ae6e863ba82c02f2eaa02da"' 1 \
+  'side-by-side TestFlight exact Xcode distribution-service executable digest'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function verify_xcode_itunes_software_service_static_contract() {' 1 \
+  'side-by-side TestFlight static Xcode distribution-service contract'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function verify_reviewed_xcode_itunes_software_service_identity() {' 1 \
+  'side-by-side TestFlight runtime Xcode distribution-service identity proof'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_JOB_CREATION_RULE="(allow job-creation (literal \"${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH}\"))"' 1 \
+  'side-by-side TestFlight exact Xcode distribution-service job allowance'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'job-creation' 3 \
+  'side-by-side TestFlight sole exact job-creation allowance'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '[[ "${profile_text}" != *'\''job-creation'\''* ]] || operation_status=1' 1 \
+  'side-by-side TestFlight job-creation-free base sandbox profile'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    settings|archive)\n      ;;\n    export)\n      verify_reviewed_xcode_itunes_software_service_identity || return 1' 1 \
+  'side-by-side TestFlight export-only distribution-service job allowance'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  "if [[ \"\${destination_contract}\" == 'export' ]]; then" 2 \
+  'side-by-side TestFlight exact export sandbox-profile delta'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  "effective_profile_text+=\$'\\n'" 1 \
+  'side-by-side TestFlight separated export sandbox-profile rule'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'effective_profile_text+="${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_JOB_CREATION_RULE}"' 1 \
+  'side-by-side TestFlight exact export job-creation rule insertion'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    verify_reviewed_xcode_itunes_software_service_identity \\\n      || operation_status=1' 1 \
+  'side-by-side TestFlight post-export distribution-service identity proof'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '(allow job-creation)' 0 \
+  'side-by-side TestFlight broad job-creation rejection'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'DVTITunesConnectOutOfProcess' 0 \
+  'side-by-side TestFlight private in-process distribution override rejection'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function verify_reviewed_xcode_volume_identity() {' 1 \
   'side-by-side TestFlight real-Xcode T7 volume and store verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
@@ -1017,7 +1068,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '/usr/bin/codesign --verify --deep --strict --verbose=4 \' 1 \
   'side-by-side TestFlight full Xcode bundle seal verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '"${TESTFLIGHT_XCODE_BUNDLE_IDENTITY%%:*}"' 2 \
+  '"${TESTFLIGHT_XCODE_BUNDLE_IDENTITY%%:*}"' 3 \
   'side-by-side TestFlight real-Xcode filesystem-device binding'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'verify_reviewed_xcode_toolchain_identity' 3 \

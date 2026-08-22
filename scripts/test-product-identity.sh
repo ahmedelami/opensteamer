@@ -1054,9 +1054,72 @@ require_rejection "$CASE" 'side-by-side TestFlight empty inherited Xcode environ
 
 CASE=$(new_case testflight-xcode-sandbox)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  '/usr/bin/sandbox-exec -p "${profile_text}"' \
+  '/usr/bin/sandbox-exec -p "${effective_profile_text}"' \
   '/usr/bin/env'
 require_rejection "$CASE" 'side-by-side TestFlight protected-path Xcode sandbox'
+
+CASE=$(new_case testflight-xcode-distribution-service-path)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH="${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/SharedFrameworks/DVTITunesSoftware.framework/Versions/A/XPCServices/com.apple.dt.Xcode.ITunesSoftwareService.xpc"' \
+  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH="/private/tmp/com.apple.dt.Xcode.ITunesSoftwareService.xpc"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight exact Xcode distribution-service bundle path'
+
+CASE=$(new_case testflight-xcode-distribution-service-digest)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_SHA256="b45900e24d9f6ed0f468203db455a8baf78fe78c4ae6e863ba82c02f2eaa02da"' \
+  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight exact Xcode distribution-service executable digest'
+
+CASE=$(new_case testflight-xcode-distribution-service-verifier)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'function verify_reviewed_xcode_itunes_software_service_identity() {' \
+  'function ignore_reviewed_xcode_itunes_software_service_identity() {'
+require_rejection "$CASE" \
+  'side-by-side TestFlight runtime Xcode distribution-service identity proof'
+
+CASE=$(new_case testflight-xcode-broad-job-creation)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_JOB_CREATION_RULE="(allow job-creation (literal \"${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH}\"))"' \
+  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_JOB_CREATION_RULE="(allow job-creation)"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight exact Xcode distribution-service job allowance'
+
+CASE=$(new_case testflight-xcode-alternate-base-job-creation)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  "    print -r -- '(allow default)'" \
+  $'    print -r -- '\''(allow default)'\''\n    print -r -- '\''(allow job-creation (subpath "/"))'\'''
+require_rejection "$CASE" \
+  'side-by-side TestFlight sole exact job-creation allowance'
+
+CASE=$(new_case testflight-xcode-missing-export-job-creation)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'effective_profile_text+="${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_JOB_CREATION_RULE}"' \
+  ':'
+require_rejection "$CASE" \
+  'side-by-side TestFlight exact export job-creation rule insertion'
+
+CASE=$(new_case testflight-xcode-base-job-creation-runtime-check)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '[[ "${profile_text}" != *'\''job-creation'\''* ]] || operation_status=1' \
+  '[[ -n "${profile_text}" ]] || operation_status=1'
+require_rejection "$CASE" \
+  'side-by-side TestFlight job-creation-free base sandbox profile'
+
+CASE=$(new_case testflight-xcode-job-creation-on-archive)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'  local effective_profile_text="${profile_text}"\n  if [[ "${destination_contract}" == '\''export'\'' ]]; then' \
+  $'  local effective_profile_text="${profile_text}"\n  if [[ "${destination_contract}" == '\''archive'\'' ]]; then'
+require_rejection "$CASE" \
+  'side-by-side TestFlight exact export sandbox-profile delta'
+
+CASE=$(new_case testflight-xcode-in-process-distribution-override)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'readonly EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_VERSION="24904"' \
+  $'readonly EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_VERSION="24904"\nreadonly DVTITunesConnectOutOfProcess="NO"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight private in-process distribution override rejection'
 
 CASE=$(new_case testflight-native-package-sandbox-resolution)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -2591,8 +2654,11 @@ source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
 trap - EXIT HUP INT QUIT TERM
 
 typeset -gi OUTER_SANDBOX_CALLS=0
+typeset -ga OUTER_SANDBOX_CONTRACTS=()
 function run_with_pinned_xcode_sandbox_profile() {
   (( OUTER_SANDBOX_CALLS += 1 ))
+  OUTER_SANDBOX_CONTRACTS+=("$1")
+  shift
   "$@"
 }
 
@@ -2603,7 +2669,8 @@ run_xcodebuild_command_for_destination_contract resolve \
 run_xcodebuild_command_for_destination_contract settings /usr/bin/true
 run_xcodebuild_command_for_destination_contract archive /usr/bin/true
 run_xcodebuild_command_for_destination_contract export /usr/bin/true
-[[ "$OUTER_SANDBOX_CALLS" == 3 ]]
+[[ "$OUTER_SANDBOX_CALLS" == 3 \
+    && "${(j:|:)OUTER_SANDBOX_CONTRACTS}" == 'settings|archive|export' ]]
 DESTINATIONROUTINGTEST
 
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'ARCHIVEROOTSTEST'
@@ -2729,14 +2796,21 @@ PROFILE_PATH="$PROFILE_PATH" /bin/zsh <<'PROFILETEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
 trap - EXIT HUP INT QUIT TERM
 function verify_control_directory_identity() { return 0 }
+typeset -gi DISTRIBUTION_SERVICE_IDENTITY_CALLS=0
+function verify_reviewed_xcode_itunes_software_service_identity() {
+  (( DISTRIBUTION_SERVICE_IDENTITY_CALLS += 1 ))
+}
 TESTFLIGHT_CONTROL_DIRECTORY=$PROFILE_CONTROL
 TESTFLIGHT_XCODE_SANDBOX_PROFILE_PATH=$PROFILE_PATH
 TESTFLIGHT_XCODE_SANDBOX_PROFILE_IDENTITY=$(stat_identity "$PROFILE_PATH")
 TESTFLIGHT_XCODE_SANDBOX_PROFILE_SHA256=$(sha256_file "$PROFILE_PATH")
 sysopen -r -o nofollow -u TESTFLIGHT_XCODE_SANDBOX_PROFILE_FD "$PROFILE_PATH"
 verify_xcode_sandbox_profile_identity
-run_with_pinned_xcode_sandbox_profile /usr/bin/true
-run_with_pinned_xcode_sandbox_profile /usr/bin/true
+run_with_pinned_xcode_sandbox_profile settings /usr/bin/true
+run_with_pinned_xcode_sandbox_profile archive /usr/bin/true
+[[ "$DISTRIBUTION_SERVICE_IDENTITY_CALLS" == 0 ]]
+run_with_pinned_xcode_sandbox_profile export /usr/bin/true
+[[ "$DISTRIBUTION_SERVICE_IDENTITY_CALLS" == 2 ]]
 
 print -r -- '(allow default)' >"$PROFILE_PATH"
 if verify_xcode_sandbox_profile_identity >/dev/null 2>&1; then
