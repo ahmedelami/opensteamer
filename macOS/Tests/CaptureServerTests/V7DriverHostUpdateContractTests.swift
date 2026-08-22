@@ -197,7 +197,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             && !build.contains("path_text(&guardian_source)?")
             && controller.contains(
                 "const EXPECTED_DEFAULT_ROUTE_GUARDIAN_BINARY_SHA256: &str =\n"
-                    + "        \"307136582f85087ab7f8b846a49b428de9fb87d2726071e7e3ea4b3112d90b8b\";"
+                    + "        \"53ee0ce919f1b61c9d66a95d3ec8b417fba85df9f925fd24146d70b663fa995c\";"
             )
             && build.components(separatedBy: "-disable-sil-perf-optzns").count - 1 == 1
             && build.components(separatedBy: "-disable-incremental-llvm-codegen").count - 1 == 1
@@ -941,7 +941,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         }
 
         let launcherTokens = [
-            "EXPECTED_BINARY_SHA256='3ab723168c7dfd3ae86502998fd63462a306dbfe10faca46faca8e49250326c0'",
+            "EXPECTED_BINARY_SHA256='8c1efa7039649a027987fa306460af8d27caa1f10f5d741ee4332b54a0e3a07c'",
             "CONTROLLER_BINARY_SHA256=$(/usr/bin/shasum -a 256 \"$CONTROLLER\"",
             "[ \"$CONTROLLER_BINARY_SHA256\" = \"$EXPECTED_BINARY_SHA256\" ]",
             "compiled paired-v7 controller differs from the reviewed binary hash",
@@ -1200,23 +1200,32 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
     private func hasEvidencePreservingRetryNamespaceContract(_ controller: String) -> Bool {
         let retainedRoot =
             #"/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7"#
-        let retryPointer =
+        let retry2Pointer =
+            #"/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-2"#
+        let retry1Pointer =
             #"/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-1"#
         let firstAttemptPointer =
             #"/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7"#
         let retainedName =
             "paired-v7-update-1787367704-92913-bba21548-458c-4d31-bd0a-eccdb282c02a"
         let retainedPath = retainedRoot + "/" + retainedName
+        let retainedRetry1Name =
+            "paired-v7-update-retry-1-1787373601-48365-716c0ed7-8cd5-4b9f-9d64-a3169a077a25"
+        let retainedRetry1Path = retainedRoot + "/" + retainedRetry1Name
         guard
             controller.contains(
                 "const V7_UPDATE_ROOT: &str =\n        \"" + retainedRoot + "\";"
             ),
             controller.contains(
-                "const V7_ACTIVE_UPDATE: &str =\n        \"" + retryPointer + "\";"
+                "const V7_ACTIVE_UPDATE: &str =\n        \"" + retry2Pointer + "\";"
             ),
             controller.contains(
                 "const FIRST_ATTEMPT_V7_ACTIVE_UPDATE: &str =\n        \""
                     + firstAttemptPointer + "\";"
+            ),
+            controller.contains(
+                "const RETRY_1_V7_ACTIVE_UPDATE: &str =\n        \""
+                    + retry1Pointer + "\";"
             ),
             controller.contains(
                 "const RETAINED_FAILED_V7_ATTEMPT_NAME: &str =\n        \""
@@ -1225,6 +1234,14 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             controller.contains(
                 "const RETAINED_FAILED_V7_ATTEMPT: &str =\n        \""
                     + retainedPath + "\";"
+            ),
+            controller.contains(
+                "const RETAINED_FAILED_V7_RETRY_1_NAME: &str =\n        \""
+                    + retainedRetry1Name + "\";"
+            ),
+            controller.contains(
+                "const RETAINED_FAILED_V7_RETRY_1: &str =\n        \""
+                    + retainedRetry1Path + "\";"
             ),
             !controller.contains("paired-host-updates-v7-retry-1"),
             let singleChild = try? functionBody(
@@ -1250,6 +1267,11 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             let probes = try? functionBody(
                 controller,
                 beginningWith: "fn require_exact_retained_probe_directory(",
+                endingBefore: "fn require_exact_retained_retry_1_probe_directory("
+            ),
+            let retry1Probes = try? functionBody(
+                controller,
+                beginningWith: "fn require_exact_retained_retry_1_probe_directory(",
                 endingBefore: "fn require_no_v7_pending_pointers()"
             ),
             let pendingScan = try? functionBody(
@@ -1265,6 +1287,11 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             let retainedEvidence = try? functionBody(
                 controller,
                 beginningWith: "fn require_exact_retained_v7_evidence(",
+                endingBefore: "fn require_exact_retained_retry_1_v7_evidence("
+            ),
+            let retainedRetry1Evidence = try? functionBody(
+                controller,
+                beginningWith: "fn require_exact_retained_retry_1_v7_evidence(",
                 endingBefore: "fn require_v7_retry_admission_ready()"
             ),
             let admission = try? functionBody(
@@ -1272,9 +1299,19 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                 beginningWith: "fn require_v7_retry_admission_ready()",
                 endingBefore: "enum RetryV7PointerExpectation"
             ),
-            let rootPair = try? functionBody(
+            let rootNames = try? functionBody(
                 controller,
-                beginningWith: "fn require_exact_v7_root_pair(",
+                beginningWith: "fn require_exact_v7_root_names(",
+                endingBefore: "fn require_exact_v7_retained_pair("
+            ),
+            let retainedPair = try? functionBody(
+                controller,
+                beginningWith: "fn require_exact_v7_retained_pair(",
+                endingBefore: "fn require_exact_v7_root_triplet("
+            ),
+            let rootTriplet = try? functionBody(
+                controller,
+                beginningWith: "fn require_exact_v7_root_triplet(",
                 endingBefore: "fn require_retry_v7_pointer_expectation("
             ),
             let pointerExpectation = try? functionBody(
@@ -1345,7 +1382,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             let pointerTokens = try? functionBody(
                 controller,
                 beginningWith: "impl RetryV7PointerExpectation",
-                endingBefore: "fn require_exact_v7_root_pair("
+                endingBefore: "fn require_exact_v7_root_names("
             ),
             let rollback = try? functionBody(
                 controller,
@@ -1368,6 +1405,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         let exactPins = [
             "active-paired-host-update-v7.pending-",
             "active-paired-host-update-v7-retry-1.pending-",
+            "active-paired-host-update-v7-retry-2.pending-",
             "const RETAINED_FAILED_V7_ROOT_INODE: u64 = 27_737_655;",
             "const RETAINED_FAILED_V7_ATTEMPT_INODE: u64 = 27_737_656;",
             "const RETAINED_FAILED_V7_RESULT_INODE: u64 = 27_744_003;",
@@ -1409,6 +1447,48 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             "13f6209ebb6a388f296c62ae4cfa5ce153b24e8a78d0ef45091b0aa30bc27b4b",
             "const RETAINED_FAILED_V7_FAILED_NEW_INODE: u64 = 27_737_658;",
             "const RETAINED_FAILED_V7_ROLLBACK_CURRENT_INODE: u64 = 27_737_657;",
+            "const RETAINED_FAILED_V7_RETRY_1_INODE: u64 = 27_758_526;",
+            "const RETAINED_FAILED_V7_RETRY_1_RESULT_INODE: u64 = 27_765_144;",
+            "606dd930e931ef96c1f028d4693473b39ad5c24fede939ed961d0e5c8b12aa70",
+            "paired-v7 probe binary differs from its release pin:",
+            "probes/opensteamer-v7-default-route-guardian\\n\";",
+            "const RETAINED_FAILED_V7_RETRY_1_JOURNAL_INODE: u64 = 27_758_529;",
+            "41a2e81d30d176f32dec89c1a770e0181695a3cb00428d09dcb449411d802827",
+            "STATE SOURCE_EXPORTED commit=17c61bafcbef3e873bbd25789e3c516379bbac91 tree=7bf8155bc0b83c8de9feb718ceabb0e6735e7b2d initial_pid=873",
+            "const RETAINED_FAILED_V7_RETRY_1_PROVENANCE_INODE: u64 = 27_758_957;",
+            "dba0fc40a54e28fee8a7ec55220d94be596097c4167466510a2808d1fb3ba114",
+            "authorized_release_commit=17c61bafcbef3e873bbd25789e3c516379bbac91",
+            "authorized_release_tree=7bf8155bc0b83c8de9feb718ceabb0e6735e7b2d",
+            "functional_input_evidence_sha256=42819772d0ecfd838e23a0b8e9ea17d270604d03ab311566b1f4c337bf676e75",
+            "source_archive_sha256=bfee8bcd03c2815525a0e6a4217f6c3de7411fdced7753e3b7dcfccf9f2bcec1",
+            "const RETAINED_FAILED_V7_RETRY_1_SOURCE_TAR_INODE: u64 = 27_758_532;",
+            "const RETAINED_FAILED_V7_RETRY_1_SOURCE_TAR_SIZE: u64 = 12_707_840;",
+            "const RETAINED_FAILED_V7_RETRY_1_FUNCTIONAL_INPUTS_INODE: u64 = 27_758_956;",
+            "const RETAINED_FAILED_V7_RETRY_1_FUNCTIONAL_INPUTS_SIZE: u64 = 22_759;",
+            "const RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD_NAME_INODE: u64 = 27_758_530;",
+            "19c00bad374b30b1ea7d9e6ed23c3c2cd8c26e7e48a8aa059bb1eb7ffd15a3fb",
+            "const RETAINED_FAILED_V7_RETRY_1_PROBES_INODE: u64 = 27_764_883;",
+            "const RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_INODE: u64 = 27_765_140;",
+            "const RETAINED_FAILED_V7_RETRY_1_GUARDIAN_INODE: u64 = 27_765_125;",
+            "53ee0ce919f1b61c9d66a95d3ec8b417fba85df9f925fd24146d70b663fa995c",
+            "const RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_INODE: u64 = 27_765_117;",
+            "const RETAINED_FAILED_V7_RETRY_1_FAILED_NEW_INODE: u64 = 27_758_528;",
+            "const RETAINED_FAILED_V7_RETRY_1_ROLLBACK_CURRENT_INODE: u64 = 27_758_527;",
+            "/Applications/.opensteamer-paired-v7-install-716c0ed7-8cd5-4b9f-9d64-a3169a077a25",
+        ]
+        let scopedRetry1Declarations = [
+            "const RETAINED_FAILED_V7_RETRY_1_RESULT: &str =\n        \"result=failed-before-stop\\ndiagnostic=paired-v7 probe binary differs from its release pin: /Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-1-1787373601-48365-716c0ed7-8cd5-4b9f-9d64-a3169a077a25/probes/opensteamer-v7-default-route-guardian\\n\";",
+            "const RETAINED_FAILED_V7_RETRY_1_JOURNAL: &str =\n        \"OPENSTEAMER_PAIRED_HOST_UPDATE_V7\\nSTATE BEGUN\\nSTATE SOURCE_EXPORTED commit=17c61bafcbef3e873bbd25789e3c516379bbac91 tree=7bf8155bc0b83c8de9feb718ceabb0e6735e7b2d initial_pid=873\\n\";",
+            "const RETAINED_FAILED_V7_RETRY_1_PROVENANCE: &str =\n        \"commit=17c61bafcbef3e873bbd25789e3c516379bbac91\\ntree=7bf8155bc0b83c8de9feb718ceabb0e6735e7b2d\\nfunctional_source_commit=7beb049226ada83e97afba3e60089469d0eeeef6\\nfunctional_source_tree=60e2df01afe1b4c09362b8e1b55efa709f23a748\\nauthorized_release_commit=17c61bafcbef3e873bbd25789e3c516379bbac91\\nauthorized_release_tree=7bf8155bc0b83c8de9feb718ceabb0e6735e7b2d\\nupstream=origin/agent/auto-select-iphone-microphone\\nremote=https://github.com/ahmedelami/opensteamer.git\\nfunctional_inputs_sha256=fdef1da4413f66d5f066c86b0eba709b55c74b1f72b29dac8d62e991a2343ca6\\nfunctional_input_evidence_sha256=42819772d0ecfd838e23a0b8e9ea17d270604d03ab311566b1f4c337bf676e75\\nsource_archive_sha256=bfee8bcd03c2815525a0e6a4217f6c3de7411fdced7753e3b7dcfccf9f2bcec1\\n\";",
+            "const RETAINED_FAILED_V7_RETRY_1_SOURCE_TAR_SHA256: &str =\n        \"bfee8bcd03c2815525a0e6a4217f6c3de7411fdced7753e3b7dcfccf9f2bcec1\";",
+            "const RETAINED_FAILED_V7_RETRY_1_FUNCTIONAL_INPUTS_SHA256: &str =\n        \"42819772d0ecfd838e23a0b8e9ea17d270604d03ab311566b1f4c337bf676e75\";",
+            "const RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD_NAME_SIZE: u64 = 82;",
+            "const RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_SIZE: u64 = 154_912;",
+            "const RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_SHA256: &str =\n        \"0ec9e1a0cc5f253cc569134ce2be024a7f3ae6ad211fa7d20fe6436c0bac84c8\";",
+            "const RETAINED_FAILED_V7_RETRY_1_GUARDIAN_SIZE: u64 = 286_968;",
+            "const RETAINED_FAILED_V7_RETRY_1_GUARDIAN_SHA256: &str =\n        \"53ee0ce919f1b61c9d66a95d3ec8b417fba85df9f925fd24146d70b663fa995c\";",
+            "const RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_SIZE: u64 = 1_096_944;",
+            "const RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_SHA256: &str =\n        \"13f6209ebb6a388f296c62ae4cfa5ce153b24e8a78d0ef45091b0aa30bc27b4b\";",
         ]
         let singleChildTokens = [
             "expected_name.is_empty() || expected_name.contains('/')",
@@ -1495,25 +1575,73 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             "root_before.ino() != root_after.ino()",
             "retained_before.ino() != retained_after.ino()",
         ]
+        let retainedRetry1EvidenceTokens = [
+            "let root = Path::new(V7_UPDATE_ROOT);",
+            "let retained = Path::new(RETAINED_FAILED_V7_RETRY_1);",
+            "RETAINED_FAILED_V7_RETRY_1_INODE",
+            "retained.parent().and_then(Path::to_str) != Some(V7_UPDATE_ROOT)",
+            "let root_before = fs::symlink_metadata(root)?;",
+            "let retained_before = fs::symlink_metadata(retained)?;",
+            "Path::new(RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD),",
+            #"&retained.join("rollback-reserve.bin"),"#,
+            #"&retained.join("driver-transaction-record.txt"),"#,
+            #"&retained.join("retired-pending-active-pointer.txt"),"#,
+            "require_exact_retained_v7_top_level(retained)?;",
+            #"&retained.join("result.txt"),"#,
+            "RETAINED_FAILED_V7_RETRY_1_RESULT_INODE,",
+            "RETAINED_FAILED_V7_RETRY_1_RESULT,",
+            "RETAINED_FAILED_V7_RETRY_1_RESULT_SHA256,",
+            #"&retained.join("journal.log"),"#,
+            "RETAINED_FAILED_V7_RETRY_1_JOURNAL_INODE,",
+            "RETAINED_FAILED_V7_RETRY_1_JOURNAL,",
+            "RETAINED_FAILED_V7_RETRY_1_JOURNAL_SHA256,",
+            #"&retained.join("provenance.txt"),"#,
+            "RETAINED_FAILED_V7_RETRY_1_PROVENANCE_INODE,",
+            "RETAINED_FAILED_V7_RETRY_1_PROVENANCE,",
+            "RETAINED_FAILED_V7_RETRY_1_PROVENANCE_SHA256,",
+            #"&retained.join("source.tar"),"#,
+            "RETAINED_FAILED_V7_RETRY_1_SOURCE_TAR_INODE,",
+            "RETAINED_FAILED_V7_RETRY_1_SOURCE_TAR_SIZE,",
+            "RETAINED_FAILED_V7_RETRY_1_SOURCE_TAR_SHA256,",
+            #"&retained.join("functional-inputs.txt"),"#,
+            "RETAINED_FAILED_V7_RETRY_1_FUNCTIONAL_INPUTS_INODE,",
+            "RETAINED_FAILED_V7_RETRY_1_FUNCTIONAL_INPUTS_SIZE,",
+            "RETAINED_FAILED_V7_RETRY_1_FUNCTIONAL_INPUTS_SHA256,",
+            #"&retained.join("install-hold-name.txt"),"#,
+            "RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD_NAME_INODE,",
+            "RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD_NAME_SIZE,",
+            "RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD_NAME_SHA256,",
+            "require_exact_retained_retry_1_probe_directory(retained, expected_device)?;",
+            #"&retained.join("failed-new"),"#,
+            "RETAINED_FAILED_V7_RETRY_1_FAILED_NEW_INODE,",
+            #"&retained.join("rollback-current"),"#,
+            "RETAINED_FAILED_V7_RETRY_1_ROLLBACK_CURRENT_INODE,",
+            "require_exact_retained_v7_top_level(retained)?;",
+            "let retained_after = fs::symlink_metadata(retained)?;",
+            "let root_after = fs::symlink_metadata(root)?;",
+            "root_before.ino() != root_after.ino()",
+            "retained_before.ino() != retained_after.ino()",
+        ]
         let admissionTokens = [
             "Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE),",
             "\"retained first-attempt paired-v7 pointer\",",
+            "Path::new(RETRY_1_V7_ACTIVE_UPDATE),",
+            "\"retained retry-1 paired-v7 pointer\",",
             #"require_path_absent(Path::new(V7_ACTIVE_UPDATE), "retry paired-v7 pointer")?;"#,
             "require_no_v7_pending_pointers()?;",
             "Path::new(RETAINED_FAILED_V7_INSTALL_HOLD),",
+            "Path::new(RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD),",
             "Path::new(ROOT_V7_SUPPORT_DIRECTORY),",
             "Path::new(ROOT_V7_TRANSACTION_PARENT),",
             "let data_volume_device = verified_data_volume_device()?;",
             "let root = Path::new(V7_UPDATE_ROOT);",
-            "require_exact_single_private_directory_child_at(",
-            "RETAINED_FAILED_V7_ATTEMPT_NAME,",
+            "require_exact_v7_retained_pair(root)?;",
             "require_exact_retained_v7_evidence(data_volume_device)?;",
-            "require_exact_single_private_directory_child_at(",
-            "RETAINED_FAILED_V7_ATTEMPT_NAME,",
-            ".to_str()",
-            "!= Some(RETAINED_FAILED_V7_ATTEMPT)",
+            "require_exact_retained_retry_1_v7_evidence(data_volume_device)?;",
+            "require_exact_v7_retained_pair(root)",
         ]
         return exactPins.allSatisfy(controller.contains)
+            && scopedRetry1Declarations.allSatisfy(controller.contains)
             && containsOrdered(singleChildTokens, in: singleChild)
             && containsOrdered(exactFileTokens, in: exactFile)
             && containsOrdered(
@@ -1554,10 +1682,37 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             ].allSatisfy(probes.contains)
             && containsOrdered(
                 [
+                    "opensteamer-public-vpio-probe",
+                    "opensteamer-v7-default-route-guardian",
+                    "physical-virtual-microphone-probe",
+                    "metadata.nlink() == 5",
+                    "RETAINED_FAILED_V7_RETRY_1_PROBES_INODE",
+                    "if !entry.file_type()?.is_file()",
+                    "actual.sort_unstable();",
+                    "RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_INODE,",
+                    "0o755,",
+                    "RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_SIZE,",
+                    "RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_SHA256,",
+                    "RETAINED_FAILED_V7_RETRY_1_GUARDIAN_INODE,",
+                    "0o755,",
+                    "RETAINED_FAILED_V7_RETRY_1_GUARDIAN_SIZE,",
+                    "RETAINED_FAILED_V7_RETRY_1_GUARDIAN_SHA256,",
+                    "RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_INODE,",
+                    "0o755,",
+                    "RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_SIZE,",
+                    "RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_SHA256,",
+                    "let after = fs::symlink_metadata(&probes)?;",
+                    "before.ino() != after.ino()",
+                ],
+                in: retry1Probes
+            )
+            && containsOrdered(
+                [
                     "let private_root = Path::new(PRIVATE_ROOT);",
                     "require_directory(private_root, 0o700)?;",
                     "for entry in fs::read_dir(private_root)?",
                     "name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)",
+                    "name.starts_with(RETRY_1_V7_PENDING_PREFIX)",
                     "name.starts_with(RETRY_V7_PENDING_PREFIX)",
                     "let after = fs::symlink_metadata(private_root)?;",
                     "before.dev() != after.dev()",
@@ -1586,10 +1741,11 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                 in: topLevel
             )
             && containsOrdered(retainedEvidenceTokens, in: retainedEvidence)
+            && containsOrdered(retainedRetry1EvidenceTokens, in: retainedRetry1Evidence)
             && containsOrdered(admissionTokens, in: admission)
             && containsOrdered(
                 [
-                    #".strip_prefix("paired-v7-update-retry-1-")"#,
+                    #".strip_prefix("paired-v7-update-retry-2-")"#,
                     "suffix.as_bytes()[suffix.len() - 37] != b'-'",
                     "let nonce = &nonce_with_separator[1..];",
                     "validate_v7_nonce(nonce)?;",
@@ -1602,15 +1758,18 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                     "evidence.to_str() != expected_evidence.to_str()",
                     "evidence.parent().and_then(Path::to_str) != Some(V7_UPDATE_ROOT)",
                     "evidence.to_str() == Some(RETAINED_FAILED_V7_ATTEMPT)",
+                    "evidence.to_str() == Some(RETAINED_FAILED_V7_RETRY_1)",
                     "let data_volume_device = verified_data_volume_device()?;",
                     "let retry_metadata = fs::symlink_metadata(evidence)?;",
                     "retry_metadata.dev() != data_volume_device",
                     "retry_metadata.ino() == RETAINED_FAILED_V7_ATTEMPT_INODE",
+                    "retry_metadata.ino() == RETAINED_FAILED_V7_RETRY_1_INODE",
                     "retry_metadata.nlink() < 2",
-                    "require_exact_v7_root_pair(root, name)?;",
+                    "require_exact_v7_root_triplet(root, name)?;",
                     "require_exact_retained_v7_evidence(data_volume_device)?;",
+                    "require_exact_retained_retry_1_v7_evidence(data_volume_device)?;",
                     "require_retry_v7_pointer_expectation(evidence, pointer_expectation)?;",
-                    "require_exact_v7_root_pair(root, name)?;",
+                    "require_exact_v7_root_triplet(root, name)?;",
                     "let root_after = fs::symlink_metadata(root)?;",
                     "let retry_after = fs::symlink_metadata(evidence)?;",
                     "root_before.dev() != root_after.dev()",
@@ -1620,24 +1779,48 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                     "retry_metadata.nlink() != retry_after.nlink()",
                     "retry_metadata.len() != retry_after.len()",
                     "require_retry_v7_pointer_expectation(evidence, pointer_expectation)?;",
-                    "require_exact_v7_root_pair(root, name)?;",
+                    "require_exact_v7_root_triplet(root, name)?;",
                 ],
                 in: currentRetry
             )
             && containsOrdered(
                 [
+                    "root.to_str() != Some(V7_UPDATE_ROOT)",
+                    "expected_names.is_empty()",
+                    "name.is_empty() || name.contains('/')",
+                    "let root_before = fs::symlink_metadata(root)?;",
                     "for entry in fs::read_dir(root)?",
                     "if !entry.file_type()?.is_dir()",
                     "actual.sort_unstable();",
-                    "RETAINED_FAILED_V7_ATTEMPT_NAME.to_owned()",
-                    "current_name.to_owned()",
-                    "if actual != expected",
+                    "let mut expected: Vec<String> = expected_names",
+                    "expected.windows(2).any",
+                    "actual != expected",
+                    "let root_after = fs::symlink_metadata(root)?;",
+                    "root_before.ino() != root_after.ino()",
                 ],
-                in: rootPair
+                in: rootNames
+            )
+            && containsOrdered(
+                [
+                    "require_exact_v7_root_names(",
+                    "RETAINED_FAILED_V7_ATTEMPT_NAME,",
+                    "RETAINED_FAILED_V7_RETRY_1_NAME,",
+                ],
+                in: retainedPair
+            )
+            && containsOrdered(
+                [
+                    "require_exact_v7_root_names(",
+                    "RETAINED_FAILED_V7_ATTEMPT_NAME,",
+                    "RETAINED_FAILED_V7_RETRY_1_NAME,",
+                    "current_name,",
+                ],
+                in: rootTriplet
             )
             && containsOrdered(
                 [
                     "Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE),",
+                    "Path::new(RETRY_1_V7_ACTIVE_UPDATE),",
                     "require_no_v7_pending_pointers()?;",
                     "RetryV7PointerExpectation::Absent",
                     "require_path_absent(Path::new(V7_ACTIVE_UPDATE),",
@@ -1659,7 +1842,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                 [
                     "require_v7_retry_admission_ready()?;",
                     "let evidence = PathBuf::from(V7_UPDATE_ROOT).join(format!(",
-                    "\"paired-v7-update-retry-1-{}-{}-{}\"",
+                    "\"paired-v7-update-retry-2-{}-{}-{}\"",
                     "require_v7_retry_admission_ready()?;",
                     "create_private_directory(&evidence)?;",
                     "require_current_retry_v7_layout(",
@@ -1724,7 +1907,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             && containsOrdered(
                 [
                     "expected_main_pid == 0",
-                    #".strip_prefix("paired-v7-update-retry-1-")"#,
+                    #".strip_prefix("paired-v7-update-retry-2-")"#,
                     "suffix.as_bytes()[suffix.len() - 37] != b'-'",
                     "validate_v7_nonce(&nonce_with_separator[1..])?;",
                     "let (timestamp_text, pid_text) = numeric.split_once('-')",
@@ -1763,11 +1946,13 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             && containsOrdered(
                 [
                     "Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE),",
+                    "Path::new(RETRY_1_V7_ACTIVE_UPDATE),",
                     "require_path_absent(Path::new(V7_ACTIVE_UPDATE),",
                     "{V7_ACTIVE_UPDATE}.pending-{expected_main_pid}",
                     "let root_before = fs::symlink_metadata(private_root)?;",
                     "for entry in fs::read_dir(private_root)?",
                     "name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)",
+                    "name.starts_with(RETRY_1_V7_PENDING_PREFIX)",
                     "name.starts_with(RETRY_V7_PENDING_PREFIX)",
                     "if name != pending_name || entry.path().to_str() != pending.to_str()",
                     "unexpected paired-v7 pending pointer blocks crash recovery",
@@ -1979,7 +2164,9 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
 
         let retainedRoot =
             "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7"
-        let retryPointer =
+        let retry2Pointer =
+            "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-2"
+        let retry1Pointer =
             "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-1"
         let firstAttemptPointer =
             "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7"
@@ -1988,10 +2175,178 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                 of: "        \"\(retainedRoot)\";\n    const V7_ACTIVE_UPDATE",
                 with: "        \"\(retainedRoot)-retry-1\";\n    const V7_ACTIVE_UPDATE"
             ),
-            controller.replacingOccurrences(of: retryPointer, with: firstAttemptPointer),
+            controller.replacingOccurrences(of: retry2Pointer, with: firstAttemptPointer),
             controller.replacingOccurrences(
-                of: "        \"\(firstAttemptPointer)\";\n    const FIRST_ATTEMPT_V7_PENDING_PREFIX",
-                with: "        \"\(retryPointer)\";\n    const FIRST_ATTEMPT_V7_PENDING_PREFIX"
+                of: "        \"\(firstAttemptPointer)\";\n    const RETRY_1_V7_ACTIVE_UPDATE",
+                with: "        \"\(retry2Pointer)\";\n    const RETRY_1_V7_ACTIVE_UPDATE"
+            ),
+            controller.replacingOccurrences(
+                of: "        \"\(retry1Pointer)\";\n    const FIRST_ATTEMPT_V7_PENDING_PREFIX",
+                with: "        \"\(retry2Pointer)\";\n    const FIRST_ATTEMPT_V7_PENDING_PREFIX"
+            ),
+            controller.replacingOccurrences(
+                of: "paired-v7-update-retry-1-1787373601-48365-716c0ed7-8cd5-4b9f-9d64-a3169a077a25",
+                with: "paired-v7-update-retry-1-1787373601-48365-wrong-attempt"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_RETRY_1_INODE: u64 = 27_758_526;",
+                with: "const RETAINED_FAILED_V7_RETRY_1_INODE: u64 = 27_758_527;"
+            ),
+            controller.replacingOccurrences(
+                of: "606dd930e931ef96c1f028d4693473b39ad5c24fede939ed961d0e5c8b12aa70",
+                with: "706dd930e931ef96c1f028d4693473b39ad5c24fede939ed961d0e5c8b12aa70"
+            ),
+            controller.replacingOccurrences(
+                of: "41a2e81d30d176f32dec89c1a770e0181695a3cb00428d09dcb449411d802827",
+                with: "51a2e81d30d176f32dec89c1a770e0181695a3cb00428d09dcb449411d802827"
+            ),
+            controller.replacingOccurrences(
+                of: "dba0fc40a54e28fee8a7ec55220d94be596097c4167466510a2808d1fb3ba114",
+                with: "eba0fc40a54e28fee8a7ec55220d94be596097c4167466510a2808d1fb3ba114"
+            ),
+            controller.replacingOccurrences(
+                of: "bfee8bcd03c2815525a0e6a4217f6c3de7411fdced7753e3b7dcfccf9f2bcec1",
+                with: "cfee8bcd03c2815525a0e6a4217f6c3de7411fdced7753e3b7dcfccf9f2bcec1"
+            ),
+            controller.replacingOccurrences(
+                of: "42819772d0ecfd838e23a0b8e9ea17d270604d03ab311566b1f4c337bf676e75",
+                with: "52819772d0ecfd838e23a0b8e9ea17d270604d03ab311566b1f4c337bf676e75"
+            ),
+            controller.replacingOccurrences(
+                of: "19c00bad374b30b1ea7d9e6ed23c3c2cd8c26e7e48a8aa059bb1eb7ffd15a3fb",
+                with: "29c00bad374b30b1ea7d9e6ed23c3c2cd8c26e7e48a8aa059bb1eb7ffd15a3fb"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_RETRY_1_PROBES_INODE: u64 = 27_764_883;",
+                with: "const RETAINED_FAILED_V7_RETRY_1_PROBES_INODE: u64 = 27_764_884;"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_RETRY_1_FAILED_NEW_INODE: u64 = 27_758_528;",
+                with: "const RETAINED_FAILED_V7_RETRY_1_FAILED_NEW_INODE: u64 = 27_758_529;"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_RETRY_1_ROLLBACK_CURRENT_INODE: u64 = 27_758_527;",
+                with: "const RETAINED_FAILED_V7_RETRY_1_ROLLBACK_CURRENT_INODE: u64 = 27_758_528;"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_SIZE,",
+                with: "RETAINED_FAILED_V7_PUBLIC_PROBE_SIZE,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_SHA256,",
+                with: "RETAINED_FAILED_V7_PUBLIC_PROBE_SHA256,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_GUARDIAN_SIZE,",
+                with: "RETAINED_FAILED_V7_GUARDIAN_SIZE,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_GUARDIAN_SHA256,",
+                with: "RETAINED_FAILED_V7_GUARDIAN_SHA256,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_SIZE,",
+                with: "RETAINED_FAILED_V7_MIRROR_PROBE_SIZE,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_SHA256,",
+                with: "RETAINED_FAILED_V7_MIRROR_PROBE_SHA256,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_RESULT,",
+                with: "RETAINED_FAILED_V7_RESULT,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_RESULT_SHA256,",
+                with: "RETAINED_FAILED_V7_RESULT_SHA256,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_JOURNAL,",
+                with: "RETAINED_FAILED_V7_JOURNAL,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_JOURNAL_SHA256,",
+                with: "RETAINED_FAILED_V7_JOURNAL_SHA256,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_PROVENANCE,",
+                with: "RETAINED_FAILED_V7_PROVENANCE,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_PROVENANCE_SHA256,",
+                with: "RETAINED_FAILED_V7_PROVENANCE_SHA256,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_SOURCE_TAR_SIZE,",
+                with: "RETAINED_FAILED_V7_SOURCE_TAR_SIZE,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_SOURCE_TAR_SHA256,",
+                with: "RETAINED_FAILED_V7_SOURCE_TAR_SHA256,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_FUNCTIONAL_INPUTS_SIZE,",
+                with: "RETAINED_FAILED_V7_FUNCTIONAL_INPUTS_SIZE,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_FUNCTIONAL_INPUTS_SHA256,",
+                with: "RETAINED_FAILED_V7_FUNCTIONAL_INPUTS_SHA256,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD_NAME_SIZE,",
+                with: "RETAINED_FAILED_V7_INSTALL_HOLD_NAME_SIZE,"
+            ),
+            controller.replacingOccurrences(
+                of: "RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD_NAME_SHA256,",
+                with: "RETAINED_FAILED_V7_INSTALL_HOLD_NAME_SHA256,"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_RETRY_1_RESULT: &str =\n        \"result=failed-before-stop\\ndiagnostic=",
+                with: "const RETAINED_FAILED_V7_RETRY_1_RESULT: &str =\n        \"result=rolled-back\\ndiagnostic="
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_RETRY_1_JOURNAL: &str =\n        \"OPENSTEAMER_PAIRED_HOST_UPDATE_V7\\nSTATE BEGUN",
+                with: "const RETAINED_FAILED_V7_RETRY_1_JOURNAL: &str =\n        \"OPENSTEAMER_PAIRED_HOST_UPDATE_V7\\nSTATE COMMITTED"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_RETRY_1_PROVENANCE: &str =\n        \"commit=17c61bafcbef3e873bbd25789e3c516379bbac91",
+                with: "const RETAINED_FAILED_V7_RETRY_1_PROVENANCE: &str =\n        \"commit=0000000000000000000000000000000000000000"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_RETRY_1_SOURCE_TAR_SHA256: &str =\n        \"bfee8bcd03c2815525a0e6a4217f6c3de7411fdced7753e3b7dcfccf9f2bcec1\";",
+                with: "const RETAINED_FAILED_V7_RETRY_1_SOURCE_TAR_SHA256: &str =\n        \"cfee8bcd03c2815525a0e6a4217f6c3de7411fdced7753e3b7dcfccf9f2bcec1\";"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_RETRY_1_FUNCTIONAL_INPUTS_SHA256: &str =\n        \"42819772d0ecfd838e23a0b8e9ea17d270604d03ab311566b1f4c337bf676e75\";",
+                with: "const RETAINED_FAILED_V7_RETRY_1_FUNCTIONAL_INPUTS_SHA256: &str =\n        \"52819772d0ecfd838e23a0b8e9ea17d270604d03ab311566b1f4c337bf676e75\";"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD_NAME_SIZE: u64 = 82;",
+                with: "const RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD_NAME_SIZE: u64 = 83;"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_SIZE: u64 = 154_912;",
+                with: "const RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_SIZE: u64 = 154_913;"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_SHA256: &str =\n        \"0ec9e1a0cc5f253cc569134ce2be024a7f3ae6ad211fa7d20fe6436c0bac84c8\";",
+                with: "const RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_SHA256: &str =\n        \"1ec9e1a0cc5f253cc569134ce2be024a7f3ae6ad211fa7d20fe6436c0bac84c8\";"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_RETRY_1_GUARDIAN_SIZE: u64 = 286_968;",
+                with: "const RETAINED_FAILED_V7_RETRY_1_GUARDIAN_SIZE: u64 = 286_969;"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_RETRY_1_GUARDIAN_SHA256: &str =\n        \"53ee0ce919f1b61c9d66a95d3ec8b417fba85df9f925fd24146d70b663fa995c\";",
+                with: "const RETAINED_FAILED_V7_RETRY_1_GUARDIAN_SHA256: &str =\n        \"63ee0ce919f1b61c9d66a95d3ec8b417fba85df9f925fd24146d70b663fa995c\";"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_SIZE: u64 = 1_096_944;",
+                with: "const RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_SIZE: u64 = 1_096_945;"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_SHA256: &str =\n        \"13f6209ebb6a388f296c62ae4cfa5ce153b24e8a78d0ef45091b0aa30bc27b4b\";",
+                with: "const RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_SHA256: &str =\n        \"23f6209ebb6a388f296c62ae4cfa5ce153b24e8a78d0ef45091b0aa30bc27b4b\";"
             ),
             controller.replacingOccurrences(
                 of: "paired-v7-update-1787367704-92913-bba21548-458c-4d31-bd0a-eccdb282c02a",
@@ -2062,6 +2417,10 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                 with: ""
             ),
             controller.replacingOccurrences(
+                of: "            Path::new(RETRY_1_V7_ACTIVE_UPDATE),\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
                 of: "        require_path_absent(Path::new(V7_ACTIVE_UPDATE), \"retry paired-v7 pointer\")?;\n",
                 with: ""
             ),
@@ -2098,6 +2457,10 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                 with: ""
             ),
             controller.replacingOccurrences(
+                of: "            Path::new(RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD),\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
                 of: "            &retained.join(\"rollback-reserve.bin\"),\n",
                 with: ""
             ),
@@ -2118,7 +2481,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                 with: "rename_exclusive(&pending, Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE))?;"
             ),
             controller.replacingOccurrences(
-                of: "paired-v7-update-retry-1-{}-{}-{}",
+                of: "paired-v7-update-retry-2-{}-{}-{}",
                 with: "paired-v7-update-{}-{}-{}"
             ),
             controller.replacingOccurrences(
@@ -2130,19 +2493,35 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                 with: ""
             ),
             controller.replacingOccurrences(
+                of: "            || evidence.to_str() == Some(RETAINED_FAILED_V7_RETRY_1)\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: #".strip_prefix("paired-v7-update-retry-2-")"#,
+                with: #".strip_prefix("paired-v7-update-retry-1-")"#
+            ),
+            controller.replacingOccurrences(
                 of: "            RetryV7PointerExpectation::Present => verify_update_pointer_at(\n                Path::new(V7_ACTIVE_UPDATE),\n                evidence,\n                Path::new(V7_UPDATE_ROOT),\n            ),",
                 with: "            RetryV7PointerExpectation::Present => verify_update_pointer_at(\n                Path::new(V7_ACTIVE_UPDATE),\n                Path::new(RETAINED_FAILED_V7_ATTEMPT),\n                Path::new(V7_UPDATE_ROOT),\n            ),"
             ),
             controller.replacingOccurrences(
-                of: "        if actual != expected {\n",
-                with: "        if false {\n"
+                of: "actual != expected",
+                with: "false"
             ),
             controller.replacingOccurrences(
-                of: "        require_exact_retained_v7_evidence(data_volume_device)?;\n        require_retry_v7_pointer_expectation(evidence, pointer_expectation)?;",
-                with: "        require_retry_v7_pointer_expectation(evidence, pointer_expectation)?;"
+                of: "        require_exact_retained_v7_evidence(data_volume_device)?;\n",
+                with: ""
             ),
             controller.replacingOccurrences(
-                of: "            || retry_metadata.ino() != retry_after.ino()\n",
+                of: "        require_exact_retained_retry_1_v7_evidence(data_volume_device)?;\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "                RETAINED_FAILED_V7_RETRY_1_NAME,\n",
+                with: "                RETAINED_FAILED_V7_ATTEMPT_NAME,\n"
+            ),
+            controller.replacingOccurrences(
+                of: "retry_metadata.ino() != retry_after.ino()",
                 with: ""
             ),
             controller.replacingOccurrences(
@@ -2200,7 +2579,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                 with: ""
             ),
             controller.replacingOccurrences(
-                of: "            if name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)\n                || name.starts_with(RETRY_V7_PENDING_PREFIX)\n",
+                of: "            if name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)\n                || name.starts_with(RETRY_1_V7_PENDING_PREFIX)\n                || name.starts_with(RETRY_V7_PENDING_PREFIX)\n",
                 with: "            if name.starts_with(RETRY_V7_PENDING_PREFIX)\n"
             ),
             controller.replacingOccurrences(
@@ -2301,12 +2680,12 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         XCTAssertTrue(launcher.contains("RELEASE_PIN_STATUS='PINNED_FINAL_REVIEW'"))
         XCTAssertTrue(
             launcher.contains(
-                "EXPECTED_SOURCE_SHA256='4369fe922fa1a26e8445613c461056d4f931098b6837f8caae46c512d6181ff0'"
+                "EXPECTED_SOURCE_SHA256='b319bf967b4edeedb47634b46e57792d8c228715d13d5fc00c172a010fcb0e0c'"
             )
         )
         XCTAssertTrue(
             launcher.contains(
-                "EXPECTED_BINARY_SHA256='3ab723168c7dfd3ae86502998fd63462a306dbfe10faca46faca8e49250326c0'"
+                "EXPECTED_BINARY_SHA256='8c1efa7039649a027987fa306460af8d27caa1f10f5d741ee4332b54a0e3a07c'"
             )
         )
         let exactControllerReleasePins = [
@@ -2328,7 +2707,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             "4ec4cf52b5bb79eae45b6965e97912f23041a3d879b3814b67763caded0548dd",
             "0ec9e1a0cc5f253cc569134ce2be024a7f3ae6ad211fa7d20fe6436c0bac84c8",
             "f152ef8d05eed29c5918666be31821e5ef6e325351d2fcf4ad5f8b83987e299c",
-            "307136582f85087ab7f8b846a49b428de9fb87d2726071e7e3ea4b3112d90b8b",
+            "53ee0ce919f1b61c9d66a95d3ec8b417fba85df9f925fd24146d70b663fa995c",
             "91e1da8c84d47f05dd4dc19a84418a946238b1e411cf09d0dd3fb275babc88d5",
             "290731edd02baf42ca40f43f11f74d75271617a46393184cb4d0d566a147257e",
             "25293a4c83b5c6a6e1c95a95388d596f56057e5c5a54add0756017cfc6b0deac",
@@ -3226,8 +3605,8 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                 with: "            &layout.default_route_guardian,\n            &[\"-Xlinker\", \"-reproducible\"],"
             ),
             controller.replacingOccurrences(
-                of: "307136582f85087ab7f8b846a49b428de9fb87d2726071e7e3ea4b3112d90b8b",
-                with: "b69c5d4d71db35d871a5e561c33fb2a0303ecec48a411ee8e41aa963987018bb"
+                of: "53ee0ce919f1b61c9d66a95d3ec8b417fba85df9f925fd24146d70b663fa995c",
+                with: "307136582f85087ab7f8b846a49b428de9fb87d2726071e7e3ea4b3112d90b8b"
             ),
             controller.replacingOccurrences(
                 of: "            compiled_output.set_permissions(fs::Permissions::from_mode(0o755))?;\n",

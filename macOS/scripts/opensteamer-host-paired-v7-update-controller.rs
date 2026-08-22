@@ -31,11 +31,14 @@ pub(crate) mod paired_v7 {
     const V7_UPDATE_ROOT: &str =
         "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7";
     const V7_ACTIVE_UPDATE: &str =
-        "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-1";
+        "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-2";
     const FIRST_ATTEMPT_V7_ACTIVE_UPDATE: &str =
         "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7";
+    const RETRY_1_V7_ACTIVE_UPDATE: &str =
+        "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-1";
     const FIRST_ATTEMPT_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7.pending-";
-    const RETRY_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-1.pending-";
+    const RETRY_1_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-1.pending-";
+    const RETRY_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-2.pending-";
     const RETAINED_FAILED_V7_ATTEMPT_NAME: &str =
         "paired-v7-update-1787367704-92913-bba21548-458c-4d31-bd0a-eccdb282c02a";
     const RETAINED_FAILED_V7_ATTEMPT: &str =
@@ -87,6 +90,55 @@ pub(crate) mod paired_v7 {
     const RETAINED_FAILED_V7_ROLLBACK_CURRENT_INODE: u64 = 27_737_657;
     const RETAINED_FAILED_V7_INSTALL_HOLD: &str =
         "/Applications/.opensteamer-paired-v7-install-bba21548-458c-4d31-bd0a-eccdb282c02a";
+    const RETAINED_FAILED_V7_RETRY_1_NAME: &str =
+        "paired-v7-update-retry-1-1787373601-48365-716c0ed7-8cd5-4b9f-9d64-a3169a077a25";
+    const RETAINED_FAILED_V7_RETRY_1: &str =
+        "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-1-1787373601-48365-716c0ed7-8cd5-4b9f-9d64-a3169a077a25";
+    const RETAINED_FAILED_V7_RETRY_1_INODE: u64 = 27_758_526;
+    const RETAINED_FAILED_V7_RETRY_1_RESULT_INODE: u64 = 27_765_144;
+    const RETAINED_FAILED_V7_RETRY_1_RESULT_SHA256: &str =
+        "606dd930e931ef96c1f028d4693473b39ad5c24fede939ed961d0e5c8b12aa70";
+    const RETAINED_FAILED_V7_RETRY_1_RESULT: &str =
+        "result=failed-before-stop\ndiagnostic=paired-v7 probe binary differs from its release pin: /Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-1-1787373601-48365-716c0ed7-8cd5-4b9f-9d64-a3169a077a25/probes/opensteamer-v7-default-route-guardian\n";
+    const RETAINED_FAILED_V7_RETRY_1_JOURNAL_INODE: u64 = 27_758_529;
+    const RETAINED_FAILED_V7_RETRY_1_JOURNAL_SHA256: &str =
+        "41a2e81d30d176f32dec89c1a770e0181695a3cb00428d09dcb449411d802827";
+    const RETAINED_FAILED_V7_RETRY_1_JOURNAL: &str =
+        "OPENSTEAMER_PAIRED_HOST_UPDATE_V7\nSTATE BEGUN\nSTATE SOURCE_EXPORTED commit=17c61bafcbef3e873bbd25789e3c516379bbac91 tree=7bf8155bc0b83c8de9feb718ceabb0e6735e7b2d initial_pid=873\n";
+    const RETAINED_FAILED_V7_RETRY_1_PROVENANCE_INODE: u64 = 27_758_957;
+    const RETAINED_FAILED_V7_RETRY_1_PROVENANCE_SHA256: &str =
+        "dba0fc40a54e28fee8a7ec55220d94be596097c4167466510a2808d1fb3ba114";
+    const RETAINED_FAILED_V7_RETRY_1_PROVENANCE: &str =
+        "commit=17c61bafcbef3e873bbd25789e3c516379bbac91\ntree=7bf8155bc0b83c8de9feb718ceabb0e6735e7b2d\nfunctional_source_commit=7beb049226ada83e97afba3e60089469d0eeeef6\nfunctional_source_tree=60e2df01afe1b4c09362b8e1b55efa709f23a748\nauthorized_release_commit=17c61bafcbef3e873bbd25789e3c516379bbac91\nauthorized_release_tree=7bf8155bc0b83c8de9feb718ceabb0e6735e7b2d\nupstream=origin/agent/auto-select-iphone-microphone\nremote=https://github.com/ahmedelami/opensteamer.git\nfunctional_inputs_sha256=fdef1da4413f66d5f066c86b0eba709b55c74b1f72b29dac8d62e991a2343ca6\nfunctional_input_evidence_sha256=42819772d0ecfd838e23a0b8e9ea17d270604d03ab311566b1f4c337bf676e75\nsource_archive_sha256=bfee8bcd03c2815525a0e6a4217f6c3de7411fdced7753e3b7dcfccf9f2bcec1\n";
+    const RETAINED_FAILED_V7_RETRY_1_SOURCE_TAR_INODE: u64 = 27_758_532;
+    const RETAINED_FAILED_V7_RETRY_1_SOURCE_TAR_SIZE: u64 = 12_707_840;
+    const RETAINED_FAILED_V7_RETRY_1_SOURCE_TAR_SHA256: &str =
+        "bfee8bcd03c2815525a0e6a4217f6c3de7411fdced7753e3b7dcfccf9f2bcec1";
+    const RETAINED_FAILED_V7_RETRY_1_FUNCTIONAL_INPUTS_INODE: u64 = 27_758_956;
+    const RETAINED_FAILED_V7_RETRY_1_FUNCTIONAL_INPUTS_SIZE: u64 = 22_759;
+    const RETAINED_FAILED_V7_RETRY_1_FUNCTIONAL_INPUTS_SHA256: &str =
+        "42819772d0ecfd838e23a0b8e9ea17d270604d03ab311566b1f4c337bf676e75";
+    const RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD_NAME_INODE: u64 = 27_758_530;
+    const RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD_NAME_SIZE: u64 = 82;
+    const RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD_NAME_SHA256: &str =
+        "19c00bad374b30b1ea7d9e6ed23c3c2cd8c26e7e48a8aa059bb1eb7ffd15a3fb";
+    const RETAINED_FAILED_V7_RETRY_1_PROBES_INODE: u64 = 27_764_883;
+    const RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_INODE: u64 = 27_765_140;
+    const RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_SIZE: u64 = 154_912;
+    const RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_SHA256: &str =
+        "0ec9e1a0cc5f253cc569134ce2be024a7f3ae6ad211fa7d20fe6436c0bac84c8";
+    const RETAINED_FAILED_V7_RETRY_1_GUARDIAN_INODE: u64 = 27_765_125;
+    const RETAINED_FAILED_V7_RETRY_1_GUARDIAN_SIZE: u64 = 286_968;
+    const RETAINED_FAILED_V7_RETRY_1_GUARDIAN_SHA256: &str =
+        "53ee0ce919f1b61c9d66a95d3ec8b417fba85df9f925fd24146d70b663fa995c";
+    const RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_INODE: u64 = 27_765_117;
+    const RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_SIZE: u64 = 1_096_944;
+    const RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_SHA256: &str =
+        "13f6209ebb6a388f296c62ae4cfa5ce153b24e8a78d0ef45091b0aa30bc27b4b";
+    const RETAINED_FAILED_V7_RETRY_1_FAILED_NEW_INODE: u64 = 27_758_528;
+    const RETAINED_FAILED_V7_RETRY_1_ROLLBACK_CURRENT_INODE: u64 = 27_758_527;
+    const RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD: &str =
+        "/Applications/.opensteamer-paired-v7-install-716c0ed7-8cd5-4b9f-9d64-a3169a077a25";
     const V7_UPDATE_LOCK: &str = UPDATE_LOCK;
     const V7_JOURNAL_HEADER: &str = "OPENSTEAMER_PAIRED_HOST_UPDATE_V7";
     const HIDDEN_INSTALL_PREFIX: &str = ".opensteamer-paired-v7-install-";
@@ -149,7 +201,7 @@ pub(crate) mod paired_v7 {
     const EXPECTED_DEFAULT_ROUTE_GUARDIAN_SOURCE_SHA256: &str =
         "f152ef8d05eed29c5918666be31821e5ef6e325351d2fcf4ad5f8b83987e299c";
     const EXPECTED_DEFAULT_ROUTE_GUARDIAN_BINARY_SHA256: &str =
-        "307136582f85087ab7f8b846a49b428de9fb87d2726071e7e3ea4b3112d90b8b";
+        "53ee0ce919f1b61c9d66a95d3ec8b417fba85df9f925fd24146d70b663fa995c";
     const EXPECTED_PRODUCTION_DRIVER_BUILDER_SHA256: &str =
         "91e1da8c84d47f05dd4dc19a84418a946238b1e411cf09d0dd3fb275babc88d5";
     const EXPECTED_PRODUCTION_DRIVER_VERIFIER_SHA256: &str =
@@ -3927,9 +3979,9 @@ pub(crate) mod paired_v7 {
             .and_then(|value| value.to_str())
             .ok_or_else(|| ControllerError("paired-v7 retry leaf name is not UTF-8".to_owned()))?;
         let suffix = name
-            .strip_prefix("paired-v7-update-retry-1-")
+            .strip_prefix("paired-v7-update-retry-2-")
             .ok_or_else(|| {
-                ControllerError("paired-v7 pending recovery leaf is not retry-1".to_owned())
+                ControllerError("paired-v7 pending recovery leaf is not retry-2".to_owned())
             })?;
         if suffix.len() <= 37 || suffix.as_bytes()[suffix.len() - 37] != b'-' {
             return Err(ControllerError(
@@ -4028,6 +4080,10 @@ pub(crate) mod paired_v7 {
             Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE),
             "retained first-attempt paired-v7 pointer",
         )?;
+        require_path_absent(
+            Path::new(RETRY_1_V7_ACTIVE_UPDATE),
+            "retained retry-1 paired-v7 pointer",
+        )?;
         require_path_absent(Path::new(V7_ACTIVE_UPDATE), "retry paired-v7 pointer")?;
         let pending = PathBuf::from(format!(
             "{V7_ACTIVE_UPDATE}.pending-{expected_main_pid}"
@@ -4047,6 +4103,7 @@ pub(crate) mod paired_v7 {
                 ControllerError("private opensteamer entry name is not UTF-8".to_owned())
             })?;
             if name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)
+                || name.starts_with(RETRY_1_V7_PENDING_PREFIX)
                 || name.starts_with(RETRY_V7_PENDING_PREFIX)
             {
                 if name != pending_name || entry.path().to_str() != pending.to_str() {
@@ -5372,6 +5429,93 @@ pub(crate) mod paired_v7 {
         Ok(())
     }
 
+    fn require_exact_retained_retry_1_probe_directory(
+        retained: &Path,
+        expected_device: u64,
+    ) -> Result<()> {
+        const EXPECTED_NAMES: [&str; 3] = [
+            "opensteamer-public-vpio-probe",
+            "opensteamer-v7-default-route-guardian",
+            "physical-virtual-microphone-probe",
+        ];
+        let probes = retained.join("probes");
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.nlink() == 5
+                && metadata.permissions().mode() & 0o7777 == 0o700
+                && metadata.dev() == expected_device
+                && metadata.ino() == RETAINED_FAILED_V7_RETRY_1_PROBES_INODE
+                && metadata.st_flags() == 0
+        };
+        let before = fs::symlink_metadata(&probes)?;
+        if !metadata_is_exact(&before) {
+            return Err(ControllerError(
+                "retained paired-v7 retry-1 probe directory metadata changed".to_owned(),
+            ));
+        }
+        let mut actual = Vec::new();
+        for entry in fs::read_dir(&probes)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_str().ok_or_else(|| {
+                ControllerError("retained paired-v7 retry-1 probe name is not UTF-8".to_owned())
+            })?;
+            if !entry.file_type()?.is_file()
+                || entry.path().to_str() != probes.join(name).to_str()
+            {
+                return Err(ControllerError(format!(
+                    "retained paired-v7 retry-1 probe has unsafe type or path: {name}"
+                )));
+            }
+            actual.push(name.to_owned());
+        }
+        actual.sort_unstable();
+        if actual.iter().map(String::as_str).ne(EXPECTED_NAMES) {
+            return Err(ControllerError(
+                "retained paired-v7 retry-1 probe name/type set changed".to_owned(),
+            ));
+        }
+        require_exact_retained_file(
+            &probes.join("opensteamer-public-vpio-probe"),
+            expected_device,
+            RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_INODE,
+            0o755,
+            RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_SIZE,
+            RETAINED_FAILED_V7_RETRY_1_PUBLIC_PROBE_SHA256,
+        )?;
+        require_exact_retained_file(
+            &probes.join("opensteamer-v7-default-route-guardian"),
+            expected_device,
+            RETAINED_FAILED_V7_RETRY_1_GUARDIAN_INODE,
+            0o755,
+            RETAINED_FAILED_V7_RETRY_1_GUARDIAN_SIZE,
+            RETAINED_FAILED_V7_RETRY_1_GUARDIAN_SHA256,
+        )?;
+        require_exact_retained_file(
+            &probes.join("physical-virtual-microphone-probe"),
+            expected_device,
+            RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_INODE,
+            0o755,
+            RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_SIZE,
+            RETAINED_FAILED_V7_RETRY_1_MIRROR_PROBE_SHA256,
+        )?;
+        let after = fs::symlink_metadata(&probes)?;
+        if !metadata_is_exact(&after)
+            || before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.nlink() != after.nlink()
+        {
+            return Err(ControllerError(
+                "retained paired-v7 retry-1 probe directory changed during verification"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     fn require_no_v7_pending_pointers() -> Result<()> {
         let private_root = Path::new(PRIVATE_ROOT);
         require_directory(private_root, 0o700)?;
@@ -5383,6 +5527,7 @@ pub(crate) mod paired_v7 {
                 ControllerError("private opensteamer entry name is not UTF-8".to_owned())
             })?;
             if name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)
+                || name.starts_with(RETRY_1_V7_PENDING_PREFIX)
                 || name.starts_with(RETRY_V7_PENDING_PREFIX)
             {
                 return Err(ControllerError(format!(
@@ -5601,16 +5746,163 @@ pub(crate) mod paired_v7 {
         Ok(())
     }
 
+    fn require_exact_retained_retry_1_v7_evidence(expected_device: u64) -> Result<()> {
+        let root = Path::new(V7_UPDATE_ROOT);
+        let retained = Path::new(RETAINED_FAILED_V7_RETRY_1);
+        let root_metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.permissions().mode() & 0o7777 == 0o700
+                && metadata.dev() == expected_device
+                && metadata.ino() == RETAINED_FAILED_V7_ROOT_INODE
+                && metadata.st_flags() == 0
+        };
+        let retained_metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.nlink() >= 2
+                && metadata.permissions().mode() & 0o7777 == 0o700
+                && metadata.dev() == expected_device
+                && metadata.ino() == RETAINED_FAILED_V7_RETRY_1_INODE
+                && metadata.st_flags() == 0
+        };
+        if retained.to_str() != Some(RETAINED_FAILED_V7_RETRY_1)
+            || retained.parent().and_then(Path::to_str) != Some(V7_UPDATE_ROOT)
+            || retained.file_name().and_then(|name| name.to_str())
+                != Some(RETAINED_FAILED_V7_RETRY_1_NAME)
+        {
+            return Err(ControllerError(
+                "retained paired-v7 retry-1 failed attempt path is not byte-exact".to_owned(),
+            ));
+        }
+        let root_before = fs::symlink_metadata(root)?;
+        let retained_before = fs::symlink_metadata(retained)?;
+        if !root_metadata_is_exact(&root_before)
+            || !retained_metadata_is_exact(&retained_before)
+        {
+            return Err(ControllerError(
+                "retained paired-v7 retry-1 failure evidence metadata changed".to_owned(),
+            ));
+        }
+        require_path_absent(
+            Path::new(RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD),
+            "retained retry-1 paired-v7 install hold",
+        )?;
+        require_path_absent(
+            &retained.join("rollback-reserve.bin"),
+            "retained retry-1 rollback reserve",
+        )?;
+        require_path_absent(
+            &retained.join("driver-transaction-record.txt"),
+            "retained retry-1 driver transaction record",
+        )?;
+        require_path_absent(
+            &retained.join("retired-pending-active-pointer.txt"),
+            "retained retry-1 retired pending pointer",
+        )?;
+        require_exact_retained_v7_top_level(retained)?;
+        require_exact_retained_failure_file(
+            &retained.join("result.txt"),
+            expected_device,
+            RETAINED_FAILED_V7_RETRY_1_RESULT_INODE,
+            RETAINED_FAILED_V7_RETRY_1_RESULT,
+            RETAINED_FAILED_V7_RETRY_1_RESULT_SHA256,
+        )?;
+        require_exact_retained_failure_file(
+            &retained.join("journal.log"),
+            expected_device,
+            RETAINED_FAILED_V7_RETRY_1_JOURNAL_INODE,
+            RETAINED_FAILED_V7_RETRY_1_JOURNAL,
+            RETAINED_FAILED_V7_RETRY_1_JOURNAL_SHA256,
+        )?;
+        require_exact_retained_failure_file(
+            &retained.join("provenance.txt"),
+            expected_device,
+            RETAINED_FAILED_V7_RETRY_1_PROVENANCE_INODE,
+            RETAINED_FAILED_V7_RETRY_1_PROVENANCE,
+            RETAINED_FAILED_V7_RETRY_1_PROVENANCE_SHA256,
+        )?;
+        require_exact_retained_file(
+            &retained.join("source.tar"),
+            expected_device,
+            RETAINED_FAILED_V7_RETRY_1_SOURCE_TAR_INODE,
+            0o600,
+            RETAINED_FAILED_V7_RETRY_1_SOURCE_TAR_SIZE,
+            RETAINED_FAILED_V7_RETRY_1_SOURCE_TAR_SHA256,
+        )?;
+        require_exact_retained_file(
+            &retained.join("functional-inputs.txt"),
+            expected_device,
+            RETAINED_FAILED_V7_RETRY_1_FUNCTIONAL_INPUTS_INODE,
+            0o600,
+            RETAINED_FAILED_V7_RETRY_1_FUNCTIONAL_INPUTS_SIZE,
+            RETAINED_FAILED_V7_RETRY_1_FUNCTIONAL_INPUTS_SHA256,
+        )?;
+        require_exact_retained_file(
+            &retained.join("install-hold-name.txt"),
+            expected_device,
+            RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD_NAME_INODE,
+            0o600,
+            RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD_NAME_SIZE,
+            RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD_NAME_SHA256,
+        )?;
+        require_exact_retained_retry_1_probe_directory(retained, expected_device)?;
+        require_exact_retained_empty_directory(
+            &retained.join("failed-new"),
+            expected_device,
+            RETAINED_FAILED_V7_RETRY_1_FAILED_NEW_INODE,
+        )?;
+        require_exact_retained_empty_directory(
+            &retained.join("rollback-current"),
+            expected_device,
+            RETAINED_FAILED_V7_RETRY_1_ROLLBACK_CURRENT_INODE,
+        )?;
+        require_exact_retained_v7_top_level(retained)?;
+        let retained_after = fs::symlink_metadata(retained)?;
+        let root_after = fs::symlink_metadata(root)?;
+        if !root_metadata_is_exact(&root_after)
+            || !retained_metadata_is_exact(&retained_after)
+            || root_before.dev() != root_after.dev()
+            || root_before.ino() != root_after.ino()
+            || root_before.nlink() != root_after.nlink()
+            || root_before.permissions().mode() & 0o7777
+                != root_after.permissions().mode() & 0o7777
+            || retained_before.dev() != retained_after.dev()
+            || retained_before.ino() != retained_after.ino()
+            || retained_before.nlink() != retained_after.nlink()
+            || retained_before.permissions().mode() & 0o7777
+                != retained_after.permissions().mode() & 0o7777
+        {
+            return Err(ControllerError(
+                "retained paired-v7 retry-1 failure evidence changed during persistent verification"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     fn require_v7_retry_admission_ready() -> Result<()> {
         require_path_absent(
             Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE),
             "retained first-attempt paired-v7 pointer",
+        )?;
+        require_path_absent(
+            Path::new(RETRY_1_V7_ACTIVE_UPDATE),
+            "retained retry-1 paired-v7 pointer",
         )?;
         require_path_absent(Path::new(V7_ACTIVE_UPDATE), "retry paired-v7 pointer")?;
         require_no_v7_pending_pointers()?;
         require_path_absent(
             Path::new(RETAINED_FAILED_V7_INSTALL_HOLD),
             "retained first-attempt paired-v7 install hold",
+        )?;
+        require_path_absent(
+            Path::new(RETAINED_FAILED_V7_RETRY_1_INSTALL_HOLD),
+            "retained retry-1 paired-v7 install hold",
         )?;
         require_path_absent(
             Path::new(ROOT_V7_SUPPORT_DIRECTORY),
@@ -5622,24 +5914,10 @@ pub(crate) mod paired_v7 {
         )?;
         let data_volume_device = verified_data_volume_device()?;
         let root = Path::new(V7_UPDATE_ROOT);
-        let retained = require_exact_single_private_directory_child_at(
-            root,
-            RETAINED_FAILED_V7_ATTEMPT_NAME,
-        )?;
+        require_exact_v7_retained_pair(root)?;
         require_exact_retained_v7_evidence(data_volume_device)?;
-        if retained.to_str() != Some(RETAINED_FAILED_V7_ATTEMPT)
-            || require_exact_single_private_directory_child_at(
-                root,
-                RETAINED_FAILED_V7_ATTEMPT_NAME,
-            )?
-            .to_str()
-                != Some(RETAINED_FAILED_V7_ATTEMPT)
-        {
-            return Err(ControllerError(
-                "retained paired-v7 namespace changed during retry admission".to_owned(),
-            ));
-        }
-        Ok(())
+        require_exact_retained_retry_1_v7_evidence(data_volume_device)?;
+        require_exact_v7_retained_pair(root)
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5667,7 +5945,30 @@ pub(crate) mod paired_v7 {
         }
     }
 
-    fn require_exact_v7_root_pair(root: &Path, current_name: &str) -> Result<()> {
+    fn require_exact_v7_root_names(root: &Path, expected_names: &[&str]) -> Result<()> {
+        if root.to_str() != Some(V7_UPDATE_ROOT)
+            || expected_names.is_empty()
+            || expected_names
+                .iter()
+                .any(|name| name.is_empty() || name.contains('/'))
+        {
+            return Err(ControllerError(
+                "paired-v7 namespace proof received a non-canonical root or child".to_owned(),
+            ));
+        }
+        let root_before = fs::symlink_metadata(root)?;
+        if !root_before.file_type().is_dir()
+            || root_before.file_type().is_symlink()
+            || root_before.uid() != USER_ID
+            || root_before.gid() != RETAINED_FAILED_V7_ATTEMPT_GID
+            || root_before.permissions().mode() & 0o7777 != 0o700
+            || root_before.ino() != RETAINED_FAILED_V7_ROOT_INODE
+            || root_before.st_flags() != 0
+        {
+            return Err(ControllerError(
+                "paired-v7 namespace root metadata is unsafe".to_owned(),
+            ));
+        }
         let mut actual = Vec::new();
         for entry in fs::read_dir(root)? {
             let entry = entry?;
@@ -5687,18 +5988,54 @@ pub(crate) mod paired_v7 {
             actual.push(entry_name.to_owned());
         }
         actual.sort_unstable();
-        let mut expected = vec![
-            RETAINED_FAILED_V7_ATTEMPT_NAME.to_owned(),
-            current_name.to_owned(),
-        ];
+        let mut expected: Vec<String> = expected_names
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
         expected.sort_unstable();
-        if actual != expected {
+        if expected.windows(2).any(|pair| pair[0] == pair[1]) || actual != expected {
             return Err(ControllerError(
-                "paired-v7 retry namespace is not the exact retained-plus-current pair"
+                "paired-v7 retry namespace child set is not exact"
                     .to_owned(),
             ));
         }
+        let root_after = fs::symlink_metadata(root)?;
+        if !root_after.file_type().is_dir()
+            || root_after.file_type().is_symlink()
+            || root_after.uid() != USER_ID
+            || root_after.gid() != RETAINED_FAILED_V7_ATTEMPT_GID
+            || root_after.permissions().mode() & 0o7777 != 0o700
+            || root_after.st_flags() != 0
+            || root_before.dev() != root_after.dev()
+            || root_before.ino() != root_after.ino()
+            || root_before.nlink() != root_after.nlink()
+        {
+            return Err(ControllerError(
+                "paired-v7 retry namespace root changed during exact enumeration".to_owned(),
+            ));
+        }
         Ok(())
+    }
+
+    fn require_exact_v7_retained_pair(root: &Path) -> Result<()> {
+        require_exact_v7_root_names(
+            root,
+            &[
+                RETAINED_FAILED_V7_ATTEMPT_NAME,
+                RETAINED_FAILED_V7_RETRY_1_NAME,
+            ],
+        )
+    }
+
+    fn require_exact_v7_root_triplet(root: &Path, current_name: &str) -> Result<()> {
+        require_exact_v7_root_names(
+            root,
+            &[
+                RETAINED_FAILED_V7_ATTEMPT_NAME,
+                RETAINED_FAILED_V7_RETRY_1_NAME,
+                current_name,
+            ],
+        )
     }
 
     fn require_retry_v7_pointer_expectation(
@@ -5708,6 +6045,10 @@ pub(crate) mod paired_v7 {
         require_path_absent(
             Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE),
             "retained first-attempt paired-v7 pointer",
+        )?;
+        require_path_absent(
+            Path::new(RETRY_1_V7_ACTIVE_UPDATE),
+            "retained retry-1 paired-v7 pointer",
         )?;
         require_no_v7_pending_pointers()?;
         match expectation {
@@ -5732,9 +6073,9 @@ pub(crate) mod paired_v7 {
             .and_then(|value| value.to_str())
             .ok_or_else(|| ControllerError("paired-v7 retry leaf name is not UTF-8".to_owned()))?;
         let suffix = name
-            .strip_prefix("paired-v7-update-retry-1-")
+            .strip_prefix("paired-v7-update-retry-2-")
             .ok_or_else(|| {
-                ControllerError("paired-v7 retry leaf escaped its fixed retry-1 shape".to_owned())
+                ControllerError("paired-v7 retry leaf escaped its fixed retry-2 shape".to_owned())
             })?;
         if suffix.len() <= 37 || suffix.as_bytes()[suffix.len() - 37] != b'-' {
             return Err(ControllerError(
@@ -5769,7 +6110,9 @@ pub(crate) mod paired_v7 {
         if evidence.to_str() != expected_evidence.to_str()
             || evidence.parent().and_then(Path::to_str) != Some(V7_UPDATE_ROOT)
             || evidence.to_str() == Some(RETAINED_FAILED_V7_ATTEMPT)
+            || evidence.to_str() == Some(RETAINED_FAILED_V7_RETRY_1)
             || name == RETAINED_FAILED_V7_ATTEMPT_NAME
+            || name == RETAINED_FAILED_V7_RETRY_1_NAME
         {
             return Err(ControllerError(
                 "paired-v7 retry leaf is not one exact direct non-retained child".to_owned(),
@@ -5795,6 +6138,7 @@ pub(crate) mod paired_v7 {
             || retry_metadata.ino() == 0
             || retry_metadata.ino() == RETAINED_FAILED_V7_ROOT_INODE
             || retry_metadata.ino() == RETAINED_FAILED_V7_ATTEMPT_INODE
+            || retry_metadata.ino() == RETAINED_FAILED_V7_RETRY_1_INODE
             || retry_metadata.nlink() < 2
             || retry_metadata.st_flags() != 0
         {
@@ -5802,10 +6146,11 @@ pub(crate) mod paired_v7 {
                 "paired-v7 current retry namespace metadata is unsafe".to_owned(),
             ));
         }
-        require_exact_v7_root_pair(root, name)?;
+        require_exact_v7_root_triplet(root, name)?;
         require_exact_retained_v7_evidence(data_volume_device)?;
+        require_exact_retained_retry_1_v7_evidence(data_volume_device)?;
         require_retry_v7_pointer_expectation(evidence, pointer_expectation)?;
-        require_exact_v7_root_pair(root, name)?;
+        require_exact_v7_root_triplet(root, name)?;
         let root_after = fs::symlink_metadata(root)?;
         let retry_after = fs::symlink_metadata(evidence)?;
         if !root_after.file_type().is_dir()
@@ -5838,7 +6183,7 @@ pub(crate) mod paired_v7 {
             ));
         }
         require_retry_v7_pointer_expectation(evidence, pointer_expectation)?;
-        require_exact_v7_root_pair(root, name)?;
+        require_exact_v7_root_triplet(root, name)?;
         Ok(())
     }
 
@@ -5871,7 +6216,7 @@ pub(crate) mod paired_v7 {
 
         let nonce = new_nonce()?;
         let evidence = PathBuf::from(V7_UPDATE_ROOT).join(format!(
-            "paired-v7-update-retry-1-{}-{}-{}",
+            "paired-v7-update-retry-2-{}-{}-{}",
             unix_seconds()?,
             std::process::id(),
             nonce
@@ -9951,7 +10296,7 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
         let staged_driver = format!("{staged_root}/{PRODUCT_DRIVER_NAME}");
         let staged_package = format!("{staged_root}/OpensteamerVirtualMicrophone-v7.pkg");
         let retry_evidence =
-            format!("{V7_UPDATE_ROOT}/paired-v7-update-retry-1-1-41-{nonce}");
+            format!("{V7_UPDATE_ROOT}/paired-v7-update-retry-2-1-41-{nonce}");
         let parent_start_sha256 = "e".repeat(64);
         let internal = [
             vec![
