@@ -963,18 +963,18 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             ),
             let uidBootstrap = try? functionBody(
                 controller,
-                beginningWith: "fn bootstrap_root_owned_v7_controller()",
-                endingBefore: "fn spawn_bounded_line_reader<"
+                beginningWith: "fn bootstrap_root_owned_v7_controller_for_prepare()",
+                endingBefore: "fn verify_root_owned_v7_controller_for_restore("
             ),
             let rootBootstrap = try? functionBody(
                 controller,
                 beginningWith: "fn bootstrap_root_controller_identity()",
-                endingBefore: "fn verify_root_controller_identity()"
+                endingBefore: "fn publish_root_controller()"
             ),
             let rootVerification = try? functionBody(
                 controller,
                 beginningWith: "fn verify_root_controller_identity()",
-                endingBefore: "fn require_root_private_directory("
+                endingBefore: "fn require_retry_3_root_operation_trust("
             ),
             let proxyVerification = try? functionBody(
                 controller,
@@ -986,7 +986,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         }
 
         let launcherTokens = [
-            "EXPECTED_BINARY_SHA256='4ce57b2affe12fca36c4b1bc5d1425d78355bbe5153ab99053a9ddf1ae71c31d'",
+            "EXPECTED_BINARY_SHA256='5feb2414a70b55ebac702916850cfb2b35f5d51a70ea63ae9ca00d67ba10bb04'",
             "CONTROLLER_BINARY_SHA256=$(/usr/bin/shasum -a 256 \"$CONTROLLER\"",
             "[ \"$CONTROLLER_BINARY_SHA256\" = \"$EXPECTED_BINARY_SHA256\" ]",
             "compiled paired-v7 controller differs from the reviewed binary hash",
@@ -2967,11 +2967,1942 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             && launcher.contains(#""$EXECUTE_MODE"|"$RECOVER_RETRY_2_MODE")"#)
     }
 
+    private func hasRetry3TerminalNamespaceContract(_ controller: String) -> Bool {
+        guard
+            let pending = try? functionBody(
+                controller,
+                beginningWith: "    fn require_no_v7_pending_pointers()",
+                endingBefore: "    fn require_exact_retained_v7_top_level"
+            ),
+            let topLevel = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_retry_2_post_recovery_top_level",
+                endingBefore: "    fn require_exact_terminal_retry_2_recovery_journal"
+            ),
+            let terminalJournal = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_terminal_retry_2_recovery_journal",
+                endingBefore: "    fn require_exact_recovered_retry_2_probes"
+            ),
+            let probes = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_recovered_retry_2_probes",
+                endingBefore: "    fn require_exact_recovered_retry_2_evidence"
+            ),
+            let recovered = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_recovered_retry_2_evidence",
+                endingBefore: "    fn require_v7_retry_admission_ready"
+            ),
+            let admission = try? functionBody(
+                controller,
+                beginningWith: "    fn require_v7_retry_admission_ready",
+                endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]"
+            ),
+            let triplet = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_v7_retained_triplet",
+                endingBefore: "    fn require_exact_v7_root_quartet"
+            ),
+            let rootNames = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_v7_root_names",
+                endingBefore: "    fn require_exact_v7_retained_triplet"
+            ),
+            let quartet = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_v7_root_quartet",
+                endingBefore: "    fn require_retry_v7_pointer_expectation"
+            ),
+            let pointer = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retry_v7_pointer_expectation",
+                endingBefore: "    fn require_current_retry_v7_layout"
+            ),
+            let current = try? functionBody(
+                controller,
+                beginningWith: "    fn require_current_retry_v7_layout",
+                endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum Retry2RecoveryState"
+            ),
+            let reserve = try? functionBody(
+                controller,
+                beginningWith: "    fn retry_2_reserve_is_released",
+                endingBefore: "    fn verify_retry_2_default_route_snapshot"
+            ),
+            let archivedHold = try? functionBody(
+                controller,
+                beginningWith: "    fn retry_2_install_hold_is_archived",
+                endingBefore: "    fn retry_2_reserve_is_released"
+            ),
+            let retainedFile = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_retained_file",
+                endingBefore: "    fn require_exact_retained_failure_file"
+            ),
+            let retainedFailure = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_retained_failure_file",
+                endingBefore: "    fn require_exact_retained_empty_directory"
+            ),
+            let retainedEmpty = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_retained_empty_directory",
+                endingBefore: "    fn require_exact_retained_probe_directory"
+            ),
+            let pendingRetire = try? functionBody(
+                controller,
+                beginningWith: "    fn retire_exact_retry_v7_pending_pointer_after_parent_crash",
+                endingBefore: "    fn uid_proxy_complete_host_crash_rollback"
+            ),
+            let recovery = try? functionBody(
+                controller,
+                beginningWith: "    fn recover_retry_2_critical_failure",
+                endingBefore: "    fn execute_paired_v7_update"
+            ),
+            let uidBroker = try? functionBody(
+                controller,
+                beginningWith: "    fn uid501_driver_broker_proxy",
+                endingBefore: "    fn existing_v7_layout_for_restore_proxy"
+            ),
+            let execute = try? functionBody(
+                controller,
+                beginningWith: "    fn execute_paired_v7_update",
+                endingBefore: "    fn perform_paired_v7_update"
+            )
+        else { return false }
+
+        let exactPins = [
+            "const V7_ACTIVE_UPDATE: &str =\n        \"/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-3\";",
+            "const FIRST_ATTEMPT_V7_ACTIVE_UPDATE: &str =\n        \"/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7\";",
+            "const RETRY_1_V7_ACTIVE_UPDATE: &str =\n        \"/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-1\";",
+            "const RETRY_2_V7_ACTIVE_UPDATE: &str =\n        \"/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-2\";",
+            #"const FIRST_ATTEMPT_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7.pending-";"#,
+            #"const RETRY_1_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-1.pending-";"#,
+            #"const RETRY_2_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-2.pending-";"#,
+            #"const RETRY_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-3.pending-";"#,
+            "const RETAINED_FAILED_V7_ROOT_NLINK: u64 = 5;",
+            "const RETAINED_FAILED_V7_ROOT_SIZE: u64 = 160;",
+            "const RETRY_3_V7_ROOT_NLINK: u64 = 6;",
+            "const RETRY_3_V7_ROOT_SIZE: u64 = 192;",
+            "const RECOVERY_RETRY_2_EVIDENCE_INODE: u64 = 27_770_302;",
+            "const RECOVERY_RETRY_2_EVIDENCE_NLINK: u64 = 22;",
+            "const RECOVERY_RETRY_2_EVIDENCE_SIZE: u64 = 704;",
+            "const RECOVERY_RETRY_2_RECOVERY_JOURNAL_INODE: u64 = 27_807_742;",
+            "const RECOVERY_RETRY_2_RECOVERY_JOURNAL_SIZE: u64 = 2_720;",
+            #""6b5d1b606bfd8eb3bf662e7596698afa891a13340d35af3be4805b1033a83c87""#,
+            #""61c88c3d3633119af3910a86afd8bea14d6033f49976615f5c5a1b2e888c450f""#,
+            #""f0361f4443eefae656aa2e5e75ed5a4d4a80df521d56403bcc386f00556cfa3f""#,
+            #""10578545d58874d94e821cc23657838b62428522be6f32d7b7b23bd926a3e2ba""#,
+            #""82f6ab1ce97e08b23e2bbfa3ae309fbfcf3de8734822895ae3064b834f932a1f""#,
+            #""55c9dc33d4e7d368f775013c73045eee70a142d8bf30e2faafa7d5e4276e8474""#,
+            #""abb699a0a4b80026533b57c960ebe612a2b1a01d""#,
+            #""7c47dea69e8d1026d2e54a793e4bb5eb65b7efd6""#,
+            "const RECOVERY_RETRY_2_SOURCE_TAR_INODE: u64 = 27_770_309;",
+            "const RECOVERY_RETRY_2_SOURCE_TAR_SIZE: u64 = 12_748_800;",
+            #""2d4b88d64d3a0df724de32ca6126c0aecbe3e821f72e60ffe78b2ede6f6450ae""#,
+            "const RECOVERY_RETRY_2_FUNCTIONAL_INPUTS_INODE: u64 = 27_770_733;",
+            #""44da69e650783d6697c1b3b3afe67d29e22161023d712d79c1824eba589327ef""#,
+            "const RECOVERY_RETRY_2_PROBES_INODE: u64 = 27_776_651;",
+            "const RECOVERY_RETRY_2_PROBES_NLINK: u64 = 7;",
+            "const RECOVERY_RETRY_2_PROBES_SIZE: u64 = 224;",
+            #""035e3cd9c881c75f101aed88f749c730cff5293c3ca04dfb88f7c14fef84275d""#,
+            #""5a9f216f281ddc4540ea4b763580d1d46efc7bc02e66e4b67da974dd380bedf2""#,
+            "const RECOVERY_RETRY_2_FAILED_NEW_INODE: u64 = 27_770_305;",
+            "const RECOVERY_RETRY_2_FAILED_NEW_NLINK: u64 = 3;",
+            "const RECOVERY_RETRY_2_FAILED_NEW_SIZE: u64 = 96;",
+            "const RECOVERY_RETRY_2_INSTALL_HOLD_INODE: u64 = 27_776_737;",
+            "const RECOVERY_RETRY_2_INSTALL_HOLD_APP_INODE: u64 = 27_776_738;",
+            "const RECOVERY_RETRY_2_INSTALL_HOLD_EXECUTABLE_INODE: u64 = 27_776_743;",
+            "const RECOVERY_RETRY_2_INSTALL_HOLD_EXECUTABLE_SIZE: u64 = 6_090_624;",
+            #""78d63b9806739cd1088f9b342a4ec0976e6cadff66a95b6750bb5597b74672df""#,
+            #""e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855""#,
+        ]
+        let scopedPinDeclarations = [
+            "const RECOVERY_RETRY_2_NAME: &str =\n        \"paired-v7-update-retry-2-1787375620-74854-34192453-910c-4331-a0d0-d9cb250b1f9c\";",
+            "const RECOVERY_RETRY_2_EVIDENCE: &str =\n        \"/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-2-1787375620-74854-34192453-910c-4331-a0d0-d9cb250b1f9c\";",
+            #"const RECOVERY_RETRY_2_NONCE: &str = "34192453-910c-4331-a0d0-d9cb250b1f9c";"#,
+            "const RECOVERY_RETRY_2_POINTER_INODE: u64 = 27_777_557;",
+            "const RECOVERY_RETRY_2_POINTER_SHA256: &str =\n        \"61c88c3d3633119af3910a86afd8bea14d6033f49976615f5c5a1b2e888c450f\";",
+            "const RECOVERY_RETRY_2_POINTER: &str =\n        \"/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-2-1787375620-74854-34192453-910c-4331-a0d0-d9cb250b1f9c\\n\";",
+            "const RECOVERY_RETRY_2_JOURNAL_INODE: u64 = 27_770_306;",
+            "const RECOVERY_RETRY_2_JOURNAL_SHA256: &str =\n        \"f0361f4443eefae656aa2e5e75ed5a4d4a80df521d56403bcc386f00556cfa3f\";",
+            #"""
+            const RECOVERY_RETRY_2_JOURNAL: &str =
+                    "OPENSTEAMER_PAIRED_HOST_UPDATE_V7\nSTATE BEGUN\nSTATE SOURCE_EXPORTED commit=f4962f422b9795b4074d73dd25f332fb6b05b073 tree=52e737fb8a46a607a4a673b788ddccfbcd38efe6 initial_pid=873\nSTATE BUILD_VERIFIED executable_sha256=78d63b9806739cd1088f9b342a4ec0976e6cadff66a95b6750bb5597b74672df\nSTATE INSTALL_HOLD_VERIFIED\nSTATE DRIVER_PREPARED\nSTATE STOP_INITIATED reserve_device=16777229 reserve_inode=27777546 reserve_bytes=8388608\nSTATE CURRENT_STOPPED\nSTATE CURRENT_HELD\nSTATE ROLLBACK_STARTED\nSTATE CRITICAL_FAILURE phase=rollback\n";
+            """#,
+            "const RECOVERY_RETRY_2_RESULT_INODE: u64 = 27_777_807;",
+            "const RECOVERY_RETRY_2_RESULT_SHA256: &str =\n        \"10578545d58874d94e821cc23657838b62428522be6f32d7b7b23bd926a3e2ba\";",
+            #"""
+            const RECOVERY_RETRY_2_RESULT: &str =
+                    "result=critical-failure\ndiagnostic=primary=CRITICAL: paired-v7 failure could not prove product-driver restoration before host rollback: primary=root broker response pipe closed before ROOT_V7_BROKER_PUBLISHED nonce=34192453-910c-4331-a0d0-d9cb250b1f9c; host_stop=Ok(()); privileged_cleanup=Broken pipe (os error 32); rollback=restore proxy response pipe closed before UID_V7_RESTORE_PROXY_READY nonce=34192453-910c-4331-a0d0-d9cb250b1f9c\n";
+            """#,
+            "const RECOVERY_RETRY_2_PROVENANCE_INODE: u64 = 27_770_734;",
+            "const RECOVERY_RETRY_2_PROVENANCE_SHA256: &str =\n        \"82f6ab1ce97e08b23e2bbfa3ae309fbfcf3de8734822895ae3064b834f932a1f\";",
+            #"""
+            const RECOVERY_RETRY_2_PROVENANCE: &str =
+                    "commit=f4962f422b9795b4074d73dd25f332fb6b05b073\ntree=52e737fb8a46a607a4a673b788ddccfbcd38efe6\nfunctional_source_commit=7beb049226ada83e97afba3e60089469d0eeeef6\nfunctional_source_tree=60e2df01afe1b4c09362b8e1b55efa709f23a748\nauthorized_release_commit=f4962f422b9795b4074d73dd25f332fb6b05b073\nauthorized_release_tree=52e737fb8a46a607a4a673b788ddccfbcd38efe6\nupstream=origin/agent/auto-select-iphone-microphone\nremote=https://github.com/ahmedelami/opensteamer.git\nfunctional_inputs_sha256=fdef1da4413f66d5f066c86b0eba709b55c74b1f72b29dac8d62e991a2343ca6\nfunctional_input_evidence_sha256=44da69e650783d6697c1b3b3afe67d29e22161023d712d79c1824eba589327ef\nsource_archive_sha256=2d4b88d64d3a0df724de32ca6126c0aecbe3e821f72e60ffe78b2ede6f6450ae\n";
+            """#,
+            "const RECOVERY_RETRY_2_DRIVER_RECORD_INODE: u64 = 27_777_174;",
+            "const RECOVERY_RETRY_2_DRIVER_RECORD_SHA256: &str =\n        \"55c9dc33d4e7d368f775013c73045eee70a142d8bf30e2faafa7d5e4276e8474\";",
+            #"""
+            const RECOVERY_RETRY_2_DRIVER_RECORD: &str =
+                    "schema=opensteamer.driver-transaction-evidence.v7\nnonce=34192453-910c-4331-a0d0-d9cb250b1f9c\ncanonical_product_driver=/Library/Audio/Plug-Ins/HAL/OpensteamerVirtualMicrophone.driver\nroot_controller_sha256=8c1efa7039649a027987fa306460af8d27caa1f10f5d741ee4332b54a0e3a07c\nroot=ROOT_V7_DRIVER_PREPARED root=/Library/Application Support/opensteamer/driver-transactions-v7/transaction-34192453-910c-4331-a0d0-d9cb250b1f9c prior=0 prior_device=0 prior_inode=0 hold_device=16777229 hold_inode=27777177\nroot=ROOT_V7_BROKER_READY nonce=34192453-910c-4331-a0d0-d9cb250b1f9c\nuser=PING\nroot=ROOT_V7_BROKER_PONG nonce=34192453-910c-4331-a0d0-d9cb250b1f9c\nuser=PUBLISH\nuser=ABANDON\n";
+            """#,
+            "const RECOVERY_RETRY_2_RECOVERY_JOURNAL_INODE: u64 = 27_807_742;",
+            "const RECOVERY_RETRY_2_RECOVERY_JOURNAL_SIZE: u64 = 2_720;",
+            "const RECOVERY_RETRY_2_RECOVERY_JOURNAL_SHA256: &str =\n        \"6b5d1b606bfd8eb3bf662e7596698afa891a13340d35af3be4805b1033a83c87\";",
+            "const RECOVERY_RETRY_2_SOURCE_TAR_INODE: u64 = 27_770_309;",
+            "const RECOVERY_RETRY_2_SOURCE_TAR_SIZE: u64 = 12_748_800;",
+            "const RECOVERY_RETRY_2_SOURCE_TAR_SHA256: &str =\n        \"2d4b88d64d3a0df724de32ca6126c0aecbe3e821f72e60ffe78b2ede6f6450ae\";",
+            "const RECOVERY_RETRY_2_FUNCTIONAL_INPUTS_INODE: u64 = 27_770_733;",
+            "const RECOVERY_RETRY_2_FUNCTIONAL_INPUTS_SIZE: u64 = 22_759;",
+            "const RECOVERY_RETRY_2_FUNCTIONAL_INPUTS_SHA256: &str =\n        \"44da69e650783d6697c1b3b3afe67d29e22161023d712d79c1824eba589327ef\";",
+            "const RECOVERY_RETRY_2_INSTALL_HOLD_NAME_INODE: u64 = 27_770_307;",
+            "const RECOVERY_RETRY_2_INSTALL_HOLD_NAME_SIZE: u64 = 82;",
+            "const RECOVERY_RETRY_2_INSTALL_HOLD_NAME_SHA256: &str =\n        \"0d898c51b1ecf2ec41027fe5f3d5aa29046f0d46eebc2c5e59b2ddc055f16c4b\";",
+            "const RECOVERY_RETRY_2_ROLLBACK_CURRENT_INODE: u64 = 27_770_304;",
+            "const RECOVERY_RETRY_2_RESERVE_INODE: u64 = 27_777_546;",
+            "const RECOVERY_RETRY_2_RESERVE_SIZE: u64 = 8_388_608;",
+            "const RECOVERY_RETRY_2_RESERVE_SHA256: &str =\n        \"2daeb1f36095b44b318410b3f4e8b5d989dcc7bb023d1426c492dab0a3053e74\";",
+            "const RECOVERY_RETRY_2_RELEASED_RESERVE_SHA256: &str =\n        \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\";",
+            "const RECOVERY_RETRY_2_PROBES_INODE: u64 = 27_776_651;",
+            "const RECOVERY_RETRY_2_PROBES_NLINK: u64 = 7;",
+            "const RECOVERY_RETRY_2_PROBES_SIZE: u64 = 224;",
+            "const RECOVERY_RETRY_2_GUARDIAN_SELF_TEST_INODE: u64 = 27_776_734;",
+            "const RECOVERY_RETRY_2_GUARDIAN_SELF_TEST_SIZE: u64 = 122;",
+            "const RECOVERY_RETRY_2_GUARDIAN_SELF_TEST_SHA256: &str =\n        \"035e3cd9c881c75f101aed88f749c730cff5293c3ca04dfb88f7c14fef84275d\";",
+            "const RECOVERY_RETRY_2_MIRROR_SELF_TEST_INODE: u64 = 27_776_731;",
+            "const RECOVERY_RETRY_2_MIRROR_SELF_TEST_SIZE: u64 = 10_310;",
+            "const RECOVERY_RETRY_2_MIRROR_SELF_TEST_SHA256: &str =\n        \"5a9f216f281ddc4540ea4b763580d1d46efc7bc02e66e4b67da974dd380bedf2\";",
+            "const RECOVERY_RETRY_2_PUBLIC_PROBE_INODE: u64 = 27_776_727;",
+            "const RECOVERY_RETRY_2_PUBLIC_PROBE_SIZE: u64 = 154_912;",
+            "const RECOVERY_RETRY_2_GUARDIAN_INODE: u64 = 27_776_710;",
+            "const RECOVERY_RETRY_2_GUARDIAN_SIZE: u64 = 286_968;",
+            "const RECOVERY_RETRY_2_MIRROR_PROBE_INODE: u64 = 27_776_683;",
+            "const RECOVERY_RETRY_2_MIRROR_PROBE_SIZE: u64 = 1_096_944;",
+            "const RECOVERY_RETRY_2_INSTALL_HOLD_INODE: u64 = 27_776_737;",
+            "const RECOVERY_RETRY_2_INSTALL_HOLD_APP_INODE: u64 = 27_776_738;",
+            "const RECOVERY_RETRY_2_INSTALL_HOLD_EXECUTABLE_INODE: u64 = 27_776_743;",
+            "const RECOVERY_RETRY_2_INSTALL_HOLD_EXECUTABLE_SHA256: &str =\n        \"78d63b9806739cd1088f9b342a4ec0976e6cadff66a95b6750bb5597b74672df\";",
+            "const RECOVERY_RETRY_2_INSTALL_HOLD: &str =\n        \"/Applications/.opensteamer-paired-v7-install-34192453-910c-4331-a0d0-d9cb250b1f9c\";",
+            "const RECOVERY_RETRY_2_ARCHIVED_INSTALL_HOLD: &str =\n        \"/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-2-1787375620-74854-34192453-910c-4331-a0d0-d9cb250b1f9c/failed-new/partial-install-hold-root\";",
+            "const RECOVERY_RETRY_2_RECOVERY_JOURNAL: &str =\n        \"/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-2-1787375620-74854-34192453-910c-4331-a0d0-d9cb250b1f9c/recovery-journal.txt\";",
+            "const RECOVERY_RETRY_2_RECOVERY_COMMIT: &str =\n        \"abb699a0a4b80026533b57c960ebe612a2b1a01d\";",
+            "const RECOVERY_RETRY_2_RECOVERY_TREE: &str =\n        \"7c47dea69e8d1026d2e54a793e4bb5eb65b7efd6\";",
+            "const RECOVERY_RETRY_2_RETIRED_POINTER: &str =\n        \"/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-2-1787375620-74854-34192453-910c-4331-a0d0-d9cb250b1f9c/retired-active-pointer.txt\";",
+        ]
+        let topLevelNames = [
+            "D:deployment-reference", "D:failed-new", "D:probes",
+            "D:production-driver-v7", "D:rollback-current", "D:source-export",
+            "D:staged-output", "D:swiftpm-scratch", "F:build.stderr",
+            "F:build.stdout", "F:driver-transaction-record.txt",
+            "F:functional-inputs.txt", "F:install-hold-name.txt", "F:journal.log",
+            "F:provenance.txt", "F:recovery-journal.txt", "F:result.txt",
+            "F:retired-active-pointer.txt", "F:rollback-reserve.bin", "F:source.tar",
+        ]
+        let terminalTokens = [
+            ".custom_flags(O_NOFOLLOW)",
+            "let before = descriptor.metadata()?;", "let named_before = fs::symlink_metadata(path)?;",
+            "metadata.file_type().is_file()", "!metadata.file_type().is_symlink()",
+            "metadata.uid() == USER_ID", "metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID",
+            "metadata.nlink() == 1", "mode() & 0o7777 == 0o600", "metadata.dev() == expected_device",
+            "RECOVERY_RETRY_2_RECOVERY_JOURNAL_INODE", "RECOVERY_RETRY_2_RECOVERY_JOURNAL_SIZE",
+            "metadata.st_flags() == 0", "!metadata_is_exact(&before)", "!metadata_is_exact(&named_before)",
+            "before.dev() != named_before.dev()", "before.ino() != named_before.ino()",
+            "before.len() != named_before.len()", ".take(RECOVERY_RETRY_2_RECOVERY_JOURNAL_SIZE + 1)",
+            "sha256_bytes(&bytes)? != RECOVERY_RETRY_2_RECOVERY_JOURNAL_SHA256",
+            "text != expected",
+            "state != Retry2RecoveryState::RecoveredV6",
+            "RECOVERY_RETRY_2_RECOVERY_COMMIT.to_owned()",
+            "RECOVERY_RETRY_2_RECOVERY_TREE.to_owned()",
+            #"!text.ends_with("STATE RECOVERED_V6\n")"#,
+            "let after = descriptor.metadata()?;",
+            "let named_after = fs::symlink_metadata(path)?;",
+            "!metadata_is_exact(&after)", "!metadata_is_exact(&named_after)",
+            "before.dev() != after.dev()", "before.ino() != after.ino()", "before.len() != after.len()",
+            "before.dev() != named_after.dev()", "before.ino() != named_after.ino()",
+            "before.len() != named_after.len()",
+        ]
+        let pendingTokens = [
+            "require_directory(private_root, 0o700)?;", "let before = fs::symlink_metadata(private_root)?;",
+            "for entry in fs::read_dir(private_root)?", "name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)",
+            "name.starts_with(RETRY_1_V7_PENDING_PREFIX)", "name.starts_with(RETRY_2_V7_PENDING_PREFIX)",
+            "name.starts_with(RETRY_V7_PENDING_PREFIX)", "let after = fs::symlink_metadata(private_root)?;",
+            "before.dev() != after.dev()", "before.ino() != after.ino()",
+            "before.permissions().mode() & 0o7777 != 0o700", "after.permissions().mode() & 0o7777 != 0o700",
+        ]
+        let topLevelTokens = [
+            "const EXPECTED: [&str; 20]", "let before = fs::symlink_metadata(evidence)?;",
+            "for entry in fs::read_dir(evidence)?", "entry.file_type()?.is_dir()", "entry.file_type()?.is_file()",
+            "entry.path() != evidence.join(&name)", "actual.push(format!(\"{kind}:{name}\"));",
+            "actual.sort_unstable();", "actual.iter().map(String::as_str).ne(EXPECTED)",
+            "let after = fs::symlink_metadata(evidence)?;", "before.dev() != after.dev()",
+            "before.ino() != after.ino()", "before.nlink() != after.nlink()", "before.len() != after.len()",
+            "before.permissions().mode() != after.permissions().mode()", "before.st_flags() != after.st_flags()",
+        ]
+        let probeTokens = [
+            "const EXPECTED: [&str; 5]", "let before = fs::symlink_metadata(&probes)?;",
+            "metadata.file_type().is_dir()", "!metadata.file_type().is_symlink()",
+            "metadata.uid() == USER_ID", "metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID",
+            "metadata.nlink() == RECOVERY_RETRY_2_PROBES_NLINK", "mode() & 0o7777 == 0o700",
+            "metadata.dev() == expected_device", "metadata.ino() == RECOVERY_RETRY_2_PROBES_INODE",
+            "metadata.len() == RECOVERY_RETRY_2_PROBES_SIZE", "metadata.st_flags() == 0",
+            "!metadata_is_exact(&before)",
+            "for entry in fs::read_dir(&probes)?", "!entry.file_type()?.is_file()",
+            "entry.path() != probes.join(&name)", "actual.sort_unstable();",
+            "actual.iter().map(String::as_str).ne(EXPECTED)", "guardian-self-test.json",
+            "RECOVERY_RETRY_2_GUARDIAN_SELF_TEST_INODE", "0o600",
+            "RECOVERY_RETRY_2_GUARDIAN_SELF_TEST_SIZE", "RECOVERY_RETRY_2_GUARDIAN_SELF_TEST_SHA256",
+            "mirror-loopback-self-test.json", "RECOVERY_RETRY_2_MIRROR_SELF_TEST_INODE", "0o600",
+            "RECOVERY_RETRY_2_MIRROR_SELF_TEST_SIZE", "RECOVERY_RETRY_2_MIRROR_SELF_TEST_SHA256",
+            "opensteamer-public-vpio-probe", "RECOVERY_RETRY_2_PUBLIC_PROBE_INODE", "0o755",
+            "RECOVERY_RETRY_2_PUBLIC_PROBE_SIZE", "EXPECTED_PUBLIC_VPIO_PROBE_BINARY_SHA256",
+            "opensteamer-v7-default-route-guardian", "RECOVERY_RETRY_2_GUARDIAN_INODE", "0o755",
+            "RECOVERY_RETRY_2_GUARDIAN_SIZE", "EXPECTED_DEFAULT_ROUTE_GUARDIAN_BINARY_SHA256",
+            "physical-virtual-microphone-probe", "RECOVERY_RETRY_2_MIRROR_PROBE_INODE", "0o755",
+            "RECOVERY_RETRY_2_MIRROR_PROBE_SIZE", "EXPECTED_MIRROR_PROBE_BINARY_SHA256",
+            "require_exact_retained_file(",
+            "let after = fs::symlink_metadata(&probes)?;", "!metadata_is_exact(&after)",
+            "before.dev() != after.dev()",
+            "before.ino() != after.ino()", "before.nlink() != after.nlink()", "before.len() != after.len()",
+        ]
+        let recoveredTokens = [
+            "evidence.parent() != Some(root)", "Some(RECOVERY_RETRY_2_NAME)",
+            "let root_before = fs::symlink_metadata(root)?;", "let before = fs::symlink_metadata(evidence)?;",
+            "metadata.file_type().is_dir()", "!metadata.file_type().is_symlink()",
+            "metadata.uid() == USER_ID", "metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID",
+            "metadata.nlink() == RECOVERY_RETRY_2_EVIDENCE_NLINK", "mode() & 0o7777 == 0o700",
+            "metadata.dev() == expected_device", "metadata.ino() == RECOVERY_RETRY_2_EVIDENCE_INODE",
+            "metadata.len() == RECOVERY_RETRY_2_EVIDENCE_SIZE", "metadata.st_flags() == 0",
+            "!metadata_is_exact(&before)", "RETRY_2_V7_ACTIVE_UPDATE", "RECOVERY_RETRY_2_INSTALL_HOLD",
+            "require_exact_retry_2_post_recovery_top_level(evidence)?;",
+            #"&evidence.join("journal.log")"#,
+            "expected_device", "RECOVERY_RETRY_2_JOURNAL_INODE", "RECOVERY_RETRY_2_JOURNAL",
+            "RECOVERY_RETRY_2_JOURNAL_SHA256",
+            #"&evidence.join("result.txt")"#,
+            "expected_device", "RECOVERY_RETRY_2_RESULT_INODE", "RECOVERY_RETRY_2_RESULT",
+            "RECOVERY_RETRY_2_RESULT_SHA256",
+            #"&evidence.join("provenance.txt")"#,
+            "expected_device", "RECOVERY_RETRY_2_PROVENANCE_INODE", "RECOVERY_RETRY_2_PROVENANCE",
+            "RECOVERY_RETRY_2_PROVENANCE_SHA256",
+            #"&evidence.join("driver-transaction-record.txt")"#,
+            "expected_device", "RECOVERY_RETRY_2_DRIVER_RECORD_INODE", "RECOVERY_RETRY_2_DRIVER_RECORD",
+            "RECOVERY_RETRY_2_DRIVER_RECORD_SHA256", "Path::new(RECOVERY_RETRY_2_RETIRED_POINTER)",
+            "expected_device", "RECOVERY_RETRY_2_POINTER_INODE", "RECOVERY_RETRY_2_POINTER",
+            "RECOVERY_RETRY_2_POINTER_SHA256",
+            #"&evidence.join("source.tar")"#,
+            "expected_device", "RECOVERY_RETRY_2_SOURCE_TAR_INODE", "0o600",
+            "RECOVERY_RETRY_2_SOURCE_TAR_SIZE", "RECOVERY_RETRY_2_SOURCE_TAR_SHA256",
+            #"&evidence.join("functional-inputs.txt")"#,
+            "expected_device", "RECOVERY_RETRY_2_FUNCTIONAL_INPUTS_INODE", "0o600",
+            "RECOVERY_RETRY_2_FUNCTIONAL_INPUTS_SIZE", "RECOVERY_RETRY_2_FUNCTIONAL_INPUTS_SHA256",
+            #"&evidence.join("install-hold-name.txt")"#,
+            "expected_device", "RECOVERY_RETRY_2_INSTALL_HOLD_NAME_INODE", "0o600",
+            "RECOVERY_RETRY_2_INSTALL_HOLD_NAME_SIZE", "RECOVERY_RETRY_2_INSTALL_HOLD_NAME_SHA256",
+            "require_exact_recovered_retry_2_probes(evidence, expected_device)?;",
+            "require_exact_terminal_retry_2_recovery_journal(expected_device)?;",
+            #"&evidence.join("rollback-current")"#,
+            "let failed = fs::symlink_metadata(&layout.failed_dir)?;",
+            "!failed.file_type().is_dir()", "failed.file_type().is_symlink()", "failed.uid() != USER_ID",
+            "failed.gid() != RETAINED_FAILED_V7_ATTEMPT_GID", "failed.nlink() != RECOVERY_RETRY_2_FAILED_NEW_NLINK",
+            "failed.permissions().mode() & 0o7777 != 0o700", "failed.dev() != expected_device",
+            "failed.ino() != RECOVERY_RETRY_2_FAILED_NEW_INODE", "failed.len() != RECOVERY_RETRY_2_FAILED_NEW_SIZE",
+            "failed.st_flags() != 0",
+            "retry_2_install_hold_is_archived(&layout)?",
+            "retry_2_reserve_is_released(&layout)?",
+            "let failed_after = fs::symlink_metadata(&layout.failed_dir)?;",
+            "let failed_metadata_is_exact = |metadata: &fs::Metadata|",
+            "!failed_metadata_is_exact(&failed_after)",
+            "failed.dev() != failed_after.dev()", "failed.ino() != failed_after.ino()",
+            "failed.nlink() != failed_after.nlink()", "failed.len() != failed_after.len()",
+            "failed.permissions().mode() & 0o7777", "failed_after.permissions().mode() & 0o7777",
+            "failed.st_flags() != failed_after.st_flags()",
+            "RECOVERY_RETRY_2_RELEASED_RESERVE_SHA256",
+            "require_exact_retry_2_post_recovery_top_level(evidence)?;",
+            "let after = fs::symlink_metadata(evidence)?;",
+            "!metadata_is_exact(&after)", "before.dev() != after.dev()",
+            "before.ino() != after.ino()", "before.nlink() != after.nlink()", "before.len() != after.len()",
+            "root_before.dev() != root_after.dev()", "root_before.ino() != root_after.ino()",
+        ]
+        let admissionTokens = [
+            "FIRST_ATTEMPT_V7_ACTIVE_UPDATE", "RETRY_1_V7_ACTIVE_UPDATE",
+            "RETRY_2_V7_ACTIVE_UPDATE", "V7_ACTIVE_UPDATE",
+            "require_no_v7_pending_pointers()?;", "ROOT_V7_SUPPORT_DIRECTORY",
+            "require_exact_v7_retained_triplet(root, data_volume_device)?;",
+            "require_exact_retained_v7_evidence(data_volume_device)?;",
+            "require_exact_retained_retry_1_v7_evidence(data_volume_device)?;",
+            "require_exact_recovered_retry_2_evidence(data_volume_device)?;",
+            "require_exact_v7_retained_triplet(root, data_volume_device)",
+        ]
+        let rootNameTokens = [
+            "root.to_str() != Some(V7_UPDATE_ROOT)", "expected_names.is_empty()",
+            "name.is_empty() || name.contains('/')", "let root_before = fs::symlink_metadata(root)?;",
+            "root_before.file_type().is_dir()", "root_before.file_type().is_symlink()",
+            "root_before.uid() != USER_ID", "root_before.gid() != RETAINED_FAILED_V7_ATTEMPT_GID",
+            "root_before.permissions().mode() & 0o7777 != 0o700",
+            "root_before.ino() != RETAINED_FAILED_V7_ROOT_INODE", "root_before.st_flags() != 0",
+            "for entry in fs::read_dir(root)?", "!entry.file_type()?.is_dir()",
+            "entry.path().to_str() != expected_path.to_str()", "actual.push(entry_name.to_owned());",
+            "actual.sort_unstable();", "expected.sort_unstable();",
+            "expected.windows(2).any(|pair| pair[0] == pair[1]) || actual != expected",
+            "let root_after = fs::symlink_metadata(root)?;", "root_after.uid() != USER_ID",
+            "root_after.gid() != RETAINED_FAILED_V7_ATTEMPT_GID", "root_after.st_flags() != 0",
+            "root_before.dev() != root_after.dev()", "root_before.ino() != root_after.ino()",
+            "root_before.nlink() != root_after.nlink()",
+        ]
+        let tripletTokens = [
+            "require_exact_v7_root_names(", "RETAINED_FAILED_V7_ATTEMPT_NAME",
+            "RETAINED_FAILED_V7_RETRY_1_NAME", "RECOVERY_RETRY_2_NAME",
+            "let metadata = fs::symlink_metadata(root)?;", "metadata.dev() != expected_device",
+            "metadata.ino() != RETAINED_FAILED_V7_ROOT_INODE", "metadata.uid() != USER_ID",
+            "metadata.gid() != RETAINED_FAILED_V7_ATTEMPT_GID",
+            "metadata.nlink() != RETAINED_FAILED_V7_ROOT_NLINK", "mode() & 0o7777 != 0o700",
+            "metadata.len() != RETAINED_FAILED_V7_ROOT_SIZE", "metadata.st_flags() != 0",
+        ]
+        let quartetTokens = [
+            "require_exact_v7_root_names(", "RETAINED_FAILED_V7_ATTEMPT_NAME",
+            "RETAINED_FAILED_V7_RETRY_1_NAME", "RECOVERY_RETRY_2_NAME", "current_name",
+        ]
+        let pointerTokens = [
+            "Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE)", "Path::new(RETRY_1_V7_ACTIVE_UPDATE)",
+            "Path::new(RETRY_2_V7_ACTIVE_UPDATE)", "require_no_v7_pending_pointers()?;",
+            "RetryV7PointerExpectation::Absent", "require_path_absent(Path::new(V7_ACTIVE_UPDATE)",
+            "RetryV7PointerExpectation::Present", "verify_update_pointer_at(",
+            "Path::new(V7_ACTIVE_UPDATE)", "evidence", "Path::new(V7_UPDATE_ROOT)",
+        ]
+        let currentTokens = [
+            #".strip_prefix("paired-v7-update-retry-3-")"#,
+            "suffix.len() <= 37", "suffix.as_bytes()[suffix.len() - 37] != b'-'",
+            "suffix.split_at(suffix.len() - 37)", "validate_v7_nonce(nonce)?;",
+            "expected_nonce.is_some_and(|expected| expected != nonce)", "numeric.split_once('-')",
+            "timestamp_text.parse::<u64>().ok()", "pid_text.parse::<u32>().ok()",
+            "timestamp.filter(|value| *value > 0).is_none()", "value.to_string() != timestamp_text",
+            "value.to_string() != pid_text", "pid_text.contains('-')", "let root = Path::new(V7_UPDATE_ROOT);",
+            "evidence.to_str() != expected_evidence.to_str()", "evidence.parent().and_then(Path::to_str) != Some(V7_UPDATE_ROOT)",
+            "RETAINED_FAILED_V7_ATTEMPT", "RETAINED_FAILED_V7_RETRY_1", "RECOVERY_RETRY_2_EVIDENCE",
+            "root_before.file_type().is_dir()", "root_before.file_type().is_symlink()",
+            "root_before.uid() != USER_ID", "root_before.gid() != RETAINED_FAILED_V7_ATTEMPT_GID",
+            "root_before.permissions().mode() & 0o7777 != 0o700",
+            "root_before.dev() != data_volume_device", "root_before.ino() != RETAINED_FAILED_V7_ROOT_INODE",
+            "root_before.nlink() != RETRY_3_V7_ROOT_NLINK", "root_before.len() != RETRY_3_V7_ROOT_SIZE",
+            "root_before.st_flags() != 0",
+            "retry_metadata.file_type().is_symlink()", "!retry_metadata.file_type().is_dir()",
+            "retry_metadata.uid() != USER_ID", "retry_metadata.gid() != RETAINED_FAILED_V7_ATTEMPT_GID",
+            "retry_metadata.permissions().mode() & 0o7777 != 0o700",
+            "retry_metadata.dev() != data_volume_device", "retry_metadata.ino() == 0",
+            "RETAINED_FAILED_V7_ATTEMPT_INODE", "RETAINED_FAILED_V7_RETRY_1_INODE",
+            "RECOVERY_RETRY_2_EVIDENCE_INODE", "retry_metadata.nlink() < 2", "retry_metadata.st_flags() != 0",
+            "require_exact_v7_root_quartet(root, name)?;",
+            "require_exact_retained_v7_evidence(data_volume_device)?;",
+            "require_exact_retained_retry_1_v7_evidence(data_volume_device)?;",
+            "require_exact_recovered_retry_2_evidence(data_volume_device)?;",
+            "require_retry_v7_pointer_expectation(evidence, pointer_expectation)?;",
+            "require_exact_v7_root_quartet(root, name)?;",
+            "let root_after = fs::symlink_metadata(root)?;", "let retry_after = fs::symlink_metadata(evidence)?;",
+            "root_after.file_type().is_dir()", "root_after.file_type().is_symlink()",
+            "root_after.uid() != USER_ID", "root_after.gid() != RETAINED_FAILED_V7_ATTEMPT_GID",
+            "root_after.permissions().mode() & 0o7777 != 0o700",
+            "root_after.nlink() != RETRY_3_V7_ROOT_NLINK", "root_after.len() != RETRY_3_V7_ROOT_SIZE",
+            "retry_after.file_type().is_symlink()", "!retry_after.file_type().is_dir()",
+            "retry_after.uid() != USER_ID", "retry_after.gid() != RETAINED_FAILED_V7_ATTEMPT_GID",
+            "retry_after.permissions().mode() & 0o7777 != 0o700",
+            "root_before.dev() != root_after.dev()", "root_before.ino() != root_after.ino()",
+            "root_before.nlink() != root_after.nlink()", "root_before.permissions().mode() & 0o7777",
+            "root_after.permissions().mode() & 0o7777", "root_before.st_flags() != root_after.st_flags()",
+            "retry_metadata.dev() != retry_after.dev()", "retry_metadata.ino() != retry_after.ino()",
+            "retry_metadata.nlink() != retry_after.nlink()", "retry_metadata.len() != retry_after.len()",
+            "retry_metadata.st_flags() != retry_after.st_flags()", "require_retry_v7_pointer_expectation(evidence, pointer_expectation)?;",
+            "require_exact_v7_root_quartet(root, name)?;",
+        ]
+        let recoveryTokens = [
+            "terminal retry-2 recovery verification transaction lock",
+            "Path::new(RETRY_2_V7_ACTIVE_UPDATE)", "Path::new(V7_ACTIVE_UPDATE)",
+            "require_no_v7_pending_pointers()?;", "verified_data_volume_device()?;",
+            "require_exact_recovered_retry_2_evidence(data_volume_device)?;",
+            "verify_retry_2_recovered_v6_generation()?;",
+            "authenticate_v7_privileged_boundary()?;", "prove_retry_2_safe_runtime(&layout)?;",
+            "require_exact_recovered_retry_2_evidence(data_volume_device)?;",
+            "PAIRED_V7_RETRY_2_RECOVERED_V6_VERIFIED",
+        ]
+        let retainedFileTokens = [
+            "expected_length > 16 * 1_024 * 1_024", "metadata.file_type().is_file()",
+            "!metadata.file_type().is_symlink()", "metadata.uid() == USER_ID",
+            "metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID", "metadata.nlink() == 1",
+            "mode() & 0o7777 == expected_mode", "metadata.dev() == expected_device",
+            "metadata.ino() == expected_inode", "metadata.len() == expected_length",
+            "metadata.st_flags() == 0", "let named_before = fs::symlink_metadata(path)?;",
+            ".custom_flags(O_NOFOLLOW)", "let descriptor_before = file.metadata()?;",
+            "descriptor_before.dev() != named_before.dev()", "descriptor_before.ino() != named_before.ino()",
+            "descriptor_before.len() != named_before.len()", ".take(expected_length + 1)",
+            "let descriptor_after = file.metadata()?;", "let named_after = fs::symlink_metadata(path)?;",
+            "sha256_bytes(&bytes)? != expected_sha256", "!metadata_is_exact(&descriptor_after)",
+            "!metadata_is_exact(&named_after)", "descriptor_before.dev() != descriptor_after.dev()",
+            "descriptor_before.ino() != descriptor_after.ino()", "descriptor_before.len() != descriptor_after.len()",
+            "descriptor_before.dev() != named_after.dev()", "descriptor_before.ino() != named_after.ino()",
+            "descriptor_before.len() != named_after.len()",
+        ]
+        let retainedFailureTokens = [
+            "require_exact_retained_file(", "0o600", "expected_bytes.len() as u64",
+            "expected_sha256", "bytes.as_slice() != expected_bytes.as_bytes()",
+        ]
+        let retainedEmptyTokens = [
+            "metadata.file_type().is_dir()", "!metadata.file_type().is_symlink()",
+            "metadata.uid() == USER_ID", "metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID",
+            "metadata.nlink() == 2", "mode() & 0o7777 == 0o700",
+            "metadata.dev() == expected_device", "metadata.ino() == expected_inode", "metadata.st_flags() == 0",
+            "let before = fs::symlink_metadata(path)?;", "fs::read_dir(path)?.next().transpose()?.is_some()",
+            "let after = fs::symlink_metadata(path)?;", "!metadata_is_exact(&after)",
+            "before.dev() != after.dev()", "before.ino() != after.ino()", "before.nlink() != after.nlink()",
+        ]
+        let archivedHoldTokens = [
+            "Path::new(RECOVERY_RETRY_2_INSTALL_HOLD)", "Path::new(RECOVERY_RETRY_2_ARCHIVED_INSTALL_HOLD)",
+            "archive.parent() != Some(layout.failed_dir.as_path())", "path_exists_without_follow(source)?",
+            "path_exists_without_follow(archive)?", "match (source_exists, archive_exists)",
+            "(true, false)", "require_exact_retry_2_install_hold_at(source, layout)?;",
+            "fs::read_dir(&layout.failed_dir)?", "Ok(false)", "(false, true)",
+            "require_exact_retry_2_install_hold_at(archive, layout)?;", "names != [\"partial-install-hold-root\".to_owned()]",
+            "Ok(true)", "retry-2 install hold is duplicated or missing",
+        ]
+        let releasedReserveTokens = [
+            "verified_data_volume_device()?", "require_regular(&layout.rollback_reserve, 0o600)?;",
+            ".custom_flags(O_NOFOLLOW)", "let before = descriptor.metadata()?;",
+            "let named_before = fs::symlink_metadata(&layout.rollback_reserve)?;",
+            "before.dev() != data_volume_device", "before.ino() != RECOVERY_RETRY_2_RESERVE_INODE",
+            "before.uid() != USER_ID", "before.gid() != RETAINED_FAILED_V7_ATTEMPT_GID",
+            "before.nlink() != 1", "mode() & 0o7777 != 0o600", "before.st_flags() != 0",
+            "before.dev() != named_before.dev()", "before.len() == RECOVERY_RETRY_2_RESERVE_SIZE",
+            "before.blocks().checked_mul(512)", "allocated_bytes < RECOVERY_RETRY_2_RESERVE_SIZE",
+            "RECOVERY_RETRY_2_RESERVE_SHA256", "return Ok(false)", "let read = descriptor.read(&mut byte)?;",
+            "before.len() != 0", "before.blocks() != 0", "read != 0", "after.uid() != USER_ID",
+            "after.gid() != RETAINED_FAILED_V7_ATTEMPT_GID", "after.nlink() != 1",
+            "after.permissions().mode() & 0o7777 != 0o600", "after.blocks() != 0",
+            "named_after.uid() != USER_ID", "named_after.blocks() != 0",
+            "before.dev() != after.dev()", "before.dev() != named_after.dev()", "Ok(true)",
+        ]
+        let pendingRetireTokens = [
+            "Path::new(FIRST_ATTEMPT_V7_ACTIVE_UPDATE)", "Path::new(RETRY_1_V7_ACTIVE_UPDATE)",
+            "Path::new(RETRY_2_V7_ACTIVE_UPDATE)", "Path::new(V7_ACTIVE_UPDATE)",
+            #""{V7_ACTIVE_UPDATE}.pending-{expected_main_pid}""#, "require_directory(private_root, 0o700)?;",
+            "for entry in fs::read_dir(private_root)?", "name.starts_with(FIRST_ATTEMPT_V7_PENDING_PREFIX)",
+            "name.starts_with(RETRY_1_V7_PENDING_PREFIX)", "name.starts_with(RETRY_2_V7_PENDING_PREFIX)",
+            "name.starts_with(RETRY_V7_PENDING_PREFIX)", "name != pending_name",
+            "if found_expected_pending", "root_before.dev() != root_after_scan.dev()",
+            "evidence.join(\"retired-pending-active-pointer.txt\")", "found_expected_pending && retired_exists",
+            "!found_expected_pending && !retired_exists", "require_retry_v7_leaf_main_pid(evidence, expected_main_pid)?;",
+            "open_exact_retry_v7_pending_pointer(source, evidence, data_volume_device)?;",
+            "rename_exclusive(&pending, &retired)?;", "fsync_parent(&pending)?;", "fsync_parent(&retired)?;",
+            "descriptor_before.dev() != descriptor_after.dev()", "descriptor_before.dev() != retired_after.dev()",
+            "require_path_absent(&pending", "require_no_v7_pending_pointers()",
+        ]
+        return exactPins.allSatisfy(controller.contains)
+            && scopedPinDeclarations.allSatisfy(controller.contains)
+            && topLevelNames.allSatisfy(topLevel.contains)
+            && containsOrdered(pendingTokens, in: pending)
+            && containsOrdered(topLevelTokens, in: topLevel)
+            && containsOrdered(terminalTokens, in: terminalJournal)
+            && ["guardian-self-test.json", "mirror-loopback-self-test.json",
+                "opensteamer-public-vpio-probe", "opensteamer-v7-default-route-guardian",
+                "physical-virtual-microphone-probe"]
+                .allSatisfy(probes.contains)
+            && containsOrdered(probeTokens, in: probes)
+            && containsOrdered(recoveredTokens, in: recovered)
+            && containsOrdered(admissionTokens, in: admission)
+            && containsOrdered(rootNameTokens, in: rootNames)
+            && containsOrdered(tripletTokens, in: triplet)
+            && containsOrdered(quartetTokens, in: quartet)
+            && containsOrdered(pointerTokens, in: pointer)
+            && containsOrdered(currentTokens, in: current)
+            && reserve.contains("before.blocks() != 0")
+            && reserve.contains("RECOVERY_RETRY_2_RELEASED_RESERVE_SHA256") == false
+            && containsOrdered(recoveryTokens, in: recovery)
+            && containsOrdered(retainedFileTokens, in: retainedFile)
+            && containsOrdered(retainedFailureTokens, in: retainedFailure)
+            && containsOrdered(retainedEmptyTokens, in: retainedEmpty)
+            && containsOrdered(archivedHoldTokens, in: archivedHold)
+            && containsOrdered(releasedReserveTokens, in: reserve)
+            && containsOrdered(pendingRetireTokens, in: pendingRetire)
+            && !recovery.contains("Retry2RecoveryJournal::open")
+            && !recovery.contains("Retry2RecoveryJournal::create")
+            && !recovery.contains(".record(")
+            && !recovery.contains("retire_update_pointer_at")
+            && !controller.contains("legacy_recover_retry_2_critical_failure")
+            && !controller.contains("Retry2RecoveryJournal")
+            && !controller.contains("archive_exact_retry_2_install_hold")
+            && !controller.contains("release_exact_retry_2_reserve")
+            && controller.components(separatedBy: "recover_retry_2_critical_failure(").count - 1 == 2
+            && containsOrdered(
+                [
+                    "require_exact_staged_driver_artifacts(nonce, staged_driver, staged_package)?;",
+                    "require_current_retry_v7_layout(",
+                    "Some(&layout.nonce)",
+                    "RetryV7PointerExpectation::Absent",
+                    "Command::new(\"/usr/bin/sudo\")",
+                ],
+                in: uidBroker
+            )
+            && execute.contains(#""paired-v7-update-retry-3-{}-{}-{}""#)
+            && execute.components(separatedBy: "require_v7_retry_admission_ready()?;").count - 1 >= 3
+            && execute.contains("require_retry_3_root_admission_via_sudo()?;")
+            && execute.contains("require_current_retry_v7_layout(")
+    }
+
+    private func hasRetry3RootV2Contract(_ controller: String) -> Bool {
+        guard
+            let direct = try? functionBody(controller, beginningWith: "    fn require_retained_root_controller_set(", endingBefore: "    fn require_retained_root_normal_v1"),
+            let sudo = try? functionBody(controller, beginningWith: "    fn require_retained_root_controller_set_via_sudo", endingBefore: "    fn require_retained_root_normal_v1_via_sudo"),
+            let parent = try? functionBody(controller, beginningWith: "    fn require_exact_retry_3_transaction_parent_names", endingBefore: "    fn require_retained_retry_2_root_tombstone"),
+            let tombstone = try? functionBody(controller, beginningWith: "    fn require_retained_retry_2_root_tombstone", endingBefore: "    fn require_no_openers_root"),
+            let topology = try? functionBody(controller, beginningWith: "    fn require_root_v2_support_topology", endingBefore: "    fn create_or_repair_root_recovery_sealed"),
+            let repair = try? functionBody(controller, beginningWith: "    fn create_or_repair_root_recovery_sealed", endingBefore: "    fn verify_root_controller_identity"),
+            let publisher = try? functionBody(controller, beginningWith: "    fn publish_root_controller", endingBefore: "    fn require_root_v2_support_topology"),
+            let bootstrap = try? functionBody(controller, beginningWith: "    fn bootstrap_root_controller_identity", endingBefore: "    fn publish_root_controller"),
+            let retainedFile = try? functionBody(controller, beginningWith: "    fn require_exact_retained_root_controller_set_file", endingBefore: "    fn require_retained_root_controller_set("),
+            let recoveryV1File = try? functionBody(controller, beginningWith: "    fn require_exact_retained_root_recovery_v1_file", endingBefore: "    fn require_retained_root_recovery_v1"),
+            let recoveryV1Direct = try? functionBody(controller, beginningWith: "    fn require_retained_root_recovery_v1()", endingBefore: "    fn require_exact_retained_root_controller_set_file"),
+            let sudoSealed = try? functionBody(controller, beginningWith: "    fn sudo_root_sealed_file", endingBefore: "    fn sudo_retained_root_recovery_v1_stat"),
+            let recoveryV1SudoStat = try? functionBody(controller, beginningWith: "    fn sudo_retained_root_recovery_v1_stat", endingBefore: "    fn require_retained_root_recovery_v1_via_sudo"),
+            let recoveryV1Sudo = try? functionBody(controller, beginningWith: "    fn require_retained_root_recovery_v1_via_sudo", endingBefore: "    fn require_retained_root_controller_set_via_sudo"),
+            let sudoParent = try? functionBody(controller, beginningWith: "    fn require_retry_3_transaction_parent_via_sudo", endingBefore: "    fn read_root_controller_identity_records_via_sudo"),
+            let normalV1Direct = try? functionBody(controller, beginningWith: "    fn require_retained_root_normal_v1()", endingBefore: "    fn require_retained_root_recovery_v2"),
+            let recoveryV2Direct = try? functionBody(controller, beginningWith: "    fn require_retained_root_recovery_v2()", endingBefore: "    fn require_exact_root_transaction_children"),
+            let normalV1Sudo = try? functionBody(controller, beginningWith: "    fn require_retained_root_normal_v1_via_sudo", endingBefore: "    fn require_retained_root_recovery_v2_via_sudo"),
+            let recoveryV2Sudo = try? functionBody(controller, beginningWith: "    fn require_retained_root_recovery_v2_via_sudo", endingBefore: "    fn require_retry_3_transaction_parent_via_sudo"),
+            let uidPrepare = try? functionBody(controller, beginningWith: "    fn bootstrap_root_owned_v7_controller_for_prepare", endingBefore: "    fn verify_root_owned_v7_controller_for_restore"),
+            let uidRestore = try? functionBody(controller, beginningWith: "    fn verify_root_owned_v7_controller_for_restore", endingBefore: "    fn attest_retry_2_root_safe_state_via_sudo"),
+            let attestSudo = try? functionBody(controller, beginningWith: "    fn attest_retry_2_root_safe_state_via_sudo", endingBefore: "    fn require_retry_3_root_admission_via_sudo"),
+            let rootAdmission = try? functionBody(controller, beginningWith: "    fn require_retry_3_root_admission_via_sudo", endingBefore: "    fn spawn_bounded_line_reader"),
+            let verifyRootController = try? functionBody(controller, beginningWith: "    fn verify_root_controller_identity", endingBefore: "    fn require_retry_3_root_operation_trust"),
+            let rootTrust = try? functionBody(controller, beginningWith: "    fn require_retry_3_root_operation_trust", endingBefore: "    fn finish_retry_3_root_operation"),
+            let finish = try? functionBody(controller, beginningWith: "    fn finish_retry_3_root_operation", endingBefore: "    fn verify_root_recovery_controller_identity"),
+            let recoveryIdentity = try? functionBody(controller, beginningWith: "    fn verify_root_recovery_controller_identity", endingBefore: "    fn require_root_private_directory"),
+            let rootAttest = try? functionBody(controller, beginningWith: "    fn root_attest_retry_2_safe_state", endingBefore: "    fn require_fixed_system_binary"),
+            let rootDirectoryIdentity = try? functionBody(controller, beginningWith: "    fn require_exact_root_directory_identity", endingBefore: "    fn require_exact_root_regular_identity"),
+            let rootRegularIdentity = try? functionBody(controller, beginningWith: "    fn require_exact_root_regular_identity", endingBefore: "    fn require_exact_retained_root_recovery_v1_file"),
+            let rootChildren = try? functionBody(controller, beginningWith: "    fn require_exact_root_transaction_children", endingBefore: "    fn require_exact_retry_3_transaction_parent_names"),
+            let commandEnum = try? functionBody(controller, beginningWith: "    enum V7Command", endingBefore: "    impl V7Layout"),
+            let main = try? functionBody(controller, beginningWith: "    fn paired_v7_real_main", endingBefore: "    fn parse_v7_command"),
+            let parser = try? functionBody(controller, beginningWith: "    fn parse_v7_command", endingBefore: "    fn require_canonical_git_oid"),
+            let releasePins = try? functionBody(controller, beginningWith: "    fn require_v7_release_pins", endingBefore: "    fn count_exact_production_identity"),
+            let stableIdentity = try? functionBody(controller, beginningWith: "    fn stable_controller_binary_identity", endingBefore: "    fn verified_uid501_controller_identity"),
+            let pinnedBinary = try? functionBody(controller, beginningWith: "    fn require_pinned_system_binary", endingBefore: "    fn parse_core_audio_launch_state"),
+            let prepare = try? functionBody(controller, beginningWith: "    fn root_driver_prepare", endingBefore: "    fn root_driver_publish_reload"),
+            let publish = try? functionBody(controller, beginningWith: "    fn root_driver_publish_reload", endingBefore: "    fn root_driver_rollback_reload"),
+            let rollback = try? functionBody(controller, beginningWith: "    fn root_driver_rollback_reload", endingBefore: "    fn root_driver_restore_or_abandon_existing"),
+            let abandon = try? functionBody(controller, beginningWith: "    fn root_driver_abandon_prepare", endingBefore: "    fn root_driver_verify_commit_ready")
+        else { return false }
+
+        let exactPins = [
+            #""/Library/Application Support/opensteamer/privileged-v7-v2""#,
+            #""/Library/Application Support/opensteamer/privileged-v7-v2/opensteamer-v7-controller""#,
+            #""/Library/Application Support/opensteamer/privileged-v7-v2/.opensteamer-v7-controller.pending""#,
+            #""--root-publish-controller-identity-v7-v2""#,
+            #""--root-bootstrap-controller-identity-v7-v2""#,
+            #""/Library/Application Support/opensteamer/privileged-v7""#,
+            "const RETAINED_ROOT_V7_V1_SUPPORT_INODE: u64 = 27_777_169;",
+            "const RETAINED_ROOT_V7_V1_SUPPORT_NLINK: u64 = 5;",
+            "const RETAINED_ROOT_V7_V1_SUPPORT_LENGTH: u64 = 160;",
+            "const RETAINED_ROOT_V7_V1_CONTROLLER_INODE: u64 = 27_777_170;",
+            "const RETAINED_ROOT_V7_V1_CONTROLLER_LENGTH: u64 = 1_309_384;",
+            #""8c1efa7039649a027987fa306460af8d27caa1f10f5d741ee4332b54a0e3a07c""#,
+            #""b0686ad2c1ddc26ccd5d9fa4c31b80339427de6a52efccd34994f815e54f61e7""#,
+            #""0c8907ef3d77c3c296d8e255d4aeb01cf91333aa4147fa2cacbdee9c73c1ff62""#,
+            "const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_INODE: u64 = 27_803_148;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_NLINK: u64 = 5;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_LENGTH: u64 = 160;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_INODE: u64 = 27_803_149;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_LENGTH: u64 = 1_420_216;",
+            #""b763b2eaec3d3c0a9d6ae558f0f55c6c478237a22baedf99d42945584347f317""#,
+            #""030450c1027f4e0d36fabf66471248e4ef9690e1b30d2d3961db4f1cae0ffdd6""#,
+            #""41c5042ed37c13692cb4d11fc8e039d0008d8038b7240175920b0338701737a7""#,
+            "const RETAINED_ROOT_V7_RECOVERY_V2_SUPPORT_INODE: u64 = 27_807_654;",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_SUPPORT_NLINK: u64 = 5;",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_SUPPORT_LENGTH: u64 = 160;",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_CONTROLLER_INODE: u64 = 27_807_655;",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_CONTROLLER_LENGTH: u64 = 1_438_232;",
+            #""4ce57b2affe12fca36c4b1bc5d1425d78355bbe5153ab99053a9ddf1ae71c31d""#,
+            #""9cc5788a0094c204bd776724553babe10d010093de6391aa1ea484fa11732459""#,
+            #""1f88d2b981364a34a2db517a3ffc75a52f9b081c8693c3b8322b8718569b536d""#,
+            "const RETAINED_ROOT_V7_TRANSACTION_PARENT_INODE: u64 = 27_777_175;",
+            "const RETAINED_ROOT_V7_TRANSACTION_PARENT_NLINK: u64 = 3;",
+            "const RETAINED_ROOT_V7_TRANSACTION_PARENT_LENGTH: u64 = 96;",
+            "const RECOVERY_RETRY_2_ROOT_TRANSACTION_INODE: u64 = 27_777_176;",
+            "const RECOVERY_RETRY_2_ROOT_FAILED_DRIVER_INODE: u64 = 27_777_177;",
+            "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V2",
+        ]
+        let scopedRootDeclarations = [
+            "const ROOT_V7_SUPPORT_DIRECTORY: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7-v2\";",
+            "const ROOT_V7_CONTROLLER: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7-v2/opensteamer-v7-controller\";",
+            "const ROOT_V7_CONTROLLER_PENDING: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7-v2/.opensteamer-v7-controller.pending\";",
+            "const ROOT_V7_CONTROLLER_PIN: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7-v2/controller-binary.sha256\";",
+            "const ROOT_V7_CONTROLLER_IDENTITY_JOURNAL: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7-v2/controller-identity.log\";",
+            "const RETAINED_ROOT_V7_V1_SUPPORT_DIRECTORY: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7\";",
+            "const RETAINED_ROOT_V7_V1_CONTROLLER: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7/opensteamer-v7-controller\";",
+            "const RETAINED_ROOT_V7_V1_CONTROLLER_PENDING: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7/.opensteamer-v7-controller.pending\";",
+            "const RETAINED_ROOT_V7_V1_CONTROLLER_PIN: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7/controller-binary.sha256\";",
+            "const RETAINED_ROOT_V7_V1_CONTROLLER_IDENTITY_JOURNAL: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7/controller-identity.log\";",
+            "const RETAINED_ROOT_V7_V1_DEVICE: u64 = 16_777_229;",
+            "const RETAINED_ROOT_V7_V1_SUPPORT_INODE: u64 = 27_777_169;",
+            "const RETAINED_ROOT_V7_V1_SUPPORT_NLINK: u64 = 5;",
+            "const RETAINED_ROOT_V7_V1_SUPPORT_LENGTH: u64 = 160;",
+            "const RETAINED_ROOT_V7_V1_CONTROLLER_INODE: u64 = 27_777_170;",
+            "const RETAINED_ROOT_V7_V1_CONTROLLER_LENGTH: u64 = 1_309_384;",
+            "const RETAINED_ROOT_V7_V1_CONTROLLER_SHA256: &str =\n        \"8c1efa7039649a027987fa306460af8d27caa1f10f5d741ee4332b54a0e3a07c\";",
+            "const RETAINED_ROOT_V7_V1_PIN_INODE: u64 = 27_777_172;",
+            "const RETAINED_ROOT_V7_V1_PIN_LENGTH: u64 = 65;",
+            "const RETAINED_ROOT_V7_V1_PIN_SHA256: &str =\n        \"b0686ad2c1ddc26ccd5d9fa4c31b80339427de6a52efccd34994f815e54f61e7\";",
+            "const RETAINED_ROOT_V7_V1_JOURNAL_INODE: u64 = 27_777_173;",
+            "const RETAINED_ROOT_V7_V1_JOURNAL_LENGTH: u64 = 297;",
+            "const RETAINED_ROOT_V7_V1_JOURNAL_SHA256: &str =\n        \"0c8907ef3d77c3c296d8e255d4aeb01cf91333aa4147fa2cacbdee9c73c1ff62\";",
+            "const RETAINED_ROOT_V7_V1_PIN: &str =\n        \"8c1efa7039649a027987fa306460af8d27caa1f10f5d741ee4332b54a0e3a07c\\n\";",
+            #"const RETAINED_ROOT_V7_V1_JOURNAL: &str = "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V1\ncontroller_path=/Library/Application Support/opensteamer/privileged-v7/opensteamer-v7-controller\ncontroller_device=16777229\ncontroller_inode=27777170\ncontroller_length=1309384\ncontroller_sha256=8c1efa7039649a027987fa306460af8d27caa1f10f5d741ee4332b54a0e3a07c\n";"#,
+            "const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_DIRECTORY: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2\";",
+            #"const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/opensteamer-v7-recovery-controller";"#,
+            #"const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PENDING: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/.opensteamer-v7-recovery-controller.pending";"#,
+            #"const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PIN: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/controller-binary.sha256";"#,
+            #"const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_IDENTITY_JOURNAL: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/controller-identity.log";"#,
+            "const RETAINED_ROOT_V7_RECOVERY_V1_DEVICE: u64 = 16_777_229;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_INODE: u64 = 27_803_148;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_NLINK: u64 = 5;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_LENGTH: u64 = 160;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_INODE: u64 = 27_803_149;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_LENGTH: u64 = 1_420_216;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_SHA256: &str =\n        \"b763b2eaec3d3c0a9d6ae558f0f55c6c478237a22baedf99d42945584347f317\";",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_PIN_INODE: u64 = 27_803_150;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_PIN_LENGTH: u64 = 65;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_PIN_SHA256: &str =\n        \"030450c1027f4e0d36fabf66471248e4ef9690e1b30d2d3961db4f1cae0ffdd6\";",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_INODE: u64 = 27_803_151;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_LENGTH: u64 = 332;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_SHA256: &str =\n        \"41c5042ed37c13692cb4d11fc8e039d0008d8038b7240175920b0338701737a7\";",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_PIN: &str =\n        \"b763b2eaec3d3c0a9d6ae558f0f55c6c478237a22baedf99d42945584347f317\\n\";",
+            #"const RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL: &str = "OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V1\ncontroller_path=/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/opensteamer-v7-recovery-controller\ncontroller_device=16777229\ncontroller_inode=27803149\ncontroller_length=1420216\ncontroller_sha256=b763b2eaec3d3c0a9d6ae558f0f55c6c478237a22baedf99d42945584347f317\n";"#,
+            "const ROOT_V7_RECOVERY_SUPPORT_DIRECTORY: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2\";",
+            #"const ROOT_V7_RECOVERY_CONTROLLER: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2/opensteamer-v7-recovery-controller";"#,
+            #"const ROOT_V7_RECOVERY_CONTROLLER_PENDING: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2/.opensteamer-v7-recovery-controller.pending";"#,
+            #"const ROOT_V7_RECOVERY_CONTROLLER_PIN: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2/controller-binary.sha256";"#,
+            #"const ROOT_V7_RECOVERY_CONTROLLER_IDENTITY_JOURNAL: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2/controller-identity.log";"#,
+            "const RETAINED_ROOT_V7_RECOVERY_V2_DEVICE: u64 = 16_777_229;",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_SUPPORT_INODE: u64 = 27_807_654;",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_SUPPORT_NLINK: u64 = 5;",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_SUPPORT_LENGTH: u64 = 160;",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_CONTROLLER_INODE: u64 = 27_807_655;",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_CONTROLLER_LENGTH: u64 = 1_438_232;",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_CONTROLLER_SHA256: &str =\n        \"4ce57b2affe12fca36c4b1bc5d1425d78355bbe5153ab99053a9ddf1ae71c31d\";",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_PIN_INODE: u64 = 27_807_656;",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_PIN_LENGTH: u64 = 65;",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_PIN_SHA256: &str =\n        \"9cc5788a0094c204bd776724553babe10d010093de6391aa1ea484fa11732459\";",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_JOURNAL_INODE: u64 = 27_807_657;",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_JOURNAL_LENGTH: u64 = 335;",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_JOURNAL_SHA256: &str =\n        \"1f88d2b981364a34a2db517a3ffc75a52f9b081c8693c3b8322b8718569b536d\";",
+            "const RETAINED_ROOT_V7_RECOVERY_V2_PIN: &str =\n        \"4ce57b2affe12fca36c4b1bc5d1425d78355bbe5153ab99053a9ddf1ae71c31d\\n\";",
+            #"const RETAINED_ROOT_V7_RECOVERY_V2_JOURNAL: &str = "OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V2\ncontroller_path=/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2/opensteamer-v7-recovery-controller\ncontroller_device=16777229\ncontroller_inode=27807655\ncontroller_length=1438232\ncontroller_sha256=4ce57b2affe12fca36c4b1bc5d1425d78355bbe5153ab99053a9ddf1ae71c31d\n";"#,
+        ]
+        let directTokens = [
+            "child.parent() != Some(support)", "metadata.file_type().is_dir()",
+            "metadata.file_type().is_symlink()", "metadata.uid() != 0", "metadata.gid() != 0",
+            "metadata.nlink() != support_nlink", "mode() & 0o7777 != 0o700",
+            "metadata.dev() != expected_device", "metadata.ino() != support_inode",
+            "metadata.len() != support_length", "metadata.st_flags() != 0",
+            "fs::read_dir(support)?", "controller-binary.sha256", "controller-identity.log",
+            "expected.sort_unstable();", "if names != expected",
+            "require_path_absent(pending", "require_exact_retained_root_controller_set_file(",
+            "let children_after = read_children()?;", "let after = read_support()?;",
+            "children_before != children_after", "before.dev() != after.dev()",
+            "before.ino() != after.ino()", "before.nlink() != after.nlink()",
+            "before.len() != after.len()", "before.permissions().mode() != after.permissions().mode()",
+            "before.st_flags() != after.st_flags()",
+        ]
+        let sudoTokens = [
+            "child.parent() != Some(support)", "expected_support", "controller-binary.sha256",
+            "controller-identity.log", "sudo_stat(pending)?.is_some()",
+            #"sudo_output(&["-n", "/bin/ls", "-1A", support_text])?"#,
+            "listing.stderr.is_empty()", "listing.stdout != expected_listing.as_bytes()",
+            "let before = read_topology()?;", "if before", "expected_support",
+            "expected_controller", "expected_pin", "expected_journal",
+            #"sudo_output(&["-n", "/usr/bin/shasum", "-a", "256", controller_text])?"#,
+            "sudo_root_sealed_file(pin, pin_length)?", "sudo_root_sealed_file(journal, journal_length)?",
+            "if read_topology()? != before",
+        ]
+        let sudoFormatTokens = [
+            "let expected_support = format!(",
+            #""0:0:{support_nlink}:0700:Directory:{expected_device}:{support_inode}:{support_length}:0""#,
+            "let expected_controller = format!(",
+            #""0:0:1:0500:Regular File:{expected_device}:{controller_inode}:{controller_length}:0""#,
+            "let expected_pin =", #""0:0:1:0400:Regular File:{expected_device}:{pin_inode}:{pin_length}:0""#,
+            "let expected_journal = format!(",
+            #""0:0:1:0400:Regular File:{expected_device}:{journal_inode}:{journal_length}:0""#,
+        ]
+        let parentTokens = [
+            "let before = fs::symlink_metadata(parent)?;", "let expected_nlink = if current.is_some()",
+            "RETAINED_ROOT_V7_TRANSACTION_PARENT_NLINK + 1",
+            "metadata.file_type().is_dir()", "!metadata.file_type().is_symlink()",
+            "metadata.uid() == 0", "metadata.gid() == 0", "metadata.nlink() == expected_nlink",
+            "mode() & 0o7777 == 0o700", "metadata.dev() == RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE",
+            "metadata.ino() == RETAINED_ROOT_V7_TRANSACTION_PARENT_INODE",
+            "RETAINED_ROOT_V7_TRANSACTION_PARENT_LENGTH", "+ if current.is_some() { 32 } else { 0 }",
+            "metadata.st_flags() == 0", "!metadata_is_exact(&before)",
+            "current.parent() != Some(parent) || current == retained",
+            "if actual != expected", "let after = fs::symlink_metadata(parent)?;",
+            "!metadata_is_exact(&after)", "before.dev() != after.dev()", "before.ino() != after.ino()",
+            "before.nlink() != after.nlink()", "before.len() != after.len()",
+            "before.st_flags() != after.st_flags()",
+        ]
+        let tombstoneTokens = [
+            "verified_data_volume_device()?", "require_exact_root_directory_identity(",
+            "transaction", "data_volume_device", "RECOVERY_RETRY_2_ROOT_TRANSACTION_INODE", "5",
+            "require_exact_root_transaction_children(transaction)?;", "root_driver_layout(RECOVERY_RETRY_2_NONCE)?",
+            "layout.root != transaction",
+            "PRODUCT_DRIVER_CANONICAL_PATH", "layout.hold", "layout.prior", "layout.abandoned",
+            "!failed.file_type().is_dir()", "failed.file_type().is_symlink()",
+            "failed.uid() != 0", "failed.gid() != 0", "failed.nlink() != 3",
+            "mode() & 0o7777 != 0o755", "failed.dev() != data_volume_device",
+            "failed.ino() != RECOVERY_RETRY_2_ROOT_FAILED_DRIVER_INODE", "failed.st_flags() != 0",
+            "verify_root_production_driver(&layout.failed)?;", "read_root_driver_state(&layout)?",
+            "prior.present", "hold.device != data_volume_device",
+            "hold.inode != RECOVERY_RETRY_2_ROOT_FAILED_DRIVER_INODE",
+            "root_node_identity(&layout.failed)?.device != hold.device",
+            "root_node_identity(&layout.failed)?.inode != hold.inode",
+            "require_exact_root_regular_identity(", "&layout.state", "data_volume_device",
+            "RECOVERY_RETRY_2_ROOT_STATE_INODE", "0o600", "RECOVERY_RETRY_2_ROOT_STATE.len() as u64",
+            "RECOVERY_RETRY_2_ROOT_STATE_SHA256", "read_root_bounded_utf8(&layout.state, 4_096)?",
+            "RECOVERY_RETRY_2_ROOT_STATE",
+            "require_exact_root_regular_identity(", "&layout.package", "data_volume_device",
+            "RECOVERY_RETRY_2_ROOT_PACKAGE_INODE", "0o400", "54_515",
+            "EXPECTED_PRODUCTION_DRIVER_PACKAGE_SHA256", "verify_root_production_package(&layout.package)?;",
+            "require_no_extended_attributes_root(transaction)?;", "require_no_openers_root(transaction)?;",
+            "require_exact_root_directory_identity(", "transaction", "data_volume_device",
+            "RECOVERY_RETRY_2_ROOT_TRANSACTION_INODE", "5", "require_exact_root_transaction_children(transaction)?;",
+        ]
+        let topologyTokens = [
+            "expected_sets.is_empty()", "fs::read_dir(support)?", "!entry.file_type()?.is_file()",
+            "matches_expected", "expected_nlink = 2 + actual.len() as u64",
+            "expected_length = 64 + 32 * actual.len() as u64", "metadata.file_type().is_dir()",
+            "!metadata.file_type().is_symlink()", "metadata.uid() == 0", "metadata.gid() == 0",
+            "metadata.nlink() == expected_nlink", "mode() & 0o7777 == 0o700",
+            "metadata.dev() == RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE",
+            "metadata.len() == expected_length", "metadata.st_flags() == 0",
+            "!metadata_is_exact(&before)", "!metadata_is_exact(&after)",
+            "before.dev() != after.dev()", "before.ino() != after.ino()",
+            "before.nlink() != after.nlink()", "before.len() != after.len()",
+        ]
+        let publishTokens = [
+            "geteuid()", "env::current_exe()? != Path::new(ROOT_V7_CONTROLLER_PENDING)",
+            "require_retained_root_normal_v1()?;", "require_retained_root_recovery_v1()?;",
+            "require_retained_root_recovery_v2()?;", "require_exact_retry_3_transaction_parent_names(None)?;",
+            "require_retained_retry_2_root_tombstone(true)?;", "stable_controller_binary_identity(",
+            "Path::new(ROOT_V7_CONTROLLER_PENDING)", ".custom_flags(O_NOFOLLOW)",
+            "let before = descriptor.metadata()?;", "descriptor.sync_all()?;", "require_path_absent(Path::new(ROOT_V7_CONTROLLER)",
+            "rename_exclusive(", "fsync_parent(Path::new(ROOT_V7_CONTROLLER))?;", "let after = descriptor.metadata()?;",
+            "stable_controller_binary_identity(", "Path::new(ROOT_V7_CONTROLLER)", "pending != published",
+            "before.dev() != after.dev()", "before.ino() != after.ino()", "before.len() != after.len()",
+            "require_root_v2_support_topology",
+            "ROOT_V7_CONTROLLER_V2_PUBLISHED",
+        ]
+        let prepareTokens = [
+            "require_retry_3_root_operation_trust(None, true)?;",
+            "require_current_retry_v7_layout(", "RetryV7PointerExpectation::Absent",
+            "fs::create_dir(&layout.root)?;", "finish_retry_3_root_operation(&layout, operation, true)?;",
+        ]
+        let retainedFileTokens = [
+            ".custom_flags(O_NOFOLLOW)", "let before = descriptor.metadata()?;",
+            "let named_before = fs::symlink_metadata(path)?;", "metadata.file_type().is_file()",
+            "!metadata.file_type().is_symlink()", "metadata.uid() == 0", "metadata.gid() == 0",
+            "metadata.nlink() == 1", "mode() & 0o7777 == expected_mode",
+            "metadata.dev() == expected_device", "metadata.ino() == expected_inode",
+            "metadata.len() == expected_length", "metadata.st_flags() == 0",
+            "!metadata_is_exact(&before)", "!metadata_is_exact(&named_before)",
+            "before.dev() != named_before.dev()", "before.ino() != named_before.ino()",
+            "before.len() != named_before.len()", ".take(expected_length + 1)",
+            "sha256_bytes(&bytes)? != expected_sha256",
+            "expected_bytes.is_some_and", "let after = descriptor.metadata()?;",
+            "let named_after = fs::symlink_metadata(path)?;", "!metadata_is_exact(&after)",
+            "!metadata_is_exact(&named_after)", "before.dev() != after.dev()",
+            "before.ino() != after.ino()", "before.len() != after.len()",
+            "before.dev() != named_after.dev()", "before.ino() != named_after.ino()",
+            "before.len() != named_after.len()",
+        ]
+        let recoveryV1FileTokens = [
+            ".custom_flags(O_NOFOLLOW)", "let before = descriptor.metadata()?;",
+            "let named_before = fs::symlink_metadata(path)?;", "metadata.file_type().is_file()",
+            "!metadata.file_type().is_symlink()", "metadata.uid() == 0",
+            "metadata.gid() == 0", "metadata.nlink() == 1",
+            "mode() & 0o7777 == expected_mode", "metadata.dev() == RETAINED_ROOT_V7_RECOVERY_V1_DEVICE",
+            "metadata.ino() == expected_inode", "metadata.len() == expected_length", "metadata.st_flags() == 0",
+            "!metadata_is_exact(&before)", "!metadata_is_exact(&named_before)",
+            "before.dev() != named_before.dev()", "before.ino() != named_before.ino()",
+            "before.len() != named_before.len()",
+            ".take(expected_length + 1)", "sha256_bytes(&bytes)? != expected_sha256",
+            "bytes != expected_bytes", "let after = descriptor.metadata()?;",
+            "let named_after = fs::symlink_metadata(path)?;", "!metadata_is_exact(&after)",
+            "!metadata_is_exact(&named_after)", "before.dev() != after.dev()",
+            "before.ino() != after.ino()", "before.len() != after.len()",
+            "before.dev() != named_after.dev()", "before.ino() != named_after.ino()",
+            "before.len() != named_after.len()",
+        ]
+        let recoveryV1DirectTokens = [
+            "RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_DIRECTORY", "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER",
+            "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PIN", "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_IDENTITY_JOURNAL",
+            "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PENDING", "metadata.file_type().is_dir()",
+            "metadata.file_type().is_symlink()", "metadata.uid() != 0", "metadata.gid() != 0",
+            "metadata.nlink() != RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_NLINK", "mode() & 0o7777 != 0o700",
+            "metadata.dev() != RETAINED_ROOT_V7_RECOVERY_V1_DEVICE", "metadata.ino() != RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_INODE",
+            "metadata.len() != RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_LENGTH", "metadata.st_flags() != 0",
+            "fs::read_dir(support)?", "if names", "!= [", "controller-binary.sha256",
+            "controller-identity.log", "require_path_absent(", "require_exact_retained_root_recovery_v1_file(",
+            "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_SHA256", "RETAINED_ROOT_V7_RECOVERY_V1_PIN_SHA256",
+            "Some(RETAINED_ROOT_V7_RECOVERY_V1_PIN.as_bytes())", "RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_SHA256",
+            "Some(RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL.as_bytes())", "let children_after = read_children()?;",
+            "children_before != children_after", "before.dev() != after.dev()",
+            "before.ino() != after.ino()", "before.nlink() != after.nlink()",
+            "before.len() != after.len()", "before.permissions().mode() != after.permissions().mode()",
+            "before.st_flags() != after.st_flags()",
+        ]
+        let recoveryV1SudoStatTokens = [
+            #"%u:%g:%l:%Mp%Lp:%HT:%d:%i:%z:%f"#, "require_output_success",
+            "!output.stderr.is_empty()", ".strip_suffix('\\n')", "!line.is_empty() && !line.contains('\\n')",
+        ]
+        let recoveryV1SudoTokens = [
+            #"require_pinned_system_binary(Path::new("/bin/ls"), 0o755, EXPECTED_LS_SHA256)?;"#,
+            "RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_DIRECTORY", "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER",
+            "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PIN", "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_IDENTITY_JOURNAL",
+            "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PENDING", "RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_NLINK",
+            "RETAINED_ROOT_V7_RECOVERY_V1_DEVICE", "RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_INODE",
+            "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_INODE", "RETAINED_ROOT_V7_RECOVERY_V1_PIN_INODE",
+            "RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_INODE", "sudo_stat(pending)?.is_some()",
+            "listing.stdout\n                    != b\"controller-binary.sha256\\ncontroller-identity.log\\nopensteamer-v7-recovery-controller\\n\"",
+            "let before = read_topology()?;", "if before", "expected_support.clone()",
+            "expected_controller.clone()", "expected_pin.clone()", "expected_journal.clone()",
+            "controller_hash", "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_SHA256",
+            "sudo_root_sealed_file(pin", "RETAINED_ROOT_V7_RECOVERY_V1_PIN_SHA256",
+            "sudo_root_sealed_file(", "RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_SHA256",
+            "let after = read_topology()?;", "after != before",
+        ]
+        let recoveryV1SudoFormatTokens = [
+            "let expected_support = format!(", #""0:0:{}:0700:Directory:{}:{}:{}:0""#,
+            "RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_NLINK", "RETAINED_ROOT_V7_RECOVERY_V1_DEVICE",
+            "RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_INODE", "RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_LENGTH",
+            "let expected_controller = format!(", #""0:0:1:0500:Regular File:{}:{}:{}:0""#,
+            "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_INODE", "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_LENGTH",
+            "let expected_pin = format!(", #""0:0:1:0400:Regular File:{}:{}:{}:0""#,
+            "RETAINED_ROOT_V7_RECOVERY_V1_PIN_INODE", "RETAINED_ROOT_V7_RECOVERY_V1_PIN_LENGTH",
+            "let expected_journal = format!(", #""0:0:1:0400:Regular File:{}:{}:{}:0""#,
+            "RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_INODE", "RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_LENGTH",
+        ]
+        let normalV1WrapperTokens = [
+            #""normal-v1""#, "RETAINED_ROOT_V7_V1_SUPPORT_DIRECTORY", "RETAINED_ROOT_V7_V1_CONTROLLER",
+            "RETAINED_ROOT_V7_V1_CONTROLLER_PENDING", "RETAINED_ROOT_V7_V1_CONTROLLER_PIN",
+            "RETAINED_ROOT_V7_V1_CONTROLLER_IDENTITY_JOURNAL", "RETAINED_ROOT_V7_V1_DEVICE",
+            "RETAINED_ROOT_V7_V1_SUPPORT_INODE", "RETAINED_ROOT_V7_V1_SUPPORT_NLINK",
+            "RETAINED_ROOT_V7_V1_SUPPORT_LENGTH", "RETAINED_ROOT_V7_V1_CONTROLLER_INODE",
+            "RETAINED_ROOT_V7_V1_CONTROLLER_LENGTH",
+            "RETAINED_ROOT_V7_V1_CONTROLLER_SHA256", "RETAINED_ROOT_V7_V1_PIN_INODE",
+            "RETAINED_ROOT_V7_V1_PIN_SHA256", "RETAINED_ROOT_V7_V1_PIN",
+            "RETAINED_ROOT_V7_V1_JOURNAL_INODE", "RETAINED_ROOT_V7_V1_JOURNAL_LENGTH",
+            "RETAINED_ROOT_V7_V1_JOURNAL_SHA256",
+            "RETAINED_ROOT_V7_V1_JOURNAL",
+        ]
+        let recoveryV2WrapperTokens = [
+            #""recovery-v2""#, "ROOT_V7_RECOVERY_SUPPORT_DIRECTORY", "ROOT_V7_RECOVERY_CONTROLLER",
+            "ROOT_V7_RECOVERY_CONTROLLER_PENDING", "ROOT_V7_RECOVERY_CONTROLLER_PIN",
+            "ROOT_V7_RECOVERY_CONTROLLER_IDENTITY_JOURNAL", "RETAINED_ROOT_V7_RECOVERY_V2_DEVICE",
+            "RETAINED_ROOT_V7_RECOVERY_V2_SUPPORT_INODE", "RETAINED_ROOT_V7_RECOVERY_V2_SUPPORT_NLINK",
+            "RETAINED_ROOT_V7_RECOVERY_V2_SUPPORT_LENGTH", "RETAINED_ROOT_V7_RECOVERY_V2_CONTROLLER_INODE",
+            "RETAINED_ROOT_V7_RECOVERY_V2_CONTROLLER_LENGTH",
+            "RETAINED_ROOT_V7_RECOVERY_V2_CONTROLLER_SHA256", "RETAINED_ROOT_V7_RECOVERY_V2_PIN_INODE",
+            "RETAINED_ROOT_V7_RECOVERY_V2_PIN_SHA256", "RETAINED_ROOT_V7_RECOVERY_V2_PIN",
+            "RETAINED_ROOT_V7_RECOVERY_V2_JOURNAL_INODE", "RETAINED_ROOT_V7_RECOVERY_V2_JOURNAL_LENGTH",
+            "RETAINED_ROOT_V7_RECOVERY_V2_JOURNAL_SHA256",
+            "RETAINED_ROOT_V7_RECOVERY_V2_JOURNAL",
+        ]
+        let normalV1SudoOnlyTokens = ["RETAINED_ROOT_V7_V1_PIN_LENGTH"]
+        let recoveryV2SudoOnlyTokens = ["RETAINED_ROOT_V7_RECOVERY_V2_PIN_LENGTH"]
+        let sudoSealedTokens = [
+            #"%u:%g:%l:%Lp:%HT:%d:%i:%z"#, "fields.len() != 8", #"fields[3] != "400""#,
+            #"fields[4] != "Regular File""#, "length == 0 || length > maximum",
+            "let before = read_identity()?;", #"sudo_output(&["-n", "/bin/cat", path_text(path)?])?"#,
+            "output.stdout.len() as u64 > maximum", "let after = read_identity()?;", "before != after",
+        ]
+        let sudoParentTokens = [
+            #"require_pinned_system_binary(Path::new("/bin/ls"), 0o755, EXPECTED_LS_SHA256)?;"#,
+            "RETAINED_ROOT_V7_TRANSACTION_PARENT_NLINK", "if current.is_some() { 1 } else { 0 }",
+            "RETAINED_ROOT_V7_TRANSACTION_PARENT_LENGTH", "if current.is_some() { 32 } else { 0 }",
+            "let expected_parent = format!(", #""0:0:{expected_nlink}:0700:Directory:{}:{}:{expected_length}:0""#,
+            "RETAINED_ROOT_V7_TRANSACTION_PARENT_DEVICE", "RETAINED_ROOT_V7_TRANSACTION_PARENT_INODE",
+            "current.parent() != Some(parent) || current == retained", "expected_names.sort_unstable();",
+            "let parent_stat = sudo_retained_root_recovery_v1_stat(parent)?;", "parent_stat != expected_parent",
+            #"sudo_output(&["#, #""/bin/ls""#, "ROOT_V7_TRANSACTION_PARENT",
+            "require_output_success(&listing", "!listing.stderr.is_empty()",
+            "listing.stdout != expected_listing.as_bytes()", "let before = read()?;", "let after = read()?;",
+            "before != after",
+        ]
+        let repairTokens = [
+            "expected.is_empty()", "expected.len() > 1_024", "!expected.ends_with('\\n')",
+            "!metadata.file_type().is_file()", "metadata.file_type().is_symlink()",
+            "metadata.uid() != 0", "metadata.gid() != 0", "metadata.nlink() != 1",
+            "mode() & 0o7777, 0o400 | 0o600", "metadata.len() > expected.len() as u64",
+            "metadata.st_flags() != 0",
+            ".read(true)", ".write(true)", ".custom_flags(O_NOFOLLOW)",
+            "let before = file.metadata()?;", "let named_before = fs::symlink_metadata(path)?;",
+            "before.dev() != named_before.dev()", "before.ino() != named_before.ino()",
+            "before.len() != named_before.len()",
+            ".take(expected.len() as u64 + 1)", "expected.as_bytes().starts_with(&bytes)",
+            "if bytes != expected.as_bytes()",
+            "file.set_len(0)?;", "file.seek(SeekFrom::Start(0))?;", "file.write_all(expected.as_bytes())?;",
+            "file.set_permissions(fs::Permissions::from_mode(0o400))?;", "file.sync_all()?;",
+            "fsync_parent(path)?;", "read_root_sealed_utf8(path, 1_024)? != expected",
+        ]
+        let bootstrapTokens = [
+            "geteuid()", "env::current_exe()? != Path::new(ROOT_V7_CONTROLLER)",
+            "require_retained_root_normal_v1()?;", "require_retained_root_recovery_v1()?;",
+            "require_retained_root_recovery_v2()?;", "require_exact_retry_3_transaction_parent_names(None)?;",
+            "require_retained_retry_2_root_tombstone(true)?;", "require_root_v2_support_topology",
+            "stable_controller_binary_identity(", "create_or_repair_root_recovery_sealed(",
+            "ROOT_V7_CONTROLLER_PIN", "create_or_repair_root_recovery_sealed(",
+            "ROOT_V7_CONTROLLER_IDENTITY_JOURNAL", "read_root_controller_identity_records()? != identity",
+            "require_root_v2_support_topology", "require_retained_root_normal_v1()?;",
+            "require_retained_root_recovery_v1()?;", "require_retained_root_recovery_v2()?;",
+            "require_exact_retry_3_transaction_parent_names(None)?;", "require_retained_retry_2_root_tombstone(true)?;",
+            "ROOT_V7_CONTROLLER_V2_IDENTITY_SEALED",
+        ]
+        let uidPrepareTokens = [
+            "require_retained_root_normal_v1_via_sudo()?;", "require_retained_root_recovery_v1_via_sudo()?;",
+            "require_retained_root_recovery_v2_via_sudo()?;", "require_retry_3_transaction_parent_via_sudo(None)?;",
+            "attest_retry_2_root_safe_state_via_sudo()?;", "let before = verified_uid501_controller_identity()?;",
+            "ROOT_V7_CONTROLLER_PENDING", "stage exact normal root controller V2",
+            "hash staged normal root controller V2", "!= before.sha256", "ROOT_V7_CONTROLLER_PUBLISH_MODE",
+            "ROOT_V7_CONTROLLER_V2_PUBLISHED", "ROOT_V7_CONTROLLER", "!= before.sha256",
+            #"Some("0:0:1:500:Regular File")"#, "ROOT_V7_CONTROLLER_BOOTSTRAP_MODE",
+            "ROOT_V7_CONTROLLER_V2_IDENTITY_SEALED", "let after = verified_uid501_controller_identity()?;",
+            "before != after", "read_root_controller_identity_records_via_sudo()?",
+            "sealed.sha256 != after.sha256 || sealed.length != after.length",
+            "require_retained_root_normal_v1_via_sudo()?;", "require_retained_root_recovery_v1_via_sudo()?;",
+            "require_retained_root_recovery_v2_via_sudo()?;", "require_retry_3_transaction_parent_via_sudo(None)?;",
+            "attest_retry_2_root_safe_state_via_sudo()?;",
+        ]
+        let uidStageTokens = [
+            "let output = sudo_output(&[", #""-n""#, #""/usr/bin/install""#,
+            #""-o""#, #""root""#, #""-g""#, #""wheel""#, #""-m""#, #""0500""#,
+            "path_text(&current)?", "ROOT_V7_CONTROLLER_PENDING", "])?;",
+            #"require_output_success(&output, "stage exact normal root controller V2")?;"#,
+        ]
+        let uidRestoreTokens = [
+            "require_retained_root_normal_v1_via_sudo()?;", "require_retained_root_recovery_v1_via_sudo()?;",
+            "require_retained_root_recovery_v2_via_sudo()?;", "require_current_retry_v7_layout(",
+            "Some(&layout.nonce)", "pointer_expectation", "expected_root == Path::new(RECOVERY_RETRY_2_ROOT_TRANSACTION)",
+            "require_retry_3_transaction_parent_via_sudo(Some(&expected_root))?;",
+            "let before = verified_uid501_controller_identity()?;", "hash existing normal root controller V2",
+            "!= before.sha256", #"Some("0:0:1:500:Regular File")"#,
+            "sudo_stat(Path::new(ROOT_V7_CONTROLLER_PENDING))?.is_some()", "read_root_controller_identity_records_via_sudo()?",
+            "sealed.sha256 != before.sha256 || sealed.length != before.length",
+            "require_retained_root_normal_v1_via_sudo()?;", "require_retained_root_recovery_v1_via_sudo()?;",
+            "require_retained_root_recovery_v2_via_sudo()?;", "require_retry_3_transaction_parent_via_sudo(Some(&expected_root))?;",
+            "require_current_retry_v7_layout(",
+        ]
+        let finishTokens = [
+            "require_retry_3_root_operation_trust(", "Some(&layout.root)",
+            "operation.is_ok() && success_requires_product_absent", "match (operation, post)",
+            "(Ok(value), Ok(())) => Ok(value)", "(Err(primary), Ok(())) => Err(primary)",
+            "(Ok(_), Err(post)) => Err(post)", "(Err(primary), Err(post))",
+        ]
+        let verifyRootControllerTokens = [
+            "geteuid()", "env::current_exe()?", "ROOT_V7_CONTROLLER",
+            "require_retained_root_normal_v1()?;", "require_retained_root_recovery_v1()?;",
+            "require_retained_root_recovery_v2()?;", "require_root_v2_support_topology",
+            "stable_controller_binary_identity(&executable, 0, Some(0), 0o500)?",
+            "read_root_controller_identity_records()?", "require_root_controller_identity_binding(&actual, &sealed)?;",
+            "require_retained_retry_2_root_tombstone(false)?;",
+            "require_retained_root_normal_v1()?;", "require_retained_root_recovery_v1()?;",
+            "require_retained_root_recovery_v2()?;", "require_root_v2_support_topology",
+        ]
+        let rootTrustTokens = [
+            "verify_root_controller_identity()?;", "require_exact_retry_3_transaction_parent_names(current)?;",
+            "require_retained_retry_2_root_tombstone(require_product_absent)?;",
+        ]
+        let rootDirectoryTokens = [
+            "fs::symlink_metadata(path)?", "metadata.file_type().is_dir()", "metadata.file_type().is_symlink()",
+            "metadata.uid() != 0", "metadata.gid() != 0", "mode() & 0o7777 != 0o700",
+            "metadata.dev() != expected_device", "metadata.ino() != expected_inode",
+            "metadata.nlink() != expected_nlink", "metadata.st_flags() != 0",
+        ]
+        let rootRegularTokens = [
+            "require_root_regular(path, expected_mode)?;", "let before = fs::symlink_metadata(path)?;",
+            "before.dev() != expected_device", "before.ino() != expected_inode", "before.len() != expected_length",
+            "before.st_flags() != 0", "sha256(path)? != expected_sha256", "let after = fs::symlink_metadata(path)?;",
+            "before.dev() != after.dev()", "before.ino() != after.ino()", "before.len() != after.len()",
+            "before.nlink() != after.nlink()",
+        ]
+        let rootChildrenTokens = [
+            "let before = fs::symlink_metadata(root)?;", "for entry in fs::read_dir(root)?",
+            "entry.path() != root.join(&name)", "if names", "!= [",
+            "OpensteamerVirtualMicrophone-v7.pkg", "failed-v7-product-driver.node", "state.txt",
+            "let after = fs::symlink_metadata(root)?;",
+            "before.dev() != after.dev()", "before.ino() != after.ino()", "before.nlink() != after.nlink()",
+            "before.len() != after.len()",
+        ]
+        let recoveryIdentityTokens = [
+            "geteuid()", "env::current_exe()?", "Path::new(ROOT_V7_RECOVERY_CONTROLLER)",
+            "stable_controller_binary_identity(&executable, 0, Some(0), 0o500)?",
+            "ROOT_V7_RECOVERY_CONTROLLER_PIN", "ROOT_V7_RECOVERY_CONTROLLER_IDENTITY_JOURNAL",
+            "OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V2", "require_root_controller_identity_binding(&actual, &sealed)?;",
+        ]
+        let rootAttestTokens = [
+            "require_retained_root_normal_v1()?;", "require_retained_root_recovery_v1()?;",
+            "require_retained_root_recovery_v2()?;", "verify_root_recovery_controller_identity()?;",
+            "verified_data_volume_device()?", "RECOVERY_RETRY_2_ROOT_CONTROLLER_SHA256",
+            "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V1", "require_root_controller_identity_binding(&old_controller, &old_sealed)?;",
+            "require_exact_root_directory_identity(", "require_exact_root_transaction_children(transaction)?;",
+            "root_driver_layout(RECOVERY_RETRY_2_NONCE)?", "layout.root != transaction",
+            "PRODUCT_DRIVER_CANONICAL_PATH", "layout.hold", "layout.prior", "layout.abandoned",
+            "!failed.file_type().is_dir()", "failed.file_type().is_symlink()",
+            "failed.uid() != 0", "failed.gid() != 0", "mode() & 0o7777 != 0o755",
+            "failed.dev() != data_volume_device", "failed.ino() != RECOVERY_RETRY_2_ROOT_FAILED_DRIVER_INODE",
+            "failed.nlink() != 3", "failed.st_flags() != 0",
+            "verify_root_production_driver(&layout.failed)?;", "read_root_driver_state(&layout)?",
+            "prior.present", "hold.device != data_volume_device",
+            "hold.inode != RECOVERY_RETRY_2_ROOT_FAILED_DRIVER_INODE",
+            "root_node_identity(&layout.failed)?.device != hold.device",
+            "root_node_identity(&layout.failed)?.inode != hold.inode",
+            "RECOVERY_RETRY_2_ROOT_STATE_INODE",
+            "RECOVERY_RETRY_2_ROOT_STATE_SHA256", "read_root_bounded_utf8(&layout.state, 4_096)? != RECOVERY_RETRY_2_ROOT_STATE",
+            "RECOVERY_RETRY_2_ROOT_PACKAGE_INODE", "verify_root_production_package(&layout.package)?;",
+            "require_no_extended_attributes_root(transaction)?;", "require_no_openers_root(transaction)?;",
+            "read_core_audio_generation_root()?", "RECOVERY_RETRY_2_COREAUDIO_PID",
+            "require_exact_root_directory_identity(", "require_exact_root_transaction_children(transaction)?;",
+            "require_retained_root_normal_v1()?;", "require_retained_root_recovery_v1()?;",
+            "require_retained_root_recovery_v2()?;", "ROOT_V7_RETRY_2_SAFE_STATE",
+        ]
+        let attestSudoTokens = [
+            "require_retained_root_normal_v1_via_sudo()?;", "require_retained_root_recovery_v1_via_sudo()?;",
+            "require_retained_root_recovery_v2_via_sudo()?;", "ROOT_V7_RECOVERY_CONTROLLER",
+            "ROOT_V7_RECOVERY_ATTEST_MODE", "require_output_success", "ROOT_V7_RETRY_2_SAFE_STATE",
+            "output.stdout != expected.as_bytes()", "!output.stderr.is_empty()",
+            "require_retained_root_normal_v1_via_sudo()?;", "require_retained_root_recovery_v1_via_sudo()?;",
+            "require_retained_root_recovery_v2_via_sudo()?;",
+        ]
+        let releaseSystemHashTokens = [
+            #""pinned coreaudiod SHA-256""#, "EXPECTED_COREAUDIOD_SHA256", "64,",
+            #""pinned kill SHA-256""#, "EXPECTED_KILL_SHA256", "64",
+            #""pinned launchctl SHA-256""#, "EXPECTED_LAUNCHCTL_SHA256", "64,",
+            #""pinned ps SHA-256""#, "EXPECTED_PS_SHA256", "64",
+            #""pinned ls SHA-256""#, "EXPECTED_LS_SHA256", "64",
+            #""pinned system_profiler SHA-256""#, "EXPECTED_SYSTEM_PROFILER_SHA256", "64,",
+            #""pinned lsof SHA-256""#, "EXPECTED_LSOF_SHA256", "64",
+            #""pinned xattr SHA-256""#, "EXPECTED_XATTR_SHA256", "64",
+        ]
+        let rootAdmissionTokens = [
+            "authenticate_v7_privileged_boundary()?;", "require_retained_root_normal_v1_via_sudo()?;",
+            "require_retained_root_recovery_v1_via_sudo()?;", "require_retained_root_recovery_v2_via_sudo()?;",
+            "require_retry_3_transaction_parent_via_sudo(None)?;", "sudo_stat(Path::new(ROOT_V7_SUPPORT_DIRECTORY))?.is_some()",
+            "attest_retry_2_root_safe_state_via_sudo()?;", "require_retained_root_normal_v1_via_sudo()?;",
+            "require_retained_root_recovery_v1_via_sudo()?;", "require_retained_root_recovery_v2_via_sudo()?;",
+            "require_retry_3_transaction_parent_via_sudo(None)?;", "sudo_stat(Path::new(ROOT_V7_SUPPORT_DIRECTORY))?.is_some()",
+        ]
+        let compactPublisher = publisher.filter { !$0.isWhitespace }
+        let compactBootstrap = bootstrap.filter { !$0.isWhitespace }
+        let publishPendingTopology = #"require_root_v2_support_topology(&[&[".opensteamer-v7-controller.pending"]])?;"#
+        let publishFinalTopology = #"require_root_v2_support_topology(&[&["opensteamer-v7-controller"]])?;"#
+        let bootstrapEntryTopology = #"require_root_v2_support_topology(&[&["opensteamer-v7-controller"],&["controller-binary.sha256","opensteamer-v7-controller"],&["controller-binary.sha256","controller-identity.log","opensteamer-v7-controller",],])?;"#
+        let bootstrapAfterPinTopology = #"require_root_v2_support_topology(&[&["controller-binary.sha256","opensteamer-v7-controller"],&["controller-binary.sha256","controller-identity.log","opensteamer-v7-controller",],])?;"#
+        let bootstrapFinalTopology = #"require_root_v2_support_topology(&[&["controller-binary.sha256","controller-identity.log","opensteamer-v7-controller",]])?;"#
+        let publisherProgressTokens = [
+            publishPendingTopology, "stable_controller_binary_identity(Path::new(ROOT_V7_CONTROLLER_PENDING)",
+            "rename_exclusive(Path::new(ROOT_V7_CONTROLLER_PENDING),Path::new(ROOT_V7_CONTROLLER),)?;",
+            "stable_controller_binary_identity(Path::new(ROOT_V7_CONTROLLER)", publishFinalTopology,
+        ]
+        let bootstrapProgressTokens = [
+            bootstrapEntryTopology, "create_or_repair_root_recovery_sealed(Path::new(ROOT_V7_CONTROLLER_PIN)",
+            bootstrapAfterPinTopology,
+            "create_or_repair_root_recovery_sealed(Path::new(ROOT_V7_CONTROLLER_IDENTITY_JOURNAL)",
+            "read_root_controller_identity_records()?!=identity", bootstrapFinalTopology,
+        ]
+        let psExact = #"require_pinned_system_binary(Path::new("/bin/ps"), 0o4755, EXPECTED_PS_SHA256)?;"#
+        let psWrongRejected = #"require_pinned_system_binary(Path::new("/bin/ps"), 0o755, EXPECTED_PS_SHA256).is_ok()"#
+        let coreaudiodCall = "require_pinned_system_binary(\n            Path::new(PINNED_COREAUDIOD),\n            0o755,\n            EXPECTED_COREAUDIOD_SHA256,\n        )?;"
+        let launchctlCall = "require_pinned_system_binary(\n            Path::new(\"/bin/launchctl\"),\n            0o755,\n            EXPECTED_LAUNCHCTL_SHA256,\n        )?;"
+        let lsofCall = "require_pinned_system_binary(\n            Path::new(\"/usr/sbin/lsof\"),\n            0o755,\n            EXPECTED_LSOF_SHA256,\n        )?;"
+        let xattrCall = "require_pinned_system_binary(\n            Path::new(\"/usr/bin/xattr\"),\n            0o755,\n            EXPECTED_XATTR_SHA256,\n        )?;"
+        let profilerCall = "require_pinned_system_binary(\n            Path::new(\"/usr/sbin/system_profiler\"),\n            0o755,\n            EXPECTED_SYSTEM_PROFILER_SHA256,\n        )?;"
+        let killCall = #"require_pinned_system_binary(Path::new("/bin/kill"), 0o755, EXPECTED_KILL_SHA256)?;"#
+        let lsCall = #"require_pinned_system_binary(Path::new("/bin/ls"), 0o755, EXPECTED_LS_SHA256)?;"#
+        return exactPins.allSatisfy(controller.contains)
+            && scopedRootDeclarations.allSatisfy(controller.contains)
+            && containsOrdered(directTokens, in: direct)
+            && containsOrdered(sudoTokens, in: sudo)
+            && containsOrdered(sudoFormatTokens, in: sudo)
+            && containsOrdered(parentTokens, in: parent)
+            && containsOrdered(tombstoneTokens, in: tombstone)
+            && containsOrdered(topologyTokens, in: topology)
+            && containsOrdered(repairTokens, in: repair)
+            && containsOrdered(publishTokens, in: publisher)
+            && containsOrdered(retainedFileTokens, in: retainedFile)
+            && containsOrdered(recoveryV1FileTokens, in: recoveryV1File)
+            && containsOrdered(recoveryV1DirectTokens, in: recoveryV1Direct)
+            && containsOrdered(recoveryV1SudoStatTokens, in: recoveryV1SudoStat)
+            && containsOrdered(recoveryV1SudoTokens, in: recoveryV1Sudo)
+            && containsOrdered(recoveryV1SudoFormatTokens, in: recoveryV1Sudo)
+            && containsOrdered(normalV1WrapperTokens, in: normalV1Direct)
+            && containsOrdered(recoveryV2WrapperTokens, in: recoveryV2Direct)
+            && containsOrdered(normalV1WrapperTokens, in: normalV1Sudo)
+            && containsOrdered(recoveryV2WrapperTokens, in: recoveryV2Sudo)
+            && normalV1SudoOnlyTokens.allSatisfy(normalV1Sudo.contains)
+            && recoveryV2SudoOnlyTokens.allSatisfy(recoveryV2Sudo.contains)
+            && containsOrdered(sudoSealedTokens, in: sudoSealed)
+            && containsOrdered(sudoParentTokens, in: sudoParent)
+            && containsOrdered(bootstrapTokens, in: bootstrap)
+            && containsOrdered(uidPrepareTokens, in: uidPrepare)
+            && containsOrdered(uidStageTokens, in: uidPrepare)
+            && containsOrdered(uidRestoreTokens, in: uidRestore)
+            && containsOrdered(verifyRootControllerTokens, in: verifyRootController)
+            && containsOrdered(rootTrustTokens, in: rootTrust)
+            && containsOrdered(finishTokens, in: finish)
+            && containsOrdered(rootDirectoryTokens, in: rootDirectoryIdentity)
+            && containsOrdered(rootRegularTokens, in: rootRegularIdentity)
+            && containsOrdered(rootChildrenTokens, in: rootChildren)
+            && containsOrdered(recoveryIdentityTokens, in: recoveryIdentity)
+            && containsOrdered(rootAttestTokens, in: rootAttest)
+            && containsOrdered(attestSudoTokens, in: attestSudo)
+            && containsOrdered(rootAdmissionTokens, in: rootAdmission)
+            && containsOrdered(publisherProgressTokens, in: compactPublisher)
+            && containsOrdered(bootstrapProgressTokens, in: compactBootstrap)
+            && rootAdmission.components(separatedBy: "require_retry_3_transaction_parent_via_sudo(None)?;").count - 1 == 2
+            && rootAdmission.components(separatedBy: "ROOT_V7_SUPPORT_DIRECTORY").count - 1 == 2
+            && rootAdmission.contains("attest_retry_2_root_safe_state_via_sudo()?;")
+            && containsOrdered(prepareTokens, in: prepare)
+            && publish.contains("finish_retry_3_root_operation(&layout, operation, false)?;")
+            && rollback.contains("finish_retry_3_root_operation(&layout, operation, true)?;")
+            && abandon.contains("finish_retry_3_root_operation(&layout, operation, true)?;")
+            && commandEnum.contains("RootControllerPublish")
+            && commandEnum.contains("RootControllerBootstrap")
+            && parser.contains("ROOT_V7_CONTROLLER_PUBLISH_MODE")
+            && parser.contains("Ok(V7Command::RootControllerPublish)")
+            && parser.contains("ROOT_V7_CONTROLLER_BOOTSTRAP_MODE")
+            && parser.contains("Ok(V7Command::RootControllerBootstrap)")
+            && main.contains("V7Command::RootControllerPublish => publish_root_controller()")
+            && main.contains("V7Command::RootControllerBootstrap => bootstrap_root_controller_identity()")
+            && containsOrdered(
+                ["paired-v7 preflight transaction lock", "require_retry_3_root_admission_via_sudo()?;"],
+                in: main
+            )
+            && containsOrdered(releaseSystemHashTokens, in: releasePins)
+            && controller.components(separatedBy: psExact).count - 1 == 2
+            && controller.contains(psWrongRejected)
+            && controller.components(separatedBy: coreaudiodCall).count - 1 == 1
+            && controller.components(separatedBy: launchctlCall).count - 1 == 2
+            && controller.components(separatedBy: lsofCall).count - 1 == 1
+            && controller.components(separatedBy: xattrCall).count - 1 == 1
+            && controller.components(separatedBy: profilerCall).count - 1 == 1
+            && controller.components(separatedBy: killCall).count - 1 == 1
+            && controller.components(separatedBy: lsCall).count - 1 == 3
+            && pinnedBinary.contains("metadata.permissions().mode() & 0o7777 == expected_mode")
+            && stableIdentity.contains("metadata.permissions().mode() & 0o7777 == expected_mode")
+            && !controller.contains("RootRecoveryControllerPublish")
+            && !controller.contains("RootRecoveryControllerBootstrap")
+            && !controller.contains("ROOT_V7_RECOVERY_CONTROLLER_PUBLISH_MODE")
+            && !controller.contains("ROOT_V7_RECOVERY_CONTROLLER_BOOTSTRAP_MODE")
+            && !controller.contains("publish_root_recovery_controller")
+            && !controller.contains("bootstrap_root_recovery_controller_identity")
+            && !controller.contains("bootstrap_root_owned_v7_recovery_controller")
+    }
+
     func testV7Retry2CriticalRecoveryPreservesEvidenceAndRejectsMutants() throws {
         let controller = try source(
             "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs"
         )
         let launcher = try source("macOS/scripts/update-opensteamer-host-paired-v7.sh")
+        if controller.contains("active-paired-host-update-v7-retry-3") {
+            XCTAssertTrue(hasRetry3TerminalNamespaceContract(controller))
+            XCTAssertTrue(hasRetry3RootV2Contract(controller))
+            let publishPendingCall = "        require_root_v2_support_topology(&[&[\".opensteamer-v7-controller.pending\"]])?;\n"
+            let publishFinalCall = "        require_root_v2_support_topology(&[&[\"opensteamer-v7-controller\"]])?;\n"
+            var publisherOrderMutant = replacingInFunction(
+                controller,
+                beginningWith: "    fn publish_root_controller",
+                endingBefore: "    fn require_root_v2_support_topology",
+                target: publishPendingCall,
+                replacement: "        __PUBLISH_TOPOLOGY_SWAP__\n"
+            )
+            publisherOrderMutant = replacingInFunction(
+                publisherOrderMutant,
+                beginningWith: "    fn publish_root_controller",
+                endingBefore: "    fn require_root_v2_support_topology",
+                target: publishFinalCall,
+                replacement: publishPendingCall
+            ).replacingOccurrences(
+                of: "        __PUBLISH_TOPOLOGY_SWAP__\n",
+                with: publishFinalCall
+            )
+            let bootstrapEntryCall = "        require_root_v2_support_topology(&[\n            &[\"opensteamer-v7-controller\"],\n            &[\"controller-binary.sha256\", \"opensteamer-v7-controller\"],\n            &[\n                \"controller-binary.sha256\",\n                \"controller-identity.log\",\n                \"opensteamer-v7-controller\",\n            ],\n        ])?;\n"
+            let bootstrapFinalCall = "        require_root_v2_support_topology(&[&[\n            \"controller-binary.sha256\",\n            \"controller-identity.log\",\n            \"opensteamer-v7-controller\",\n        ]])?;\n"
+            var bootstrapOrderMutant = replacingInFunction(
+                controller,
+                beginningWith: "    fn bootstrap_root_controller_identity",
+                endingBefore: "    fn publish_root_controller",
+                target: bootstrapEntryCall,
+                replacement: "        __BOOTSTRAP_TOPOLOGY_SWAP__\n"
+            )
+            bootstrapOrderMutant = replacingInFunction(
+                bootstrapOrderMutant,
+                beginningWith: "    fn bootstrap_root_controller_identity",
+                endingBefore: "    fn publish_root_controller",
+                target: bootstrapFinalCall,
+                replacement: bootstrapEntryCall
+            ).replacingOccurrences(
+                of: "        __BOOTSTRAP_TOPOLOGY_SWAP__\n",
+                with: bootstrapFinalCall
+            )
+            let retry3Mutants = [
+                publisherOrderMutant,
+                bootstrapOrderMutant,
+                controller.replacingOccurrences(
+                    of: "active-paired-host-update-v7-retry-3",
+                    with: "active-paired-host-update-v7-retry-2"
+                ),
+                controller.replacingOccurrences(
+                    of: "active-paired-host-update-v7-retry-2.pending-",
+                    with: "active-paired-host-update-v7-retry-3.pending-"
+                ),
+                controller.replacingOccurrences(
+                    of: "const RETRY_3_V7_ROOT_NLINK: u64 = 6;",
+                    with: "const RETRY_3_V7_ROOT_NLINK: u64 = 5;"
+                ),
+                controller.replacingOccurrences(
+                    of: "const RETRY_3_V7_ROOT_SIZE: u64 = 192;",
+                    with: "const RETRY_3_V7_ROOT_SIZE: u64 = 160;"
+                ),
+                controller.replacingOccurrences(
+                    of: "6b5d1b606bfd8eb3bf662e7596698afa891a13340d35af3be4805b1033a83c87",
+                    with: "f0361f4443eefae656aa2e5e75ed5a4d4a80df521d56403bcc386f00556cfa3f"
+                ),
+                controller.replacingOccurrences(
+                    of: "abb699a0a4b80026533b57c960ebe612a2b1a01d",
+                    with: "f4962f422b9795b4074d73dd25f332fb6b05b073"
+                ),
+                controller.replacingOccurrences(
+                    of: "            \"F:retired-active-pointer.txt\",\n",
+                    with: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_terminal_retry_2_recovery_journal",
+                    endingBefore: "    fn require_exact_recovered_retry_2_probes",
+                    target: ".custom_flags(O_NOFOLLOW)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_terminal_retry_2_recovery_journal",
+                    endingBefore: "    fn require_exact_recovered_retry_2_probes",
+                    target: "            || sha256_bytes(&bytes)? != RECOVERY_RETRY_2_RECOVERY_JOURNAL_SHA256\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_recovered_retry_2_evidence",
+                    endingBefore: "    fn require_v7_retry_admission_ready",
+                    target: "        let failed_after = fs::symlink_metadata(&layout.failed_dir)?;\n",
+                    replacement: "        let failed_after = failed;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_v7_retry_admission_ready",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]",
+                    target: "        require_exact_recovered_retry_2_evidence(data_volume_device)?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_current_retry_v7_layout",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum Retry2RecoveryState",
+                    target: #".strip_prefix("paired-v7-update-retry-3-")"#,
+                    replacement: #".strip_prefix("paired-v7-update-retry-2-")"#
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn recover_retry_2_critical_failure",
+                    endingBefore: "    fn execute_paired_v7_update",
+                    target: "        require_exact_recovered_retry_2_evidence(data_volume_device)?;\n",
+                    replacement: ""
+                ),
+                controller + "\nfn legacy_recover_retry_2_critical_failure() {}\n",
+                controller + "\nenum RootRecoveryControllerPublish {}\n",
+                controller + "\nfn release_exact_retry_2_reserve() {}\n",
+                controller.replacingOccurrences(
+                    of: "/Library/Application Support/opensteamer/privileged-v7-v2",
+                    with: "/Library/Application Support/opensteamer/privileged-v7"
+                ),
+                controller.replacingOccurrences(
+                    of: "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V2",
+                    with: "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V1"
+                ),
+                controller.replacingOccurrences(
+                    of: "const RETAINED_ROOT_V7_V1_SUPPORT_INODE: u64 = 27_777_169;",
+                    with: "const RETAINED_ROOT_V7_V1_SUPPORT_INODE: u64 = 27_777_170;"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_root_controller_set(",
+                    endingBefore: "    fn require_retained_root_normal_v1",
+                    target: "                || metadata.st_flags() != 0\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_root_controller_set_via_sudo",
+                    endingBefore: "    fn require_retained_root_normal_v1_via_sudo",
+                    target: "        if read_topology()? != before {\n",
+                    replacement: "        if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_transaction_parent_names",
+                    endingBefore: "    fn require_retained_retry_2_root_tombstone",
+                    target: "                        + if current.is_some() { 32 } else { 0 }\n",
+                    replacement: "\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_retry_2_root_tombstone",
+                    endingBefore: "    fn require_no_openers_root",
+                    target: "        require_no_extended_attributes_root(transaction)?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_root_controller",
+                    endingBefore: "    fn require_root_v2_support_topology",
+                    target: "        descriptor.sync_all()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_root_controller",
+                    endingBefore: "    fn require_root_v2_support_topology",
+                    target: "        rename_exclusive(\n",
+                    replacement: "        fs::rename(\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn root_driver_prepare",
+                    endingBefore: "    fn root_driver_publish_reload",
+                    target: "        require_current_retry_v7_layout(\n",
+                    replacement: "        verify_update_pointer_at(\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn root_driver_publish_reload",
+                    endingBefore: "    fn root_driver_rollback_reload",
+                    target: "        finish_retry_3_root_operation(&layout, operation, false)?;\n",
+                    replacement: "        operation?;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn root_driver_rollback_reload",
+                    endingBefore: "    fn root_driver_restore_or_abandon_existing",
+                    target: "        finish_retry_3_root_operation(&layout, operation, true)?;\n",
+                    replacement: "        operation?;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn root_driver_abandon_prepare",
+                    endingBefore: "    fn root_driver_verify_commit_ready",
+                    target: "        finish_retry_3_root_operation(&layout, operation, true)?;\n",
+                    replacement: "        operation?;\n"
+                ),
+                controller.replacingOccurrences(
+                    of: #"require_pinned_system_binary(Path::new("/bin/ps"), 0o4755, EXPECTED_PS_SHA256)?;"#,
+                    with: #"require_pinned_system_binary(Path::new("/bin/ps"), 0o755, EXPECTED_PS_SHA256)?;"#
+                ),
+                controller.replacingOccurrences(
+                    of: "Path::new(\"/usr/sbin/lsof\"),\n            0o755,",
+                    with: "Path::new(\"/usr/sbin/lsof\"),\n            0o4755,"
+                ),
+                controller.replacingOccurrences(
+                    of: #"require_pinned_system_binary(Path::new("/bin/ls"), 0o755, EXPECTED_LS_SHA256)?;"#,
+                    with: #"require_pinned_system_binary(Path::new("/bin/ls"), 0o4755, EXPECTED_LS_SHA256)?;"#
+                ),
+                controller.replacingOccurrences(
+                    of: "Path::new(\"/usr/sbin/system_profiler\"),\n            0o755,",
+                    with: "Path::new(\"/usr/sbin/system_profiler\"),\n            0o4755,"
+                ),
+                controller.replacingOccurrences(
+                    of: "Path::new(\"/usr/bin/xattr\"),\n            0o755,",
+                    with: "Path::new(\"/usr/bin/xattr\"),\n            0o4755,"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn stable_controller_binary_identity",
+                    endingBefore: "    fn verified_uid501_controller_identity",
+                    target: "metadata.permissions().mode() & 0o7777 == expected_mode",
+                    replacement: "metadata.permissions().mode() & 0o777 == expected_mode"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_v7_release_pins",
+                    endingBefore: "    fn count_exact_production_identity",
+                    target: "\"pinned ps SHA-256\"",
+                    replacement: "\"pinned process SHA-256\""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_no_v7_pending_pointers",
+                    endingBefore: "    fn require_exact_retained_v7_top_level",
+                    target: "                || name.starts_with(RETRY_2_V7_PENDING_PREFIX)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_2_post_recovery_top_level",
+                    endingBefore: "    fn require_exact_terminal_retry_2_recovery_journal",
+                    target: "actual.iter().map(String::as_str).ne(EXPECTED)",
+                    replacement: "false"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_recovered_retry_2_probes",
+                    endingBefore: "    fn require_exact_recovered_retry_2_evidence",
+                    target: "actual.iter().map(String::as_str).ne(EXPECTED)",
+                    replacement: "false"
+                ),
+                controller.replacingOccurrences(
+                    of: "const RECOVERY_RETRY_2_JOURNAL_SHA256: &str =\n        \"f0361f4443eefae656aa2e5e75ed5a4d4a80df521d56403bcc386f00556cfa3f\";",
+                    with: "const RECOVERY_RETRY_2_JOURNAL_SHA256: &str =\n        \"10578545d58874d94e821cc23657838b62428522be6f32d7b7b23bd926a3e2ba\";"
+                ),
+                controller.replacingOccurrences(
+                    of: "const ROOT_V7_CONTROLLER_PIN: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7-v2/controller-binary.sha256\";",
+                    with: "const ROOT_V7_CONTROLLER_PIN: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7/controller-binary.sha256\";"
+                ),
+                controller.replacingOccurrences(
+                    of: "const RETAINED_ROOT_V7_V1_PIN_INODE: u64 = 27_777_172;",
+                    with: "const RETAINED_ROOT_V7_V1_PIN_INODE: u64 = 27_777_173;"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn create_or_repair_root_recovery_sealed",
+                    endingBefore: "    fn verify_root_controller_identity",
+                    target: "        file.sync_all()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn bootstrap_root_controller_identity",
+                    endingBefore: "    fn publish_root_controller",
+                    target: "        require_retained_root_normal_v1()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn bootstrap_root_owned_v7_controller_for_prepare",
+                    endingBefore: "    fn verify_root_owned_v7_controller_for_restore",
+                    target: "                ROOT_V7_CONTROLLER_PENDING,\n",
+                    replacement: "                ROOT_V7_CONTROLLER,\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn finish_retry_3_root_operation",
+                    endingBefore: "    fn verify_root_recovery_controller_identity",
+                    target: "            (Err(primary), Err(post)) => Err(ControllerError(format!(\n",
+                    replacement: "            (Err(primary), Err(_post)) => Err(primary), /*\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn paired_v7_real_main",
+                    endingBefore: "    fn parse_v7_command",
+                    target: "                require_descriptor_close_on_exec(\n                    &_transaction_lock.file,\n                    \"paired-v7 preflight transaction lock\",\n                )?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn parse_v7_command",
+                    endingBefore: "    fn require_canonical_git_oid",
+                    target: "            [_, mode] if mode == ROOT_V7_CONTROLLER_PUBLISH_MODE => {\n                Ok(V7Command::RootControllerPublish)\n            }\n",
+                    replacement: ""
+                ),
+                controller.replacingOccurrences(
+                    of: "const FIRST_ATTEMPT_V7_ACTIVE_UPDATE: &str =\n        \"/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7\";",
+                    with: "const FIRST_ATTEMPT_V7_ACTIVE_UPDATE: &str =\n        \"/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v7-retry-1\";"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_v7_root_names",
+                    endingBefore: "    fn require_exact_v7_retained_triplet",
+                    target: "expected.windows(2).any(|pair| pair[0] == pair[1]) || actual != expected",
+                    replacement: "false"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_v7_retained_triplet",
+                    endingBefore: "    fn require_exact_v7_root_quartet",
+                    target: "                RETAINED_FAILED_V7_ATTEMPT_NAME,\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_v7_root_quartet",
+                    endingBefore: "    fn require_retry_v7_pointer_expectation",
+                    target: "                RETAINED_FAILED_V7_RETRY_1_NAME,\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_v7_pointer_expectation",
+                    endingBefore: "    fn require_current_retry_v7_layout",
+                    target: "        require_path_absent(\n            Path::new(RETRY_2_V7_ACTIVE_UPDATE),\n            \"retained retry-2 paired-v7 pointer\",\n        )?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_current_retry_v7_layout",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum Retry2RecoveryState",
+                    target: "            || pid_text.contains('-')\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_terminal_retry_2_recovery_journal",
+                    endingBefore: "    fn require_exact_recovered_retry_2_probes",
+                    target: "                && metadata.uid() == USER_ID\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_recovered_retry_2_probes",
+                    endingBefore: "    fn require_exact_recovered_retry_2_evidence",
+                    target: "                RECOVERY_RETRY_2_PUBLIC_PROBE_INODE,\n",
+                    replacement: "                RECOVERY_RETRY_2_GUARDIAN_INODE,\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retained_file",
+                    endingBefore: "    fn require_exact_retained_failure_file",
+                    target: "                && metadata.nlink() == 1\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retained_empty_directory",
+                    endingBefore: "    fn require_exact_retained_probe_directory",
+                    target: " || fs::read_dir(path)?.next().transpose()?.is_some()",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn retry_2_install_hold_is_archived",
+                    endingBefore: "    fn retry_2_reserve_is_released",
+                    target: "if names != [\"partial-install-hold-root\".to_owned()]",
+                    replacement: "if false"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn retry_2_reserve_is_released",
+                    endingBefore: "    fn verify_retry_2_default_route_snapshot",
+                    target: "            || before.blocks() != 0\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn retire_exact_retry_v7_pending_pointer_after_parent_crash",
+                    endingBefore: "    fn uid_proxy_complete_host_crash_rollback",
+                    target: "                || name.starts_with(RETRY_2_V7_PENDING_PREFIX)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retained_root_recovery_v1_file",
+                    endingBefore: "    fn require_retained_root_recovery_v1",
+                    target: "metadata.permissions().mode() & 0o7777 == expected_mode",
+                    replacement: "metadata.permissions().mode() & 0o777 == expected_mode"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_root_recovery_v1()",
+                    endingBefore: "    fn require_exact_retained_root_controller_set_file",
+                    target: "            if names\n                != [",
+                    replacement: "            if false { /*"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_root_recovery_v1_via_sudo",
+                    endingBefore: "    fn require_retained_root_controller_set_via_sudo",
+                    target: "listing.stdout\n                    != b\"controller-binary.sha256\\ncontroller-identity.log\\nopensteamer-v7-recovery-controller\\n\"",
+                    replacement: "false"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_root_controller_set(",
+                    endingBefore: "    fn require_retained_root_normal_v1",
+                    target: "            if names != expected {\n",
+                    replacement: "            if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_root_controller_set_via_sudo",
+                    endingBefore: "    fn require_retained_root_normal_v1_via_sudo",
+                    target: "if !listing.stderr.is_empty() || listing.stdout != expected_listing.as_bytes()",
+                    replacement: "if false"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retained_root_controller_set_file",
+                    endingBefore: "    fn require_retained_root_controller_set(",
+                    target: "                && metadata.nlink() == 1\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_root_transaction_children",
+                    endingBefore: "    fn require_exact_retry_3_transaction_parent_names",
+                    target: "        if names\n            != [",
+                    replacement: "        if false { /*"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_root_regular_identity",
+                    endingBefore: "    fn require_exact_retained_root_recovery_v1_file",
+                    target: "            || sha256(path)? != expected_sha256\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_root_operation_trust",
+                    endingBefore: "    fn finish_retry_3_root_operation",
+                    target: "        verify_root_controller_identity()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_root_admission_via_sudo",
+                    endingBefore: "    fn spawn_bounded_line_reader",
+                    target: "        require_retained_root_recovery_v1_via_sudo()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_root_controller",
+                    endingBefore: "    fn require_root_v2_support_topology",
+                    target: #"require_root_v2_support_topology(&[&[".opensteamer-v7-controller.pending"]])?;"#,
+                    replacement: #"require_root_v2_support_topology(&[&[".opensteamer-v7-controller.pending"], &["opensteamer-v7-controller"]])?;"#
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn bootstrap_root_controller_identity",
+                    endingBefore: "    fn publish_root_controller",
+                    target: "            &[\"opensteamer-v7-controller\"],\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn create_or_repair_root_recovery_sealed",
+                    endingBefore: "    fn verify_root_controller_identity",
+                    target: " || expected.len() > 1_024",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn create_or_repair_root_recovery_sealed",
+                    endingBefore: "    fn verify_root_controller_identity",
+                    target: "                    || metadata.nlink() != 1\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn verify_root_controller_identity",
+                    endingBefore: "    fn require_retry_3_root_operation_trust",
+                    target: "        require_retained_root_recovery_v2()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_retry_2_root_tombstone",
+                    endingBefore: "    fn require_no_openers_root",
+                    target: "        if prior.present\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_retry_2_root_tombstone",
+                    endingBefore: "    fn require_no_openers_root",
+                    target: "            || hold.inode != RECOVERY_RETRY_2_ROOT_FAILED_DRIVER_INODE\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_transaction_parent_names",
+                    endingBefore: "    fn require_retained_retry_2_root_tombstone",
+                    target: "                && metadata.uid() == 0\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_transaction_parent_names",
+                    endingBefore: "    fn require_retained_retry_2_root_tombstone",
+                    target: "                && metadata.nlink() == expected_nlink\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_transaction_parent_via_sudo",
+                    endingBefore: "    fn read_root_controller_identity_records_via_sudo",
+                    target: "0:0:{expected_nlink}:0700:Directory:{}:{}:{expected_length}:0",
+                    replacement: "0:0:{expected_nlink}:0755:Directory:{}:{}:{expected_length}:0"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_recovered_retry_2_probes",
+                    endingBefore: "    fn require_exact_recovered_retry_2_evidence",
+                    target: "                && metadata.uid() == USER_ID\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_recovered_retry_2_probes",
+                    endingBefore: "    fn require_exact_recovered_retry_2_evidence",
+                    target: "RECOVERY_RETRY_2_GUARDIAN_SELF_TEST_SIZE",
+                    replacement: "RECOVERY_RETRY_2_MIRROR_SELF_TEST_SIZE"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retained_root_recovery_v1_file",
+                    endingBefore: "    fn require_retained_root_recovery_v1",
+                    target: "            || !metadata_is_exact(&named_before)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retained_root_recovery_v1_file",
+                    endingBefore: "    fn require_retained_root_recovery_v1",
+                    target: "        if !metadata_is_exact(&after)\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retained_root_controller_set_file",
+                    endingBefore: "    fn require_retained_root_controller_set(",
+                    target: "        if !metadata_is_exact(&after)\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_root_v2_support_topology",
+                    endingBefore: "    fn create_or_repair_root_recovery_sealed",
+                    target: "                && metadata.uid() == 0\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_root_v2_support_topology",
+                    endingBefore: "    fn create_or_repair_root_recovery_sealed",
+                    target: "                && metadata.nlink() == expected_nlink\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_root_controller",
+                    endingBefore: "    fn require_root_v2_support_topology",
+                    target: "            || before.ino() != after.ino()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_terminal_retry_2_recovery_journal",
+                    endingBefore: "    fn require_exact_recovered_retry_2_probes",
+                    target: "        if !metadata_is_exact(&after)\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_recovered_retry_2_evidence",
+                    endingBefore: "    fn require_v7_retry_admission_ready",
+                    target: "            RECOVERY_RETRY_2_RESULT_INODE,\n            RECOVERY_RETRY_2_RESULT,\n",
+                    replacement: "            RECOVERY_RETRY_2_JOURNAL_INODE,\n            RECOVERY_RETRY_2_JOURNAL,\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_recovered_retry_2_evidence",
+                    endingBefore: "    fn require_v7_retry_admission_ready",
+                    target: "        if !metadata_is_exact(&before) {\n",
+                    replacement: "        if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_current_retry_v7_layout",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum Retry2RecoveryState",
+                    target: "            || retry_metadata.permissions().mode() & 0o7777 != 0o700\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_current_retry_v7_layout",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum Retry2RecoveryState",
+                    target: "            || retry_metadata.st_flags() != 0\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_root_controller_set(",
+                    endingBefore: "    fn require_retained_root_normal_v1",
+                    target: "        if children_before != children_after\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_root_recovery_v1()",
+                    endingBefore: "    fn require_exact_retained_root_controller_set_file",
+                    target: "        if children_before != children_after\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_current_retry_v7_layout",
+                    endingBefore: "    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n    enum Retry2RecoveryState",
+                    target: "            || root_before.nlink() != RETRY_3_V7_ROOT_NLINK\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_recovered_retry_2_evidence",
+                    endingBefore: "    fn require_v7_retry_admission_ready",
+                    target: "        if !failed_metadata_is_exact(&failed_after)\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn create_or_repair_root_recovery_sealed",
+                    endingBefore: "    fn verify_root_controller_identity",
+                    target: "        if bytes != expected.as_bytes() {\n",
+                    replacement: "        if true {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_root_controller_set_via_sudo",
+                    endingBefore: "    fn require_retained_root_normal_v1_via_sudo",
+                    target: "0:0:{support_nlink}:0700:Directory:{expected_device}:{support_inode}:{support_length}:0",
+                    replacement: "0:0:{support_nlink}:0755:Directory:{expected_device}:{support_inode}:{support_length}:0"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retained_root_recovery_v1_via_sudo",
+                    endingBefore: "    fn require_retained_root_controller_set_via_sudo",
+                    target: "0:0:{}:0700:Directory:{}:{}:{}:0",
+                    replacement: "0:0:{}:0755:Directory:{}:{}:{}:0"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn root_attest_retry_2_safe_state",
+                    endingBefore: "    fn require_fixed_system_binary",
+                    target: "        if prior.present\n",
+                    replacement: "        if false\n"
+                ),
+            ]
+            for (index, mutant) in retry3Mutants.enumerated() {
+                XCTAssertNotEqual(mutant, controller, "retry3/root mutant \(index) was inert")
+                XCTAssertFalse(
+                    hasRetry3TerminalNamespaceContract(mutant)
+                        && hasRetry3RootV2Contract(mutant),
+                    "retry3/root contract accepted mutant \(index)"
+                )
+            }
+            XCTAssertTrue(launcher.contains("RECOVER_RETRY_2_MODE='--recover-authorized-paired-v7-retry-2-critical-failure'"))
+            return
+        }
         XCTAssertTrue(
             hasEvidencePreservingRetry2CriticalRecoveryContract(
                 controller: controller,
@@ -3417,6 +5348,69 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         let controller = try source(
             "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs"
         )
+        if controller.contains("paired-v7-update-retry-3-") {
+            XCTAssertTrue(hasRetry3TerminalNamespaceContract(controller))
+            let retry3NamespaceMutants = [
+                controller.replacingOccurrences(
+                    of: #".strip_prefix("paired-v7-update-retry-3-")"#,
+                    with: #".strip_prefix("paired-v7-update-retry-2-")"#
+                ),
+                controller.replacingOccurrences(
+                    of: #""paired-v7-update-retry-3-{}-{}-{}""#,
+                    with: #""paired-v7-update-retry-2-{}-{}-{}""#
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_v7_retained_triplet",
+                    endingBefore: "    fn require_exact_v7_root_quartet",
+                    target: "                RECOVERY_RETRY_2_NAME,\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_v7_root_quartet",
+                    endingBefore: "    fn require_retry_v7_pointer_expectation",
+                    target: "                current_name,\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_v7_pointer_expectation",
+                    endingBefore: "    fn require_current_retry_v7_layout",
+                    target: "            Path::new(RETRY_2_V7_ACTIVE_UPDATE),\n",
+                    replacement: "            Path::new(V7_ACTIVE_UPDATE),\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_no_v7_pending_pointers",
+                    endingBefore: "    fn require_exact_retained_v7_top_level",
+                    target: "                || name.starts_with(RETRY_2_V7_PENDING_PREFIX)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn execute_paired_v7_update",
+                    endingBefore: "    fn perform_paired_v7_update",
+                    target: "        require_retry_3_root_admission_via_sudo()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn uid501_driver_broker_proxy",
+                    endingBefore: "    fn existing_v7_layout_for_restore_proxy",
+                    target: "        require_current_retry_v7_layout(\n",
+                    replacement: "        verify_update_pointer_at(\n"
+                ),
+            ]
+            for (index, mutant) in retry3NamespaceMutants.enumerated() {
+                XCTAssertNotEqual(mutant, controller, "retry3 namespace mutant \(index) was inert")
+                XCTAssertFalse(
+                    hasRetry3TerminalNamespaceContract(mutant),
+                    "retry3 namespace contract accepted mutant \(index)"
+                )
+            }
+            return
+        }
         XCTAssertTrue(hasEvidencePreservingRetryNamespaceContract(controller))
 
         let retainedRoot =
@@ -3936,7 +5930,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         )
         XCTAssertTrue(launcher.contains("RELEASE_PIN_STATUS='PINNED_FINAL_REVIEW'"))
         let expectedControllerSourceSHA256 =
-            "59c13995b8131bca5f3c76052553703a8c7b47f3fa199a13c3255640399d75ae"
+            "0d3d09a17bf5eeef0c76a76b5d4034993dbcb917481095ee9d49366bc977e77c"
         XCTAssertTrue(
             hasExactLauncherSourcePinContract(
                 controller: controller,
@@ -3946,7 +5940,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         )
         XCTAssertTrue(
             launcher.contains(
-                "EXPECTED_BINARY_SHA256='4ce57b2affe12fca36c4b1bc5d1425d78355bbe5153ab99053a9ddf1ae71c31d'"
+                "EXPECTED_BINARY_SHA256='5feb2414a70b55ebac702916850cfb2b35f5d51a70ea63ae9ca00d67ba10bb04'"
             )
         )
         let exactControllerReleasePins = [
