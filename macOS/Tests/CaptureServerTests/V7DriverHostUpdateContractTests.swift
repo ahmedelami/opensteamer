@@ -889,7 +889,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         }
 
         let launcherTokens = [
-            "EXPECTED_BINARY_SHA256='962a404afa49faa7c6a8b68554896914bc973e7237326da0f495abd3c8b1f3cd'",
+            "EXPECTED_BINARY_SHA256='e234e757edcaf1b6b3e6ca482a2d75434f4f7b6ca6c00e7426c4e4f0746a741f'",
             "CONTROLLER_BINARY_SHA256=$(/usr/bin/shasum -a 256 \"$CONTROLLER\"",
             "[ \"$CONTROLLER_BINARY_SHA256\" = \"$EXPECTED_BINARY_SHA256\" ]",
             "compiled paired-v7 controller differs from the reviewed binary hash",
@@ -1027,6 +1027,124 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             && verificationTokens.allSatisfy(verifier.contains)
     }
 
+    private func hasRebootStableRollbackReserveDeviceContract(_ controller: String) -> Bool {
+        guard
+            let mountIdentity = try? functionBody(
+                controller,
+                beginningWith: "fn data_volume_mount_identity(",
+                endingBefore: "fn plist_value_after_unique_key"
+            ),
+            let plistValidation = try? functionBody(
+                controller,
+                beginningWith: "fn validate_data_volume_plist(",
+                endingBefore: "fn verified_data_volume_device("
+            ),
+            let deviceDerivation = try? functionBody(
+                controller,
+                beginningWith: "fn verified_data_volume_device(",
+                endingBefore: "fn sudo_output("
+            ),
+            let v5Verification = try? functionBody(
+                controller,
+                beginningWith: "fn verify_committed_v5_baseline(",
+                endingBefore: "fn verify_committed_v6_baseline("
+            ),
+            let v6Verification = try? functionBody(
+                controller,
+                beginningWith: "fn verify_committed_v6_baseline(",
+                endingBefore: "fn verify_committed_v3_oracle_pins("
+            )
+        else {
+            return false
+        }
+        let exactPins = [
+            #"const PINNED_DATA_VOLUME_MOUNT: &str = "/System/Volumes/Data";"#,
+            #"const EXPECTED_DATA_VOLUME_UUID: &str = "AF638805-E0CB-4356-941F-16B84DFB6435";"#,
+            #"const EXPECTED_DATA_VOLUME_GROUP_UUID: &str = "AF638805-E0CB-4356-941F-16B84DFB6435";"#,
+            #"const PINNED_DATA_VOLUME_DISKUTIL: &str = "/usr/sbin/diskutil";"#,
+            #""9299ccac6acdf493796a88979d14ff464c1ec2196b167c879f023c2dbe9f3049";"#,
+            "const COMMITTED_V5_RESERVE_INODE: u64 = 25_430_692;",
+            "const COMMITTED_V6_RESERVE_INODE: u64 = 25_795_487;",
+        ]
+        let mountTokens = [
+            "let mount = Path::new(PINNED_DATA_VOLUME_MOUNT);",
+            "let metadata = fs::symlink_metadata(mount)?;",
+            "!metadata.file_type().is_dir()",
+            "metadata.file_type().is_symlink()",
+            "metadata.uid() != 0",
+            "metadata.gid() != 80",
+            "metadata.permissions().mode() & 0o7777 != 0o775",
+            "metadata.st_flags() != 0",
+            "metadata.dev() == 0",
+            "fs::canonicalize(mount)? != mount",
+            "device: metadata.dev(),",
+            "inode: metadata.ino(),",
+            "mode: metadata.mode(),",
+            "links: metadata.nlink(),",
+            "length: metadata.len(),",
+            "flags: metadata.st_flags(),",
+        ]
+        let plistTokens = [
+            #"("VolumeUUID", EXPECTED_DATA_VOLUME_UUID)"#,
+            #"("APFSVolumeGroupID", EXPECTED_DATA_VOLUME_GROUP_UUID)"#,
+            #"("MountPoint", PINNED_DATA_VOLUME_MOUNT)"#,
+            #"("FilesystemType", "apfs")"#,
+            #"if !exact_plist_boolean(plist, "Internal")?"#,
+            #"if !exact_plist_boolean(plist, "Writable")?"#,
+        ]
+        let derivationTokens = [
+            "let diskutil = Path::new(PINNED_DATA_VOLUME_DISKUTIL);",
+            "require_fixed_system_binary(diskutil, 0o755)?;",
+            "sha256(diskutil)? != EXPECTED_DATA_VOLUME_DISKUTIL_SHA256",
+            "let mount_before = data_volume_mount_identity()?;",
+            "let volume = Command::new(PINNED_DATA_VOLUME_DISKUTIL)",
+            #".args(["info", "-plist", PINNED_DATA_VOLUME_MOUNT])"#,
+            ".env_clear()",
+            #".env("LC_ALL", "C")"#,
+            #".env("HOME", USER_HOME)"#,
+            #".env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")"#,
+            "require_output_success(&volume, \"inspect the canonical APFS Data volume\")?;",
+            "volume.stdout.len() < 256",
+            "volume.stdout.len() > 131_072",
+            "!volume.stderr.is_empty()",
+            "volume.stdout.contains(&0)",
+            "volume.stdout.contains(&b'\\r')",
+            "let mount_after = data_volume_mount_identity()?;",
+            "mount_after != mount_before",
+            "validate_data_volume_plist(decode_utf8(",
+            "Ok(mount_before.device)",
+        ]
+        let v5Tokens = [
+            #"let reserve = evidence.join("rollback-reserve.bin");"#,
+            "require_regular(&reserve, 0o600)?;",
+            "let reserve_metadata = fs::symlink_metadata(&reserve)?;",
+            "reserve_metadata.dev() != data_volume_device",
+            "reserve_metadata.ino() != COMMITTED_V5_RESERVE_INODE",
+            "reserve_metadata.len() != 0",
+            "reserve_metadata.blocks() != 0",
+        ]
+        let v6Tokens = [
+            "let data_volume_device = verified_data_volume_device()?;",
+            "verify_committed_v5_baseline(data_volume_device)?;",
+            #"let reserve = evidence.join("rollback-reserve.bin");"#,
+            "require_regular(&reserve, 0o600)?;",
+            "let reserve_metadata = fs::symlink_metadata(&reserve)?;",
+            "reserve_metadata.dev() != data_volume_device",
+            "reserve_metadata.ino() != COMMITTED_V6_RESERVE_INODE",
+            "reserve_metadata.len() != 0",
+            "reserve_metadata.blocks() != 0",
+        ]
+        return exactPins.allSatisfy(controller.contains)
+            && !controller.contains("COMMITTED_V5_RESERVE_DEVICE")
+            && !controller.contains("COMMITTED_V6_RESERVE_DEVICE")
+            && !controller.contains("16_777_229")
+            && containsOrdered(mountTokens, in: mountIdentity)
+            && containsOrdered(plistTokens, in: plistValidation)
+            && containsOrdered(derivationTokens, in: deviceDerivation)
+            && containsOrdered(v5Tokens, in: v5Verification)
+            && containsOrdered(v6Tokens, in: v6Verification)
+    }
+
     func testV7RemainsProductionOnlyAndHasExactFinalReleasePins() throws {
         let controller = try source(
             "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs"
@@ -1039,12 +1157,12 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         XCTAssertTrue(launcher.contains("RELEASE_PIN_STATUS='PINNED_FINAL_REVIEW'"))
         XCTAssertTrue(
             launcher.contains(
-                "EXPECTED_SOURCE_SHA256='75a0875aedaa3213129a479d4cd87ccd106c1c5b938d2bc0d7e726134976f85f'"
+                "EXPECTED_SOURCE_SHA256='9c6b6cfbad128fe6a4886c68e0ef6202ffe3df3208eb74ddcbdcf354735a77b4'"
             )
         )
         XCTAssertTrue(
             launcher.contains(
-                "EXPECTED_BINARY_SHA256='962a404afa49faa7c6a8b68554896914bc973e7237326da0f495abd3c8b1f3cd'"
+                "EXPECTED_BINARY_SHA256='e234e757edcaf1b6b3e6ca482a2d75434f4f7b6ca6c00e7426c4e4f0746a741f'"
             )
         )
         let exactControllerReleasePins = [
@@ -1083,6 +1201,83 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         XCTAssertTrue(controller.contains("notarytool"))
         XCTAssertTrue(controller.contains("EXPECTED_PRODUCTION_DRIVER_CANDIDATE_MANIFEST_SHA256"))
         XCTAssertFalse(controller.contains("--local-uncommitted-trial"))
+    }
+
+    func testV7RollbackReserveDeviceIsDerivedFromExactDataVolumeAndRejectsMutants() throws {
+        let controller = try source(
+            "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs"
+        )
+        XCTAssertTrue(hasRebootStableRollbackReserveDeviceContract(controller))
+
+        let mutants = [
+            controller.replacingOccurrences(
+                of: #"const EXPECTED_DATA_VOLUME_UUID: &str = "AF638805-E0CB-4356-941F-16B84DFB6435";"#,
+                with: #"const EXPECTED_DATA_VOLUME_UUID: &str = "00000000-0000-0000-0000-000000000000";"#
+            ),
+            controller.replacingOccurrences(
+                of: #"const EXPECTED_DATA_VOLUME_GROUP_UUID: &str = "AF638805-E0CB-4356-941F-16B84DFB6435";"#,
+                with: #"const EXPECTED_DATA_VOLUME_GROUP_UUID: &str = "00000000-0000-0000-0000-000000000000";"#
+            ),
+            controller.replacingOccurrences(
+                of: #"const PINNED_DATA_VOLUME_MOUNT: &str = "/System/Volumes/Data";"#,
+                with: #"const PINNED_DATA_VOLUME_MOUNT: &str = "/System/Volumes/Wrong";"#
+            ),
+            controller.replacingOccurrences(
+                of: #"("FilesystemType", "apfs")"#,
+                with: #"("FilesystemType", "hfs")"#
+            ),
+            controller.replacingOccurrences(
+                of: #"if !exact_plist_boolean(plist, "Internal")?"#,
+                with: #"if exact_plist_boolean(plist, "Internal")?"#
+            ),
+            controller.replacingOccurrences(
+                of: #"if !exact_plist_boolean(plist, "Writable")?"#,
+                with: #"if exact_plist_boolean(plist, "Writable")?"#
+            ),
+            controller.replacingOccurrences(
+                of: "let mount_before = data_volume_mount_identity()?;",
+                with: "let mount_before = mount_after;"
+            ),
+            controller.replacingOccurrences(
+                of: "let mount_after = data_volume_mount_identity()?;",
+                with: "let mount_after = mount_before;"
+            ),
+            controller.replacingOccurrences(
+                of: "        if mount_after != mount_before {\n",
+                with: "        if false {\n"
+            ),
+            controller.replacingOccurrences(
+                of: "        validate_data_volume_plist(decode_utf8(\n",
+                with: "        decode_utf8(\n"
+            ),
+            controller.replacingOccurrences(
+                of: "reserve_metadata.dev() != data_volume_device",
+                with: "reserve_metadata.dev() != 16_777_229"
+            ),
+            controller.replacingOccurrences(
+                of: "const COMMITTED_V5_RESERVE_INODE: u64 = 25_430_692;",
+                with: "const COMMITTED_V5_RESERVE_INODE: u64 = 25_430_693;"
+            ),
+            controller.replacingOccurrences(
+                of: "const COMMITTED_V6_RESERVE_INODE: u64 = 25_795_487;",
+                with: "const COMMITTED_V6_RESERVE_INODE: u64 = 25_795_488;"
+            ),
+            controller.replacingOccurrences(
+                of: #"const PINNED_DATA_VOLUME_DISKUTIL: &str = "/usr/sbin/diskutil";"#,
+                with: #"const PINNED_DATA_VOLUME_DISKUTIL: &str = "/tmp/diskutil";"#
+            ),
+            controller.replacingOccurrences(
+                of: "9299ccac6acdf493796a88979d14ff464c1ec2196b167c879f023c2dbe9f3049",
+                with: String(repeating: "0", count: 64)
+            ),
+        ]
+        for (index, mutant) in mutants.enumerated() {
+            XCTAssertNotEqual(mutant, controller, "Data-volume mutant \(index) was inert")
+            XCTAssertFalse(
+                hasRebootStableRollbackReserveDeviceContract(mutant),
+                "Data-volume source contract accepted mutant \(index)"
+            )
+        }
     }
 
     func testV7ControllerBinaryPinIsExternalThenRootSealedAndMutationClosed() throws {

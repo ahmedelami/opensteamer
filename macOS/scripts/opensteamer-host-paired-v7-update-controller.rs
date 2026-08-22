@@ -11,6 +11,7 @@
 #[allow(dead_code)]
 pub(crate) mod paired_v7 {
     include!(env!("OPENSTEAMER_PAIRED_V7_INCLUDED_SOURCE"));
+    use std::os::darwin::fs::MetadataExt as _;
     use std::os::unix::process::CommandExt as _;
 
     unsafe extern "C" {
@@ -132,6 +133,12 @@ pub(crate) mod paired_v7 {
     const EXPECTED_XCODE_CLANG_SHA256: &str =
         "7def90dd8829726686213a747fc5bff1583df933dae5edc55d755479e0bfe00a";
     const EXPECTED_XCODE_SWIFTC_VERSION: &str = "swift-driver version: 1.148.6 Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx26.0";
+    const PINNED_DATA_VOLUME_MOUNT: &str = "/System/Volumes/Data";
+    const EXPECTED_DATA_VOLUME_UUID: &str = "AF638805-E0CB-4356-941F-16B84DFB6435";
+    const EXPECTED_DATA_VOLUME_GROUP_UUID: &str = "AF638805-E0CB-4356-941F-16B84DFB6435";
+    const PINNED_DATA_VOLUME_DISKUTIL: &str = "/usr/sbin/diskutil";
+    const EXPECTED_DATA_VOLUME_DISKUTIL_SHA256: &str =
+        "9299ccac6acdf493796a88979d14ff464c1ec2196b167c879f023c2dbe9f3049";
 
     const COMMITTED_V1_POINTER: &str =
         "/Users/ahmed/Library/Application Support/opensteamer/active-post-v20-host-update-v1";
@@ -331,7 +338,6 @@ pub(crate) mod paired_v7 {
     const COMMITTED_V5_SOURCE_TREE: &str = "ebf42a023e9790b9eb58becd8a473a7b124b1e07";
     const COMMITTED_V5_INSTALL_HOLD_ROOT: &str =
         "/Applications/.opensteamer-paired-v5-install-3f7de8a9-473f-4abf-b15d-9790c827765e";
-    const COMMITTED_V5_RESERVE_DEVICE: u64 = 16_777_230;
     const COMMITTED_V5_RESERVE_INODE: u64 = 25_430_692;
     const COMMITTED_V5_BASELINE_APP: &str = "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v5/paired-v5-update-1786316959-19979-3f7de8a9-473f-4abf-b15d-9790c827765e/deployment-reference/opensteamer Host.app";
     const COMMITTED_V5_BASELINE_SOURCE_EXPORT: &str = "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v5/paired-v5-update-1786316959-19979-3f7de8a9-473f-4abf-b15d-9790c827765e/source-export";
@@ -382,7 +388,6 @@ pub(crate) mod paired_v7 {
     const COMMITTED_V6_SOURCE_TREE: &str = "205c379540e9e033ede4fdea86ed4954a82747ee";
     const COMMITTED_V6_INSTALL_HOLD_ROOT: &str =
         "/Applications/.opensteamer-paired-v6-install-728d9781-2b79-4d10-a220-8a48c1f6f716";
-    const COMMITTED_V6_RESERVE_DEVICE: u64 = 16_777_230;
     const COMMITTED_V6_RESERVE_INODE: u64 = 25_795_487;
 
     const CURRENT_BASELINE_APP: &str = "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v6/paired-v6-update-1786412787-39578-728d9781-2b79-4d10-a220-8a48c1f6f716/deployment-reference/opensteamer Host.app";
@@ -1159,7 +1164,7 @@ pub(crate) mod paired_v7 {
             EXPECTED_INSTALLER_SIGNATURE_PARSER_SHA256,
             REQUIRED_REPO_OWNED_DRIVER_PATCH_COMMIT,
         ];
-        let numeric_pins = [COMMITTED_V6_RESERVE_DEVICE, COMMITTED_V6_RESERVE_INODE];
+        let numeric_pins = [COMMITTED_V5_RESERVE_INODE, COMMITTED_V6_RESERVE_INODE];
         if !release_pins_complete(RELEASE_PIN_STATUS, &text_pins, &numeric_pins) {
             return Err(ControllerError(
                 "paired-v7 is intentionally unrunnable until final source, v6 evidence, signing, notarization, driver, package, and probe pins are reviewed"
@@ -3158,6 +3163,157 @@ pub(crate) mod paired_v7 {
             )));
         }
         Ok(())
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    struct DataVolumeMountIdentity {
+        device: u64,
+        inode: u64,
+        mode: u32,
+        links: u64,
+        uid: u32,
+        gid: u32,
+        length: u64,
+        flags: u32,
+    }
+
+    fn data_volume_mount_identity() -> Result<DataVolumeMountIdentity> {
+        let mount = Path::new(PINNED_DATA_VOLUME_MOUNT);
+        let metadata = fs::symlink_metadata(mount)?;
+        if !metadata.file_type().is_dir()
+            || metadata.file_type().is_symlink()
+            || metadata.uid() != 0
+            || metadata.gid() != 80
+            || metadata.permissions().mode() & 0o7777 != 0o775
+            || metadata.st_flags() != 0
+            || metadata.dev() == 0
+            || fs::canonicalize(mount)? != mount
+        {
+            return Err(ControllerError(
+                "canonical APFS Data volume mount is unavailable or unsafe".to_owned(),
+            ));
+        }
+        Ok(DataVolumeMountIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            mode: metadata.mode(),
+            links: metadata.nlink(),
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+            length: metadata.len(),
+            flags: metadata.st_flags(),
+        })
+    }
+
+    fn plist_value_after_unique_key<'a>(plist: &'a str, key: &str) -> Result<&'a str> {
+        let marker = format!("<key>{key}</key>");
+        let mut occurrences = plist.match_indices(&marker);
+        let (offset, _) = occurrences.next().ok_or_else(|| {
+            ControllerError(format!("Data volume plist is missing {key}"))
+        })?;
+        if occurrences.next().is_some() {
+            return Err(ControllerError(format!(
+                "Data volume plist repeats {key}"
+            )));
+        }
+        Ok(plist[offset + marker.len()..]
+            .trim_start_matches(|character: char| matches!(character, ' ' | '\t' | '\n')))
+    }
+
+    fn exact_plist_string<'a>(plist: &'a str, key: &str) -> Result<&'a str> {
+        let value_and_tail = plist_value_after_unique_key(plist, key)?
+            .strip_prefix("<string>")
+            .ok_or_else(|| ControllerError(format!("Data volume plist {key} is not a string")))?;
+        let end = value_and_tail.find("</string>").ok_or_else(|| {
+            ControllerError(format!("Data volume plist {key} string is unterminated"))
+        })?;
+        let value = &value_and_tail[..end];
+        if value.is_empty() || value.bytes().any(|byte| matches!(byte, b'<' | b'>' | b'&')) {
+            return Err(ControllerError(format!(
+                "Data volume plist {key} string is unsafe"
+            )));
+        }
+        Ok(value)
+    }
+
+    fn exact_plist_boolean(plist: &str, key: &str) -> Result<bool> {
+        let value = plist_value_after_unique_key(plist, key)?;
+        if value.starts_with("<true/>") {
+            Ok(true)
+        } else if value.starts_with("<false/>") {
+            Ok(false)
+        } else {
+            Err(ControllerError(format!(
+                "Data volume plist {key} is not a Boolean"
+            )))
+        }
+    }
+
+    fn validate_data_volume_plist(plist: &str) -> Result<()> {
+        for (key, expected) in [
+            ("VolumeUUID", EXPECTED_DATA_VOLUME_UUID),
+            ("APFSVolumeGroupID", EXPECTED_DATA_VOLUME_GROUP_UUID),
+            ("MountPoint", PINNED_DATA_VOLUME_MOUNT),
+            ("FilesystemType", "apfs"),
+        ] {
+            if exact_plist_string(plist, key)? != expected {
+                return Err(ControllerError(format!(
+                    "canonical APFS Data volume {key} changed"
+                )));
+            }
+        }
+        if !exact_plist_boolean(plist, "Internal")? {
+            return Err(ControllerError(
+                "canonical APFS Data volume Internal is not true".to_owned(),
+            ));
+        }
+        if !exact_plist_boolean(plist, "Writable")? {
+            return Err(ControllerError(
+                "canonical APFS Data volume Writable is not true".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn verified_data_volume_device() -> Result<u64> {
+        let diskutil = Path::new(PINNED_DATA_VOLUME_DISKUTIL);
+        require_fixed_system_binary(diskutil, 0o755)?;
+        if sha256(diskutil)? != EXPECTED_DATA_VOLUME_DISKUTIL_SHA256 {
+            return Err(ControllerError(
+                "pinned APFS Data volume observer bytes changed".to_owned(),
+            ));
+        }
+
+        let mount_before = data_volume_mount_identity()?;
+        let volume = Command::new(PINNED_DATA_VOLUME_DISKUTIL)
+            .args(["info", "-plist", PINNED_DATA_VOLUME_MOUNT])
+            .env_clear()
+            .env("LC_ALL", "C")
+            .env("HOME", USER_HOME)
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .output()?;
+        require_output_success(&volume, "inspect the canonical APFS Data volume")?;
+        if volume.stdout.len() < 256
+            || volume.stdout.len() > 131_072
+            || !volume.stderr.is_empty()
+            || volume.stdout.contains(&0)
+            || volume.stdout.contains(&b'\r')
+        {
+            return Err(ControllerError(
+                "canonical APFS Data volume plist is not exact and bounded".to_owned(),
+            ));
+        }
+        let mount_after = data_volume_mount_identity()?;
+        if mount_after != mount_before {
+            return Err(ControllerError(
+                "canonical APFS Data mount changed during identity proof".to_owned(),
+            ));
+        }
+        validate_data_volume_plist(decode_utf8(
+            &volume.stdout,
+            "canonical APFS Data volume plist",
+        )?)?;
+        Ok(mount_before.device)
     }
 
     fn sudo_output(arguments: &[&str]) -> Result<Output> {
@@ -7172,7 +7328,7 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
         verify_committed_v3_app_at(&v3_rollback)
     }
 
-    fn verify_committed_v5_baseline() -> Result<()> {
+    fn verify_committed_v5_baseline(data_volume_device: u64) -> Result<()> {
         verify_committed_v4_baseline()?;
         require_regular(Path::new(COMMITTED_V5_POINTER), 0o600)?;
         if sha256(Path::new(COMMITTED_V5_POINTER))? != COMMITTED_V5_POINTER_SHA256 {
@@ -7252,7 +7408,7 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
         let reserve = evidence.join("rollback-reserve.bin");
         require_regular(&reserve, 0o600)?;
         let reserve_metadata = fs::symlink_metadata(&reserve)?;
-        if reserve_metadata.dev() != COMMITTED_V5_RESERVE_DEVICE
+        if reserve_metadata.dev() != data_volume_device
             || reserve_metadata.ino() != COMMITTED_V5_RESERVE_INODE
             || reserve_metadata.len() != 0
             || reserve_metadata.blocks() != 0
@@ -7341,7 +7497,8 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
     }
 
     fn verify_committed_v6_baseline() -> Result<()> {
-        verify_committed_v5_baseline()?;
+        let data_volume_device = verified_data_volume_device()?;
+        verify_committed_v5_baseline(data_volume_device)?;
         require_regular(Path::new(COMMITTED_V6_POINTER), 0o600)?;
         if sha256(Path::new(COMMITTED_V6_POINTER))? != COMMITTED_V6_POINTER_SHA256 {
             return Err(ControllerError(
@@ -7420,7 +7577,7 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
         let reserve = evidence.join("rollback-reserve.bin");
         require_regular(&reserve, 0o600)?;
         let reserve_metadata = fs::symlink_metadata(&reserve)?;
-        if reserve_metadata.dev() != COMMITTED_V6_RESERVE_DEVICE
+        if reserve_metadata.dev() != data_volume_device
             || reserve_metadata.ino() != COMMITTED_V6_RESERVE_INODE
             || reserve_metadata.len() != 0
             || reserve_metadata.blocks() != 0
