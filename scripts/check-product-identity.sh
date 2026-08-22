@@ -936,7 +936,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_PACKAGE_RESOLVED_SHA256="161213e9507513e41f0acba0d7439fcf633b9d03d78c22b1e4b15fa9f83a01d9"' 1 \
   'side-by-side TestFlight exact resolved package pin'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '/usr/bin/sandbox-exec -p "${effective_profile_text}"' 1 \
+  '/usr/bin/sandbox-exec -p "${profile_text}"' 1 \
   'side-by-side TestFlight protected-path Xcode sandbox'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'if sysread -i ${profile_reader_fd} -s 4096 \' 1 \
@@ -993,56 +993,65 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_XCODEBUILD_SHA256="d508f0e1901151843804e4af512d4587ad0e422039e43e14abf22792360ad3d4"' 1 \
   'side-by-side TestFlight reviewed real xcodebuild digest'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH="${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/SharedFrameworks/DVTITunesSoftware.framework/Versions/A/XPCServices/com.apple.dt.Xcode.ITunesSoftwareService.xpc"' 1 \
-  'side-by-side TestFlight exact Xcode distribution-service bundle path'
+  'readonly -a EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS=(' 1 \
+  'side-by-side TestFlight read-only export process vector'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH="${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH}/Contents/MacOS/com.apple.dt.Xcode.ITunesSoftwareService"' 1 \
-  'side-by-side TestFlight exact Xcode distribution-service executable path'
+  $'readonly -a EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS=(\n  -DVTITunesConnectOutOfProcess\n  NO\n)' 1 \
+  'side-by-side TestFlight exact in-process export vector'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_CD_HASH="0a6b7f28d14e95f3a9273a61c7433b278b4998d2"' 1 \
-  'side-by-side TestFlight exact Xcode distribution-service signature identity'
+  'EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS_SHA256="8bb76e840b538ff928d882e86a44ef9c7c9ae07253dd9b0f10765fb79efc7b1e"' 1 \
+  'side-by-side TestFlight exact export process-vector digest'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_SHA256="090e23f877a26bb2d67eb7ba9444e914e39c722ab81d9ab7168ae3b445422b5b"' 1 \
-  'side-by-side TestFlight exact Xcode distribution-service metadata digest'
+  'function verify_xcode_export_distribution_process_static_contract() {' 1 \
+  'side-by-side TestFlight static export process contract'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_SHA256="b45900e24d9f6ed0f468203db455a8baf78fe78c4ae6e863ba82c02f2eaa02da"' 1 \
-  'side-by-side TestFlight exact Xcode distribution-service executable digest'
+  'function verify_xcodebuild_distribution_process_arguments() {' 1 \
+  'side-by-side TestFlight runtime export process argument proof'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'function verify_xcode_itunes_software_service_static_contract() {' 1 \
-  'side-by-side TestFlight static Xcode distribution-service contract'
+  'verify_xcode_export_distribution_process_static_contract' 6 \
+  'side-by-side TestFlight complete export process-contract revalidation'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'function verify_reviewed_xcode_itunes_software_service_identity() {' 1 \
-  'side-by-side TestFlight runtime Xcode distribution-service identity proof'
+  'verify_xcodebuild_distribution_process_arguments' 2 \
+  'side-by-side TestFlight process-argument verifier invocation'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_JOB_CREATION_RULE="(allow job-creation (literal \"${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH}\"))"' 1 \
-  'side-by-side TestFlight exact Xcode distribution-service job allowance'
+  $'  verify_xcodebuild_distribution_process_arguments \\\n    "${destination_contract}" "$@" || return 1' 1 \
+  'side-by-side TestFlight immediate full process-argument verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'job-creation' 3 \
-  'side-by-side TestFlight sole exact job-creation allowance'
+  'DVTITunesConnectOutOfProcess' 3 \
+  'side-by-side TestFlight exact process-override occurrence set'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    if [[ "${supplied_argument}" \\\n        == '\''-DVTITunesConnectOutOfProcess'\''* ]]; then' 1 \
+  'side-by-side TestFlight complete process-override prefix rejection'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '(( process_override_count == 1 \' 1 \
+  'side-by-side TestFlight single export process override'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'      local -a expected_export_arguments=(\n        "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}"\n        -exportArchive\n        -archivePath "${TESTFLIGHT_ARCHIVE_PATH}"\n        -exportOptionsPlist "${EXPORT_OPTIONS_PATH}"\n        -exportPath "${TESTFLIGHT_EXPORT_DIRECTORY}"\n        -allowProvisioningUpdates\n        "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}"\n      )' 1 \
+  'side-by-side TestFlight independently constructed full export vector'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '== "$(string_vector_sha256 "${expected_export_arguments[@]}")" ]]' 1 \
+  'side-by-side TestFlight full export-vector equality proof'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '    resolve|settings|archive)' 1 \
+  'side-by-side TestFlight non-export process-override rejection'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}" \' 1 \
+  'side-by-side TestFlight exact export-only process vector placement'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  run_pinned_xcodebuild export \\\n    "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}" \\\n    -exportArchive \\' 1 \
+  'side-by-side TestFlight process override before export action'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'job-creation' 1 \
+  'side-by-side TestFlight complete job-creation allowance rejection'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '[[ "${profile_text}" != *'\''job-creation'\''* ]] || operation_status=1' 1 \
   'side-by-side TestFlight job-creation-free base sandbox profile'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'    settings|archive)\n      ;;\n    export)\n      verify_reviewed_xcode_itunes_software_service_identity || return 1' 1 \
-  'side-by-side TestFlight export-only distribution-service job allowance'
+  '(allow job-creation' 0 \
+  'side-by-side TestFlight sandbox job-creation capability rejection'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  "if [[ \"\${destination_contract}\" == 'export' ]]; then" 2 \
-  'side-by-side TestFlight exact export sandbox-profile delta'
-assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  "effective_profile_text+=\$'\\n'" 1 \
-  'side-by-side TestFlight separated export sandbox-profile rule'
-assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'effective_profile_text+="${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_JOB_CREATION_RULE}"' 1 \
-  'side-by-side TestFlight exact export job-creation rule insertion'
-assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'    verify_reviewed_xcode_itunes_software_service_identity \\\n      || operation_status=1' 1 \
-  'side-by-side TestFlight post-export distribution-service identity proof'
-assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '(allow job-creation)' 0 \
-  'side-by-side TestFlight broad job-creation rejection'
-assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'DVTITunesConnectOutOfProcess' 0 \
-  'side-by-side TestFlight private in-process distribution override rejection'
+  'defaults' 0 \
+  'side-by-side TestFlight persistent defaults mutation rejection'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function verify_reviewed_xcode_volume_identity() {' 1 \
   'side-by-side TestFlight real-Xcode T7 volume and store verification'
@@ -1068,7 +1077,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '/usr/bin/codesign --verify --deep --strict --verbose=4 \' 1 \
   'side-by-side TestFlight full Xcode bundle seal verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '"${TESTFLIGHT_XCODE_BUNDLE_IDENTITY%%:*}"' 3 \
+  '"${TESTFLIGHT_XCODE_BUNDLE_IDENTITY%%:*}"' 2 \
   'side-by-side TestFlight real-Xcode filesystem-device binding'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'verify_reviewed_xcode_toolchain_identity' 3 \
@@ -1080,7 +1089,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'run_pinned_xcodebuild archive' 1 \
   'side-by-side TestFlight guarded archive invocation'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'run_pinned_xcodebuild export -exportArchive' 1 \
+  'run_pinned_xcodebuild export \' 1 \
   'side-by-side TestFlight guarded export/upload invocation'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function require_canonical_safe_path() {' 1 \
@@ -1323,7 +1332,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function verify_app_store_connect_api_key_identity() {' 1 \
   'side-by-side TestFlight persistent API-key identity verifier'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'verify_xcodebuild_authentication_contract' 6 \
+  'verify_xcodebuild_authentication_contract' 7 \
   'side-by-side TestFlight complete authentication revalidation set'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function ls_mode_token() {' 1 \

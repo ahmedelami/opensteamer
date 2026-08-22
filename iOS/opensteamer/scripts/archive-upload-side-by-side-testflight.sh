@@ -84,15 +84,11 @@ readonly EXPECTED_XCODEBUILD_CD_HASH="335573a2d481a0021e20d7c8b6e2768e407e0f26"
 readonly EXPECTED_XCODE_INFO_SHA256="224c27a718df1d8b4e785d29d06259e0a9326c424e70d30efab9c587463f719a"
 readonly EXPECTED_XCODE_VERSION_SHA256="951ddf34d65d84d57684bd083ca7deebf8d5722eefb074f3cdf00f8304d5f511"
 readonly EXPECTED_XCODEBUILD_SHA256="d508f0e1901151843804e4af512d4587ad0e422039e43e14abf22792360ad3d4"
-readonly EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH="${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/SharedFrameworks/DVTITunesSoftware.framework/Versions/A/XPCServices/com.apple.dt.Xcode.ITunesSoftwareService.xpc"
-readonly EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_PATH="${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH}/Contents/Info.plist"
-readonly EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH="${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH}/Contents/MacOS/com.apple.dt.Xcode.ITunesSoftwareService"
-readonly EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_IDENTIFIER="com.apple.dt.Xcode.ITunesSoftwareService"
-readonly EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_VERSION="24904"
-readonly EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_CD_HASH="0a6b7f28d14e95f3a9273a61c7433b278b4998d2"
-readonly EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_SHA256="090e23f877a26bb2d67eb7ba9444e914e39c722ab81d9ab7168ae3b445422b5b"
-readonly EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_SHA256="b45900e24d9f6ed0f468203db455a8baf78fe78c4ae6e863ba82c02f2eaa02da"
-readonly EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_JOB_CREATION_RULE="(allow job-creation (literal \"${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH}\"))"
+readonly -a EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS=(
+  -DVTITunesConnectOutOfProcess
+  NO
+)
+readonly EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS_SHA256="8bb76e840b538ff928d882e86a44ef9c7c9ae07253dd9b0f10765fb79efc7b1e"
 readonly PACKAGE_MANIFEST_PATH="${REPOSITORY_ROOT}/Package.swift"
 readonly PACKAGE_RESOLVED_PATH="${REPOSITORY_ROOT}/Package.resolved"
 readonly EXPECTED_PACKAGE_MANIFEST_SHA256="9c02a86ef1f8257dcd67af517ba35fca50bba0a94b865fd4dacfe476b9c7ed52"
@@ -186,9 +182,6 @@ typeset TESTFLIGHT_XCODE_ALIAS_IDENTITY=""
 typeset TESTFLIGHT_XCODE_BUNDLE_IDENTITY=""
 typeset TESTFLIGHT_XCODE_DEVELOPER_IDENTITY=""
 typeset TESTFLIGHT_XCODEBUILD_IDENTITY=""
-typeset TESTFLIGHT_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_IDENTITY=""
-typeset TESTFLIGHT_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_IDENTITY=""
-typeset TESTFLIGHT_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_IDENTITY=""
 typeset TESTFLIGHT_XCODE_VOLUME_ROOT_IDENTITY=""
 typeset TESTFLIGHT_XCODE_VOLUME_DEVICE_IDENTIFIER=""
 typeset TESTFLIGHT_XCODE_VOLUME_PARENT_WHOLE_DISK=""
@@ -340,32 +333,17 @@ function verify_app_store_connect_api_key_static_contract() {
         == "${EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS_SHA256}" ]]
 }
 
-function verify_xcode_itunes_software_service_static_contract() {
-  [[ "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH}" \
-        == "${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/SharedFrameworks/DVTITunesSoftware.framework/Versions/A/XPCServices/com.apple.dt.Xcode.ITunesSoftwareService.xpc" \
-      && "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_PATH}" \
-        == "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH}/Contents/Info.plist" \
-      && "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH}" \
-        == "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH}/Contents/MacOS/${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_IDENTIFIER}" \
-      && "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH:A}" \
-        == "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH}" \
-      && "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_PATH:A}" \
-        == "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_PATH}" \
-      && "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH:A}" \
-        == "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH}" \
-      && "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_IDENTIFIER}" \
-        == 'com.apple.dt.Xcode.ITunesSoftwareService' \
-      && "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_VERSION}" == '24904' \
-      && "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_JOB_CREATION_RULE}" \
-        == "(allow job-creation (literal \"${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH}\"))" ]] \
-    || return 1
+function verify_xcode_export_distribution_process_static_contract() {
+  [[ ${#EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]} == 2 \
+      && "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[1]}" \
+        == '-DVTITunesConnectOutOfProcess' \
+      && "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[2]}" \
+        == 'NO' ]] || return 1
   string_is_lowercase_sha256 \
-      "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_SHA256}" \
-    && string_is_lowercase_sha256 \
-      "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_SHA256}" \
-    && [[ "${#EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_CD_HASH}" == 40 \
-      && "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_CD_HASH}" \
-        != *[^0-9a-f]* ]]
+      "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS_SHA256}" \
+    && [[ "$(string_vector_sha256 \
+          "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}")" \
+        == "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS_SHA256}" ]]
 }
 
 function xcodebuild_authentication_arguments_sha256() {
@@ -683,7 +661,7 @@ function run_with_pinned_xcode_sandbox_profile() {
     settings|archive)
       ;;
     export)
-      verify_reviewed_xcode_itunes_software_service_identity || return 1
+      verify_xcode_export_distribution_process_static_contract || return 1
       ;;
     *)
       return 1
@@ -735,15 +713,10 @@ function run_with_pinned_xcode_sandbox_profile() {
   exec {profile_reader_fd}>&-
   verify_xcode_sandbox_profile_identity || operation_status=1
   (( operation_status == 0 )) || return ${operation_status}
-  local effective_profile_text="${profile_text}"
-  if [[ "${destination_contract}" == 'export' ]]; then
-    effective_profile_text+=$'\n'
-    effective_profile_text+="${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_JOB_CREATION_RULE}"
-  fi
-  /usr/bin/sandbox-exec -p "${effective_profile_text}" "$@" \
+  /usr/bin/sandbox-exec -p "${profile_text}" "$@" \
     || operation_status=$?
   if [[ "${destination_contract}" == 'export' ]]; then
-    verify_reviewed_xcode_itunes_software_service_identity \
+    verify_xcode_export_distribution_process_static_contract \
       || operation_status=1
   fi
   verify_xcode_sandbox_profile_identity || operation_status=1
@@ -1159,64 +1132,6 @@ function verify_or_reuse_reviewed_xcode_deep_signature() {
   esac
 }
 
-function verify_reviewed_xcode_itunes_software_service_identity() {
-  verify_xcode_itunes_software_service_static_contract || return 1
-  [[ -n "${TESTFLIGHT_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_IDENTITY:-}" \
-      && -n "${TESTFLIGHT_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_IDENTITY:-}" \
-      && -n "${TESTFLIGHT_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_IDENTITY:-}" \
-      && -d "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH}" \
-      && ! -L "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH}" \
-      && -f "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_PATH}" \
-      && ! -L "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_PATH}" \
-      && -x "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH}" \
-      && -f "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH}" \
-      && ! -L "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH}" \
-      && "$(stat_identity \
-        "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH}")" \
-        == "${TESTFLIGHT_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_IDENTITY}" \
-      && "$(stat_identity \
-        "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_PATH}")" \
-        == "${TESTFLIGHT_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_IDENTITY}" \
-      && "$(stat_identity \
-        "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH}")" \
-        == "${TESTFLIGHT_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_IDENTITY}" \
-      && "${TESTFLIGHT_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_IDENTITY%%:*}" \
-        == "${TESTFLIGHT_XCODE_BUNDLE_IDENTITY%%:*}" \
-      && "$(sha256_file \
-        "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_PATH}")" \
-        == "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_SHA256}" \
-      && "$(sha256_file \
-        "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH}")" \
-        == "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_SHA256}" \
-      && "$(plist_raw_value \
-        "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_PATH}" \
-        CFBundleIdentifier)" \
-        == "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_IDENTIFIER}" \
-      && "$(plist_raw_value \
-        "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_PATH}" \
-        CFBundleExecutable)" \
-        == "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_IDENTIFIER}" \
-      && "$(plist_raw_value \
-        "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_PATH}" \
-        CFBundlePackageType)" == 'XPC!' \
-      && "$(plist_raw_value \
-        "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_PATH}" \
-        CFBundleVersion)" \
-        == "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_VERSION}" ]] || return 1
-  /usr/bin/codesign --verify --strict --verbose=4 \
-    "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH}" \
-    >/dev/null 2>&1 || return 1
-  local service_metadata
-  service_metadata=$(/usr/bin/codesign -dv --verbose=4 \
-    "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH}" 2>&1) || return 1
-  [[ "$(codesign_metadata_value "${service_metadata}" Identifier)" \
-        == "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_IDENTIFIER}" \
-      && "$(codesign_metadata_value "${service_metadata}" TeamIdentifier)" \
-        == "${EXPECTED_XCODE_SIGNING_TEAM_ID}" \
-      && "$(codesign_metadata_value "${service_metadata}" CDHash)" \
-        == "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_CD_HASH}" ]]
-}
-
 function verify_reviewed_xcode_toolchain_identity() {
   local selected_developer_path
   selected_developer_path=$(/usr/bin/xcode-select -p 2>/dev/null) || return 2
@@ -1266,7 +1181,6 @@ function verify_reviewed_xcode_toolchain_identity() {
         ProductBuildVersion)" == "${EXPECTED_XCODE_BUILD_VERSION}" ]] || return 1
   verify_reviewed_xcode_volume_identity || return $?
   verify_or_reuse_reviewed_xcode_deep_signature || return 1
-  verify_reviewed_xcode_itunes_software_service_identity || return 1
   /usr/bin/codesign --verify --strict --verbose=4 \
     "${EXPECTED_XCODEBUILD_REAL_PATH}" >/dev/null 2>&1 || return 1
   local bundle_metadata
@@ -1298,15 +1212,7 @@ function pin_reviewed_xcode_toolchain_identity() {
       && -d "${EXPECTED_XCODE_REAL_DEVELOPER_PATH}" \
       && ! -L "${EXPECTED_XCODE_REAL_DEVELOPER_PATH}" \
       && -f "${EXPECTED_XCODEBUILD_REAL_PATH}" \
-      && ! -L "${EXPECTED_XCODEBUILD_REAL_PATH}" \
-      && -d "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH}" \
-      && ! -L "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH}" \
-      && -f "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_PATH}" \
-      && ! -L "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_PATH}" \
-      && -x "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH}" \
-      && -f "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH}" \
-      && ! -L "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH}" ]] \
-    || return 1
+      && ! -L "${EXPECTED_XCODEBUILD_REAL_PATH}" ]] || return 1
   TESTFLIGHT_XCODE_ALIAS_IDENTITY=$(stat_identity "${EXPECTED_XCODE_ALIAS_PATH}") \
     || return 1
   TESTFLIGHT_XCODE_BUNDLE_IDENTITY=$(stat_identity \
@@ -1315,12 +1221,6 @@ function pin_reviewed_xcode_toolchain_identity() {
     "${EXPECTED_XCODE_REAL_DEVELOPER_PATH}") || return 1
   TESTFLIGHT_XCODEBUILD_IDENTITY=$(stat_identity \
     "${EXPECTED_XCODEBUILD_REAL_PATH}") || return 1
-  TESTFLIGHT_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_IDENTITY=$(stat_identity \
-    "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_BUNDLE_PATH}") || return 1
-  TESTFLIGHT_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_IDENTITY=$(stat_identity \
-    "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_INFO_PATH}") || return 1
-  TESTFLIGHT_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_IDENTITY=$(stat_identity \
-    "${EXPECTED_XCODE_ITUNES_SOFTWARE_SERVICE_EXECUTABLE_PATH}") || return 1
   TESTFLIGHT_XCODE_VOLUME_ROOT_IDENTITY=$(stat_identity "${TESTFLIGHT_BUILD_ROOT}") \
     || return 1
   [[ "${TESTFLIGHT_XCODE_BUNDLE_IDENTITY%%:*}" \
@@ -2238,6 +2138,46 @@ function xcodebuild_pinned_environment_sha256() {
   string_vector_sha256 "${TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT[@]}"
 }
 
+function verify_xcodebuild_distribution_process_arguments() {
+  local destination_contract=$1
+  shift
+  verify_xcode_export_distribution_process_static_contract || return 1
+  local -a supplied_arguments=("$@")
+  local supplied_argument
+  local -i process_override_count=0
+  for supplied_argument in "${supplied_arguments[@]}"; do
+    if [[ "${supplied_argument}" \
+        == '-DVTITunesConnectOutOfProcess'* ]]; then
+      (( process_override_count += 1 ))
+    fi
+  done
+  case "${destination_contract}" in
+    export)
+      verify_xcodebuild_authentication_contract || return 1
+      local -a expected_export_arguments=(
+        "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}"
+        -exportArchive
+        -archivePath "${TESTFLIGHT_ARCHIVE_PATH}"
+        -exportOptionsPlist "${EXPORT_OPTIONS_PATH}"
+        -exportPath "${TESTFLIGHT_EXPORT_DIRECTORY}"
+        -allowProvisioningUpdates
+        "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}"
+      )
+      (( process_override_count == 1 \
+          && ${#supplied_arguments[@]} \
+            == ${#expected_export_arguments[@]} )) \
+        && [[ "$(string_vector_sha256 "${supplied_arguments[@]}")" \
+          == "$(string_vector_sha256 "${expected_export_arguments[@]}")" ]]
+      ;;
+    resolve|settings|archive)
+      (( process_override_count == 0 ))
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 function verify_pinned_xcodebuild_filesystem_contract() {
   reject_unsafe_build_environment
   verify_reviewed_xcode_toolchain_identity || return 1
@@ -2245,6 +2185,7 @@ function verify_pinned_xcodebuild_filesystem_contract() {
   verify_xcode_sandbox_profile_identity || return 1
   verify_package_dependency_contract || return 1
   verify_xcodebuild_authentication_contract || return 1
+  verify_xcode_export_distribution_process_static_contract || return 1
   (( ${#TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[@]} > 0 )) || return 1
   (( ${#TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT[@]} > 0 )) || return 1
   [[ "${#TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS_SHA256}" == 64 \
@@ -2298,6 +2239,8 @@ function run_xcodebuild_command_for_destination_contract() {
 function run_pinned_xcodebuild() {
   local destination_contract=$1
   shift
+  verify_xcodebuild_distribution_process_arguments \
+    "${destination_contract}" "$@" || return 1
   verify_pinned_xcodebuild_filesystem_contract || return 1
   case "${destination_contract}" in
     archive|export)
@@ -2456,8 +2399,8 @@ function verify_static_contract() {
     || fail "isolated and protected bundle identifiers are equal"
   verify_app_store_connect_api_key_static_contract \
     || fail "App Store Connect API-key constants are not the reviewed exact contract"
-  verify_xcode_itunes_software_service_static_contract \
-    || fail "Xcode distribution-service constants are not the reviewed exact contract"
+  verify_xcode_export_distribution_process_static_contract \
+    || fail "Xcode export process constants are not the reviewed exact contract"
   [[ -d "${PROJECT_PATH}" ]] || fail "Xcode project is missing"
   [[ -f "${SCHEME_PATH}" ]] || fail "archive-only shared scheme is missing"
   [[ -f "${SCHEME_SOURCE_PATH}" && ! -L "${SCHEME_SOURCE_PATH}" ]] \
@@ -3730,7 +3673,9 @@ function run_authorized_upload() {
   verify_pinned_xcodebuild_filesystem_contract \
     || fail "private build filesystem contract changed immediately before upload"
   local upload_status=0
-  run_pinned_xcodebuild export -exportArchive \
+  run_pinned_xcodebuild export \
+    "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}" \
+    -exportArchive \
     -archivePath "${TESTFLIGHT_ARCHIVE_PATH}" \
     -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \
     -exportPath "${TESTFLIGHT_EXPORT_DIRECTORY}" \
