@@ -192,6 +192,62 @@ final class V8HostUpdateContractTests: XCTestCase {
         XCTAssertFalse(selfTest.contains("self_test_v5_oracle_pin_mutation"))
     }
 
+    func testV5ReleasedReserveUsesEvidenceFilesystemAndRejectsPinMutants() throws {
+        let controller = try source(
+            "macOS/scripts/opensteamer-host-paired-v8-update-controller.rs"
+        )
+        XCTAssertFalse(controller.contains("COMMITTED_V5_RESERVE_DEVICE"))
+        let verifier = try functionBody(
+            controller,
+            beginningWith: "    fn verify_committed_v5_baseline()",
+            endingBefore: "    fn verify_committed_v6_baseline()"
+        )
+        let required = [
+            "require_regular(&reserve, 0o600)?;",
+            "let reserve_metadata = fs::symlink_metadata(&reserve)?;",
+            "let evidence_metadata = fs::symlink_metadata(evidence)?;",
+            "!reserve_metadata.file_type().is_file()",
+            "reserve_metadata.file_type().is_symlink()",
+            "reserve_metadata.uid() != USER_ID",
+            "reserve_metadata.gid() != 20",
+            "reserve_metadata.nlink() != 1",
+            "reserve_metadata.permissions().mode() & 0o777 != 0o600",
+            "reserve_metadata.st_flags() != 0",
+            "reserve_metadata.dev() != evidence_metadata.dev()",
+            "reserve_metadata.ino() != COMMITTED_V5_RESERVE_INODE",
+            "reserve_metadata.len() != 0",
+            "reserve_metadata.blocks() != 0",
+        ]
+        func hasReserveContract(_ candidate: String) -> Bool {
+            required.allSatisfy(candidate.contains)
+                && !candidate.contains("COMMITTED_V5_RESERVE_DEVICE")
+        }
+        XCTAssertTrue(hasReserveContract(verifier))
+
+        let mutants = [
+            verifier.replacingOccurrences(
+                of: "reserve_metadata.dev() != evidence_metadata.dev()",
+                with: "reserve_metadata.dev() != 16_777_230"
+            ),
+            verifier.replacingOccurrences(
+                of: "            || reserve_metadata.st_flags() != 0\n",
+                with: ""
+            ),
+            verifier.replacingOccurrences(
+                of: "            || reserve_metadata.ino() != COMMITTED_V5_RESERVE_INODE\n",
+                with: ""
+            ),
+            verifier.replacingOccurrences(
+                of: "            || reserve_metadata.permissions().mode() & 0o777 != 0o600\n",
+                with: ""
+            ),
+        ]
+        for mutant in mutants {
+            XCTAssertNotEqual(mutant, verifier)
+            XCTAssertFalse(hasReserveContract(mutant), "v5 reserve mutant escaped contract")
+        }
+    }
+
     func testOuterRootAndDriverProofsPinExactMetadataIncludingBSDFlags() throws {
         let controller = try source(
             "macOS/scripts/opensteamer-host-paired-v8-update-controller.rs"
@@ -332,8 +388,8 @@ final class V8HostUpdateContractTests: XCTestCase {
         let launcher = try source("macOS/scripts/update-opensteamer-host-paired-v8.sh")
         for token in [
             "RELEASE_PIN_STATUS='PINNED_FINAL_REVIEW'",
-            "EXPECTED_SOURCE_SHA256='806c9503ccdbecd741302084f31e72fef036c7ee178de0f4fee0ba2d4272e3c4'",
-            "EXPECTED_BINARY_SHA256='a0523cafcf9e514e248ee46babd7ec2aa40d25e87a0707fab2a77bac49055fac'",
+            "EXPECTED_SOURCE_SHA256='9ca05ff323a7412256df2395418a82ff61d09dd83869747b92c233489926a46b'",
+            "EXPECTED_BINARY_SHA256='a233400d68f58adcf3a0aa11037634cc6e8c970b07e5e1e59248b771793a576a'",
             #"[ "$RELEASE_PIN_STATUS" = 'PINNED_FINAL_REVIEW' ]"#,
             #"*PIN_AFTER_FINAL_REVIEW*)"#,
             #"BUILD_ROOT_A=$(/usr/bin/mktemp -d "$BUILD_PARENT/.paired-v8-controller-build-a.XXXXXX")"#,

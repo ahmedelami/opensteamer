@@ -227,7 +227,6 @@ mod paired_v8 {
     const COMMITTED_V5_SOURCE_TREE: &str = "ebf42a023e9790b9eb58becd8a473a7b124b1e07";
     const COMMITTED_V5_INSTALL_HOLD_ROOT: &str =
         "/Applications/.opensteamer-paired-v5-install-3f7de8a9-473f-4abf-b15d-9790c827765e";
-    const COMMITTED_V5_RESERVE_DEVICE: u64 = 16_777_230;
     const COMMITTED_V5_RESERVE_INODE: u64 = 25_430_692;
 
     const COMMITTED_V5_BASELINE_APP: &str = "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v5/paired-v5-update-1786316959-19979-3f7de8a9-473f-4abf-b15d-9790c827765e/deployment-reference/opensteamer Host.app";
@@ -2253,7 +2252,15 @@ mod paired_v8 {
         let reserve = evidence.join("rollback-reserve.bin");
         require_regular(&reserve, 0o600)?;
         let reserve_metadata = fs::symlink_metadata(&reserve)?;
-        if reserve_metadata.dev() != COMMITTED_V5_RESERVE_DEVICE
+        let evidence_metadata = fs::symlink_metadata(evidence)?;
+        if !reserve_metadata.file_type().is_file()
+            || reserve_metadata.file_type().is_symlink()
+            || reserve_metadata.uid() != USER_ID
+            || reserve_metadata.gid() != 20
+            || reserve_metadata.nlink() != 1
+            || reserve_metadata.permissions().mode() & 0o777 != 0o600
+            || reserve_metadata.st_flags() != 0
+            || reserve_metadata.dev() != evidence_metadata.dev()
             || reserve_metadata.ino() != COMMITTED_V5_RESERVE_INODE
             || reserve_metadata.len() != 0
             || reserve_metadata.blocks() != 0
