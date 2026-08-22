@@ -88,6 +88,74 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             && !verifier.contains(literalBackslashNJoin)
     }
 
+    private func hasDeterministicOptimizedMirrorProbeCompileContract(
+        _ controller: String
+    ) -> Bool {
+        guard
+            let build = try? functionBody(
+                controller,
+                beginningWith: "fn build_and_verify_v7_probe_binaries(",
+                endingBefore: "struct BoundedChildOutcome"
+            )
+        else {
+            return false
+        }
+        let validationTokens = [
+            "let mirror_source = require_exported_pinned_file(",
+            "\"iOS/opensteamer/scripts/physical-blackhole-microphone-probe.swift\"",
+            "EXPECTED_MIRROR_PROBE_SOURCE_SHA256,",
+            "const MIRROR_SOURCE_BASENAME: &str = \"physical-blackhole-microphone-probe.swift\";",
+            "let mirror_source_parent = mirror_source.parent().ok_or_else(",
+            "require_directory(mirror_source_parent, 0o700)?;",
+            "if mirror_source.file_name().and_then(|name| name.to_str())",
+            "!= Some(MIRROR_SOURCE_BASENAME)",
+        ]
+        let compileClosureTokens = [
+            "let compile_swift = |source_argument: &str,",
+            "source_directory: Option<&Path>,",
+            "\"-O\",",
+            "source_argument,",
+            "arguments.push(\"-o\");",
+            "arguments.push(path_text(output)?);",
+            "if let Some(directory) = source_directory {",
+            "command.current_dir(directory);",
+        ]
+        let mirrorCompileTokens = [
+            "compile_swift(",
+            "MIRROR_SOURCE_BASENAME,",
+            "Some(mirror_source_parent),",
+            "&layout.mirror_probe,",
+            "\"-Xfrontend\",",
+            "\"-disable-sil-perf-optzns\",",
+            "\"-Xfrontend\",",
+            "\"-disable-incremental-llvm-codegen\",",
+            "\"-Xlinker\",",
+            "\"-reproducible\",",
+            "\"-framework\",",
+            "\"AudioToolbox\",",
+            "\"-framework\",",
+            "\"CoreAudio\",",
+        ]
+        return containsOrdered(validationTokens, in: build)
+            && containsOrdered(compileClosureTokens, in: build)
+            && build.contains("\"-O\",")
+            && !build.contains("\"-Onone\",")
+            && containsOrdered(mirrorCompileTokens, in: build)
+            && !build.contains("path_text(&mirror_source)?")
+            && containsOrdered(
+                [
+                    "compile_swift(\n            path_text(&guardian_source)?,",
+                    "None,",
+                    "&layout.default_route_guardian,",
+                    "&[],",
+                ],
+                in: build
+            )
+            && build.components(separatedBy: "-disable-sil-perf-optzns").count - 1 == 1
+            && build.components(separatedBy: "-disable-incremental-llvm-codegen").count - 1 == 1
+            && build.components(separatedBy: "-reproducible").count - 1 == 1
+    }
+
     private func swappingFirst(
         _ first: String,
         with second: String,
@@ -717,7 +785,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         }
 
         let launcherTokens = [
-            "EXPECTED_BINARY_SHA256='PIN_AFTER_FINAL_REVIEW_CONTROLLER_BINARY_SHA256'",
+            "EXPECTED_BINARY_SHA256='6aa9556a680fe3d562226ae74c944031110af167065a11a51af19fc036a36959'",
             "CONTROLLER_BINARY_SHA256=$(/usr/bin/shasum -a 256 \"$CONTROLLER\"",
             "[ \"$CONTROLLER_BINARY_SHA256\" = \"$EXPECTED_BINARY_SHA256\" ]",
             "compiled paired-v7 controller differs from the reviewed binary hash",
@@ -855,14 +923,54 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             && verificationTokens.allSatisfy(verifier.contains)
     }
 
-    func testV7RemainsProductionOnlyAndIntentionallyUnpinned() throws {
+    func testV7RemainsProductionOnlyAndHasExactFinalReleasePins() throws {
         let controller = try source(
             "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs"
         )
         let launcher = try source("macOS/scripts/update-opensteamer-host-paired-v7.sh")
 
-        XCTAssertTrue(controller.contains("UNPINNED_SOURCE_AND_ARTIFACTS"))
-        XCTAssertTrue(launcher.contains("UNPINNED_SOURCE_AND_ARTIFACTS"))
+        XCTAssertTrue(
+            controller.contains(#"const RELEASE_PIN_STATUS: &str = "PINNED_FINAL_REVIEW";"#)
+        )
+        XCTAssertTrue(launcher.contains("RELEASE_PIN_STATUS='PINNED_FINAL_REVIEW'"))
+        XCTAssertTrue(
+            launcher.contains(
+                "EXPECTED_SOURCE_SHA256='df545d586a34b2e88814ba08e039be8b726ea47461540c8e744632b5d269fdde'"
+            )
+        )
+        XCTAssertTrue(
+            launcher.contains(
+                "EXPECTED_BINARY_SHA256='6aa9556a680fe3d562226ae74c944031110af167065a11a51af19fc036a36959'"
+            )
+        )
+        let exactControllerReleasePins = [
+            "opensteamer-production-v7",
+            "2BD65FABE76E3155726886963F8836E0048440E2",
+            "39FE8277467264AAAFDAAE6A74E68F99FE8B3461",
+            "4021696842E07336784376884D24969D9A94654A54F5B0C5C8FBC3C8C5D599AE",
+            "/Users/ahmed/Library/Application Support/opensteamer/reviewed-driver-candidates-v7/production-driver-v7",
+            "88c842ec87374b6cbf1f5de32ae7788e15cf42f81fcb9213952ea8338a11f1a1",
+            "fdef1da4413f66d5f066c86b0eba709b55c74b1f72b29dac8d62e991a2343ca6",
+            "f32e870ed639fedd90ea63d3434727d72e5c030fccc4d3c6cf9bda1ae003ce49",
+            "ca6efc2627be0e83e591b66187820cbc7a34d8dfd7cbf2818788e1589d496866",
+            "e2b13dde169a7994a50b819e414212e884136b0ab0c40c482531b8f8dc2a3f45",
+            "3c6baf8474bd5f2ed807f74bd910a9e057bfcf384e54f6b66aadeb1634554383",
+            "13f6209ebb6a388f296c62ae4cfa5ce153b24e8a78d0ef45091b0aa30bc27b4b",
+            "88a8a3d7cced350337e6624d010efc0c061d9f23ed1ce8e72f626494c14f1b2d",
+            "cbb5cf76c51119e9d232f2cee3c8d4d66c3fc85fa8611a09436587becec6ad2b",
+            "31bd71470968758c1809d5475dfc1a7b823b7b5db2cbe889b6660f84f1907aab",
+            "4ec4cf52b5bb79eae45b6965e97912f23041a3d879b3814b67763caded0548dd",
+            "0ec9e1a0cc5f253cc569134ce2be024a7f3ae6ad211fa7d20fe6436c0bac84c8",
+            "f152ef8d05eed29c5918666be31821e5ef6e325351d2fcf4ad5f8b83987e299c",
+            "b69c5d4d71db35d871a5e561c33fb2a0303ecec48a411ee8e41aa963987018bb",
+            "91e1da8c84d47f05dd4dc19a84418a946238b1e411cf09d0dd3fb275babc88d5",
+            "290731edd02baf42ca40f43f11f74d75271617a46393184cb4d0d566a147257e",
+            "25293a4c83b5c6a6e1c95a95388d596f56057e5c5a54add0756017cfc6b0deac",
+            "7beb049226ada83e97afba3e60089469d0eeeef6",
+        ]
+        for pin in exactControllerReleasePins {
+            XCTAssertTrue(controller.contains("\"\(pin)\";"), "missing exact release pin: \(pin)")
+        }
         XCTAssertTrue(controller.contains("Developer ID Application"))
         XCTAssertTrue(controller.contains("Developer ID Installer"))
         XCTAssertTrue(controller.contains("MSMG8CJLB3"))
@@ -1425,6 +1533,67 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             XCTAssertFalse(
                 hasBoundsSafeStreamConfigurationParser(mutant),
                 "ABL source contract accepted mutant \(index)"
+            )
+        }
+    }
+
+    func testV7MirrorProbeOptimizedCompileIsDeterministicAndMutationClosed() throws {
+        let controller = try source(
+            "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs"
+        )
+        XCTAssertTrue(hasDeterministicOptimizedMirrorProbeCompileContract(controller))
+
+        let mutants = [
+            controller.replacingOccurrences(
+                of: "        require_directory(mirror_source_parent, 0o700)?;\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "MIRROR_SOURCE_BASENAME,\n            Some(mirror_source_parent),",
+                with: "path_text(&mirror_source)?,\n            None,"
+            ),
+            controller.replacingOccurrences(
+                of: "                \"-Xfrontend\",\n                \"-disable-sil-perf-optzns\",\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "-disable-sil-perf-optzns",
+                with: "-enable-sil-perf-optzns"
+            ),
+            controller.replacingOccurrences(
+                of: "                \"-Xfrontend\",\n                \"-disable-incremental-llvm-codegen\",\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "-disable-incremental-llvm-codegen",
+                with: "-enable-incremental-llvm-codegen"
+            ),
+            controller.replacingOccurrences(
+                of: "                \"-Xlinker\",\n                \"-reproducible\",\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "\"-reproducible\"",
+                with: "\"-random_uuid\""
+            ),
+            controller.replacingOccurrences(
+                of: "                command.current_dir(directory);\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "            &layout.mirror_probe,\n",
+                with: "            &mirror_source,\n"
+            ),
+            controller.replacingOccurrences(
+                of: "            None,\n            &layout.default_route_guardian,",
+                with: "            Some(mirror_source_parent),\n            &layout.default_route_guardian,"
+            ),
+        ]
+        for (index, mutant) in mutants.enumerated() {
+            XCTAssertNotEqual(mutant, controller, "mirror determinism mutant \(index) was inert")
+            XCTAssertFalse(
+                hasDeterministicOptimizedMirrorProbeCompileContract(mutant),
+                "mirror determinism source contract accepted mutant \(index)"
             )
         }
     }

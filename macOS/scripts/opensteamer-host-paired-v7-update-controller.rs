@@ -43,7 +43,7 @@ pub(crate) mod paired_v7 {
     const REVIEWED_LAUNCH_AGENT_PATH: &str = NEW_PLIST;
     const REVIEWED_LAUNCH_AGENT_SHA256: &str = NEW_PLIST_SHA256;
 
-    const RELEASE_PIN_STATUS: &str = "UNPINNED_SOURCE_AND_ARTIFACTS";
+    const RELEASE_PIN_STATUS: &str = "PINNED_FINAL_REVIEW";
     const RELEASE_PIN_READY: &str = "PINNED_FINAL_REVIEW";
     const RELEASE_PIN_PLACEHOLDER: &str = "PIN_AFTER_FINAL_REVIEW";
     const EXPECTED_DRIVER_TEAM_ID: &str = "MSMG8CJLB3";
@@ -57,49 +57,49 @@ pub(crate) mod paired_v7 {
     const PRODUCT_WRITER_UID: &str = "com.elamin.opensteamer.virtual-microphone.writer";
     const PRODUCT_MODEL_UID: &str = "com.elamin.opensteamer.virtual-microphone.model";
     const PRODUCT_CLOCK_DOMAIN: u32 = 0x6F73_564D;
-    const NOTARY_KEYCHAIN_PROFILE: &str = "PIN_AFTER_FINAL_REVIEW_NOTARY_KEYCHAIN_PROFILE";
+    const NOTARY_KEYCHAIN_PROFILE: &str = "opensteamer-production-v7";
     const EXPECTED_DEVELOPER_ID_APPLICATION_SHA1: &str =
-        "PIN_AFTER_FINAL_REVIEW_DEVELOPER_ID_APPLICATION_SHA1";
+        "2BD65FABE76E3155726886963F8836E0048440E2";
     const EXPECTED_DEVELOPER_ID_INSTALLER_IDENTITY_SHA1: &str =
-        "PIN_AFTER_FINAL_REVIEW_DEVELOPER_ID_INSTALLER_IDENTITY_SHA1";
+        "39FE8277467264AAAFDAAE6A74E68F99FE8B3461";
     const EXPECTED_DEVELOPER_ID_INSTALLER_LEAF_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_DEVELOPER_ID_INSTALLER_LEAF_SHA256";
+        "4021696842E07336784376884D24969D9A94654A54F5B0C5C8FBC3C8C5D599AE";
     const REVIEWED_PRODUCTION_DRIVER_CANDIDATE_ROOT: &str =
-        "/Users/ahmed/Library/Application Support/opensteamer/reviewed-driver-candidates-v7/PIN_AFTER_FINAL_REVIEW_CANDIDATE";
+        "/Users/ahmed/Library/Application Support/opensteamer/reviewed-driver-candidates-v7/production-driver-v7";
     const EXPECTED_PRODUCTION_DRIVER_CANDIDATE_MANIFEST_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_CANDIDATE_MANIFEST_SHA256";
+        "88c842ec87374b6cbf1f5de32ae7788e15cf42f81fcb9213952ea8338a11f1a1";
     const EXPECTED_FUNCTIONAL_INPUTS_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_FUNCTIONAL_INPUTS_SHA256";
+        "fdef1da4413f66d5f066c86b0eba709b55c74b1f72b29dac8d62e991a2343ca6";
     const EXPECTED_PRODUCTION_DRIVER_TREE_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_PRODUCTION_DRIVER_TREE_SHA256";
+        "f32e870ed639fedd90ea63d3434727d72e5c030fccc4d3c6cf9bda1ae003ce49";
     const EXPECTED_PRODUCTION_DRIVER_EXECUTABLE_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_PRODUCTION_DRIVER_EXECUTABLE_SHA256";
+        "ca6efc2627be0e83e591b66187820cbc7a34d8dfd7cbf2818788e1589d496866";
     const EXPECTED_PRODUCTION_DRIVER_PACKAGE_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_PRODUCTION_DRIVER_PACKAGE_SHA256";
+        "e2b13dde169a7994a50b819e414212e884136b0ab0c40c482531b8f8dc2a3f45";
     const EXPECTED_MIRROR_PROBE_SOURCE_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_MIRROR_PROBE_SOURCE_SHA256";
+        "3c6baf8474bd5f2ed807f74bd910a9e057bfcf384e54f6b66aadeb1634554383";
     const EXPECTED_MIRROR_PROBE_BINARY_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_MIRROR_PROBE_BINARY_SHA256";
+        "13f6209ebb6a388f296c62ae4cfa5ce153b24e8a78d0ef45091b0aa30bc27b4b";
     const EXPECTED_PUBLIC_VPIO_PROBE_BUILDER_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_PUBLIC_VPIO_PROBE_BUILDER_SHA256";
+        "88a8a3d7cced350337e6624d010efc0c061d9f23ed1ce8e72f626494c14f1b2d";
     const EXPECTED_PUBLIC_VPIO_PROBE_SOURCE_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_PUBLIC_VPIO_PROBE_SOURCE_SHA256";
+        "cbb5cf76c51119e9d232f2cee3c8d4d66c3fc85fa8611a09436587becec6ad2b";
     const EXPECTED_PUBLIC_VPIO_PROBE_CORE_SOURCE_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_PUBLIC_VPIO_PROBE_CORE_SOURCE_SHA256";
+        "31bd71470968758c1809d5475dfc1a7b823b7b5db2cbe889b6660f84f1907aab";
     const EXPECTED_PUBLIC_VPIO_PROBE_HEADER_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_PUBLIC_VPIO_PROBE_HEADER_SHA256";
+        "4ec4cf52b5bb79eae45b6965e97912f23041a3d879b3814b67763caded0548dd";
     const EXPECTED_PUBLIC_VPIO_PROBE_BINARY_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_PUBLIC_VPIO_PROBE_BINARY_SHA256";
+        "0ec9e1a0cc5f253cc569134ce2be024a7f3ae6ad211fa7d20fe6436c0bac84c8";
     const EXPECTED_DEFAULT_ROUTE_GUARDIAN_SOURCE_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_DEFAULT_ROUTE_GUARDIAN_SOURCE_SHA256";
+        "f152ef8d05eed29c5918666be31821e5ef6e325351d2fcf4ad5f8b83987e299c";
     const EXPECTED_DEFAULT_ROUTE_GUARDIAN_BINARY_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_DEFAULT_ROUTE_GUARDIAN_BINARY_SHA256";
+        "b69c5d4d71db35d871a5e561c33fb2a0303ecec48a411ee8e41aa963987018bb";
     const EXPECTED_PRODUCTION_DRIVER_BUILDER_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_PRODUCTION_DRIVER_BUILDER_SHA256";
+        "91e1da8c84d47f05dd4dc19a84418a946238b1e411cf09d0dd3fb275babc88d5";
     const EXPECTED_PRODUCTION_DRIVER_VERIFIER_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_PRODUCTION_DRIVER_VERIFIER_SHA256";
+        "290731edd02baf42ca40f43f11f74d75271617a46393184cb4d0d566a147257e";
     const EXPECTED_INSTALLER_SIGNATURE_PARSER_SHA256: &str =
-        "PIN_AFTER_FINAL_REVIEW_INSTALLER_SIGNATURE_PARSER_SHA256";
+        "25293a4c83b5c6a6e1c95a95388d596f56057e5c5a54add0756017cfc6b0deac";
     const ROOT_V7_SUPPORT_DIRECTORY: &str =
         "/Library/Application Support/opensteamer/privileged-v7";
     const ROOT_V7_CONTROLLER: &str =
@@ -388,7 +388,7 @@ pub(crate) mod paired_v7 {
     const PAIRED_AVAILABILITY_MARKER_PREFIX: &str =
         "[info] Worldwide paired-device availability is online";
     const REQUIRED_REPO_OWNED_DRIVER_PATCH_COMMIT: &str =
-        "PIN_AFTER_FINAL_REVIEW_REPO_OWNED_DRIVER_PATCH_COMMIT";
+        "7beb049226ada83e97afba3e60089469d0eeeef6";
     const EXPECTED_SOURCE_BRANCH: &str = "agent/auto-select-iphone-microphone";
     const EXPECTED_REMOTE: &str = "https://github.com/ahmedelami/opensteamer.git";
     const REQUIRED_RELEASE_DIFF_PATHS: [&str; 2] = [
@@ -5867,6 +5867,19 @@ pub(crate) mod paired_v7 {
             0o600,
             EXPECTED_MIRROR_PROBE_SOURCE_SHA256,
         )?;
+        const MIRROR_SOURCE_BASENAME: &str = "physical-blackhole-microphone-probe.swift";
+        let mirror_source_parent = mirror_source.parent().ok_or_else(|| {
+            ControllerError("paired-v7 mirror source has no validated parent".to_owned())
+        })?;
+        require_directory(mirror_source_parent, 0o700)?;
+        if mirror_source.file_name().and_then(|name| name.to_str())
+            != Some(MIRROR_SOURCE_BASENAME)
+        {
+            return Err(ControllerError(
+                "paired-v7 mirror source basename changed after absolute-path validation"
+                    .to_owned(),
+            ));
+        }
         let guardian_source = require_exported_pinned_file(
             layout,
             "macOS/VirtualAudioDriver/Probes/V7DefaultRouteGuardian.swift",
@@ -5896,7 +5909,11 @@ pub(crate) mod paired_v7 {
             let _ = require_exported_pinned_file(layout, relative, 0o600, expected)?;
         }
 
-        let compile_swift = |source: &Path, output: &Path, extra: &[&str]| -> Result<()> {
+        let compile_swift = |source_argument: &str,
+                             source_directory: Option<&Path>,
+                             output: &Path,
+                             extra: &[&str]|
+         -> Result<()> {
             let mut arguments = vec![
                 "--sdk",
                 "macosx",
@@ -5905,13 +5922,17 @@ pub(crate) mod paired_v7 {
                 "5",
                 "-O",
                 "-warnings-as-errors",
-                path_text(source)?,
+                source_argument,
             ];
             arguments.extend_from_slice(extra);
             arguments.push("-o");
             arguments.push(path_text(output)?);
-            let result = Command::new("/usr/bin/xcrun")
-                .args(arguments)
+            let mut command = Command::new("/usr/bin/xcrun");
+            command.args(arguments);
+            if let Some(directory) = source_directory {
+                command.current_dir(directory);
+            }
+            let result = command
                 .env_clear()
                 .env("LC_ALL", "C")
                 .env("HOME", USER_HOME)
@@ -5921,11 +5942,28 @@ pub(crate) mod paired_v7 {
             require_output_success(&result, "compile exact paired-v7 Swift probe")
         };
         compile_swift(
-            &mirror_source,
+            MIRROR_SOURCE_BASENAME,
+            Some(mirror_source_parent),
             &layout.mirror_probe,
-            &["-framework", "AudioToolbox", "-framework", "CoreAudio"],
+            &[
+                "-Xfrontend",
+                "-disable-sil-perf-optzns",
+                "-Xfrontend",
+                "-disable-incremental-llvm-codegen",
+                "-Xlinker",
+                "-reproducible",
+                "-framework",
+                "AudioToolbox",
+                "-framework",
+                "CoreAudio",
+            ],
         )?;
-        compile_swift(&guardian_source, &layout.default_route_guardian, &[])?;
+        compile_swift(
+            path_text(&guardian_source)?,
+            None,
+            &layout.default_route_guardian,
+            &[],
+        )?;
         let public = Command::new(&public_builder)
             .arg(&layout.public_vpio_probe)
             .env_clear()
