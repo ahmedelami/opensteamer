@@ -27,8 +27,9 @@ text = open(sys.argv[1], "r", encoding="utf-8").read()
 team = sys.argv[2]
 lines = text.splitlines()
 status = [line.strip() for line in lines if line.strip().startswith("Status:")]
-if len(status) != 1 or "signed by a certificate trusted by" not in status[0]:
-    raise SystemExit("installer signature status is not exactly trusted")
+expected_status = "Status: signed by a developer certificate issued by Apple for distribution"
+if status != [expected_status]:
+    raise SystemExit("installer signature status is not the exact Developer ID distribution status")
 
 leaf_indices = [
     index for index, line in enumerate(lines)

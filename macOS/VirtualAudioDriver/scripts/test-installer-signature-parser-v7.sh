@@ -33,33 +33,53 @@ write_fixture() {
 
 healthy="$test_root/healthy.txt"
 write_fixture "$healthy" \
-    "signed by a certificate trusted by Mac OS X" \
+    "signed by a developer certificate issued by Apple for distribution" \
     "Developer ID Installer: Example (MSMG8CJLB3)" \
     "SHA256 Fingerprint:" \
     "${fingerprint[1,32]} ${fingerprint[33,64]}"
 [[ "$($parser "$healthy" MSMG8CJLB3)" == "$fingerprint" ]] || exit 1
 
-mutants=(wrong-status wrong-team wrong-identity missing-label short-hash duplicate-leaf)
+mutants=(
+    wrong-status
+    legacy-status
+    status-suffix
+    duplicate-status
+    wrong-team
+    wrong-identity
+    missing-label
+    short-hash
+    duplicate-leaf
+)
 for mutant in "${mutants[@]}"; do
     fixture="$test_root/$mutant.txt"
     case "$mutant" in
         wrong-status)
             write_fixture "$fixture" "unsigned" "Developer ID Installer: Example (MSMG8CJLB3)" "SHA256 Fingerprint:" "$fingerprint"
             ;;
+        legacy-status)
+            write_fixture "$fixture" "signed by a certificate trusted by Mac OS X" "Developer ID Installer: Example (MSMG8CJLB3)" "SHA256 Fingerprint:" "$fingerprint"
+            ;;
+        status-suffix)
+            write_fixture "$fixture" "signed by a developer certificate issued by Apple for distribution (trusted)" "Developer ID Installer: Example (MSMG8CJLB3)" "SHA256 Fingerprint:" "$fingerprint"
+            ;;
+        duplicate-status)
+            write_fixture "$fixture" "signed by a developer certificate issued by Apple for distribution" "Developer ID Installer: Example (MSMG8CJLB3)" "SHA256 Fingerprint:" "$fingerprint"
+            print -r -- "   Status: signed by a developer certificate issued by Apple for distribution" >>"$fixture"
+            ;;
         wrong-team)
-            write_fixture "$fixture" "signed by a certificate trusted by Mac OS X" "Developer ID Installer: Example (AAAAAAAAAA)" "SHA256 Fingerprint:" "$fingerprint"
+            write_fixture "$fixture" "signed by a developer certificate issued by Apple for distribution" "Developer ID Installer: Example (AAAAAAAAAA)" "SHA256 Fingerprint:" "$fingerprint"
             ;;
         wrong-identity)
-            write_fixture "$fixture" "signed by a certificate trusted by Mac OS X" "Developer ID Application: Example (MSMG8CJLB3)" "SHA256 Fingerprint:" "$fingerprint"
+            write_fixture "$fixture" "signed by a developer certificate issued by Apple for distribution" "Developer ID Application: Example (MSMG8CJLB3)" "SHA256 Fingerprint:" "$fingerprint"
             ;;
         missing-label)
-            write_fixture "$fixture" "signed by a certificate trusted by Mac OS X" "Developer ID Installer: Example (MSMG8CJLB3)" "SHA1 Fingerprint:" "$fingerprint"
+            write_fixture "$fixture" "signed by a developer certificate issued by Apple for distribution" "Developer ID Installer: Example (MSMG8CJLB3)" "SHA1 Fingerprint:" "$fingerprint"
             ;;
         short-hash)
-            write_fixture "$fixture" "signed by a certificate trusted by Mac OS X" "Developer ID Installer: Example (MSMG8CJLB3)" "SHA256 Fingerprint:" "01234567"
+            write_fixture "$fixture" "signed by a developer certificate issued by Apple for distribution" "Developer ID Installer: Example (MSMG8CJLB3)" "SHA256 Fingerprint:" "01234567"
             ;;
         duplicate-leaf)
-            write_fixture "$fixture" "signed by a certificate trusted by Mac OS X" "Developer ID Installer: Example (MSMG8CJLB3)" "SHA256 Fingerprint:" "$fingerprint"
+            write_fixture "$fixture" "signed by a developer certificate issued by Apple for distribution" "Developer ID Installer: Example (MSMG8CJLB3)" "SHA256 Fingerprint:" "$fingerprint"
             print -r -- "    1. Developer ID Installer: Duplicate (MSMG8CJLB3)" >>"$fixture"
             ;;
     esac

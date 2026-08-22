@@ -2105,6 +2105,8 @@ pub(crate) mod paired_v7 {
     }
 
     fn parse_installer_leaf_sha256(text: &str) -> Result<String> {
+        const EXPECTED_STATUS: &str =
+            "Status: signed by a developer certificate issued by Apple for distribution";
         if text.len() > 65_536 {
             return Err(ControllerError(
                 "installer signature output exceeds the bounded limit".to_owned(),
@@ -2114,11 +2116,13 @@ pub(crate) mod paired_v7 {
         let statuses: Vec<&str> = lines
             .iter()
             .copied()
-            .filter(|line| line.trim_start().starts_with("Status:"))
+            .map(str::trim)
+            .filter(|line| line.starts_with("Status:"))
             .collect();
-        if statuses.len() != 1 || !statuses[0].contains("signed by a certificate trusted by") {
+        if statuses.as_slice() != [EXPECTED_STATUS] {
             return Err(ControllerError(
-                "installer signature status is not exactly trusted".to_owned(),
+                "installer signature status is not the exact Developer ID distribution status"
+                    .to_owned(),
             ));
         }
         let leaf_indices: Vec<usize> = lines
@@ -8265,6 +8269,7 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
         verify_v7_cli_surface()?;
         self_test_controller_binary_identity_binding()?;
         self_test_production_identity_parser()?;
+        self_test_installer_signature_parser()?;
         self_test_isolated_pairing_keychain_metadata_contract()?;
         self_test_detached_crash_matrix()?;
         for state in [
@@ -8661,6 +8666,45 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
             {
                 return Err(ControllerError(
                     "production signing identity parser accepted a mutant".to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn self_test_installer_signature_parser() -> Result<()> {
+        const STATUS: &str =
+            "Status: signed by a developer certificate issued by Apple for distribution";
+        const FINGERPRINT: &str =
+            "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+        let fingerprint_lines = format!("{} {}", &FINGERPRINT[..32], &FINGERPRINT[32..]);
+        let healthy = format!(
+            "Package fixture:\n   {STATUS}\n   Certificate Chain:\n    1. Developer ID Installer: Reviewed ({EXPECTED_DRIVER_TEAM_ID})\n       SHA256 Fingerprint:\n           {fingerprint_lines}\n    2. Developer ID Certification Authority\n",
+        );
+        if parse_installer_leaf_sha256(&healthy)? != FINGERPRINT {
+            return Err(ControllerError(
+                "installer signature parser rejected the current pkgutil status".to_owned(),
+            ));
+        }
+
+        let mutants = [
+            healthy.replace(
+                STATUS,
+                "Status: signed by a certificate trusted by Mac OS X",
+            ),
+            healthy.replace(STATUS, &format!("{STATUS} (trusted)")),
+            healthy.replace(STATUS, &format!("{STATUS}\n   {STATUS}")),
+            healthy.replace(EXPECTED_DRIVER_TEAM_ID, "AAAAAAAAAA"),
+            healthy.replace("Developer ID Installer:", "Developer ID Application:"),
+            healthy.replace(&fingerprint_lines, "01234567"),
+            format!(
+                "{healthy}    1. Developer ID Installer: Duplicate ({EXPECTED_DRIVER_TEAM_ID})\n"
+            ),
+        ];
+        for mutant in mutants {
+            if parse_installer_leaf_sha256(&mutant).is_ok() {
+                return Err(ControllerError(
+                    "installer signature parser accepted a status or identity mutant".to_owned(),
                 ));
             }
         }
