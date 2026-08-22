@@ -8,6 +8,7 @@ umask 077
 PREFLIGHT_MODE='--verify-paired-v7-host-update-preflight'
 EXECUTE_MODE='--execute-authorized-paired-v7-host-update'
 ROLLBACK_MODE='--rollback-authorized-paired-v7-host-update'
+RECOVER_RETRY_2_MODE='--recover-authorized-paired-v7-retry-2-critical-failure'
 SELF_TEST_MODE='--self-test-paired-v7-host-update'
 EXPECTED_REPO='/Users/ahmed/Documents/Codex/opensteamer'
 SOURCE="$EXPECTED_REPO/macOS/scripts/opensteamer-host-paired-v7-update-controller.rs"
@@ -19,19 +20,20 @@ EXPECTED_RUSTC_VERSION='rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)'
 EXPECTED_RUSTC_SHA256='d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd'
 EXPECTED_RUSTC_DRIVER_SHA256='aa8f5e89644f6d54fd3f1c4d4031bbda10ff750984cede4a75c7addee27e15df'
 RELEASE_PIN_STATUS='PINNED_FINAL_REVIEW'
-EXPECTED_SOURCE_SHA256='b319bf967b4edeedb47634b46e57792d8c228715d13d5fc00c172a010fcb0e0c'
+EXPECTED_SOURCE_SHA256='db3e87bbc4177fd142d5e8f5c46899426e8663674d28e69e4b571dc58dc71454'
 EXPECTED_V1_CONTROLLER_SOURCE_SHA256='2dfe9ddec5ea71b206f6462deec0b8be5423e9f23ab30aebc42b8f424dfdab06'
 EXPECTED_INCLUDED_SOURCE_SHA256='2020edb76b1f9537afad1ed2ec22686044f2f0cbbb3d95155546b69e0b1442e6'
 # B is pinned only here, outside the Rust source whose bytes it identifies. Embedding B in that
 # source would require an impossible SHA-256 fixed point. The controller derives B again from its
 # own stable inode and seals it after the authenticated root boundary; no hash is passed by argv or
 # environment.
-EXPECTED_BINARY_SHA256='8c1efa7039649a027987fa306460af8d27caa1f10f5d741ee4332b54a0e3a07c'
+EXPECTED_BINARY_SHA256='b763b2eaec3d3c0a9d6ae558f0f55c6c478237a22baedf99d42945584347f317'
 BUILD_PARENT='/Users/ahmed/Library/Application Support/opensteamer'
 
 usage() {
     echo "usage: $0 $PREFLIGHT_MODE $EXPECTED_REPO" >&2
     echo "       $0 $EXECUTE_MODE $EXPECTED_REPO <authorized-commit> <authorized-tree>" >&2
+    echo "       $0 $RECOVER_RETRY_2_MODE $EXPECTED_REPO <authorized-commit> <authorized-tree>" >&2
     echo "       $0 $ROLLBACK_MODE $EXPECTED_REPO" >&2
     echo "       $0 $SELF_TEST_MODE" >&2
     exit 64
@@ -44,7 +46,7 @@ case "$MODE" in
     "$PREFLIGHT_MODE"|"$ROLLBACK_MODE")
         [ "$#" -eq 2 ] && [ "$2" = "$EXPECTED_REPO" ] || usage
         ;;
-    "$EXECUTE_MODE")
+    "$EXECUTE_MODE"|"$RECOVER_RETRY_2_MODE")
         [ "$#" -eq 4 ] && [ "$2" = "$EXPECTED_REPO" ] || usage
         ;;
     *) usage ;;
