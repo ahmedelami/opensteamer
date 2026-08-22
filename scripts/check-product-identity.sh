@@ -1026,7 +1026,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   $'  run_pinned_xcodebuild export -exportArchive \\\n    -archivePath "${TESTFLIGHT_ARCHIVE_PATH}" \\\n    -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \\\n    -exportPath "${TESTFLIGHT_EXPORT_DIRECTORY}" \\\n    -allowProvisioningUpdates \\\n    "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}" \\\n    2>&1 | /usr/bin/tee "/dev/fd/${TESTFLIGHT_UPLOAD_LOG_FD}" \\' 1 \
   'side-by-side TestFlight exact supported export invocation vector'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'    settings|archive)\n      run_with_pinned_xcode_sandbox_profile "${destination_contract}" "$@"\n      ;;\n    export)\n      # The supported upload action launches Xcode' 1 \
+  $'    settings|archive)\n      run_with_pinned_xcode_sandbox_profile "${destination_contract}" "$@"\n      ;;\n    export)\n      # The supported upload action launches Xcode\'s distribution service. Its\n      # launchd job cannot be authorized by a filtered Seatbelt rule, so run only\n      # this exact, fully pinned export vector without the outer profile.\n      "$@"\n      ;;' 1 \
   'side-by-side TestFlight export-only outer-sandbox bypass'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   $'  verify_xcodebuild_action_arguments \\\n    "${destination_contract}" "$@" || command_status=1\n  case "${destination_contract}" in\n    archive|export)\n      verify_reviewed_xcode_deep_signature || command_status=1\n      ;;\n  esac\n  verify_pinned_xcodebuild_filesystem_contract || command_status=1' 1 \
