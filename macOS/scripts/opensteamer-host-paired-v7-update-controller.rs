@@ -285,16 +285,41 @@ pub(crate) mod paired_v7 {
     const ROOT_V7_CONTROLLER_IDENTITY_JOURNAL: &str =
         "/Library/Application Support/opensteamer/privileged-v7/controller-identity.log";
     const ROOT_V7_RECOVERY_SUPPORT_DIRECTORY: &str =
-        "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2";
-    const ROOT_V7_RECOVERY_CONTROLLER: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/opensteamer-v7-recovery-controller";
-    const ROOT_V7_RECOVERY_CONTROLLER_PENDING: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/.opensteamer-v7-recovery-controller.pending";
-    const ROOT_V7_RECOVERY_CONTROLLER_PIN: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/controller-binary.sha256";
-    const ROOT_V7_RECOVERY_CONTROLLER_IDENTITY_JOURNAL: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/controller-identity.log";
+        "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2";
+    const ROOT_V7_RECOVERY_CONTROLLER: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2/opensteamer-v7-recovery-controller";
+    const ROOT_V7_RECOVERY_CONTROLLER_PENDING: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2/.opensteamer-v7-recovery-controller.pending";
+    const ROOT_V7_RECOVERY_CONTROLLER_PIN: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2/controller-binary.sha256";
+    const ROOT_V7_RECOVERY_CONTROLLER_IDENTITY_JOURNAL: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2/controller-identity.log";
     const ROOT_V7_RECOVERY_CONTROLLER_BOOTSTRAP_MODE: &str =
-        "--root-bootstrap-controller-identity-v7-recovery-retry-2";
+        "--root-bootstrap-controller-identity-v7-recovery-retry-2-v2";
     const ROOT_V7_RECOVERY_CONTROLLER_PUBLISH_MODE: &str =
-        "--root-publish-controller-v7-recovery-retry-2";
-    const ROOT_V7_RECOVERY_ATTEST_MODE: &str = "--root-attest-v7-retry-2-safe-state";
+        "--root-publish-controller-v7-recovery-retry-2-v2";
+    const ROOT_V7_RECOVERY_ATTEST_MODE: &str = "--root-attest-v7-retry-2-safe-state-v2";
+    const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_DIRECTORY: &str =
+        "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2";
+    const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/opensteamer-v7-recovery-controller";
+    const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PENDING: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/.opensteamer-v7-recovery-controller.pending";
+    const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PIN: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/controller-binary.sha256";
+    const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_IDENTITY_JOURNAL: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/controller-identity.log";
+    const RETAINED_ROOT_V7_RECOVERY_V1_DEVICE: u64 = 16_777_229;
+    const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_INODE: u64 = 27_803_148;
+    const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_NLINK: u64 = 5;
+    const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_LENGTH: u64 = 160;
+    const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_INODE: u64 = 27_803_149;
+    const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_LENGTH: u64 = 1_420_216;
+    const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_SHA256: &str =
+        "b763b2eaec3d3c0a9d6ae558f0f55c6c478237a22baedf99d42945584347f317";
+    const RETAINED_ROOT_V7_RECOVERY_V1_PIN_INODE: u64 = 27_803_150;
+    const RETAINED_ROOT_V7_RECOVERY_V1_PIN_LENGTH: u64 = 65;
+    const RETAINED_ROOT_V7_RECOVERY_V1_PIN_SHA256: &str =
+        "030450c1027f4e0d36fabf66471248e4ef9690e1b30d2d3961db4f1cae0ffdd6";
+    const RETAINED_ROOT_V7_RECOVERY_V1_PIN: &str =
+        "b763b2eaec3d3c0a9d6ae558f0f55c6c478237a22baedf99d42945584347f317\n";
+    const RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_INODE: u64 = 27_803_151;
+    const RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_LENGTH: u64 = 332;
+    const RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_SHA256: &str =
+        "41c5042ed37c13692cb4d11fc8e039d0008d8038b7240175920b0338701737a7";
+    const RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL: &str = "OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V1\ncontroller_path=/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/opensteamer-v7-recovery-controller\ncontroller_device=16777229\ncontroller_inode=27803149\ncontroller_length=1420216\ncontroller_sha256=b763b2eaec3d3c0a9d6ae558f0f55c6c478237a22baedf99d42945584347f317\n";
     const ROOT_V7_TRANSACTION_PARENT: &str =
         "/Library/Application Support/opensteamer/driver-transactions-v7";
     const ROOT_V7_CONTROLLER_BOOTSTRAP_MODE: &str = "--root-bootstrap-controller-identity-v7";
@@ -319,6 +344,8 @@ pub(crate) mod paired_v7 {
         "b1f2b90f349938cc4c3c9234f11cefd05545f7b4bfe9b1751ac01f1cb27d3714";
     const EXPECTED_PS_SHA256: &str =
         "472992c470606d28f577590decfecd7f4a20f832fd92c671bebc6d44790b5d02";
+    const EXPECTED_LS_SHA256: &str =
+        "a97c50d34f912a5ada66959c231897ec2144e3c9cb922cd8150e4f2b0c9470e7";
     const EXPECTED_SYSTEM_PROFILER_SHA256: &str =
         "3ddf3117b8a3718efe3c6cc5e36b7e3c179aaac65f5d93d03329a695d9f88b19";
     const EXPECTED_LSOF_SHA256: &str =
@@ -1446,10 +1473,29 @@ pub(crate) mod paired_v7 {
             RECOVERY_RETRY_2_RESERVE_SHA256,
             RECOVERY_RETRY_2_ROOT_CONTROLLER_SHA256,
             RECOVERY_RETRY_2_ROOT_STATE_SHA256,
+            ROOT_V7_RECOVERY_SUPPORT_DIRECTORY,
+            ROOT_V7_RECOVERY_CONTROLLER,
+            ROOT_V7_RECOVERY_CONTROLLER_PENDING,
+            ROOT_V7_RECOVERY_CONTROLLER_PIN,
+            ROOT_V7_RECOVERY_CONTROLLER_IDENTITY_JOURNAL,
+            ROOT_V7_RECOVERY_CONTROLLER_BOOTSTRAP_MODE,
+            ROOT_V7_RECOVERY_CONTROLLER_PUBLISH_MODE,
+            ROOT_V7_RECOVERY_ATTEST_MODE,
+            RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_DIRECTORY,
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER,
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PENDING,
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PIN,
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_IDENTITY_JOURNAL,
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_SHA256,
+            RETAINED_ROOT_V7_RECOVERY_V1_PIN_SHA256,
+            RETAINED_ROOT_V7_RECOVERY_V1_PIN,
+            RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_SHA256,
+            RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL,
             EXPECTED_COREAUDIOD_SHA256,
             EXPECTED_KILL_SHA256,
             EXPECTED_LAUNCHCTL_SHA256,
             EXPECTED_PS_SHA256,
+            EXPECTED_LS_SHA256,
             EXPECTED_SYSTEM_PROFILER_SHA256,
             EXPECTED_LSOF_SHA256,
             EXPECTED_XATTR_SHA256,
@@ -1466,6 +1512,16 @@ pub(crate) mod paired_v7 {
             RECOVERY_RETRY_2_RESERVE_INODE,
             RECOVERY_RETRY_2_ROOT_TRANSACTION_INODE,
             RECOVERY_RETRY_2_ROOT_FAILED_DRIVER_INODE,
+            RETAINED_ROOT_V7_RECOVERY_V1_DEVICE,
+            RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_INODE,
+            RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_NLINK,
+            RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_LENGTH,
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_INODE,
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_LENGTH,
+            RETAINED_ROOT_V7_RECOVERY_V1_PIN_INODE,
+            RETAINED_ROOT_V7_RECOVERY_V1_PIN_LENGTH,
+            RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_INODE,
+            RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_LENGTH,
         ];
         if !release_pins_complete(RELEASE_PIN_STATUS, &text_pins, &numeric_pins) {
             return Err(ControllerError(
@@ -1559,6 +1615,22 @@ pub(crate) mod paired_v7 {
                 EXPECTED_INSTALLER_SIGNATURE_PARSER_SHA256,
                 64,
             ),
+            (
+                "retained recovery-v1 controller SHA-256",
+                RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_SHA256,
+                64,
+            ),
+            (
+                "retained recovery-v1 pin-file SHA-256",
+                RETAINED_ROOT_V7_RECOVERY_V1_PIN_SHA256,
+                64,
+            ),
+            (
+                "retained recovery-v1 identity-journal SHA-256",
+                RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_SHA256,
+                64,
+            ),
+            ("retained recovery-v1 ls SHA-256", EXPECTED_LS_SHA256, 64),
         ] {
             if value.len() != expected_length
                 || !value
@@ -2385,6 +2457,7 @@ pub(crate) mod paired_v7 {
                 "root recovery controller publication escaped its fixed pending path".to_owned(),
             ));
         }
+        require_retained_root_recovery_v1()?;
         require_root_private_directory(Path::new(ROOT_V7_RECOVERY_SUPPORT_DIRECTORY))?;
         let pending = stable_controller_binary_identity(
             Path::new(ROOT_V7_RECOVERY_CONTROLLER_PENDING),
@@ -2424,7 +2497,8 @@ pub(crate) mod paired_v7 {
                     .to_owned(),
             ));
         }
-        println!("ROOT_V7_RECOVERY_CONTROLLER_PUBLISHED");
+        require_retained_root_recovery_v1()?;
+        println!("ROOT_V7_RECOVERY_CONTROLLER_V2_PUBLISHED");
         Ok(())
     }
 
@@ -2437,6 +2511,7 @@ pub(crate) mod paired_v7 {
                     .to_owned(),
             ));
         }
+        require_retained_root_recovery_v1()?;
         require_root_private_directory(Path::new(ROOT_V7_RECOVERY_SUPPORT_DIRECTORY))?;
         let identity = stable_controller_binary_identity(
             Path::new(ROOT_V7_RECOVERY_CONTROLLER),
@@ -2453,17 +2528,18 @@ pub(crate) mod paired_v7 {
             &controller_identity_journal_at(
                 &identity,
                 ROOT_V7_RECOVERY_CONTROLLER,
-                "OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V1",
+                "OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V2",
             ),
         )?;
         let sealed = read_root_controller_identity_records_at(
             Path::new(ROOT_V7_RECOVERY_CONTROLLER_PIN),
             Path::new(ROOT_V7_RECOVERY_CONTROLLER_IDENTITY_JOURNAL),
             ROOT_V7_RECOVERY_CONTROLLER,
-            "OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V1",
+            "OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V2",
         )?;
         require_root_controller_identity_binding(&identity, &sealed)?;
-        println!("ROOT_V7_RECOVERY_CONTROLLER_IDENTITY_SEALED");
+        require_retained_root_recovery_v1()?;
+        println!("ROOT_V7_RECOVERY_CONTROLLER_V2_IDENTITY_SEALED");
         Ok(())
     }
 
@@ -2503,7 +2579,7 @@ pub(crate) mod paired_v7 {
             Path::new(ROOT_V7_RECOVERY_CONTROLLER_PIN),
             Path::new(ROOT_V7_RECOVERY_CONTROLLER_IDENTITY_JOURNAL),
             ROOT_V7_RECOVERY_CONTROLLER,
-            "OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V1",
+            "OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V2",
         )?;
         require_root_controller_identity_binding(&actual, &sealed)?;
         Ok(actual)
@@ -3635,21 +3711,37 @@ pub(crate) mod paired_v7 {
         runs: u64,
     }
 
-    fn require_pinned_system_binary(path: &Path, expected_sha256: &str) -> Result<()> {
-        require_fixed_system_binary(path, 0o755)?;
+    fn require_pinned_system_binary(
+        path: &Path,
+        expected_mode: u32,
+        expected_sha256: &str,
+    ) -> Result<()> {
+        if !matches!(expected_mode, 0o755 | 0o4755) {
+            return Err(ControllerError(format!(
+                "pinned system binary exact mode is outside the reviewed set: {}",
+                path.display()
+            )));
+        }
+        require_fixed_system_binary(path, expected_mode & 0o777)?;
         let mut file = OpenOptions::new()
             .read(true)
             .custom_flags(O_NOFOLLOW)
             .open(path)?;
         let descriptor_before = file.metadata()?;
         let named_before = fs::symlink_metadata(path)?;
-        if descriptor_before.dev() != named_before.dev()
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == 0
+                && metadata.gid() == 0
+                && metadata.nlink() > 0
+                && metadata.permissions().mode() & 0o7777 == expected_mode
+        };
+        if !metadata_is_exact(&descriptor_before)
+            || !metadata_is_exact(&named_before)
+            || descriptor_before.dev() != named_before.dev()
             || descriptor_before.ino() != named_before.ino()
             || descriptor_before.len() != named_before.len()
-            || descriptor_before.uid() != 0
-            || descriptor_before.gid() != 0
-            || descriptor_before.nlink() == 0
-            || descriptor_before.permissions().mode() & 0o7777 != 0o755
         {
             return Err(ControllerError(format!(
                 "pinned system binary changed before descriptor-bound hash: {}",
@@ -3663,6 +3755,8 @@ pub(crate) mod paired_v7 {
         if bytes.len() as u64 != descriptor_before.len()
             || bytes.len() > 64 * 1_024 * 1_024
             || sha256_bytes(&bytes)? != expected_sha256
+            || !metadata_is_exact(&descriptor_after)
+            || !metadata_is_exact(&named_after)
             || descriptor_before.dev() != descriptor_after.dev()
             || descriptor_before.ino() != descriptor_after.ino()
             || descriptor_before.len() != descriptor_after.len()
@@ -3822,9 +3916,17 @@ pub(crate) mod paired_v7 {
     }
 
     fn read_core_audio_generation_root() -> Result<CoreAudioGeneration> {
-        require_pinned_system_binary(Path::new(PINNED_COREAUDIOD), EXPECTED_COREAUDIOD_SHA256)?;
-        require_pinned_system_binary(Path::new("/bin/launchctl"), EXPECTED_LAUNCHCTL_SHA256)?;
-        require_pinned_system_binary(Path::new("/bin/ps"), EXPECTED_PS_SHA256)?;
+        require_pinned_system_binary(
+            Path::new(PINNED_COREAUDIOD),
+            0o755,
+            EXPECTED_COREAUDIOD_SHA256,
+        )?;
+        require_pinned_system_binary(
+            Path::new("/bin/launchctl"),
+            0o755,
+            EXPECTED_LAUNCHCTL_SHA256,
+        )?;
+        require_pinned_system_binary(Path::new("/bin/ps"), 0o4755, EXPECTED_PS_SHA256)?;
         let read = || -> Result<CoreAudioGeneration> {
             let output = command_output(
                 "/bin/launchctl",
@@ -3856,7 +3958,7 @@ pub(crate) mod paired_v7 {
     }
 
     fn reload_core_audio_root() -> Result<()> {
-        require_pinned_system_binary(Path::new("/bin/kill"), EXPECTED_KILL_SHA256)?;
+        require_pinned_system_binary(Path::new("/bin/kill"), 0o755, EXPECTED_KILL_SHA256)?;
         let before = read_core_audio_generation_root()?;
         let pid = before.pid.to_string();
         let signal = command_output("/bin/kill", &["-TERM", &pid], None)?;
@@ -3954,6 +4056,205 @@ pub(crate) mod paired_v7 {
         Ok(())
     }
 
+    fn require_exact_retained_root_recovery_v1_file(
+        path: &Path,
+        expected_inode: u64,
+        expected_mode: u32,
+        expected_length: u64,
+        expected_sha256: &str,
+        expected_bytes: Option<&[u8]>,
+    ) -> Result<()> {
+        let mut descriptor = OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NOFOLLOW)
+            .open(path)?;
+        let before = descriptor.metadata()?;
+        let named_before = fs::symlink_metadata(path)?;
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == 0
+                && metadata.gid() == 0
+                && metadata.nlink() == 1
+                && metadata.permissions().mode() & 0o7777 == expected_mode
+                && metadata.dev() == RETAINED_ROOT_V7_RECOVERY_V1_DEVICE
+                && metadata.ino() == expected_inode
+                && metadata.len() == expected_length
+                && metadata.st_flags() == 0
+        };
+        if !metadata_is_exact(&before)
+            || !metadata_is_exact(&named_before)
+            || before.dev() != named_before.dev()
+            || before.ino() != named_before.ino()
+            || before.len() != named_before.len()
+        {
+            return Err(ControllerError(format!(
+                "retained root recovery-v1 file identity changed: {}",
+                path.display()
+            )));
+        }
+        let mut bytes = Vec::with_capacity(expected_length as usize);
+        Read::by_ref(&mut descriptor)
+            .take(expected_length + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 != expected_length || sha256_bytes(&bytes)? != expected_sha256 {
+            return Err(ControllerError(format!(
+                "retained root recovery-v1 file bytes changed: {}",
+                path.display()
+            )));
+        }
+        if let Some(expected_bytes) = expected_bytes {
+            if bytes != expected_bytes {
+                return Err(ControllerError(format!(
+                    "retained root recovery-v1 sealed bytes changed: {}",
+                    path.display()
+                )));
+            }
+        }
+        let after = descriptor.metadata()?;
+        let named_after = fs::symlink_metadata(path)?;
+        if !metadata_is_exact(&after)
+            || !metadata_is_exact(&named_after)
+            || before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.len() != after.len()
+            || before.dev() != named_after.dev()
+            || before.ino() != named_after.ino()
+            || before.len() != named_after.len()
+        {
+            return Err(ControllerError(format!(
+                "retained root recovery-v1 file changed during descriptor proof: {}",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    fn require_retained_root_recovery_v1() -> Result<()> {
+        if unsafe { geteuid() } != 0 {
+            return Err(ControllerError(
+                "retained root recovery-v1 proof requires effective UID 0".to_owned(),
+            ));
+        }
+        let support = Path::new(RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_DIRECTORY);
+        for child in [
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER,
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PIN,
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_IDENTITY_JOURNAL,
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PENDING,
+        ] {
+            if Path::new(child).parent() != Some(support) {
+                return Err(ControllerError(
+                    "retained root recovery-v1 child escaped its exact support directory"
+                        .to_owned(),
+                ));
+            }
+        }
+        let read_support = || -> Result<fs::Metadata> {
+            let metadata = fs::symlink_metadata(support)?;
+            if !metadata.file_type().is_dir()
+                || metadata.file_type().is_symlink()
+                || metadata.uid() != 0
+                || metadata.gid() != 0
+                || metadata.nlink() != RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_NLINK
+                || metadata.permissions().mode() & 0o7777 != 0o700
+                || metadata.dev() != RETAINED_ROOT_V7_RECOVERY_V1_DEVICE
+                || metadata.ino() != RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_INODE
+                || metadata.len() != RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_LENGTH
+                || metadata.st_flags() != 0
+            {
+                return Err(ControllerError(
+                    "retained root recovery-v1 support identity changed".to_owned(),
+                ));
+            }
+            Ok(metadata)
+        };
+        let read_children = || -> Result<Vec<String>> {
+            let mut names = Vec::new();
+            for entry in fs::read_dir(support)? {
+                let entry = entry?;
+                let name = entry
+                    .file_name()
+                    .to_str()
+                    .ok_or_else(|| {
+                        ControllerError(
+                            "retained root recovery-v1 child name is not UTF-8".to_owned(),
+                        )
+                    })?
+                    .to_owned();
+                if entry.path() != support.join(&name) {
+                    return Err(ControllerError(
+                        "retained root recovery-v1 child escaped enumeration".to_owned(),
+                    ));
+                }
+                names.push(name);
+            }
+            names.sort_unstable();
+            if names
+                != [
+                    "controller-binary.sha256".to_owned(),
+                    "controller-identity.log".to_owned(),
+                    "opensteamer-v7-recovery-controller".to_owned(),
+                ]
+            {
+                return Err(ControllerError(
+                    "retained root recovery-v1 support child set changed".to_owned(),
+                ));
+            }
+            Ok(names)
+        };
+
+        let before = read_support()?;
+        let children_before = read_children()?;
+        require_path_absent(
+            Path::new(RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PENDING),
+            "retained root recovery-v1 pending controller",
+        )?;
+        require_exact_retained_root_recovery_v1_file(
+            Path::new(RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER),
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_INODE,
+            0o500,
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_LENGTH,
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_SHA256,
+            None,
+        )?;
+        require_exact_retained_root_recovery_v1_file(
+            Path::new(RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PIN),
+            RETAINED_ROOT_V7_RECOVERY_V1_PIN_INODE,
+            0o400,
+            RETAINED_ROOT_V7_RECOVERY_V1_PIN_LENGTH,
+            RETAINED_ROOT_V7_RECOVERY_V1_PIN_SHA256,
+            Some(RETAINED_ROOT_V7_RECOVERY_V1_PIN.as_bytes()),
+        )?;
+        require_exact_retained_root_recovery_v1_file(
+            Path::new(RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_IDENTITY_JOURNAL),
+            RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_INODE,
+            0o400,
+            RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_LENGTH,
+            RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_SHA256,
+            Some(RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL.as_bytes()),
+        )?;
+        require_path_absent(
+            Path::new(RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PENDING),
+            "retained root recovery-v1 pending controller",
+        )?;
+        let children_after = read_children()?;
+        let after = read_support()?;
+        if children_before != children_after
+            || before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.nlink() != after.nlink()
+            || before.len() != after.len()
+            || before.permissions().mode() != after.permissions().mode()
+            || before.st_flags() != after.st_flags()
+        {
+            return Err(ControllerError(
+                "retained root recovery-v1 support changed during exact proof".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     fn require_exact_root_transaction_children(root: &Path) -> Result<()> {
         let before = fs::symlink_metadata(root)?;
         let mut names = Vec::new();
@@ -3997,7 +4298,11 @@ pub(crate) mod paired_v7 {
     }
 
     fn require_no_openers_root(path: &Path) -> Result<()> {
-        require_pinned_system_binary(Path::new("/usr/sbin/lsof"), EXPECTED_LSOF_SHA256)?;
+        require_pinned_system_binary(
+            Path::new("/usr/sbin/lsof"),
+            0o755,
+            EXPECTED_LSOF_SHA256,
+        )?;
         let output = command_output("/usr/sbin/lsof", &["+D", path_text(path)?], None)?;
         if output.status.code() != Some(1)
             || !output.stdout.is_empty()
@@ -4012,7 +4317,11 @@ pub(crate) mod paired_v7 {
     }
 
     fn require_no_extended_attributes_root(path: &Path) -> Result<()> {
-        require_pinned_system_binary(Path::new("/usr/bin/xattr"), EXPECTED_XATTR_SHA256)?;
+        require_pinned_system_binary(
+            Path::new("/usr/bin/xattr"),
+            0o755,
+            EXPECTED_XATTR_SHA256,
+        )?;
         let output = command_output("/usr/bin/xattr", &["-lr", path_text(path)?], None)?;
         require_output_success(&output, "prove root transaction has no extended attributes")?;
         if !output.stdout.is_empty() || !output.stderr.is_empty() {
@@ -4024,6 +4333,7 @@ pub(crate) mod paired_v7 {
     }
 
     fn root_attest_retry_2_safe_state() -> Result<()> {
+        require_retained_root_recovery_v1()?;
         verify_root_recovery_controller_identity()?;
         let data_volume_device = verified_data_volume_device()?;
         let old_controller = stable_controller_binary_identity(
@@ -4143,6 +4453,7 @@ pub(crate) mod paired_v7 {
             5,
         )?;
         require_exact_root_transaction_children(transaction)?;
+        require_retained_root_recovery_v1()?;
         println!(
             "ROOT_V7_RETRY_2_SAFE_STATE coreaudiod_pid={} coreaudiod_runs={} transaction_inode={} failed_driver_inode={}",
             generation.pid,
@@ -4451,6 +4762,162 @@ pub(crate) mod paired_v7 {
         })
     }
 
+    fn sudo_retained_root_recovery_v1_stat(path: &Path) -> Result<String> {
+        let output = sudo_output(&[
+            "-n",
+            "/usr/bin/stat",
+            "-f",
+            "%u:%g:%l:%Mp%Lp:%HT:%d:%i:%z:%f",
+            path_text(path)?,
+        ])?;
+        require_output_success(&output, "inspect retained root recovery-v1 identity")?;
+        if !output.stderr.is_empty() {
+            return Err(ControllerError(
+                "retained root recovery-v1 stat wrote stderr".to_owned(),
+            ));
+        }
+        decode_utf8(&output.stdout, "retained root recovery-v1 stat output")?
+            .strip_suffix('\n')
+            .filter(|line| !line.is_empty() && !line.contains('\n'))
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                ControllerError(
+                    "retained root recovery-v1 stat output is not one exact line".to_owned(),
+                )
+            })
+    }
+
+    fn require_retained_root_recovery_v1_via_sudo() -> Result<()> {
+        for (path, mode) in [
+            ("/bin/cat", 0o755),
+            ("/usr/bin/stat", 0o755),
+            ("/usr/bin/shasum", 0o755),
+        ] {
+            require_fixed_system_binary(Path::new(path), mode)?;
+        }
+        require_pinned_system_binary(Path::new("/bin/ls"), 0o755, EXPECTED_LS_SHA256)?;
+
+        let support = Path::new(RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_DIRECTORY);
+        let controller = Path::new(RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER);
+        let pin = Path::new(RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PIN);
+        let journal = Path::new(RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_IDENTITY_JOURNAL);
+        let pending = Path::new(RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PENDING);
+        let expected_support = format!(
+            "0:0:{}:0700:Directory:{}:{}:{}:0",
+            RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_NLINK,
+            RETAINED_ROOT_V7_RECOVERY_V1_DEVICE,
+            RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_INODE,
+            RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_LENGTH,
+        );
+        let expected_controller = format!(
+            "0:0:1:0500:Regular File:{}:{}:{}:0",
+            RETAINED_ROOT_V7_RECOVERY_V1_DEVICE,
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_INODE,
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_LENGTH,
+        );
+        let expected_pin = format!(
+            "0:0:1:0400:Regular File:{}:{}:{}:0",
+            RETAINED_ROOT_V7_RECOVERY_V1_DEVICE,
+            RETAINED_ROOT_V7_RECOVERY_V1_PIN_INODE,
+            RETAINED_ROOT_V7_RECOVERY_V1_PIN_LENGTH,
+        );
+        let expected_journal = format!(
+            "0:0:1:0400:Regular File:{}:{}:{}:0",
+            RETAINED_ROOT_V7_RECOVERY_V1_DEVICE,
+            RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_INODE,
+            RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_LENGTH,
+        );
+        let read_topology = || -> Result<[String; 4]> {
+            if sudo_stat(pending)?.is_some() {
+                return Err(ControllerError(
+                    "retained root recovery-v1 pending controller appeared".to_owned(),
+                ));
+            }
+            let listing = sudo_output(&[
+                "-n",
+                "/bin/ls",
+                "-1A",
+                RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_DIRECTORY,
+            ])?;
+            require_output_success(&listing, "enumerate retained root recovery-v1 support")?;
+            if !listing.stderr.is_empty()
+                || listing.stdout
+                    != b"controller-binary.sha256\ncontroller-identity.log\nopensteamer-v7-recovery-controller\n"
+            {
+                return Err(ControllerError(
+                    "retained root recovery-v1 support child set changed".to_owned(),
+                ));
+            }
+            Ok([
+                sudo_retained_root_recovery_v1_stat(support)?,
+                sudo_retained_root_recovery_v1_stat(controller)?,
+                sudo_retained_root_recovery_v1_stat(pin)?,
+                sudo_retained_root_recovery_v1_stat(journal)?,
+            ])
+        };
+        let before = read_topology()?;
+        if before
+            != [
+                expected_support.clone(),
+                expected_controller.clone(),
+                expected_pin.clone(),
+                expected_journal.clone(),
+            ]
+        {
+            return Err(ControllerError(
+                "retained root recovery-v1 metadata differs from its exact pins".to_owned(),
+            ));
+        }
+        let controller_hash = sudo_output(&[
+            "-n",
+            "/usr/bin/shasum",
+            "-a",
+            "256",
+            RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER,
+        ])?;
+        require_output_success(&controller_hash, "hash retained root recovery-v1 controller")?;
+        if !controller_hash.stderr.is_empty()
+            || parse_shasum_output(
+                decode_utf8(
+                    &controller_hash.stdout,
+                    "retained root recovery-v1 controller shasum output",
+                )?,
+                RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER,
+            )? != RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_SHA256
+        {
+            return Err(ControllerError(
+                "retained root recovery-v1 controller bytes changed".to_owned(),
+            ));
+        }
+        let pin_bytes = sudo_root_sealed_file(pin, RETAINED_ROOT_V7_RECOVERY_V1_PIN_LENGTH)?;
+        if pin_bytes != RETAINED_ROOT_V7_RECOVERY_V1_PIN
+            || sha256_bytes(pin_bytes.as_bytes())? != RETAINED_ROOT_V7_RECOVERY_V1_PIN_SHA256
+        {
+            return Err(ControllerError(
+                "retained root recovery-v1 digest pin changed".to_owned(),
+            ));
+        }
+        let journal_bytes = sudo_root_sealed_file(
+            journal,
+            RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_LENGTH,
+        )?;
+        if journal_bytes != RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL
+            || sha256_bytes(journal_bytes.as_bytes())?
+                != RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_SHA256
+        {
+            return Err(ControllerError(
+                "retained root recovery-v1 identity journal changed".to_owned(),
+            ));
+        }
+        let after = read_topology()?;
+        if after != before {
+            return Err(ControllerError(
+                "retained root recovery-v1 topology changed during sudo proof".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     fn read_root_controller_identity_records_via_sudo() -> Result<ControllerBinaryIdentity> {
         let pin = sudo_root_sealed_file(Path::new(ROOT_V7_CONTROLLER_PIN), 65)?;
         let digest = pin.strip_suffix('\n').ok_or_else(|| {
@@ -4486,7 +4953,7 @@ pub(crate) mod paired_v7 {
         let identity = parse_controller_identity_journal_at(
             &journal,
             ROOT_V7_RECOVERY_CONTROLLER,
-            "OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V1",
+            "OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V2",
         )?;
         if identity.sha256 != digest {
             return Err(ControllerError(
@@ -4636,6 +5103,7 @@ pub(crate) mod paired_v7 {
         ] {
             require_fixed_system_binary(Path::new(path), mode)?;
         }
+        require_retained_root_recovery_v1_via_sudo()?;
         let current = env::current_exe()?;
         let before = verified_uid501_controller_identity()?;
         let root_parent = Path::new("/Library/Application Support/opensteamer");
@@ -4686,7 +5154,7 @@ pub(crate) mod paired_v7 {
                 &publish,
                 "atomically publish versioned root recovery controller",
             )?;
-            if publish.stdout != b"ROOT_V7_RECOVERY_CONTROLLER_PUBLISHED\n"
+            if publish.stdout != b"ROOT_V7_RECOVERY_CONTROLLER_V2_PUBLISHED\n"
                 || !publish.stderr.is_empty()
             {
                 return Err(ControllerError(
@@ -4723,7 +5191,7 @@ pub(crate) mod paired_v7 {
         if decode_utf8(
             &bootstrap.stdout,
             "root recovery controller identity bootstrap stdout",
-        )? != "ROOT_V7_RECOVERY_CONTROLLER_IDENTITY_SEALED\n"
+        )? != "ROOT_V7_RECOVERY_CONTROLLER_V2_IDENTITY_SEALED\n"
             || !bootstrap.stderr.is_empty()
         {
             return Err(ControllerError(
@@ -4743,10 +5211,12 @@ pub(crate) mod paired_v7 {
                 "sealed recovery controller identity differs from UID501 bytes".to_owned(),
             ));
         }
+        require_retained_root_recovery_v1_via_sudo()?;
         Ok(after)
     }
 
     fn attest_retry_2_root_safe_state_via_sudo() -> Result<CoreAudioGeneration> {
+        require_retained_root_recovery_v1_via_sudo()?;
         let output = sudo_output(&[
             "-n",
             ROOT_V7_RECOVERY_CONTROLLER,
@@ -4765,6 +5235,7 @@ pub(crate) mod paired_v7 {
                 "retry-2 root safety attestation marker changed".to_owned(),
             ));
         }
+        require_retained_root_recovery_v1_via_sudo()?;
         Ok(CoreAudioGeneration {
             pid: RECOVERY_RETRY_2_COREAUDIO_PID,
             runs: RECOVERY_RETRY_2_COREAUDIO_RUNS,
@@ -7879,7 +8350,11 @@ pub(crate) mod paired_v7 {
     }
 
     fn require_no_openers_user(path: &Path) -> Result<()> {
-        require_pinned_system_binary(Path::new("/usr/sbin/lsof"), EXPECTED_LSOF_SHA256)?;
+        require_pinned_system_binary(
+            Path::new("/usr/sbin/lsof"),
+            0o755,
+            EXPECTED_LSOF_SHA256,
+        )?;
         let output = command_output("/usr/sbin/lsof", &["+D", path_text(path)?], None)?;
         if output.status.code() != Some(1)
             || !output.stdout.is_empty()
@@ -8089,6 +8564,7 @@ pub(crate) mod paired_v7 {
     fn verify_retry_2_default_route_snapshot() -> Result<()> {
         require_pinned_system_binary(
             Path::new("/usr/sbin/system_profiler"),
+            0o755,
             EXPECTED_SYSTEM_PROFILER_SHA256,
         )?;
         let read = || -> Result<Vec<u8>> {
@@ -12285,6 +12761,29 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
 
     fn paired_v7_self_test() -> Result<()> {
         verify_v7_cli_surface()?;
+        require_pinned_system_binary(Path::new("/bin/ps"), 0o4755, EXPECTED_PS_SHA256)?;
+        if require_pinned_system_binary(Path::new("/bin/ps"), 0o755, EXPECTED_PS_SHA256).is_ok()
+        {
+            return Err(ControllerError(
+                "pinned /bin/ps self-test accepted removal of its exact setuid mode".to_owned(),
+            ));
+        }
+        require_pinned_system_binary(
+            Path::new("/bin/launchctl"),
+            0o755,
+            EXPECTED_LAUNCHCTL_SHA256,
+        )?;
+        if require_pinned_system_binary(
+            Path::new("/bin/launchctl"),
+            0o4755,
+            EXPECTED_LAUNCHCTL_SHA256,
+        )
+        .is_ok()
+        {
+            return Err(ControllerError(
+                "pinned launchctl self-test accepted an unreviewed special mode".to_owned(),
+            ));
+        }
         let core_audio = "system/com.apple.audio.coreaudiod = {\nstate = running\nprogram = /usr/sbin/coreaudiod\ndomain = system\nusername = _coreaudiod\ngroup = _coreaudiod\nruns = 2\npid = 6355\n}\n";
         if parse_core_audio_launch_state(core_audio)?
             != (CoreAudioGeneration {

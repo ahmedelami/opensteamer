@@ -986,7 +986,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         }
 
         let launcherTokens = [
-            "EXPECTED_BINARY_SHA256='b763b2eaec3d3c0a9d6ae558f0f55c6c478237a22baedf99d42945584347f317'",
+            "EXPECTED_BINARY_SHA256='4ce57b2affe12fca36c4b1bc5d1425d78355bbe5153ab99053a9ddf1ae71c31d'",
             "CONTROLLER_BINARY_SHA256=$(/usr/bin/shasum -a 256 \"$CONTROLLER\"",
             "[ \"$CONTROLLER_BINARY_SHA256\" = \"$EXPECTED_BINARY_SHA256\" ]",
             "compiled paired-v7 controller differs from the reviewed binary hash",
@@ -1234,7 +1234,8 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         return exactPins.allSatisfy(controller.contains)
             && !controller.contains("COMMITTED_V5_RESERVE_DEVICE")
             && !controller.contains("COMMITTED_V6_RESERVE_DEVICE")
-            && !controller.contains("16_777_229")
+            && !v5Verification.contains("16_777_229")
+            && !v6Verification.contains("16_777_229")
             && containsOrdered(mountTokens, in: mountIdentity)
             && containsOrdered(plistTokens, in: plistValidation)
             && containsOrdered(derivationTokens, in: deviceDerivation)
@@ -2316,6 +2317,41 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                 beginningWith: "fn verify_root_recovery_controller_identity(",
                 endingBefore: "fn require_root_private_directory("
             ),
+            let pinnedSystemBinary = try? functionBody(
+                controller,
+                beginningWith: "fn require_pinned_system_binary(",
+                endingBefore: "fn parse_core_audio_launch_state("
+            ),
+            let retainedV1RootFile = try? functionBody(
+                controller,
+                beginningWith: "fn require_exact_retained_root_recovery_v1_file(",
+                endingBefore: "fn require_retained_root_recovery_v1("
+            ),
+            let retainedV1Root = try? functionBody(
+                controller,
+                beginningWith: "fn require_retained_root_recovery_v1(",
+                endingBefore: "fn require_exact_root_transaction_children("
+            ),
+            let retainedV1SudoStat = try? functionBody(
+                controller,
+                beginningWith: "fn sudo_retained_root_recovery_v1_stat(",
+                endingBefore: "fn require_retained_root_recovery_v1_via_sudo("
+            ),
+            let retainedV1Sudo = try? functionBody(
+                controller,
+                beginningWith: "fn require_retained_root_recovery_v1_via_sudo(",
+                endingBefore: "fn read_root_controller_identity_records_via_sudo("
+            ),
+            let recoveryAttestViaSudo = try? functionBody(
+                controller,
+                beginningWith: "fn attest_retry_2_root_safe_state_via_sudo(",
+                endingBefore: "fn spawn_bounded_line_reader"
+            ),
+            let controllerSelfTest = try? functionBody(
+                controller,
+                beginningWith: "fn paired_v7_self_test(",
+                endingBefore: "fn self_test_controller_binary_identity_binding("
+            ),
             let tornTail = try? functionBody(
                 controller,
                 beginningWith: "fn is_plausible_retry_2_recovery_torn_tail(",
@@ -2344,12 +2380,36 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             #""31d2d750db685c631b95958c1a26a77a49fcb20f9781a5554bfb61f5d634d964";"#,
             #""2daeb1f36095b44b318410b3f4e8b5d989dcc7bb023d1426c492dab0a3053e74";"#,
             #""f6bbd6e37f9c2df0a54b86ff3e631e3d14b1931e16574cf952653585f31b3977";"#,
-            "const ROOT_V7_RECOVERY_SUPPORT_DIRECTORY: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2\";",
-            #"const ROOT_V7_RECOVERY_CONTROLLER: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/opensteamer-v7-recovery-controller";"#,
-            #"const ROOT_V7_RECOVERY_CONTROLLER_PENDING: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/.opensteamer-v7-recovery-controller.pending";"#,
-            #"const ROOT_V7_RECOVERY_CONTROLLER_PIN: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/controller-binary.sha256";"#,
-            #"const ROOT_V7_RECOVERY_CONTROLLER_IDENTITY_JOURNAL: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/controller-identity.log";"#,
-            #""OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V1""#,
+            "const ROOT_V7_RECOVERY_SUPPORT_DIRECTORY: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2\";",
+            #"const ROOT_V7_RECOVERY_CONTROLLER: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2/opensteamer-v7-recovery-controller";"#,
+            #"const ROOT_V7_RECOVERY_CONTROLLER_PENDING: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2/.opensteamer-v7-recovery-controller.pending";"#,
+            #"const ROOT_V7_RECOVERY_CONTROLLER_PIN: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2/controller-binary.sha256";"#,
+            #"const ROOT_V7_RECOVERY_CONTROLLER_IDENTITY_JOURNAL: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2/controller-identity.log";"#,
+            #""--root-bootstrap-controller-identity-v7-recovery-retry-2-v2""#,
+            #""--root-publish-controller-v7-recovery-retry-2-v2""#,
+            #""--root-attest-v7-retry-2-safe-state-v2""#,
+            #""OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V2""#,
+            "const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_DIRECTORY: &str =\n        \"/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2\";",
+            #"const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/opensteamer-v7-recovery-controller";"#,
+            #"const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PENDING: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/.opensteamer-v7-recovery-controller.pending";"#,
+            #"const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PIN: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/controller-binary.sha256";"#,
+            #"const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_IDENTITY_JOURNAL: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/controller-identity.log";"#,
+            "const RETAINED_ROOT_V7_RECOVERY_V1_DEVICE: u64 = 16_777_229;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_INODE: u64 = 27_803_148;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_NLINK: u64 = 5;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_LENGTH: u64 = 160;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_INODE: u64 = 27_803_149;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_LENGTH: u64 = 1_420_216;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_SHA256: &str =\n        \"b763b2eaec3d3c0a9d6ae558f0f55c6c478237a22baedf99d42945584347f317\";",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_PIN_INODE: u64 = 27_803_150;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_PIN_LENGTH: u64 = 65;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_PIN_SHA256: &str =\n        \"030450c1027f4e0d36fabf66471248e4ef9690e1b30d2d3961db4f1cae0ffdd6\";",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_PIN: &str =\n        \"b763b2eaec3d3c0a9d6ae558f0f55c6c478237a22baedf99d42945584347f317\\n\";",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_INODE: u64 = 27_803_151;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_LENGTH: u64 = 332;",
+            "const RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_SHA256: &str =\n        \"41c5042ed37c13692cb4d11fc8e039d0008d8038b7240175920b0338701737a7\";",
+            #"const RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL: &str = "OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V1\ncontroller_path=/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/opensteamer-v7-recovery-controller\ncontroller_device=16777229\ncontroller_inode=27803149\ncontroller_length=1420216\ncontroller_sha256=b763b2eaec3d3c0a9d6ae558f0f55c6c478237a22baedf99d42945584347f317\n";"#,
+            "const EXPECTED_LS_SHA256: &str =\n        \"a97c50d34f912a5ada66959c231897ec2144e3c9cb922cd8150e4f2b0c9470e7\";",
             "const RECOVERY_RETRY_2_ROOT_TRANSACTION_INODE: u64 = 27_777_176;",
             "const RECOVERY_RETRY_2_ROOT_FAILED_DRIVER_INODE: u64 = 27_777_177;",
             "const RECOVERY_RETRY_2_ROOT_PACKAGE_INODE: u64 = 27_777_188;",
@@ -2441,6 +2501,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             "RECOVERY_RETRY_2_INSTALL_HOLD_EXECUTABLE_SHA256",
         ]
         let rootTokens = [
+            "require_retained_root_recovery_v1()?;",
             "verify_root_recovery_controller_identity()?;",
             "let data_volume_device = verified_data_volume_device()?;",
             "old_controller.sha256 != RECOVERY_RETRY_2_ROOT_CONTROLLER_SHA256",
@@ -2458,9 +2519,116 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             "require_no_extended_attributes_root(transaction)?;",
             "require_no_openers_root(transaction)?;",
             "read_core_audio_generation_root()?;",
+            "require_retained_root_recovery_v1()?;",
         ]
+        let pinnedSystemBinaryTokens = [
+            "expected_mode: u32,",
+            "if !matches!(expected_mode, 0o755 | 0o4755)",
+            "require_fixed_system_binary(path, expected_mode & 0o777)?;",
+            ".custom_flags(O_NOFOLLOW)",
+            "metadata.permissions().mode() & 0o7777 == expected_mode",
+            "!metadata_is_exact(&descriptor_before)",
+            "!metadata_is_exact(&named_before)",
+            "sha256_bytes(&bytes)? != expected_sha256",
+            "!metadata_is_exact(&descriptor_after)",
+            "!metadata_is_exact(&named_after)",
+        ]
+        let retainedV1RootFileTokens = [
+            ".custom_flags(O_NOFOLLOW)",
+            "metadata.nlink() == 1",
+            "metadata.permissions().mode() & 0o7777 == expected_mode",
+            "metadata.dev() == RETAINED_ROOT_V7_RECOVERY_V1_DEVICE",
+            "metadata.ino() == expected_inode",
+            "metadata.len() == expected_length",
+            "metadata.st_flags() == 0",
+            "!metadata_is_exact(&before)",
+            "!metadata_is_exact(&named_before)",
+            ".take(expected_length + 1)",
+            "sha256_bytes(&bytes)? != expected_sha256",
+            "if let Some(expected_bytes) = expected_bytes",
+            "if bytes != expected_bytes",
+            "!metadata_is_exact(&after)",
+            "!metadata_is_exact(&named_after)",
+        ]
+        let retainedV1RootTokens = [
+            "unsafe { geteuid() } != 0",
+            "Path::new(child).parent() != Some(support)",
+            "metadata.nlink() != RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_NLINK",
+            "metadata.permissions().mode() & 0o7777 != 0o700",
+            "metadata.dev() != RETAINED_ROOT_V7_RECOVERY_V1_DEVICE",
+            "metadata.ino() != RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_INODE",
+            "metadata.len() != RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_LENGTH",
+            "metadata.st_flags() != 0",
+            "names.sort_unstable();",
+            "if names\n                != [",
+            #""controller-binary.sha256".to_owned()"#,
+            #""controller-identity.log".to_owned()"#,
+            #""opensteamer-v7-recovery-controller".to_owned()"#,
+            "let before = read_support()?;",
+            "let children_before = read_children()?;",
+            "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_PENDING",
+            "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_INODE,",
+            "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_SHA256,",
+            "RETAINED_ROOT_V7_RECOVERY_V1_PIN_INODE,",
+            "RETAINED_ROOT_V7_RECOVERY_V1_PIN_SHA256,",
+            "Some(RETAINED_ROOT_V7_RECOVERY_V1_PIN.as_bytes()),",
+            "RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_INODE,",
+            "RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_SHA256,",
+            "Some(RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL.as_bytes()),",
+            "let children_after = read_children()?;",
+            "let after = read_support()?;",
+            "children_before != children_after",
+        ]
+        let retainedV1SudoStatTokens = [
+            #""%u:%g:%l:%Mp%Lp:%HT:%d:%i:%z:%f""#,
+            "require_output_success(&output,",
+            "if !output.stderr.is_empty()",
+            ".strip_suffix('\\n')",
+            ".filter(|line| !line.is_empty() && !line.contains('\\n'))",
+        ]
+        let retainedV1SudoTokens = [
+            #"require_pinned_system_binary(Path::new("/bin/ls"), 0o755, EXPECTED_LS_SHA256)?;"#,
+            "let support = Path::new(RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_DIRECTORY);",
+            #""0:0:{}:0700:Directory:{}:{}:{}:0""#,
+            #""0:0:1:0500:Regular File:{}:{}:{}:0""#,
+            #""0:0:1:0400:Regular File:{}:{}:{}:0""#,
+            "if sudo_stat(pending)?.is_some()",
+            #""/bin/ls""#,
+            #""-1A""#,
+            #"b"controller-binary.sha256\ncontroller-identity.log\nopensteamer-v7-recovery-controller\n""#,
+            "sudo_retained_root_recovery_v1_stat(support)?",
+            "sudo_retained_root_recovery_v1_stat(controller)?",
+            "sudo_retained_root_recovery_v1_stat(pin)?",
+            "sudo_retained_root_recovery_v1_stat(journal)?",
+            "let before = read_topology()?;",
+            "expected_support.clone(),",
+            "expected_controller.clone(),",
+            "expected_pin.clone(),",
+            "expected_journal.clone(),",
+            "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER_SHA256",
+            "pin_bytes != RETAINED_ROOT_V7_RECOVERY_V1_PIN",
+            "RETAINED_ROOT_V7_RECOVERY_V1_PIN_SHA256",
+            "journal_bytes != RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL",
+            "RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL_SHA256",
+            "let after = read_topology()?;",
+            "if after != before",
+        ]
+        let controllerModeSelfTestTokens = [
+            #"require_pinned_system_binary(Path::new("/bin/ps"), 0o4755, EXPECTED_PS_SHA256)?;"#,
+            #"require_pinned_system_binary(Path::new("/bin/ps"), 0o755, EXPECTED_PS_SHA256).is_ok()"#,
+            "Path::new(\"/bin/launchctl\"),\n            0o755,\n            EXPECTED_LAUNCHCTL_SHA256,",
+            "Path::new(\"/bin/launchctl\"),\n            0o4755,\n            EXPECTED_LAUNCHCTL_SHA256,",
+        ]
+        let coreaudiodPinnedCall = "require_pinned_system_binary(\n            Path::new(PINNED_COREAUDIOD),\n            0o755,\n            EXPECTED_COREAUDIOD_SHA256,\n        )?;"
+        let launchctlPinnedCall = "require_pinned_system_binary(\n            Path::new(\"/bin/launchctl\"),\n            0o755,\n            EXPECTED_LAUNCHCTL_SHA256,\n        )?;"
+        let launchctlWrongModeSelfTestCall = "require_pinned_system_binary(\n            Path::new(\"/bin/launchctl\"),\n            0o4755,\n            EXPECTED_LAUNCHCTL_SHA256,\n        )"
+        let psPinnedCall = #"require_pinned_system_binary(Path::new("/bin/ps"), 0o4755, EXPECTED_PS_SHA256)"#
+        let psWrongModeSelfTestCall = #"require_pinned_system_binary(Path::new("/bin/ps"), 0o755, EXPECTED_PS_SHA256)"#
+        let lsofPinnedCall = "require_pinned_system_binary(\n            Path::new(\"/usr/sbin/lsof\"),\n            0o755,\n            EXPECTED_LSOF_SHA256,\n        )?;"
+        let xattrPinnedCall = "require_pinned_system_binary(\n            Path::new(\"/usr/bin/xattr\"),\n            0o755,\n            EXPECTED_XATTR_SHA256,\n        )?;"
+        let systemProfilerPinnedCall = "require_pinned_system_binary(\n            Path::new(\"/usr/sbin/system_profiler\"),\n            0o755,\n            EXPECTED_SYSTEM_PROFILER_SHA256,\n        )?;"
         let reloadTokens = [
-            #"require_pinned_system_binary(Path::new("/bin/kill"), EXPECTED_KILL_SHA256)?;"#,
+            #"require_pinned_system_binary(Path::new("/bin/kill"), 0o755, EXPECTED_KILL_SHA256)?;"#,
             "let before = read_core_audio_generation_root()?;",
             "let pid = before.pid.to_string();",
             #"command_output("/bin/kill", &["-TERM", &pid], None)?;"#,
@@ -2468,9 +2636,9 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             "after.pid != before.pid && after.runs == expected_runs",
         ]
         let coreAudioGenerationTokens = [
-            "require_pinned_system_binary(Path::new(PINNED_COREAUDIOD), EXPECTED_COREAUDIOD_SHA256)?;",
-            #"require_pinned_system_binary(Path::new("/bin/launchctl"), EXPECTED_LAUNCHCTL_SHA256)?;"#,
-            #"require_pinned_system_binary(Path::new("/bin/ps"), EXPECTED_PS_SHA256)?;"#,
+            "Path::new(PINNED_COREAUDIOD),\n            0o755,\n            EXPECTED_COREAUDIOD_SHA256,",
+            "Path::new(\"/bin/launchctl\"),\n            0o755,\n            EXPECTED_LAUNCHCTL_SHA256,",
+            #"require_pinned_system_binary(Path::new("/bin/ps"), 0o4755, EXPECTED_PS_SHA256)?;"#,
             #"&["print", "system/com.apple.audio.coreaudiod"]"#,
             "parse_core_audio_launch_state(",
             "require_core_audio_process(generation)?;",
@@ -2657,6 +2825,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         ]
         let recoveryPublishTokens = [
             "env::current_exe()? != Path::new(ROOT_V7_RECOVERY_CONTROLLER_PENDING)",
+            "require_retained_root_recovery_v1()?;",
             "descriptor.sync_all()?;",
             "require_path_absent(",
             "rename_exclusive(",
@@ -2664,14 +2833,19 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             "ROOT_V7_RECOVERY_CONTROLLER",
             "fsync_parent(Path::new(ROOT_V7_RECOVERY_CONTROLLER))?;",
             "pending != published",
+            "require_retained_root_recovery_v1()?;",
+            #"println!("ROOT_V7_RECOVERY_CONTROLLER_V2_PUBLISHED");"#,
         ]
         let recoveryBootstrapTokens = [
+            "require_retained_root_recovery_v1_via_sudo()?;",
             "sudo_stat(Path::new(ROOT_V7_RECOVERY_CONTROLLER))?",
             "sudo_stat(Path::new(ROOT_V7_RECOVERY_CONTROLLER_PENDING))?",
             "ROOT_V7_RECOVERY_CONTROLLER_PENDING,",
             "ROOT_V7_RECOVERY_CONTROLLER_PUBLISH_MODE,",
-            "ROOT_V7_RECOVERY_CONTROLLER_PUBLISHED",
-            "ROOT_V7_RECOVERY_CONTROLLER_BOOTSTRAP_MODE,",
+            "ROOT_V7_RECOVERY_CONTROLLER_V2_PUBLISHED",
+            "ROOT_V7_RECOVERY_CONTROLLER,\n            ROOT_V7_RECOVERY_CONTROLLER_BOOTSTRAP_MODE,",
+            "ROOT_V7_RECOVERY_CONTROLLER_V2_IDENTITY_SEALED",
+            "require_retained_root_recovery_v1_via_sudo()?;",
         ]
         let recoverySealTokens = [
             "!matches!(metadata.permissions().mode() & 0o7777, 0o400 | 0o600)",
@@ -2684,22 +2858,33 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         ]
         let recoveryIdentityBootstrapTokens = [
             "env::current_exe()? != Path::new(ROOT_V7_RECOVERY_CONTROLLER)",
+            "require_retained_root_recovery_v1()?;",
             "require_root_private_directory(Path::new(ROOT_V7_RECOVERY_SUPPORT_DIRECTORY))?;",
             "create_or_repair_root_recovery_sealed(\n            Path::new(ROOT_V7_RECOVERY_CONTROLLER_PIN)",
             "create_or_repair_root_recovery_sealed(\n            Path::new(ROOT_V7_RECOVERY_CONTROLLER_IDENTITY_JOURNAL)",
             "let sealed = read_root_controller_identity_records_at(\n            Path::new(ROOT_V7_RECOVERY_CONTROLLER_PIN)",
             "Path::new(ROOT_V7_RECOVERY_CONTROLLER_IDENTITY_JOURNAL)",
             "ROOT_V7_RECOVERY_CONTROLLER,",
-            #""OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V1""#,
+            #""OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V2""#,
             "require_root_controller_identity_binding(&identity, &sealed)?;",
+            "require_retained_root_recovery_v1()?;",
+            #"println!("ROOT_V7_RECOVERY_CONTROLLER_V2_IDENTITY_SEALED");"#,
         ]
         let recoveryIdentityVerifyTokens = [
             "executable != Path::new(ROOT_V7_RECOVERY_CONTROLLER)",
             "Path::new(ROOT_V7_RECOVERY_CONTROLLER_PIN)",
             "Path::new(ROOT_V7_RECOVERY_CONTROLLER_IDENTITY_JOURNAL)",
             "ROOT_V7_RECOVERY_CONTROLLER,",
-            #""OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V1""#,
+            #""OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V2""#,
             "require_root_controller_identity_binding(&actual, &sealed)?;",
+        ]
+        let recoveryAttestViaSudoTokens = [
+            "require_retained_root_recovery_v1_via_sudo()?;",
+            "ROOT_V7_RECOVERY_CONTROLLER,",
+            "ROOT_V7_RECOVERY_ATTEST_MODE,",
+            "require_output_success(&output,",
+            "if output.stdout != expected.as_bytes() || !output.stderr.is_empty()",
+            "require_retained_root_recovery_v1_via_sudo()?;",
         ]
         let cleanupTopologyTokens = [
             "if canonical == prior && held_is_hold {",
@@ -2720,6 +2905,27 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             && containsOrdered(tornTailTokens, in: tornTail)
             && containsOrdered(safeRecordPins, in: safeRecord)
             && containsOrdered(rootTokens, in: rootAttest)
+            && containsOrdered(pinnedSystemBinaryTokens, in: pinnedSystemBinary)
+            && containsOrdered(retainedV1RootFileTokens, in: retainedV1RootFile)
+            && containsOrdered(retainedV1RootTokens, in: retainedV1Root)
+            && containsOrdered(retainedV1SudoStatTokens, in: retainedV1SudoStat)
+            && containsOrdered(retainedV1SudoTokens, in: retainedV1Sudo)
+            && containsOrdered(controllerModeSelfTestTokens, in: controllerSelfTest)
+            && controller.components(separatedBy: "require_pinned_system_binary(").count - 1 == 14
+            && controller.components(separatedBy: coreaudiodPinnedCall).count - 1 == 1
+            && controller.components(separatedBy: launchctlPinnedCall).count - 1 == 2
+            && controller.components(separatedBy: launchctlWrongModeSelfTestCall).count - 1 == 1
+            && controller.components(separatedBy: psPinnedCall).count - 1 == 2
+            && controller.components(separatedBy: psWrongModeSelfTestCall).count - 1 == 1
+            && controller.components(separatedBy: lsofPinnedCall).count - 1 == 2
+            && controller.components(separatedBy: xattrPinnedCall).count - 1 == 1
+            && controller.components(separatedBy: systemProfilerPinnedCall).count - 1 == 1
+            && controller.components(
+                separatedBy: #"require_pinned_system_binary(Path::new("/bin/kill"), 0o755, EXPECTED_KILL_SHA256)?;"#
+            ).count - 1 == 1
+            && controller.components(
+                separatedBy: #"require_pinned_system_binary(Path::new("/bin/ls"), 0o755, EXPECTED_LS_SHA256)?;"#
+            ).count - 1 == 1
             && containsOrdered(reloadTokens, in: reload)
             && containsOrdered(coreAudioGenerationTokens, in: coreAudioGeneration)
             && containsOrdered(coreAudioParserTokens, in: coreAudioParser)
@@ -2733,6 +2939,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             && containsOrdered(recoverySealTokens, in: recoverySealRepair)
             && containsOrdered(recoveryIdentityBootstrapTokens, in: recoveryIdentityBootstrap)
             && containsOrdered(recoveryIdentityVerifyTokens, in: recoveryIdentityVerify)
+            && containsOrdered(recoveryAttestViaSudoTokens, in: recoveryAttestViaSudo)
             && containsOrdered(cleanupTopologyTokens, in: cleanupTopology)
             && containsOrdered(
                 [
@@ -2948,7 +3155,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                 controller,
                 beginningWith: "fn verify_root_recovery_controller_identity(",
                 endingBefore: "fn require_root_private_directory(",
-                target: #""OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V1""#,
+                target: #""OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V2""#,
                 replacement: #""OPENSTEAMER_V7_CONTROLLER_IDENTITY_V1""#
             ),
             replacingInFunction(
@@ -3008,7 +3215,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                 replacement: ""
             ),
             controller.replacingOccurrences(
-                of: "const ROOT_V7_RECOVERY_CONTROLLER_PIN: &str = \"/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/controller-binary.sha256\";",
+                of: "const ROOT_V7_RECOVERY_CONTROLLER_PIN: &str = \"/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2/controller-binary.sha256\";",
                 with: "const ROOT_V7_RECOVERY_CONTROLLER_PIN: &str = \"/Library/Application Support/opensteamer/privileged-v7/controller-binary.sha256\";"
             ),
             controller.replacingOccurrences(
@@ -3056,6 +3263,142 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                 endingBefore: "fn retry_2_recovery_transition_record(",
                 target: "RECOVERY_RETRY_2_RESERVE_SIZE,\n            RECOVERY_RETRY_2_RESERVE_SIZE,",
                 replacement: "RECOVERY_RETRY_2_RESERVE_SIZE,\n            RECOVERY_RETRY_2_GUARDIAN_SIZE,"
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "fn require_pinned_system_binary(",
+                endingBefore: "fn parse_core_audio_launch_state(",
+                target: "metadata.permissions().mode() & 0o7777 == expected_mode",
+                replacement: "metadata.permissions().mode() & 0o777 == expected_mode"
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "fn require_pinned_system_binary(",
+                endingBefore: "fn parse_core_audio_launch_state(",
+                target: "if !matches!(expected_mode, 0o755 | 0o4755)",
+                replacement: "if !matches!(expected_mode, 0o755)"
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "fn read_core_audio_generation_root(",
+                endingBefore: "fn reload_core_audio_root(",
+                target: #"require_pinned_system_binary(Path::new("/bin/ps"), 0o4755, EXPECTED_PS_SHA256)?;"#,
+                replacement: #"require_pinned_system_binary(Path::new("/bin/ps"), 0o755, EXPECTED_PS_SHA256)?;"#
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "fn paired_v7_self_test(",
+                endingBefore: "fn self_test_controller_binary_identity_binding(",
+                target: #"require_pinned_system_binary(Path::new("/bin/ps"), 0o4755, EXPECTED_PS_SHA256)?;"#,
+                replacement: ""
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "fn paired_v7_self_test(",
+                endingBefore: "fn self_test_controller_binary_identity_binding(",
+                target: "Path::new(\"/bin/launchctl\"),\n            0o4755,",
+                replacement: "Path::new(\"/bin/launchctl\"),\n            0o755,"
+            ),
+            controller.replacingOccurrences(
+                of: "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2",
+                with: "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2"
+            ),
+            controller.replacingOccurrences(
+                of: "--root-attest-v7-retry-2-safe-state-v2",
+                with: "--root-attest-v7-retry-2-safe-state"
+            ),
+            controller.replacingOccurrences(
+                of: "const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_INODE: u64 = 27_803_148;",
+                with: "const RETAINED_ROOT_V7_RECOVERY_V1_SUPPORT_INODE: u64 = 1;"
+            ),
+            controller.replacingOccurrences(
+                of: "b763b2eaec3d3c0a9d6ae558f0f55c6c478237a22baedf99d42945584347f317",
+                with: "c763b2eaec3d3c0a9d6ae558f0f55c6c478237a22baedf99d42945584347f317"
+            ),
+            controller.replacingOccurrences(
+                of: "030450c1027f4e0d36fabf66471248e4ef9690e1b30d2d3961db4f1cae0ffdd6",
+                with: "130450c1027f4e0d36fabf66471248e4ef9690e1b30d2d3961db4f1cae0ffdd6"
+            ),
+            controller.replacingOccurrences(
+                of: "41c5042ed37c13692cb4d11fc8e039d0008d8038b7240175920b0338701737a7",
+                with: "51c5042ed37c13692cb4d11fc8e039d0008d8038b7240175920b0338701737a7"
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "fn require_exact_retained_root_recovery_v1_file(",
+                endingBefore: "fn require_retained_root_recovery_v1(",
+                target: "metadata.permissions().mode() & 0o7777 == expected_mode",
+                replacement: "metadata.permissions().mode() & 0o777 == expected_mode"
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "fn require_retained_root_recovery_v1(",
+                endingBefore: "fn require_exact_root_transaction_children(",
+                target: "if names\n                != [",
+                replacement: "if false && names\n                != ["
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "fn sudo_retained_root_recovery_v1_stat(",
+                endingBefore: "fn require_retained_root_recovery_v1_via_sudo(",
+                target: #""%u:%g:%l:%Mp%Lp:%HT:%d:%i:%z:%f""#,
+                replacement: #""%u:%g:%l:%Lp:%HT:%d:%i:%z:%f""#
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "fn require_retained_root_recovery_v1_via_sudo(",
+                endingBefore: "fn read_root_controller_identity_records_via_sudo(",
+                target: "if sudo_stat(pending)?.is_some()",
+                replacement: "if false"
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "fn require_retained_root_recovery_v1_via_sudo(",
+                endingBefore: "fn read_root_controller_identity_records_via_sudo(",
+                target: "if after != before",
+                replacement: "if false"
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "fn publish_root_recovery_controller(",
+                endingBefore: "fn bootstrap_root_recovery_controller_identity(",
+                target: "require_retained_root_recovery_v1()?;",
+                replacement: ""
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "fn bootstrap_root_owned_v7_recovery_controller(",
+                endingBefore: "fn attest_retry_2_root_safe_state_via_sudo(",
+                target: "require_retained_root_recovery_v1_via_sudo()?;",
+                replacement: ""
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "fn attest_retry_2_root_safe_state_via_sudo(",
+                endingBefore: "fn spawn_bounded_line_reader",
+                target: "require_retained_root_recovery_v1_via_sudo()?;",
+                replacement: ""
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "fn bootstrap_root_owned_v7_recovery_controller(",
+                endingBefore: "fn attest_retry_2_root_safe_state_via_sudo(",
+                target: "ROOT_V7_RECOVERY_CONTROLLER,\n            ROOT_V7_RECOVERY_CONTROLLER_BOOTSTRAP_MODE,",
+                replacement: "RETAINED_ROOT_V7_RECOVERY_V1_CONTROLLER,\n            ROOT_V7_RECOVERY_CONTROLLER_BOOTSTRAP_MODE,"
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "fn paired_v7_self_test(",
+                endingBefore: "fn self_test_controller_binary_identity_binding(",
+                target: #"if require_pinned_system_binary(Path::new("/bin/ps"), 0o755, EXPECTED_PS_SHA256).is_ok()"#,
+                replacement: "if false"
+            ),
+            replacingInFunction(
+                controller,
+                beginningWith: "fn require_no_openers_root(",
+                endingBefore: "fn require_no_extended_attributes_root(",
+                target: "Path::new(\"/usr/sbin/lsof\"),\n            0o755,",
+                replacement: "Path::new(\"/usr/sbin/lsof\"),\n            0o4755,"
             ),
         ]
         for (index, mutant) in mutants.enumerated() {
@@ -3593,7 +3936,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         )
         XCTAssertTrue(launcher.contains("RELEASE_PIN_STATUS='PINNED_FINAL_REVIEW'"))
         let expectedControllerSourceSHA256 =
-            "db3e87bbc4177fd142d5e8f5c46899426e8663674d28e69e4b571dc58dc71454"
+            "59c13995b8131bca5f3c76052553703a8c7b47f3fa199a13c3255640399d75ae"
         XCTAssertTrue(
             hasExactLauncherSourcePinContract(
                 controller: controller,
@@ -3603,7 +3946,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         )
         XCTAssertTrue(
             launcher.contains(
-                "EXPECTED_BINARY_SHA256='b763b2eaec3d3c0a9d6ae558f0f55c6c478237a22baedf99d42945584347f317'"
+                "EXPECTED_BINARY_SHA256='4ce57b2affe12fca36c4b1bc5d1425d78355bbe5153ab99053a9ddf1ae71c31d'"
             )
         )
         let exactControllerReleasePins = [
