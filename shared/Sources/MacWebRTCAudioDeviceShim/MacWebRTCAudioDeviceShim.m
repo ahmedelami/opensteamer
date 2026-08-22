@@ -10,14 +10,18 @@
 #import <stdatomic.h>
 #import <string.h>
 
-// This file is the intentionally narrow ABI bridge between source-clock stereo PCM and the
-// exact-pinned native WebRTC audio device. Lifecycle locks never enter WebRTC's render callback;
-// diagnostics use a separate lock so observation cannot change audio admission semantics.
+// This file is the intentionally narrow ABI bridge between source-clock PCM and the exact-pinned
+// native WebRTC audio device. Recording is stereo and playout is mono. Lifecycle locks never
+// enter WebRTC's render callback; diagnostics use a separate lock so observation cannot change
+// audio admission semantics.
 NSErrorDomain const ASMacWebRTCAudioDeviceErrorDomain = @"opensteamer.MacWebRTCAudioDevice";
 
 static const double ASAudioSampleRate = 48000.0;
 static const NSTimeInterval ASAudioIOBufferDuration = 0.010;
-enum { ASAudioChannelCount = 2 };
+enum {
+    ASAudioInputChannelCount = 2,
+    ASAudioOutputChannelCount = 1,
+};
 static const uint_fast64_t ASMacPlayoutPullClosedBit =
     ((uint_fast64_t)1 << 63);
 static const uint_fast64_t ASMacPlayoutPullCountMask =
@@ -621,20 +625,11 @@ typedef struct ASMacAudioQueuePCMContentSlot {
     atomic_uint_fast64_t sourceEndFrame;
     atomic_uint_fast64_t windowFingerprint;
     atomic_uint_fast64_t frameCount;
-    atomic_uint_fast64_t leftSampleSumBits;
-    atomic_uint_fast64_t rightSampleSumBits;
-    atomic_uint_fast64_t leftSquareSum;
-    atomic_uint_fast64_t rightSquareSum;
-    atomic_uint_fast64_t leftRightProductSumBits;
-    atomic_uint_fast64_t sumSquareSum;
-    atomic_uint_fast64_t differenceSquareSum;
-    atomic_uint_fast64_t leftPeak;
-    atomic_uint_fast64_t rightPeak;
-    atomic_uint_fast64_t leftZeroCount;
-    atomic_uint_fast64_t rightZeroCount;
-    atomic_uint_fast64_t leftClippingCount;
-    atomic_uint_fast64_t rightClippingCount;
-    atomic_uint_fast64_t oneSidedFrameCount;
+    atomic_uint_fast64_t sampleSumBits;
+    atomic_uint_fast64_t squareSum;
+    atomic_uint_fast64_t peak;
+    atomic_uint_fast64_t zeroCount;
+    atomic_uint_fast64_t clippingCount;
 } ASMacAudioQueuePCMContentSlot;
 
 typedef struct ASMacAudioQueuePCMContentStorage {
@@ -674,20 +669,11 @@ static void ASMacAudioQueuePCMContentInitializeSlot(
     atomic_init(&slot->sourceEndFrame, 0);
     atomic_init(&slot->windowFingerprint, 0);
     atomic_init(&slot->frameCount, 0);
-    atomic_init(&slot->leftSampleSumBits, 0);
-    atomic_init(&slot->rightSampleSumBits, 0);
-    atomic_init(&slot->leftSquareSum, 0);
-    atomic_init(&slot->rightSquareSum, 0);
-    atomic_init(&slot->leftRightProductSumBits, 0);
-    atomic_init(&slot->sumSquareSum, 0);
-    atomic_init(&slot->differenceSquareSum, 0);
-    atomic_init(&slot->leftPeak, 0);
-    atomic_init(&slot->rightPeak, 0);
-    atomic_init(&slot->leftZeroCount, 0);
-    atomic_init(&slot->rightZeroCount, 0);
-    atomic_init(&slot->leftClippingCount, 0);
-    atomic_init(&slot->rightClippingCount, 0);
-    atomic_init(&slot->oneSidedFrameCount, 0);
+    atomic_init(&slot->sampleSumBits, 0);
+    atomic_init(&slot->squareSum, 0);
+    atomic_init(&slot->peak, 0);
+    atomic_init(&slot->zeroCount, 0);
+    atomic_init(&slot->clippingCount, 0);
 }
 
 static void ASMacAudioQueuePCMContentResetSlot(
@@ -708,59 +694,14 @@ static void ASMacAudioQueuePCMContentResetSlot(
     atomic_store_explicit(&slot->windowFingerprint, 0, memory_order_seq_cst);
     atomic_store_explicit(&slot->frameCount, 0, memory_order_seq_cst);
     atomic_store_explicit(
-        &slot->leftSampleSumBits,
+        &slot->sampleSumBits,
         0,
         memory_order_seq_cst
     );
-    atomic_store_explicit(
-        &slot->rightSampleSumBits,
-        0,
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(
-        &slot->leftSquareSum,
-        0,
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(
-        &slot->rightSquareSum,
-        0,
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(
-        &slot->leftRightProductSumBits,
-        0,
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(
-        &slot->sumSquareSum,
-        0,
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(
-        &slot->differenceSquareSum,
-        0,
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(&slot->leftPeak, 0, memory_order_seq_cst);
-    atomic_store_explicit(&slot->rightPeak, 0, memory_order_seq_cst);
-    atomic_store_explicit(&slot->leftZeroCount, 0, memory_order_seq_cst);
-    atomic_store_explicit(&slot->rightZeroCount, 0, memory_order_seq_cst);
-    atomic_store_explicit(
-        &slot->leftClippingCount,
-        0,
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(
-        &slot->rightClippingCount,
-        0,
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(
-        &slot->oneSidedFrameCount,
-        0,
-        memory_order_seq_cst
-    );
+    atomic_store_explicit(&slot->squareSum, 0, memory_order_seq_cst);
+    atomic_store_explicit(&slot->peak, 0, memory_order_seq_cst);
+    atomic_store_explicit(&slot->zeroCount, 0, memory_order_seq_cst);
+    atomic_store_explicit(&slot->clippingCount, 0, memory_order_seq_cst);
 }
 
 static void ASMacAudioQueuePCMContentStoreSlot(
@@ -802,75 +743,28 @@ static void ASMacAudioQueuePCMContentStoreSlot(
         memory_order_seq_cst
     );
     atomic_store_explicit(
-        &slot->leftSampleSumBits,
-        ASMacAudioQueuePCMContentSignedBits(window.leftSampleSum),
+        &slot->sampleSumBits,
+        ASMacAudioQueuePCMContentSignedBits(window.sampleSum),
         memory_order_seq_cst
     );
     atomic_store_explicit(
-        &slot->rightSampleSumBits,
-        ASMacAudioQueuePCMContentSignedBits(window.rightSampleSum),
+        &slot->squareSum,
+        window.squareSum,
         memory_order_seq_cst
     );
     atomic_store_explicit(
-        &slot->leftSquareSum,
-        window.leftSquareSum,
+        &slot->peak,
+        window.peak,
         memory_order_seq_cst
     );
     atomic_store_explicit(
-        &slot->rightSquareSum,
-        window.rightSquareSum,
+        &slot->zeroCount,
+        window.zeroCount,
         memory_order_seq_cst
     );
     atomic_store_explicit(
-        &slot->leftRightProductSumBits,
-        ASMacAudioQueuePCMContentSignedBits(
-            window.leftRightProductSum
-        ),
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(
-        &slot->sumSquareSum,
-        window.sumSquareSum,
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(
-        &slot->differenceSquareSum,
-        window.differenceSquareSum,
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(
-        &slot->leftPeak,
-        window.leftPeak,
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(
-        &slot->rightPeak,
-        window.rightPeak,
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(
-        &slot->leftZeroCount,
-        window.leftZeroCount,
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(
-        &slot->rightZeroCount,
-        window.rightZeroCount,
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(
-        &slot->leftClippingCount,
-        window.leftClippingCount,
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(
-        &slot->rightClippingCount,
-        window.rightClippingCount,
-        memory_order_seq_cst
-    );
-    atomic_store_explicit(
-        &slot->oneSidedFrameCount,
-        window.oneSidedFrameCount,
+        &slot->clippingCount,
+        window.clippingCount,
         memory_order_seq_cst
     );
     atomic_store_explicit(
@@ -901,67 +795,23 @@ ASMacAudioQueuePCMContentLoadSlot(
         &slot->frameCount,
         memory_order_seq_cst
     );
-    window.leftSampleSum = ASMacAudioQueuePCMContentSignedFromBits(
+    window.sampleSum = ASMacAudioQueuePCMContentSignedFromBits(
         atomic_load_explicit(
-            &slot->leftSampleSumBits,
+            &slot->sampleSumBits,
             memory_order_seq_cst
         )
     );
-    window.rightSampleSum = ASMacAudioQueuePCMContentSignedFromBits(
-        atomic_load_explicit(
-            &slot->rightSampleSumBits,
-            memory_order_seq_cst
-        )
-    );
-    window.leftSquareSum = atomic_load_explicit(
-        &slot->leftSquareSum,
+    window.squareSum = atomic_load_explicit(
+        &slot->squareSum,
         memory_order_seq_cst
     );
-    window.rightSquareSum = atomic_load_explicit(
-        &slot->rightSquareSum,
+    window.peak = atomic_load_explicit(&slot->peak, memory_order_seq_cst);
+    window.zeroCount = atomic_load_explicit(
+        &slot->zeroCount,
         memory_order_seq_cst
     );
-    window.leftRightProductSum =
-        ASMacAudioQueuePCMContentSignedFromBits(
-            atomic_load_explicit(
-                &slot->leftRightProductSumBits,
-                memory_order_seq_cst
-            )
-        );
-    window.sumSquareSum = atomic_load_explicit(
-        &slot->sumSquareSum,
-        memory_order_seq_cst
-    );
-    window.differenceSquareSum = atomic_load_explicit(
-        &slot->differenceSquareSum,
-        memory_order_seq_cst
-    );
-    window.leftPeak = atomic_load_explicit(
-        &slot->leftPeak,
-        memory_order_seq_cst
-    );
-    window.rightPeak = atomic_load_explicit(
-        &slot->rightPeak,
-        memory_order_seq_cst
-    );
-    window.leftZeroCount = atomic_load_explicit(
-        &slot->leftZeroCount,
-        memory_order_seq_cst
-    );
-    window.rightZeroCount = atomic_load_explicit(
-        &slot->rightZeroCount,
-        memory_order_seq_cst
-    );
-    window.leftClippingCount = atomic_load_explicit(
-        &slot->leftClippingCount,
-        memory_order_seq_cst
-    );
-    window.rightClippingCount = atomic_load_explicit(
-        &slot->rightClippingCount,
-        memory_order_seq_cst
-    );
-    window.oneSidedFrameCount = atomic_load_explicit(
-        &slot->oneSidedFrameCount,
+    window.clippingCount = atomic_load_explicit(
+        &slot->clippingCount,
         memory_order_seq_cst
     );
     return window;
@@ -1233,10 +1083,10 @@ static LKRTCAudioDeviceRenderRecordedDataBlock const ASRenderStereoRecordedData 
     if (context->samples == NULL
         || frameCount != context->frameCount
         || context->byteCount
-            != context->frameCount * ASAudioChannelCount * sizeof(int16_t)
+            != context->frameCount * ASAudioInputChannelCount * sizeof(int16_t)
         || renderData == NULL
         || renderData->mNumberBuffers != 1
-        || renderData->mBuffers[0].mNumberChannels != ASAudioChannelCount
+        || renderData->mBuffers[0].mNumberChannels != ASAudioInputChannelCount
         || renderData->mBuffers[0].mDataByteSize < context->byteCount
         || renderData->mBuffers[0].mData == NULL) {
         context->validationFailureCount += 1;
@@ -1246,7 +1096,7 @@ static LKRTCAudioDeviceRenderRecordedDataBlock const ASRenderStereoRecordedData 
     renderData->mBuffers[0].mDataByteSize = context->byteCount;
     context->copiedFrameCount += frameCount;
     context->copiedSampleElementCount +=
-        (uint64_t)frameCount * ASAudioChannelCount;
+        (uint64_t)frameCount * ASAudioInputChannelCount;
     return noErr;
 };
 
@@ -1259,22 +1109,11 @@ typedef struct ASMacDecodedPlayoutBlockScalars {
     uint64_t sourceEndFrame;
     uint64_t frameCount;
     uint64_t byteCount;
-    int64_t leftSum;
-    int64_t rightSum;
-    double leftSquareSum;
-    double rightSquareSum;
-    double crossSum;
-    double sumSquareSum;
-    double differenceSquareSum;
-    uint32_t leftPeakMagnitude;
-    uint32_t rightPeakMagnitude;
-    uint64_t leftZeroSampleCount;
-    uint64_t rightZeroSampleCount;
-    uint64_t leftClippedSampleCount;
-    uint64_t rightClippedSampleCount;
-    uint64_t leftActiveFrameCount;
-    uint64_t rightActiveFrameCount;
-    uint64_t oneSidedFrameCount;
+    int64_t sum;
+    double squareSum;
+    uint32_t peakMagnitude;
+    uint64_t zeroSampleCount;
+    uint64_t clippedSampleCount;
     uint64_t fingerprint;
     uint64_t windowFingerprint;
 } ASMacDecodedPlayoutBlockScalars;
@@ -1290,25 +1129,12 @@ typedef struct ASMacDecodedPlayoutWindowScalars {
     uint64_t fingerprint;
     uint64_t frameCount;
     uint64_t byteCount;
-    int64_t leftSum;
-    int64_t rightSum;
-    double leftSquareSum;
-    double rightSquareSum;
-    double crossSum;
-    double sumSquareSum;
-    double differenceSquareSum;
-    uint32_t leftPeakMagnitude;
-    uint32_t rightPeakMagnitude;
-    uint64_t leftZeroSampleCount;
-    uint64_t rightZeroSampleCount;
-    uint64_t leftClippedSampleCount;
-    uint64_t rightClippedSampleCount;
-    uint64_t leftActiveFrameCount;
-    uint64_t rightActiveFrameCount;
-    uint64_t oneSidedFrameCount;
+    int64_t sum;
+    double squareSum;
+    uint32_t peakMagnitude;
+    uint64_t zeroSampleCount;
+    uint64_t clippedSampleCount;
     uint64_t allZeroBlockCount;
-    uint64_t leftOnlyBlockCount;
-    uint64_t rightOnlyBlockCount;
     uint64_t frozenBlockCount;
     uint64_t currentFrozenBlockRun;
     uint64_t longestFrozenBlockRun;
@@ -1327,25 +1153,12 @@ typedef struct ASMacDecodedPlayoutWindowSlot {
     atomic_uint_fast64_t fingerprint;
     atomic_uint_fast64_t frameCount;
     atomic_uint_fast64_t byteCount;
-    atomic_uint_fast64_t leftSumBits;
-    atomic_uint_fast64_t rightSumBits;
-    atomic_uint_fast64_t leftSquareSumBits;
-    atomic_uint_fast64_t rightSquareSumBits;
-    atomic_uint_fast64_t crossSumBits;
-    atomic_uint_fast64_t sumSquareSumBits;
-    atomic_uint_fast64_t differenceSquareSumBits;
-    atomic_uint_fast64_t leftPeakMagnitude;
-    atomic_uint_fast64_t rightPeakMagnitude;
-    atomic_uint_fast64_t leftZeroSampleCount;
-    atomic_uint_fast64_t rightZeroSampleCount;
-    atomic_uint_fast64_t leftClippedSampleCount;
-    atomic_uint_fast64_t rightClippedSampleCount;
-    atomic_uint_fast64_t leftActiveFrameCount;
-    atomic_uint_fast64_t rightActiveFrameCount;
-    atomic_uint_fast64_t oneSidedFrameCount;
+    atomic_uint_fast64_t sumBits;
+    atomic_uint_fast64_t squareSumBits;
+    atomic_uint_fast64_t peakMagnitude;
+    atomic_uint_fast64_t zeroSampleCount;
+    atomic_uint_fast64_t clippedSampleCount;
     atomic_uint_fast64_t allZeroBlockCount;
-    atomic_uint_fast64_t leftOnlyBlockCount;
-    atomic_uint_fast64_t rightOnlyBlockCount;
     atomic_uint_fast64_t frozenBlockCount;
     atomic_uint_fast64_t longestFrozenBlockRun;
 } ASMacDecodedPlayoutWindowSlot;
@@ -1482,25 +1295,12 @@ static void ASMacDecodedInitializeWindowSlot(
     atomic_init(&slot->fingerprint, 0);
     atomic_init(&slot->frameCount, 0);
     atomic_init(&slot->byteCount, 0);
-    atomic_init(&slot->leftSumBits, 0);
-    atomic_init(&slot->rightSumBits, 0);
-    atomic_init(&slot->leftSquareSumBits, 0);
-    atomic_init(&slot->rightSquareSumBits, 0);
-    atomic_init(&slot->crossSumBits, 0);
-    atomic_init(&slot->sumSquareSumBits, 0);
-    atomic_init(&slot->differenceSquareSumBits, 0);
-    atomic_init(&slot->leftPeakMagnitude, 0);
-    atomic_init(&slot->rightPeakMagnitude, 0);
-    atomic_init(&slot->leftZeroSampleCount, 0);
-    atomic_init(&slot->rightZeroSampleCount, 0);
-    atomic_init(&slot->leftClippedSampleCount, 0);
-    atomic_init(&slot->rightClippedSampleCount, 0);
-    atomic_init(&slot->leftActiveFrameCount, 0);
-    atomic_init(&slot->rightActiveFrameCount, 0);
-    atomic_init(&slot->oneSidedFrameCount, 0);
+    atomic_init(&slot->sumBits, 0);
+    atomic_init(&slot->squareSumBits, 0);
+    atomic_init(&slot->peakMagnitude, 0);
+    atomic_init(&slot->zeroSampleCount, 0);
+    atomic_init(&slot->clippedSampleCount, 0);
     atomic_init(&slot->allZeroBlockCount, 0);
-    atomic_init(&slot->leftOnlyBlockCount, 0);
-    atomic_init(&slot->rightOnlyBlockCount, 0);
     atomic_init(&slot->frozenBlockCount, 0);
     atomic_init(&slot->longestFrozenBlockRun, 0);
 }
@@ -1549,60 +1349,32 @@ static ASMacDecodedPlayoutBlockScalars ASMacDecodedAnalyzeBlock(
         .sourceStartFrame = sourceStartFrame,
         .sourceEndFrame = sourceStartFrame + frameCount,
         .frameCount = frameCount,
-        .byteCount = frameCount * ASAudioChannelCount * sizeof(int16_t),
+        .byteCount = frameCount * ASAudioOutputChannelCount * sizeof(int16_t),
         .fingerprint = fnvOffsetBasis,
         .windowFingerprint = initialWindowFingerprint,
     };
     for (uint64_t frame = 0; frame < frameCount; frame += 1) {
-        const int32_t left = samples[frame * ASAudioChannelCount];
-        const int32_t right = samples[frame * ASAudioChannelCount + 1];
-        const uint32_t leftMagnitude = (uint32_t)(left < 0 ? -left : left);
-        const uint32_t rightMagnitude = (uint32_t)(right < 0 ? -right : right);
-        const int32_t sum = left + right;
-        const int32_t difference = left - right;
+        const int32_t sample = samples[frame];
+        const uint32_t magnitude = (uint32_t)(sample < 0 ? -sample : sample);
+        block.sum += sample;
+        block.squareSum += (double)sample * sample;
+        if (magnitude > block.peakMagnitude) {
+            block.peakMagnitude = magnitude;
+        }
+        block.zeroSampleCount += sample == 0;
+        block.clippedSampleCount += magnitude >= 32760;
 
-        block.leftSum += left;
-        block.rightSum += right;
-        block.leftSquareSum += (double)left * left;
-        block.rightSquareSum += (double)right * right;
-        block.crossSum += (double)left * right;
-        block.sumSquareSum += (double)sum * sum;
-        block.differenceSquareSum += (double)difference * difference;
-        if (leftMagnitude > block.leftPeakMagnitude) {
-            block.leftPeakMagnitude = leftMagnitude;
-        }
-        if (rightMagnitude > block.rightPeakMagnitude) {
-            block.rightPeakMagnitude = rightMagnitude;
-        }
-        block.leftZeroSampleCount += left == 0;
-        block.rightZeroSampleCount += right == 0;
-        block.leftClippedSampleCount += leftMagnitude >= 32760;
-        block.rightClippedSampleCount += rightMagnitude >= 32760;
-        const BOOL leftIsActive = leftMagnitude >= 128;
-        const BOOL rightIsActive = rightMagnitude >= 128;
-        block.leftActiveFrameCount += leftIsActive;
-        block.rightActiveFrameCount += rightIsActive;
-        block.oneSidedFrameCount += leftIsActive != rightIsActive;
-
-        // Canonical, cross-boundary-compatible FNV-1a: each signed sample is
-        // reinterpreted as UInt16 and hashed low byte then high byte, L then R.
-        const uint16_t sampleValues[ASAudioChannelCount] = {
-            (uint16_t)left,
-            (uint16_t)right,
-        };
-        for (NSUInteger channel = 0; channel < ASAudioChannelCount; channel += 1) {
-            const uint16_t value = sampleValues[channel];
-            const uint8_t lowByte = (uint8_t)(value & UINT16_C(0x00ff));
-            const uint8_t highByte = (uint8_t)(value >> 8);
-            block.fingerprint ^= lowByte;
-            block.fingerprint *= fnvPrime;
-            block.fingerprint ^= highByte;
-            block.fingerprint *= fnvPrime;
-            block.windowFingerprint ^= lowByte;
-            block.windowFingerprint *= fnvPrime;
-            block.windowFingerprint ^= highByte;
-            block.windowFingerprint *= fnvPrime;
-        }
+        const uint16_t value = (uint16_t)sample;
+        const uint8_t lowByte = (uint8_t)(value & UINT16_C(0x00ff));
+        const uint8_t highByte = (uint8_t)(value >> 8);
+        block.fingerprint ^= lowByte;
+        block.fingerprint *= fnvPrime;
+        block.fingerprint ^= highByte;
+        block.fingerprint *= fnvPrime;
+        block.windowFingerprint ^= lowByte;
+        block.windowFingerprint *= fnvPrime;
+        block.windowFingerprint ^= highByte;
+        block.windowFingerprint *= fnvPrime;
     }
     return block;
 }
@@ -1663,98 +1435,33 @@ static void ASMacDecodedPublishCompletedWindow(
     atomic_store_explicit(&slot->frameCount, window->frameCount, memory_order_relaxed);
     atomic_store_explicit(&slot->byteCount, window->byteCount, memory_order_relaxed);
     atomic_store_explicit(
-        &slot->leftSumBits,
-        ASMacDecodedSignedBits(window->leftSum),
+        &slot->sumBits,
+        ASMacDecodedSignedBits(window->sum),
         memory_order_relaxed
     );
     atomic_store_explicit(
-        &slot->rightSumBits,
-        ASMacDecodedSignedBits(window->rightSum),
+        &slot->squareSumBits,
+        ASMacDecodedDoubleBits(window->squareSum),
         memory_order_relaxed
     );
     atomic_store_explicit(
-        &slot->leftSquareSumBits,
-        ASMacDecodedDoubleBits(window->leftSquareSum),
+        &slot->peakMagnitude,
+        window->peakMagnitude,
         memory_order_relaxed
     );
     atomic_store_explicit(
-        &slot->rightSquareSumBits,
-        ASMacDecodedDoubleBits(window->rightSquareSum),
+        &slot->zeroSampleCount,
+        window->zeroSampleCount,
         memory_order_relaxed
     );
     atomic_store_explicit(
-        &slot->crossSumBits,
-        ASMacDecodedDoubleBits(window->crossSum),
-        memory_order_relaxed
-    );
-    atomic_store_explicit(
-        &slot->sumSquareSumBits,
-        ASMacDecodedDoubleBits(window->sumSquareSum),
-        memory_order_relaxed
-    );
-    atomic_store_explicit(
-        &slot->differenceSquareSumBits,
-        ASMacDecodedDoubleBits(window->differenceSquareSum),
-        memory_order_relaxed
-    );
-    atomic_store_explicit(
-        &slot->leftPeakMagnitude,
-        window->leftPeakMagnitude,
-        memory_order_relaxed
-    );
-    atomic_store_explicit(
-        &slot->rightPeakMagnitude,
-        window->rightPeakMagnitude,
-        memory_order_relaxed
-    );
-    atomic_store_explicit(
-        &slot->leftZeroSampleCount,
-        window->leftZeroSampleCount,
-        memory_order_relaxed
-    );
-    atomic_store_explicit(
-        &slot->rightZeroSampleCount,
-        window->rightZeroSampleCount,
-        memory_order_relaxed
-    );
-    atomic_store_explicit(
-        &slot->leftClippedSampleCount,
-        window->leftClippedSampleCount,
-        memory_order_relaxed
-    );
-    atomic_store_explicit(
-        &slot->rightClippedSampleCount,
-        window->rightClippedSampleCount,
-        memory_order_relaxed
-    );
-    atomic_store_explicit(
-        &slot->leftActiveFrameCount,
-        window->leftActiveFrameCount,
-        memory_order_relaxed
-    );
-    atomic_store_explicit(
-        &slot->rightActiveFrameCount,
-        window->rightActiveFrameCount,
-        memory_order_relaxed
-    );
-    atomic_store_explicit(
-        &slot->oneSidedFrameCount,
-        window->oneSidedFrameCount,
+        &slot->clippedSampleCount,
+        window->clippedSampleCount,
         memory_order_relaxed
     );
     atomic_store_explicit(
         &slot->allZeroBlockCount,
         window->allZeroBlockCount,
-        memory_order_relaxed
-    );
-    atomic_store_explicit(
-        &slot->leftOnlyBlockCount,
-        window->leftOnlyBlockCount,
-        memory_order_relaxed
-    );
-    atomic_store_explicit(
-        &slot->rightOnlyBlockCount,
-        window->rightOnlyBlockCount,
         memory_order_relaxed
     );
     atomic_store_explicit(
@@ -1798,40 +1505,20 @@ static void ASMacDecodedAccumulateBlock(
     window->fingerprint = block->windowFingerprint;
     window->frameCount += block->frameCount;
     window->byteCount += block->byteCount;
-    window->leftSum += block->leftSum;
-    window->rightSum += block->rightSum;
-    window->leftSquareSum += block->leftSquareSum;
-    window->rightSquareSum += block->rightSquareSum;
-    window->crossSum += block->crossSum;
-    window->sumSquareSum += block->sumSquareSum;
-    window->differenceSquareSum += block->differenceSquareSum;
-    if (block->leftPeakMagnitude > window->leftPeakMagnitude) {
-        window->leftPeakMagnitude = block->leftPeakMagnitude;
+    window->sum += block->sum;
+    window->squareSum += block->squareSum;
+    if (block->peakMagnitude > window->peakMagnitude) {
+        window->peakMagnitude = block->peakMagnitude;
     }
-    if (block->rightPeakMagnitude > window->rightPeakMagnitude) {
-        window->rightPeakMagnitude = block->rightPeakMagnitude;
-    }
-    window->leftZeroSampleCount += block->leftZeroSampleCount;
-    window->rightZeroSampleCount += block->rightZeroSampleCount;
-    window->leftClippedSampleCount += block->leftClippedSampleCount;
-    window->rightClippedSampleCount += block->rightClippedSampleCount;
-    window->leftActiveFrameCount += block->leftActiveFrameCount;
-    window->rightActiveFrameCount += block->rightActiveFrameCount;
-    window->oneSidedFrameCount += block->oneSidedFrameCount;
+    window->zeroSampleCount += block->zeroSampleCount;
+    window->clippedSampleCount += block->clippedSampleCount;
 
-    const BOOL blockIsAllZero = block->leftSquareSum == 0
-        && block->rightSquareSum == 0;
-    const BOOL blockIsLeftOnly = block->leftActiveFrameCount > 0
-        && block->rightActiveFrameCount == 0;
-    const BOOL blockIsRightOnly = block->leftActiveFrameCount == 0
-        && block->rightActiveFrameCount > 0;
+    const BOOL blockIsAllZero = block->squareSum == 0;
     const BOOL blockIsFrozen = !blockIsAllZero
         && state->decodedPreviousBlockIsValid
         && state->decodedPreviousBlockFrameCount == block->frameCount
         && state->decodedPreviousBlockFingerprint == block->fingerprint;
     window->allZeroBlockCount += blockIsAllZero;
-    window->leftOnlyBlockCount += blockIsLeftOnly;
-    window->rightOnlyBlockCount += blockIsRightOnly;
     if (blockIsFrozen) {
         window->frozenBlockCount += 1;
         window->currentFrozenBlockRun += 1;
@@ -1904,7 +1591,7 @@ static void ASMacDecodedAccumulateSamples(
             sourceStartFrame + sourceOffset;
         const ASMacDecodedPlayoutBlockScalars block =
             ASMacDecodedAnalyzeBlock(
-                samples + sourceOffset * ASAudioChannelCount,
+                samples + sourceOffset * ASAudioOutputChannelCount,
                 chunkSourceStartFrame,
                 chunkFrameCount,
                 window->fingerprint
@@ -2083,80 +1770,28 @@ static BOOL ASMacDecodedReadWindowSlot(
         );
         value.frameCount = atomic_load_explicit(&slot->frameCount, memory_order_relaxed);
         value.byteCount = atomic_load_explicit(&slot->byteCount, memory_order_relaxed);
-        value.leftSum = ASMacDecodedSignedFromBits(atomic_load_explicit(
-            &slot->leftSumBits,
+        value.sum = ASMacDecodedSignedFromBits(atomic_load_explicit(
+            &slot->sumBits,
             memory_order_relaxed
         ));
-        value.rightSum = ASMacDecodedSignedFromBits(atomic_load_explicit(
-            &slot->rightSumBits,
+        value.squareSum = ASMacDecodedDoubleFromBits(atomic_load_explicit(
+            &slot->squareSumBits,
             memory_order_relaxed
         ));
-        value.leftSquareSum = ASMacDecodedDoubleFromBits(atomic_load_explicit(
-            &slot->leftSquareSumBits,
-            memory_order_relaxed
-        ));
-        value.rightSquareSum = ASMacDecodedDoubleFromBits(atomic_load_explicit(
-            &slot->rightSquareSumBits,
-            memory_order_relaxed
-        ));
-        value.crossSum = ASMacDecodedDoubleFromBits(atomic_load_explicit(
-            &slot->crossSumBits,
-            memory_order_relaxed
-        ));
-        value.sumSquareSum = ASMacDecodedDoubleFromBits(atomic_load_explicit(
-            &slot->sumSquareSumBits,
-            memory_order_relaxed
-        ));
-        value.differenceSquareSum = ASMacDecodedDoubleFromBits(atomic_load_explicit(
-            &slot->differenceSquareSumBits,
-            memory_order_relaxed
-        ));
-        value.leftPeakMagnitude = (uint32_t)atomic_load_explicit(
-            &slot->leftPeakMagnitude,
+        value.peakMagnitude = (uint32_t)atomic_load_explicit(
+            &slot->peakMagnitude,
             memory_order_relaxed
         );
-        value.rightPeakMagnitude = (uint32_t)atomic_load_explicit(
-            &slot->rightPeakMagnitude,
+        value.zeroSampleCount = atomic_load_explicit(
+            &slot->zeroSampleCount,
             memory_order_relaxed
         );
-        value.leftZeroSampleCount = atomic_load_explicit(
-            &slot->leftZeroSampleCount,
-            memory_order_relaxed
-        );
-        value.rightZeroSampleCount = atomic_load_explicit(
-            &slot->rightZeroSampleCount,
-            memory_order_relaxed
-        );
-        value.leftClippedSampleCount = atomic_load_explicit(
-            &slot->leftClippedSampleCount,
-            memory_order_relaxed
-        );
-        value.rightClippedSampleCount = atomic_load_explicit(
-            &slot->rightClippedSampleCount,
-            memory_order_relaxed
-        );
-        value.leftActiveFrameCount = atomic_load_explicit(
-            &slot->leftActiveFrameCount,
-            memory_order_relaxed
-        );
-        value.rightActiveFrameCount = atomic_load_explicit(
-            &slot->rightActiveFrameCount,
-            memory_order_relaxed
-        );
-        value.oneSidedFrameCount = atomic_load_explicit(
-            &slot->oneSidedFrameCount,
+        value.clippedSampleCount = atomic_load_explicit(
+            &slot->clippedSampleCount,
             memory_order_relaxed
         );
         value.allZeroBlockCount = atomic_load_explicit(
             &slot->allZeroBlockCount,
-            memory_order_relaxed
-        );
-        value.leftOnlyBlockCount = atomic_load_explicit(
-            &slot->leftOnlyBlockCount,
-            memory_order_relaxed
-        );
-        value.rightOnlyBlockCount = atomic_load_explicit(
-            &slot->rightOnlyBlockCount,
             memory_order_relaxed
         );
         value.frozenBlockCount = atomic_load_explicit(
@@ -2459,7 +2094,7 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
         || samples == NULL
         || frameCount == 0
         || frameCount > UINT32_MAX
-        || frameCount > UINT32_MAX / (ASAudioChannelCount * sizeof(int16_t))) {
+        || frameCount > UINT32_MAX / (ASAudioInputChannelCount * sizeof(int16_t))) {
         return NO;
     }
 
@@ -2537,7 +2172,7 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
     // than lying about frameCount or depending on private native state.
     const UInt32 callbackFrameCount = (UInt32)frameCount;
     const UInt32 requiredByteCount =
-        callbackFrameCount * ASAudioChannelCount * (UInt32)sizeof(int16_t);
+        callbackFrameCount * ASAudioInputChannelCount * (UInt32)sizeof(int16_t);
     ASMacStereoRenderContext renderContext = {
         .samples = samples,
         .frameCount = callbackFrameCount,
@@ -2554,7 +2189,7 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
     );
 
     const uint64_t requiredSampleElementCount =
-        (uint64_t)callbackFrameCount * ASAudioChannelCount;
+        (uint64_t)callbackFrameCount * ASAudioInputChannelCount;
     const BOOL renderWasAcknowledged = status == noErr
         && renderContext.invocationCount == 1
         && renderContext.copiedFrameCount == callbackFrameCount
@@ -2641,17 +2276,17 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
     pthread_mutex_unlock(&_state->lifecycleMutex);
 }
 
-- (BOOL)renderPlayoutInterleavedStereoInt16:(int16_t *)samples
-                                  frameCount:(NSUInteger)frameCount {
+- (BOOL)renderPlayoutMonoInt16:(int16_t *)samples
+                    frameCount:(NSUInteger)frameCount {
     if (_state == NULL
         || samples == NULL
         || frameCount == 0
         || frameCount > UINT32_MAX
-        || frameCount > UINT32_MAX / (ASAudioChannelCount * sizeof(int16_t))) {
+        || frameCount > UINT32_MAX / (ASAudioOutputChannelCount * sizeof(int16_t))) {
         return NO;
     }
 
-    const size_t sampleCount = frameCount * ASAudioChannelCount;
+    const size_t sampleCount = frameCount * ASAudioOutputChannelCount;
     const UInt32 byteCount = (UInt32)(sampleCount * sizeof(int16_t));
     memset(samples, 0, byteCount);
 
@@ -2705,7 +2340,7 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
 
     AudioBufferList audioBufferList = {0};
     audioBufferList.mNumberBuffers = 1;
-    audioBufferList.mBuffers[0].mNumberChannels = ASAudioChannelCount;
+    audioBufferList.mBuffers[0].mNumberChannels = ASAudioOutputChannelCount;
     audioBufferList.mBuffers[0].mDataByteSize = byteCount;
     audioBufferList.mBuffers[0].mData = samples;
 
@@ -2724,11 +2359,11 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
     );
 
     // This is the earliest decoded-content boundary: native WebRTC has returned into the exact
-    // caller-owned stereo storage and no output-device transform has run yet. Cumulative contract
+    // caller-owned mono storage and no output-device transform has run yet. Cumulative contract
     // evidence is lock-free and exact. Content analysis retains only fixed-size scalar sums.
     const uint32_t returnedByteCount = audioBufferList.mBuffers[0].mDataByteSize;
     const BOOL bufferContractWasExact = audioBufferList.mNumberBuffers == 1
-        && audioBufferList.mBuffers[0].mNumberChannels == ASAudioChannelCount
+        && audioBufferList.mBuffers[0].mNumberChannels == ASAudioOutputChannelCount
         && audioBufferList.mBuffers[0].mData == samples
         && returnedByteCount == byteCount;
     const uint64_t renderCall = atomic_fetch_add_explicit(
@@ -2819,16 +2454,16 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
     if (_state == NULL
         || frameCount == 0
         || frameCount > UINT32_MAX
-        || frameCount > UINT32_MAX / (ASAudioChannelCount * sizeof(int16_t))) {
+        || frameCount > UINT32_MAX / (ASAudioOutputChannelCount * sizeof(int16_t))) {
         return NO;
     }
-    const size_t sampleCount = frameCount * ASAudioChannelCount;
+    const size_t sampleCount = frameCount * ASAudioOutputChannelCount;
     int16_t *samples = calloc(sampleCount, sizeof(int16_t));
     if (samples == NULL) {
         return NO;
     }
-    const BOOL rendered = [self renderPlayoutInterleavedStereoInt16:samples
-                                                         frameCount:frameCount];
+    const BOOL rendered = [self renderPlayoutMonoInt16:samples
+                                           frameCount:frameCount];
     free(samples);
     return rendered;
 }
@@ -3015,7 +2650,6 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
     const ASMacDecodedPlayoutWindowScalars *window = &published.scalars;
     const double frameCount = (double)window->frameCount;
     const double fullScale = 32768.0;
-    const double fullScaleSquared = fullScale * fullScale;
     snapshot.hasCompletedWindow = true;
     snapshot.completedWindowSequence = published.sequence;
     snapshot.completedWindowGeneration = window->generation;
@@ -3028,71 +2662,22 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
     snapshot.completedWindowSourceEndFrame = window->sourceEndFrame;
     snapshot.completedWindowFingerprint = window->fingerprint;
     snapshot.completedWindowDurationSeconds = frameCount / ASAudioSampleRate;
-    snapshot.leftRMS = sqrt(window->leftSquareSum / frameCount) / fullScale;
-    snapshot.rightRMS = sqrt(window->rightSquareSum / frameCount) / fullScale;
-    snapshot.leftPeak = (double)window->leftPeakMagnitude / fullScale;
-    snapshot.rightPeak = (double)window->rightPeakMagnitude / fullScale;
-    snapshot.leftRMSDecibelsFS = snapshot.leftRMS > 0
-        ? 20 * log10(snapshot.leftRMS)
+    snapshot.rms = sqrt(window->squareSum / frameCount) / fullScale;
+    snapshot.peak = (double)window->peakMagnitude / fullScale;
+    snapshot.rmsDecibelsFS = snapshot.rms > 0
+        ? 20 * log10(snapshot.rms)
         : -INFINITY;
-    snapshot.rightRMSDecibelsFS = snapshot.rightRMS > 0
-        ? 20 * log10(snapshot.rightRMS)
+    snapshot.peakDecibelsFS = snapshot.peak > 0
+        ? 20 * log10(snapshot.peak)
         : -INFINITY;
-    snapshot.leftPeakDecibelsFS = snapshot.leftPeak > 0
-        ? 20 * log10(snapshot.leftPeak)
-        : -INFINITY;
-    snapshot.rightPeakDecibelsFS = snapshot.rightPeak > 0
-        ? 20 * log10(snapshot.rightPeak)
-        : -INFINITY;
-    snapshot.leftDC = ((double)window->leftSum / frameCount) / fullScale;
-    snapshot.rightDC = ((double)window->rightSum / frameCount) / fullScale;
-    snapshot.leftZeroSampleCount = window->leftZeroSampleCount;
-    snapshot.rightZeroSampleCount = window->rightZeroSampleCount;
-    snapshot.leftZeroFraction = (double)window->leftZeroSampleCount / frameCount;
-    snapshot.rightZeroFraction = (double)window->rightZeroSampleCount / frameCount;
-    snapshot.leftClippedSampleCount = window->leftClippedSampleCount;
-    snapshot.rightClippedSampleCount = window->rightClippedSampleCount;
-    snapshot.leftClippingFraction =
-        (double)window->leftClippedSampleCount / frameCount;
-    snapshot.rightClippingFraction =
-        (double)window->rightClippedSampleCount / frameCount;
-    const double centeredLeftPower = fmax(
-        0,
-        window->leftSquareSum
-            - ((double)window->leftSum * window->leftSum) / frameCount
-    );
-    const double centeredRightPower = fmax(
-        0,
-        window->rightSquareSum
-            - ((double)window->rightSum * window->rightSum) / frameCount
-    );
-    if (centeredLeftPower > 0 && centeredRightPower > 0) {
-        const double centeredCrossPower = window->crossSum
-            - ((double)window->leftSum * window->rightSum) / frameCount;
-        snapshot.leftRightCorrelationIsValid = true;
-        snapshot.leftRightCorrelation = centeredCrossPower
-            / sqrt(centeredLeftPower * centeredRightPower);
-        snapshot.leftRightCorrelation = fmax(
-            -1,
-            fmin(1, snapshot.leftRightCorrelation)
-        );
-    }
-    snapshot.sumPower = window->sumSquareSum
-        / (frameCount * 4 * fullScaleSquared);
-    snapshot.differencePower = window->differenceSquareSum
-        / (frameCount * 4 * fullScaleSquared);
-    snapshot.oneSidedFrameCount = window->oneSidedFrameCount;
-    snapshot.oneSidedFraction =
-        (double)window->oneSidedFrameCount / frameCount;
-    snapshot.windowIsAllZero = window->leftSquareSum == 0
-        && window->rightSquareSum == 0;
-    snapshot.windowIsLeftOnly = window->leftActiveFrameCount > 0
-        && window->rightActiveFrameCount == 0;
-    snapshot.windowIsRightOnly = window->leftActiveFrameCount == 0
-        && window->rightActiveFrameCount > 0;
+    snapshot.dc = ((double)window->sum / frameCount) / fullScale;
+    snapshot.zeroSampleCount = window->zeroSampleCount;
+    snapshot.zeroFraction = (double)window->zeroSampleCount / frameCount;
+    snapshot.clippedSampleCount = window->clippedSampleCount;
+    snapshot.clippingFraction =
+        (double)window->clippedSampleCount / frameCount;
+    snapshot.windowIsAllZero = window->squareSum == 0;
     snapshot.allZeroBlockCount = window->allZeroBlockCount;
-    snapshot.leftOnlyBlockCount = window->leftOnlyBlockCount;
-    snapshot.rightOnlyBlockCount = window->rightOnlyBlockCount;
     snapshot.frozenBlockCount = window->frozenBlockCount;
     snapshot.longestFrozenBlockRun = window->longestFrozenBlockRun;
     return snapshot;
@@ -3102,11 +2687,11 @@ static void ASNotifyOutputInterrupted(id<LKRTCAudioDeviceDelegate> delegate) {
 
 - (double)deviceInputSampleRate { return ASAudioSampleRate; }
 - (NSTimeInterval)inputIOBufferDuration { return ASAudioIOBufferDuration; }
-- (NSInteger)inputNumberOfChannels { return ASAudioChannelCount; }
+- (NSInteger)inputNumberOfChannels { return ASAudioInputChannelCount; }
 - (NSTimeInterval)inputLatency { return 0; }
 - (double)deviceOutputSampleRate { return ASAudioSampleRate; }
 - (NSTimeInterval)outputIOBufferDuration { return ASAudioIOBufferDuration; }
-- (NSInteger)outputNumberOfChannels { return ASAudioChannelCount; }
+- (NSInteger)outputNumberOfChannels { return ASAudioOutputChannelCount; }
 - (NSTimeInterval)outputLatency { return 0; }
 
 - (BOOL)isInitialized {

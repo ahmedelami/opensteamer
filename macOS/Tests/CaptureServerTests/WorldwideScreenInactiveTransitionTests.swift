@@ -249,6 +249,38 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
                 ),
             .runtimeProgressStalled
         )
+        let capturedClockRejection =
+            BlackHoleFaceTimeClockRejection
+                .insufficientSigned32Headroom(
+                    observation: BlackHoleFaceTimeClockObservation(
+                        deviceSampleTime: 6_687_779_444,
+                        deviceHostTime: 1,
+                        deviceSampleRate: 48_000,
+                        projectedFaceTimeSampleTime: 3_343_889_722
+                    ),
+                    maximumProjectedSampleTime:
+                        BlackHoleFaceTimeClockPolicy
+                            .maximumProjectedSampleTime
+                )
+        XCTAssertEqual(
+            WorldwideScreenService
+                .iPhoneMicrophoneRuntimeFailureCategory(
+                    for: .sharedClockUnsafe(
+                        capturedClockRejection
+                    )
+                ),
+            .sharedClockUnsafe
+        )
+        let formatRejection =
+            BlackHoleMicrophoneOutputFormatRejection
+                .unexpectedDeviceChannelCount(actual: 4)
+        XCTAssertEqual(
+            WorldwideScreenService
+                .iPhoneMicrophoneRuntimeFailureCategory(
+                    for: .formatUnsafe(formatRejection)
+                ),
+            .formatUnsafe
+        )
 
         let message = WorldwideScreenService
             .iPhoneMicrophoneRuntimeFailureLogMessage(
@@ -256,6 +288,60 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
             )
         XCTAssertTrue(message.contains("output runtime failure"))
         XCTAssertFalse(message.contains("AudioQueue"))
+        let clockMessage = WorldwideScreenService
+            .iPhoneMicrophoneRuntimeFailureLogMessage(
+                error: .sharedClockUnsafe(
+                    capturedClockRejection
+                )
+            )
+        XCTAssertTrue(
+            clockMessage.contains(
+                "projected 24 kHz sample time 3343889722"
+            )
+        )
+        XCTAssertTrue(
+            clockMessage.contains("automatic restart is blocked")
+        )
+        XCTAssertFalse(clockMessage.contains("BlackHole2ch_UID"))
+        XCTAssertFalse(clockMessage.contains("BlackHole2ch_2_UID"))
+        XCTAssertFalse(
+            clockMessage.contains(
+                WorldwideVirtualMicrophoneEndpointContract
+                    .visibleDefaultInputDeviceUID
+            )
+        )
+        XCTAssertFalse(
+            clockMessage.contains(
+                WorldwideVirtualMicrophoneEndpointContract
+                    .hiddenMirrorSinkDeviceUID
+            )
+        )
+        let formatMessage = WorldwideScreenService
+            .iPhoneMicrophoneRuntimeFailureLogMessage(
+                error: .formatUnsafe(formatRejection)
+            )
+        XCTAssertTrue(
+            formatMessage.contains(formatRejection.description),
+            "The exact typed readback rejection must reach telemetry."
+        )
+        XCTAssertTrue(
+            formatMessage.contains("automatic restart is blocked")
+        )
+        XCTAssertFalse(formatMessage.contains("BlackHole2ch_UID"))
+        XCTAssertFalse(formatMessage.contains("BlackHole2ch_2_UID"))
+        XCTAssertFalse(
+            formatMessage.contains(
+                WorldwideVirtualMicrophoneEndpointContract
+                    .visibleDefaultInputDeviceUID
+            )
+        )
+        XCTAssertFalse(
+            formatMessage.contains(
+                WorldwideVirtualMicrophoneEndpointContract
+                    .hiddenMirrorSinkDeviceUID
+            )
+        )
+        XCTAssertFalse(formatMessage.contains("raw PCM"))
 
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -284,6 +370,384 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
             )
         )
         XCTAssertFalse(handler.contains("AudioQueue failure"))
+
+        let failedKeyCapture = try XCTUnwrap(
+            handler.range(
+                of: "iPhoneMicrophoneForwarding.snapshot().currentKey"
+            )
+        )
+        let formatFailureBranch = try sourceSlice(
+            in: handler,
+            after:
+                "        if case .formatUnsafe(let rejection) = error {",
+            before:
+                "        if case .sharedClockUnsafe(let rejection) = error {"
+        )
+        let formatRuntimeTeardown = try XCTUnwrap(
+            formatFailureBranch.range(
+                of: "iPhoneMicrophoneForwarding.handleRuntimeFailure("
+            )
+        )
+        let formatRevocation = try XCTUnwrap(
+            formatFailureBranch.range(
+                of: "iPhoneMicrophoneFormatDidFail("
+            )
+        )
+        XCTAssertLessThan(
+            formatRuntimeTeardown.lowerBound,
+            formatRevocation.lowerBound,
+            "The driver must own the exact failed key before the service blocks its pair."
+        )
+        XCTAssertFalse(
+            formatFailureBranch.contains(
+                "consumeCurrentBlackHoleDeviceSnapshot()"
+            ),
+            "A deterministic format failure must not readmit the rejected pair."
+        )
+        let clockFailureBranch = try sourceSlice(
+            in: handler,
+            after:
+                "        if case .sharedClockUnsafe(let rejection) = error {",
+            before:
+                "        // A listener may already have closed the realtime gate while its actor"
+        )
+        let clockRuntimeTeardown = try XCTUnwrap(
+            clockFailureBranch.range(
+                of: "iPhoneMicrophoneForwarding.handleRuntimeFailure("
+            )
+        )
+        let clockRevocation = try XCTUnwrap(
+            clockFailureBranch.range(
+                of: "iPhoneMicrophoneSharedClockDidFail("
+            )
+        )
+        XCTAssertLessThan(
+            clockRuntimeTeardown.lowerBound,
+            clockRevocation.lowerBound,
+            "The non-retryable driver teardown must own the captured exact key before the service blocks and revokes it."
+        )
+        XCTAssertFalse(
+            clockFailureBranch.contains(
+                "consumeCurrentBlackHoleDeviceSnapshot()"
+            ),
+            "A deterministic shared-clock failure must not readmit the rejected pair."
+        )
+
+        let clockBranchStart = try XCTUnwrap(
+            handler.range(
+                of: "if case .sharedClockUnsafe(let rejection) = error"
+            )
+        )
+        let formatBranchStart = try XCTUnwrap(
+            handler.range(
+                of: "if case .formatUnsafe(let rejection) = error"
+            )
+        )
+        XCTAssertLessThan(
+            failedKeyCapture.lowerBound,
+            formatBranchStart.lowerBound,
+            "The exact failed key must be captured before format-failure handling can clear it."
+        )
+        XCTAssertLessThan(
+            failedKeyCapture.lowerBound,
+            clockBranchStart.lowerBound,
+            "The exact failed key must be captured before handling can clear it."
+        )
+
+        let genericFailureBranch = try sourceSlice(
+            in: handler,
+            after:
+                "        // A listener may already have closed the realtime gate while its actor",
+            before: "        logger.error("
+        )
+        let genericRevalidation = try XCTUnwrap(
+            genericFailureBranch.range(
+                of: "await consumeCurrentBlackHoleDeviceSnapshot()"
+            )
+        )
+        let genericRuntimeTeardown = try XCTUnwrap(
+            genericFailureBranch.range(
+                of: "iPhoneMicrophoneForwarding.handleRuntimeFailure("
+            )
+        )
+        XCTAssertLessThan(
+            genericRevalidation.lowerBound,
+            genericRuntimeTeardown.lowerBound,
+            "Fresh endpoint-pair and safe-output proof must precede any retryable driver teardown/redrive."
+        )
+
+        let clockFailureHandler = try sourceSlice(
+            in: serviceSource,
+            after:
+                "    private func iPhoneMicrophoneSharedClockDidFail(",
+            before:
+                "    private func startIPhoneMicrophoneDeviceMonitoringIfNeeded()"
+        )
+        let blockPublication = try XCTUnwrap(
+            clockFailureHandler.range(
+                of: "sharedClockBlockedPeerPair ="
+            )
+        )
+        let routeRevocation = try XCTUnwrap(
+            clockFailureHandler.range(
+                of: "revokeWorldwideMicrophoneForUnsafeOutputInvariant("
+            )
+        )
+        XCTAssertTrue(
+            clockFailureHandler.contains(
+                "preservingSharedClockUnsafeFailure: true"
+            )
+        )
+        XCTAssertLessThan(
+            blockPublication.lowerBound,
+            routeRevocation.lowerBound,
+            "The exact peer/pair generation must be blocked before route ownership is revoked."
+        )
+
+        let formatFailureHandler = try sourceSlice(
+            in: serviceSource,
+            after:
+                "    private func iPhoneMicrophoneFormatDidFail(",
+            before:
+                "    private func startIPhoneMicrophoneDeviceMonitoringIfNeeded()"
+        )
+        let formatBlockPublication = try XCTUnwrap(
+            formatFailureHandler.range(
+                of: "formatUnsafeBlockedPeerPair ="
+            )
+        )
+        let formatRouteRevocation = try XCTUnwrap(
+            formatFailureHandler.range(
+                of: "revokeWorldwideMicrophoneForUnsafeOutputInvariant("
+            )
+        )
+        XCTAssertTrue(
+            formatFailureHandler.contains(
+                "preservingFormatUnsafeFailure: true"
+            )
+        )
+        XCTAssertTrue(
+            formatFailureHandler.contains(
+                "error: .formatUnsafe(rejection)"
+            )
+        )
+        XCTAssertLessThan(
+            formatBlockPublication.lowerBound,
+            formatRouteRevocation.lowerBound,
+            "The exact peer/pair format block must publish before route revocation."
+        )
+
+        let routeRevocationHandler = try sourceSlice(
+            in: serviceSource,
+            after:
+                "    private func revokeWorldwideMicrophoneForUnsafeOutputInvariant()",
+            before:
+                "    private func resumeWorldwideMicrophoneAfterSafeOutputInvariant()"
+        )
+        let writerClose = try XCTUnwrap(
+            routeRevocationHandler.range(
+                of: "blackHoleMicrophoneOutputAuthorizationGate?.close()"
+            )
+        )
+        let forwardingRevocation = try XCTUnwrap(
+            routeRevocationHandler.range(
+                of: "iPhoneMicrophoneForwarding.invalidateTransport("
+            )
+        )
+        let conditionalInputRelease = try XCTUnwrap(
+            routeRevocationHandler.range(
+                of: "blackHoleDefaultInput.transportDidBecomeUnhealthy("
+            )
+        )
+        XCTAssertLessThan(
+            writerClose.lowerBound,
+            forwardingRevocation.lowerBound
+        )
+        XCTAssertLessThan(
+            forwardingRevocation.lowerBound,
+            conditionalInputRelease.lowerBound,
+            "The writer and track route must close before the coordinator conditionally releases its exact default-input lease."
+        )
+
+        let admission = try sourceSlice(
+            in: serviceSource,
+            after:
+                "    private func admitBlackHoleInputWithinSafeOutputFence()",
+            before:
+                "    /// Continuously verifies the output invariant."
+        )
+        let clockFence = try XCTUnwrap(
+            admission.range(
+                of: "if sharedClockBlocksCurrentPeerAndPair()"
+            )
+        )
+        let formatFence = try XCTUnwrap(
+            admission.range(
+                of: "if formatUnsafeBlocksCurrentPeerAndPair()"
+            )
+        )
+        let mutationTransaction = try XCTUnwrap(
+            admission.range(
+                of: "enforceDuringAdmission("
+            )
+        )
+        XCTAssertLessThan(
+            clockFence.lowerBound,
+            mutationTransaction.lowerBound,
+            "A statistics tick must reject the blocked peer/pair before reopening or mutating Core Audio routing."
+        )
+        XCTAssertLessThan(
+            formatFence.lowerBound,
+            mutationTransaction.lowerBound,
+            "A format-rejected peer/pair must remain fenced before Core Audio routing mutation."
+        )
+    }
+
+    func testCompatibilityBlocksSurviveDriverKeyChurnAndClearForNewPeerOrPair()
+    {
+        let epoch = UUID()
+        let originalKey = WorldwideIPhoneMicrophoneForwardingKey(
+            monitorEpoch: epoch,
+            deviceGeneration: 7,
+            peerGeneration: 11,
+            transportAuthorizationEpoch: 13,
+            trackGeneration: 17
+        )
+        let churnedDriverKey =
+            WorldwideIPhoneMicrophoneForwardingKey(
+                monitorEpoch: epoch,
+                deviceGeneration: 7,
+                peerGeneration: 11,
+                transportAuthorizationEpoch: 19,
+                trackGeneration: 23
+            )
+        let originalBlock =
+            WorldwideScreenService.SharedClockBlockedPeerPair(
+                forwardingKey: originalKey
+            )
+        XCTAssertEqual(
+            originalBlock,
+            WorldwideScreenService.SharedClockBlockedPeerPair(
+                forwardingKey: churnedDriverKey
+            ),
+            "Track and transport-authorization churn must not escape an exact peer/pair clock block."
+        )
+        let originalFormatBlock =
+            WorldwideScreenService.FormatUnsafeBlockedPeerPair(
+                forwardingKey: originalKey
+            )
+        XCTAssertEqual(
+            originalFormatBlock,
+            WorldwideScreenService.FormatUnsafeBlockedPeerPair(
+                forwardingKey: churnedDriverKey
+            ),
+            "Track and transport churn must not escape an exact peer/pair format block."
+        )
+
+        func pairSnapshot(
+            epoch: UUID,
+            generation: UInt64
+        ) -> BlackHoleDeviceAvailabilitySnapshot {
+            BlackHoleDeviceAvailabilitySnapshot(
+                monitorEpoch: epoch,
+                deviceGeneration: generation,
+                defaultInputEndpoint: .init(
+                    deviceID: 79,
+                    deviceUID: WorldwideVirtualMicrophoneEndpointContract
+                        .visibleDefaultInputDeviceUID
+                ),
+                hiddenMirrorSinkEndpoint: .init(
+                    deviceID: 89,
+                    deviceUID: WorldwideVirtualMicrophoneEndpointContract
+                        .hiddenMirrorSinkDeviceUID
+                )
+            )
+        }
+
+        let originalSnapshot = pairSnapshot(
+            epoch: epoch,
+            generation: 7
+        )
+        var samePairBlock:
+            WorldwideScreenService.SharedClockBlockedPeerPair? =
+                originalBlock
+        XCTAssertTrue(
+            WorldwideScreenService.sharedClockBlockRemainsActive(
+                &samePairBlock,
+                peerGeneration: 11,
+                snapshot: originalSnapshot
+            )
+        )
+        XCTAssertEqual(samePairBlock, originalBlock)
+        var samePairFormatBlock:
+            WorldwideScreenService.FormatUnsafeBlockedPeerPair? =
+                originalFormatBlock
+        XCTAssertTrue(
+            WorldwideScreenService.formatUnsafeBlockRemainsActive(
+                &samePairFormatBlock,
+                peerGeneration: 11,
+                snapshot: originalSnapshot
+            )
+        )
+        XCTAssertEqual(samePairFormatBlock, originalFormatBlock)
+
+        var newPeerBlock:
+            WorldwideScreenService.SharedClockBlockedPeerPair? =
+                originalBlock
+        XCTAssertFalse(
+            WorldwideScreenService.sharedClockBlockRemainsActive(
+                &newPeerBlock,
+                peerGeneration: 12,
+                snapshot: originalSnapshot
+            )
+        )
+        XCTAssertNil(newPeerBlock)
+        var newPeerFormatBlock:
+            WorldwideScreenService.FormatUnsafeBlockedPeerPair? =
+                originalFormatBlock
+        XCTAssertFalse(
+            WorldwideScreenService.formatUnsafeBlockRemainsActive(
+                &newPeerFormatBlock,
+                peerGeneration: 12,
+                snapshot: originalSnapshot
+            )
+        )
+        XCTAssertNil(newPeerFormatBlock)
+
+        for replacementSnapshot in [
+            pairSnapshot(epoch: epoch, generation: 8),
+            pairSnapshot(epoch: UUID(), generation: 7),
+        ] {
+            var changedPairBlock:
+                WorldwideScreenService.SharedClockBlockedPeerPair? =
+                    originalBlock
+            XCTAssertFalse(
+                WorldwideScreenService.sharedClockBlockRemainsActive(
+                    &changedPairBlock,
+                    peerGeneration: 11,
+                    snapshot: replacementSnapshot
+                )
+            )
+            XCTAssertNil(
+                changedPairBlock,
+                "A new monitor or device generation must clear the block so a fresh proof can be attempted."
+            )
+            var changedFormatBlock:
+                WorldwideScreenService.FormatUnsafeBlockedPeerPair? =
+                    originalFormatBlock
+            XCTAssertFalse(
+                WorldwideScreenService
+                    .formatUnsafeBlockRemainsActive(
+                        &changedFormatBlock,
+                        peerGeneration: 11,
+                        snapshot: replacementSnapshot
+                    )
+            )
+            XCTAssertNil(
+                changedFormatBlock,
+                "A new monitor or device generation must clear the format block for a fresh proof."
+            )
+        }
     }
 
     func testDefaultInputSelectionPrecedesSystemAudioAndHasNoTrackDependency()
@@ -1622,7 +2086,8 @@ private final class
     private let lock = NSLock()
     private let devices: [AudioDeviceID: String] = [
         1: "BuiltInMic_UID",
-        2: "BlackHole2ch_UID",
+        2: WorldwideVirtualMicrophoneEndpointContract
+            .visibleDefaultInputDeviceUID,
     ]
     private var currentDeviceID: AudioDeviceID = 1
     private var listener: Listener?

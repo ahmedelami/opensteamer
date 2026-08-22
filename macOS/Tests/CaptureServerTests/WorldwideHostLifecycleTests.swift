@@ -28,8 +28,8 @@ final class WorldwideHostLifecycleTests: XCTestCase {
                 deviceGeneration: 4,
                 processIdentifier: 42_071
             ),
-            "Worldwide authenticated media route selected BlackHole " +
-                "default input routingEpoch=\(Self.routingEpoch) " +
+            "Worldwide authenticated media route selected virtual " +
+                "microphone default input routingEpoch=\(Self.routingEpoch) " +
                 "peerGeneration=9 " +
                 "deviceGeneration=4 pid=42071"
         )
@@ -88,41 +88,32 @@ final class WorldwideHostLifecycleTests: XCTestCase {
                 "enqueueFailures=0 pcmLifecycleGeneration=0 " +
                 "pcmWindowSequence=0 pcmCompletedFrames=0 " +
                 "pcmSourceStartFrame=0 pcmSourceEndFrame=0 " +
-                "pcmWindowFrames=0 " +
+                "pcmWindowFrames=0 pcmWindowBytes=0 " +
                 "boundDecGeneration=0 " +
                 "boundDecRenderFloor=0 " +
-                "pcmLRMS=0.000000 pcmLRMSdBFS=-160.00 " +
-                "pcmLPeak=0.000000 pcmLPeakdBFS=-160.00 " +
-                "pcmLDC=0.000000 pcmLZeroFraction=0.000000 " +
-                "pcmLClippingFraction=0.000000 " +
-                "pcmRRMS=0.000000 pcmRRMSdBFS=-160.00 " +
-                "pcmRPeak=0.000000 pcmRPeakdBFS=-160.00 " +
-                "pcmRDC=0.000000 pcmRZeroFraction=0.000000 " +
-                "pcmRClippingFraction=0.000000 " +
-                "pcmLRCorrelation=0.000000 pcmSumPower=0.000000 " +
-                "pcmDifferencePower=0.000000 " +
-                "pcmOneSidedFraction=0.000000 " +
-                "pcmLRCorrelationValid=false " +
-                "decGeneration=0 decCalls=0 decAnalyzedFrames=0 " +
+                "pcmRMS=0.000000 pcmRMSdBFS=-160.00 " +
+                "pcmPeak=0.000000 pcmPeakdBFS=-160.00 " +
+                "pcmDC=0.000000 pcmZeroFraction=0.000000 " +
+                "pcmClippingFraction=0.000000 " +
+                "decGeneration=0 decCalls=0 decRequestedFrames=0 " +
+                "decRequestedBytes=0 decReturnedBytes=0 " +
+                "decNativeSuccess=0 decNativeFailure=0 " +
+                "decExactContracts=0 decAnalyzedCalls=0 " +
+                "decAnalyzedFrames=0 decAnalyzedBytes=0 " +
                 "decDropped=0 decContractMismatch=0 " +
                 "decPendingFrames=0 decLatestCall=0 " +
-                "decLatestStatus=0 decLatestExact=false " +
+                "decLatestStatus=0 decLatestRequestedFrames=0 " +
+                "decLatestRequestedBytes=0 decLatestReturnedBytes=0 " +
+                "decLatestExact=false " +
                 "decHasWindow=false decWindowSequence=0 " +
                 "decWindowGeneration=0 decSourceStartFrame=0 " +
                 "decSourceEndFrame=0 decWindowFrames=0 " +
-                "decLRMS=0.000000 decLRMSdBFS=-160.00 " +
-                "decLPeak=0.000000 decLPeakdBFS=-160.00 " +
-                "decLDC=0.000000 decLZeroFraction=0.000000 " +
-                "decLClippingFraction=0.000000 " +
-                "decRRMS=0.000000 decRRMSdBFS=-160.00 " +
-                "decRPeak=0.000000 decRPeakdBFS=-160.00 " +
-                "decRDC=0.000000 decRZeroFraction=0.000000 " +
-                "decRClippingFraction=0.000000 " +
-                "decLRCorrelation=0.000000 decSumPower=0.000000 " +
-                "decDifferencePower=0.000000 " +
-                "decOneSidedFraction=0.000000 " +
-                "decLRCorrelationValid=false decAllZero=false " +
-                "decLeftOnly=false decRightOnly=false " +
+                "decWindowBytes=0 " +
+                "decRMS=0.000000 decRMSdBFS=-160.00 " +
+                "decPeak=0.000000 decPeakdBFS=-160.00 " +
+                "decDC=0.000000 decZeroFraction=0.000000 " +
+                "decClippingFraction=0.000000 " +
+                "decAllZero=false " +
                 "decFrozenBlocks=0 decLongestFrozenRun=0 " +
                 "contentWindowsAlign=false " +
                 "contentFingerprintsMatch=false " +
@@ -131,11 +122,24 @@ final class WorldwideHostLifecycleTests: XCTestCase {
         )
         XCTAssertFalse(message.contains("BlackHole2ch_UID"))
         XCTAssertFalse(message.contains("BlackHole2ch_2_UID"))
+        XCTAssertFalse(
+            message.contains(
+                "com.elamin.opensteamer.virtual-microphone.input"
+            )
+        )
+        XCTAssertFalse(
+            message.contains(
+                "com.elamin.opensteamer.virtual-microphone.writer"
+            )
+        )
         XCTAssertFalse(message.contains("trackID"))
         XCTAssertFalse(message.contains("attemptID"))
         XCTAssertFalse(message.contains("nonce"))
         XCTAssertFalse(message.contains("rawPCM"))
         XCTAssertFalse(message.contains("windowFingerprint"))
+        XCTAssertFalse(message.contains("Correlation"))
+        XCTAssertFalse(message.contains("LeftOnly"))
+        XCTAssertFalse(message.contains("RightOnly"))
     }
 
     func testInboundAudioRTPTelemetryIsAggregateAndPrivacySafe() {
@@ -153,6 +157,16 @@ final class WorldwideHostLifecycleTests: XCTestCase {
         )
         XCTAssertFalse(message.contains("BlackHole2ch_UID"))
         XCTAssertFalse(message.contains("BlackHole2ch_2_UID"))
+        XCTAssertFalse(
+            message.contains(
+                "com.elamin.opensteamer.virtual-microphone.input"
+            )
+        )
+        XCTAssertFalse(
+            message.contains(
+                "com.elamin.opensteamer.virtual-microphone.writer"
+            )
+        )
         XCTAssertFalse(message.contains("trackID"))
         XCTAssertFalse(message.contains("device"))
         XCTAssertFalse(message.contains("nonce"))

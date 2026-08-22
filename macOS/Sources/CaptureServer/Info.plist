@@ -27,6 +27,6 @@
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>opensteamer captures system audio from this Mac so it can stream playback to your iPhone.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>opensteamer records the BlackHole virtual input so it can stream this Mac's routed audio to your iPhone.</string>
+	<string>opensteamer uses its virtual microphone to route your iPhone's microphone into calls on this Mac.</string>
 </dict>
 </plist>

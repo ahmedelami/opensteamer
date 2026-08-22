@@ -11,7 +11,7 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         throws {
         let operations = BlackHoleMonitorOperationsFake(
             lookupResults: [
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
             ]
         )
         let ledger = BlackHoleSnapshotLedger()
@@ -44,12 +44,12 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
                     defaultInputEndpoint:
                         BlackHoleDeviceEndpointIdentity(
                             deviceID: 79,
-                            deviceUID: "BlackHole2ch_UID"
+                            deviceUID: "com.elamin.opensteamer.virtual-microphone.input"
                         ),
                     hiddenMirrorSinkEndpoint:
                         BlackHoleDeviceEndpointIdentity(
                             deviceID: 89,
-                            deviceUID: "BlackHole2ch_2_UID"
+                            deviceUID: "com.elamin.opensteamer.virtual-microphone.writer"
                         )
                 ),
             ]
@@ -76,8 +76,8 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
             )
         let operations = BlackHoleMonitorOperationsFake(
             lookupResults: [
-                .uid("BlackHole2ch_UID"),
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
             ]
         )
         let epochs = [UUID(), UUID()]
@@ -159,8 +159,8 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
             )
         let operations = BlackHoleMonitorOperationsFake(
             lookupResults: [
-                .uid("BlackHole2ch_UID"),
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
                 .unavailable,
             ]
         )
@@ -242,7 +242,7 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
             )
         let operations = BlackHoleMonitorOperationsFake(
             lookupResults: [
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
             ]
         )
         var monitor: BlackHoleDeviceAvailabilityMonitor? =
@@ -301,7 +301,7 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
             )
         let operations = BlackHoleMonitorOperationsFake(
             lookupResults: [
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
                 .unavailable,
             ]
         )
@@ -347,7 +347,7 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
             )
         let operations = BlackHoleMonitorOperationsFake(
             lookupResults: [
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
             ]
         )
         let monitor = BlackHoleDeviceAvailabilityMonitor(
@@ -440,8 +440,8 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
     func testStoppedAndOldEpochCallbacksAreFenced() throws {
         let operations = BlackHoleMonitorOperationsFake(
             lookupResults: [
-                .uid("BlackHole2ch_UID"),
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
                 .unavailable,
             ]
         )
@@ -487,9 +487,9 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         throws {
         let operations = BlackHoleMonitorOperationsFake(
             lookupResults: [
-                .uid("BlackHole2ch_UID"),
-                .uid("BlackHole2ch_UID"),
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
             ]
         )
         let snapshots = BlackHoleSnapshotLedger()
@@ -591,8 +591,8 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         throws {
         let operations = BlackHoleMonitorOperationsFake(
             lookupResults: [
-                .uid("BlackHole2ch_UID"),
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
             ]
         )
         let uncertainties = BlackHoleUncertaintyLedger()
@@ -650,9 +650,9 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         throws {
         let operations = BlackHoleMonitorOperationsFake(
             lookupResults: [
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
                 .unavailable,
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
             ]
         )
         let ledger = BlackHoleSnapshotLedger()
@@ -682,9 +682,9 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         XCTAssertEqual(
             ledger.snapshots.map(\.deviceUID),
             [
-                "BlackHole2ch_UID",
+                "com.elamin.opensteamer.virtual-microphone.input",
                 nil,
-                "BlackHole2ch_UID",
+                "com.elamin.opensteamer.virtual-microphone.input",
             ]
         )
         XCTAssertEqual(
@@ -707,9 +707,9 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         throws {
         let operations = BlackHoleMonitorOperationsFake(
             lookupResults: [
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
                 .configurationFailure,
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
             ]
         )
         let retryScheduler =
@@ -769,7 +769,7 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         throws {
         let operations = BlackHoleMonitorOperationsFake(
             lookupResults: [
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
                 .configurationFailure,
                 .configurationFailure,
                 .unavailable,
@@ -833,7 +833,7 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         throws {
         let operations = BlackHoleMonitorOperationsFake(
             lookupResults: [
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
                 .configurationFailure,
                 .configurationFailure,
                 .unavailable,
@@ -892,7 +892,7 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         let operations = BlackHoleMonitorOperationsFake(
             lookupResults: [
                 .configurationFailure,
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
             ]
         )
         let retryScheduler =
@@ -942,8 +942,8 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         throws {
         let operations = BlackHoleMonitorOperationsFake(
             lookupResults: [
-                .uid("BlackHole2ch_UID"),
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
             ]
         )
         let ledger = BlackHoleSnapshotLedger()
@@ -1001,7 +1001,7 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
                     BlackHoleMonitorOperationsFake.endpointPair(
                         defaultInputDeviceID: 80,
                         defaultInputDeviceUID:
-                            "BlackHole2ch_UID-replacement",
+                            "com.elamin.opensteamer.virtual-microphone.input-replacement",
                         hiddenMirrorSinkDeviceID: 90
                     )
                 ),
@@ -1009,10 +1009,10 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
                     BlackHoleMonitorOperationsFake.endpointPair(
                         defaultInputDeviceID: 80,
                         defaultInputDeviceUID:
-                            "BlackHole2ch_UID-replacement",
+                            "com.elamin.opensteamer.virtual-microphone.input-replacement",
                         hiddenMirrorSinkDeviceID: 90,
                         hiddenMirrorSinkDeviceUID:
-                            "BlackHole2ch_2_UID-replacement"
+                            "com.elamin.opensteamer.virtual-microphone.writer-replacement"
                     )
                 ),
             ]
@@ -1053,12 +1053,12 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         XCTAssertEqual(
             ledger.snapshots.last?
                 .defaultInputEndpoint?.deviceUID,
-            "BlackHole2ch_UID-replacement"
+            "com.elamin.opensteamer.virtual-microphone.input-replacement"
         )
         XCTAssertEqual(
             ledger.snapshots.last?
                 .hiddenMirrorSinkEndpoint?.deviceUID,
-            "BlackHole2ch_2_UID-replacement"
+            "com.elamin.opensteamer.virtual-microphone.writer-replacement"
         )
         monitor.stop()
     }
@@ -1369,16 +1369,24 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
             monitorEpoch: epoch,
             deviceGeneration: 7,
             isAvailable: true,
-            deviceUID: "BlackHole2ch_UID"
+            deviceUID:
+                WorldwideVirtualMicrophoneEndpointContract
+                    .visibleDefaultInputDeviceUID
         )
 
         XCTAssertFalse(snapshot.isAvailable)
-        XCTAssertEqual(snapshot.deviceUID, "BlackHole2ch_UID")
+        XCTAssertEqual(
+            snapshot.deviceUID,
+            WorldwideVirtualMicrophoneEndpointContract
+                .visibleDefaultInputDeviceUID
+        )
         XCTAssertEqual(
             snapshot.defaultInputEndpoint,
             BlackHoleDeviceEndpointIdentity(
                 deviceID: AudioDeviceID(kAudioObjectUnknown),
-                deviceUID: "BlackHole2ch_UID"
+                deviceUID:
+                    WorldwideVirtualMicrophoneEndpointContract
+                        .visibleDefaultInputDeviceUID
             )
         )
         XCTAssertNil(snapshot.hiddenMirrorSinkEndpoint)
@@ -1462,6 +1470,42 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         XCTAssertEqual(reader.hiddenMirrorSinkReadCount, 4)
     }
 
+    func testEndpointPairResolverRejectsRoleStreamFormatChangeAcrossObservations()
+        throws {
+        let firstVisible = makeDefaultInputEndpointProperties()
+        let changedVisible = makeDefaultInputEndpointProperties(
+            roleStreams: [
+                makeCanonicalRoleStream(
+                    streamID: 179,
+                    physicalFormat: makeCanonicalStreamFormat(
+                        sampleRate: 48_000.5
+                    )
+                ),
+            ]
+        )
+        let hidden = makeHiddenMirrorSinkEndpointProperties()
+        let reader = SequencedBlackHoleEndpointPropertyReaderFake(
+            defaultInputs: [firstVisible, changedVisible],
+            hiddenMirrorSinks: [hidden, hidden]
+        )
+        let resolver = BlackHoleDeviceEndpointPairResolver(
+            propertyReader: reader
+        )
+
+        XCTAssertThrowsError(
+            try resolver.resolveValidatedPair()
+        ) { error in
+            guard let captureError = error as? CaptureError,
+                  case .audioRouteUnhealthy = captureError else {
+                return XCTFail(
+                    "A torn role-stream format produced \(error)"
+                )
+            }
+        }
+        XCTAssertEqual(reader.defaultInputReadCount, 2)
+        XCTAssertEqual(reader.hiddenMirrorSinkReadCount, 2)
+    }
+
     func testEndpointPairResolverRejectsDistinctInvalidObservationsWithSameGenericReason()
         throws {
         let validVisible =
@@ -1481,7 +1525,7 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
                 hiddenMirrorSinks: [
                     validHidden,
                     makeHiddenMirrorSinkEndpointProperties(
-                        outputChannelCount: 1
+                        outputChannelCount: 2
                     ),
                     validHidden,
                     validHidden,
@@ -1623,7 +1667,7 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
                 name: "visible input channels",
                 defaultInput:
                     makeDefaultInputEndpointProperties(
-                        inputChannelCount: 1
+                        inputChannelCount: 2
                     ),
                 hiddenMirrorSink:
                     makeHiddenMirrorSinkEndpointProperties()
@@ -1652,7 +1696,7 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
                     makeDefaultInputEndpointProperties(),
                 hiddenMirrorSink:
                     makeHiddenMirrorSinkEndpointProperties(
-                        outputChannelCount: 1
+                        outputChannelCount: 2
                     )
             ),
             Scenario(
@@ -1671,6 +1715,253 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
                 hiddenMirrorSink:
                     makeHiddenMirrorSinkEndpointProperties(
                         nominalSampleRate: 44_100
+                    )
+            ),
+            Scenario(
+                name: "visible zero clock domain",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        clockDomain: 0
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "hidden zero clock domain",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties(
+                        clockDomain: 0
+                    )
+            ),
+            Scenario(
+                name: "visible wrong clock domain",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        clockDomain: 0x1234
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "hidden wrong clock domain",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties(
+                        clockDomain: 0x1234
+                    )
+            ),
+            Scenario(
+                name: "role stream format ID",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        roleStreams: [
+                            makeCanonicalRoleStream(
+                                streamID: 179,
+                                virtualFormat:
+                                    makeCanonicalStreamFormat(
+                                        formatID: 0
+                                    )
+                            ),
+                        ]
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "role stream missing packed flag",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        roleStreams: [
+                            makeCanonicalRoleStream(
+                                streamID: 179,
+                                virtualFormat:
+                                    makeCanonicalStreamFormat(
+                                        formatFlags:
+                                            kAudioFormatFlagIsFloat
+                                    )
+                            ),
+                        ]
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "role stream noninterleaved flag",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        roleStreams: [
+                            makeCanonicalRoleStream(
+                                streamID: 179,
+                                virtualFormat:
+                                    makeCanonicalStreamFormat(
+                                        formatFlags:
+                                            kAudioFormatFlagsNativeFloatPacked
+                                            | kAudioFormatFlagIsNonInterleaved
+                                    )
+                            ),
+                        ]
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "role stream fractional sample rate",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        roleStreams: [
+                            makeCanonicalRoleStream(
+                                streamID: 179,
+                                virtualFormat:
+                                    makeCanonicalStreamFormat(
+                                        sampleRate: 48_000.5
+                                    )
+                            ),
+                        ]
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "role stream channel count",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        roleStreams: [
+                            makeCanonicalRoleStream(
+                                streamID: 179,
+                                virtualFormat:
+                                    makeCanonicalStreamFormat(
+                                        channelsPerFrame: 2
+                                    )
+                            ),
+                        ]
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "role stream bytes per frame",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        roleStreams: [
+                            makeCanonicalRoleStream(
+                                streamID: 179,
+                                virtualFormat:
+                                    makeCanonicalStreamFormat(
+                                        bytesPerFrame: 8
+                                    )
+                            ),
+                        ]
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "role stream bytes per packet",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        roleStreams: [
+                            makeCanonicalRoleStream(
+                                streamID: 179,
+                                virtualFormat:
+                                    makeCanonicalStreamFormat(
+                                        bytesPerPacket: 8
+                                    )
+                            ),
+                        ]
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "role stream frames per packet",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        roleStreams: [
+                            makeCanonicalRoleStream(
+                                streamID: 179,
+                                virtualFormat:
+                                    makeCanonicalStreamFormat(
+                                        framesPerPacket: 2
+                                    )
+                            ),
+                        ]
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "role stream bits per channel",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        roleStreams: [
+                            makeCanonicalRoleStream(
+                                streamID: 179,
+                                virtualFormat:
+                                    makeCanonicalStreamFormat(
+                                        bitsPerChannel: 24
+                                    )
+                            ),
+                        ]
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "role stream reserved field",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        roleStreams: [
+                            makeCanonicalRoleStream(
+                                streamID: 179,
+                                virtualFormat:
+                                    makeCanonicalStreamFormat(
+                                        reserved: 1
+                                    )
+                            ),
+                        ]
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "role stream virtual physical mismatch",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties(
+                        roleStreams: [
+                            makeCanonicalRoleStream(
+                                streamID: 189,
+                                physicalFormat:
+                                    makeCanonicalStreamFormat(
+                                        sampleRate: 44_100
+                                    )
+                            ),
+                        ]
+                    )
+            ),
+            Scenario(
+                name: "extra visible role stream",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(
+                        roleStreams: [
+                            makeCanonicalRoleStream(streamID: 179),
+                            makeCanonicalRoleStream(streamID: 180),
+                        ]
+                    ),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties()
+            ),
+            Scenario(
+                name: "missing hidden role stream",
+                defaultInput:
+                    makeDefaultInputEndpointProperties(),
+                hiddenMirrorSink:
+                    makeHiddenMirrorSinkEndpointProperties(
+                        roleStreams: []
                     )
             ),
         ]
@@ -1702,7 +1993,7 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         throws {
         let operations = BlackHoleMonitorOperationsFake(
             lookupResults: [
-                .uid("BlackHole2ch_UID"),
+                .uid("com.elamin.opensteamer.virtual-microphone.input"),
             ]
         )
         let ledger = BlackHoleSnapshotLedger()
@@ -1725,12 +2016,12 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
                 defaultInputEndpoint:
                     BlackHoleDeviceEndpointIdentity(
                         deviceID: 79,
-                        deviceUID: "BlackHole2ch_UID"
+                        deviceUID: "com.elamin.opensteamer.virtual-microphone.input"
                     ),
                 hiddenMirrorSinkEndpoint:
                     BlackHoleDeviceEndpointIdentity(
                         deviceID: 89,
-                        deviceUID: "BlackHole2ch_2_UID"
+                        deviceUID: "com.elamin.opensteamer.virtual-microphone.writer"
                     )
             )
         )
@@ -1869,7 +2160,7 @@ final class BlackHoleDefaultInputLeaseTests:
         XCTAssertEqual(
             lease.acquisitionResult(
                 generation: 1,
-                targetUID: "BlackHole2ch_2_UID"
+                targetUID: "com.elamin.opensteamer.virtual-microphone.writer"
             ),
             .terminalFailure
         )
@@ -1886,7 +2177,29 @@ final class BlackHoleDefaultInputLeaseTests:
             lease.acquisitionResult(generation: 1),
             .terminalFailure
         )
-        XCTAssertEqual(operations.currentUID, "BlackHole2ch_2_UID")
+        XCTAssertEqual(operations.currentUID, "com.elamin.opensteamer.virtual-microphone.writer")
+        XCTAssertEqual(operations.writtenDeviceIDs, [])
+        XCTAssertFalse(operations.events.contains("register"))
+        XCTAssertEqual(
+            lease.acquisitionResult(generation: 1),
+            .terminalFailure
+        )
+    }
+
+    func testPreexistingRetiredHiddenMirrorDefaultInputFailsClosedWithoutRestorationLease() {
+        let operations = DefaultInputLeaseOperationsFake()
+        operations.externalSelect(deviceID: 5)
+        let lease = makeLease(operations)
+
+        XCTAssertEqual(
+            lease.acquisitionResult(generation: 1),
+            .terminalFailure
+        )
+        XCTAssertEqual(
+            operations.currentUID,
+            WorldwideVirtualMicrophoneEndpointContract
+                .retiredLegacyHiddenWriterDeviceUID
+        )
         XCTAssertEqual(operations.writtenDeviceIDs, [])
         XCTAssertFalse(operations.events.contains("register"))
         XCTAssertEqual(
@@ -2288,7 +2601,7 @@ final class BlackHoleDefaultInputLeaseTests:
             lease.release(generation: 1),
             .externallySuperseded
         )
-        XCTAssertEqual(operations.currentUID, "BlackHole2ch_2_UID")
+        XCTAssertEqual(operations.currentUID, "com.elamin.opensteamer.virtual-microphone.writer")
         XCTAssertEqual(
             operations.writtenDeviceIDs,
             [2],
@@ -2794,14 +3107,21 @@ final class BlackHoleDefaultInputLeaseTests:
             BlackHoleDefaultInputLeaseDeferredCleanupRetainer()
         let strongBox = BlackHoleLeaseStrongBox()
         let weakBox = BlackHoleWeakLeaseBox()
+        let operationQueue = DispatchQueue(
+            label: "test.BlackHoleDefaultInputLease.callback-deinit.operations"
+        )
+        let listenerQueue = DispatchQueue(
+            label: "test.BlackHoleDefaultInputLease.callback-deinit.listener"
+        )
         let callbackReturned =
             DispatchSemaphore(value: 0)
 
         do {
             let lease = makeLease(
                 operations,
-                deferredCleanupRetainer:
-                    cleanupRetainer
+                deferredCleanupRetainer: cleanupRetainer,
+                operationQueue: operationQueue,
+                listenerQueue: listenerQueue
             )
             XCTAssertTrue(lease.acquire(generation: 1))
             strongBox.store(lease)
@@ -2832,6 +3152,7 @@ final class BlackHoleDefaultInputLeaseTests:
             .success,
             "The externally retained cleanup owner must run after callback return and remove the exact registration."
         )
+        operationQueue.sync {}
         XCTAssertEqual(
             cleanupRetainer.retainedJobCount,
             0
@@ -2881,16 +3202,18 @@ final class BlackHoleDefaultInputLeaseTests:
         proofTimeout: TimeInterval = 0.1,
         deferredCleanupRetainer:
             any BlackHoleDefaultInputLeaseDeferredCleanupRetaining =
-                BlackHoleDefaultInputLeaseDeferredCleanupRetainer()
+                BlackHoleDefaultInputLeaseDeferredCleanupRetainer(),
+        operationQueue: DispatchQueue = DispatchQueue(
+            label: "test.BlackHoleDefaultInputLease.operations"
+        ),
+        listenerQueue: DispatchQueue = DispatchQueue(
+            label: "test.BlackHoleDefaultInputLease.listener"
+        )
     ) -> BlackHoleDefaultInputLease {
         BlackHoleDefaultInputLease(
             operations: operations,
-            operationQueue: DispatchQueue(
-                label: "test.BlackHoleDefaultInputLease.operations"
-            ),
-            listenerQueue: DispatchQueue(
-                label: "test.BlackHoleDefaultInputLease.listener"
-            ),
+            operationQueue: operationQueue,
+            listenerQueue: listenerQueue,
             proofTimeout: proofTimeout,
             deferredCleanupRetainer:
                 deferredCleanupRetainer
@@ -2914,9 +3237,11 @@ private final class DefaultInputLeaseOperationsFake:
     private let lock = NSLock()
     private var uids: [AudioDeviceID: String] = [
         1: "BuiltInMic_UID",
-        2: "BlackHole2ch_UID",
+        2: "com.elamin.opensteamer.virtual-microphone.input",
         3: "USBMic_UID",
-        4: "BlackHole2ch_2_UID",
+        4: "com.elamin.opensteamer.virtual-microphone.writer",
+        5: WorldwideVirtualMicrophoneEndpointContract
+            .retiredLegacyHiddenWriterDeviceUID,
     ]
     private var currentDeviceID: AudioDeviceID = 1
     private var listener: Listener?
@@ -3384,13 +3709,21 @@ private final class SequencedBlackHoleEndpointPropertyReaderFake:
 
 private func makeDefaultInputEndpointProperties(
     deviceID: AudioDeviceID = 79,
-    deviceUID: String = "BlackHole2ch_UID",
-    modelUID: String = "BlackHole2ch_ModelUID",
+    deviceUID: String =
+        WorldwideVirtualMicrophoneEndpointContract
+            .visibleDefaultInputDeviceUID,
+    modelUID: String =
+        WorldwideVirtualMicrophoneEndpointContract.modelUID,
     isAlive: Bool = true,
     isHidden: Bool = false,
-    inputChannelCount: UInt32 = 2,
-    outputChannelCount: UInt32 = 2,
-    nominalSampleRate: Double = 48_000
+    inputChannelCount: UInt32 = 1,
+    outputChannelCount: UInt32 = 0,
+    nominalSampleRate: Double = 48_000,
+    clockDomain: UInt32 =
+        WorldwideVirtualMicrophoneEndpointContract.clockDomain,
+    roleStreams: [BlackHoleDeviceRoleStreamProperties] = [
+        makeCanonicalRoleStream(streamID: 179),
+    ]
 ) -> BlackHoleDeviceEndpointProperties {
     BlackHoleDeviceEndpointProperties(
         identity: BlackHoleDeviceEndpointIdentity(
@@ -3402,19 +3735,29 @@ private func makeDefaultInputEndpointProperties(
         isHidden: isHidden,
         inputChannelCount: inputChannelCount,
         outputChannelCount: outputChannelCount,
-        nominalSampleRate: nominalSampleRate
+        nominalSampleRate: nominalSampleRate,
+        clockDomain: clockDomain,
+        roleStreams: roleStreams
     )
 }
 
 private func makeHiddenMirrorSinkEndpointProperties(
     deviceID: AudioDeviceID = 89,
-    deviceUID: String = "BlackHole2ch_2_UID",
-    modelUID: String = "BlackHole2ch_ModelUID",
+    deviceUID: String =
+        WorldwideVirtualMicrophoneEndpointContract
+            .hiddenMirrorSinkDeviceUID,
+    modelUID: String =
+        WorldwideVirtualMicrophoneEndpointContract.modelUID,
     isAlive: Bool = true,
     isHidden: Bool = true,
-    inputChannelCount: UInt32 = 2,
-    outputChannelCount: UInt32 = 2,
-    nominalSampleRate: Double = 48_000
+    inputChannelCount: UInt32 = 0,
+    outputChannelCount: UInt32 = 1,
+    nominalSampleRate: Double = 48_000,
+    clockDomain: UInt32 =
+        WorldwideVirtualMicrophoneEndpointContract.clockDomain,
+    roleStreams: [BlackHoleDeviceRoleStreamProperties] = [
+        makeCanonicalRoleStream(streamID: 189),
+    ]
 ) -> BlackHoleDeviceEndpointProperties {
     BlackHoleDeviceEndpointProperties(
         identity: BlackHoleDeviceEndpointIdentity(
@@ -3426,7 +3769,47 @@ private func makeHiddenMirrorSinkEndpointProperties(
         isHidden: isHidden,
         inputChannelCount: inputChannelCount,
         outputChannelCount: outputChannelCount,
-        nominalSampleRate: nominalSampleRate
+        nominalSampleRate: nominalSampleRate,
+        clockDomain: clockDomain,
+        roleStreams: roleStreams
+    )
+}
+
+private func makeCanonicalRoleStream(
+    streamID: AudioStreamID,
+    virtualFormat: BlackHoleDeviceStreamFormat =
+        makeCanonicalStreamFormat(),
+    physicalFormat: BlackHoleDeviceStreamFormat? = nil
+) -> BlackHoleDeviceRoleStreamProperties {
+    BlackHoleDeviceRoleStreamProperties(
+        streamID: streamID,
+        virtualFormat: virtualFormat,
+        physicalFormat: physicalFormat ?? virtualFormat
+    )
+}
+
+private func makeCanonicalStreamFormat(
+    sampleRate: Double = 48_000,
+    formatID: AudioFormatID = kAudioFormatLinearPCM,
+    formatFlags: AudioFormatFlags =
+        kAudioFormatFlagsNativeFloatPacked,
+    bytesPerPacket: UInt32 = 4,
+    framesPerPacket: UInt32 = 1,
+    bytesPerFrame: UInt32 = 4,
+    channelsPerFrame: UInt32 = 1,
+    bitsPerChannel: UInt32 = 32,
+    reserved: UInt32 = 0
+) -> BlackHoleDeviceStreamFormat {
+    BlackHoleDeviceStreamFormat(
+        sampleRate: sampleRate,
+        formatID: formatID,
+        formatFlags: formatFlags,
+        bytesPerPacket: bytesPerPacket,
+        framesPerPacket: framesPerPacket,
+        bytesPerFrame: bytesPerFrame,
+        channelsPerFrame: channelsPerFrame,
+        bitsPerChannel: bitsPerChannel,
+        reserved: reserved
     )
 }
 
@@ -3653,9 +4036,9 @@ private final class BlackHoleMonitorOperationsFake:
 
     static func endpointPair(
         defaultInputDeviceID: AudioDeviceID,
-        defaultInputDeviceUID: String = "BlackHole2ch_UID",
+        defaultInputDeviceUID: String = "com.elamin.opensteamer.virtual-microphone.input",
         hiddenMirrorSinkDeviceID: AudioDeviceID,
-        hiddenMirrorSinkDeviceUID: String = "BlackHole2ch_2_UID"
+        hiddenMirrorSinkDeviceUID: String = "com.elamin.opensteamer.virtual-microphone.writer"
     ) -> BlackHoleDeviceEndpointPair {
         BlackHoleDeviceEndpointPair(
             defaultInputEndpoint:

@@ -1042,6 +1042,43 @@ final class SystemAudioCaptureSourceTests: XCTestCase {
         XCTAssertEqual(selected.inputChannelCount, 0)
     }
 
+    func testProcessTapClockPolicyRejectsEveryVirtualMicrophoneUIDEvenWhenOutputOnly()
+        throws {
+        let safeOutput = makeClockDeviceSnapshot(
+            deviceID: 505,
+            uid: "BuiltInSpeakerDevice",
+            inputChannelCount: 0,
+            outputChannelCount: 2
+        )
+        let forbiddenUIDs = [
+            WorldwideSafeOutputInvariant.canonicalBlackHoleUID,
+            WorldwideSafeOutputInvariant.hiddenMirrorBlackHoleUID,
+            WorldwideSafeOutputInvariant.legacyBlackHoleUID,
+            WorldwideSafeOutputInvariant.legacyHiddenMirrorBlackHoleUID,
+        ]
+        let forbidden = forbiddenUIDs.enumerated().map { index, uid in
+            makeClockDeviceSnapshot(
+                deviceID: AudioObjectID(600 + index),
+                uid: uid,
+                isDefaultOutput: true,
+                inputChannelCount: 0,
+                outputChannelCount: 1
+            )
+        }
+
+        XCTAssertEqual(
+            CoreAudioProcessTapClockDeviceSelectionPolicy.select(
+                from: forbidden + [safeOutput]
+            ),
+            safeOutput
+        )
+        XCTAssertNil(
+            CoreAudioProcessTapClockDeviceSelectionPolicy.select(
+                from: forbidden
+            )
+        )
+    }
+
     func testProcessTapClockPolicyPrefersSafeDefaultThenStableUID() throws {
         let safeDefault = makeClockDeviceSnapshot(
             deviceID: 303,

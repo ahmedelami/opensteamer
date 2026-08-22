@@ -2195,12 +2195,13 @@ function validate_blackhole_probe_json() {
       "totalCapturedFrameCount"
     ]) and
     ([.. | strings | select(contains($physical_output_uid))] | length == 0) and
-    (.schema == "opensteamer.physical-blackhole-microphone.v1") and
+    (.schema == "opensteamer.physical-virtual-microphone.v2") and
     (.status == "passed") and
     (.runNonce == $expected_nonce) and
     (.challengeAlgorithm == "nonce-splitmix64-frequency-hop-raised-envelope") and
     (.challengeVersion == 1) and
-    (.canonicalCaptureUID == "BlackHole2ch_UID") and
+    (.canonicalCaptureUID ==
+      "com.elamin.opensteamer.virtual-microphone.input") and
     (.captureUIDMatches == true) and
     (.physicalOutputValidated == true) and
     (.challengeNonceMatches == true) and
@@ -2217,7 +2218,7 @@ function validate_blackhole_probe_json() {
         "signedInt16"
       ]) and
       (.sampleRate == 48000) and
-      (.channels == 2) and
+      (.channels == 1) and
       (.signedInt16 == true) and
       (.interleaved == true)) and
     (.proofWindowSeconds | finite_number) and
@@ -2310,8 +2311,8 @@ function validate_blackhole_probe_json() {
       ($progress[-1].capturedFrameCount <= $root.totalCapturedFrameCount)) and
     (.channels as $channels |
       (($channels | type) == "array") and
-      (($channels | length) == 2) and
-      (([$channels[].channel] | sort) == [0, 1]) and
+      (($channels | length) == 1) and
+      ([$channels[].channel] == [0]) and
       all(
         $channels[];
         exact_keys([
@@ -2359,8 +2360,7 @@ function validate_blackhole_probe_json() {
         (.envelopeCorrelation <= 1)
       ) and
       ($root.recognizedChannel | nonnegative_integer) and
-      (($root.recognizedChannel == 0) or
-        ($root.recognizedChannel == 1)) and
+      ($root.recognizedChannel == 0) and
       ([
         $channels[]
         | select(.channel == $root.recognizedChannel)
@@ -2399,7 +2399,7 @@ function validate_blackhole_probe_json() {
       ) and
       close(
         $root.aggregateClippedRatio;
-        (([$channels[].clippedRatio] | add) / 2);
+        ([$channels[].clippedRatio] | add);
         0.000000001
       )) and
     (.detectedLagMs | finite_number) and
@@ -3029,7 +3029,7 @@ function compile_blackhole_probe() {
       -framework CoreAudio \
       > "${RAW_BLACKHOLE_PROBE_COMPILE_STDOUT}" \
       2> "${RAW_BLACKHOLE_PROBE_COMPILE_STDERR}"; then
-    echo "The physical BlackHole microphone probe did not compile." >&2
+    echo "The physical virtual-microphone probe did not compile." >&2
     return 3
   fi
 }
@@ -3348,7 +3348,7 @@ function start_blackhole_probe() {
   fi
   probe_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
   if (( probe_status != 0 )); then
-    echo "The physical BlackHole microphone probe did not enter an isolated process group." >&2
+    echo "The physical virtual-microphone probe did not enter an isolated process group." >&2
     return "${probe_status}"
   fi
   return 0
@@ -5024,7 +5024,7 @@ function audit_raw_session_continuity_lines() {
   local accept_positive_observations=$6
   local line
   local expected_peer_state="Worldwide WebRTC peer state: connected pid=${expected_host_pid}"
-  local expected_route="Worldwide authenticated media route selected BlackHole default input routingEpoch=${expected_routing_epoch} peerGeneration=${expected_peer_generation} deviceGeneration=${expected_device_generation} pid=${expected_host_pid}"
+  local expected_route="Worldwide authenticated media route selected virtual microphone default input routingEpoch=${expected_routing_epoch} peerGeneration=${expected_peer_generation} deviceGeneration=${expected_device_generation} pid=${expected_host_pid}"
   local expected_writer="Worldwide iPhone microphone hidden writer selected routingEpoch=${expected_routing_epoch} peerGeneration=${expected_peer_generation} deviceGeneration=${expected_device_generation} pid=${expected_host_pid}"
   local healthy_forwarding="Worldwide iPhone microphone forwarding phase=forwardingHealthy inputEndpointAvailable=true hiddenSinkAvailable=true hiddenWriterSelectionProven=true transport=true trackAdmitted=true queueRunning=true "
   local progress_fields
@@ -5037,7 +5037,7 @@ function audit_raw_session_continuity_lines() {
     if [[ "${line}" == *"Worldwide WebRTC peer state: "* ]]; then
       [[ "${line}" == *"${expected_peer_state}" ]] || return 4
     fi
-    if [[ "${line}" == *"Worldwide authenticated media route selected BlackHole default input routingEpoch="* ]]; then
+    if [[ "${line}" == *"Worldwide authenticated media route selected virtual microphone default input routingEpoch="* ]]; then
       [[ "${line}" == *"${expected_route}" ]] || return 4
     fi
     if [[ "${line}" == *"Worldwide iPhone microphone hidden writer selected routingEpoch="* ]]; then
@@ -5775,7 +5775,7 @@ function wait_for_fresh_raw_session_readiness_and_start_probe() {
     authenticated_connections=$(( authenticated_connections
         + new_connections
     ))
-    healthy_route_pattern="Worldwide authenticated media route selected BlackHole default input routingEpoch=[0-9a-f]{32} peerGeneration=[1-9][0-9]* deviceGeneration=[1-9][0-9]* pid=${current_process_id}$"
+    healthy_route_pattern="Worldwide authenticated media route selected virtual microphone default input routingEpoch=[0-9a-f]{32} peerGeneration=[1-9][0-9]* deviceGeneration=[1-9][0-9]* pid=${current_process_id}$"
     if grep -Eq "${healthy_route_pattern}" \
         "${RAW_HOST_LOG_COMPLETED_LINES}"; then
       healthy_boundary_observed=1
@@ -6122,7 +6122,7 @@ function run_raw_microphone_blackhole_phase() {
   local probe_status=0
   local critical_status=0
 
-  begin_phase 1 raw-iphone-microphone-blackhole "${RAW_PHASE_STATUS}" || return $?
+  begin_phase 1 raw-iphone-microphone-virtual-microphone "${RAW_PHASE_STATUS}" || return $?
   if [[ "${OPENSTEAMER_SELF_TEST_CRITICAL_FAILURE:-}" == "raw-phase" ]]; then
     fail_phase "${RAW_PHASE_STATUS}" || true
     return 91
@@ -6222,7 +6222,7 @@ function run_raw_microphone_blackhole_phase() {
     "${RAW_DEVICE_AFTER}" \
     "${RAW_APP_LIST_AFTER}" \
     "${RAW_CANDIDATE_AFTER}" \
-    "raw iPhone microphone and BlackHole validation"
+    "raw iPhone and virtual-microphone validation"
   critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
   if (( critical_status != 0 )); then
     cleanup_blackhole_probe || true
@@ -6234,7 +6234,7 @@ function run_raw_microphone_blackhole_phase() {
     return "${ui_status}"
   fi
   if (( probe_status != 0 )); then
-    echo "The physical BlackHole microphone probe failed." >&2
+    echo "The physical virtual-microphone probe failed." >&2
     fail_phase "${RAW_PHASE_STATUS}" || true
     return "${probe_status}"
   fi
@@ -6244,7 +6244,7 @@ function run_raw_microphone_blackhole_phase() {
     return 1
   fi
   if (( BLACKHOLE_PROBE_STATUS != 0 )); then
-    echo "The physical BlackHole microphone probe failed." >&2
+    echo "The physical virtual-microphone probe failed." >&2
     fail_phase "${RAW_PHASE_STATUS}" || true
     return "${BLACKHOLE_PROBE_STATUS}"
   fi
@@ -6264,7 +6264,7 @@ function run_raw_microphone_blackhole_phase() {
     "${PHYSICAL_OUTPUT_UID}"
   critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
   if (( critical_status != 0 )); then
-    echo "The physical BlackHole microphone result failed its exact JSON contract." >&2
+    echo "The physical virtual-microphone result failed its exact JSON contract." >&2
     record_raw_overlap_failure \
       blackhole-json-invalid "${critical_status}"
     fail_phase "${RAW_PHASE_STATUS}" || true
@@ -6332,7 +6332,7 @@ function run_raw_microphone_blackhole_phase() {
   run_command_capturing_status validate_and_retain_raw_overlap_evidence
   critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
   if (( critical_status != 0 )); then
-    echo "The nonce-bound causal raw UI and BlackHole overlap proof failed." >&2
+    echo "The nonce-bound causal raw UI and virtual-microphone overlap proof failed." >&2
     fail_phase "${RAW_PHASE_STATUS}" || true
     return "${critical_status}"
   fi
@@ -6374,7 +6374,7 @@ function run_raw_microphone_blackhole_phase() {
   fi
 
   if complete_phase \
-      1 raw-iphone-microphone-blackhole "${RAW_PHASE_STATUS}"; then
+      1 raw-iphone-microphone-virtual-microphone "${RAW_PHASE_STATUS}"; then
     return 0
   else
     critical_status=$?
@@ -6547,7 +6547,7 @@ function run_real_connected_call_phase() {
       || [[ -z "${BLACKHOLE_PROBE_STATUS}" \
           || "${BLACKHOLE_PROBE_STATUS}" == *[^0-9]* ]] \
       || (( BLACKHOLE_PROBE_STATUS != 0 )); then
-    echo "The post-call physical BlackHole microphone probe failed." >&2
+    echo "The post-call physical virtual-microphone probe failed." >&2
     cleanup_audio_oracle_tone || true
     fail_phase "${CALL_PHASE_STATUS}" || true
     return 7
@@ -6589,7 +6589,7 @@ function run_real_connected_call_phase() {
     critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
   fi
   if (( critical_status != 0 )); then
-    echo "The post-call BlackHole preselected/switch lifecycle proof failed." >&2
+    echo "The post-call virtual-microphone preselected/switch lifecycle proof failed." >&2
     cleanup_audio_oracle_tone || true
     fail_phase "${CALL_PHASE_STATUS}" || true
     return "${critical_status}"
@@ -6672,7 +6672,7 @@ function run_real_connected_call_phase() {
     critical_status=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
   fi
   if (( critical_status != 0 )); then
-    echo "The nonce-bound post-call raw sender/BlackHole overlap proof failed." >&2
+    echo "The nonce-bound post-call raw sender/virtual-microphone overlap proof failed." >&2
     cleanup_audio_oracle_tone || true
     fail_phase "${CALL_PHASE_STATUS}" || true
     return "${critical_status}"
@@ -7041,7 +7041,7 @@ function run_critical_failure_self_test() {
 
   case "${target}" in
     xcresult-summary|xcresult-tests|xcresult-build-results|xcresult-activities)
-      begin_phase 1 raw-iphone-microphone-blackhole "${RAW_PHASE_STATUS}" || return $?
+      begin_phase 1 raw-iphone-microphone-virtual-microphone "${RAW_PHASE_STATUS}" || return $?
       OPENSTEAMER_SELF_TEST_XCRESULT_FAILURE=${target#xcresult-}
       if validate_ui_xcresult \
           "${RAW_PHASE_DIR}/missing.xcresult" \
@@ -7058,7 +7058,7 @@ function run_critical_failure_self_test() {
       fi
       ;;
     unchanged-candidate)
-      begin_phase 1 raw-iphone-microphone-blackhole "${RAW_PHASE_STATUS}" || return $?
+      begin_phase 1 raw-iphone-microphone-virtual-microphone "${RAW_PHASE_STATUS}" || return $?
       OPENSTEAMER_SELF_TEST_CRITICAL_FAILURE=unchanged-candidate
       if capture_and_require_unchanged_candidate \
           "${RAW_DEVICE_AFTER}" \
@@ -7071,7 +7071,7 @@ function run_critical_failure_self_test() {
       fi
       ;;
     lock-proof)
-      begin_phase 1 raw-iphone-microphone-blackhole "${RAW_PHASE_STATUS}" || return $?
+      begin_phase 1 raw-iphone-microphone-virtual-microphone "${RAW_PHASE_STATUS}" || return $?
       OPENSTEAMER_SELF_TEST_CRITICAL_FAILURE=lock-proof
       if capture_and_require_unlocked "${RAW_LOCK_STATE_BEFORE_XCODEBUILD}"; then
         injected_status=0
@@ -7080,7 +7080,7 @@ function run_critical_failure_self_test() {
       fi
       ;;
     simple-ui-isolation)
-      begin_phase 1 raw-iphone-microphone-blackhole "${RAW_PHASE_STATUS}" || return $?
+      begin_phase 1 raw-iphone-microphone-virtual-microphone "${RAW_PHASE_STATUS}" || return $?
       OPENSTEAMER_SELF_TEST_ISOLATION_FAILURE_STATUS=19
       if run_simple_physical_ui_test \
           "${EXPECTED_RAW_TEST_NAME}" \
@@ -7365,7 +7365,81 @@ endCursorOffset=2
 endCursorDigest=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 endCursorPartialBytes=0
 endCursorPartialDigest=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" || return $?
-  opensteamer_write_state "${RAW_BLACKHOLE_PROBE_RESULT}" "{\"schema\":\"opensteamer.physical-blackhole-microphone.v1\",\"status\":\"passed\",\"runNonce\":\"${RAW_READY_NONCE}\"}"
+  local probe_result_json
+  probe_result_json=$(jq -cn --arg nonce "${RAW_READY_NONCE}" '
+    [range(0; 13) as $index | {
+      elapsedSeconds: ($index * 0.5),
+      callbackCount: ($index * 50),
+      capturedFrameCount: ($index * 24000),
+      callbackDelta: (if $index == 0 then 0 else 50 end),
+      frameDelta: (if $index == 0 then 0 else 24000 end),
+      advancing: ($index != 0)
+    }] as $progress |
+    {
+      schema: "opensteamer.physical-virtual-microphone.v2",
+      status: "passed",
+      runNonce: $nonce,
+      challengeAlgorithm: "nonce-splitmix64-frequency-hop-raised-envelope",
+      challengeVersion: 1,
+      canonicalCaptureUID:
+        "com.elamin.opensteamer.virtual-microphone.input",
+      captureUIDMatches: true,
+      physicalOutputValidated: true,
+      challengeNonceMatches: true,
+      queueReadbackMatches: true,
+      captureQueueReadbackMatches: true,
+      physicalOutputQueueReadbackMatches: true,
+      format: {
+        sampleRate: 48000,
+        channels: 1,
+        signedInt16: true,
+        interleaved: true
+      },
+      proofWindowSeconds: 6,
+      captureSeconds: 6,
+      callbackCount: 600,
+      capturedFrameCount: 288000,
+      totalCallbackCount: 600,
+      totalCapturedFrameCount: 288000,
+      frameDensity: 1,
+      maxCallbackGapMs: 10,
+      longestNonSilentGapMs: 20,
+      nonSilentFrameRatio: 0.9,
+      aggregateClippedRatio: 0,
+      progressObservationCount: 13,
+      advancingProgressObservationCount: 12,
+      progressSnapshots: $progress,
+      channels: [{
+        channel: 0,
+        rms: 4000,
+        peak: 7000,
+        clippedRatio: 0,
+        nonSilentRatio: 0.9,
+        challengeSymbolCount: 20,
+        matchedSymbolCount: 18,
+        matchRatio: 0.9,
+        normalizedCorrelation: 0.8,
+        discriminationMargin: 0.3,
+        envelopeCorrelation: 0.7
+      }],
+      recognizedChannel: 0,
+      symbolCount: 20,
+      matchedSymbolCount: 18,
+      matchRatio: 0.9,
+      normalizedCorrelation: 0.8,
+      discriminationMargin: 0.3,
+      envelopeCorrelation: 0.7,
+      detectedLagMs: 280,
+      defaultInputBeforeAfterEqual: true,
+      defaultOutputBeforeAfterEqual: true,
+      defaultSystemOutputBeforeAfterEqual: true,
+      defaultChangeNotificationCount: 0,
+      failureCode: "none",
+      failureReasons: []
+    }
+  ') || return $?
+  opensteamer_write_state \
+    "${RAW_BLACKHOLE_PROBE_RESULT}" "${probe_result_json}"
 }
 
 function run_legacy_raw_readiness_self_test() {
@@ -7552,29 +7626,29 @@ function run_raw_completion_self_test() {
     done
     [[ -s "${RAW_READY_RESUMED_MARKER}" ]] || exit 101
     if [[ "${scenario}" == "completion-stale-hidden-writer-after-pair-change" ]]; then
-      print -r -- "Worldwide authenticated media route selected BlackHole default input routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
+      print -r -- "Worldwide authenticated media route selected virtual microphone default input routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
         >> "${HOST_LOG}"
       print -r -- "Worldwide iPhone microphone hidden writer selected routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
         >> "${HOST_LOG}"
       sleep 0.2
       print -r -- "Worldwide WebRTC peer state: connected pid=5100" \
         >> "${HOST_LOG}"
-      print -r -- "Worldwide authenticated media route selected BlackHole default input routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=2 pid=5100" \
+      print -r -- "Worldwide authenticated media route selected virtual microphone default input routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=2 pid=5100" \
         >> "${HOST_LOG}"
     elif [[ "${scenario}" == "completion-stale-hidden-writer-after-routing-epoch-change" ]]; then
-      print -r -- "Worldwide authenticated media route selected BlackHole default input routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
+      print -r -- "Worldwide authenticated media route selected virtual microphone default input routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
         >> "${HOST_LOG}"
       print -r -- "Worldwide iPhone microphone hidden writer selected routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
         >> "${HOST_LOG}"
       sleep 0.2
       print -r -- "Worldwide WebRTC peer state: connected pid=5100" \
         >> "${HOST_LOG}"
-      print -r -- "Worldwide authenticated media route selected BlackHole default input routingEpoch=${replacement_routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
+      print -r -- "Worldwide authenticated media route selected virtual microphone default input routingEpoch=${replacement_routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
         >> "${HOST_LOG}"
     else
       print -r -- "Worldwide WebRTC peer state: connected pid=5100" \
         >> "${HOST_LOG}"
-      print -r -- "Worldwide authenticated media route selected BlackHole default input routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
+      print -r -- "Worldwide authenticated media route selected virtual microphone default input routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
         >> "${HOST_LOG}"
       if [[ "${scenario}" != "completion-missing-hidden-writer" ]]; then
         if [[ "${scenario}" == "completion-mismatched-hidden-writer-generation" ]]; then
@@ -7613,15 +7687,15 @@ function run_raw_completion_self_test() {
             done
             ;;
           completion-post-launch-device-generation-change)
-            print -r -- "Worldwide authenticated media route selected BlackHole default input routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=2 pid=5100" \
+            print -r -- "Worldwide authenticated media route selected virtual microphone default input routingEpoch=${routing_epoch} peerGeneration=1 deviceGeneration=2 pid=5100" \
               >> "${HOST_LOG}"
             ;;
           completion-post-launch-peer-generation-change)
-            print -r -- "Worldwide authenticated media route selected BlackHole default input routingEpoch=${routing_epoch} peerGeneration=2 deviceGeneration=1 pid=5100" \
+            print -r -- "Worldwide authenticated media route selected virtual microphone default input routingEpoch=${routing_epoch} peerGeneration=2 deviceGeneration=1 pid=5100" \
               >> "${HOST_LOG}"
             ;;
           completion-post-launch-routing-epoch-change)
-            print -r -- "Worldwide authenticated media route selected BlackHole default input routingEpoch=${replacement_routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
+            print -r -- "Worldwide authenticated media route selected virtual microphone default input routingEpoch=${replacement_routing_epoch} peerGeneration=1 deviceGeneration=1 pid=5100" \
               >> "${HOST_LOG}"
             ;;
           completion-post-launch-writer-revoked)
@@ -8103,8 +8177,8 @@ if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "validate-call-activities" ]]; then
   exit 0
 fi
 if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "phase-order" ]]; then
-  begin_phase 1 raw-iphone-microphone-blackhole "${RAW_PHASE_STATUS}"
-  complete_phase 1 raw-iphone-microphone-blackhole "${RAW_PHASE_STATUS}"
+  begin_phase 1 raw-iphone-microphone-virtual-microphone "${RAW_PHASE_STATUS}"
+  complete_phase 1 raw-iphone-microphone-virtual-microphone "${RAW_PHASE_STATUS}"
   begin_phase 2 reconnect-background-screen "${RECONNECT_PHASE_STATUS}"
   complete_phase 2 reconnect-background-screen "${RECONNECT_PHASE_STATUS}"
   begin_phase 3 real-connected-call "${CALL_PHASE_STATUS}"
@@ -8114,20 +8188,20 @@ if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "phase-order" ]]; then
   exit 0
 fi
 if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "phase-failure-raw" ]]; then
-  begin_phase 1 raw-iphone-microphone-blackhole "${RAW_PHASE_STATUS}"
+  begin_phase 1 raw-iphone-microphone-virtual-microphone "${RAW_PHASE_STATUS}"
   function fail_raw_phase_self_test() { return 11 }
   fail_raw_phase_self_test
 fi
 if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "phase-failure-reconnect" ]]; then
-  begin_phase 1 raw-iphone-microphone-blackhole "${RAW_PHASE_STATUS}"
-  complete_phase 1 raw-iphone-microphone-blackhole "${RAW_PHASE_STATUS}"
+  begin_phase 1 raw-iphone-microphone-virtual-microphone "${RAW_PHASE_STATUS}"
+  complete_phase 1 raw-iphone-microphone-virtual-microphone "${RAW_PHASE_STATUS}"
   begin_phase 2 reconnect-background-screen "${RECONNECT_PHASE_STATUS}"
   function fail_reconnect_phase_self_test() { return 12 }
   fail_reconnect_phase_self_test
 fi
 if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == "phase-failure-call" ]]; then
-  begin_phase 1 raw-iphone-microphone-blackhole "${RAW_PHASE_STATUS}"
-  complete_phase 1 raw-iphone-microphone-blackhole "${RAW_PHASE_STATUS}"
+  begin_phase 1 raw-iphone-microphone-virtual-microphone "${RAW_PHASE_STATUS}"
+  complete_phase 1 raw-iphone-microphone-virtual-microphone "${RAW_PHASE_STATUS}"
   begin_phase 2 reconnect-background-screen "${RECONNECT_PHASE_STATUS}"
   complete_phase 2 reconnect-background-screen "${RECONNECT_PHASE_STATUS}"
   begin_phase 3 real-connected-call "${CALL_PHASE_STATUS}"
@@ -9622,7 +9696,7 @@ if ! grep -qx 'status=passed' "${RAW_PHASE_STATUS}" \
   exit 1
 fi
 
-echo "Production-bundle raw iPhone microphone and BlackHole gate passed: ${RAW_RESULT_BUNDLE}"
+echo "Production-bundle raw iPhone and virtual-microphone gate passed: ${RAW_RESULT_BUNDLE}"
 echo "Production-bundle reconnect gate passed with three verified same-process host restarts: ${RECONNECT_RESULT_BUNDLE}"
 echo "Host restart evidence: ${HOST_EVENTS}"
 echo "Production-bundle real connected-call gate passed under one stable host PID: ${CALL_RESULT_BUNDLE}"

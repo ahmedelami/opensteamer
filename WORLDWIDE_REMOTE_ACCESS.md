@@ -75,22 +75,28 @@ input bus 1, and send a separate 48 kHz mono Opus track with stable ID
 `iphone-microphone`. VoiceProcessingIO and voice/chat modes are not used.
 
 The Mac offers that second audio transceiver as recvOnly and accepts only the
-`iphone-microphone` track. Its decoded PCM is written only to the installed hidden
-BlackHole mirror `BlackHole2ch_2_UID`; the output AudioQueue must read back that
-exact current-device UID before and after start. The design leaves the distinct
-visible `BlackHole2ch_UID` input for FaceTime and other Mac clients; only a fresh
-physical call can prove that the target client adopted and transmitted that route.
+`iphone-microphone` track. Its decoded mono PCM is written only to the hidden,
+output-only product endpoint
+`com.elamin.opensteamer.virtual-microphone.writer`; the output AudioQueue must
+read back that exact UID and AudioDeviceID before and after start. The distinct,
+visible, input-only endpoint
+`com.elamin.opensteamer.virtual-microphone.input` is the endpoint FaceTime and
+other Mac clients may open. The currently installed BlackHole pair is retained
+only as historical failure evidence and for the separate legacy LAN path; worldwide
+routing must never fall back to it.
 
 Independently of remote-track arrival, the first current-generation authenticated
 peer/ICE/control healthy boundary acquires a connection-level default-input lease.
 Before `WorldwideScreenService` awaits system-audio startup, that lease selects the
-canonical installed `BlackHole2ch_UID` endpoint as the macOS default input. It does
+visible product endpoint as the macOS default input. It does
 not wait for an `iphone-microphone` callback, RTP, decoded PCM, successful pulls,
 forwarding readiness, iOS microphone permission, the manual microphone switch, or
 iPhone call state. Already-safe default output and system-output devices are
-preserved; if either selector points at a visible or hidden BlackHole endpoint,
-the safe-output invariant repairs it to an eligible physical output before the
-input lease is acquired.
+preserved; if either selector points at either product endpoint or either retired
+BlackHole endpoint, the safe-output invariant repairs it to an eligible physical
+output before the input lease is acquired. The process-tap clock policy rejects the
+same four virtual endpoints, so the hidden writer cannot become an aggregate/output
+clock and disturb speaker playback.
 
 The two output-selector listeners remain installed for that entire routing
 session. Their callback closes a lock-free hidden-writer gate before scheduling
@@ -104,15 +110,28 @@ notifications and AudioQueue enqueue are separate public APIs, so one buffer alr
 in flight at the HAL boundary cannot be retracted; the gate closes the earliest
 observable subsequent work without claiming atomic selector/enqueue behavior.
 
-BlackHole discovery is read-only. The host registers a Core Audio device-list
+A separate internal PCM gate remains closed through AudioQueue priming and start.
+It opens only after the requested and read-back queue format proves 48 kHz packed,
+signed, interleaved Int16 mono, device readbacks prove 48 kHz/one-channel output
+with no converter error, and two advancing
+sample/host-time observations prove the public 48 kHz timeline has at least 60 seconds
+of signed-32 headroom after projection into FaceTime's observed 24 kHz domain. Runtime
+clock checks synchronously close the outer writer-authorization gate before reporting
+a violation; the complete format contract is re-proved on every fresh queue startup
+rather than continuously polled.
+
+Product-endpoint discovery is read-only. The host registers a Core Audio device-list
 listener before its initial inventory read, resolves the hidden endpoint by exact UID,
 and publishes an epoch plus a monotonic atomic-pair generation. It requires distinct
-visible/hidden identities, the expected shared model UID, alive and visibility flags,
-2-in/2-out topology, and 48 kHz; healthy media boundaries reconcile the pair even when
-the hidden endpoint is absent from normal enumeration. The connection-level input
+visible/hidden identities, exact shared model UID
+`com.elamin.opensteamer.virtual-microphone.model`, alive and visibility flags,
+visible 1-in/0-out and hidden 0-in/1-out topology, packed Float32 mono at 48 kHz,
+and exact shared nonzero clock domain `0x6F73564D`; healthy media boundaries
+reconcile the pair even when the hidden endpoint is absent from normal enumeration.
+The connection-level input
 coordinator supports both orderings:
 an available snapshot may precede connection health, or the healthy connection may
-wait for the first current snapshot that makes BlackHole available. Each output
+wait for the first current snapshot that makes the product pair available. Each output
 attempt remains separately bound to its exact monitor snapshot, peer generation,
 transport-authorization epoch, and remote-track generation.
 
@@ -122,7 +141,7 @@ bounded notification plus stable-UID readback proof. On transport uncertainty,
 disconnect, peer replacement, device removal, startup failure, or graceful
 shutdown, restoration is initiated synchronously. The prior UID is resolved fresh
 and restored only if the same generation still owns the lease and the current
-input remains BlackHole; a newer user or application choice is not overwritten.
+input remains the visible product endpoint; a newer user or application choice is not overwritten.
 Stale generations cannot restore over a replacement connection. A missing device,
 failed write, or failed proof degrades this convenience without ending worldwide
 signaling, system audio, screen video, or control. Because the lease is in memory,
@@ -141,7 +160,7 @@ health requires two bounded observations with advancing callback and successful-
 counts. These counters prove forwarding activity, not nonzero acoustic content.
 
 When trusted-LAN services coexist with worldwide mode, iPhone-microphone forwarding
-and its automatic default-input lease are suppressed for both BlackHole-input and
+and its automatic default-input lease are suppressed for both legacy BlackHole-input and
 ScreenCaptureKit LAN capture. This prevents a local capture/forwarding loop without
 stopping worldwide signaling, system audio, screen viewing, control, remote input,
 or either LAN listener.
@@ -203,23 +222,60 @@ dependencies.
 | Protocol, crypto, replay, lifecycle, and mutation suites | Implemented as automated tests |
 | Signed Simulator lifecycle and artifact gates | Available; require local signing |
 | WSS/STUN and TURN provisioning code | Implemented; deployment-specific runtime proof required |
+| Repo-owned mono virtual-microphone driver | Clean-room core, production wrapper, sanitizers, lifecycle stress, malformed-bundle mutations, reproducible universal build, and actual bundle-load gate implemented; not installed or production-signed |
+| Installed BlackHole 2ch v0.7.1 | Release-incompatible: no-call clock/headroom and unity-gain gates fail; exact hidden-to-visible PCM comparison remains unavailable and unproved |
 | Unrelated-network direct connection | Physical acceptance pass required per deployment |
 | Forced-TURN connection | Physical acceptance pass required before “works anywhere” |
 | Remote-input native target mutation | Physical target-state oracle still required |
 | Final speaker/headphone fidelity | External source-correlated acoustic capture still required |
 | Cryptographic screen-source/GPU presentation proof | Still required |
 
-Worldwide-only BlackHole acceptance must record the original default input before
-connection, prove BlackHole is the default input at the authenticated
+The observed v0.7.1 driver resets its local timeline counter without changing the
+zero-timestamp seed. Its public device time remained beyond FaceTime's signed-32
+compatibility boundary after both endpoints were stopped, so quiescence is not clock
+reset or retry proof. This blocks microphone-forwarding release on that driver
+generation; it does not block worldwide signaling, system audio, screen video, or
+control.
+
+Worldwide-only product-microphone acceptance must record the original default input before
+connection, prove the visible product endpoint is the default input at the authenticated
 peer/ICE/control boundary before remote-track or PCM proof, prove the default output
-and system-output UIDs remain unchanged, prove neither BlackHole endpoint becomes an
-output default, require a current PID/peer/pair-generation hidden-writer readback marker,
+and system-output UIDs remain unchanged, prove no product or retired BlackHole endpoint becomes an
+output default or process-tap clock, require a current PID/peer/pair-generation hidden-writer readback marker,
 and prove the original input is restored
 after disconnect. Expected default-input notifications around selection and
-restoration must not fail the oracle. It must also open BlackHole's input side by
+restoration must not fail the oracle. It must also open the visible product input by
 stable UID, drive a known time-varying remote microphone challenge, and independently
 require advancing frames and pattern recognition. A forwarding snapshot or successful
 AudioQueue start is not host-visible PCM proof.
+
+Before another FaceTime call, the finite-challenge no-call `mirror-loopback` oracle must open
+the hidden output and visible input by exact UID, bit-compare its mono nonce
+challenge, prove format, clock continuity and signed-32 headroom, leave every default
+selector unchanged, and record teardown/quiescence status. Stopping both endpoints is
+only a precondition; a supervising release runner must impose a process deadline.
+After this oracle passes on the freshly resolved installed endpoint pair, one final FaceTime/far-end
+acceptance call is still required because only FaceTime can prove route adoption and
+transmission to the other participant. Exact driver-build claims additionally require
+separate signed-bundle provenance until the oracle records it directly.
+
+For the repo-owned replacement driver, one public AudioQueue lifecycle is not seed proof.
+The implemented driver test target directly proves a new nonzero zero-timestamp seed on every
+shared zero-client-to-first-client transition, atomic reset of all epoch-owned clock
+and ring state, and repeated restarts in both visible-input-first and hidden-writer-
+first orders. Installed public-API validation must still repeat those lifecycle orders. The
+current no-call artifact is decisive evidence that the installed BlackHole pair is
+unsafe; it does not certify the uninstalled replacement artifact.
+
+Before the final call, a separate bounded public VoiceProcessingIO compatibility
+probe must exercise the product writer-to-visible-input boundary with 48 kHz mono
+processed-microphone capture, exact 48 kHz stereo playout-client readback with a
+bounded two-buffer silence callback, advancing timestamps/callbacks, zero render
+error, and strong speech-band nonce correlation while preserving and restoring every default. This covers Apple's public
+voice-processing boundary without pretending to simulate FaceTime. The final physical
+acceptance must then prove both directions: the far end hears intelligible local speech,
+and the local Mac speakers/headphones reproduce intelligible far-end speech while
+output and system-output remain on the reviewed real device.
 
 App-observable RemoteIO PCM is the final boundary the app can inspect, not proof of the later iOS
 mixer, route processing, DAC, speaker, or headphones. See [TESTING_ORACLES.md](TESTING_ORACLES.md)

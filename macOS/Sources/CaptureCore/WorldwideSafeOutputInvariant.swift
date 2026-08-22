@@ -1,7 +1,8 @@
 import CoreAudio
 import Foundation
 
-/// The two output defaults that must remain non-BlackHole during worldwide duplex audio.
+/// The two output defaults that must remain usable, real outputs during
+/// worldwide duplex audio.
 enum BlackHoleDefaultOutputKind: CaseIterable, Hashable, Sendable {
     case output
     case systemOutput
@@ -22,6 +23,14 @@ enum BlackHoleDefaultOutputMutationResult: Equatable, Sendable {
     case readFailed
 }
 
+/// One selector's exact UID plus proof that the UID resolves back to the
+/// current, alive device and that device exposes at least one output channel.
+/// A nil device ID is a factual unsafe-route observation, not a safe UID.
+struct WorldwideSafeOutputRouteObservation: Equatable, Sendable {
+    let uid: String
+    let usableDeviceID: AudioDeviceID?
+}
+
 protocol WorldwideSafeOutputInvariantOperations: AnyObject, Sendable {
     func addDefaultOutputListener(
         kind: BlackHoleDefaultOutputKind,
@@ -35,9 +44,9 @@ protocol WorldwideSafeOutputInvariantOperations: AnyObject, Sendable {
         listener: CoreAudioPropertyListenerRegistration
     ) -> OSStatus
 
-    func currentDefaultOutputUID(
+    func currentDefaultOutputRoute(
         _ kind: BlackHoleDefaultOutputKind
-    ) throws -> String
+    ) throws -> WorldwideSafeOutputRouteObservation
 
     /// Resolves and validates one alive device with at least one output channel.
     func resolveUsableOutputDeviceID(uid: String) throws -> AudioDeviceID
@@ -98,12 +107,14 @@ public struct WorldwideSafeOutputInvariantAuthorization:
     public let listenerSequence: UInt64
 }
 
-/// Enforces the worldwide duplex invariant that BlackHole may be the input, never an output.
+/// Enforces the worldwide duplex invariant that a virtual-microphone endpoint
+/// may be an input route, never an output route.
 ///
-/// When exactly one selector is BlackHole, the other current usable output supplies the preferred
-/// replacement. When both are BlackHole, the built-in speaker is the deterministic fallback. The
-/// default-input selector is deliberately absent from this type. Core Audio has no atomic
-/// compare-and-set; an exact listener sequence plus readback rejects every observable overlap.
+/// When exactly one selector is unsafe, the other current usable output
+/// supplies the preferred replacement. When neither is usable, the built-in
+/// speaker is the deterministic fallback. The default-input selector is
+/// deliberately absent from this type. Core Audio has no atomic compare-and-set;
+/// an exact listener sequence plus readback rejects every observable overlap.
 public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
     public static let canonicalBlackHoleUID =
         WorldwideBlackHoleMicrophoneEndpointContract
@@ -111,41 +122,70 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
     public static let hiddenMirrorBlackHoleUID =
         WorldwideBlackHoleMicrophoneEndpointContract
             .hiddenMirrorSinkDeviceUID
+    /// The retired BlackHole experiment remains installed side by side. A
+    /// stale selector must never make either legacy endpoint an output again.
+    public static let legacyBlackHoleUID =
+        WorldwideBlackHoleMicrophoneEndpointContract
+            .retiredLegacyVisibleDeviceUID
+    public static let legacyHiddenMirrorBlackHoleUID =
+        WorldwideBlackHoleMicrophoneEndpointContract
+            .retiredLegacyHiddenWriterDeviceUID
     public static let builtInSpeakerUID = "BuiltInSpeakerDevice"
 
     public static func isForbiddenOutputUID(_ uid: String) -> Bool {
         uid == canonicalBlackHoleUID
             || uid == hiddenMirrorBlackHoleUID
+            || uid == legacyBlackHoleUID
+            || uid == legacyHiddenMirrorBlackHoleUID
     }
 
     private struct Snapshot: Equatable {
-        let outputUID: String
-        let systemOutputUID: String
+        let output: WorldwideSafeOutputRouteObservation
+        let systemOutput: WorldwideSafeOutputRouteObservation
 
         func uid(for kind: BlackHoleDefaultOutputKind) -> String {
             switch kind {
             case .output:
-                outputUID
+                output.uid
             case .systemOutput:
-                systemOutputUID
+                systemOutput.uid
             }
+        }
+
+        func route(
+            for kind: BlackHoleDefaultOutputKind
+        ) -> WorldwideSafeOutputRouteObservation {
+            switch kind {
+            case .output:
+                output
+            case .systemOutput:
+                systemOutput
+            }
+        }
+
+        func isSafe(
+            _ route: WorldwideSafeOutputRouteObservation
+        ) -> Bool {
+            !WorldwideSafeOutputInvariant
+                .isForbiddenOutputUID(route.uid)
+                && route.usableDeviceID != nil
+        }
+
+        func isSafe(for kind: BlackHoleDefaultOutputKind) -> Bool {
+            isSafe(route(for: kind))
         }
 
         var isSafe: Bool {
-            !WorldwideSafeOutputInvariant
-                .isForbiddenOutputUID(outputUID)
-                && !WorldwideSafeOutputInvariant
-                    .isForbiddenOutputUID(systemOutputUID)
+            isSafe(output) && isSafe(systemOutput)
         }
 
-        var preferredSafeUID: String? {
-            if !WorldwideSafeOutputInvariant
-                .isForbiddenOutputUID(outputUID) {
-                return outputUID
+        var preferredSafeRoute:
+            WorldwideSafeOutputRouteObservation? {
+            if isSafe(output) {
+                return output
             }
-            if !WorldwideSafeOutputInvariant
-                .isForbiddenOutputUID(systemOutputUID) {
-                return systemOutputUID
+            if isSafe(systemOutput) {
+                return systemOutput
             }
             return nil
         }
@@ -850,9 +890,7 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
 
             var shouldRetry = false
             for kind in BlackHoleDefaultOutputKind.allCases
-                where Self.isForbiddenOutputUID(
-                    before.uid(for: kind)
-                ) {
+                where !before.isSafe(for: kind) {
                 let unsafeUID = before.uid(for: kind)
                 switch try writeAndProve(
                     deviceID: safeDeviceID,
@@ -902,9 +940,9 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
 
     private func snapshot() throws -> Snapshot {
         Snapshot(
-            outputUID: try operations.currentDefaultOutputUID(.output),
-            systemOutputUID:
-                try operations.currentDefaultOutputUID(.systemOutput)
+            output: try operations.currentDefaultOutputRoute(.output),
+            systemOutput:
+                try operations.currentDefaultOutputRoute(.systemOutput)
         )
     }
 
@@ -933,11 +971,18 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
     private func safeOutputTarget(
         for snapshot: Snapshot
     ) throws -> (uid: String, deviceID: AudioDeviceID) {
-        if let preferredUID = snapshot.preferredSafeUID,
-           preferredUID != Self.builtInSpeakerUID,
+        if let preferredRoute = snapshot.preferredSafeRoute,
+           preferredRoute.uid != Self.builtInSpeakerUID,
            let preferredDeviceID = try? operations
-            .resolveUsableOutputDeviceID(uid: preferredUID) {
-            return (preferredUID, preferredDeviceID)
+            .resolveUsableOutputDeviceID(uid: preferredRoute.uid),
+           preferredDeviceID == preferredRoute.usableDeviceID {
+            return (preferredRoute.uid, preferredDeviceID)
+        }
+
+        if let preferredRoute = snapshot.preferredSafeRoute,
+           preferredRoute.uid == Self.builtInSpeakerUID,
+           let preferredDeviceID = preferredRoute.usableDeviceID {
+            return (preferredRoute.uid, preferredDeviceID)
         }
 
         let deviceID = try operations.resolveUsableOutputDeviceID(
@@ -1172,13 +1217,13 @@ public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
     ) -> Bool {
         drainListenerQueue(registration)
         guard registration.signal.snapshot() == sequence,
-              (try? operations.currentDefaultOutputUID(kind))
+              (try? operations.currentDefaultOutputRoute(kind).uid)
                 == expectedUID else {
             return false
         }
         drainListenerQueue(registration)
         guard registration.signal.snapshot() == sequence,
-              (try? operations.currentDefaultOutputUID(kind))
+              (try? operations.currentDefaultOutputRoute(kind).uid)
                 == expectedUID else {
             return false
         }
@@ -1309,9 +1354,9 @@ private final class SystemWorldwideSafeOutputInvariantOperations:
         )
     }
 
-    func currentDefaultOutputUID(
+    func currentDefaultOutputRoute(
         _ kind: BlackHoleDefaultOutputKind
-    ) throws -> String {
+    ) throws -> WorldwideSafeOutputRouteObservation {
         let deviceID = try currentDefaultDeviceID(kind)
         guard let uid = deviceUID(deviceID), !uid.isEmpty else {
             throw CaptureError.audioDeviceConfiguration(
@@ -1319,7 +1364,14 @@ private final class SystemWorldwideSafeOutputInvariantOperations:
                 kAudio_ParamError
             )
         }
-        return uid
+        let resolvedDeviceID = try? resolveUsableOutputDeviceID(
+            uid: uid
+        )
+        return WorldwideSafeOutputRouteObservation(
+            uid: uid,
+            usableDeviceID:
+                resolvedDeviceID == deviceID ? deviceID : nil
+        )
     }
 
     func resolveUsableOutputDeviceID(uid: String) throws -> AudioDeviceID {
@@ -1365,7 +1417,7 @@ private final class SystemWorldwideSafeOutputInvariantOperations:
         expectedCurrentUID: String
     ) -> BlackHoleDefaultOutputMutationResult {
         do {
-            guard try currentDefaultOutputUID(kind)
+            guard try currentDefaultOutputRoute(kind).uid
                     == expectedCurrentUID else {
                 return .currentOutputMismatch
             }

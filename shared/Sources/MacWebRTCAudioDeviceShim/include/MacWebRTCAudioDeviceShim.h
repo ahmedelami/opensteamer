@@ -169,24 +169,15 @@ typedef struct ASMacAudioQueuePCMContentRawWindow {
     /// Exact half-open source-frame interval represented by this window.
     uint64_t sourceStartFrame;
     uint64_t sourceEndFrame;
-    /// Canonical FNV-1a 64 over every interleaved Int16 sample in the window. Each
-    /// sample is reinterpreted as UInt16 and hashed low byte then high byte.
+    /// Canonical FNV-1a 64 over every mono Int16 sample in the window. Each sample
+    /// is reinterpreted as UInt16 and hashed low byte then high byte.
     uint64_t windowFingerprint;
     uint64_t frameCount;
-    int64_t leftSampleSum;
-    int64_t rightSampleSum;
-    uint64_t leftSquareSum;
-    uint64_t rightSquareSum;
-    int64_t leftRightProductSum;
-    uint64_t sumSquareSum;
-    uint64_t differenceSquareSum;
-    uint64_t leftPeak;
-    uint64_t rightPeak;
-    uint64_t leftZeroCount;
-    uint64_t rightZeroCount;
-    uint64_t leftClippingCount;
-    uint64_t rightClippingCount;
-    uint64_t oneSidedFrameCount;
+    int64_t sampleSum;
+    uint64_t squareSum;
+    uint64_t peak;
+    uint64_t zeroCount;
+    uint64_t clippingCount;
 } ASMacAudioQueuePCMContentRawWindow;
 
 typedef struct ASMacAudioQueuePCMContentSnapshot {
@@ -275,14 +266,14 @@ typedef struct ASMacStereoAudioDeviceDiagnostics {
     uint64_t playoutFenceWaitCount;
 } ASMacStereoAudioDeviceDiagnostics;
 
-/// Privacy-safe decoded-content evidence from the caller-owned stereo playout boundary.
+/// Privacy-safe decoded-content evidence from the caller-owned mono playout boundary.
 ///
 /// Content-derived fields describe only the latest completed exact 48,000-frame window. An
 /// arbitrary render callback may be divided between adjacent scalar windows while its PCM remains
 /// solely in caller-owned storage for the duration of the callback. Exact render/frame/byte
 /// evidence is cumulative for the device lifetime. The realtime path retains scalar sums and a
-/// non-reversible FNV-1a fingerprint only; RMS, dBFS, fractions, and centered Pearson correlation
-/// are derived by this off-callback snapshot accessor. No PCM is retained.
+/// non-reversible FNV-1a fingerprint only; RMS, dBFS, and fractions are derived by this
+/// off-callback snapshot accessor. No PCM is retained.
 typedef struct ASMacDecodedPlayoutTelemetrySnapshot {
     uint64_t playoutGeneration;
 
@@ -319,41 +310,22 @@ typedef struct ASMacDecodedPlayoutTelemetrySnapshot {
     /// Exact half-open playout source-frame interval represented by the window.
     uint64_t completedWindowSourceStartFrame;
     uint64_t completedWindowSourceEndFrame;
-    /// Canonical FNV-1a 64 over interleaved Int16 sample bytes, low byte then high byte.
+    /// Canonical FNV-1a 64 over mono Int16 sample bytes, low byte then high byte.
     uint64_t completedWindowFingerprint;
     double completedWindowDurationSeconds;
 
-    double leftRMS;
-    double rightRMS;
-    double leftRMSDecibelsFS;
-    double rightRMSDecibelsFS;
-    double leftPeak;
-    double rightPeak;
-    double leftPeakDecibelsFS;
-    double rightPeakDecibelsFS;
-    double leftDC;
-    double rightDC;
-    uint64_t leftZeroSampleCount;
-    uint64_t rightZeroSampleCount;
-    double leftZeroFraction;
-    double rightZeroFraction;
-    uint64_t leftClippedSampleCount;
-    uint64_t rightClippedSampleCount;
-    double leftClippingFraction;
-    double rightClippingFraction;
-    bool leftRightCorrelationIsValid;
-    double leftRightCorrelation;
-    double sumPower;
-    double differencePower;
-    uint64_t oneSidedFrameCount;
-    double oneSidedFraction;
+    double rms;
+    double rmsDecibelsFS;
+    double peak;
+    double peakDecibelsFS;
+    double dc;
+    uint64_t zeroSampleCount;
+    double zeroFraction;
+    uint64_t clippedSampleCount;
+    double clippingFraction;
 
     bool windowIsAllZero;
-    bool windowIsLeftOnly;
-    bool windowIsRightOnly;
     uint64_t allZeroBlockCount;
-    uint64_t leftOnlyBlockCount;
-    uint64_t rightOnlyBlockCount;
     uint64_t frozenBlockCount;
     uint64_t longestFrozenBlockRun;
 } ASMacDecodedPlayoutTelemetrySnapshot;
@@ -383,12 +355,12 @@ typedef struct ASMacDecodedPlayoutTelemetrySnapshot {
 
 - (void)revokeRecordingAdmission;
 
-/// Pulls decoded stereo PCM directly into caller-owned output-device memory.
+/// Pulls decoded mono PCM directly into caller-owned output-device memory.
 /// The method performs no allocation, logging, sleeping, network work, or
 /// contended locking. Failure leaves the destination as silence.
-- (BOOL)renderPlayoutInterleavedStereoInt16:(int16_t *)samples
-                                  frameCount:(NSUInteger)frameCount
-    NS_SWIFT_NAME(renderPlayoutInterleavedStereoInt16(_:frameCount:));
+- (BOOL)renderPlayoutMonoInt16:(int16_t *)samples
+                    frameCount:(NSUInteger)frameCount
+    NS_SWIFT_NAME(renderPlayoutMonoInt16(_:frameCount:));
 
 /// Pulls one arbitrary-size playout block without opening hardware. Production Mac hosts are
 /// send-only; this explicit pull exists for embedders and deterministic headless codec tests.

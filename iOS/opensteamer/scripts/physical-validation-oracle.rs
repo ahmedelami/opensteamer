@@ -1735,10 +1735,7 @@ fn validate_overlap(values: &[&str]) -> Result<(String, String, String), i32> {
         || observation["schema"] != "opensteamer.blackhole-probe-completion-observation.v1"
         || waited["schema"] != "opensteamer.blackhole-probe-wait.v1"
         || wrapper["schema"] != "opensteamer.blackhole-probe-completion.v1"
-        || json_object_string(result_object, "schema")
-            != Some("opensteamer.physical-blackhole-microphone.v1")
-        || json_object_string(result_object, "status") != Some("passed")
-        || json_object_string(result_object, "runNonce") != Some(expected_nonce)
+        || !physical_probe_result_matches(result_object, expected_nonce)
     {
         return Err(INVALID);
     }
@@ -2003,10 +2000,10 @@ fn validate_overlap(values: &[&str]) -> Result<(String, String, String), i32> {
 #[derive(Debug)]
 enum JsonValue {
     Null,
-    Bool,
-    Number,
+    Bool(bool),
+    Number(String),
     String(String),
-    Array,
+    Array(Vec<JsonValue>),
     Object(BTreeMap<String, JsonValue>),
 }
 
@@ -2025,6 +2022,212 @@ fn json_object_string<'a>(object: &'a BTreeMap<String, JsonValue>, key: &str) ->
         Some(JsonValue::String(value)) => Some(value),
         _ => None,
     }
+}
+
+fn json_object_bool(object: &BTreeMap<String, JsonValue>, key: &str) -> Option<bool> {
+    match object.get(key) {
+        Some(JsonValue::Bool(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn json_object_number<'a>(
+    object: &'a BTreeMap<String, JsonValue>,
+    key: &str,
+) -> Option<&'a str> {
+    match object.get(key) {
+        Some(JsonValue::Number(value)) => Some(value),
+        _ => None,
+    }
+}
+
+fn json_object_object<'a>(
+    object: &'a BTreeMap<String, JsonValue>,
+    key: &str,
+) -> Option<&'a BTreeMap<String, JsonValue>> {
+    object.get(key).and_then(JsonValue::as_object)
+}
+
+fn exact_json_keys(object: &BTreeMap<String, JsonValue>, expected: &[&str]) -> bool {
+    object.len() == expected.len() && expected.iter().all(|key| object.contains_key(*key))
+}
+
+fn physical_probe_result_matches(
+    object: &BTreeMap<String, JsonValue>,
+    expected_nonce: &str,
+) -> bool {
+    const ROOT_KEYS: &[&str] = &[
+        "advancingProgressObservationCount",
+        "aggregateClippedRatio",
+        "callbackCount",
+        "canonicalCaptureUID",
+        "captureQueueReadbackMatches",
+        "captureSeconds",
+        "captureUIDMatches",
+        "capturedFrameCount",
+        "challengeAlgorithm",
+        "challengeNonceMatches",
+        "challengeVersion",
+        "channels",
+        "defaultChangeNotificationCount",
+        "defaultInputBeforeAfterEqual",
+        "defaultOutputBeforeAfterEqual",
+        "defaultSystemOutputBeforeAfterEqual",
+        "detectedLagMs",
+        "discriminationMargin",
+        "envelopeCorrelation",
+        "failureCode",
+        "failureReasons",
+        "format",
+        "frameDensity",
+        "longestNonSilentGapMs",
+        "matchRatio",
+        "matchedSymbolCount",
+        "maxCallbackGapMs",
+        "nonSilentFrameRatio",
+        "normalizedCorrelation",
+        "physicalOutputQueueReadbackMatches",
+        "physicalOutputValidated",
+        "progressObservationCount",
+        "progressSnapshots",
+        "proofWindowSeconds",
+        "queueReadbackMatches",
+        "recognizedChannel",
+        "runNonce",
+        "schema",
+        "status",
+        "symbolCount",
+        "totalCallbackCount",
+        "totalCapturedFrameCount",
+    ];
+    const FORMAT_KEYS: &[&str] = &[
+        "channels",
+        "interleaved",
+        "sampleRate",
+        "signedInt16",
+    ];
+    const CHANNEL_KEYS: &[&str] = &[
+        "challengeSymbolCount",
+        "channel",
+        "clippedRatio",
+        "discriminationMargin",
+        "envelopeCorrelation",
+        "matchRatio",
+        "matchedSymbolCount",
+        "nonSilentRatio",
+        "normalizedCorrelation",
+        "peak",
+        "rms",
+    ];
+
+    let Some(format) = json_object_object(object, "format") else {
+        return false;
+    };
+    let Some(JsonValue::Array(channels)) = object.get("channels") else {
+        return false;
+    };
+    let Some(channel) = channels.first().and_then(JsonValue::as_object) else {
+        return false;
+    };
+    let Some(JsonValue::Array(failure_reasons)) = object.get("failureReasons") else {
+        return false;
+    };
+    let Some(JsonValue::Array(_)) = object.get("progressSnapshots") else {
+        return false;
+    };
+
+    exact_json_keys(object, ROOT_KEYS)
+        && json_object_string(object, "schema")
+            == Some("opensteamer.physical-virtual-microphone.v2")
+        && json_object_string(object, "status") == Some("passed")
+        && json_object_string(object, "runNonce") == Some(expected_nonce)
+        && json_object_string(object, "challengeAlgorithm")
+            == Some("nonce-splitmix64-frequency-hop-raised-envelope")
+        && json_object_number(object, "challengeVersion") == Some("1")
+        && json_object_string(object, "canonicalCaptureUID")
+            == Some("com.elamin.opensteamer.virtual-microphone.input")
+        && json_object_bool(object, "captureUIDMatches") == Some(true)
+        && json_object_bool(object, "physicalOutputValidated") == Some(true)
+        && json_object_bool(object, "challengeNonceMatches") == Some(true)
+        && json_object_bool(object, "queueReadbackMatches") == Some(true)
+        && json_object_bool(object, "captureQueueReadbackMatches") == Some(true)
+        && json_object_bool(object, "physicalOutputQueueReadbackMatches") == Some(true)
+        && exact_json_keys(format, FORMAT_KEYS)
+        && json_object_number(format, "sampleRate") == Some("48000")
+        && json_object_number(format, "channels") == Some("1")
+        && json_object_bool(format, "signedInt16") == Some(true)
+        && json_object_bool(format, "interleaved") == Some(true)
+        && channels.len() == 1
+        && exact_json_keys(channel, CHANNEL_KEYS)
+        && json_object_number(channel, "channel") == Some("0")
+        && json_object_number(object, "recognizedChannel") == Some("0")
+        && json_object_string(object, "failureCode") == Some("none")
+        && failure_reasons.is_empty()
+}
+
+fn physical_probe_fixture(nonce: &str) -> String {
+    r#"{
+  "advancingProgressObservationCount": 2,
+  "aggregateClippedRatio": 0,
+  "callbackCount": 600,
+  "canonicalCaptureUID": "com.elamin.opensteamer.virtual-microphone.input",
+  "captureQueueReadbackMatches": true,
+  "captureSeconds": 6,
+  "captureUIDMatches": true,
+  "capturedFrameCount": 288000,
+  "challengeAlgorithm": "nonce-splitmix64-frequency-hop-raised-envelope",
+  "challengeNonceMatches": true,
+  "challengeVersion": 1,
+  "channels": [{
+    "challengeSymbolCount": 20,
+    "channel": 0,
+    "clippedRatio": 0,
+    "discriminationMargin": 0.3,
+    "envelopeCorrelation": 0.7,
+    "matchRatio": 0.9,
+    "matchedSymbolCount": 18,
+    "nonSilentRatio": 0.9,
+    "normalizedCorrelation": 0.8,
+    "peak": 7000,
+    "rms": 4000
+  }],
+  "defaultChangeNotificationCount": 0,
+  "defaultInputBeforeAfterEqual": true,
+  "defaultOutputBeforeAfterEqual": true,
+  "defaultSystemOutputBeforeAfterEqual": true,
+  "detectedLagMs": 280,
+  "discriminationMargin": 0.3,
+  "envelopeCorrelation": 0.7,
+  "failureCode": "none",
+  "failureReasons": [],
+  "format": {
+    "channels": 1,
+    "interleaved": true,
+    "sampleRate": 48000,
+    "signedInt16": true
+  },
+  "frameDensity": 1,
+  "longestNonSilentGapMs": 20,
+  "matchRatio": 0.9,
+  "matchedSymbolCount": 18,
+  "maxCallbackGapMs": 10,
+  "nonSilentFrameRatio": 0.9,
+  "normalizedCorrelation": 0.8,
+  "physicalOutputQueueReadbackMatches": true,
+  "physicalOutputValidated": true,
+  "progressObservationCount": 3,
+  "progressSnapshots": [],
+  "proofWindowSeconds": 6,
+  "queueReadbackMatches": true,
+  "recognizedChannel": 0,
+  "runNonce": "__NONCE__",
+  "schema": "opensteamer.physical-virtual-microphone.v2",
+  "status": "passed",
+  "symbolCount": 20,
+  "totalCallbackCount": 600,
+  "totalCapturedFrameCount": 288000
+}"#
+        .replace("__NONCE__", nonce)
 }
 
 struct JsonParser<'a> {
@@ -2070,18 +2273,17 @@ impl<'a> JsonParser<'a> {
             }
             Some(b't') => {
                 self.literal(b"true")?;
-                Ok(JsonValue::Bool)
+                Ok(JsonValue::Bool(true))
             }
             Some(b'f') => {
                 self.literal(b"false")?;
-                Ok(JsonValue::Bool)
+                Ok(JsonValue::Bool(false))
             }
             Some(b'"') => Ok(JsonValue::String(self.string()?)),
             Some(b'[') => self.array(),
             Some(b'{') => self.object(),
             Some(b'-' | b'0'..=b'9') => {
-                self.number()?;
-                Ok(JsonValue::Number)
+                Ok(JsonValue::Number(self.number()?))
             }
             _ => Err(()),
         }
@@ -2176,7 +2378,8 @@ impl<'a> JsonParser<'a> {
         })
     }
 
-    fn number(&mut self) -> Result<(), ()> {
+    fn number(&mut self) -> Result<String, ()> {
+        let number_start = self.cursor;
         if self.bytes.get(self.cursor) == Some(&b'-') {
             self.cursor += 1;
         }
@@ -2220,7 +2423,9 @@ impl<'a> JsonParser<'a> {
                 return Err(());
             }
         }
-        Ok(())
+        std::str::from_utf8(&self.bytes[number_start..self.cursor])
+            .map(str::to_owned)
+            .map_err(|_| ())
     }
 
     fn array(&mut self) -> Result<JsonValue, ()> {
@@ -2228,10 +2433,11 @@ impl<'a> JsonParser<'a> {
         self.whitespace();
         if self.bytes.get(self.cursor) == Some(&b']') {
             self.cursor += 1;
-            return Ok(JsonValue::Array);
+            return Ok(JsonValue::Array(Vec::new()));
         }
+        let mut values = Vec::new();
         loop {
-            self.value()?;
+            values.push(self.value()?);
             self.whitespace();
             match self.bytes.get(self.cursor) {
                 Some(b',') => {
@@ -2240,7 +2446,7 @@ impl<'a> JsonParser<'a> {
                 }
                 Some(b']') => {
                     self.cursor += 1;
-                    return Ok(JsonValue::Array);
+                    return Ok(JsonValue::Array(values));
                 }
                 _ => return Err(()),
             }
@@ -2334,9 +2540,53 @@ fn run_self_test(root: &Path) -> Result<(), i32> {
     )?;
     require(!payload_id_is_valid("0~"), "payload must not be empty")?;
     let parsed = JsonParser::new(
-        r#"{"schema":"opensteamer.physical-blackhole-microphone.v1","status":"passed","runNonce":"raw-123456789012","extra":[true,null,4]}"#,
+        r#"{"schema":"opensteamer.physical-virtual-microphone.v2","status":"passed","runNonce":"raw-123456789012","extra":[true,null,4]}"#,
     ).parse().map_err(|_| 1)?;
     require(parsed.as_object().is_some(), "strict JSON parser")?;
+    let probe_fixture = physical_probe_fixture("raw-123456789012");
+    let parsed_probe = JsonParser::new(&probe_fixture).parse().map_err(|_| 1)?;
+    let parsed_probe_object = parsed_probe.as_object().ok_or(1)?;
+    require(
+        physical_probe_result_matches(parsed_probe_object, "raw-123456789012"),
+        "exact mono physical-probe contract",
+    )?;
+    for (old, replacement, message) in [
+        (
+            "opensteamer.physical-virtual-microphone.v2",
+            "opensteamer.physical-blackhole-microphone.v1",
+            "legacy physical-probe schema is rejected",
+        ),
+        (
+            "com.elamin.opensteamer.virtual-microphone.input",
+            "BlackHole2ch_UID",
+            "legacy capture UID is rejected",
+        ),
+        (
+            "\"channels\": 1",
+            "\"channels\": 2",
+            "stereo physical-probe format is rejected",
+        ),
+        (
+            "  \"status\": \"passed\",",
+            "  \"unexpected\": true,\n  \"status\": \"passed\",",
+            "extra physical-probe root fields are rejected",
+        ),
+        (
+            "    \"signedInt16\": true\n  },",
+            "    \"signedInt16\": true,\n    \"unexpected\": true\n  },",
+            "extra physical-probe format fields are rejected",
+        ),
+    ] {
+        let mutant = probe_fixture.replacen(old, replacement, 1);
+        let parsed_mutant = JsonParser::new(&mutant).parse().map_err(|_| 1)?;
+        require(
+            !physical_probe_result_matches(
+                parsed_mutant.as_object().ok_or(1)?,
+                "raw-123456789012",
+            ),
+            message,
+        )?;
+    }
 
     let tone = root.join("tone.wav");
     write_tone(&tone, 1).map_err(|_| 1)?;
@@ -2718,7 +2968,7 @@ fn run_self_test(root: &Path) -> Result<(), i32> {
         continuity_fixture("0123456789abcdef0123456789abcdef", 1, false).as_bytes(),
     )
     .map_err(|_| 1)?;
-    atomic_write(&result, format!(r#"{{"schema":"opensteamer.physical-blackhole-microphone.v1","status":"passed","runNonce":"{nonce}"}}"#).as_bytes()).map_err(|_| 1)?;
+    atomic_write(&result, physical_probe_fixture(nonce).as_bytes()).map_err(|_| 1)?;
     env::set_var(
         "OPENSTEAMER_EXPECTED_APP_BUNDLE_IDENTIFIER",
         "com.elamin.opensteamer",
@@ -2768,7 +3018,7 @@ fn run_self_test(root: &Path) -> Result<(), i32> {
     invalid_device_generation_values[1] = invalid_device_generation_readiness.to_str().ok_or(1)?;
     require(
         validate_overlap(&invalid_device_generation_values) == Err(INVALID),
-        "BlackHole device generation must be positive",
+        "virtual-microphone device generation must be positive",
     )?;
     let mut non_overlap_values = overlap_values;
     non_overlap_values[12] = late_ui_completion.to_str().ok_or(1)?;

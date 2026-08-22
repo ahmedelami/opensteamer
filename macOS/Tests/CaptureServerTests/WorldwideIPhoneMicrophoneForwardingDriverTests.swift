@@ -34,7 +34,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
                 monitorEpoch: epoch,
                 deviceGeneration: 1,
                 isAvailable: true,
-                deviceUID: "BlackHole2ch_UID"
+                deviceUID: "com.elamin.opensteamer.virtual-microphone.input"
             )
         )
 
@@ -42,7 +42,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         XCTAssertEqual(factory.requestCount, 0)
         XCTAssertFalse(track.isEnabled)
         XCTAssertEqual(result.phase, .waitingForDevice)
-        XCTAssertEqual(result.deviceUID, "BlackHole2ch_UID")
+        XCTAssertEqual(result.deviceUID, "com.elamin.opensteamer.virtual-microphone.input")
         XCTAssertNil(result.sinkDeviceUID)
         XCTAssertFalse(result.hiddenWriterSelectionProven)
     }
@@ -110,8 +110,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         XCTAssertEqual(
             factory.requestedUIDs,
             [
-                "BlackHole2ch_2_UID",
-                "BlackHole2ch_2_UID",
+                "com.elamin.opensteamer.virtual-microphone.writer",
+                "com.elamin.opensteamer.virtual-microphone.writer",
             ]
         )
         XCTAssertEqual(factory.requestedDeviceIDs, [89, 89])
@@ -204,8 +204,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         XCTAssertTrue(final.exactTrackAdmitted)
         XCTAssertEqual(final.monitorEpoch, epoch)
         XCTAssertEqual(final.deviceGeneration, 2)
-        XCTAssertEqual(final.deviceUID, "BlackHole2ch_UID")
-        XCTAssertEqual(final.sinkDeviceUID, "BlackHole2ch_2_UID")
+        XCTAssertEqual(final.deviceUID, "com.elamin.opensteamer.virtual-microphone.input")
+        XCTAssertEqual(final.sinkDeviceUID, "com.elamin.opensteamer.virtual-microphone.writer")
         XCTAssertEqual(
             final.currentKey?.deviceGeneration,
             2
@@ -216,7 +216,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         )
         XCTAssertEqual(
             factory.requestedUIDs,
-            ["BlackHole2ch_2_UID", "BlackHole2ch_2_UID"]
+            ["com.elamin.opensteamer.virtual-microphone.writer", "com.elamin.opensteamer.virtual-microphone.writer"]
         )
 
         await harness.updateDevice(
@@ -231,6 +231,202 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
             2,
             "A duplicate monitor snapshot must not create another attempt."
         )
+    }
+
+    func testSharedClockStartupFailureDoesNotRetryExactKey()
+        async {
+        let rejection = capturedSharedClockRejection()
+        let failureProbe = DriverSharedClockFailureProbe()
+        let failing = DriverTestOutput(
+            startError:
+                BlackHoleMicrophoneOutputError
+                    .sharedClockUnsafe(rejection)
+        )
+        let replacement = DriverTestOutput(
+            progressSnapshots: readyProgressSnapshots()
+        )
+        let factory = DriverTestOutputFactory(
+            outputs: [failing, replacement]
+        )
+        let harness = DriverTestHarness(
+            factory: factory,
+            sharedClockFailureHandler: { key, rejection in
+                failureProbe.record(
+                    key: key,
+                    rejection: rejection
+                )
+            }
+        )
+        let peer = DriverTestPeer()
+        let track = DriverTestTrack()
+        let epoch = UUID()
+
+        await prepare(
+            harness: harness,
+            epoch: epoch,
+            peer: peer,
+            track: track
+        )
+        await harness.authorize(peer: peer, generation: 1)
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+
+        let terminal = await harness.snapshot()
+        XCTAssertEqual(factory.requestCount, 1)
+        XCTAssertEqual(failing.startCount, 1)
+        XCTAssertEqual(failing.stopCount, 1)
+        XCTAssertFalse(track.isEnabled)
+        XCTAssertEqual(terminal.phase, .sharedClockUnsafe)
+        XCTAssertEqual(
+            terminal.lastFailureCategory,
+            .sharedClockUnsafe
+        )
+        XCTAssertEqual(
+            failureProbe.entries,
+            [
+                .init(
+                    key: WorldwideIPhoneMicrophoneForwardingKey(
+                        monitorEpoch: epoch,
+                        deviceGeneration: 1,
+                        peerGeneration: 1,
+                        transportAuthorizationEpoch: 1,
+                        trackGeneration: 1
+                    ),
+                    rejection: rejection
+                ),
+            ],
+            "The service callback must receive the exact rejected attempt key and captured clock evidence."
+        )
+
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+        XCTAssertEqual(
+            factory.requestCount,
+            1,
+            "A deterministic shared-clock rejection must not enter the same-key retry loop."
+        )
+
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 2,
+                available: true
+            )
+        )
+        XCTAssertEqual(factory.requestCount, 2)
+        XCTAssertTrue(track.isEnabled)
+        let recovered = await harness.snapshot()
+        XCTAssertEqual(recovered.phase, .forwardingHealthy)
+        XCTAssertEqual(recovered.currentKey?.deviceGeneration, 2)
+    }
+
+    func testFormatStartupFailureReachesHandlerAndDoesNotRetryExactKey()
+        async {
+        let rejection =
+            BlackHoleMicrophoneOutputFormatRejection
+                .unexpectedDeviceChannelCount(actual: 4)
+        let failureProbe = DriverFormatFailureProbe()
+        let failing = DriverTestOutput(
+            startError:
+                BlackHoleMicrophoneOutputError
+                    .formatUnsafe(rejection)
+        )
+        let replacement = DriverTestOutput(
+            progressSnapshots: readyProgressSnapshots()
+        )
+        let factory = DriverTestOutputFactory(
+            outputs: [failing, replacement]
+        )
+        let harness = DriverTestHarness(
+            factory: factory,
+            formatFailureHandler: { key, rejection in
+                failureProbe.record(
+                    key: key,
+                    rejection: rejection
+                )
+            }
+        )
+        let peer = DriverTestPeer()
+        let track = DriverTestTrack()
+        let epoch = UUID()
+
+        await prepare(
+            harness: harness,
+            epoch: epoch,
+            peer: peer,
+            track: track
+        )
+        await harness.authorize(peer: peer, generation: 1)
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+
+        let terminal = await harness.snapshot()
+        XCTAssertEqual(factory.requestCount, 1)
+        XCTAssertEqual(failing.startCount, 1)
+        XCTAssertEqual(failing.stopCount, 1)
+        XCTAssertFalse(track.isEnabled)
+        XCTAssertEqual(terminal.phase, .formatUnsafe)
+        XCTAssertEqual(
+            terminal.lastFailureCategory,
+            .formatUnsafe
+        )
+        XCTAssertEqual(
+            failureProbe.entries,
+            [
+                .init(
+                    key: WorldwideIPhoneMicrophoneForwardingKey(
+                        monitorEpoch: epoch,
+                        deviceGeneration: 1,
+                        peerGeneration: 1,
+                        transportAuthorizationEpoch: 1,
+                        trackGeneration: 1
+                    ),
+                    rejection: rejection
+                ),
+            ],
+            "The service callback must receive the exact rejected key and format/readback evidence."
+        )
+
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+        XCTAssertEqual(
+            factory.requestCount,
+            1,
+            "A deterministic format rejection must not retry the exact key."
+        )
+
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 2,
+                available: true
+            )
+        )
+        XCTAssertEqual(factory.requestCount, 2)
+        XCTAssertTrue(track.isEnabled)
+        let recovered = await harness.snapshot()
+        XCTAssertEqual(recovered.phase, .forwardingHealthy)
+        XCTAssertEqual(recovered.currentKey?.deviceGeneration, 2)
     }
 
     func testStartFailureRetryBudgetIsBoundedPerGeneration()
@@ -385,9 +581,9 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         XCTAssertEqual(
             factory.requestedUIDs,
             [
-                "BlackHole2ch_2_UID",
-                "BlackHole2ch_2_UID",
-                "BlackHole2ch_2_UID",
+                "com.elamin.opensteamer.virtual-microphone.writer",
+                "com.elamin.opensteamer.virtual-microphone.writer",
+                "com.elamin.opensteamer.virtual-microphone.writer",
             ]
         )
         let outputUnavailablePhase = await harness.snapshot().phase
@@ -906,6 +1102,94 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         XCTAssertEqual(factory.requestCount, 3)
     }
 
+    func testSharedClockRuntimeFailureDoesNotRetryExactKey()
+        async {
+        let active = DriverTestOutput(
+            progressSnapshots: readyProgressSnapshots()
+        )
+        let replacement = DriverTestOutput(
+            progressSnapshots: readyProgressSnapshots()
+        )
+        let factory = DriverTestOutputFactory(
+            outputs: [active, replacement]
+        )
+        let harness = DriverTestHarness(factory: factory)
+        let peer = DriverTestPeer()
+        let track = DriverTestTrack()
+        let epoch = UUID()
+
+        await prepare(
+            harness: harness,
+            epoch: epoch,
+            peer: peer,
+            track: track
+        )
+        await harness.authorize(peer: peer, generation: 1)
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+        XCTAssertEqual(factory.requestCount, 1)
+        XCTAssertTrue(track.isEnabled)
+
+        let handled = await harness.handleRuntimeFailure(
+            active,
+            category: .sharedClockUnsafe
+        )
+        XCTAssertTrue(handled)
+        let terminal = await harness.snapshot()
+        XCTAssertEqual(factory.requestCount, 1)
+        XCTAssertEqual(active.stopCount, 1)
+        XCTAssertFalse(track.isEnabled)
+        XCTAssertEqual(terminal.phase, .sharedClockUnsafe)
+        XCTAssertEqual(
+            terminal.lastFailureCategory,
+            .sharedClockUnsafe
+        )
+
+        await harness.invalidateTransport(
+            preservingSharedClockUnsafeFailure: true
+        )
+        let routeRevoked = await harness.snapshot()
+        XCTAssertFalse(routeRevoked.transportAuthorized)
+        XCTAssertEqual(routeRevoked.phase, .sharedClockUnsafe)
+        XCTAssertEqual(
+            routeRevoked.lastFailureCategory,
+            .sharedClockUnsafe
+        )
+
+        let replacementTrack = DriverTestTrack()
+        await harness.installTrack(replacementTrack)
+        let afterTrackChurn = await harness.snapshot()
+        XCTAssertEqual(afterTrackChurn.trackGeneration, 2)
+        XCTAssertEqual(afterTrackChurn.phase, .sharedClockUnsafe)
+        XCTAssertEqual(factory.requestCount, 1)
+
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+        XCTAssertEqual(factory.requestCount, 1)
+
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 2,
+                available: true
+            )
+        )
+        XCTAssertEqual(factory.requestCount, 1)
+        await harness.authorize(peer: peer, generation: 1)
+        XCTAssertEqual(factory.requestCount, 2)
+        XCTAssertTrue(replacementTrack.isEnabled)
+    }
+
     func testRuntimeFailureTreatsDisposeReturnAsTerminalBeforeReplacementQueueCreation()
         async throws {
         let disposalFailure = OSStatus(-66_701)
@@ -948,11 +1232,11 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
                 deviceGeneration: 1,
                 defaultInputEndpoint: .init(
                     deviceID: 79,
-                    deviceUID: "BlackHole2ch_UID"
+                    deviceUID: "com.elamin.opensteamer.virtual-microphone.input"
                 ),
                 hiddenMirrorSinkEndpoint: .init(
                     deviceID: 89,
-                    deviceUID: "BlackHole2ch_2_UID"
+                    deviceUID: "com.elamin.opensteamer.virtual-microphone.writer"
                 )
             )
         )
@@ -1822,12 +2106,27 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
             deviceGeneration: generation,
             defaultInputEndpoint: .init(
                 deviceID: 79,
-                deviceUID: "BlackHole2ch_UID"
+                deviceUID: "com.elamin.opensteamer.virtual-microphone.input"
             ),
             hiddenMirrorSinkEndpoint: .init(
                 deviceID: 89,
-                deviceUID: "BlackHole2ch_2_UID"
+                deviceUID: "com.elamin.opensteamer.virtual-microphone.writer"
             )
+        )
+    }
+
+    private func capturedSharedClockRejection()
+        -> BlackHoleFaceTimeClockRejection {
+        .insufficientSigned32Headroom(
+            observation: BlackHoleFaceTimeClockObservation(
+                deviceSampleTime: 6_687_779_444,
+                deviceHostTime: 1,
+                deviceSampleRate: 48_000,
+                projectedFaceTimeSampleTime: 3_343_889_722
+            ),
+            maximumProjectedSampleTime:
+                BlackHoleFaceTimeClockPolicy
+                    .maximumProjectedSampleTime
         )
     }
 
@@ -1914,11 +2213,11 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
             deviceGeneration: 2,
             defaultInputEndpoint: .init(
                 deviceID: 79,
-                deviceUID: "BlackHole2ch_UID"
+                deviceUID: "com.elamin.opensteamer.virtual-microphone.input"
             ),
             hiddenMirrorSinkEndpoint: .init(
                 deviceID: 90,
-                deviceUID: "BlackHole2ch_2_UID"
+                deviceUID: "com.elamin.opensteamer.virtual-microphone.writer"
             )
         )
         guard case .selected(let second) = coordinator
@@ -1930,7 +2229,7 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
         XCTAssertEqual(lease.releases, [first.leaseGeneration])
         XCTAssertEqual(
             lease.acquisitions.map(\.targetUID),
-            ["BlackHole2ch_UID", "BlackHole2ch_UID"]
+            ["com.elamin.opensteamer.virtual-microphone.input", "com.elamin.opensteamer.virtual-microphone.input"]
         )
         XCTAssertEqual(
             lease.acquisitions.map(\.targetDeviceID),
@@ -1989,11 +2288,11 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
             deviceGeneration: 2,
             defaultInputEndpoint: .init(
                 deviceID: 80,
-                deviceUID: "BlackHole2ch_UID"
+                deviceUID: "com.elamin.opensteamer.virtual-microphone.input"
             ),
             hiddenMirrorSinkEndpoint: .init(
                 deviceID: 89,
-                deviceUID: "BlackHole2ch_2_UID"
+                deviceUID: "com.elamin.opensteamer.virtual-microphone.writer"
             )
         )
         guard case .selected(let second) = coordinator
@@ -2009,7 +2308,7 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
         )
         XCTAssertEqual(
             lease.acquisitions.map(\.targetUID),
-            ["BlackHole2ch_UID", "BlackHole2ch_UID"]
+            ["com.elamin.opensteamer.virtual-microphone.input", "com.elamin.opensteamer.virtual-microphone.input"]
         )
         XCTAssertEqual(lease.releases, [first.leaseGeneration])
     }
@@ -2220,7 +2519,7 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
         XCTAssertEqual(key.peerGeneration, 7)
         XCTAssertEqual(key.deviceGeneration, 1)
         XCTAssertEqual(key.deviceEndpoint.deviceID, 79)
-        XCTAssertEqual(key.deviceEndpoint.deviceUID, "BlackHole2ch_UID")
+        XCTAssertEqual(key.deviceEndpoint.deviceUID, "com.elamin.opensteamer.virtual-microphone.input")
         XCTAssertEqual(lease.acquisitions.count, 1)
         XCTAssertEqual(lease.acquisitions[0].targetDeviceID, 79)
     }
@@ -3162,11 +3461,11 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
             deviceGeneration: generation,
             defaultInputEndpoint: .init(
                 deviceID: 79,
-                deviceUID: "BlackHole2ch_UID"
+                deviceUID: "com.elamin.opensteamer.virtual-microphone.input"
             ),
             hiddenMirrorSinkEndpoint: .init(
                 deviceID: 89,
-                deviceUID: "BlackHole2ch_2_UID"
+                deviceUID: "com.elamin.opensteamer.virtual-microphone.writer"
             )
         )
     }
@@ -3278,6 +3577,60 @@ private final class DefaultInputCoordinatorLeaseFake:
     }
 }
 
+private final class DriverSharedClockFailureProbe:
+    @unchecked Sendable
+{
+    struct Entry: Equatable {
+        let key: WorldwideIPhoneMicrophoneForwardingKey
+        let rejection: BlackHoleFaceTimeClockRejection
+    }
+
+    private let lock = NSLock()
+    private var recordedEntries: [Entry] = []
+
+    var entries: [Entry] {
+        lock.withLock { recordedEntries }
+    }
+
+    func record(
+        key: WorldwideIPhoneMicrophoneForwardingKey,
+        rejection: BlackHoleFaceTimeClockRejection
+    ) {
+        lock.withLock {
+            recordedEntries.append(
+                Entry(key: key, rejection: rejection)
+            )
+        }
+    }
+}
+
+private final class DriverFormatFailureProbe:
+    @unchecked Sendable
+{
+    struct Entry: Equatable {
+        let key: WorldwideIPhoneMicrophoneForwardingKey
+        let rejection: BlackHoleMicrophoneOutputFormatRejection
+    }
+
+    private let lock = NSLock()
+    private var recordedEntries: [Entry] = []
+
+    var entries: [Entry] {
+        lock.withLock { recordedEntries }
+    }
+
+    func record(
+        key: WorldwideIPhoneMicrophoneForwardingKey,
+        rejection: BlackHoleMicrophoneOutputFormatRejection
+    ) {
+        lock.withLock {
+            recordedEntries.append(
+                Entry(key: key, rejection: rejection)
+            )
+        }
+    }
+}
+
 private actor DriverTestHarness {
     private let driver:
         WorldwideIPhoneMicrophoneForwardingDriver<
@@ -3301,7 +3654,17 @@ private actor DriverTestHarness {
         mediaFreshnessTimeoutNanoseconds: UInt64 = 3_000_000_000,
         mediaFreshnessWatchdog:
             DriverTestMediaFreshnessWatchdog? = nil,
-        automaticallyAdvanceInboundMedia: Bool = true
+        automaticallyAdvanceInboundMedia: Bool = true,
+        sharedClockFailureHandler:
+            @escaping @Sendable (
+                WorldwideIPhoneMicrophoneForwardingKey,
+                BlackHoleFaceTimeClockRejection
+            ) async -> Void = { _, _ in },
+        formatFailureHandler:
+            @escaping @Sendable (
+                WorldwideIPhoneMicrophoneForwardingKey,
+                BlackHoleMicrophoneOutputFormatRejection
+            ) async -> Void = { _, _ in }
     ) {
         self.automaticallyAdvanceInboundMedia =
             automaticallyAdvanceInboundMedia
@@ -3358,7 +3721,11 @@ private actor DriverTestHarness {
                 }
             },
             maximumAttemptCountPerKey:
-                maximumAttemptCountPerKey
+                maximumAttemptCountPerKey,
+            sharedClockFailureHandler:
+                sharedClockFailureHandler,
+            formatFailureHandler:
+                formatFailureHandler
         )
     }
 
@@ -3394,8 +3761,13 @@ private actor DriverTestHarness {
         await automaticallyPublishAdvancingInboundMediaIfNeeded()
     }
 
-    func invalidateTransport() {
-        driver.invalidateTransport()
+    func invalidateTransport(
+        preservingSharedClockUnsafeFailure: Bool = false
+    ) {
+        driver.invalidateTransport(
+            preservingSharedClockUnsafeFailure:
+                preservingSharedClockUnsafeFailure
+        )
     }
 
     func updateDevice(
@@ -3477,7 +3849,7 @@ private final class DriverTestOutput:
 {
     private let lock = NSLock()
     private let startGate: DriverSuspensionGate?
-    private let startError: DriverTestError?
+    private let startError: (any Error)?
     private var progressSnapshots:
         [BlackHoleMicrophoneOutputProgressSnapshot]
     private var starts = 0
@@ -3486,7 +3858,7 @@ private final class DriverTestOutput:
 
     init(
         startGate: DriverSuspensionGate? = nil,
-        startError: DriverTestError? = nil,
+        startError: (any Error)? = nil,
         progressSnapshots:
             [BlackHoleMicrophoneOutputProgressSnapshot] = [.zero]
     ) {
@@ -3506,7 +3878,7 @@ private final class DriverTestOutput:
     }
 
     func start() throws {
-        let error = lock.withLock { () -> DriverTestError? in
+        let error = lock.withLock { () -> (any Error)? in
             starts += 1
             return startError
         }
@@ -3683,7 +4055,7 @@ private final class RuntimeDisposalOutputFactory:
                     renderForTesting: {
                         samples,
                         frameCount in
-                        for index in 0..<(frameCount * 2) {
+                        for index in 0..<frameCount {
                             samples[index] = 1
                         }
                         return true

@@ -32,6 +32,8 @@ enum WorldwideIPhoneMicrophoneForwardingPhase:
     case admissionFailed
     case readinessFailed
     case sourceMediaStalled
+    case formatUnsafe
+    case sharedClockUnsafe
     case runtimeFailed
     case suppressedForLANCoexistence
     case stopped
@@ -48,6 +50,8 @@ enum WorldwideIPhoneMicrophoneForwardingFailureCategory:
     case admissionFailed
     case readinessFailed
     case sourceMediaStalled
+    case formatUnsafe
+    case sharedClockUnsafe
     case runtimeEnqueueFailed
     case runtimeProgressStalled
 }
@@ -277,6 +281,16 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     typealias MonotonicNow = @Sendable () -> UInt64
     typealias MediaFreshnessDeadlineSleep =
         @Sendable (_ deadlineNanoseconds: UInt64) async throws -> Void
+    typealias SharedClockFailureHandler =
+        @Sendable (
+            WorldwideIPhoneMicrophoneForwardingKey,
+            BlackHoleFaceTimeClockRejection
+        ) async -> Void
+    typealias FormatFailureHandler =
+        @Sendable (
+            WorldwideIPhoneMicrophoneForwardingKey,
+            BlackHoleMicrophoneOutputFormatRejection
+        ) async -> Void
 
     private struct Candidate {
         let key: WorldwideIPhoneMicrophoneForwardingKey
@@ -350,6 +364,10 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         MediaFreshnessDeadlineSleep
     private let maximumAttemptCountPerKey: Int
     private let makeAttemptID: @Sendable () -> UUID
+    private let sharedClockFailureHandler:
+        SharedClockFailureHandler
+    private let formatFailureHandler:
+        FormatFailureHandler
 
     private var activeMonitorEpoch: UUID?
     private var monitorSnapshot: BlackHoleDeviceAvailabilitySnapshot?
@@ -380,6 +398,10 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     private var lastAttemptID: UUID?
     private var lastFailureCategory:
         WorldwideIPhoneMicrophoneForwardingFailureCategory?
+    private var preserveSharedClockUnsafePhaseUntilPeerOrPairChanges =
+        false
+    private var preserveFormatUnsafePhaseUntilPeerOrPairChanges =
+        false
 
     private var phase: WorldwideIPhoneMicrophoneForwardingPhase
     private var isDriving = false
@@ -418,6 +440,12 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         maximumAttemptCountPerKey: Int = 3,
         makeAttemptID: @escaping @Sendable () -> UUID = {
             UUID()
+        },
+        sharedClockFailureHandler:
+            @escaping SharedClockFailureHandler = { _, _ in
+        },
+        formatFailureHandler:
+            @escaping FormatFailureHandler = { _, _ in
         }
     ) {
         self.policy = policy
@@ -444,6 +472,9 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             maximumAttemptCountPerKey
         )
         self.makeAttemptID = makeAttemptID
+        self.sharedClockFailureHandler =
+            sharedClockFailureHandler
+        self.formatFailureHandler = formatFailureHandler
         phase = policy == .suppressedForLANCoexistence
             ? .suppressedForLANCoexistence
             : .waitingForMonitor
@@ -463,6 +494,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             return
         }
 
+        preserveSharedClockUnsafePhaseUntilPeerOrPairChanges = false
+        preserveFormatUnsafePhaseUntilPeerOrPairChanges = false
         invalidateCurrentAttempt()
         activeMonitorEpoch = epoch
         monitorSnapshot = nil
@@ -476,6 +509,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         isolation: isolated (any Actor)? = #isolation
     ) {
         guard !isStopped, policy == .enabled else { return }
+        preserveSharedClockUnsafePhaseUntilPeerOrPairChanges = false
+        preserveFormatUnsafePhaseUntilPeerOrPairChanges = false
         invalidateCurrentAttempt()
         monitoringFailed = true
         monitorSnapshot = nil
@@ -501,6 +536,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             }
         }
 
+        preserveSharedClockUnsafePhaseUntilPeerOrPairChanges = false
+        preserveFormatUnsafePhaseUntilPeerOrPairChanges = false
         invalidateCurrentAttempt()
         monitorSnapshot = snapshot
         monitoringFailed = false
@@ -522,6 +559,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             return
         }
 
+        preserveSharedClockUnsafePhaseUntilPeerOrPairChanges = false
+        preserveFormatUnsafePhaseUntilPeerOrPairChanges = false
         invalidateCurrentAttempt()
         disableCurrentTrack()
         track = nil
@@ -537,6 +576,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         isolation: isolated (any Actor)? = #isolation
     ) {
         guard !isStopped else { return }
+        preserveSharedClockUnsafePhaseUntilPeerOrPairChanges = false
+        preserveFormatUnsafePhaseUntilPeerOrPairChanges = false
         invalidateCurrentAttempt()
         disableCurrentTrack()
         track = nil
@@ -575,9 +616,21 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     }
 
     func invalidateTransport(
-        isolation: isolated (any Actor)? = #isolation
+        isolation: isolated (any Actor)? = #isolation,
+        preservingSharedClockUnsafeFailure: Bool = false,
+        preservingFormatUnsafeFailure: Bool = false
     ) {
         guard !isStopped else { return }
+        if preservingSharedClockUnsafeFailure,
+           phase == .sharedClockUnsafe,
+           lastFailureCategory == .sharedClockUnsafe {
+            preserveSharedClockUnsafePhaseUntilPeerOrPairChanges = true
+        }
+        if preservingFormatUnsafeFailure,
+           phase == .formatUnsafe,
+           lastFailureCategory == .formatUnsafe {
+            preserveFormatUnsafePhaseUntilPeerOrPairChanges = true
+        }
         transportAuthorized = false
         latestInboundMediaSample = nil
         invalidateCurrentAttempt()
@@ -749,7 +802,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         }
         attempt.output.stop()
         lastFailureCategory = category
-        phase = .runtimeFailed
+        phase = Self.phase(for: category)
         redriveRequested = markRetryable(
             attempt.key,
             category: category
@@ -765,6 +818,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     ) {
         guard !isStopped else { return }
         isStopped = true
+        preserveSharedClockUnsafePhaseUntilPeerOrPairChanges = false
+        preserveFormatUnsafePhaseUntilPeerOrPairChanges = false
         transportAuthorized = false
         invalidateCurrentAttempt()
         disableCurrentTrack()
@@ -933,11 +988,39 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
                 finishSupersededAttempt(attempt)
                 return
             }
-            failAttempt(
-                attempt,
-                category: .startFailed,
-                allowRetry: !Task.isCancelled
-            )
+            if let outputError =
+                    error as? BlackHoleMicrophoneOutputError,
+               case .formatUnsafe(let rejection) =
+                    outputError {
+                failAttempt(
+                    attempt,
+                    category: .formatUnsafe,
+                    allowRetry: false
+                )
+                await formatFailureHandler(
+                    attempt.key,
+                    rejection
+                )
+            } else if let outputError =
+                        error as? BlackHoleMicrophoneOutputError,
+                      case .sharedClockUnsafe(let rejection) =
+                        outputError {
+                failAttempt(
+                    attempt,
+                    category: .sharedClockUnsafe,
+                    allowRetry: false
+                )
+                await sharedClockFailureHandler(
+                    attempt.key,
+                    rejection
+                )
+            } else {
+                failAttempt(
+                    attempt,
+                    category: .startFailed,
+                    allowRetry: !Task.isCancelled
+                )
+            }
             return
         }
 
@@ -1509,6 +1592,14 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             phase = .monitoringFailed
             return
         }
+        if preserveSharedClockUnsafePhaseUntilPeerOrPairChanges {
+            phase = .sharedClockUnsafe
+            return
+        }
+        if preserveFormatUnsafePhaseUntilPeerOrPairChanges {
+            phase = .formatUnsafe
+            return
+        }
         guard activeMonitorEpoch != nil,
               let monitorSnapshot else {
             phase = .waitingForMonitor
@@ -1559,6 +1650,10 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             .readinessFailed
         case .sourceMediaStalled:
             .sourceMediaStalled
+        case .formatUnsafe:
+            .formatUnsafe
+        case .sharedClockUnsafe:
+            .sharedClockUnsafe
         case .runtimeEnqueueFailed, .runtimeProgressStalled:
             .runtimeFailed
         }
@@ -1573,7 +1668,10 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
              .readinessFailed, .sourceMediaStalled,
              .runtimeEnqueueFailed, .runtimeProgressStalled:
             true
-        case .monitoringFailed, .admissionFailed:
+        case .monitoringFailed, .admissionFailed,
+             .formatUnsafe:
+            false
+        case .sharedClockUnsafe:
             false
         }
     }

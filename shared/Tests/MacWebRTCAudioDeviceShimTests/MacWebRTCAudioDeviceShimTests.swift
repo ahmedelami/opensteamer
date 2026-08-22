@@ -41,7 +41,8 @@ private final class SendableValueBox<Value>: @unchecked Sendable {
 /// Proves the pinned Objective-C ABI preserves every stereo sample, rejects inactive delivery,
 /// and maintains a monotonic source clock across arbitrary callback sizes and restarts.
 final class MacWebRTCAudioDeviceShimTests: XCTestCase {
-    private static let channelCount = 2
+    private static let inputChannelCount = 2
+    private static let outputChannelCount = 1
 
     func testPinnedRuntimePreflightAndSwiftImporter() throws {
         var error: NSError?
@@ -193,7 +194,7 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         firstWindow.sourceEndFrame = 48_000
         firstWindow.windowFingerprint = 0x1111_2222_3333_4444
         firstWindow.frameCount = 48_000
-        firstWindow.leftSampleSum = 17
+        firstWindow.sampleSum = 17
         ASMacAudioQueuePCMContentPublish(reference, firstWindow)
         let first = ASMacAudioQueuePCMContentRead(reference)
         XCTAssertTrue(first.hasCompletedWindow)
@@ -227,7 +228,7 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         secondWindow.sourceEndFrame = 96_000
         secondWindow.windowFingerprint = 0xaaaa_bbbb_cccc_dddd
         secondWindow.frameCount = 48_000
-        secondWindow.leftSampleSum = -23
+        secondWindow.sampleSum = -23
         ASMacAudioQueuePCMContentPublish(reference, secondWindow)
         ASMacAudioQueuePCMContentReleaseReadForTesting(reference)
 
@@ -246,7 +247,7 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
             raced.window.windowFingerprint,
             0xaaaa_bbbb_cccc_dddd
         )
-        XCTAssertEqual(raced.window.leftSampleSum, -23)
+        XCTAssertEqual(raced.window.sampleSum, -23)
     }
     #endif
 
@@ -280,7 +281,7 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         XCTAssertEqual(diagnostics.renderBlockCallbackCount, 1)
         XCTAssertEqual(
             diagnostics.renderedSampleElementCount,
-            UInt64(480 * Self.channelCount)
+            UInt64(480 * Self.inputChannelCount)
         )
         XCTAssertEqual(diagnostics.frameCount, 480)
         XCTAssertEqual(diagnostics.invalidBufferListCount, 0)
@@ -462,11 +463,19 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
     func testCallerOwnedPlayoutPullWritesExactFrameCountWithoutFailure() throws {
         let device = try XCTUnwrap(ASMacStereoAudioDevice())
         let harness = ASMacStereoAudioDeviceTestHarness(device: device)
+        XCTAssertEqual(
+            ASMacStereoDeviceInputChannelCountForTesting(device),
+            2
+        )
+        XCTAssertEqual(
+            ASMacStereoDeviceOutputChannelCountForTesting(device),
+            1
+        )
         XCTAssertTrue(harness.startPlayout())
 
-        var samples = Array(repeating: Int16.max, count: 480 * 2)
+        var samples = Array(repeating: Int16.max, count: 480)
         let rendered = samples.withUnsafeMutableBufferPointer { buffer in
-            device.renderPlayoutInterleavedStereoInt16(
+            device.renderPlayoutMonoInt16(
                 buffer.baseAddress!,
                 frameCount: 480
             )
@@ -481,6 +490,10 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         XCTAssertEqual(native.playoutFailureCount, 0)
         XCTAssertEqual(delegate.playoutCallbackCount, 1)
         XCTAssertEqual(delegate.lastPlayoutFrameCount, 480)
+        let telemetry = device.decodedPlayoutTelemetry
+        XCTAssertEqual(telemetry.latestRequestedFrameCount, 480)
+        XCTAssertEqual(telemetry.latestRequestedByteCount, 960)
+        XCTAssertEqual(telemetry.latestReturnedByteCount, 960)
         XCTAssertEqual(
             delegate.playoutSampleTimeDiscontinuityCount,
             0
@@ -495,13 +508,13 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         throws {
         let device = try XCTUnwrap(ASMacStereoAudioDevice())
         let harness = ASMacStereoAudioDeviceTestHarness(device: device)
-        harness.playoutPattern = .correlatedAlternating
+        harness.playoutPattern = .alternating
         harness.playoutContractBehavior = .returnSuccessWithShortBuffer
         XCTAssertTrue(harness.startPlayout())
 
-        var samples = Array(repeating: Int16.max, count: 480 * 2)
+        var samples = Array(repeating: Int16.max, count: 480)
         let rendered = samples.withUnsafeMutableBufferPointer { buffer in
-            device.renderPlayoutInterleavedStereoInt16(
+            device.renderPlayoutMonoInt16(
                 buffer.baseAddress!,
                 frameCount: 480
             )
@@ -525,16 +538,44 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         XCTAssertFalse(telemetry.hasCompletedWindow)
     }
 
-    func testDecodedPlayoutTelemetryPublishesExactOneSecondCorrelatedWindow() throws {
+    func testCallerOwnedPlayoutPullRejectsMalformedNativeChannelContract()
+        throws {
         let device = try XCTUnwrap(ASMacStereoAudioDevice())
         let harness = ASMacStereoAudioDeviceTestHarness(device: device)
-        harness.playoutPattern = .correlatedAlternating
+        harness.playoutPattern = .alternating
+        harness.playoutContractBehavior =
+            .returnSuccessWithWrongChannelCount
         XCTAssertTrue(harness.startPlayout())
 
-        var samples = Array(repeating: Int16.zero, count: 480 * 2)
+        var samples = Array(repeating: Int16.max, count: 480)
+        let rendered = samples.withUnsafeMutableBufferPointer { buffer in
+            device.renderPlayoutMonoInt16(
+                buffer.baseAddress!,
+                frameCount: 480
+            )
+        }
+
+        XCTAssertFalse(rendered)
+        XCTAssertTrue(samples.allSatisfy { $0 == 0 })
+        let telemetry = device.decodedPlayoutTelemetry
+        XCTAssertEqual(telemetry.latestRequestedFrameCount, 480)
+        XCTAssertEqual(telemetry.latestRequestedByteCount, 960)
+        XCTAssertEqual(telemetry.latestReturnedByteCount, 960)
+        XCTAssertFalse(telemetry.latestBufferContractWasExact)
+        XCTAssertEqual(telemetry.bufferContractMismatchCount, 1)
+        XCTAssertEqual(telemetry.analyzedFrameCount, 0)
+    }
+
+    func testDecodedPlayoutTelemetryPublishesExactOneSecondMonoWindow() throws {
+        let device = try XCTUnwrap(ASMacStereoAudioDevice())
+        let harness = ASMacStereoAudioDeviceTestHarness(device: device)
+        harness.playoutPattern = .alternating
+        XCTAssertTrue(harness.startPlayout())
+
+        var samples = Array(repeating: Int16.zero, count: 480)
         for _ in 0..<100 {
             XCTAssertTrue(samples.withUnsafeMutableBufferPointer { buffer in
-                device.renderPlayoutInterleavedStereoInt16(
+                device.renderPlayoutMonoInt16(
                     buffer.baseAddress!,
                     frameCount: 480
                 )
@@ -545,22 +586,22 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         XCTAssertEqual(telemetry.playoutGeneration, 1)
         XCTAssertEqual(telemetry.renderCallCount, 100)
         XCTAssertEqual(telemetry.requestedFrameCount, 48_000)
-        XCTAssertEqual(telemetry.requestedByteCount, 192_000)
-        XCTAssertEqual(telemetry.returnedByteCount, 192_000)
+        XCTAssertEqual(telemetry.requestedByteCount, 96_000)
+        XCTAssertEqual(telemetry.returnedByteCount, 96_000)
         XCTAssertEqual(telemetry.nativeSuccessRenderCallCount, 100)
         XCTAssertEqual(telemetry.nativeFailureRenderCallCount, 0)
         XCTAssertEqual(telemetry.exactBufferContractCount, 100)
         XCTAssertEqual(telemetry.bufferContractMismatchCount, 0)
         XCTAssertEqual(telemetry.analyzedRenderCallCount, 100)
         XCTAssertEqual(telemetry.analyzedFrameCount, 48_000)
-        XCTAssertEqual(telemetry.analyzedByteCount, 192_000)
+        XCTAssertEqual(telemetry.analyzedByteCount, 96_000)
         XCTAssertEqual(telemetry.droppedTelemetryRenderCallCount, 0)
         XCTAssertEqual(telemetry.pendingWindowFrameCount, 0)
         XCTAssertEqual(telemetry.latestRenderCall, 100)
         XCTAssertEqual(telemetry.latestRenderStatus, noErr)
         XCTAssertEqual(telemetry.latestRequestedFrameCount, 480)
-        XCTAssertEqual(telemetry.latestRequestedByteCount, 1_920)
-        XCTAssertEqual(telemetry.latestReturnedByteCount, 1_920)
+        XCTAssertEqual(telemetry.latestRequestedByteCount, 960)
+        XCTAssertEqual(telemetry.latestReturnedByteCount, 960)
         XCTAssertTrue(telemetry.latestBufferContractWasExact)
 
         XCTAssertTrue(telemetry.hasCompletedWindow)
@@ -570,102 +611,55 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         XCTAssertEqual(telemetry.completedWindowLastRenderCall, 100)
         XCTAssertEqual(telemetry.completedWindowRenderCallCount, 100)
         XCTAssertEqual(telemetry.completedWindowFrameCount, 48_000)
-        XCTAssertEqual(telemetry.completedWindowByteCount, 192_000)
+        XCTAssertEqual(telemetry.completedWindowByteCount, 96_000)
         XCTAssertEqual(telemetry.completedWindowDurationSeconds, 1, accuracy: 0.000_001)
-        XCTAssertEqual(telemetry.leftRMS, 0.5, accuracy: 0.000_001)
-        XCTAssertEqual(telemetry.rightRMS, 0.5, accuracy: 0.000_001)
-        XCTAssertEqual(telemetry.leftPeak, 0.5, accuracy: 0.000_001)
-        XCTAssertEqual(telemetry.rightPeak, 0.5, accuracy: 0.000_001)
-        XCTAssertEqual(telemetry.leftDC, 0, accuracy: 0.000_001)
-        XCTAssertEqual(telemetry.rightDC, 0, accuracy: 0.000_001)
-        XCTAssertEqual(telemetry.leftZeroSampleCount, 0)
-        XCTAssertEqual(telemetry.rightZeroSampleCount, 0)
-        XCTAssertEqual(telemetry.leftClippedSampleCount, 0)
-        XCTAssertEqual(telemetry.rightClippedSampleCount, 0)
-        XCTAssertTrue(telemetry.leftRightCorrelationIsValid)
-        XCTAssertEqual(telemetry.leftRightCorrelation, 1, accuracy: 0.000_001)
-        XCTAssertEqual(telemetry.sumPower, 0.25, accuracy: 0.000_001)
-        XCTAssertEqual(telemetry.differencePower, 0, accuracy: 0.000_001)
+        XCTAssertEqual(telemetry.rms, 0.5, accuracy: 0.000_001)
+        XCTAssertEqual(telemetry.peak, 0.5, accuracy: 0.000_001)
+        XCTAssertEqual(telemetry.dc, 0, accuracy: 0.000_001)
+        XCTAssertEqual(telemetry.zeroSampleCount, 0)
+        XCTAssertEqual(telemetry.clippedSampleCount, 0)
         XCTAssertEqual(telemetry.frozenBlockCount, 99)
         XCTAssertEqual(telemetry.longestFrozenBlockRun, 99)
     }
 
-    func testDecodedPlayoutTelemetryDistinguishesAntiPhaseOneSidedAndClipping() throws {
-        let antiPhase = try completedTelemetry(pattern: .antiCorrelatedAlternating)
-        XCTAssertEqual(antiPhase.leftRightCorrelation, -1, accuracy: 0.000_001)
-        XCTAssertEqual(antiPhase.sumPower, 0, accuracy: 0.000_001)
-        XCTAssertEqual(antiPhase.differencePower, 0.25, accuracy: 0.000_001)
-
-        let leftOnly = try completedTelemetry(pattern: .leftOnlyAlternating)
-        XCTAssertTrue(leftOnly.windowIsLeftOnly)
-        XCTAssertEqual(leftOnly.leftOnlyBlockCount, 1)
-        XCTAssertEqual(leftOnly.leftRMS, 0.25, accuracy: 0.000_001)
-        XCTAssertEqual(leftOnly.rightRMS, 0, accuracy: 0.000_001)
-        XCTAssertEqual(leftOnly.rightZeroSampleCount, 48_000)
-        XCTAssertEqual(leftOnly.rightZeroFraction, 1, accuracy: 0.000_001)
-        XCTAssertFalse(leftOnly.leftRightCorrelationIsValid)
-
+    func testDecodedPlayoutTelemetryReportsMonoSilenceClippingAndDC() throws {
         let clipped = try completedTelemetry(pattern: .clippedDC)
-        XCTAssertEqual(clipped.leftClippingFraction, 1, accuracy: 0.000_001)
-        XCTAssertEqual(clipped.rightClippingFraction, 1, accuracy: 0.000_001)
-        XCTAssertEqual(clipped.leftPeak, 1, accuracy: 0.000_001)
-        XCTAssertEqual(clipped.leftDC, -1, accuracy: 0.000_001)
-        XCTAssertEqual(clipped.rightDC, 32_767.0 / 32_768.0, accuracy: 0.000_001)
-    }
+        XCTAssertEqual(clipped.clippingFraction, 1, accuracy: 0.000_001)
+        XCTAssertEqual(clipped.peak, 1, accuracy: 0.000_001)
+        XCTAssertEqual(clipped.dc, -1, accuracy: 0.000_001)
 
-    func testDecodedPlayoutTelemetryUsesProbeCompatibleCenteredThresholds() throws {
-        let dcNoise = try completedTelemetry(
-            pattern: .dcOffsetCorrelatedNoise
-        )
-        XCTAssertTrue(dcNoise.leftRightCorrelationIsValid)
-        XCTAssertEqual(
-            dcNoise.leftRightCorrelation,
-            1,
-            accuracy: 0.000_001,
-            "Opposite DC offsets must be removed before correlation."
-        )
-        XCTAssertEqual(dcNoise.leftDC, 12_000.0 / 32_768.0, accuracy: 0.000_001)
-        XCTAssertEqual(dcNoise.rightDC, -12_000.0 / 32_768.0, accuracy: 0.000_001)
+        let silence = try completedTelemetry(pattern: .silence)
+        XCTAssertTrue(silence.windowIsAllZero)
+        XCTAssertEqual(silence.zeroSampleCount, 48_000)
+        XCTAssertEqual(silence.zeroFraction, 1, accuracy: 0.000_001)
+        XCTAssertEqual(silence.allZeroBlockCount, 1)
+
+        let dcNoise = try completedTelemetry(pattern: .dcOffsetNoise)
+        XCTAssertEqual(dcNoise.dc, 12_000.0 / 32_768.0, accuracy: 0.000_001)
 
         let nearClipping = try completedTelemetry(pattern: .nearClipping)
         XCTAssertEqual(
-            nearClipping.leftClippingFraction,
+            nearClipping.clippingFraction,
             0.5,
             accuracy: 0.000_001
         )
         XCTAssertEqual(
-            nearClipping.rightClippingFraction,
-            0.5,
-            accuracy: 0.000_001
-        )
-        XCTAssertEqual(
-            nearClipping.leftPeak,
+            nearClipping.peak,
             32_760.0 / 32_768.0,
             accuracy: 0.000_001
-        )
-
-        let threshold = try completedTelemetry(pattern: .subThresholdLeft)
-        XCTAssertFalse(threshold.windowIsLeftOnly)
-        XCTAssertTrue(threshold.windowIsRightOnly)
-        XCTAssertEqual(threshold.oneSidedFrameCount, 48_000)
-        XCTAssertEqual(threshold.oneSidedFraction, 1, accuracy: 0.000_001)
-        XCTAssertGreaterThan(
-            threshold.leftRMS,
-            0,
-            "A nonzero but inactive (<128) channel is not exact digital silence."
         )
     }
 
     func testDecodedPlayoutTelemetrySplitsArbitraryCallbacksIntoExactWindows() throws {
         let device = try XCTUnwrap(ASMacStereoAudioDevice())
         let harness = ASMacStereoAudioDeviceTestHarness(device: device)
-        harness.playoutPattern = .dcOffsetCorrelatedNoise
+        harness.playoutPattern = .dcOffsetNoise
         XCTAssertTrue(harness.startPlayout())
 
         let callbackPattern = [1_024, 441, 1_536, 480, 2_048, 735, 1_000, 256]
         var samples = Array(
             repeating: Int16.zero,
-            count: callbackPattern.max()! * Self.channelCount
+            count: callbackPattern.max()! * Self.outputChannelCount
         )
         var requestedFrameCount = 0
         var callbackIndex = 0
@@ -674,7 +668,7 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
                 callbackIndex % callbackPattern.count
             ]
             XCTAssertTrue(samples.withUnsafeMutableBufferPointer { buffer in
-                device.renderPlayoutInterleavedStereoInt16(
+                device.renderPlayoutMonoInt16(
                     buffer.baseAddress!,
                     frameCount: UInt(frameCount)
                 )
@@ -687,7 +681,7 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         XCTAssertTrue(telemetry.hasCompletedWindow)
         XCTAssertEqual(telemetry.completedWindowSequence, 1)
         XCTAssertEqual(telemetry.completedWindowFrameCount, 48_000)
-        XCTAssertEqual(telemetry.completedWindowByteCount, 192_000)
+        XCTAssertEqual(telemetry.completedWindowByteCount, 96_000)
         XCTAssertEqual(telemetry.completedWindowSourceStartFrame, 0)
         XCTAssertEqual(telemetry.completedWindowSourceEndFrame, 48_000)
         XCTAssertEqual(
@@ -698,7 +692,7 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
             telemetry.completedWindowFingerprint,
             Self.fnv1aFingerprint(frameCount: 48_000) { frame in
                 let noise: Int16 = frame.isMultiple(of: 2) ? 512 : -512
-                return (12_000 + noise, -12_000 + noise)
+                return 12_000 + noise
             }
         )
     }
@@ -707,11 +701,11 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
     func testDecodedCompletedWindowReadSpanningResetCannotABA() throws {
         let device = try XCTUnwrap(ASMacStereoAudioDevice())
         let harness = ASMacStereoAudioDeviceTestHarness(device: device)
-        harness.playoutPattern = .correlatedAlternating
+        harness.playoutPattern = .alternating
         XCTAssertTrue(harness.startPlayout())
-        var samples = Array(repeating: Int16.zero, count: 48_000 * 2)
+        var samples = Array(repeating: Int16.zero, count: 48_000)
         XCTAssertTrue(samples.withUnsafeMutableBufferPointer { buffer in
-            device.renderPlayoutInterleavedStereoInt16(
+            device.renderPlayoutMonoInt16(
                 buffer.baseAddress!,
                 frameCount: 48_000
             )
@@ -736,10 +730,10 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         XCTAssertTrue(device.decodedTelemetryReadIsHeldForTesting)
 
         XCTAssertTrue(harness.stopPlayout())
-        harness.playoutPattern = .antiCorrelatedAlternating
+        harness.playoutPattern = .clippedDC
         XCTAssertTrue(harness.startPlayout())
         XCTAssertTrue(samples.withUnsafeMutableBufferPointer { buffer in
-            device.renderPlayoutInterleavedStereoInt16(
+            device.renderPlayoutMonoInt16(
                 buffer.baseAddress!,
                 frameCount: 48_000
             )
@@ -763,7 +757,7 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         XCTAssertEqual(fresh.completedWindowSequence, 2)
         XCTAssertEqual(fresh.completedWindowSourceStartFrame, 0)
         XCTAssertEqual(fresh.completedWindowSourceEndFrame, 48_000)
-        XCTAssertEqual(fresh.leftRightCorrelation, -1, accuracy: 0.000_001)
+        XCTAssertEqual(fresh.dc, -1, accuracy: 0.000_001)
     }
     #endif
 
@@ -778,9 +772,9 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
 
         device.holdPlayoutPullsForTesting()
         DispatchQueue.global(qos: .userInitiated).async {
-            var samples = Array(repeating: Int16.max, count: 480 * 2)
+            var samples = Array(repeating: Int16.max, count: 480)
             _ = samples.withUnsafeMutableBufferPointer { buffer in
-                box.device.renderPlayoutInterleavedStereoInt16(
+                box.device.renderPlayoutMonoInt16(
                     buffer.baseAddress!,
                     frameCount: 480
                 )
@@ -875,7 +869,7 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
 
         var samples = [Int16](
             repeating: 0,
-            count: callbackFramePattern.max()! * Self.channelCount
+            count: callbackFramePattern.max()! * Self.inputChannelCount
         )
         var sourceFrame = 0
         var callbackIndex = 0
@@ -916,7 +910,7 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         XCTAssertEqual(deviceDiagnostics.renderCopiedFrameCount, UInt64(totalFrameCount))
         XCTAssertEqual(
             deviceDiagnostics.renderCopiedSampleElementCount,
-            UInt64(totalFrameCount * Self.channelCount)
+            UInt64(totalFrameCount * Self.inputChannelCount)
         )
         XCTAssertEqual(deviceDiagnostics.renderNotInvokedCount, 0)
         XCTAssertEqual(deviceDiagnostics.renderMultipleInvocationCount, 0)
@@ -1020,9 +1014,9 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         let harness = ASMacStereoAudioDeviceTestHarness(device: device)
         harness.playoutPattern = pattern
         XCTAssertTrue(harness.startPlayout())
-        var samples = Array(repeating: Int16.zero, count: 48_000 * 2)
+        var samples = Array(repeating: Int16.zero, count: 48_000)
         XCTAssertTrue(samples.withUnsafeMutableBufferPointer { buffer in
-            device.renderPlayoutInterleavedStereoInt16(
+            device.renderPlayoutMonoInt16(
                 buffer.baseAddress!,
                 frameCount: 48_000
             )
@@ -1039,18 +1033,15 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
 
     private static func fnv1aFingerprint(
         frameCount: Int,
-        samples: (Int) -> (Int16, Int16)
+        samples: (Int) -> Int16
     ) -> UInt64 {
         var fingerprint: UInt64 = 14_695_981_039_346_656_037
         for frame in 0..<frameCount {
-            let (left, right) = samples(frame)
-            for sample in [left, right] {
-                let value = UInt16(bitPattern: sample)
-                fingerprint ^= UInt64(value & 0x00ff)
-                fingerprint &*= 1_099_511_628_211
-                fingerprint ^= UInt64(value >> 8)
-                fingerprint &*= 1_099_511_628_211
-            }
+            let value = UInt16(bitPattern: samples(frame))
+            fingerprint ^= UInt64(value & 0x00ff)
+            fingerprint &*= 1_099_511_628_211
+            fingerprint ^= UInt64(value >> 8)
+            fingerprint &*= 1_099_511_628_211
         }
         return fingerprint
     }

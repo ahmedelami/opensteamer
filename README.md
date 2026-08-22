@@ -27,22 +27,34 @@ passes the unrelated-network and forced-TURN gates described in
   automatically requests the user's microphone permission and enables a 48 kHz mono
   uplink through the same conditional-duplex RemoteIO device. The user can still turn
   the microphone off for the current session.
-- An atomic BlackHole 2ch visible-input/hidden-writer pair for the first Mac
-  microphone MVP. The host writes decoded iPhone PCM only to the hidden mirror
-  while the intended FaceTime route reads the visible endpoint. That separation
-  remains a physical-call experiment until a far-end listener confirms it. When the authenticated
+- A repo-owned, true-mono Core Audio virtual-microphone design with a visible
+  input-only endpoint for FaceTime and a separate hidden output-only writer.
+  The host writes decoded iPhone PCM only to the hidden endpoint while the
+  visible endpoint is the default input. When the authenticated
   WebRTC peer, ICE route, and control channel are all healthy, opensteamer
-  automatically selects BlackHole 2ch as the Mac default input before starting
+  automatically selects the product virtual microphone as the Mac default input before starting
   system audio. It conditionally restores the prior input after disconnect. For
-  authenticated worldwide duplex audio, neither BlackHole endpoint is permitted to
-  remain an output: worldwide mode first moves only a BlackHole output selector to a
-  validated real output, while healthy output selections remain unchanged. Exact
+  authenticated worldwide duplex audio, neither product endpoint nor either retired
+  BlackHole endpoint is permitted to remain an output: worldwide mode moves only a
+  forbidden virtual-output selector to a validated real output, while healthy output
+  selections remain unchanged. Exact
   session-lifetime output listeners close a lock-free writer gate on every delivered
   selector change; only a fresh fenced admission can reopen it.
 - Legacy Bonjour/TCP/PCM tools retained only for trusted-LAN diagnostics.
 
 Automatic input restoration is an in-memory graceful-lifecycle guarantee; a crash,
 `SIGKILL`, or power loss can prevent restoration.
+
+The currently installed BlackHole 2ch v0.7.1 remains release-incompatible: its
+zero-timestamp seed does not change when it establishes a new timeline, and its
+public clock exceeded the observed FaceTime signed-32 boundary. The repository now
+contains a clean-room replacement driver and direct C17 seed/ring/timeline tests,
+but that driver is not installed. It must still pass signed-bundle provenance,
+installed both-order mono loopback, and the bounded public VoiceProcessingIO
+compatibility probe before another FaceTime trial. One final far-end call is then
+required only to prove FaceTime adoption, network transmission, far-end uplink
+audibility, and intelligible local downlink on the unchanged reviewed real output.
+This status does not establish a new deployment.
 
 ```text
 Mac Host ── outbound authenticated WSS ──┐
@@ -111,7 +123,7 @@ The authoritative values for the maintainer build are:
 | Configuration field | Checked-in value |
 | --- | --- |
 | Protected legacy Release bundle | <code>com.elamin.AudioStreamer</code>, build `36` |
-| Side-by-side TestFlight bundle | <code>com.elamin.opensteamer</code>, build `41` |
+| Side-by-side TestFlight bundle | <code>com.elamin.opensteamer</code>, build `45` |
 | Development team | `MSMG8CJLB3` |
 | Marketing version | `0.1.0` |
 | Release rendezvous | Both `OPENSTEAMER_RENDEZVOUS_URL` and compatibility `AUDIOSTREAMER_RENDEZVOUS_URL` use the production WSS Worker origin declared in [`project.yml`](iOS/opensteamer/project.yml) |

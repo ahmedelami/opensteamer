@@ -1483,19 +1483,6 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 let targetIndex = channels.firstIndex {
                     ($0["channel"] as? Int) == channel
                 }!
-                let recognizedChannel = object["recognizedChannel"] as! Int
-
-                if recognizedChannel == channel {
-                    let replacementChannel = channel == 0 ? 1 : 0
-                    let replacementIndex = channels.firstIndex {
-                        ($0["channel"] as? Int) == replacementChannel
-                    }!
-                    var replacement = channels[targetIndex]
-                    replacement["channel"] = replacementChannel
-                    channels[replacementIndex] = replacement
-                    object["recognizedChannel"] = replacementChannel
-                }
-
                 channels[targetIndex][key] = value
                 object["channels"] = channels
             }
@@ -1641,7 +1628,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             ),
             (
                 "wrong schema",
-                { $0["schema"] = "opensteamer.physical-blackhole-microphone.v2" }
+                { $0["schema"] = "opensteamer.physical-blackhole-microphone.v1" }
             ),
             (
                 "wrong status",
@@ -1799,18 +1786,6 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 )
             ),
             (
-                "channel 1 rms below zero",
-                invalidProbeChannelMetric(
-                    channel: 1, key: "rms", value: -0.01
-                )
-            ),
-            (
-                "channel 1 rms above peak",
-                invalidProbeChannelMetric(
-                    channel: 1, key: "rms", value: 32_760.0
-                )
-            ),
-            (
                 "channel 0 normalized correlation below zero",
                 invalidProbeChannelMetric(
                     channel: 0, key: "normalizedCorrelation", value: -0.01
@@ -1820,18 +1795,6 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 "channel 0 normalized correlation above one",
                 invalidProbeChannelMetric(
                     channel: 0, key: "normalizedCorrelation", value: 1.01
-                )
-            ),
-            (
-                "channel 1 normalized correlation below zero",
-                invalidProbeChannelMetric(
-                    channel: 1, key: "normalizedCorrelation", value: -0.01
-                )
-            ),
-            (
-                "channel 1 normalized correlation above one",
-                invalidProbeChannelMetric(
-                    channel: 1, key: "normalizedCorrelation", value: 1.01
                 )
             ),
             (
@@ -1847,18 +1810,6 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 )
             ),
             (
-                "channel 1 discrimination margin below minus one",
-                invalidProbeChannelMetric(
-                    channel: 1, key: "discriminationMargin", value: -1.01
-                )
-            ),
-            (
-                "channel 1 discrimination margin above one",
-                invalidProbeChannelMetric(
-                    channel: 1, key: "discriminationMargin", value: 1.01
-                )
-            ),
-            (
                 "channel 0 envelope correlation below minus one",
                 invalidProbeChannelMetric(
                     channel: 0, key: "envelopeCorrelation", value: -1.01
@@ -1868,18 +1819,6 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 "channel 0 envelope correlation above one",
                 invalidProbeChannelMetric(
                     channel: 0, key: "envelopeCorrelation", value: 1.01
-                )
-            ),
-            (
-                "channel 1 envelope correlation below minus one",
-                invalidProbeChannelMetric(
-                    channel: 1, key: "envelopeCorrelation", value: -1.01
-                )
-            ),
-            (
-                "channel 1 envelope correlation above one",
-                invalidProbeChannelMetric(
-                    channel: 1, key: "envelopeCorrelation", value: 1.01
                 )
             ),
             (
@@ -1977,7 +1916,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 "format channels",
                 {
                     mutateFormat(&$0) { format in
-                        format["channels"] = 1
+                        format["channels"] = 2
                     }
                 }
             ),
@@ -2136,16 +2075,15 @@ final class PhysicalValidationScriptTests: XCTestCase {
             (
                 "channel count",
                 {
-                    let channels = $0["channels"] as! [[String: Any]]
-                    $0["channels"] = Array(channels.prefix(1))
+                    $0["channels"] = []
                 }
             ),
             (
-                "duplicate channel identity",
+                "extra channel identity",
                 {
-                    mutateChannel(&$0, index: 1) { channel in
-                        channel["channel"] = 0
-                    }
+                    var channels = $0["channels"] as! [[String: Any]]
+                    channels.append(channels[0])
+                    $0["channels"] = channels
                 }
             ),
             (
@@ -2374,10 +2312,14 @@ final class PhysicalValidationScriptTests: XCTestCase {
             "output-generator",
             "physical-output-policy",
             "route-mutation",
-            "default-output-canonical-blackhole",
-            "default-output-hidden-mirror-blackhole",
-            "default-system-output-canonical-blackhole",
-            "default-system-output-hidden-mirror-blackhole",
+            "default-output-virtual-microphone-input",
+            "default-output-virtual-microphone-writer",
+            "default-system-output-virtual-microphone-input",
+            "default-system-output-virtual-microphone-writer",
+            "default-output-legacy-blackhole-visible",
+            "default-output-legacy-blackhole-hidden",
+            "default-system-output-legacy-blackhole-visible",
+            "default-system-output-legacy-blackhole-hidden",
             "digital-delayed-loop",
         ]
         let passingCases: Set<String> = [
@@ -2388,14 +2330,22 @@ final class PhysicalValidationScriptTests: XCTestCase {
         let expectedRouteFailureCodes = [
             "route-mutation":
                 "route_identity_changed_during_proof",
-            "default-output-canonical-blackhole":
-                "default_output_is_canonical_blackhole",
-            "default-output-hidden-mirror-blackhole":
-                "default_output_is_hidden_mirror_blackhole",
-            "default-system-output-canonical-blackhole":
-                "default_system_output_is_canonical_blackhole",
-            "default-system-output-hidden-mirror-blackhole":
-                "default_system_output_is_hidden_mirror_blackhole",
+            "default-output-virtual-microphone-input":
+                "default_output_is_virtual_microphone_input",
+            "default-output-virtual-microphone-writer":
+                "default_output_is_virtual_microphone_writer",
+            "default-system-output-virtual-microphone-input":
+                "default_system_output_is_virtual_microphone_input",
+            "default-system-output-virtual-microphone-writer":
+                "default_system_output_is_virtual_microphone_writer",
+            "default-output-legacy-blackhole-visible":
+                "default_output_is_legacy_blackhole_visible",
+            "default-output-legacy-blackhole-hidden":
+                "default_output_is_legacy_blackhole_hidden",
+            "default-system-output-legacy-blackhole-visible":
+                "default_system_output_is_legacy_blackhole_visible",
+            "default-system-output-legacy-blackhole-hidden":
+                "default_system_output_is_legacy_blackhole_hidden",
         ]
         for testCase in cases {
             let resultURL = root.appendingPathComponent("\(testCase).json")
@@ -2429,6 +2379,20 @@ final class PhysicalValidationScriptTests: XCTestCase {
             let object = try JSONSerialization.jsonObject(
                 with: Data(contentsOf: resultURL)
             ) as! [String: Any]
+            XCTAssertEqual(
+                object["schema"] as? String,
+                "opensteamer.physical-virtual-microphone.v2"
+            )
+            XCTAssertEqual(
+                object["canonicalCaptureUID"] as? String,
+                "com.elamin.opensteamer.virtual-microphone.input"
+            )
+            let format = object["format"] as! [String: Any]
+            XCTAssertEqual(format["sampleRate"] as? Int, 48_000)
+            XCTAssertEqual(format["channels"] as? Int, 1)
+            XCTAssertEqual(format["signedInt16"] as? Bool, true)
+            XCTAssertEqual(format["interleaved"] as? Bool, true)
+            XCTAssertEqual((object["channels"] as! [[String: Any]]).count, 1)
             if passingCases.contains(testCase) {
                 XCTAssertEqual(process.terminationStatus, 0, diagnostic)
                 XCTAssertEqual(object["status"] as? String, "passed")
@@ -2699,6 +2663,772 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 XCTFail("Unexpected BlackHole measurement self-test case.")
             }
         }
+
+        let mirrorCases: [(
+            name: String,
+            headroom: String,
+            status: String,
+            exit: Int32,
+            failure: String
+        )] = [
+            ("healthy", "60", "passed", 0, "none"),
+            (
+                "captured-overflow", "60", "failed", 1,
+                "captured_pcm_overflow"
+            ),
+            (
+                "live-style-overflow", "60", "failed", 1,
+                "captured_pcm_overflow"
+            ),
+            ("cap-boundary-pass", "0", "passed", 0, "none"),
+            (
+                "cap-boundary-fail", "0", "failed", 1,
+                "projected_sample_time_exceeds_signed32"
+            ),
+            (
+                "captured-aged-clock", "60", "failed", 1,
+                "projected_sample_time_exceeds_signed32"
+            ),
+            ("headroom-boundary-pass", "60", "passed", 0, "none"),
+            (
+                "headroom-boundary-fail", "60", "failed", 1,
+                "insufficient_signed32_headroom"
+            ),
+            (
+                "wrong-projection", "60", "failed", 1,
+                "projection_evidence_mismatch"
+            ),
+            (
+                "wrong-rounding", "60", "failed", 1,
+                "projection_evidence_mismatch"
+            ),
+            ("dropped-frame", "60", "failed", 1, "exact_pcm_mismatch"),
+            (
+                "duplicated-frame", "60", "failed", 1,
+                "exact_pcm_mismatch"
+            ),
+            ("bit-flip", "60", "failed", 1, "exact_pcm_mismatch"),
+            (
+                "gain-change", "60", "failed", 1,
+                "challenge_alignment_not_found"
+            ),
+            (
+                "silence", "60", "failed", 1,
+                "challenge_alignment_not_found"
+            ),
+            (
+                "short-capture", "60", "failed", 1,
+                "exact_pcm_mismatch"
+            ),
+            (
+                "timestamp-flags", "60", "failed", 1,
+                "timestamp_flags_missing"
+            ),
+            (
+                "device-time-flags", "60", "failed", 1,
+                "device_time_flags_missing"
+            ),
+            (
+                "frozen-device-time", "60", "failed", 1,
+                "device_time_not_advancing"
+            ),
+            (
+                "divergent-device-time", "60", "failed", 1,
+                "mirror_device_time_mismatch"
+            ),
+            (
+                "nonintegral-sample-time", "60", "failed", 1,
+                "nonintegral_sample_timestamp"
+            ),
+            (
+                "unrepresentable-sample-time", "60", "failed", 1,
+                "nonintegral_sample_timestamp"
+            ),
+            (
+                "sample-time-regression", "60", "failed", 1,
+                "nonmonotonic_sample_timestamp"
+            ),
+            (
+                "sample-time-gap", "60", "failed", 1,
+                "sample_timestamp_discontinuity"
+            ),
+            (
+                "host-time-regression", "60", "failed", 1,
+                "nonmonotonic_host_timestamp"
+            ),
+            (
+                "host-time-mismatch", "60", "failed", 1,
+                "host_sample_clock_mismatch"
+            ),
+            (
+                "format", "60", "failed", 1,
+                "queue_format_readback_mismatch"
+            ),
+            (
+                "fractional-format", "60", "failed", 1,
+                "queue_format_readback_mismatch"
+            ),
+            (
+                "extra-format-flag", "60", "failed", 1,
+                "queue_format_readback_mismatch"
+            ),
+            (
+                "reserved-format", "60", "failed", 1,
+                "queue_format_readback_mismatch"
+            ),
+            (
+                "device-format", "60", "failed", 1,
+                "device_stream_format_mismatch"
+            ),
+            (
+                "physical-device-format", "60", "failed", 1,
+                "device_stream_format_mismatch"
+            ),
+            (
+                "writer-physical-device-format", "60", "failed", 1,
+                "device_stream_format_mismatch"
+            ),
+            (
+                "stereo-format", "60", "failed", 1,
+                "queue_format_readback_mismatch"
+            ),
+            (
+                "fractional-nominal-rate", "60", "failed", 1,
+                "visible_endpoint_identity_mismatch"
+            ),
+            (
+                "wrong-role", "60", "failed", 1,
+                "visible_endpoint_identity_mismatch"
+            ),
+            (
+                "clock-domain", "60", "failed", 1,
+                "clock_domain_mismatch"
+            ),
+            (
+                "control-mute", "60", "failed", 1,
+                "signal_path_muted"
+            ),
+            (
+                "device-volume", "60", "failed", 1,
+                "device_volume_not_unity"
+            ),
+            (
+                "queue-volume", "60", "failed", 1,
+                "writer_queue_volume_mismatch"
+            ),
+            (
+                "input-not-ready", "60", "failed", 1,
+                "input_capture_not_ready"
+            ),
+            (
+                "buffer-contract", "60", "failed", 1,
+                "capture_buffer_contract_unproven"
+            ),
+            (
+                "writer-no-progress", "60", "failed", 1,
+                "writer_challenge_not_submitted"
+            ),
+            (
+                "post-roll-noise", "60", "failed", 1,
+                "post_roll_not_silent"
+            ),
+            (
+                "visible-uid", "60", "failed", 1,
+                "visible_endpoint_identity_mismatch"
+            ),
+            (
+                "hidden-uid", "60", "failed", 1,
+                "hidden_endpoint_identity_mismatch"
+            ),
+            (
+                "queue-uid", "60", "failed", 1,
+                "queue_device_readback_mismatch"
+            ),
+            (
+                "default-mutation", "60", "failed", 1,
+                "default_route_changed"
+            ),
+            (
+                "default-notification", "60", "failed", 1,
+                "default_change_notification_observed"
+            ),
+            (
+                "hidden-default", "60", "failed", 1,
+                "default_route_changed"
+            ),
+            (
+                "legacy-output-default", "60", "failed", 1,
+                "virtual_endpoint_became_output_default"
+            ),
+            (
+                "device-notification", "60", "failed", 1,
+                "device_change_notification_observed"
+            ),
+            (
+                "teardown-stop", "60", "failed", 1,
+                "audio_queue_teardown_failure"
+            ),
+            (
+                "teardown-dispose", "60", "failed", 1,
+                "audio_queue_teardown_failure"
+            ),
+            (
+                "teardown-gate", "60", "failed", 1,
+                "callback_gate_teardown_failure"
+            ),
+            ("teardown-post-close", "60", "passed", 0, "none"),
+            (
+                "cleanup-evidence", "60", "failed", 1,
+                "cleanup_evidence_incomplete"
+            ),
+            (
+                "listener-remove", "60", "failed", 1,
+                "listener_remove_failed"
+            ),
+            (
+                "running-state", "60", "failed", 1,
+                "device_running_state_not_restored"
+            ),
+        ]
+        for mirrorCase in mirrorCases {
+            let nonce = "mirror-loopback-self-test-nonce"
+            let resultURL = root.appendingPathComponent(
+                "mirror-\(mirrorCase.name).json"
+            )
+            let process = Process()
+            process.executableURL = binary
+            process.arguments = [
+                "mirror-loopback-self-test",
+                "--case",
+                mirrorCase.name,
+                "--nonce",
+                nonce,
+                "--required-headroom-seconds",
+                mirrorCase.headroom,
+                "--result",
+                resultURL.path,
+            ]
+            let standardError = Pipe()
+            process.standardError = standardError
+            try process.run()
+            let exited = waitForExit(process, timeout: 30)
+            if !exited {
+                forceStopProcessAndIsolatedGroup(process)
+            }
+            XCTAssertTrue(
+                exited,
+                "Mirror loopback case \(mirrorCase.name) timed out."
+            )
+            guard !process.isRunning else {
+                XCTFail(
+                    "Mirror loopback case \(mirrorCase.name) survived cleanup."
+                )
+                continue
+            }
+            let diagnostic = String(
+                decoding: readAvailableData(from: standardError),
+                as: UTF8.self
+            )
+            XCTAssertEqual(
+                process.terminationStatus,
+                mirrorCase.exit,
+                "\(mirrorCase.name): \(diagnostic)"
+            )
+            let data = try Data(contentsOf: resultURL)
+            let object = try JSONSerialization.jsonObject(with: data)
+                as! [String: Any]
+            XCTAssertEqual(
+                object["schema"] as? String,
+                "opensteamer.virtual-microphone-mirror-loopback.v2"
+            )
+            XCTAssertEqual(object["status"] as? String, mirrorCase.status)
+            XCTAssertEqual(
+                object["mode"] as? String,
+                "synthetic-self-test"
+            )
+            XCTAssertEqual(
+                object["realQueuePathImplemented"] as? Bool,
+                false
+            )
+            XCTAssertEqual(
+                object["failureCode"] as? String,
+                mirrorCase.failure
+            )
+            let failureReasons = object["failureReasons"] as! [String]
+            XCTAssertFalse(
+                String(decoding: data, as: UTF8.self).contains(nonce),
+                "The mirror artifact persisted its plaintext challenge nonce."
+            )
+
+            let challenge = object["challenge"] as! [String: Any]
+            XCTAssertEqual(
+                challenge["algorithm"] as? String,
+                "nonce-splitmix64-mono-sentinel-prbs"
+            )
+            XCTAssertEqual(challenge["version"] as? Int, 2)
+            XCTAssertEqual(challenge["frameCount"] as? Int, 96_000)
+            XCTAssertEqual(challenge["sampleCount"] as? Int, 96_000)
+            XCTAssertEqual(challenge["sentinelFrameCount"] as? Int, 256)
+
+            let endpoints = object["endpointPair"] as! [String: Any]
+            let visible = endpoints["visible"] as! [String: Any]
+            let hidden = endpoints["hidden"] as! [String: Any]
+            XCTAssertEqual(
+                visible["expectedUID"] as? String,
+                "com.elamin.opensteamer.virtual-microphone.input"
+            )
+            XCTAssertEqual(
+                hidden["expectedUID"] as? String,
+                "com.elamin.opensteamer.virtual-microphone.writer"
+            )
+            XCTAssertEqual(visible["hidden"] as? Bool, false)
+            XCTAssertEqual(visible["inputChannels"] as? Int, 1)
+            XCTAssertEqual(
+                visible["outputChannels"] as? Int,
+                mirrorCase.name == "wrong-role" ? 1 : 0
+            )
+            XCTAssertEqual(hidden["hidden"] as? Bool, true)
+            XCTAssertEqual(hidden["inputChannels"] as? Int, 0)
+            XCTAssertEqual(hidden["outputChannels"] as? Int, 1)
+            XCTAssertEqual(
+                visible["modelUIDMatchesExpected"] as? Bool,
+                true
+            )
+            XCTAssertEqual(
+                hidden["modelUIDMatchesExpected"] as? Bool,
+                true
+            )
+            XCTAssertEqual(
+                visible["clockDomain"] as? Int,
+                Int(0x6F73564D)
+            )
+            XCTAssertEqual(
+                hidden["clockDomain"] as? Int,
+                mirrorCase.name == "clock-domain"
+                    ? Int(0x6F73564D) + 1
+                    : Int(0x6F73564D)
+            )
+            XCTAssertEqual(
+                endpoints["clockDomainsMatch"] as? Bool,
+                mirrorCase.name != "clock-domain"
+            )
+            let queue = object["queueContract"] as! [String: Any]
+            let requestedFormat = queue["requestedFormat"]
+                as! [String: Any]
+            XCTAssertEqual(
+                requestedFormat["sampleRate"] as? Double,
+                48_000
+            )
+            XCTAssertEqual(
+                requestedFormat["formatFlags"] as? Int,
+                Int(kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked)
+            )
+            XCTAssertEqual(requestedFormat["reserved"] as? Int, 0)
+            XCTAssertEqual(requestedFormat["channelsPerFrame"] as? Int, 1)
+            XCTAssertEqual(requestedFormat["bitsPerChannel"] as? Int, 16)
+            XCTAssertEqual(requestedFormat["bytesPerFrame"] as? Int, 2)
+            XCTAssertEqual(requestedFormat["interleaved"] as? Bool, true)
+            XCTAssertEqual(requestedFormat["signedInteger"] as? Bool, true)
+            XCTAssertEqual(requestedFormat["floatingPoint"] as? Bool, false)
+            let captureDeviceFormat = queue["captureDeviceVirtualFormat"]
+                as! [String: Any]
+            let captureDevicePhysicalFormat =
+                queue["captureDevicePhysicalFormat"] as! [String: Any]
+            XCTAssertEqual(
+                captureDeviceFormat["floatingPoint"] as? Bool,
+                true
+            )
+            XCTAssertEqual(
+                captureDeviceFormat["channelsPerFrame"] as? Int,
+                1
+            )
+            XCTAssertEqual(
+                captureDeviceFormat["bytesPerFrame"] as? Int,
+                4
+            )
+            XCTAssertEqual(
+                captureDeviceFormat["bitsPerChannel"] as? Int,
+                32
+            )
+            XCTAssertEqual(
+                captureDevicePhysicalFormat["sampleRate"] as? Double,
+                mirrorCase.name == "physical-device-format"
+                    ? 44_100 : 48_000
+            )
+            XCTAssertEqual(
+                captureDevicePhysicalFormat["floatingPoint"] as? Bool,
+                true
+            )
+            XCTAssertEqual(
+                captureDevicePhysicalFormat["channelsPerFrame"] as? Int,
+                1
+            )
+            let writerDeviceFormat = queue["writerDeviceVirtualFormat"]
+                as! [String: Any]
+            let writerDevicePhysicalFormat =
+                queue["writerDevicePhysicalFormat"] as! [String: Any]
+            XCTAssertEqual(
+                writerDeviceFormat["floatingPoint"] as? Bool,
+                true
+            )
+            XCTAssertEqual(
+                writerDeviceFormat["channelsPerFrame"] as? Int,
+                1
+            )
+            XCTAssertEqual(
+                writerDeviceFormat["bytesPerFrame"] as? Int,
+                4
+            )
+            XCTAssertEqual(
+                writerDeviceFormat["bitsPerChannel"] as? Int,
+                32
+            )
+            XCTAssertEqual(
+                writerDevicePhysicalFormat["sampleRate"] as? Double,
+                mirrorCase.name == "writer-physical-device-format"
+                    ? 44_100 : 48_000
+            )
+            XCTAssertEqual(
+                writerDevicePhysicalFormat["floatingPoint"] as? Bool,
+                true
+            )
+            XCTAssertEqual(
+                writerDevicePhysicalFormat["channelsPerFrame"] as? Int,
+                1
+            )
+            XCTAssertEqual(
+                queue["writerPrimingFrameCount"] as? Int,
+                1_920
+            )
+            XCTAssertEqual(
+                queue["writerChallengeFullySubmitted"] as? Bool,
+                mirrorCase.name != "writer-no-progress"
+            )
+            XCTAssertEqual(
+                queue["visibleInputMuted"] as? Bool,
+                mirrorCase.name == "control-mute"
+            )
+            XCTAssertEqual(queue["hiddenOutputMuted"] as? Bool, false)
+            XCTAssertEqual(
+                queue["hiddenOutputVolumeScalar"] as? Double,
+                1.0
+            )
+            XCTAssertEqual(
+                queue["writerQueueVolumeScalar"] as? Double,
+                mirrorCase.name == "queue-volume" ? 0.5 : 1.0
+            )
+            XCTAssertEqual(
+                queue["writerQueueVolumeMatches"] as? Bool,
+                mirrorCase.name != "queue-volume"
+            )
+            XCTAssertEqual(
+                queue["signalControlsMatch"] as? Bool,
+                !["control-mute", "device-volume"]
+                    .contains(mirrorCase.name)
+            )
+            if mirrorCase.name == "device-volume" {
+                XCTAssertEqual(
+                    queue["visibleInputVolumeScalar"] as! Double,
+                    0.841_040_5,
+                    accuracy: 0.000_000_1
+                )
+            } else if mirrorCase.name == "fractional-format" {
+                let captureFormat = queue["captureReadbackFormat"]
+                    as! [String: Any]
+                XCTAssertEqual(
+                    captureFormat["sampleRate"] as? Double,
+                    48_000.25
+                )
+            } else if mirrorCase.name == "extra-format-flag" {
+                let captureFormat = queue["captureReadbackFormat"]
+                    as! [String: Any]
+                XCTAssertEqual(
+                    captureFormat["formatFlags"] as? Int,
+                    Int(
+                        kAudioFormatFlagIsSignedInteger
+                            | kAudioFormatFlagIsPacked
+                            | kAudioFormatFlagIsAlignedHigh
+                    )
+                )
+            } else if mirrorCase.name == "reserved-format" {
+                let captureFormat = queue["captureReadbackFormat"]
+                    as! [String: Any]
+                XCTAssertEqual(captureFormat["reserved"] as? Int, 1)
+            } else if mirrorCase.name == "fractional-nominal-rate" {
+                XCTAssertEqual(
+                    visible["nominalSampleRate"] as? Double,
+                    48_000.25
+                )
+            } else if mirrorCase.name == "stereo-format" {
+                let captureFormat = queue["captureReadbackFormat"]
+                    as! [String: Any]
+                XCTAssertEqual(captureFormat["channelsPerFrame"] as? Int, 2)
+                XCTAssertEqual(captureFormat["bytesPerFrame"] as? Int, 4)
+                XCTAssertEqual(captureFormat["bytesPerPacket"] as? Int, 4)
+            }
+
+            let pcm = object["pcm"] as! [String: Any]
+            XCTAssertEqual(pcm["retainedSampleLimit"] as? Int, 145_920)
+            XCTAssertLessThanOrEqual(
+                min(
+                    pcm["capturedSampleCount"] as! Int,
+                    pcm["retainedSampleLimit"] as! Int
+                ),
+                145_920
+            )
+            XCTAssertEqual(
+                pcm["capturedOverflow"] as? Bool,
+                failureReasons.contains("captured_pcm_overflow")
+            )
+            XCTAssertGreaterThanOrEqual(
+                pcm["totalObservedSampleCount"] as! Int,
+                min(
+                    pcm["capturedSampleCount"] as! Int,
+                    pcm["retainedSampleLimit"] as! Int
+                )
+            )
+            XCTAssertGreaterThanOrEqual(
+                pcm["rawCaptureCallbackCount"] as! Int,
+                mirrorCase.name == "input-not-ready" ? 0 : 2
+            )
+            XCTAssertFalse((pcm["retainedPCMHash"] as! String).isEmpty)
+            if pcm["alignmentCount"] as? Int == 0 {
+                XCTAssertEqual(pcm["comparisonAvailable"] as? Bool, false)
+                XCTAssertFalse(
+                    failureReasons.contains("host_sample_clock_mismatch")
+                )
+                XCTAssertFalse(
+                    failureReasons.contains("timestamp_frame_count_mismatch")
+                )
+            }
+            if mirrorCase.name == "healthy" {
+                XCTAssertEqual(pcm["alignmentCount"] as? Int, 1)
+                XCTAssertEqual(pcm["alignedStartFrame"] as? Int, 480)
+                XCTAssertEqual(pcm["exactPCMMatches"] as? Bool, true)
+                XCTAssertEqual(pcm["matchedFrameCount"] as? Int, 96_000)
+                XCTAssertEqual(
+                    pcm["requiredPostRollFrameCount"] as? Int,
+                    1_920
+                )
+                XCTAssertEqual(
+                    pcm["capturedPostRollFrameCount"] as? Int,
+                    1_920
+                )
+                XCTAssertEqual(
+                    pcm["postRollNonzeroSampleCount"] as? Int,
+                    0
+                )
+                XCTAssertEqual(pcm["postRollAbsolutePeak"] as? Int, 0)
+                XCTAssertEqual(pcm["postRollSilenceMatches"] as? Bool, true)
+                XCTAssertEqual(
+                    pcm["unexpectedTrailingFrameCount"] as? Int,
+                    0
+                )
+                XCTAssertEqual(pcm["signedInt16Compatible"] as? Bool, true)
+                XCTAssertGreaterThan(pcm["nonzeroSampleCount"] as! Int, 0)
+                XCTAssertGreaterThan(pcm["absolutePeak"] as! Int, 0)
+                XCTAssertGreaterThan(pcm["rootMeanSquare"] as! Double, 0)
+            } else if mirrorCase.name == "live-style-overflow" {
+                XCTAssertEqual(pcm["capturedSampleCount"] as? Int, 145_920)
+                XCTAssertEqual(
+                    pcm["totalObservedSampleCount"] as? Int,
+                    146_400
+                )
+            } else if [
+                "format",
+                "fractional-format",
+                "extra-format-flag",
+                "reserved-format",
+                "stereo-format",
+                "buffer-contract",
+            ].contains(mirrorCase.name) {
+                XCTAssertEqual(pcm["signedInt16Compatible"] as? Bool, false)
+            } else if mirrorCase.name == "post-roll-noise" {
+                XCTAssertEqual(pcm["exactPCMMatches"] as? Bool, true)
+                XCTAssertEqual(pcm["postRollSilenceMatches"] as? Bool, false)
+                XCTAssertEqual(
+                    pcm["postRollNonzeroSampleCount"] as? Int,
+                    1
+                )
+                XCTAssertEqual(
+                    pcm["unexpectedTrailingFrameCount"] as? Int,
+                    1
+                )
+                XCTAssertTrue(failureReasons.contains("post_roll_not_silent"))
+            } else if mirrorCase.name == "short-capture" {
+                XCTAssertEqual(pcm["comparisonAvailable"] as? Bool, true)
+                XCTAssertEqual(pcm["missingFrameCount"] as? Int, 480)
+                XCTAssertEqual(pcm["capturedPostRollFrameCount"] as? Int, 0)
+                XCTAssertTrue(failureReasons.contains("post_roll_incomplete"))
+            }
+
+            let defaults = object["defaults"] as! [String: Any]
+            XCTAssertEqual(
+                defaults["inputBeforeAfterEqual"] as? Bool,
+                mirrorCase.name != "hidden-default"
+            )
+            XCTAssertEqual(
+                defaults["outputBeforeAfterEqual"] as? Bool,
+                mirrorCase.name != "default-mutation"
+            )
+            XCTAssertEqual(
+                defaults["systemOutputBeforeAfterEqual"] as? Bool,
+                true
+            )
+            XCTAssertEqual(
+                defaults["mutated"] as? Bool,
+                [
+                    "default-mutation",
+                    "default-notification",
+                    "hidden-default",
+                ].contains(mirrorCase.name)
+            )
+            XCTAssertEqual(
+                defaults["hiddenEndpointNeverDefault"] as? Bool,
+                mirrorCase.name != "hidden-default"
+            )
+            XCTAssertEqual(
+                defaults["virtualEndpointsNeverOutputDefault"] as? Bool,
+                mirrorCase.name != "legacy-output-default"
+            )
+
+            let lifecycle = object["lifecycle"] as! [String: Any]
+            XCTAssertEqual(
+                lifecycle["requiredStartOrders"] as? [String],
+                ["visible-first", "hidden-first"]
+            )
+            XCTAssertEqual(
+                lifecycle["zeroTimestampSeedObservableViaPublicAPI"] as? Bool,
+                false
+            )
+            XCTAssertEqual(
+                lifecycle["seedChangeClaimed"] as? Bool,
+                false
+            )
+            let cycles = lifecycle["cycles"] as! [[String: Any]]
+            XCTAssertEqual(
+                cycles.compactMap { $0["startOrder"] as? String },
+                ["visible-first", "hidden-first"]
+            )
+            XCTAssertEqual(cycles.count, 2)
+            for cycle in cycles {
+                XCTAssertEqual(cycle["quiescentBefore"] as? Bool, true)
+                XCTAssertEqual(cycle["quiescentAfter"] as? Bool, true)
+                XCTAssertEqual(cycle["nearZeroSharedClock"] as? Bool, true)
+                XCTAssertEqual(cycle["timelinesAdvanced"] as? Bool, true)
+                XCTAssertEqual(
+                    cycle["queuesStoppedAndDisposed"] as? Bool,
+                    true
+                )
+                XCTAssertEqual(
+                    cycle["initialVisibleSampleFrame"] as? Int,
+                    cycle["initialHiddenSampleFrame"] as? Int
+                )
+                XCTAssertEqual(
+                    cycle["finalVisibleSampleFrame"] as? Int,
+                    cycle["finalHiddenSampleFrame"] as? Int
+                )
+                XCTAssertGreaterThan(
+                    cycle["finalVisibleSampleFrame"] as! Int,
+                    cycle["initialVisibleSampleFrame"] as! Int
+                )
+            }
+            XCTAssertNotEqual(
+                cycles[0]["initialVisibleSampleFrame"] as? Int,
+                cycles[1]["initialVisibleSampleFrame"] as? Int
+            )
+
+            let timestamps = object["timestamps"] as! [String: Any]
+            XCTAssertEqual(
+                timestamps["rawCaptureCallbackCount"] as? Int,
+                pcm["rawCaptureCallbackCount"] as? Int
+            )
+            XCTAssertEqual(
+                timestamps["alignedEvidenceAvailable"] as? Bool,
+                pcm["comparisonAvailable"] as? Bool
+            )
+            let projection = timestamps["projection"] as! [String: Any]
+            XCTAssertEqual(
+                projection["schema"] as? String,
+                "opensteamer.facetime-timestamp-projection.v1"
+            )
+            XCTAssertEqual(projection["sourceSampleRate"] as? Int, 48_000)
+            XCTAssertEqual(
+                projection["consumerSampleRate"] as? Int,
+                24_000
+            )
+            XCTAssertEqual(projection["ratioNumerator"] as? Int, 1)
+            XCTAssertEqual(projection["ratioDenominator"] as? Int, 2)
+            XCTAssertEqual(
+                projection["rounding"] as? String,
+                "conservative-ceiling"
+            )
+            XCTAssertEqual(
+                projection["signedMaximum"] as? Int,
+                Int(Int32.max)
+            )
+            if mirrorCase.name == "cap-boundary-pass" {
+                XCTAssertEqual(
+                    projection["projectedLastFrame"] as? Int,
+                    Int(Int32.max)
+                )
+                XCTAssertEqual(
+                    projection["remainingHeadroomFrames"] as? Int,
+                    0
+                )
+            } else if mirrorCase.name == "cap-boundary-fail" {
+                XCTAssertEqual(
+                    projection["projectedLastFrame"] as? Int,
+                    Int(Int32.max) + 1
+                )
+                XCTAssertEqual(
+                    projection["signed32Compatible"] as? Bool,
+                    false
+                )
+            } else if mirrorCase.name == "captured-aged-clock" {
+                XCTAssertEqual(
+                    projection["projectedLastFrame"] as? Int,
+                    3_343_889_722
+                )
+                XCTAssertEqual(
+                    projection["signed32Compatible"] as? Bool,
+                    false
+                )
+            }
+        }
+
+        for unsafeLiveHeadroom in ["0", "59.999"] {
+            let rejectedResult = root.appendingPathComponent(
+                "mirror-live-headroom-(unsafeLiveHeadroom).json"
+            )
+            let process = Process()
+            process.executableURL = binary
+            process.arguments = [
+                "mirror-loopback",
+                "--nonce",
+                "mirror-loopback-live-cli-mutant",
+                "--required-headroom-seconds",
+                unsafeLiveHeadroom,
+                "--result",
+                rejectedResult.path,
+            ]
+            let standardError = Pipe()
+            process.standardError = standardError
+            try process.run()
+            XCTAssertTrue(waitForExit(process, timeout: 5))
+            XCTAssertEqual(
+                process.terminationStatus,
+                64,
+                String(
+                    decoding: readAvailableData(from: standardError),
+                    as: UTF8.self
+                )
+            )
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: rejectedResult.path),
+                "An unsafe live headroom value reached the Core Audio path."
+            )
+        }
         let probeSource = try String(contentsOf: source, encoding: .utf8)
         for requiredPolicyToken in [
             "BuiltInSpeakerDevice",
@@ -2717,10 +3447,80 @@ final class PhysicalValidationScriptTests: XCTestCase {
             "defaultsMutated",
             "tagged-challenge-nonce",
             "BlackHoleMeasureInputBufferContractSelfTest",
+            "opensteamer.virtual-microphone-mirror-loopback.v2",
+            "opensteamer.facetime-timestamp-projection.v1",
+            "nonce-splitmix64-mono-sentinel-prbs",
+            "com.elamin.opensteamer.virtual-microphone.input",
+            "com.elamin.opensteamer.virtual-microphone.writer",
+            "com.elamin.opensteamer.virtual-microphone.model",
+            "0x6F73564D",
+            "static let captureChannels = 1",
+            "static let physicalOutputChannels = 2",
+            "static let canonicalDeviceFloat",
+            "kAudioHardwarePropertyTranslateUIDToDevice",
+            "AudioQueueDeviceGetCurrentTime",
+            "required-headroom-seconds",
+            "minimumProductionHeadroomSeconds",
+            "private enum MirrorLoopbackRealRunner",
+            "real-dual-audioqueue",
+            "mirror_endpoints_not_quiescent",
+            "MirrorLoopbackLiveSeamSelfTest.passes",
+            "minimumReadyInputCallbacks",
+            "fillPrimingSilence",
+            "collectorRetainsNonSilentPostRoll",
+            "inputBufferContractProofSurvivesEnqueueFailure",
+            "stopInducedEmptyInputCallbackIsRejected",
+            "writerChallengeFullySubmitted",
+            "captureDeviceVirtualFormat",
+            "captureDevicePhysicalFormat",
+            "writerDevicePhysicalFormat",
+            "kAudioStreamPropertyVirtualFormat",
+            "kAudioStreamPropertyPhysicalFormat",
+            "kAudioDevicePropertyMute",
+            "kAudioDevicePropertyVolumeScalar",
+            "kAudioQueueParam_Volume",
+            "cannot observe the AudioServerPlugIn zero-timestamp",
+            "private enum MirrorLoopbackRestartVerifier",
+            "zeroTimestampSeedObservableViaPublicAPI: false",
+            "seedChangeClaimed: false",
+            "both endpoint start orders",
         ] {
             XCTAssertTrue(
                 probeSource.contains(requiredPolicyToken),
                 "The physical-output policy omitted \(requiredPolicyToken)."
+            )
+        }
+
+        let mirrorMarker = try XCTUnwrap(
+            probeSource.range(
+                of: "// MARK: - Deterministic repo-owned virtual-microphone loopback oracle"
+            )
+        )
+        let mirrorSource = probeSource[mirrorMarker.lowerBound...]
+        for removedStereoClaim in [
+            "nonce-splitmix64-stereo-sentinel-prbs",
+            "channel-swap",
+            "mono-collapse",
+            "channelOrderMatches",
+            "channelSwapDetected",
+            "channelDistinct",
+        ] {
+            XCTAssertFalse(
+                mirrorSource.contains(removedStereoClaim),
+                "The mono mirror oracle retained stale stereo evidence \(removedStereoClaim)."
+            )
+        }
+        for requiredMonoMutant in [
+            "stereo-format",
+            "wrong-role",
+            "clock-domain",
+            "short-capture",
+            "post-roll-noise",
+            "sample-time-gap",
+        ] {
+            XCTAssertTrue(
+                mirrorSource.contains(requiredMonoMutant),
+                "The mono mirror oracle omitted mutant \(requiredMonoMutant)."
             )
         }
 
@@ -2758,6 +3558,153 @@ final class PhysicalValidationScriptTests: XCTestCase {
             measureQueueSource.contains(
                 "guard let queue else { return !teardownFailed }"
             )
+        )
+
+        let mirrorInputStart = try XCTUnwrap(
+            probeSource.range(
+                of: "private enum MirrorLoopbackQueueSupport"
+            )
+        )
+        let mirrorRealEnd = try XCTUnwrap(
+            probeSource.range(
+                of: "private enum MirrorLoopbackFailureBuilder",
+                range: mirrorInputStart.upperBound..<probeSource.endIndex
+            )
+        )
+        let mirrorRealSource = probeSource[
+            mirrorInputStart.lowerBound..<mirrorRealEnd.lowerBound
+        ]
+        XCTAssertTrue(mirrorRealSource.contains("AudioQueueNewInput("))
+        XCTAssertTrue(mirrorRealSource.contains("AudioQueueNewOutput("))
+        XCTAssertTrue(
+            mirrorRealSource.contains("MirrorLoopbackPolicy.visibleUID")
+        )
+        XCTAssertTrue(
+            mirrorRealSource.contains("MirrorLoopbackPolicy.hiddenUID")
+        )
+        XCTAssertTrue(
+            mirrorRealSource.contains("kAudioQueueProperty_StreamDescription")
+        )
+        XCTAssertTrue(
+            mirrorRealSource.contains(
+                "BlackHoleMeasureCallbackTimestamp(startTime.pointee)"
+            )
+        )
+        XCTAssertTrue(
+            mirrorRealSource.contains(
+                "MirrorLoopbackRunningState.bothStopped("
+            )
+        )
+        let restartVerifierStart = try XCTUnwrap(
+            mirrorRealSource.range(
+                of: "private enum MirrorLoopbackRestartVerifier"
+            )
+        )
+        let mirrorRunnerStart = try XCTUnwrap(
+            mirrorRealSource.range(
+                of: "private enum MirrorLoopbackRealRunner",
+                range: (
+                    restartVerifierStart.upperBound..<mirrorRealSource.endIndex
+                )
+            )
+        )
+        let restartVerifierSource = mirrorRealSource[
+            restartVerifierStart.lowerBound..<mirrorRunnerStart.lowerBound
+        ]
+        let mirrorRunnerSource = mirrorRealSource[
+            mirrorRunnerStart.lowerBound..<mirrorRealSource.endIndex
+        ]
+        XCTAssertTrue(
+            restartVerifierSource.contains(
+                "let orders = [\"visible-first\", \"hidden-first\"]"
+            )
+        )
+        XCTAssertTrue(
+            restartVerifierSource.contains(
+                "nonce: nonce + \":restart:\" + $0"
+            ),
+            "Each complete restart must receive a distinct challenge seed input."
+        )
+        XCTAssertTrue(
+            restartVerifierSource.contains(
+                "case \"visible-first\":\n            try input.start()\n            try output.start()"
+            )
+        )
+        XCTAssertTrue(
+            restartVerifierSource.contains(
+                "case \"hidden-first\":\n            try output.start()\n            try input.start()"
+            )
+        )
+        XCTAssertTrue(
+            restartVerifierSource.contains(
+                "let queuesStoppedAndDisposed = input.stopStatus == noErr"
+            )
+        )
+        XCTAssertTrue(
+            restartVerifierSource.contains(
+                "zeroTimestampSeedObservableViaPublicAPI: false"
+            )
+        )
+        XCTAssertTrue(
+            restartVerifierSource.contains("seedChangeClaimed: false")
+        )
+        let inputStart = try XCTUnwrap(
+            mirrorRunnerSource.range(of: "try input.start()")
+        )
+        let inputReady = try XCTUnwrap(
+            mirrorRunnerSource.range(
+                of: "let inputReadiness = input.readiness()",
+                range: inputStart.upperBound..<mirrorRunnerSource.endIndex
+            )
+        )
+        let outputStart = try XCTUnwrap(
+            mirrorRunnerSource.range(
+                of: "try output.start()",
+                range: inputReady.upperBound..<mirrorRunnerSource.endIndex
+            )
+        )
+        XCTAssertLessThan(inputStart.lowerBound, inputReady.lowerBound)
+        XCTAssertLessThan(inputReady.lowerBound, outputStart.lowerBound)
+        XCTAssertTrue(
+            mirrorRealSource.contains("context.fillPrimingSilence(buffer)")
+        )
+        XCTAssertTrue(mirrorRealSource.contains("context.enableChallenge()"))
+        let mirrorQueueStops = mirrorRealSource.components(
+            separatedBy: "func stop() {"
+        ).dropFirst()
+        XCTAssertEqual(
+            mirrorQueueStops.count,
+            2,
+            "The mirror proof must retain one explicit stop path per queue."
+        )
+        for stopBody in mirrorQueueStops {
+            let gateClose = try XCTUnwrap(
+                stopBody.range(of: "context.stopAccepting()")
+            )
+            let queueStop = try XCTUnwrap(
+                stopBody.range(of: "AudioQueueStop(queue, true)")
+            )
+            XCTAssertLessThan(
+                gateClose.lowerBound,
+                queueStop.lowerBound,
+                "Each mirror callback gate must close before AudioQueueStop can deliver a terminal callback."
+            )
+        }
+        XCTAssertTrue(
+            mirrorRealSource.contains(
+                "defer {\n            output.stop()\n            input.stop()"
+            ),
+            "Every real-attempt exception path must explicitly drain and dispose both queues."
+        )
+        XCTAssertTrue(
+            mirrorRealSource.contains("defer { _ = defaultGuard.remove() }")
+        )
+        XCTAssertTrue(
+            mirrorRealSource.contains("defer { _ = deviceGuard.remove() }")
+        )
+        XCTAssertFalse(
+            mirrorRealSource.contains("AudioObjectSetPropertyData("),
+            "The real mirror gate must never mutate a system default device."
         )
     }
 
@@ -2817,7 +3764,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 of: "DefaultRouteSafety.failureCode(",
                 range: finalSnapshot.upperBound..<realRunner.endIndex
             ),
-            "Final default-route evidence lost its semantic BlackHole safety check."
+            "Final default-route evidence lost its virtual-microphone and legacy-UID safety check."
         )
 
         let continuityCoreStart = try XCTUnwrap(
@@ -3290,8 +4237,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
         XCTAssertEqual(
             events,
             """
-            phase=1 name=raw-iphone-microphone-blackhole state=started
-            phase=1 name=raw-iphone-microphone-blackhole state=passed
+            phase=1 name=raw-iphone-microphone-virtual-microphone state=started
+            phase=1 name=raw-iphone-microphone-virtual-microphone state=passed
             phase=2 name=reconnect-background-screen state=started
             phase=2 name=reconnect-background-screen state=passed
             phase=3 name=real-connected-call state=started
@@ -4138,7 +5085,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
         )
         XCTAssertTrue(
             driver.contains(
-                "Worldwide authenticated media route selected BlackHole default input"
+                "Worldwide authenticated media route selected virtual microphone default input"
             )
         )
         XCTAssertTrue(
@@ -5662,27 +6609,15 @@ final class PhysicalValidationScriptTests: XCTestCase {
                 "discriminationMargin": 0.30,
                 "envelopeCorrelation": 0.70,
             ],
-            [
-                "channel": 1,
-                "rms": 3_500.0,
-                "peak": 6_500,
-                "clippedRatio": 0.0,
-                "nonSilentRatio": 0.88,
-                "challengeSymbolCount": 20,
-                "matchedSymbolCount": 17,
-                "matchRatio": 0.85,
-                "normalizedCorrelation": 0.75,
-                "discriminationMargin": 0.25,
-                "envelopeCorrelation": 0.65,
-            ],
         ]
         return [
-            "schema": "opensteamer.physical-blackhole-microphone.v1",
+            "schema": "opensteamer.physical-virtual-microphone.v2",
             "status": "passed",
             "runNonce": nonce,
             "challengeAlgorithm": "nonce-splitmix64-frequency-hop-raised-envelope",
             "challengeVersion": 1,
-            "canonicalCaptureUID": "BlackHole2ch_UID",
+            "canonicalCaptureUID":
+                "com.elamin.opensteamer.virtual-microphone.input",
             "captureUIDMatches": true,
             "physicalOutputValidated": true,
             "challengeNonceMatches": true,
@@ -5691,7 +6626,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             "physicalOutputQueueReadbackMatches": true,
             "format": [
                 "sampleRate": 48_000,
-                "channels": 2,
+                "channels": 1,
                 "signedInt16": true,
                 "interleaved": true,
             ],

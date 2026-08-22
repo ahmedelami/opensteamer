@@ -2,15 +2,29 @@ import CoreAudio
 import Foundation
 
 /// Exact installed endpoint contract for worldwide iPhone microphone routing.
-public enum WorldwideBlackHoleMicrophoneEndpointContract {
+public enum WorldwideVirtualMicrophoneEndpointContract {
     public static let visibleDefaultInputDeviceUID =
-        "BlackHole2ch_UID"
+        "com.elamin.opensteamer.virtual-microphone.input"
     public static let hiddenMirrorSinkDeviceUID =
-        "BlackHole2ch_2_UID"
-    public static let modelUID = "BlackHole2ch_ModelUID"
-    public static let channelCount: UInt32 = 2
+        "com.elamin.opensteamer.virtual-microphone.writer"
+    public static let modelUID =
+        "com.elamin.opensteamer.virtual-microphone.model"
+    public static let visibleInputChannelCount: UInt32 = 1
+    public static let visibleOutputChannelCount: UInt32 = 0
+    public static let hiddenInputChannelCount: UInt32 = 0
+    public static let hiddenOutputChannelCount: UInt32 = 1
     public static let nominalSampleRate: Double = 48_000
+    public static let clockDomain: UInt32 = 0x6F73564D
+    public static let retiredLegacyVisibleDeviceUID =
+        "BlackHole2ch_UID"
+    public static let retiredLegacyHiddenWriterDeviceUID =
+        "BlackHole2ch_2_UID"
 }
+
+/// Compatibility spelling retained while the worldwide route migrates from
+/// the installed BlackHole experiment to the product-owned virtual mic.
+public typealias WorldwideBlackHoleMicrophoneEndpointContract =
+    WorldwideVirtualMicrophoneEndpointContract
 
 /// One stable Core Audio identity participating in the BlackHole microphone path.
 public struct BlackHoleDeviceEndpointIdentity: Equatable, Sendable {
@@ -1161,6 +1175,82 @@ struct BlackHoleDeviceEndpointProperties: Equatable, Sendable {
     let inputChannelCount: UInt32
     let outputChannelCount: UInt32
     let nominalSampleRate: Double
+    let clockDomain: UInt32
+    /// Every public Core Audio stream object in this endpoint's active role
+    /// scope. Pair admission requires exactly one and validates both of that
+    /// stream object's exact ASBDs.
+    let roleStreams: [BlackHoleDeviceRoleStreamProperties]
+}
+
+/// Value-semantic copy of every field in one AudioStreamBasicDescription.
+/// Keeping this in the full endpoint observation makes virtual/physical
+/// format changes participate in the existing two-pass stability fence.
+struct BlackHoleDeviceStreamFormat: Equatable, Sendable {
+    let sampleRate: Double
+    let formatID: AudioFormatID
+    let formatFlags: AudioFormatFlags
+    let bytesPerPacket: UInt32
+    let framesPerPacket: UInt32
+    let bytesPerFrame: UInt32
+    let channelsPerFrame: UInt32
+    let bitsPerChannel: UInt32
+    let reserved: UInt32
+
+    init(
+        sampleRate: Double,
+        formatID: AudioFormatID,
+        formatFlags: AudioFormatFlags,
+        bytesPerPacket: UInt32,
+        framesPerPacket: UInt32,
+        bytesPerFrame: UInt32,
+        channelsPerFrame: UInt32,
+        bitsPerChannel: UInt32,
+        reserved: UInt32
+    ) {
+        self.sampleRate = sampleRate
+        self.formatID = formatID
+        self.formatFlags = formatFlags
+        self.bytesPerPacket = bytesPerPacket
+        self.framesPerPacket = framesPerPacket
+        self.bytesPerFrame = bytesPerFrame
+        self.channelsPerFrame = channelsPerFrame
+        self.bitsPerChannel = bitsPerChannel
+        self.reserved = reserved
+    }
+
+    init(_ description: AudioStreamBasicDescription) {
+        self.init(
+            sampleRate: description.mSampleRate,
+            formatID: description.mFormatID,
+            formatFlags: description.mFormatFlags,
+            bytesPerPacket: description.mBytesPerPacket,
+            framesPerPacket: description.mFramesPerPacket,
+            bytesPerFrame: description.mBytesPerFrame,
+            channelsPerFrame: description.mChannelsPerFrame,
+            bitsPerChannel: description.mBitsPerChannel,
+            reserved: description.mReserved
+        )
+    }
+
+    var isCanonicalNativeFloatPackedMono: Bool {
+        sampleRate
+            == WorldwideBlackHoleMicrophoneEndpointContract
+                .nominalSampleRate
+            && formatID == kAudioFormatLinearPCM
+            && formatFlags == kAudioFormatFlagsNativeFloatPacked
+            && bytesPerPacket == 4
+            && framesPerPacket == 1
+            && bytesPerFrame == 4
+            && channelsPerFrame == 1
+            && bitsPerChannel == 32
+            && reserved == 0
+    }
+}
+
+struct BlackHoleDeviceRoleStreamProperties: Equatable, Sendable {
+    let streamID: AudioStreamID
+    let virtualFormat: BlackHoleDeviceStreamFormat
+    let physicalFormat: BlackHoleDeviceStreamFormat
 }
 
 protocol BlackHoleDeviceEndpointPropertyReading:
@@ -1230,6 +1320,17 @@ struct BlackHoleDeviceEndpointPairResolver: Sendable {
             )
         }
 
+        guard defaultInput.roleStreams.count == 1,
+              hiddenMirrorSink.roleStreams.count == 1,
+              let defaultInputRoleStream =
+                defaultInput.roleStreams.first,
+              let hiddenMirrorRoleStream =
+                hiddenMirrorSink.roleStreams.first else {
+            throw Self.invalidTopology(
+                "each endpoint must expose exactly one stream object in its active role scope"
+            )
+        }
+
         guard defaultInput.identity.deviceID != kAudioObjectUnknown,
               hiddenMirrorSink.identity.deviceID != kAudioObjectUnknown,
               defaultInput.identity.deviceID
@@ -1255,24 +1356,47 @@ struct BlackHoleDeviceEndpointPairResolver: Sendable {
               hiddenMirrorSink.isHidden,
               defaultInput.inputChannelCount
                 == WorldwideBlackHoleMicrophoneEndpointContract
-                    .channelCount,
+                    .visibleInputChannelCount,
               defaultInput.outputChannelCount
                 == WorldwideBlackHoleMicrophoneEndpointContract
-                    .channelCount,
+                    .visibleOutputChannelCount,
               hiddenMirrorSink.inputChannelCount
                 == WorldwideBlackHoleMicrophoneEndpointContract
-                    .channelCount,
+                    .hiddenInputChannelCount,
               hiddenMirrorSink.outputChannelCount
                 == WorldwideBlackHoleMicrophoneEndpointContract
-                    .channelCount,
+                    .hiddenOutputChannelCount,
               defaultInput.nominalSampleRate
                 == WorldwideBlackHoleMicrophoneEndpointContract
                     .nominalSampleRate,
               hiddenMirrorSink.nominalSampleRate
                 == WorldwideBlackHoleMicrophoneEndpointContract
-                    .nominalSampleRate else {
+                    .nominalSampleRate,
+              defaultInput.clockDomain
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .clockDomain,
+              hiddenMirrorSink.clockDomain
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .clockDomain,
+              defaultInput.clockDomain == hiddenMirrorSink.clockDomain,
+              defaultInputRoleStream.virtualFormat
+                .isCanonicalNativeFloatPackedMono,
+              defaultInputRoleStream.physicalFormat
+                .isCanonicalNativeFloatPackedMono,
+              defaultInputRoleStream.virtualFormat
+                == defaultInputRoleStream.physicalFormat,
+              hiddenMirrorRoleStream.virtualFormat
+                .isCanonicalNativeFloatPackedMono,
+              hiddenMirrorRoleStream.physicalFormat
+                .isCanonicalNativeFloatPackedMono,
+              hiddenMirrorRoleStream.virtualFormat
+                == hiddenMirrorRoleStream.physicalFormat,
+              defaultInputRoleStream.virtualFormat
+                == hiddenMirrorRoleStream.virtualFormat,
+              defaultInputRoleStream.physicalFormat
+                == hiddenMirrorRoleStream.physicalFormat else {
             throw Self.invalidTopology(
-                "the exact endpoint pair does not match the required model, liveness, visibility, channels, sample rate, and distinct-identity contract"
+                "the exact endpoint pair does not match the required model, liveness, visibility, role topology, sample rate, clock domain, exact native-Float packed-interleaved mono stream formats, and distinct-identity contract"
             )
         }
 
@@ -1286,7 +1410,7 @@ struct BlackHoleDeviceEndpointPairResolver: Sendable {
         _ detail: String
     ) -> CaptureError {
         CaptureError.audioDeviceNotFound(
-            "validated BlackHole 2ch mirror topology: \(detail)"
+            "validated opensteamer virtual-microphone topology: \(detail)"
         )
     }
 }
@@ -1305,6 +1429,20 @@ private final class SystemBlackHoleDeviceEndpointPropertyReader:
             exactUID: exactUID
         ) else {
             return nil
+        }
+        let roleScope: AudioObjectPropertyScope
+        switch exactUID {
+        case WorldwideBlackHoleMicrophoneEndpointContract
+            .visibleDefaultInputDeviceUID:
+            roleScope = kAudioDevicePropertyScopeInput
+        case WorldwideBlackHoleMicrophoneEndpointContract
+            .hiddenMirrorSinkDeviceUID:
+            roleScope = kAudioDevicePropertyScopeOutput
+        default:
+            throw CaptureError.audioDeviceConfiguration(
+                "select virtual-microphone endpoint role scope",
+                kAudio_ParamError
+            )
         }
 
         return BlackHoleDeviceEndpointProperties(
@@ -1345,6 +1483,15 @@ private final class SystemBlackHoleDeviceEndpointPropertyReader:
                 deviceID,
                 selector: kAudioDevicePropertyNominalSampleRate,
                 operation: "read BlackHole endpoint nominal sample rate"
+            ),
+            clockDomain: try uint32Property(
+                deviceID,
+                selector: kAudioDevicePropertyClockDomain,
+                operation: "read virtual-microphone endpoint clock domain"
+            ),
+            roleStreams: try roleStreamProperties(
+                deviceID,
+                scope: roleScope
             )
         )
     }
@@ -1548,6 +1695,123 @@ private final class SystemBlackHoleDeviceEndpointPropertyReader:
             )
         }
         return UInt32(total)
+    }
+
+    private func roleStreamProperties(
+        _ deviceID: AudioDeviceID,
+        scope: AudioObjectPropertyScope
+    ) throws -> [BlackHoleDeviceRoleStreamProperties] {
+        let streamIDs = try audioObjectIDs(
+            deviceID,
+            selector: kAudioDevicePropertyStreams,
+            scope: scope,
+            operation: "read virtual-microphone role stream objects"
+        )
+        return try streamIDs.map { streamID in
+            BlackHoleDeviceRoleStreamProperties(
+                streamID: AudioStreamID(streamID),
+                virtualFormat: try streamFormat(
+                    AudioStreamID(streamID),
+                    selector: kAudioStreamPropertyVirtualFormat,
+                    operation: "read virtual-microphone stream virtual format"
+                ),
+                physicalFormat: try streamFormat(
+                    AudioStreamID(streamID),
+                    selector: kAudioStreamPropertyPhysicalFormat,
+                    operation: "read virtual-microphone stream physical format"
+                )
+            )
+        }
+    }
+
+    private func audioObjectIDs(
+        _ objectID: AudioObjectID,
+        selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope,
+        operation: String
+    ) throws -> [AudioObjectID] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: scope,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var byteCount: UInt32 = 0
+        var status = AudioObjectGetPropertyDataSize(
+            objectID,
+            &address,
+            0,
+            nil,
+            &byteCount
+        )
+        let stride = UInt32(MemoryLayout<AudioObjectID>.stride)
+        guard status == noErr,
+              byteCount % stride == 0 else {
+            throw CaptureError.audioDeviceConfiguration(
+                "\(operation) size",
+                status == noErr ? kAudio_ParamError : status
+            )
+        }
+        guard byteCount > 0 else {
+            return []
+        }
+
+        var values = [AudioObjectID](
+            repeating: kAudioObjectUnknown,
+            count: Int(byteCount / stride)
+        )
+        status = values.withUnsafeMutableBytes { storage in
+            AudioObjectGetPropertyData(
+                objectID,
+                &address,
+                0,
+                nil,
+                &byteCount,
+                storage.baseAddress!
+            )
+        }
+        guard status == noErr,
+              byteCount == UInt32(values.count) * stride,
+              values.allSatisfy({ $0 != kAudioObjectUnknown }) else {
+            throw CaptureError.audioDeviceConfiguration(
+                operation,
+                status == noErr ? kAudio_ParamError : status
+            )
+        }
+        return values
+    }
+
+    private func streamFormat(
+        _ streamID: AudioStreamID,
+        selector: AudioObjectPropertySelector,
+        operation: String
+    ) throws -> BlackHoleDeviceStreamFormat {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var description = AudioStreamBasicDescription()
+        var size = UInt32(
+            MemoryLayout<AudioStreamBasicDescription>.size
+        )
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(streamID),
+            &address,
+            0,
+            nil,
+            &size,
+            &description
+        )
+        guard status == noErr,
+              size == UInt32(
+                MemoryLayout<AudioStreamBasicDescription>.size
+              ) else {
+            throw CaptureError.audioDeviceConfiguration(
+                operation,
+                status == noErr ? kAudio_ParamError : status
+            )
+        }
+        return BlackHoleDeviceStreamFormat(description)
     }
 }
 
@@ -2671,7 +2935,10 @@ public final class BlackHoleDefaultInputLease:
         }
         guard previousUID
                 != WorldwideBlackHoleMicrophoneEndpointContract
-                    .hiddenMirrorSinkDeviceUID else {
+                    .hiddenMirrorSinkDeviceUID,
+              previousUID
+                != WorldwideBlackHoleMicrophoneEndpointContract
+                    .retiredLegacyHiddenWriterDeviceUID else {
             clearRetryBaseline(for: generation)
             markTerminal(generation)
             return .terminalFailure

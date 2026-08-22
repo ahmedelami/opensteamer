@@ -86,9 +86,13 @@ mkdir -p \
   "$BASELINE/iOS/opensteamer/opensteamer.xcodeproj/xcshareddata/xcschemes" \
   "$BASELINE/macOS/OpensteamerHost" \
   "$BASELINE/macOS/scripts" \
+  "$BASELINE/macOS/Sources/CaptureCore" \
   "$BASELINE/macOS/Sources/CaptureServer" \
   "$BASELINE/macOS/LaunchAgents" \
   "$BASELINE/macOS/RelayBridge" \
+  "$BASELINE/macOS/VirtualAudioDriver/Driver" \
+  "$BASELINE/macOS/VirtualAudioDriver/include" \
+  "$BASELINE/macOS/VirtualAudioDriver/scripts" \
   "$BASELINE/services/Rendezvous" \
   "$BASELINE/services/RendezvousWorker"
 cp "$ROOT_DIR/scripts/check-product-identity.sh" "$BASELINE/scripts/"
@@ -360,14 +364,19 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <key>CFBundleIdentifier</key><string>com.elamin.AudioStreamer.CaptureServer</string>
 <key>CFBundleExecutable</key><string>CaptureServer</string>
 <key>NSAudioCaptureUsageDescription</key><string>opensteamer captures this Mac&apos;s audio so it can stream playback to your iPhone.</string>
-<key>NSMicrophoneUsageDescription</key><string>opensteamer records the BlackHole virtual input so it can stream this Mac&apos;s routed audio to your iPhone.</string>
+<key>NSMicrophoneUsageDescription</key><string>opensteamer uses its virtual microphone to route your iPhone&apos;s microphone into calls on this Mac.</string>
 </dict></plist>' >"$BASELINE/macOS/OpensteamerHost/Info.plist"
 print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleName</key><string>opensteamer Capture Server</string>
 <key>CFBundleIdentifier</key><string>com.elamin.AudioStreamer.CaptureServer</string>
+<key>NSMicrophoneUsageDescription</key><string>opensteamer uses its virtual microphone to route your iPhone&apos;s microphone into calls on this Mac.</string>
 </dict></plist>' >"$BASELINE/macOS/Sources/CaptureServer/Info.plist"
+print -r -- 'enum BlackHoleRouteManagerFixture {
+  static let uid = "BlackHole2ch_UID"
+  static let hiddenUID = "BlackHole2ch_2_UID"
+}' >"$BASELINE/macOS/Sources/CaptureCore/BlackHoleRouteManager.swift"
 print -r -- 'static let opensteamerPairingService =
     "com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1"' \
   >"$BASELINE/macOS/Sources/CaptureServer/WorldwidePairingStore.swift"
@@ -384,6 +393,80 @@ print -r -- 'EXPECTED_BUNDLE_IDENTIFIER="com.elamin.AudioStreamer.CaptureServer"
   >"$BASELINE/macOS/scripts/verify-mac-host-bundle.sh"
 print -r -- 'verify-live "com.elamin.AudioStreamer.CaptureServer"' \
   >"$BASELINE/macOS/scripts/verify-mac-host-deployment.sh"
+
+print -r -- '<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>OpensteamerVirtualMicrophone</string>
+<key>CFBundleIdentifier</key><string>com.elamin.opensteamer.VirtualMicrophoneDriver</string>
+<key>CFBundleName</key><string>opensteamer Virtual Microphone</string>
+<key>CFBundlePackageType</key><string>BNDL</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFPlugInFactories</key><dict>
+  <key>81CE9D28-D187-499B-84EE-F6AC6159C800</key>
+  <string>OpensteamerVirtualMicrophone_Create</string>
+</dict>
+<key>CFPlugInTypes</key><dict>
+  <key>443ABAB8-E7B3-491A-B985-BEB9187030DB</key>
+  <array><string>81CE9D28-D187-499B-84EE-F6AC6159C800</string></array>
+</dict>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
+</dict></plist>' >"$BASELINE/macOS/VirtualAudioDriver/Driver/Info.plist"
+print -r -- '#define OSVA_BUNDLE_IDENTIFIER "com.elamin.opensteamer.VirtualMicrophoneDriver"
+#define OSVA_VISIBLE_INPUT_DEVICE_UID "com.elamin.opensteamer.virtual-microphone.input"
+#define OSVA_HIDDEN_WRITER_DEVICE_UID "com.elamin.opensteamer.virtual-microphone.writer"
+#define OSVA_DEVICE_MODEL_UID "com.elamin.opensteamer.virtual-microphone.model"
+enum {
+  kOSVAClockDomain = 0x6F73564D,
+};' >"$BASELINE/macOS/VirtualAudioDriver/include/OpensteamerVirtualMicrophoneDriver.h"
+print -r -- '#define OSVA_SAMPLE_RATE_HZ UINT64_C(48000)
+#define OSVA_CHANNEL_COUNT UINT32_C(1)
+#define OSVA_BYTES_PER_FRAME UINT32_C(4)' \
+  >"$BASELINE/macOS/VirtualAudioDriver/include/OpensteamerVirtualAudioCore.h"
+print -r -- 'static size_t OSVADeviceRoleObjectCount(
+    AudioObjectID objectID,
+    AudioObjectPropertyScope scope) {
+  if ((OSVAIsVisibleDevice(objectID) &&
+       scope == kAudioObjectPropertyScopeInput) ||
+      (OSVAIsHiddenDevice(objectID) &&
+       scope == kAudioObjectPropertyScopeOutput)) {
+    return 3;
+  }
+  return 0;
+}
+static size_t OSVADeviceRoleStreamCount(
+    AudioObjectID objectID,
+    AudioObjectPropertyScope scope) {
+  return OSVADeviceRoleObjectCount(objectID, scope) == 0 ? 0 : 1;
+}
+static AudioStreamBasicDescription OSVAMonoFormat(void) {
+  AudioStreamBasicDescription format = {
+      .mSampleRate = 48000.0,
+      .mFormatID = kAudioFormatLinearPCM,
+      .mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagsNativeEndian |
+                      kAudioFormatFlagIsPacked,
+      .mBytesPerPacket = 4,
+      .mFramesPerPacket = 1,
+      .mBytesPerFrame = 4,
+      .mChannelsPerFrame = 1,
+      .mBitsPerChannel = 32,
+  };
+  return format;
+}' >"$BASELINE/macOS/VirtualAudioDriver/Driver/OpensteamerVirtualMicrophone.c"
+print -r -- '#!/bin/zsh
+[[ "${requested_output:t}" != "OpensteamerVirtualMicrophone.driver" ]]
+compile -mmacosx-version-min=14.0
+install "$bundle/Contents/MacOS/OpensteamerVirtualMicrophone"
+codesign --identifier com.elamin.opensteamer.VirtualMicrophoneDriver' \
+  >"$BASELINE/macOS/VirtualAudioDriver/scripts/build-driver.sh"
+print -r -- '#!/bin/zsh
+[[ "${bundle:t}" != "OpensteamerVirtualMicrophone.driver" ]]
+executable="$bundle/Contents/MacOS/OpensteamerVirtualMicrophone"' \
+  >"$BASELINE/macOS/VirtualAudioDriver/scripts/verify-driver-bundle.sh"
+chmod 755 \
+  "$BASELINE/macOS/VirtualAudioDriver/scripts/build-driver.sh" \
+  "$BASELINE/macOS/VirtualAudioDriver/scripts/verify-driver-bundle.sh"
 print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -1327,6 +1410,286 @@ replace_once "$CASE/iOS/opensteamer/Sources/Views/BrowserView.swift" \
   '.navigationTitle("opensteamer")' '.navigationTitle("Opensteamer")'
 require_rejection "$CASE" 'iOS navigation-title lowercase identity'
 
+CASE=$(new_case virtual-driver-directory)
+mv "$CASE/macOS/VirtualAudioDriver" "$CASE/macOS/VirtualAudioDriverRenamed"
+require_rejection "$CASE" 'required directory is missing: macOS/VirtualAudioDriver'
+
+CASE=$(new_case virtual-driver-build-script-missing)
+mv "$CASE/macOS/VirtualAudioDriver/scripts/build-driver.sh" \
+  "$CASE/macOS/VirtualAudioDriver/scripts/build-driver.sh.missing"
+require_rejection "$CASE" \
+  'required file is missing: macOS/VirtualAudioDriver/scripts/build-driver.sh'
+
+CASE=$(new_case virtual-driver-build-script-not-executable)
+chmod 644 "$CASE/macOS/VirtualAudioDriver/scripts/build-driver.sh"
+require_rejection "$CASE" 'virtual microphone driver build script: required file is not executable'
+
+CASE=$(new_case virtual-driver-verifier-missing)
+mv "$CASE/macOS/VirtualAudioDriver/scripts/verify-driver-bundle.sh" \
+  "$CASE/macOS/VirtualAudioDriver/scripts/verify-driver-bundle.sh.missing"
+require_rejection "$CASE" \
+  'required file is missing: macOS/VirtualAudioDriver/scripts/verify-driver-bundle.sh'
+
+CASE=$(new_case virtual-driver-verifier-not-executable)
+chmod 644 "$CASE/macOS/VirtualAudioDriver/scripts/verify-driver-bundle.sh"
+require_rejection "$CASE" 'virtual microphone bundle verifier: required file is not executable'
+
+CASE=$(new_case virtual-driver-build-bundle-filename)
+replace_once "$CASE/macOS/VirtualAudioDriver/scripts/build-driver.sh" \
+  '"${requested_output:t}" != "OpensteamerVirtualMicrophone.driver"' \
+  '"${requested_output:t}" != "OpensteamerMicrophone.driver"'
+require_rejection "$CASE" 'virtual microphone build output bundle filename'
+
+CASE=$(new_case virtual-driver-verifier-bundle-filename)
+replace_once "$CASE/macOS/VirtualAudioDriver/scripts/verify-driver-bundle.sh" \
+  '"${bundle:t}" != "OpensteamerVirtualMicrophone.driver"' \
+  '"${bundle:t}" != "OpensteamerMicrophone.driver"'
+require_rejection "$CASE" 'virtual microphone verifier bundle filename'
+
+CASE=$(new_case virtual-driver-build-executable-filename)
+replace_once "$CASE/macOS/VirtualAudioDriver/scripts/build-driver.sh" \
+  '"$bundle/Contents/MacOS/OpensteamerVirtualMicrophone"' \
+  '"$bundle/Contents/MacOS/OpensteamerMicrophone"'
+require_rejection "$CASE" 'virtual microphone build executable filename'
+
+CASE=$(new_case virtual-driver-verifier-executable-filename)
+replace_once "$CASE/macOS/VirtualAudioDriver/scripts/verify-driver-bundle.sh" \
+  'executable="$bundle/Contents/MacOS/OpensteamerVirtualMicrophone"' \
+  'executable="$bundle/Contents/MacOS/OpensteamerMicrophone"'
+require_rejection "$CASE" 'virtual microphone verifier executable filename'
+
+CASE=$(new_case virtual-driver-build-minimum-macos)
+replace_once "$CASE/macOS/VirtualAudioDriver/scripts/build-driver.sh" \
+  '-mmacosx-version-min=14.0' '-mmacosx-version-min=13.0'
+require_rejection "$CASE" 'virtual microphone build minimum macOS version'
+
+CASE=$(new_case virtual-driver-build-signature-identifier)
+replace_once "$CASE/macOS/VirtualAudioDriver/scripts/build-driver.sh" \
+  '--identifier com.elamin.opensteamer.VirtualMicrophoneDriver' \
+  '--identifier com.elamin.opensteamer.MicrophoneDriver'
+require_rejection "$CASE" 'virtual microphone build signature identifier'
+
+CASE=$(new_case virtual-driver-bundle-identifier)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/Info.plist" \
+  '<key>CFBundleIdentifier</key><string>com.elamin.opensteamer.VirtualMicrophoneDriver</string>' \
+  '<key>CFBundleIdentifier</key><string>com.elamin.opensteamer.MicrophoneDriver</string>'
+require_rejection "$CASE" 'virtual microphone driver bundle identifier'
+
+CASE=$(new_case virtual-driver-bundle-name)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/Info.plist" \
+  '<key>CFBundleName</key><string>opensteamer Virtual Microphone</string>' \
+  '<key>CFBundleName</key><string>opensteamer Microphone</string>'
+require_rejection "$CASE" 'virtual microphone driver bundle name'
+
+CASE=$(new_case virtual-driver-executable-name)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/Info.plist" \
+  '<key>CFBundleExecutable</key><string>OpensteamerVirtualMicrophone</string>' \
+  '<key>CFBundleExecutable</key><string>OpensteamerMicrophone</string>'
+require_rejection "$CASE" 'virtual microphone driver executable name'
+
+CASE=$(new_case virtual-driver-short-version)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/Info.plist" \
+  '<key>CFBundleShortVersionString</key><string>0.1.0</string>' \
+  '<key>CFBundleShortVersionString</key><string>0.2.0</string>'
+require_rejection "$CASE" 'virtual microphone driver short version'
+
+CASE=$(new_case virtual-driver-build-version)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/Info.plist" \
+  '<key>CFBundleVersion</key><string>1</string>' \
+  '<key>CFBundleVersion</key><string>2</string>'
+require_rejection "$CASE" 'virtual microphone driver build version'
+
+CASE=$(new_case virtual-driver-package-type)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/Info.plist" \
+  '<key>CFBundlePackageType</key><string>BNDL</string>' \
+  '<key>CFBundlePackageType</key><string>APPL</string>'
+require_rejection "$CASE" 'virtual microphone driver package type'
+
+CASE=$(new_case virtual-driver-plist-minimum-macos)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/Info.plist" \
+  '<key>LSMinimumSystemVersion</key><string>14.0</string>' \
+  '<key>LSMinimumSystemVersion</key><string>13.0</string>'
+require_rejection "$CASE" 'virtual microphone driver minimum macOS version'
+
+CASE=$(new_case virtual-driver-factory-cardinality)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/Info.plist" \
+  $'  <key>81CE9D28-D187-499B-84EE-F6AC6159C800</key>\n  <string>OpensteamerVirtualMicrophone_Create</string>' \
+  $'  <key>81CE9D28-D187-499B-84EE-F6AC6159C800</key>\n  <string>OpensteamerVirtualMicrophone_Create</string>\n  <key>00000000-0000-0000-0000-000000000000</key>\n  <string>UnexpectedFactory</string>'
+require_rejection "$CASE" 'virtual microphone factory dictionary cardinality'
+
+CASE=$(new_case virtual-driver-factory-uuid)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/Info.plist" \
+  $'<key>81CE9D28-D187-499B-84EE-F6AC6159C800</key>\n  <string>OpensteamerVirtualMicrophone_Create</string>' \
+  $'<key>00000000-0000-0000-0000-000000000000</key>\n  <string>OpensteamerVirtualMicrophone_Create</string>'
+require_rejection "$CASE" 'virtual microphone factory UUID and symbol'
+
+CASE=$(new_case virtual-driver-factory-symbol)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/Info.plist" \
+  '<string>OpensteamerVirtualMicrophone_Create</string>' \
+  '<string>OpensteamerVirtualMicrophone_CreateUnexpected</string>'
+require_rejection "$CASE" 'virtual microphone factory UUID and symbol'
+
+CASE=$(new_case virtual-driver-type-cardinality)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/Info.plist" \
+  $'  <key>443ABAB8-E7B3-491A-B985-BEB9187030DB</key>\n  <array><string>81CE9D28-D187-499B-84EE-F6AC6159C800</string></array>' \
+  $'  <key>443ABAB8-E7B3-491A-B985-BEB9187030DB</key>\n  <array><string>81CE9D28-D187-499B-84EE-F6AC6159C800</string></array>\n  <key>00000000-0000-0000-0000-000000000000</key>\n  <array><string>81CE9D28-D187-499B-84EE-F6AC6159C800</string></array>'
+require_rejection "$CASE" 'virtual microphone plug-in type dictionary cardinality'
+
+CASE=$(new_case virtual-driver-type-uuid)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/Info.plist" \
+  '<key>443ABAB8-E7B3-491A-B985-BEB9187030DB</key>' \
+  '<key>00000000-0000-0000-0000-000000000000</key>'
+require_rejection "$CASE" 'virtual microphone factory list cardinality'
+
+CASE=$(new_case virtual-driver-factory-list-cardinality)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/Info.plist" \
+  '<array><string>81CE9D28-D187-499B-84EE-F6AC6159C800</string></array>' \
+  '<array><string>81CE9D28-D187-499B-84EE-F6AC6159C800</string><string>00000000-0000-0000-0000-000000000000</string></array>'
+require_rejection "$CASE" 'virtual microphone factory list cardinality'
+
+CASE=$(new_case virtual-driver-type-mapping)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/Info.plist" \
+  '<array><string>81CE9D28-D187-499B-84EE-F6AC6159C800</string></array>' \
+  '<array><string>00000000-0000-0000-0000-000000000000</string></array>'
+require_rejection "$CASE" 'virtual microphone plug-in type UUID mapping'
+
+CASE=$(new_case virtual-driver-source-bundle-identifier)
+replace_once "$CASE/macOS/VirtualAudioDriver/include/OpensteamerVirtualMicrophoneDriver.h" \
+  '"com.elamin.opensteamer.VirtualMicrophoneDriver"' \
+  '"com.elamin.opensteamer.MicrophoneDriver"'
+require_rejection "$CASE" 'virtual microphone source bundle identifier'
+
+CASE=$(new_case virtual-driver-visible-uid)
+replace_once "$CASE/macOS/VirtualAudioDriver/include/OpensteamerVirtualMicrophoneDriver.h" \
+  '"com.elamin.opensteamer.virtual-microphone.input"' \
+  '"com.elamin.opensteamer.virtual-microphone.capture"'
+require_rejection "$CASE" 'virtual microphone visible-input UID'
+
+CASE=$(new_case virtual-driver-hidden-uid)
+replace_once "$CASE/macOS/VirtualAudioDriver/include/OpensteamerVirtualMicrophoneDriver.h" \
+  '"com.elamin.opensteamer.virtual-microphone.writer"' \
+  '"com.elamin.opensteamer.virtual-microphone.output"'
+require_rejection "$CASE" 'virtual microphone hidden-writer UID'
+
+CASE=$(new_case virtual-driver-model-uid)
+replace_once "$CASE/macOS/VirtualAudioDriver/include/OpensteamerVirtualMicrophoneDriver.h" \
+  '"com.elamin.opensteamer.virtual-microphone.model"' \
+  '"com.elamin.opensteamer.virtual-microphone.model-v2"'
+require_rejection "$CASE" 'virtual microphone model UID'
+
+CASE=$(new_case virtual-driver-clock-domain)
+replace_once "$CASE/macOS/VirtualAudioDriver/include/OpensteamerVirtualMicrophoneDriver.h" \
+  'kOSVAClockDomain = 0x6F73564D,' \
+  'kOSVAClockDomain = 0x00000000,'
+require_rejection "$CASE" 'virtual microphone shared clock domain'
+
+CASE=$(new_case virtual-driver-core-sample-rate)
+replace_once "$CASE/macOS/VirtualAudioDriver/include/OpensteamerVirtualAudioCore.h" \
+  '#define OSVA_SAMPLE_RATE_HZ UINT64_C(48000)' \
+  '#define OSVA_SAMPLE_RATE_HZ UINT64_C(44100)'
+require_rejection "$CASE" 'virtual microphone core sample rate'
+
+CASE=$(new_case virtual-driver-core-channels)
+replace_once "$CASE/macOS/VirtualAudioDriver/include/OpensteamerVirtualAudioCore.h" \
+  '#define OSVA_CHANNEL_COUNT UINT32_C(1)' \
+  '#define OSVA_CHANNEL_COUNT UINT32_C(2)'
+require_rejection "$CASE" 'virtual microphone core mono channel count'
+
+CASE=$(new_case virtual-driver-core-bytes-per-frame)
+replace_once "$CASE/macOS/VirtualAudioDriver/include/OpensteamerVirtualAudioCore.h" \
+  '#define OSVA_BYTES_PER_FRAME UINT32_C(4)' \
+  '#define OSVA_BYTES_PER_FRAME UINT32_C(8)'
+require_rejection "$CASE" 'virtual microphone core Float32 bytes per frame'
+
+CASE=$(new_case virtual-driver-visible-role)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/OpensteamerVirtualMicrophone.c" \
+  $'(OSVAIsVisibleDevice(objectID) &&\n       scope == kAudioObjectPropertyScopeInput)' \
+  $'(OSVAIsVisibleDevice(objectID) &&\n       scope == kAudioObjectPropertyScopeOutput)'
+require_rejection "$CASE" 'virtual microphone visible device 1-in/0-out role'
+
+CASE=$(new_case virtual-driver-hidden-role)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/OpensteamerVirtualMicrophone.c" \
+  $'(OSVAIsHiddenDevice(objectID) &&\n       scope == kAudioObjectPropertyScopeOutput)' \
+  $'(OSVAIsHiddenDevice(objectID) &&\n       scope == kAudioObjectPropertyScopeInput)'
+require_rejection "$CASE" 'virtual microphone hidden device 0-in/1-out role'
+
+CASE=$(new_case virtual-driver-added-visible-output-role)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/OpensteamerVirtualMicrophone.c" \
+  $'(OSVAIsVisibleDevice(objectID) &&\n       scope == kAudioObjectPropertyScopeInput) ||' \
+  $'(OSVAIsVisibleDevice(objectID) &&\n       scope == kAudioObjectPropertyScopeInput) ||\n      (OSVAIsVisibleDevice(objectID) &&\n       scope == kAudioObjectPropertyScopeOutput) ||'
+require_rejection "$CASE" 'virtual microphone visible output-role absence'
+
+CASE=$(new_case virtual-driver-added-hidden-input-role)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/OpensteamerVirtualMicrophone.c" \
+  $'(OSVAIsHiddenDevice(objectID) &&\n       scope == kAudioObjectPropertyScopeOutput)) {' \
+  $'(OSVAIsHiddenDevice(objectID) &&\n       scope == kAudioObjectPropertyScopeOutput) ||\n      (OSVAIsHiddenDevice(objectID) &&\n       scope == kAudioObjectPropertyScopeInput)) {'
+require_rejection "$CASE" 'virtual microphone hidden input-role absence'
+
+CASE=$(new_case virtual-driver-role-stream-count)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/OpensteamerVirtualMicrophone.c" \
+  'return OSVADeviceRoleObjectCount(objectID, scope) == 0 ? 0 : 1;' \
+  'return OSVADeviceRoleObjectCount(objectID, scope) == 0 ? 0 : 2;'
+require_rejection "$CASE" 'virtual microphone one stream per valid endpoint role'
+
+CASE=$(new_case virtual-driver-native-sample-rate)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/OpensteamerVirtualMicrophone.c" \
+  '.mSampleRate = 48000.0,' '.mSampleRate = 44100.0,'
+require_rejection "$CASE" 'virtual microphone native sample rate'
+
+CASE=$(new_case virtual-driver-native-format-id)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/OpensteamerVirtualMicrophone.c" \
+  '.mFormatID = kAudioFormatLinearPCM,' \
+  '.mFormatID = kAudioFormatMPEG4AAC,'
+require_rejection "$CASE" 'virtual microphone native linear PCM format'
+
+CASE=$(new_case virtual-driver-native-format-flags)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/OpensteamerVirtualMicrophone.c" \
+  $'.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagsNativeEndian |\n                      kAudioFormatFlagIsPacked,' \
+  $'.mFormatFlags = kAudioFormatFlagsNativeEndian |\n                      kAudioFormatFlagIsPacked,'
+require_rejection "$CASE" 'virtual microphone native Float32 packed-endian flags'
+
+CASE=$(new_case virtual-driver-native-bytes-per-packet)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/OpensteamerVirtualMicrophone.c" \
+  '.mBytesPerPacket = 4,' '.mBytesPerPacket = 8,'
+require_rejection "$CASE" 'virtual microphone native bytes per packet'
+
+CASE=$(new_case virtual-driver-native-frames-per-packet)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/OpensteamerVirtualMicrophone.c" \
+  '.mFramesPerPacket = 1,' '.mFramesPerPacket = 2,'
+require_rejection "$CASE" 'virtual microphone native frames per packet'
+
+CASE=$(new_case virtual-driver-native-bytes-per-frame)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/OpensteamerVirtualMicrophone.c" \
+  '.mBytesPerFrame = 4,' '.mBytesPerFrame = 8,'
+require_rejection "$CASE" 'virtual microphone native bytes per frame'
+
+CASE=$(new_case virtual-driver-native-channels)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/OpensteamerVirtualMicrophone.c" \
+  '.mChannelsPerFrame = 1,' '.mChannelsPerFrame = 2,'
+require_rejection "$CASE" 'virtual microphone native mono channel count'
+
+CASE=$(new_case virtual-driver-native-bit-depth)
+replace_once "$CASE/macOS/VirtualAudioDriver/Driver/OpensteamerVirtualMicrophone.c" \
+  '.mBitsPerChannel = 32,' '.mBitsPerChannel = 16,'
+require_rejection "$CASE" 'virtual microphone native Float32 bit depth'
+
+CASE=$(new_case virtual-driver-legacy-visible-uid)
+print -r -- '#define FORBIDDEN_LEGACY_UID "BlackHole2ch_UID"' \
+  >>"$CASE/macOS/VirtualAudioDriver/include/OpensteamerVirtualMicrophoneDriver.h"
+require_rejection "$CASE" 'legacy BlackHole device UID appears in the new virtual microphone driver'
+
+CASE=$(new_case mac-host-microphone-usage-description)
+replace_once "$CASE/macOS/OpensteamerHost/Info.plist" \
+  '<key>NSMicrophoneUsageDescription</key><string>opensteamer uses its virtual microphone to route your iPhone&apos;s microphone into calls on this Mac.</string>' \
+  '<key>NSMicrophoneUsageDescription</key><string>opensteamer records the BlackHole virtual input.</string>'
+require_rejection "$CASE" 'macOS host microphone description lowercase identity'
+
+CASE=$(new_case swiftpm-host-microphone-usage-description)
+replace_once "$CASE/macOS/Sources/CaptureServer/Info.plist" \
+  '<key>NSMicrophoneUsageDescription</key><string>opensteamer uses its virtual microphone to route your iPhone&apos;s microphone into calls on this Mac.</string>' \
+  '<key>NSMicrophoneUsageDescription</key><string>opensteamer records the BlackHole virtual input.</string>'
+require_rejection "$CASE" 'SwiftPM capture-server microphone description lowercase identity'
+
 CASE=$(new_case mac-host-bundle-identifier)
 replace_once "$CASE/macOS/OpensteamerHost/Info.plist" \
   '<key>CFBundleIdentifier</key><string>com.elamin.AudioStreamer.CaptureServer</string>' \
@@ -1934,7 +2297,7 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <key>Architectures</key><array><string>arm64</string></array>
 <key>CFBundleIdentifier</key><string>com.elamin.opensteamer</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
-<key>CFBundleVersion</key><string>44</string>
+<key>CFBundleVersion</key><string>45</string>
 <key>SigningIdentity</key><string>Apple Development: Ahmed Elamin (92LVX32M8K)</string>
 <key>Team</key><string>MSMG8CJLB3</string>
 </dict>
@@ -1950,7 +2313,7 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <key>Architectures</key><array><string>arm64</string></array>
 <key>CFBundleIdentifier</key><string>com.elamin.opensteamer</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
-<key>CFBundleVersion</key><string>44</string>
+<key>CFBundleVersion</key><string>45</string>
 <key>SigningIdentity</key><string>Apple Development: Ahmed Elamin (92LVX32M8K)</string>
 <key>Team</key><string>MSMG8CJLB3</string>
 </dict>
@@ -1964,7 +2327,7 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <key>task</key><string>distribute</string>
 <key>teamID</key><string>MSMG8CJLB3</string>
 <key>uploadDestination</key><string>App Store</string>
-<key>uploadedBuildNumber</key><string>44</string>
+<key>uploadedBuildNumber</key><string>45</string>
 <key>uploadEvent</key><dict><key>errors</key><array/><key>state</key><string>success</string></dict>
 </dict></array>
 <key>Name</key><string>opensteamerTestFlight</string>
@@ -2021,7 +2384,7 @@ expect_distribution_rejection apple-id
 /usr/bin/plutil -replace Distributions.0.uploadedBuildNumber -string 40 \
   "$POSTUPLOAD_ARCHIVE_INFO"
 expect_distribution_rejection build
-/usr/bin/plutil -replace Distributions.0.uploadedBuildNumber -string 44 \
+/usr/bin/plutil -replace Distributions.0.uploadedBuildNumber -string 45 \
   "$POSTUPLOAD_ARCHIVE_INFO"
 /usr/bin/plutil -replace Distributions.0.certificateSHA1 \
   -string 0000000000000000000000000000000000000000 "$POSTUPLOAD_ARCHIVE_INFO"

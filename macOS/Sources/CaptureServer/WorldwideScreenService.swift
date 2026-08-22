@@ -473,7 +473,7 @@ actor WorldwideScreenService {
         deviceGeneration: UInt64,
         processIdentifier: Int32
     ) -> String {
-        "Worldwide authenticated media route selected BlackHole default input " +
+        "Worldwide authenticated media route selected virtual microphone default input " +
             "routingEpoch=\(routingEpoch) " +
             "peerGeneration=\(peerGeneration) " +
             "deviceGeneration=\(deviceGeneration) " +
@@ -495,15 +495,34 @@ actor WorldwideScreenService {
             return .runtimeEnqueueFailed
         case .progressStalled:
             return .runtimeProgressStalled
+        case .formatUnsafe:
+            return .formatUnsafe
+        case .sharedClockUnsafe:
+            return .sharedClockUnsafe
         }
     }
 
     nonisolated static func iPhoneMicrophoneRuntimeFailureLogMessage(
         error: BlackHoleMicrophoneOutputError
     ) -> String {
-        "iPhone microphone forwarding encountered an output runtime " +
-            "failure and ran its bounded restart policy: " +
-            error.localizedDescription
+        switch error {
+        case .formatUnsafe:
+            return "iPhone microphone forwarding rejected the current " +
+                "peer and virtual microphone pair because its output format/readback " +
+                "is unsafe; automatic restart is blocked until the peer or " +
+                "pair generation changes: " +
+                error.localizedDescription
+        case .sharedClockUnsafe:
+            return "iPhone microphone forwarding rejected the current " +
+                "peer and virtual microphone pair because its shared clock is " +
+                "unsafe for FaceTime; automatic restart is blocked until " +
+                "the peer or pair generation changes: " +
+                error.localizedDescription
+        case .operation, .progressStalled:
+            return "iPhone microphone forwarding encountered an output " +
+                "runtime failure and ran its bounded restart policy: " +
+                error.localizedDescription
+        }
     }
 
     nonisolated static func hiddenWriterSelectionLogMessage(
@@ -534,67 +553,31 @@ actor WorldwideScreenService {
         let decoded = progress.decodedContent
         let contentScalars = String(
             format:
-                "pcmLRMS=%.6f pcmLRMSdBFS=%.2f " +
-                "pcmLPeak=%.6f pcmLPeakdBFS=%.2f " +
-                "pcmLDC=%.6f pcmLZeroFraction=%.6f " +
-                "pcmLClippingFraction=%.6f " +
-                "pcmRRMS=%.6f pcmRRMSdBFS=%.2f " +
-                "pcmRPeak=%.6f pcmRPeakdBFS=%.2f " +
-                "pcmRDC=%.6f pcmRZeroFraction=%.6f " +
-                "pcmRClippingFraction=%.6f " +
-                "pcmLRCorrelation=%.6f pcmSumPower=%.6f " +
-                "pcmDifferencePower=%.6f " +
-                "pcmOneSidedFraction=%.6f",
-            content.left.rms,
-            content.left.rmsDBFS,
-            content.left.peak,
-            content.left.peakDBFS,
-            content.left.dc,
-            content.left.zeroFraction,
-            content.left.clippingFraction,
-            content.right.rms,
-            content.right.rmsDBFS,
-            content.right.peak,
-            content.right.peakDBFS,
-            content.right.dc,
-            content.right.zeroFraction,
-            content.right.clippingFraction,
-            content.leftRightCorrelation,
-            content.sumPower,
-            content.differencePower,
-            content.oneSidedFraction
+                "pcmRMS=%.6f pcmRMSdBFS=%.2f " +
+                "pcmPeak=%.6f pcmPeakdBFS=%.2f " +
+                "pcmDC=%.6f pcmZeroFraction=%.6f " +
+                "pcmClippingFraction=%.6f",
+            content.metrics.rms,
+            content.metrics.rmsDBFS,
+            content.metrics.peak,
+            content.metrics.peakDBFS,
+            content.metrics.dc,
+            content.metrics.zeroFraction,
+            content.metrics.clippingFraction
         )
         let decodedScalars = String(
             format:
-                "decLRMS=%.6f decLRMSdBFS=%.2f " +
-                "decLPeak=%.6f decLPeakdBFS=%.2f " +
-                "decLDC=%.6f decLZeroFraction=%.6f " +
-                "decLClippingFraction=%.6f " +
-                "decRRMS=%.6f decRRMSdBFS=%.2f " +
-                "decRPeak=%.6f decRPeakdBFS=%.2f " +
-                "decRDC=%.6f decRZeroFraction=%.6f " +
-                "decRClippingFraction=%.6f " +
-                "decLRCorrelation=%.6f decSumPower=%.6f " +
-                "decDifferencePower=%.6f " +
-                "decOneSidedFraction=%.6f",
-            decoded.left.rms,
-            decoded.left.rmsDBFS,
-            decoded.left.peak,
-            decoded.left.peakDBFS,
-            decoded.left.dc,
-            decoded.left.zeroFraction,
-            decoded.left.clippingFraction,
-            decoded.right.rms,
-            decoded.right.rmsDBFS,
-            decoded.right.peak,
-            decoded.right.peakDBFS,
-            decoded.right.dc,
-            decoded.right.zeroFraction,
-            decoded.right.clippingFraction,
-            decoded.leftRightCorrelation,
-            decoded.sumPower,
-            decoded.differencePower,
-            decoded.oneSidedFraction
+                "decRMS=%.6f decRMSdBFS=%.2f " +
+                "decPeak=%.6f decPeakdBFS=%.2f " +
+                "decDC=%.6f decZeroFraction=%.6f " +
+                "decClippingFraction=%.6f",
+            decoded.metrics.rms,
+            decoded.metrics.rmsDBFS,
+            decoded.metrics.peak,
+            decoded.metrics.peakDBFS,
+            decoded.metrics.dc,
+            decoded.metrics.zeroFraction,
+            decoded.metrics.clippingFraction
         )
         return "Worldwide iPhone microphone forwarding " +
             "phase=\(snapshot.phase.rawValue) " +
@@ -616,21 +599,36 @@ actor WorldwideScreenService {
             "pcmSourceStartFrame=\(content.sourceStartFrame) " +
             "pcmSourceEndFrame=\(content.sourceEndFrame) " +
             "pcmWindowFrames=\(content.windowFrameCount) " +
+            "pcmWindowBytes=\(content.windowByteCount) " +
             "boundDecGeneration=" +
                 "\(progress.boundDecodedPlayoutGeneration) " +
             "boundDecRenderFloor=" +
                 "\(progress.boundDecodedRenderCallFloor) " +
             contentScalars + " " +
-            "pcmLRCorrelationValid=" +
-                "\(content.leftRightCorrelationIsValid) " +
             "decGeneration=\(decoded.playoutGeneration) " +
             "decCalls=\(decoded.renderCallCount) " +
+            "decRequestedFrames=\(decoded.requestedFrameCount) " +
+            "decRequestedBytes=\(decoded.requestedByteCount) " +
+            "decReturnedBytes=\(decoded.returnedByteCount) " +
+            "decNativeSuccess=" +
+                "\(decoded.nativeSuccessRenderCallCount) " +
+            "decNativeFailure=" +
+                "\(decoded.nativeFailureRenderCallCount) " +
+            "decExactContracts=\(decoded.exactBufferContractCount) " +
+            "decAnalyzedCalls=\(decoded.analyzedRenderCallCount) " +
             "decAnalyzedFrames=\(decoded.analyzedFrameCount) " +
+            "decAnalyzedBytes=\(decoded.analyzedByteCount) " +
             "decDropped=\(decoded.droppedTelemetryRenderCallCount) " +
             "decContractMismatch=\(decoded.bufferContractMismatchCount) " +
             "decPendingFrames=\(decoded.pendingWindowFrameCount) " +
             "decLatestCall=\(decoded.latestRenderCall) " +
             "decLatestStatus=\(decoded.latestRenderStatus) " +
+            "decLatestRequestedFrames=" +
+                "\(decoded.latestRequestedFrameCount) " +
+            "decLatestRequestedBytes=" +
+                "\(decoded.latestRequestedByteCount) " +
+            "decLatestReturnedBytes=" +
+                "\(decoded.latestReturnedByteCount) " +
             "decLatestExact=\(decoded.latestBufferContractWasExact) " +
             "decHasWindow=\(decoded.hasCompletedWindow) " +
             "decWindowSequence=\(decoded.windowSequence) " +
@@ -638,12 +636,9 @@ actor WorldwideScreenService {
             "decSourceStartFrame=\(decoded.windowSourceStartFrame) " +
             "decSourceEndFrame=\(decoded.windowSourceEndFrame) " +
             "decWindowFrames=\(decoded.windowFrameCount) " +
+            "decWindowBytes=\(decoded.windowByteCount) " +
             decodedScalars + " " +
-            "decLRCorrelationValid=" +
-                "\(decoded.leftRightCorrelationIsValid) " +
             "decAllZero=\(decoded.windowIsAllZero) " +
-            "decLeftOnly=\(decoded.windowIsLeftOnly) " +
-            "decRightOnly=\(decoded.windowIsRightOnly) " +
             "decFrozenBlocks=\(decoded.frozenBlockCount) " +
             "decLongestFrozenRun=\(decoded.longestFrozenBlockRun) " +
             "contentWindowsAlign=\(progress.contentWindowsAlign) " +
@@ -750,6 +745,56 @@ actor WorldwideScreenService {
         BlackHoleEndpointPairAuthorization?
     private var blackHoleDefaultInputAuthorization:
         BlackHoleDefaultInputLeaseAuthorization?
+    struct SharedClockBlockedPeerPair: Equatable {
+        let monitorEpoch: UUID
+        let deviceGeneration: UInt64
+        let peerGeneration: UInt64
+
+        init(
+            forwardingKey:
+                WorldwideIPhoneMicrophoneForwardingKey
+        ) {
+            monitorEpoch = forwardingKey.monitorEpoch
+            deviceGeneration = forwardingKey.deviceGeneration
+            peerGeneration = forwardingKey.peerGeneration
+        }
+
+        func matches(
+            peerGeneration: UInt64,
+            snapshot: BlackHoleDeviceAvailabilitySnapshot
+        ) -> Bool {
+            self.peerGeneration == peerGeneration
+                && monitorEpoch == snapshot.monitorEpoch
+                && deviceGeneration == snapshot.deviceGeneration
+        }
+    }
+    struct FormatUnsafeBlockedPeerPair: Equatable {
+        let monitorEpoch: UUID
+        let deviceGeneration: UInt64
+        let peerGeneration: UInt64
+
+        init(
+            forwardingKey:
+                WorldwideIPhoneMicrophoneForwardingKey
+        ) {
+            monitorEpoch = forwardingKey.monitorEpoch
+            deviceGeneration = forwardingKey.deviceGeneration
+            peerGeneration = forwardingKey.peerGeneration
+        }
+
+        func matches(
+            peerGeneration: UInt64,
+            snapshot: BlackHoleDeviceAvailabilitySnapshot
+        ) -> Bool {
+            self.peerGeneration == peerGeneration
+                && monitorEpoch == snapshot.monitorEpoch
+                && deviceGeneration == snapshot.deviceGeneration
+        }
+    }
+    private var sharedClockBlockedPeerPair:
+        SharedClockBlockedPeerPair?
+    private var formatUnsafeBlockedPeerPair:
+        FormatUnsafeBlockedPeerPair?
     private lazy var blackHoleDefaultInput =
         WorldwideBlackHoleDefaultInputCoordinator(
             policy: iPhoneMicrophoneForwardingPolicy,
@@ -793,6 +838,20 @@ actor WorldwideScreenService {
             },
             disableTrack: { track in
                 track.setEnabled(false)
+            },
+            sharedClockFailureHandler: {
+                [weak self] key, rejection in
+                await self?.iPhoneMicrophoneSharedClockDidFail(
+                    key: key,
+                    rejection: rejection
+                )
+            },
+            formatFailureHandler: {
+                [weak self] key, rejection in
+                await self?.iPhoneMicrophoneFormatDidFail(
+                    key: key,
+                    rejection: rejection
+                )
             }
         )
     private var activeInputCapability: WebRTCInputCapability?
@@ -2174,6 +2233,14 @@ actor WorldwideScreenService {
                 blackHoleMicrophoneOutputAuthorizationGate else {
             return (false, nil)
         }
+        if sharedClockBlocksCurrentPeerAndPair() {
+            authorizationGate.close()
+            return (false, nil)
+        }
+        if formatUnsafeBlocksCurrentPeerAndPair() {
+            authorizationGate.close()
+            return (false, nil)
+        }
         if safeOutputInvariantNeedsRedrive,
            !safeOutputInvariantRetryPolicy
             .shouldAttemptOnCurrentTick() {
@@ -2337,7 +2404,7 @@ actor WorldwideScreenService {
             safeOutputInvariantRetryPolicy.reset()
             if transaction.invariant.changedAnything {
                 logger.info(
-                    "Worldwide audio routing moved BlackHole off the " +
+                    "Worldwide audio routing moved the virtual microphone off the " +
                         "default output selectors before selecting it " +
                         "as the iPhone microphone input"
                 )
@@ -2473,11 +2540,26 @@ actor WorldwideScreenService {
     }
 
     private func revokeWorldwideMicrophoneForUnsafeOutputInvariant() {
+        revokeWorldwideMicrophoneForUnsafeOutputInvariant(
+            preservingSharedClockUnsafeFailure: false,
+            preservingFormatUnsafeFailure: false
+        )
+    }
+
+    private func revokeWorldwideMicrophoneForUnsafeOutputInvariant(
+        preservingSharedClockUnsafeFailure: Bool,
+        preservingFormatUnsafeFailure: Bool = false
+    ) {
         blackHoleMicrophoneOutputAuthorizationGate?.close()
         safeOutputInvariantAuthorization = nil
         blackHoleEndpointPairAuthorization = nil
         blackHoleDefaultInputAuthorization = nil
-        iPhoneMicrophoneForwarding.invalidateTransport()
+        iPhoneMicrophoneForwarding.invalidateTransport(
+            preservingSharedClockUnsafeFailure:
+                preservingSharedClockUnsafeFailure,
+            preservingFormatUnsafeFailure:
+                preservingFormatUnsafeFailure
+        )
         recordBlackHoleDefaultInputOutcome(
             blackHoleDefaultInput.transportDidBecomeUnhealthy(
                 peerGeneration: peerGeneration
@@ -2500,6 +2582,136 @@ actor WorldwideScreenService {
         }
     }
 
+    /// Holds the captured clock rejection across statistics ticks and transport
+    /// epochs. A genuinely new peer or atomic endpoint-pair generation is the
+    /// only automatic retry boundary for this deterministic incompatibility.
+    private func sharedClockBlocksCurrentPeerAndPair() -> Bool {
+        Self.sharedClockBlockRemainsActive(
+            &sharedClockBlockedPeerPair,
+            peerGeneration: peerGeneration,
+            snapshot:
+                blackHoleDeviceAvailabilityMonitor.currentSnapshot()
+        )
+    }
+
+    nonisolated static func sharedClockBlockRemainsActive(
+        _ blockedPeerPair: inout SharedClockBlockedPeerPair?,
+        peerGeneration: UInt64,
+        snapshot: BlackHoleDeviceAvailabilitySnapshot?
+    ) -> Bool {
+        guard let blocked = blockedPeerPair else {
+            return false
+        }
+        guard blocked.peerGeneration == peerGeneration else {
+            blockedPeerPair = nil
+            return false
+        }
+        guard let snapshot else {
+            return true
+        }
+        guard blocked.matches(
+            peerGeneration: peerGeneration,
+            snapshot: snapshot
+        ) else {
+            blockedPeerPair = nil
+            return false
+        }
+        return true
+    }
+
+    /// A format/readback rejection is deterministic for the captured output
+    /// pair. Keep that exact peer/pair fenced until either generation changes.
+    private func formatUnsafeBlocksCurrentPeerAndPair() -> Bool {
+        Self.formatUnsafeBlockRemainsActive(
+            &formatUnsafeBlockedPeerPair,
+            peerGeneration: peerGeneration,
+            snapshot:
+                blackHoleDeviceAvailabilityMonitor.currentSnapshot()
+        )
+    }
+
+    nonisolated static func formatUnsafeBlockRemainsActive(
+        _ blockedPeerPair: inout FormatUnsafeBlockedPeerPair?,
+        peerGeneration: UInt64,
+        snapshot: BlackHoleDeviceAvailabilitySnapshot?
+    ) -> Bool {
+        guard let blocked = blockedPeerPair else {
+            return false
+        }
+        guard blocked.peerGeneration == peerGeneration else {
+            blockedPeerPair = nil
+            return false
+        }
+        guard let snapshot else {
+            return true
+        }
+        guard blocked.matches(
+            peerGeneration: peerGeneration,
+            snapshot: snapshot
+        ) else {
+            blockedPeerPair = nil
+            return false
+        }
+        return true
+    }
+
+    private func iPhoneMicrophoneSharedClockDidFail(
+        key: WorldwideIPhoneMicrophoneForwardingKey,
+        rejection: BlackHoleFaceTimeClockRejection
+    ) {
+        guard key.peerGeneration == peerGeneration else {
+            return
+        }
+        if let snapshot =
+                blackHoleDeviceAvailabilityMonitor.currentSnapshot() {
+            guard snapshot.monitorEpoch == key.monitorEpoch,
+                  snapshot.deviceGeneration
+                    == key.deviceGeneration else {
+                return
+            }
+        }
+
+        sharedClockBlockedPeerPair =
+            SharedClockBlockedPeerPair(forwardingKey: key)
+        revokeWorldwideMicrophoneForUnsafeOutputInvariant(
+            preservingSharedClockUnsafeFailure: true
+        )
+        logger.error(
+            Self.iPhoneMicrophoneRuntimeFailureLogMessage(
+                error: .sharedClockUnsafe(rejection)
+            )
+        )
+    }
+
+    private func iPhoneMicrophoneFormatDidFail(
+        key: WorldwideIPhoneMicrophoneForwardingKey,
+        rejection: BlackHoleMicrophoneOutputFormatRejection
+    ) {
+        guard key.peerGeneration == peerGeneration else {
+            return
+        }
+        if let snapshot =
+                blackHoleDeviceAvailabilityMonitor.currentSnapshot() {
+            guard snapshot.monitorEpoch == key.monitorEpoch,
+                  snapshot.deviceGeneration
+                    == key.deviceGeneration else {
+                return
+            }
+        }
+
+        formatUnsafeBlockedPeerPair =
+            FormatUnsafeBlockedPeerPair(forwardingKey: key)
+        revokeWorldwideMicrophoneForUnsafeOutputInvariant(
+            preservingSharedClockUnsafeFailure: false,
+            preservingFormatUnsafeFailure: true
+        )
+        logger.error(
+            Self.iPhoneMicrophoneRuntimeFailureLogMessage(
+                error: .formatUnsafe(rejection)
+            )
+        )
+    }
+
     private func startIPhoneMicrophoneDeviceMonitoringIfNeeded()
         async {
         guard iPhoneMicrophoneForwardingPolicy == .enabled else {
@@ -2515,7 +2727,7 @@ actor WorldwideScreenService {
             ) else {
             blackHoleDeviceMonitorEpoch = nil
             logger.error(
-                "BlackHole device monitoring startup is deferred " +
+                "Virtual microphone device monitoring startup is deferred " +
                     "because an older lease or service still retains unresolved " +
                     "exact Core Audio routing cleanup ownership"
             )
@@ -2525,7 +2737,7 @@ actor WorldwideScreenService {
         guard let authorizationGate =
                 blackHoleMicrophoneOutputAuthorizationGate else {
             logger.error(
-                "BlackHole microphone writer authorization is unavailable; " +
+                "Virtual microphone writer authorization is unavailable; " +
                     "automatic input selection and forwarding remain disabled"
             )
             return
@@ -2611,7 +2823,7 @@ actor WorldwideScreenService {
             )
             iPhoneMicrophoneForwarding.monitoringDidFail()
             logger.error(
-                "BlackHole device monitoring is unavailable; " +
+                "Virtual microphone device monitoring is unavailable; " +
                     "iPhone microphone forwarding remains disabled: " +
                     error.localizedDescription
             )
@@ -2681,7 +2893,7 @@ actor WorldwideScreenService {
             )
             iPhoneMicrophoneForwarding.monitoringDidFail()
             logger.error(
-                "BlackHole endpoint-pair revalidation failed; " +
+                "Virtual microphone endpoint-pair revalidation failed; " +
                     "automatic input selection and iPhone microphone " +
                     "forwarding were revoked"
             )
@@ -2826,7 +3038,7 @@ actor WorldwideScreenService {
                     return true
                 }
             logger.error(
-                "BlackHole audio-routing cleanup remains degraded " +
+                "Virtual microphone audio-routing cleanup remains degraded " +
                     "after its single globally bounded shutdown " +
                     "episode; exact Core Audio cleanup ownership " +
                     "is retained for a later explicit lifecycle redrive"
@@ -2892,7 +3104,7 @@ actor WorldwideScreenService {
             )
         case .degraded:
             logger.error(
-                "Automatic BlackHole default-input selection is unavailable; " +
+                "Automatic virtual microphone default-input selection is unavailable; " +
                     "the worldwide media session remains active"
             )
         case .noChange, .waitingForMonitor, .waitingForDevice,
@@ -2909,6 +3121,43 @@ actor WorldwideScreenService {
             Self.iPhoneMicrophoneRuntimeFailureCategory(
                 for: error
             )
+        let failedKey =
+            iPhoneMicrophoneForwarding.snapshot().currentKey
+
+        if case .formatUnsafe(let rejection) = error {
+            guard let failedKey,
+                  await iPhoneMicrophoneForwarding.handleRuntimeFailure(
+                    from: output,
+                    category: category
+                  ) else {
+                return
+            }
+            iPhoneMicrophoneFormatDidFail(
+                key: failedKey,
+                rejection: rejection
+            )
+            return
+        }
+
+        if case .sharedClockUnsafe(let rejection) = error {
+            guard let failedKey,
+                  await iPhoneMicrophoneForwarding.handleRuntimeFailure(
+                    from: output,
+                    category: category
+                  ) else {
+                return
+            }
+            iPhoneMicrophoneSharedClockDidFail(
+                key: failedKey,
+                rejection: rejection
+            )
+            return
+        }
+
+        // A listener may already have closed the realtime gate while its actor
+        // reconciliation is still queued. Revalidate the exact endpoint pair
+        // and safe-output proof before the driver can spend this key's retry or
+        // synchronously redrive it.
         await consumeCurrentBlackHoleDeviceSnapshot()
         guard await iPhoneMicrophoneForwarding.handleRuntimeFailure(
             from: output,
@@ -2916,7 +3165,6 @@ actor WorldwideScreenService {
         ) else {
             return
         }
-
         logger.error(
             Self.iPhoneMicrophoneRuntimeFailureLogMessage(
                 error: error

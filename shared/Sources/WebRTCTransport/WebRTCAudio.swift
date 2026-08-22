@@ -20,18 +20,18 @@ public final class WebRTCMacDecodedAudioSource: @unchecked Sendable {
         self.device = device
     }
 
-    public func renderInterleavedStereoInt16(
+    public func renderMonoInt16(
         into samples: UnsafeMutablePointer<Int16>,
         frameCount: Int
     ) -> Bool {
         guard frameCount > 0 else { return false }
-        return device.renderPlayoutInterleavedStereoInt16(
+        return device.renderPlayoutMonoInt16(
             samples,
             frameCount: UInt(frameCount)
         )
     }
 
-    /// Privacy-safe, off-callback scalar evidence from the earliest decoded stereo boundary.
+    /// Privacy-safe, off-callback scalar evidence from the earliest decoded mono boundary.
     public var decodedContentTelemetry: ASMacDecodedPlayoutTelemetrySnapshot {
         device.decodedPlayoutTelemetry
     }

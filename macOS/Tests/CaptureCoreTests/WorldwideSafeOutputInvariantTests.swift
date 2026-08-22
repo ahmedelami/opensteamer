@@ -11,7 +11,30 @@ final class WorldwideSafeOutputInvariantTests: XCTestCase {
     private let speakers =
         WorldwideSafeOutputInvariant.builtInSpeakerUID
 
-    func testHealthyRealOutputsArePreservedWithoutResolutionOrWrites()
+    func testEveryProductAndLegacyVirtualEndpointIsForbiddenAsOutput() {
+        XCTAssertTrue(
+            WorldwideSafeOutputInvariant.isForbiddenOutputUID(blackHole)
+        )
+        XCTAssertTrue(
+            WorldwideSafeOutputInvariant.isForbiddenOutputUID(hiddenMirror)
+        )
+        XCTAssertTrue(
+            WorldwideSafeOutputInvariant.isForbiddenOutputUID(
+                WorldwideSafeOutputInvariant.legacyBlackHoleUID
+            )
+        )
+        XCTAssertTrue(
+            WorldwideSafeOutputInvariant.isForbiddenOutputUID(
+                WorldwideSafeOutputInvariant
+                    .legacyHiddenMirrorBlackHoleUID
+            )
+        )
+        XCTAssertFalse(
+            WorldwideSafeOutputInvariant.isForbiddenOutputUID(speakers)
+        )
+    }
+
+    func testHealthyUsableRealOutputsArePreservedWithoutWrites()
         throws {
         let operations = FakeSafeOutputOperations(
             outputUID: "headphones",
@@ -24,6 +47,11 @@ final class WorldwideSafeOutputInvariantTests: XCTestCase {
         XCTAssertFalse(result.changedAnything)
         XCTAssertEqual(operations.resolvedUIDs, [])
         XCTAssertEqual(operations.writes, [])
+        XCTAssertEqual(
+            operations.routeReadCount,
+            4,
+            "Both selectors must be usability-validated in both fenced observations."
+        )
         XCTAssertEqual(operations.outputUID, "headphones")
         XCTAssertEqual(
             operations.systemOutputUID,
@@ -622,7 +650,6 @@ final class WorldwideSafeOutputInvariantTests: XCTestCase {
             deviceIDsByUID: [speakers: 74]
         )
         let invariant = makeInvariant(operations: operations)
-
         let result = try invariant.enforce()
 
         XCTAssertTrue(result.changedDefaultOutput)
@@ -728,22 +755,75 @@ final class WorldwideSafeOutputInvariantTests: XCTestCase {
         let operations = FakeSafeOutputOperations(
             outputUID: blackHole,
             systemOutputUID: "disconnected-headphones",
-            deviceIDsByUID: [speakers: 74]
+            deviceIDsByUID: [speakers: 74],
+            unresolvableUIDs: ["disconnected-headphones"]
         )
         let invariant = makeInvariant(operations: operations)
 
         let result = try invariant.enforce()
 
         XCTAssertTrue(result.changedDefaultOutput)
-        XCTAssertEqual(
-            operations.resolvedUIDs,
-            ["disconnected-headphones", speakers]
-        )
+        XCTAssertTrue(result.changedDefaultSystemOutput)
+        XCTAssertEqual(operations.resolvedUIDs, [speakers])
         XCTAssertEqual(operations.outputUID, speakers)
-        XCTAssertEqual(
-            operations.systemOutputUID,
-            "disconnected-headphones"
+        XCTAssertEqual(operations.systemOutputUID, speakers)
+    }
+
+    func testDeadDefaultOutputIsRepairedToUsableOtherRoute() throws {
+        let operations = FakeSafeOutputOperations(
+            outputUID: "dead-headphones",
+            systemOutputUID: "display-audio",
+            deviceIDsByUID: [
+                "dead-headphones": 90,
+                "display-audio": 91,
+            ],
+            deadUIDs: ["dead-headphones"]
         )
+        let invariant = makeInvariant(operations: operations)
+        var mutationFenceCount = 0
+
+        let transaction = try invariant.enforceDuringAdmission(
+            beforeFirstMutation: {
+                mutationFenceCount += 1
+                XCTAssertEqual(operations.writes, [])
+            },
+            admission: { 41 },
+            rollback: { _ in
+                XCTFail("A proven dead-route repair must not roll back.")
+            }
+        )
+        let result = transaction.invariant
+
+        XCTAssertEqual(mutationFenceCount, 1)
+        XCTAssertTrue(result.changedDefaultOutput)
+        XCTAssertFalse(result.changedDefaultSystemOutput)
+        XCTAssertEqual(operations.outputUID, "display-audio")
+        XCTAssertEqual(operations.systemOutputUID, "display-audio")
+        XCTAssertEqual(operations.writes.map(\.kind), [.output])
+        XCTAssertEqual(operations.resolvedUIDs, ["display-audio"])
+    }
+
+    func testZeroChannelSystemOutputIsRepairedToUsableOtherRoute()
+        throws {
+        let operations = FakeSafeOutputOperations(
+            outputUID: "headphones",
+            systemOutputUID: "zero-channel-display",
+            deviceIDsByUID: [
+                "headphones": 92,
+                "zero-channel-display": 93,
+            ],
+            zeroOutputChannelUIDs: ["zero-channel-display"]
+        )
+        let invariant = makeInvariant(operations: operations)
+
+        let result = try invariant.enforce()
+
+        XCTAssertFalse(result.changedDefaultOutput)
+        XCTAssertTrue(result.changedDefaultSystemOutput)
+        XCTAssertEqual(operations.outputUID, "headphones")
+        XCTAssertEqual(operations.systemOutputUID, "headphones")
+        XCTAssertEqual(operations.writes.map(\.kind), [.systemOutput])
+        XCTAssertEqual(operations.resolvedUIDs, ["headphones"])
     }
 
     func testChoiceChangedBeforeImmediateComparisonIsNotMutated() throws {
@@ -923,6 +1003,9 @@ private final class FakeSafeOutputOperations:
     var outputUID: String
     var systemOutputUID: String
     var deviceIDsByUID: [String: AudioDeviceID]
+    var unresolvableUIDs: Set<String>
+    var deadUIDs: Set<String>
+    var zeroOutputChannelUIDs: Set<String>
     var resolvedUIDs: [String] = []
     var writes: [Write] = []
     var beforeFirstMutation:
@@ -946,6 +1029,8 @@ private final class FakeSafeOutputOperations:
     ] = [:]
     private var totalReadCount = 0
     private var successfulWriteReadCount: Int?
+    private var syntheticDeviceIDsByUID: [String: AudioDeviceID] = [:]
+    private var nextSyntheticDeviceID: AudioDeviceID = 10_000
     private var listeners: [
         BlackHoleDefaultOutputKind:
             CoreAudioPropertyListenerRegistration
@@ -955,14 +1040,24 @@ private final class FakeSafeOutputOperations:
         listeners.count
     }
 
+    var routeReadCount: Int {
+        totalReadCount
+    }
+
     init(
         outputUID: String,
         systemOutputUID: String,
-        deviceIDsByUID: [String: AudioDeviceID] = [:]
+        deviceIDsByUID: [String: AudioDeviceID] = [:],
+        unresolvableUIDs: Set<String> = [],
+        deadUIDs: Set<String> = [],
+        zeroOutputChannelUIDs: Set<String> = []
     ) {
         self.outputUID = outputUID
         self.systemOutputUID = systemOutputUID
         self.deviceIDsByUID = deviceIDsByUID
+        self.unresolvableUIDs = unresolvableUIDs
+        self.deadUIDs = deadUIDs
+        self.zeroOutputChannelUIDs = zeroOutputChannelUIDs
     }
 
     func addDefaultOutputListener(
@@ -1001,9 +1096,9 @@ private final class FakeSafeOutputOperations:
         return noErr
     }
 
-    func currentDefaultOutputUID(
+    func currentDefaultOutputRoute(
         _ kind: BlackHoleDefaultOutputKind
-    ) throws -> String {
+    ) throws -> WorldwideSafeOutputRouteObservation {
         let uid: String
         switch kind {
         case .output:
@@ -1018,12 +1113,37 @@ private final class FakeSafeOutputOperations:
             successfulWriteReadCount = next
             afterSuccessfulWriteReadCount?(self, next)
         }
-        return uid
+        let usableDeviceID: AudioDeviceID?
+        if WorldwideSafeOutputInvariant.isForbiddenOutputUID(uid)
+            || unresolvableUIDs.contains(uid)
+            || deadUIDs.contains(uid)
+            || zeroOutputChannelUIDs.contains(uid) {
+            usableDeviceID = nil
+        } else if let explicitDeviceID = deviceIDsByUID[uid] {
+            usableDeviceID = explicitDeviceID
+        } else if let syntheticDeviceID =
+                    syntheticDeviceIDsByUID[uid] {
+            usableDeviceID = syntheticDeviceID
+        } else {
+            let syntheticDeviceID = nextSyntheticDeviceID
+            nextSyntheticDeviceID &+= 1
+            syntheticDeviceIDsByUID[uid] = syntheticDeviceID
+            usableDeviceID = syntheticDeviceID
+        }
+        return WorldwideSafeOutputRouteObservation(
+            uid: uid,
+            usableDeviceID: usableDeviceID
+        )
     }
 
     func resolveUsableOutputDeviceID(uid: String) throws -> AudioDeviceID {
         resolvedUIDs.append(uid)
-        guard let deviceID = deviceIDsByUID[uid] else {
+        guard !WorldwideSafeOutputInvariant.isForbiddenOutputUID(uid),
+              !unresolvableUIDs.contains(uid),
+              !deadUIDs.contains(uid),
+              !zeroOutputChannelUIDs.contains(uid),
+              let deviceID = deviceIDsByUID[uid]
+                ?? syntheticDeviceIDsByUID[uid] else {
             throw WorldwideSafeOutputInvariantError
                 .safeOutputUnavailable
         }

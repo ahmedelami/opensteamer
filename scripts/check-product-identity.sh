@@ -39,6 +39,19 @@ require_file() {
   return 0
 }
 
+require_executable_file() {
+  local relative_path=$1
+  local description=$2
+  require_file "$relative_path" || return
+  if [[ -L "$ROOT/$relative_path" ]]; then
+    fail "$description: executable must not be a symbolic link: $relative_path"
+    return
+  fi
+  if [[ ! -x "$ROOT/$relative_path" ]]; then
+    fail "$description: required file is not executable: $relative_path"
+  fi
+}
+
 require_directory() {
   local relative_path=$1
   if [[ ! -d "$ROOT/$relative_path" ]]; then
@@ -65,6 +78,53 @@ assert_plist_value() {
     return
   fi
   assert_equal "$description" "$expected" "$actual"
+}
+
+assert_plist_container_cardinality() {
+  local relative_path=$1
+  local key_path=$2
+  local expected_type=$3
+  local expected_count=$4
+  local description=$5
+  local xml
+  local actual_type
+  local actual_count
+  local count_expression
+
+  require_file "$relative_path" || return
+  if ! xml=$(plutil -extract "$key_path" xml1 -o - \
+      "$ROOT/$relative_path" 2>/dev/null); then
+    fail "$description: key $key_path is missing from $relative_path"
+    return
+  fi
+  if ! actual_type=$(print -r -- "$xml" | \
+      xmllint --xpath 'name(/plist/*[1])' - 2>/dev/null); then
+    fail "$description: key $key_path could not be inspected in $relative_path"
+    return
+  fi
+  if [[ "$actual_type" != "$expected_type" ]]; then
+    fail "$description: expected $expected_type, found $actual_type"
+    return
+  fi
+
+  case "$expected_type" in
+    dict)
+      count_expression='count(/plist/dict/key)'
+      ;;
+    array)
+      count_expression='count(/plist/array/*)'
+      ;;
+    *)
+      fail "$description: unsupported expected container type: $expected_type"
+      return
+      ;;
+  esac
+  if ! actual_count=$(print -r -- "$xml" | \
+      xmllint --xpath "$count_expression" - 2>/dev/null); then
+    fail "$description: key $key_path cardinality could not be inspected in $relative_path"
+    return
+  fi
+  assert_equal "$description" "$expected_count" "$actual_count"
 }
 
 assert_json_name() {
@@ -100,8 +160,40 @@ assert_literal_count() {
   local expected_count=$3
   local description=$4
   local actual_count
+  local grep_matches
+  local grep_status
+  local -a grep_match_lines
 
   require_file "$relative_path" || return
+  if [[ -z "$literal" ]]; then
+    fail "$description: cannot count an empty required literal in $relative_path"
+    return
+  fi
+
+  # Nearly every identity pin is one line. Avoid launching a JavaScript runtime for each of
+  # those assertions; fixed-string grep has the same non-overlapping count semantics. Preserve
+  # the byte-for-byte JavaScript implementation for the small set of multiline contracts.
+  if [[ "$literal" != *$'\n'* ]]; then
+    grep_matches=$(LC_ALL=C grep -F -o -- "$literal" \
+      "$ROOT/$relative_path" 2>/dev/null)
+    grep_status=$?
+    case "$grep_status" in
+      0)
+        grep_match_lines=("${(f)grep_matches}")
+        actual_count=${#grep_match_lines[@]}
+        ;;
+      1)
+        actual_count=0
+        ;;
+      *)
+        fail "$description: could not count the required literal in $relative_path"
+        return
+        ;;
+    esac
+    assert_equal "$description" "$expected_count" "$actual_count"
+    return
+  fi
+
   if ! actual_count=$(node -e '
     const fs = require("node:fs");
     const contents = fs.readFileSync(process.argv[1], "utf8");
@@ -598,7 +690,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_CONFIGURATION="TestFlight"' 1 \
   'side-by-side TestFlight configuration guard'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'EXPECTED_BUILD_NUMBER="44"' 1 \
+  'EXPECTED_BUILD_NUMBER="45"' 1 \
   'side-by-side TestFlight build-number guard'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'PRIVATE_TEMPORARY_ROOT="/private/tmp"' 1 \
@@ -1232,6 +1324,165 @@ assert_literal_count iOS/opensteamer/Sources/Views/BrowserView.swift \
 assert_literal_count iOS/opensteamer/Sources/App/BackgroundPlaybackCoordinator.swift \
   'MPMediaItemPropertyTitle: "opensteamer"' 1 'iOS Now Playing lowercase identity'
 
+# The repo-owned virtual microphone has one fixed AudioServerPlugIn identity. Keep the product
+# gate source-only: it validates the build inputs and verifier contract without loading Core
+# Audio, touching either installed runtime, or treating the legacy BlackHole route as this driver.
+VIRTUAL_AUDIO_DRIVER_DIRECTORY='macOS/VirtualAudioDriver'
+VIRTUAL_AUDIO_DRIVER_PLIST="$VIRTUAL_AUDIO_DRIVER_DIRECTORY/Driver/Info.plist"
+VIRTUAL_AUDIO_DRIVER_HEADER="$VIRTUAL_AUDIO_DRIVER_DIRECTORY/include/OpensteamerVirtualMicrophoneDriver.h"
+VIRTUAL_AUDIO_CORE_HEADER="$VIRTUAL_AUDIO_DRIVER_DIRECTORY/include/OpensteamerVirtualAudioCore.h"
+VIRTUAL_AUDIO_DRIVER_SOURCE="$VIRTUAL_AUDIO_DRIVER_DIRECTORY/Driver/OpensteamerVirtualMicrophone.c"
+VIRTUAL_AUDIO_DRIVER_BUILD_SCRIPT="$VIRTUAL_AUDIO_DRIVER_DIRECTORY/scripts/build-driver.sh"
+VIRTUAL_AUDIO_DRIVER_VERIFY_SCRIPT="$VIRTUAL_AUDIO_DRIVER_DIRECTORY/scripts/verify-driver-bundle.sh"
+
+require_directory "$VIRTUAL_AUDIO_DRIVER_DIRECTORY"
+require_file "$VIRTUAL_AUDIO_DRIVER_HEADER"
+require_file "$VIRTUAL_AUDIO_CORE_HEADER"
+require_file "$VIRTUAL_AUDIO_DRIVER_SOURCE"
+require_executable_file "$VIRTUAL_AUDIO_DRIVER_BUILD_SCRIPT" \
+  'virtual microphone driver build script'
+require_executable_file "$VIRTUAL_AUDIO_DRIVER_VERIFY_SCRIPT" \
+  'virtual microphone bundle verifier'
+
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_BUILD_SCRIPT" \
+  '"${requested_output:t}" != "OpensteamerVirtualMicrophone.driver"' 1 \
+  'virtual microphone build output bundle filename'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_VERIFY_SCRIPT" \
+  '"${bundle:t}" != "OpensteamerVirtualMicrophone.driver"' 1 \
+  'virtual microphone verifier bundle filename'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_BUILD_SCRIPT" \
+  '"$bundle/Contents/MacOS/OpensteamerVirtualMicrophone"' 1 \
+  'virtual microphone build executable filename'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_VERIFY_SCRIPT" \
+  'executable="$bundle/Contents/MacOS/OpensteamerVirtualMicrophone"' 1 \
+  'virtual microphone verifier executable filename'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_BUILD_SCRIPT" \
+  '-mmacosx-version-min=14.0' 1 \
+  'virtual microphone build minimum macOS version'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_BUILD_SCRIPT" \
+  '--identifier com.elamin.opensteamer.VirtualMicrophoneDriver' 1 \
+  'virtual microphone build signature identifier'
+
+assert_plist_value "$VIRTUAL_AUDIO_DRIVER_PLIST" \
+  CFBundleIdentifier com.elamin.opensteamer.VirtualMicrophoneDriver \
+  'virtual microphone driver bundle identifier'
+assert_plist_value "$VIRTUAL_AUDIO_DRIVER_PLIST" \
+  CFBundleName 'opensteamer Virtual Microphone' \
+  'virtual microphone driver bundle name'
+assert_plist_value "$VIRTUAL_AUDIO_DRIVER_PLIST" \
+  CFBundleExecutable OpensteamerVirtualMicrophone \
+  'virtual microphone driver executable name'
+assert_plist_value "$VIRTUAL_AUDIO_DRIVER_PLIST" \
+  CFBundleShortVersionString 0.1.0 \
+  'virtual microphone driver short version'
+assert_plist_value "$VIRTUAL_AUDIO_DRIVER_PLIST" \
+  CFBundleVersion 1 'virtual microphone driver build version'
+assert_plist_value "$VIRTUAL_AUDIO_DRIVER_PLIST" \
+  CFBundlePackageType BNDL 'virtual microphone driver package type'
+assert_plist_value "$VIRTUAL_AUDIO_DRIVER_PLIST" \
+  LSMinimumSystemVersion 14.0 'virtual microphone driver minimum macOS version'
+
+VIRTUAL_AUDIO_DRIVER_FACTORY_UUID='81CE9D28-D187-499B-84EE-F6AC6159C800'
+VIRTUAL_AUDIO_DRIVER_TYPE_UUID='443ABAB8-E7B3-491A-B985-BEB9187030DB'
+assert_plist_container_cardinality "$VIRTUAL_AUDIO_DRIVER_PLIST" \
+  CFPlugInFactories dict 1 \
+  'virtual microphone factory dictionary cardinality'
+assert_plist_value "$VIRTUAL_AUDIO_DRIVER_PLIST" \
+  "CFPlugInFactories.$VIRTUAL_AUDIO_DRIVER_FACTORY_UUID" \
+  OpensteamerVirtualMicrophone_Create \
+  'virtual microphone factory UUID and symbol'
+assert_plist_container_cardinality "$VIRTUAL_AUDIO_DRIVER_PLIST" \
+  CFPlugInTypes dict 1 \
+  'virtual microphone plug-in type dictionary cardinality'
+assert_plist_container_cardinality "$VIRTUAL_AUDIO_DRIVER_PLIST" \
+  "CFPlugInTypes.$VIRTUAL_AUDIO_DRIVER_TYPE_UUID" array 1 \
+  'virtual microphone factory list cardinality'
+assert_plist_value "$VIRTUAL_AUDIO_DRIVER_PLIST" \
+  "CFPlugInTypes.$VIRTUAL_AUDIO_DRIVER_TYPE_UUID.0" \
+  "$VIRTUAL_AUDIO_DRIVER_FACTORY_UUID" \
+  'virtual microphone plug-in type UUID mapping'
+
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_HEADER" \
+  '"com.elamin.opensteamer.VirtualMicrophoneDriver"' 1 \
+  'virtual microphone source bundle identifier'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_HEADER" \
+  '"com.elamin.opensteamer.virtual-microphone.input"' 1 \
+  'virtual microphone visible-input UID'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_HEADER" \
+  '"com.elamin.opensteamer.virtual-microphone.writer"' 1 \
+  'virtual microphone hidden-writer UID'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_HEADER" \
+  '"com.elamin.opensteamer.virtual-microphone.model"' 1 \
+  'virtual microphone model UID'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_HEADER" \
+  'kOSVAClockDomain = 0x6F73564D,' 1 \
+  'virtual microphone shared clock domain'
+
+assert_literal_count "$VIRTUAL_AUDIO_CORE_HEADER" \
+  '#define OSVA_SAMPLE_RATE_HZ UINT64_C(48000)' 1 \
+  'virtual microphone core sample rate'
+assert_literal_count "$VIRTUAL_AUDIO_CORE_HEADER" \
+  '#define OSVA_CHANNEL_COUNT UINT32_C(1)' 1 \
+  'virtual microphone core mono channel count'
+assert_literal_count "$VIRTUAL_AUDIO_CORE_HEADER" \
+  '#define OSVA_BYTES_PER_FRAME UINT32_C(4)' 1 \
+  'virtual microphone core Float32 bytes per frame'
+
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_SOURCE" \
+  $'(OSVAIsVisibleDevice(objectID) &&\n       scope == kAudioObjectPropertyScopeInput)' 1 \
+  'virtual microphone visible device 1-in/0-out role'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_SOURCE" \
+  $'(OSVAIsHiddenDevice(objectID) &&\n       scope == kAudioObjectPropertyScopeOutput)' 1 \
+  'virtual microphone hidden device 0-in/1-out role'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_SOURCE" \
+  $'(OSVAIsVisibleDevice(objectID) &&\n       scope == kAudioObjectPropertyScopeOutput)' 0 \
+  'virtual microphone visible output-role absence'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_SOURCE" \
+  $'(OSVAIsHiddenDevice(objectID) &&\n       scope == kAudioObjectPropertyScopeInput)' 0 \
+  'virtual microphone hidden input-role absence'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_SOURCE" \
+  'return OSVADeviceRoleObjectCount(objectID, scope) == 0 ? 0 : 1;' 1 \
+  'virtual microphone one stream per valid endpoint role'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_SOURCE" \
+  '.mSampleRate = 48000.0,' 1 \
+  'virtual microphone native sample rate'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_SOURCE" \
+  '.mFormatID = kAudioFormatLinearPCM,' 1 \
+  'virtual microphone native linear PCM format'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_SOURCE" \
+  $'.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagsNativeEndian |\n                      kAudioFormatFlagIsPacked,' 1 \
+  'virtual microphone native Float32 packed-endian flags'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_SOURCE" \
+  '.mBytesPerPacket = 4,' 1 \
+  'virtual microphone native bytes per packet'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_SOURCE" \
+  '.mFramesPerPacket = 1,' 1 \
+  'virtual microphone native frames per packet'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_SOURCE" \
+  '.mBytesPerFrame = 4,' 1 \
+  'virtual microphone native bytes per frame'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_SOURCE" \
+  '.mChannelsPerFrame = 1,' 1 \
+  'virtual microphone native mono channel count'
+assert_literal_count "$VIRTUAL_AUDIO_DRIVER_SOURCE" \
+  '.mBitsPerChannel = 32,' 1 \
+  'virtual microphone native Float32 bit depth'
+
+if require_directory "$VIRTUAL_AUDIO_DRIVER_DIRECTORY"; then
+  LEGACY_VIRTUAL_DRIVER_UID_MATCHES=$(
+    for production_subdirectory in Driver include src Resources scripts; do
+      [[ -d "$ROOT/$VIRTUAL_AUDIO_DRIVER_DIRECTORY/$production_subdirectory" ]] \
+        || continue
+      find "$ROOT/$VIRTUAL_AUDIO_DRIVER_DIRECTORY/$production_subdirectory" \
+        -type f -exec grep -lF \
+          -e 'BlackHole2ch_UID' -e 'BlackHole2ch_2_UID' {} + 2>/dev/null \
+        || true
+    done
+  )
+  [[ -z "$LEGACY_VIRTUAL_DRIVER_UID_MATCHES" ]] \
+    || fail 'legacy BlackHole device UID appears in the new virtual microphone driver'
+fi
+
 # The distributed host uses user-facing opensteamer naming but retains the established bundle ID.
 assert_plist_value macOS/OpensteamerHost/Info.plist \
   CFBundleDisplayName 'opensteamer Host' 'macOS host CFBundleDisplayName'
@@ -1247,13 +1498,17 @@ assert_plist_value macOS/OpensteamerHost/Info.plist \
   'macOS host audio-capture description lowercase identity'
 assert_plist_value macOS/OpensteamerHost/Info.plist \
   NSMicrophoneUsageDescription \
-  "opensteamer records the BlackHole virtual input so it can stream this Mac's routed audio to your iPhone." \
+  "opensteamer uses its virtual microphone to route your iPhone's microphone into calls on this Mac." \
   'macOS host microphone description lowercase identity'
 assert_plist_value macOS/Sources/CaptureServer/Info.plist \
   CFBundleIdentifier com.elamin.AudioStreamer.CaptureServer \
   'preserved SwiftPM capture-server bundle identifier'
 assert_plist_value macOS/Sources/CaptureServer/Info.plist \
   CFBundleName 'opensteamer Capture Server' 'SwiftPM capture-server bundle name'
+assert_plist_value macOS/Sources/CaptureServer/Info.plist \
+  NSMicrophoneUsageDescription \
+  "opensteamer uses its virtual microphone to route your iPhone's microphone into calls on this Mac." \
+  'SwiftPM capture-server microphone description lowercase identity'
 assert_literal_count macOS/Sources/CaptureServer/WorldwidePairingStore.swift \
   '"com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1"' 1 \
   'isolated opensteamer pairing Keychain service'

@@ -371,9 +371,11 @@ struct CoreAudioProcessTapClockDeviceSnapshot: Equatable, Sendable {
     let outputChannelCount: UInt32
 }
 
-/// A clock subdevice must contribute no input channels to the tap aggregate. A duplex default
-/// such as BlackHole is therefore never selected; another live output-only device is used or
-/// startup fails closed.
+/// A clock subdevice must contribute no input channels to the tap aggregate and
+/// must not be any current or retired virtual-microphone endpoint. The explicit
+/// UID exclusion is required for the product's hidden writer because that role
+/// is intentionally output-only and would otherwise look like an ideal clock.
+/// Another live output-only device is used or startup fails closed.
 enum CoreAudioProcessTapClockDeviceSelectionPolicy {
     static func select(
         from snapshots: [CoreAudioProcessTapClockDeviceSnapshot]
@@ -383,6 +385,8 @@ enum CoreAudioProcessTapClockDeviceSelectionPolicy {
                 $0.deviceID != kAudioObjectUnknown
                     && !$0.uid.isEmpty
                     && $0.isAlive
+                    && !WorldwideSafeOutputInvariant
+                        .isForbiddenOutputUID($0.uid)
                     && $0.inputChannelCount == 0
                     && $0.outputChannelCount > 0
             }

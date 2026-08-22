@@ -17,19 +17,17 @@ typedef NS_ENUM(NSInteger, ASMacStereoAudioDeviceHarnessDeliveryBehavior) {
 
 typedef NS_ENUM(NSInteger, ASMacStereoAudioDeviceHarnessPlayoutPattern) {
     ASMacStereoAudioDeviceHarnessPlayoutPatternSilence = 0,
-    ASMacStereoAudioDeviceHarnessPlayoutPatternCorrelatedAlternating = 1,
-    ASMacStereoAudioDeviceHarnessPlayoutPatternAntiCorrelatedAlternating = 2,
-    ASMacStereoAudioDeviceHarnessPlayoutPatternLeftOnlyAlternating = 3,
-    ASMacStereoAudioDeviceHarnessPlayoutPatternClippedDC = 4,
-    ASMacStereoAudioDeviceHarnessPlayoutPatternDCOffsetCorrelatedNoise = 5,
-    ASMacStereoAudioDeviceHarnessPlayoutPatternNearClipping = 6,
-    ASMacStereoAudioDeviceHarnessPlayoutPatternSubThresholdLeft = 7,
+    ASMacStereoAudioDeviceHarnessPlayoutPatternAlternating = 1,
+    ASMacStereoAudioDeviceHarnessPlayoutPatternClippedDC = 2,
+    ASMacStereoAudioDeviceHarnessPlayoutPatternDCOffsetNoise = 3,
+    ASMacStereoAudioDeviceHarnessPlayoutPatternNearClipping = 4,
 };
 
 /// Test-only mutations of the native playout delegate's returned buffer contract.
 typedef NS_ENUM(NSInteger, ASMacStereoAudioDeviceHarnessPlayoutContractBehavior) {
     ASMacStereoAudioDeviceHarnessPlayoutContractBehaviorExact = 0,
     ASMacStereoAudioDeviceHarnessPlayoutContractBehaviorReturnSuccessWithShortBuffer = 1,
+    ASMacStereoAudioDeviceHarnessPlayoutContractBehaviorReturnSuccessWithWrongChannelCount = 2,
 };
 
 /// Exact callback, sample-pattern, and timestamp evidence collected by the test-only delegate.
@@ -92,5 +90,11 @@ typedef struct ASMacStereoAudioDeviceHarnessDiagnostics {
 /// zero render-block invocations.
 FOUNDATION_EXPORT BOOL
 ASStartMacStereoDeviceRecordingWithoutStartingNativeADM(ASMacStereoAudioDevice *device);
+
+FOUNDATION_EXPORT NSInteger
+ASMacStereoDeviceInputChannelCountForTesting(ASMacStereoAudioDevice *device);
+
+FOUNDATION_EXPORT NSInteger
+ASMacStereoDeviceOutputChannelCountForTesting(ASMacStereoAudioDevice *device);
 
 NS_ASSUME_NONNULL_END
