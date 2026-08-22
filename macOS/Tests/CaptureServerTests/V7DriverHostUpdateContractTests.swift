@@ -156,6 +156,110 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             && build.components(separatedBy: "-reproducible").count - 1 == 1
     }
 
+    private func hasPinnedProductionXcodeTrustContract(_ controller: String) -> Bool {
+        guard
+            let verifier = try? functionBody(
+                controller,
+                beginningWith: "fn verify_pinned_xcode_developer_directory(",
+                endingBefore: "fn verify_v7_production_signing_availability("
+            ),
+            let signingAvailability = try? functionBody(
+                controller,
+                beginningWith: "fn verify_v7_production_signing_availability(",
+                endingBefore: "fn verify_reviewed_production_candidate_preflight("
+            ),
+            let stagedBuild = try? functionBody(
+                controller,
+                beginningWith: "fn build_and_verify_v7_staged_app(",
+                endingBefore: "fn require_exported_pinned_file("
+            )
+        else {
+            return false
+        }
+        let exactPins = [
+            #"const PINNED_XCODE_APPLICATION_LINK: &str = "/Applications/Xcode-26.6.0.app";"#,
+            #""/Volumes/t7/opensteamer-space-recovery-20260804/nonrepo/Xcode-26.6.0.app";"#,
+            #"const PINNED_XCODE_DEVELOPER_DIR: &str = "/Applications/Xcode-26.6.0.app/Contents/Developer";"#,
+            #""/Volumes/t7/opensteamer-space-recovery-20260804/nonrepo/Xcode-26.6.0.app/Contents/Developer";"#,
+            "const PINNED_XCODE_DEVELOPER_UID: u32 = 501;",
+            "const PINNED_XCODE_DEVELOPER_GID: u32 = 20;",
+            "const PINNED_XCODE_DEVELOPER_MODE: u32 = 0o755;",
+            #"const PINNED_XCODE_SWIFTC_ALIAS: &str = "/Applications/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc";"#,
+            #"const PINNED_XCODE_RESOLVED_SWIFTC_ALIAS: &str = "/Volumes/t7/opensteamer-space-recovery-20260804/nonrepo/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc";"#,
+            #"const PINNED_XCODE_SWIFTC_ALIAS_TARGET: &str = "swift-frontend";"#,
+            #"const PINNED_XCODE_SWIFT_FRONTEND: &str = "/Applications/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend";"#,
+            #"const PINNED_XCODE_CLANG: &str = "/Applications/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang";"#,
+            #""2ed38571e92c0283091838c1649e27650ad9c99950288e883c7b2dc6c4ce89fb";"#,
+            #""7def90dd8829726686213a747fc5bff1583df933dae5edc55d755479e0bfe00a";"#,
+            #"const EXPECTED_XCODE_SWIFTC_VERSION: &str = "swift-driver version: 1.148.6 Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx26.0";"#,
+        ]
+        let verifierTokens = [
+            "let application_link = Path::new(PINNED_XCODE_APPLICATION_LINK);",
+            "fs::symlink_metadata(application_link)?;",
+            "!application_link_metadata.file_type().is_symlink()",
+            "let application_target = fs::read_link(application_link)?;",
+            "!application_target.is_absolute()",
+            "application_target.to_str() != Some(PINNED_XCODE_APPLICATION_TARGET)",
+            "fs::canonicalize(PINNED_XCODE_DEVELOPER_DIR)?;",
+            "canonical_developer_directory != Path::new(PINNED_XCODE_RESOLVED_DEVELOPER_DIR)",
+            "fs::symlink_metadata(PINNED_XCODE_RESOLVED_DEVELOPER_DIR)?;",
+            "!resolved_developer_directory.file_type().is_dir()",
+            "resolved_developer_directory.file_type().is_symlink()",
+            "resolved_developer_directory.uid() != PINNED_XCODE_DEVELOPER_UID",
+            "resolved_developer_directory.gid() != PINNED_XCODE_DEVELOPER_GID",
+            "resolved_developer_directory.permissions().mode() & 0o7777",
+            "!= PINNED_XCODE_DEVELOPER_MODE",
+            "let swiftc_alias = Path::new(PINNED_XCODE_SWIFTC_ALIAS);",
+            "let swiftc_alias_metadata = fs::symlink_metadata(swiftc_alias)?;",
+            "!swiftc_alias_metadata.file_type().is_symlink()",
+            "let swiftc_alias_target = fs::read_link(swiftc_alias)?;",
+            "swiftc_alias_target.to_str() != Some(PINNED_XCODE_SWIFTC_ALIAS_TARGET)",
+            "PINNED_XCODE_SWIFT_FRONTEND,",
+            "EXPECTED_XCODE_SWIFT_FRONTEND_SHA256,",
+            "PINNED_XCODE_CLANG,",
+            "EXPECTED_XCODE_CLANG_SHA256,",
+            "let tool_metadata = fs::symlink_metadata(tool_path)?;",
+            "!tool_metadata.file_type().is_file()",
+            "tool_metadata.file_type().is_symlink()",
+            "tool_metadata.permissions().mode() & 0o111 == 0",
+            "sha256(tool_path)? != expected_sha256",
+            "let xcrun_swiftc = Command::new(\"/usr/bin/xcrun\")",
+            #".args(["--sdk", "macosx", "--find", "swiftc"])"#,
+            ".env_clear()",
+            #".env("LC_ALL", "C")"#,
+            #".env("HOME", USER_HOME)"#,
+            #".env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")"#,
+            #".env("DEVELOPER_DIR", PINNED_XCODE_DEVELOPER_DIR)"#,
+            "require_output_success(&xcrun_swiftc, \"resolve the pinned production swiftc\")?;",
+            #"format!("{PINNED_XCODE_RESOLVED_SWIFTC_ALIAS}\n")"#,
+            "!xcrun_swiftc.stderr.is_empty()",
+            "xcrun_swiftc.stdout.as_slice() != expected_xcrun_swiftc.as_bytes()",
+            "let swiftc_version = Command::new(\"/usr/bin/xcrun\")",
+            #".args(["--sdk", "macosx", "swiftc", "--version"])"#,
+            ".env_clear()",
+            #".env("LC_ALL", "C")"#,
+            #".env("HOME", USER_HOME)"#,
+            #".env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")"#,
+            #".env("DEVELOPER_DIR", PINNED_XCODE_DEVELOPER_DIR)"#,
+            "require_output_success(&swiftc_version, \"inspect the pinned production swiftc version\")?;",
+            "let observed_swiftc_version = format!(\"{version_stderr}{version_stdout}\");",
+            "observed_swiftc_version.strip_suffix('\\n') != Some(EXPECTED_XCODE_SWIFTC_VERSION)",
+        ]
+        return exactPins.allSatisfy(controller.contains)
+            && containsOrdered(verifierTokens, in: verifier)
+            && verifier.components(separatedBy: ".env_clear()").count - 1 == 2
+            && verifier.components(
+                separatedBy: #".env("DEVELOPER_DIR", PINNED_XCODE_DEVELOPER_DIR)"#
+            ).count - 1 == 2
+            && signingAvailability.contains("verify_pinned_xcode_developer_directory()?;")
+            && signingAvailability.contains(
+                #".env("DEVELOPER_DIR", PINNED_XCODE_DEVELOPER_DIR)"#
+            )
+            && stagedBuild.components(
+                separatedBy: #".env("DEVELOPER_DIR", PINNED_XCODE_DEVELOPER_DIR)"#
+            ).count - 1 == 1
+    }
+
     private func swappingFirst(
         _ first: String,
         with second: String,
@@ -785,7 +889,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         }
 
         let launcherTokens = [
-            "EXPECTED_BINARY_SHA256='6aa9556a680fe3d562226ae74c944031110af167065a11a51af19fc036a36959'",
+            "EXPECTED_BINARY_SHA256='962a404afa49faa7c6a8b68554896914bc973e7237326da0f495abd3c8b1f3cd'",
             "CONTROLLER_BINARY_SHA256=$(/usr/bin/shasum -a 256 \"$CONTROLLER\"",
             "[ \"$CONTROLLER_BINARY_SHA256\" = \"$EXPECTED_BINARY_SHA256\" ]",
             "compiled paired-v7 controller differs from the reviewed binary hash",
@@ -935,12 +1039,12 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         XCTAssertTrue(launcher.contains("RELEASE_PIN_STATUS='PINNED_FINAL_REVIEW'"))
         XCTAssertTrue(
             launcher.contains(
-                "EXPECTED_SOURCE_SHA256='df545d586a34b2e88814ba08e039be8b726ea47461540c8e744632b5d269fdde'"
+                "EXPECTED_SOURCE_SHA256='75a0875aedaa3213129a479d4cd87ccd106c1c5b938d2bc0d7e726134976f85f'"
             )
         )
         XCTAssertTrue(
             launcher.contains(
-                "EXPECTED_BINARY_SHA256='6aa9556a680fe3d562226ae74c944031110af167065a11a51af19fc036a36959'"
+                "EXPECTED_BINARY_SHA256='962a404afa49faa7c6a8b68554896914bc973e7237326da0f495abd3c8b1f3cd'"
             )
         )
         let exactControllerReleasePins = [
@@ -966,6 +1070,8 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             "91e1da8c84d47f05dd4dc19a84418a946238b1e411cf09d0dd3fb275babc88d5",
             "290731edd02baf42ca40f43f11f74d75271617a46393184cb4d0d566a147257e",
             "25293a4c83b5c6a6e1c95a95388d596f56057e5c5a54add0756017cfc6b0deac",
+            "2ed38571e92c0283091838c1649e27650ad9c99950288e883c7b2dc6c4ce89fb",
+            "7def90dd8829726686213a747fc5bff1583df933dae5edc55d755479e0bfe00a",
             "7beb049226ada83e97afba3e60089469d0eeeef6",
         ]
         for pin in exactControllerReleasePins {
@@ -1157,6 +1263,182 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         )
         XCTAssertNotEqual(mutant, production)
         XCTAssertFalse(hasRealLFProductionDriverManifestContract(mutant))
+    }
+
+    func testV7ProductionXcodeAndToolchainTrustIsExactAndMutationClosed() throws {
+        let controller = try source(
+            "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs"
+        )
+        XCTAssertTrue(hasPinnedProductionXcodeTrustContract(controller))
+
+        let mutants = [
+            controller.replacingOccurrences(
+                of: #""/Volumes/t7/opensteamer-space-recovery-20260804/nonrepo/Xcode-26.6.0.app";"#,
+                with: #""/Volumes/wrong/Xcode-26.6.0.app";"#
+            ),
+            controller.replacingOccurrences(
+                of: #""/Volumes/t7/opensteamer-space-recovery-20260804/nonrepo/Xcode-26.6.0.app";"#,
+                with: #""/Volumes//t7/opensteamer-space-recovery-20260804/nonrepo/Xcode-26.6.0.app";"#
+            ),
+            controller.replacingOccurrences(
+                of: #""/Volumes/t7/opensteamer-space-recovery-20260804/nonrepo/Xcode-26.6.0.app";"#,
+                with: #""/Volumes/t7/opensteamer-space-recovery-20260804/nonrepo/./Xcode-26.6.0.app";"#
+            ),
+            controller.replacingOccurrences(
+                of: #""/Volumes/t7/opensteamer-space-recovery-20260804/nonrepo/Xcode-26.6.0.app";"#,
+                with: #""/Volumes/t7/opensteamer-space-recovery-20260804/nonrepo/Xcode-26.6.0.app/";"#
+            ),
+            controller.replacingOccurrences(
+                of: "application_target.to_str() != Some(PINNED_XCODE_APPLICATION_TARGET)",
+                with: "application_target != Path::new(PINNED_XCODE_APPLICATION_TARGET)"
+            ),
+            controller.replacingOccurrences(
+                of: "const PINNED_XCODE_DEVELOPER_UID: u32 = 501;",
+                with: "const PINNED_XCODE_DEVELOPER_UID: u32 = 0;"
+            ),
+            controller.replacingOccurrences(
+                of: "const PINNED_XCODE_DEVELOPER_GID: u32 = 20;",
+                with: "const PINNED_XCODE_DEVELOPER_GID: u32 = 80;"
+            ),
+            controller.replacingOccurrences(
+                of: "const PINNED_XCODE_DEVELOPER_MODE: u32 = 0o755;",
+                with: "const PINNED_XCODE_DEVELOPER_MODE: u32 = 0o775;"
+            ),
+            controller.replacingOccurrences(
+                of: "const PINNED_XCODE_DEVELOPER_MODE: u32 = 0o755;",
+                with: "const PINNED_XCODE_DEVELOPER_MODE: u32 = 0o4755;"
+            ),
+            controller.replacingOccurrences(
+                of: "const PINNED_XCODE_DEVELOPER_MODE: u32 = 0o755;",
+                with: "const PINNED_XCODE_DEVELOPER_MODE: u32 = 0o2755;"
+            ),
+            controller.replacingOccurrences(
+                of: "const PINNED_XCODE_DEVELOPER_MODE: u32 = 0o755;",
+                with: "const PINNED_XCODE_DEVELOPER_MODE: u32 = 0o1755;"
+            ),
+            controller.replacingOccurrences(
+                of: "resolved_developer_directory.permissions().mode() & 0o7777",
+                with: "resolved_developer_directory.permissions().mode() & 0o777"
+            ),
+            controller.replacingOccurrences(
+                of: "            || resolved_developer_directory.file_type().is_symlink()\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "fs::canonicalize(PINNED_XCODE_DEVELOPER_DIR)?",
+                with: "PathBuf::from(PINNED_XCODE_DEVELOPER_DIR)"
+            ),
+            controller.replacingOccurrences(
+                of: "canonical_developer_directory != Path::new(PINNED_XCODE_RESOLVED_DEVELOPER_DIR)",
+                with: "false"
+            ),
+            controller.replacingOccurrences(
+                of: "let application_target = fs::read_link(application_link)?;",
+                with: "let application_target = PathBuf::from(PINNED_XCODE_APPLICATION_TARGET);"
+            ),
+            controller.replacingOccurrences(
+                of: #"const PINNED_XCODE_SWIFTC_ALIAS: &str = "/Applications/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc";"#,
+                with: #"const PINNED_XCODE_SWIFTC_ALIAS: &str = "/usr/bin/swiftc";"#
+            ),
+            controller.replacingOccurrences(
+                of: #"const PINNED_XCODE_RESOLVED_SWIFTC_ALIAS: &str = "/Volumes/t7/opensteamer-space-recovery-20260804/nonrepo/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc";"#,
+                with: #"const PINNED_XCODE_RESOLVED_SWIFTC_ALIAS: &str = "/Applications/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc";"#
+            ),
+            controller.replacingOccurrences(
+                of: #"const PINNED_XCODE_SWIFT_FRONTEND: &str = "/Applications/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend";"#,
+                with: #"const PINNED_XCODE_SWIFT_FRONTEND: &str = "/usr/bin/swift-frontend";"#
+            ),
+            controller.replacingOccurrences(
+                of: #"const PINNED_XCODE_CLANG: &str = "/Applications/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang";"#,
+                with: #"const PINNED_XCODE_CLANG: &str = "/usr/bin/clang";"#
+            ),
+            controller.replacingOccurrences(
+                of: #"const PINNED_XCODE_SWIFTC_ALIAS_TARGET: &str = "swift-frontend";"#,
+                with: #"const PINNED_XCODE_SWIFTC_ALIAS_TARGET: &str = "/usr/bin/swiftc";"#
+            ),
+            controller.replacingOccurrences(
+                of: "2ed38571e92c0283091838c1649e27650ad9c99950288e883c7b2dc6c4ce89fb",
+                with: String(repeating: "0", count: 64)
+            ),
+            controller.replacingOccurrences(
+                of: "7def90dd8829726686213a747fc5bff1583df933dae5edc55d755479e0bfe00a",
+                with: String(repeating: "0", count: 64)
+            ),
+            controller.replacingOccurrences(
+                of: #"const EXPECTED_XCODE_SWIFTC_VERSION: &str = "swift-driver version: 1.148.6 Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx26.0";"#,
+                with: #"const EXPECTED_XCODE_SWIFTC_VERSION: &str = "Apple Swift version 6.3.3";"#
+            ),
+            controller.replacingOccurrences(
+                of: "        if !swiftc_alias_metadata.file_type().is_symlink() {\n",
+                with: "        if false {\n"
+            ),
+            controller.replacingOccurrences(
+                of: "swiftc_alias_target.to_str() != Some(PINNED_XCODE_SWIFTC_ALIAS_TARGET)",
+                with: "swiftc_alias_target != Path::new(PINNED_XCODE_SWIFTC_ALIAS_TARGET)"
+            ),
+            controller.replacingOccurrences(
+                of: "                || tool_metadata.file_type().is_symlink()\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "                || tool_metadata.permissions().mode() & 0o111 == 0\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: "            if sha256(tool_path)? != expected_sha256 {\n",
+                with: "            if false {\n"
+            ),
+            controller.replacingOccurrences(
+                of: #".args(["--sdk", "macosx", "--find", "swiftc"])"#,
+                with: #".args(["--sdk", "macosx", "--find", "clang"])"#
+            ),
+            controller.replacingOccurrences(
+                of: #".args(["--sdk", "macosx", "--find", "swiftc"])"#
+                    + "\n            .env_clear()",
+                with: #".args(["--sdk", "macosx", "--find", "swiftc"])"#
+            ),
+            controller.replacingOccurrences(
+                of: #"format!("{PINNED_XCODE_RESOLVED_SWIFTC_ALIAS}\n")"#,
+                with: #"format!("{PINNED_XCODE_SWIFTC_ALIAS}\n")"#
+            ),
+            controller.replacingOccurrences(
+                of: "xcrun_swiftc.stdout.as_slice() != expected_xcrun_swiftc.as_bytes()",
+                with: "false"
+            ),
+            controller.replacingOccurrences(
+                of: #".args(["--sdk", "macosx", "swiftc", "--version"])"#,
+                with: #".args(["--sdk", "macosx", "clang", "--version"])"#
+            ),
+            controller.replacingOccurrences(
+                of: "let observed_swiftc_version = format!(\"{version_stderr}{version_stdout}\");",
+                with: "let observed_swiftc_version = format!(\"{version_stdout}{version_stderr}\");"
+            ),
+            controller.replacingOccurrences(
+                of: "observed_swiftc_version.strip_suffix('\\n') != Some(EXPECTED_XCODE_SWIFTC_VERSION)",
+                with: "false"
+            ),
+            controller.replacingOccurrences(
+                of: "        verify_pinned_xcode_developer_directory()?;\n",
+                with: ""
+            ),
+            controller.replacingOccurrences(
+                of: #"            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin")"#
+                    + "\n"
+                    + #"            .env("DEVELOPER_DIR", PINNED_XCODE_DEVELOPER_DIR)"#
+                    + "\n"
+                    + #"            .env("OPENSTEAMER_HOST_APP_OUTPUT_DIR", &layout.stage_output)"#,
+                with: #"            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin")"#
+                    + "\n"
+                    + #"            .env("OPENSTEAMER_HOST_APP_OUTPUT_DIR", &layout.stage_output)"#
+            ),
+        ]
+        for (index, mutant) in mutants.enumerated() {
+            XCTAssertNotEqual(mutant, controller, "production Xcode mutant \(index) was inert")
+            XCTAssertFalse(
+                hasPinnedProductionXcodeTrustContract(mutant),
+                "production Xcode source contract accepted mutant \(index)"
+            )
+        }
     }
 
     func testGuardianAllowsLegacyVisibleInputButNeverVirtualOutputs() throws {

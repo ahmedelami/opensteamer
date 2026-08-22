@@ -113,7 +113,25 @@ pub(crate) mod paired_v7 {
     const ROOT_V7_CONTROLLER_BOOTSTRAP_MODE: &str = "--root-bootstrap-controller-identity-v7";
     const MAX_V7_CONTROLLER_BYTES: u64 = 64 * 1_024 * 1_024;
     const ROOT_BROKER_DEADMAN_SECONDS: u64 = 75;
+    const PINNED_XCODE_APPLICATION_LINK: &str = "/Applications/Xcode-26.6.0.app";
+    const PINNED_XCODE_APPLICATION_TARGET: &str =
+        "/Volumes/t7/opensteamer-space-recovery-20260804/nonrepo/Xcode-26.6.0.app";
     const PINNED_XCODE_DEVELOPER_DIR: &str = "/Applications/Xcode-26.6.0.app/Contents/Developer";
+    const PINNED_XCODE_RESOLVED_DEVELOPER_DIR: &str =
+        "/Volumes/t7/opensteamer-space-recovery-20260804/nonrepo/Xcode-26.6.0.app/Contents/Developer";
+    const PINNED_XCODE_DEVELOPER_UID: u32 = 501;
+    const PINNED_XCODE_DEVELOPER_GID: u32 = 20;
+    const PINNED_XCODE_DEVELOPER_MODE: u32 = 0o755;
+    const PINNED_XCODE_SWIFTC_ALIAS: &str = "/Applications/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc";
+    const PINNED_XCODE_RESOLVED_SWIFTC_ALIAS: &str = "/Volumes/t7/opensteamer-space-recovery-20260804/nonrepo/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc";
+    const PINNED_XCODE_SWIFTC_ALIAS_TARGET: &str = "swift-frontend";
+    const PINNED_XCODE_SWIFT_FRONTEND: &str = "/Applications/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend";
+    const PINNED_XCODE_CLANG: &str = "/Applications/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang";
+    const EXPECTED_XCODE_SWIFT_FRONTEND_SHA256: &str =
+        "2ed38571e92c0283091838c1649e27650ad9c99950288e883c7b2dc6c4ce89fb";
+    const EXPECTED_XCODE_CLANG_SHA256: &str =
+        "7def90dd8829726686213a747fc5bff1583df933dae5edc55d755479e0bfe00a";
+    const EXPECTED_XCODE_SWIFTC_VERSION: &str = "swift-driver version: 1.148.6 Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx26.0";
 
     const COMMITTED_V1_POINTER: &str =
         "/Users/ahmed/Library/Application Support/opensteamer/active-post-v20-host-update-v1";
@@ -1296,20 +1314,137 @@ pub(crate) mod paired_v7 {
             .count()
     }
 
+    fn verify_pinned_xcode_developer_directory() -> Result<()> {
+        let application_link = Path::new(PINNED_XCODE_APPLICATION_LINK);
+        let application_link_metadata = fs::symlink_metadata(application_link)?;
+        if !application_link_metadata.file_type().is_symlink() {
+            return Err(ControllerError(
+                "pinned production Xcode application path is not the reviewed symlink"
+                    .to_owned(),
+            ));
+        }
+        let application_target = fs::read_link(application_link)?;
+        if !application_target.is_absolute()
+            || application_target.to_str() != Some(PINNED_XCODE_APPLICATION_TARGET)
+        {
+            return Err(ControllerError(
+                "pinned production Xcode application symlink target changed".to_owned(),
+            ));
+        }
+
+        let canonical_developer_directory = fs::canonicalize(PINNED_XCODE_DEVELOPER_DIR)?;
+        if canonical_developer_directory != Path::new(PINNED_XCODE_RESOLVED_DEVELOPER_DIR) {
+            return Err(ControllerError(
+                "pinned production Xcode developer directory resolved elsewhere".to_owned(),
+            ));
+        }
+        let resolved_developer_directory =
+            fs::symlink_metadata(PINNED_XCODE_RESOLVED_DEVELOPER_DIR)?;
+        if !resolved_developer_directory.file_type().is_dir()
+            || resolved_developer_directory.file_type().is_symlink()
+            || resolved_developer_directory.uid() != PINNED_XCODE_DEVELOPER_UID
+            || resolved_developer_directory.gid() != PINNED_XCODE_DEVELOPER_GID
+            || resolved_developer_directory.permissions().mode() & 0o7777
+                != PINNED_XCODE_DEVELOPER_MODE
+        {
+            return Err(ControllerError(
+                "resolved production Xcode developer directory is unavailable or unsafe"
+                    .to_owned(),
+            ));
+        }
+
+        let swiftc_alias = Path::new(PINNED_XCODE_SWIFTC_ALIAS);
+        let swiftc_alias_metadata = fs::symlink_metadata(swiftc_alias)?;
+        if !swiftc_alias_metadata.file_type().is_symlink() {
+            return Err(ControllerError(
+                "pinned production swiftc alias is not the reviewed symlink".to_owned(),
+            ));
+        }
+        let swiftc_alias_target = fs::read_link(swiftc_alias)?;
+        if swiftc_alias_target.to_str() != Some(PINNED_XCODE_SWIFTC_ALIAS_TARGET) {
+            return Err(ControllerError(
+                "pinned production swiftc alias target changed".to_owned(),
+            ));
+        }
+
+        for (tool, expected_sha256, description) in [
+            (
+                PINNED_XCODE_SWIFT_FRONTEND,
+                EXPECTED_XCODE_SWIFT_FRONTEND_SHA256,
+                "Swift frontend",
+            ),
+            (
+                PINNED_XCODE_CLANG,
+                EXPECTED_XCODE_CLANG_SHA256,
+                "Clang linker driver",
+            ),
+        ] {
+            let tool_path = Path::new(tool);
+            let tool_metadata = fs::symlink_metadata(tool_path)?;
+            if !tool_metadata.file_type().is_file()
+                || tool_metadata.file_type().is_symlink()
+                || tool_metadata.permissions().mode() & 0o111 == 0
+            {
+                return Err(ControllerError(format!(
+                    "pinned production {description} is not a regular executable"
+                )));
+            }
+            if sha256(tool_path)? != expected_sha256 {
+                return Err(ControllerError(format!(
+                    "pinned production {description} bytes changed"
+                )));
+            }
+        }
+
+        let xcrun_swiftc = Command::new("/usr/bin/xcrun")
+            .args(["--sdk", "macosx", "--find", "swiftc"])
+            .env_clear()
+            .env("LC_ALL", "C")
+            .env("HOME", USER_HOME)
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .env("DEVELOPER_DIR", PINNED_XCODE_DEVELOPER_DIR)
+            .output()?;
+        require_output_success(&xcrun_swiftc, "resolve the pinned production swiftc")?;
+        let expected_xcrun_swiftc = format!("{PINNED_XCODE_RESOLVED_SWIFTC_ALIAS}\n");
+        if !xcrun_swiftc.stderr.is_empty()
+            || xcrun_swiftc.stdout.as_slice() != expected_xcrun_swiftc.as_bytes()
+        {
+            return Err(ControllerError(
+                "pinned production xcrun swiftc resolution changed".to_owned(),
+            ));
+        }
+
+        let swiftc_version = Command::new("/usr/bin/xcrun")
+            .args(["--sdk", "macosx", "swiftc", "--version"])
+            .env_clear()
+            .env("LC_ALL", "C")
+            .env("HOME", USER_HOME)
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .env("DEVELOPER_DIR", PINNED_XCODE_DEVELOPER_DIR)
+            .output()?;
+        require_output_success(&swiftc_version, "inspect the pinned production swiftc version")?;
+        let version_stderr = decode_utf8(
+            &swiftc_version.stderr,
+            "pinned production swiftc version stderr",
+        )?;
+        let version_stdout = decode_utf8(
+            &swiftc_version.stdout,
+            "pinned production swiftc version stdout",
+        )?;
+        let observed_swiftc_version = format!("{version_stderr}{version_stdout}");
+        if observed_swiftc_version.strip_suffix('\n') != Some(EXPECTED_XCODE_SWIFTC_VERSION) {
+            return Err(ControllerError(
+                "pinned production swiftc version changed".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     fn verify_v7_production_signing_availability() -> Result<()> {
         for (path, mode) in [("/usr/bin/security", 0o755), ("/usr/bin/xcrun", 0o755)] {
             require_fixed_system_binary(Path::new(path), mode)?;
         }
-        let developer_directory = fs::symlink_metadata(PINNED_XCODE_DEVELOPER_DIR)?;
-        if !developer_directory.file_type().is_dir()
-            || developer_directory.file_type().is_symlink()
-            || developer_directory.uid() != 0
-            || developer_directory.permissions().mode() & 0o777 != 0o755
-        {
-            return Err(ControllerError(
-                "pinned production Xcode developer directory is unavailable or unsafe".to_owned(),
-            ));
-        }
+        verify_pinned_xcode_developer_directory()?;
         if NOTARY_KEYCHAIN_PROFILE.len() > 128
             || !NOTARY_KEYCHAIN_PROFILE
                 .bytes()
@@ -5287,6 +5422,7 @@ pub(crate) mod paired_v7 {
             .env("USER", "ahmed")
             .env("LOGNAME", "ahmed")
             .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin")
+            .env("DEVELOPER_DIR", PINNED_XCODE_DEVELOPER_DIR)
             .env("OPENSTEAMER_HOST_APP_OUTPUT_DIR", &layout.stage_output)
             .env("OPENSTEAMER_HOST_SCRATCH_PATH", &layout.scratch)
             .env("OPENSTEAMER_REQUIRE_FRESH_RELEASE", "1")

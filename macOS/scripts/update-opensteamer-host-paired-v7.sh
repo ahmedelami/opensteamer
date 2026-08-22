@@ -19,14 +19,14 @@ EXPECTED_RUSTC_VERSION='rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)'
 EXPECTED_RUSTC_SHA256='d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd'
 EXPECTED_RUSTC_DRIVER_SHA256='aa8f5e89644f6d54fd3f1c4d4031bbda10ff750984cede4a75c7addee27e15df'
 RELEASE_PIN_STATUS='PINNED_FINAL_REVIEW'
-EXPECTED_SOURCE_SHA256='df545d586a34b2e88814ba08e039be8b726ea47461540c8e744632b5d269fdde'
+EXPECTED_SOURCE_SHA256='75a0875aedaa3213129a479d4cd87ccd106c1c5b938d2bc0d7e726134976f85f'
 EXPECTED_V1_CONTROLLER_SOURCE_SHA256='2dfe9ddec5ea71b206f6462deec0b8be5423e9f23ab30aebc42b8f424dfdab06'
 EXPECTED_INCLUDED_SOURCE_SHA256='2020edb76b1f9537afad1ed2ec22686044f2f0cbbb3d95155546b69e0b1442e6'
 # B is pinned only here, outside the Rust source whose bytes it identifies. Embedding B in that
 # source would require an impossible SHA-256 fixed point. The controller derives B again from its
 # own stable inode and seals it after the authenticated root boundary; no hash is passed by argv or
 # environment.
-EXPECTED_BINARY_SHA256='6aa9556a680fe3d562226ae74c944031110af167065a11a51af19fc036a36959'
+EXPECTED_BINARY_SHA256='962a404afa49faa7c6a8b68554896914bc973e7237326da0f495abd3c8b1f3cd'
 BUILD_PARENT='/Users/ahmed/Library/Application Support/opensteamer'
 
 usage() {
