@@ -27,6 +27,8 @@ pub(crate) mod paired_v7 {
     const V7_ROLLBACK_MODE: &str = "--rollback-authorized-paired-v7-host-update";
     const V7_RECOVER_RETRY_2_MODE: &str =
         "--recover-authorized-paired-v7-retry-2-critical-failure";
+    const V7_RECOVER_RETRY_3_MODE: &str =
+        "--recover-authorized-paired-v7-retry-3-critical-failure";
     const V7_SELF_TEST_MODE: &str = "--self-test-paired-v7-host-update";
     const V7_EXPECTED_REPO: &str = "/Users/ahmed/Documents/Codex/opensteamer";
 
@@ -44,6 +46,124 @@ pub(crate) mod paired_v7 {
     const RETRY_1_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-1.pending-";
     const RETRY_2_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-2.pending-";
     const RETRY_V7_PENDING_PREFIX: &str = "active-paired-host-update-v7-retry-3.pending-";
+    const RECOVERY_RETRY_3_NAME: &str =
+        "paired-v7-update-retry-3-1787392225-87409-09602523-891e-4822-bf48-650a3b7f9637";
+    const RECOVERY_RETRY_3_EVIDENCE: &str =
+        "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-3-1787392225-87409-09602523-891e-4822-bf48-650a3b7f9637";
+    const RECOVERY_RETRY_3_NONCE: &str = "09602523-891e-4822-bf48-650a3b7f9637";
+    const RECOVERY_RETRY_3_EVIDENCE_INODE: u64 = 27_828_068;
+    const RECOVERY_RETRY_3_EVIDENCE_NLINK: u64 = 20;
+    const RECOVERY_RETRY_3_EVIDENCE_SIZE: u64 = 640;
+    const RECOVERY_RETRY_3_POINTER_INODE: u64 = 27_832_813;
+    const RECOVERY_RETRY_3_POINTER_SIZE: u64 = 155;
+    const RECOVERY_RETRY_3_POINTER_SHA256: &str =
+        "efbe37925571f60f5ad898c7046dbd85d8e31d4bad9af603c57745928bf7059e";
+    const RECOVERY_RETRY_3_POINTER: &str = concat!(
+        "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/",
+        "paired-v7-update-retry-3-1787392225-87409-09602523-891e-4822-bf48-650a3b7f9637\n"
+    );
+    const RECOVERY_RETRY_3_JOURNAL_INODE: u64 = 27_828_075;
+    const RECOVERY_RETRY_3_JOURNAL_SIZE: u64 = 593;
+    const RECOVERY_RETRY_3_JOURNAL_SHA256: &str =
+        "d76c64d82bb7ba94dd067cf9c60a327e161377dce778850906fcddfb65aee1ad";
+    const RECOVERY_RETRY_3_JOURNAL: &str = concat!(
+        "OPENSTEAMER_PAIRED_HOST_UPDATE_V7\n",
+        "STATE BEGUN\n",
+        "STATE SOURCE_EXPORTED commit=858554b9a05b6c9ce7e0cbe97e889cf03269c9a3 tree=d38e35e2522f3592960f0669e50466a46b280d46 initial_pid=7631\n",
+        "STATE BUILD_VERIFIED executable_sha256=741e07fcb07cd207a8664e59f7684751bd6b3066e9ba601ea0563557640fbfbc\n",
+        "STATE INSTALL_HOLD_VERIFIED\n",
+        "STATE DRIVER_PREPARED\n",
+        "STATE STOP_INITIATED reserve_device=16777229 reserve_inode=27832809 reserve_bytes=8388608\n",
+        "STATE CURRENT_STOPPED\n",
+        "STATE CURRENT_HELD\n",
+        "STATE DRIVER_PUBLISHED\n",
+        "STATE ROLLBACK_STARTED\n",
+        "STATE DRIVER_RESTORED\n",
+        "STATE CURRENT_RESTORED\n",
+        "STATE CRITICAL_FAILURE phase=rollback\n"
+    );
+    const RECOVERY_RETRY_3_RESULT_INODE: u64 = 27_833_303;
+    const RECOVERY_RETRY_3_RESULT_SIZE: u64 = 208;
+    const RECOVERY_RETRY_3_RESULT_SHA256: &str =
+        "ce55694655fb8f1231d36ee80817abe67bc75e848f848be4d932504725f940ac";
+    const RECOVERY_RETRY_3_RESULT: &str = concat!(
+        "result=critical-failure\n",
+        "diagnostic=primary=installed-driver both-order mono loopback failed or timed out; ",
+        "rollback=required file has unsafe type/owner/link-count/mode: ",
+        "/var/tmp/opensteamer-worldwide-host.log\n"
+    );
+    const RECOVERY_RETRY_3_DRIVER_RECORD_INODE: u64 = 27_832_682;
+    const RECOVERY_RETRY_3_DRIVER_RECORD_SIZE: u64 = 1_193;
+    const RECOVERY_RETRY_3_DRIVER_RECORD_SHA256: &str =
+        "148a9e96a4dc72f3936359b3b7c726e351197508a26b41b965cf98f51dc9dd62";
+    const RECOVERY_RETRY_3_DRIVER_RECORD: &str = concat!(
+        "schema=opensteamer.driver-transaction-evidence.v7\n",
+        "nonce=09602523-891e-4822-bf48-650a3b7f9637\n",
+        "canonical_product_driver=/Library/Audio/Plug-Ins/HAL/OpensteamerVirtualMicrophone.driver\n",
+        "root_controller_sha256=5feb2414a70b55ebac702916850cfb2b35f5d51a70ea63ae9ca00d67ba10bb04\n",
+        "root=ROOT_V7_DRIVER_PREPARED root=/Library/Application Support/opensteamer/driver-transactions-v7/transaction-09602523-891e-4822-bf48-650a3b7f9637 prior=0 prior_device=0 prior_inode=0 hold_device=16777229 hold_inode=27832705\n",
+        "root=ROOT_V7_BROKER_READY nonce=09602523-891e-4822-bf48-650a3b7f9637\n",
+        "user=PING\n",
+        "root=ROOT_V7_BROKER_PONG nonce=09602523-891e-4822-bf48-650a3b7f9637\n",
+        "user=PUBLISH\n",
+        "root=ROOT_V7_DRIVER_PUBLISHED root=/Library/Application Support/opensteamer/driver-transactions-v7/transaction-09602523-891e-4822-bf48-650a3b7f9637\n",
+        "root=ROOT_V7_BROKER_PUBLISHED nonce=09602523-891e-4822-bf48-650a3b7f9637\n",
+        "user=PING\n",
+        "root=ROOT_V7_BROKER_PONG nonce=09602523-891e-4822-bf48-650a3b7f9637\n",
+        "user=ROLLBACK\n",
+        "root=ROOT_V7_DRIVER_ROLLED_BACK root=/Library/Application Support/opensteamer/driver-transactions-v7/transaction-09602523-891e-4822-bf48-650a3b7f9637\n",
+        "root=ROOT_V7_BROKER_ROLLED_BACK nonce=09602523-891e-4822-bf48-650a3b7f9637\n"
+    );
+    const RECOVERY_RETRY_3_PROVENANCE_INODE: u64 = 27_828_503;
+    const RECOVERY_RETRY_3_PROVENANCE_SIZE: u64 = 736;
+    const RECOVERY_RETRY_3_PROVENANCE_SHA256: &str =
+        "48602df91eb002ae6c996b1f743e3a4a38d73274ead7d1fa9c2f6b427ddca04e";
+    const RECOVERY_RETRY_3_PROVENANCE: &str = concat!(
+        "commit=858554b9a05b6c9ce7e0cbe97e889cf03269c9a3\n",
+        "tree=d38e35e2522f3592960f0669e50466a46b280d46\n",
+        "functional_source_commit=7beb049226ada83e97afba3e60089469d0eeeef6\n",
+        "functional_source_tree=60e2df01afe1b4c09362b8e1b55efa709f23a748\n",
+        "authorized_release_commit=858554b9a05b6c9ce7e0cbe97e889cf03269c9a3\n",
+        "authorized_release_tree=d38e35e2522f3592960f0669e50466a46b280d46\n",
+        "upstream=origin/agent/auto-select-iphone-microphone\n",
+        "remote=https://github.com/ahmedelami/opensteamer.git\n",
+        "functional_inputs_sha256=fdef1da4413f66d5f066c86b0eba709b55c74b1f72b29dac8d62e991a2343ca6\n",
+        "functional_input_evidence_sha256=63b6e3d18aa314da544c61be81a078ffd3a14343a774a99c477f44bbce02ae09\n",
+        "source_archive_sha256=32dbb60480d8f88aa175d6a39ec8a2282bdbe358031520e51ac1998201b41cc5\n"
+    );
+    const RECOVERY_RETRY_3_INSTALL_HOLD_NAME_INODE: u64 = 27_828_076;
+    const RECOVERY_RETRY_3_INSTALL_HOLD_NAME_SIZE: u64 = 82;
+    const RECOVERY_RETRY_3_INSTALL_HOLD_NAME_SHA256: &str =
+        "38b0e7d1444e5eed1c9d5064a97a7c6395c0e2ce56b0c8c84ca67ddd87959790";
+    const RECOVERY_RETRY_3_INSTALL_HOLD_NAME: &str =
+        "/Applications/.opensteamer-paired-v7-install-09602523-891e-4822-bf48-650a3b7f9637\n";
+    const RECOVERY_RETRY_3_FAILED_NEW_INODE: u64 = 27_828_074;
+    const RECOVERY_RETRY_3_ARCHIVE_INODE: u64 = 27_832_378;
+    const RECOVERY_RETRY_3_ARCHIVE_APP_INODE: u64 = 27_832_379;
+    const RECOVERY_RETRY_3_ARCHIVE_EXECUTABLE_INODE: u64 = 27_832_384;
+    const RECOVERY_RETRY_3_ARCHIVE_EXECUTABLE_SIZE: u64 = 6_090_624;
+    const RECOVERY_RETRY_3_ARCHIVE_EXECUTABLE_SHA256: &str =
+        "741e07fcb07cd207a8664e59f7684751bd6b3066e9ba601ea0563557640fbfbc";
+    const RECOVERY_RETRY_3_GUARDIAN_INODE: u64 = 27_832_356;
+    const RECOVERY_RETRY_3_GUARDIAN_SIZE: u64 = 286_968;
+    const RECOVERY_RETRY_3_GUARDIAN_SHA256: &str =
+        "53ee0ce919f1b61c9d66a95d3ec8b417fba85df9f925fd24146d70b663fa995c";
+    const RECOVERY_RETRY_3_ROLLBACK_CURRENT_INODE: u64 = 27_828_073;
+    const RECOVERY_RETRY_3_RESERVE_INODE: u64 = 27_832_809;
+    const RECOVERY_RETRY_3_RECOVERY_JOURNAL: &str = "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-3-1787392225-87409-09602523-891e-4822-bf48-650a3b7f9637/retry-3-recovery-journal.txt";
+    const RECOVERY_RETRY_3_RECOVERY_JOURNAL_PENDING: &str = "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-3-1787392225-87409-09602523-891e-4822-bf48-650a3b7f9637/.retry-3-recovery-journal.txt.pending";
+    const RECOVERY_RETRY_3_RECOVERY_RESULT: &str = "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-3-1787392225-87409-09602523-891e-4822-bf48-650a3b7f9637/retry-3-recovery-result.txt";
+    const RECOVERY_RETRY_3_RECOVERY_RESULT_PENDING: &str = "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-3-1787392225-87409-09602523-891e-4822-bf48-650a3b7f9637/.retry-3-recovery-result.txt.pending";
+    const RECOVERY_RETRY_3_STDOUT_LOG: &str = "/var/tmp/opensteamer-worldwide-host.log";
+    const RECOVERY_RETRY_3_STDOUT_INODE: u64 = 27_131_806;
+    const RECOVERY_RETRY_3_STDOUT_SIZE: u64 = 18_713;
+    const RECOVERY_RETRY_3_STDOUT_SHA256: &str =
+        "afb8ac5fc5893694378d0472957c52b4ba239f9853e8001accf21394f5c28045";
+    const RECOVERY_RETRY_3_STDERR_LOG: &str = "/var/tmp/opensteamer-worldwide-host.err.log";
+    const RECOVERY_RETRY_3_STDERR_INODE: u64 = 27_131_807;
+    const RECOVERY_RETRY_3_STDERR_SIZE: u64 = 9_310;
+    const RECOVERY_RETRY_3_STDERR_SHA256: &str =
+        "ed48b41850a21cf525f14ad834d54e0dab96ae59387052212cf80797390d49c0";
     const RETAINED_FAILED_V7_ATTEMPT_NAME: &str =
         "paired-v7-update-1787367704-92913-bba21548-458c-4d31-bd0a-eccdb282c02a";
     const RETAINED_FAILED_V7_ATTEMPT: &str =
@@ -335,6 +455,32 @@ pub(crate) mod paired_v7 {
     const ROOT_V7_CONTROLLER_IDENTITY_JOURNAL: &str =
         "/Library/Application Support/opensteamer/privileged-v7-v2/controller-identity.log";
     const ROOT_V7_CONTROLLER_PUBLISH_MODE: &str = "--root-publish-controller-identity-v7-v2";
+    const RETAINED_ROOT_V7_NORMAL_V2_DEVICE: u64 = 16_777_229;
+    const RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_INODE: u64 = 27_832_673;
+    const RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_NLINK: u64 = 5;
+    const RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_LENGTH: u64 = 160;
+    const RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_INODE: u64 = 27_832_674;
+    const RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_LENGTH: u64 = 1_491_672;
+    const RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_SHA256: &str =
+        "5feb2414a70b55ebac702916850cfb2b35f5d51a70ea63ae9ca00d67ba10bb04";
+    const RETAINED_ROOT_V7_NORMAL_V2_PIN_INODE: u64 = 27_832_678;
+    const RETAINED_ROOT_V7_NORMAL_V2_PIN_LENGTH: u64 = 65;
+    const RETAINED_ROOT_V7_NORMAL_V2_PIN_SHA256: &str =
+        "9e4b0b87814c6669afc6d572f705d6ab9c049fe8ab239daa528c23dcb0458e32";
+    const RETAINED_ROOT_V7_NORMAL_V2_PIN: &str =
+        "5feb2414a70b55ebac702916850cfb2b35f5d51a70ea63ae9ca00d67ba10bb04\n";
+    const RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_INODE: u64 = 27_832_679;
+    const RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_LENGTH: u64 = 300;
+    const RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_SHA256: &str =
+        "5b298fdd84ded3e5b130bf26d2238f62460047695cc1aa0d0a617b95fa665fb4";
+    const RETAINED_ROOT_V7_NORMAL_V2_JOURNAL: &str = concat!(
+        "OPENSTEAMER_V7_CONTROLLER_IDENTITY_V2\n",
+        "controller_path=/Library/Application Support/opensteamer/privileged-v7-v2/opensteamer-v7-controller\n",
+        "controller_device=16777229\n",
+        "controller_inode=27832674\n",
+        "controller_length=1491672\n",
+        "controller_sha256=5feb2414a70b55ebac702916850cfb2b35f5d51a70ea63ae9ca00d67ba10bb04\n"
+    );
     const ROOT_V7_RECOVERY_SUPPORT_DIRECTORY: &str =
         "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2";
     const ROOT_V7_RECOVERY_CONTROLLER: &str = "/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2-v2/opensteamer-v7-recovery-controller";
@@ -369,6 +515,40 @@ pub(crate) mod paired_v7 {
     const RETAINED_ROOT_V7_RECOVERY_V1_JOURNAL: &str = "OPENSTEAMER_V7_RECOVERY_CONTROLLER_IDENTITY_V1\ncontroller_path=/Library/Application Support/opensteamer/privileged-v7-recovery-retry-2/opensteamer-v7-recovery-controller\ncontroller_device=16777229\ncontroller_inode=27803149\ncontroller_length=1420216\ncontroller_sha256=b763b2eaec3d3c0a9d6ae558f0f55c6c478237a22baedf99d42945584347f317\n";
     const ROOT_V7_TRANSACTION_PARENT: &str =
         "/Library/Application Support/opensteamer/driver-transactions-v7";
+    const RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT: &str =
+        "/Library/Application Support/opensteamer";
+    const RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_INODE: u64 = 27_777_167;
+    const RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_NLINK: u64 = 7;
+    const RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_LENGTH: u64 = 224;
+    const RECOVERY_RETRY_3_ROOT_TRANSACTION: &str =
+        "/Library/Application Support/opensteamer/driver-transactions-v7/transaction-09602523-891e-4822-bf48-650a3b7f9637";
+    const RECOVERY_RETRY_3_ROOT_DEVICE: u64 = 16_777_229;
+    const RECOVERY_RETRY_3_ROOT_TRANSACTION_INODE: u64 = 27_832_701;
+    const RECOVERY_RETRY_3_ROOT_TRANSACTION_NLINK: u64 = 5;
+    const RECOVERY_RETRY_3_ROOT_TRANSACTION_LENGTH: u64 = 160;
+    const RECOVERY_RETRY_3_ROOT_STATE_INODE: u64 = 27_832_718;
+    const RECOVERY_RETRY_3_ROOT_STATE_LENGTH: u64 = 325;
+    const RECOVERY_RETRY_3_ROOT_STATE_SHA256: &str =
+        "ee133b1fe60f19e262081eb3eef6c290f03414b49533e6514b71901dfc854f55";
+    const RECOVERY_RETRY_3_ROOT_STATE: &str = concat!(
+        "schema=opensteamer.root-driver-transaction.v7\n",
+        "prior_present=0\n",
+        "prior_device=0\n",
+        "prior_inode=0\n",
+        "prior_mode=0\n",
+        "prior_kind=absent\n",
+        "hold_device=16777229\n",
+        "hold_inode=27832705\n",
+        "hold_tree_sha256=f32e870ed639fedd90ea63d3434727d72e5c030fccc4d3c6cf9bda1ae003ce49\n",
+        "package_sha256=e2b13dde169a7994a50b819e414212e884136b0ab0c40c482531b8f8dc2a3f45\n"
+    );
+    const RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_INODE: u64 = 27_832_705;
+    const RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_NLINK: u64 = 3;
+    const RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_LENGTH: u64 = 96;
+    const RECOVERY_RETRY_3_ROOT_FAILED_EXECUTABLE_INODE: u64 = 27_832_710;
+    const RECOVERY_RETRY_3_ROOT_FAILED_EXECUTABLE_SIZE: u64 = 169_856;
+    const RECOVERY_RETRY_3_ROOT_PACKAGE_INODE: u64 = 27_832_716;
+    const RECOVERY_RETRY_3_ROOT_PACKAGE_SIZE: u64 = 54_515;
     const ROOT_V7_CONTROLLER_BOOTSTRAP_MODE: &str =
         "--root-bootstrap-controller-identity-v7-v2";
     const RETAINED_ROOT_V7_V1_SUPPORT_DIRECTORY: &str =
@@ -1050,6 +1230,11 @@ pub(crate) mod paired_v7 {
             authorized_commit: String,
             authorized_tree: String,
         },
+        RecoverRetry3 {
+            repo: String,
+            authorized_commit: String,
+            authorized_tree: String,
+        },
         Rollback(String),
         SelfTest,
         ProbeLock {
@@ -1331,6 +1516,15 @@ pub(crate) mod paired_v7 {
                 &authorized_commit,
                 &authorized_tree,
             ),
+            V7Command::RecoverRetry3 {
+                repo,
+                authorized_commit,
+                authorized_tree,
+            } => recover_retry_3_critical_failure(
+                canonical_repo(&repo)?,
+                &authorized_commit,
+                &authorized_tree,
+            ),
             V7Command::Rollback(repo) => rollback_existing_paired_v7_update(canonical_repo(&repo)?),
             V7Command::SelfTest => paired_v7_self_test(),
             V7Command::ProbeLock { runtime, lock, pid } => {
@@ -1406,6 +1600,17 @@ pub(crate) mod paired_v7 {
                 require_canonical_git_oid(authorized_commit, "authorized recovery commit")?;
                 require_canonical_git_oid(authorized_tree, "authorized recovery tree")?;
                 Ok(V7Command::RecoverRetry2 {
+                    repo: repo.clone(),
+                    authorized_commit: authorized_commit.clone(),
+                    authorized_tree: authorized_tree.clone(),
+                })
+            }
+            [_, mode, repo, authorized_commit, authorized_tree]
+                if mode == V7_RECOVER_RETRY_3_MODE =>
+            {
+                require_canonical_git_oid(authorized_commit, "authorized retry-3 recovery commit")?;
+                require_canonical_git_oid(authorized_tree, "authorized retry-3 recovery tree")?;
+                Ok(V7Command::RecoverRetry3 {
                     repo: repo.clone(),
                     authorized_commit: authorized_commit.clone(),
                     authorized_tree: authorized_tree.clone(),
@@ -1500,7 +1705,8 @@ pub(crate) mod paired_v7 {
                 })
             }
             _ => Err(ControllerError(format!(
-                "usage: {} {V7_PREFLIGHT_MODE} <canonical-repo>\n       {} {V7_EXECUTE_MODE} <canonical-repo> <authorized-commit> <authorized-tree>\n       {} {V7_RECOVER_RETRY_2_MODE} <canonical-repo> <authorized-commit> <authorized-tree>\n       {} {V7_ROLLBACK_MODE} <canonical-repo>\n       {} {V7_SELF_TEST_MODE}\n       {} {PROBE_LOCK_MODE} <runtime-dir> <lock-file> <pid>",
+                "usage: {} {V7_PREFLIGHT_MODE} <canonical-repo>\n       {} {V7_EXECUTE_MODE} <canonical-repo> <authorized-commit> <authorized-tree>\n       {} {V7_RECOVER_RETRY_2_MODE} <canonical-repo> <authorized-commit> <authorized-tree>\n       {} {V7_RECOVER_RETRY_3_MODE} <canonical-repo> <authorized-commit> <authorized-tree>\n       {} {V7_ROLLBACK_MODE} <canonical-repo>\n       {} {V7_SELF_TEST_MODE}\n       {} {PROBE_LOCK_MODE} <runtime-dir> <lock-file> <pid>",
+                arguments.first().map_or("controller", String::as_str),
                 arguments.first().map_or("controller", String::as_str),
                 arguments.first().map_or("controller", String::as_str),
                 arguments.first().map_or("controller", String::as_str),
@@ -1573,6 +1779,41 @@ pub(crate) mod paired_v7 {
             RETRY_1_V7_PENDING_PREFIX,
             RETRY_2_V7_PENDING_PREFIX,
             RETRY_V7_PENDING_PREFIX,
+            V7_RECOVER_RETRY_3_MODE,
+            RECOVERY_RETRY_3_NAME,
+            RECOVERY_RETRY_3_EVIDENCE,
+            RECOVERY_RETRY_3_NONCE,
+            RECOVERY_RETRY_3_POINTER,
+            RECOVERY_RETRY_3_POINTER_SHA256,
+            RECOVERY_RETRY_3_JOURNAL,
+            RECOVERY_RETRY_3_JOURNAL_SHA256,
+            RECOVERY_RETRY_3_RESULT,
+            RECOVERY_RETRY_3_RESULT_SHA256,
+            RECOVERY_RETRY_3_DRIVER_RECORD,
+            RECOVERY_RETRY_3_DRIVER_RECORD_SHA256,
+            RECOVERY_RETRY_3_PROVENANCE,
+            RECOVERY_RETRY_3_PROVENANCE_SHA256,
+            RECOVERY_RETRY_3_INSTALL_HOLD_NAME,
+            RECOVERY_RETRY_3_INSTALL_HOLD_NAME_SHA256,
+            RECOVERY_RETRY_3_ARCHIVE_EXECUTABLE_SHA256,
+            RECOVERY_RETRY_3_GUARDIAN_SHA256,
+            RECOVERY_RETRY_3_RECOVERY_JOURNAL,
+            RECOVERY_RETRY_3_RECOVERY_JOURNAL_PENDING,
+            RECOVERY_RETRY_3_RECOVERY_RESULT,
+            RECOVERY_RETRY_3_RECOVERY_RESULT_PENDING,
+            RECOVERY_RETRY_3_STDOUT_LOG,
+            RECOVERY_RETRY_3_STDOUT_SHA256,
+            RECOVERY_RETRY_3_STDERR_LOG,
+            RECOVERY_RETRY_3_STDERR_SHA256,
+            RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT,
+            RECOVERY_RETRY_3_ROOT_TRANSACTION,
+            RECOVERY_RETRY_3_ROOT_STATE,
+            RECOVERY_RETRY_3_ROOT_STATE_SHA256,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_SHA256,
+            RETAINED_ROOT_V7_NORMAL_V2_PIN_SHA256,
+            RETAINED_ROOT_V7_NORMAL_V2_PIN,
+            RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_SHA256,
+            RETAINED_ROOT_V7_NORMAL_V2_JOURNAL,
             RECOVERY_RETRY_2_NAME,
             RECOVERY_RETRY_2_EVIDENCE,
             RECOVERY_RETRY_2_NONCE,
@@ -1657,6 +1898,60 @@ pub(crate) mod paired_v7 {
         let numeric_pins = [
             COMMITTED_V5_RESERVE_INODE,
             COMMITTED_V6_RESERVE_INODE,
+            RECOVERY_RETRY_3_EVIDENCE_INODE,
+            RECOVERY_RETRY_3_EVIDENCE_NLINK,
+            RECOVERY_RETRY_3_EVIDENCE_SIZE,
+            RECOVERY_RETRY_3_POINTER_INODE,
+            RECOVERY_RETRY_3_POINTER_SIZE,
+            RECOVERY_RETRY_3_JOURNAL_INODE,
+            RECOVERY_RETRY_3_JOURNAL_SIZE,
+            RECOVERY_RETRY_3_RESULT_INODE,
+            RECOVERY_RETRY_3_RESULT_SIZE,
+            RECOVERY_RETRY_3_DRIVER_RECORD_INODE,
+            RECOVERY_RETRY_3_DRIVER_RECORD_SIZE,
+            RECOVERY_RETRY_3_PROVENANCE_INODE,
+            RECOVERY_RETRY_3_PROVENANCE_SIZE,
+            RECOVERY_RETRY_3_INSTALL_HOLD_NAME_INODE,
+            RECOVERY_RETRY_3_INSTALL_HOLD_NAME_SIZE,
+            RECOVERY_RETRY_3_FAILED_NEW_INODE,
+            RECOVERY_RETRY_3_ARCHIVE_INODE,
+            RECOVERY_RETRY_3_ARCHIVE_APP_INODE,
+            RECOVERY_RETRY_3_ARCHIVE_EXECUTABLE_INODE,
+            RECOVERY_RETRY_3_ARCHIVE_EXECUTABLE_SIZE,
+            RECOVERY_RETRY_3_GUARDIAN_INODE,
+            RECOVERY_RETRY_3_GUARDIAN_SIZE,
+            RECOVERY_RETRY_3_ROLLBACK_CURRENT_INODE,
+            RECOVERY_RETRY_3_RESERVE_INODE,
+            RECOVERY_RETRY_3_STDOUT_INODE,
+            RECOVERY_RETRY_3_STDOUT_SIZE,
+            RECOVERY_RETRY_3_STDERR_INODE,
+            RECOVERY_RETRY_3_STDERR_SIZE,
+            RETAINED_ROOT_V7_NORMAL_V2_DEVICE,
+            RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_INODE,
+            RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_NLINK,
+            RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_LENGTH,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_INODE,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_LENGTH,
+            RETAINED_ROOT_V7_NORMAL_V2_PIN_INODE,
+            RETAINED_ROOT_V7_NORMAL_V2_PIN_LENGTH,
+            RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_INODE,
+            RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_LENGTH,
+            RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_INODE,
+            RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_NLINK,
+            RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_LENGTH,
+            RECOVERY_RETRY_3_ROOT_DEVICE,
+            RECOVERY_RETRY_3_ROOT_TRANSACTION_INODE,
+            RECOVERY_RETRY_3_ROOT_TRANSACTION_NLINK,
+            RECOVERY_RETRY_3_ROOT_TRANSACTION_LENGTH,
+            RECOVERY_RETRY_3_ROOT_STATE_INODE,
+            RECOVERY_RETRY_3_ROOT_STATE_LENGTH,
+            RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_INODE,
+            RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_NLINK,
+            RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_LENGTH,
+            RECOVERY_RETRY_3_ROOT_FAILED_EXECUTABLE_INODE,
+            RECOVERY_RETRY_3_ROOT_FAILED_EXECUTABLE_SIZE,
+            RECOVERY_RETRY_3_ROOT_PACKAGE_INODE,
+            RECOVERY_RETRY_3_ROOT_PACKAGE_SIZE,
             RECOVERY_RETRY_2_EVIDENCE_INODE,
             RECOVERY_RETRY_2_POINTER_INODE,
             RECOVERY_RETRY_2_JOURNAL_INODE,
@@ -1836,6 +2131,76 @@ pub(crate) mod paired_v7 {
             (
                 "installer signature parser SHA-256",
                 EXPECTED_INSTALLER_SIGNATURE_PARSER_SHA256,
+                64,
+            ),
+            (
+                "retry-3 active pointer SHA-256",
+                RECOVERY_RETRY_3_POINTER_SHA256,
+                64,
+            ),
+            (
+                "retry-3 failure journal SHA-256",
+                RECOVERY_RETRY_3_JOURNAL_SHA256,
+                64,
+            ),
+            (
+                "retry-3 failure result SHA-256",
+                RECOVERY_RETRY_3_RESULT_SHA256,
+                64,
+            ),
+            (
+                "retry-3 driver record SHA-256",
+                RECOVERY_RETRY_3_DRIVER_RECORD_SHA256,
+                64,
+            ),
+            (
+                "retry-3 provenance SHA-256",
+                RECOVERY_RETRY_3_PROVENANCE_SHA256,
+                64,
+            ),
+            (
+                "retry-3 install-hold name SHA-256",
+                RECOVERY_RETRY_3_INSTALL_HOLD_NAME_SHA256,
+                64,
+            ),
+            (
+                "retry-3 archived v6 executable SHA-256",
+                RECOVERY_RETRY_3_ARCHIVE_EXECUTABLE_SHA256,
+                64,
+            ),
+            (
+                "retry-3 endpoint guardian SHA-256",
+                RECOVERY_RETRY_3_GUARDIAN_SHA256,
+                64,
+            ),
+            (
+                "retry-3 stdout prefix SHA-256",
+                RECOVERY_RETRY_3_STDOUT_SHA256,
+                64,
+            ),
+            (
+                "retry-3 stderr prefix SHA-256",
+                RECOVERY_RETRY_3_STDERR_SHA256,
+                64,
+            ),
+            (
+                "retry-3 root state SHA-256",
+                RECOVERY_RETRY_3_ROOT_STATE_SHA256,
+                64,
+            ),
+            (
+                "retained normal-v2 controller SHA-256",
+                RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_SHA256,
+                64,
+            ),
+            (
+                "retained normal-v2 pin-file SHA-256",
+                RETAINED_ROOT_V7_NORMAL_V2_PIN_SHA256,
+                64,
+            ),
+            (
+                "retained normal-v2 identity-journal SHA-256",
+                RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_SHA256,
                 64,
             ),
             (
@@ -3313,7 +3678,11 @@ pub(crate) mod paired_v7 {
             present: true,
             device: parse_number("hold_device")?,
             inode: parse_number("hold_inode")?,
-            mode: 0,
+            // The state schema stores only the hold inode. The staged driver is independently
+            // verified as an exact root-owned 0755 directory before this identity participates in
+            // a full equality comparison, so reconstruct the same file-type/mode bits returned by
+            // `symlink_metadata().mode()` instead of the impossible historical zero placeholder.
+            mode: 0o040755,
             kind: "directory".to_owned(),
         };
         Ok((prior, hold))
@@ -6070,6 +6439,32 @@ pub(crate) mod paired_v7 {
         )
     }
 
+    fn require_retained_root_normal_v2_via_sudo() -> Result<()> {
+        require_retained_root_controller_set_via_sudo(
+            "normal-v2",
+            ROOT_V7_SUPPORT_DIRECTORY,
+            ROOT_V7_CONTROLLER,
+            ROOT_V7_CONTROLLER_PENDING,
+            ROOT_V7_CONTROLLER_PIN,
+            ROOT_V7_CONTROLLER_IDENTITY_JOURNAL,
+            RETAINED_ROOT_V7_NORMAL_V2_DEVICE,
+            RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_INODE,
+            RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_NLINK,
+            RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_LENGTH,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_INODE,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_LENGTH,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_SHA256,
+            RETAINED_ROOT_V7_NORMAL_V2_PIN_INODE,
+            RETAINED_ROOT_V7_NORMAL_V2_PIN_LENGTH,
+            RETAINED_ROOT_V7_NORMAL_V2_PIN_SHA256,
+            RETAINED_ROOT_V7_NORMAL_V2_PIN,
+            RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_INODE,
+            RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_LENGTH,
+            RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_SHA256,
+            RETAINED_ROOT_V7_NORMAL_V2_JOURNAL,
+        )
+    }
+
     fn require_retained_root_recovery_v2_via_sudo() -> Result<()> {
         require_retained_root_controller_set_via_sudo(
             "recovery-v2",
@@ -6162,6 +6557,808 @@ pub(crate) mod paired_v7 {
             ));
         }
         Ok(())
+    }
+
+    fn sudo_require_exact_incident_stat(path: &Path, expected: &str) -> Result<()> {
+        let actual = sudo_retained_root_recovery_v1_stat(path)?;
+        if actual != expected {
+            return Err(ControllerError(format!(
+                "retry-3 incident root metadata changed: {}",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    fn sudo_require_exact_incident_listing(path: &Path, expected: &str) -> Result<()> {
+        let output = sudo_output(&["-n", "/bin/ls", "-1A", path_text(path)?])?;
+        require_output_success(&output, "enumerate retry-3 incident root directory")?;
+        if !output.stderr.is_empty() || output.stdout != expected.as_bytes() {
+            return Err(ControllerError(format!(
+                "retry-3 incident root child set changed: {}",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    fn sudo_require_exact_incident_hash(path: &Path, expected: &str) -> Result<()> {
+        let output = sudo_output(&["-n", "/usr/bin/shasum", "-a", "256", path_text(path)?])?;
+        require_output_success(&output, "hash retry-3 incident root file")?;
+        if !output.stderr.is_empty()
+            || parse_shasum_output(
+                decode_utf8(&output.stdout, "retry-3 incident root shasum")?,
+                path_text(path)?,
+            )? != expected
+        {
+            return Err(ControllerError(format!(
+                "retry-3 incident root file hash changed: {}",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    fn sudo_read_exact_incident_text(
+        path: &Path,
+        expected_stat: &str,
+        expected_sha256: &str,
+        expected_text: &str,
+    ) -> Result<()> {
+        sudo_require_exact_incident_stat(path, expected_stat)?;
+        sudo_require_exact_incident_hash(path, expected_sha256)?;
+        let output = sudo_output(&["-n", "/bin/cat", path_text(path)?])?;
+        require_output_success(&output, "read retry-3 incident root text")?;
+        if !output.stderr.is_empty() || output.stdout != expected_text.as_bytes() {
+            return Err(ControllerError(format!(
+                "retry-3 incident root text changed: {}",
+                path.display()
+            )));
+        }
+        sudo_require_exact_incident_stat(path, expected_stat)
+    }
+
+    fn require_retry_3_restored_root_via_sudo() -> Result<()> {
+        for (path, mode) in [
+            ("/bin/cat", 0o755),
+            ("/bin/ls", 0o755),
+            ("/usr/bin/stat", 0o755),
+            ("/usr/bin/shasum", 0o755),
+        ] {
+            require_fixed_system_binary(Path::new(path), mode)?;
+        }
+        require_pinned_system_binary(Path::new("/usr/bin/xattr"), 0o755, EXPECTED_XATTR_SHA256)?;
+        require_pinned_system_binary(Path::new("/usr/sbin/lsof"), 0o755, EXPECTED_LSOF_SHA256)?;
+
+        let transaction = Path::new(RECOVERY_RETRY_3_ROOT_TRANSACTION);
+        let layout = root_driver_layout(RECOVERY_RETRY_3_NONCE)?;
+        if layout.root != transaction {
+            return Err(ControllerError(
+                "retry-3 incident root transaction is not nonce-bound".to_owned(),
+            ));
+        }
+        let attest_immutable_sets = || -> Result<()> {
+            sudo_require_exact_incident_stat(
+                Path::new(RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT),
+                &format!(
+                    "0:0:{}:0755:Directory:{}:{}:{}:0",
+                    RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_NLINK,
+                    RECOVERY_RETRY_3_ROOT_DEVICE,
+                    RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_INODE,
+                    RECOVERY_RETRY_3_ROOT_SUPPORT_PARENT_LENGTH,
+                ),
+            )?;
+            require_retained_root_normal_v1_via_sudo()?;
+            require_retained_root_recovery_v1_via_sudo()?;
+            require_retained_root_recovery_v2_via_sudo()?;
+            require_retained_root_normal_v2_via_sudo()?;
+            require_retry_3_transaction_parent_via_sudo(Some(transaction))
+        };
+        attest_immutable_sets()?;
+
+        let attest_transaction = || -> Result<()> {
+            let expected_transaction = format!(
+                "0:0:{}:0700:Directory:{}:{}:{}:0",
+                RECOVERY_RETRY_3_ROOT_TRANSACTION_NLINK,
+                RECOVERY_RETRY_3_ROOT_DEVICE,
+                RECOVERY_RETRY_3_ROOT_TRANSACTION_INODE,
+                RECOVERY_RETRY_3_ROOT_TRANSACTION_LENGTH,
+            );
+            let expected_failed = format!(
+                "0:0:{}:0755:Directory:{}:{}:{}:0",
+                RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_NLINK,
+                RECOVERY_RETRY_3_ROOT_DEVICE,
+                RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_INODE,
+                RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_LENGTH,
+            );
+            let expected_state = format!(
+                "0:0:1:0600:Regular File:{}:{}:{}:0",
+                RECOVERY_RETRY_3_ROOT_DEVICE,
+                RECOVERY_RETRY_3_ROOT_STATE_INODE,
+                RECOVERY_RETRY_3_ROOT_STATE_LENGTH,
+            );
+            let expected_package = format!(
+                "0:0:1:0400:Regular File:{}:{}:{}:0",
+                RECOVERY_RETRY_3_ROOT_DEVICE,
+                RECOVERY_RETRY_3_ROOT_PACKAGE_INODE,
+                RECOVERY_RETRY_3_ROOT_PACKAGE_SIZE,
+            );
+            let state_fields: std::collections::BTreeMap<&str, &str> =
+                RECOVERY_RETRY_3_ROOT_STATE
+                    .lines()
+                    .map(|line| {
+                        line.split_once('=').ok_or_else(|| {
+                            ControllerError(
+                                "retry-3 pinned root-state line is malformed".to_owned(),
+                            )
+                        })
+                    })
+                    .collect::<Result<_>>()?;
+            if state_fields.get("prior_present").copied() != Some("0")
+                || state_fields.get("prior_device").copied() != Some("0")
+                || state_fields.get("prior_inode").copied() != Some("0")
+                || state_fields.get("prior_mode").copied() != Some("0")
+                || state_fields.get("prior_kind").copied() != Some("absent")
+                || state_fields
+                    .get("hold_device")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    != Some(RECOVERY_RETRY_3_ROOT_DEVICE)
+                || state_fields
+                    .get("hold_inode")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    != Some(RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_INODE)
+            {
+                return Err(ControllerError(
+                    "retry-3 pinned root state does not bind the absent prior and exact failed-driver inode"
+                        .to_owned(),
+                ));
+            }
+            sudo_require_exact_incident_stat(
+                transaction,
+                &expected_transaction,
+            )?;
+            sudo_require_exact_incident_listing(
+                transaction,
+                "OpensteamerVirtualMicrophone-v7.pkg\nfailed-v7-product-driver.node\nstate.txt\n",
+            )?;
+            for absent in [
+                Path::new(PRODUCT_DRIVER_CANONICAL_PATH),
+                layout.hold.as_path(),
+                layout.prior.as_path(),
+                layout.abandoned.as_path(),
+            ] {
+                if sudo_stat(absent)?.is_some() {
+                    return Err(ControllerError(format!(
+                        "retry-3 restored root path unexpectedly exists: {}",
+                        absent.display()
+                    )));
+                }
+            }
+            sudo_require_exact_incident_stat(
+                &layout.failed,
+                &expected_failed,
+            )?;
+            sudo_require_exact_incident_stat(
+                &layout.state,
+                &expected_state,
+            )?;
+            sudo_require_exact_incident_stat(
+                &layout.package,
+                &expected_package,
+            )?;
+            sudo_read_exact_incident_text(
+                &layout.state,
+                &expected_state,
+                RECOVERY_RETRY_3_ROOT_STATE_SHA256,
+                RECOVERY_RETRY_3_ROOT_STATE,
+            )?;
+            sudo_require_exact_incident_hash(
+                &layout.package,
+                EXPECTED_PRODUCTION_DRIVER_PACKAGE_SHA256,
+            )?;
+
+            let contents = layout.failed.join("Contents");
+            let macos = contents.join("MacOS");
+            let resources = contents.join("Resources");
+            let localized = resources.join("en.lproj");
+            let signature = contents.join("_CodeSignature");
+            sudo_require_exact_incident_listing(&layout.failed, "Contents\n")?;
+            sudo_require_exact_incident_listing(
+                &contents,
+                "Info.plist\nMacOS\nResources\n_CodeSignature\n",
+            )?;
+            sudo_require_exact_incident_listing(&macos, "OpensteamerVirtualMicrophone\n")?;
+            sudo_require_exact_incident_listing(
+                &resources,
+                "APPLE_SAMPLE_LICENSE.txt\nen.lproj\n",
+            )?;
+            sudo_require_exact_incident_listing(&localized, "Localizable.strings\n")?;
+            sudo_require_exact_incident_listing(&signature, "CodeResources\n")?;
+            for directory in [&contents, &macos, &resources, &localized, &signature] {
+                let stat = sudo_retained_root_recovery_v1_stat(directory)?;
+                let fields: Vec<&str> = stat.split(':').collect();
+                if fields.len() != 9
+                    || fields[0] != "0"
+                    || fields[1] != "0"
+                    || fields[3] != "0755"
+                    || fields[4] != "Directory"
+                    || fields[5] != RECOVERY_RETRY_3_ROOT_DEVICE.to_string()
+                    || fields[8] != "0"
+                {
+                    return Err(ControllerError(format!(
+                        "retry-3 failed-driver directory metadata changed: {}",
+                        directory.display()
+                    )));
+                }
+            }
+            let exact_files = [
+                (contents.join("Info.plist"), 0o644, "6e2fa0980cd27498ffe1075bcd439e61fcb0b6d38827ca2dadc3a7d6872e84e1"),
+                (signature.join("CodeResources"), 0o644, "92c1b53f174dd64d1835fa9b2ecbddd84eac815ad43bbe231090d214b1cc9731"),
+                (macos.join("OpensteamerVirtualMicrophone"), 0o755, EXPECTED_PRODUCTION_DRIVER_EXECUTABLE_SHA256),
+                (resources.join("APPLE_SAMPLE_LICENSE.txt"), 0o644, "63202ae6ab294069b6f77114f0cce8f35531bbb75355f1d96c8db68f949acdc5"),
+                (localized.join("Localizable.strings"), 0o644, "4798181065dbb851f0de518be396d6d4f8a465158923adf16bbf91bcb826a166"),
+            ];
+            for (path, mode, hash) in exact_files {
+                let stat = sudo_retained_root_recovery_v1_stat(&path)?;
+                let fields: Vec<&str> = stat.split(':').collect();
+                if fields.len() != 9
+                    || fields[0] != "0"
+                    || fields[1] != "0"
+                    || fields[2] != "1"
+                    || fields[3] != format!("{mode:04o}")
+                    || fields[4] != "Regular File"
+                    || fields[5] != RECOVERY_RETRY_3_ROOT_DEVICE.to_string()
+                    || fields[8] != "0"
+                {
+                    return Err(ControllerError(format!(
+                        "retry-3 failed-driver file metadata changed: {}",
+                        path.display()
+                    )));
+                }
+                sudo_require_exact_incident_hash(&path, hash)?;
+            }
+            sudo_require_exact_incident_stat(
+                &macos.join("OpensteamerVirtualMicrophone"),
+                &format!(
+                    "0:0:1:0755:Regular File:{}:{}:{}:0",
+                    RECOVERY_RETRY_3_ROOT_DEVICE,
+                    RECOVERY_RETRY_3_ROOT_FAILED_EXECUTABLE_INODE,
+                    RECOVERY_RETRY_3_ROOT_FAILED_EXECUTABLE_SIZE,
+                ),
+            )?;
+            let xattrs = sudo_output(&["-n", "/usr/bin/xattr", "-lr", path_text(transaction)?])?;
+            require_output_success(&xattrs, "prove retry-3 root transaction has no xattrs")?;
+            if !xattrs.stdout.is_empty() || !xattrs.stderr.is_empty() {
+                return Err(ControllerError(
+                    "retry-3 root transaction contains extended attributes".to_owned(),
+                ));
+            }
+            let openers = sudo_output(&["-n", "/usr/sbin/lsof", "+D", path_text(transaction)?])?;
+            if openers.status.code() != Some(1)
+                || !openers.stdout.is_empty()
+                || !openers.stderr.is_empty()
+            {
+                return Err(ControllerError(
+                    "retry-3 root transaction has an opener or ambiguous lsof result".to_owned(),
+                ));
+            }
+            sudo_require_exact_incident_stat(
+                transaction,
+                &expected_transaction,
+            )?;
+            sudo_require_exact_incident_listing(
+                transaction,
+                "OpensteamerVirtualMicrophone-v7.pkg\nfailed-v7-product-driver.node\nstate.txt\n",
+            )?;
+            sudo_read_exact_incident_text(
+                &layout.state,
+                &expected_state,
+                RECOVERY_RETRY_3_ROOT_STATE_SHA256,
+                RECOVERY_RETRY_3_ROOT_STATE,
+            )?;
+            sudo_require_exact_incident_hash(
+                &layout.package,
+                EXPECTED_PRODUCTION_DRIVER_PACKAGE_SHA256,
+            )?;
+            sudo_require_exact_incident_hash(
+                &macos.join("OpensteamerVirtualMicrophone"),
+                EXPECTED_PRODUCTION_DRIVER_EXECUTABLE_SHA256,
+            )
+        };
+        attest_transaction()?;
+        verify_exact_retry_3_product_endpoints_absent(&V7Layout::new(
+            PathBuf::from(V7_EXPECTED_REPO),
+            PathBuf::from(RECOVERY_RETRY_3_EVIDENCE),
+            RECOVERY_RETRY_3_NONCE,
+        ))?;
+        attest_transaction()?;
+        attest_immutable_sets()
+    }
+
+    fn require_retry_3_log_has_no_openers(path: &Path) -> Result<()> {
+        require_pinned_system_binary(
+            Path::new("/usr/sbin/lsof"),
+            0o755,
+            EXPECTED_LSOF_SHA256,
+        )?;
+        let output = command_output(
+            "/usr/sbin/lsof",
+            &["-n", "-Fpcufa", "--", path_text(path)?],
+            None,
+        )?;
+        if output.status.code() != Some(1)
+            || !output.stdout.is_empty()
+            || !output.stderr.is_empty()
+        {
+            return Err(ControllerError(format!(
+                "retry-3 recovery log has an opener or ambiguous lsof result: {}",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    fn require_exact_retry_3_log(
+        path: &Path,
+        expected_inode: u64,
+        expected_length: u64,
+        expected_sha256: &str,
+        expected_mode: u32,
+    ) -> Result<()> {
+        if !matches!(expected_mode, 0o600 | 0o644) {
+            return Err(ControllerError(
+                "retry-3 recovery log expected mode is outside the incident contract".to_owned(),
+            ));
+        }
+        let expected_device = verified_data_volume_device()?;
+        require_retry_3_log_has_no_openers(path)?;
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == 0
+                && metadata.nlink() == 1
+                && metadata.permissions().mode() & 0o7777 == expected_mode
+                && metadata.dev() == expected_device
+                && metadata.ino() == expected_inode
+                && metadata.len() == expected_length
+                && metadata.st_flags() == 0
+        };
+        let named_before = fs::symlink_metadata(path)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NOFOLLOW | 0x0100_0000)
+            .open(path)?;
+        require_descriptor_close_on_exec(&file, "retry-3 exact recovery log")?;
+        let descriptor_before = file.metadata()?;
+        if !metadata_is_exact(&named_before)
+            || !metadata_is_exact(&descriptor_before)
+            || descriptor_before.dev() != named_before.dev()
+            || descriptor_before.ino() != named_before.ino()
+            || descriptor_before.len() != named_before.len()
+        {
+            return Err(ControllerError(format!(
+                "retry-3 recovery log identity changed: {}",
+                path.display()
+            )));
+        }
+        let mut bytes = Vec::with_capacity(expected_length as usize);
+        Read::by_ref(&mut file)
+            .take(expected_length + 1)
+            .read_to_end(&mut bytes)?;
+        let descriptor_after = file.metadata()?;
+        let named_after = fs::symlink_metadata(path)?;
+        if bytes.len() as u64 != expected_length
+            || sha256_bytes(&bytes)? != expected_sha256
+            || !metadata_is_exact(&descriptor_after)
+            || !metadata_is_exact(&named_after)
+            || descriptor_before.dev() != descriptor_after.dev()
+            || descriptor_before.ino() != descriptor_after.ino()
+            || descriptor_before.len() != descriptor_after.len()
+            || descriptor_before.dev() != named_after.dev()
+            || descriptor_before.ino() != named_after.ino()
+            || descriptor_before.len() != named_after.len()
+        {
+            return Err(ControllerError(format!(
+                "retry-3 recovery log bytes or identity changed: {}",
+                path.display()
+            )));
+        }
+        drop(file);
+        require_retry_3_log_has_no_openers(path)
+    }
+
+    fn require_exact_retry_3_logs(expected_mode: u32) -> Result<()> {
+        require_exact_retry_3_log(
+            Path::new(RECOVERY_RETRY_3_STDOUT_LOG),
+            RECOVERY_RETRY_3_STDOUT_INODE,
+            RECOVERY_RETRY_3_STDOUT_SIZE,
+            RECOVERY_RETRY_3_STDOUT_SHA256,
+            expected_mode,
+        )?;
+        require_exact_retry_3_log(
+            Path::new(RECOVERY_RETRY_3_STDERR_LOG),
+            RECOVERY_RETRY_3_STDERR_INODE,
+            RECOVERY_RETRY_3_STDERR_SIZE,
+            RECOVERY_RETRY_3_STDERR_SHA256,
+            expected_mode,
+        )
+    }
+
+    fn require_exact_retry_3_log_admission_mode(
+        path: &Path,
+        expected_inode: u64,
+        expected_length: u64,
+        expected_sha256: &str,
+    ) -> Result<u32> {
+        let mode = fs::symlink_metadata(path)?.permissions().mode() & 0o7777;
+        if !matches!(mode, 0o600 | 0o644) {
+            return Err(ControllerError(format!(
+                "retry-3 recovery log is neither the exact pre-repair nor repaired mode: {}",
+                path.display()
+            )));
+        }
+        require_exact_retry_3_log(
+            path,
+            expected_inode,
+            expected_length,
+            expected_sha256,
+            mode,
+        )?;
+        Ok(mode)
+    }
+
+    fn require_exact_retry_3_log_admission_modes() -> Result<Retry3IncidentLogModes> {
+        Ok(Retry3IncidentLogModes {
+            stdout: require_exact_retry_3_log_admission_mode(
+                Path::new(RECOVERY_RETRY_3_STDOUT_LOG),
+                RECOVERY_RETRY_3_STDOUT_INODE,
+                RECOVERY_RETRY_3_STDOUT_SIZE,
+                RECOVERY_RETRY_3_STDOUT_SHA256,
+            )?,
+            stderr: require_exact_retry_3_log_admission_mode(
+                Path::new(RECOVERY_RETRY_3_STDERR_LOG),
+                RECOVERY_RETRY_3_STDERR_INODE,
+                RECOVERY_RETRY_3_STDERR_SIZE,
+                RECOVERY_RETRY_3_STDERR_SHA256,
+            )?,
+        })
+    }
+
+    fn require_retry_3_log_resume_modes(
+        admitted: Retry3IncidentLogModes,
+    ) -> Result<Retry3IncidentLogModes> {
+        let actual = require_exact_retry_3_log_admission_modes()?;
+        let monotonic = |before: u32, now: u32| before == now || (before == 0o644 && now == 0o600);
+        if !monotonic(admitted.stdout, actual.stdout)
+            || !monotonic(admitted.stderr, actual.stderr)
+        {
+            return Err(ControllerError(
+                "retry-3 recovery log mode moved outside the admitted monotonic repair path"
+                    .to_owned(),
+            ));
+        }
+        Ok(actual)
+    }
+
+    fn require_exact_retry_3_log_prefix(
+        path: &Path,
+        expected_inode: u64,
+        expected_prefix_length: u64,
+        expected_prefix_sha256: &str,
+    ) -> Result<()> {
+        let expected_device = verified_data_volume_device()?;
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == 0
+                && metadata.nlink() == 1
+                && metadata.permissions().mode() & 0o7777 == 0o600
+                && metadata.dev() == expected_device
+                && metadata.ino() == expected_inode
+                && metadata.len() >= expected_prefix_length
+                && metadata.len() <= expected_prefix_length + 16 * 1_024 * 1_024
+                && metadata.st_flags() == 0
+        };
+        let named_before = fs::symlink_metadata(path)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NOFOLLOW | 0x0100_0000)
+            .open(path)?;
+        require_descriptor_close_on_exec(&file, "retry-3 recovered log prefix")?;
+        let descriptor_before = file.metadata()?;
+        if !metadata_is_exact(&named_before)
+            || !metadata_is_exact(&descriptor_before)
+            || descriptor_before.dev() != named_before.dev()
+            || descriptor_before.ino() != named_before.ino()
+        {
+            return Err(ControllerError(format!(
+                "retry-3 recovered log prefix identity changed: {}",
+                path.display()
+            )));
+        }
+        let mut prefix = Vec::with_capacity(expected_prefix_length as usize);
+        Read::by_ref(&mut file)
+            .take(expected_prefix_length)
+            .read_to_end(&mut prefix)?;
+        let descriptor_after = file.metadata()?;
+        let named_after = fs::symlink_metadata(path)?;
+        if prefix.len() as u64 != expected_prefix_length
+            || sha256_bytes(&prefix)? != expected_prefix_sha256
+            || !metadata_is_exact(&descriptor_after)
+            || !metadata_is_exact(&named_after)
+            || descriptor_before.dev() != descriptor_after.dev()
+            || descriptor_before.ino() != descriptor_after.ino()
+            || descriptor_before.dev() != named_after.dev()
+            || descriptor_before.ino() != named_after.ino()
+            || descriptor_after.len() < descriptor_before.len()
+            || named_after.len() < named_before.len()
+        {
+            return Err(ControllerError(format!(
+                "retry-3 recovered log prefix bytes or identity changed: {}",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    fn require_exact_retry_3_log_prefixes() -> Result<()> {
+        require_exact_retry_3_log_prefix(
+            Path::new(RECOVERY_RETRY_3_STDOUT_LOG),
+            RECOVERY_RETRY_3_STDOUT_INODE,
+            RECOVERY_RETRY_3_STDOUT_SIZE,
+            RECOVERY_RETRY_3_STDOUT_SHA256,
+        )?;
+        require_exact_retry_3_log_prefix(
+            Path::new(RECOVERY_RETRY_3_STDERR_LOG),
+            RECOVERY_RETRY_3_STDERR_INODE,
+            RECOVERY_RETRY_3_STDERR_SIZE,
+            RECOVERY_RETRY_3_STDERR_SHA256,
+        )
+    }
+
+    fn require_exact_retry_3_offline_log_prefixes() -> Result<()> {
+        for path in [
+            Path::new(RECOVERY_RETRY_3_STDOUT_LOG),
+            Path::new(RECOVERY_RETRY_3_STDERR_LOG),
+        ] {
+            require_retry_3_log_has_no_openers(path)?;
+        }
+        require_exact_retry_3_log_prefixes()?;
+        for path in [
+            Path::new(RECOVERY_RETRY_3_STDOUT_LOG),
+            Path::new(RECOVERY_RETRY_3_STDERR_LOG),
+        ] {
+            require_retry_3_log_has_no_openers(path)?;
+        }
+        Ok(())
+    }
+
+    fn repair_exact_retry_3_log_mode(
+        path: &Path,
+        expected_inode: u64,
+        expected_length: u64,
+        expected_sha256: &str,
+    ) -> Result<()> {
+        let expected_device = verified_data_volume_device()?;
+        require_retry_3_log_has_no_openers(path)?;
+        let metadata_is_exact = |metadata: &fs::Metadata, mode: u32| {
+            metadata.file_type().is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == 0
+                && metadata.nlink() == 1
+                && metadata.permissions().mode() & 0o7777 == mode
+                && metadata.dev() == expected_device
+                && metadata.ino() == expected_inode
+                && metadata.len() == expected_length
+                && metadata.st_flags() == 0
+        };
+        let named_before = fs::symlink_metadata(path)?;
+        let before_mode = named_before.permissions().mode() & 0o7777;
+        if !matches!(before_mode, 0o600 | 0o644)
+            || !metadata_is_exact(&named_before, before_mode)
+        {
+            return Err(ControllerError(format!(
+                "retry-3 recovery log pre-repair identity changed: {}",
+                path.display()
+            )));
+        }
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(O_NOFOLLOW | 0x0100_0000)
+            .open(path)?;
+        require_descriptor_close_on_exec(&file, "retry-3 recovery log")?;
+        let descriptor_before = file.metadata()?;
+        if !metadata_is_exact(&descriptor_before, before_mode)
+            || descriptor_before.dev() != named_before.dev()
+            || descriptor_before.ino() != named_before.ino()
+            || descriptor_before.len() != named_before.len()
+        {
+            return Err(ControllerError(format!(
+                "retry-3 recovery log changed while opening: {}",
+                path.display()
+            )));
+        }
+        let mut before_bytes = Vec::with_capacity(expected_length as usize);
+        Read::by_ref(&mut file)
+            .take(expected_length + 1)
+            .read_to_end(&mut before_bytes)?;
+        if before_bytes.len() as u64 != expected_length
+            || sha256_bytes(&before_bytes)? != expected_sha256
+        {
+            return Err(ControllerError(format!(
+                "retry-3 recovery log bytes differ from the incident pin: {}",
+                path.display()
+            )));
+        }
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        file.sync_all()?;
+        let descriptor_after = file.metadata()?;
+        let named_after = fs::symlink_metadata(path)?;
+        if !metadata_is_exact(&descriptor_after, 0o600)
+            || !metadata_is_exact(&named_after, 0o600)
+            || descriptor_before.dev() != descriptor_after.dev()
+            || descriptor_before.ino() != descriptor_after.ino()
+            || descriptor_before.len() != descriptor_after.len()
+            || descriptor_before.dev() != named_after.dev()
+            || descriptor_before.ino() != named_after.ino()
+            || descriptor_before.len() != named_after.len()
+        {
+            return Err(ControllerError(format!(
+                "retry-3 recovery log lost its descriptor-bound identity: {}",
+                path.display()
+            )));
+        }
+        file.seek(SeekFrom::Start(0))?;
+        let mut after_bytes = Vec::with_capacity(expected_length as usize);
+        Read::by_ref(&mut file)
+            .take(expected_length + 1)
+            .read_to_end(&mut after_bytes)?;
+        if after_bytes != before_bytes || sha256_bytes(&after_bytes)? != expected_sha256 {
+            return Err(ControllerError(format!(
+                "retry-3 recovery log bytes changed during descriptor chmod: {}",
+                path.display()
+            )));
+        }
+        drop(file);
+        require_retry_3_log_has_no_openers(path)
+    }
+
+    fn repair_exact_retry_3_logs() -> Result<()> {
+        repair_exact_retry_3_log_mode(
+            Path::new(RECOVERY_RETRY_3_STDOUT_LOG),
+            RECOVERY_RETRY_3_STDOUT_INODE,
+            RECOVERY_RETRY_3_STDOUT_SIZE,
+            RECOVERY_RETRY_3_STDOUT_SHA256,
+        )?;
+        repair_exact_retry_3_log_mode(
+            Path::new(RECOVERY_RETRY_3_STDERR_LOG),
+            RECOVERY_RETRY_3_STDERR_INODE,
+            RECOVERY_RETRY_3_STDERR_SIZE,
+            RECOVERY_RETRY_3_STDERR_SHA256,
+        )
+    }
+
+    fn require_retry_3_exact_v6_offline() -> Result<()> {
+        verify_committed_v6_baseline()?;
+        verify_current_baseline_app_at(Path::new(NEW_APP), true)?;
+        verify_reviewed_launch_agent_unchanged()?;
+        require_service_absent(NEW_LAUNCH_AGENT_LABEL)?;
+        require_no_capture_servers()?;
+        verify_isolated_pairing_items_present()?;
+        verify_v5_pointer_unchanged()?;
+        verify_protected_legacy_absent()?;
+        acquire_unowned_shared_lock().map(drop)
+    }
+
+    fn require_retry_3_core_audio_generation(
+        actual: CoreAudioGeneration,
+        expected: Option<CoreAudioGeneration>,
+    ) -> Result<CoreAudioGeneration> {
+        if expected.is_some_and(|expected| expected != actual) {
+            return Err(ControllerError(
+                "coreaudiod generation differs from the retry-3 recovery admission".to_owned(),
+            ));
+        }
+        Ok(actual)
+    }
+
+    fn prove_retry_3_offline_safe_runtime(
+        layout: &V7Layout,
+        expected_core_audio: Option<CoreAudioGeneration>,
+    ) -> Result<CoreAudioGeneration> {
+        require_retry_3_restored_root_via_sudo()?;
+        verify_exact_retry_3_product_endpoints_absent(layout)?;
+        let core_audio_before = read_core_audio_generation_root()?;
+        require_retry_3_exact_v6_offline()?;
+        let core_audio_after = read_core_audio_generation_root()?;
+        verify_exact_retry_3_product_endpoints_absent(layout)?;
+        require_retry_3_restored_root_via_sudo()?;
+        if core_audio_before != core_audio_after {
+            return Err(ControllerError(
+                "coreaudiod generation changed during retry-3 offline recovery proof".to_owned(),
+            ));
+        }
+        require_retry_3_core_audio_generation(core_audio_before, expected_core_audio)
+    }
+
+    fn retry_3_recovery_checkpoint() -> LogCheckpoint {
+        LogCheckpoint {
+            offset: RECOVERY_RETRY_3_STDOUT_SIZE,
+            device: RETAINED_ROOT_V7_NORMAL_V2_DEVICE,
+            inode: RECOVERY_RETRY_3_STDOUT_INODE,
+        }
+    }
+
+    fn prove_retry_3_online_safe_runtime(
+        layout: &V7Layout,
+        expected_generation: &Retry3RecoveredGeneration,
+        expected_core_audio: CoreAudioGeneration,
+    ) -> Result<LaunchGeneration> {
+        require_exact_retry_3_log_prefixes()?;
+        require_retry_3_restored_root_via_sudo()?;
+        verify_exact_retry_3_product_endpoints_absent(layout)?;
+        let core_audio_before = read_core_audio_generation_root()?;
+        let generation = verify_paired_v7_runtime()?;
+        require_retry_3_generation_matches(&generation, expected_generation)?;
+        verify_current_baseline_oracle_pins()?;
+        verify_deployment(
+            Path::new(CURRENT_BASELINE_SOURCE_EXPORT),
+            Path::new(CURRENT_BASELINE_APP),
+            &retry_3_recovery_checkpoint(),
+            &generation,
+        )?;
+        verify_isolated_pairing_items_present()?;
+        verify_v5_pointer_unchanged()?;
+        let core_audio_after = read_core_audio_generation_root()?;
+        verify_exact_retry_3_product_endpoints_absent(layout)?;
+        require_retry_3_restored_root_via_sudo()?;
+        require_exact_retry_3_log_prefixes()?;
+        if core_audio_before != core_audio_after {
+            return Err(ControllerError(
+                "coreaudiod generation changed during retry-3 recovered-v6 proof".to_owned(),
+            ));
+        }
+        require_retry_3_core_audio_generation(core_audio_before, Some(expected_core_audio))?;
+        let final_generation = verify_paired_v7_runtime()?;
+        require_retry_3_generation_matches(&final_generation, expected_generation)?;
+        Ok(final_generation)
+    }
+
+    fn retry_3_v6_service_is_absent() -> Result<bool> {
+        let state = command_output(
+            "/bin/launchctl",
+            &["print", &format!("gui/{USER_ID}/{NEW_LAUNCH_AGENT_LABEL}")],
+            None,
+        )?;
+        if service_absence_observation(NEW_LAUNCH_AGENT_LABEL, &state)? {
+            return Ok(true);
+        }
+        require_output_success(&state, "inspect retry-3 recovery v6 launch service")?;
+        Ok(false)
+    }
+
+    fn launch_or_resume_retry_3_v6(
+        layout: &V7Layout,
+        expected_core_audio: CoreAudioGeneration,
+    ) -> Result<LaunchGeneration> {
+        if retry_3_v6_service_is_absent()? {
+            require_exact_retry_3_offline_log_prefixes()?;
+            prove_retry_3_offline_safe_runtime(layout, Some(expected_core_audio))?;
+            reset_retry_3_pending_result_before_generation_publish()?;
+            require_exact_retry_3_critical_failure_evidence(
+                RetryV7PointerExpectation::Present,
+            )?;
+            prove_retry_3_offline_safe_runtime(layout, Some(expected_core_audio))?;
+            require_exact_retry_3_offline_log_prefixes()?;
+            bootstrap_exact_new_job()?;
+        }
+        let generation = wait_for_paired_v7_launch_generation(Duration::from_secs(45))?;
+        let expected = retry_3_recovered_generation(&generation)?;
+        prove_retry_3_online_safe_runtime(layout, &expected, expected_core_audio)
     }
 
     fn read_root_controller_identity_records_via_sudo() -> Result<ControllerBinaryIdentity> {
@@ -7390,6 +8587,86 @@ pub(crate) mod paired_v7 {
         Ok(())
     }
 
+    fn verify_exact_retry_3_product_endpoints_absent(layout: &V7Layout) -> Result<()> {
+        let expected_guardian = Path::new(RECOVERY_RETRY_3_EVIDENCE)
+            .join("probes/opensteamer-v7-default-route-guardian");
+        if layout.default_route_guardian != expected_guardian {
+            return Err(ControllerError(
+                "product-endpoint guardian escaped the exact retry-3 evidence path".to_owned(),
+            ));
+        }
+        let data_volume_device = verified_data_volume_device()?;
+        let mut guardian = OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NOFOLLOW | 0x0100_0000)
+            .open(&layout.default_route_guardian)?;
+        require_descriptor_close_on_exec(&guardian, "retry-3 product-endpoint guardian")?;
+        let before = guardian.metadata()?;
+        let named_before = fs::symlink_metadata(&layout.default_route_guardian)?;
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.nlink() == 1
+                && metadata.permissions().mode() & 0o7777 == 0o755
+                && metadata.dev() == data_volume_device
+                && metadata.ino() == RECOVERY_RETRY_3_GUARDIAN_INODE
+                && metadata.len() == RECOVERY_RETRY_3_GUARDIAN_SIZE
+                && metadata.st_flags() == 0
+        };
+        let mut bytes = Vec::with_capacity(RECOVERY_RETRY_3_GUARDIAN_SIZE as usize);
+        Read::by_ref(&mut guardian)
+            .take(RECOVERY_RETRY_3_GUARDIAN_SIZE + 1)
+            .read_to_end(&mut bytes)?;
+        if !metadata_is_exact(&before)
+            || !metadata_is_exact(&named_before)
+            || before.dev() != named_before.dev()
+            || before.ino() != named_before.ino()
+            || before.len() != named_before.len()
+            || bytes.len() as u64 != RECOVERY_RETRY_3_GUARDIAN_SIZE
+            || sha256_bytes(&bytes)? != RECOVERY_RETRY_3_GUARDIAN_SHA256
+            || RECOVERY_RETRY_3_GUARDIAN_SHA256
+                != EXPECTED_DEFAULT_ROUTE_GUARDIAN_BINARY_SHA256
+        {
+            return Err(ControllerError(
+                "retry-3 product-endpoint guardian differs from its exact inode and release pin"
+                    .to_owned(),
+            ));
+        }
+        let output = Command::new(&layout.default_route_guardian)
+            .arg("verify-product-absent")
+            .env_clear()
+            .env("LC_ALL", "C")
+            .stdin(Stdio::null())
+            .output()?;
+        require_output_success(&output, "prove exact retry-3 product HAL endpoints absent")?;
+        if output.stdout != b"PRODUCT_ENDPOINTS_ABSENT_AND_LEGACY_PAIR_AVAILABLE\n"
+            || !output.stderr.is_empty()
+        {
+            return Err(ControllerError(
+                "retry-3 product HAL endpoint absence proof changed".to_owned(),
+            ));
+        }
+        let after = guardian.metadata()?;
+        let named_after = fs::symlink_metadata(&layout.default_route_guardian)?;
+        if !metadata_is_exact(&after)
+            || !metadata_is_exact(&named_after)
+            || before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.len() != after.len()
+            || before.dev() != named_after.dev()
+            || before.ino() != named_after.ino()
+            || before.len() != named_after.len()
+        {
+            return Err(ControllerError(
+                "retry-3 product-endpoint guardian changed during descriptor-bracketed execution"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     fn uid501_driver_restore_proxy(
         nonce: &str,
         evidence: &Path,
@@ -8225,6 +9502,374 @@ pub(crate) mod paired_v7 {
             )));
         }
         Ok(())
+    }
+
+    fn require_exact_retry_3_critical_failure_evidence(
+        pointer_expectation: RetryV7PointerExpectation,
+    ) -> Result<V7Layout> {
+        let expected_device = verified_data_volume_device()?;
+        let evidence = Path::new(RECOVERY_RETRY_3_EVIDENCE);
+        require_current_retry_v7_layout(
+            evidence,
+            Some(RECOVERY_RETRY_3_NONCE),
+            pointer_expectation,
+        )?;
+        let recovery_journal_exists =
+            path_exists_without_follow(Path::new(RECOVERY_RETRY_3_RECOVERY_JOURNAL))?;
+        let recovery_journal_pending_exists = path_exists_without_follow(Path::new(
+            RECOVERY_RETRY_3_RECOVERY_JOURNAL_PENDING,
+        ))?;
+        let recovery_result_exists =
+            path_exists_without_follow(Path::new(RECOVERY_RETRY_3_RECOVERY_RESULT))?;
+        let recovery_result_pending_exists = path_exists_without_follow(Path::new(
+            RECOVERY_RETRY_3_RECOVERY_RESULT_PENDING,
+        ))?;
+        let retired_pointer = evidence.join("retired-active-pointer.txt");
+        let retired_pointer_exists = path_exists_without_follow(&retired_pointer)?;
+        if recovery_journal_exists && recovery_journal_pending_exists {
+            return Err(ControllerError(
+                "retry-3 final and pending recovery journals both exist".to_owned(),
+            ));
+        }
+        if (recovery_result_exists || recovery_result_pending_exists) && !recovery_journal_exists {
+            return Err(ControllerError(
+                "retry-3 recovery result exists without its durable recovery journal".to_owned(),
+            ));
+        }
+        if recovery_result_exists && recovery_result_pending_exists {
+            return Err(ControllerError(
+                "retry-3 final and pending recovery results both exist".to_owned(),
+            ));
+        }
+        if retired_pointer_exists && (!recovery_journal_exists || !recovery_result_exists) {
+            return Err(ControllerError(
+                "retry-3 pointer retired before durable recovery evidence existed".to_owned(),
+            ));
+        }
+        let optional_children = u64::from(recovery_journal_exists)
+            + u64::from(recovery_journal_pending_exists)
+            + u64::from(recovery_result_exists)
+            + u64::from(recovery_result_pending_exists)
+            + u64::from(retired_pointer_exists);
+        let expected_nlink = RECOVERY_RETRY_3_EVIDENCE_NLINK + optional_children;
+        let expected_length = RECOVERY_RETRY_3_EVIDENCE_SIZE
+            .checked_add(optional_children.checked_mul(32).ok_or_else(|| {
+                ControllerError("retry-3 recovery evidence child count overflowed".to_owned())
+            })?)
+            .ok_or_else(|| {
+                ControllerError("retry-3 recovery evidence length overflowed".to_owned())
+            })?;
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.nlink() == expected_nlink
+                && metadata.permissions().mode() & 0o7777 == 0o700
+                && metadata.dev() == expected_device
+                && metadata.ino() == RECOVERY_RETRY_3_EVIDENCE_INODE
+                && metadata.len() == expected_length
+                && metadata.st_flags() == 0
+        };
+        let evidence_before = fs::symlink_metadata(evidence)?;
+        if evidence.file_name().and_then(|name| name.to_str()) != Some(RECOVERY_RETRY_3_NAME)
+            || evidence.parent() != Some(Path::new(V7_UPDATE_ROOT))
+            || !metadata_is_exact(&evidence_before)
+        {
+            return Err(ControllerError(
+                "retry-3 critical evidence root identity changed".to_owned(),
+            ));
+        }
+        let pointer_path = match pointer_expectation {
+            RetryV7PointerExpectation::Present => {
+                require_path_absent(&retired_pointer, "retry-3 retired pointer before recovery")?;
+                Path::new(V7_ACTIVE_UPDATE)
+            }
+            RetryV7PointerExpectation::Absent => {
+                require_path_absent(Path::new(V7_ACTIVE_UPDATE), "retired retry-3 active pointer")?;
+                retired_pointer.as_path()
+            }
+        };
+        let pointer = require_exact_retained_file(
+            pointer_path,
+            expected_device,
+            RECOVERY_RETRY_3_POINTER_INODE,
+            0o600,
+            RECOVERY_RETRY_3_POINTER_SIZE,
+            RECOVERY_RETRY_3_POINTER_SHA256,
+        )?;
+        if pointer.as_slice() != RECOVERY_RETRY_3_POINTER.as_bytes() {
+            return Err(ControllerError(
+                "retry-3 active pointer bytes changed".to_owned(),
+            ));
+        }
+        for (path, inode, length, bytes, sha256) in [
+            (
+                evidence.join("journal.log"),
+                RECOVERY_RETRY_3_JOURNAL_INODE,
+                RECOVERY_RETRY_3_JOURNAL_SIZE,
+                RECOVERY_RETRY_3_JOURNAL,
+                RECOVERY_RETRY_3_JOURNAL_SHA256,
+            ),
+            (
+                evidence.join("result.txt"),
+                RECOVERY_RETRY_3_RESULT_INODE,
+                RECOVERY_RETRY_3_RESULT_SIZE,
+                RECOVERY_RETRY_3_RESULT,
+                RECOVERY_RETRY_3_RESULT_SHA256,
+            ),
+            (
+                evidence.join("driver-transaction-record.txt"),
+                RECOVERY_RETRY_3_DRIVER_RECORD_INODE,
+                RECOVERY_RETRY_3_DRIVER_RECORD_SIZE,
+                RECOVERY_RETRY_3_DRIVER_RECORD,
+                RECOVERY_RETRY_3_DRIVER_RECORD_SHA256,
+            ),
+            (
+                evidence.join("provenance.txt"),
+                RECOVERY_RETRY_3_PROVENANCE_INODE,
+                RECOVERY_RETRY_3_PROVENANCE_SIZE,
+                RECOVERY_RETRY_3_PROVENANCE,
+                RECOVERY_RETRY_3_PROVENANCE_SHA256,
+            ),
+            (
+                evidence.join("install-hold-name.txt"),
+                RECOVERY_RETRY_3_INSTALL_HOLD_NAME_INODE,
+                RECOVERY_RETRY_3_INSTALL_HOLD_NAME_SIZE,
+                RECOVERY_RETRY_3_INSTALL_HOLD_NAME,
+                RECOVERY_RETRY_3_INSTALL_HOLD_NAME_SHA256,
+            ),
+        ] {
+            if bytes.len() as u64 != length {
+                return Err(ControllerError(format!(
+                    "retry-3 pinned failure-file length disagrees with exact bytes: {}",
+                    path.display()
+                )));
+            }
+            require_exact_retained_failure_file(&path, expected_device, inode, bytes, sha256)?;
+        }
+        let history = parse_v7_journal_history(RECOVERY_RETRY_3_JOURNAL)?;
+        if history.state != V7State::CriticalFailure
+            || history.terminal_critical_predecessor != Some(V7State::CurrentRestored)
+        {
+            return Err(ControllerError(
+                "retry-3 failure journal is not terminal immediately after CURRENT_RESTORED"
+                    .to_owned(),
+            ));
+        }
+        require_exact_retained_file(
+            &evidence.join("rollback-reserve.bin"),
+            expected_device,
+            RECOVERY_RETRY_3_RESERVE_INODE,
+            0o600,
+            0,
+            RECOVERY_RETRY_2_RELEASED_RESERVE_SHA256,
+        )?;
+        let reserve = fs::symlink_metadata(evidence.join("rollback-reserve.bin"))?;
+        if reserve.blocks() != 0 {
+            return Err(ControllerError(
+                "retry-3 released rollback reserve regained allocation".to_owned(),
+            ));
+        }
+        require_exact_retained_empty_directory(
+            &evidence.join("rollback-current"),
+            expected_device,
+            RECOVERY_RETRY_3_ROLLBACK_CURRENT_INODE,
+        )?;
+        let failed = evidence.join("failed-new");
+        let archive = failed.join("partial-install-hold-root");
+        let archive_app = archive.join("opensteamer Host.app");
+        let archive_executable = archive_app.join("Contents/MacOS/CaptureServer");
+        let failed_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.nlink() == 3
+                && metadata.permissions().mode() & 0o7777 == 0o700
+                && metadata.dev() == expected_device
+                && metadata.ino() == RECOVERY_RETRY_3_FAILED_NEW_INODE
+                && metadata.len() == 96
+                && metadata.st_flags() == 0
+        };
+        let failed_before = fs::symlink_metadata(&failed)?;
+        if !failed_exact(&failed_before)
+            || fs::read_dir(&failed)?
+                .map(|entry| entry.map(|value| value.file_name()))
+                .collect::<std::result::Result<Vec<_>, _>>()?
+                != [std::ffi::OsString::from("partial-install-hold-root")]
+        {
+            return Err(ControllerError(
+                "retry-3 failed-new archive topology changed".to_owned(),
+            ));
+        }
+        for (path, expected_gid, expected_inode, expected_mode) in [
+            (&archive, 80, RECOVERY_RETRY_3_ARCHIVE_INODE, 0o700),
+            (
+                &archive_app,
+                RETAINED_FAILED_V7_ATTEMPT_GID,
+                RECOVERY_RETRY_3_ARCHIVE_APP_INODE,
+                0o755,
+            ),
+        ] {
+            let metadata = fs::symlink_metadata(path)?;
+            if !metadata.file_type().is_dir()
+                || metadata.file_type().is_symlink()
+                || metadata.uid() != USER_ID
+                || metadata.gid() != expected_gid
+                || metadata.nlink() != 3
+                || metadata.permissions().mode() & 0o7777 != expected_mode
+                || metadata.dev() != expected_device
+                || metadata.ino() != expected_inode
+                || metadata.len() != 96
+                || metadata.st_flags() != 0
+            {
+                return Err(ControllerError(format!(
+                    "retry-3 archived install hold identity changed: {}",
+                    path.display()
+                )));
+            }
+        }
+        require_exact_retained_file(
+            &archive_executable,
+            expected_device,
+            RECOVERY_RETRY_3_ARCHIVE_EXECUTABLE_INODE,
+            0o755,
+            RECOVERY_RETRY_3_ARCHIVE_EXECUTABLE_SIZE,
+            RECOVERY_RETRY_3_ARCHIVE_EXECUTABLE_SHA256,
+        )?;
+        require_path_absent(
+            Path::new(RECOVERY_RETRY_3_INSTALL_HOLD_NAME.trim_end()),
+            "retry-3 original install-hold root",
+        )?;
+        let failed_after = fs::symlink_metadata(&failed)?;
+        if !failed_exact(&failed_after)
+            || failed_before.dev() != failed_after.dev()
+            || failed_before.ino() != failed_after.ino()
+            || failed_before.nlink() != failed_after.nlink()
+            || failed_before.len() != failed_after.len()
+            || failed_before.permissions().mode() != failed_after.permissions().mode()
+            || failed_before.st_flags() != failed_after.st_flags()
+        {
+            return Err(ControllerError(
+                "retry-3 failed-new archive changed during proof".to_owned(),
+            ));
+        }
+        let allowed: std::collections::BTreeMap<&str, bool> = [
+            ("build.stderr", false),
+            ("build.stdout", false),
+            ("deployment-reference", true),
+            ("driver-transaction-record.txt", false),
+            ("failed-new", true),
+            ("functional-inputs.txt", false),
+            ("install-hold-name.txt", false),
+            ("journal.log", false),
+            ("probes", true),
+            ("production-driver-v7", true),
+            ("provenance.txt", false),
+            ("result.txt", false),
+            (".retry-3-recovery-result.txt.pending", false),
+            (".retry-3-recovery-journal.txt.pending", false),
+            ("retry-3-recovery-journal.txt", false),
+            ("retry-3-recovery-result.txt", false),
+            ("retired-active-pointer.txt", false),
+            ("rollback-current", true),
+            ("rollback-reserve.bin", false),
+            ("source-export", true),
+            ("source.tar", false),
+            ("staged-output", true),
+            ("swiftpm-scratch", true),
+        ]
+        .into_iter()
+        .collect();
+        let mut actual = std::collections::BTreeMap::new();
+        for entry in fs::read_dir(evidence)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_str().ok_or_else(|| {
+                ControllerError("retry-3 evidence child is not UTF-8".to_owned())
+            })?;
+            let file_type = entry.file_type()?;
+            let is_directory = file_type.is_dir();
+            let expected_directory = allowed.get(name).copied();
+            if expected_directory.is_none()
+                || file_type.is_symlink()
+                || (expected_directory == Some(true) && !file_type.is_dir())
+                || (expected_directory == Some(false) && !file_type.is_file())
+                || actual.insert(name.to_owned(), is_directory).is_some()
+            {
+                return Err(ControllerError(
+                    "retry-3 evidence contains an unexpected child".to_owned(),
+                ));
+            }
+        }
+        for required in [
+            "build.stderr",
+            "build.stdout",
+            "deployment-reference",
+            "driver-transaction-record.txt",
+            "failed-new",
+            "functional-inputs.txt",
+            "install-hold-name.txt",
+            "journal.log",
+            "probes",
+            "production-driver-v7",
+            "provenance.txt",
+            "result.txt",
+            "rollback-current",
+            "rollback-reserve.bin",
+            "source-export",
+            "source.tar",
+            "staged-output",
+            "swiftpm-scratch",
+        ] {
+            if !actual.contains_key(required) {
+                return Err(ControllerError(
+                    "retry-3 evidence omitted a required failure child".to_owned(),
+                ));
+            }
+        }
+        for (name, expected_present) in [
+            ("retry-3-recovery-journal.txt", recovery_journal_exists),
+            (
+                ".retry-3-recovery-journal.txt.pending",
+                recovery_journal_pending_exists,
+            ),
+            ("retry-3-recovery-result.txt", recovery_result_exists),
+            (
+                ".retry-3-recovery-result.txt.pending",
+                recovery_result_pending_exists,
+            ),
+            ("retired-active-pointer.txt", retired_pointer_exists),
+        ] {
+            if actual.contains_key(name) != expected_present {
+                return Err(ControllerError(format!(
+                    "retry-3 recovery evidence child presence changed: {name}"
+                )));
+            }
+        }
+        let evidence_after = fs::symlink_metadata(evidence)?;
+        if !metadata_is_exact(&evidence_after)
+            || evidence_before.dev() != evidence_after.dev()
+            || evidence_before.ino() != evidence_after.ino()
+            || evidence_before.nlink() != evidence_after.nlink()
+            || evidence_before.len() != evidence_after.len()
+            || evidence_before.st_flags() != evidence_after.st_flags()
+        {
+            return Err(ControllerError(
+                "retry-3 evidence root changed during persistent proof".to_owned(),
+            ));
+        }
+        let layout = v7_layout_from_existing(
+            PathBuf::from(V7_EXPECTED_REPO),
+            evidence.to_path_buf(),
+        )?;
+        if layout.nonce != RECOVERY_RETRY_3_NONCE {
+            return Err(ControllerError(
+                "retry-3 critical layout nonce changed".to_owned(),
+            ));
+        }
+        Ok(layout)
     }
 
     fn require_exact_retained_probe_directory(
@@ -9743,6 +11388,1210 @@ pub(crate) mod paired_v7 {
             .unwrap_or(false)
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Retry3RecoveryState {
+        SafeRuntimeProven,
+        LogsRepaired,
+        LaunchArmed,
+        RecoveredV6,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct Retry3IncidentLogModes {
+        stdout: u32,
+        stderr: u32,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct Retry3RecoveryAdmission {
+        core_audio: CoreAudioGeneration,
+        log_modes: Retry3IncidentLogModes,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct ParsedRetry3RecoveryJournal {
+        state: Retry3RecoveryState,
+        recovery_commit: String,
+        recovery_tree: String,
+        admission: Retry3RecoveryAdmission,
+        terminal: Option<Retry3RecoveryResultBinding>,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct Retry3RecoveredGeneration {
+        pid: u32,
+        runs: u64,
+        process_start_sha256: String,
+        nonce: String,
+        lock_device: u64,
+        lock_inode: u64,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct Retry3RecoveryResultBinding {
+        inode: u64,
+        size: u64,
+        sha256: String,
+        generation: Retry3RecoveredGeneration,
+    }
+
+    struct Retry3RecoveryJournal {
+        path: PathBuf,
+        file: File,
+        state: Retry3RecoveryState,
+        recovery_commit: String,
+        recovery_tree: String,
+        journal_inode: u64,
+        admission: Retry3RecoveryAdmission,
+        terminal: Option<Retry3RecoveryResultBinding>,
+    }
+
+    fn retry_3_recovered_generation(
+        generation: &LaunchGeneration,
+    ) -> Result<Retry3RecoveredGeneration> {
+        Ok(Retry3RecoveredGeneration {
+            pid: generation.pid,
+            runs: generation.runs,
+            process_start_sha256: sha256_bytes(generation.process_start.as_bytes())?,
+            nonce: generation.nonce.clone(),
+            lock_device: generation.lock_device,
+            lock_inode: generation.lock_inode,
+        })
+    }
+
+    fn require_retry_3_generation_matches(
+        generation: &LaunchGeneration,
+        expected: &Retry3RecoveredGeneration,
+    ) -> Result<()> {
+        if retry_3_recovered_generation(generation)? != *expected {
+            return Err(ControllerError(
+                "retry-3 recovered v6 generation changed after its durable result".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn retry_3_recovery_safe_record(
+        commit: &str,
+        tree: &str,
+        journal_inode: u64,
+        admission: Retry3RecoveryAdmission,
+    ) -> String {
+        format!(
+            "STATE SAFE_RUNTIME_PROVEN recovery_commit={commit} recovery_tree={tree} recovery_journal_inode={journal_inode} evidence_inode={} active_pointer_inode={} active_pointer_sha256={} failure_journal_inode={} failure_journal_size={} failure_journal_sha256={} failure_result_inode={} failure_result_size={} failure_result_sha256={} provenance_inode={} provenance_size={} provenance_sha256={} driver_record_inode={} driver_record_size={} driver_record_sha256={} install_hold_name_inode={} install_hold_name_size={} install_hold_name_sha256={} reserve_inode={} reserve_length=0 reserve_blocks=0 reserve_sha256={} rollback_current_inode={} archived_hold_inode={} archived_app_inode={} archived_executable_inode={} archived_executable_size={} archived_executable_sha256={} guardian_inode={} guardian_size={} guardian_sha256={} stdout_inode={} stdout_size={} stdout_sha256={} stderr_inode={} stderr_size={} stderr_sha256={} root_transaction_inode={} root_state_inode={} root_state_sha256={} root_failed_inode={} root_failed_executable_inode={} root_failed_executable_size={} root_failed_executable_sha256={} root_package_inode={} root_package_sha256={} normal_v2_support_inode={} normal_v2_controller_inode={} normal_v2_controller_sha256={} normal_v2_pin_inode={} normal_v2_pin_sha256={} normal_v2_journal_inode={} normal_v2_journal_sha256={} v6_executable_sha256={} critical_predecessor=CURRENT_RESTORED coreaudio_pid={} coreaudio_runs={} stdout_initial_mode={:04o} stderr_initial_mode={:04o}\n",
+            RECOVERY_RETRY_3_EVIDENCE_INODE,
+            RECOVERY_RETRY_3_POINTER_INODE,
+            RECOVERY_RETRY_3_POINTER_SHA256,
+            RECOVERY_RETRY_3_JOURNAL_INODE,
+            RECOVERY_RETRY_3_JOURNAL_SIZE,
+            RECOVERY_RETRY_3_JOURNAL_SHA256,
+            RECOVERY_RETRY_3_RESULT_INODE,
+            RECOVERY_RETRY_3_RESULT_SIZE,
+            RECOVERY_RETRY_3_RESULT_SHA256,
+            RECOVERY_RETRY_3_PROVENANCE_INODE,
+            RECOVERY_RETRY_3_PROVENANCE_SIZE,
+            RECOVERY_RETRY_3_PROVENANCE_SHA256,
+            RECOVERY_RETRY_3_DRIVER_RECORD_INODE,
+            RECOVERY_RETRY_3_DRIVER_RECORD_SIZE,
+            RECOVERY_RETRY_3_DRIVER_RECORD_SHA256,
+            RECOVERY_RETRY_3_INSTALL_HOLD_NAME_INODE,
+            RECOVERY_RETRY_3_INSTALL_HOLD_NAME_SIZE,
+            RECOVERY_RETRY_3_INSTALL_HOLD_NAME_SHA256,
+            RECOVERY_RETRY_3_RESERVE_INODE,
+            RECOVERY_RETRY_2_RELEASED_RESERVE_SHA256,
+            RECOVERY_RETRY_3_ROLLBACK_CURRENT_INODE,
+            RECOVERY_RETRY_3_ARCHIVE_INODE,
+            RECOVERY_RETRY_3_ARCHIVE_APP_INODE,
+            RECOVERY_RETRY_3_ARCHIVE_EXECUTABLE_INODE,
+            RECOVERY_RETRY_3_ARCHIVE_EXECUTABLE_SIZE,
+            RECOVERY_RETRY_3_ARCHIVE_EXECUTABLE_SHA256,
+            RECOVERY_RETRY_3_GUARDIAN_INODE,
+            RECOVERY_RETRY_3_GUARDIAN_SIZE,
+            RECOVERY_RETRY_3_GUARDIAN_SHA256,
+            RECOVERY_RETRY_3_STDOUT_INODE,
+            RECOVERY_RETRY_3_STDOUT_SIZE,
+            RECOVERY_RETRY_3_STDOUT_SHA256,
+            RECOVERY_RETRY_3_STDERR_INODE,
+            RECOVERY_RETRY_3_STDERR_SIZE,
+            RECOVERY_RETRY_3_STDERR_SHA256,
+            RECOVERY_RETRY_3_ROOT_TRANSACTION_INODE,
+            RECOVERY_RETRY_3_ROOT_STATE_INODE,
+            RECOVERY_RETRY_3_ROOT_STATE_SHA256,
+            RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_INODE,
+            RECOVERY_RETRY_3_ROOT_FAILED_EXECUTABLE_INODE,
+            RECOVERY_RETRY_3_ROOT_FAILED_EXECUTABLE_SIZE,
+            EXPECTED_PRODUCTION_DRIVER_EXECUTABLE_SHA256,
+            RECOVERY_RETRY_3_ROOT_PACKAGE_INODE,
+            EXPECTED_PRODUCTION_DRIVER_PACKAGE_SHA256,
+            RETAINED_ROOT_V7_NORMAL_V2_SUPPORT_INODE,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_INODE,
+            RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_SHA256,
+            RETAINED_ROOT_V7_NORMAL_V2_PIN_INODE,
+            RETAINED_ROOT_V7_NORMAL_V2_PIN_SHA256,
+            RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_INODE,
+            RETAINED_ROOT_V7_NORMAL_V2_JOURNAL_SHA256,
+            CURRENT_BASELINE_EXECUTABLE_SHA256,
+            admission.core_audio.pid,
+            admission.core_audio.runs,
+            admission.log_modes.stdout,
+            admission.log_modes.stderr,
+        )
+    }
+
+    fn retry_3_recovery_result_text(generation: &Retry3RecoveredGeneration) -> String {
+        format!(
+            "OPENSTEAMER_PAIRED_HOST_RECOVERY_RESULT_V7_RETRY_3\nresult=recovered-v6\npid={}\nruns={}\nprocess_start_sha256={}\nnonce={}\nlock_device={}\nlock_inode={}\n",
+            generation.pid,
+            generation.runs,
+            generation.process_start_sha256,
+            generation.nonce,
+            generation.lock_device,
+            generation.lock_inode,
+        )
+    }
+
+    fn retry_3_recovery_transition_record(
+        state: Retry3RecoveryState,
+        terminal: Option<&Retry3RecoveryResultBinding>,
+    ) -> Result<(Retry3RecoveryState, String)> {
+        match state {
+            Retry3RecoveryState::SafeRuntimeProven => Ok((
+                Retry3RecoveryState::LogsRepaired,
+                format!(
+                    "STATE LOGS_REPAIRED stdout_inode={} stdout_mode=0600 stdout_size={} stdout_sha256={} stderr_inode={} stderr_mode=0600 stderr_size={} stderr_sha256={}\n",
+                    RECOVERY_RETRY_3_STDOUT_INODE,
+                    RECOVERY_RETRY_3_STDOUT_SIZE,
+                    RECOVERY_RETRY_3_STDOUT_SHA256,
+                    RECOVERY_RETRY_3_STDERR_INODE,
+                    RECOVERY_RETRY_3_STDERR_SIZE,
+                    RECOVERY_RETRY_3_STDERR_SHA256,
+                ),
+            )),
+            Retry3RecoveryState::LogsRepaired => Ok((
+                Retry3RecoveryState::LaunchArmed,
+                format!(
+                    "STATE LAUNCH_ARMED stdout_device={} stdout_inode={} stdout_offset={}\n",
+                    RETAINED_ROOT_V7_NORMAL_V2_DEVICE,
+                    RECOVERY_RETRY_3_STDOUT_INODE,
+                    RECOVERY_RETRY_3_STDOUT_SIZE,
+                ),
+            )),
+            Retry3RecoveryState::LaunchArmed => {
+                let terminal = terminal.ok_or_else(|| {
+                    ControllerError(
+                        "retry-3 terminal recovery transition lacks its exact result binding"
+                            .to_owned(),
+                    )
+                })?;
+                let generation = &terminal.generation;
+                Ok((
+                    Retry3RecoveryState::RecoveredV6,
+                    format!(
+                        "STATE RECOVERED_V6 result_inode={} result_size={} result_sha256={} pid={} runs={} process_start_sha256={} nonce={} lock_device={} lock_inode={}\n",
+                        terminal.inode,
+                        terminal.size,
+                        terminal.sha256,
+                        generation.pid,
+                        generation.runs,
+                        generation.process_start_sha256,
+                        generation.nonce,
+                        generation.lock_device,
+                        generation.lock_inode,
+                    ),
+                ))
+            }
+            Retry3RecoveryState::RecoveredV6 => Err(ControllerError(
+                "retry-3 recovery journal has no state after RECOVERED_V6".to_owned(),
+            )),
+        }
+    }
+
+    fn parse_retry_3_recovery_terminal(line: &str) -> Result<Retry3RecoveryResultBinding> {
+        let fields: Vec<&str> = line.split_ascii_whitespace().collect();
+        if fields.len() != 11 || fields[0] != "STATE" || fields[1] != "RECOVERED_V6" {
+            return Err(ControllerError(
+                "retry-3 recovery terminal record has the wrong schema".to_owned(),
+            ));
+        }
+        let value = |index: usize, prefix: &str| -> Result<&str> {
+            fields[index].strip_prefix(prefix).ok_or_else(|| {
+                ControllerError("retry-3 recovery terminal field is malformed".to_owned())
+            })
+        };
+        let parse_u64 = |index: usize, prefix: &str| -> Result<u64> {
+            value(index, prefix)?
+                .parse::<u64>()
+                .map_err(|_| ControllerError("retry-3 recovery number is malformed".to_owned()))
+        };
+        let inode = parse_u64(2, "result_inode=")?;
+        let size = parse_u64(3, "result_size=")?;
+        let sha256 = value(4, "result_sha256=")?.to_owned();
+        let pid = parse_positive_u32(value(5, "pid=")?, "retry-3 recovered v6 PID")?;
+        let runs = parse_u64(6, "runs=")?;
+        let process_start_sha256 = value(7, "process_start_sha256=")?.to_owned();
+        let nonce = value(8, "nonce=")?.to_owned();
+        let lock_device = parse_u64(9, "lock_device=")?;
+        let lock_inode = parse_u64(10, "lock_inode=")?;
+        require_canonical_lower_hex(&sha256, 64, "retry-3 recovery result hash")?;
+        require_canonical_lower_hex(
+            &process_start_sha256,
+            64,
+            "retry-3 recovered v6 process-start hash",
+        )?;
+        require_canonical_lower_hex(&nonce, 64, "retry-3 recovered v6 nonce")?;
+        if inode == 0 || size == 0 || size > 2_048 || runs == 0 || lock_device == 0 || lock_inode == 0
+        {
+            return Err(ControllerError(
+                "retry-3 recovery terminal numeric field is outside its exact domain".to_owned(),
+            ));
+        }
+        let binding = Retry3RecoveryResultBinding {
+            inode,
+            size,
+            sha256,
+            generation: Retry3RecoveredGeneration {
+                pid,
+                runs,
+                process_start_sha256,
+                nonce,
+                lock_device,
+                lock_inode,
+            },
+        };
+        let (_, expected) = retry_3_recovery_transition_record(
+            Retry3RecoveryState::LaunchArmed,
+            Some(&binding),
+        )?;
+        if expected.trim_end_matches('\n') != line {
+            return Err(ControllerError(
+                "retry-3 recovery terminal record did not round-trip exactly".to_owned(),
+            ));
+        }
+        Ok(binding)
+    }
+
+    fn retry_3_recovery_safe_value<'a>(fields: &[&'a str], prefix: &str) -> Result<&'a str> {
+        let mut matches = fields
+            .iter()
+            .filter_map(|field| field.strip_prefix(prefix));
+        let value = matches.next().ok_or_else(|| {
+            ControllerError(format!(
+                "retry-3 recovery safety record omitted {prefix}"
+            ))
+        })?;
+        if matches.next().is_some() {
+            return Err(ControllerError(format!(
+                "retry-3 recovery safety record repeats {prefix}"
+            )));
+        }
+        Ok(value)
+    }
+
+    fn parse_retry_3_recovery_journal(
+        text: &str,
+        journal_inode: u64,
+    ) -> Result<ParsedRetry3RecoveryJournal> {
+        if !text.ends_with('\n') {
+            return Err(ControllerError(
+                "retry-3 recovery journal is not newline-terminated".to_owned(),
+            ));
+        }
+        let mut lines = text.lines();
+        if lines.next() != Some("OPENSTEAMER_PAIRED_HOST_RECOVERY_V7_RETRY_3") {
+            return Err(ControllerError(
+                "retry-3 recovery journal header is malformed".to_owned(),
+            ));
+        }
+        let safe = lines.next().ok_or_else(|| {
+            ControllerError("retry-3 recovery journal omitted its safety record".to_owned())
+        })?;
+        let safe_fields: Vec<&str> = safe.split_ascii_whitespace().collect();
+        if safe_fields.len() < 5
+            || safe_fields[0] != "STATE"
+            || safe_fields[1] != "SAFE_RUNTIME_PROVEN"
+        {
+            return Err(ControllerError(
+                "retry-3 recovery safety record has the wrong schema".to_owned(),
+            ));
+        }
+        let recovery_commit = safe_fields[2]
+            .strip_prefix("recovery_commit=")
+            .ok_or_else(|| ControllerError("retry-3 recovery commit is malformed".to_owned()))?;
+        let recovery_tree = safe_fields[3]
+            .strip_prefix("recovery_tree=")
+            .ok_or_else(|| ControllerError("retry-3 recovery tree is malformed".to_owned()))?;
+        require_canonical_git_oid(recovery_commit, "retry-3 recorded recovery commit")?;
+        require_canonical_git_oid(recovery_tree, "retry-3 recorded recovery tree")?;
+        let core_audio_pid = parse_positive_u32(
+            retry_3_recovery_safe_value(&safe_fields, "coreaudio_pid=")?,
+            "retry-3 admitted coreaudiod PID",
+        )?;
+        let core_audio_runs = retry_3_recovery_safe_value(&safe_fields, "coreaudio_runs=")?
+            .parse::<u64>()
+            .ok()
+            .filter(|runs| *runs > 0)
+            .ok_or_else(|| {
+                ControllerError("retry-3 admitted coreaudiod runs is malformed".to_owned())
+            })?;
+        let parse_log_mode = |prefix: &str| -> Result<u32> {
+            match retry_3_recovery_safe_value(&safe_fields, prefix)? {
+                "0600" => Ok(0o600),
+                "0644" => Ok(0o644),
+                _ => Err(ControllerError(
+                    "retry-3 admitted log mode is outside the exact incident set".to_owned(),
+                )),
+            }
+        };
+        let admission = Retry3RecoveryAdmission {
+            core_audio: CoreAudioGeneration {
+                pid: core_audio_pid,
+                runs: core_audio_runs,
+            },
+            log_modes: Retry3IncidentLogModes {
+                stdout: parse_log_mode("stdout_initial_mode=")?,
+                stderr: parse_log_mode("stderr_initial_mode=")?,
+            },
+        };
+        if format!("{safe}\n")
+            != retry_3_recovery_safe_record(
+                recovery_commit,
+                recovery_tree,
+                journal_inode,
+                admission,
+            )
+        {
+            return Err(ControllerError(
+                "retry-3 recovery safety record pins changed".to_owned(),
+            ));
+        }
+        let mut state = Retry3RecoveryState::SafeRuntimeProven;
+        let mut terminal = None;
+        for line in lines {
+            match state {
+                Retry3RecoveryState::SafeRuntimeProven
+                | Retry3RecoveryState::LogsRepaired => {
+                    let (next, expected) = retry_3_recovery_transition_record(state, None)?;
+                    if expected.trim_end_matches('\n') != line {
+                        return Err(ControllerError(
+                            "retry-3 recovery transition record is malformed".to_owned(),
+                        ));
+                    }
+                    state = next;
+                }
+                Retry3RecoveryState::LaunchArmed => {
+                    let binding = parse_retry_3_recovery_terminal(line)?;
+                    state = Retry3RecoveryState::RecoveredV6;
+                    terminal = Some(binding);
+                }
+                Retry3RecoveryState::RecoveredV6 => {
+                    return Err(ControllerError(
+                        "retry-3 recovery journal contains trailing records".to_owned(),
+                    ));
+                }
+            }
+        }
+        Ok(ParsedRetry3RecoveryJournal {
+            state,
+            recovery_commit: recovery_commit.to_owned(),
+            recovery_tree: recovery_tree.to_owned(),
+            admission,
+            terminal,
+        })
+    }
+
+    fn validate_retry_3_recovery_journal_file(path: &Path, file: &File) -> Result<u64> {
+        let expected_device = verified_data_volume_device()?;
+        let descriptor = file.metadata()?;
+        let named = fs::symlink_metadata(path)?;
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.nlink() == 1
+                && metadata.permissions().mode() & 0o7777 == 0o600
+                && metadata.dev() == expected_device
+                && metadata.len() <= 32_768
+                && metadata.st_flags() == 0
+        };
+        if !metadata_is_exact(&descriptor)
+            || !metadata_is_exact(&named)
+            || descriptor.dev() != named.dev()
+            || descriptor.ino() != named.ino()
+            || descriptor.len() != named.len()
+        {
+            return Err(ControllerError(
+                "retry-3 recovery journal descriptor identity is unsafe".to_owned(),
+            ));
+        }
+        Ok(descriptor.ino())
+    }
+
+    impl Retry3RecoveryJournal {
+        fn initial_text(
+            commit: &str,
+            tree: &str,
+            journal_inode: u64,
+            admission: Retry3RecoveryAdmission,
+        ) -> String {
+            format!(
+                "OPENSTEAMER_PAIRED_HOST_RECOVERY_V7_RETRY_3\n{}",
+                retry_3_recovery_safe_record(commit, tree, journal_inode, admission)
+            )
+        }
+
+        fn create_or_publish(
+            path: &Path,
+            pending_path: &Path,
+            commit: &str,
+            tree: &str,
+            admission: Retry3RecoveryAdmission,
+        ) -> Result<Self> {
+            require_canonical_git_oid(commit, "retry-3 recovery journal commit")?;
+            require_canonical_git_oid(tree, "retry-3 recovery journal tree")?;
+            require_path_absent(path, "retry-3 recovery journal before atomic publication")?;
+            let create = OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .write(true)
+                .mode(0o600)
+                .custom_flags(O_NOFOLLOW | 0x0100_0000)
+                .open(pending_path);
+            let mut file = match create {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .custom_flags(O_NOFOLLOW | 0x0100_0000)
+                        .open(pending_path)?
+                }
+                Err(error) => return Err(error.into()),
+            };
+            require_descriptor_close_on_exec(&file, "pending retry-3 recovery journal")?;
+            let journal_inode =
+                validate_retry_3_recovery_journal_file(pending_path, &file)?;
+            let text = Self::initial_text(commit, tree, journal_inode, admission);
+            let existing_length = file.metadata()?.len();
+            let mut existing = Vec::with_capacity(existing_length as usize);
+            Read::by_ref(&mut file)
+                .take(32_769)
+                .read_to_end(&mut existing)?;
+            if existing.len() as u64 != existing_length
+                || existing.len() > text.len()
+                || !text.as_bytes().starts_with(&existing)
+            {
+                return Err(ControllerError(
+                    "pending retry-3 recovery journal is not an exact initial-record prefix"
+                        .to_owned(),
+                ));
+            }
+            let before_write_inode =
+                validate_retry_3_recovery_journal_file(pending_path, &file)?;
+            if before_write_inode != journal_inode || file.metadata()?.len() != existing_length {
+                return Err(ControllerError(
+                    "pending retry-3 recovery journal changed before durable repair".to_owned(),
+                ));
+            }
+            file.set_len(0)?;
+            file.seek(SeekFrom::Start(0))?;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
+            fsync_parent(pending_path)?;
+            let pending_inode =
+                validate_retry_3_recovery_journal_file(pending_path, &file)?;
+            if pending_inode != journal_inode || file.metadata()?.len() != text.len() as u64 {
+                return Err(ControllerError(
+                    "pending retry-3 recovery journal changed after durable repair".to_owned(),
+                ));
+            }
+            file.seek(SeekFrom::Start(0))?;
+            let mut reread = Vec::with_capacity(text.len());
+            Read::by_ref(&mut file)
+                .take(text.len() as u64 + 1)
+                .read_to_end(&mut reread)?;
+            if reread != text.as_bytes() {
+                return Err(ControllerError(
+                    "pending retry-3 recovery journal differs after durable repair".to_owned(),
+                ));
+            }
+            require_path_absent(path, "retry-3 recovery journal publication target")?;
+            rename_exclusive(pending_path, path)?;
+            fsync_parent(path)?;
+            require_path_absent(
+                pending_path,
+                "published retry-3 pending recovery journal",
+            )?;
+            let published_inode = validate_retry_3_recovery_journal_file(path, &file)?;
+            if published_inode != journal_inode || file.metadata()?.len() != text.len() as u64 {
+                return Err(ControllerError(
+                    "published retry-3 recovery journal lost its descriptor identity".to_owned(),
+                ));
+            }
+            let parsed = parse_retry_3_recovery_journal(&text, journal_inode)?;
+            if parsed.state != Retry3RecoveryState::SafeRuntimeProven
+                || parsed.recovery_commit != commit
+                || parsed.recovery_tree != tree
+                || parsed.admission != admission
+                || parsed.terminal.is_some()
+            {
+                return Err(ControllerError(
+                    "new retry-3 recovery journal did not reparse exactly".to_owned(),
+                ));
+            }
+            file.seek(SeekFrom::End(0))?;
+            Ok(Self {
+                path: path.to_path_buf(),
+                file,
+                state: parsed.state,
+                recovery_commit: parsed.recovery_commit,
+                recovery_tree: parsed.recovery_tree,
+                journal_inode,
+                admission: parsed.admission,
+                terminal: None,
+            })
+        }
+
+        fn open(
+            path: &Path,
+            expected_commit: &str,
+            expected_tree: &str,
+            expected_terminal: Option<&Retry3RecoveryResultBinding>,
+        ) -> Result<Self> {
+            require_canonical_git_oid(expected_commit, "expected retry-3 recovery commit")?;
+            require_canonical_git_oid(expected_tree, "expected retry-3 recovery tree")?;
+            let mut file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(O_NOFOLLOW | 0x0100_0000)
+                .open(path)?;
+            require_descriptor_close_on_exec(&file, "retry-3 recovery journal")?;
+            let journal_inode = validate_retry_3_recovery_journal_file(path, &file)?;
+            let length = file.metadata()?.len();
+            let mut bytes = Vec::with_capacity(length as usize);
+            Read::by_ref(&mut file).take(32_769).read_to_end(&mut bytes)?;
+            if bytes.len() as u64 != length {
+                return Err(ControllerError(
+                    "retry-3 recovery journal bounded read changed".to_owned(),
+                ));
+            }
+            let post_read_inode = validate_retry_3_recovery_journal_file(path, &file)?;
+            if post_read_inode != journal_inode || file.metadata()?.len() != length {
+                return Err(ControllerError(
+                    "retry-3 recovery journal changed during bounded read".to_owned(),
+                ));
+            }
+            let complete_length = bytes
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |index| index + 1);
+            let complete_text = std::str::from_utf8(&bytes[..complete_length]).map_err(|_| {
+                ControllerError("retry-3 recovery journal is not UTF-8".to_owned())
+            })?;
+            let parsed = parse_retry_3_recovery_journal(complete_text, journal_inode)?;
+            if complete_length != bytes.len() {
+                let tail = &bytes[complete_length..];
+                let next = retry_3_recovery_transition_record(parsed.state, expected_terminal)?.1;
+                if tail.is_empty()
+                    || tail.contains(&b'\n')
+                    || tail.contains(&b'\r')
+                    || !next.as_bytes().starts_with(tail)
+                {
+                    return Err(ControllerError(
+                        "retry-3 recovery journal has an implausible torn transition".to_owned(),
+                    ));
+                }
+                validate_retry_3_recovery_journal_file(path, &file)?;
+                file.set_len(complete_length as u64)?;
+                file.sync_all()?;
+                let after_truncate_inode =
+                    validate_retry_3_recovery_journal_file(path, &file)?;
+                let after_truncate = file.metadata()?;
+                if after_truncate_inode != journal_inode
+                    || after_truncate.len() != complete_length as u64
+                {
+                    return Err(ControllerError(
+                        "retry-3 recovery journal identity changed during torn-tail repair"
+                            .to_owned(),
+                    ));
+                }
+            }
+            if parsed.recovery_commit != expected_commit
+                || parsed.recovery_tree != expected_tree
+            {
+                return Err(ControllerError(
+                    "retry-3 recovery journal source binding changed".to_owned(),
+                ));
+            }
+            match (parsed.terminal.as_ref(), expected_terminal) {
+                (Some(recorded), Some(expected)) if recorded == expected => {}
+                (None, Some(_)) if parsed.state == Retry3RecoveryState::LaunchArmed => {}
+                (None, None) => {}
+                _ => {
+                    return Err(ControllerError(
+                        "retry-3 recovery journal terminal/result binding changed".to_owned(),
+                    ))
+                }
+            }
+            if expected_terminal.is_some()
+                && !matches!(
+                    parsed.state,
+                    Retry3RecoveryState::LaunchArmed | Retry3RecoveryState::RecoveredV6
+                )
+            {
+                return Err(ControllerError(
+                    "retry-3 recovery result appeared before launch was durably armed".to_owned(),
+                ));
+            }
+            let final_inode = validate_retry_3_recovery_journal_file(path, &file)?;
+            let final_metadata = file.metadata()?;
+            let expected_final_length = if complete_length != bytes.len() {
+                complete_length as u64
+            } else {
+                length
+            };
+            if final_inode != journal_inode || final_metadata.len() != expected_final_length {
+                return Err(ControllerError(
+                    "retry-3 recovery journal identity changed during open".to_owned(),
+                ));
+            }
+            file.seek(SeekFrom::End(0))?;
+            Ok(Self {
+                path: path.to_path_buf(),
+                file,
+                state: parsed.state,
+                recovery_commit: parsed.recovery_commit,
+                recovery_tree: parsed.recovery_tree,
+                journal_inode,
+                admission: parsed.admission,
+                terminal: parsed.terminal,
+            })
+        }
+
+        fn record(
+            &mut self,
+            next: Retry3RecoveryState,
+            terminal: Option<&Retry3RecoveryResultBinding>,
+        ) -> Result<()> {
+            let (expected, record) = retry_3_recovery_transition_record(self.state, terminal)?;
+            if next != expected {
+                return Err(ControllerError(
+                    "retry-3 recovery journal transition is invalid".to_owned(),
+                ));
+            }
+            let before_append_inode =
+                validate_retry_3_recovery_journal_file(&self.path, &self.file)?;
+            let prior_length = self.file.metadata()?.len();
+            if before_append_inode != self.journal_inode
+                || self.file.seek(SeekFrom::End(0))? != prior_length
+            {
+                return Err(ControllerError(
+                    "retry-3 recovery journal changed before append".to_owned(),
+                ));
+            }
+            let immediate_inode =
+                validate_retry_3_recovery_journal_file(&self.path, &self.file)?;
+            if immediate_inode != self.journal_inode || self.file.metadata()?.len() != prior_length {
+                return Err(ControllerError(
+                    "retry-3 recovery journal changed immediately before append".to_owned(),
+                ));
+            }
+            if let Err(error) = self
+                .file
+                .write_all(record.as_bytes())
+                .and_then(|_| self.file.sync_all())
+            {
+                self.file.set_len(prior_length)?;
+                self.file.sync_all()?;
+                return Err(ControllerError(format!(
+                    "cannot durably append retry-3 recovery journal: {error}"
+                )));
+            }
+            validate_retry_3_recovery_journal_file(&self.path, &self.file)?;
+            self.state = expected;
+            self.terminal = terminal.cloned();
+            let reopened = Self::open(
+                &self.path,
+                &self.recovery_commit,
+                &self.recovery_tree,
+                self.terminal.as_ref(),
+            )?;
+            if reopened.state != self.state
+                || reopened.journal_inode != self.journal_inode
+                || reopened.admission != self.admission
+                || reopened.terminal != self.terminal
+            {
+                return Err(ControllerError(
+                    "retry-3 recovery journal append did not reparse exactly".to_owned(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    fn require_terminal_retry_3_recovery_journal(
+        path: &Path,
+        expected_commit: &str,
+        expected_tree: &str,
+        expected_terminal: &Retry3RecoveryResultBinding,
+    ) -> Result<Retry3RecoveryAdmission> {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NOFOLLOW | 0x0100_0000)
+            .open(path)?;
+        require_descriptor_close_on_exec(&file, "terminal retry-3 recovery journal")?;
+        let inode = validate_retry_3_recovery_journal_file(path, &file)?;
+        let length = file.metadata()?.len();
+        let mut bytes = Vec::with_capacity(length as usize);
+        Read::by_ref(&mut file).take(32_769).read_to_end(&mut bytes)?;
+        let after = file.metadata()?;
+        let named_after = fs::symlink_metadata(path)?;
+        let validated_after_inode = validate_retry_3_recovery_journal_file(path, &file)?;
+        if bytes.len() as u64 != length
+            || after.ino() != inode
+            || validated_after_inode != inode
+            || after.len() != length
+            || after.dev() != named_after.dev()
+            || after.ino() != named_after.ino()
+            || after.len() != named_after.len()
+        {
+            return Err(ControllerError(
+                "terminal retry-3 recovery journal changed during read-only proof".to_owned(),
+            ));
+        }
+        let text = String::from_utf8(bytes)
+            .map_err(|_| ControllerError("terminal retry-3 journal is not UTF-8".to_owned()))?;
+        let parsed = parse_retry_3_recovery_journal(&text, inode)?;
+        if parsed.state != Retry3RecoveryState::RecoveredV6
+            || parsed.recovery_commit != expected_commit
+            || parsed.recovery_tree != expected_tree
+            || parsed.terminal.as_ref() != Some(expected_terminal)
+        {
+            return Err(ControllerError(
+                "terminal retry-3 recovery journal/result binding changed".to_owned(),
+            ));
+        }
+        Ok(parsed.admission)
+    }
+
+    fn parse_retry_3_recovery_result(text: &str) -> Result<Retry3RecoveredGeneration> {
+        if !text.ends_with('\n') {
+            return Err(ControllerError(
+                "retry-3 recovery result is not newline-terminated".to_owned(),
+            ));
+        }
+        let lines: Vec<&str> = text.lines().collect();
+        if lines.len() != 8
+            || lines[0] != "OPENSTEAMER_PAIRED_HOST_RECOVERY_RESULT_V7_RETRY_3"
+            || lines[1] != "result=recovered-v6"
+        {
+            return Err(ControllerError(
+                "retry-3 recovery result schema changed".to_owned(),
+            ));
+        }
+        let field = |index: usize, prefix: &str| -> Result<&str> {
+            lines[index].strip_prefix(prefix).ok_or_else(|| {
+                ControllerError("retry-3 recovery result field is malformed".to_owned())
+            })
+        };
+        let parse_u64 = |index: usize, prefix: &str| -> Result<u64> {
+            field(index, prefix)?
+                .parse::<u64>()
+                .map_err(|_| ControllerError("retry-3 recovery result number is malformed".to_owned()))
+        };
+        let generation = Retry3RecoveredGeneration {
+            pid: parse_positive_u32(field(2, "pid=")?, "retry-3 recovery result PID")?,
+            runs: parse_u64(3, "runs=")?,
+            process_start_sha256: field(4, "process_start_sha256=")?.to_owned(),
+            nonce: field(5, "nonce=")?.to_owned(),
+            lock_device: parse_u64(6, "lock_device=")?,
+            lock_inode: parse_u64(7, "lock_inode=")?,
+        };
+        require_canonical_lower_hex(
+            &generation.process_start_sha256,
+            64,
+            "retry-3 recovery result process-start hash",
+        )?;
+        require_canonical_lower_hex(&generation.nonce, 64, "retry-3 recovery result nonce")?;
+        if generation.runs == 0 || generation.lock_device == 0 || generation.lock_inode == 0 {
+            return Err(ControllerError(
+                "retry-3 recovery result numeric field is outside its exact domain".to_owned(),
+            ));
+        }
+        if retry_3_recovery_result_text(&generation) != text {
+            return Err(ControllerError(
+                "retry-3 recovery result did not round-trip exactly".to_owned(),
+            ));
+        }
+        Ok(generation)
+    }
+
+    fn is_plausible_retry_3_recovery_result_prefix(bytes: &[u8]) -> bool {
+        if bytes.len() > 2_048 || bytes.contains(&b'\r') || bytes.contains(&0) {
+            return false;
+        }
+        if bytes.is_empty() {
+            return true;
+        }
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            return false;
+        };
+        let newline_terminated = text.ends_with('\n');
+        let mut lines: Vec<&str> = text.split('\n').collect();
+        if newline_terminated {
+            lines.pop();
+        }
+        if lines.len() > 8 || lines.is_empty() {
+            return false;
+        }
+        let fixed = [
+            "OPENSTEAMER_PAIRED_HOST_RECOVERY_RESULT_V7_RETRY_3",
+            "result=recovered-v6",
+        ];
+        let prefixes = [
+            "pid=",
+            "runs=",
+            "process_start_sha256=",
+            "nonce=",
+            "lock_device=",
+            "lock_inode=",
+        ];
+        for (index, line) in lines.iter().enumerate() {
+            let complete = newline_terminated || index + 1 < lines.len();
+            if index < fixed.len() {
+                if (complete && *line != fixed[index])
+                    || (!complete && !fixed[index].starts_with(line))
+                {
+                    return false;
+                }
+                continue;
+            }
+            let prefix = prefixes[index - fixed.len()];
+            if !complete && prefix.starts_with(line) {
+                continue;
+            }
+            let Some(value) = line.strip_prefix(prefix) else {
+                return false;
+            };
+            let hash = matches!(index, 4 | 5);
+            if hash {
+                if value.len() > 64
+                    || !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    || (complete && value.len() != 64)
+                {
+                    return false;
+                }
+            } else if value.is_empty()
+                || !value.bytes().all(|byte| byte.is_ascii_digit())
+                || (complete && value.parse::<u64>().ok().filter(|value| *value > 0).is_none())
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn reset_retry_3_pending_result_before_generation_publish() -> Result<()> {
+        let pending = Path::new(RECOVERY_RETRY_3_RECOVERY_RESULT_PENDING);
+        require_path_absent(
+            Path::new(RECOVERY_RETRY_3_RECOVERY_RESULT),
+            "retry-3 final result before absent-generation pending repair",
+        )?;
+        if !path_exists_without_follow(pending)? {
+            return Ok(());
+        }
+        let expected_device = verified_data_volume_device()?;
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.nlink() == 1
+                && metadata.permissions().mode() & 0o7777 == 0o600
+                && metadata.dev() == expected_device
+                && metadata.len() <= 2_048
+                && metadata.st_flags() == 0
+        };
+        let named_before = fs::symlink_metadata(pending)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(O_NOFOLLOW | 0x0100_0000)
+            .open(pending)?;
+        require_descriptor_close_on_exec(&file, "retry-3 stale pending recovery result")?;
+        let descriptor_before = file.metadata()?;
+        if !metadata_is_exact(&named_before)
+            || !metadata_is_exact(&descriptor_before)
+            || descriptor_before.dev() != named_before.dev()
+            || descriptor_before.ino() != named_before.ino()
+            || descriptor_before.len() != named_before.len()
+        {
+            return Err(ControllerError(
+                "retry-3 stale pending result identity is unsafe".to_owned(),
+            ));
+        }
+        let mut bytes = Vec::with_capacity(descriptor_before.len() as usize);
+        Read::by_ref(&mut file).take(2_049).read_to_end(&mut bytes)?;
+        let descriptor_read = file.metadata()?;
+        let named_read = fs::symlink_metadata(pending)?;
+        if bytes.len() as u64 != descriptor_before.len()
+            || !is_plausible_retry_3_recovery_result_prefix(&bytes)
+            || !metadata_is_exact(&descriptor_read)
+            || !metadata_is_exact(&named_read)
+            || descriptor_before.dev() != descriptor_read.dev()
+            || descriptor_before.ino() != descriptor_read.ino()
+            || descriptor_before.len() != descriptor_read.len()
+            || descriptor_before.dev() != named_read.dev()
+            || descriptor_before.ino() != named_read.ino()
+            || descriptor_before.len() != named_read.len()
+        {
+            return Err(ControllerError(
+                "retry-3 stale pending result is not an exact plausible prefix".to_owned(),
+            ));
+        }
+        file.set_len(0)?;
+        file.sync_all()?;
+        fsync_parent(pending)?;
+        let descriptor_after = file.metadata()?;
+        let named_after = fs::symlink_metadata(pending)?;
+        if !metadata_is_exact(&descriptor_after)
+            || !metadata_is_exact(&named_after)
+            || descriptor_after.len() != 0
+            || named_after.len() != 0
+            || descriptor_before.dev() != descriptor_after.dev()
+            || descriptor_before.ino() != descriptor_after.ino()
+            || descriptor_before.dev() != named_after.dev()
+            || descriptor_before.ino() != named_after.ino()
+        {
+            return Err(ControllerError(
+                "retry-3 stale pending result lost identity during reset".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn read_retry_3_recovery_result(path: &Path) -> Result<Retry3RecoveryResultBinding> {
+        let expected_device = verified_data_volume_device()?;
+        let named_before = fs::symlink_metadata(path)?;
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.nlink() == 1
+                && metadata.permissions().mode() & 0o7777 == 0o600
+                && metadata.dev() == expected_device
+                && metadata.len() > 0
+                && metadata.len() <= 2_048
+                && metadata.st_flags() == 0
+        };
+        if !metadata_is_exact(&named_before) {
+            return Err(ControllerError(
+                "retry-3 recovery result metadata is unsafe".to_owned(),
+            ));
+        }
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NOFOLLOW | 0x0100_0000)
+            .open(path)?;
+        require_descriptor_close_on_exec(&file, "retry-3 recovery result")?;
+        let descriptor_before = file.metadata()?;
+        if !metadata_is_exact(&descriptor_before)
+            || descriptor_before.dev() != named_before.dev()
+            || descriptor_before.ino() != named_before.ino()
+            || descriptor_before.len() != named_before.len()
+        {
+            return Err(ControllerError(
+                "retry-3 recovery result changed while opening".to_owned(),
+            ));
+        }
+        let mut bytes = Vec::with_capacity(descriptor_before.len() as usize);
+        Read::by_ref(&mut file).take(2_049).read_to_end(&mut bytes)?;
+        let descriptor_after = file.metadata()?;
+        let named_after = fs::symlink_metadata(path)?;
+        if bytes.len() as u64 != descriptor_before.len()
+            || !metadata_is_exact(&descriptor_after)
+            || !metadata_is_exact(&named_after)
+            || descriptor_before.dev() != descriptor_after.dev()
+            || descriptor_before.ino() != descriptor_after.ino()
+            || descriptor_before.len() != descriptor_after.len()
+            || descriptor_before.dev() != named_after.dev()
+            || descriptor_before.ino() != named_after.ino()
+            || descriptor_before.len() != named_after.len()
+        {
+            return Err(ControllerError(
+                "retry-3 recovery result changed during its bounded read".to_owned(),
+            ));
+        }
+        let text = String::from_utf8(bytes.clone()).map_err(|_| {
+            ControllerError("retry-3 recovery result is not UTF-8".to_owned())
+        })?;
+        Ok(Retry3RecoveryResultBinding {
+            inode: descriptor_before.ino(),
+            size: descriptor_before.len(),
+            sha256: sha256_bytes(&bytes)?,
+            generation: parse_retry_3_recovery_result(&text)?,
+        })
+    }
+
+    fn publish_retry_3_recovery_result(
+        generation: &LaunchGeneration,
+    ) -> Result<Retry3RecoveryResultBinding> {
+        let expected_generation = retry_3_recovered_generation(generation)?;
+        let expected = retry_3_recovery_result_text(&expected_generation);
+        let final_path = Path::new(RECOVERY_RETRY_3_RECOVERY_RESULT);
+        let pending = Path::new(RECOVERY_RETRY_3_RECOVERY_RESULT_PENDING);
+        match (
+            path_exists_without_follow(final_path)?,
+            path_exists_without_follow(pending)?,
+        ) {
+            (true, true) => {
+                return Err(ControllerError(
+                    "retry-3 final and pending recovery results both exist".to_owned(),
+                ))
+            }
+            (true, false) => {
+                let binding = read_retry_3_recovery_result(final_path)?;
+                if binding.generation != expected_generation {
+                    return Err(ControllerError(
+                        "retry-3 preexisting recovery result names another generation".to_owned(),
+                    ));
+                }
+                fsync_parent(final_path)?;
+                let sealed = read_retry_3_recovery_result(final_path)?;
+                if sealed != binding {
+                    return Err(ControllerError(
+                        "retry-3 preexisting recovery result changed while sealing its directory entry"
+                            .to_owned(),
+                    ));
+                }
+                return Ok(sealed);
+            }
+            _ => {}
+        }
+
+        let created = !path_exists_without_follow(pending)?;
+        let mut file = if created {
+            OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .write(true)
+                .mode(0o600)
+                .custom_flags(O_NOFOLLOW | 0x0100_0000)
+                .open(pending)?
+        } else {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(O_NOFOLLOW | 0x0100_0000)
+                .open(pending)?
+        };
+        require_descriptor_close_on_exec(&file, "retry-3 pending recovery result")?;
+        let expected_device = verified_data_volume_device()?;
+        let metadata_is_exact = |metadata: &fs::Metadata| {
+            metadata.file_type().is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == USER_ID
+                && metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID
+                && metadata.nlink() == 1
+                && metadata.permissions().mode() & 0o7777 == 0o600
+                && metadata.dev() == expected_device
+                && metadata.len() <= expected.len() as u64
+                && metadata.st_flags() == 0
+        };
+        let descriptor_before = file.metadata()?;
+        let named_before = fs::symlink_metadata(pending)?;
+        if !metadata_is_exact(&descriptor_before)
+            || !metadata_is_exact(&named_before)
+            || descriptor_before.dev() != named_before.dev()
+            || descriptor_before.ino() != named_before.ino()
+            || descriptor_before.len() != named_before.len()
+        {
+            return Err(ControllerError(
+                "retry-3 pending recovery result identity is unsafe".to_owned(),
+            ));
+        }
+        let mut current = Vec::with_capacity(descriptor_before.len() as usize);
+        Read::by_ref(&mut file)
+            .take(expected.len() as u64 + 1)
+            .read_to_end(&mut current)?;
+        if current.len() as u64 != descriptor_before.len()
+            || !expected.as_bytes().starts_with(&current)
+        {
+            return Err(ControllerError(
+                "retry-3 pending recovery result is not an exact stable prefix".to_owned(),
+            ));
+        }
+        let descriptor_read = file.metadata()?;
+        let named_read = fs::symlink_metadata(pending)?;
+        if !metadata_is_exact(&descriptor_read)
+            || !metadata_is_exact(&named_read)
+            || descriptor_read.dev() != descriptor_before.dev()
+            || descriptor_read.ino() != descriptor_before.ino()
+            || descriptor_read.len() != descriptor_before.len()
+            || descriptor_read.dev() != named_read.dev()
+            || descriptor_read.ino() != named_read.ino()
+            || descriptor_read.len() != named_read.len()
+        {
+            return Err(ControllerError(
+                "retry-3 pending recovery result changed before durable repair".to_owned(),
+            ));
+        }
+        if current != expected.as_bytes() {
+            file.set_len(0)?;
+            file.seek(SeekFrom::Start(0))?;
+            file.write_all(expected.as_bytes())?;
+            file.sync_all()?;
+        }
+        let descriptor_ready = file.metadata()?;
+        let named_ready = fs::symlink_metadata(pending)?;
+        if !metadata_is_exact(&descriptor_ready)
+            || !metadata_is_exact(&named_ready)
+            || descriptor_ready.len() != expected.len() as u64
+            || descriptor_ready.dev() != descriptor_before.dev()
+            || descriptor_ready.ino() != descriptor_before.ino()
+            || descriptor_ready.dev() != named_ready.dev()
+            || descriptor_ready.ino() != named_ready.ino()
+            || descriptor_ready.len() != named_ready.len()
+            || path_exists_without_follow(final_path)?
+        {
+            return Err(ControllerError(
+                "retry-3 pending recovery result changed before publication".to_owned(),
+            ));
+        }
+        file.sync_all()?;
+        fsync_parent(pending)?;
+        rename_exclusive(pending, final_path)?;
+        fsync_parent(final_path)?;
+        let final_named = fs::symlink_metadata(final_path)?;
+        let descriptor_after = file.metadata()?;
+        if !metadata_is_exact(&descriptor_after)
+            || !metadata_is_exact(&final_named)
+            || descriptor_after.len() != expected.len() as u64
+            || descriptor_ready.dev() != descriptor_after.dev()
+            || descriptor_ready.ino() != descriptor_after.ino()
+            || descriptor_ready.len() != descriptor_after.len()
+            || descriptor_after.dev() != final_named.dev()
+            || descriptor_after.ino() != final_named.ino()
+            || descriptor_after.len() != final_named.len()
+            || path_exists_without_follow(pending)?
+        {
+            return Err(ControllerError(
+                "retry-3 recovery result lost identity during exclusive publication".to_owned(),
+            ));
+        }
+        drop(file);
+        let binding = read_retry_3_recovery_result(final_path)?;
+        if binding.generation != expected_generation {
+            return Err(ControllerError(
+                "retry-3 published recovery result failed its generation binding".to_owned(),
+            ));
+        }
+        Ok(binding)
+    }
+
     fn require_exact_retry_2_install_hold_at(path: &Path, layout: &V7Layout) -> Result<()> {
         let data_volume_device = verified_data_volume_device()?;
         let root = fs::symlink_metadata(path)?;
@@ -10070,6 +12919,270 @@ pub(crate) mod paired_v7 {
         println!(
             "PAIRED_V7_RETRY_2_RECOVERED_V6_VERIFIED evidence={} original_failure=immutable root_tombstone=retained pairing=preserved",
             layout.evidence.display()
+        );
+        Ok(())
+    }
+
+    fn recover_retry_3_critical_failure(
+        repo: PathBuf,
+        authorized_commit: &str,
+        authorized_tree: &str,
+    ) -> Result<()> {
+        require_canonical_git_oid(authorized_commit, "authorized retry-3 recovery commit")?;
+        require_canonical_git_oid(authorized_tree, "authorized retry-3 recovery tree")?;
+        verify_machine_contract()?;
+        let provenance = verify_paired_v7_git_provenance(&repo, true)?;
+        require_authorized_provenance(&provenance, authorized_commit, authorized_tree)?;
+        let transaction_lock = acquire_update_transaction_lock_at(Path::new(V7_UPDATE_LOCK))?;
+        require_descriptor_close_on_exec(
+            &transaction_lock.file,
+            "retry-3 incident recovery transaction lock",
+        )?;
+        verify_committed_v6_baseline()?;
+        verify_current_baseline_app_at(Path::new(NEW_APP), true)?;
+        require_no_v7_pending_pointers()?;
+
+        let pointer_expectation = if path_exists_without_follow(Path::new(V7_ACTIVE_UPDATE))? {
+            RetryV7PointerExpectation::Present
+        } else {
+            RetryV7PointerExpectation::Absent
+        };
+        let layout =
+            require_exact_retry_3_critical_failure_evidence(pointer_expectation)?;
+        authenticate_v7_privileged_boundary()?;
+
+        let journal_path = Path::new(RECOVERY_RETRY_3_RECOVERY_JOURNAL);
+        let journal_pending_path = Path::new(RECOVERY_RETRY_3_RECOVERY_JOURNAL_PENDING);
+        let result_path = Path::new(RECOVERY_RETRY_3_RECOVERY_RESULT);
+        let result_pending = Path::new(RECOVERY_RETRY_3_RECOVERY_RESULT_PENDING);
+        let journal_exists = path_exists_without_follow(journal_path)?;
+        if journal_exists {
+            fsync_parent(journal_path)?;
+        }
+        if !journal_exists {
+            if pointer_expectation != RetryV7PointerExpectation::Present {
+                return Err(ControllerError(
+                    "retry-3 pointer retired before a durable incident recovery journal existed"
+                        .to_owned(),
+                ));
+            }
+            require_path_absent(journal_path, "retry-3 recovery journal before admission")?;
+            require_path_absent(result_path, "retry-3 recovery result before admission")?;
+            require_path_absent(result_pending, "retry-3 pending recovery result before admission")?;
+            require_path_absent(
+                &layout.evidence.join("retired-active-pointer.txt"),
+                "retry-3 retired pointer before admission",
+            )?;
+            let initial_log_modes = require_exact_retry_3_log_admission_modes()?;
+            let admitted_core_audio = prove_retry_3_offline_safe_runtime(&layout, None)?;
+            require_exact_retry_3_critical_failure_evidence(
+                RetryV7PointerExpectation::Present,
+            )?;
+            if require_exact_retry_3_log_admission_modes()? != initial_log_modes {
+                return Err(ControllerError(
+                    "retry-3 recovery log modes changed during initial admission".to_owned(),
+                ));
+            }
+            prove_retry_3_offline_safe_runtime(&layout, Some(admitted_core_audio))?;
+            Retry3RecoveryJournal::create_or_publish(
+                journal_path,
+                journal_pending_path,
+                authorized_commit,
+                authorized_tree,
+                Retry3RecoveryAdmission {
+                    core_audio: admitted_core_audio,
+                    log_modes: initial_log_modes,
+                },
+            )?;
+            require_exact_retry_3_critical_failure_evidence(
+                RetryV7PointerExpectation::Present,
+            )?;
+        }
+
+        let existing_result = if path_exists_without_follow(result_path)? {
+            Some(read_retry_3_recovery_result(result_path)?)
+        } else {
+            None
+        };
+
+        if pointer_expectation == RetryV7PointerExpectation::Absent {
+            let terminal = existing_result.as_ref().ok_or_else(|| {
+                ControllerError(
+                    "retry-3 pointer retired without its exact recovery result".to_owned(),
+                )
+            })?;
+            require_path_absent(result_pending, "terminal retry-3 pending recovery result")?;
+            let admission = require_terminal_retry_3_recovery_journal(
+                journal_path,
+                authorized_commit,
+                authorized_tree,
+                terminal,
+            )?;
+            let generation = wait_for_paired_v7_launch_generation(Duration::from_secs(45))?;
+            require_retry_3_generation_matches(&generation, &terminal.generation)?;
+            prove_retry_3_online_safe_runtime(
+                &layout,
+                &terminal.generation,
+                admission.core_audio,
+            )?;
+            require_exact_retry_3_critical_failure_evidence(
+                RetryV7PointerExpectation::Absent,
+            )?;
+            println!(
+                "PAIRED_V7_RETRY_3_RECOVERED_V6_VERIFIED evidence={} pid={} original_failure=immutable root_tombstones=retained pairing=preserved",
+                layout.evidence.display(),
+                generation.pid,
+            );
+            return Ok(());
+        }
+
+        let mut recovery_journal = Retry3RecoveryJournal::open(
+            journal_path,
+            authorized_commit,
+            authorized_tree,
+            existing_result.as_ref(),
+        )?;
+        let admitted_core_audio = recovery_journal.admission.core_audio;
+        if recovery_journal.state == Retry3RecoveryState::SafeRuntimeProven {
+            require_path_absent(result_path, "retry-3 result before log repair")?;
+            require_path_absent(result_pending, "retry-3 pending result before log repair")?;
+            require_retry_3_log_resume_modes(recovery_journal.admission.log_modes)?;
+            prove_retry_3_offline_safe_runtime(&layout, Some(admitted_core_audio))?;
+            repair_exact_retry_3_logs()?;
+            require_exact_retry_3_logs(0o600)?;
+            prove_retry_3_offline_safe_runtime(&layout, Some(admitted_core_audio))?;
+            require_exact_retry_3_critical_failure_evidence(
+                RetryV7PointerExpectation::Present,
+            )?;
+            recovery_journal.record(Retry3RecoveryState::LogsRepaired, None)?;
+        }
+        if recovery_journal.state == Retry3RecoveryState::LogsRepaired {
+            require_path_absent(result_path, "retry-3 result before launch intent")?;
+            require_path_absent(result_pending, "retry-3 pending result before launch intent")?;
+            require_exact_retry_3_logs(0o600)?;
+            prove_retry_3_offline_safe_runtime(&layout, Some(admitted_core_audio))?;
+            require_exact_retry_3_logs(0o600)?;
+            let checkpoint = capture_log_checkpoint()?;
+            if checkpoint.offset != RECOVERY_RETRY_3_STDOUT_SIZE
+                || checkpoint.device != RETAINED_ROOT_V7_NORMAL_V2_DEVICE
+                || checkpoint.inode != RECOVERY_RETRY_3_STDOUT_INODE
+            {
+                return Err(ControllerError(
+                    "retry-3 log checkpoint differs from the exact repaired incident log"
+                        .to_owned(),
+                ));
+            }
+            require_exact_retry_3_critical_failure_evidence(
+                RetryV7PointerExpectation::Present,
+            )?;
+            recovery_journal.record(Retry3RecoveryState::LaunchArmed, None)?;
+        }
+        if recovery_journal.state == Retry3RecoveryState::LaunchArmed {
+            let mut generation = if let Some(binding) = existing_result.as_ref() {
+                let generation = wait_for_paired_v7_launch_generation(Duration::from_secs(45))?;
+                require_retry_3_generation_matches(&generation, &binding.generation)?;
+                prove_retry_3_online_safe_runtime(
+                    &layout,
+                    &binding.generation,
+                    admitted_core_audio,
+                )?
+            } else {
+                launch_or_resume_retry_3_v6(&layout, admitted_core_audio)?
+            };
+            if existing_result.is_none() {
+                reset_retry_3_pending_result_before_generation_publish()?;
+                require_exact_retry_3_critical_failure_evidence(
+                    RetryV7PointerExpectation::Present,
+                )?;
+                let expected_generation = retry_3_recovered_generation(&generation)?;
+                generation = prove_retry_3_online_safe_runtime(
+                    &layout,
+                    &expected_generation,
+                    admitted_core_audio,
+                )?;
+            }
+            let binding = publish_retry_3_recovery_result(&generation)?;
+            require_retry_3_generation_matches(&generation, &binding.generation)?;
+            require_path_absent(result_pending, "published retry-3 pending recovery result")?;
+            require_exact_retry_3_critical_failure_evidence(
+                RetryV7PointerExpectation::Present,
+            )?;
+            prove_retry_3_online_safe_runtime(
+                &layout,
+                &binding.generation,
+                admitted_core_audio,
+            )?;
+            recovery_journal.record(Retry3RecoveryState::RecoveredV6, Some(&binding))?;
+        }
+
+        if recovery_journal.state != Retry3RecoveryState::RecoveredV6 {
+            return Err(ControllerError(
+                "retry-3 recovery did not reach its exact terminal state".to_owned(),
+            ));
+        }
+        let terminal = recovery_journal.terminal.clone().ok_or_else(|| {
+            ControllerError("retry-3 terminal recovery journal lacks a result binding".to_owned())
+        })?;
+        let result = read_retry_3_recovery_result(result_path)?;
+        if result != terminal {
+            return Err(ControllerError(
+                "retry-3 terminal journal and recovery result disagree".to_owned(),
+            ));
+        }
+        require_path_absent(result_pending, "terminal retry-3 pending recovery result")?;
+        let generation = wait_for_paired_v7_launch_generation(Duration::from_secs(45))?;
+        require_retry_3_generation_matches(&generation, &terminal.generation)?;
+        prove_retry_3_online_safe_runtime(
+            &layout,
+            &terminal.generation,
+            admitted_core_audio,
+        )?;
+        require_exact_retry_3_critical_failure_evidence(
+            RetryV7PointerExpectation::Present,
+        )?;
+        let open_admission = recovery_journal.admission;
+        drop(recovery_journal);
+        let terminal_admission = require_terminal_retry_3_recovery_journal(
+            journal_path,
+            authorized_commit,
+            authorized_tree,
+            &terminal,
+        )?;
+        if terminal_admission != open_admission {
+            return Err(ControllerError(
+                "retry-3 terminal recovery admission changed before pointer retirement"
+                    .to_owned(),
+            ));
+        }
+        retire_v7_active_pointer(&layout)?;
+        require_exact_retry_3_critical_failure_evidence(
+            RetryV7PointerExpectation::Absent,
+        )?;
+        let retired_admission = require_terminal_retry_3_recovery_journal(
+            journal_path,
+            authorized_commit,
+            authorized_tree,
+            &terminal,
+        )?;
+        if retired_admission != terminal_admission {
+            return Err(ControllerError(
+                "retry-3 terminal recovery admission changed after pointer retirement".to_owned(),
+            ));
+        }
+        if read_retry_3_recovery_result(result_path)? != terminal {
+            return Err(ControllerError(
+                "retry-3 recovery result changed after pointer retirement".to_owned(),
+            ));
+        }
+        prove_retry_3_online_safe_runtime(
+            &layout,
+            &terminal.generation,
+            retired_admission.core_audio,
+        )?;
+        println!(
+            "PAIRED_V7_RETRY_3_RECOVERED_V6 evidence={} pid={} original_failure=immutable root_tombstones=retained pairing=preserved",
+            layout.evidence.display(),
+            generation.pid,
         );
         Ok(())
     }
@@ -13787,7 +16900,13 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
         }
     }
 
-    fn parse_v7_journal(text: &str) -> Result<V7State> {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct ParsedV7JournalHistory {
+        state: V7State,
+        terminal_critical_predecessor: Option<V7State>,
+    }
+
+    fn parse_v7_journal_history(text: &str) -> Result<ParsedV7JournalHistory> {
         let mut lines = text.lines();
         if lines.next() != Some(V7_JOURNAL_HEADER) {
             return Err(ControllerError(
@@ -13795,6 +16914,7 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
             ));
         }
         let mut state = None;
+        let mut latest_critical_predecessor = None;
         for line in lines {
             let mut fields = line.split(' ');
             if fields.next() != Some("STATE") {
@@ -13808,6 +16928,9 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
                 .ok_or_else(|| ControllerError("paired-v7 journal state is unknown".to_owned()))?;
             if let Some(previous) = state {
                 validate_v7_transition(previous, next)?;
+                if next == V7State::CriticalFailure {
+                    latest_critical_predecessor = Some(previous);
+                }
             } else if next != V7State::Begun {
                 return Err(ControllerError(
                     "paired-v7 journal does not begin at BEGUN".to_owned(),
@@ -13832,7 +16955,20 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
             }
             state = Some(next);
         }
-        state.ok_or_else(|| ControllerError("paired-v7 journal has no state".to_owned()))
+        let state =
+            state.ok_or_else(|| ControllerError("paired-v7 journal has no state".to_owned()))?;
+        Ok(ParsedV7JournalHistory {
+            state,
+            terminal_critical_predecessor: if state == V7State::CriticalFailure {
+                latest_critical_predecessor
+            } else {
+                None
+            },
+        })
+    }
+
+    fn parse_v7_journal(text: &str) -> Result<V7State> {
+        Ok(parse_v7_journal_history(text)?.state)
     }
 
     fn v7_field_schema(state: V7State) -> &'static [&'static str] {
@@ -14246,6 +17382,13 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
             ],
             vec![
                 executable.clone(),
+                V7_RECOVER_RETRY_3_MODE.to_owned(),
+                repo.clone(),
+                authorized_commit.clone(),
+                authorized_tree.clone(),
+            ],
+            vec![
+                executable.clone(),
                 V7_ROLLBACK_MODE.to_owned(),
                 repo.clone(),
             ],
@@ -14264,10 +17407,14 @@ assert not v['faceTimeUplinkClaimed'] and not v['localDownlinkAcousticsClaimed']
                 parse_v7_command(&allowed[2]),
                 Ok(V7Command::RecoverRetry2 { .. })
             )
-            || !matches!(parse_v7_command(&allowed[3]), Ok(V7Command::Rollback(_)))
-            || !matches!(parse_v7_command(&allowed[4]), Ok(V7Command::SelfTest))
             || !matches!(
-                parse_v7_command(&allowed[5]),
+                parse_v7_command(&allowed[3]),
+                Ok(V7Command::RecoverRetry3 { .. })
+            )
+            || !matches!(parse_v7_command(&allowed[4]), Ok(V7Command::Rollback(_)))
+            || !matches!(parse_v7_command(&allowed[5]), Ok(V7Command::SelfTest))
+            || !matches!(
+                parse_v7_command(&allowed[6]),
                 Ok(V7Command::ProbeLock { .. })
             )
         {

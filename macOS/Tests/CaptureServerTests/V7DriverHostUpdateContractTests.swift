@@ -62,6 +62,31 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         return nsSource.replacingCharacters(in: mutation, with: replacement)
     }
 
+    private func replacingLastInFunction(
+        _ source: String,
+        beginningWith beginning: String,
+        endingBefore ending: String,
+        target: String,
+        replacement: String
+    ) -> String {
+        let nsSource = source as NSString
+        let start = nsSource.range(of: beginning)
+        guard start.location != NSNotFound else { return source }
+        let tail = NSRange(
+            location: start.location,
+            length: nsSource.length - start.location
+        )
+        let finish = nsSource.range(of: ending, options: [], range: tail)
+        guard finish.location != NSNotFound else { return source }
+        let body = NSRange(
+            location: start.location,
+            length: finish.location - start.location
+        )
+        let mutation = nsSource.range(of: target, options: .backwards, range: body)
+        guard mutation.location != NSNotFound else { return source }
+        return nsSource.replacingCharacters(in: mutation, with: replacement)
+    }
+
     private func sha256Hex(_ source: String) -> String {
         SHA256.hash(data: Data(source.utf8))
             .map { String(format: "%02x", $0) }
@@ -986,7 +1011,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         }
 
         let launcherTokens = [
-            "EXPECTED_BINARY_SHA256='5feb2414a70b55ebac702916850cfb2b35f5d51a70ea63ae9ca00d67ba10bb04'",
+            "EXPECTED_BINARY_SHA256='0e70c2f4b9be266b793ad307a51be9c7c798b37c15abd83f2235d132439938e9'",
             "CONTROLLER_BINARY_SHA256=$(/usr/bin/shasum -a 256 \"$CONTROLLER\"",
             "[ \"$CONTROLLER_BINARY_SHA256\" = \"$EXPECTED_BINARY_SHA256\" ]",
             "compiled paired-v7 controller differs from the reviewed binary hash",
@@ -2747,7 +2772,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             "file.sync_all()?;",
             ".write_all(record.as_bytes())",
             ".and_then(|_| self.file.sync_all())",
-            "self.file.set_len(prior_length)?;",
+            "self.file.set_len(prior_length)?;\n                self.file.sync_all()?;",
             "self.file.sync_all()?;",
         ]
         let tornTailTokens = [
@@ -3057,7 +3082,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             let recovery = try? functionBody(
                 controller,
                 beginningWith: "    fn recover_retry_2_critical_failure",
-                endingBefore: "    fn execute_paired_v7_update"
+                endingBefore: "    fn recover_retry_3_critical_failure"
             ),
             let uidBroker = try? functionBody(
                 controller,
@@ -4187,7 +4212,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             && controller.contains(psWrongRejected)
             && controller.components(separatedBy: coreaudiodCall).count - 1 == 1
             && controller.components(separatedBy: launchctlCall).count - 1 == 2
-            && controller.components(separatedBy: lsofCall).count - 1 == 1
+            && controller.components(separatedBy: lsofCall).count - 1 == 2
             && controller.components(separatedBy: xattrCall).count - 1 == 1
             && controller.components(separatedBy: profilerCall).count - 1 == 1
             && controller.components(separatedBy: killCall).count - 1 == 1
@@ -4203,6 +4228,975 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
             && !controller.contains("bootstrap_root_owned_v7_recovery_controller")
     }
 
+    private func hasRetry3IncidentRecoveryContract(
+        controller: String,
+        launcher: String
+    ) -> Bool {
+        guard
+            let rootState = try? functionBody(
+                controller,
+                beginningWith: "    fn read_root_driver_state",
+                endingBefore: "    fn expected_driver_nodes"
+            ),
+            let history = try? functionBody(
+                controller,
+                beginningWith: "    fn parse_v7_journal_history",
+                endingBefore: "    fn v7_field_schema"
+            ),
+            let rootProof = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retry_3_restored_root_via_sudo",
+                endingBefore: "    fn require_retry_3_log_has_no_openers"
+            ),
+            let guardian = try? functionBody(
+                controller,
+                beginningWith: "    fn verify_exact_retry_3_product_endpoints_absent",
+                endingBefore: "    fn uid501_driver_restore_proxy"
+            ),
+            let logs = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retry_3_log_has_no_openers",
+                endingBefore: "    fn read_root_controller_identity_records_via_sudo"
+            ),
+            let exactLog = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_retry_3_log(",
+                endingBefore: "    fn require_exact_retry_3_logs"
+            ),
+            let logNoOpeners = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retry_3_log_has_no_openers",
+                endingBefore: "    fn require_exact_retry_3_log("
+            ),
+            let logPrefix = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_retry_3_log_prefix(",
+                endingBefore: "    fn require_exact_retry_3_log_prefixes"
+            ),
+            let logPrefixMappings = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_retry_3_log_prefixes",
+                endingBefore: "    fn require_exact_retry_3_offline_log_prefixes"
+            ),
+            let repairLog = try? functionBody(
+                controller,
+                beginningWith: "    fn repair_exact_retry_3_log_mode(",
+                endingBefore: "    fn repair_exact_retry_3_logs"
+            ),
+            let coreAudioMatch = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retry_3_core_audio_generation",
+                endingBefore: "    fn prove_retry_3_offline_safe_runtime"
+            ),
+            let offlineProof = try? functionBody(
+                controller,
+                beginningWith: "    fn prove_retry_3_offline_safe_runtime",
+                endingBefore: "    fn retry_3_recovery_checkpoint"
+            ),
+            let recoveryCheckpoint = try? functionBody(
+                controller,
+                beginningWith: "    fn retry_3_recovery_checkpoint",
+                endingBefore: "    fn prove_retry_3_online_safe_runtime"
+            ),
+            let evidence = try? functionBody(
+                controller,
+                beginningWith: "    fn require_exact_retry_3_critical_failure_evidence",
+                endingBefore: "    fn require_exact_retained_probe_directory"
+            ),
+            let journal = try? functionBody(
+                controller,
+                beginningWith: "    enum Retry3RecoveryState",
+                endingBefore: "    fn require_exact_retry_2_install_hold_at"
+            ),
+            let journalSafe = try? functionBody(
+                controller,
+                beginningWith: "    fn retry_3_recovery_safe_record",
+                endingBefore: "    fn retry_3_recovery_result_text"
+            ),
+            let generationMatch = try? functionBody(
+                controller,
+                beginningWith: "    fn require_retry_3_generation_matches",
+                endingBefore: "    fn retry_3_recovery_safe_record"
+            ),
+            let recoveredGeneration = try? functionBody(
+                controller,
+                beginningWith: "    fn retry_3_recovered_generation",
+                endingBefore: "    fn require_retry_3_generation_matches"
+            ),
+            let journalTransition = try? functionBody(
+                controller,
+                beginningWith: "    fn retry_3_recovery_transition_record",
+                endingBefore: "    fn parse_retry_3_recovery_terminal"
+            ),
+            let journalParser = try? functionBody(
+                controller,
+                beginningWith: "    fn retry_3_recovery_safe_value",
+                endingBefore: "    fn validate_retry_3_recovery_journal_file"
+            ),
+            let journalCreate = try? functionBody(
+                controller,
+                beginningWith: "        fn create_or_publish(",
+                endingBefore: "        fn open("
+            ),
+            let journalValidation = try? functionBody(
+                controller,
+                beginningWith: "    fn validate_retry_3_recovery_journal_file",
+                endingBefore: "    impl Retry3RecoveryJournal"
+            ),
+            let journalOpen = try? functionBody(
+                controller,
+                beginningWith: "        fn open(\n            path: &Path,\n            expected_commit: &str,\n            expected_tree: &str,\n            expected_terminal: Option<&Retry3RecoveryResultBinding>,",
+                endingBefore: "        fn record(\n            &mut self,\n            next: Retry3RecoveryState,"
+            ),
+            let journalRecord = try? functionBody(
+                controller,
+                beginningWith: "        fn record(\n            &mut self,\n            next: Retry3RecoveryState,",
+                endingBefore: "    fn require_terminal_retry_3_recovery_journal"
+            ),
+            let terminalJournal = try? functionBody(
+                controller,
+                beginningWith: "    fn require_terminal_retry_3_recovery_journal",
+                endingBefore: "    fn parse_retry_3_recovery_result"
+            ),
+            let pendingResultReset = try? functionBody(
+                controller,
+                beginningWith: "    fn reset_retry_3_pending_result_before_generation_publish",
+                endingBefore: "    fn read_retry_3_recovery_result"
+            ),
+            let pendingResultPrefix = try? functionBody(
+                controller,
+                beginningWith: "    fn is_plausible_retry_3_recovery_result_prefix",
+                endingBefore: "    fn reset_retry_3_pending_result_before_generation_publish"
+            ),
+            let resultRead = try? functionBody(
+                controller,
+                beginningWith: "    fn read_retry_3_recovery_result",
+                endingBefore: "    fn publish_retry_3_recovery_result"
+            ),
+            let resultPublish = try? functionBody(
+                controller,
+                beginningWith: "    fn publish_retry_3_recovery_result",
+                endingBefore: "    fn require_exact_retry_2_install_hold_at"
+            ),
+            let onlineProof = try? functionBody(
+                controller,
+                beginningWith: "    fn prove_retry_3_online_safe_runtime",
+                endingBefore: "    fn retry_3_v6_service_is_absent"
+            ),
+            let launchResume = try? functionBody(
+                controller,
+                beginningWith: "    fn launch_or_resume_retry_3_v6",
+                endingBefore: "    fn read_root_controller_identity_records_via_sudo"
+            ),
+            let recovery = try? functionBody(
+                controller,
+                beginningWith: "    fn recover_retry_3_critical_failure",
+                endingBefore: "    fn execute_paired_v7_update"
+            ),
+            let commandEnum = try? functionBody(
+                controller,
+                beginningWith: "    enum V7Command",
+                endingBefore: "    impl V7Layout"
+            ),
+            let main = try? functionBody(
+                controller,
+                beginningWith: "    fn paired_v7_real_main",
+                endingBefore: "    fn parse_v7_command"
+            ),
+            let parser = try? functionBody(
+                controller,
+                beginningWith: "    fn parse_v7_command",
+                endingBefore: "    fn require_canonical_git_oid"
+            ),
+            let releasePins = try? functionBody(
+                controller,
+                beginningWith: "    fn require_v7_release_pins",
+                endingBefore: "    fn count_exact_production_identity"
+            )
+        else { return false }
+
+        let exactPins = [
+            "const V7_RECOVER_RETRY_3_MODE: &str =",
+            #""--recover-authorized-paired-v7-retry-3-critical-failure";"#,
+            #"const RECOVERY_RETRY_3_NONCE: &str = "09602523-891e-4822-bf48-650a3b7f9637";"#,
+            "const RECOVERY_RETRY_3_EVIDENCE_INODE: u64 = 27_828_068;",
+            "const RECOVERY_RETRY_3_POINTER_INODE: u64 = 27_832_813;",
+            #""efbe37925571f60f5ad898c7046dbd85d8e31d4bad9af603c57745928bf7059e""#,
+            "const RECOVERY_RETRY_3_JOURNAL_INODE: u64 = 27_828_075;",
+            "const RECOVERY_RETRY_3_JOURNAL_SIZE: u64 = 593;",
+            #""d76c64d82bb7ba94dd067cf9c60a327e161377dce778850906fcddfb65aee1ad""#,
+            "const RECOVERY_RETRY_3_RESULT_INODE: u64 = 27_833_303;",
+            #""ce55694655fb8f1231d36ee80817abe67bc75e848f848be4d932504725f940ac""#,
+            "const RECOVERY_RETRY_3_DRIVER_RECORD_INODE: u64 = 27_832_682;",
+            #""148a9e96a4dc72f3936359b3b7c726e351197508a26b41b965cf98f51dc9dd62""#,
+            "const RECOVERY_RETRY_3_STDOUT_INODE: u64 = 27_131_806;",
+            #""afb8ac5fc5893694378d0472957c52b4ba239f9853e8001accf21394f5c28045""#,
+            "const RECOVERY_RETRY_3_STDERR_INODE: u64 = 27_131_807;",
+            #""ed48b41850a21cf525f14ad834d54e0dab96ae59387052212cf80797390d49c0""#,
+            "const RECOVERY_RETRY_3_GUARDIAN_INODE: u64 = 27_832_356;",
+            #""53ee0ce919f1b61c9d66a95d3ec8b417fba85df9f925fd24146d70b663fa995c""#,
+            "const RECOVERY_RETRY_3_ROOT_TRANSACTION_INODE: u64 = 27_832_701;",
+            "const RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_INODE: u64 = 27_832_705;",
+            #""ee133b1fe60f19e262081eb3eef6c290f03414b49533e6514b71901dfc854f55""#,
+            "const RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_INODE: u64 = 27_832_674;",
+            #""5feb2414a70b55ebac702916850cfb2b35f5d51a70ea63ae9ca00d67ba10bb04""#,
+            #"const RECOVERY_RETRY_3_RECOVERY_JOURNAL_PENDING: &str = "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-3-1787392225-87409-09602523-891e-4822-bf48-650a3b7f9637/.retry-3-recovery-journal.txt.pending";"#,
+            #"const RECOVERY_RETRY_3_RECOVERY_RESULT_PENDING: &str = "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v7/paired-v7-update-retry-3-1787392225-87409-09602523-891e-4822-bf48-650a3b7f9637/.retry-3-recovery-result.txt.pending";"#,
+        ]
+        let rootStateTokens = [
+            #"mode: 0o040755"#,
+            #"kind: "directory".to_owned()"#,
+        ]
+        let historyTokens = [
+            "let mut latest_critical_predecessor = None;",
+            "validate_v7_transition(previous, next)?;",
+            "if next == V7State::CriticalFailure {",
+            "latest_critical_predecessor = Some(previous);",
+            "terminal_critical_predecessor: if state == V7State::CriticalFailure {",
+            "latest_critical_predecessor",
+            "} else {",
+            "None",
+        ]
+        let rootTokens = [
+            "if layout.root != transaction",
+            #""0:0:{}:0755:Directory:{}:{}:{}:0""#,
+            "require_retained_root_normal_v1_via_sudo()?;",
+            "require_retained_root_recovery_v1_via_sudo()?;",
+            "require_retained_root_recovery_v2_via_sudo()?;",
+            "require_retained_root_normal_v2_via_sudo()?;",
+            "require_retry_3_transaction_parent_via_sudo(Some(transaction))",
+            #""0:0:{}:0700:Directory:{}:{}:{}:0""#,
+            #""0:0:{}:0755:Directory:{}:{}:{}:0""#,
+            #""0:0:1:0600:Regular File:{}:{}:{}:0""#,
+            #""0:0:1:0400:Regular File:{}:{}:{}:0""#,
+            #"state_fields.get("prior_present").copied() != Some("0")"#,
+            #".get("hold_device")"#,
+            "Some(RECOVERY_RETRY_3_ROOT_DEVICE)",
+            #".get("hold_inode")"#,
+            "Some(RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_INODE)",
+            #""OpensteamerVirtualMicrophone-v7.pkg\nfailed-v7-product-driver.node\nstate.txt\n""#,
+            "PRODUCT_DRIVER_CANONICAL_PATH",
+            "layout.hold.as_path()",
+            "layout.prior.as_path()",
+            "layout.abandoned.as_path()",
+            "RECOVERY_RETRY_3_ROOT_STATE_SHA256",
+            "RECOVERY_RETRY_3_ROOT_STATE",
+            "EXPECTED_PRODUCTION_DRIVER_PACKAGE_SHA256",
+            "RECOVERY_RETRY_3_ROOT_FAILED_EXECUTABLE_INODE",
+            #""/usr/bin/xattr", "-lr""#,
+            "require_output_success(&xattrs, \"prove retry-3 root transaction has no xattrs\")?;",
+            "if !xattrs.stdout.is_empty() || !xattrs.stderr.is_empty() {",
+            #""/usr/sbin/lsof", "+D""#,
+            "if openers.status.code() != Some(1)",
+            "!openers.stdout.is_empty()",
+            "!openers.stderr.is_empty()",
+            "EXPECTED_PRODUCTION_DRIVER_EXECUTABLE_SHA256",
+            "attest_transaction()?;",
+            "verify_exact_retry_3_product_endpoints_absent",
+            "attest_transaction()?;",
+            "attest_immutable_sets()",
+        ]
+        let guardianTokens = [
+            "layout.default_route_guardian != expected_guardian",
+            "let data_volume_device = verified_data_volume_device()?;",
+            ".custom_flags(O_NOFOLLOW | 0x0100_0000)",
+            "require_descriptor_close_on_exec(&guardian",
+            "metadata.uid() == USER_ID",
+            "metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID",
+            "metadata.nlink() == 1",
+            "mode() & 0o7777 == 0o755",
+            "metadata.dev() == data_volume_device",
+            "metadata.ino() == RECOVERY_RETRY_3_GUARDIAN_INODE",
+            "metadata.len() == RECOVERY_RETRY_3_GUARDIAN_SIZE",
+            "metadata.st_flags() == 0",
+            "if !metadata_is_exact(&before)",
+            "!metadata_is_exact(&named_before)",
+            "before.dev() != named_before.dev()",
+            "before.ino() != named_before.ino()",
+            "before.len() != named_before.len()",
+            "sha256_bytes(&bytes)? != RECOVERY_RETRY_3_GUARDIAN_SHA256",
+            #".arg("verify-product-absent")"#,
+            "require_output_success(&output, \"prove exact retry-3 product HAL endpoints absent\")?;",
+            #"if output.stdout != b"PRODUCT_ENDPOINTS_ABSENT_AND_LEGACY_PAIR_AVAILABLE\n""#,
+            "|| !output.stderr.is_empty()",
+            "let after = guardian.metadata()?;",
+            "let named_after = fs::symlink_metadata",
+            "!metadata_is_exact(&after)",
+            "!metadata_is_exact(&named_after)",
+            "before.dev() != after.dev()",
+            "before.ino() != after.ino()",
+            "before.len() != after.len()",
+        ]
+        let exactLogTokens = [
+            "matches!(expected_mode, 0o600 | 0o644)",
+            "let expected_device = verified_data_volume_device()?;",
+            "require_retry_3_log_has_no_openers(path)?;",
+            "metadata.uid() == USER_ID",
+            "metadata.gid() == 0",
+            "metadata.nlink() == 1",
+            "metadata.permissions().mode() & 0o7777 == expected_mode",
+            "metadata.dev() == expected_device",
+            "metadata.ino() == expected_inode",
+            "metadata.len() == expected_length",
+            "metadata.st_flags() == 0",
+            ".custom_flags(O_NOFOLLOW | 0x0100_0000)",
+            "descriptor_before.ino() != named_before.ino()",
+            "sha256_bytes(&bytes)? != expected_sha256",
+            "!metadata_is_exact(&descriptor_after)",
+            "!metadata_is_exact(&named_after)",
+            "descriptor_before.ino() != descriptor_after.ino()",
+            "descriptor_before.ino() != named_after.ino()",
+            "require_retry_3_log_has_no_openers(path)",
+        ]
+        let logNoOpenersTokens = [
+            #"Path::new("/usr/sbin/lsof")"#,
+            "EXPECTED_LSOF_SHA256",
+            #""/usr/sbin/lsof""#,
+            #"&["-n", "-Fpcufa", "--", path_text(path)?]"#,
+            "if output.status.code() != Some(1)",
+            "!output.stdout.is_empty()",
+            "!output.stderr.is_empty()",
+            "Ok(())",
+        ]
+        let logPrefixTokens = [
+            "let expected_device = verified_data_volume_device()?;",
+            "metadata.uid() == USER_ID",
+            "metadata.gid() == 0",
+            "metadata.nlink() == 1",
+            "metadata.permissions().mode() & 0o7777 == 0o600",
+            "metadata.dev() == expected_device",
+            "metadata.ino() == expected_inode",
+            "metadata.len() >= expected_prefix_length",
+            "metadata.len() <= expected_prefix_length + 16 * 1_024 * 1_024",
+            "metadata.st_flags() == 0",
+            ".custom_flags(O_NOFOLLOW | 0x0100_0000)",
+            "sha256_bytes(&prefix)? != expected_prefix_sha256",
+            "!metadata_is_exact(&descriptor_after)",
+            "!metadata_is_exact(&named_after)",
+            "descriptor_before.ino() != descriptor_after.ino()",
+            "descriptor_before.ino() != named_after.ino()",
+            "descriptor_after.len() < descriptor_before.len()",
+            "named_after.len() < named_before.len()",
+        ]
+        let repairLogTokens = [
+            "let expected_device = verified_data_volume_device()?;",
+            "metadata.file_type().is_file()",
+            "!metadata.file_type().is_symlink()",
+            "metadata.uid() == USER_ID",
+            "metadata.gid() == 0",
+            "metadata.nlink() == 1",
+            "metadata.permissions().mode() & 0o7777 == mode",
+            "metadata.dev() == expected_device",
+            "metadata.ino() == expected_inode",
+            "metadata.len() == expected_length",
+            "metadata.st_flags() == 0",
+            "if !matches!(before_mode, 0o600 | 0o644)",
+            "!metadata_is_exact(&named_before, before_mode)",
+            ".custom_flags(O_NOFOLLOW | 0x0100_0000)",
+            "require_descriptor_close_on_exec(&file, \"retry-3 recovery log\")?;",
+            "if !metadata_is_exact(&descriptor_before, before_mode)",
+            "descriptor_before.dev() != named_before.dev()",
+            "descriptor_before.ino() != named_before.ino()",
+            "descriptor_before.len() != named_before.len()",
+            "if before_bytes.len() as u64 != expected_length",
+            "sha256_bytes(&before_bytes)? != expected_sha256",
+            "file.set_permissions(fs::Permissions::from_mode(0o600))?;",
+            "file.sync_all()?;",
+            "if !metadata_is_exact(&descriptor_after, 0o600)",
+            "!metadata_is_exact(&named_after, 0o600)",
+            "descriptor_before.dev() != descriptor_after.dev()",
+            "descriptor_before.ino() != descriptor_after.ino()",
+            "descriptor_before.len() != descriptor_after.len()",
+            "descriptor_before.dev() != named_after.dev()",
+            "descriptor_before.ino() != named_after.ino()",
+            "descriptor_before.len() != named_after.len()",
+            "after_bytes != before_bytes",
+            "sha256_bytes(&after_bytes)? != expected_sha256",
+            "require_retry_3_log_has_no_openers(path)",
+        ]
+        let logPrefixMappingTokens = [
+            "Path::new(RECOVERY_RETRY_3_STDOUT_LOG)",
+            "RECOVERY_RETRY_3_STDOUT_INODE",
+            "RECOVERY_RETRY_3_STDOUT_SIZE",
+            "RECOVERY_RETRY_3_STDOUT_SHA256",
+            "Path::new(RECOVERY_RETRY_3_STDERR_LOG)",
+            "RECOVERY_RETRY_3_STDERR_INODE",
+            "RECOVERY_RETRY_3_STDERR_SIZE",
+            "RECOVERY_RETRY_3_STDERR_SHA256",
+        ]
+        let coreAudioMatchTokens = [
+            "if expected.is_some_and(|expected| expected != actual) {",
+            "Ok(actual)",
+        ]
+        let offlineProofTokens = [
+            "require_retry_3_restored_root_via_sudo()?;",
+            "verify_exact_retry_3_product_endpoints_absent(layout)?;",
+            "let core_audio_before = read_core_audio_generation_root()?;",
+            "require_retry_3_exact_v6_offline()?;",
+            "let core_audio_after = read_core_audio_generation_root()?;",
+            "verify_exact_retry_3_product_endpoints_absent(layout)?;",
+            "require_retry_3_restored_root_via_sudo()?;",
+            "if core_audio_before != core_audio_after",
+            "require_retry_3_core_audio_generation(core_audio_before, expected_core_audio)",
+        ]
+        let recoveryCheckpointTokens = [
+            "offset: RECOVERY_RETRY_3_STDOUT_SIZE",
+            "device: RETAINED_ROOT_V7_NORMAL_V2_DEVICE",
+            "inode: RECOVERY_RETRY_3_STDOUT_INODE",
+        ]
+        let logTokens = [
+            "matches!(expected_mode, 0o600 | 0o644)",
+            "require_retry_3_log_has_no_openers(path)?;",
+            "metadata.uid() == USER_ID",
+            "metadata.gid() == 0",
+            "metadata.nlink() == 1",
+            "metadata.ino() == expected_inode",
+            "metadata.len() == expected_length",
+            "metadata.st_flags() == 0",
+            ".custom_flags(O_NOFOLLOW | 0x0100_0000)",
+            "require_descriptor_close_on_exec(&file",
+            "sha256_bytes(&bytes)? != expected_sha256",
+            "Retry3IncidentLogModes {",
+            "stdout: require_exact_retry_3_log_admission_mode(",
+            "stderr: require_exact_retry_3_log_admission_mode(",
+            "before == now || (before == 0o644 && now == 0o600)",
+            "sha256_bytes(&prefix)? != expected_prefix_sha256",
+            "require_exact_retry_3_log_prefixes()?;",
+            "file.set_permissions(fs::Permissions::from_mode(0o600))?;",
+            "file.sync_all()?;",
+            "after_bytes != before_bytes",
+            "require_retry_3_core_audio_generation(core_audio_before, expected_core_audio)",
+            "require_retry_3_core_audio_generation(core_audio_before, Some(expected_core_audio))?;",
+        ]
+        let evidenceTokens = [
+            "let expected_device = verified_data_volume_device()?;",
+            "recovery_journal_pending_exists",
+            "recovery_result_pending_exists",
+            "recovery_journal_exists && recovery_journal_pending_exists",
+            "if (recovery_result_exists || recovery_result_pending_exists) && !recovery_journal_exists",
+            "recovery_result_exists && recovery_result_pending_exists",
+            "if retired_pointer_exists && (!recovery_journal_exists || !recovery_result_exists)",
+            "RECOVERY_RETRY_3_EVIDENCE_NLINK + optional_children",
+            "RECOVERY_RETRY_3_EVIDENCE_SIZE",
+            "metadata.file_type().is_dir()",
+            "!metadata.file_type().is_symlink()",
+            "metadata.uid() == USER_ID",
+            "metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID",
+            "metadata.nlink() == expected_nlink",
+            "metadata.permissions().mode() & 0o7777 == 0o700",
+            "metadata.dev() == expected_device",
+            "metadata.ino() == RECOVERY_RETRY_3_EVIDENCE_INODE",
+            "metadata.len() == expected_length",
+            "metadata.st_flags() == 0",
+            "if evidence.file_name().and_then(|name| name.to_str()) != Some(RECOVERY_RETRY_3_NAME)",
+            "evidence.parent() != Some(Path::new(V7_UPDATE_ROOT))",
+            "!metadata_is_exact(&evidence_before)",
+            "RECOVERY_RETRY_3_JOURNAL",
+            "RECOVERY_RETRY_3_JOURNAL_SHA256",
+            "RECOVERY_RETRY_3_RESULT",
+            "RECOVERY_RETRY_3_RESULT_SHA256",
+            "RECOVERY_RETRY_3_DRIVER_RECORD",
+            "RECOVERY_RETRY_3_DRIVER_RECORD_SHA256",
+            "history.state != V7State::CriticalFailure",
+            "history.terminal_critical_predecessor != Some(V7State::CurrentRestored)",
+            #"(".retry-3-recovery-result.txt.pending", false)"#,
+            #"(".retry-3-recovery-journal.txt.pending", false)"#,
+            "actual.contains_key(name) != expected_present",
+            "if !metadata_is_exact(&evidence_after)",
+            "evidence_before.dev() != evidence_after.dev()",
+            "evidence_before.ino() != evidence_after.ino()",
+            "evidence_before.nlink() != evidence_after.nlink()",
+            "evidence_before.len() != evidence_after.len()",
+            "evidence_before.st_flags() != evidence_after.st_flags()",
+        ]
+        let journalTokens = [
+            "coreaudio_pid={}",
+            "coreaudio_runs={}",
+            "stdout_initial_mode={:04o}",
+            "stderr_initial_mode={:04o}",
+            "critical_predecessor=CURRENT_RESTORED",
+            "retry_3_recovery_safe_value",
+            "parse_log_mode",
+            "retry_3_recovery_safe_record(",
+            "Retry3RecoveryState::SafeRuntimeProven",
+            "Retry3RecoveryState::LogsRepaired",
+            "Retry3RecoveryState::LaunchArmed",
+            "Retry3RecoveryState::RecoveredV6",
+            "result_inode={}",
+            "result_sha256={}",
+            ".create_new(true)",
+            ".open(pending_path)",
+            "text.as_bytes().starts_with(&existing)",
+            "file.write_all(text.as_bytes())?;",
+            "file.sync_all()?;",
+            "fsync_parent(pending_path)?;",
+            "rename_exclusive(pending_path, path)?;",
+            "fsync_parent(path)?;",
+            "validate_retry_3_recovery_journal_file(path, &file)?;",
+            "tail.contains(&b'\\n')",
+            "next.as_bytes().starts_with(tail)",
+            "file.set_len(complete_length as u64)?;",
+            ".write_all(record.as_bytes())",
+            ".and_then(|_| self.file.sync_all())",
+            "self.file.set_len(prior_length)?;",
+            "parsed.terminal.as_ref() != Some(expected_terminal)",
+            "RECOVERY_RETRY_3_RECOVERY_RESULT_PENDING",
+            "rename_exclusive(pending, final_path)?;",
+        ]
+        let journalSafeTokens = [
+            "STATE SAFE_RUNTIME_PROVEN",
+            "critical_predecessor=CURRENT_RESTORED",
+            "coreaudio_pid={}",
+            "coreaudio_runs={}",
+            "stdout_initial_mode={:04o}",
+            "stderr_initial_mode={:04o}",
+            "RECOVERY_RETRY_3_JOURNAL_SHA256",
+            "RECOVERY_RETRY_3_RESULT_SHA256",
+            "RECOVERY_RETRY_3_ROOT_STATE_SHA256",
+            "RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_SHA256",
+            "admission.core_audio.pid",
+            "admission.core_audio.runs",
+            "admission.log_modes.stdout",
+            "admission.log_modes.stderr",
+        ]
+        let generationMatchTokens = [
+            "if retry_3_recovered_generation(generation)? != *expected {",
+            "retry-3 recovered v6 generation changed after its durable result",
+            "Ok(())",
+        ]
+        let recoveredGenerationTokens = [
+            "pid: generation.pid",
+            "runs: generation.runs",
+            "process_start_sha256: sha256_bytes(generation.process_start.as_bytes())?",
+            "nonce: generation.nonce.clone()",
+            "lock_device: generation.lock_device",
+            "lock_inode: generation.lock_inode",
+        ]
+        let journalTransitionTokens = [
+            "Retry3RecoveryState::SafeRuntimeProven",
+            "Retry3RecoveryState::LogsRepaired",
+            "STATE LOGS_REPAIRED",
+            "Retry3RecoveryState::LaunchArmed",
+            "STATE LAUNCH_ARMED",
+            "terminal.ok_or_else",
+            "Retry3RecoveryState::RecoveredV6",
+            "STATE RECOVERED_V6 result_inode={} result_size={} result_sha256={} pid={} runs={} process_start_sha256={} nonce={} lock_device={} lock_inode={}",
+            "terminal.inode",
+            "terminal.size",
+            "terminal.sha256",
+        ]
+        let journalParserTokens = [
+            "retry_3_recovery_safe_value(&safe_fields, \"coreaudio_pid=\")",
+            "retry_3_recovery_safe_value(&safe_fields, \"coreaudio_runs=\")",
+            #""0600" => Ok(0o600)"#,
+            #""0644" => Ok(0o644)"#,
+            "stdout: parse_log_mode(\"stdout_initial_mode=\")?",
+            "stderr: parse_log_mode(\"stderr_initial_mode=\")?",
+            "if format!(\"{safe}\\n\")",
+            "retry_3_recovery_safe_record(",
+            "retry_3_recovery_transition_record(state, None)?",
+            "parse_retry_3_recovery_terminal(line)?",
+        ]
+        let journalCreateTokens = [
+            "require_path_absent(path, \"retry-3 recovery journal before atomic publication\")?;",
+            ".create_new(true)",
+            ".custom_flags(O_NOFOLLOW | 0x0100_0000)",
+            "validate_retry_3_recovery_journal_file(pending_path, &file)?;",
+            "!text.as_bytes().starts_with(&existing)",
+            "let before_write_inode =",
+            "validate_retry_3_recovery_journal_file(pending_path, &file)?;",
+            "file.set_len(0)?;",
+            "file.write_all(text.as_bytes())?;",
+            "file.sync_all()?;",
+            "fsync_parent(pending_path)?;",
+            "rename_exclusive(pending_path, path)?;",
+            "fsync_parent(path)?;",
+            "require_path_absent(",
+            "validate_retry_3_recovery_journal_file(path, &file)?;",
+        ]
+        let journalValidationTokens = [
+            "let expected_device = verified_data_volume_device()?;",
+            "metadata.file_type().is_file()",
+            "!metadata.file_type().is_symlink()",
+            "metadata.uid() == USER_ID",
+            "metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID",
+            "metadata.nlink() == 1",
+            "metadata.permissions().mode() & 0o7777 == 0o600",
+            "metadata.dev() == expected_device",
+            "metadata.len() <= 32_768",
+            "metadata.st_flags() == 0",
+            "if !metadata_is_exact(&descriptor)",
+            "!metadata_is_exact(&named)",
+            "descriptor.ino() != named.ino()",
+            "descriptor.len() != named.len()",
+            "Ok(descriptor.ino())",
+        ]
+        let journalOpenTokens = [
+            ".custom_flags(O_NOFOLLOW | 0x0100_0000)",
+            "let journal_inode =",
+            "validate_retry_3_recovery_journal_file(path, &file)?;",
+            ".take(32_769)",
+            "let post_read_inode = validate_retry_3_recovery_journal_file(path, &file)?;",
+            "if post_read_inode != journal_inode || file.metadata()?.len() != length",
+            "tail.contains(&b'\\n')",
+            "!next.as_bytes().starts_with(tail)",
+            "validate_retry_3_recovery_journal_file(path, &file)?;",
+            "file.set_len(complete_length as u64)?;",
+            "file.sync_all()?;",
+            "let after_truncate_inode =",
+            "if parsed.recovery_commit != expected_commit\n                || parsed.recovery_tree != expected_tree",
+            "let final_inode = validate_retry_3_recovery_journal_file(path, &file)?;",
+        ]
+        let journalRecordTokens = [
+            "retry_3_recovery_transition_record(self.state, terminal)?",
+            "let before_append_inode =",
+            "validate_retry_3_recovery_journal_file(&self.path, &self.file)?;",
+            "let prior_length = self.file.metadata()?.len();",
+            "self.file.seek(SeekFrom::End(0))? != prior_length",
+            "let immediate_inode =",
+            "validate_retry_3_recovery_journal_file(&self.path, &self.file)?;",
+            ".write_all(record.as_bytes())",
+            ".and_then(|_| self.file.sync_all())",
+            "self.file.set_len(prior_length)?;\n                self.file.sync_all()?;\n                return Err(ControllerError(format!(",
+            "validate_retry_3_recovery_journal_file(&self.path, &self.file)?;",
+            "let reopened = Self::open(",
+        ]
+        let terminalJournalTokens = [
+            ".custom_flags(O_NOFOLLOW | 0x0100_0000)",
+            "validate_retry_3_recovery_journal_file(path, &file)?;",
+            ".take(32_769)",
+            "let validated_after_inode = validate_retry_3_recovery_journal_file(path, &file)?;",
+            "if bytes.len() as u64 != length",
+            "after.ino() != inode",
+            "validated_after_inode != inode",
+            "after.len() != length",
+            "after.dev() != named_after.dev()",
+            "after.ino() != named_after.ino()",
+            "after.len() != named_after.len()",
+            "parse_retry_3_recovery_journal(&text, inode)?",
+            "parsed.state != Retry3RecoveryState::RecoveredV6",
+            "parsed.recovery_commit != expected_commit",
+            "parsed.recovery_tree != expected_tree",
+            "parsed.terminal.as_ref() != Some(expected_terminal)",
+        ]
+        let pendingResetTokens = [
+            "require_path_absent(",
+            "let expected_device = verified_data_volume_device()?;",
+            "metadata.file_type().is_file()",
+            "!metadata.file_type().is_symlink()",
+            "metadata.uid() == USER_ID",
+            "metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID",
+            "metadata.nlink() == 1",
+            "metadata.permissions().mode() & 0o7777 == 0o600",
+            "metadata.dev() == expected_device",
+            "metadata.len() <= 2_048",
+            "metadata.st_flags() == 0",
+            ".custom_flags(O_NOFOLLOW | 0x0100_0000)",
+            "require_descriptor_close_on_exec(&file, \"retry-3 stale pending recovery result\")?;",
+            "if !metadata_is_exact(&named_before)",
+            "!metadata_is_exact(&descriptor_before)",
+            "descriptor_before.dev() != named_before.dev()",
+            "descriptor_before.ino() != named_before.ino()",
+            "descriptor_before.len() != named_before.len()",
+            "if bytes.len() as u64 != descriptor_before.len()",
+            "!is_plausible_retry_3_recovery_result_prefix(&bytes)",
+            "!metadata_is_exact(&descriptor_read)",
+            "!metadata_is_exact(&named_read)",
+            "descriptor_before.dev() != descriptor_read.dev()",
+            "descriptor_before.ino() != descriptor_read.ino()",
+            "descriptor_before.len() != descriptor_read.len()",
+            "descriptor_before.dev() != named_read.dev()",
+            "descriptor_before.ino() != named_read.ino()",
+            "descriptor_before.len() != named_read.len()",
+            "file.set_len(0)?;",
+            "file.sync_all()?;",
+            "fsync_parent(pending)?;",
+            "if !metadata_is_exact(&descriptor_after)",
+            "!metadata_is_exact(&named_after)",
+            "descriptor_after.len() != 0",
+            "named_after.len() != 0",
+            "descriptor_before.dev() != descriptor_after.dev()",
+            "descriptor_before.ino() != descriptor_after.ino()",
+            "descriptor_before.dev() != named_after.dev()",
+            "descriptor_before.ino() != named_after.ino()",
+        ]
+        let pendingPrefixTokens = [
+            "if bytes.len() > 2_048 || bytes.contains(&b'\\r') || bytes.contains(&0) {",
+            "std::str::from_utf8(bytes)",
+            "lines.len() > 8",
+            "OPENSTEAMER_PAIRED_HOST_RECOVERY_RESULT_V7_RETRY_3",
+            "result=recovered-v6",
+            "process_start_sha256=",
+            "lock_inode=",
+            "value.len() > 64",
+            "value.parse::<u64>().ok().filter(|value| *value > 0)",
+            "true",
+        ]
+        let resultReadTokens = [
+            "let expected_device = verified_data_volume_device()?;",
+            "metadata.file_type().is_file()",
+            "!metadata.file_type().is_symlink()",
+            "metadata.uid() == USER_ID",
+            "metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID",
+            "metadata.nlink() == 1",
+            "metadata.permissions().mode() & 0o7777 == 0o600",
+            "metadata.dev() == expected_device",
+            "metadata.len() > 0",
+            "metadata.len() <= 2_048",
+            "metadata.st_flags() == 0",
+            "if !metadata_is_exact(&named_before)",
+            ".custom_flags(O_NOFOLLOW | 0x0100_0000)",
+            "require_descriptor_close_on_exec(&file, \"retry-3 recovery result\")?;",
+            "if !metadata_is_exact(&descriptor_before)",
+            "descriptor_before.dev() != named_before.dev()",
+            "descriptor_before.ino() != named_before.ino()",
+            "descriptor_before.len() != named_before.len()",
+            ".take(2_049)",
+            "if bytes.len() as u64 != descriptor_before.len()",
+            "!metadata_is_exact(&descriptor_after)",
+            "!metadata_is_exact(&named_after)",
+            "descriptor_before.dev() != descriptor_after.dev()",
+            "descriptor_before.ino() != descriptor_after.ino()",
+            "descriptor_before.len() != descriptor_after.len()",
+            "descriptor_before.dev() != named_after.dev()",
+            "descriptor_before.ino() != named_after.ino()",
+            "descriptor_before.len() != named_after.len()",
+            "inode: descriptor_before.ino(),",
+            "size: descriptor_before.len(),",
+            "sha256: sha256_bytes(&bytes)?,",
+            "parse_retry_3_recovery_result(&text)?",
+        ]
+        let resultPublishTokens = [
+            "path_exists_without_follow(final_path)?",
+            "path_exists_without_follow(pending)?",
+            "(true, true) =>",
+            "if binding.generation != expected_generation",
+            "fsync_parent(final_path)?;\n                let sealed = read_retry_3_recovery_result(final_path)?;\n                if sealed != binding",
+            "return Ok(sealed);",
+            ".create_new(true)",
+            ".mode(0o600)",
+            ".custom_flags(O_NOFOLLOW | 0x0100_0000)",
+            "require_descriptor_close_on_exec(&file, \"retry-3 pending recovery result\")?;",
+            "let expected_device = verified_data_volume_device()?;",
+            "metadata.file_type().is_file()",
+            "!metadata.file_type().is_symlink()",
+            "metadata.uid() == USER_ID",
+            "metadata.gid() == RETAINED_FAILED_V7_ATTEMPT_GID",
+            "metadata.nlink() == 1",
+            "metadata.permissions().mode() & 0o7777 == 0o600",
+            "metadata.dev() == expected_device",
+            "metadata.len() <= expected.len() as u64",
+            "metadata.st_flags() == 0",
+            "if !metadata_is_exact(&descriptor_before)",
+            "!metadata_is_exact(&named_before)",
+            "descriptor_before.dev() != named_before.dev()",
+            "descriptor_before.ino() != named_before.ino()",
+            "descriptor_before.len() != named_before.len()",
+            "if current.len() as u64 != descriptor_before.len()",
+            "expected.as_bytes().starts_with(&current)",
+            "let descriptor_read = file.metadata()?;",
+            "!metadata_is_exact(&descriptor_read)",
+            "!metadata_is_exact(&named_read)",
+            "descriptor_read.dev() != descriptor_before.dev()",
+            "descriptor_read.ino() != descriptor_before.ino()",
+            "descriptor_read.len() != descriptor_before.len()",
+            "descriptor_read.dev() != named_read.dev()",
+            "descriptor_read.ino() != named_read.ino()",
+            "descriptor_read.len() != named_read.len()",
+            "if current != expected.as_bytes() {",
+            "file.set_len(0)?;",
+            "file.seek(SeekFrom::Start(0))?;",
+            "file.write_all(expected.as_bytes())?;",
+            "file.sync_all()?;",
+            "if !metadata_is_exact(&descriptor_ready)",
+            "!metadata_is_exact(&named_ready)",
+            "descriptor_ready.len() != expected.len() as u64",
+            "descriptor_ready.dev() != descriptor_before.dev()",
+            "descriptor_ready.ino() != descriptor_before.ino()",
+            "descriptor_ready.dev() != named_ready.dev()",
+            "descriptor_ready.ino() != named_ready.ino()",
+            "descriptor_ready.len() != named_ready.len()",
+            "path_exists_without_follow(final_path)?",
+            "file.sync_all()?;\n        fsync_parent(pending)?;\n        rename_exclusive(pending, final_path)?;\n        fsync_parent(final_path)?;",
+            "if !metadata_is_exact(&descriptor_after)",
+            "!metadata_is_exact(&final_named)",
+            "descriptor_after.len() != expected.len() as u64",
+            "descriptor_ready.dev() != descriptor_after.dev()",
+            "descriptor_ready.ino() != descriptor_after.ino()",
+            "descriptor_ready.len() != descriptor_after.len()",
+            "descriptor_after.dev() != final_named.dev()",
+            "descriptor_after.ino() != final_named.ino()",
+            "descriptor_after.len() != final_named.len()",
+            "path_exists_without_follow(pending)?",
+            "read_retry_3_recovery_result(final_path)?",
+            "if binding.generation != expected_generation",
+        ]
+        let onlineProofTokens = [
+            "let generation = verify_paired_v7_runtime()?;",
+            "require_retry_3_generation_matches(&generation, expected_generation)?;",
+            "verify_deployment(",
+            "require_retry_3_core_audio_generation(core_audio_before, Some(expected_core_audio))?;",
+            "let final_generation = verify_paired_v7_runtime()?;",
+            "require_retry_3_generation_matches(&final_generation, expected_generation)?;",
+            "Ok(final_generation)",
+        ]
+        let launchResumeTokens = [
+            "if retry_3_v6_service_is_absent()? {",
+            "require_exact_retry_3_offline_log_prefixes()?;",
+            "prove_retry_3_offline_safe_runtime(layout, Some(expected_core_audio))?;",
+            "reset_retry_3_pending_result_before_generation_publish()?;",
+            "require_exact_retry_3_critical_failure_evidence(",
+            "prove_retry_3_offline_safe_runtime(layout, Some(expected_core_audio))?;",
+            "require_exact_retry_3_offline_log_prefixes()?;",
+            "bootstrap_exact_new_job()?;",
+        ]
+        let recoveryOrder = [
+            "require_exact_retry_3_critical_failure_evidence(pointer_expectation)?;",
+            "let journal_exists = path_exists_without_follow(journal_path)?;",
+            "if journal_exists {\n            fsync_parent(journal_path)?;\n        }",
+            "let initial_log_modes = require_exact_retry_3_log_admission_modes()?;",
+            "let admitted_core_audio = prove_retry_3_offline_safe_runtime(&layout, None)?;",
+            "require_exact_retry_3_critical_failure_evidence(",
+            "if require_exact_retry_3_log_admission_modes()? != initial_log_modes",
+            "prove_retry_3_offline_safe_runtime(&layout, Some(admitted_core_audio))?;",
+            "Retry3RecoveryJournal::create_or_publish(",
+            "require_exact_retry_3_critical_failure_evidence(",
+            "Retry3RecoveryJournal::open(",
+            "require_retry_3_log_resume_modes(recovery_journal.admission.log_modes)?;",
+            "prove_retry_3_offline_safe_runtime(&layout, Some(admitted_core_audio))?;",
+            "repair_exact_retry_3_logs()?;",
+            "require_exact_retry_3_logs(0o600)?;",
+            "prove_retry_3_offline_safe_runtime(&layout, Some(admitted_core_audio))?;",
+            "require_exact_retry_3_critical_failure_evidence(",
+            "recovery_journal.record(Retry3RecoveryState::LogsRepaired, None)?;",
+            "require_exact_retry_3_logs(0o600)?;",
+            "prove_retry_3_offline_safe_runtime(&layout, Some(admitted_core_audio))?;",
+            "require_exact_retry_3_logs(0o600)?;",
+            "let checkpoint = capture_log_checkpoint()?;",
+            "checkpoint.offset != RECOVERY_RETRY_3_STDOUT_SIZE",
+            "checkpoint.device != RETAINED_ROOT_V7_NORMAL_V2_DEVICE",
+            "checkpoint.inode != RECOVERY_RETRY_3_STDOUT_INODE",
+            "require_exact_retry_3_critical_failure_evidence(",
+            "recovery_journal.record(Retry3RecoveryState::LaunchArmed, None)?;",
+            "launch_or_resume_retry_3_v6(&layout, admitted_core_audio)?",
+            "reset_retry_3_pending_result_before_generation_publish()?;",
+            "require_exact_retry_3_critical_failure_evidence(",
+            "let expected_generation = retry_3_recovered_generation(&generation)?;",
+            "generation = prove_retry_3_online_safe_runtime(",
+            "let binding = publish_retry_3_recovery_result(&generation)?;\n            require_retry_3_generation_matches(&generation, &binding.generation)?;\n            require_path_absent(result_pending, \"published retry-3 pending recovery result\")?;",
+            "require_exact_retry_3_critical_failure_evidence(",
+            "prove_retry_3_online_safe_runtime(",
+            "recovery_journal.record(Retry3RecoveryState::RecoveredV6, Some(&binding))?;",
+            "if result != terminal",
+            "require_retry_3_generation_matches(&generation, &terminal.generation)?;",
+            "prove_retry_3_online_safe_runtime(",
+            "RetryV7PointerExpectation::Present",
+            "require_terminal_retry_3_recovery_journal(",
+            "if terminal_admission != open_admission",
+            "retire_v7_active_pointer(&layout)?;",
+            "RetryV7PointerExpectation::Absent",
+            "require_terminal_retry_3_recovery_journal(",
+            "if retired_admission != terminal_admission",
+            "if read_retry_3_recovery_result(result_path)? != terminal",
+            "prove_retry_3_online_safe_runtime(",
+        ]
+        let releasePinTokens = [
+            "V7_RECOVER_RETRY_3_MODE",
+            "RECOVERY_RETRY_3_EVIDENCE",
+            "RECOVERY_RETRY_3_JOURNAL_SHA256",
+            "RECOVERY_RETRY_3_RESULT_SHA256",
+            "RECOVERY_RETRY_3_DRIVER_RECORD_SHA256",
+            "RECOVERY_RETRY_3_STDOUT_SHA256",
+            "RECOVERY_RETRY_3_STDERR_SHA256",
+            "RECOVERY_RETRY_3_ROOT_STATE_SHA256",
+            "RETAINED_ROOT_V7_NORMAL_V2_CONTROLLER_SHA256",
+            #""retry-3 failure journal SHA-256""#,
+            #""retry-3 root state SHA-256""#,
+            #""retained normal-v2 controller SHA-256""#,
+        ]
+        let reachableRecoverySurface = [
+            recovery,
+            launchResume,
+            onlineProof,
+            offlineProof,
+            rootProof,
+            guardian,
+            logs,
+            evidence,
+            journal,
+        ].joined(separator: "\n")
+        let forbiddenRecoveryWriters = [
+            "RootExistingDriverRestoreClient",
+            "RootDriverBrokerClient",
+            "root_driver_restore",
+            "bootstrap_root_owned_v7_controller",
+            "publish_root_controller",
+            "V7Journal::open",
+            "write_result(",
+        ]
+        return exactPins.allSatisfy(controller.contains)
+            && containsOrdered(rootStateTokens, in: rootState)
+            && containsOrdered(historyTokens, in: history)
+            && containsOrdered(rootTokens, in: rootProof)
+            && containsOrdered(guardianTokens, in: guardian)
+            && containsOrdered(logTokens, in: logs)
+            && containsOrdered(logNoOpenersTokens, in: logNoOpeners)
+            && containsOrdered(exactLogTokens, in: exactLog)
+            && containsOrdered(logPrefixTokens, in: logPrefix)
+            && containsOrdered(logPrefixMappingTokens, in: logPrefixMappings)
+            && containsOrdered(repairLogTokens, in: repairLog)
+            && containsOrdered(coreAudioMatchTokens, in: coreAudioMatch)
+            && containsOrdered(offlineProofTokens, in: offlineProof)
+            && containsOrdered(recoveryCheckpointTokens, in: recoveryCheckpoint)
+            && containsOrdered(evidenceTokens, in: evidence)
+            && journalTokens.allSatisfy(journal.contains)
+            && containsOrdered(journalSafeTokens, in: journalSafe)
+            && containsOrdered(recoveredGenerationTokens, in: recoveredGeneration)
+            && containsOrdered(generationMatchTokens, in: generationMatch)
+            && containsOrdered(journalTransitionTokens, in: journalTransition)
+            && containsOrdered(journalParserTokens, in: journalParser)
+            && containsOrdered(journalCreateTokens, in: journalCreate)
+            && containsOrdered(journalValidationTokens, in: journalValidation)
+            && containsOrdered(journalOpenTokens, in: journalOpen)
+            && containsOrdered(journalRecordTokens, in: journalRecord)
+            && containsOrdered(terminalJournalTokens, in: terminalJournal)
+            && containsOrdered(pendingResetTokens, in: pendingResultReset)
+            && containsOrdered(pendingPrefixTokens, in: pendingResultPrefix)
+            && !pendingResultPrefix.contains("    fn is_plausible_retry_3_recovery_result_prefix(bytes: &[u8]) -> bool {\n        return true;")
+            && containsOrdered(resultReadTokens, in: resultRead)
+            && containsOrdered(resultPublishTokens, in: resultPublish)
+            && resultPublish.components(
+                separatedBy: ".custom_flags(O_NOFOLLOW | 0x0100_0000)"
+            ).count - 1 == 2
+            && containsOrdered(onlineProofTokens, in: onlineProof)
+            && containsOrdered(launchResumeTokens, in: launchResume)
+            && containsOrdered(recoveryOrder, in: recovery)
+            && releasePinTokens.allSatisfy(releasePins.contains)
+            && commandEnum.contains("RecoverRetry3 {")
+            && commandEnum.contains("authorized_commit: String")
+            && commandEnum.contains("authorized_tree: String")
+            && parser.contains("V7_RECOVER_RETRY_3_MODE")
+            && parser.contains("[_, mode, repo, authorized_commit, authorized_tree]")
+            && parser.contains("if mode == V7_RECOVER_RETRY_3_MODE =>")
+            && parser.contains("Ok(V7Command::RecoverRetry3 {")
+            && main.contains("V7Command::RecoverRetry3 {")
+            && main.contains("recover_retry_3_critical_failure(")
+            && main.contains("canonical_repo(&repo)?")
+            && main.contains("&authorized_commit")
+            && main.contains("&authorized_tree")
+            && launcher.contains("RECOVER_RETRY_3_MODE='--recover-authorized-paired-v7-retry-3-critical-failure'")
+            && launcher.contains(#""$EXECUTE_MODE"|"$RECOVER_RETRY_2_MODE"|"$RECOVER_RETRY_3_MODE")"#)
+            && launcher.contains(#"[ "$#" -eq 4 ] && [ "$2" = "$EXPECTED_REPO" ] || usage"#)
+            && forbiddenRecoveryWriters.allSatisfy { !reachableRecoverySurface.contains($0) }
+            && recovery.components(
+                separatedBy: "require_retry_3_generation_matches(&generation, &binding.generation)?;"
+            ).count - 1 == 2
+            && rootProof.components(separatedBy: "sudo_require_exact_incident_stat(\n                transaction,").count - 1 == 2
+            && rootProof.components(separatedBy: "RECOVERY_RETRY_3_ROOT_STATE_SHA256,").count - 1 == 2
+            && rootProof.components(separatedBy: "EXPECTED_PRODUCTION_DRIVER_PACKAGE_SHA256,").count - 1 == 2
+            && rootProof.components(separatedBy: "EXPECTED_PRODUCTION_DRIVER_EXECUTABLE_SHA256").count - 1 >= 2
+    }
+
     func testV7Retry2CriticalRecoveryPreservesEvidenceAndRejectsMutants() throws {
         let controller = try source(
             "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs"
@@ -4211,6 +5205,9 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         if controller.contains("active-paired-host-update-v7-retry-3") {
             XCTAssertTrue(hasRetry3TerminalNamespaceContract(controller))
             XCTAssertTrue(hasRetry3RootV2Contract(controller))
+            XCTAssertTrue(
+                hasRetry3IncidentRecoveryContract(controller: controller, launcher: launcher)
+            )
             let publishPendingCall = "        require_root_v2_support_topology(&[&[\".opensteamer-v7-controller.pending\"]])?;\n"
             let publishFinalCall = "        require_root_v2_support_topology(&[&[\"opensteamer-v7-controller\"]])?;\n"
             var publisherOrderMutant = replacingInFunction(
@@ -4898,6 +5895,1010 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
                     hasRetry3TerminalNamespaceContract(mutant)
                         && hasRetry3RootV2Contract(mutant),
                     "retry3/root contract accepted mutant \(index)"
+                )
+            }
+            let incidentMutants = [
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_root_driver_state",
+                    endingBefore: "    fn expected_driver_nodes",
+                    target: "            mode: 0o040755,\n",
+                    replacement: "            mode: 0,\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_root_driver_state",
+                    endingBefore: "    fn expected_driver_nodes",
+                    target: "            mode: 0o040755,\n",
+                    replacement: "            mode: 0o0755,\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn parse_v7_journal_history",
+                    endingBefore: "    fn v7_field_schema",
+                    target: "                    latest_critical_predecessor = Some(previous);\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_critical_failure_evidence",
+                    endingBefore: "    fn require_exact_retained_probe_directory",
+                    target: "history.terminal_critical_predecessor != Some(V7State::CurrentRestored)",
+                    replacement: "history.terminal_critical_predecessor != Some(V7State::CurrentBootstrapped)"
+                ),
+                controller.replacingOccurrences(
+                    of: #""d76c64d82bb7ba94dd067cf9c60a327e161377dce778850906fcddfb65aee1ad""#,
+                    with: #""ce55694655fb8f1231d36ee80817abe67bc75e848f848be4d932504725f940ac""#
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_restored_root_via_sudo",
+                    endingBefore: "    fn require_retry_3_log_has_no_openers",
+                    target: "            require_retained_root_normal_v2_via_sudo()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_restored_root_via_sudo",
+                    endingBefore: "    fn require_retry_3_log_has_no_openers",
+                    target: #""0:0:{}:0700:Directory:{}:{}:{}:0""#,
+                    replacement: #""0:0:{}:0755:Directory:{}:{}:{}:0""#
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_restored_root_via_sudo",
+                    endingBefore: "    fn require_retry_3_log_has_no_openers",
+                    target: "!= Some(RECOVERY_RETRY_3_ROOT_FAILED_DRIVER_INODE)\n",
+                    replacement: "!= Some(1)\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn verify_exact_retry_3_product_endpoints_absent",
+                    endingBefore: "    fn uid501_driver_restore_proxy",
+                    target: ".custom_flags(O_NOFOLLOW | 0x0100_0000)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn verify_exact_retry_3_product_endpoints_absent",
+                    endingBefore: "    fn uid501_driver_restore_proxy",
+                    target: "                && metadata.ino() == RECOVERY_RETRY_3_GUARDIAN_INODE\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn verify_exact_retry_3_product_endpoints_absent",
+                    endingBefore: "    fn uid501_driver_restore_proxy",
+                    target: "            || before.ino() != after.ino()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_log(",
+                    endingBefore: "    fn require_exact_retry_3_logs",
+                    target: "if !matches!(expected_mode, 0o600 | 0o644)",
+                    replacement: "if expected_mode != 0o644"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_log(",
+                    endingBefore: "    fn require_exact_retry_3_logs",
+                    target: "                && metadata.gid() == 0\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_log_resume_modes",
+                    endingBefore: "    fn require_exact_retry_3_log_prefix",
+                    target: "before == now || (before == 0o644 && now == 0o600)",
+                    replacement: "matches!(now, 0o600 | 0o644)"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_log_prefix",
+                    endingBefore: "    fn require_exact_retry_3_log_prefixes",
+                    target: "            || sha256_bytes(&prefix)? != expected_prefix_sha256\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn prove_retry_3_online_safe_runtime",
+                    endingBefore: "    fn retry_3_v6_service_is_absent",
+                    target: "        require_retry_3_core_audio_generation(core_audio_before, Some(expected_core_audio))?;\n",
+                    replacement: "        require_retry_3_core_audio_generation(core_audio_before, None)?;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn prove_retry_3_online_safe_runtime",
+                    endingBefore: "    fn retry_3_v6_service_is_absent",
+                    target: "        let final_generation = verify_paired_v7_runtime()?;\n",
+                    replacement: "        let final_generation = generation;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "        fn create_or_publish(",
+                    endingBefore: "        fn open(\n            path: &Path,\n            expected_commit: &str,",
+                    target: "                .create_new(true)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "        fn create_or_publish(",
+                    endingBefore: "        fn open(\n            path: &Path,\n            expected_commit: &str,",
+                    target: "            let before_write_inode =\n                validate_retry_3_recovery_journal_file(pending_path, &file)?;\n",
+                    replacement: "            let before_write_inode = journal_inode;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "        fn open(\n            path: &Path,\n            expected_commit: &str,",
+                    endingBefore: "        fn record(\n            &mut self,\n            next: Retry3RecoveryState,",
+                    target: "            let post_read_inode = validate_retry_3_recovery_journal_file(path, &file)?;\n",
+                    replacement: "            let post_read_inode = journal_inode;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "        fn record(\n            &mut self,\n            next: Retry3RecoveryState,",
+                    endingBefore: "    fn require_terminal_retry_3_recovery_journal",
+                    target: "            let immediate_inode =\n                validate_retry_3_recovery_journal_file(&self.path, &self.file)?;\n",
+                    replacement: "            let immediate_inode = self.journal_inode;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn reset_retry_3_pending_result_before_generation_publish",
+                    endingBefore: "    fn read_retry_3_recovery_result",
+                    target: "            || !is_plausible_retry_3_recovery_result_prefix(&bytes)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn reset_retry_3_pending_result_before_generation_publish",
+                    endingBefore: "    fn read_retry_3_recovery_result",
+                    target: "        fsync_parent(pending)?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "        let descriptor_read = file.metadata()?;\n",
+                    replacement: "        let descriptor_read = descriptor_before;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "        rename_exclusive(pending, final_path)?;\n",
+                    replacement: "        fs::rename(pending, final_path)?;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn launch_or_resume_retry_3_v6",
+                    endingBefore: "    fn read_root_controller_identity_records_via_sudo",
+                    target: "            reset_retry_3_pending_result_before_generation_publish()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn recover_retry_3_critical_failure",
+                    endingBefore: "    fn execute_paired_v7_update",
+                    target: "                reset_retry_3_pending_result_before_generation_publish()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn recover_retry_3_critical_failure",
+                    endingBefore: "    fn execute_paired_v7_update",
+                    target: "                generation = prove_retry_3_online_safe_runtime(\n",
+                    replacement: "                generation = generation; /*\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn recover_retry_3_critical_failure",
+                    endingBefore: "    fn execute_paired_v7_update",
+                    target: "        let terminal_admission = require_terminal_retry_3_recovery_journal(\n",
+                    replacement: "        let terminal_admission = open_admission; /*\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn recover_retry_3_critical_failure",
+                    endingBefore: "    fn execute_paired_v7_update",
+                    target: "        verify_committed_v6_baseline()?;\n",
+                    replacement: "        RootExistingDriverRestoreClient::start();\n        verify_committed_v6_baseline()?;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn recover_retry_3_critical_failure",
+                    endingBefore: "    fn execute_paired_v7_update",
+                    target: "        verify_committed_v6_baseline()?;\n",
+                    replacement: "        V7Journal::open(Path::new(\"unsafe\"))?;\n        verify_committed_v6_baseline()?;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn parse_v7_command",
+                    endingBefore: "    fn require_canonical_git_oid",
+                    target: "                if mode == V7_RECOVER_RETRY_3_MODE =>\n",
+                    replacement: "                if false =>\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_generation_matches",
+                    endingBefore: "    fn retry_3_recovery_safe_record",
+                    target: "        if retry_3_recovered_generation(generation)? != *expected {\n",
+                    replacement: "        if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_core_audio_generation",
+                    endingBefore: "    fn prove_retry_3_offline_safe_runtime",
+                    target: "        if expected.is_some_and(|expected| expected != actual) {\n",
+                    replacement: "        if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn prove_retry_3_offline_safe_runtime",
+                    endingBefore: "    fn retry_3_recovery_checkpoint",
+                    target: "        if core_audio_before != core_audio_after {\n",
+                    replacement: "        if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn launch_or_resume_retry_3_v6",
+                    endingBefore: "    fn read_root_controller_identity_records_via_sudo",
+                    target: "            reset_retry_3_pending_result_before_generation_publish()?;\n",
+                    replacement: "            RootDriverBrokerClient::start();\n            reset_retry_3_pending_result_before_generation_publish()?;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn is_plausible_retry_3_recovery_result_prefix",
+                    endingBefore: "    fn reset_retry_3_pending_result_before_generation_publish",
+                    target: "        if bytes.len() > 2_048 || bytes.contains(&b'\\r') || bytes.contains(&0) {\n",
+                    replacement: "        if false && (bytes.len() > 2_048 || bytes.contains(&b'\\r') || bytes.contains(&0)) {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_log(",
+                    endingBefore: "    fn require_exact_retry_3_logs",
+                    target: "                && metadata.permissions().mode() & 0o7777 == expected_mode\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_log_prefixes",
+                    endingBefore: "    fn require_exact_retry_3_offline_log_prefixes",
+                    target: "Path::new(RECOVERY_RETRY_3_STDERR_LOG)",
+                    replacement: "Path::new(RECOVERY_RETRY_3_STDOUT_LOG)"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn parse_retry_3_recovery_journal",
+                    endingBefore: "    fn validate_retry_3_recovery_journal_file",
+                    target: "        if format!(\"{safe}\\n\")\n",
+                    replacement: "        if false && format!(\"{safe}\\n\")\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn recover_retry_3_critical_failure",
+                    endingBefore: "    fn execute_paired_v7_update",
+                    target: "        if result != terminal {\n",
+                    replacement: "        if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn recover_retry_3_critical_failure",
+                    endingBefore: "    fn execute_paired_v7_update",
+                    target: "        if read_retry_3_recovery_result(result_path)? != terminal {\n",
+                    replacement: "        if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn verify_exact_retry_3_product_endpoints_absent",
+                    endingBefore: "    fn uid501_driver_restore_proxy",
+                    target: "                && metadata.dev() == data_volume_device\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn verify_exact_retry_3_product_endpoints_absent",
+                    endingBefore: "    fn uid501_driver_restore_proxy",
+                    target: "                && metadata.st_flags() == 0\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn is_plausible_retry_3_recovery_result_prefix",
+                    endingBefore: "    fn reset_retry_3_pending_result_before_generation_publish",
+                    target: "    fn is_plausible_retry_3_recovery_result_prefix(bytes: &[u8]) -> bool {\n",
+                    replacement: "    fn is_plausible_retry_3_recovery_result_prefix(bytes: &[u8]) -> bool {\n        return true;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn recover_retry_3_critical_failure",
+                    endingBefore: "    fn execute_paired_v7_update",
+                    target: "        if terminal_admission != open_admission {\n",
+                    replacement: "        if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn recover_retry_3_critical_failure",
+                    endingBefore: "    fn execute_paired_v7_update",
+                    target: "        if retired_admission != terminal_admission {\n",
+                    replacement: "        if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn recover_retry_3_critical_failure",
+                    endingBefore: "    fn execute_paired_v7_update",
+                    target: "                || checkpoint.device != RETAINED_ROOT_V7_NORMAL_V2_DEVICE\n",
+                    replacement: ""
+                ),
+                controller.replacingOccurrences(
+                    of: "        require_retry_3_generation_matches(&generation, &terminal.generation)?;\n",
+                    with: ""
+                ),
+                replacingLastInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_restored_root_via_sudo",
+                    endingBefore: "    fn require_retry_3_log_has_no_openers",
+                    target: "                RECOVERY_RETRY_3_ROOT_STATE_SHA256,\n",
+                    replacement: "                RECOVERY_RETRY_3_RESULT_SHA256,\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_restored_root_via_sudo",
+                    endingBefore: "    fn require_retry_3_log_has_no_openers",
+                    target: "            require_retained_root_normal_v1_via_sudo()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_restored_root_via_sudo",
+                    endingBefore: "    fn require_retry_3_log_has_no_openers",
+                    target: "            require_retained_root_recovery_v1_via_sudo()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_restored_root_via_sudo",
+                    endingBefore: "    fn require_retry_3_log_has_no_openers",
+                    target: "            require_retained_root_recovery_v2_via_sudo()?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn verify_exact_retry_3_product_endpoints_absent",
+                    endingBefore: "    fn uid501_driver_restore_proxy",
+                    target: "        require_output_success(&output, \"prove exact retry-3 product HAL endpoints absent\")?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_log_has_no_openers",
+                    endingBefore: "    fn require_exact_retry_3_log(",
+                    target: "        if output.status.code() != Some(1)\n",
+                    replacement: "        if false && output.status.code() != Some(1)\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_restored_root_via_sudo",
+                    endingBefore: "    fn require_retry_3_log_has_no_openers",
+                    target: "            if !xattrs.stdout.is_empty() || !xattrs.stderr.is_empty() {\n",
+                    replacement: "            if false && (!xattrs.stdout.is_empty() || !xattrs.stderr.is_empty()) {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_restored_root_via_sudo",
+                    endingBefore: "    fn require_retry_3_log_has_no_openers",
+                    target: "            if openers.status.code() != Some(1)\n",
+                    replacement: "            if false && openers.status.code() != Some(1)\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn verify_exact_retry_3_product_endpoints_absent",
+                    endingBefore: "    fn uid501_driver_restore_proxy",
+                    target: "        if output.stdout != b\"PRODUCT_ENDPOINTS_ABSENT_AND_LEGACY_PAIR_AVAILABLE\\n\"\n",
+                    replacement: "        if false && output.stdout != b\"PRODUCT_ENDPOINTS_ABSENT_AND_LEGACY_PAIR_AVAILABLE\\n\"\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_core_audio_generation",
+                    endingBefore: "    fn prove_retry_3_offline_safe_runtime",
+                    target: "        if expected.is_some_and(|expected| expected != actual) {\n",
+                    replacement: "        if false && expected.is_some_and(|expected| expected != actual) {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_retry_3_generation_matches",
+                    endingBefore: "    fn retry_3_recovery_safe_record",
+                    target: "        if retry_3_recovered_generation(generation)? != *expected {\n",
+                    replacement: "        if false && retry_3_recovered_generation(generation)? != *expected {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn retry_3_recovered_generation",
+                    endingBefore: "    fn require_retry_3_generation_matches",
+                    target: "            runs: generation.runs,\n",
+                    replacement: "            runs: 1,\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn retry_3_recovery_checkpoint",
+                    endingBefore: "    fn prove_retry_3_online_safe_runtime",
+                    target: "            device: RETAINED_ROOT_V7_NORMAL_V2_DEVICE,\n",
+                    replacement: "            device: 1,\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn validate_retry_3_recovery_journal_file",
+                    endingBefore: "    impl Retry3RecoveryJournal",
+                    target: "        if !metadata_is_exact(&descriptor)\n",
+                    replacement: "        if false && !metadata_is_exact(&descriptor)\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "        fn record(\n            &mut self,\n            next: Retry3RecoveryState,",
+                    endingBefore: "    fn require_terminal_retry_3_recovery_journal",
+                    target: "                self.file.set_len(prior_length)?;\n                self.file.sync_all()?;\n",
+                    replacement: "                self.file.set_len(prior_length)?;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "                if binding.generation != expected_generation {\n",
+                    replacement: "                if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn recover_retry_3_critical_failure",
+                    endingBefore: "    fn execute_paired_v7_update",
+                    target: "            if require_exact_retry_3_log_admission_modes()? != initial_log_modes {\n",
+                    replacement: "            if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn recover_retry_3_critical_failure",
+                    endingBefore: "    fn execute_paired_v7_update",
+                    target: "        if journal_exists {\n            fsync_parent(journal_path)?;\n        }\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn recover_retry_3_critical_failure",
+                    endingBefore: "    fn execute_paired_v7_update",
+                    target: "            require_retry_3_generation_matches(&generation, &binding.generation)?;\n",
+                    replacement: ""
+                ),
+                replacingLastInFunction(
+                    controller,
+                    beginningWith: "    fn recover_retry_3_critical_failure",
+                    endingBefore: "    fn execute_paired_v7_update",
+                    target: "            require_retry_3_generation_matches(&generation, &binding.generation)?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_log_prefix(",
+                    endingBefore: "    fn require_exact_retry_3_log_prefixes",
+                    target: "                && metadata.len() <= expected_prefix_length + 16 * 1_024 * 1_024\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_retry_3_recovery_result",
+                    endingBefore: "    fn publish_retry_3_recovery_result",
+                    target: "            sha256: sha256_bytes(&bytes)?,\n",
+                    replacement: "            sha256: RECOVERY_RETRY_3_RESULT_SHA256.to_owned(),\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_retry_3_recovery_result",
+                    endingBefore: "    fn publish_retry_3_recovery_result",
+                    target: "            inode: descriptor_before.ino(),\n",
+                    replacement: "            inode: RECOVERY_RETRY_3_RESULT_INODE,\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_retry_3_recovery_result",
+                    endingBefore: "    fn publish_retry_3_recovery_result",
+                    target: "            size: descriptor_before.len(),\n",
+                    replacement: "            size: RECOVERY_RETRY_3_RESULT_SIZE,\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_retry_3_recovery_result",
+                    endingBefore: "    fn publish_retry_3_recovery_result",
+                    target: "                && metadata.dev() == expected_device\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_retry_3_recovery_result",
+                    endingBefore: "    fn publish_retry_3_recovery_result",
+                    target: "                && metadata.len() <= 2_048\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_retry_3_recovery_result",
+                    endingBefore: "    fn publish_retry_3_recovery_result",
+                    target: "        require_descriptor_close_on_exec(&file, \"retry-3 recovery result\")?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_retry_3_recovery_result",
+                    endingBefore: "    fn publish_retry_3_recovery_result",
+                    target: "            || descriptor_before.dev() != named_before.dev()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_retry_3_recovery_result",
+                    endingBefore: "    fn publish_retry_3_recovery_result",
+                    target: "            || descriptor_before.len() != named_before.len()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_retry_3_recovery_result",
+                    endingBefore: "    fn publish_retry_3_recovery_result",
+                    target: "        if bytes.len() as u64 != descriptor_before.len()\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_retry_3_recovery_result",
+                    endingBefore: "    fn publish_retry_3_recovery_result",
+                    target: "            || descriptor_before.dev() != descriptor_after.dev()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_retry_3_recovery_result",
+                    endingBefore: "    fn publish_retry_3_recovery_result",
+                    target: "            || descriptor_before.len() != descriptor_after.len()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_retry_3_recovery_result",
+                    endingBefore: "    fn publish_retry_3_recovery_result",
+                    target: "            || descriptor_before.dev() != named_after.dev()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_retry_3_recovery_result",
+                    endingBefore: "    fn publish_retry_3_recovery_result",
+                    target: "            || descriptor_before.len() != named_after.len()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn read_retry_3_recovery_result",
+                    endingBefore: "    fn publish_retry_3_recovery_result",
+                    target: "            || descriptor_before.ino() != named_after.ino()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "                && metadata.nlink() == 1\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "        let expected_device = verified_data_volume_device()?;\n",
+                    replacement: "        let expected_device = 1;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "                fsync_parent(final_path)?;\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "                if sealed != binding {\n",
+                    replacement: "                if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "                .custom_flags(O_NOFOLLOW | 0x0100_0000)\n",
+                    replacement: ""
+                ),
+                replacingLastInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "                .custom_flags(O_NOFOLLOW | 0x0100_0000)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "            || !metadata_is_exact(&named_before)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "            || descriptor_before.dev() != named_before.dev()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "            || descriptor_before.len() != named_before.len()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "        if current.len() as u64 != descriptor_before.len()\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "            || !metadata_is_exact(&named_read)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "            || descriptor_read.len() != named_read.len()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "            || !metadata_is_exact(&named_ready)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "        if !metadata_is_exact(&descriptor_ready)\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "            || descriptor_ready.len() != expected.len() as u64\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "            || path_exists_without_follow(final_path)?\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "        file.sync_all()?;\n        fsync_parent(pending)?;\n        rename_exclusive(pending, final_path)?;\n        fsync_parent(final_path)?;\n",
+                    replacement: "        fsync_parent(pending)?;\n        rename_exclusive(pending, final_path)?;\n        fsync_parent(final_path)?;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "            || !metadata_is_exact(&final_named)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "            || descriptor_ready.len() != descriptor_after.len()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "            || descriptor_after.len() != final_named.len()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn publish_retry_3_recovery_result",
+                    endingBefore: "    fn require_exact_retry_2_install_hold_at",
+                    target: "            || path_exists_without_follow(pending)?\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_log_prefix(",
+                    endingBefore: "    fn require_exact_retry_3_log_prefixes",
+                    target: "            || !metadata_is_exact(&descriptor_after)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_log_prefix(",
+                    endingBefore: "    fn require_exact_retry_3_log_prefixes",
+                    target: "            || !metadata_is_exact(&named_after)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_log(",
+                    endingBefore: "    fn require_exact_retry_3_logs",
+                    target: "        let expected_device = verified_data_volume_device()?;\n",
+                    replacement: "        let expected_device = 1;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_log_prefix(",
+                    endingBefore: "    fn require_exact_retry_3_log_prefixes",
+                    target: "        let expected_device = verified_data_volume_device()?;\n",
+                    replacement: "        let expected_device = 1;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn repair_exact_retry_3_log_mode(",
+                    endingBefore: "    fn repair_exact_retry_3_logs",
+                    target: "        let expected_device = verified_data_volume_device()?;\n",
+                    replacement: "        let expected_device = 1;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn verify_exact_retry_3_product_endpoints_absent",
+                    endingBefore: "    fn uid501_driver_restore_proxy",
+                    target: "        let data_volume_device = verified_data_volume_device()?;\n",
+                    replacement: "        let data_volume_device = 1;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "        fn open(\n            path: &Path,",
+                    endingBefore: "        fn record(\n            &mut self,",
+                    target: "            if parsed.recovery_commit != expected_commit\n                || parsed.recovery_tree != expected_tree\n",
+                    replacement: "            if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_terminal_retry_3_recovery_journal",
+                    endingBefore: "    fn parse_retry_3_recovery_result",
+                    target: "            || parsed.recovery_commit != expected_commit\n            || parsed.recovery_tree != expected_tree\n",
+                    replacement: "            || false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_critical_failure_evidence",
+                    endingBefore: "    fn require_exact_retained_probe_directory",
+                    target: "        let expected_device = verified_data_volume_device()?;\n",
+                    replacement: "        let expected_device = 1;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_critical_failure_evidence",
+                    endingBefore: "    fn require_exact_retained_probe_directory",
+                    target: "        if (recovery_result_exists || recovery_result_pending_exists) && !recovery_journal_exists {\n",
+                    replacement: "        if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_critical_failure_evidence",
+                    endingBefore: "    fn require_exact_retained_probe_directory",
+                    target: "        if retired_pointer_exists && (!recovery_journal_exists || !recovery_result_exists) {\n",
+                    replacement: "        if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_critical_failure_evidence",
+                    endingBefore: "    fn require_exact_retained_probe_directory",
+                    target: "                && metadata.nlink() == expected_nlink\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_critical_failure_evidence",
+                    endingBefore: "    fn require_exact_retained_probe_directory",
+                    target: "            || !metadata_is_exact(&evidence_before)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_critical_failure_evidence",
+                    endingBefore: "    fn require_exact_retained_probe_directory",
+                    target: "        if !metadata_is_exact(&evidence_after)\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn reset_retry_3_pending_result_before_generation_publish",
+                    endingBefore: "    fn read_retry_3_recovery_result",
+                    target: "        let expected_device = verified_data_volume_device()?;\n",
+                    replacement: "        let expected_device = 1;\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn reset_retry_3_pending_result_before_generation_publish",
+                    endingBefore: "    fn read_retry_3_recovery_result",
+                    target: "        if !metadata_is_exact(&named_before)\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn reset_retry_3_pending_result_before_generation_publish",
+                    endingBefore: "    fn read_retry_3_recovery_result",
+                    target: "            || !metadata_is_exact(&descriptor_before)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn reset_retry_3_pending_result_before_generation_publish",
+                    endingBefore: "    fn read_retry_3_recovery_result",
+                    target: "            || descriptor_before.len() != named_before.len()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn reset_retry_3_pending_result_before_generation_publish",
+                    endingBefore: "    fn read_retry_3_recovery_result",
+                    target: "        if bytes.len() as u64 != descriptor_before.len()\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn reset_retry_3_pending_result_before_generation_publish",
+                    endingBefore: "    fn read_retry_3_recovery_result",
+                    target: "            || !metadata_is_exact(&named_read)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn reset_retry_3_pending_result_before_generation_publish",
+                    endingBefore: "    fn read_retry_3_recovery_result",
+                    target: "            || descriptor_before.len() != named_read.len()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn reset_retry_3_pending_result_before_generation_publish",
+                    endingBefore: "    fn read_retry_3_recovery_result",
+                    target: "        if !metadata_is_exact(&descriptor_after)\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn reset_retry_3_pending_result_before_generation_publish",
+                    endingBefore: "    fn read_retry_3_recovery_result",
+                    target: "            || !metadata_is_exact(&named_after)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn reset_retry_3_pending_result_before_generation_publish",
+                    endingBefore: "    fn read_retry_3_recovery_result",
+                    target: "            || descriptor_before.ino() != named_after.ino()\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn repair_exact_retry_3_log_mode(",
+                    endingBefore: "    fn repair_exact_retry_3_logs",
+                    target: "                && metadata.nlink() == 1\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn repair_exact_retry_3_log_mode(",
+                    endingBefore: "    fn repair_exact_retry_3_logs",
+                    target: "        if !matches!(before_mode, 0o600 | 0o644)\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn repair_exact_retry_3_log_mode(",
+                    endingBefore: "    fn repair_exact_retry_3_logs",
+                    target: "        if !metadata_is_exact(&descriptor_before, before_mode)\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn repair_exact_retry_3_log_mode(",
+                    endingBefore: "    fn repair_exact_retry_3_logs",
+                    target: "        if !metadata_is_exact(&descriptor_after, 0o600)\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn repair_exact_retry_3_log_mode(",
+                    endingBefore: "    fn repair_exact_retry_3_logs",
+                    target: "            || !metadata_is_exact(&named_after, 0o600)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn verify_exact_retry_3_product_endpoints_absent",
+                    endingBefore: "    fn uid501_driver_restore_proxy",
+                    target: "        if !metadata_is_exact(&before)\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn verify_exact_retry_3_product_endpoints_absent",
+                    endingBefore: "    fn uid501_driver_restore_proxy",
+                    target: "            || !metadata_is_exact(&named_before)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "        fn open(\n            path: &Path,",
+                    endingBefore: "        fn record(\n            &mut self,",
+                    target: "            if post_read_inode != journal_inode || file.metadata()?.len() != length {\n",
+                    replacement: "            if false {\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_exact_retry_3_log(",
+                    endingBefore: "    fn require_exact_retry_3_logs",
+                    target: "            || !metadata_is_exact(&named_after)\n",
+                    replacement: ""
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_terminal_retry_3_recovery_journal",
+                    endingBefore: "    fn parse_retry_3_recovery_result",
+                    target: "        if bytes.len() as u64 != length\n",
+                    replacement: "        if false\n"
+                ),
+                replacingInFunction(
+                    controller,
+                    beginningWith: "    fn require_terminal_retry_3_recovery_journal",
+                    endingBefore: "    fn parse_retry_3_recovery_result",
+                    target: "            || after.len() != named_after.len()\n",
+                    replacement: ""
+                ),
+            ]
+            for (index, mutant) in incidentMutants.enumerated() {
+                XCTAssertNotEqual(mutant, controller, "retry3 incident mutant \(index) was inert")
+                XCTAssertFalse(
+                    hasRetry3IncidentRecoveryContract(controller: mutant, launcher: launcher),
+                    "retry3 incident contract accepted mutant \(index)"
+                )
+            }
+            let incidentLauncherMutants = [
+                launcher.replacingOccurrences(
+                    of: "RECOVER_RETRY_3_MODE='--recover-authorized-paired-v7-retry-3-critical-failure'",
+                    with: "RECOVER_RETRY_3_MODE='--recover-authorized-paired-v7-retry-2-critical-failure'"
+                ),
+                launcher.replacingOccurrences(
+                    of: #""$EXECUTE_MODE"|"$RECOVER_RETRY_2_MODE"|"$RECOVER_RETRY_3_MODE")"#,
+                    with: #""$EXECUTE_MODE"|"$RECOVER_RETRY_2_MODE")"#
+                ),
+                launcher.replacingOccurrences(
+                    of: #"[ "$#" -eq 4 ] && [ "$2" = "$EXPECTED_REPO" ] || usage"#,
+                    with: #"[ "$#" -ge 2 ] && [ "$2" = "$EXPECTED_REPO" ] || usage"#
+                ),
+            ]
+            for (index, mutant) in incidentLauncherMutants.enumerated() {
+                XCTAssertNotEqual(mutant, launcher, "retry3 incident launcher mutant \(index) was inert")
+                XCTAssertFalse(
+                    hasRetry3IncidentRecoveryContract(controller: controller, launcher: mutant),
+                    "retry3 incident contract accepted launcher mutant \(index)"
                 )
             }
             XCTAssertTrue(launcher.contains("RECOVER_RETRY_2_MODE='--recover-authorized-paired-v7-retry-2-critical-failure'"))
@@ -5930,7 +7931,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         )
         XCTAssertTrue(launcher.contains("RELEASE_PIN_STATUS='PINNED_FINAL_REVIEW'"))
         let expectedControllerSourceSHA256 =
-            "0d3d09a17bf5eeef0c76a76b5d4034993dbcb917481095ee9d49366bc977e77c"
+            "da254e4bd5d829be4a66031320ff47c8bf2f8379e2d2dbeaa51df94836a65804"
         XCTAssertTrue(
             hasExactLauncherSourcePinContract(
                 controller: controller,
@@ -5940,7 +7941,7 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         )
         XCTAssertTrue(
             launcher.contains(
-                "EXPECTED_BINARY_SHA256='5feb2414a70b55ebac702916850cfb2b35f5d51a70ea63ae9ca00d67ba10bb04'"
+                "EXPECTED_BINARY_SHA256='0e70c2f4b9be266b793ad307a51be9c7c798b37c15abd83f2235d132439938e9'"
             )
         )
         let exactControllerReleasePins = [
