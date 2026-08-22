@@ -1058,110 +1058,96 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   '/usr/bin/env'
 require_rejection "$CASE" 'side-by-side TestFlight protected-path Xcode sandbox'
 
-CASE=$(new_case testflight-export-process-vector-digest)
+CASE=$(new_case testflight-unsupported-private-export-override)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  'EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS_SHA256="8bb76e840b538ff928d882e86a44ef9c7c9ae07253dd9b0f10765fb79efc7b1e"' \
-  'EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
+  '  run_pinned_xcodebuild export -exportArchive \' \
+  $'  run_pinned_xcodebuild export \\\n    -DVTITunesConnectOutOfProcess NO \\\n    -exportArchive \\'
 require_rejection "$CASE" \
-  'side-by-side TestFlight exact export process-vector digest'
+  'side-by-side TestFlight unsupported private Xcode override rejection'
 
-CASE=$(new_case testflight-export-process-vector-value)
-replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  $'readonly -a EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS=(\n  -DVTITunesConnectOutOfProcess\n  NO\n)' \
-  $'readonly -a EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS=(\n  -DVTITunesConnectOutOfProcess\n  YES\n)'
-require_rejection "$CASE" \
-  'side-by-side TestFlight exact in-process export vector'
-
-CASE=$(new_case testflight-export-process-vector-key)
-replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  $'readonly -a EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS=(\n  -DVTITunesConnectOutOfProcess\n  NO\n)' \
-  $'readonly -a EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS=(\n  -DVTUnreviewedOutOfProcess\n  NO\n)'
-require_rejection "$CASE" \
-  'side-by-side TestFlight exact in-process export vector'
-
-CASE=$(new_case testflight-export-process-vector-removed)
-replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  '    "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}" \' \
-  '    # export process override removed'
-require_rejection "$CASE" \
-  'side-by-side TestFlight exact export-only process vector placement'
-
-CASE=$(new_case testflight-export-process-vector-duplicated)
-replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  '    "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}" \' \
-  $'    "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}" \\\n    -DVTITunesConnectOutOfProcess YES \\'
-require_rejection "$CASE" \
-  'side-by-side TestFlight exact process-override occurrence set'
-
-CASE=$(new_case testflight-export-process-vector-moved)
-replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  $'  run_pinned_xcodebuild export \\\n    "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}" \\\n    -exportArchive \\' \
-  $'  run_pinned_xcodebuild export \\\n    -exportArchive \\\n    "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}" \\'
-require_rejection "$CASE" \
-  'side-by-side TestFlight process override before export action'
-
-CASE=$(new_case testflight-archive-process-override)
-replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  '  run_pinned_xcodebuild archive archive \' \
-  $'  run_pinned_xcodebuild archive archive \\\n    "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}" \\'
-require_rejection "$CASE" \
-  'side-by-side TestFlight exact export-only process vector placement'
-
-CASE=$(new_case testflight-settings-process-override)
-replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  '    "${destination}" run_pinned_xcodebuild settings \' \
-  $'    "${destination}" run_pinned_xcodebuild settings \\\n    "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}" \\'
-require_rejection "$CASE" \
-  'side-by-side TestFlight exact export-only process vector placement'
-
-CASE=$(new_case testflight-resolve-process-override)
-replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  '  run_pinned_xcodebuild resolve \' \
-  $'  run_pinned_xcodebuild resolve \\\n    "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}" \\'
-require_rejection "$CASE" \
-  'side-by-side TestFlight exact export-only process vector placement'
-
-CASE=$(new_case testflight-export-process-vector-equality-bypass)
+CASE=$(new_case testflight-export-action-vector-equality-bypass)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
   '== "$(string_vector_sha256 "${expected_export_arguments[@]}")" ]]' \
   '== "$(string_vector_sha256 "${supplied_arguments[@]}")" ]]'
 require_rejection "$CASE" \
   'side-by-side TestFlight full export-vector equality proof'
 
-CASE=$(new_case testflight-export-process-verifier-bypass)
+CASE=$(new_case testflight-export-action-verifier-bypass)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  'function verify_xcodebuild_distribution_process_arguments() {' \
-  'function ignore_xcodebuild_distribution_process_arguments() {'
+  'function verify_xcodebuild_action_arguments() {' \
+  'function ignore_xcodebuild_action_arguments() {'
 require_rejection "$CASE" \
-  'side-by-side TestFlight runtime export process argument proof'
+  'side-by-side TestFlight runtime Xcode action argument proof'
 
-CASE=$(new_case testflight-export-process-verifier-call-bypass)
+CASE=$(new_case testflight-export-pre-action-verifier-call-bypass)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  $'  verify_xcodebuild_distribution_process_arguments \\\n    "${destination_contract}" "$@" || return 1' \
-  '  true # process-argument verification bypassed'
+  $'  verify_xcodebuild_action_arguments \\\n    "${destination_contract}" "$@" || return 1' \
+  '  true # action verification bypassed'
 require_rejection "$CASE" \
-  'side-by-side TestFlight immediate full process-argument verification'
+  'side-by-side TestFlight immediate exact action verification'
 
-CASE=$(new_case testflight-export-process-prefix-check)
+CASE=$(new_case testflight-export-post-action-verifier-call-bypass)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  $'    if [[ "${supplied_argument}" \\\n        == '\''-DVTITunesConnectOutOfProcess'\''* ]]; then' \
-  $'    if [[ "${supplied_argument}" \\\n        == '\''-DVTITunesConnectOutOfProcess'\'' ]]; then'
+  $'  verify_xcodebuild_action_arguments \\\n    "${destination_contract}" "$@" || command_status=1' \
+  '  true # post-command action verification bypassed'
 require_rejection "$CASE" \
-  'side-by-side TestFlight complete process-override prefix rejection'
+  'side-by-side TestFlight post-command action, deep-seal, and filesystem proof'
 
-CASE=$(new_case testflight-persistent-export-process-default)
+CASE=$(new_case testflight-export-routed-through-outer-sandbox)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  'function verify_xcode_export_distribution_process_static_contract() {' \
-  $'/usr/bin/defaults write com.apple.dt.Xcode DVTITunesConnectOutOfProcess -bool false\nfunction verify_xcode_export_distribution_process_static_contract() {'
+  $'      # this exact, fully pinned export vector without the outer profile.\n      "$@"' \
+  $'      # this exact, fully pinned export vector without the outer profile.\n      run_with_pinned_xcode_sandbox_profile "${destination_contract}" "$@"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight export-only outer-sandbox bypass'
+
+CASE=$(new_case testflight-export-router-broadened)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    export)\n      # The supported upload action launches Xcode' \
+  $'    export|*)\n      # The supported upload action launches Xcode'
+require_rejection "$CASE" \
+  'side-by-side TestFlight export-only outer-sandbox bypass'
+
+CASE=$(new_case testflight-archive-routed-direct)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    settings|archive)\n      run_with_pinned_xcode_sandbox_profile "${destination_contract}" "$@"\n      ;;\n    export)' \
+  $'    settings)\n      run_with_pinned_xcode_sandbox_profile "${destination_contract}" "$@"\n      ;;\n    archive)\n      "$@"\n      ;;\n    export)'
+require_rejection "$CASE" \
+  'side-by-side TestFlight build-action protected-path sandbox'
+
+CASE=$(new_case testflight-export-arguments-reordered)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    -archivePath "${TESTFLIGHT_ARCHIVE_PATH}" \\\n    -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \\' \
+  $'    -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \\\n    -archivePath "${TESTFLIGHT_ARCHIVE_PATH}" \\'
+require_rejection "$CASE" \
+  'side-by-side TestFlight exact supported export invocation vector'
+
+CASE=$(new_case testflight-export-trailing-argument)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}" \\\n    2>&1 | /usr/bin/tee "/dev/fd/${TESTFLIGHT_UPLOAD_LOG_FD}" \\' \
+  $'    "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}" \\\n    -unreviewedTrailingArgument \\\n    2>&1 | /usr/bin/tee "/dev/fd/${TESTFLIGHT_UPLOAD_LOG_FD}" \\'
+require_rejection "$CASE" \
+  'side-by-side TestFlight exact supported export invocation vector'
+
+CASE=$(new_case testflight-export-post-deep-seal)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '      verify_reviewed_xcode_deep_signature || command_status=1' \
+  '      true # fresh post-command deep seal bypassed'
+require_rejection "$CASE" \
+  'side-by-side TestFlight post-command action, deep-seal, and filesystem proof'
+
+CASE=$(new_case testflight-persistent-export-default)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'function verify_xcodebuild_action_arguments() {' \
+  $'/usr/bin/defaults write com.apple.dt.Xcode UnreviewedExportBehavior -bool true\nfunction verify_xcodebuild_action_arguments() {'
 require_rejection "$CASE" \
   'side-by-side TestFlight persistent defaults mutation rejection'
 
-CASE=$(new_case testflight-global-export-process-environment)
+CASE=$(new_case testflight-global-private-export-environment)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
   "    'PATH=/usr/bin:/bin:/usr/sbin:/sbin'" \
-  $'    \'PATH=/usr/bin:/bin:/usr/sbin:/sbin\'\n    \'DVTITunesConnectOutOfProcess=NO\''
+  $'    '\''PATH=/usr/bin:/bin:/usr/sbin:/sbin'\''\n    '\''DVTITunesConnectOutOfProcess=NO'\'''
 require_rejection "$CASE" \
-  'side-by-side TestFlight exact process-override occurrence set'
+  'side-by-side TestFlight unsupported private Xcode override rejection'
 
 CASE=$(new_case testflight-base-sandbox-job-creation)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -1339,8 +1325,8 @@ require_rejection "$CASE" 'side-by-side TestFlight deep Xcode signature state in
 
 CASE=$(new_case testflight-fresh-release-xcode-seal)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  '    archive|export)' \
-  '    ignored-release-operation)'
+  $'    archive|export)\n      # Settings resolution may reuse the process-local deep seal, but any command' \
+  $'    ignored-release-operation)\n      # Settings resolution may reuse the process-local deep seal, but any command'
 require_rejection "$CASE" 'side-by-side TestFlight fresh pre-release Xcode signature verification'
 
 CASE=$(new_case testflight-real-xcode-filesystem-device)
@@ -2691,8 +2677,10 @@ function verify_pinned_xcodebuild_filesystem_contract() {
 }
 function verify_control_directory_identity() { return 0 }
 function verify_archive_exec_destinations() { return 0 }
+function verify_archive_destination_identity() { return 0 }
 function verify_export_exec_destinations() { return 0 }
-function verify_xcodebuild_distribution_process_arguments() { return 0 }
+function verify_export_destination_identity() { return 0 }
+function verify_xcodebuild_action_arguments() { return 0 }
 typeset -gi DESTINATION_COMMAND_CALLS=0
 function run_xcodebuild_command_for_destination_contract() {
   (( DESTINATION_COMMAND_CALLS += 1 ))
@@ -2702,8 +2690,8 @@ TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1
 run_pinned_xcodebuild settings ignored
 run_pinned_xcodebuild archive ignored
 run_pinned_xcodebuild export ignored
-[[ "$DEEP_SIGNATURE_CALLS" == 3 \
-    && "$PINNED_CONTRACT_CALLS" == 5 \
+[[ "$DEEP_SIGNATURE_CALLS" == 5 \
+    && "$PINNED_CONTRACT_CALLS" == 8 \
     && "$DESTINATION_COMMAND_CALLS" == 3 ]]
 DEEPSIGNATURETEST
 
@@ -2727,68 +2715,72 @@ run_xcodebuild_command_for_destination_contract resolve \
 run_xcodebuild_command_for_destination_contract settings /usr/bin/true
 run_xcodebuild_command_for_destination_contract archive /usr/bin/true
 run_xcodebuild_command_for_destination_contract export /usr/bin/true
-[[ "$OUTER_SANDBOX_CALLS" == 3 \
-    && "${(j:|:)OUTER_SANDBOX_CONTRACTS}" == 'settings|archive|export' ]]
+[[ "$OUTER_SANDBOX_CALLS" == 2 \
+    && "${(j:|:)OUTER_SANDBOX_CONTRACTS}" == 'settings|archive' ]]
 DESTINATIONROUTINGTEST
 
-WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'EXPORTPROCESSARGUMENTSTEST'
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'EXPORTACTIONARGUMENTSTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
 trap - EXIT HUP INT QUIT TERM
 
-TESTFLIGHT_ARCHIVE_PATH=/private/tmp/opensteamer-process-contract.xcarchive
-TESTFLIGHT_EXPORT_DIRECTORY=/private/tmp/opensteamer-process-contract-export
+TESTFLIGHT_ARCHIVE_PATH=/private/tmp/opensteamer-action-contract.xcarchive
+TESTFLIGHT_EXPORT_DIRECTORY=/private/tmp/opensteamer-action-contract-export
+function verify_xcodebuild_authentication_contract() { return 0 }
+TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS=(
+  -authenticationKeyPath /private/tmp/reviewed-test-key.p8
+  -authenticationKeyID REVIEWEDKEY
+  -authenticationKeyIssuerID 00000000-0000-0000-0000-000000000000
+)
 typeset -a EXPECTED_EXPORT_ARGUMENTS=(
-  "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}"
   -exportArchive
   -archivePath "${TESTFLIGHT_ARCHIVE_PATH}"
   -exportOptionsPlist "${EXPORT_OPTIONS_PATH}"
   -exportPath "${TESTFLIGHT_EXPORT_DIRECTORY}"
   -allowProvisioningUpdates
+  "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}"
 )
 
-verify_xcodebuild_distribution_process_arguments \
+verify_xcodebuild_action_arguments \
   export "${EXPECTED_EXPORT_ARGUMENTS[@]}"
 
-function expect_process_argument_rejection() {
+function expect_action_argument_rejection() {
   local destination_contract=$1
   shift
-  if verify_xcodebuild_distribution_process_arguments \
+  if verify_xcodebuild_action_arguments \
       "${destination_contract}" "$@" >/dev/null 2>&1; then
-    print -u2 -r -- "process-argument mutation unexpectedly passed: $1"
+    print -u2 -r -- "action-argument mutation unexpectedly passed: $1"
     exit 1
   fi
 }
 
-expect_process_argument_rejection export \
+expect_action_argument_rejection export \
+  -exportArchive \
+  -archivePath "${TESTFLIGHT_ARCHIVE_PATH}" \
+  -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \
+  -exportPath "${TESTFLIGHT_EXPORT_DIRECTORY}" \
+  "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}"
+expect_action_argument_rejection export \
   -exportArchive \
   -archivePath "${TESTFLIGHT_ARCHIVE_PATH}" \
   -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \
   -exportPath "${TESTFLIGHT_EXPORT_DIRECTORY}" \
   -allowProvisioningUpdates
-expect_process_argument_rejection export \
-  -DVTITunesConnectOutOfProcess YES "${EXPECTED_EXPORT_ARGUMENTS[@]:2}"
-expect_process_argument_rejection export \
-  -DVTITunesConnectOutOfProcess no "${EXPECTED_EXPORT_ARGUMENTS[@]:2}"
-expect_process_argument_rejection export \
-  -exportArchive "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}" \
+expect_action_argument_rejection export \
+  -archivePath "${TESTFLIGHT_ARCHIVE_PATH}" \
+  -exportArchive \
   "${EXPECTED_EXPORT_ARGUMENTS[@]:3}"
-expect_process_argument_rejection export \
-  "${EXPECTED_EXPORT_ARGUMENTS[@]}" \
-  -DVTITunesConnectOutOfProcess NO
-expect_process_argument_rejection export \
+expect_action_argument_rejection export \
   "${EXPECTED_EXPORT_ARGUMENTS[@]}" -unreviewedTrailingArgument
 typeset -a WRONG_ARCHIVE_ARGUMENTS=("${EXPECTED_EXPORT_ARGUMENTS[@]}")
-WRONG_ARCHIVE_ARGUMENTS[5]=/private/tmp/unreviewed.xcarchive
-expect_process_argument_rejection export "${WRONG_ARCHIVE_ARGUMENTS[@]}"
-expect_process_argument_rejection resolve \
-  "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}"
-expect_process_argument_rejection settings \
-  "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}"
-expect_process_argument_rejection archive \
-  "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}"
-expect_process_argument_rejection archive \
+WRONG_ARCHIVE_ARGUMENTS[3]=/private/tmp/unreviewed.xcarchive
+expect_action_argument_rejection export "${WRONG_ARCHIVE_ARGUMENTS[@]}"
+expect_action_argument_rejection export \
+  -DVTITunesConnectOutOfProcess NO "${EXPECTED_EXPORT_ARGUMENTS[@]}"
+expect_action_argument_rejection resolve -DVTUnreviewedOverride
+expect_action_argument_rejection settings -DVTUnreviewedOverride
+expect_action_argument_rejection archive \
   -DVTITunesConnectOutOfProcessUnreviewed
-EXPORTPROCESSARGUMENTSTEST
+EXPORTACTIONARGUMENTSTEST
 
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'ARCHIVEROOTSTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
@@ -2913,10 +2905,6 @@ PROFILE_PATH="$PROFILE_PATH" /bin/zsh <<'PROFILETEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
 trap - EXIT HUP INT QUIT TERM
 function verify_control_directory_identity() { return 0 }
-typeset -gi EXPORT_PROCESS_STATIC_CALLS=0
-function verify_xcode_export_distribution_process_static_contract() {
-  (( EXPORT_PROCESS_STATIC_CALLS += 1 ))
-}
 TESTFLIGHT_CONTROL_DIRECTORY=$PROFILE_CONTROL
 TESTFLIGHT_XCODE_SANDBOX_PROFILE_PATH=$PROFILE_PATH
 TESTFLIGHT_XCODE_SANDBOX_PROFILE_IDENTITY=$(stat_identity "$PROFILE_PATH")
@@ -2925,9 +2913,10 @@ sysopen -r -o nofollow -u TESTFLIGHT_XCODE_SANDBOX_PROFILE_FD "$PROFILE_PATH"
 verify_xcode_sandbox_profile_identity
 run_with_pinned_xcode_sandbox_profile settings /usr/bin/true
 run_with_pinned_xcode_sandbox_profile archive /usr/bin/true
-[[ "$EXPORT_PROCESS_STATIC_CALLS" == 0 ]]
-run_with_pinned_xcode_sandbox_profile export /usr/bin/true
-[[ "$EXPORT_PROCESS_STATIC_CALLS" == 2 ]]
+if run_with_pinned_xcode_sandbox_profile export /usr/bin/true; then
+  print -u2 -r -- 'outer sandbox unexpectedly accepted the export action'
+  exit 1
+fi
 
 print -r -- '(allow default)' >"$PROFILE_PATH"
 if verify_xcode_sandbox_profile_identity >/dev/null 2>&1; then

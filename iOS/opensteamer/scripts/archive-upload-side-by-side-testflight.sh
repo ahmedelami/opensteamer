@@ -84,11 +84,6 @@ readonly EXPECTED_XCODEBUILD_CD_HASH="335573a2d481a0021e20d7c8b6e2768e407e0f26"
 readonly EXPECTED_XCODE_INFO_SHA256="224c27a718df1d8b4e785d29d06259e0a9326c424e70d30efab9c587463f719a"
 readonly EXPECTED_XCODE_VERSION_SHA256="951ddf34d65d84d57684bd083ca7deebf8d5722eefb074f3cdf00f8304d5f511"
 readonly EXPECTED_XCODEBUILD_SHA256="d508f0e1901151843804e4af512d4587ad0e422039e43e14abf22792360ad3d4"
-readonly -a EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS=(
-  -DVTITunesConnectOutOfProcess
-  NO
-)
-readonly EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS_SHA256="8bb76e840b538ff928d882e86a44ef9c7c9ae07253dd9b0f10765fb79efc7b1e"
 readonly PACKAGE_MANIFEST_PATH="${REPOSITORY_ROOT}/Package.swift"
 readonly PACKAGE_RESOLVED_PATH="${REPOSITORY_ROOT}/Package.resolved"
 readonly EXPECTED_PACKAGE_MANIFEST_SHA256="9c02a86ef1f8257dcd67af517ba35fca50bba0a94b865fd4dacfe476b9c7ed52"
@@ -331,19 +326,6 @@ function verify_app_store_connect_api_key_static_contract() {
     && [[ "$(string_vector_sha256 \
           "${EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS[@]}")" \
         == "${EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS_SHA256}" ]]
-}
-
-function verify_xcode_export_distribution_process_static_contract() {
-  [[ ${#EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]} == 2 \
-      && "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[1]}" \
-        == '-DVTITunesConnectOutOfProcess' \
-      && "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[2]}" \
-        == 'NO' ]] || return 1
-  string_is_lowercase_sha256 \
-      "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS_SHA256}" \
-    && [[ "$(string_vector_sha256 \
-          "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}")" \
-        == "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS_SHA256}" ]]
 }
 
 function xcodebuild_authentication_arguments_sha256() {
@@ -660,9 +642,6 @@ function run_with_pinned_xcode_sandbox_profile() {
   case "${destination_contract}" in
     settings|archive)
       ;;
-    export)
-      verify_xcode_export_distribution_process_static_contract || return 1
-      ;;
     *)
       return 1
       ;;
@@ -715,10 +694,6 @@ function run_with_pinned_xcode_sandbox_profile() {
   (( operation_status == 0 )) || return ${operation_status}
   /usr/bin/sandbox-exec -p "${profile_text}" "$@" \
     || operation_status=$?
-  if [[ "${destination_contract}" == 'export' ]]; then
-    verify_xcode_export_distribution_process_static_contract \
-      || operation_status=1
-  fi
   verify_xcode_sandbox_profile_identity || operation_status=1
   return ${operation_status}
 }
@@ -2138,24 +2113,18 @@ function xcodebuild_pinned_environment_sha256() {
   string_vector_sha256 "${TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT[@]}"
 }
 
-function verify_xcodebuild_distribution_process_arguments() {
+function verify_xcodebuild_action_arguments() {
   local destination_contract=$1
   shift
-  verify_xcode_export_distribution_process_static_contract || return 1
   local -a supplied_arguments=("$@")
   local supplied_argument
-  local -i process_override_count=0
   for supplied_argument in "${supplied_arguments[@]}"; do
-    if [[ "${supplied_argument}" \
-        == '-DVTITunesConnectOutOfProcess'* ]]; then
-      (( process_override_count += 1 ))
-    fi
+    [[ "${supplied_argument}" != -DVT* ]] || return 1
   done
   case "${destination_contract}" in
     export)
       verify_xcodebuild_authentication_contract || return 1
       local -a expected_export_arguments=(
-        "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}"
         -exportArchive
         -archivePath "${TESTFLIGHT_ARCHIVE_PATH}"
         -exportOptionsPlist "${EXPORT_OPTIONS_PATH}"
@@ -2163,14 +2132,12 @@ function verify_xcodebuild_distribution_process_arguments() {
         -allowProvisioningUpdates
         "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}"
       )
-      (( process_override_count == 1 \
-          && ${#supplied_arguments[@]} \
-            == ${#expected_export_arguments[@]} )) \
+      (( ${#supplied_arguments[@]} == ${#expected_export_arguments[@]} )) \
         && [[ "$(string_vector_sha256 "${supplied_arguments[@]}")" \
           == "$(string_vector_sha256 "${expected_export_arguments[@]}")" ]]
       ;;
     resolve|settings|archive)
-      (( process_override_count == 0 ))
+      return 0
       ;;
     *)
       return 1
@@ -2185,7 +2152,6 @@ function verify_pinned_xcodebuild_filesystem_contract() {
   verify_xcode_sandbox_profile_identity || return 1
   verify_package_dependency_contract || return 1
   verify_xcodebuild_authentication_contract || return 1
-  verify_xcode_export_distribution_process_static_contract || return 1
   (( ${#TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[@]} > 0 )) || return 1
   (( ${#TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT[@]} > 0 )) || return 1
   [[ "${#TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS_SHA256}" == 64 \
@@ -2227,8 +2193,14 @@ function run_xcodebuild_command_for_destination_contract() {
       # retaining the scrubbed environment and reviewed Xcode command.
       "$@"
       ;;
-    settings|archive|export)
+    settings|archive)
       run_with_pinned_xcode_sandbox_profile "${destination_contract}" "$@"
+      ;;
+    export)
+      # The supported upload action launches Xcode's distribution service. Its
+      # launchd job cannot be authorized by a filtered Seatbelt rule, so run only
+      # this exact, fully pinned export vector without the outer profile.
+      "$@"
       ;;
     *)
       return 1
@@ -2239,7 +2211,7 @@ function run_xcodebuild_command_for_destination_contract() {
 function run_pinned_xcodebuild() {
   local destination_contract=$1
   shift
-  verify_xcodebuild_distribution_process_arguments \
+  verify_xcodebuild_action_arguments \
     "${destination_contract}" "$@" || return 1
   verify_pinned_xcodebuild_filesystem_contract || return 1
   case "${destination_contract}" in
@@ -2270,8 +2242,29 @@ function run_pinned_xcodebuild() {
     "${EXPECTED_XCODEBUILD_REAL_PATH}"
     "$@"
   )
+  local command_status=0
   run_xcodebuild_command_for_destination_contract \
-    "${destination_contract}" "${pinned_command[@]}"
+    "${destination_contract}" "${pinned_command[@]}" || command_status=$?
+  verify_xcodebuild_action_arguments \
+    "${destination_contract}" "$@" || command_status=1
+  case "${destination_contract}" in
+    archive|export)
+      verify_reviewed_xcode_deep_signature || command_status=1
+      ;;
+  esac
+  verify_pinned_xcodebuild_filesystem_contract || command_status=1
+  case "${destination_contract}" in
+    resolve|settings)
+      verify_control_directory_identity || command_status=1
+      ;;
+    archive)
+      verify_archive_destination_identity || command_status=1
+      ;;
+    export)
+      verify_export_destination_identity || command_status=1
+      ;;
+  esac
+  return ${command_status}
 }
 
 function resolve_pinned_package_dependencies() {
@@ -2399,8 +2392,6 @@ function verify_static_contract() {
     || fail "isolated and protected bundle identifiers are equal"
   verify_app_store_connect_api_key_static_contract \
     || fail "App Store Connect API-key constants are not the reviewed exact contract"
-  verify_xcode_export_distribution_process_static_contract \
-    || fail "Xcode export process constants are not the reviewed exact contract"
   [[ -d "${PROJECT_PATH}" ]] || fail "Xcode project is missing"
   [[ -f "${SCHEME_PATH}" ]] || fail "archive-only shared scheme is missing"
   [[ -f "${SCHEME_SOURCE_PATH}" && ! -L "${SCHEME_SOURCE_PATH}" ]] \
@@ -3673,9 +3664,7 @@ function run_authorized_upload() {
   verify_pinned_xcodebuild_filesystem_contract \
     || fail "private build filesystem contract changed immediately before upload"
   local upload_status=0
-  run_pinned_xcodebuild export \
-    "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}" \
-    -exportArchive \
+  run_pinned_xcodebuild export -exportArchive \
     -archivePath "${TESTFLIGHT_ARCHIVE_PATH}" \
     -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \
     -exportPath "${TESTFLIGHT_EXPORT_DIRECTORY}" \

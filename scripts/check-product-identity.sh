@@ -912,11 +912,14 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function run_xcodebuild_command_for_destination_contract() {' 1 \
   'side-by-side TestFlight destination-scoped Xcode sandbox routing'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'run_xcodebuild_command_for_destination_contract' 2 \
+  'side-by-side TestFlight exact Xcode command router call surface'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   $'    resolve)\n      # Xcode\'s package resolver applies its own child sandbox.' 1 \
   'side-by-side TestFlight native package-sandbox resolution'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'    settings|archive|export)\n      run_with_pinned_xcode_sandbox_profile "${destination_contract}" "$@"' 1 \
-  'side-by-side TestFlight release-action protected-path sandbox'
+  $'    settings|archive)\n      run_with_pinned_xcode_sandbox_profile "${destination_contract}" "$@"' 1 \
+  'side-by-side TestFlight build-action protected-path sandbox'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '-packageCachePath "${TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY}"' 1 \
   'side-by-side TestFlight encrypted SwiftPM package cache'
@@ -993,53 +996,44 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_XCODEBUILD_SHA256="d508f0e1901151843804e4af512d4587ad0e422039e43e14abf22792360ad3d4"' 1 \
   'side-by-side TestFlight reviewed real xcodebuild digest'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'readonly -a EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS=(' 1 \
-  'side-by-side TestFlight read-only export process vector'
+  'DVTITunesConnectOutOfProcess' 0 \
+  'side-by-side TestFlight unsupported private Xcode override rejection'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'readonly -a EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS=(\n  -DVTITunesConnectOutOfProcess\n  NO\n)' 1 \
-  'side-by-side TestFlight exact in-process export vector'
+  'function verify_xcodebuild_action_arguments() {' 1 \
+  'side-by-side TestFlight runtime Xcode action argument proof'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS_SHA256="8bb76e840b538ff928d882e86a44ef9c7c9ae07253dd9b0f10765fb79efc7b1e"' 1 \
-  'side-by-side TestFlight exact export process-vector digest'
+  'verify_xcodebuild_action_arguments' 3 \
+  'side-by-side TestFlight complete pre/post action argument proof'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'function verify_xcode_export_distribution_process_static_contract() {' 1 \
-  'side-by-side TestFlight static export process contract'
+  $'  verify_xcodebuild_action_arguments \\\n    "${destination_contract}" "$@" || return 1' 1 \
+  'side-by-side TestFlight immediate exact action verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'function verify_xcodebuild_distribution_process_arguments() {' 1 \
-  'side-by-side TestFlight runtime export process argument proof'
+  '[[ "${supplied_argument}" != -DVT* ]] || return 1' 1 \
+  'side-by-side TestFlight all private DVT action override rejection'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'verify_xcode_export_distribution_process_static_contract' 6 \
-  'side-by-side TestFlight complete export process-contract revalidation'
+  'process_override_count' 0 \
+  'side-by-side TestFlight removed process-override state'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'verify_xcodebuild_distribution_process_arguments' 2 \
-  'side-by-side TestFlight process-argument verifier invocation'
-assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'  verify_xcodebuild_distribution_process_arguments \\\n    "${destination_contract}" "$@" || return 1' 1 \
-  'side-by-side TestFlight immediate full process-argument verification'
-assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'DVTITunesConnectOutOfProcess' 3 \
-  'side-by-side TestFlight exact process-override occurrence set'
-assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'    if [[ "${supplied_argument}" \\\n        == '\''-DVTITunesConnectOutOfProcess'\''* ]]; then' 1 \
-  'side-by-side TestFlight complete process-override prefix rejection'
-assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '(( process_override_count == 1 \' 1 \
-  'side-by-side TestFlight single export process override'
-assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'      local -a expected_export_arguments=(\n        "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}"\n        -exportArchive\n        -archivePath "${TESTFLIGHT_ARCHIVE_PATH}"\n        -exportOptionsPlist "${EXPORT_OPTIONS_PATH}"\n        -exportPath "${TESTFLIGHT_EXPORT_DIRECTORY}"\n        -allowProvisioningUpdates\n        "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}"\n      )' 1 \
-  'side-by-side TestFlight independently constructed full export vector'
+  $'      local -a expected_export_arguments=(\n        -exportArchive\n        -archivePath "${TESTFLIGHT_ARCHIVE_PATH}"\n        -exportOptionsPlist "${EXPORT_OPTIONS_PATH}"\n        -exportPath "${TESTFLIGHT_EXPORT_DIRECTORY}"\n        -allowProvisioningUpdates\n        "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}"\n      )' 1 \
+  'side-by-side TestFlight independently constructed supported export vector'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '== "$(string_vector_sha256 "${expected_export_arguments[@]}")" ]]' 1 \
   'side-by-side TestFlight full export-vector equality proof'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '    resolve|settings|archive)' 1 \
-  'side-by-side TestFlight non-export process-override rejection'
+  'run_pinned_xcodebuild export -exportArchive \' 1 \
+  'side-by-side TestFlight exact supported export action'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '"${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}" \' 1 \
-  'side-by-side TestFlight exact export-only process vector placement'
+  $'  run_pinned_xcodebuild export -exportArchive \\\n    -archivePath "${TESTFLIGHT_ARCHIVE_PATH}" \\\n    -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \\\n    -exportPath "${TESTFLIGHT_EXPORT_DIRECTORY}" \\\n    -allowProvisioningUpdates \\\n    "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}" \\\n    2>&1 | /usr/bin/tee "/dev/fd/${TESTFLIGHT_UPLOAD_LOG_FD}" \\' 1 \
+  'side-by-side TestFlight exact supported export invocation vector'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'  run_pinned_xcodebuild export \\\n    "${EXPECTED_XCODE_EXPORT_DISTRIBUTION_PROCESS_ARGUMENTS[@]}" \\\n    -exportArchive \\' 1 \
-  'side-by-side TestFlight process override before export action'
+  $'    settings|archive)\n      run_with_pinned_xcode_sandbox_profile "${destination_contract}" "$@"\n      ;;\n    export)\n      # The supported upload action launches Xcode' 1 \
+  'side-by-side TestFlight export-only outer-sandbox bypass'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  verify_xcodebuild_action_arguments \\\n    "${destination_contract}" "$@" || command_status=1\n  case "${destination_contract}" in\n    archive|export)\n      verify_reviewed_xcode_deep_signature || command_status=1\n      ;;\n  esac\n  verify_pinned_xcodebuild_filesystem_contract || command_status=1' 1 \
+  'side-by-side TestFlight post-command action, deep-seal, and filesystem proof'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    export)\n      verify_export_destination_identity || command_status=1' 1 \
+  'side-by-side TestFlight post-export destination proof'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'job-creation' 1 \
   'side-by-side TestFlight complete job-creation allowance rejection'
@@ -1089,7 +1083,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'run_pinned_xcodebuild archive' 1 \
   'side-by-side TestFlight guarded archive invocation'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'run_pinned_xcodebuild export \' 1 \
+  'run_pinned_xcodebuild export -exportArchive \' 1 \
   'side-by-side TestFlight guarded export/upload invocation'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function require_canonical_safe_path() {' 1 \
