@@ -3391,6 +3391,184 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
         XCTAssertEqual(lease.acquisitions.count, 1)
     }
 
+    func testExternalDefaultInputFenceSurvivesSamePeerReconnectAndRepeatedRedrives()
+    {
+        let lease = DefaultInputCoordinatorLeaseFake(
+            releaseResults: [.externallySuperseded]
+        )
+        let coordinator =
+            WorldwideBlackHoleDefaultInputCoordinator(
+                policy: .enabled,
+                lease: lease
+            )
+        let epoch = UUID()
+
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(
+            snapshot(epoch: epoch, generation: 1)
+        )
+        guard case .selected(let admitted) =
+                coordinator.transportDidBecomeHealthy(
+                    peerGeneration: 1
+                ) else {
+            return XCTFail("Expected exact default-input admission")
+        }
+
+        let externalEvent =
+            BlackHoleDefaultInputLeaseUncertaintyEvent(
+                leaseGeneration: admitted.leaseGeneration,
+                listenerRegistrationID:
+                    admitted.inputAuthorization
+                        .listenerRegistrationID,
+                listenerSequence:
+                    admitted.inputAuthorization
+                        .acceptedListenerSequence + 1
+            )
+        XCTAssertEqual(
+            coordinator.defaultInputDidBecomeUncertain(
+                externalEvent
+            ),
+            .degraded
+        )
+        XCTAssertEqual(
+            coordinator.transportDidBecomeUnhealthy(
+                peerGeneration: 1
+            ),
+            .noChange
+        )
+
+        for generation in UInt64(2)...UInt64(13) {
+            XCTAssertEqual(
+                coordinator.transportDidBecomeHealthy(
+                    peerGeneration: 1
+                ),
+                .degraded
+            )
+            XCTAssertEqual(
+                coordinator.updateDeviceSnapshot(
+                    snapshot(
+                        epoch: epoch,
+                        generation: generation
+                    )
+                ),
+                .noChange
+            )
+            _ = coordinator.invalidateCurrentConnection()
+        }
+
+        XCTAssertEqual(
+            lease.acquisitions.count,
+            1,
+            "The externally superseded peer must perform zero reacquisitions across same-peer health, snapshot, and invalidation redrives."
+        )
+
+        guard case .selected(let replacement) =
+                coordinator.transportDidBecomeHealthy(
+                    peerGeneration: 2
+                ) else {
+            return XCTFail(
+                "Only a strictly newer peer may clear the external-selector fence"
+            )
+        }
+        XCTAssertEqual(replacement.peerGeneration, 2)
+        XCTAssertEqual(lease.acquisitions.count, 2)
+        XCTAssertNotEqual(
+            admitted.leaseGeneration,
+            replacement.leaseGeneration
+        )
+    }
+
+    func testStaleOldRegistrationEventCannotPoisonReplacementPeer() {
+        let lease = DefaultInputCoordinatorLeaseFake()
+        let coordinator =
+            WorldwideBlackHoleDefaultInputCoordinator(
+                policy: .enabled,
+                lease: lease
+            )
+        let epoch = UUID()
+
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(
+            snapshot(epoch: epoch, generation: 1)
+        )
+        guard case .selected(let first) =
+                coordinator.transportDidBecomeHealthy(
+                    peerGeneration: 1
+                ),
+              case .selected(let replacement) =
+                coordinator.transportDidBecomeHealthy(
+                    peerGeneration: 2
+                ) else {
+            return XCTFail("Expected a replacement peer lease")
+        }
+
+        let staleEvent =
+            BlackHoleDefaultInputLeaseUncertaintyEvent(
+                leaseGeneration: first.leaseGeneration,
+                listenerRegistrationID:
+                    first.inputAuthorization
+                        .listenerRegistrationID,
+                listenerSequence:
+                    first.inputAuthorization
+                        .acceptedListenerSequence + 1
+            )
+        XCTAssertEqual(
+            coordinator.defaultInputDidBecomeUncertain(
+                staleEvent
+            ),
+            .noChange
+        )
+        let currentLeaseOldRegistrationEvent =
+            BlackHoleDefaultInputLeaseUncertaintyEvent(
+                leaseGeneration:
+                    replacement.leaseGeneration,
+                listenerRegistrationID:
+                    first.inputAuthorization
+                        .listenerRegistrationID,
+                listenerSequence:
+                    replacement.inputAuthorization
+                        .acceptedListenerSequence + 1
+            )
+        let oldLeaseCurrentRegistrationEvent =
+            BlackHoleDefaultInputLeaseUncertaintyEvent(
+                leaseGeneration: first.leaseGeneration,
+                listenerRegistrationID:
+                    replacement.inputAuthorization
+                        .listenerRegistrationID,
+                listenerSequence:
+                    replacement.inputAuthorization
+                        .acceptedListenerSequence + 1
+            )
+        XCTAssertEqual(
+            coordinator.defaultInputDidBecomeUncertain(
+                currentLeaseOldRegistrationEvent
+            ),
+            .noChange
+        )
+        XCTAssertEqual(
+            coordinator.defaultInputDidBecomeUncertain(
+                oldLeaseCurrentRegistrationEvent
+            ),
+            .noChange
+        )
+        XCTAssertEqual(lease.acquisitions.count, 2)
+        XCTAssertEqual(lease.releases.count, 1)
+
+        guard case .selected(let refreshed) =
+                coordinator.transportDidBecomeHealthy(
+                    peerGeneration: 2
+                ) else {
+            return XCTFail(
+                "The stale registration must not terminalize the replacement"
+            )
+        }
+        XCTAssertEqual(
+            refreshed.leaseGeneration,
+            replacement.leaseGeneration
+        )
+        XCTAssertEqual(lease.acquisitions.count, 2)
+    }
+
     func testStalePeerReleaseCannotClearPendingReplacementConnection() {
         let lease = DefaultInputCoordinatorLeaseFake(
             releaseResults: [

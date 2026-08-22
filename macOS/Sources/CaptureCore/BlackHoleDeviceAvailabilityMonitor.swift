@@ -1905,8 +1905,9 @@ enum BlackHoleDefaultInputMutationResult:
 /// Owns one generation-bound, input-only Core Audio default selection.
 ///
 /// The exact default-input listener is installed before every owned write. A write
-/// succeeds only after exactly one post-fence listener notification and stable-UID
-/// readback. Release keeps its captured restoration baseline across bounded,
+/// succeeds only after one or two contiguous post-fence listener notifications
+/// settle under one fixed deadline and exact endpoint readback. Release keeps
+/// its captured restoration baseline across bounded,
 /// retryable failures and restores only while the current input remains the lease's
 /// BlackHole target.
 public enum BlackHoleDefaultInputLeaseAcquisitionResult:
@@ -3380,6 +3381,8 @@ public final class BlackHoleDefaultInputLease:
                 expectedCurrentUID:
                     activeLease.targetUID,
                 expectedUID: restoreUID,
+                expectedReadbackDeviceID:
+                    restoreDeviceID,
                 expectedSignalSequence:
                     activeLease.acceptedSignalSequence,
                 registration: activeLease.registration
@@ -3460,6 +3463,8 @@ public final class BlackHoleDefaultInputLease:
             deviceID: previousDeviceID,
             expectedCurrentUID: targetUID,
             expectedUID: previousUID,
+            expectedReadbackDeviceID:
+                previousDeviceID,
             expectedSignalSequence:
                 expectedSignalSequence,
             registration: registration
@@ -3542,74 +3547,98 @@ public final class BlackHoleDefaultInputLease:
 
         // Core Audio exposes no atomic compare-and-set primitive. The system
         // operation performs the narrowest available compare immediately before
-        // this input-only write, while this exact listener sequence and readback
-        // reject every observable overlapping mutation.
-        let expectedProofSequence =
+        // this input-only write. Some HAL implementations publish the same
+        // selector write twice, so settle one or two contiguous callbacks under
+        // one fixed deadline before returning ownership. Three callbacks still
+        // prove overlapping mutation (the owned write plus an external
+        // away-and-back), and the duplicate allowance is available only when an
+        // exact target AudioDeviceID is part of the admission proof.
+        let firstProofSequence =
             Self.nextSignalSequence(
                 after: expectedSignalSequence
             )
-        guard registration.signal.waitForAdvance(
-            after: expectedSignalSequence,
-            timeout: proofTimeout
-        ) else {
-            drainListenerQueue(registration)
-            let signalSequence =
+        let secondProofSequence =
+            Self.nextSignalSequence(
+                after: firstProofSequence
+            )
+        let settlementDeadline =
+            Date().addingTimeInterval(proofTimeout)
+
+        var settledSequence =
+            registration.signal.snapshot()
+        while Date() < settlementDeadline {
+            let sequenceCanStillSettle =
+                settledSequence == expectedSignalSequence
+                    || settledSequence == firstProofSequence
+                    || (expectedReadbackDeviceID != nil
+                        && settledSequence
+                            == secondProofSequence)
+            guard sequenceCanStillSettle else {
+                break
+            }
+            let remaining =
+                settlementDeadline.timeIntervalSinceNow
+            guard remaining > 0 else {
+                break
+            }
+            _ = registration.signal.waitForAdvance(
+                after: settledSequence,
+                timeout: remaining
+            )
+            let latestSequence =
                 registration.signal.snapshot()
-            guard signalSequence == expectedSignalSequence
-                    || signalSequence == expectedProofSequence else {
-                return .contentionDetected(
-                    signalSequence: signalSequence
+            if latestSequence == settledSequence {
+                break
+            }
+            settledSequence = latestSequence
+        }
+
+        // This final fence performs three listener-queue drains around two
+        // stable UID/AudioDeviceID reads. It either incorporates every raw
+        // callback in the bounded owned-write settlement or fails closed before
+        // `.acquired` can expose an authorization that omits one.
+        drainListenerQueue(registration)
+        settledSequence = registration.signal.snapshot()
+        let sequenceIsAdmissible =
+            settledSequence == firstProofSequence
+                || (expectedReadbackDeviceID != nil
+                    && settledSequence == secondProofSequence)
+        guard sequenceIsAdmissible else {
+            if settledSequence == expectedSignalSequence {
+                return .attemptedButUnproved(
+                    signalSequence: settledSequence
                 )
             }
-            return .attemptedButUnproved(
-                signalSequence: signalSequence
+            return .contentionDetected(
+                signalSequence: settledSequence
             )
         }
 
-        let deadline = Date().addingTimeInterval(
-            proofTimeout
-        )
-        repeat {
-            drainListenerQueue(registration)
-            let proofSequence =
-                registration.signal.snapshot()
-            guard proofSequence == expectedProofSequence else {
-                return .contentionDetected(
-                    signalSequence: proofSequence
-                )
-            }
-            let readback = currentInputFenceResult(
-                expectedUID: expectedUID,
-                expectedDeviceID:
-                    expectedReadbackDeviceID,
-                expectedSignalSequence:
-                    proofSequence,
-                registration: registration
+        switch currentInputFenceResult(
+            expectedUID: expectedUID,
+            expectedDeviceID:
+                expectedReadbackDeviceID,
+            expectedSignalSequence:
+                settledSequence,
+            registration: registration
+        ) {
+        case .matched:
+            return .proved(
+                signalSequence: settledSequence
             )
-            if readback == .matched {
-                return .proved(
-                    signalSequence: proofSequence
-                )
-            }
-            if readback == .changed,
-               expectedReadbackDeviceID != nil {
-                return .contentionDetected(
-                    signalSequence: proofSequence
-                )
-            }
-            Thread.sleep(forTimeInterval: 0.005)
-        } while Date() < deadline
-        drainListenerQueue(registration)
-        let signalSequence =
-            registration.signal.snapshot()
-        guard signalSequence == expectedProofSequence else {
+
+        case .changed:
             return .contentionDetected(
-                signalSequence: signalSequence
+                signalSequence:
+                    registration.signal.snapshot()
+            )
+
+        case .unreadable:
+            return .attemptedButUnproved(
+                signalSequence:
+                    registration.signal.snapshot()
             )
         }
-        return .attemptedButUnproved(
-            signalSequence: signalSequence
-        )
     }
 
     private func removeRegistration(

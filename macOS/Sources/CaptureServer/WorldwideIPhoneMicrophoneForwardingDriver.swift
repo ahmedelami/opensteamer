@@ -2029,6 +2029,7 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
     private var pendingKey: LeaseKey?
     private var releaseIsPending = false
     private var terminalConnectionGeneration: UInt64?
+    private var externallySupersededPeerGeneration: UInt64?
     private var lastAttemptedIdentity: CandidateIdentity?
     private var acquisitionAttemptCount = 0
     private var isStopped = false
@@ -2159,9 +2160,18 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
                 >= highestPeerGenerationSeen else {
             return .noChange
         }
-        if peerGeneration
-                > highestPeerGenerationSeen {
+        let isStrictlyNewerPeer =
+            peerGeneration > highestPeerGenerationSeen
+        if isStrictlyNewerPeer {
             highestPeerGenerationSeen = peerGeneration
+        }
+
+        if externallySupersededPeerGeneration
+                == peerGeneration {
+            if releaseIsPending {
+                _ = releaseActiveBounded()
+            }
+            return .degraded
         }
 
         if healthyPeerGeneration == peerGeneration {
@@ -2175,6 +2185,11 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         )
         terminalConnectionGeneration = nil
         resetAcquisitionAttempts()
+        if isStrictlyNewerPeer {
+            // A genuinely newer authenticated peer is the only runtime event
+            // allowed to clear a prior external-selector terminal fence.
+            externallySupersededPeerGeneration = nil
+        }
         if release == .retryableFailure {
             return .degraded
         }
@@ -2234,17 +2249,29 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         guard policy == .enabled else {
             return .suppressed
         }
-        if let authorization = activeKey?.inputAuthorization,
-           authorization.incorporates(event) {
+        guard let activeKey else {
             return .noChange
         }
-        guard let connectionGeneration =
-                activeKey?.connectionGeneration
-                    ?? pendingKey?.connectionGeneration else {
+        let authorization =
+            activeKey.inputAuthorization
+        guard event.leaseGeneration
+                == activeKey.leaseGeneration,
+              event.listenerRegistrationID
+                == authorization.listenerRegistrationID else {
+            // A callback retained by an older registration cannot poison the
+            // current peer or replacement lease.
+            return .noChange
+        }
+        if authorization.incorporates(event) {
             return .noChange
         }
 
-        terminalConnectionGeneration = connectionGeneration
+        recordExternalSupersession(
+            peerGeneration:
+                activeKey.peerGeneration
+        )
+        terminalConnectionGeneration =
+            activeKey.connectionGeneration
         resetAcquisitionAttempts()
         _ = releaseActiveBounded()
         return .degraded
@@ -2329,6 +2356,10 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         }
         guard let healthyPeerGeneration else {
             return .noChange
+        }
+        if externallySupersededPeerGeneration
+                == healthyPeerGeneration {
+            return .degraded
         }
         if terminalConnectionGeneration
                 == connectionGeneration,
@@ -2495,6 +2526,10 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
             releaseIsPending = false
             terminalConnectionGeneration =
                 leaseKey.connectionGeneration
+            recordExternalSupersession(
+                peerGeneration:
+                    leaseKey.peerGeneration
+            )
             return .externallySuperseded
         }
     }
@@ -2543,6 +2578,18 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
     private func resetAcquisitionAttempts() {
         lastAttemptedIdentity = nil
         acquisitionAttemptCount = 0
+    }
+
+    private func recordExternalSupersession(
+        peerGeneration: UInt64
+    ) {
+        guard peerGeneration > 0 else {
+            return
+        }
+        externallySupersededPeerGeneration = max(
+            externallySupersededPeerGeneration ?? 0,
+            peerGeneration
+        )
     }
 
     private static func nextNonzero(

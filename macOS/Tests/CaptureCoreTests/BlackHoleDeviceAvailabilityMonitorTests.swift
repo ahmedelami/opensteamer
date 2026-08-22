@@ -2271,6 +2271,107 @@ final class BlackHoleDefaultInputLeaseTests:
         XCTAssertTrue(operations.removedExactRegistration)
     }
 
+    func testExactOwnedWriteSettlesTwoHALNotificationsBeforeReturningAuthorization()
+    {
+        let operations = DefaultInputLeaseOperationsFake()
+        operations.deliversNotificationsAsynchronously = true
+        operations.notificationDelaysByWrittenDeviceID[2] = [
+            0,
+            0.005,
+        ]
+        operations.notificationDelaysByWrittenDeviceID[1] = [
+            0,
+            0.005,
+        ]
+        let recorder = DefaultInputUncertaintyRecorder()
+        let lease = makeLease(
+            operations,
+            proofTimeout: 0.02
+        )
+        lease.setUncertaintyHandler { event in
+            recorder.record(event)
+        }
+        let endpoint = BlackHoleDeviceEndpointIdentity(
+            deviceID: 2,
+            deviceUID:
+                BlackHoleDefaultInputLease.canonicalDeviceUID
+        )
+
+        XCTAssertEqual(
+            lease.acquisitionResult(
+                generation: 1,
+                targetEndpoint: endpoint
+            ),
+            .acquired
+        )
+        guard let authorization = lease.authorizationProof(
+            generation: 1,
+            targetEndpoint: endpoint
+        ) else {
+            return XCTFail(
+                "Expected the settled exact listener authorization"
+            )
+        }
+
+        XCTAssertEqual(
+            authorization.acceptedListenerSequence,
+            2
+        )
+        XCTAssertEqual(recorder.events.count, 2)
+        XCTAssertTrue(
+            recorder.events.allSatisfy(
+                authorization.incorporates
+            ),
+            "The authorization returned after acquisition must incorporate both raw callbacks so neither can later revoke the reopened writer gate."
+        )
+        XCTAssertEqual(operations.writtenDeviceIDs, [2])
+
+        XCTAssertEqual(
+            lease.release(generation: 1),
+            .released
+        )
+        XCTAssertEqual(operations.currentUID, "BuiltInMic_UID")
+        XCTAssertEqual(operations.writtenDeviceIDs, [2, 1])
+    }
+
+    func testExactOwnedWriteThirdHALNotificationFailsClosed() {
+        let operations = DefaultInputLeaseOperationsFake()
+        operations.deliversNotificationsAsynchronously = true
+        operations.notificationDelaysByWrittenDeviceID[2] = [
+            0,
+            0.004,
+            0.008,
+        ]
+        let lease = makeLease(
+            operations,
+            proofTimeout: 0.02
+        )
+        let endpoint = BlackHoleDeviceEndpointIdentity(
+            deviceID: 2,
+            deviceUID:
+                BlackHoleDefaultInputLease.canonicalDeviceUID
+        )
+
+        XCTAssertEqual(
+            lease.acquisitionResult(
+                generation: 1,
+                targetEndpoint: endpoint
+            ),
+            .terminalFailure
+        )
+        XCTAssertNil(
+            lease.authorizationProof(
+                generation: 1,
+                targetEndpoint: endpoint
+            )
+        )
+        XCTAssertEqual(operations.writtenDeviceIDs, [2])
+        XCTAssertEqual(
+            lease.release(generation: 1),
+            .externallySuperseded
+        )
+    }
+
     func testListenerRegistrationFailureIsProvablyRetryable() {
         let operations = DefaultInputLeaseOperationsFake()
         operations.listenerRegistrationFailuresRemaining = 1
@@ -3267,6 +3368,8 @@ private final class DefaultInputLeaseOperationsFake:
     var restoreResolutionFailuresRemaining = 0
     var defaultInputWriteFailuresRemaining = 0
     var writeFailuresByDeviceID: [AudioDeviceID: Int] = [:]
+    var notificationDelaysByWrittenDeviceID:
+        [AudioDeviceID: [TimeInterval]] = [:]
     var onListenerRegistered: (() -> Void)?
     var onResolveDeviceID: ((String) -> Void)?
     var onBeforeDefaultInputCompareAndWrite:
@@ -3510,7 +3613,21 @@ private final class DefaultInputLeaseOperationsFake:
         guard result.mutation == .written(noErr) else {
             return result.mutation
         }
-        emit(result.callback)
+        if emitsNotifications {
+            if let delays =
+                    notificationDelaysByWrittenDeviceID[
+                        deviceID
+                    ] {
+                for delay in delays {
+                    emit(
+                        result.callback,
+                        after: delay
+                    )
+                }
+            } else {
+                emit(result.callback)
+            }
+        }
         onDefaultInputWritten?(deviceID)
         return result.mutation
     }
@@ -3561,7 +3678,10 @@ private final class DefaultInputLeaseOperationsFake:
         }
     }
 
-    private func emit(_ listener: Listener?) {
+    private func emit(
+        _ listener: Listener?,
+        after delay: TimeInterval = 0
+    ) {
         guard let listener else { return }
         let beforeCallback = lock.withLock {
             onListenerQueueBeforeCallbackStorage
@@ -3573,7 +3693,12 @@ private final class DefaultInputLeaseOperationsFake:
                 listener.registration.block(1, $0)
             }
         }
-        if deliversNotificationsAsynchronously {
+        if delay > 0 {
+            listener.queue.asyncAfter(
+                deadline: .now() + delay,
+                execute: callback
+            )
+        } else if deliversNotificationsAsynchronously {
             listener.queue.async(execute: callback)
         } else {
             listener.queue.sync(execute: callback)
