@@ -67,6 +67,27 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         return true
     }
 
+    private func hasRealLFProductionDriverManifestContract(_ verifier: String) -> Bool {
+        let canonicalJoin =
+            "expected_nodes_text=\"$(canonical_manifest_text \"${expected_nodes[@]}\")\""
+        let literalBackslashNJoin =
+            "expected_nodes_text=\"${(j:\\n:)expected_nodes}\""
+        let required = [
+            "canonical_manifest_text()",
+            "manifest_is_exact()",
+            canonicalJoin,
+            "manifest_is_exact \"$expected_nodes_text\" \"$actual_nodes_text\"",
+            "--self-test-lstat-manifest-v7",
+            "exact_manifest=$'Directory|755|.\\nDirectory|755|Contents'",
+            "literal_backslash_n_mutant='Directory|755|.\\nDirectory|755|Contents'",
+            "manifest_is_exact \"$exact_manifest\" \"$actual_manifest\"",
+            "manifest_is_exact \"$exact_manifest\" \"$literal_backslash_n_mutant\"",
+            "SELF_TEST_OK production-driver-lstat-manifest-v7",
+        ]
+        return required.allSatisfy(verifier.contains)
+            && !verifier.contains(literalBackslashNJoin)
+    }
+
     private func swappingFirst(
         _ first: String,
         with second: String,
@@ -1014,6 +1035,20 @@ final class V7DriverHostUpdateContractTests: XCTestCase {
         XCTAssertTrue(production.contains("installer_leaf_sha256"))
         XCTAssertTrue(local.contains("ad-hoc"))
         XCTAssertFalse(local.contains("Developer ID Application"))
+    }
+
+    func testV7ProductionVerifierUsesRealLFForExactLstatManifest() throws {
+        let production = try source(
+            "macOS/VirtualAudioDriver/scripts/verify-production-driver-package-v7.sh"
+        )
+        XCTAssertTrue(hasRealLFProductionDriverManifestContract(production))
+
+        let mutant = production.replacingOccurrences(
+            of: "expected_nodes_text=\"$(canonical_manifest_text \"${expected_nodes[@]}\")\"",
+            with: "expected_nodes_text=\"${(j:\\n:)expected_nodes}\""
+        )
+        XCTAssertNotEqual(mutant, production)
+        XCTAssertFalse(hasRealLFProductionDriverManifestContract(mutant))
     }
 
     func testGuardianAllowsLegacyVisibleInputButNeverVirtualOutputs() throws {

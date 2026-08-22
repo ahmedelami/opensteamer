@@ -8,6 +8,14 @@ fail() {
     exit 65
 }
 
+canonical_manifest_text() {
+    /usr/bin/printf '%s\n' "$@"
+}
+
+manifest_is_exact() {
+    [[ "$1" == "$2" ]]
+}
+
 if (( $# != 1 )); then
     print -u2 "usage: $0 /absolute/path/OpensteamerVirtualMicrophone.driver"
     exit 64
@@ -59,7 +67,9 @@ while IFS= read -r -d '' relative; do
     actual_nodes+=("$type_and_mode|$display_path")
 done < <(cd "$bundle" && /usr/bin/find -s . -print0)
 
-if [[ "${(j:\n:)actual_nodes}" != "${(j:\n:)expected_nodes}" ]]; then
+expected_nodes_text="$(canonical_manifest_text "${expected_nodes[@]}")"
+actual_nodes_text="$(canonical_manifest_text "${actual_nodes[@]}")"
+if ! manifest_is_exact "$expected_nodes_text" "$actual_nodes_text"; then
     print -u2 "driver bundle lstat manifest is not exact"
     print -u2 "expected:"
     print -u2 -l -- "${expected_nodes[@]}"

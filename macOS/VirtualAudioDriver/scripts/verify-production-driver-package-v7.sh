@@ -14,6 +14,37 @@ usage() {
     exit 64
 }
 
+canonical_manifest_text() {
+    /usr/bin/printf '%s\n' "$@"
+}
+
+manifest_is_exact() {
+    [[ "$1" == "$2" ]]
+}
+
+self_test_lstat_manifest_v7() {
+    local -a sample_nodes=(
+        "Directory|755|."
+        "Directory|755|Contents"
+    )
+    local actual_manifest exact_manifest literal_backslash_n_mutant
+    actual_manifest="$(canonical_manifest_text "${sample_nodes[@]}")"
+    exact_manifest=$'Directory|755|.\nDirectory|755|Contents'
+    literal_backslash_n_mutant='Directory|755|.\nDirectory|755|Contents'
+
+    manifest_is_exact "$exact_manifest" "$actual_manifest" || \
+        fail "real-LF lstat manifest self-test rejected the exact manifest"
+    if manifest_is_exact "$exact_manifest" "$literal_backslash_n_mutant"; then
+        fail "real-LF lstat manifest self-test accepted the literal-backslash-n mutant"
+    fi
+    print "SELF_TEST_OK production-driver-lstat-manifest-v7"
+}
+
+if (( $# == 1 )) && [[ "$1" == "--self-test-lstat-manifest-v7" ]]; then
+    self_test_lstat_manifest_v7
+    exit 0
+fi
+
 (( $# == 7 )) || usage
 bundle="$1"
 package="$2"
@@ -170,9 +201,9 @@ verify_driver() {
     local target="$1"
     local expected_nodes_text actual_nodes_text xattrs executable archs details entitlements
     local requirement leaf_sha1
-    expected_nodes_text="${(j:\n:)expected_nodes}"
+    expected_nodes_text="$(canonical_manifest_text "${expected_nodes[@]}")"
     actual_nodes_text="$(collect_nodes "$target")"
-    [[ "$actual_nodes_text" == "$expected_nodes_text" ]] || \
+    manifest_is_exact "$expected_nodes_text" "$actual_nodes_text" || \
         fail "production driver lstat manifest is not exact"
     xattrs="$(/usr/bin/xattr -lr "$target" 2>&1)" || \
         fail "unable to inspect production driver extended attributes"
