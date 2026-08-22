@@ -156,15 +156,21 @@ From `iOS/opensteamer`, the guarded side-by-side operator flow is:
 ```sh
 xcodegen generate
 scripts/archive-upload-side-by-side-testflight.sh --verify-config-only
-scripts/archive-upload-side-by-side-testflight.sh --upload-authorized-side-by-side-testflight
+scripts/archive-upload-side-by-side-testflight.sh --verify-api-key-config-only
+scripts/archive-upload-side-by-side-testflight.sh --upload-authorized-side-by-side-testflight-with-api-key
 ```
 
-The upload flag is an explicit release action. The helper accepts no caller-controlled identity,
-scheme, configuration, or output path, and verifies the completed archive before export. Never
-use the protected `Release` configuration for this side-by-side TestFlight deployment.
+The API-key verification command is offline only: it proves the exact external key file,
+permissions, byte digest, and Xcode argument vector, but not that Apple still accepts the key or
+its role. The API-key upload flag is the explicit live release action and supplies the same pinned
+authentication triplet to both archive and export. The helper accepts no caller-controlled
+identity, scheme, configuration, credential, or output path, and verifies the completed archive
+before export. Never use the protected `Release` configuration for this side-by-side TestFlight
+deployment.
 
-The signing machine must already have access to the maintainer's Apple account and local signing
-assets. None of those credentials are stored in the repository.
+The signing machine must already have the exact external team API key and local signing assets.
+The private key is stored outside the repository and must never be copied into source or retained
+upload evidence.
 
 ## Build and test
 

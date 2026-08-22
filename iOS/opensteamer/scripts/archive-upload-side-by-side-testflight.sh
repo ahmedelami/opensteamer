@@ -4,6 +4,8 @@
 # caller-supplied bundle identifier, scheme, configuration, or filesystem destination. Before any
 # archive it proves the effective Xcode settings use the isolated identity; before any upload it
 # independently validates the finished archive's Info.plist and signing identifier.
+# `--verify-api-key-config-only` is an offline file/argument pin check; only the explicit API-key
+# upload mode can prove that the team-scoped key is active and authorized for archive/export.
 set -euo pipefail
 zmodload zsh/system || {
   print -u2 -r -- 'side-by-side TestFlight guard failed: zsh/system is unavailable'
@@ -19,6 +21,21 @@ readonly EXPECTED_SHORT_VERSION="0.1.0"
 readonly EXPECTED_TEAM_ID="MSMG8CJLB3"
 readonly EXPECTED_ARCHIVE_SIGNING_IDENTITY="Apple Development: Ahmed Elamin (92LVX32M8K)"
 readonly EXPECTED_ASC_APPLE_ID="6797410161"
+readonly EXPECTED_ASC_TEAM_ISSUER_ID="98529b8c-9fa6-4799-bcb1-7ef7c85a83d3"
+readonly EXPECTED_ASC_API_KEY_ID="WPN8WJYC7H"
+readonly EXPECTED_ASC_API_KEY_DIRECTORY="/Users/ahmed/Library/Application Support/opensteamer-release-credentials"
+readonly EXPECTED_ASC_API_KEY_PATH="${EXPECTED_ASC_API_KEY_DIRECTORY}/AuthKey_${EXPECTED_ASC_API_KEY_ID}.p8"
+readonly EXPECTED_ASC_API_KEY_OWNER_UID="501"
+readonly EXPECTED_ASC_API_KEY_OWNER_GID="20"
+readonly EXPECTED_ASC_API_KEY_DIRECTORY_MODE="700"
+readonly EXPECTED_ASC_API_KEY_FILE_MODE="600"
+readonly EXPECTED_ASC_P8_SHA256="22d0dffa775141c5bedb6eb255fb909f50f0547f1997f2ff9ad92609afce5300"
+readonly -a EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS=(
+  -authenticationKeyPath "${EXPECTED_ASC_API_KEY_PATH}"
+  -authenticationKeyID "${EXPECTED_ASC_API_KEY_ID}"
+  -authenticationKeyIssuerID "${EXPECTED_ASC_TEAM_ISSUER_ID}"
+)
+readonly EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS_SHA256="8116cc2c29c6b7781770f13ca76f39a605d705655f7a619907ec21ac9afb7399"
 readonly EXPECTED_DISTRIBUTION_CERTIFICATE_SHA1="CEB61B792A7A5848E9E797BB2E44EA2642611A6F"
 readonly EXPECTED_RENDEZVOUS_URL="wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
 readonly PROTECTED_LEGACY_LAUNCH_AGENT_PATH="/Users/ahmed/Library/LaunchAgents/com.elamin.audiostreamer.worldwide.plist"
@@ -225,6 +242,13 @@ typeset TESTFLIGHT_ARCHIVE_TREE_WITHOUT_ROOT_INFO_SHA256=""
 typeset EXPORT_OPTIONS_IDENTITY=""
 typeset EXPORT_OPTIONS_SHA256=""
 typeset -i EXPORT_OPTIONS_FD=-1
+typeset TESTFLIGHT_XCODEBUILD_AUTHENTICATION_MODE="xcode-account"
+typeset TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS_SHA256=""
+typeset -a TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS=()
+typeset TESTFLIGHT_ASC_API_KEY_DIRECTORY_IDENTITY=""
+typeset TESTFLIGHT_ASC_API_KEY_IDENTITY=""
+typeset TESTFLIGHT_ASC_API_KEY_PIN_FAILURE="not-started"
+typeset -i TESTFLIGHT_ASC_API_KEY_FD=-1
 typeset -i TESTFLIGHT_BUILD_CREATE_ATTEMPTED=0
 typeset -i TESTFLIGHT_BUILD_IMAGE_CREATED=0
 typeset -i TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=0
@@ -243,9 +267,210 @@ function stat_identity() {
   /usr/bin/stat -f '%d:%i:%u:%g:%Lp:%HT' "$1" 2>/dev/null
 }
 
+function ls_mode_token() {
+  LC_ALL=C /bin/ls -lde "$1" 2>/dev/null \
+    | /usr/bin/awk 'NR == 1 { print $1 }'
+}
+
 function sha256_file() {
   /usr/bin/shasum -a 256 "$1" 2>/dev/null \
     | /usr/bin/awk 'NR == 1 && NF == 2 { print $1 }'
+}
+
+function sha256_private_file_contents() {
+  /usr/bin/shasum -a 256 <"$1" 2>/dev/null \
+    | /usr/bin/awk \
+      'NR == 1 && NF == 2 && $2 == "-" && length($1) == 64 && $1 !~ /[^0-9a-f]/ { print $1 }'
+}
+
+function string_is_lowercase_sha256() {
+  local candidate=$1
+  [[ "${#candidate}" == 64 && "${candidate}" != *[^0-9a-f]* ]]
+}
+
+function verify_app_store_connect_api_key_static_contract() {
+  print -rn -- "${EXPECTED_ASC_TEAM_ISSUER_ID}" \
+    | /usr/bin/grep -Eq \
+      '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$' \
+    || return 1
+  print -rn -- "${EXPECTED_ASC_API_KEY_ID}" \
+    | /usr/bin/grep -Eq '^[0-9A-Z]{10}$' || return 1
+  [[ "${EXPECTED_ASC_API_KEY_DIRECTORY}" \
+        == '/Users/ahmed/Library/Application Support/opensteamer-release-credentials' \
+      && "${EXPECTED_ASC_API_KEY_DIRECTORY:A}" \
+        == "${EXPECTED_ASC_API_KEY_DIRECTORY}" \
+      && "${EXPECTED_ASC_API_KEY_PATH}" \
+        == "${EXPECTED_ASC_API_KEY_DIRECTORY}/AuthKey_${EXPECTED_ASC_API_KEY_ID}.p8" \
+      && "${EXPECTED_ASC_API_KEY_PATH:A}" == "${EXPECTED_ASC_API_KEY_PATH}" \
+      && "${EXPECTED_ASC_API_KEY_OWNER_UID}" == <-> \
+      && "${EXPECTED_ASC_API_KEY_OWNER_GID}" == <-> \
+      && "${EXPECTED_ASC_API_KEY_OWNER_UID}" == "${EUID}" \
+      && "${EXPECTED_ASC_API_KEY_DIRECTORY_MODE}" == '700' \
+      && "${EXPECTED_ASC_API_KEY_FILE_MODE}" == '600' \
+      && ${#EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS[@]} == 6 \
+      && "${EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS[1]}" \
+        == '-authenticationKeyPath' \
+      && "${EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS[2]}" \
+        == "${EXPECTED_ASC_API_KEY_PATH}" \
+      && "${EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS[3]}" \
+        == '-authenticationKeyID' \
+      && "${EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS[4]}" \
+        == "${EXPECTED_ASC_API_KEY_ID}" \
+      && "${EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS[5]}" \
+        == '-authenticationKeyIssuerID' \
+      && "${EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS[6]}" \
+        == "${EXPECTED_ASC_TEAM_ISSUER_ID}" ]] || return 1
+  string_is_lowercase_sha256 "${EXPECTED_ASC_P8_SHA256}" \
+    && string_is_lowercase_sha256 \
+      "${EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS_SHA256}" \
+    && [[ "$(string_vector_sha256 \
+          "${EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS[@]}")" \
+        == "${EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS_SHA256}" ]]
+}
+
+function xcodebuild_authentication_arguments_sha256() {
+  string_vector_sha256 "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}"
+}
+
+function verify_app_store_connect_api_key_identity() {
+  verify_app_store_connect_api_key_static_contract || return 1
+  [[ "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_MODE}" \
+        == 'app-store-connect-api-key' \
+      && -n "${TESTFLIGHT_ASC_API_KEY_DIRECTORY_IDENTITY:-}" \
+      && -n "${TESTFLIGHT_ASC_API_KEY_IDENTITY:-}" \
+      && -d "${EXPECTED_ASC_API_KEY_DIRECTORY}" \
+      && ! -L "${EXPECTED_ASC_API_KEY_DIRECTORY}" \
+      && "$(stat_identity "${EXPECTED_ASC_API_KEY_DIRECTORY}")" \
+        == "${TESTFLIGHT_ASC_API_KEY_DIRECTORY_IDENTITY}" \
+      && "$(/usr/bin/stat -f '%u:%g:%Lp:%HT' \
+        "${EXPECTED_ASC_API_KEY_DIRECTORY}" 2>/dev/null)" \
+        == "${EXPECTED_ASC_API_KEY_OWNER_UID}:${EXPECTED_ASC_API_KEY_OWNER_GID}:${EXPECTED_ASC_API_KEY_DIRECTORY_MODE}:Directory" \
+      && "$(ls_mode_token "${EXPECTED_ASC_API_KEY_DIRECTORY}")" \
+        == 'drwx------' \
+      && -f "${EXPECTED_ASC_API_KEY_PATH}" \
+      && ! -L "${EXPECTED_ASC_API_KEY_PATH}" \
+      && "$(stat_identity "${EXPECTED_ASC_API_KEY_PATH}")" \
+        == "${TESTFLIGHT_ASC_API_KEY_IDENTITY}" \
+      && "$(/usr/bin/stat -f '%u:%g:%Lp:%HT:%l' \
+        "${EXPECTED_ASC_API_KEY_PATH}" 2>/dev/null)" \
+        == "${EXPECTED_ASC_API_KEY_OWNER_UID}:${EXPECTED_ASC_API_KEY_OWNER_GID}:${EXPECTED_ASC_API_KEY_FILE_MODE}:Regular File:1" \
+      && "$(ls_mode_token "${EXPECTED_ASC_API_KEY_PATH}")" \
+        == '-rw-------' \
+      && "$(sha256_private_file_contents "${EXPECTED_ASC_API_KEY_PATH}")" \
+        == "${EXPECTED_ASC_P8_SHA256}" \
+      && ${TESTFLIGHT_ASC_API_KEY_FD} -ge 0 \
+      && -e "/dev/fd/${TESTFLIGHT_ASC_API_KEY_FD}" \
+      && "${EXPECTED_ASC_API_KEY_PATH}" \
+        -ef "/dev/fd/${TESTFLIGHT_ASC_API_KEY_FD}" \
+      && ${#TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]} == 6 \
+      && "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[1]}" \
+        == '-authenticationKeyPath' \
+      && "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[2]}" \
+        == "${EXPECTED_ASC_API_KEY_PATH}" \
+      && "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[3]}" \
+        == '-authenticationKeyID' \
+      && "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[4]}" \
+        == "${EXPECTED_ASC_API_KEY_ID}" \
+      && "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[5]}" \
+        == '-authenticationKeyIssuerID' \
+      && "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[6]}" \
+        == "${EXPECTED_ASC_TEAM_ISSUER_ID}" \
+      && "${#TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS_SHA256}" == 64 \
+      && "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS_SHA256}" \
+        == "${EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS_SHA256}" \
+      && "$(xcodebuild_authentication_arguments_sha256)" \
+        == "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS_SHA256}" ]]
+}
+
+function verify_xcodebuild_authentication_contract() {
+  case "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_MODE}" in
+    xcode-account)
+      [[ ${#TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]} == 0 \
+          && -z "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS_SHA256}" \
+          && -z "${TESTFLIGHT_ASC_API_KEY_DIRECTORY_IDENTITY}" \
+          && -z "${TESTFLIGHT_ASC_API_KEY_IDENTITY}" \
+          && ${TESTFLIGHT_ASC_API_KEY_FD} == -1 ]]
+      ;;
+    app-store-connect-api-key)
+      verify_app_store_connect_api_key_identity
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+function pin_app_store_connect_api_key_identity() {
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='static-contract'
+  verify_app_store_connect_api_key_static_contract || return 1
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='initial-state'
+  [[ "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_MODE}" == 'xcode-account' \
+      && ${#TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]} == 0 \
+      && -z "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS_SHA256}" \
+      && -z "${TESTFLIGHT_ASC_API_KEY_DIRECTORY_IDENTITY}" \
+      && -z "${TESTFLIGHT_ASC_API_KEY_IDENTITY}" \
+      && ${TESTFLIGHT_ASC_API_KEY_FD} == -1 ]] || return 1
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='directory-type'
+  [[ -d "${EXPECTED_ASC_API_KEY_DIRECTORY}" \
+      && ! -L "${EXPECTED_ASC_API_KEY_DIRECTORY}" ]] || return 1
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='directory-owner-mode'
+  [[ "$(/usr/bin/stat -f '%u:%g:%Lp:%HT' \
+      "${EXPECTED_ASC_API_KEY_DIRECTORY}" 2>/dev/null)" \
+      == "${EXPECTED_ASC_API_KEY_OWNER_UID}:${EXPECTED_ASC_API_KEY_OWNER_GID}:${EXPECTED_ASC_API_KEY_DIRECTORY_MODE}:Directory" ]] || return 1
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='directory-acl-or-xattr'
+  [[ "$(ls_mode_token "${EXPECTED_ASC_API_KEY_DIRECTORY}")" \
+      == 'drwx------' ]] || return 1
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='file-type'
+  [[ -f "${EXPECTED_ASC_API_KEY_PATH}" \
+      && ! -L "${EXPECTED_ASC_API_KEY_PATH}" ]] || return 1
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='file-owner-mode-links'
+  [[ "$(/usr/bin/stat -f '%u:%g:%Lp:%HT:%l' \
+      "${EXPECTED_ASC_API_KEY_PATH}" 2>/dev/null)" \
+      == "${EXPECTED_ASC_API_KEY_OWNER_UID}:${EXPECTED_ASC_API_KEY_OWNER_GID}:${EXPECTED_ASC_API_KEY_FILE_MODE}:Regular File:1" ]] || return 1
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='file-acl-or-xattr'
+  [[ "$(ls_mode_token "${EXPECTED_ASC_API_KEY_PATH}")" \
+      == '-rw-------' ]] || return 1
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='file-digest'
+  [[ "$(sha256_private_file_contents "${EXPECTED_ASC_API_KEY_PATH}")" \
+      == "${EXPECTED_ASC_P8_SHA256}" ]] || return 1
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='directory-identity'
+  TESTFLIGHT_ASC_API_KEY_DIRECTORY_IDENTITY=$(stat_identity \
+    "${EXPECTED_ASC_API_KEY_DIRECTORY}") || return 1
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='file-identity'
+  TESTFLIGHT_ASC_API_KEY_IDENTITY=$(stat_identity \
+    "${EXPECTED_ASC_API_KEY_PATH}") || return 1
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='persistent-open'
+  sysopen -r -o nofollow,cloexec -u TESTFLIGHT_ASC_API_KEY_FD \
+    "${EXPECTED_ASC_API_KEY_PATH}" || return 1
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='persistent-bind'
+  [[ "${EXPECTED_ASC_API_KEY_PATH}" \
+      -ef "/dev/fd/${TESTFLIGHT_ASC_API_KEY_FD}" ]] || return 1
+  local -i key_reader_fd=-1
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='parse-reader-open'
+  sysopen -r -o nofollow -u key_reader_fd \
+    "${EXPECTED_ASC_API_KEY_PATH}" || return 1
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='parse-reader-bind'
+  [[ "/dev/fd/${key_reader_fd}" -ef "/dev/fd/${TESTFLIGHT_ASC_API_KEY_FD}" ]] \
+    || {
+      exec {key_reader_fd}>&-
+      return 1
+    }
+  local key_parse_status=0
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='pkcs8-parse'
+  /usr/bin/openssl pkey -in "/dev/fd/${key_reader_fd}" -noout \
+    >/dev/null 2>&1 || key_parse_status=$?
+  exec {key_reader_fd}>&-
+  (( key_parse_status == 0 )) || return 1
+  TESTFLIGHT_XCODEBUILD_AUTHENTICATION_MODE='app-store-connect-api-key'
+  TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS=(
+    "${EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS[@]}"
+  )
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='argument-vector-digest'
+  TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS_SHA256=$( \
+    xcodebuild_authentication_arguments_sha256) || return 1
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='final-reverification'
+  verify_app_store_connect_api_key_identity || return 1
+  TESTFLIGHT_ASC_API_KEY_PIN_FAILURE='none'
 }
 
 function verify_package_dependency_contract() {
@@ -579,6 +804,10 @@ function create_xcode_sandbox_profile() {
       "(deny file-write* (literal \"${PROTECTED_MIGRATION_EVIDENCE_DIRECTORY}\"))"
     print -r -- \
       "(deny file-write* (subpath \"${PROTECTED_MIGRATION_EVIDENCE_DIRECTORY}\"))"
+    print -r -- \
+      "(deny file-write* (literal \"${EXPECTED_ASC_API_KEY_DIRECTORY}\"))"
+    print -r -- \
+      "(deny file-write* (subpath \"${EXPECTED_ASC_API_KEY_DIRECTORY}\"))"
     print -r -- \
       "(deny file-write* (subpath \"${EXPECTED_XCODE_REAL_BUNDLE_PATH}\"))"
   } >"/dev/fd/${profile_writer_fd}" || {
@@ -1752,13 +1981,15 @@ function cleanup_on_exit() {
     exit 1
   fi
   RELEASE_EXIT_CLEANUP_RUNNING=1
-  if ! cleanup_release_scratch; then
-    RELEASE_EXIT_CLEANUP_RUNNING=0
-    RELEASE_EXIT_CLEANUP_COMPLETE=1
-    exit 1
+  local cleanup_failed=0
+  cleanup_release_scratch || cleanup_failed=1
+  if (( TESTFLIGHT_ASC_API_KEY_FD >= 0 )); then
+    exec {TESTFLIGHT_ASC_API_KEY_FD}>&- || cleanup_failed=1
+    TESTFLIGHT_ASC_API_KEY_FD=-1
   fi
   RELEASE_EXIT_CLEANUP_RUNNING=0
   RELEASE_EXIT_CLEANUP_COMPLETE=1
+  (( cleanup_failed == 0 )) || exit 1
   exit ${original_status}
 }
 
@@ -1878,6 +2109,7 @@ function verify_pinned_xcodebuild_filesystem_contract() {
   verify_private_build_volume_identity || return 1
   verify_xcode_sandbox_profile_identity || return 1
   verify_package_dependency_contract || return 1
+  verify_xcodebuild_authentication_contract || return 1
   (( ${#TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[@]} > 0 )) || return 1
   (( ${#TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT[@]} > 0 )) || return 1
   [[ "${#TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS_SHA256}" == 64 \
@@ -2087,6 +2319,8 @@ function verify_effective_archive_build_roots() {
 function verify_static_contract() {
   [[ "${EXPECTED_BUNDLE_IDENTIFIER}" != "${PROTECTED_BUNDLE_IDENTIFIER}" ]] \
     || fail "isolated and protected bundle identifiers are equal"
+  verify_app_store_connect_api_key_static_contract \
+    || fail "App Store Connect API-key constants are not the reviewed exact contract"
   [[ -d "${PROJECT_PATH}" ]] || fail "Xcode project is missing"
   [[ -f "${SCHEME_PATH}" ]] || fail "archive-only shared scheme is missing"
   [[ -f "${SCHEME_SOURCE_PATH}" && ! -L "${SCHEME_SOURCE_PATH}" ]] \
@@ -3298,11 +3532,17 @@ function archive_side_by_side_app() {
     || fail "reserved archive or log destination changed immediately before archive"
   verify_pinned_xcodebuild_filesystem_contract \
     || fail "private build filesystem contract changed immediately before archive"
+  local archive_status=0
   run_pinned_xcodebuild archive archive \
     "${TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[@]}" \
     -archivePath "${TESTFLIGHT_ARCHIVE_PATH}" \
     -allowProvisioningUpdates \
-    2>&1 | /usr/bin/tee "/dev/fd/${TESTFLIGHT_ARCHIVE_LOG_FD}"
+    "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}" \
+    2>&1 | /usr/bin/tee "/dev/fd/${TESTFLIGHT_ARCHIVE_LOG_FD}" \
+    || archive_status=$?
+  verify_xcodebuild_authentication_contract \
+    || fail "release authentication identity changed during archive"
+  (( archive_status == 0 )) || return ${archive_status}
   verify_archive_destination_identity \
     || fail "archive or pinned log destination changed during archive"
   exec {TESTFLIGHT_ARCHIVE_LOG_FD}>&-
@@ -3332,6 +3572,8 @@ function run_archive_only() {
 }
 
 function run_authorized_upload() {
+  verify_xcodebuild_authentication_contract \
+    || fail "release authentication contract is invalid before archive"
   create_safe_output_directory \
     || fail "could not create a private TestFlight output directory"
   local output_directory=${TESTFLIGHT_OUTPUT_DIRECTORY}
@@ -3344,16 +3586,24 @@ function run_authorized_upload() {
   verify_export_options_identity \
     || fail "export options changed after reviewed configuration validation"
   verify_archive
+  verify_xcodebuild_authentication_contract \
+    || fail "release authentication identity changed before upload"
   verify_export_exec_destinations \
     || fail "reserved export or upload-log destination changed immediately before upload"
   verify_pinned_xcodebuild_filesystem_contract \
     || fail "private build filesystem contract changed immediately before upload"
+  local upload_status=0
   run_pinned_xcodebuild export -exportArchive \
     -archivePath "${TESTFLIGHT_ARCHIVE_PATH}" \
     -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \
     -exportPath "${TESTFLIGHT_EXPORT_DIRECTORY}" \
     -allowProvisioningUpdates \
-    2>&1 | /usr/bin/tee "/dev/fd/${TESTFLIGHT_UPLOAD_LOG_FD}"
+    "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}" \
+    2>&1 | /usr/bin/tee "/dev/fd/${TESTFLIGHT_UPLOAD_LOG_FD}" \
+    || upload_status=$?
+  verify_xcodebuild_authentication_contract \
+    || fail "release authentication identity changed during upload"
+  (( upload_status == 0 )) || return ${upload_status}
   verify_export_destination_identity \
     || fail "export or pinned upload-log destination changed during upload"
   exec {TESTFLIGHT_UPLOAD_LOG_FD}>&-
@@ -3375,10 +3625,22 @@ function run_authorized_upload() {
   print -- "side-by-side TestFlight upload completed; evidence: ${output_directory}"
 }
 
+function run_authorized_api_key_upload() {
+  pin_app_store_connect_api_key_identity \
+    || fail "reviewed App Store Connect API key is missing, changed, or unsafe (${TESTFLIGHT_ASC_API_KEY_PIN_FAILURE})"
+  run_authorized_upload
+}
+
 verify_static_contract
 pin_export_options_identity \
   || fail "could not pin the reviewed export-options identity"
 reject_unsafe_build_environment
+if [[ "${1:-}" == '--verify-api-key-config-only' ]]; then
+  (( $# == 1 )) || fail \
+    "--verify-api-key-config-only accepts no additional arguments"
+  pin_app_store_connect_api_key_identity \
+    || fail "reviewed App Store Connect API key is missing, changed, or unsafe (${TESTFLIGHT_ASC_API_KEY_PIN_FAILURE})"
+fi
 pin_reviewed_xcode_toolchain_identity \
   || fail "active Xcode does not match the reviewed signed T7 toolchain identity"
 
@@ -3386,6 +3648,11 @@ case "${1:-}" in
   --verify-config-only)
     (( $# == 1 )) || fail "--verify-config-only accepts no additional arguments"
     print -- "side-by-side TestFlight configuration verified"
+    ;;
+  --verify-api-key-config-only)
+    verify_app_store_connect_api_key_identity \
+      || fail "reviewed App Store Connect API key changed during Xcode verification"
+    print -- "side-by-side TestFlight API-key configuration verified"
     ;;
   --archive-only)
     (( $# == 1 )) || fail "--archive-only accepts no additional arguments"
@@ -3396,8 +3663,13 @@ case "${1:-}" in
       "--upload-authorized-side-by-side-testflight accepts no additional arguments"
     run_authorized_upload
     ;;
+  --upload-authorized-side-by-side-testflight-with-api-key)
+    (( $# == 1 )) || fail \
+      "--upload-authorized-side-by-side-testflight-with-api-key accepts no additional arguments"
+    run_authorized_api_key_upload
+    ;;
   *)
     fail \
-      "usage: $0 --verify-config-only | --archive-only | --upload-authorized-side-by-side-testflight"
+      "usage: $0 --verify-config-only | --verify-api-key-config-only | --archive-only | --upload-authorized-side-by-side-testflight | --upload-authorized-side-by-side-testflight-with-api-key"
     ;;
 esac

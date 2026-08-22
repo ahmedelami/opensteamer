@@ -1230,6 +1230,105 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_ASC_APPLE_ID="6797410161"' 1 \
   'side-by-side TestFlight exact App Store Connect app identity'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_ASC_TEAM_ISSUER_ID="98529b8c-9fa6-4799-bcb1-7ef7c85a83d3"' 1 \
+  'side-by-side TestFlight exact App Store Connect team-key issuer'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_ASC_API_KEY_ID="WPN8WJYC7H"' 1 \
+  'side-by-side TestFlight exact App Store Connect team-key ID'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_ASC_API_KEY_DIRECTORY="/Users/ahmed/Library/Application Support/opensteamer-release-credentials"' 1 \
+  'side-by-side TestFlight fixed external API-key directory'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_ASC_API_KEY_PATH="${EXPECTED_ASC_API_KEY_DIRECTORY}/AuthKey_${EXPECTED_ASC_API_KEY_ID}.p8"' 1 \
+  'side-by-side TestFlight exact API-key basename contract'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_ASC_API_KEY_OWNER_UID="501"' 1 \
+  'side-by-side TestFlight exact API-key owner UID'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_ASC_API_KEY_OWNER_GID="20"' 1 \
+  'side-by-side TestFlight exact API-key owner GID'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_ASC_API_KEY_DIRECTORY_MODE="700"' 1 \
+  'side-by-side TestFlight private API-key directory mode'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_ASC_API_KEY_FILE_MODE="600"' 1 \
+  'side-by-side TestFlight private API-key file mode'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_ASC_P8_SHA256="22d0dffa775141c5bedb6eb255fb909f50f0547f1997f2ff9ad92609afce5300"' 1 \
+  'side-by-side TestFlight exact API-key byte digest'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'sha256_private_file_contents' 3 \
+  'side-by-side TestFlight path-independent private-key hashing'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'NR == 1 && NF == 2 && $2 == "-" && length($1) == 64 && $1 !~ /[^0-9a-f]/ { print $1 }' 1 \
+  'side-by-side TestFlight private-key stdin digest parser'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'readonly -a EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS=(' 1 \
+  'side-by-side TestFlight read-only API-key authentication vector'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS_SHA256="8116cc2c29c6b7781770f13ca76f39a605d705655f7a619907ec21ac9afb7399"' 1 \
+  'side-by-side TestFlight exact API-key authentication-vector digest'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function verify_app_store_connect_api_key_identity() {' 1 \
+  'side-by-side TestFlight persistent API-key identity verifier'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'verify_xcodebuild_authentication_contract' 6 \
+  'side-by-side TestFlight complete authentication revalidation set'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function ls_mode_token() {' 1 \
+  'side-by-side TestFlight ACL-aware mode parser'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'LC_ALL=C /bin/ls -lde "$1" 2>/dev/null \' 1 \
+  'side-by-side TestFlight ACL-aware metadata inspection'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '== '\''drwx------'\''' 2 \
+  'side-by-side TestFlight API-key directory ACL absence'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '== '\''-rw-------'\''' 2 \
+  'side-by-side TestFlight API-key file ACL absence'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'sysopen -r -o nofollow,cloexec -u TESTFLIGHT_ASC_API_KEY_FD \' 1 \
+  'side-by-side TestFlight non-inherited no-follow API-key pin'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '/usr/bin/openssl pkey -in "/dev/fd/${key_reader_fd}" -noout \' 1 \
+  'side-by-side TestFlight silent PKCS8 API-key parse'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"(deny file-write* (literal \"${EXPECTED_ASC_API_KEY_DIRECTORY}\"))"' 1 \
+  'side-by-side TestFlight API-key directory write denial'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"(deny file-write* (subpath \"${EXPECTED_ASC_API_KEY_DIRECTORY}\"))"' 1 \
+  'side-by-side TestFlight API-key subtree write denial'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'-allowProvisioningUpdates \\\n    "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}" \\' 2 \
+  'side-by-side TestFlight exact API-key vector on archive and export'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'|| archive_status=$?\n  verify_xcodebuild_authentication_contract \\\n    || fail "release authentication identity changed during archive"\n  (( archive_status == 0 )) || return ${archive_status}' 1 \
+  'side-by-side TestFlight status-preserving post-archive authentication proof'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'|| upload_status=$?\n  verify_xcodebuild_authentication_contract \\\n    || fail "release authentication identity changed during upload"\n  (( upload_status == 0 )) || return ${upload_status}' 1 \
+  'side-by-side TestFlight status-preserving post-upload authentication proof'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'function run_authorized_api_key_upload() {\n  pin_app_store_connect_api_key_identity \\\n    || fail "reviewed App Store Connect API key is missing, changed, or unsafe (${TESTFLIGHT_ASC_API_KEY_PIN_FAILURE})"\n  run_authorized_upload\n}' 1 \
+  'side-by-side TestFlight API-key pin-before-upload wrapper'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '--upload-authorized-side-by-side-testflight-with-api-key)' 1 \
+  'side-by-side TestFlight explicit API-key upload authorization mode'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'exec {TESTFLIGHT_ASC_API_KEY_FD}>&- || cleanup_failed=1' 1 \
+  'side-by-side TestFlight persistent API-key descriptor close'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'iTMSTransporter' 0 \
+  'side-by-side TestFlight direct Transporter bypass rejection'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'altool' 0 \
+  'side-by-side TestFlight direct altool bypass rejection'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '-username' 0 \
+  'side-by-side TestFlight username authentication rejection'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '-password' 0 \
+  'side-by-side TestFlight password authentication rejection'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_DISTRIBUTION_CERTIFICATE_SHA1="CEB61B792A7A5848E9E797BB2E44EA2642611A6F"' 1 \
   'side-by-side TestFlight exact distribution certificate identity'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
@@ -1254,7 +1353,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function verify_export_options_identity() {' 1 \
   'side-by-side TestFlight pinned export-options identity'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'verify_export_options_identity \\\n    || fail "export options changed after reviewed configuration validation"\n  verify_archive\n  verify_export_exec_destinations' 1 \
+  $'verify_export_options_identity \\\n    || fail "export options changed after reviewed configuration validation"\n  verify_archive\n  verify_xcodebuild_authentication_contract \\\n    || fail "release authentication identity changed before upload"\n  verify_export_exec_destinations' 1 \
   'side-by-side TestFlight immediate pre-upload revalidation'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   "trap '' HUP INT QUIT TERM" 1 \

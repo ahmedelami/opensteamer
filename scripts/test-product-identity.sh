@@ -631,6 +631,78 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   'PRIVATE_TEMPORARY_ROOT="/Applications/AudioStreamer Host.app"'
 require_rejection "$CASE" 'side-by-side TestFlight fixed temporary root'
 
+CASE=$(new_case testflight-api-key-issuer)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_ASC_TEAM_ISSUER_ID="98529b8c-9fa6-4799-bcb1-7ef7c85a83d3"' \
+  'EXPECTED_ASC_TEAM_ISSUER_ID="00000000-0000-0000-0000-000000000000"'
+require_rejection "$CASE" 'side-by-side TestFlight exact App Store Connect team-key issuer'
+
+CASE=$(new_case testflight-api-key-id)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_ASC_API_KEY_ID="WPN8WJYC7H"' \
+  'EXPECTED_ASC_API_KEY_ID="AAAAAAAAAA"'
+require_rejection "$CASE" 'side-by-side TestFlight exact App Store Connect team-key ID'
+
+CASE=$(new_case testflight-api-key-directory)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_ASC_API_KEY_DIRECTORY="/Users/ahmed/Library/Application Support/opensteamer-release-credentials"' \
+  'EXPECTED_ASC_API_KEY_DIRECTORY="/Users/ahmed/Downloads"'
+require_rejection "$CASE" 'side-by-side TestFlight fixed external API-key directory'
+
+CASE=$(new_case testflight-api-key-file-mode)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_ASC_API_KEY_FILE_MODE="600"' \
+  'EXPECTED_ASC_API_KEY_FILE_MODE="644"'
+require_rejection "$CASE" 'side-by-side TestFlight private API-key file mode'
+
+CASE=$(new_case testflight-api-key-digest)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_ASC_P8_SHA256="22d0dffa775141c5bedb6eb255fb909f50f0547f1997f2ff9ad92609afce5300"' \
+  'EXPECTED_ASC_P8_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
+require_rejection "$CASE" 'side-by-side TestFlight exact API-key byte digest'
+
+CASE=$(new_case testflight-api-key-stdin-digest-parser)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'NR == 1 && NF == 2 && $2 == "-" && length($1) == 64 && $1 !~ /[^0-9a-f]/ { print $1 }' \
+  'NR == 1 && NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-f]/ { print $1 }'
+require_rejection "$CASE" 'side-by-side TestFlight private-key stdin digest parser'
+
+CASE=$(new_case testflight-api-key-vector-digest)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS_SHA256="8116cc2c29c6b7781770f13ca76f39a605d705655f7a619907ec21ac9afb7399"' \
+  'EXPECTED_ASC_API_KEY_XCODEBUILD_ARGUMENTS_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
+require_rejection "$CASE" 'side-by-side TestFlight exact API-key authentication-vector digest'
+
+CASE=$(new_case testflight-api-key-inherited-fd)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'sysopen -r -o nofollow,cloexec -u TESTFLIGHT_ASC_API_KEY_FD \' \
+  'sysopen -r -o nofollow -u TESTFLIGHT_ASC_API_KEY_FD \'
+require_rejection "$CASE" 'side-by-side TestFlight non-inherited no-follow API-key pin'
+
+CASE=$(new_case testflight-api-key-acl-inspection)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'LC_ALL=C /bin/ls -lde "$1" 2>/dev/null \' \
+  'LC_ALL=C /bin/ls -ld "$1" 2>/dev/null \'
+require_rejection "$CASE" 'side-by-side TestFlight ACL-aware metadata inspection'
+
+CASE=$(new_case testflight-api-key-missing-archive-auth)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'-archivePath "${TESTFLIGHT_ARCHIVE_PATH}" \\\n    -allowProvisioningUpdates \\\n    "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}" \\' \
+  $'-archivePath "${TESTFLIGHT_ARCHIVE_PATH}" \\\n    -allowProvisioningUpdates \\'
+require_rejection "$CASE" 'side-by-side TestFlight exact API-key vector on archive and export'
+
+CASE=$(new_case testflight-api-key-missing-export-auth)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'-exportPath "${TESTFLIGHT_EXPORT_DIRECTORY}" \\\n    -allowProvisioningUpdates \\\n    "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}" \\' \
+  $'-exportPath "${TESTFLIGHT_EXPORT_DIRECTORY}" \\\n    -allowProvisioningUpdates \\'
+require_rejection "$CASE" 'side-by-side TestFlight exact API-key vector on archive and export'
+
+CASE=$(new_case testflight-api-key-upload-wrapper)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'function run_authorized_api_key_upload() {\n  pin_app_store_connect_api_key_identity \\\n    || fail "reviewed App Store Connect API key is missing, changed, or unsafe (${TESTFLIGHT_ASC_API_KEY_PIN_FAILURE})"\n  run_authorized_upload\n}' \
+  $'function run_authorized_api_key_upload() {\n  run_authorized_upload\n}'
+require_rejection "$CASE" 'side-by-side TestFlight API-key pin-before-upload wrapper'
+
 CASE=$(new_case testflight-build-root)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
   'TESTFLIGHT_BUILD_ROOT="/Volumes/t7"' \
@@ -964,7 +1036,7 @@ require_rejection "$CASE" 'side-by-side TestFlight pinned export-options identit
 
 CASE=$(new_case testflight-immediate-preupload-revalidation)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  $'verify_export_options_identity \\\n    || fail "export options changed after reviewed configuration validation"\n  verify_archive\n  verify_export_exec_destinations' \
+  $'verify_export_options_identity \\\n    || fail "export options changed after reviewed configuration validation"\n  verify_archive\n  verify_xcodebuild_authentication_contract \\\n    || fail "release authentication identity changed before upload"\n  verify_export_exec_destinations' \
   $'verify_export_options_identity || true\n  verify_archive\n  verify_output_directory_identity'
 require_rejection "$CASE" 'side-by-side TestFlight immediate pre-upload revalidation'
 
