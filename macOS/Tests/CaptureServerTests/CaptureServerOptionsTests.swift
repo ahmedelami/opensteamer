@@ -89,37 +89,6 @@ final class CaptureServerOptionsTests: XCTestCase {
         XCTAssertFalse(options.lanEnabled)
     }
 
-    func testWorldwideModeAcceptsLegacyRendezvousEnvironmentForOneRelease() throws {
-        let options = try CaptureServerOptions.parse(
-            ["CaptureServer", "--worldwide"],
-            environment: [
-                "AUDIOSTREAMER_RENDEZVOUS_URL": "wss://legacy-rendezvous.example.invalid",
-            ]
-        )
-
-        XCTAssertEqual(
-            options.rendezvousURL?.absoluteString,
-            "wss://legacy-rendezvous.example.invalid"
-        )
-        XCTAssertFalse(options.lanEnabled)
-    }
-
-    func testOpensteamerRendezvousEnvironmentTakesPrecedenceOverLegacyAlias() throws {
-        let options = try CaptureServerOptions.parse(
-            ["CaptureServer", "--worldwide"],
-            environment: [
-                "OPENSTEAMER_RENDEZVOUS_URL": "wss://opensteamer.example.invalid",
-                "AUDIOSTREAMER_RENDEZVOUS_URL": "wss://legacy.example.invalid",
-            ]
-        )
-
-        XCTAssertEqual(
-            options.rendezvousURL?.absoluteString,
-            "wss://opensteamer.example.invalid"
-        )
-        XCTAssertFalse(options.lanEnabled)
-    }
-
     func testLANCoexistenceSuppressesIPhoneMicrophoneForBothCaptureModesAndArgumentOrders()
         throws {
         let cases: [([String], AudioCaptureMode)] = [

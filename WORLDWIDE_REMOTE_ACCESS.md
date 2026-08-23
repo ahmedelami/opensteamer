@@ -222,8 +222,8 @@ dependencies.
 | Protocol, crypto, replay, lifecycle, and mutation suites | Implemented as automated tests |
 | Signed Simulator lifecycle and artifact gates | Available; require local signing |
 | WSS/STUN and TURN provisioning code | Implemented; deployment-specific runtime proof required |
-| Repo-owned mono virtual-microphone driver | Clean-room core, production wrapper, sanitizers, lifecycle stress, malformed-bundle mutations, reproducible universal build, and actual bundle-load gate implemented; not installed or production-signed |
-| Installed BlackHole 2ch v0.7.1 | Release-incompatible: no-call clock/headroom and unity-gain gates fail; exact hidden-to-visible PCM comparison remains unavailable and unproved |
+| Repo-owned mono virtual-microphone driver | Clean-room core, production wrapper, sanitizers, lifecycle stress, malformed-bundle mutations, reproducible universal build, and actual bundle-load gate implemented. The user reports that the current side-by-side installed path works bidirectionally; exact installed-artifact provenance and the post-cleanup source remain independently unverified |
+| Retained BlackHole 2ch v0.7.1 | Historical worldwide release blocker and separate LAN fallback only: prior no-call clock/headroom and unity-gain gates failed, and exact hidden-to-visible PCM comparison was not proved |
 | Unrelated-network direct connection | Physical acceptance pass required per deployment |
 | Forced-TURN connection | Physical acceptance pass required before “works anywhere” |
 | Remote-input native target mutation | Physical target-state oracle still required |
@@ -264,8 +264,11 @@ The implemented driver test target directly proves a new nonzero zero-timestamp 
 shared zero-client-to-first-client transition, atomic reset of all epoch-owned clock
 and ring state, and repeated restarts in both visible-input-first and hidden-writer-
 first orders. Installed public-API validation must still repeat those lifecycle orders. The
-current no-call artifact is decisive evidence that the installed BlackHole pair is
-unsafe; it does not certify the uninstalled replacement artifact.
+historical no-call artifact is decisive evidence that the retained BlackHole pair is
+unsafe for worldwide routing; it does not certify the product replacement's exact
+installed artifact. The user's successful bidirectional run proves the behavior they
+observed in the pre-cleanup deployment, not signed-driver provenance or a future build
+from this cleaned source tree.
 
 Before the final call, a separate bounded public VoiceProcessingIO compatibility
 probe must exercise the product writer-to-visible-input boundary with 48 kHz mono

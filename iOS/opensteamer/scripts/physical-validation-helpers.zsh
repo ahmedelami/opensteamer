@@ -78,21 +78,6 @@ function opensteamer_require_same_host_process() {
       && "${logged_process_id}" == "${current_process_id}" ]]
 }
 
-function opensteamer_require_continuous_log() {
-  local initial_identity=$1
-  local current_identity=$2
-  local prior_line_count=$3
-  local current_line_count=$4
-
-  [[ -n "${initial_identity}" && "${current_identity}" == "${initial_identity}" ]] \
-    || return 1
-  [[ -n "${prior_line_count}" && "${prior_line_count}" != *[^0-9]* ]] \
-    || return 1
-  [[ -n "${current_line_count}" && "${current_line_count}" != *[^0-9]* ]] \
-    || return 1
-  (( current_line_count >= prior_line_count ))
-}
-
 function opensteamer_empty_sha256() {
   print -r -- "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 }

@@ -33,8 +33,11 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
             BlackHoleDeviceAvailabilitySnapshot(
                 monitorEpoch: epoch,
                 deviceGeneration: 1,
-                isAvailable: true,
-                deviceUID: "com.elamin.opensteamer.virtual-microphone.input"
+                defaultInputEndpoint: .init(
+                    deviceID: 79,
+                    deviceUID: "com.elamin.opensteamer.virtual-microphone.input"
+                ),
+                hiddenMirrorSinkEndpoint: nil
             )
         )
 
@@ -1193,8 +1196,6 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
     func testRuntimeFailureTreatsDisposeReturnAsTerminalBeforeReplacementQueueCreation()
         async throws {
         let disposalFailure = OSStatus(-66_701)
-        let retainer =
-            BlackHoleMicrophoneOutputQueueDisposalRetainer()
         let operations =
             DistinctRuntimeAudioQueueOperations(
                 disposeStatuses: [
@@ -1204,8 +1205,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
             )
         let factory =
             RuntimeDisposalOutputFactory(
-                operations: operations,
-                retainer: retainer
+                operations: operations
             )
         let harness =
             RuntimeDisposalDriverHarness(
@@ -1267,11 +1267,6 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
             queueIdentities[1],
             "The integration fake must expose distinct old/new AudioQueue identities."
         )
-        XCTAssertEqual(
-            retainer.retainedDisposalCount,
-            0
-        )
-
         let events = operations.events
         let oldDisposeReturned =
             try XCTUnwrap(
@@ -2097,8 +2092,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
             return BlackHoleDeviceAvailabilitySnapshot(
                 monitorEpoch: epoch,
                 deviceGeneration: generation,
-                isAvailable: false,
-                deviceUID: nil
+                defaultInputEndpoint: nil,
+                hiddenMirrorSinkEndpoint: nil
             )
         }
         return BlackHoleDeviceAvailabilitySnapshot(
@@ -2576,8 +2571,8 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
             BlackHoleDeviceAvailabilitySnapshot(
                 monitorEpoch: epoch,
                 deviceGeneration: 2,
-                isAvailable: false,
-                deviceUID: nil
+                defaultInputEndpoint: nil,
+                hiddenMirrorSinkEndpoint: nil
             )
         )
         XCTAssertEqual(lease.releases, [firstGeneration])
@@ -2891,8 +2886,8 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
                 BlackHoleDeviceAvailabilitySnapshot(
                     monitorEpoch: epoch,
                     deviceGeneration: 3,
-                    isAvailable: false,
-                    deviceUID: nil
+                    defaultInputEndpoint: nil,
+                    hiddenMirrorSinkEndpoint: nil
                 )
             ),
             .waitingForDevice,
@@ -3257,8 +3252,8 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
                 BlackHoleDeviceAvailabilitySnapshot(
                     monitorEpoch: epoch,
                     deviceGeneration: 2,
-                    isAvailable: false,
-                    deviceUID: nil
+                    defaultInputEndpoint: nil,
+                    hiddenMirrorSinkEndpoint: nil
                 )
             ),
             .released
@@ -4209,19 +4204,14 @@ private final class RuntimeDisposalOutputFactory:
     private let lock = NSLock()
     private let operations:
         DistinctRuntimeAudioQueueOperations
-    private let retainer:
-        BlackHoleMicrophoneOutputQueueDisposalRetainer
     private var outputs:
         [BlackHoleMicrophoneOutput] = []
 
     init(
         operations:
-            DistinctRuntimeAudioQueueOperations,
-        retainer:
-            BlackHoleMicrophoneOutputQueueDisposalRetainer
+            DistinctRuntimeAudioQueueOperations
     ) {
         self.operations = operations
-        self.retainer = retainer
     }
 
     func makeOutput()
@@ -4238,10 +4228,6 @@ private final class RuntimeDisposalOutputFactory:
                         }
                         return true
                     },
-                    queueDisposalRetainer:
-                        retainer,
-                    maximumQueueDisposalAttemptCountPerEpisode:
-                        1,
                     runtimeFailureHandler: {
                         _, _ in
                     }
@@ -4552,7 +4538,7 @@ private final class
         exactUID: String
     ) -> (status: OSStatus, deviceID: AudioDeviceID?) {
         guard exactUID
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .hiddenMirrorSinkDeviceUID else {
             return (kAudio_ParamError, nil)
         }

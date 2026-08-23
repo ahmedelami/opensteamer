@@ -3315,14 +3315,6 @@ function start_bounded_blackhole_probe_process() {
   fi
 }
 
-function fresh_blackhole_probe_nonce() {
-  print -r -- \
-    "raw-$(
-      /usr/bin/uuidgen \
-        | tr '[:upper:]' '[:lower:]'
-    )"
-}
-
 function start_blackhole_probe() {
   local probe_status
 
@@ -4918,10 +4910,6 @@ function validate_post_call_raw_generation_evidence() {
 function reject_runtime_uid_in_retained_artifacts() {
   opensteamer_run_physical_validation_oracle \
     scan-no-bytes "${ARTIFACT_DIR}" "${PHYSICAL_OUTPUT_UID}"
-}
-
-function current_unix_time_ns() {
-  opensteamer_run_physical_validation_oracle unix-ns
 }
 
 function current_monotonic_time_ns() {

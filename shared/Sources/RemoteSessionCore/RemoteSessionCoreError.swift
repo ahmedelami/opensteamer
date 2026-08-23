@@ -5,9 +5,6 @@ public enum RemoteSessionCoreError: Error, Equatable, LocalizedError, Sendable {
     case invalidInvitationCode
     case unsupportedInvitationVersion
     case secureRandomGenerationFailed
-    case invalidInvitationLifetime
-    case invitationExpired
-    case invitationAlreadyConsumed
     case invalidRendezvousChannel
     case unsupportedEnvelopeVersion
     case wrongRendezvousChannel
@@ -38,12 +35,6 @@ public enum RemoteSessionCoreError: Error, Equatable, LocalizedError, Sendable {
             "This invitation code version is not supported."
         case .secureRandomGenerationFailed:
             "A secure invitation code could not be generated."
-        case .invalidInvitationLifetime:
-            "The invitation lifetime is invalid."
-        case .invitationExpired:
-            "The invitation has expired."
-        case .invitationAlreadyConsumed:
-            "The invitation has already been used."
         case .invalidRendezvousChannel:
             "The rendezvous channel is invalid."
         case .unsupportedEnvelopeVersion:

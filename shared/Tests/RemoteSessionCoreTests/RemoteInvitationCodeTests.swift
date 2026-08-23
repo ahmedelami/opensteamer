@@ -77,9 +77,6 @@ struct RemoteInvitationCodeTests {
             .invalidInvitationCode,
             .unsupportedInvitationVersion,
             .secureRandomGenerationFailed,
-            .invalidInvitationLifetime,
-            .invitationExpired,
-            .invitationAlreadyConsumed,
             .invalidRendezvousChannel,
             .unsupportedEnvelopeVersion,
             .wrongRendezvousChannel,
@@ -93,51 +90,6 @@ struct RemoteInvitationCodeTests {
 
         for error in errors {
             #expect(!error.localizedDescription.contains(secretFragment))
-        }
-    }
-}
-
-/// Proves expiry and consumption are boundary-exact and atomic for a one-use capability.
-struct OneTimeRemoteInvitationTests {
-    private let now = Date(timeIntervalSince1970: 1_700_000_000)
-
-    @Test func invitationExpiresAtItsDeadline() async throws {
-        let code = try RemoteInvitationCode(secret: Data(repeating: 7, count: 20))
-        let invitation = try OneTimeRemoteInvitation(code: code, createdAt: now, timeToLive: 60)
-
-        #expect(await invitation.status(at: now.addingTimeInterval(59.999)) == .active)
-        #expect(await invitation.status(at: now.addingTimeInterval(60)) == .expired)
-
-        do {
-            _ = try await invitation.consume(at: now.addingTimeInterval(60))
-            Issue.record("An expired invitation was consumed")
-        } catch let error as RemoteSessionCoreError {
-            #expect(error == .invitationExpired)
-        }
-    }
-
-    @Test func invitationCanBeConsumedExactlyOnce() async throws {
-        let code = try RemoteInvitationCode(secret: Data(repeating: 8, count: 20))
-        let invitation = try OneTimeRemoteInvitation(code: code, createdAt: now, timeToLive: 60)
-
-        let consumed = try await invitation.consume(at: now.addingTimeInterval(1))
-        #expect(consumed.canonicalCode == code.canonicalCode)
-        #expect(await invitation.status(at: now.addingTimeInterval(2)) == .consumed)
-
-        do {
-            _ = try await invitation.consume(at: now.addingTimeInterval(2))
-            Issue.record("A consumed invitation was reused")
-        } catch let error as RemoteSessionCoreError {
-            #expect(error == .invitationAlreadyConsumed)
-        }
-    }
-
-    @Test func invalidLifetimesAreRejected() throws {
-        let code = try RemoteInvitationCode(secret: Data(repeating: 9, count: 20))
-        for lifetime in [0, -1, .infinity, .nan, OneTimeRemoteInvitation.maximumTimeToLive + 1] {
-            #expect(throws: RemoteSessionCoreError.invalidInvitationLifetime) {
-                try OneTimeRemoteInvitation(code: code, createdAt: now, timeToLive: lifetime)
-            }
         }
     }
 }

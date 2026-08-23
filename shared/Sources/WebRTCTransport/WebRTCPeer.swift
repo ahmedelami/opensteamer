@@ -2790,12 +2790,6 @@ public actor WebRTCPeer {
         return request.id
     }
 
-    /// Compatibility spelling for callers that send a control command directly.
-    @discardableResult
-    public func sendControl(_ command: RemoteControlCommand) throws -> UInt64 {
-        try requestControl(command)
-    }
-
     @discardableResult
     public func setScreenVisible(_ isVisible: Bool) throws -> UInt64 {
         try requestControl(isVisible ? .showScreen : .hideScreen)
@@ -4265,17 +4259,6 @@ public actor WebRTCPeer {
         return iOSPlayoutDiagnostics()
     }
 
-    private func approveNativeIPhoneMicrophonePolicy(
-        _ authorization: WebRTCIOSMicrophoneAuthorization,
-        recordingGeneration: UInt64
-    ) -> Bool {
-        guard let device = iOSStereoPlayoutAudioDevice else { return false }
-        return device.approveStagedMicrophoneAuthorization(
-            authorization.native,
-            recordingGeneration: recordingGeneration
-        )
-    }
-
     private func applyNativeIPhoneMicrophonePolicy(
         _ authorization: WebRTCIOSMicrophoneAuthorization?
     ) -> Bool {
@@ -4298,10 +4281,6 @@ public actor WebRTCPeer {
 
     public func remoteVideoTrack() -> WebRTCRemoteVideoTrack? {
         currentRemoteVideoTrack
-    }
-
-    public func routeDiagnostics() -> WebRTCICERouteDiagnostics? {
-        currentRoute
     }
 
     #if os(iOS)
@@ -5030,12 +5009,6 @@ public actor WebRTCPeer {
     private func collectAndPublishStatistics() async {
         guard !isClosed else { return }
         _ = await collectStatistics(publishEvent: true)
-    }
-
-    /// Cancels periodic statistics collection without closing transport.
-    public func stopStatistics() {
-        statisticsTask?.cancel()
-        statisticsTask = nil
     }
 
     /// Revokes every media/input gate and idempotently releases the native peer.

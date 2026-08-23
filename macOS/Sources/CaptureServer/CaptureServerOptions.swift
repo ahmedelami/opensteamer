@@ -79,10 +79,7 @@ struct CaptureServerOptions {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> CaptureServerOptions {
         var options = CaptureServerOptions()
-        // Accept the former variable for one release so an installed LaunchAgent can be upgraded
-        // independently. The opensteamer spelling wins whenever both contain a value.
         let rendezvousURLText = environment["OPENSTEAMER_RENDEZVOUS_URL"]?.nilIfEmpty
-            ?? environment["AUDIOSTREAMER_RENDEZVOUS_URL"]?.nilIfEmpty
         options.rendezvousURL = rendezvousURLText.flatMap(URL.init(string:))
         var index = 1
         var screenPortWasExplicit = false

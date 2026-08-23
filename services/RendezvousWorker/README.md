@@ -84,8 +84,8 @@ For an existing installation, a Worker-name change is an infrastructure migratio
 protocol migration. During a staggered client rollout, deploy the updated contract at the existing
 stable origin whenever possible. If both old and new origins must run temporarily, switch each
 paired Mac and iPhone to the same origin as one coordinated rollout and keep both Workers available
-until every deployed endpoint has moved. The legacy environment-variable fallback only reads an
-origin; it does not discover or retry a second origin. Retiring the existing Worker too early makes
+until every deployed endpoint has moved. Each client uses one configured origin; it does not
+discover or retry a second origin. Retiring the existing Worker too early makes
 otherwise compatible old and new clients unable to rendezvous.
 
 The included `JOIN_RATE_LIMITER` binding limits syntactically valid upgrades per edge-observed actor and per channel before a Durable Object is invoked. Its numeric namespace must remain unique within the Cloudflare account; change `namespace_id` before deployment if `1001001` is already used. Cloudflare's binding is intentionally local and eventually consistent, so account-level WAF/bot rules remain useful defense in depth. Per-connection message limits are enforced inside each Durable Object, while the one-object-per-channel design serializes role occupancy and consume-once state.

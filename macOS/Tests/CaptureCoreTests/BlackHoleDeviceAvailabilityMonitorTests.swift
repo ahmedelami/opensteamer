@@ -680,7 +680,9 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
             [true, false, true]
         )
         XCTAssertEqual(
-            ledger.snapshots.map(\.deviceUID),
+            ledger.snapshots.map {
+                $0.defaultInputEndpoint?.deviceUID
+            },
             [
                 "com.elamin.opensteamer.virtual-microphone.input",
                 nil,
@@ -1250,7 +1252,9 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
             [1, 2]
         )
         XCTAssertFalse(revalidatedSnapshot.isAvailable)
-        XCTAssertNil(revalidatedSnapshot.deviceUID)
+        XCTAssertNil(
+            revalidatedSnapshot.defaultInputEndpoint?.deviceUID
+        )
         XCTAssertEqual(revalidatedSnapshot, ledger.snapshots.last)
         XCTAssertEqual(
             operations.events.filter { $0 == "inventory" }.count,
@@ -1363,20 +1367,23 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
         monitor.stop()
     }
 
-    func testCompatibilitySnapshotCannotAssertPairAvailability() {
+    func testPartialSnapshotCannotAssertPairAvailability() {
         let epoch = UUID()
         let snapshot = BlackHoleDeviceAvailabilitySnapshot(
             monitorEpoch: epoch,
             deviceGeneration: 7,
-            isAvailable: true,
-            deviceUID:
-                WorldwideVirtualMicrophoneEndpointContract
-                    .visibleDefaultInputDeviceUID
+            defaultInputEndpoint: BlackHoleDeviceEndpointIdentity(
+                deviceID: AudioDeviceID(kAudioObjectUnknown),
+                deviceUID:
+                    WorldwideVirtualMicrophoneEndpointContract
+                        .visibleDefaultInputDeviceUID
+            ),
+            hiddenMirrorSinkEndpoint: nil
         )
 
         XCTAssertFalse(snapshot.isAvailable)
         XCTAssertEqual(
-            snapshot.deviceUID,
+            snapshot.defaultInputEndpoint?.deviceUID,
             WorldwideVirtualMicrophoneEndpointContract
                 .visibleDefaultInputDeviceUID
         )
@@ -2029,16 +2036,16 @@ final class BlackHoleDeviceAvailabilityMonitorTests:
             BlackHoleDeviceAvailabilitySnapshot(
                 monitorEpoch: epoch,
                 deviceGeneration: 2,
-                isAvailable: false,
-                deviceUID: nil
+                defaultInputEndpoint: nil,
+                hiddenMirrorSinkEndpoint: nil
             )
         )
         monitor.publishForTesting(
             BlackHoleDeviceAvailabilitySnapshot(
                 monitorEpoch: UUID(),
                 deviceGeneration: 4,
-                isAvailable: false,
-                deviceUID: nil
+                defaultInputEndpoint: nil,
+                hiddenMirrorSinkEndpoint: nil
             )
         )
 
@@ -2072,10 +2079,10 @@ private final class BlackHoleEndpointPropertyReaderFake:
         exactUID: String
     ) throws -> BlackHoleDeviceEndpointProperties? {
         switch exactUID {
-        case WorldwideBlackHoleMicrophoneEndpointContract
+        case WorldwideVirtualMicrophoneEndpointContract
             .visibleDefaultInputDeviceUID:
             return defaultInput
-        case WorldwideBlackHoleMicrophoneEndpointContract
+        case WorldwideVirtualMicrophoneEndpointContract
             .hiddenMirrorSinkDeviceUID:
             return hiddenMirrorSink
         default:
@@ -2109,14 +2116,14 @@ private final class SequencedBlackHoleEndpointPropertyReaderFake:
     ) throws -> BlackHoleDeviceEndpointProperties? {
         try lock.withLock {
             switch exactUID {
-            case WorldwideBlackHoleMicrophoneEndpointContract
+            case WorldwideVirtualMicrophoneEndpointContract
                 .visibleDefaultInputDeviceUID:
                 guard !defaultInputs.isEmpty else {
                     throw BlackHoleMonitorLookupError.injected
                 }
                 defaultInputReads += 1
                 return defaultInputs.removeFirst()
-            case WorldwideBlackHoleMicrophoneEndpointContract
+            case WorldwideVirtualMicrophoneEndpointContract
                 .hiddenMirrorSinkDeviceUID:
                 guard !hiddenMirrorSinks.isEmpty else {
                     throw BlackHoleMonitorLookupError.injected

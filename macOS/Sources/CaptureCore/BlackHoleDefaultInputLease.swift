@@ -26,17 +26,6 @@ protocol BlackHoleDefaultInputLeaseOperations:
     ) -> BlackHoleDefaultInputMutationResult
 }
 
-extension BlackHoleDefaultInputLeaseOperations {
-    /// Compatibility fallback for test operations that model stable UID
-    /// translation but not the Core Audio default-device selector directly.
-    /// The system implementation overrides this with an exact selector read.
-    func currentDefaultInputDeviceID() throws -> AudioDeviceID {
-        try resolveDeviceID(
-            uid: currentDefaultInputUID()
-        )
-    }
-}
-
 enum BlackHoleDefaultInputMutationResult:
     Equatable,
     Sendable
@@ -156,7 +145,7 @@ public final class BlackHoleDefaultInputLease:
         )
     }
     public static let canonicalDeviceUID =
-        WorldwideBlackHoleMicrophoneEndpointContract
+        WorldwideVirtualMicrophoneEndpointContract
             .visibleDefaultInputDeviceUID
 
     private final class UncertaintyObserver:
@@ -1010,10 +999,10 @@ public final class BlackHoleDefaultInputLease:
             return .retryableFailure
         }
         guard previousUID
-                != WorldwideBlackHoleMicrophoneEndpointContract
+                != WorldwideVirtualMicrophoneEndpointContract
                     .hiddenMirrorSinkDeviceUID,
               previousUID
-                != WorldwideBlackHoleMicrophoneEndpointContract
+                != WorldwideVirtualMicrophoneEndpointContract
                     .retiredLegacyHiddenWriterDeviceUID else {
             clearRetryBaseline(for: generation)
             markTerminal(generation)

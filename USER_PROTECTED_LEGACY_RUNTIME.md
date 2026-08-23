@@ -1,6 +1,6 @@
 # User-protected legacy AudioStreamer runtime
 
-Status: **PAIRING-PRESERVING HOST UPDATE V6 COMMITTED; HIDDEN-WRITER HOST READY FOR THE NEXT PHYSICAL CALL; TESTFLIGHT BUILD 44 UPLOADED TO APPLE; PHYSICAL VALIDATION NOT CLAIMED; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
+Status: **CURRENT SIDE-BY-SIDE OPENSTEAMER AUDIO PATH USER-REPORTED WORKING 2026-08-23; THIS SOURCE CLEANUP IS NOT DEPLOYED; LEGACY ROLLBACK SOURCES AND IPHONE REMAIN PROTECTED**\
 Original preservation direction: **2026-07-25**\
 Mac-only migration authorization recorded: **2026-07-30/31**\
 Version-15 retry authorization recorded: **2026-08-02**\
@@ -15,6 +15,12 @@ Pairing-preserving new-host update v3 authorization recorded and consumed: **202
 Pairing-preserving new-host update v4 authorization recorded and consumed: **2026-08-09**
 Pairing-preserving new-host update v5 authorization recorded and consumed: **2026-08-09**
 Pairing-preserving new-host update v6 authorization recorded and consumed: **2026-08-10**
+
+On August 23, 2026, the user reported that the current installed side-by-side
+host and TestFlight app work with simultaneous iPhone-microphone uplink and
+Mac-audio downlink to the iPhone. This supersedes the pre-call summary that
+introduced the historical ledger below. It does not claim that later source
+cleanup is deployed, and it does not relax any protected-runtime boundary.
 
 The user authorized guarded Mac-only cutovers from the running legacy host to
 the validated opensteamer host. Versions 15, 16, 17, 18, and 19 all fully
@@ -727,7 +733,11 @@ build or operate the physical iPhone; build `44` remains the intended
 side-by-side client. Physical FaceTime microphone behavior remains unvalidated
 until the next call, and the consumed v5 authorization grants no retry.
 
-### Pairing-preserving host update v6
+### Historical pairing-preserving host update v6 (as of 2026-08-10)
+
+This subsection records the deployment state at the end of the August 10 v6
+transaction. Its present-tense wording is historical and does not override the
+August 23 current-status note at the top of this document.
 
 On August 10, 2026, the user explicitly authorized exactly one fresh guarded
 replacement of only the active side-by-side new Mac host to deploy the
@@ -785,19 +795,23 @@ and `419eff4f410cfb0bf5e224528fd450c10292f7c1c2448d33e215e929f7c14730`;
 their job remains absent and disabled.
 
 This transaction performed no TestFlight upload or physical-iPhone operation;
-side-by-side TestFlight build `44` remains the intended client. The hidden
-writer route is installed and ready for a new physical call, but far-end
-FaceTime microphone behavior remains unvalidated until that call. The one-shot
-v6 authorization is consumed; any retry requires a fresh versioned updater and
-new user authorization.
+at that point, side-by-side TestFlight build `44` was the intended client. The
+hidden writer route was installed and ready for a new physical call, but
+far-end FaceTime microphone behavior had not yet been validated. The one-shot
+v6 authorization was consumed; any retry required a fresh versioned updater
+and new user authorization.
 
 ## Protected iPhone client
+
+This section is a chronological deployment ledger. Build `44` and physical-
+validation statements below describe their recorded August 10 state and are
+superseded by the bounded August 23 status note above.
 
 The production iOS app and the development Release target both use bundle
 identifier `com.elamin.AudioStreamer`. The physical iPhone was unavailable while
 this migration was prepared.
 
-A separate archive-only `TestFlight` configuration now uses bundle identifier
+A separate archive-only `TestFlight` configuration then used bundle identifier
 `com.elamin.opensteamer`, build `44`, and the production rendezvous endpoint.
 Its guarded upload path rejects the protected bundle identifier and validates
 the completed archive identity before any upload. This side-by-side app has a

@@ -39,6 +39,14 @@ require_file() {
   return 0
 }
 
+require_absent_file() {
+  local relative_path=$1
+  local description=$2
+  if [[ -e "$ROOT/$relative_path" || -L "$ROOT/$relative_path" ]]; then
+    fail "$description: obsolete file is still present: $relative_path"
+  fi
+}
+
 require_executable_file() {
   local relative_path=$1
   local description=$2
@@ -272,6 +280,9 @@ fi
 if require_file README.md; then
   README_HEADING=$(sed -n '1p' "$ROOT/README.md")
   assert_equal "README heading" '# opensteamer' "$README_HEADING"
+  assert_literal_count \
+    README.md 'AUDIOSTREAMER_RENDEZVOUS_URL' 0 \
+    'README retired rendezvous environment alias count'
 fi
 
 # XcodeGen is authoritative, while the generated project and shared schemes must carry the same
@@ -298,6 +309,9 @@ if require_file "$PROJECT_YML"; then
     "$PROJECT_YML" 'PRODUCT_NAME:' 0 'project.yml product-name override count'
   assert_literal_count \
     "$PROJECT_YML" 'CODE_SIGN_IDENTITY:' 0 'project.yml code-sign identity override count'
+  assert_literal_count \
+    "$PROJECT_YML" 'AUDIOSTREAMER_RENDEZVOUS_URL' 0 \
+    'project.yml retired rendezvous build-setting count'
 
   XCODEGEN_PROJECT_NAME=$(awk '
     /^name:[[:space:]]*/ {
@@ -564,6 +578,9 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
   assert_literal_count \
     "$PBX_PROJECT" 'PRODUCT_NAME = "$(TARGET_NAME)";' 3 \
     'generated Xcode inherited product-name defaults'
+  assert_literal_count \
+    "$PBX_PROJECT" 'AUDIOSTREAMER_RENDEZVOUS_URL' 0 \
+    'generated Xcode retired rendezvous build-setting count'
 fi
 
 scheme_contracts() {
@@ -677,6 +694,12 @@ fi
 
 SIDE_BY_SIDE_TESTFLIGHT_SCRIPT='iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh'
 require_file "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT"
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'AUDIOSTREAMER_RENDEZVOUS_URL' 0 \
+  'side-by-side TestFlight retired rendezvous environment alias count'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'AudioStreamerRendezvousURL' 0 \
+  'side-by-side TestFlight retired rendezvous plist alias count'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_BUNDLE_IDENTIFIER="com.elamin.opensteamer"' 1 \
   'side-by-side TestFlight expected bundle guard'
@@ -1441,6 +1464,9 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'side-by-side TestFlight caller-controlled output path rejection'
 
 SIDE_BY_SIDE_EXPORT_OPTIONS='iOS/opensteamer/TestFlightExportOptions.plist'
+require_absent_file \
+  'iOS/opensteamer/ExportOptions.plist' \
+  'superseded generic iOS export options'
 assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" destination upload \
   'side-by-side TestFlight export destination'
 assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" method app-store-connect \
@@ -1458,6 +1484,8 @@ assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" uploadSymbols true \
 
 assert_plist_value iOS/opensteamer/Sources/Support/Info.plist \
   CFBundleDisplayName opensteamer 'iOS CFBundleDisplayName lowercase identity'
+assert_literal_count iOS/opensteamer/Sources/Support/Info.plist \
+  'AudioStreamerRendezvousURL' 0 'iOS retired rendezvous plist key count'
 assert_plist_value iOS/opensteamer/Sources/Support/Info.plist \
   CFBundleName opensteamer 'iOS CFBundleName lowercase identity'
 assert_plist_value iOS/opensteamer/Sources/Support/Info.plist \

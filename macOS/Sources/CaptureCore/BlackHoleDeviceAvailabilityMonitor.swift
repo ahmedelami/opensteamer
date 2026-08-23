@@ -553,8 +553,8 @@ public final class BlackHoleDeviceAvailabilityMonitor: @unchecked Sendable {
                 BlackHoleDeviceAvailabilitySnapshot(
                     monitorEpoch: epoch,
                     deviceGeneration: nextDeviceGeneration,
-                    isAvailable: false,
-                    deviceUID: nil,
+                    defaultInputEndpoint: nil,
+                    hiddenMirrorSinkEndpoint: nil,
                     acceptedInventoryChangeSequence:
                         initialInventoryChangeSequence
                 )
@@ -761,7 +761,7 @@ struct BlackHoleDeviceStreamFormat: Equatable, Sendable {
 
     var isCanonicalNativeFloatPackedMono: Bool {
         sampleRate
-            == WorldwideBlackHoleMicrophoneEndpointContract
+            == WorldwideVirtualMicrophoneEndpointContract
                 .nominalSampleRate
             && formatID == kAudioFormatLinearPCM
             && formatFlags == kAudioFormatFlagsNativeFloatPacked
@@ -817,12 +817,12 @@ struct BlackHoleDeviceEndpointPairResolver: Sendable {
         -> EndpointPairObservation {
         let defaultInput = try propertyReader.endpointProperties(
             exactUID:
-                WorldwideBlackHoleMicrophoneEndpointContract
+                WorldwideVirtualMicrophoneEndpointContract
                     .visibleDefaultInputDeviceUID
         )
         let hiddenMirrorSink = try propertyReader.endpointProperties(
             exactUID:
-                WorldwideBlackHoleMicrophoneEndpointContract
+                WorldwideVirtualMicrophoneEndpointContract
                     .hiddenMirrorSinkDeviceUID
         )
         return EndpointPairObservation(
@@ -863,18 +863,18 @@ struct BlackHoleDeviceEndpointPairResolver: Sendable {
               defaultInput.identity.deviceID
                 != hiddenMirrorSink.identity.deviceID,
               defaultInput.identity.deviceUID
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .visibleDefaultInputDeviceUID,
               hiddenMirrorSink.identity.deviceUID
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .hiddenMirrorSinkDeviceUID,
               defaultInput.identity.deviceUID
                 != hiddenMirrorSink.identity.deviceUID,
               defaultInput.modelUID
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .modelUID,
               hiddenMirrorSink.modelUID
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .modelUID,
               defaultInput.modelUID == hiddenMirrorSink.modelUID,
               defaultInput.isAlive,
@@ -882,28 +882,28 @@ struct BlackHoleDeviceEndpointPairResolver: Sendable {
               !defaultInput.isHidden,
               hiddenMirrorSink.isHidden,
               defaultInput.inputChannelCount
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .visibleInputChannelCount,
               defaultInput.outputChannelCount
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .visibleOutputChannelCount,
               hiddenMirrorSink.inputChannelCount
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .hiddenInputChannelCount,
               hiddenMirrorSink.outputChannelCount
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .hiddenOutputChannelCount,
               defaultInput.nominalSampleRate
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .nominalSampleRate,
               hiddenMirrorSink.nominalSampleRate
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .nominalSampleRate,
               defaultInput.clockDomain
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .clockDomain,
               hiddenMirrorSink.clockDomain
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .clockDomain,
               defaultInput.clockDomain == hiddenMirrorSink.clockDomain,
               defaultInputRoleStream.virtualFormat
@@ -959,10 +959,10 @@ private final class SystemBlackHoleDeviceEndpointPropertyReader:
         }
         let roleScope: AudioObjectPropertyScope
         switch exactUID {
-        case WorldwideBlackHoleMicrophoneEndpointContract
+        case WorldwideVirtualMicrophoneEndpointContract
             .visibleDefaultInputDeviceUID:
             roleScope = kAudioDevicePropertyScopeInput
-        case WorldwideBlackHoleMicrophoneEndpointContract
+        case WorldwideVirtualMicrophoneEndpointContract
             .hiddenMirrorSinkDeviceUID:
             roleScope = kAudioDevicePropertyScopeOutput
         default:

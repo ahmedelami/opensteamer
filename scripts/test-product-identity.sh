@@ -549,6 +549,16 @@ replace_once "$CASE/iOS/opensteamer/Sources/Support/Info.plist" \
   '<key>NSCameraUsageDescription</key><string>opensteamer uses the camera during ordinary audio streaming.</string>'
 require_rejection "$CASE" 'iOS camera usage description'
 
+CASE=$(new_case readme-retired-rendezvous-environment-alias)
+print -r -- 'AUDIOSTREAMER_RENDEZVOUS_URL' >>"$CASE/README.md"
+require_rejection "$CASE" 'README retired rendezvous environment alias count'
+
+CASE=$(new_case info-retired-rendezvous-plist-alias)
+replace_once "$CASE/iOS/opensteamer/Sources/Support/Info.plist" \
+  '<key>CFBundleName</key><string>opensteamer</string>' \
+  $'<key>CFBundleName</key><string>opensteamer</string>\n<key>AudioStreamerRendezvousURL</key><string>https://retired.invalid</string>'
+require_rejection "$CASE" 'iOS retired rendezvous plist key count'
+
 CASE=$(new_case project-target)
 replace_once "$CASE/iOS/opensteamer/project.yml" \
   $'  opensteamerTests:\n' $'  opensteamerUnitTests:\n'
@@ -576,6 +586,12 @@ replace_once "$CASE/iOS/opensteamer/project.yml" \
   'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer' \
   $'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer\n          CODE_SIGN_IDENTITY: "Apple Distribution"'
 require_rejection "$CASE" 'project.yml code-sign identity override count'
+
+CASE=$(new_case project-retired-rendezvous-build-setting)
+replace_once "$CASE/iOS/opensteamer/project.yml" \
+  'SWIFT_VERSION: 6.0' \
+  $'SWIFT_VERSION: 6.0\n        AUDIOSTREAMER_RENDEZVOUS_URL: "https://retired.invalid"'
+require_rejection "$CASE" 'project.yml retired rendezvous build-setting count'
 
 CASE=$(new_case project-debug-bundle-id)
 replace_once "$CASE/iOS/opensteamer/project.yml" \
@@ -624,6 +640,29 @@ replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
   'PRODUCT_BUNDLE_IDENTIFIER = com.elamin.opensteamer;' \
   'PRODUCT_BUNDLE_IDENTIFIER = com.elamin.AudioStreamer;'
 require_rejection "$CASE" 'generated Xcode target/configuration bundle-ID mapping'
+
+CASE=$(new_case generated-project-retired-rendezvous-build-setting)
+replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
+  'PRODUCT_BUNDLE_IDENTIFIER = com.elamin.opensteamer;' \
+  $'PRODUCT_BUNDLE_IDENTIFIER = com.elamin.opensteamer;\n        AUDIOSTREAMER_RENDEZVOUS_URL = "https://retired.invalid";'
+require_rejection "$CASE" 'generated Xcode retired rendezvous build-setting count'
+
+CASE=$(new_case superseded-generic-export-options)
+cp "$CASE/iOS/opensteamer/TestFlightExportOptions.plist" \
+  "$CASE/iOS/opensteamer/ExportOptions.plist"
+require_rejection "$CASE" 'superseded generic iOS export options'
+
+CASE=$(new_case testflight-retired-rendezvous-environment-alias)
+print -r -- '# AUDIOSTREAMER_RENDEZVOUS_URL' \
+  >>"$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh"
+require_rejection "$CASE" \
+  'side-by-side TestFlight retired rendezvous environment alias count'
+
+CASE=$(new_case testflight-retired-rendezvous-plist-alias)
+print -r -- '# AudioStreamerRendezvousURL' \
+  >>"$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh"
+require_rejection "$CASE" \
+  'side-by-side TestFlight retired rendezvous plist alias count'
 
 CASE=$(new_case testflight-temporary-root)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -2843,7 +2882,7 @@ function build_settings_entry_value() {
     DEVELOPMENT_TEAM) print -r -- "$EXPECTED_TEAM_ID" ;;
     CODE_SIGN_STYLE) print -r -- Automatic ;;
     CODE_SIGN_IDENTITY) print -r -- 'Apple Development' ;;
-    OPENSTEAMER_RENDEZVOUS_URL|AUDIOSTREAMER_RENDEZVOUS_URL)
+    OPENSTEAMER_RENDEZVOUS_URL)
       print -r -- "$EXPECTED_RENDEZVOUS_URL"
       ;;
     *) print -r -- "$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Derived/$key" ;;

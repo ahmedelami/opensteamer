@@ -117,18 +117,18 @@ public struct WorldwideSafeOutputInvariantAuthorization:
 /// an exact listener sequence plus readback rejects every observable overlap.
 public final class WorldwideSafeOutputInvariant: @unchecked Sendable {
     public static let canonicalBlackHoleUID =
-        WorldwideBlackHoleMicrophoneEndpointContract
+        WorldwideVirtualMicrophoneEndpointContract
             .visibleDefaultInputDeviceUID
     public static let hiddenMirrorBlackHoleUID =
-        WorldwideBlackHoleMicrophoneEndpointContract
+        WorldwideVirtualMicrophoneEndpointContract
             .hiddenMirrorSinkDeviceUID
     /// The retired BlackHole experiment remains installed side by side. A
     /// stale selector must never make either legacy endpoint an output again.
     public static let legacyBlackHoleUID =
-        WorldwideBlackHoleMicrophoneEndpointContract
+        WorldwideVirtualMicrophoneEndpointContract
             .retiredLegacyVisibleDeviceUID
     public static let legacyHiddenMirrorBlackHoleUID =
-        WorldwideBlackHoleMicrophoneEndpointContract
+        WorldwideVirtualMicrophoneEndpointContract
             .retiredLegacyHiddenWriterDeviceUID
     public static let builtInSpeakerUID = "BuiltInSpeakerDevice"
 

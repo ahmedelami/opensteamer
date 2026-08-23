@@ -21,11 +21,6 @@ public enum WorldwideVirtualMicrophoneEndpointContract {
         "BlackHole2ch_2_UID"
 }
 
-/// Compatibility spelling retained while the worldwide route migrates from
-/// the installed BlackHole experiment to the product-owned virtual mic.
-public typealias WorldwideBlackHoleMicrophoneEndpointContract =
-    WorldwideVirtualMicrophoneEndpointContract
-
 /// One stable Core Audio identity participating in the BlackHole microphone path.
 public struct BlackHoleDeviceEndpointIdentity: Equatable, Sendable {
     public let deviceID: AudioDeviceID
@@ -50,7 +45,7 @@ public struct BlackHoleDeviceAvailabilitySnapshot: Equatable, Sendable {
     /// before any asynchronous refresh work is dispatched.
     public let acceptedInventoryChangeSequence: UInt64
     /// Availability is derived from a complete, role-correct pair. It cannot
-    /// be asserted independently by a compatibility caller.
+    /// be asserted independently by a caller.
     public var isAvailable: Bool {
         guard let defaultInputEndpoint,
               let hiddenMirrorSinkEndpoint else {
@@ -61,52 +56,23 @@ public struct BlackHoleDeviceAvailabilitySnapshot: Equatable, Sendable {
             && defaultInputEndpoint.deviceID
                 != hiddenMirrorSinkEndpoint.deviceID
             && defaultInputEndpoint.deviceUID
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .visibleDefaultInputDeviceUID
             && hiddenMirrorSinkEndpoint.deviceUID
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .hiddenMirrorSinkDeviceUID
     }
 
-    /// Compatibility alias for the visible endpoint selected as default input.
-    public var deviceUID: String? {
-        defaultInputEndpoint?.deviceUID
-    }
     public let defaultInputEndpoint: BlackHoleDeviceEndpointIdentity?
     public let hiddenMirrorSinkEndpoint: BlackHoleDeviceEndpointIdentity?
 
-    /// Compatibility initializer for existing callers that only model the
-    /// visible endpoint. Production discovery uses the validated-pair
-    /// initializer below. An unknown object ID explicitly records that the
-    /// compatibility caller did not bind the stable UID to a live identity;
-    /// the legacy `isAvailable` argument cannot assert pair availability.
+    /// Records the endpoint observations for one inventory generation. Only
+    /// a complete, role-correct pair makes `isAvailable` true.
     public init(
         monitorEpoch: UUID,
         deviceGeneration: UInt64,
-        isAvailable _: Bool,
-        deviceUID: String?,
-        acceptedInventoryChangeSequence: UInt64 = 0
-    ) {
-        self.monitorEpoch = monitorEpoch
-        self.deviceGeneration = deviceGeneration
-        self.acceptedInventoryChangeSequence =
-            acceptedInventoryChangeSequence
-        defaultInputEndpoint = deviceUID.map {
-            BlackHoleDeviceEndpointIdentity(
-                deviceID: AudioDeviceID(kAudioObjectUnknown),
-                deviceUID: $0
-            )
-        }
-        hiddenMirrorSinkEndpoint = nil
-    }
-
-    /// Creates an available snapshot from the complete pair already validated
-    /// against the installed BlackHole topology.
-    public init(
-        monitorEpoch: UUID,
-        deviceGeneration: UInt64,
-        defaultInputEndpoint: BlackHoleDeviceEndpointIdentity,
-        hiddenMirrorSinkEndpoint: BlackHoleDeviceEndpointIdentity,
+        defaultInputEndpoint: BlackHoleDeviceEndpointIdentity?,
+        hiddenMirrorSinkEndpoint: BlackHoleDeviceEndpointIdentity?,
         acceptedInventoryChangeSequence: UInt64 = 0
     ) {
         self.monitorEpoch = monitorEpoch

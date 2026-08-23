@@ -45,16 +45,12 @@ passes the unrelated-network and forced-TURN gates described in
 Automatic input restoration is an in-memory graceful-lifecycle guarantee; a crash,
 `SIGKILL`, or power loss can prevent restoration.
 
-The currently installed BlackHole 2ch v0.7.1 remains release-incompatible: its
-zero-timestamp seed does not change when it establishes a new timeline, and its
-public clock exceeded the observed FaceTime signed-32 boundary. The repository now
-contains a clean-room replacement driver and direct C17 seed/ring/timeline tests,
-but that driver is not installed. It must still pass signed-bundle provenance,
-installed both-order mono loopback, and the bounded public VoiceProcessingIO
-compatibility probe before another FaceTime trial. One final far-end call is then
-required only to prove FaceTime adoption, network transmission, far-end uplink
-audibility, and intelligible local downlink on the unchanged reviewed real output.
-This status does not establish a new deployment.
+The installed BlackHole 2ch v0.7.1 remains release-incompatible and is retained only
+as historical failure evidence and for the separate trusted-LAN path. As of August 23,
+2026, the user reports that the current side-by-side opensteamer deployment works with
+simultaneous iPhone-microphone uplink and Mac-audio downlink to the iPhone. That report
+describes the installed pre-cleanup build; source cleanup and future builds remain
+unproven until their documented host, driver, and physical-device gates pass.
 
 ```text
 Mac Host ── outbound authenticated WSS ──┐
@@ -103,11 +99,10 @@ the microphone after the call ends and the exact built-in-microphone route is he
    `PROVISIONING_PROFILE_SPECIFIER`, `CODE_SIGN_IDENTITY`, or an ExportOptions profile map.
    Apple account sessions, certificate private keys, and provisioning profiles remain local to
    the signing machine.
-4. The maintainer iOS Release target already has both rendezvous build settings populated; the
-   Debug target leaves both empty. For a fork, replace both Release values with the same WSS
-   origin. The Mac host still receives `OPENSTEAMER_RENDEZVOUS_URL=wss://your-origin.example`
-   locally. During migration it also accepts legacy `AUDIOSTREAMER_RENDEZVOUS_URL`; when both
-   are set, the opensteamer setting wins.
+4. The maintainer iOS Release target already has its rendezvous build setting populated; the
+   Debug target leaves it empty. For a fork, replace the Release value with the intended WSS
+   origin. The Mac host receives
+   `OPENSTEAMER_RENDEZVOUS_URL=wss://your-origin.example` locally.
 5. Never commit Worker/TURN credentials, Apple signing credentials, invitation or activation
    codes, provisioning files, device identifiers, or captured signaling/media. See
    [SECURITY.md](SECURITY.md).
@@ -126,9 +121,9 @@ The authoritative values for the maintainer build are:
 | Side-by-side TestFlight bundle | <code>com.elamin.opensteamer</code>, build `46` |
 | Development team | `MSMG8CJLB3` |
 | Marketing version | `0.1.0` |
-| Release rendezvous | Both `OPENSTEAMER_RENDEZVOUS_URL` and compatibility `AUDIOSTREAMER_RENDEZVOUS_URL` use the production WSS Worker origin declared in [`project.yml`](iOS/opensteamer/project.yml) |
+| Release rendezvous | `OPENSTEAMER_RENDEZVOUS_URL` uses the production WSS Worker origin declared in [`project.yml`](iOS/opensteamer/project.yml) |
 | Debug bundle | <code>org.example.AudioStreamer.dev</code> |
-| Debug rendezvous | Both endpoint settings are empty unless explicitly overridden locally |
+| Debug rendezvous | The endpoint setting is empty unless explicitly overridden locally |
 
 Clients append `/v1/rendezvous` and `/v2/availability` to the configured origin.
 

@@ -120,24 +120,6 @@ extension BrowserView {
         }
     }
 
-    // Compatibility projections for focused tests that predate the unified presentation model.
-    // BrowserView itself renders exclusively from WorldwidePresentation.
-    struct PairedMacPresentation: Equatable {
-        struct Recovery: Equatable {
-            let title: String
-            let message: String
-        }
-
-        let primaryActionTitle: String
-        let recovery: Recovery?
-    }
-
-    enum WorldwideStatusPresentation: Equatable {
-        case savedPairUnavailable(title: String, message: String)
-        case preparationError(String)
-        case mediaError(String)
-    }
-
     /// Selects exactly one Connect-from-Anywhere surface. Status and invitation metadata are
     /// reduced with the same precedence and explicit fresh-attempt retirement boundary.
     static func worldwidePresentation(
@@ -210,89 +192,4 @@ extension BrowserView {
         )
     }
 
-    static func pairedMacPresentation(
-        pairID: UUID,
-        isPairingActive: Bool,
-        savedPairState: SavedPairConnectionState
-    ) -> PairedMacPresentation {
-        let presentation = worldwidePresentation(
-            compatibilityPresentationInput(
-                pairedMac: .init(
-                    pairID: pairID,
-                    displayName: "Mac",
-                    isPairingActive: isPairingActive
-                ),
-                savedPairState: savedPairState
-            )
-        )
-        let recovery: PairedMacPresentation.Recovery?
-        if case .savedPairUnavailable(let title, let message) = presentation.status {
-            recovery = .init(title: title, message: message)
-        } else {
-            recovery = nil
-        }
-        return PairedMacPresentation(
-            primaryActionTitle: presentation.primaryActionTitle,
-            recovery: recovery
-        )
-    }
-
-    static func worldwideStatusPresentation(
-        hasActiveSession: Bool,
-        isPreparingFreshSession: Bool,
-        pairedMacID: UUID?,
-        savedPairState: SavedPairConnectionState,
-        preparationError: String?,
-        mediaError: String?
-    ) -> WorldwideStatusPresentation? {
-        let presentation = worldwidePresentation(
-            compatibilityPresentationInput(
-                hasActiveSession: hasActiveSession,
-                isPreparingFreshSession: isPreparingFreshSession,
-                pairedMac: pairedMacID.map {
-                    .init(pairID: $0, displayName: "Mac", isPairingActive: true)
-                },
-                savedPairState: savedPairState,
-                preparationError: preparationError,
-                mediaError: mediaError
-            )
-        )
-        return switch presentation.status {
-        case .savedPairUnavailable(let title, let message):
-            .savedPairUnavailable(title: title, message: message)
-        case .preparationError(let message):
-            .preparationError(message)
-        case .mediaError(let message):
-            .mediaError(message)
-        case .audioError, nil:
-            nil
-        }
-    }
-
-    private static func compatibilityPresentationInput(
-        hasActiveSession: Bool = false,
-        isPreparingFreshSession: Bool = false,
-        pairedMac: WorldwidePresentation.PairedMac? = nil,
-        savedPairState: SavedPairConnectionState = .idle,
-        preparationError: String? = nil,
-        mediaError: String? = nil
-    ) -> WorldwidePresentationInput {
-        WorldwidePresentationInput(
-            hasActiveSession: hasActiveSession,
-            activeStateText: "Connected",
-            activeAudioStateText: "Playing",
-            canResumeAudioPlayback: false,
-            audioRecoveryButtonTitle: "Resume Audio",
-            isPeerConnected: hasActiveSession,
-            routeText: "Direct",
-            isPreparingFreshSession: isPreparingFreshSession,
-            preparationStateText: "Finding paired Mac",
-            pairedMac: pairedMac,
-            savedPairState: savedPairState,
-            preparationError: preparationError,
-            mediaError: mediaError,
-            audioError: nil,
-            invitationExpiresAt: nil
-        )
-    }
 }

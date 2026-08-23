@@ -48,6 +48,12 @@ function initialize_fixture_repository() {
     "$ROOT_DIR/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
     "$ROOT_DIR/iOS/opensteamer/scripts/restore-archive-only-testflight-scheme.sh" \
     "$repository/iOS/opensteamer/scripts/"
+  # A publishable clone uses a symbolic home component. Rewrite both the guarded release script
+  # and its exact identity oracle together so the fixture remains internally consistent without
+  # disclosing a workstation account name.
+  sed -i '' 's#/Users/ahmed#/Users/${USER}#g' \
+    "$repository/scripts/check-product-identity.sh" \
+    "$repository/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh"
   cp -R \
     "$ROOT_DIR/iOS/opensteamer/opensteamer.xcodeproj" \
     "$repository/iOS/opensteamer/"
@@ -64,6 +70,24 @@ function initialize_fixture_repository() {
   cp \
     "$ROOT_DIR/macOS/Sources/CaptureServer/Info.plist" \
     "$repository/macOS/Sources/CaptureServer/"
+  # Copy the source identity inputs required by the product gate, without importing the frozen
+  # deployment capsules whose machine-bound paths intentionally fail a public-clone audit.
+  mkdir -p \
+    "$repository/macOS/VirtualAudioDriver/Driver" \
+    "$repository/macOS/VirtualAudioDriver/include" \
+    "$repository/macOS/VirtualAudioDriver/scripts"
+  cp \
+    "$ROOT_DIR/macOS/VirtualAudioDriver/Driver/Info.plist" \
+    "$ROOT_DIR/macOS/VirtualAudioDriver/Driver/OpensteamerVirtualMicrophone.c" \
+    "$repository/macOS/VirtualAudioDriver/Driver/"
+  cp \
+    "$ROOT_DIR/macOS/VirtualAudioDriver/include/OpensteamerVirtualAudioCore.h" \
+    "$ROOT_DIR/macOS/VirtualAudioDriver/include/OpensteamerVirtualMicrophoneDriver.h" \
+    "$repository/macOS/VirtualAudioDriver/include/"
+  cp \
+    "$ROOT_DIR/macOS/VirtualAudioDriver/scripts/build-driver.sh" \
+    "$ROOT_DIR/macOS/VirtualAudioDriver/scripts/verify-driver-bundle.sh" \
+    "$repository/macOS/VirtualAudioDriver/scripts/"
   print -r -- 'static let opensteamerPairingService =
     "com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1"' \
     >"$repository/macOS/Sources/CaptureServer/WorldwidePairingStore.swift"
@@ -134,7 +158,7 @@ print -r -- 'export const CHANNEL_HEADER = "x-audiostreamer-channel";' \
   >"$SAFE_REPOSITORY/services/Rendezvous/src/protocol.mjs"
 print -r -- 'let service = "org.example.AudioStreamer"' \
   >"$SAFE_REPOSITORY/iOS/opensteamer/Sources/Security/KeychainStore.swift"
-print -r -- 'let legacy = environment["AUDIOSTREAMER_RENDEZVOUS_URL"]' \
+print -r -- 'let rendezvous = environment["OPENSTEAMER_RENDEZVOUS_URL"]' \
   >"$SAFE_REPOSITORY/macOS/Sources/CaptureServer/CaptureServerOptions.swift"
 print -r -- 'let salt = "AudioStreamer.RemoteSession.HKDF-SHA256.v1"' \
   >"$SAFE_REPOSITORY/shared/Sources/RemoteSessionCore/RemoteSignalingCrypto.swift"
@@ -212,5 +236,18 @@ require_rejection \
   "a blocklisted literal remains in reachable history" \
   env GITLEAKS_BIN="$GITLEAKS" PUBLIC_RELEASE_BLOCKLIST_FILE="$BLOCKLIST" \
   "$HISTORY_REPOSITORY/scripts/audit-public-release.sh" "$HISTORY_REPOSITORY"
+
+HOME_HISTORY_REPOSITORY="$TEMPORARY_ROOT/home-path-history"
+initialize_fixture_repository "$HOME_HISTORY_REPOSITORY"
+print -r -- 'artifact=/Users/alice/private-build/output.log' \
+  >"$HOME_HISTORY_REPOSITORY/fixture.txt"
+commit_fixture "$HOME_HISTORY_REPOSITORY" "Add concrete home-path fixture"
+rm "$HOME_HISTORY_REPOSITORY/fixture.txt"
+commit_fixture "$HOME_HISTORY_REPOSITORY" "Remove concrete home-path fixture"
+require_rejection \
+  "an absolute macOS home path remains in reachable history" \
+  env GITLEAKS_BIN="$GITLEAKS" \
+  "$HOME_HISTORY_REPOSITORY/scripts/audit-public-release.sh" \
+  "$HOME_HISTORY_REPOSITORY"
 
 print -- "public-release audit regression tests passed"

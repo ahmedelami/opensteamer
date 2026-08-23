@@ -510,87 +510,6 @@ final class WorldwideRemoteInputLifecycleTests: XCTestCase {
     }
 
     @MainActor
-    func testPassiveTeardownRevokesQueuedReturnBeforeAsyncHideAndStaysRevokedOnFailure() async {
-        let viewModel = WorldwideSessionViewModel()
-        let oldAuthorization = viewModel.debugInstallQueuedReturnForPassiveTeardown()
-        let before = viewModel.debugRemoteInputState
-        let hideGate = AsyncGate()
-        let hideFinished = expectation(description: "simulated failed Hide finished")
-        let probe = LifecycleProbe()
-        let authenticatedNoOpSender: @MainActor (Bool) async throws -> UInt64 = { _ in
-            XCTFail("The late-acknowledgement cache test must not send a visibility request.")
-            return 74
-        }
-        viewModel.debugInstallScreenVisibilityRequestSender(authenticatedNoOpSender)
-
-        XCTAssertTrue(oldAuthorization.isValid)
-        XCTAssertTrue(before.inputAvailable)
-        XCTAssertEqual(before.queuedActionCount, 1)
-        XCTAssertEqual(before.focusGeneration, 41)
-        XCTAssertTrue(before.acceptsActiveScreenAcknowledgement)
-        XCTAssertTrue(before.remoteHideRequired)
-        XCTAssertFalse(before.hideRequestWouldBeNoOp)
-
-        viewModel.beginPassiveScreenTeardown {
-            probe.hideStarted = true
-            await hideGate.wait()
-            probe.hideFailed = true
-            hideFinished.fulfill()
-        }
-
-        // No actor yield has occurred: revocation and queue clearing must precede the Hide task.
-        let immediatelyAfter = viewModel.debugRemoteInputState
-        XCTAssertFalse(probe.hideStarted)
-        XCTAssertFalse(oldAuthorization.isValid)
-        XCTAssertFalse(immediatelyAfter.capabilityInstalled)
-        XCTAssertFalse(immediatelyAfter.authorizationInstalled)
-        XCTAssertNil(immediatelyAfter.focusGeneration)
-        XCTAssertEqual(immediatelyAfter.queuedActionCount, 0)
-        XCTAssertEqual(immediatelyAfter.pendingActionCount, 0)
-        XCTAssertNotEqual(immediatelyAfter.inputGeneration, before.inputGeneration)
-        XCTAssertNotEqual(
-            immediatelyAfter.screenVisibilityOperationGeneration,
-            before.screenVisibilityOperationGeneration
-        )
-        XCTAssertFalse(immediatelyAfter.inputAvailable)
-        XCTAssertFalse(immediatelyAfter.acceptsActiveScreenAcknowledgement)
-        XCTAssertTrue(immediatelyAfter.remoteHideRequired)
-        XCTAssertFalse(immediatelyAfter.hideRequestWouldBeNoOp)
-
-        // Even when Show has not yet made local visibility true, the remembered remote Hide
-        // requirement must bypass the ordinary false→false visibility fast path.
-        viewModel.debugSimulateLocallyHiddenPendingShow()
-        XCTAssertTrue(viewModel.debugRemoteInputState.remoteHideRequired)
-        XCTAssertFalse(viewModel.debugRemoteInputState.hideRequestWouldBeNoOp)
-
-        let lateAuthorization = await viewModel.debugDeliverLateActiveAcknowledgement()
-        XCTAssertFalse(lateAuthorization.isValid)
-        XCTAssertFalse(viewModel.debugRemoteInputState.capabilityInstalled)
-        XCTAssertFalse(viewModel.debugRemoteInputState.inputAvailable)
-
-        await Task.yield()
-        XCTAssertTrue(probe.hideStarted)
-        await hideGate.open()
-        await fulfillment(of: [hideFinished], timeout: 1)
-
-        // A failed asynchronous Hide cannot restore the old local authorization or queue.
-        let afterFailure = viewModel.debugRemoteInputState
-        XCTAssertTrue(probe.hideFailed)
-        XCTAssertFalse(oldAuthorization.isValid)
-        XCTAssertFalse(afterFailure.capabilityInstalled)
-        XCTAssertFalse(afterFailure.authorizationInstalled)
-        XCTAssertNil(afterFailure.focusGeneration)
-        XCTAssertEqual(afterFailure.queuedActionCount, 0)
-        XCTAssertFalse(afterFailure.inputAvailable)
-        XCTAssertFalse(afterFailure.acceptsActiveScreenAcknowledgement)
-        XCTAssertTrue(afterFailure.remoteHideRequired)
-        XCTAssertFalse(afterFailure.hideRequestWouldBeNoOp)
-
-        viewModel.disconnect()
-        XCTAssertFalse(lateAuthorization.isValid)
-    }
-
-    @MainActor
     func testInitialShowIsAllowedOnlyWhileSceneIsActive() {
         XCTAssertTrue(WorldwideScreenViewerView.allowsScreenPresentation(in: .active))
         XCTAssertFalse(WorldwideScreenViewerView.allowsScreenPresentation(in: .inactive))
@@ -665,9 +584,10 @@ final class WorldwideRemoteInputLifecycleTests: XCTestCase {
     }
 
     @MainActor
-    func testPassiveTeardownDispatchesProductionHideAfterSynchronousRevocation() async {
+    func testPassiveTeardownDispatchesProductionHideAfterSynchronousRevocation() async throws {
         let viewModel = WorldwideSessionViewModel()
         let oldAuthorization = viewModel.debugInstallQueuedReturnForPassiveTeardown()
+        let lease = try XCTUnwrap(viewModel.debugScreenPresentationState.currentLease)
         let hideDispatched = expectation(description: "production Hide dispatched")
         let probe = LifecycleProbe()
         let hideRequestID: UInt64 = 901
@@ -677,9 +597,8 @@ final class WorldwideRemoteInputLifecycleTests: XCTestCase {
             return hideRequestID
         }
 
-        viewModel.beginPassiveScreenTeardown()
+        XCTAssertTrue(viewModel.beginPassiveScreenTeardown(for: lease))
 
-        // This is the production convenience path, not the injectable ordering-only overload.
         // Revocation remains synchronous even though its real visibility send has not run yet.
         XCTAssertFalse(oldAuthorization.isValid)
         XCTAssertFalse(viewModel.debugRemoteInputState.inputAvailable)
@@ -857,31 +776,7 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
 /// Synchronous completion counter used where an actor hop would alter the ordering under test.
 @MainActor
 private final class LifecycleProbe {
-    var hideStarted = false
-    var hideFailed = false
     var visibilityRequests: [Bool] = []
-}
-
-private actor AsyncGate {
-    private var isOpen = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    func wait() async {
-        guard !isOpen else { return }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
-        }
-    }
-
-    func open() {
-        guard !isOpen else { return }
-        isOpen = true
-        let currentWaiters = waiters
-        waiters.removeAll(keepingCapacity: false)
-        for waiter in currentWaiters {
-            waiter.resume()
-        }
-    }
 }
 
 /// Checked continuations intentionally do not observe task cancellation. This models the exact

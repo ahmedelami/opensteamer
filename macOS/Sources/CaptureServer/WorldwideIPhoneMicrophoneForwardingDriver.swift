@@ -847,7 +847,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             monitorEpoch: activeMonitorEpoch,
             deviceGeneration:
                 monitorSnapshot?.deviceGeneration ?? 0,
-            deviceUID: monitorSnapshot?.deviceUID,
+            deviceUID:
+                monitorSnapshot?.defaultInputEndpoint?.deviceUID,
             sinkDeviceUID:
                 monitorSnapshot?.hiddenMirrorSinkEndpoint?.deviceUID,
             deviceAvailable:
@@ -1190,7 +1191,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
               monitorSnapshot.monitorEpoch == activeMonitorEpoch,
               monitorSnapshot.isAvailable,
               monitorSnapshot.deviceGeneration > 0,
-              let defaultInputDeviceUID = monitorSnapshot.deviceUID,
+              let defaultInputDeviceUID = monitorSnapshot
+                .defaultInputEndpoint?.deviceUID,
               !defaultInputDeviceUID.isEmpty,
               let defaultInputEndpoint = monitorSnapshot
                 .defaultInputEndpoint,
@@ -1606,7 +1608,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             return
         }
         guard monitorSnapshot.isAvailable,
-              monitorSnapshot.deviceUID != nil,
+              monitorSnapshot.defaultInputEndpoint != nil,
               monitorSnapshot.hiddenMirrorSinkEndpoint != nil else {
             phase = .waitingForDevice
             return
@@ -2135,7 +2137,6 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
 
         monitorSnapshot = snapshot
         if !snapshot.isAvailable
-            || snapshot.deviceUID == nil
             || snapshot.defaultInputEndpoint == nil
             || snapshot.hiddenMirrorSinkEndpoint == nil {
             resetAcquisitionAttempts()
@@ -2349,7 +2350,7 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
               let deviceEndpoint =
                 monitorSnapshot.defaultInputEndpoint,
               !deviceEndpoint.deviceUID.isEmpty,
-              monitorSnapshot.deviceUID
+              monitorSnapshot.defaultInputEndpoint?.deviceUID
                 == deviceEndpoint.deviceUID,
               monitorSnapshot.hiddenMirrorSinkEndpoint != nil else {
             return .waitingForDevice

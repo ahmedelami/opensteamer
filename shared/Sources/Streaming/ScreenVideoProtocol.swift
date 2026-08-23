@@ -113,12 +113,6 @@ public struct ScreenVideoConfiguration: Sendable, Equatable {
     }
 }
 
-/// Incremental parser output: protocol readiness followed by complete packets.
-public enum ScreenVideoStreamEvent: Sendable, Equatable {
-    case ready(ScreenVideoPreamble)
-    case packet(ScreenVideoPacket)
-}
-
 /// Encodes and validates preambles, packet envelopes, and H.264 decoder configuration.
 public enum ScreenVideoFraming {
     /// Creates the fixed-width stream preamble for the current protocol version.
@@ -328,50 +322,6 @@ public enum ScreenVideoFraming {
             bitrate: bitrate,
             parameterSets: parameterSets
         )
-    }
-}
-
-/// Reassembles a byte stream into a preamble and complete screen-video packets.
-///
-/// Callers must serialize access; `@unchecked Sendable` permits ownership by a session that does
-/// that serialization rather than making individual parser calls internally synchronized.
-public final class ScreenVideoStreamParser: @unchecked Sendable {
-    private var buffer = Data()
-    private var expectsPreamble = true
-
-    public init() {}
-
-    /// Appends bytes without assuming transport reads align to packet boundaries.
-    public func append(_ data: Data) {
-        buffer.append(data)
-    }
-
-    /// Returns the next complete event, or `nil` when more bytes are required.
-    public func nextEvent() throws -> ScreenVideoStreamEvent? {
-        if expectsPreamble {
-            guard buffer.count >= ScreenVideoProtocol.preambleByteCount else { return nil }
-            let preambleData = Data(buffer.prefix(ScreenVideoProtocol.preambleByteCount))
-            let preamble = try ScreenVideoFraming.parsePreamble(preambleData)
-            buffer.removeFirst(ScreenVideoProtocol.preambleByteCount)
-            expectsPreamble = false
-            return .ready(preamble)
-        }
-
-        guard buffer.count >= ScreenVideoProtocol.packetHeaderByteCount else { return nil }
-        let headerData = Data(buffer.prefix(ScreenVideoProtocol.packetHeaderByteCount))
-        let header = try ScreenVideoFraming.parsePacketHeader(headerData)
-        let packetByteCount = ScreenVideoProtocol.packetHeaderByteCount + Int(header.payloadByteCount)
-        guard buffer.count >= packetByteCount else { return nil }
-
-        let packetData = Data(buffer.prefix(packetByteCount))
-        buffer.removeFirst(packetByteCount)
-        return .packet(try ScreenVideoFraming.parsePacket(packetData))
-    }
-
-    /// Discards buffered bytes and requires a fresh protocol preamble.
-    public func reset() {
-        buffer.removeAll(keepingCapacity: true)
-        expectsPreamble = true
     }
 }
 

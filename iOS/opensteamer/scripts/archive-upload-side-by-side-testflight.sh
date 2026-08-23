@@ -91,7 +91,6 @@ readonly EXPECTED_PACKAGE_RESOLVED_SHA256="161213e9507513e41f0acba0d7439fcf633b9
 readonly EXPECTED_APPLICATION_IDENTIFIER="${EXPECTED_TEAM_ID}.${EXPECTED_BUNDLE_IDENTIFIER}"
 readonly PROTECTED_APPLICATION_IDENTIFIER="${EXPECTED_TEAM_ID}.${PROTECTED_BUNDLE_IDENTIFIER}"
 readonly -a REJECTED_BUILD_ENVIRONMENT_VARIABLES=(
-  AUDIOSTREAMER_RENDEZVOUS_URL
   BUILD_DIR
   BUILT_PRODUCTS_DIR
   BUILD_ROOT
@@ -549,12 +548,6 @@ function archive_info_without_distributions_sha256() {
   digest=$(string_vector_sha256 "${semantic_fields[@]}") || return 1
   [[ "${#digest}" == 64 ]] || return 1
   print -r -- "${digest}"
-}
-
-function rewind_held_regular_fd() {
-  local -i held_fd=$1
-  (( held_fd >= 0 )) && [[ -e "/dev/fd/${held_fd}" ]] || return 1
-  sysseek -u ${held_fd} -w start 0 >/dev/null 2>&1
 }
 
 function filesystem_tree_manifest_stream() {
@@ -2378,9 +2371,6 @@ function verify_effective_archive_build_roots() {
               == 'Apple Development' ) \
           && "$(build_settings_entry_value \
             "${destination}" "${entry_index}" OPENSTEAMER_RENDEZVOUS_URL)" \
-            == "${EXPECTED_RENDEZVOUS_URL}" \
-          && "$(build_settings_entry_value \
-            "${destination}" "${entry_index}" AUDIOSTREAMER_RENDEZVOUS_URL)" \
             == "${EXPECTED_RENDEZVOUS_URL}" ]] || return 1
     fi
   done
@@ -3421,9 +3411,6 @@ function verify_archive_contents_at_path() {
   require_exact_plist_value \
     "${app_info}" OpensteamerRendezvousURL "${EXPECTED_RENDEZVOUS_URL}" \
     "archived app rendezvous endpoint"
-  require_exact_plist_value \
-    "${app_info}" AudioStreamerRendezvousURL "${EXPECTED_RENDEZVOUS_URL}" \
-    "archived app compatibility rendezvous endpoint"
 
   /usr/bin/codesign --verify --deep --strict --verbose=4 "${app_path}" \
     >/dev/null 2>&1 || fail "archived app signature integrity verification failed"

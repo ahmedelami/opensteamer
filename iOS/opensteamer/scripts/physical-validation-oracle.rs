@@ -57,7 +57,6 @@ fn usage() -> &'static str {
        validate-payload-id PAYLOAD_ID\n\
        probe-supervise DIAGNOSTIC COMPLETION UID LIMIT NONCE START_NS PID REPORTED|- MODE END_OFFSET|- -- COMMAND [ARG ...]\n\
        scan-no-bytes ROOT NEEDLE\n\
-       unix-ns\n\
        monotonic-ns\n\
        parse-completion PATH EXPECTED_NONCE EXPECTED_START_NS EXPECTED_PID\n\
        validate-overlap REQUEST READINESS UI START COMPLETION OBSERVATION WAIT WRAPPER RESULT NONCE REQUESTED_NS RESUMED_NS UI_COMPLETION UI_CAUSAL_STATE|- BOUNDS_OUT PROBE_OUT VERDICT_OUT NOW_NS CONTINUITY\n\
@@ -85,7 +84,6 @@ fn main() {
         "validate-payload-id" => command_validate_payload_id(&remaining),
         "probe-supervise" => command_probe_supervise(&remaining),
         "scan-no-bytes" => command_scan_no_bytes(&remaining),
-        "unix-ns" => command_unix_ns(&remaining),
         "monotonic-ns" => command_monotonic_ns(&remaining),
         "parse-completion" => command_parse_completion(&remaining),
         "validate-overlap" => command_validate_overlap(&remaining),
@@ -316,15 +314,6 @@ fn write_tone(path: &Path, duration: u64) -> io::Result<()> {
         file.write_all(&one_second)?;
     }
     file.sync_all()
-}
-
-fn command_unix_ns(args: &[OsString]) -> Result<(), i32> {
-    exact_args(args, 0)?;
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| 1)?;
-    println!("{}", duration.as_nanos());
-    Ok(())
 }
 
 fn monotonic_ns() -> Result<u64, i32> {

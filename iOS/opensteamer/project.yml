@@ -45,9 +45,6 @@ targets:
         SWIFT_VERSION: 6.0
         # Development builds remain endpoint-free unless explicitly overridden.
         OPENSTEAMER_RENDEZVOUS_URL: ""
-        # Keep the pre-rebrand Info.plist input available in development without changing its
-        # compatibility role; Release supplies the same production origin to both inputs.
-        AUDIOSTREAMER_RENDEZVOUS_URL: ""
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:
         Debug:
@@ -64,7 +61,6 @@ targets:
           CURRENT_PROJECT_VERSION: 36
           CODE_SIGN_STYLE: Automatic
           OPENSTEAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
-          AUDIOSTREAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
         TestFlight:
           # This identity must remain distinct from the protected production app so installing a
           # TestFlight build cannot replace its app container or binary.
@@ -73,7 +69,6 @@ targets:
           CURRENT_PROJECT_VERSION: 46
           CODE_SIGN_STYLE: Automatic
           OPENSTEAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
-          AUDIOSTREAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
     scheme:
       testTargets:
         - opensteamerTests
