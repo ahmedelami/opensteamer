@@ -45,6 +45,7 @@ let package = Package(
                 "Server",
                 "Streaming",
                 "Utilities",
+                "VirtualDisplayCore",
                 "WebRTCTransport"
             ],
             path: "macOS/Sources/CaptureServer",
@@ -100,6 +101,20 @@ let package = Package(
         .target(
             name: "Utilities",
             path: "shared/Sources/Utilities"
+        ),
+        .target(
+            name: "VirtualDisplayPrivate",
+            path: "macOS/Sources/VirtualDisplayPrivate",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("CoreGraphics"),
+                .linkedFramework("Foundation")
+            ]
+        ),
+        .target(
+            name: "VirtualDisplayCore",
+            dependencies: ["VirtualDisplayPrivate"],
+            path: "macOS/Sources/VirtualDisplayCore"
         ),
         .target(
             name: "WebRTCTransport",
@@ -182,6 +197,11 @@ let package = Package(
             name: "CaptureServerTests",
             dependencies: ["CaptureServer"],
             path: "macOS/Tests/CaptureServerTests"
+        ),
+        .testTarget(
+            name: "VirtualDisplayCoreTests",
+            dependencies: ["VirtualDisplayCore"],
+            path: "macOS/Tests/VirtualDisplayCoreTests"
         ),
         .testTarget(
             name: "StreamingTests",

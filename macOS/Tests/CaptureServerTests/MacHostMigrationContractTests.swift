@@ -112,7 +112,7 @@ final class MacHostMigrationContractTests: XCTestCase {
         )
         XCTAssertTrue(
             source.contains(
-                "EXPECTED_CONTROLLER_BINARY_SHA256='6214dbcf6c5aadcb5b4a5b9240c59f900ac45ee42e3c73bd1a7f0e223a3961fa'"
+                "EXPECTED_CONTROLLER_BINARY_SHA256='d9a32468966eac830ffd6b0453b6f9282fc7d010919dc4f414d20f1af8542770'"
             )
         )
         XCTAssertTrue(source.contains("fresh controller binary differs from the reviewed reproducible postimage"))
@@ -123,6 +123,7 @@ final class MacHostMigrationContractTests: XCTestCase {
         XCTAssertTrue(source.contains("copy_companion_script"))
         XCTAssertTrue(source.contains("verify_private_companion_script"))
         XCTAssertTrue(source.contains("EXPECTED_BUILD_SCRIPT_SHA256"))
+        XCTAssertTrue(source.contains("EXPECTED_PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER_SHA256"))
         XCTAssertTrue(source.contains("EXPECTED_DEPLOYMENT_VERIFIER_SHA256"))
         XCTAssertTrue(
             source.contains(
@@ -162,6 +163,70 @@ final class MacHostMigrationContractTests: XCTestCase {
             arguments: ["-n", launcher.path]
         )
         XCTAssertEqual(syntax.status, 0, syntax.diagnostic)
+    }
+
+    func testPrivateVirtualDisplayImportVerifierIsInsideMigrationTrustBoundary() throws {
+        let launcher = repositoryRoot.appendingPathComponent(
+            "macOS/scripts/migrate-opensteamer-host.sh"
+        )
+        let controller = repositoryRoot.appendingPathComponent(
+            "macOS/scripts/opensteamer-host-migration-controller.rs"
+        )
+        let buildScript = repositoryRoot.appendingPathComponent(
+            "macOS/scripts/build-opensteamer-host-app.sh"
+        )
+        let verifier = repositoryRoot.appendingPathComponent(
+            "macOS/scripts/verify-no-private-virtual-display-imports.sh"
+        )
+        let launcherSource = try String(contentsOf: launcher, encoding: .utf8)
+        let controllerSource = try String(contentsOf: controller, encoding: .utf8)
+        let buildSource = try String(contentsOf: buildScript, encoding: .utf8)
+
+        let verifierHashResult = try run(
+            executable: URL(fileURLWithPath: "/usr/bin/shasum"),
+            arguments: ["-a", "256", verifier.path]
+        )
+        XCTAssertEqual(verifierHashResult.status, 0, verifierHashResult.diagnostic)
+        let verifierHash = try XCTUnwrap(
+            verifierHashResult.standardOutput.split(whereSeparator: \.isWhitespace).first.map(String.init)
+        )
+        XCTAssertTrue(
+            launcherSource.contains(
+                "EXPECTED_PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER_SHA256='\(verifierHash)'"
+            ),
+            "Launcher private-import verifier attestation is stale."
+        )
+        XCTAssertTrue(
+            controllerSource.contains(
+                "include_bytes!(\"verify-no-private-virtual-display-imports.sh\")"
+            )
+        )
+        XCTAssertTrue(controllerSource.contains(verifierHash))
+        XCTAssertTrue(controllerSource.contains("private_virtual_display_import: PinnedScript"))
+        XCTAssertTrue(
+            controllerSource.contains(
+                "OPENSTEAMER_PINNED_PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER_SCRIPT"
+            )
+        )
+        XCTAssertTrue(
+            buildSource.contains(
+                "OPENSTEAMER_PINNED_PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER_SCRIPT"
+            )
+        )
+        XCTAssertTrue(buildSource.contains("run_private_virtual_display_import_verifier"))
+
+        let buildHashResult = try run(
+            executable: URL(fileURLWithPath: "/usr/bin/shasum"),
+            arguments: ["-a", "256", buildScript.path]
+        )
+        XCTAssertEqual(buildHashResult.status, 0, buildHashResult.diagnostic)
+        let buildHash = try XCTUnwrap(
+            buildHashResult.standardOutput.split(whereSeparator: \.isWhitespace).first.map(String.init)
+        )
+        XCTAssertTrue(
+            launcherSource.contains("EXPECTED_BUILD_SCRIPT_SHA256='\(buildHash)'")
+        )
+        XCTAssertTrue(controllerSource.contains(buildHash))
     }
 
     func testPostV20UpdaterHasPinnedCrashRecoverableJournalAndSafeSelfTest() throws {
@@ -2278,6 +2343,7 @@ final class MacHostMigrationContractTests: XCTestCase {
             "macOS/scripts/opensteamer-host-migration-controller.rs",
             "macOS/scripts/build-opensteamer-host-app.sh",
             "macOS/scripts/verify-mac-host-bundle.sh",
+            "macOS/scripts/verify-no-private-virtual-display-imports.sh",
             "macOS/scripts/verify-mac-host-launch-state.sh",
             "macOS/scripts/verify-mac-host-deployment.sh",
             "macOS/scripts/verify-live-mac-host-process.sh",
@@ -2702,6 +2768,7 @@ final class MacHostMigrationContractTests: XCTestCase {
             "run_pinned_script_until",
             "verify_deployment_with_prefix_until",
             "include_bytes!(\"verify-mac-host-deployment.sh\")",
+            "include_bytes!(\"verify-no-private-virtual-display-imports.sh\")",
             "verify_embedded_verifier_hashes",
             "--self-test-zsh-runtime",
             "deployment zsh-runtime self-test",
@@ -3978,6 +4045,7 @@ final class MacHostMigrationContractTests: XCTestCase {
         let zshScripts = [
             "macOS/scripts/build-opensteamer-host-app.sh",
             "macOS/scripts/verify-mac-host-bundle.sh",
+            "macOS/scripts/verify-no-private-virtual-display-imports.sh",
             "macOS/scripts/verify-mac-host-launch-state.sh",
             "macOS/scripts/verify-mac-host-deployment.sh",
             "macOS/scripts/verify-live-mac-host-process.sh",

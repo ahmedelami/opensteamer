@@ -23,6 +23,29 @@ public protocol ScreenVideoSampleConsumer: AnyObject, Sendable {
     )
 }
 
+/// Bounds one native screen-capture lifecycle call without changing its error semantics.
+///
+/// The watchdog is supplied by the executable only while it owns the private virtual display.
+/// A normal or promptly failed native call cancels and drains that watchdog before returning.
+enum ScreenCaptureLifecycleWatchdog {
+    static func perform<T>(
+        makeWatchdog: @Sendable () -> Task<Void, Never>?,
+        operation: () async throws -> T
+    ) async throws -> T {
+        let watchdog = makeWatchdog()
+        do {
+            let result = try await operation()
+            watchdog?.cancel()
+            await watchdog?.value
+            return result
+        } catch {
+            watchdog?.cancel()
+            await watchdog?.value
+            throw error
+        }
+    }
+}
+
 /// Owns a video-only ScreenCaptureKit stream for the selected display.
 ///
 /// `stateLock` protects stream identity and start/stop cancellation across Swift
@@ -30,9 +53,11 @@ public protocol ScreenVideoSampleConsumer: AnyObject, Sendable {
 /// `await`; framework samples are delivered on the dedicated `sampleQueue`.
 public final class ScreenVideoCaptureSource: @unchecked Sendable {
     private let displayID: UInt32?
+    private let displayRequirement: ScreenVideoDisplayRequirement?
     private let maximumWidth: Int
     private let framesPerSecond: Int
     private let consumer: ScreenVideoSampleConsumer
+    private let makeStopWatchdog: @Sendable () -> Task<Void, Never>?
     private let logger: Logger
     private let sampleQueue = DispatchQueue(label: "opensteamer.ScreenVideoCapture")
     private let stateLock = NSLock()
@@ -41,6 +66,8 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
     private var isStarting = false
     private var cancellationRequested = false
     private var isStopping = false
+    private var startCompletionWaiters: [CheckedContinuation<Void, Never>] = []
+    private var stopCompletionWaiters: [CheckedContinuation<Void, Never>] = []
     private lazy var streamDelegate = ScreenVideoStreamDelegate { [weak self] stream, message in
         self?.handleUnexpectedStop(of: stream, errorDescription: message)
     }
@@ -48,15 +75,19 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
     /// Creates a source with an aspect-preserving width cap and target cadence.
     public init(
         displayID: UInt32?,
+        displayRequirement: ScreenVideoDisplayRequirement? = nil,
         maximumWidth: Int,
         framesPerSecond: Int,
         consumer: ScreenVideoSampleConsumer,
+        makeStopWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
         logger: Logger
     ) {
         self.displayID = displayID
+        self.displayRequirement = displayRequirement
         self.maximumWidth = maximumWidth
         self.framesPerSecond = framesPerSecond
         self.consumer = consumer
+        self.makeStopWatchdog = makeStopWatchdog
         self.logger = logger
     }
 
@@ -67,15 +98,25 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
     /// A concurrent `stop()` latches cancellation and prevents a partially started
     /// stream from becoming visible to the rest of the session.
     public func start() async throws -> ScreenVideoCaptureFormat {
+        try await ScreenCaptureLifecycleWatchdog.perform(
+            makeWatchdog: makeStopWatchdog,
+            operation: {
+                try await self.startWithoutStartupWatchdog()
+            }
+        )
+    }
+
+    /// Runs one complete startup transaction under the caller's already-armed watchdog.
+    private func startWithoutStartupWatchdog() async throws -> ScreenVideoCaptureFormat {
         guard stateLock.withLock({ () -> Bool in
-            guard self.stream == nil, !isStarting else { return false }
+            guard self.stream == nil, !isStarting, !isStopping else { return false }
             isStarting = true
             cancellationRequested = false
-            isStopping = false
             return true
         }) else {
             throw ScreenVideoCaptureError.alreadyRunning
         }
+        defer { finishStarting() }
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(
                 false,
@@ -83,7 +124,12 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
             )
             try ensureStartWasNotCancelled()
             let display = try selectDisplay(from: content.displays)
-            let dimensions = outputDimensions(for: display)
+            try validateDisplayRequirement(for: display.displayID)
+            let sourceDimensions = try activeSourceDimensions(for: display)
+            let dimensions = try ScreenVideoOutputPolicy.outputDimensions(
+                source: sourceDimensions,
+                maximumWidth: maximumWidth
+            )
             let format = ScreenVideoCaptureFormat(
                 displayID: display.displayID,
                 width: dimensions.width,
@@ -118,7 +164,6 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
             try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: sampleQueue)
             let installed = stateLock.withLock { () -> Bool in
                 guard !cancellationRequested else {
-                    isStarting = false
                     return false
                 }
                 self.output = output
@@ -126,6 +171,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
                 return true
             }
             guard installed else {
+                output.revoke()
                 try? stream.removeStreamOutput(output, type: .screen)
                 throw ScreenVideoCaptureError.startCancelled
             }
@@ -138,60 +184,228 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
                 try ensureStartWasNotCancelled()
                 try await stream.startCapture()
             } catch {
-                stateLock.withLock {
-                    if self.stream === stream {
-                        self.stream = nil
-                        self.output = nil
-                    }
-                    isStarting = false
+                try await recoverFromFailedStart(
+                    stream: stream,
+                    output: output,
+                    startError: error
+                )
+            }
+
+            do {
+                try ensureStartWasNotCancelled()
+                try validateDisplayRequirement(for: display.displayID)
+                let postStartSourceDimensions = try activeSourceDimensions(for: display)
+                guard ScreenVideoSourceDimensionPolicy.isStableAcrossStart(
+                    before: sourceDimensions,
+                    after: postStartSourceDimensions
+                ) else {
+                    throw ScreenVideoCaptureError.displayModeChangedDuringStart(
+                        display.displayID
+                    )
                 }
-                try? stream.removeStreamOutput(output, type: .screen)
-                throw error
+            } catch {
+                let validationError = error
+                let ownsStop = stateLock.withLock { () -> Bool in
+                    guard self.stream === stream, !isStopping else { return false }
+                    isStopping = true
+                    return true
+                }
+                if ownsStop {
+                    do {
+                        try await self.stopOwnedStreamWithoutWatchdog(
+                            stream,
+                            output: output
+                        )
+                    } catch {
+                        // Keep the only native teardown handle attached after a failed stop so
+                        // an explicit stop() can retry it.
+                        throw error
+                    }
+                }
+                throw validationError
             }
 
             let cancelledAfterStart = stateLock.withLock { () -> Bool in
-                isStarting = false
-                return cancellationRequested || self.stream !== stream
+                cancellationRequested || self.stream !== stream
             }
             guard !cancelledAfterStart else {
-                try? await stream.stopCapture()
-                stateLock.withLock {
-                    if self.stream === stream {
-                        self.stream = nil
-                        self.output = nil
-                    }
-                }
-                try? stream.removeStreamOutput(output, type: .screen)
+                // A concurrent stop owns teardown and is waiting for startup to leave this
+                // method. Retain native ownership so it can stop the exact stream once.
                 throw ScreenVideoCaptureError.startCancelled
             }
             return format
         } catch {
-            stateLock.withLock {
-                isStarting = false
-            }
             throw error
         }
     }
 
-    /// Detaches and stops the currently owned stream; repeated calls are harmless.
+    /// Stops the currently owned native stream exactly once.
+    ///
+    /// A stop requested during startup latches cancellation and waits for startup to finish.
+    /// A concurrent stop joins the owning native stop, then retries only if that owner retained
+    /// the stream after failure. No caller can report success while teardown remains in flight.
     public func stop() async throws {
-        let stopped = stateLock.withLock { () -> (SCStream, ScreenVideoStreamOutput?)? in
+        let ownsStop = stateLock.withLock { () -> Bool in
             cancellationRequested = true
+            guard !isStopping else { return false }
             isStopping = true
-            guard let stream else { return nil }
-            let output = self.output
-            self.stream = nil
-            self.output = nil
-            return (stream, output)
+            return true
         }
-        guard let (stream, output) = stopped else { return }
+        guard ownsStop else {
+            await waitForStopToFinish()
+            return try await stop()
+        }
+
+        try await ScreenCaptureLifecycleWatchdog.perform(
+            makeWatchdog: makeStopWatchdog,
+            operation: {
+                await self.waitForStartToFinish()
+                let ownedStream = self.stateLock.withLock {
+                    self.stream.map { ($0, self.output) }
+                }
+                guard let (stream, output) = ownedStream else {
+                    self.finishStopping()
+                    return
+                }
+                try await self.stopOwnedStreamWithoutWatchdog(stream, output: output)
+            }
+        )
+    }
+
+    /// Revokes sample delivery, then releases native ownership only after stop confirmation.
+    /// The owning caller must already have armed its full-attempt watchdog.
+    private func stopOwnedStreamWithoutWatchdog(
+        _ stream: SCStream,
+        output: ScreenVideoStreamOutput?
+    ) async throws {
         logger.info("Stopping screen video capture")
-        defer {
-            if let output {
-                try? stream.removeStreamOutput(output, type: .screen)
+        let outputWasRemoved: Bool
+        if let output {
+            output.revoke()
+            do {
+                try stream.removeStreamOutput(output, type: .screen)
+                outputWasRemoved = true
+                stateLock.withLock {
+                    if self.stream === stream, self.output === output {
+                        self.output = nil
+                    }
+                }
+            } catch {
+                outputWasRemoved = false
+            }
+        } else {
+            outputWasRemoved = true
+        }
+
+        defer { finishStopping() }
+        do {
+            try await stream.stopCapture()
+        } catch {
+            // Keep the SCStream and any output registration that could not be revoked. Clearing
+            // `isStopping` in the defer makes this exact stream retryable.
+            throw error
+        }
+
+        stateLock.withLock {
+            if self.stream === stream {
+                self.stream = nil
+                self.output = nil
             }
         }
-        try await stream.stopCapture()
+        if !outputWasRemoved, let output {
+            try? stream.removeStreamOutput(output, type: .screen)
+        }
+    }
+
+    /// Treats a prompt native start error as a potentially partial start. Two teardown attempts
+    /// are permitted while the enclosing startup watchdog remains armed; repeated failure keeps
+    /// the exact stream attached for the service-level stop/quarantine path.
+    private func recoverFromFailedStart(
+        stream: SCStream,
+        output: ScreenVideoStreamOutput,
+        startError: Error
+    ) async throws -> Never {
+        var stopFailureDescriptions: [String] = []
+        for _ in 0..<2 {
+            let ownsStop = stateLock.withLock { () -> Bool in
+                guard self.stream === stream, !isStopping else { return false }
+                isStopping = true
+                return true
+            }
+            guard ownsStop else {
+                // A concurrent stop already owns the installed stream and will run as soon as
+                // this startup transaction leaves its `defer`.
+                throw startError
+            }
+
+            var didStop = false
+            do {
+                try await stopOwnedStreamWithoutWatchdog(stream, output: output)
+                didStop = true
+            } catch {
+                if stateLock.withLock({ self.stream == nil }) {
+                    throw startError
+                }
+                stopFailureDescriptions.append(error.localizedDescription)
+            }
+            if didStop {
+                throw startError
+            }
+        }
+        throw ScreenVideoCaptureError.nativeStopUnconfirmed(
+            stopFailureDescriptions.joined(separator: "; ")
+        )
+    }
+
+    /// Suspends a stop owner until startup can no longer install a native stream.
+    private func waitForStartToFinish() async {
+        await withCheckedContinuation { continuation in
+            let shouldResume = stateLock.withLock { () -> Bool in
+                guard isStarting else { return true }
+                startCompletionWaiters.append(continuation)
+                return false
+            }
+            if shouldResume {
+                continuation.resume()
+            }
+        }
+    }
+
+    /// Joins the exact in-progress native stop without issuing a duplicate framework call.
+    private func waitForStopToFinish() async {
+        await withCheckedContinuation { continuation in
+            let shouldResume = stateLock.withLock { () -> Bool in
+                guard isStopping else { return true }
+                stopCompletionWaiters.append(continuation)
+                return false
+            }
+            if shouldResume {
+                continuation.resume()
+            }
+        }
+    }
+
+    /// Clears start ownership and resumes every waiting stop owner outside the lock.
+    private func finishStarting() {
+        let waiters = stateLock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            guard isStarting else { return [] }
+            isStarting = false
+            let waiters = startCompletionWaiters
+            startCompletionWaiters.removeAll(keepingCapacity: false)
+            return waiters
+        }
+        waiters.forEach { $0.resume() }
+    }
+
+    /// Releases stop ownership so a retained stream can be retried after failure.
+    private func finishStopping() {
+        let waiters = stateLock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            isStopping = false
+            let waiters = stopCompletionWaiters
+            stopCompletionWaiters.removeAll(keepingCapacity: false)
+            return waiters
+        }
+        waiters.forEach { $0.resume() }
     }
 
     /// Checks the cancellation latch after asynchronous startup boundaries.
@@ -203,14 +417,15 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
 
     /// Reports only a failure belonging to the current, non-stopping stream.
     private func handleUnexpectedStop(of stoppedStream: SCStream, errorDescription: String) {
-        let shouldReport = stateLock.withLock { () -> Bool in
-            guard !isStopping, stream === stoppedStream else { return false }
+        let transition = stateLock.withLock { () -> (Bool, ScreenVideoStreamOutput?) in
+            guard !isStopping, stream === stoppedStream else { return (false, nil) }
+            let retiredOutput = output
             stream = nil
             output = nil
-            isStarting = false
-            return true
+            return (true, retiredOutput)
         }
-        guard shouldReport else { return }
+        transition.1?.revoke()
+        guard transition.0 else { return }
         consumer.screenVideoCaptureSource(
             self,
             didStopWithErrorDescription: errorDescription
@@ -233,15 +448,70 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
         return displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? displays[0]
     }
 
-    /// Scales within the width cap and rounds both dimensions down for H.264 chroma planes.
-    private func outputDimensions(for display: SCDisplay) -> (width: Int, height: Int) {
-        let cappedWidth = min(display.width, maximumWidth)
-        let width = max(2, cappedWidth - cappedWidth % 2)
-        let scaledHeight = Int(
-            (Double(display.height) * Double(width) / Double(display.width)).rounded()
+    /// Re-proves an owned display's identity and topology around every native capture start.
+    private func validateDisplayRequirement(for selectedDisplayID: UInt32) throws {
+        guard let displayRequirement else { return }
+        guard displayID == selectedDisplayID else {
+            throw ScreenVideoCaptureError.displayIdentityMismatch(selectedDisplayID)
+        }
+
+        // Two slots are sufficient to disprove the required sole-display topology and avoid a
+        // count/allocation race if a physical display appears during this snapshot.
+        var onlineDisplayIDs = [CGDirectDisplayID](
+            repeating: kCGNullDirectDisplay,
+            count: 2
         )
-        let height = max(2, scaledHeight - scaledHeight % 2)
-        return (width, height)
+        var onlineDisplayCount: UInt32 = 0
+        guard CGGetOnlineDisplayList(
+            UInt32(onlineDisplayIDs.count),
+            &onlineDisplayIDs,
+            &onlineDisplayCount
+        ) == .success else {
+            throw ScreenVideoCaptureError.displayIdentityMismatch(selectedDisplayID)
+        }
+        onlineDisplayIDs.removeSubrange(
+            min(Int(onlineDisplayCount), onlineDisplayIDs.count)..<onlineDisplayIDs.count
+        )
+
+        let snapshot = ScreenVideoDisplaySnapshot(
+            displayID: selectedDisplayID,
+            vendorID: CGDisplayVendorNumber(selectedDisplayID),
+            productID: CGDisplayModelNumber(selectedDisplayID),
+            serialNumber: CGDisplaySerialNumber(selectedDisplayID),
+            isOnline: CGDisplayIsOnline(selectedDisplayID) != 0,
+            isActive: CGDisplayIsActive(selectedDisplayID) != 0,
+            mainDisplayID: CGMainDisplayID(),
+            onlineDisplayIDs: onlineDisplayIDs
+        )
+        guard ScreenVideoDisplayRequirementPolicy.isSatisfied(
+            displayRequirement,
+            by: snapshot
+        ) else {
+            throw ScreenVideoCaptureError.displayIdentityMismatch(selectedDisplayID)
+        }
+    }
+
+    /// Preserves ScreenCaptureKit's established logical sizing for ordinary displays while
+    /// OpenSteamer virtual displays stream the active Retina framebuffer at full resolution.
+    private func activeSourceDimensions(
+        for display: SCDisplay
+    ) throws -> ScreenVideoPixelDimensions {
+        let dimensionKind = ScreenVideoSourceDimensionPolicy.dimensionKind(
+            vendorID: CGDisplayVendorNumber(display.displayID),
+            productID: CGDisplayModelNumber(display.displayID)
+        )
+        guard dimensionKind == .framebufferPixels else {
+            return ScreenVideoPixelDimensions(width: display.width, height: display.height)
+        }
+
+        guard let mode = CGDisplayCopyDisplayMode(display.displayID),
+              mode.pixelWidth >= 2, mode.pixelHeight >= 2 else {
+            throw ScreenVideoCaptureError.displayModeUnavailable(display.displayID)
+        }
+        return ScreenVideoPixelDimensions(
+            width: mode.pixelWidth,
+            height: mode.pixelHeight
+        )
     }
 }
 
@@ -261,9 +531,16 @@ private final class ScreenVideoStreamDelegate: NSObject, SCStreamDelegate, @unch
 /// Rejects incomplete ScreenCaptureKit frames before invoking the session consumer.
 private final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
     private let consumer: ScreenVideoSampleConsumer
+    private let lock = NSLock()
+    private var isForwarding = true
 
     init(consumer: ScreenVideoSampleConsumer) {
         self.consumer = consumer
+    }
+
+    /// Permanently closes this capture generation and waits for an admitted callback to return.
+    func revoke() {
+        lock.withLock { isForwarding = false }
     }
 
     /// Forwards only ready screen samples whose frame status is `.complete`.
@@ -284,7 +561,10 @@ private final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
               SCFrameStatus(rawValue: statusRawValue) == .complete else {
             return
         }
-        consumer.consumeScreenVideoSample(sampleBuffer)
+        lock.withLock {
+            guard isForwarding else { return }
+            consumer.consumeScreenVideoSample(sampleBuffer)
+        }
     }
 }
 
@@ -292,8 +572,12 @@ private final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
 public enum ScreenVideoCaptureError: LocalizedError {
     case noDisplays
     case displayNotFound(UInt32)
+    case displayModeUnavailable(UInt32)
+    case displayModeChangedDuringStart(UInt32)
+    case displayIdentityMismatch(UInt32)
     case alreadyRunning
     case startCancelled
+    case nativeStopUnconfirmed(String)
 
     /// A user-facing diagnostic for host status and logs.
     public var errorDescription: String? {
@@ -302,10 +586,18 @@ public enum ScreenVideoCaptureError: LocalizedError {
             "ScreenCaptureKit did not report any displays"
         case .displayNotFound(let displayID):
             "ScreenCaptureKit did not find display \(displayID)"
+        case .displayModeUnavailable(let displayID):
+            "CoreGraphics did not report an active pixel mode for display \(displayID)"
+        case .displayModeChangedDuringStart(let displayID):
+            "Display \(displayID) changed resolution while screen capture was starting"
+        case .displayIdentityMismatch(let displayID):
+            "Display \(displayID) no longer matches the required identity and topology"
         case .alreadyRunning:
             "Screen video capture is already running"
         case .startCancelled:
             "Screen video capture was cancelled before startup completed"
+        case .nativeStopUnconfirmed(let description):
+            "Screen video capture did not confirm native shutdown: \(description)"
         }
     }
 }

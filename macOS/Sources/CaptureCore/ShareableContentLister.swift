@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 
@@ -19,7 +20,18 @@ public struct ShareableContentLister {
         }
 
         for display in content.displays {
-            print("display id=\(display.displayID) width=\(display.width) height=\(display.height)")
+            if let mode = CGDisplayCopyDisplayMode(display.displayID) {
+                print(
+                    "display id=\(display.displayID) "
+                        + "width=\(display.width) height=\(display.height) "
+                        + "pixels=\(mode.pixelWidth)x\(mode.pixelHeight)"
+                )
+            } else {
+                print(
+                    "display id=\(display.displayID) "
+                        + "width=\(display.width) height=\(display.height) pixels=unavailable"
+                )
+            }
         }
     }
 

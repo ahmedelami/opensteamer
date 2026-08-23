@@ -11,6 +11,8 @@ public final class StreamingCaptureManager {
     private let captureMode: AudioCaptureMode
     private let sink: PCMFrameSink
     private let logger: Logger
+    private let teardownDidBegin: @Sendable () -> Void
+    private let makeCaptureStopWatchdog: @Sendable () -> Task<Void, Never>?
 
     /// Creates a capture run with an explicit backend and transport sink.
     public init(
@@ -18,12 +20,16 @@ public final class StreamingCaptureManager {
         displayID: UInt32?,
         captureMode: AudioCaptureMode,
         sink: PCMFrameSink,
+        teardownDidBegin: @escaping @Sendable () -> Void = {},
+        makeCaptureStopWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
         logger: Logger
     ) {
         self.duration = duration
         self.displayID = displayID
         self.captureMode = captureMode
         self.sink = sink
+        self.teardownDidBegin = teardownDidBegin
+        self.makeCaptureStopWatchdog = makeCaptureStopWatchdog
         self.logger = logger
     }
 
@@ -41,17 +47,23 @@ public final class StreamingCaptureManager {
 
         switch captureMode {
         case .screen:
-            let source = ScreenCaptureAudioSource(displayID: displayID, logger: logger)
+            let source = ScreenCaptureAudioSource(
+                displayID: displayID,
+                makeStopWatchdog: makeCaptureStopWatchdog,
+                logger: logger
+            )
             try await Self.runStartedSource(
                 start: { try await source.start(consumer: processor) },
                 wait: { try await self.waitForRequestedDuration() },
-                stop: { try await source.stop() }
+                teardownDidBegin: teardownDidBegin,
+                stop: { try await Self.stopScreenCaptureAudioSource(source) }
             )
         case .blackHoleInput:
             let source = BlackHoleInputAudioSource(logger: logger)
             try await Self.runStartedSource(
                 start: { try source.start(consumer: processor) },
                 wait: { try await self.waitForRequestedDuration() },
+                teardownDidBegin: teardownDidBegin,
                 stop: { source.stop() }
             )
         }
@@ -73,28 +85,62 @@ public final class StreamingCaptureManager {
 
     /// Runs one capture source and guarantees one best-effort stop after a successfully started
     /// source, including when the wait is cancelled by worldwide-host supervision. The original
-    /// wait error wins over a cleanup error so cancellation still reaches the process supervisor.
+    /// wait error wins over an ordinary cleanup error. An unconfirmed native screen stop instead
+    /// propagates its retained owner so process teardown cannot release the virtual display first.
     static func runStartedSource(
         start: () async throws -> Void,
         wait: () async throws -> Void,
+        teardownDidBegin: @Sendable () -> Void = {},
         stop: @escaping () async throws -> Void
     ) async throws {
         try await start()
         let cleanupOperation = CancellationShieldedCleanup(stop)
         do {
             try await wait()
-        } catch {
+        } catch let waitError {
+            teardownDidBegin()
             let cleanup = Task {
                 try await cleanupOperation.run()
             }
-            _ = try? await cleanup.value
-            throw error
+            do {
+                try await cleanup.value
+            } catch let cleanupError {
+                if hasUnconfirmedNativeScreenCaptureStop(cleanupError) {
+                    throw cleanupError
+                }
+            }
+            throw waitError
         }
+        teardownDidBegin()
         let cleanup = Task {
             try await cleanupOperation.run()
         }
         try await cleanup.value
         try Task.checkCancellation()
+    }
+
+    /// Identifies a retained ScreenCaptureKit audio owner whose native stop remains uncertain.
+    public static func hasUnconfirmedNativeScreenCaptureStop(_ error: any Error) -> Bool {
+        error is any NativeScreenCaptureStopUnconfirmedError
+    }
+
+    /// Gives prompt native failures a second bounded attempt before retaining the exact owner.
+    private static func stopScreenCaptureAudioSource(
+        _ source: ScreenCaptureAudioSource
+    ) async throws {
+        var failureDescriptions: [String] = []
+        for _ in 0..<2 {
+            do {
+                try await source.stop()
+                return
+            } catch {
+                failureDescriptions.append(error.localizedDescription)
+            }
+        }
+        throw RetainedScreenCaptureAudioStopError(
+            source: source,
+            failureDescriptions: failureDescriptions
+        )
     }
 
     /// Waits for a fixed duration or cooperatively until task cancellation.
@@ -128,6 +174,29 @@ public final class StreamingCaptureManager {
                 return
             }
         }
+    }
+}
+
+/// Marks the one cleanup failure that must take precedence over cancellation or wait errors.
+public protocol NativeScreenCaptureStopUnconfirmedError: Error {}
+
+/// Holds the exact audio source until Main takes the fail-closed process-exit path.
+final class RetainedScreenCaptureAudioStopError:
+    NativeScreenCaptureStopUnconfirmedError,
+    LocalizedError,
+    @unchecked Sendable
+{
+    private let retainedSource: ScreenCaptureAudioSource
+    private let failureDescriptions: [String]
+
+    init(source: ScreenCaptureAudioSource, failureDescriptions: [String]) {
+        retainedSource = source
+        self.failureDescriptions = failureDescriptions
+    }
+
+    var errorDescription: String? {
+        let detail = failureDescriptions.last ?? "unknown ScreenCaptureKit error"
+        return "ScreenCaptureKit audio did not confirm shutdown after two attempts: \(detail)"
     }
 }
 

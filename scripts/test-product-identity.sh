@@ -1230,7 +1230,7 @@ require_rejection "$CASE" 'side-by-side TestFlight package update suppression'
 
 CASE=$(new_case testflight-package-manifest-pin)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  'EXPECTED_PACKAGE_MANIFEST_SHA256="9c02a86ef1f8257dcd67af517ba35fca50bba0a94b865fd4dacfe476b9c7ed52"' \
+  'EXPECTED_PACKAGE_MANIFEST_SHA256="22facbd0e7f6b53b21dbe95fa2e720858391857564f7a5ab783f8a743d81ce76"' \
   'EXPECTED_PACKAGE_MANIFEST_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
 require_rejection "$CASE" 'side-by-side TestFlight exact package manifest pin'
 

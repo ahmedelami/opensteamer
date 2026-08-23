@@ -103,6 +103,7 @@ public protocol SystemAudioSampleConsumer: AnyObject, Sendable {
 public final class SystemAudioCaptureSource: @unchecked Sendable {
     private let displayID: UInt32?
     private let consumer: SystemAudioSampleConsumer
+    private let makeStopWatchdog: @Sendable () -> Task<Void, Never>?
     private let logger: Logger
     private lazy var processTapSource =
         CoreAudioProcessTapSystemAudioSource(
@@ -124,6 +125,7 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
     private var isStarting = false
     private var cancellationRequested = false
     private var isStopping = false
+    private var nativeStopFailureDescription: String?
     private var startCompletionWaiters: [CheckedContinuation<Void, Never>] = []
     private var stopCompletionWaiters: [CheckedContinuation<Void, Never>] = []
     private lazy var streamDelegate = SystemAudioStreamDelegate { [weak self] stream, message in
@@ -137,10 +139,12 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
     public init(
         displayID: UInt32?,
         consumer: SystemAudioSampleConsumer,
+        makeStopWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
         logger: Logger
     ) {
         self.displayID = displayID
         self.consumer = consumer
+        self.makeStopWatchdog = makeStopWatchdog
         self.logger = logger
         installWorkspaceObservers()
     }
@@ -159,11 +163,22 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
     /// Concurrent starts fail with `alreadyRunning`. A stop requested during any
     /// suspension point wins and causes startup to fail with `startCancelled`.
     public func start() async throws -> SystemAudioCaptureFormat {
+        try await ScreenCaptureLifecycleWatchdog.perform(
+            makeWatchdog: makeStopWatchdog,
+            operation: {
+                try await self.startWithoutStartupWatchdog()
+            }
+        )
+    }
+
+    /// Runs one complete startup transaction under the caller's already-armed watchdog.
+    private func startWithoutStartupWatchdog() async throws -> SystemAudioCaptureFormat {
         guard stateLock.withLock({ () -> Bool in
             guard stream == nil,
                   !processTapIsActive,
                   !isStarting,
-                  !isStopping else {
+                  !isStopping,
+                  nativeStopFailureDescription == nil else {
                 return false
             }
             isStarting = true
@@ -199,13 +214,45 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
                     displayID: selectedDisplayID
                 )
             } catch {
-                if didStartProcessTap {
-                    stateLock.withLock {
-                        processTapIsActive = false
-                        activeDisplayID = nil
-                        feedbackRefreshGeneration &+= 1
+                let startupCleanupError = error as? CoreAudioProcessTapError
+                let mustConfirmNativeTeardown = didStartProcessTap
+                    || startupCleanupError?.hasUnconfirmedNativeTeardown == true
+                if mustConfirmNativeTeardown {
+                    if !didStartProcessTap {
+                        // The Core Audio backend retained exact partially-created identities.
+                        // Publish synthetic ownership so stop() retries that cleanup before any
+                        // replacement backend can be created.
+                        stateLock.withLock {
+                            processTapIsActive = true
+                            activeDisplayID = displayID ?? CGMainDisplayID()
+                        }
                     }
-                    try? processTapSource.stop()
+                    do {
+                        try await ScreenCaptureLifecycleWatchdog.perform(
+                            makeWatchdog: makeStopWatchdog,
+                            operation: {
+                                try self.processTapSource.stop()
+                            }
+                        )
+                        stateLock.withLock {
+                            processTapIsActive = false
+                            activeDisplayID = nil
+                            feedbackRefreshGeneration &+= 1
+                        }
+                    } catch {
+                        let description = error.localizedDescription
+                        stateLock.withLock {
+                            processTapIsActive = true
+                            nativeStopFailureDescription = description
+                        }
+                        throw SystemAudioCaptureError.nativeStopUnconfirmed(description)
+                    }
+                    if let startupFailure =
+                        startupCleanupError?.startupFailureDescription {
+                        throw CoreAudioProcessTapError.startupFailedAfterCleanup(
+                            startupFailure
+                        )
+                    }
                 }
                 stateLock.withLock {
                     activeDisplayID = nil
@@ -273,19 +320,11 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
                 try ensureStartWasNotCancelled()
                 try await stream.startCapture()
             } catch {
-                let ownsCleanup = stateLock.withLock { () -> Bool in
-                    if self.stream === stream {
-                        self.stream = nil
-                        self.output = nil
-                        activeDisplayID = nil
-                        return true
-                    }
-                    return false
-                }
-                if ownsCleanup {
-                    try? stream.removeStreamOutput(output, type: .audio)
-                }
-                throw error
+                try await recoverFromFailedScreenCaptureStart(
+                    stream: stream,
+                    output: output,
+                    startError: error
+                )
             }
 
             let cancelledAfterStart = stateLock.withLock {
@@ -326,45 +365,110 @@ public final class SystemAudioCaptureSource: @unchecked Sendable {
         }
         guard ownsStop else {
             await waitForStopToFinish()
-            return
+            return try await stop()
         }
 
-        await waitForStartToFinish()
-        if #available(macOS 14.2, *) {
-            let shouldStopProcessTap = stateLock.withLock { () -> Bool in
-                guard processTapIsActive else { return false }
-                processTapIsActive = false
-                activeDisplayID = nil
-                feedbackRefreshGeneration &+= 1
+        try await ScreenCaptureLifecycleWatchdog.perform(
+            makeWatchdog: makeStopWatchdog,
+            operation: {
+                await self.waitForStartToFinish()
+                defer { self.finishStopping() }
+
+                if #available(macOS 14.2, *) {
+                    let shouldStopProcessTap = self.stateLock.withLock {
+                        self.processTapIsActive
+                            || self.nativeStopFailureDescription != nil
+                    }
+                    guard shouldStopProcessTap else { return }
+                    do {
+                        try self.processTapSource.stop()
+                    } catch {
+                        let description = error.localizedDescription
+                        self.stateLock.withLock {
+                            self.nativeStopFailureDescription = description
+                        }
+                        throw SystemAudioCaptureError.nativeStopUnconfirmed(description)
+                    }
+                    self.stateLock.withLock {
+                        self.processTapIsActive = false
+                        self.activeDisplayID = nil
+                        self.nativeStopFailureDescription = nil
+                        self.feedbackRefreshGeneration &+= 1
+                    }
+                    return
+                }
+
+                let ownedStream = self.stateLock.withLock {
+                    self.stream.map { ($0, self.output) }
+                }
+                guard let (stream, output) = ownedStream else { return }
+                try await self.stopOwnedScreenCaptureStreamWithoutWatchdog(
+                    stream,
+                    output: output
+                )
+            }
+        )
+    }
+
+    /// Treats a prompt ScreenCaptureKit start error as a potentially partial native start.
+    /// Repeated stop failure retains the exact stream for service-level retry and quarantine.
+    private func recoverFromFailedScreenCaptureStart(
+        stream: SCStream,
+        output: SystemAudioStreamOutput,
+        startError: Error
+    ) async throws -> Never {
+        var stopFailureDescriptions: [String] = []
+        for _ in 0..<2 {
+            let ownsStop = stateLock.withLock { () -> Bool in
+                guard self.stream === stream, !isStopping else { return false }
+                isStopping = true
                 return true
             }
-            defer { finishStopping() }
-            if shouldStopProcessTap {
-                try processTapSource.stop()
+            guard ownsStop else {
+                throw startError
             }
-            return
+
+            var didStop = false
+            do {
+                try await stopOwnedScreenCaptureStreamWithoutWatchdog(
+                    stream,
+                    output: output
+                )
+                didStop = true
+            } catch {
+                if stateLock.withLock({ self.stream == nil }) {
+                    throw startError
+                }
+                stopFailureDescriptions.append(error.localizedDescription)
+            }
+            if didStop {
+                throw startError
+            }
         }
-        let stopped = stateLock.withLock { () -> (SCStream, SystemAudioStreamOutput?)? in
-            guard let stream else { return nil }
-            let output = self.output
-            self.stream = nil
-            self.output = nil
-            activeDisplayID = nil
-            feedbackRefreshGeneration &+= 1
-            return (stream, output)
-        }
-        guard let (stream, output) = stopped else {
-            finishStopping()
-            return
-        }
+        throw SystemAudioCaptureError.nativeStopUnconfirmed(
+            stopFailureDescriptions.joined(separator: "; ")
+        )
+    }
+
+    /// Releases ScreenCaptureKit ownership only after its exact native stream confirms stop.
+    private func stopOwnedScreenCaptureStreamWithoutWatchdog(
+        _ stream: SCStream,
+        output: SystemAudioStreamOutput?
+    ) async throws {
+        defer { finishStopping() }
         logger.info("Stopping system audio capture")
-        defer {
-            if let output {
-                try? stream.removeStreamOutput(output, type: .audio)
-            }
-            finishStopping()
-        }
         try await stream.stopCapture()
+        stateLock.withLock {
+            if self.stream === stream {
+                self.stream = nil
+                self.output = nil
+                activeDisplayID = nil
+                feedbackRefreshGeneration &+= 1
+            }
+        }
+        if let output {
+            try? stream.removeStreamOutput(output, type: .audio)
+        }
     }
 
     /// Suspends a stop caller until the current startup path reaches its defer.
@@ -746,6 +850,7 @@ public enum SystemAudioCaptureError: LocalizedError {
     case displayNotFound(UInt32)
     case alreadyRunning
     case startCancelled
+    case nativeStopUnconfirmed(String)
 
     /// A user-facing explanation suitable for host status and diagnostics.
     public var errorDescription: String? {
@@ -758,6 +863,8 @@ public enum SystemAudioCaptureError: LocalizedError {
             "System audio capture is already running"
         case .startCancelled:
             "System audio capture was cancelled before startup completed"
+        case .nativeStopUnconfirmed(let description):
+            "System audio capture did not confirm native shutdown: \(description)"
         }
     }
 }

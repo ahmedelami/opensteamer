@@ -3,7 +3,7 @@ import Foundation
 import RemoteSessionCore
 
 /// Startup outcome presented by the host process.
-enum WorldwideHostStartResult: Equatable {
+enum WorldwideHostStartResult: Equatable, Sendable {
     case invitation(String)
     case paired(remoteDisplayName: String?)
 }
@@ -28,11 +28,14 @@ actor WorldwideHostCoordinator {
 
     private let endpoint: URL
     private let forceRelay: Bool
-    private let displayID: UInt32?
+    private let screenDisplayID: UInt32?
+    private let screenDisplayRequirement: ScreenVideoDisplayRequirement?
+    private let systemAudioDisplayID: UInt32?
     private let maximumWidth: Int
     private let framesPerSecond: Int
     private let maximumVideoBitrate: Int
     private let remoteInputController: MacRemoteInputController
+    private weak var captureLifetime: CaptureServiceLifetime?
     private let iPhoneMicrophoneForwardingPolicy:
         WorldwideIPhoneMicrophoneForwardingPolicy
     private let store: WorldwidePairingStore
@@ -48,6 +51,9 @@ actor WorldwideHostCoordinator {
     private let availabilityRetrySleep: @Sendable (Int) async throws -> Void
     private let availabilityLoopOverride: (@Sendable () async -> Void)?
     private let connectionTelemetry: any ConnectionTelemetryRecording
+    private let teardownDidBegin: @Sendable () -> Void
+    private let makeMediaServiceTeardownWatchdog: @Sendable () -> Task<Void, Never>?
+    private let makeNativeCaptureWatchdog: @Sendable () -> Task<Void, Never>?
 
     private var lifecycle = WorldwideHostLifecycle()
     private var identity: RemoteDeviceIdentity?
@@ -61,16 +67,21 @@ actor WorldwideHostCoordinator {
     private var mediaCompletionTask: Task<Void, Never>?
     private var isStarted = false
     private var isStopped = false
+    private var shutdownIsInProgress = false
+    private var shutdownCompletionWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// Creates a coordinator with injectable availability and timing dependencies for tests.
     init(
         endpoint: URL,
         forceRelay: Bool,
-        displayID: UInt32?,
+        screenDisplayID: UInt32?,
+        screenDisplayRequirement: ScreenVideoDisplayRequirement? = nil,
+        systemAudioDisplayID: UInt32?,
         maximumWidth: Int,
         framesPerSecond: Int,
         maximumVideoBitrate: Int,
         remoteInputController: MacRemoteInputController,
+        captureLifetime: CaptureServiceLifetime? = nil,
         iPhoneMicrophoneForwardingPolicy:
             WorldwideIPhoneMicrophoneForwardingPolicy = .enabled,
         store: WorldwidePairingStore,
@@ -93,6 +104,9 @@ actor WorldwideHostCoordinator {
         availabilityLoopOverride: (@Sendable () async -> Void)? = nil,
         connectionTelemetry: any ConnectionTelemetryRecording =
             NoopConnectionTelemetryRecorder(),
+        teardownDidBegin: @escaping @Sendable () -> Void = {},
+        makeMediaServiceTeardownWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
+        makeNativeCaptureWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
         logger: Logger
     ) {
         let pair = AsyncThrowingStream<Void, Error>.makeStream(
@@ -102,11 +116,14 @@ actor WorldwideHostCoordinator {
         completionContinuation = pair.continuation
         self.endpoint = endpoint
         self.forceRelay = forceRelay
-        self.displayID = displayID
+        self.screenDisplayID = screenDisplayID
+        self.screenDisplayRequirement = screenDisplayRequirement
+        self.systemAudioDisplayID = systemAudioDisplayID
         self.maximumWidth = maximumWidth
         self.framesPerSecond = framesPerSecond
         self.maximumVideoBitrate = maximumVideoBitrate
         self.remoteInputController = remoteInputController
+        self.captureLifetime = captureLifetime
         self.iPhoneMicrophoneForwardingPolicy =
             iPhoneMicrophoneForwardingPolicy
         self.store = store
@@ -117,6 +134,9 @@ actor WorldwideHostCoordinator {
         self.availabilityRetrySleep = availabilityRetrySleep
         self.availabilityLoopOverride = availabilityLoopOverride
         self.connectionTelemetry = connectionTelemetry
+        self.teardownDidBegin = teardownDidBegin
+        self.makeMediaServiceTeardownWatchdog = makeMediaServiceTeardownWatchdog
+        self.makeNativeCaptureWatchdog = makeNativeCaptureWatchdog
         self.logger = logger
     }
 
@@ -162,6 +182,9 @@ actor WorldwideHostCoordinator {
             )
             pairingBootstrap = bootstrap
             let code = try await bootstrap.start()
+            guard !isStopped, pairingBootstrap === bootstrap else {
+                throw CancellationError()
+            }
             pairingTask = Task { [weak self, bootstrap] in
                 do {
                     for try await record in bootstrap.completion {
@@ -191,8 +214,13 @@ actor WorldwideHostCoordinator {
     }
 
     /// Performs idempotent, ordered shutdown of every child service and completion stream.
-    func stop() async {
-        await shutdown(throwing: nil)
+    @discardableResult
+    func stop() async -> Bool {
+        if isStopped {
+            await waitForShutdownToFinish()
+            return await retryRetainedMediaStopIfNeeded()
+        }
+        return await shutdown(throwing: nil)
     }
 
     /// Returns the current forwarding boundary without treating absence as failure.
@@ -404,7 +432,7 @@ actor WorldwideHostCoordinator {
             )
             if let activeExchangeID = lifecycle.activeExchangeID,
                activeExchangeID != exchangeID.wireValue {
-                await stopActiveMediaSession()
+                try await stopActiveMediaSession()
                 lifecycle.availabilityPeerLeft(exchangeID: activeExchangeID)
             }
             try lifecycle.availabilityReady(exchangeID: exchangeID.wireValue)
@@ -532,7 +560,7 @@ actor WorldwideHostCoordinator {
         try store.savePairedViewer(record, for: identity)
         pairedRecord = record
 
-        await stopActiveMediaSession()
+        try await stopActiveMediaSession()
         guard !isStopped,
               isCurrentAvailabilityClient(client),
               lifecycle.activeExchangeID == exchangeID else {
@@ -543,13 +571,18 @@ actor WorldwideHostCoordinator {
             endpoint: endpoint,
             sessionCredential: responder.credential,
             forceRelay: forceRelay,
-            displayID: displayID,
+            screenDisplayID: screenDisplayID,
+            screenDisplayRequirement: screenDisplayRequirement,
+            systemAudioDisplayID: systemAudioDisplayID,
             maximumWidth: maximumWidth,
             framesPerSecond: framesPerSecond,
             maximumVideoBitrate: maximumVideoBitrate,
             remoteInputController: remoteInputController,
+            captureLifetime: captureLifetime,
             iPhoneMicrophoneForwardingPolicy:
                 iPhoneMicrophoneForwardingPolicy,
+            makeServiceTeardownWatchdog: makeMediaServiceTeardownWatchdog,
+            makeNativeCaptureWatchdog: makeNativeCaptureWatchdog,
             logger: logger
         )
         try lifecycle.mediaStarted(exchangeID: exchangeID)
@@ -578,6 +611,12 @@ actor WorldwideHostCoordinator {
             logger.info("A fresh encrypted media rendezvous is ready for the paired iPhone")
         } catch {
             await service.stop()
+            if await service.hasUnconfirmedNativeCaptureStop() {
+                let stopError = WorldwideHostCoordinatorError.nativeCaptureStopUnconfirmed
+                logger.error(stopError.localizedDescription)
+                await shutdown(throwing: stopError)
+                throw stopError
+            }
             if mediaService === service {
                 mediaService = nil
                 mediaCompletionTask?.cancel()
@@ -594,20 +633,36 @@ actor WorldwideHostCoordinator {
         exchangeID: String
     ) async {
         guard mediaService === service else { return }
+        let nativeStopIsUnconfirmed = await service.hasUnconfirmedNativeCaptureStop()
+        guard mediaService === service, !isStopped else { return }
+        if nativeStopIsUnconfirmed {
+            let error = WorldwideHostCoordinatorError.nativeCaptureStopUnconfirmed
+            logger.error(error.localizedDescription)
+            await shutdown(throwing: error)
+            return
+        }
         mediaService = nil
         mediaCompletionTask = nil
         lifecycle.mediaEnded(exchangeID: exchangeID)
         logger.info("Worldwide media ended; the Mac remains available for the paired iPhone")
     }
 
-    /// Detaches actor state before awaiting media teardown and clears lifecycle ownership.
-    private func stopActiveMediaSession() async {
+    /// Retains media ownership until native screen teardown is confirmed.
+    private func stopActiveMediaSession() async throws {
         mediaCompletionTask?.cancel()
         mediaCompletionTask = nil
         let service = mediaService
-        mediaService = nil
         let exchangeID = lifecycle.mediaExchangeID
         await service?.stop()
+        if let service, await service.hasUnconfirmedNativeCaptureStop() {
+            let error = WorldwideHostCoordinatorError.nativeCaptureStopUnconfirmed
+            logger.error(error.localizedDescription)
+            await shutdown(throwing: error)
+            throw error
+        }
+        if mediaService === service {
+            mediaService = nil
+        }
         if let exchangeID {
             lifecycle.mediaEnded(exchangeID: exchangeID)
         }
@@ -624,9 +679,16 @@ actor WorldwideHostCoordinator {
     }
 
     /// Cancels child tasks, closes transports in dependency order, then flushes telemetry.
-    private func shutdown(throwing error: (any Error)?) async {
-        guard !isStopped else { return }
+    @discardableResult
+    private func shutdown(throwing error: (any Error)?) async -> Bool {
+        guard !isStopped else {
+            await waitForShutdownToFinish()
+            return await retryRetainedMediaStopIfNeeded()
+        }
+        teardownDidBegin()
         isStopped = true
+        shutdownIsInProgress = true
+        defer { finishShutdown() }
         lifecycle.stop()
 
         pairingTask?.cancel()
@@ -643,21 +705,66 @@ actor WorldwideHostCoordinator {
         let availability = availabilityClient
         availabilityClient = nil
         let media = mediaService
-        mediaService = nil
 
-        await bootstrap?.stop()
-        await availability?.close()
+        // Revoke media and restore audio routing before waiting on network transports. A wedged
+        // WebSocket must never extend the interval in which capture callbacks remain authorized.
         await media?.stop()
+        let nativeScreenStopIsUnconfirmed = if let media {
+            await media.hasUnconfirmedNativeCaptureStop()
+        } else {
+            false
+        }
+        if !nativeScreenStopIsUnconfirmed, mediaService === media {
+            mediaService = nil
+        }
+        async let bootstrapStop: Void = bootstrap?.stop() ?? ()
+        async let availabilityStop: Void = availability?.close() ?? ()
+        _ = await (bootstrapStop, availabilityStop)
 
-        if let error {
+        let terminalError: (any Error)? = error ?? (
+            nativeScreenStopIsUnconfirmed
+                ? WorldwideHostCoordinatorError.nativeCaptureStopUnconfirmed
+                : nil
+        )
+        if let terminalError {
             _ = await connectionTelemetry.flush()
-            completionContinuation.finish(throwing: error)
+            completionContinuation.finish(throwing: terminalError)
         } else {
             recordConnectionTelemetry(.hostStopped, terminal: .success)
             _ = await connectionTelemetry.flush()
             completionContinuation.yield(())
             completionContinuation.finish()
         }
+        return !nativeScreenStopIsUnconfirmed
+    }
+
+    /// Retries an exact source retained by a failed native stop and preserves it on uncertainty.
+    private func retryRetainedMediaStopIfNeeded() async -> Bool {
+        guard let media = mediaService else { return true }
+        await media.stop()
+        guard await media.hasUnconfirmedNativeCaptureStop() else {
+            if mediaService === media {
+                mediaService = nil
+            }
+            return true
+        }
+        return false
+    }
+
+    /// Joins the coordinator invocation that owns media and signaling teardown.
+    private func waitForShutdownToFinish() async {
+        guard shutdownIsInProgress else { return }
+        await withCheckedContinuation { continuation in
+            shutdownCompletionWaiters.append(continuation)
+        }
+    }
+
+    /// Publishes full coordinator teardown before another owner can release process resources.
+    private func finishShutdown() {
+        shutdownIsInProgress = false
+        let waiters = shutdownCompletionWaiters
+        shutdownCompletionWaiters.removeAll(keepingCapacity: false)
+        waiters.forEach { $0.resume() }
     }
 
     // MARK: - Privacy-preserving telemetry
@@ -729,6 +836,8 @@ actor WorldwideHostCoordinator {
                 return .protocolViolation
             case .availabilityLoopEndedUnexpectedly:
                 return .unexpectedLoopEnd
+            case .nativeCaptureStopUnconfirmed:
+                return .unknown
             case .invalidLifecycle, .pairingEndedBeforeCommit,
                  .activePairMissing, .availabilityServer:
                 return .unknown
@@ -751,6 +860,7 @@ enum WorldwideHostCoordinatorError: LocalizedError {
     case unexpectedAvailabilityPayload
     case availabilityServer(RendezvousServerError)
     case availabilityLoopEndedUnexpectedly
+    case nativeCaptureStopUnconfirmed
 
     var errorDescription: String? {
         switch self {
@@ -777,6 +887,9 @@ enum WorldwideHostCoordinatorError: LocalizedError {
             }
         case .availabilityLoopEndedUnexpectedly:
             "The worldwide availability supervisor ended unexpectedly."
+        case .nativeCaptureStopUnconfirmed:
+            "Native screen or system-audio capture did not confirm shutdown; the worldwide host is " +
+                "terminating instead of advertising another media session."
         }
     }
 

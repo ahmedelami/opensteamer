@@ -227,11 +227,15 @@ actor WorldwideScreenService {
     private let invitation: RemoteInvitationCode?
     private let signaling: RendezvousSignalingClient
     private let icePolicy: WebRTCICEPolicy
-    private let displayID: UInt32?
+    private let screenDisplayID: UInt32?
+    private let screenDisplayRequirement: ScreenVideoDisplayRequirement?
+    private let systemAudioDisplayID: UInt32?
     private let maximumWidth: Int
     private let framesPerSecond: Int
     private let maximumVideoBitrate: Int
     private let remoteInputController: MacRemoteInputController
+    private weak var captureLifetime: CaptureServiceLifetime?
+    private let captureLifetimeIsRequired: Bool
     private let iPhoneMicrophoneForwardingPolicy:
         WorldwideIPhoneMicrophoneForwardingPolicy
     private let blackHoleDeviceAvailabilityMonitor =
@@ -250,6 +254,8 @@ actor WorldwideScreenService {
         1
     private let logger: Logger
     private let completionContinuation: AsyncStream<Void>.Continuation
+    private let makeServiceTeardownWatchdog: @Sendable () -> Task<Void, Never>?
+    private let makeNativeCaptureWatchdog: @Sendable () -> Task<Void, Never>?
 
     private var signalingTask: Task<Void, Never>?
     private var peerEventTask: Task<Void, Never>?
@@ -413,6 +419,8 @@ actor WorldwideScreenService {
     private var activeInputAuthorization: WebRTCInputAuthorization?
     private var isStarted = false
     private var isStopped = false
+    private var stopIsInProgress = false
+    private var stopCompletionWaiters: [CheckedContinuation<Void, Never>] = []
     private var safeOutputInvariantNeedsRedrive = false
     private var safeOutputInvariantVerificationWasFailing = false
     private var safeOutputInvariantRetryPolicy =
@@ -425,19 +433,25 @@ actor WorldwideScreenService {
             && controlChannelIsOpen
             && !isRecovering
             && !isStopped
+            && (!captureLifetimeIsRequired || captureLifetime?.isValid == true)
     }
 
     /// Creates a legacy consume-once session with a newly generated invitation capability.
     init(
         endpoint: URL,
         forceRelay: Bool,
-        displayID: UInt32?,
+        screenDisplayID: UInt32?,
+        screenDisplayRequirement: ScreenVideoDisplayRequirement? = nil,
+        systemAudioDisplayID: UInt32?,
         maximumWidth: Int,
         framesPerSecond: Int,
         maximumVideoBitrate: Int,
         remoteInputController: MacRemoteInputController,
+        captureLifetime: CaptureServiceLifetime? = nil,
         iPhoneMicrophoneForwardingPolicy:
             WorldwideIPhoneMicrophoneForwardingPolicy = .enabled,
+        makeServiceTeardownWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
+        makeNativeCaptureWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
         logger: Logger
     ) throws {
         let completionPair = AsyncStream<Void>.makeStream(
@@ -453,13 +467,19 @@ actor WorldwideScreenService {
             role: .host
         )
         icePolicy = forceRelay ? .relayOnly : .directPreferred
-        self.displayID = displayID
+        self.screenDisplayID = screenDisplayID
+        self.screenDisplayRequirement = screenDisplayRequirement
+        self.systemAudioDisplayID = systemAudioDisplayID
         self.maximumWidth = maximumWidth
         self.framesPerSecond = framesPerSecond
         self.maximumVideoBitrate = maximumVideoBitrate
         self.remoteInputController = remoteInputController
+        self.captureLifetime = captureLifetime
+        captureLifetimeIsRequired = captureLifetime != nil
         self.iPhoneMicrophoneForwardingPolicy =
             iPhoneMicrophoneForwardingPolicy
+        self.makeServiceTeardownWatchdog = makeServiceTeardownWatchdog
+        self.makeNativeCaptureWatchdog = makeNativeCaptureWatchdog
         self.logger = logger
     }
 
@@ -468,13 +488,18 @@ actor WorldwideScreenService {
         endpoint: URL,
         sessionCredential: RemoteRendezvousCredential,
         forceRelay: Bool,
-        displayID: UInt32?,
+        screenDisplayID: UInt32?,
+        screenDisplayRequirement: ScreenVideoDisplayRequirement? = nil,
+        systemAudioDisplayID: UInt32?,
         maximumWidth: Int,
         framesPerSecond: Int,
         maximumVideoBitrate: Int,
         remoteInputController: MacRemoteInputController,
+        captureLifetime: CaptureServiceLifetime? = nil,
         iPhoneMicrophoneForwardingPolicy:
             WorldwideIPhoneMicrophoneForwardingPolicy = .enabled,
+        makeServiceTeardownWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
+        makeNativeCaptureWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
         logger: Logger
     ) throws {
         let completionPair = AsyncStream<Void>.makeStream(
@@ -489,13 +514,19 @@ actor WorldwideScreenService {
             role: .host
         )
         icePolicy = forceRelay ? .relayOnly : .directPreferred
-        self.displayID = displayID
+        self.screenDisplayID = screenDisplayID
+        self.screenDisplayRequirement = screenDisplayRequirement
+        self.systemAudioDisplayID = systemAudioDisplayID
         self.maximumWidth = maximumWidth
         self.framesPerSecond = framesPerSecond
         self.maximumVideoBitrate = maximumVideoBitrate
         self.remoteInputController = remoteInputController
+        self.captureLifetime = captureLifetime
+        captureLifetimeIsRequired = captureLifetime != nil
         self.iPhoneMicrophoneForwardingPolicy =
             iPhoneMicrophoneForwardingPolicy
+        self.makeServiceTeardownWatchdog = makeServiceTeardownWatchdog
+        self.makeNativeCaptureWatchdog = makeNativeCaptureWatchdog
         self.logger = logger
     }
 
@@ -546,8 +577,29 @@ actor WorldwideScreenService {
     /// Teardown is idempotent. Authorization and forwarding gates close synchronously
     /// before any `await`, so actor reentrancy cannot leak a late media or input callback.
     func stop() async {
-        guard !isStopped else { return }
+        guard !isStopped else {
+            await waitForStopToFinish()
+            // A prior close may have retained the exact source after two failed native stops.
+            // Explicit owners can retry without reopening any transport or forwarding gate.
+            do {
+                try await stopScreenCapture()
+            } catch {
+                logger.error(
+                    "Worldwide retained screen capture stop remained unconfirmed: " +
+                        error.localizedDescription
+                )
+            }
+            if !(await stopSystemAudio()) {
+                logger.error(
+                    "Worldwide retained system audio stop remained unconfirmed"
+                )
+            }
+            return
+        }
+        let teardownWatchdog = makeServiceTeardownWatchdog()
         isStopped = true
+        stopIsInProgress = true
+        defer { finishStopping() }
         safeOutputInvariantNeedsRedrive = false
         safeOutputInvariantVerificationWasFailing = false
         safeOutputInvariantRetryPolicy.reset()
@@ -578,9 +630,11 @@ actor WorldwideScreenService {
         captureSink?.stopForwarding()
         audioSink?.stopForwarding()
         await coordinator?.cancel()
+        var nativeScreenStopNeedsRetry = false
         do {
             try await stopScreenCapture()
         } catch {
+            nativeScreenStopNeedsRetry = true
             // Session shutdown must continue through peer/signaling close even when
             // ScreenCaptureKit cannot confirm its native stop.
             logger.error(
@@ -588,14 +642,59 @@ actor WorldwideScreenService {
                 error.localizedDescription
             )
         }
-        await stopSystemAudio()
+        var nativeSystemAudioStopNeedsRetry = !(await stopSystemAudio())
         if let peer {
             await peer.close(reason: .hostStopped)
         }
         self.peer = nil
+        if nativeScreenStopNeedsRetry {
+            do {
+                try await stopScreenCapture()
+            } catch {
+                // Retain the source until process exit; its callback gate is permanently closed.
+                logger.error(
+                    "Worldwide screen capture retry remained unconfirmed during session close: " +
+                        error.localizedDescription
+                )
+            }
+        }
+        if nativeSystemAudioStopNeedsRetry {
+            nativeSystemAudioStopNeedsRetry = !(await stopSystemAudio())
+            if nativeSystemAudioStopNeedsRetry {
+                logger.error(
+                    "Worldwide system audio retry remained unconfirmed during session close"
+                )
+            }
+        }
         await signaling.close()
         completionContinuation.yield(())
         completionContinuation.finish()
+        teardownWatchdog?.cancel()
+        await teardownWatchdog?.value
+    }
+
+    /// Joins the actor invocation that owns complete peer, audio, screen, and signaling teardown.
+    private func waitForStopToFinish() async {
+        guard stopIsInProgress else { return }
+        await withCheckedContinuation { continuation in
+            stopCompletionWaiters.append(continuation)
+        }
+    }
+
+    /// Publishes complete service teardown before any repeated stop caller can return.
+    private func finishStopping() {
+        stopIsInProgress = false
+        let waiters = stopCompletionWaiters
+        stopCompletionWaiters.removeAll(keepingCapacity: false)
+        waiters.forEach { $0.resume() }
+    }
+
+    /// Reports whether any native screen or system-audio teardown remains unconfirmed.
+    ///
+    /// The coordinator uses this terminal ownership signal to quarantine the whole host instead
+    /// of advertising a new media rendezvous while the exact retained `SCStream` may still run.
+    func hasUnconfirmedNativeCaptureStop() -> Bool {
+        isStopped && (captureSource != nil || audioSource != nil)
     }
 
     // MARK: - Rendezvous signaling
@@ -723,7 +822,10 @@ actor WorldwideScreenService {
         revokeCaptureAuthorization()
         revokeSystemAudioAuthorization()
         iPhoneMicrophoneForwarding.clearPeer()
-        await stopSystemAudio()
+        guard await stopSystemAudio() else {
+            await stop()
+            throw WorldwideScreenServiceError.nativeSystemAudioStopUnconfirmed
+        }
 
         let coordinator = ICERecoveryCoordinator(
             restart: { [weak self] in
@@ -2807,7 +2909,10 @@ actor WorldwideScreenService {
         // and revoke controller state synchronously before it schedules actor cleanup.
         let authorization = WebRTCControlAuthorization()
         let inputController = remoteInputController
-        let sink = WorldwideScreenSampleSink(capturer: capturer) { [weak self] source, message in
+        let sink = WorldwideScreenSampleSink(
+            capturer: capturer,
+            captureLifetime: captureLifetime
+        ) { [weak self] source, message in
             authorization.revoke()
             inputController.revoke()
             Task {
@@ -2819,10 +2924,12 @@ actor WorldwideScreenService {
             }
         }
         let source = ScreenVideoCaptureSource(
-            displayID: displayID,
+            displayID: screenDisplayID,
+            displayRequirement: screenDisplayRequirement,
             maximumWidth: maximumWidth,
             framesPerSecond: framesPerSecond,
             consumer: sink,
+            makeStopWatchdog: makeNativeCaptureWatchdog,
             logger: logger
         )
         captureSink = sink
@@ -2845,7 +2952,9 @@ actor WorldwideScreenService {
                 height: Int32(format.height),
                 framesPerSecond: Int32(format.framesPerSecond)
             )
-            sink.beginForwarding()
+            guard sink.beginForwarding() else {
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
             logger.info(
                 "Worldwide screen capture is visible at " +
                 "\(format.width)x\(format.height)@\(format.framesPerSecond)"
@@ -2855,15 +2964,20 @@ actor WorldwideScreenService {
             let startError = error
             if captureSource === source {
                 revokeCaptureAuthorization()
-                captureSource = nil
-                captureSink = nil
             }
             sink.stopForwarding()
             do {
                 // Even a failed post-start health check can leave a native SCStream running.
                 // Never turn that uncertainty into a protocol-level Inactive acknowledgement.
                 try await source.stop()
+                if captureSource === source {
+                    captureSource = nil
+                    captureSink = nil
+                    captureDisplayID = nil
+                }
             } catch {
+                // Retain the exact source so session shutdown can retry its native stop before
+                // process exit. Forwarding and remote input are already synchronously revoked.
                 throw WorldwideScreenServiceError.nativeScreenStopFailed(error)
             }
             throw startError
@@ -2875,11 +2989,19 @@ actor WorldwideScreenService {
         revokeCaptureAuthorization()
         let source = captureSource
         let sink = captureSink
-        captureSource = nil
-        captureSink = nil
         sink?.stopForwarding()
         guard let source else { return }
-        try await source.stop()
+        do {
+            try await source.stop()
+        } catch {
+            // Preserve ownership for the caller's fail-closed session teardown retry.
+            throw error
+        }
+        if captureSource === source {
+            captureSource = nil
+            captureSink = nil
+            captureDisplayID = nil
+        }
     }
 
     /// Handles a native stop only if its source and authorization still own capture.
@@ -2989,6 +3111,7 @@ actor WorldwideScreenService {
         let authorization = WebRTCAudioAuthorization()
         let sink = WorldwideSystemAudioSampleSink(
             capturer: capturer,
+            captureLifetime: captureLifetime,
             didObserveMacFaceTimeActivity: {
                 [weak self]
                 source,
@@ -3015,8 +3138,9 @@ actor WorldwideScreenService {
             }
         )
         let source = SystemAudioCaptureSource(
-            displayID: displayID,
+            displayID: systemAudioDisplayID,
             consumer: sink,
+            makeStopWatchdog: makeNativeCaptureWatchdog,
             logger: logger
         )
         audioSink = sink
@@ -3065,6 +3189,7 @@ actor WorldwideScreenService {
                 "\(format.sampleRate) Hz, \(format.channelCount) channels"
             )
         } catch {
+            let startError = error
             let stillOwnsNativeSource = audioSource === source
                 && audioSink === sink
                 && audioPeerGeneration == generation
@@ -3089,15 +3214,22 @@ actor WorldwideScreenService {
                 }
             } else if stillOwnsNativeSource {
                 revokeSystemAudioAuthorization()
-                audioSource = nil
-                audioSink = nil
-                audioPeerGeneration = nil
-                try? await source.stop()
+                sink.stopForwarding()
+                do {
+                    try await source.stop()
+                    if audioSource === source, audioSink === sink {
+                        audioSource = nil
+                        audioSink = nil
+                        audioPeerGeneration = nil
+                    }
+                } catch {
+                    throw WorldwideScreenServiceError.nativeSystemAudioStopUnconfirmed
+                }
             } else {
                 authorization.revoke()
                 sink.stopForwarding()
             }
-            throw error
+            throw startError
         }
     }
 
@@ -3171,22 +3303,27 @@ actor WorldwideScreenService {
     }
 
     /// Revokes forwarding, suspends the track, resets buffered PCM, and stops native capture.
-    private func stopSystemAudio() async {
+    @discardableResult
+    private func stopSystemAudio() async -> Bool {
         revokeSystemAudioAuthorization()
         let source = audioSource
         let sink = audioSink
-        audioSource = nil
-        audioSink = nil
-        audioPeerGeneration = nil
         sink?.stopForwarding()
         await peer?.suspendSystemAudioForTransportUncertainty()
         peer?.externalAudioCapturer?.reset()
-        guard let source else { return }
+        guard let source else { return true }
         do {
             try await source.stop()
         } catch {
             logger.error("Worldwide system audio stop failed: \(error.localizedDescription)")
+            return false
         }
+        if audioSource === source {
+            audioSource = nil
+            audioSink = nil
+            audioPeerGeneration = nil
+        }
+        return true
     }
 
     /// Installs a viewer nonce only while this actor owns the exact live process-tap source. The
@@ -3420,20 +3557,31 @@ private struct ArmedRemoteInputSession {
 private final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sendable {
     private let capturer: MacExternalVideoCapturer
     private let didStop: @Sendable (ScreenVideoCaptureSource, String) -> Void
+    private weak var captureLifetime: CaptureServiceLifetime?
+    private let captureLifetimeIsRequired: Bool
     private let lock = NSLock()
     private var isForwarding = false
 
     init(
         capturer: MacExternalVideoCapturer,
+        captureLifetime: CaptureServiceLifetime? = nil,
         didStop: @escaping @Sendable (ScreenVideoCaptureSource, String) -> Void
     ) {
         self.capturer = capturer
+        self.captureLifetime = captureLifetime
+        captureLifetimeIsRequired = captureLifetime != nil
         self.didStop = didStop
     }
 
     /// Opens the callback gate after capture and transport health are proven.
-    func beginForwarding() {
-        lock.withLock { isForwarding = true }
+    @discardableResult
+    func beginForwarding() -> Bool {
+        guard lifetimeAllowsCapture else { return false }
+        return lock.withLock {
+            guard lifetimeAllowsCapture else { return false }
+            isForwarding = true
+            return true
+        }
     }
 
     /// Closes the callback gate synchronously.
@@ -3443,13 +3591,15 @@ private final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unche
 
     /// Forwards image-backed, timestamped samples only while the gate is open.
     func consumeScreenVideoSample(_ sampleBuffer: CMSampleBuffer) {
-        guard lock.withLock({ isForwarding }),
-              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             return
         }
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard timestamp.isValid else { return }
-        capturer.capture(pixelBuffer: pixelBuffer, timestamp: timestamp)
+        lock.withLock {
+            guard isForwarding, callbackGateAllowsEntry else { return }
+            capturer.capture(pixelBuffer: pixelBuffer, timestamp: timestamp)
+        }
     }
 
     func screenVideoCaptureSource(
@@ -3458,6 +3608,14 @@ private final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unche
     ) {
         stopForwarding()
         didStop(source, errorDescription)
+    }
+
+    private var lifetimeAllowsCapture: Bool {
+        !captureLifetimeIsRequired || captureLifetime?.isValid == true
+    }
+
+    private var callbackGateAllowsEntry: Bool {
+        !captureLifetimeIsRequired || captureLifetime?.allowsCallbackEntry == true
     }
 }
 
@@ -3650,6 +3808,8 @@ final class WorldwideSystemAudioForwardingGate: @unchecked Sendable {
 final class WorldwideSystemAudioSampleSink: SystemAudioSampleConsumer, @unchecked Sendable {
     private let capturer: MacExternalAudioCapturer
     private let gate: WorldwideSystemAudioForwardingGate
+    private weak var captureLifetime: CaptureServiceLifetime?
+    private let captureLifetimeIsRequired: Bool
     private let didObserveMacFaceTimeActivity:
         @Sendable (
             SystemAudioCaptureSource,
@@ -3668,6 +3828,7 @@ final class WorldwideSystemAudioSampleSink: SystemAudioSampleConsumer, @unchecke
         capturer: MacExternalAudioCapturer,
         gate: WorldwideSystemAudioForwardingGate =
             WorldwideSystemAudioForwardingGate(),
+        captureLifetime: CaptureServiceLifetime? = nil,
         didObserveMacFaceTimeActivity:
             @escaping @Sendable (
                 SystemAudioCaptureSource,
@@ -3684,6 +3845,8 @@ final class WorldwideSystemAudioSampleSink: SystemAudioSampleConsumer, @unchecke
     ) {
         self.capturer = capturer
         self.gate = gate
+        self.captureLifetime = captureLifetime
+        captureLifetimeIsRequired = captureLifetime != nil
         self.didObserveMacFaceTimeActivity =
             didObserveMacFaceTimeActivity
         self.didStop = didStop
@@ -3693,7 +3856,8 @@ final class WorldwideSystemAudioSampleSink: SystemAudioSampleConsumer, @unchecke
     func beginForwarding(
         with authorization: WebRTCAudioAuthorization
     ) -> Bool {
-        gate.beginForwarding(with: authorization)
+        lifetimeAllowsCapture
+            && gate.beginForwarding(with: authorization)
     }
 
     func stopForwarding() {
@@ -3705,6 +3869,7 @@ final class WorldwideSystemAudioSampleSink: SystemAudioSampleConsumer, @unchecke
             return
         }
         gate.withCurrentAuthorization(authorization) {
+            guard callbackGateAllowsEntry else { return }
             capturer.capture(sampleBuffer: sampleBuffer)
         }
     }
@@ -3719,6 +3884,7 @@ final class WorldwideSystemAudioSampleSink: SystemAudioSampleConsumer, @unchecke
             return
         }
         gate.withCurrentAuthorization(authorization) {
+            guard callbackGateAllowsEntry else { return }
             capturer.capture(
                 audioBufferList: audioBufferList,
                 format: format,
@@ -3742,6 +3908,7 @@ final class WorldwideSystemAudioSampleSink: SystemAudioSampleConsumer, @unchecke
         didObserveMacFaceTimeActivity observation:
             SystemAudioMacFaceTimeActivityObservation
     ) {
+        guard callbackGateAllowsEntry else { return }
         gate.withEvidenceAuthorization(for: observation) {
             authorization, evidenceAuthorization in
             didObserveMacFaceTimeActivity(
@@ -3751,6 +3918,14 @@ final class WorldwideSystemAudioSampleSink: SystemAudioSampleConsumer, @unchecke
                 evidenceAuthorization
             )
         }
+    }
+
+    private var lifetimeAllowsCapture: Bool {
+        !captureLifetimeIsRequired || captureLifetime?.isValid == true
+    }
+
+    private var callbackGateAllowsEntry: Bool {
+        !captureLifetimeIsRequired || captureLifetime?.allowsCallbackEntry == true
     }
 }
 
@@ -3765,6 +3940,7 @@ private enum WorldwideScreenServiceError: LocalizedError {
     case microphoneInputReleaseUnproved
     case microphoneWriterAuthorizationSuperseded
     case nativeScreenStopFailed(any Error)
+    case nativeSystemAudioStopUnconfirmed
     case rendezvous(RendezvousServerError)
 
     var errorDescription: String? {
@@ -3788,6 +3964,8 @@ private enum WorldwideScreenServiceError: LocalizedError {
         case .nativeScreenStopFailed(let error):
             "The native screen source could not confirm that capture stopped " +
                 "(\(error.localizedDescription))."
+        case .nativeSystemAudioStopUnconfirmed:
+            "The native system-audio source could not confirm that capture stopped."
         case .rendezvous(let error):
             "The rendezvous rejected the session (\(String(describing: error)))."
         }

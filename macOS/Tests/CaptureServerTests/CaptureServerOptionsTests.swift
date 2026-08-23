@@ -7,6 +7,55 @@ import XCTest
 /// Pairing reset and remote input are worldwide-only operations. Remote control must remain an
 /// explicit opt-in so adding worldwide connectivity cannot silently grant input injection.
 final class CaptureServerOptionsTests: XCTestCase {
+    func testVirtualPhoneDisplayIsDisabledByDefault() throws {
+        let options = try CaptureServerOptions.parse(["CaptureServer"])
+
+        XCTAssertFalse(options.virtualPhoneDisplayEnabled)
+        XCTAssertFalse(options.requiresExclusiveHostProcessLock)
+    }
+
+    func testVirtualPhoneDisplayRequiresExplicitFlag() throws {
+        let options = try CaptureServerOptions.parse([
+            "CaptureServer",
+            "--virtual-phone-display",
+        ])
+
+        XCTAssertTrue(options.virtualPhoneDisplayEnabled)
+        XCTAssertNil(options.displayID)
+        XCTAssertTrue(options.requiresExclusiveHostProcessLock)
+    }
+
+    func testVirtualPhoneDisplayRejectsDisabledScreenService() {
+        XCTAssertThrowsError(
+            try CaptureServerOptions.parse([
+                "CaptureServer",
+                "--virtual-phone-display",
+                "--no-screen",
+            ])
+        ) { error in
+            XCTAssertEqual(
+                error.localizedDescription,
+                "--virtual-phone-display cannot be combined with --no-screen"
+            )
+        }
+    }
+
+    func testVirtualPhoneDisplayRejectsRuntimeDisplayIDConflict() {
+        XCTAssertThrowsError(
+            try CaptureServerOptions.parse([
+                "CaptureServer",
+                "--virtual-phone-display",
+                "--display-id",
+                "42",
+            ])
+        ) { error in
+            XCTAssertEqual(
+                error.localizedDescription,
+                "--virtual-phone-display cannot be combined with --display-id"
+            )
+        }
+    }
+
     func testResetPairingRequiresWorldwideMode() {
         XCTAssertThrowsError(
             try CaptureServerOptions.parse(["CaptureServer", "--reset-worldwide-pairing"])

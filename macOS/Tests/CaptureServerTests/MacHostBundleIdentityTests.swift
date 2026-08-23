@@ -794,7 +794,14 @@ final class MacHostBundleIdentityTests: XCTestCase {
     }
 
     private func makeTemporaryDirectory(prefix: String) -> URL {
-        let url = FileManager.default.temporaryDirectory
+        let baseDirectory = ProcessInfo.processInfo.environment["OPENSTEAMER_TEST_TMPDIR"]
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.temporaryDirectory
+        try! FileManager.default.createDirectory(
+            at: baseDirectory,
+            withIntermediateDirectories: true
+        )
+        let url = baseDirectory
             .appendingPathComponent("opensteamer-\(prefix)-\(UUID().uuidString)")
         try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
         return url

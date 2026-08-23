@@ -99,6 +99,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
     private let clock: any MacRemoteInputClock
     private let lock = NSLock()
 
+    private var isPermanentlyInvalidated = false
     private var activeSession: ActiveSession?
     private var authorizedFocus: AuthorizedFocus?
     private var nextFocusGeneration: UInt64 = 0
@@ -164,6 +165,10 @@ public final class MacRemoteInputController: @unchecked Sendable {
         screenRequestID: UInt64,
         inputSessionID: UUID
     ) -> MacRemoteInputArmResult {
+        guard !isPermanentlyInvalidated else {
+            return .disabled
+        }
+
         revokeState()
 
         guard allowRemoteControl else {
@@ -195,6 +200,17 @@ public final class MacRemoteInputController: @unchecked Sendable {
         }
     }
 
+    /// Permanently disables this controller and revokes every active authorization.
+    ///
+    /// Unlike `revoke()`, invalidation is terminal: the controller cannot be armed
+    /// again and every subsequent input request remains fail closed.
+    public func invalidate() {
+        withLock {
+            isPermanentlyInvalidated = true
+            revokeState()
+        }
+    }
+
     // MARK: - Pointer actions
 
     /// Posts one primary click and optionally grants keyboard focus to its editable target.
@@ -222,7 +238,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         // malformed or rate-limited.
         authorizedFocus = nil
 
-        guard allowRemoteControl else {
+        guard !isPermanentlyInvalidated, allowRemoteControl else {
             return .rejected(.disabled)
         }
         guard let session = matchingSession(
@@ -310,7 +326,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         // malformed, stale, denied, or rate-limited drag.
         authorizedFocus = nil
 
-        guard allowRemoteControl else {
+        guard !isPermanentlyInvalidated, allowRemoteControl else {
             return .rejected(.disabled)
         }
         guard let session = matchingSession(
@@ -490,7 +506,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         inputSessionID: UUID,
         focusGeneration: UInt64
     ) -> (focus: AuthorizedFocus?, rejection: MacRemoteInputRejection?) {
-        guard allowRemoteControl else {
+        guard !isPermanentlyInvalidated, allowRemoteControl else {
             return (nil, .disabled)
         }
         guard matchingSession(
