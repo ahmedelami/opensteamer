@@ -1,0 +1,521 @@
+import Foundation
+
+/// A host-issued capability binding remote input to one successful Show/Active transition.
+/// It deliberately rides inside the existing v2 acknowledgement so old v2 peers remain wire
+/// compatible and never send input they do not understand.
+public struct WebRTCInputCapability: Codable, Equatable, Sendable {
+    public static let currentProtocolVersion = 1
+    public static let maximumMessageBytes = 4_096
+
+    public let protocolVersion: Int
+    public let inputSessionID: UUID
+    public let screenRequestID: UInt64
+    public let maxMessageBytes: Int
+    public let supportsPrimaryDrag: Bool
+
+    public init(
+        inputSessionID: UUID,
+        screenRequestID: UInt64,
+        protocolVersion: Int = Self.currentProtocolVersion,
+        maxMessageBytes: Int = Self.maximumMessageBytes,
+        supportsPrimaryDrag: Bool = false
+    ) {
+        self.protocolVersion = protocolVersion
+        self.inputSessionID = inputSessionID
+        self.screenRequestID = screenRequestID
+        self.maxMessageBytes = maxMessageBytes
+        self.supportsPrimaryDrag = supportsPrimaryDrag
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case protocolVersion
+        case inputSessionID
+        case screenRequestID
+        case maxMessageBytes
+        case supportsPrimaryDrag
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let protocolVersion = try container.decode(Int.self, forKey: .protocolVersion)
+        let inputSessionID = try container.decode(UUID.self, forKey: .inputSessionID)
+        let screenRequestID = try container.decode(UInt64.self, forKey: .screenRequestID)
+        let maxMessageBytes = try container.decode(Int.self, forKey: .maxMessageBytes)
+        let supportsPrimaryDrag = if container.contains(.supportsPrimaryDrag) {
+            try container.decode(Bool.self, forKey: .supportsPrimaryDrag)
+        } else {
+            false
+        }
+        guard protocolVersion == Self.currentProtocolVersion,
+              inputSessionID != Self.zeroUUID,
+              screenRequestID > 0,
+              maxMessageBytes == Self.maximumMessageBytes else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .protocolVersion,
+                in: container,
+                debugDescription: "Invalid remote-input capability."
+            )
+        }
+        self.init(
+            inputSessionID: inputSessionID,
+            screenRequestID: screenRequestID,
+            protocolVersion: protocolVersion,
+            maxMessageBytes: maxMessageBytes,
+            supportsPrimaryDrag: supportsPrimaryDrag
+        )
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        guard isValid else {
+            throw EncodingError.invalidValue(
+                self,
+                .init(codingPath: encoder.codingPath, debugDescription: "Invalid remote-input capability.")
+            )
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolVersion, forKey: .protocolVersion)
+        try container.encode(inputSessionID, forKey: .inputSessionID)
+        try container.encode(screenRequestID, forKey: .screenRequestID)
+        try container.encode(maxMessageBytes, forKey: .maxMessageBytes)
+        try container.encode(supportsPrimaryDrag, forKey: .supportsPrimaryDrag)
+    }
+
+    var isValid: Bool {
+        protocolVersion == Self.currentProtocolVersion
+            && inputSessionID != Self.zeroUUID
+            && screenRequestID > 0
+            && maxMessageBytes == Self.maximumMessageBytes
+    }
+
+    private static let zeroUUID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+}
+
+/// A finite point in the inclusive unit square used for resolution-independent input.
+public struct WebRTCNormalizedPoint: Codable, Equatable, Sendable {
+    public let x: Double
+    public let y: Double
+
+    public init(x: Double, y: Double) {
+        self.x = x
+        self.y = y
+    }
+
+    private enum CodingKeys: String, CodingKey { case x, y }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let x = try container.decode(Double.self, forKey: .x)
+        let y = try container.decode(Double.self, forKey: .y)
+        guard x.isFinite, y.isFinite,
+              (0 ... 1).contains(x), (0 ... 1).contains(y) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .x,
+                in: container,
+                debugDescription: "Remote-input coordinates must be finite normalized values."
+            )
+        }
+        self.init(x: x, y: y)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        guard isValid else {
+            throw EncodingError.invalidValue(
+                self,
+                .init(codingPath: encoder.codingPath, debugDescription: "Invalid normalized point.")
+            )
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(x, forKey: .x)
+        try container.encode(y, forKey: .y)
+    }
+
+    var isValid: Bool {
+        x.isFinite && y.isFinite && (0 ... 1).contains(x) && (0 ... 1).contains(y)
+    }
+}
+
+/// The intentionally small remote-input vocabulary. Return is distinct from inserted text so
+/// control characters never enter the text path.
+public enum WebRTCInputAction: Codable, Equatable, Sendable {
+    case tap(WebRTCNormalizedPoint)
+    case primaryDrag(start: WebRTCNormalizedPoint, end: WebRTCNormalizedPoint)
+    case insertText(String, focusGeneration: UInt64)
+    case backspace(focusGeneration: UInt64)
+    case returnKey(focusGeneration: UInt64)
+
+    private enum Kind: String, Codable {
+        case tap
+        case primaryDrag
+        case text
+        case backspace
+        case returnKey = "return"
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case point
+        case start
+        case end
+        case text
+        case focusGeneration
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .tap:
+            guard !container.contains(.start), !container.contains(.end),
+                  !container.contains(.text), !container.contains(.focusGeneration) else {
+                throw Self.invalidAction(in: container)
+            }
+            self = .tap(try container.decode(WebRTCNormalizedPoint.self, forKey: .point))
+        case .primaryDrag:
+            guard !container.contains(.point), !container.contains(.text),
+                  !container.contains(.focusGeneration) else {
+                throw Self.invalidAction(in: container)
+            }
+            self = .primaryDrag(
+                start: try container.decode(WebRTCNormalizedPoint.self, forKey: .start),
+                end: try container.decode(WebRTCNormalizedPoint.self, forKey: .end)
+            )
+        case .text:
+            guard !container.contains(.point), !container.contains(.start),
+                  !container.contains(.end) else {
+                throw Self.invalidAction(in: container)
+            }
+            let text = try container.decode(String.self, forKey: .text)
+            let generation = try container.decode(UInt64.self, forKey: .focusGeneration)
+            guard Self.isValidCommittedText(text), generation > 0 else {
+                throw Self.invalidAction(in: container)
+            }
+            self = .insertText(text, focusGeneration: generation)
+        case .backspace:
+            guard !container.contains(.point), !container.contains(.start),
+                  !container.contains(.end), !container.contains(.text) else {
+                throw Self.invalidAction(in: container)
+            }
+            let generation = try container.decode(UInt64.self, forKey: .focusGeneration)
+            guard generation > 0 else { throw Self.invalidAction(in: container) }
+            self = .backspace(focusGeneration: generation)
+        case .returnKey:
+            guard !container.contains(.point), !container.contains(.start),
+                  !container.contains(.end), !container.contains(.text) else {
+                throw Self.invalidAction(in: container)
+            }
+            let generation = try container.decode(UInt64.self, forKey: .focusGeneration)
+            guard generation > 0 else { throw Self.invalidAction(in: container) }
+            self = .returnKey(focusGeneration: generation)
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        guard isValid else {
+            throw EncodingError.invalidValue(
+                self,
+                .init(codingPath: encoder.codingPath, debugDescription: "Invalid remote-input action.")
+            )
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .tap(let point):
+            try container.encode(Kind.tap, forKey: .kind)
+            try container.encode(point, forKey: .point)
+        case .primaryDrag(let start, let end):
+            try container.encode(Kind.primaryDrag, forKey: .kind)
+            try container.encode(start, forKey: .start)
+            try container.encode(end, forKey: .end)
+        case .insertText(let text, let focusGeneration):
+            try container.encode(Kind.text, forKey: .kind)
+            try container.encode(text, forKey: .text)
+            try container.encode(focusGeneration, forKey: .focusGeneration)
+        case .backspace(let focusGeneration):
+            try container.encode(Kind.backspace, forKey: .kind)
+            try container.encode(focusGeneration, forKey: .focusGeneration)
+        case .returnKey(let focusGeneration):
+            try container.encode(Kind.returnKey, forKey: .kind)
+            try container.encode(focusGeneration, forKey: .focusGeneration)
+        }
+    }
+
+    var isValid: Bool {
+        switch self {
+        case .tap(let point):
+            point.isValid
+        case .primaryDrag(let start, let end):
+            start.isValid && end.isValid
+        case .insertText(let text, let focusGeneration):
+            focusGeneration > 0 && Self.isValidCommittedText(text)
+        case .backspace(let focusGeneration), .returnKey(let focusGeneration):
+            focusGeneration > 0
+        }
+    }
+
+    /// Validates a whole committed-text chunk before it enters the remote-input queue or wire.
+    /// AppKit's private-use function-key scalars are commands, not text, and are deliberately
+    /// excluded along with control characters.
+    public static func isValidCommittedText(_ text: String) -> Bool {
+        !text.isEmpty
+            && text.utf8.count <= 512
+            && text.utf16.count <= 256
+            && !text.unicodeScalars.contains(where: {
+                (0x00 ... 0x1F).contains($0.value)
+                    || (0x7F ... 0x9F).contains($0.value)
+                    || (0xF700 ... 0xF8FF).contains($0.value)
+            })
+    }
+
+    private static func invalidAction(
+        in container: KeyedDecodingContainer<CodingKeys>
+    ) -> DecodingError {
+        .dataCorruptedError(
+            forKey: .kind,
+            in: container,
+            debugDescription: "Invalid remote-input action."
+        )
+    }
+}
+
+/// One monotonically identified input action bound to an active screen capability.
+public struct WebRTCInputRequest: Codable, Equatable, Sendable {
+    public let id: UInt64
+    public let screenRequestID: UInt64
+    public let inputSessionID: UUID
+    public let action: WebRTCInputAction
+
+    public init(
+        id: UInt64,
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        action: WebRTCInputAction
+    ) {
+        self.id = id
+        self.screenRequestID = screenRequestID
+        self.inputSessionID = inputSessionID
+        self.action = action
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case screenRequestID
+        case inputSessionID
+        case action
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try container.decode(UInt64.self, forKey: .id)
+        let screenRequestID = try container.decode(UInt64.self, forKey: .screenRequestID)
+        let inputSessionID = try container.decode(UUID.self, forKey: .inputSessionID)
+        let action = try container.decode(WebRTCInputAction.self, forKey: .action)
+        guard id > 0,
+              screenRequestID > 0,
+              inputSessionID != WebRTCInputCapability.zeroUUIDForValidation,
+              action.isValid else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .id,
+                in: container,
+                debugDescription: "Invalid remote-input request."
+            )
+        }
+        self.init(
+            id: id,
+            screenRequestID: screenRequestID,
+            inputSessionID: inputSessionID,
+            action: action
+        )
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        guard isValid else {
+            throw EncodingError.invalidValue(
+                self,
+                .init(codingPath: encoder.codingPath, debugDescription: "Invalid remote-input request.")
+            )
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(screenRequestID, forKey: .screenRequestID)
+        try container.encode(inputSessionID, forKey: .inputSessionID)
+        try container.encode(action, forKey: .action)
+    }
+
+    var isValid: Bool {
+        id > 0
+            && screenRequestID > 0
+            && inputSessionID != WebRTCInputCapability.zeroUUIDForValidation
+            && action.isValid
+    }
+}
+
+/// Host-reported editability state; secure fields never authorize committed-text insertion.
+public enum WebRTCInputFocus: Codable, Equatable, Sendable {
+    case none
+    case editable(generation: UInt64, secure: Bool)
+
+    private enum Kind: String, Codable { case none, editable }
+    private enum CodingKeys: String, CodingKey { case kind, generation, secure }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .none:
+            guard !container.contains(.generation), !container.contains(.secure) else {
+                throw Self.invalidFocus(in: container)
+            }
+            self = .none
+        case .editable:
+            let generation = try container.decode(UInt64.self, forKey: .generation)
+            guard generation > 0 else { throw Self.invalidFocus(in: container) }
+            self = .editable(
+                generation: generation,
+                secure: try container.decode(Bool.self, forKey: .secure)
+            )
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .none:
+            try container.encode(Kind.none, forKey: .kind)
+        case .editable(let generation, let secure):
+            guard generation > 0 else {
+                throw EncodingError.invalidValue(
+                    self,
+                    .init(codingPath: encoder.codingPath, debugDescription: "Invalid focus generation.")
+                )
+            }
+            try container.encode(Kind.editable, forKey: .kind)
+            try container.encode(generation, forKey: .generation)
+            try container.encode(secure, forKey: .secure)
+        }
+    }
+
+    var isValid: Bool {
+        if case .editable(let generation, _) = self { return generation > 0 }
+        return true
+    }
+
+    private static func invalidFocus(
+        in container: KeyedDecodingContainer<CodingKeys>
+    ) -> DecodingError {
+        .dataCorruptedError(
+            forKey: .kind,
+            in: container,
+            debugDescription: "Invalid remote-input focus."
+        )
+    }
+}
+
+/// Whether the host accepted a remote input request for OS injection.
+public enum WebRTCInputFeedbackResult: String, Codable, Sendable {
+    case accepted
+    case rejected
+}
+
+/// Closed reasons for refusing input without exposing host UI or document contents.
+public enum WebRTCInputRejectionReason: String, Codable, CaseIterable, Sendable {
+    case inputDisabled
+    case staleSession
+    case invalidFocus
+    case accessibilityPermissionRequired
+    case eventPostingPermissionRequired
+    case rateLimited
+    case injectionFailed
+    case invalidRequest
+}
+
+/// Result and focus state bound to the exact input and screen-generation identifiers.
+public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
+    public let id: UInt64
+    public let screenRequestID: UInt64
+    public let inputSessionID: UUID
+    public let result: WebRTCInputFeedbackResult
+    public let rejectionReason: WebRTCInputRejectionReason?
+    public let focus: WebRTCInputFocus
+
+    public init(
+        id: UInt64,
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        result: WebRTCInputFeedbackResult,
+        rejectionReason: WebRTCInputRejectionReason? = nil,
+        focus: WebRTCInputFocus = .none
+    ) {
+        self.id = id
+        self.screenRequestID = screenRequestID
+        self.inputSessionID = inputSessionID
+        self.result = result
+        self.rejectionReason = rejectionReason
+        self.focus = focus
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case screenRequestID
+        case inputSessionID
+        case result
+        case rejectionReason
+        case focus
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let result = try container.decode(WebRTCInputFeedbackResult.self, forKey: .result)
+        let rejectionReason = try container.decodeIfPresent(
+            WebRTCInputRejectionReason.self,
+            forKey: .rejectionReason
+        )
+        let id = try container.decode(UInt64.self, forKey: .id)
+        let screenRequestID = try container.decode(UInt64.self, forKey: .screenRequestID)
+        let inputSessionID = try container.decode(UUID.self, forKey: .inputSessionID)
+        let focus = try container.decode(WebRTCInputFocus.self, forKey: .focus)
+        guard id > 0,
+              screenRequestID > 0,
+              inputSessionID != WebRTCInputCapability.zeroUUIDForValidation,
+              focus.isValid,
+              (result == .accepted ? rejectionReason == nil : rejectionReason != nil) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .result,
+                in: container,
+                debugDescription: "Invalid remote-input feedback."
+            )
+        }
+        self.init(
+            id: id,
+            screenRequestID: screenRequestID,
+            inputSessionID: inputSessionID,
+            result: result,
+            rejectionReason: rejectionReason,
+            focus: focus
+        )
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        guard isValid else {
+            throw EncodingError.invalidValue(
+                self,
+                .init(codingPath: encoder.codingPath, debugDescription: "Invalid remote-input feedback.")
+            )
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(screenRequestID, forKey: .screenRequestID)
+        try container.encode(inputSessionID, forKey: .inputSessionID)
+        try container.encode(result, forKey: .result)
+        try container.encodeIfPresent(rejectionReason, forKey: .rejectionReason)
+        try container.encode(focus, forKey: .focus)
+    }
+
+    var isValid: Bool {
+        id > 0
+            && screenRequestID > 0
+            && inputSessionID != WebRTCInputCapability.zeroUUIDForValidation
+            && focus.isValid
+            && (result == .accepted ? rejectionReason == nil : rejectionReason != nil)
+    }
+}
+
+private extension WebRTCInputCapability {
+    static var zeroUUIDForValidation: UUID { zeroUUID }
+}

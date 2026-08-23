@@ -259,6 +259,7 @@ own Keychain service and therefore presents a fresh one-time code for the side-b
 - `iOS/opensteamer/` — SwiftUI viewer, Keychain state, lifecycle policy, and physical oracles.
 - `services/RendezvousWorker/` — complete Cloudflare Worker control plane.
 - `services/Rendezvous/` — single-process `/v1` rendezvous for local or self-hosted experiments.
+- [MAINTENANCE.md](MAINTENANCE.md) — source ownership, generated files, and frozen evidence boundaries.
 - [WORLDWIDE_REMOTE_ACCESS.md](WORLDWIDE_REMOTE_ACCESS.md) — protocol and trust boundaries.
 - [TESTING_ORACLES.md](TESTING_ORACLES.md) — claims, independent evidence, and mutation gates.
 - [BRANDING.md](BRANDING.md) — lowercase naming rules and immutable compatibility identifiers.
