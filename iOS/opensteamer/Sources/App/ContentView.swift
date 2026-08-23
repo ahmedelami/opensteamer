@@ -34,23 +34,28 @@ struct ContentView: View {
             }
         }
         .task {
+            forwardScenePhase(scenePhase)
             // Discovery is idempotent, so tying it to the view task also covers root recreation.
             viewModel.startBrowsing()
         }
         .onChange(of: scenePhase) { _, newPhase in
-            switch newPhase {
-            case .active:
-                viewModel.handleAppBecameActive()
-                worldwideViewModel.handleAppBecameActive()
-            case .inactive:
-                viewModel.handleAppBecameInactive()
-                worldwideViewModel.handleAppBecameInactive()
-            case .background:
-                viewModel.handleAppEnteredBackground()
-                worldwideViewModel.handleAppEnteredBackground()
-            @unknown default:
-                break
-            }
+            forwardScenePhase(newPhase)
+        }
+    }
+
+    private func forwardScenePhase(_ phase: ScenePhase) {
+        switch phase {
+        case .active:
+            viewModel.handleAppBecameActive()
+            worldwideViewModel.handleAppBecameActive()
+        case .inactive:
+            viewModel.handleAppBecameInactive()
+            worldwideViewModel.handleAppBecameInactive()
+        case .background:
+            viewModel.handleAppEnteredBackground()
+            worldwideViewModel.handleAppEnteredBackground()
+        @unknown default:
+            break
         }
     }
 }

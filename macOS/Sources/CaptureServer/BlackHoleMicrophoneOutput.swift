@@ -1,0 +1,3706 @@
+import AudioToolbox
+import CaptureCore
+import CoreAudio
+import Darwin
+import Dispatch
+import Foundation
+import MacWebRTCAudioDeviceShim
+import WebRTCTransport
+
+struct BlackHoleFaceTimeClockObservation: Equatable, Sendable {
+    let deviceSampleTime: Double
+    let deviceHostTime: UInt64
+    let deviceSampleRate: Double
+    let projectedFaceTimeSampleTime: UInt64
+}
+
+enum BlackHoleFaceTimeClockRejection: Error, Equatable, Sendable {
+    case coreAudioStatus(OSStatus)
+    case sampleRateCoreAudioStatus(OSStatus)
+    case missingRequiredTimestampFlags(actual: AudioTimeStampFlags)
+    case nonFiniteDeviceSampleTime
+    case negativeDeviceSampleTime
+    case nonIntegralDeviceSampleTime
+    case zeroDeviceHostTime
+    case unexpectedDeviceSampleRate
+    case projectedSampleTimeOverflow
+    case deviceSampleTimeDidNotAdvance(previous: Double, current: Double)
+    case deviceHostTimeDidNotAdvance(previous: UInt64, current: UInt64)
+    case deviceClockRateMismatch(
+        actualFrameDelta: Double,
+        expectedFrameDelta: Double,
+        toleranceFrames: Double,
+        elapsedHostNanoseconds: UInt64
+    )
+    case startupClockContinuityTimedOut
+    case insufficientSigned32Headroom(
+        observation: BlackHoleFaceTimeClockObservation,
+        maximumProjectedSampleTime: UInt64
+    )
+
+    var description: String {
+        switch self {
+        case .coreAudioStatus(let status):
+            return "device-time read failed with Core Audio status \(status)"
+        case .sampleRateCoreAudioStatus(let status):
+            return "device sample-rate read failed with Core Audio status \(status)"
+        case .missingRequiredTimestampFlags(let actual):
+            return "device time omitted required sample/host flags (actual=\(actual))"
+        case .nonFiniteDeviceSampleTime:
+            return "device sample time was not finite"
+        case .negativeDeviceSampleTime:
+            return "device sample time was negative"
+        case .nonIntegralDeviceSampleTime:
+            return "device sample time was not an integral frame count"
+        case .zeroDeviceHostTime:
+            return "device host time was zero"
+        case .unexpectedDeviceSampleRate:
+            return "device sample rate was not the required 48000 Hz"
+        case .projectedSampleTimeOverflow:
+            return "the projected FaceTime sample time was not representable"
+        case .deviceSampleTimeDidNotAdvance(let previous, let current):
+            return "device sample time did not advance from \(previous) (current=\(current))"
+        case .deviceHostTimeDidNotAdvance(let previous, let current):
+            return "device host time did not advance from \(previous) (current=\(current))"
+        case .deviceClockRateMismatch(
+            let actualFrameDelta,
+            let expectedFrameDelta,
+            let toleranceFrames,
+            let elapsedHostNanoseconds
+        ):
+            return "device clock advanced \(actualFrameDelta) frames over "
+                + "\(elapsedHostNanoseconds) host nanoseconds; expected "
+                + "\(expectedFrameDelta) +/- \(toleranceFrames) frames"
+        case .startupClockContinuityTimedOut:
+            return "device sample/host time did not provide two "
+                + "advancing observations before the startup deadline"
+        case .insufficientSigned32Headroom(
+            let observation,
+            let maximumProjectedSampleTime
+        ):
+            return "projected 24 kHz sample time "
+                + "\(observation.projectedFaceTimeSampleTime) exceeds safe "
+                + "signed-32 limit \(maximumProjectedSampleTime)"
+        }
+    }
+}
+
+/// Compatibility gate for FaceTime's observed signed-32 microphone timeline.
+///
+/// BlackHole's public device time is in the validated 48 kHz endpoint domain;
+/// FaceTime's failing AUIO boundary advances at 24 kHz. Projection therefore
+/// preserves elapsed time and rounds upward before reserving one minute for a
+/// delayed watchdog tick and fail-closed teardown.
+struct BlackHoleFaceTimeClockPolicy: Sendable {
+    static let deviceSampleRate: UInt64 = 48_000
+    static let faceTimeSampleRate: UInt64 = 24_000
+    static let requiredHeadroomSeconds: UInt64 = 60
+    static let requiredHeadroomFrames =
+        faceTimeSampleRate * requiredHeadroomSeconds
+    static let maximumProjectedSampleTime =
+        UInt64(Int32.max) - requiredHeadroomFrames
+    static let requiredTimestampFlags: AudioTimeStampFlags = [
+        .sampleTimeValid,
+        .hostTimeValid,
+    ]
+
+    /// BlackHole's optional adjustable clock is documented as +/-1%. The
+    /// paired sample/host timestamps remove watchdog scheduling jitter, so a
+    /// 2% envelope covers that full supported range plus conversion rounding
+    /// while rejecting a clock that can unexpectedly consume the 60-second
+    /// signed-32 teardown reserve. Two frames is the minimum rounding floor
+    /// for very short observations.
+    static let maximumClockRateErrorFraction = 0.02
+    static let minimumClockRateToleranceFrames = 2.0
+
+    private static let firstUnrepresentableUInt64AsDouble =
+        18_446_744_073_709_551_616.0
+
+    static func projectedFaceTimeSampleTime(
+        sampleTime: Double,
+        sampleRate: Double
+    ) -> Result<UInt64, BlackHoleFaceTimeClockRejection> {
+        guard sampleTime.isFinite else {
+            return .failure(.nonFiniteDeviceSampleTime)
+        }
+        guard sampleTime >= 0 else {
+            return .failure(.negativeDeviceSampleTime)
+        }
+        guard sampleTime.rounded(.towardZero) == sampleTime else {
+            return .failure(.nonIntegralDeviceSampleTime)
+        }
+        guard sampleRate.isFinite, sampleRate > 0 else {
+            return .failure(.unexpectedDeviceSampleRate)
+        }
+
+        let projected = ceil(
+            sampleTime / sampleRate
+                * Double(faceTimeSampleRate)
+        )
+        guard projected.isFinite,
+              projected >= 0,
+              projected < firstUnrepresentableUInt64AsDouble else {
+            return .failure(.projectedSampleTimeOverflow)
+        }
+        return .success(UInt64(projected))
+    }
+
+    func evaluate(
+        status: OSStatus,
+        timestamp: AudioTimeStamp,
+        deviceSampleRate: Double = Double(Self.deviceSampleRate),
+        previous: BlackHoleFaceTimeClockObservation? = nil
+    ) -> Result<
+        BlackHoleFaceTimeClockObservation,
+        BlackHoleFaceTimeClockRejection
+    > {
+        guard status == noErr else {
+            return .failure(.coreAudioStatus(status))
+        }
+        guard timestamp.mFlags.contains(
+            Self.requiredTimestampFlags
+        ) else {
+            return .failure(
+                .missingRequiredTimestampFlags(
+                    actual: timestamp.mFlags
+                )
+            )
+        }
+        guard timestamp.mHostTime > 0 else {
+            return .failure(.zeroDeviceHostTime)
+        }
+        guard deviceSampleRate == Double(Self.deviceSampleRate) else {
+            return .failure(.unexpectedDeviceSampleRate)
+        }
+
+        let projected: UInt64
+        switch Self.projectedFaceTimeSampleTime(
+            sampleTime: timestamp.mSampleTime,
+            sampleRate: deviceSampleRate
+        ) {
+        case .success(let value):
+            projected = value
+        case .failure(let rejection):
+            return .failure(rejection)
+        }
+
+        let observation = BlackHoleFaceTimeClockObservation(
+            deviceSampleTime: timestamp.mSampleTime,
+            deviceHostTime: timestamp.mHostTime,
+            deviceSampleRate: deviceSampleRate,
+            projectedFaceTimeSampleTime: projected
+        )
+        if let previous {
+            guard observation.deviceSampleTime
+                    > previous.deviceSampleTime else {
+                return .failure(
+                    .deviceSampleTimeDidNotAdvance(
+                        previous: previous.deviceSampleTime,
+                        current: observation.deviceSampleTime
+                    )
+                )
+            }
+            guard observation.deviceHostTime
+                    > previous.deviceHostTime else {
+                return .failure(
+                    .deviceHostTimeDidNotAdvance(
+                        previous: previous.deviceHostTime,
+                        current: observation.deviceHostTime
+                    )
+                )
+            }
+        }
+        guard projected <= Self.maximumProjectedSampleTime else {
+            return .failure(
+                .insufficientSigned32Headroom(
+                    observation: observation,
+                    maximumProjectedSampleTime:
+                        Self.maximumProjectedSampleTime
+                )
+            )
+        }
+        if let previous {
+            let hostDelta = observation.deviceHostTime
+                - previous.deviceHostTime
+            let elapsedHostNanoseconds =
+                AudioConvertHostTimeToNanos(hostDelta)
+            let expectedFrameDelta =
+                Double(elapsedHostNanoseconds)
+                * deviceSampleRate
+                / 1_000_000_000
+            let actualFrameDelta =
+                observation.deviceSampleTime
+                - previous.deviceSampleTime
+            let toleranceFrames = max(
+                Self.minimumClockRateToleranceFrames,
+                expectedFrameDelta
+                    * Self.maximumClockRateErrorFraction
+            )
+            guard expectedFrameDelta.isFinite,
+                  abs(actualFrameDelta - expectedFrameDelta)
+                    <= toleranceFrames else {
+                return .failure(
+                    .deviceClockRateMismatch(
+                        actualFrameDelta: actualFrameDelta,
+                        expectedFrameDelta: expectedFrameDelta,
+                        toleranceFrames: toleranceFrames,
+                        elapsedHostNanoseconds:
+                            elapsedHostNanoseconds
+                    )
+                )
+            }
+        }
+        return .success(observation)
+    }
+}
+
+struct BlackHoleMicrophoneOutputFormatEvidence {
+    var streamDescriptionStatus: OSStatus
+    var streamDescription: AudioStreamBasicDescription
+    var deviceSampleRateStatus: OSStatus
+    var deviceSampleRate: Double
+    var deviceChannelCountStatus: OSStatus
+    var deviceChannelCount: UInt32
+    var converterErrorReadStatus: OSStatus
+    var converterError: UInt32
+}
+
+struct BlackHoleMicrophoneOutputFormatObservation:
+    Equatable,
+    Sendable
+{
+    let sampleRate: Double
+    let formatID: AudioFormatID
+    let formatFlags: AudioFormatFlags
+    let bytesPerPacket: UInt32
+    let framesPerPacket: UInt32
+    let bytesPerFrame: UInt32
+    let channelsPerFrame: UInt32
+    let bitsPerChannel: UInt32
+    let reserved: UInt32
+    let deviceSampleRate: Double
+    let deviceChannelCount: UInt32
+    let converterError: UInt32
+}
+
+enum BlackHoleMicrophoneOutputFormatRejection:
+    Error,
+    Equatable,
+    Sendable
+{
+    case streamDescriptionCoreAudioStatus(OSStatus)
+    case deviceSampleRateCoreAudioStatus(OSStatus)
+    case deviceChannelCountCoreAudioStatus(OSStatus)
+    case converterErrorCoreAudioStatus(OSStatus)
+    case unexpectedStreamSampleRate(actual: Double)
+    case unexpectedStreamFormatID(actual: AudioFormatID)
+    case unexpectedStreamFormatFlags(actual: AudioFormatFlags)
+    case unexpectedStreamBytesPerPacket(actual: UInt32)
+    case unexpectedStreamFramesPerPacket(actual: UInt32)
+    case unexpectedStreamBytesPerFrame(actual: UInt32)
+    case unexpectedStreamChannelsPerFrame(actual: UInt32)
+    case unexpectedStreamBitsPerChannel(actual: UInt32)
+    case unexpectedStreamReserved(actual: UInt32)
+    case unexpectedDeviceSampleRate(actual: Double)
+    case unexpectedDeviceChannelCount(actual: UInt32)
+    case converterError(actual: UInt32)
+
+    var coreAudioStatus: OSStatus {
+        switch self {
+        case .streamDescriptionCoreAudioStatus(let status),
+             .deviceSampleRateCoreAudioStatus(let status),
+             .deviceChannelCountCoreAudioStatus(let status),
+             .converterErrorCoreAudioStatus(let status):
+            return status
+        case .unexpectedStreamSampleRate,
+             .unexpectedStreamFormatID,
+             .unexpectedStreamFormatFlags,
+             .unexpectedStreamBytesPerPacket,
+             .unexpectedStreamFramesPerPacket,
+             .unexpectedStreamBytesPerFrame,
+             .unexpectedStreamChannelsPerFrame,
+             .unexpectedStreamBitsPerChannel,
+             .unexpectedStreamReserved,
+             .unexpectedDeviceSampleRate,
+             .unexpectedDeviceChannelCount,
+             .converterError:
+            return kAudio_ParamError
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .streamDescriptionCoreAudioStatus(let status):
+            return "queue stream-description read failed with Core Audio status \(status)"
+        case .deviceSampleRateCoreAudioStatus(let status):
+            return "queue device sample-rate read failed with Core Audio status \(status)"
+        case .deviceChannelCountCoreAudioStatus(let status):
+            return "queue device channel-count read failed with Core Audio status \(status)"
+        case .converterErrorCoreAudioStatus(let status):
+            return "queue converter-error read failed with Core Audio status \(status)"
+        case .unexpectedStreamSampleRate(let actual):
+            return "queue stream sample rate was \(actual), expected 48000"
+        case .unexpectedStreamFormatID(let actual):
+            return "queue stream format ID was \(actual), expected linear PCM"
+        case .unexpectedStreamFormatFlags(let actual):
+            return "queue stream format flags were \(actual), expected "
+                + "signed packed interleaved Int16"
+        case .unexpectedStreamBytesPerPacket(let actual):
+            return "queue stream bytes per packet were \(actual), expected 2"
+        case .unexpectedStreamFramesPerPacket(let actual):
+            return "queue stream frames per packet were \(actual), expected 1"
+        case .unexpectedStreamBytesPerFrame(let actual):
+            return "queue stream bytes per frame were \(actual), expected 2"
+        case .unexpectedStreamChannelsPerFrame(let actual):
+            return "queue stream channel count was \(actual), expected 1"
+        case .unexpectedStreamBitsPerChannel(let actual):
+            return "queue stream bits per channel were \(actual), expected 16"
+        case .unexpectedStreamReserved(let actual):
+            return "queue stream reserved field was \(actual), expected 0"
+        case .unexpectedDeviceSampleRate(let actual):
+            return "queue device sample rate was \(actual), expected 48000"
+        case .unexpectedDeviceChannelCount(let actual):
+            return "queue device channel count was \(actual), expected 1"
+        case .converterError(let actual):
+            return "queue converter error was nonzero (actual=\(actual))"
+        }
+    }
+}
+
+struct BlackHoleMicrophoneOutputFormatPolicy: Sendable {
+    static let requiredSampleRate = 48_000.0
+    static let requiredChannelCount: UInt32 = 1
+    static let requiredFormatFlags: AudioFormatFlags =
+        kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked
+
+    static var requiredStreamDescription:
+        AudioStreamBasicDescription {
+        AudioStreamBasicDescription(
+            mSampleRate: requiredSampleRate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: requiredFormatFlags,
+            mBytesPerPacket: 2,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 2,
+            mChannelsPerFrame: requiredChannelCount,
+            mBitsPerChannel: 16,
+            mReserved: 0
+        )
+    }
+
+    static var validEvidence: BlackHoleMicrophoneOutputFormatEvidence {
+        BlackHoleMicrophoneOutputFormatEvidence(
+            streamDescriptionStatus: noErr,
+            streamDescription: requiredStreamDescription,
+            deviceSampleRateStatus: noErr,
+            deviceSampleRate: requiredSampleRate,
+            deviceChannelCountStatus: noErr,
+            deviceChannelCount: requiredChannelCount,
+            converterErrorReadStatus: noErr,
+            converterError: 0
+        )
+    }
+
+    func evaluate(
+        _ evidence: BlackHoleMicrophoneOutputFormatEvidence
+    ) -> Result<
+        BlackHoleMicrophoneOutputFormatObservation,
+        BlackHoleMicrophoneOutputFormatRejection
+    > {
+        guard evidence.streamDescriptionStatus == noErr else {
+            return .failure(
+                .streamDescriptionCoreAudioStatus(
+                    evidence.streamDescriptionStatus
+                )
+            )
+        }
+        guard evidence.deviceSampleRateStatus == noErr else {
+            return .failure(
+                .deviceSampleRateCoreAudioStatus(
+                    evidence.deviceSampleRateStatus
+                )
+            )
+        }
+        guard evidence.deviceChannelCountStatus == noErr else {
+            return .failure(
+                .deviceChannelCountCoreAudioStatus(
+                    evidence.deviceChannelCountStatus
+                )
+            )
+        }
+        guard evidence.converterErrorReadStatus == noErr else {
+            return .failure(
+                .converterErrorCoreAudioStatus(
+                    evidence.converterErrorReadStatus
+                )
+            )
+        }
+
+        let stream = evidence.streamDescription
+        guard stream.mSampleRate == Self.requiredSampleRate else {
+            return .failure(
+                .unexpectedStreamSampleRate(
+                    actual: stream.mSampleRate
+                )
+            )
+        }
+        guard stream.mFormatID == kAudioFormatLinearPCM else {
+            return .failure(
+                .unexpectedStreamFormatID(actual: stream.mFormatID)
+            )
+        }
+        guard stream.mFormatFlags == Self.requiredFormatFlags else {
+            return .failure(
+                .unexpectedStreamFormatFlags(
+                    actual: stream.mFormatFlags
+                )
+            )
+        }
+        guard stream.mBytesPerPacket == 2 else {
+            return .failure(
+                .unexpectedStreamBytesPerPacket(
+                    actual: stream.mBytesPerPacket
+                )
+            )
+        }
+        guard stream.mFramesPerPacket == 1 else {
+            return .failure(
+                .unexpectedStreamFramesPerPacket(
+                    actual: stream.mFramesPerPacket
+                )
+            )
+        }
+        guard stream.mBytesPerFrame == 2 else {
+            return .failure(
+                .unexpectedStreamBytesPerFrame(
+                    actual: stream.mBytesPerFrame
+                )
+            )
+        }
+        guard stream.mChannelsPerFrame == Self.requiredChannelCount else {
+            return .failure(
+                .unexpectedStreamChannelsPerFrame(
+                    actual: stream.mChannelsPerFrame
+                )
+            )
+        }
+        guard stream.mBitsPerChannel == 16 else {
+            return .failure(
+                .unexpectedStreamBitsPerChannel(
+                    actual: stream.mBitsPerChannel
+                )
+            )
+        }
+        guard stream.mReserved == 0 else {
+            return .failure(
+                .unexpectedStreamReserved(actual: stream.mReserved)
+            )
+        }
+        guard evidence.deviceSampleRate == Self.requiredSampleRate else {
+            return .failure(
+                .unexpectedDeviceSampleRate(
+                    actual: evidence.deviceSampleRate
+                )
+            )
+        }
+        guard evidence.deviceChannelCount == Self.requiredChannelCount else {
+            return .failure(
+                .unexpectedDeviceChannelCount(
+                    actual: evidence.deviceChannelCount
+                )
+            )
+        }
+        guard evidence.converterError == 0 else {
+            return .failure(
+                .converterError(actual: evidence.converterError)
+            )
+        }
+
+        return .success(
+            BlackHoleMicrophoneOutputFormatObservation(
+                sampleRate: stream.mSampleRate,
+                formatID: stream.mFormatID,
+                formatFlags: stream.mFormatFlags,
+                bytesPerPacket: stream.mBytesPerPacket,
+                framesPerPacket: stream.mFramesPerPacket,
+                bytesPerFrame: stream.mBytesPerFrame,
+                channelsPerFrame: stream.mChannelsPerFrame,
+                bitsPerChannel: stream.mBitsPerChannel,
+                reserved: stream.mReserved,
+                deviceSampleRate: evidence.deviceSampleRate,
+                deviceChannelCount: evidence.deviceChannelCount,
+                converterError: evidence.converterError
+            )
+        )
+    }
+}
+
+struct BlackHoleMicrophoneOutputPCMScalarSnapshot:
+    Equatable,
+    Sendable
+{
+    let rms: Double
+    let rmsDBFS: Double
+    let peak: Double
+    let peakDBFS: Double
+    let dc: Double
+    let zeroFraction: Double
+    let clippingFraction: Double
+
+    static let zero = Self(
+        rms: 0,
+        rmsDBFS: -160,
+        peak: 0,
+        peakDBFS: -160,
+        dc: 0,
+        zeroFraction: 0,
+        clippingFraction: 0
+    )
+}
+
+struct BlackHoleMicrophoneOutputPCMContentSnapshot:
+    Equatable,
+    Sendable
+{
+    static let minimumDBFS = -160.0
+
+    let lifecycleGeneration: UInt64
+    let windowSequence: UInt64
+    let completedFrameCount: UInt64
+    let sourceStartFrame: UInt64
+    let sourceEndFrame: UInt64
+    let windowFrameCount: UInt64
+    var windowByteCount: UInt64 { windowFrameCount * 2 }
+    /// Non-reversible process-local comparison evidence. Never log this value.
+    let windowFingerprint: UInt64
+    let metrics: BlackHoleMicrophoneOutputPCMScalarSnapshot
+
+    var completedWindowCount: UInt64 { windowSequence }
+
+    static let zero = Self(
+        lifecycleGeneration: 0,
+        windowSequence: 0,
+        completedFrameCount: 0,
+        sourceStartFrame: 0,
+        sourceEndFrame: 0,
+        windowFrameCount: 0,
+        windowFingerprint: 0,
+        metrics: .zero
+    )
+
+    init(
+        lifecycleGeneration: UInt64,
+        windowSequence: UInt64,
+        completedFrameCount: UInt64,
+        sourceStartFrame: UInt64,
+        sourceEndFrame: UInt64,
+        windowFrameCount: UInt64,
+        windowFingerprint: UInt64,
+        metrics: BlackHoleMicrophoneOutputPCMScalarSnapshot
+    ) {
+        self.lifecycleGeneration = lifecycleGeneration
+        self.windowSequence = windowSequence
+        self.completedFrameCount = completedFrameCount
+        self.sourceStartFrame = sourceStartFrame
+        self.sourceEndFrame = sourceEndFrame
+        self.windowFrameCount = windowFrameCount
+        self.windowFingerprint = windowFingerprint
+        self.metrics = metrics
+    }
+
+    fileprivate init(
+        lifecycleGeneration: UInt64,
+        windowSequence: UInt64,
+        completedFrameCount: UInt64,
+        raw: BlackHoleMicrophoneOutputPCMContentRawWindow
+    ) {
+        let frameCount = Double(raw.frameCount)
+        guard frameCount > 0 else {
+            self = .zero
+            return
+        }
+
+        let fullScale = 32_768.0
+        let rms = sqrt(Double(raw.squareSum) / frameCount) / fullScale
+        let peak = Double(raw.peak) / fullScale
+
+        self.lifecycleGeneration = lifecycleGeneration
+        self.windowSequence = windowSequence
+        self.completedFrameCount = completedFrameCount
+        sourceStartFrame = raw.sourceStartFrame
+        sourceEndFrame = raw.sourceEndFrame
+        windowFrameCount = raw.frameCount
+        windowFingerprint = raw.windowFingerprint
+        metrics = Self.scalarSnapshot(
+            rms: rms,
+            peak: peak,
+            sampleSum: raw.sampleSum,
+            zeroCount: raw.zeroCount,
+            clippingCount: raw.clippingCount,
+            frameCount: frameCount,
+            fullScale: fullScale
+        )
+    }
+
+    private static func scalarSnapshot(
+        rms: Double,
+        peak: Double,
+        sampleSum: Int64,
+        zeroCount: UInt64,
+        clippingCount: UInt64,
+        frameCount: Double,
+        fullScale: Double
+    ) -> BlackHoleMicrophoneOutputPCMScalarSnapshot {
+        BlackHoleMicrophoneOutputPCMScalarSnapshot(
+            rms: rms,
+            rmsDBFS: decibelsFullScale(rms),
+            peak: peak,
+            peakDBFS: decibelsFullScale(peak),
+            dc: Double(sampleSum) / (frameCount * fullScale),
+            zeroFraction: Double(zeroCount) / frameCount,
+            clippingFraction: Double(clippingCount) / frameCount
+        )
+    }
+
+    private static func decibelsFullScale(
+        _ amplitude: Double
+    ) -> Double {
+        guard amplitude > 0 else { return minimumDBFS }
+        return max(
+            minimumDBFS,
+            min(0, 20 * log10(amplitude))
+        )
+    }
+
+}
+
+struct BlackHoleMicrophoneOutputDecodedContentSnapshot:
+    Equatable,
+    Sendable
+{
+    let playoutGeneration: UInt64
+    let renderCallCount: UInt64
+    let requestedFrameCount: UInt64
+    let requestedByteCount: UInt64
+    let returnedByteCount: UInt64
+    let nativeSuccessRenderCallCount: UInt64
+    let nativeFailureRenderCallCount: UInt64
+    let exactBufferContractCount: UInt64
+    let bufferContractMismatchCount: UInt64
+    let analyzedRenderCallCount: UInt64
+    let analyzedFrameCount: UInt64
+    let analyzedByteCount: UInt64
+    let droppedTelemetryRenderCallCount: UInt64
+    let pendingWindowFrameCount: UInt64
+    let latestRenderCall: UInt64
+    let latestRenderStatus: OSStatus
+    let latestRequestedFrameCount: UInt32
+    let latestRequestedByteCount: UInt32
+    let latestReturnedByteCount: UInt32
+    let latestBufferContractWasExact: Bool
+    let hasCompletedWindow: Bool
+    let windowSequence: UInt64
+    let windowGeneration: UInt64
+    let windowFirstRenderCall: UInt64
+    let windowLastRenderCall: UInt64
+    let windowRenderCallCount: UInt64
+    let windowFrameCount: UInt64
+    let windowByteCount: UInt64
+    let windowSourceStartFrame: UInt64
+    let windowSourceEndFrame: UInt64
+    /// Non-reversible process-local comparison evidence. Never log this value.
+    let windowFingerprint: UInt64
+    let metrics: BlackHoleMicrophoneOutputPCMScalarSnapshot
+    let windowIsAllZero: Bool
+    let frozenBlockCount: UInt64
+    let longestFrozenBlockRun: UInt64
+
+    static let zero = Self(ASMacDecodedPlayoutTelemetrySnapshot())
+
+    init(_ native: ASMacDecodedPlayoutTelemetrySnapshot) {
+        playoutGeneration = native.playoutGeneration
+        renderCallCount = native.renderCallCount
+        requestedFrameCount = native.requestedFrameCount
+        requestedByteCount = native.requestedByteCount
+        returnedByteCount = native.returnedByteCount
+        nativeSuccessRenderCallCount =
+            native.nativeSuccessRenderCallCount
+        nativeFailureRenderCallCount =
+            native.nativeFailureRenderCallCount
+        exactBufferContractCount = native.exactBufferContractCount
+        bufferContractMismatchCount =
+            native.bufferContractMismatchCount
+        analyzedRenderCallCount = native.analyzedRenderCallCount
+        analyzedFrameCount = native.analyzedFrameCount
+        analyzedByteCount = native.analyzedByteCount
+        droppedTelemetryRenderCallCount =
+            native.droppedTelemetryRenderCallCount
+        pendingWindowFrameCount = native.pendingWindowFrameCount
+        latestRenderCall = native.latestRenderCall
+        latestRenderStatus = native.latestRenderStatus
+        latestRequestedFrameCount = native.latestRequestedFrameCount
+        latestRequestedByteCount = native.latestRequestedByteCount
+        latestReturnedByteCount = native.latestReturnedByteCount
+        latestBufferContractWasExact =
+            native.latestBufferContractWasExact
+        hasCompletedWindow = native.hasCompletedWindow
+        windowSequence = native.completedWindowSequence
+        windowGeneration = native.completedWindowGeneration
+        windowFirstRenderCall = native.completedWindowFirstRenderCall
+        windowLastRenderCall = native.completedWindowLastRenderCall
+        windowRenderCallCount = native.completedWindowRenderCallCount
+        windowFrameCount = native.completedWindowFrameCount
+        windowByteCount = native.completedWindowByteCount
+        windowSourceStartFrame = native.completedWindowSourceStartFrame
+        windowSourceEndFrame = native.completedWindowSourceEndFrame
+        windowFingerprint = native.completedWindowFingerprint
+        if native.hasCompletedWindow {
+            metrics = Self.scalarSnapshot(
+                rms: native.rms,
+                rmsDBFS: Self.boundedDBFS(native.rmsDecibelsFS),
+                peak: native.peak,
+                peakDBFS: Self.boundedDBFS(native.peakDecibelsFS),
+                dc: native.dc,
+                zeroFraction: native.zeroFraction,
+                clippingFraction: native.clippingFraction
+            )
+        } else {
+            metrics = .zero
+        }
+        windowIsAllZero = native.windowIsAllZero
+        frozenBlockCount = native.frozenBlockCount
+        longestFrozenBlockRun = native.longestFrozenBlockRun
+    }
+
+    private static func scalarSnapshot(
+        rms: Double,
+        rmsDBFS: Double,
+        peak: Double,
+        peakDBFS: Double,
+        dc: Double,
+        zeroFraction: Double,
+        clippingFraction: Double
+    ) -> BlackHoleMicrophoneOutputPCMScalarSnapshot {
+        BlackHoleMicrophoneOutputPCMScalarSnapshot(
+            rms: rms,
+            rmsDBFS: rmsDBFS,
+            peak: peak,
+            peakDBFS: peakDBFS,
+            dc: dc,
+            zeroFraction: zeroFraction,
+            clippingFraction: clippingFraction
+        )
+    }
+
+    private static func boundedDBFS(_ value: Double) -> Double {
+        guard value.isFinite else {
+            return BlackHoleMicrophoneOutputPCMContentSnapshot.minimumDBFS
+        }
+        return max(
+            BlackHoleMicrophoneOutputPCMContentSnapshot.minimumDBFS,
+            min(0, value)
+        )
+    }
+}
+
+struct BlackHoleMicrophoneOutputProgressSnapshot:
+    Equatable,
+    Sendable
+{
+    let queueRunning: Bool
+    let postStartCallbackCount: UInt64
+    let requestedFrameCount: UInt64
+    let successfulPullCount: UInt64
+    let successfulFrameCount: UInt64
+    let silenceFallbackCount: UInt64
+    let silenceFrameCount: UInt64
+    let enqueueFailureCount: UInt64
+    let lastEnqueueStatus: OSStatus
+    let pcmContent: BlackHoleMicrophoneOutputPCMContentSnapshot
+    let decodedContent:
+        BlackHoleMicrophoneOutputDecodedContentSnapshot
+    let boundDecodedPlayoutGeneration: UInt64
+    let boundDecodedRenderCallFloor: UInt64
+
+    var contentWindowsAlign: Bool {
+        let pcm = pcmContent
+        let decoded = decodedContent
+        return queueRunning
+            && pcm.lifecycleGeneration > 0
+            && pcm.windowSequence > 0
+            && decoded.hasCompletedWindow
+            && boundDecodedPlayoutGeneration > 0
+            && decoded.playoutGeneration
+                == boundDecodedPlayoutGeneration
+            && decoded.windowGeneration == decoded.playoutGeneration
+            && decoded.windowFirstRenderCall
+                > boundDecodedRenderCallFloor
+            && silenceFallbackCount == 0
+            && enqueueFailureCount == 0
+            && pcm.windowFrameCount == 48_000
+            && pcm.windowByteCount == 96_000
+            && decoded.windowFrameCount == pcm.windowFrameCount
+            && decoded.windowByteCount == pcm.windowByteCount
+            && pcm.sourceStartFrame == decoded.windowSourceStartFrame
+            && pcm.sourceEndFrame == decoded.windowSourceEndFrame
+    }
+
+    var alignedContentFingerprintsMatch: Bool {
+        contentWindowsAlign
+            && pcmContent.windowFingerprint
+                == decodedContent.windowFingerprint
+    }
+
+    init(
+        queueRunning: Bool,
+        postStartCallbackCount: UInt64,
+        requestedFrameCount: UInt64,
+        successfulPullCount: UInt64,
+        successfulFrameCount: UInt64,
+        silenceFallbackCount: UInt64,
+        silenceFrameCount: UInt64,
+        enqueueFailureCount: UInt64,
+        lastEnqueueStatus: OSStatus,
+        pcmContent: BlackHoleMicrophoneOutputPCMContentSnapshot = .zero,
+        decodedContent:
+            BlackHoleMicrophoneOutputDecodedContentSnapshot = .zero,
+        boundDecodedPlayoutGeneration: UInt64 = 0,
+        boundDecodedRenderCallFloor: UInt64 = 0
+    ) {
+        self.queueRunning = queueRunning
+        self.postStartCallbackCount = postStartCallbackCount
+        self.requestedFrameCount = requestedFrameCount
+        self.successfulPullCount = successfulPullCount
+        self.successfulFrameCount = successfulFrameCount
+        self.silenceFallbackCount = silenceFallbackCount
+        self.silenceFrameCount = silenceFrameCount
+        self.enqueueFailureCount = enqueueFailureCount
+        self.lastEnqueueStatus = lastEnqueueStatus
+        self.pcmContent = pcmContent
+        self.decodedContent = decodedContent
+        self.boundDecodedPlayoutGeneration =
+            boundDecodedPlayoutGeneration
+        self.boundDecodedRenderCallFloor =
+            boundDecodedRenderCallFloor
+    }
+
+    static let zero = Self(
+        queueRunning: false,
+        postStartCallbackCount: 0,
+        requestedFrameCount: 0,
+        successfulPullCount: 0,
+        successfulFrameCount: 0,
+        silenceFallbackCount: 0,
+        silenceFrameCount: 0,
+        enqueueFailureCount: 0,
+        lastEnqueueStatus: noErr,
+        pcmContent: .zero,
+        decodedContent: .zero,
+        boundDecodedPlayoutGeneration: 0,
+        boundDecodedRenderCallFloor: 0
+    )
+
+    fileprivate func includingDecodedContent(
+        _ decodedContent:
+            BlackHoleMicrophoneOutputDecodedContentSnapshot,
+        boundDecodedPlayoutGeneration: UInt64,
+        boundDecodedRenderCallFloor: UInt64
+    ) -> Self {
+        Self(
+            queueRunning: queueRunning,
+            postStartCallbackCount: postStartCallbackCount,
+            requestedFrameCount: requestedFrameCount,
+            successfulPullCount: successfulPullCount,
+            successfulFrameCount: successfulFrameCount,
+            silenceFallbackCount: silenceFallbackCount,
+            silenceFrameCount: silenceFrameCount,
+            enqueueFailureCount: enqueueFailureCount,
+            lastEnqueueStatus: lastEnqueueStatus,
+            pcmContent: pcmContent,
+            decodedContent: decodedContent,
+            boundDecodedPlayoutGeneration:
+                boundDecodedPlayoutGeneration,
+            boundDecodedRenderCallFloor:
+                boundDecodedRenderCallFloor
+        )
+    }
+}
+
+private struct BlackHoleMicrophoneOutputPCMContentRawWindow {
+    static let fingerprintOffsetBasis: UInt64 =
+        14_695_981_039_346_656_037
+    static let fingerprintPrime: UInt64 = 1_099_511_628_211
+
+    var sourceStartFrame: UInt64 = 0
+    var sourceEndFrame: UInt64 = 0
+    var frameCount: UInt64 = 0
+    var sampleSum: Int64 = 0
+    var squareSum: UInt64 = 0
+    var peak: UInt64 = 0
+    var zeroCount: UInt64 = 0
+    var clippingCount: UInt64 = 0
+    var windowFingerprint: UInt64 = fingerprintOffsetBasis
+}
+
+private final class BlackHoleMicrophoneOutputPCMContentStorage:
+    @unchecked Sendable
+{
+    private let reference: ASMacAudioQueuePCMContentRef
+
+    init?() {
+        guard let reference = ASMacAudioQueuePCMContentCreate() else {
+            return nil
+        }
+        self.reference = reference
+    }
+
+    deinit {
+        ASMacAudioQueuePCMContentDestroy(reference)
+    }
+
+    func reset() {
+        ASMacAudioQueuePCMContentReset(reference)
+    }
+
+    @inline(__always)
+    func publish(
+        _ window: BlackHoleMicrophoneOutputPCMContentRawWindow
+    ) {
+        var nativeWindow = ASMacAudioQueuePCMContentRawWindow()
+        nativeWindow.sourceStartFrame = window.sourceStartFrame
+        nativeWindow.sourceEndFrame = window.sourceEndFrame
+        nativeWindow.frameCount = window.frameCount
+        nativeWindow.sampleSum = window.sampleSum
+        nativeWindow.squareSum = window.squareSum
+        nativeWindow.peak = window.peak
+        nativeWindow.zeroCount = window.zeroCount
+        nativeWindow.clippingCount = window.clippingCount
+        nativeWindow.windowFingerprint = window.windowFingerprint
+        ASMacAudioQueuePCMContentPublish(reference, nativeWindow)
+    }
+
+    var snapshot: BlackHoleMicrophoneOutputPCMContentSnapshot {
+        let native = ASMacAudioQueuePCMContentRead(reference)
+        guard native.hasCompletedWindow else { return .zero }
+        let window = native.window
+        return BlackHoleMicrophoneOutputPCMContentSnapshot(
+            lifecycleGeneration: native.lifecycleGeneration,
+            windowSequence: native.windowSequence,
+            completedFrameCount: native.completedFrameCount,
+            raw: BlackHoleMicrophoneOutputPCMContentRawWindow(
+                sourceStartFrame: window.sourceStartFrame,
+                sourceEndFrame: window.sourceEndFrame,
+                frameCount: window.frameCount,
+                sampleSum: window.sampleSum,
+                squareSum: window.squareSum,
+                peak: window.peak,
+                zeroCount: window.zeroCount,
+                clippingCount: window.clippingCount,
+                windowFingerprint: window.windowFingerprint
+            )
+        )
+    }
+}
+
+private struct BlackHoleMicrophoneOutputPCMContentAccumulator {
+    static let targetFrameCount: UInt64 = 48_000
+
+    private var window =
+        BlackHoleMicrophoneOutputPCMContentRawWindow()
+    private var sourceFrame: UInt64 = 0
+
+    @inline(__always)
+    mutating func accumulate(
+        mono samples: UnsafePointer<Int16>,
+        frameCount: Int,
+        storage: BlackHoleMicrophoneOutputProgressStorage
+    ) {
+        var sourceFrameIndex = 0
+        while sourceFrameIndex < frameCount {
+            if window.frameCount == 0 {
+                window.sourceStartFrame = sourceFrame
+            }
+            let remainingWindowFrames = Int(
+                Self.targetFrameCount - window.frameCount
+            )
+            let consumedFrameCount = min(
+                remainingWindowFrames,
+                frameCount - sourceFrameIndex
+            )
+            let endFrameIndex = sourceFrameIndex + consumedFrameCount
+            while sourceFrameIndex < endFrameIndex {
+                accumulate(sample: Int64(samples[sourceFrameIndex]))
+                sourceFrameIndex += 1
+                sourceFrame &+= 1
+            }
+            window.frameCount += UInt64(consumedFrameCount)
+            window.sourceEndFrame = sourceFrame
+            if window.frameCount == Self.targetFrameCount {
+                storage.publishPCMContent(window)
+                window = BlackHoleMicrophoneOutputPCMContentRawWindow()
+            }
+        }
+    }
+
+    @inline(__always)
+    private mutating func accumulate(sample: Int64) {
+        let magnitude = UInt64(sample < 0 ? -sample : sample)
+        window.sampleSum += sample
+        window.squareSum += UInt64(sample * sample)
+        window.peak = max(window.peak, magnitude)
+        window.zeroCount += sample == 0 ? 1 : 0
+        window.clippingCount += Self.isClipping(magnitude) ? 1 : 0
+        let bits = UInt16(bitPattern: Int16(sample))
+        window.windowFingerprint ^= UInt64(bits & 0x00ff)
+        window.windowFingerprint &*=
+            BlackHoleMicrophoneOutputPCMContentRawWindow
+                .fingerprintPrime
+        window.windowFingerprint ^= UInt64(bits >> 8)
+        window.windowFingerprint &*=
+            BlackHoleMicrophoneOutputPCMContentRawWindow
+                .fingerprintPrime
+    }
+
+    @inline(__always)
+    private static func isClipping(
+        _ magnitude: UInt64
+    ) -> Bool {
+        magnitude >= 32_760
+    }
+}
+
+private final class BlackHoleMicrophoneOutputProgressStorage:
+    @unchecked Sendable
+{
+    let reference: ASMacAudioQueueProgressRef
+    private let pcmContentStorage:
+        BlackHoleMicrophoneOutputPCMContentStorage
+
+    init?() {
+        guard let pcmContentStorage =
+                BlackHoleMicrophoneOutputPCMContentStorage() else {
+            return nil
+        }
+        guard let reference = ASMacAudioQueueProgressCreate() else {
+            return nil
+        }
+        self.pcmContentStorage = pcmContentStorage
+        self.reference = reference
+    }
+
+    deinit {
+        ASMacAudioQueueProgressDestroy(reference)
+    }
+
+    func reset() {
+        ASMacAudioQueueProgressReset(reference)
+        pcmContentStorage.reset()
+    }
+
+    /// Must be called only after the callback lifetime has been closed and
+    /// drained, so an outgoing queue cannot republish a retired window.
+    func clearPCMContentAfterCallbackDrain() {
+        pcmContentStorage.reset()
+    }
+
+    func setQueueRunning(_ queueRunning: Bool) {
+        ASMacAudioQueueProgressSetQueueRunning(
+            reference,
+            queueRunning
+        )
+    }
+
+    func publish(
+        requestedFrameCount: UInt64,
+        pullSucceeded: Bool,
+        enqueueStatus: OSStatus
+    ) {
+        ASMacAudioQueueProgressPublish(
+            reference,
+            requestedFrameCount,
+            pullSucceeded,
+            enqueueStatus
+        )
+    }
+
+    @inline(__always)
+    func publishPCMContent(
+        _ window: BlackHoleMicrophoneOutputPCMContentRawWindow
+    ) {
+        pcmContentStorage.publish(window)
+    }
+
+    var snapshot: BlackHoleMicrophoneOutputProgressSnapshot {
+        let native = ASMacAudioQueueProgressRead(reference)
+        return BlackHoleMicrophoneOutputProgressSnapshot(
+            queueRunning: native.queueRunning,
+            postStartCallbackCount:
+                native.postStartCallbackCount,
+            requestedFrameCount: native.requestedFrameCount,
+            successfulPullCount: native.successfulPullCount,
+            successfulFrameCount: native.successfulFrameCount,
+            silenceFallbackCount: native.silenceFallbackCount,
+            silenceFrameCount: native.silenceFrameCount,
+            enqueueFailureCount: native.enqueueFailureCount,
+            lastEnqueueStatus: native.lastEnqueueStatus,
+            pcmContent: native.queueRunning
+                ? pcmContentStorage.snapshot
+                : .zero
+        )
+    }
+}
+
+struct BlackHoleMicrophoneOutputQueueDisposalRedriveResult:
+    Equatable,
+    Sendable
+{
+    let retainedCount: Int
+    let lastFailureStatus: OSStatus?
+
+    var permitsReplacement: Bool {
+        retainedCount == 0
+    }
+}
+
+/// Compatibility facade for older call sites. `AudioQueueDispose` is terminal in the
+/// macOS 26 SDK regardless of its returned status, so queue disposal is no longer
+/// retried or retained after the call returns.
+final class BlackHoleMicrophoneOutputQueueDisposalRetainer:
+    @unchecked Sendable
+{
+    static let shared =
+        BlackHoleMicrophoneOutputQueueDisposalRetainer()
+
+    @discardableResult
+    func redriveRetained(
+        maximumAttemptCount _: Int
+    ) -> BlackHoleMicrophoneOutputQueueDisposalRedriveResult {
+        BlackHoleMicrophoneOutputQueueDisposalRedriveResult(
+            retainedCount: 0,
+            lastFailureStatus: nil
+        )
+    }
+
+    var retainedDisposalCount: Int { 0 }
+
+    #if DEBUG
+    var debugFirstCallbackContextPointerForTesting:
+        UnsafeMutableRawPointer? {
+        nil
+    }
+    #endif
+}
+
+/// Output-device-clock sink for the decoded `iphone-microphone` track.
+
+///
+/// Core Audio owns the fixed buffers. While authorized, the realtime callback
+/// performs one caller-owned WebRTC pull and re-enqueues the same buffer;
+/// unavailable data stays zero-filled. Revocation scrubs and retires the
+/// in-flight buffer. Callback failures cross only a lock-free status latch.
+final class BlackHoleMicrophoneOutputAuthorizationGate:
+    @unchecked Sendable
+{
+    struct OpeningPreparation: Sendable {
+        fileprivate let revocationGeneration: UInt64
+    }
+
+    private let reference: UnsafeMutableRawPointer
+
+    init?() {
+        guard let reference =
+                ASMacAudioQueueWriterAuthorizationGateCreate() else {
+            return nil
+        }
+        self.reference = reference
+    }
+
+    deinit {
+        ASMacAudioQueueWriterAuthorizationGateDestroy(reference)
+    }
+
+    /// Captures the local revocation generation before a safe-output
+    /// admission. A concurrent close makes the later open fail.
+    func prepareToOpen() -> OpeningPreparation {
+        OpeningPreparation(
+            revocationGeneration:
+                ASMacAudioQueueWriterAuthorizationGatePrepareToOpen(
+                    reference
+                )
+        )
+    }
+
+    /// `authorization` is the stable monitoring-epoch proof produced by the
+    /// safe-output admission transaction. It deliberately never reaches the
+    /// realtime callback; that boundary observes only the C atomic gate.
+    @discardableResult
+    func open(
+        preparation: OpeningPreparation,
+        authorization _:
+            WorldwideSafeOutputInvariantAuthorization
+    ) -> Bool {
+        ASMacAudioQueueWriterAuthorizationGateOpenIfUnchanged(
+            reference,
+            preparation.revocationGeneration
+        )
+    }
+
+    #if DEBUG
+    @discardableResult
+    func openForTesting(
+        preparation: OpeningPreparation
+    ) -> Bool {
+        ASMacAudioQueueWriterAuthorizationGateOpenIfUnchanged(
+            reference,
+            preparation.revocationGeneration
+        )
+    }
+    #endif
+
+    /// Synchronous and nonblocking. Safe to invoke directly from the Core
+    /// Audio property-listener path before scheduling actor reconciliation.
+    func close() {
+        ASMacAudioQueueWriterAuthorizationGateClose(reference)
+    }
+
+    var isOpen: Bool {
+        ASMacAudioQueueWriterAuthorizationGateIsOpen(reference)
+    }
+}
+
+/// A second lock-free gate that admits decoded PCM only after this output has
+/// proved its exact post-start queue format and shared-clock continuity. The
+/// route authorization gate may already be open while startup buffers are
+/// being primed; this gate keeps those buffers deterministically silent.
+private final class BlackHoleMicrophoneOutputPCMAdmissionGate:
+    @unchecked Sendable
+{
+    struct OpeningPreparation: Sendable {
+        fileprivate let revocationGeneration: UInt64
+    }
+
+    private let reference: UnsafeMutableRawPointer
+
+    init?() {
+        guard let reference =
+                ASMacAudioQueueWriterAuthorizationGateCreate() else {
+            return nil
+        }
+        self.reference = reference
+    }
+
+    deinit {
+        ASMacAudioQueueWriterAuthorizationGateDestroy(reference)
+    }
+
+    func prepareToOpen() -> OpeningPreparation {
+        OpeningPreparation(
+            revocationGeneration:
+                ASMacAudioQueueWriterAuthorizationGatePrepareToOpen(
+                    reference
+                )
+        )
+    }
+
+    @discardableResult
+    func openIfUnchanged(
+        preparation: OpeningPreparation
+    ) -> Bool {
+        ASMacAudioQueueWriterAuthorizationGateOpenIfUnchanged(
+            reference,
+            preparation.revocationGeneration
+        )
+    }
+
+    func close() {
+        ASMacAudioQueueWriterAuthorizationGateClose(reference)
+    }
+
+    var isOpen: Bool {
+        ASMacAudioQueueWriterAuthorizationGateIsOpen(reference)
+    }
+}
+
+final class BlackHoleMicrophoneOutput: @unchecked Sendable {
+    private enum LifecycleState {
+        case idle
+        case starting(stopRequested: Bool)
+        case running
+        case stopping
+    }
+
+    private enum StopAction {
+        case finished
+        case waitForTransition
+        case dispose(
+            queue: AudioQueueRef,
+            callbackContext: BlackHoleMicrophoneOutputCallbackContext,
+            callbackContextPointer: UnsafeMutableRawPointer
+        )
+    }
+
+    typealias RuntimeFailureHandler = @Sendable (
+        BlackHoleMicrophoneOutput,
+        BlackHoleMicrophoneOutputError
+    ) -> Void
+
+    private static let createQueueOperation =
+        "create BlackHole output queue"
+    private static let createCallbackLifetimeOperation =
+        "create BlackHole output callback lifetime"
+    private static let authorizeWriterOperation =
+        "authorize hidden BlackHole microphone writer"
+    private static let selectDeviceOperation =
+        "select hidden BlackHole microphone sink by UID"
+    private static let verifyExpectedDeviceIdentityOperation =
+        "verify hidden BlackHole sink AudioDeviceID"
+    private static let verifySelectedDeviceOperation =
+        "verify selected BlackHole sink by UID"
+    private static let allocateBufferOperation =
+        "allocate BlackHole output buffer"
+    private static let primeBufferOperation =
+        "prime BlackHole output buffer"
+    private static let startQueueOperation =
+        "start BlackHole output queue"
+    private static let disposeQueueOperation =
+        "dispose BlackHole output queue"
+    private static let runtimeEnqueueOperation =
+        "re-enqueue BlackHole output buffer"
+    private static let runtimeFailureReportingQueueKey =
+        DispatchSpecificKey<UInt8>()
+    private static let runtimeFailureReportingQueue: DispatchQueue = {
+        let queue = DispatchQueue(
+            label: "opensteamer.BlackHoleMicrophoneOutput.RuntimeFailure",
+            qos: .utility
+        )
+        queue.setSpecific(
+            key: runtimeFailureReportingQueueKey,
+            value: 1
+        )
+        return queue
+    }()
+    private static let runtimeFailurePollInterval =
+        DispatchTimeInterval.milliseconds(10)
+    private static let runtimeFailureTimerLeeway =
+        DispatchTimeInterval.milliseconds(2)
+    private static let sharedClockPollIntervalNanoseconds: UInt64 =
+        1_000_000_000
+    /// The reviewed installed BlackHole driver publishes zero timestamps
+    /// every 16,384 frames
+    /// (about 342 ms at 48 kHz). This bound permits two such periods plus
+    /// scheduling slack while startup PCM remains gated to silence.
+    private static let startupClockProofTimeoutNanoseconds: UInt64 =
+        750_000_000
+    private static let startupClockProofPollMicroseconds: useconds_t =
+        5_000
+    private static let defaultProgressStallGraceNanoseconds: UInt64 =
+        2_000_000_000
+
+    private let source: WebRTCMacDecodedAudioSource?
+    private let expectedHiddenEndpoint:
+        BlackHoleDeviceEndpointIdentity
+    private let authorizationGate:
+        BlackHoleMicrophoneOutputAuthorizationGate
+    private let pcmAdmissionGate:
+        BlackHoleMicrophoneOutputPCMAdmissionGate
+    private let runtimeFailureLatch: WebRTCMacAudioQueueRuntimeFailureLatch
+    private let progressStorage: BlackHoleMicrophoneOutputProgressStorage
+    private let runtimeFailureHandler: RuntimeFailureHandler
+    private let automaticallyReportsRuntimeFailures: Bool
+    /// Serializes only non-realtime queue construction and teardown. The
+    /// AudioQueue callback never observes or acquires this condition.
+    private let lifecycleCondition = NSCondition()
+    private var lifecycleState = LifecycleState.idle
+    private var audioQueue: AudioQueueRef?
+    private var callbackContext: BlackHoleMicrophoneOutputCallbackContext?
+    private var callbackContextPointer: UnsafeMutableRawPointer?
+    private var buffers: [AudioQueueBufferRef] = []
+    private var lastDisposeStatus: OSStatus?
+    private var boundDecodedPlayoutGeneration: UInt64?
+    private var boundDecodedRenderCallFloor: UInt64?
+    private var runtimeFailureTimer: (any DispatchSourceTimer)?
+    private var runtimeFailureGeneration: UInt64 = 0
+    private var activeRuntimeFailureGeneration: UInt64?
+    private var runtimeFailureMonitoringStartTime: UInt64?
+    private var lastSharedClockPollTime: UInt64?
+    private var lastSharedClockObservation:
+        BlackHoleFaceTimeClockObservation?
+    private var lastObservedPostStartCallbackCount: UInt64 = 0
+    private var lastPostStartCallbackAdvanceTime: UInt64?
+    private var lastObservedSuccessfulFrameCount: UInt64 = 0
+    private var lastSuccessfulFrameAdvanceTime: UInt64?
+    private var didReportRuntimeFailure = false
+    private let runtimeFailureNow:
+        @Sendable () -> UInt64
+    private let progressStallGraceNanoseconds: UInt64
+    private let framesPerBuffer: UInt32 = 480
+    private let channelCount: UInt32 = 1
+
+    #if DEBUG
+    private let testingAudioQueueOperations:
+        (any BlackHoleMicrophoneOutputAudioQueueOperations)?
+    private let renderForTesting:
+        ((UnsafeMutablePointer<Int16>, Int) -> Bool)?
+    private let deinitForTesting: (@Sendable () -> Void)?
+    private let callbackContextDeinitForTesting:
+        (@Sendable () -> Void)?
+    private let runtimeEnqueueFailurePublicationInterlockForTesting:
+        BlackHoleMicrophoneOutputRuntimeEnqueueFailurePublicationInterlock?
+    private let writerAuthorizationInterlockForTesting:
+        BlackHoleMicrophoneOutputWriterAuthorizationInterlock?
+    private let decodedPlayoutBindingForTesting:
+        (() -> (generation: UInt64, renderCallCount: UInt64))?
+    private let pcmAdmissionDidOpenForTesting: (() -> Void)?
+    #endif
+
+    init?(
+        source: WebRTCMacDecodedAudioSource,
+        expectedHiddenEndpoint:
+            BlackHoleDeviceEndpointIdentity,
+        authorizationGate:
+            BlackHoleMicrophoneOutputAuthorizationGate,
+        runtimeFailureHandler: @escaping RuntimeFailureHandler
+    ) {
+        guard expectedHiddenEndpoint.deviceUID
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .hiddenMirrorSinkDeviceUID,
+              expectedHiddenEndpoint.deviceID
+                != kAudioObjectUnknown else {
+            return nil
+        }
+        guard let runtimeFailureLatch =
+                WebRTCMacAudioQueueRuntimeFailureLatch() else {
+            return nil
+        }
+        guard let progressStorage =
+                BlackHoleMicrophoneOutputProgressStorage() else {
+            return nil
+        }
+        guard let pcmAdmissionGate =
+                BlackHoleMicrophoneOutputPCMAdmissionGate() else {
+            return nil
+        }
+
+        self.source = source
+        self.expectedHiddenEndpoint = expectedHiddenEndpoint
+        self.authorizationGate = authorizationGate
+        self.pcmAdmissionGate = pcmAdmissionGate
+        self.runtimeFailureLatch = runtimeFailureLatch
+        self.progressStorage = progressStorage
+        self.runtimeFailureHandler = runtimeFailureHandler
+        automaticallyReportsRuntimeFailures = true
+        runtimeFailureNow = { DispatchTime.now().uptimeNanoseconds }
+        progressStallGraceNanoseconds = Self.defaultProgressStallGraceNanoseconds
+        #if DEBUG
+        testingAudioQueueOperations = nil
+        renderForTesting = nil
+        deinitForTesting = nil
+        callbackContextDeinitForTesting = nil
+        runtimeEnqueueFailurePublicationInterlockForTesting =
+            nil
+        writerAuthorizationInterlockForTesting = nil
+        decodedPlayoutBindingForTesting = nil
+        pcmAdmissionDidOpenForTesting = nil
+        #endif
+    }
+
+    #if DEBUG
+    init?(
+        testingAudioQueueOperations:
+            any BlackHoleMicrophoneOutputAudioQueueOperations,
+        expectedHiddenEndpoint:
+            BlackHoleDeviceEndpointIdentity = .init(
+                deviceID: 89,
+                deviceUID:
+                    WorldwideBlackHoleMicrophoneEndpointContract
+                        .hiddenMirrorSinkDeviceUID
+            ),
+        automaticallyReportsRuntimeFailures: Bool = false,
+        runtimeFailureNow: @escaping @Sendable () -> UInt64 = {
+            DispatchTime.now().uptimeNanoseconds
+        },
+        progressStallGraceNanoseconds: UInt64 = 2_000_000_000,
+        authorizationGate:
+            BlackHoleMicrophoneOutputAuthorizationGate? = nil,
+        runtimeEnqueueFailurePublicationInterlockForTesting:
+            BlackHoleMicrophoneOutputRuntimeEnqueueFailurePublicationInterlock? = nil,
+        writerAuthorizationInterlockForTesting:
+            BlackHoleMicrophoneOutputWriterAuthorizationInterlock? = nil,
+        renderForTesting: @escaping (
+            UnsafeMutablePointer<Int16>,
+            Int
+        ) -> Bool = { _, _ in false },
+        decodedPlayoutBindingForTesting:
+            (() -> (generation: UInt64, renderCallCount: UInt64))? = nil,
+        pcmAdmissionDidOpenForTesting: (() -> Void)? = nil,
+        queueDisposalRetainer:
+            BlackHoleMicrophoneOutputQueueDisposalRetainer =
+                .shared,
+        maximumQueueDisposalAttemptCountPerEpisode:
+            Int = 3,
+        callbackContextDeinitForTesting: (@Sendable () -> Void)? = nil,
+        deinitForTesting: (@Sendable () -> Void)? = nil,
+        runtimeFailureHandler: @escaping RuntimeFailureHandler
+    ) {
+        guard expectedHiddenEndpoint.deviceUID
+                == WorldwideBlackHoleMicrophoneEndpointContract
+                    .hiddenMirrorSinkDeviceUID,
+              expectedHiddenEndpoint.deviceID
+                != kAudioObjectUnknown else {
+            return nil
+        }
+        guard let runtimeFailureLatch =
+                WebRTCMacAudioQueueRuntimeFailureLatch() else {
+            return nil
+        }
+        guard let progressStorage =
+                BlackHoleMicrophoneOutputProgressStorage() else {
+            return nil
+        }
+        guard let pcmAdmissionGate =
+                BlackHoleMicrophoneOutputPCMAdmissionGate() else {
+            return nil
+        }
+
+        source = nil
+        self.expectedHiddenEndpoint = expectedHiddenEndpoint
+        self.pcmAdmissionGate = pcmAdmissionGate
+        if let authorizationGate {
+            self.authorizationGate = authorizationGate
+        } else {
+            guard let authorizationGate =
+                    BlackHoleMicrophoneOutputAuthorizationGate() else {
+                return nil
+            }
+            let preparation = authorizationGate.prepareToOpen()
+            guard authorizationGate.openForTesting(
+                preparation: preparation
+            ) else {
+                return nil
+            }
+            self.authorizationGate = authorizationGate
+        }
+        self.runtimeFailureLatch = runtimeFailureLatch
+        self.progressStorage = progressStorage
+        self.runtimeFailureHandler = runtimeFailureHandler
+        self.automaticallyReportsRuntimeFailures =
+            automaticallyReportsRuntimeFailures
+        self.runtimeFailureNow = runtimeFailureNow
+        self.progressStallGraceNanoseconds = progressStallGraceNanoseconds
+        _ = queueDisposalRetainer
+        _ = maximumQueueDisposalAttemptCountPerEpisode
+        self.testingAudioQueueOperations = testingAudioQueueOperations
+        self.renderForTesting = renderForTesting
+        self.deinitForTesting = deinitForTesting
+        self.callbackContextDeinitForTesting =
+            callbackContextDeinitForTesting
+        self.runtimeEnqueueFailurePublicationInterlockForTesting =
+            runtimeEnqueueFailurePublicationInterlockForTesting
+        self.writerAuthorizationInterlockForTesting =
+            writerAuthorizationInterlockForTesting
+        self.decodedPlayoutBindingForTesting =
+            decodedPlayoutBindingForTesting
+        self.pcmAdmissionDidOpenForTesting =
+            pcmAdmissionDidOpenForTesting
+    }
+    #endif
+
+    deinit {
+        stop()
+        #if DEBUG
+        deinitForTesting?()
+        #endif
+    }
+
+
+    var forwardingProgressSnapshot:
+        BlackHoleMicrophoneOutputProgressSnapshot {
+        lifecycleCondition.lock()
+        let lifecycleIsRunning: Bool
+        if case .running = lifecycleState {
+            lifecycleIsRunning = true
+        } else {
+            lifecycleIsRunning = false
+        }
+        let boundDecodedPlayoutGeneration =
+            self.boundDecodedPlayoutGeneration ?? 0
+        let boundDecodedRenderCallFloor =
+            self.boundDecodedRenderCallFloor ?? 0
+        let progress = progressStorage.snapshot
+        lifecycleCondition.unlock()
+        guard lifecycleIsRunning,
+              progress.queueRunning,
+              let source else {
+            return progress
+        }
+        // Both native snapshot reads and all floating-point derivation happen
+        // on the service/watchdog side, never in the AudioQueue callback.
+        return progress.includingDecodedContent(
+            BlackHoleMicrophoneOutputDecodedContentSnapshot(
+                source.decodedContentTelemetry
+            ),
+            boundDecodedPlayoutGeneration: boundDecodedPlayoutGeneration,
+            boundDecodedRenderCallFloor: boundDecodedRenderCallFloor
+        )
+    }
+
+    private var currentDecodedPlayoutBinding:
+        (generation: UInt64, renderCallCount: UInt64) {
+        #if DEBUG
+        if let decodedPlayoutBindingForTesting {
+            return decodedPlayoutBindingForTesting()
+        }
+        #endif
+        guard let telemetry = source?.decodedContentTelemetry else {
+            return (0, 0)
+        }
+        return (
+            telemetry.playoutGeneration,
+            telemetry.renderCallCount
+        )
+    }
+
+    #if DEBUG
+    var boundDecodedPlayoutGenerationForTesting: UInt64 {
+        lifecycleCondition.lock()
+        defer { lifecycleCondition.unlock() }
+        return boundDecodedPlayoutGeneration ?? 0
+    }
+
+    var boundDecodedRenderCallFloorForTesting: UInt64 {
+        lifecycleCondition.lock()
+        defer { lifecycleCondition.unlock() }
+        return boundDecodedRenderCallFloor ?? 0
+    }
+    #endif
+
+    func start() throws {
+        guard beginSerializedStart() else { return }
+        var lifecycleCommitted = false
+        defer {
+            if !lifecycleCommitted {
+                finishUncommittedStart()
+            }
+        }
+
+        guard authorizationGate.isOpen else {
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.authorizeWriterOperation,
+                kAudio_ParamError
+            )
+        }
+        pcmAdmissionGate.close()
+        let pcmAdmissionPreparation =
+            pcmAdmissionGate.prepareToOpen()
+
+        runtimeFailureLatch.reset()
+        progressStorage.reset()
+        var format = BlackHoleMicrophoneOutputFormatPolicy
+            .requiredStreamDescription
+
+        guard let callbackLifetime =
+                ASMacAudioQueueCallbackLifetimeCreate() else {
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.createCallbackLifetimeOperation,
+                kAudio_MemFullError
+            )
+        }
+
+        let callbackContext: BlackHoleMicrophoneOutputCallbackContext
+        #if DEBUG
+        callbackContext = BlackHoleMicrophoneOutputCallbackContext(
+            callbackLifetime: callbackLifetime,
+            source: source,
+            authorizationGate: authorizationGate,
+            pcmAdmissionGate: pcmAdmissionGate,
+            runtimeFailureLatch: runtimeFailureLatch,
+            channelCount: channelCount,
+            progressStorage: progressStorage,
+            testingAudioQueueOperations: testingAudioQueueOperations,
+            renderForTesting: renderForTesting,
+            runtimeEnqueueFailurePublicationInterlockForTesting:
+                runtimeEnqueueFailurePublicationInterlockForTesting,
+            writerAuthorizationInterlockForTesting:
+                writerAuthorizationInterlockForTesting,
+            deinitForTesting:
+                callbackContextDeinitForTesting
+        )
+        #else
+        callbackContext = BlackHoleMicrophoneOutputCallbackContext(
+            callbackLifetime: callbackLifetime,
+            source: source,
+            authorizationGate: authorizationGate,
+            pcmAdmissionGate: pcmAdmissionGate,
+            runtimeFailureLatch: runtimeFailureLatch,
+            channelCount: channelCount,
+            progressStorage: progressStorage
+        )
+        #endif
+        let callbackContextPointer = Unmanaged
+            .passRetained(callbackContext)
+            .toOpaque()
+        let creation = createOutputQueue(
+            format: &format,
+            context: callbackContextPointer
+        )
+        guard creation.status == noErr else {
+            cleanupCreatedQueue(
+                creation.queue,
+                callbackContext: callbackContext,
+                callbackContextPointer: callbackContextPointer,
+                didAttemptStart: false
+            )
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.createQueueOperation,
+                creation.status
+            )
+        }
+        guard let queue = creation.queue else {
+            cleanupCreatedQueue(
+                nil,
+                callbackContext: callbackContext,
+                callbackContextPointer: callbackContextPointer,
+                didAttemptStart: false
+            )
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.createQueueOperation,
+                kAudio_ParamError
+            )
+        }
+
+        var createdBuffers: [AudioQueueBufferRef] = []
+        createdBuffers.reserveCapacity(3)
+        var didAttemptStart = false
+        var startupCommitted = false
+        defer {
+            if !startupCommitted {
+                cleanupCreatedQueue(
+                    queue,
+                    callbackContext: callbackContext,
+                    callbackContextPointer: callbackContextPointer,
+                    didAttemptStart: didAttemptStart
+                )
+            }
+        }
+
+        let expectedDeviceUID = expectedHiddenEndpoint.deviceUID
+        let deviceBeforeSelection = translatedDeviceID(
+            exactUID: expectedDeviceUID
+        )
+        guard deviceBeforeSelection.status == noErr else {
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.verifyExpectedDeviceIdentityOperation,
+                deviceBeforeSelection.status
+            )
+        }
+        guard deviceBeforeSelection.deviceID
+                == expectedHiddenEndpoint.deviceID else {
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.verifyExpectedDeviceIdentityOperation,
+                kAudio_ParamError
+            )
+        }
+        let deviceStatus = setCurrentDevice(
+            expectedDeviceUID,
+            on: queue
+        )
+        guard deviceStatus == noErr else {
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.selectDeviceOperation,
+                deviceStatus
+            )
+        }
+        let selectedDevice = currentDeviceUID(on: queue)
+        guard selectedDevice.status == noErr else {
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.verifySelectedDeviceOperation,
+                selectedDevice.status
+            )
+        }
+        guard selectedDevice.uid == expectedDeviceUID else {
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.verifySelectedDeviceOperation,
+                kAudio_ParamError
+            )
+        }
+        do {
+            try proveOutputFormat(on: queue)
+        } catch {
+            authorizationGate.close()
+            throw error
+        }
+
+        let byteCount = framesPerBuffer
+            * channelCount
+            * UInt32(MemoryLayout<Int16>.size)
+        let decodedBindingBeforePriming =
+            currentDecodedPlayoutBinding
+        for _ in 0..<3 {
+            let allocation = allocateBuffer(
+                on: queue,
+                byteCount: byteCount
+            )
+            guard allocation.status == noErr else {
+                if let buffer = allocation.buffer {
+                    createdBuffers.append(buffer)
+                }
+                throw BlackHoleMicrophoneOutputError.operation(
+                    Self.allocateBufferOperation,
+                    allocation.status
+                )
+            }
+            guard let buffer = allocation.buffer else {
+                throw BlackHoleMicrophoneOutputError.operation(
+                    Self.allocateBufferOperation,
+                    kAudio_ParamError
+                )
+            }
+
+            createdBuffers.append(buffer)
+            let primingResult = callbackContext.fillAndEnqueue(
+                queue: queue,
+                buffer: buffer
+            )
+            guard primingResult.enqueueStatus == noErr else {
+                throw BlackHoleMicrophoneOutputError.operation(
+                    Self.primeBufferOperation,
+                    primingResult.enqueueStatus
+                )
+            }
+        }
+
+        guard authorizationGate.isOpen else {
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.authorizeWriterOperation,
+                kAudio_ParamError
+            )
+        }
+
+        didAttemptStart = true
+        let startStatus = startQueue(queue)
+        guard startStatus == noErr else {
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.startQueueOperation,
+                startStatus
+            )
+        }
+        do {
+            try proveOutputFormat(on: queue)
+        } catch {
+            authorizationGate.close()
+            throw error
+        }
+        let initialSharedClockObservation:
+            BlackHoleFaceTimeClockObservation
+        do {
+            initialSharedClockObservation =
+                try proveStartupClockSafety(on: queue)
+        } catch {
+            if case .sharedClockUnsafe =
+                    error as? BlackHoleMicrophoneOutputError {
+                authorizationGate.close()
+            }
+            throw error
+        }
+        let deviceAfterStart = translatedDeviceID(
+            exactUID: expectedDeviceUID
+        )
+        guard deviceAfterStart.status == noErr else {
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.verifyExpectedDeviceIdentityOperation,
+                deviceAfterStart.status
+            )
+        }
+        guard deviceAfterStart.deviceID
+                == expectedHiddenEndpoint.deviceID else {
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.verifyExpectedDeviceIdentityOperation,
+                kAudio_ParamError
+            )
+        }
+        let startedDevice = currentDeviceUID(on: queue)
+        guard startedDevice.status == noErr else {
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.verifySelectedDeviceOperation,
+                startedDevice.status
+            )
+        }
+        guard startedDevice.uid == expectedDeviceUID else {
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.verifySelectedDeviceOperation,
+                kAudio_ParamError
+            )
+        }
+        guard authorizationGate.isOpen else {
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.authorizeWriterOperation,
+                kAudio_ParamError
+            )
+        }
+
+        let decodedBindingAfterStart =
+            currentDecodedPlayoutBinding
+        let committedDecodedPlayoutGeneration: UInt64?
+        let committedDecodedRenderCallFloor: UInt64?
+        if decodedBindingBeforePriming.generation > 0,
+           decodedBindingAfterStart.generation
+            == decodedBindingBeforePriming.generation {
+            committedDecodedPlayoutGeneration =
+                decodedBindingBeforePriming.generation
+            committedDecodedRenderCallFloor =
+                decodedBindingAfterStart.renderCallCount
+        } else {
+            committedDecodedPlayoutGeneration = nil
+            committedDecodedRenderCallFloor = nil
+        }
+
+        guard authorizationGate.isOpen else {
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.authorizeWriterOperation,
+                kAudio_ParamError
+            )
+        }
+
+        guard commitStartedQueue(
+            queue: queue,
+            callbackContext: callbackContext,
+            callbackContextPointer: callbackContextPointer,
+            buffers: createdBuffers,
+            boundDecodedPlayoutGeneration:
+                committedDecodedPlayoutGeneration,
+            boundDecodedRenderCallFloor:
+                committedDecodedRenderCallFloor,
+            initialSharedClockObservation:
+                initialSharedClockObservation,
+            pcmAdmissionPreparation:
+                pcmAdmissionPreparation
+        ) else {
+            throw BlackHoleMicrophoneOutputError.operation(
+                Self.authorizeWriterOperation,
+                kAudio_ParamError
+            )
+        }
+        startupCommitted = true
+        lifecycleCommitted = true
+    }
+
+    func stop() {
+        while true {
+            switch prepareSerializedStop() {
+            case .finished:
+                return
+            case .waitForTransition:
+                waitForLifecycleTransition()
+            case .dispose(
+                let queue,
+                let callbackContext,
+                let callbackContextPointer
+            ):
+                closeStopDisposeAndRelease(
+                    queue: queue,
+                    callbackContext: callbackContext,
+                    callbackContextPointer: callbackContextPointer,
+                    didAttemptStart: true
+                )
+                finishSerializedStop()
+                return
+            }
+        }
+    }
+
+    /// Claims the single construction slot. A concurrent second start waits
+    /// for the current transition and then observes either running or idle.
+    private func beginSerializedStart() -> Bool {
+        lifecycleCondition.lock()
+        defer { lifecycleCondition.unlock() }
+
+        while true {
+            switch lifecycleState {
+            case .idle:
+                lifecycleState = .starting(stopRequested: false)
+                boundDecodedPlayoutGeneration = nil
+                boundDecodedRenderCallFloor = nil
+                lifecycleCondition.broadcast()
+                return true
+            case .running:
+                return false
+            case .starting, .stopping:
+                lifecycleCondition.wait()
+            }
+        }
+    }
+
+    /// Publishes the fully started queue under the same lifecycle fence that a
+    /// concurrent stop uses to request cancellation. Runtime-monitor state is
+    /// serialized first everywhere, avoiding a lifecycle/runtime-queue lock
+    /// inversion when a failure handler itself calls `stop()`.
+    private func commitStartedQueue(
+        queue: AudioQueueRef,
+        callbackContext: BlackHoleMicrophoneOutputCallbackContext,
+        callbackContextPointer: UnsafeMutableRawPointer,
+        buffers: [AudioQueueBufferRef],
+        boundDecodedPlayoutGeneration: UInt64?,
+        boundDecodedRenderCallFloor: UInt64?,
+        initialSharedClockObservation:
+            BlackHoleFaceTimeClockObservation,
+        pcmAdmissionPreparation:
+            BlackHoleMicrophoneOutputPCMAdmissionGate
+                .OpeningPreparation
+    ) -> Bool {
+        withRuntimeFailureReportingQueue {
+            lifecycleCondition.lock()
+            defer { lifecycleCondition.unlock() }
+            guard case .starting(let stopRequested) = lifecycleState,
+                  !stopRequested,
+                  authorizationGate.isOpen else {
+                return false
+            }
+            guard pcmAdmissionGate.openIfUnchanged(
+                preparation: pcmAdmissionPreparation
+            ) else {
+                return false
+            }
+            #if DEBUG
+            pcmAdmissionDidOpenForTesting?()
+            #endif
+            guard authorizationGate.isOpen else {
+                pcmAdmissionGate.close()
+                return false
+            }
+
+            audioQueue = queue
+            self.callbackContext = callbackContext
+            self.callbackContextPointer = callbackContextPointer
+            self.buffers = buffers
+            self.boundDecodedPlayoutGeneration =
+                boundDecodedPlayoutGeneration
+            self.boundDecodedRenderCallFloor =
+                boundDecodedRenderCallFloor
+            progressStorage.setQueueRunning(true)
+            startRuntimeFailureMonitoring(
+                scheduleTimer: automaticallyReportsRuntimeFailures,
+                initialSharedClockObservation:
+                    initialSharedClockObservation
+            )
+            lifecycleState = .running
+            lifecycleCondition.broadcast()
+            return true
+        }
+    }
+
+    /// Requests cancellation before a start can publish local resources, or
+    /// atomically detaches all published resources for one teardown owner.
+    private func prepareSerializedStop() -> StopAction {
+        withRuntimeFailureReportingQueue {
+            stopRuntimeFailureMonitoring()
+            lifecycleCondition.lock()
+            defer { lifecycleCondition.unlock() }
+
+            switch lifecycleState {
+            case .idle:
+                return .finished
+            case .starting(let stopRequested):
+                if !stopRequested {
+                    lifecycleState = .starting(stopRequested: true)
+                    lifecycleCondition.broadcast()
+                }
+                return .waitForTransition
+            case .running:
+                guard let queue = audioQueue,
+                      let callbackContext,
+                      let callbackContextPointer else {
+                    assertionFailure(
+                        "A running BlackHole output lost its owned queue resources."
+                    )
+                    audioQueue = nil
+                    self.callbackContext = nil
+                    self.callbackContextPointer = nil
+                    buffers.removeAll(keepingCapacity: false)
+                    boundDecodedPlayoutGeneration = nil
+                    boundDecodedRenderCallFloor = nil
+                    lifecycleState = .idle
+                    lifecycleCondition.broadcast()
+                    return .finished
+                }
+
+                audioQueue = nil
+                self.callbackContext = nil
+                self.callbackContextPointer = nil
+                buffers.removeAll(keepingCapacity: false)
+                boundDecodedPlayoutGeneration = nil
+                boundDecodedRenderCallFloor = nil
+                lifecycleState = .stopping
+                lifecycleCondition.broadcast()
+                return .dispose(
+                    queue: queue,
+                    callbackContext: callbackContext,
+                    callbackContextPointer: callbackContextPointer
+                )
+            case .stopping:
+                return .waitForTransition
+            }
+        }
+    }
+
+    private func waitForLifecycleTransition() {
+        lifecycleCondition.lock()
+        defer { lifecycleCondition.unlock() }
+        switch lifecycleState {
+        case .starting, .stopping:
+            lifecycleCondition.wait()
+        case .idle, .running:
+            break
+        }
+    }
+
+    private func finishUncommittedStart() {
+        lifecycleCondition.lock()
+        defer { lifecycleCondition.unlock() }
+        guard case .starting = lifecycleState else {
+            return
+        }
+        lifecycleState = .idle
+        lifecycleCondition.broadcast()
+    }
+
+    private func finishSerializedStop() {
+        lifecycleCondition.lock()
+        defer { lifecycleCondition.unlock() }
+        guard case .stopping = lifecycleState else {
+            return
+        }
+        lifecycleState = .idle
+        lifecycleCondition.broadcast()
+    }
+
+    private func cleanupCreatedQueue(
+        _ queue: AudioQueueRef?,
+        callbackContext: BlackHoleMicrophoneOutputCallbackContext,
+        callbackContextPointer: UnsafeMutableRawPointer,
+        didAttemptStart: Bool
+    ) {
+        guard let queue else {
+            callbackContext.closeCallbacks()
+            callbackContext.waitForCallbacks()
+            progressStorage.clearPCMContentAfterCallbackDrain()
+            Unmanaged<BlackHoleMicrophoneOutputCallbackContext>
+                .fromOpaque(callbackContextPointer)
+                .release()
+            return
+        }
+
+        closeStopDisposeAndRelease(
+            queue: queue,
+            callbackContext: callbackContext,
+            callbackContextPointer: callbackContextPointer,
+            didAttemptStart: didAttemptStart
+        )
+    }
+
+    private func closeStopDisposeAndRelease(
+        queue: AudioQueueRef,
+        callbackContext: BlackHoleMicrophoneOutputCallbackContext,
+        callbackContextPointer: UnsafeMutableRawPointer,
+        didAttemptStart: Bool
+    ) {
+        pcmAdmissionGate.close()
+        callbackContext.closeCallbacks()
+        if didAttemptStart {
+            _ = stopQueue(queue, immediate: true)
+        }
+        callbackContext.waitForCallbacks()
+        progressStorage.clearPCMContentAfterCallbackDrain()
+        let status = disposeQueue(queue, immediate: true)
+        lifecycleCondition.lock()
+        lastDisposeStatus = status
+        lifecycleCondition.unlock()
+        Unmanaged<BlackHoleMicrophoneOutputCallbackContext>
+            .fromOpaque(callbackContextPointer)
+            .release()
+    }
+
+    private func startRuntimeFailureMonitoring(
+        scheduleTimer: Bool,
+        initialSharedClockObservation:
+            BlackHoleFaceTimeClockObservation
+    ) {
+        withRuntimeFailureReportingQueue {
+            guard activeRuntimeFailureGeneration == nil else {
+                return
+            }
+
+            runtimeFailureGeneration = Self.nextNonzero(
+                runtimeFailureGeneration
+            )
+            let generation = runtimeFailureGeneration
+            activeRuntimeFailureGeneration = generation
+            runtimeFailureMonitoringStartTime =
+                runtimeFailureNow()
+            lastSharedClockPollTime =
+                runtimeFailureMonitoringStartTime
+            lastSharedClockObservation =
+                initialSharedClockObservation
+            lastObservedPostStartCallbackCount = 0
+            lastPostStartCallbackAdvanceTime = nil
+            lastObservedSuccessfulFrameCount = 0
+            lastSuccessfulFrameAdvanceTime = nil
+            didReportRuntimeFailure = false
+
+            guard scheduleTimer else { return }
+            let timer = DispatchSource.makeTimerSource(
+                queue: Self.runtimeFailureReportingQueue
+            )
+            timer.schedule(
+                deadline: .now()
+                    + Self.runtimeFailurePollInterval,
+                repeating: Self.runtimeFailurePollInterval,
+                leeway: Self.runtimeFailureTimerLeeway
+            )
+            timer.setEventHandler { [weak self] in
+                self?.pollRuntimeFailureMonitoring(
+                    generation: generation
+                )
+            }
+            runtimeFailureTimer = timer
+            timer.activate()
+        }
+    }
+
+    private func stopRuntimeFailureMonitoring() {
+        withRuntimeFailureReportingQueue {
+            progressStorage.setQueueRunning(false)
+            activeRuntimeFailureGeneration = nil
+            runtimeFailureGeneration = Self.nextNonzero(
+                runtimeFailureGeneration
+            )
+            runtimeFailureMonitoringStartTime = nil
+            lastSharedClockPollTime = nil
+            lastSharedClockObservation = nil
+            lastObservedPostStartCallbackCount = 0
+            lastPostStartCallbackAdvanceTime = nil
+            lastObservedSuccessfulFrameCount = 0
+            lastSuccessfulFrameAdvanceTime = nil
+            didReportRuntimeFailure = false
+
+            let timer = runtimeFailureTimer
+            runtimeFailureTimer = nil
+            timer?.setEventHandler {}
+            timer?.cancel()
+        }
+    }
+
+    private func pollRuntimeFailureMonitoring(
+        generation: UInt64
+    ) {
+        withRuntimeFailureReportingQueue {
+            guard activeRuntimeFailureGeneration == generation,
+                  !didReportRuntimeFailure else {
+                return
+            }
+
+            let progress = progressStorage.snapshot
+            guard progress.queueRunning else { return }
+
+            let now = runtimeFailureNow()
+            var shouldReportProgressStall = false
+            let successfulFrameCount =
+                progress.successfulFrameCount
+            if successfulFrameCount > 0 {
+                if successfulFrameCount
+                        > lastObservedSuccessfulFrameCount {
+                    lastObservedSuccessfulFrameCount =
+                        successfulFrameCount
+                    lastSuccessfulFrameAdvanceTime = now
+                } else if let lastSuccessfulFrameAdvanceTime,
+                          now >= lastSuccessfulFrameAdvanceTime,
+                          now - lastSuccessfulFrameAdvanceTime
+                            >= progressStallGraceNanoseconds {
+                    shouldReportProgressStall = true
+                }
+            } else {
+                let callbackCount =
+                    progress.postStartCallbackCount
+                if callbackCount
+                        > lastObservedPostStartCallbackCount {
+                    lastObservedPostStartCallbackCount =
+                        callbackCount
+                    lastPostStartCallbackAdvanceTime = now
+                } else if callbackCount == 0,
+                          let runtimeFailureMonitoringStartTime,
+                          now >= runtimeFailureMonitoringStartTime,
+                          now - runtimeFailureMonitoringStartTime
+                            >= progressStallGraceNanoseconds {
+                    shouldReportProgressStall = true
+                } else if callbackCount > 0,
+                          let lastPostStartCallbackAdvanceTime,
+                          now >= lastPostStartCallbackAdvanceTime,
+                          now - lastPostStartCallbackAdvanceTime
+                            >= progressStallGraceNanoseconds {
+                    shouldReportProgressStall = true
+                }
+            }
+
+            if let status = runtimeFailureLatch.take() {
+                didReportRuntimeFailure = true
+                runtimeFailureHandler(
+                    self,
+                    .operation(
+                        Self.runtimeEnqueueOperation,
+                        status
+                    )
+                )
+                return
+            }
+
+            if sharedClockPollIsDue(now: now),
+               let queue = runningAudioQueueForSharedClockPoll() {
+                lastSharedClockPollTime = now
+                switch sharedClockSafety(
+                    on: queue,
+                    previous: lastSharedClockObservation
+                ) {
+                case .success(let observation):
+                    lastSharedClockObservation = observation
+
+                case .failure(let rejection):
+                    // Fence this queue independently before reporting. The
+                    // shared route gate may be reopened by reconciliation in
+                    // the failure handler, but this failed clock epoch must
+                    // never regain decoded-PCM admission.
+                    pcmAdmissionGate.close()
+                    authorizationGate.close()
+                    didReportRuntimeFailure = true
+                    runtimeFailureHandler(
+                        self,
+                        .sharedClockUnsafe(rejection)
+                    )
+                    return
+                }
+            }
+
+            guard shouldReportProgressStall else {
+                return
+            }
+
+            didReportRuntimeFailure = true
+            runtimeFailureHandler(
+                self,
+                .progressStalled
+            )
+        }
+    }
+
+    private func sharedClockPollIsDue(now: UInt64) -> Bool {
+        guard let lastSharedClockPollTime else {
+            return true
+        }
+        guard now >= lastSharedClockPollTime else {
+            return true
+        }
+        return now - lastSharedClockPollTime
+            >= Self.sharedClockPollIntervalNanoseconds
+    }
+
+    /// Runtime monitoring owns the runtime queue before entering this lock,
+    /// matching queue commit and teardown lock order.
+    private func runningAudioQueueForSharedClockPoll()
+        -> AudioQueueRef? {
+        lifecycleCondition.lock()
+        defer { lifecycleCondition.unlock() }
+        guard case .running = lifecycleState else {
+            return nil
+        }
+        return audioQueue
+    }
+
+    private func withRuntimeFailureReportingQueue<T>(
+        _ body: () -> T
+    ) -> T {
+        if DispatchQueue.getSpecific(
+            key: Self.runtimeFailureReportingQueueKey
+        ) != nil {
+            return body()
+        }
+        return Self.runtimeFailureReportingQueue.sync(
+            execute: body
+        )
+    }
+
+    private static func nextNonzero(
+        _ value: UInt64
+    ) -> UInt64 {
+        let next = value &+ 1
+        return next == 0 ? 1 : next
+    }
+
+    private func proveOutputFormat(
+        on queue: AudioQueueRef
+    ) throws {
+        let streamDescription = queueStreamDescription(on: queue)
+        let deviceSampleRate = queueDeviceSampleRate(on: queue)
+        let deviceChannelCount = queueDeviceChannelCount(on: queue)
+        let converterError = queueConverterError(on: queue)
+        let evidence = BlackHoleMicrophoneOutputFormatEvidence(
+            streamDescriptionStatus: streamDescription.status,
+            streamDescription: streamDescription.value,
+            deviceSampleRateStatus: deviceSampleRate.status,
+            deviceSampleRate: deviceSampleRate.value,
+            deviceChannelCountStatus: deviceChannelCount.status,
+            deviceChannelCount: deviceChannelCount.value,
+            converterErrorReadStatus: converterError.status,
+            converterError: converterError.value
+        )
+        switch BlackHoleMicrophoneOutputFormatPolicy()
+            .evaluate(evidence) {
+        case .success:
+            return
+        case .failure(let rejection):
+            throw BlackHoleMicrophoneOutputError
+                .formatUnsafe(rejection)
+        }
+    }
+
+    private func proveSharedClockSafety(
+        on queue: AudioQueueRef,
+        previous: BlackHoleFaceTimeClockObservation?
+    ) throws -> BlackHoleFaceTimeClockObservation {
+        switch sharedClockSafety(
+            on: queue,
+            previous: previous
+        ) {
+        case .success(let observation):
+            return observation
+        case .failure(let rejection):
+            throw BlackHoleMicrophoneOutputError
+                .sharedClockUnsafe(rejection)
+        }
+    }
+
+    private func proveStartupClockSafety(
+        on queue: AudioQueueRef
+    ) throws -> BlackHoleFaceTimeClockObservation {
+        let start = DispatchTime.now().uptimeNanoseconds
+        let deadline = start.addingReportingOverflow(
+            Self.startupClockProofTimeoutNanoseconds
+        )
+        let maximumTime = deadline.overflow
+            ? UInt64.max
+            : deadline.partialValue
+
+        var firstObservation:
+            BlackHoleFaceTimeClockObservation?
+        while true {
+            if !authorizationGate.isOpen
+                || startupStopWasRequested() {
+                throw BlackHoleMicrophoneOutputError.operation(
+                    Self.authorizeWriterOperation,
+                    kAudio_ParamError
+                )
+            }
+            switch sharedClockSafety(
+                on: queue,
+                previous: firstObservation
+            ) {
+            case .success(let observation):
+                if firstObservation == nil {
+                    firstObservation = observation
+                } else {
+                    return observation
+                }
+
+            case .failure(
+                .deviceSampleTimeDidNotAdvance(
+                    let previous,
+                    let current
+                )
+            ) where current == previous:
+                break
+
+            case .failure(
+                .deviceHostTimeDidNotAdvance(
+                    let previous,
+                    let current
+                )
+            ) where current == previous:
+                break
+
+            case .failure(
+                    .coreAudioStatus(
+                        kAudioQueueErr_InvalidRunState
+                    )
+                 ),
+                 .failure(
+                    .coreAudioStatus(
+                        kAudioQueueErr_CannotStartYet
+                    )
+                 ):
+                break
+
+            case .failure(
+                .missingRequiredTimestampFlags(let actual)
+            ) where actual.contains(.hostTimeValid):
+                // AudioQueueDeviceGetCurrentTime documents a host-only
+                // timestamp until the associated device is actually running.
+                break
+
+            case .failure(let rejection):
+                throw BlackHoleMicrophoneOutputError
+                    .sharedClockUnsafe(rejection)
+            }
+
+            guard DispatchTime.now().uptimeNanoseconds
+                    < maximumTime else {
+                throw BlackHoleMicrophoneOutputError
+                    .sharedClockUnsafe(
+                        .startupClockContinuityTimedOut
+                    )
+            }
+            usleep(Self.startupClockProofPollMicroseconds)
+        }
+    }
+
+    private func startupStopWasRequested() -> Bool {
+        lifecycleCondition.lock()
+        defer { lifecycleCondition.unlock() }
+        guard case .starting(let stopRequested) = lifecycleState else {
+            return true
+        }
+        return stopRequested
+    }
+
+    private func sharedClockSafety(
+        on queue: AudioQueueRef,
+        previous: BlackHoleFaceTimeClockObservation?
+    ) -> Result<
+        BlackHoleFaceTimeClockObservation,
+        BlackHoleFaceTimeClockRejection
+    > {
+        let sampleRate = nominalSampleRate(
+            for: expectedHiddenEndpoint.deviceID
+        )
+        guard sampleRate.status == noErr else {
+            return .failure(
+                .sampleRateCoreAudioStatus(sampleRate.status)
+            )
+        }
+        let currentTime = deviceCurrentTime(on: queue)
+        return BlackHoleFaceTimeClockPolicy().evaluate(
+            status: currentTime.status,
+            timestamp: currentTime.timestamp,
+            deviceSampleRate: sampleRate.value,
+            previous: previous
+        )
+    }
+
+    private func createOutputQueue(
+        format: inout AudioStreamBasicDescription,
+        context: UnsafeMutableRawPointer
+    ) -> (status: OSStatus, queue: AudioQueueRef?) {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations.createOutputQueue(
+                requestedFormat: format,
+                callbackContext: context
+            )
+        }
+        #endif
+
+        var queue: AudioQueueRef?
+        let status = AudioQueueNewOutput(
+            &format,
+            blackHoleMicrophoneOutputCallback,
+            context,
+            nil,
+            nil,
+            0,
+            &queue
+        )
+        return (status, queue)
+    }
+
+    private func translatedDeviceID(
+        exactUID: String
+    ) -> (status: OSStatus, deviceID: AudioDeviceID?) {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations
+                .translateDeviceID(exactUID: exactUID)
+        }
+        #endif
+
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var qualifier = exactUID as CFString
+        var deviceID = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = withUnsafePointer(to: &qualifier) { pointer in
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                UInt32(MemoryLayout<CFString>.size),
+                pointer,
+                &size,
+                &deviceID
+            )
+        }
+        return (
+            status,
+            status == noErr && deviceID != kAudioObjectUnknown
+                ? deviceID
+                : nil
+        )
+    }
+
+    private func setCurrentDevice(
+        _ uid: String,
+        on queue: AudioQueueRef
+    ) -> OSStatus {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations
+                .setCurrentDevice(uid, on: queue)
+        }
+        #endif
+
+        var value = uid as CFString
+        return withUnsafePointer(to: &value) {
+            AudioQueueSetProperty(
+                queue,
+                kAudioQueueProperty_CurrentDevice,
+                $0,
+                UInt32(MemoryLayout<CFString>.size)
+            )
+        }
+    }
+
+    private func currentDeviceUID(
+        on queue: AudioQueueRef
+    ) -> (status: OSStatus, uid: String?) {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations
+                .currentDeviceUID(on: queue)
+        }
+        #endif
+
+        var value: CFString = "" as CFString
+        var size = UInt32(MemoryLayout<CFString>.size)
+        let status = withUnsafeMutablePointer(to: &value) {
+            AudioQueueGetProperty(
+                queue,
+                kAudioQueueProperty_CurrentDevice,
+                $0,
+                &size
+            )
+        }
+        return (
+            status,
+            status == noErr ? value as String : nil
+        )
+    }
+
+    private func allocateBuffer(
+        on queue: AudioQueueRef,
+        byteCount: UInt32
+    ) -> (status: OSStatus, buffer: AudioQueueBufferRef?) {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations.allocateBuffer(
+                on: queue,
+                byteCount: byteCount
+            )
+        }
+        #endif
+
+        var buffer: AudioQueueBufferRef?
+        let status = AudioQueueAllocateBuffer(
+            queue,
+            byteCount,
+            &buffer
+        )
+        return (status, buffer)
+    }
+
+    @inline(__always)
+    private func enqueueBuffer(
+        _ buffer: AudioQueueBufferRef,
+        on queue: AudioQueueRef
+    ) -> OSStatus {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations.enqueueBuffer(
+                buffer,
+                on: queue
+            )
+        }
+        #endif
+        return AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
+    }
+
+    private func startQueue(_ queue: AudioQueueRef) -> OSStatus {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations.startQueue(queue)
+        }
+        #endif
+        return AudioQueueStart(queue, nil)
+    }
+
+    private func queueStreamDescription(
+        on queue: AudioQueueRef
+    ) -> (
+        status: OSStatus,
+        value: AudioStreamBasicDescription
+    ) {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations
+                .queueStreamDescription(on: queue)
+        }
+        #endif
+
+        var value = AudioStreamBasicDescription()
+        let expectedSize = UInt32(
+            MemoryLayout<AudioStreamBasicDescription>.size
+        )
+        var size = expectedSize
+        let status = AudioQueueGetProperty(
+            queue,
+            kAudioQueueProperty_StreamDescription,
+            &value,
+            &size
+        )
+        guard status != noErr || size == expectedSize else {
+            return (kAudio_ParamError, value)
+        }
+        return (status, value)
+    }
+
+    private func queueDeviceSampleRate(
+        on queue: AudioQueueRef
+    ) -> (status: OSStatus, value: Double) {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations
+                .queueDeviceSampleRate(on: queue)
+        }
+        #endif
+
+        var value = 0.0
+        let expectedSize = UInt32(MemoryLayout<Double>.size)
+        var size = expectedSize
+        let status = AudioQueueGetProperty(
+            queue,
+            kAudioQueueDeviceProperty_SampleRate,
+            &value,
+            &size
+        )
+        guard status != noErr || size == expectedSize else {
+            return (kAudio_ParamError, value)
+        }
+        return (status, value)
+    }
+
+    private func queueDeviceChannelCount(
+        on queue: AudioQueueRef
+    ) -> (status: OSStatus, value: UInt32) {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations
+                .queueDeviceChannelCount(on: queue)
+        }
+        #endif
+
+        var value: UInt32 = 0
+        let expectedSize = UInt32(MemoryLayout<UInt32>.size)
+        var size = expectedSize
+        let status = AudioQueueGetProperty(
+            queue,
+            kAudioQueueDeviceProperty_NumberChannels,
+            &value,
+            &size
+        )
+        guard status != noErr || size == expectedSize else {
+            return (kAudio_ParamError, value)
+        }
+        return (status, value)
+    }
+
+    private func queueConverterError(
+        on queue: AudioQueueRef
+    ) -> (status: OSStatus, value: UInt32) {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations
+                .queueConverterError(on: queue)
+        }
+        #endif
+
+        var value: UInt32 = 0
+        let expectedSize = UInt32(MemoryLayout<UInt32>.size)
+        var size = expectedSize
+        let status = AudioQueueGetProperty(
+            queue,
+            kAudioQueueProperty_ConverterError,
+            &value,
+            &size
+        )
+        guard status != noErr || size == expectedSize else {
+            return (kAudio_ParamError, value)
+        }
+        return (status, value)
+    }
+
+    private func deviceCurrentTime(
+        on queue: AudioQueueRef
+    ) -> (status: OSStatus, timestamp: AudioTimeStamp) {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations
+                .deviceCurrentTime(on: queue)
+        }
+        #endif
+
+        var timestamp = AudioTimeStamp()
+        let status = AudioQueueDeviceGetCurrentTime(
+            queue,
+            &timestamp
+        )
+        return (status, timestamp)
+    }
+
+    private func nominalSampleRate(
+        for deviceID: AudioDeviceID
+    ) -> (status: OSStatus, value: Double) {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations
+                .nominalSampleRate(for: deviceID)
+        }
+        #endif
+
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value = 0.0
+        var size = UInt32(MemoryLayout<Double>.size)
+        let status = AudioObjectGetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            &size,
+            &value
+        )
+        return (status, value)
+    }
+
+    private func stopQueue(
+        _ queue: AudioQueueRef,
+        immediate: Bool
+    ) -> OSStatus {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations.stopQueue(
+                queue,
+                immediate: immediate
+            )
+        }
+        #endif
+        return AudioQueueStop(queue, immediate)
+    }
+
+    private func freeBuffer(
+        _ buffer: AudioQueueBufferRef,
+        from queue: AudioQueueRef
+    ) -> OSStatus {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations.freeBuffer(
+                buffer,
+                from: queue
+            )
+        }
+        #endif
+        return AudioQueueFreeBuffer(queue, buffer)
+    }
+
+    private func disposeQueue(
+        _ queue: AudioQueueRef,
+        immediate: Bool
+    ) -> OSStatus {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations.disposeQueue(
+                queue,
+                immediate: immediate
+            )
+        }
+        #endif
+        return AudioQueueDispose(queue, immediate)
+    }
+
+    #if DEBUG
+    func debugInvokeRealtimeCallbackForTesting(
+        queue: AudioQueueRef,
+        buffer: AudioQueueBufferRef
+    ) {
+        lifecycleCondition.lock()
+        let callbackContextPointer = self.callbackContextPointer
+        lifecycleCondition.unlock()
+        guard let callbackContextPointer else { return }
+        blackHoleMicrophoneOutputCallback(
+            callbackContextPointer,
+            queue,
+            buffer
+        )
+    }
+
+    func debugRealtimeCallbackContextForTesting()
+        -> UnsafeMutableRawPointer? {
+        lifecycleCondition.lock()
+        defer { lifecycleCondition.unlock() }
+        return callbackContextPointer
+    }
+
+    var debugHasPendingQueueDisposalForTesting: Bool {
+        false
+    }
+
+    var debugLastDisposeStatusForTesting: OSStatus? {
+        lifecycleCondition.lock()
+        defer { lifecycleCondition.unlock() }
+        return lastDisposeStatus
+    }
+
+    var debugPCMAdmissionIsOpenForTesting: Bool {
+        pcmAdmissionGate.isOpen
+    }
+
+    func debugWaitForStopRequestDuringStartForTesting(
+        timeout: TimeInterval
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        lifecycleCondition.lock()
+        defer { lifecycleCondition.unlock() }
+        while true {
+            switch lifecycleState {
+            case .starting(stopRequested: true):
+                return true
+            case .starting(stopRequested: false):
+                guard lifecycleCondition.wait(until: deadline) else {
+                    return false
+                }
+            case .idle, .running, .stopping:
+                return false
+            }
+        }
+    }
+
+    static func debugInvokeRealtimeCallbackWithContextForTesting(
+        context: UnsafeMutableRawPointer,
+        queue: AudioQueueRef,
+        buffer: AudioQueueBufferRef
+    ) {
+        blackHoleMicrophoneOutputCallback(
+            context,
+            queue,
+            buffer
+        )
+    }
+
+    func debugReportLatchedRuntimeFailureForTesting() {
+        guard let generation =
+                debugRuntimeFailureMonitoringGenerationForTesting() else {
+            return
+        }
+        debugPollRuntimeFailureMonitoringForTesting(
+            generation: generation
+        )
+    }
+
+    func debugRuntimeFailureMonitoringGenerationForTesting()
+        -> UInt64? {
+        withRuntimeFailureReportingQueue {
+            activeRuntimeFailureGeneration
+        }
+    }
+
+    func debugPollRuntimeFailureMonitoringForTesting(
+        generation: UInt64
+    ) {
+        pollRuntimeFailureMonitoring(generation: generation)
+    }
+    #endif
+}
+
+private struct BlackHoleMicrophoneOutputCallbackResult {
+    let requestedFrameCount: UInt64
+    let pullSucceeded: Bool
+    let enqueueStatus: OSStatus
+}
+
+#if DEBUG
+private let blackHoleMicrophoneOutputTestingClockOriginHostTime =
+    mach_absolute_time()
+
+/// DEBUG-only AudioQueue replacement used by deterministic tests.
+///
+/// All references to this protocol and its dynamic dispatch are compiled out
+/// of Release, leaving direct Core Audio calls on the production callback path.
+protocol BlackHoleMicrophoneOutputAudioQueueOperations:
+    AnyObject,
+    Sendable
+{
+    func createOutputQueue() -> (
+        status: OSStatus,
+        queue: AudioQueueRef?
+    )
+
+    func createOutputQueue(
+        requestedFormat: AudioStreamBasicDescription
+    ) -> (
+        status: OSStatus,
+        queue: AudioQueueRef?
+    )
+
+    func createOutputQueue(
+        requestedFormat: AudioStreamBasicDescription,
+        callbackContext: UnsafeMutableRawPointer
+    ) -> (
+        status: OSStatus,
+        queue: AudioQueueRef?
+    )
+
+    func translateDeviceID(
+        exactUID: String
+    ) -> (status: OSStatus, deviceID: AudioDeviceID?)
+
+    func setCurrentDevice(
+        _ uid: String,
+        on queue: AudioQueueRef
+    ) -> OSStatus
+
+    func currentDeviceUID(
+        on queue: AudioQueueRef
+    ) -> (status: OSStatus, uid: String?)
+
+    func allocateBuffer(
+        on queue: AudioQueueRef,
+        byteCount: UInt32
+    ) -> (
+        status: OSStatus,
+        buffer: AudioQueueBufferRef?
+    )
+
+    func enqueueBuffer(
+        _ buffer: AudioQueueBufferRef,
+        on queue: AudioQueueRef
+    ) -> OSStatus
+
+    func startQueue(_ queue: AudioQueueRef) -> OSStatus
+
+    func queueStreamDescription(
+        on queue: AudioQueueRef
+    ) -> (
+        status: OSStatus,
+        value: AudioStreamBasicDescription
+    )
+
+    func queueDeviceSampleRate(
+        on queue: AudioQueueRef
+    ) -> (status: OSStatus, value: Double)
+
+    func queueDeviceChannelCount(
+        on queue: AudioQueueRef
+    ) -> (status: OSStatus, value: UInt32)
+
+    func queueConverterError(
+        on queue: AudioQueueRef
+    ) -> (status: OSStatus, value: UInt32)
+
+    func deviceCurrentTime(
+        on queue: AudioQueueRef
+    ) -> (status: OSStatus, timestamp: AudioTimeStamp)
+
+    func nominalSampleRate(
+        for deviceID: AudioDeviceID
+    ) -> (status: OSStatus, value: Double)
+
+    func stopQueue(
+        _ queue: AudioQueueRef,
+        immediate: Bool
+    ) -> OSStatus
+
+    func freeBuffer(
+        _ buffer: AudioQueueBufferRef,
+        from queue: AudioQueueRef
+    ) -> OSStatus
+
+    func disposeQueue(
+        _ queue: AudioQueueRef,
+        immediate: Bool
+    ) -> OSStatus
+}
+
+extension BlackHoleMicrophoneOutputAudioQueueOperations {
+    func createOutputQueue(
+        requestedFormat: AudioStreamBasicDescription,
+        callbackContext _: UnsafeMutableRawPointer
+    ) -> (
+        status: OSStatus,
+        queue: AudioQueueRef?
+    ) {
+        createOutputQueue(requestedFormat: requestedFormat)
+    }
+
+    func createOutputQueue(
+        requestedFormat _: AudioStreamBasicDescription
+    ) -> (
+        status: OSStatus,
+        queue: AudioQueueRef?
+    ) {
+        createOutputQueue()
+    }
+
+    func queueStreamDescription(
+        on _: AudioQueueRef
+    ) -> (
+        status: OSStatus,
+        value: AudioStreamBasicDescription
+    ) {
+        (
+            noErr,
+            BlackHoleMicrophoneOutputFormatPolicy
+                .requiredStreamDescription
+        )
+    }
+
+    func queueDeviceSampleRate(
+        on _: AudioQueueRef
+    ) -> (status: OSStatus, value: Double) {
+        (
+            noErr,
+            BlackHoleMicrophoneOutputFormatPolicy.requiredSampleRate
+        )
+    }
+
+    func queueDeviceChannelCount(
+        on _: AudioQueueRef
+    ) -> (status: OSStatus, value: UInt32) {
+        (
+            noErr,
+            BlackHoleMicrophoneOutputFormatPolicy.requiredChannelCount
+        )
+    }
+
+    func queueConverterError(
+        on _: AudioQueueRef
+    ) -> (status: OSStatus, value: UInt32) {
+        (noErr, 0)
+    }
+
+    /// Compatibility defaults for focused fakes outside this file. Clock-gate
+    /// tests override both reads with scripted evidence.
+    func deviceCurrentTime(
+        on _: AudioQueueRef
+    ) -> (status: OSStatus, timestamp: AudioTimeStamp) {
+        let originHostTime =
+            blackHoleMicrophoneOutputTestingClockOriginHostTime
+        let hostTime = mach_absolute_time()
+        let elapsedHostTime = hostTime - originHostTime
+        let elapsedHostNanoseconds =
+            AudioConvertHostTimeToNanos(elapsedHostTime)
+        var timestamp = AudioTimeStamp()
+        timestamp.mSampleTime = floor(
+            Double(elapsedHostNanoseconds)
+                * BlackHoleMicrophoneOutputFormatPolicy
+                    .requiredSampleRate
+                / 1_000_000_000
+        )
+        timestamp.mHostTime = hostTime
+        timestamp.mFlags =
+            BlackHoleFaceTimeClockPolicy.requiredTimestampFlags
+        return (noErr, timestamp)
+    }
+
+    func nominalSampleRate(
+        for _: AudioDeviceID
+    ) -> (status: OSStatus, value: Double) {
+        (noErr, Double(BlackHoleFaceTimeClockPolicy.deviceSampleRate))
+    }
+}
+#endif
+
+#if DEBUG
+final class BlackHoleMicrophoneOutputRuntimeEnqueueFailurePublicationInterlock:
+    @unchecked Sendable
+{
+    private enum State {
+        case disarmed
+        case armed
+        case paused
+        case released
+    }
+
+    private let lock = NSLock()
+    private let publicationReached = DispatchSemaphore(value: 0)
+    private let callbackRelease = DispatchSemaphore(value: 0)
+    private var state = State.disarmed
+
+    func armNextFailureCallback() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard case .disarmed = state else {
+            preconditionFailure(
+                "Runtime enqueue failure interlock is already armed."
+            )
+        }
+        state = .armed
+    }
+
+    fileprivate func pauseCallbackAfterPublication() {
+        lock.lock()
+        guard case .armed = state else {
+            lock.unlock()
+            return
+        }
+        state = .paused
+        lock.unlock()
+
+        publicationReached.signal()
+        callbackRelease.wait()
+
+        lock.lock()
+        state = .disarmed
+        lock.unlock()
+    }
+
+    func waitUntilCallbackPaused(
+        timeout: DispatchTime
+    ) -> DispatchTimeoutResult {
+        return publicationReached.wait(timeout: timeout)
+    }
+
+    func releaseCallback() {
+        lock.lock()
+        switch state {
+        case .armed:
+            state = .disarmed
+            lock.unlock()
+        case .paused:
+            state = .released
+            lock.unlock()
+            callbackRelease.signal()
+        case .disarmed, .released:
+            lock.unlock()
+        }
+    }
+}
+#endif
+
+#if DEBUG
+/// Deterministically pauses a callback after a PCM pull and before the final
+/// writer-authorization check. Production has no equivalent blocking path.
+final class BlackHoleMicrophoneOutputWriterAuthorizationInterlock:
+    @unchecked Sendable
+{
+    private enum State {
+        case disarmed
+        case armed
+        case paused
+        case released
+    }
+
+    private let lock = NSLock()
+    private let checkReached = DispatchSemaphore(value: 0)
+    private let callbackRelease = DispatchSemaphore(value: 0)
+    private var state = State.disarmed
+
+    func armNextCallback() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard case .disarmed = state else {
+            preconditionFailure(
+                "Writer-authorization interlock is already armed."
+            )
+        }
+        state = .armed
+    }
+
+    fileprivate func pauseBeforeFinalAuthorizationCheck() {
+        lock.lock()
+        guard case .armed = state else {
+            lock.unlock()
+            return
+        }
+        state = .paused
+        lock.unlock()
+
+        checkReached.signal()
+        callbackRelease.wait()
+
+        lock.lock()
+        state = .disarmed
+        lock.unlock()
+    }
+
+    func waitUntilCallbackPaused(
+        timeout: DispatchTime
+    ) -> DispatchTimeoutResult {
+        checkReached.wait(timeout: timeout)
+    }
+
+    func releaseCallback() {
+        lock.lock()
+        switch state {
+        case .armed:
+            state = .disarmed
+            lock.unlock()
+        case .paused:
+            state = .released
+            lock.unlock()
+            callbackRelease.signal()
+        case .disarmed, .released:
+            lock.unlock()
+        }
+    }
+}
+#endif
+
+private final class BlackHoleMicrophoneOutputCallbackContext:
+    @unchecked Sendable
+{
+    private let callbackLifetime: UnsafeMutableRawPointer
+    private let source: WebRTCMacDecodedAudioSource?
+    private let authorizationGate:
+        BlackHoleMicrophoneOutputAuthorizationGate
+    private let pcmAdmissionGate:
+        BlackHoleMicrophoneOutputPCMAdmissionGate
+    private let runtimeFailureLatch: WebRTCMacAudioQueueRuntimeFailureLatch
+    private let channelCount: UInt32
+    private let progressStorage: BlackHoleMicrophoneOutputProgressStorage
+    private var pcmContentAccumulator =
+        BlackHoleMicrophoneOutputPCMContentAccumulator()
+
+    #if DEBUG
+    private let testingAudioQueueOperations:
+        (any BlackHoleMicrophoneOutputAudioQueueOperations)?
+    private let renderForTesting:
+        ((UnsafeMutablePointer<Int16>, Int) -> Bool)?
+    private let runtimeEnqueueFailurePublicationInterlockForTesting:
+        BlackHoleMicrophoneOutputRuntimeEnqueueFailurePublicationInterlock?
+    private let writerAuthorizationInterlockForTesting:
+        BlackHoleMicrophoneOutputWriterAuthorizationInterlock?
+    private let deinitForTesting:
+        (@Sendable () -> Void)?
+    #endif
+
+    #if DEBUG
+    init(
+        callbackLifetime: UnsafeMutableRawPointer,
+        source: WebRTCMacDecodedAudioSource?,
+        authorizationGate:
+            BlackHoleMicrophoneOutputAuthorizationGate,
+        pcmAdmissionGate:
+            BlackHoleMicrophoneOutputPCMAdmissionGate,
+        runtimeFailureLatch: WebRTCMacAudioQueueRuntimeFailureLatch,
+        channelCount: UInt32,
+        progressStorage: BlackHoleMicrophoneOutputProgressStorage,
+        testingAudioQueueOperations:
+            (any BlackHoleMicrophoneOutputAudioQueueOperations)?,
+        renderForTesting:
+            ((UnsafeMutablePointer<Int16>, Int) -> Bool)?,
+        runtimeEnqueueFailurePublicationInterlockForTesting:
+            BlackHoleMicrophoneOutputRuntimeEnqueueFailurePublicationInterlock?,
+        writerAuthorizationInterlockForTesting:
+            BlackHoleMicrophoneOutputWriterAuthorizationInterlock?,
+        deinitForTesting:
+            (@Sendable () -> Void)?
+    ) {
+        self.callbackLifetime = callbackLifetime
+        self.source = source
+        self.authorizationGate = authorizationGate
+        self.pcmAdmissionGate = pcmAdmissionGate
+        self.runtimeFailureLatch = runtimeFailureLatch
+        self.channelCount = channelCount
+        self.progressStorage = progressStorage
+        self.testingAudioQueueOperations = testingAudioQueueOperations
+        self.renderForTesting = renderForTesting
+        self.runtimeEnqueueFailurePublicationInterlockForTesting =
+            runtimeEnqueueFailurePublicationInterlockForTesting
+        self.writerAuthorizationInterlockForTesting =
+            writerAuthorizationInterlockForTesting
+        self.deinitForTesting = deinitForTesting
+    }
+    #else
+    init(
+        callbackLifetime: UnsafeMutableRawPointer,
+        source: WebRTCMacDecodedAudioSource?,
+        authorizationGate:
+            BlackHoleMicrophoneOutputAuthorizationGate,
+        pcmAdmissionGate:
+            BlackHoleMicrophoneOutputPCMAdmissionGate,
+        runtimeFailureLatch: WebRTCMacAudioQueueRuntimeFailureLatch,
+        channelCount: UInt32,
+        progressStorage: BlackHoleMicrophoneOutputProgressStorage
+    ) {
+        self.callbackLifetime = callbackLifetime
+        self.source = source
+        self.authorizationGate = authorizationGate
+        self.pcmAdmissionGate = pcmAdmissionGate
+        self.runtimeFailureLatch = runtimeFailureLatch
+        self.channelCount = channelCount
+        self.progressStorage = progressStorage
+    }
+    #endif
+
+    deinit {
+        ASMacAudioQueueCallbackLifetimeDestroy(callbackLifetime)
+        #if DEBUG
+        deinitForTesting?()
+        #endif
+    }
+
+    @inline(__always)
+    fileprivate func tryEnterCallback() -> Bool {
+        ASMacAudioQueueCallbackLifetimeTryEnter(callbackLifetime)
+    }
+
+    @inline(__always)
+    fileprivate func leaveCallback() {
+        ASMacAudioQueueCallbackLifetimeLeave(callbackLifetime)
+    }
+
+    fileprivate func closeCallbacks() {
+        ASMacAudioQueueCallbackLifetimeClose(callbackLifetime)
+    }
+
+    fileprivate func waitForCallbacks() {
+        ASMacAudioQueueCallbackLifetimeWaitForCallbacks(
+            callbackLifetime
+        )
+    }
+
+    #if DEBUG
+    @inline(__always)
+    fileprivate func pauseRuntimeEnqueueFailurePublicationForTesting() {
+        runtimeEnqueueFailurePublicationInterlockForTesting?
+            .pauseCallbackAfterPublication()
+    }
+    #endif
+
+    @inline(__always)
+    fileprivate func fillAndEnqueue(
+        queue: AudioQueueRef,
+        buffer: AudioQueueBufferRef
+    ) -> BlackHoleMicrophoneOutputCallbackResult {
+        let frameBytes = Int(channelCount) * MemoryLayout<Int16>.size
+        let capacity = Int(buffer.pointee.mAudioDataBytesCapacity)
+        let frameCount = capacity / frameBytes
+        guard frameCount > 0 else {
+            buffer.pointee.mAudioDataByteSize = 0
+            return BlackHoleMicrophoneOutputCallbackResult(
+                requestedFrameCount: 0,
+                pullSucceeded: false,
+                enqueueStatus: authorizationGate.isOpen
+                    ? enqueueBuffer(buffer, on: queue)
+                    : noErr
+            )
+        }
+
+        let rawData = buffer.pointee.mAudioData
+        memset(rawData, 0, capacity)
+        buffer.pointee.mAudioDataByteSize =
+            UInt32(frameCount * frameBytes)
+        guard authorizationGate.isOpen else {
+            return BlackHoleMicrophoneOutputCallbackResult(
+                requestedFrameCount: UInt64(frameCount),
+                pullSucceeded: false,
+                enqueueStatus: noErr
+            )
+        }
+        guard pcmAdmissionGate.isOpen else {
+            // The route may be authorized before this exact queue has proved
+            // its post-start format and clock. Keep Core Audio primed with
+            // silence without touching the decoded source.
+            return BlackHoleMicrophoneOutputCallbackResult(
+                requestedFrameCount: UInt64(frameCount),
+                pullSucceeded: false,
+                enqueueStatus: authorizationGate.isOpen
+                    ? enqueueBuffer(buffer, on: queue)
+                    : noErr
+            )
+        }
+
+        let samples = rawData.assumingMemoryBound(to: Int16.self)
+        let pullSucceeded: Bool
+        #if DEBUG
+        if let renderForTesting {
+            pullSucceeded = renderForTesting(samples, frameCount)
+        } else if let source {
+            pullSucceeded = source.renderMonoInt16(
+                into: samples,
+                frameCount: frameCount
+            )
+        } else {
+            pullSucceeded = false
+        }
+        #else
+        if let source {
+            pullSucceeded = source.renderMonoInt16(
+                into: samples,
+                frameCount: frameCount
+            )
+        } else {
+            pullSucceeded = false
+        }
+        #endif
+
+        if !pullSucceeded {
+            // A failed native renderer may have partially dirtied caller-owned
+            // memory. Re-zero the full capacity before publishing silence.
+            memset(rawData, 0, capacity)
+        }
+
+        #if DEBUG
+        writerAuthorizationInterlockForTesting?
+            .pauseBeforeFinalAuthorizationCheck()
+        #endif
+        guard authorizationGate.isOpen,
+              pcmAdmissionGate.isOpen else {
+            // Revocation may race an in-flight native render. Scrub the
+            // complete caller-owned buffer and retire it instead of returning
+            // it to Core Audio.
+            memset(rawData, 0, capacity)
+            return BlackHoleMicrophoneOutputCallbackResult(
+                requestedFrameCount: UInt64(frameCount),
+                pullSucceeded: false,
+                enqueueStatus: noErr
+            )
+        }
+
+        pcmContentAccumulator.accumulate(
+            mono: UnsafePointer(samples),
+            frameCount: frameCount,
+            storage: progressStorage
+        )
+        guard authorizationGate.isOpen,
+              pcmAdmissionGate.isOpen else {
+            memset(rawData, 0, capacity)
+            return BlackHoleMicrophoneOutputCallbackResult(
+                requestedFrameCount: UInt64(frameCount),
+                pullSucceeded: false,
+                enqueueStatus: noErr
+            )
+        }
+        // This is the last lock-free observation available before the
+        // non-transactional Core Audio enqueue. A close linearized after this
+        // load can overlap this one in-flight enqueue; the listener closes the
+        // gate synchronously and service teardown then stops the queue. There
+        // is no Core Audio API that atomically couples authorization to
+        // AudioQueueEnqueueBuffer.
+        return BlackHoleMicrophoneOutputCallbackResult(
+            requestedFrameCount: UInt64(frameCount),
+            pullSucceeded: pullSucceeded,
+            enqueueStatus: enqueueBuffer(buffer, on: queue)
+        )
+    }
+
+    @inline(__always)
+    fileprivate func publishProgress(
+        _ result: BlackHoleMicrophoneOutputCallbackResult
+    ) {
+        progressStorage.publish(
+            requestedFrameCount: result.requestedFrameCount,
+            pullSucceeded: result.pullSucceeded,
+            enqueueStatus: result.enqueueStatus
+        )
+    }
+
+    @inline(__always)
+    fileprivate func publishRuntimeEnqueueFailure(_ status: OSStatus) {
+        runtimeFailureLatch.publish(status)
+    }
+
+    @inline(__always)
+    private func enqueueBuffer(
+        _ buffer: AudioQueueBufferRef,
+        on queue: AudioQueueRef
+    ) -> OSStatus {
+        #if DEBUG
+        if let testingAudioQueueOperations {
+            return testingAudioQueueOperations.enqueueBuffer(
+                buffer,
+                on: queue
+            )
+        }
+        #endif
+        return AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
+    }
+}
+
+private func blackHoleMicrophoneOutputCallback(
+    _ userData: UnsafeMutableRawPointer?,
+    _ queue: AudioQueueRef,
+    _ buffer: AudioQueueBufferRef
+) {
+    guard let userData else { return }
+    let callbackContext =
+        Unmanaged<BlackHoleMicrophoneOutputCallbackContext>
+        .fromOpaque(userData)
+        .takeUnretainedValue()
+    guard callbackContext.tryEnterCallback() else { return }
+    defer { callbackContext.leaveCallback() }
+
+    let result = callbackContext.fillAndEnqueue(
+        queue: queue,
+        buffer: buffer
+    )
+    if result.enqueueStatus != noErr {
+        // Publish the first-status latch before the multi-field progress
+        // snapshot. A watchdog poll interleaved between these publications
+        // must therefore select the enqueue failure.
+        callbackContext.publishRuntimeEnqueueFailure(
+            result.enqueueStatus
+        )
+        #if DEBUG
+        callbackContext.pauseRuntimeEnqueueFailurePublicationForTesting()
+        #endif
+    }
+    callbackContext.publishProgress(result)
+}
+
+enum BlackHoleMicrophoneOutputError:
+    LocalizedError,
+    Equatable,
+    Sendable
+{
+    case operation(String, OSStatus)
+    case progressStalled
+    case formatUnsafe(BlackHoleMicrophoneOutputFormatRejection)
+    case sharedClockUnsafe(BlackHoleFaceTimeClockRejection)
+
+    var errorDescription: String? {
+        switch self {
+        case .operation(let operation, let status):
+            return "\(operation) failed with Core Audio status \(status)."
+        case .progressStalled:
+            return "BlackHole audio callback or decoded-frame progress " +
+                "stalled while iPhone microphone forwarding was active."
+        case .formatUnsafe(let rejection):
+            return "BlackHole output format/readback is unsafe for " +
+                "iPhone microphone forwarding: " +
+                rejection.description + "."
+        case .sharedClockUnsafe(let rejection):
+            return "BlackHole shared device clock is unsafe for FaceTime's "
+                + "24 kHz signed-32 microphone timeline: "
+                + rejection.description + "."
+        }
+    }
+}

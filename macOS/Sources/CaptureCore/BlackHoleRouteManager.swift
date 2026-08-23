@@ -1,7 +1,31 @@
 import CoreAudio
 import Foundation
 
-/// Finds BlackHole, assigns it to all relevant macOS defaults, and monitors route drift.
+private enum BlackHole2ChannelEndpoint {
+    static let name = "BlackHole 2ch"
+    static let uid = "BlackHole2ch_UID"
+
+    static func matches(_ route: AudioRoute) -> Bool {
+        if let uid = route.uid, !uid.isEmpty {
+            return uid == Self.uid
+        }
+        return route.name == name
+    }
+}
+
+protocol BlackHoleRouteInventoryReading:
+    Sendable
+{
+    func allDeviceIDs() throws -> [AudioDeviceID]
+    func deviceName(
+        _ deviceID: AudioDeviceID
+    ) throws -> String
+    func deviceUID(
+        _ deviceID: AudioDeviceID
+    ) throws -> String?
+}
+
+/// Finds the exact BlackHole 2ch endpoint, assigns it to all relevant macOS defaults, and monitors route drift.
 ///
 /// Core Audio delivers property notifications on `listenerQueue`. Host lifecycle calls
 /// install and remove listeners; the unchecked conformance exists because Core Audio's
@@ -11,6 +35,41 @@ final class BlackHoleRouteManager: @unchecked Sendable {
     private struct Listener {
         var address: AudioObjectPropertyAddress
         let block: AudioObjectPropertyListenerBlock
+    }
+
+    private struct SystemStrictInventory:
+        BlackHoleRouteInventoryReading,
+        Sendable
+    {
+        func allDeviceIDs() throws
+            -> [AudioDeviceID] {
+            try BlackHoleRouteManager.allDevices()
+        }
+
+        func deviceName(
+            _ deviceID: AudioDeviceID
+        ) throws -> String {
+            try BlackHoleRouteManager
+                .strictStringProperty(
+                    deviceID,
+                    selector:
+                        kAudioObjectPropertyName,
+                    operation: "read device name"
+                )
+        }
+
+        func deviceUID(
+            _ deviceID: AudioDeviceID
+        ) throws -> String? {
+            try BlackHoleRouteManager
+                .strictStringProperty(
+                    deviceID,
+                    selector:
+                        kAudioDevicePropertyDeviceUID,
+                    operation:
+                        "read stable device UID"
+                )
+        }
     }
 
     private let logger: Logger
@@ -30,6 +89,91 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         try applyDefaults(route: route, reason: "startup")
         expectedRoute = route
         logger.info("Routed Mac default output, system output, and input to \(route.name)")
+        return route
+    }
+
+    /// Resolves only an installed two-channel BlackHole endpoint. This path is
+    /// read-only and never applies the legacy global-default mutation policy.
+    static func blackHole2ChannelDeviceUID() throws -> String {
+        try blackHole2ChannelDeviceUID(
+            inventory: SystemStrictInventory()
+        )
+    }
+
+    /// Resolves the production inventory through strict, throwing property
+    /// reads. A property-read failure is transient configuration failure, never
+    /// factual device absence.
+    static func blackHole2ChannelDeviceUID(
+        inventory:
+            any BlackHoleRouteInventoryReading
+    ) throws -> String {
+        let deviceIDs =
+            try inventory.allDeviceIDs()
+        var nameFallbackRoutes: [AudioRoute] = []
+        nameFallbackRoutes.reserveCapacity(deviceIDs.count)
+        var firstReadFailure: (any Error)?
+
+        for deviceID in deviceIDs {
+            let uid: String?
+            do {
+                uid = try inventory.deviceUID(deviceID)
+            } catch {
+                if firstReadFailure == nil {
+                    firstReadFailure = error
+                }
+                continue
+            }
+
+            if let uid, !uid.isEmpty {
+                if uid == BlackHole2ChannelEndpoint.uid {
+                    return BlackHole2ChannelEndpoint.uid
+                }
+                continue
+            }
+
+            do {
+                let name = try inventory.deviceName(deviceID)
+                nameFallbackRoutes.append(
+                    AudioRoute(
+                        deviceID: deviceID,
+                        name: name,
+                        uid: uid
+                    )
+                )
+            } catch {
+                if firstReadFailure == nil {
+                    firstReadFailure = error
+                }
+            }
+        }
+
+        if nameFallbackRoutes.contains(where: { $0.isBlackHole }) {
+            return BlackHole2ChannelEndpoint.uid
+        }
+        if let firstReadFailure {
+            throw firstReadFailure
+        }
+        return try blackHole2ChannelDeviceUID(
+            in: nameFallbackRoutes
+        )
+    }
+
+    /// Resolves an injected route inventory without reading or changing Core Audio defaults.
+    static func blackHole2ChannelDeviceUID(in routes: [AudioRoute]) throws -> String {
+        _ = try resolveBlackHole2ChannelRoute(in: routes)
+        return BlackHole2ChannelEndpoint.uid
+    }
+
+    /// Selects only the canonical two-channel endpoint from an explicit ordered inventory.
+    static func resolveBlackHole2ChannelRoute(
+        in routes: [AudioRoute]
+    ) throws -> AudioRoute {
+        guard let route = routes.first(where: { $0.isBlackHole }) else {
+            let names = routes.map(\.name).sorted().joined(separator: ", ")
+            throw CaptureError.audioDeviceNotFound(
+                "BlackHole 2ch is required. Available devices: \(names)"
+            )
+        }
         return route
     }
 
@@ -94,21 +238,21 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         do {
             let drift = try defaultDeviceDrift(expectedRoute: expectedRoute)
             guard !drift.isEmpty else {
-                logger.debug("Mac audio defaults still routed to \(expectedRoute.name)")
+                logger.debug("BlackHole route notification verified without drift")
                 return
             }
 
             guard shouldReassertRoute() else {
                 logger.error(
                     "Mac audio default route is repeatedly changing away from \(expectedRoute.name); " +
-                    "leaving current route in place after observed drift: \(drift.joined(separator: ", "))"
+                        "leaving current route in place after observed drift: \(drift.joined(separator: ", "))"
                 )
                 return
             }
 
             logger.info(
                 "Observed Mac audio route drift from expected \(expectedRoute.name): " +
-                "\(drift.joined(separator: ", "))"
+                    "\(drift.joined(separator: ", "))"
             )
             isReassertingRoute = true
             defer { isReassertingRoute = false }
@@ -120,7 +264,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
             } else {
                 logger.error(
                     "BlackHole route restore did not stick; current drift: " +
-                    "\(remainingDrift.joined(separator: ", "))"
+                        "\(remainingDrift.joined(separator: ", "))"
                 )
             }
         } catch {
@@ -203,7 +347,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         )
     }
 
-    /// Locates the first installed route whose name or UID identifies BlackHole.
+    /// Locates the first installed route that satisfies the exact two-channel identity contract.
     private static func findBlackHoleRoute() throws -> AudioRoute {
         let routes = try Self.allDevices().map {
             AudioRoute(
@@ -212,13 +356,7 @@ final class BlackHoleRouteManager: @unchecked Sendable {
                 uid: Self.deviceUID($0)
             )
         }
-
-        guard let route = routes.first(where: { $0.isBlackHole }) else {
-            let names = routes.map(\.name).sorted().joined(separator: ", ")
-            throw CaptureError.audioDeviceNotFound("BlackHole 2ch is required. Available devices: \(names)")
-        }
-
-        return route
+        return try resolveBlackHole2ChannelRoute(in: routes)
     }
 
     /// Writes all three defaults; partial failure is surfaced to the caller.
@@ -338,6 +476,43 @@ final class BlackHoleRouteManager: @unchecked Sendable {
         return value as String
     }
 
+    private static func strictStringProperty(
+        _ deviceID: AudioDeviceID,
+        selector: AudioObjectPropertySelector,
+        operation: String
+    ) throws -> String {
+        var value: CFString = "" as CFString
+        var size = UInt32(
+            MemoryLayout<CFString>.size
+        )
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope:
+                kAudioObjectPropertyScopeGlobal,
+            mElement:
+                kAudioObjectPropertyElementMain
+        )
+        let status = withUnsafeMutablePointer(
+            to: &value
+        ) {
+            AudioObjectGetPropertyData(
+                deviceID,
+                &address,
+                0,
+                nil,
+                &size,
+                $0
+            )
+        }
+        guard status == noErr else {
+            throw CaptureError.audioDeviceConfiguration(
+                "\(operation) for Core Audio device \(deviceID)",
+                status
+            )
+        }
+        return value as String
+    }
+
     private static func propertyAddress(selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(
             mSelector: selector,
@@ -366,10 +541,9 @@ struct AudioRoute: Sendable {
     let name: String
     let uid: String?
 
-    /// Whether the human-readable name or stable UID identifies BlackHole.
+    /// Whether this route satisfies the canonical two-channel UID/name precedence contract.
     var isBlackHole: Bool {
-        name.localizedCaseInsensitiveContains("BlackHole") ||
-            (uid?.localizedCaseInsensitiveContains("BlackHole") ?? false)
+        BlackHole2ChannelEndpoint.matches(self)
     }
 }
 
@@ -378,6 +552,11 @@ public enum BlackHoleRouteVerifier {
     /// Returns current route health without reconfiguring macOS audio defaults.
     public static func verifyCurrentRoute() throws -> BlackHoleRouteHealth {
         try BlackHoleRouteManager.verifyCurrentRoute()
+    }
+
+    /// Returns the stable UID of BlackHole 2ch without changing any default.
+    public static func blackHole2ChannelDeviceUID() throws -> String {
+        try BlackHoleRouteManager.blackHole2ChannelDeviceUID()
     }
 }
 

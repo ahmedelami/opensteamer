@@ -15,7 +15,7 @@ final class ViewerPairingState: ObservableObject {
     private let store: any ViewerPairingStoring
     private var hydrationNeedsRetry = false
 
-    init(store: any ViewerPairingStoring = ViewerPairingKeychainStore()) {
+    init(store: any ViewerPairingStoring = ViewerPairingNamespaceSelectorStore()) {
         self.store = store
         hydrateSynchronously()
     }

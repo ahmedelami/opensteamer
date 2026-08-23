@@ -215,6 +215,652 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         XCTAssertNil(reconstructedState.pairedMac)
     }
 
+    func testNamespaceSelectorPrefersCompletePrimaryPairWithoutProbingLegacy() throws {
+        let primaryIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let primaryRecord = try makePairedMacRecord(localIdentity: primaryIdentity)
+        let legacyIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let legacyRecord = try makePairedMacRecord(localIdentity: legacyIdentity)
+        let primary = PairingNamespaceStoreSpy(
+            snapshot: try pairingNamespaceSnapshot(
+                identity: primaryIdentity,
+                record: primaryRecord
+            )
+        )
+        let legacy = PairingNamespaceStoreSpy(
+            snapshot: try pairingNamespaceSnapshot(
+                identity: legacyIdentity,
+                record: legacyRecord
+            )
+        )
+
+        let state = ViewerPairingState(
+            store: ViewerPairingNamespaceSelectorStore(
+                primaryStore: primary,
+                legacyStore: legacy
+            )
+        )
+
+        XCTAssertEqual(state.viewerIdentity, primaryIdentity)
+        XCTAssertEqual(state.pairedMac, primaryRecord)
+        XCTAssertEqual(primary.snapshotLoadCount, 1)
+        XCTAssertEqual(legacy.snapshotLoadCount, 0)
+        XCTAssertEqual(primary.createIdentityCount, 0)
+        XCTAssertEqual(legacy.createIdentityCount, 0)
+    }
+
+    func testPrimaryIdentityOnlyIsExplicitlyUnpairedAndDoesNotProbeLegacy() throws {
+        let primaryIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let legacyIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let legacyRecord = try makePairedMacRecord(localIdentity: legacyIdentity)
+        let primary = PairingNamespaceStoreSpy(
+            snapshot: try pairingNamespaceSnapshot(
+                identity: primaryIdentity,
+                record: nil
+            )
+        )
+        let legacy = PairingNamespaceStoreSpy(
+            snapshot: try pairingNamespaceSnapshot(
+                identity: legacyIdentity,
+                record: legacyRecord
+            )
+        )
+
+        let state = ViewerPairingState(
+            store: ViewerPairingNamespaceSelectorStore(
+                primaryStore: primary,
+                legacyStore: legacy
+            )
+        )
+
+        XCTAssertEqual(state.viewerIdentity, primaryIdentity)
+        XCTAssertNil(state.pairingRecord)
+        XCTAssertFalse(state.isPaired)
+        XCTAssertEqual(legacy.snapshotLoadCount, 0)
+        XCTAssertEqual(primary.createIdentityCount, 0)
+        XCTAssertEqual(legacy.saveCount, 0)
+    }
+
+    func testNamespaceSelectorUsesCompleteLegacyPairOnlyWhenPrimaryIsEmpty() throws {
+        let legacyIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let legacyRecord = try makePairedMacRecord(localIdentity: legacyIdentity)
+        let primary = PairingNamespaceStoreSpy(
+            snapshot: .empty,
+            identityToCreate: try RemoteDeviceIdentity.generate(role: .viewer)
+        )
+        let legacy = PairingNamespaceStoreSpy(
+            snapshot: try pairingNamespaceSnapshot(
+                identity: legacyIdentity,
+                record: legacyRecord
+            )
+        )
+
+        let state = ViewerPairingState(
+            store: ViewerPairingNamespaceSelectorStore(
+                primaryStore: primary,
+                legacyStore: legacy
+            )
+        )
+
+        XCTAssertEqual(state.viewerIdentity, legacyIdentity)
+        XCTAssertEqual(state.pairedMac, legacyRecord)
+        XCTAssertEqual(primary.snapshotLoadCount, 1)
+        XCTAssertEqual(legacy.snapshotLoadCount, 1)
+        XCTAssertEqual(primary.createIdentityCount, 0)
+        XCTAssertEqual(primary.saveCount, 0)
+    }
+
+    func testLegacyIdentityOnlyIsNotFallbackAndCreatesOnlyPrimaryIdentity() throws {
+        let primaryIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let legacyIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let primary = PairingNamespaceStoreSpy(
+            snapshot: .empty,
+            identityToCreate: primaryIdentity
+        )
+        let legacySnapshot = try pairingNamespaceSnapshot(
+            identity: legacyIdentity,
+            record: nil
+        )
+        let legacy = PairingNamespaceStoreSpy(snapshot: legacySnapshot)
+
+        let state = ViewerPairingState(
+            store: ViewerPairingNamespaceSelectorStore(
+                primaryStore: primary,
+                legacyStore: legacy
+            )
+        )
+
+        XCTAssertEqual(state.viewerIdentity, primaryIdentity)
+        XCTAssertNotEqual(state.viewerIdentity, legacyIdentity)
+        XCTAssertNil(state.pairingRecord)
+        XCTAssertEqual(primary.createIdentityCount, 1)
+        XCTAssertEqual(primary.snapshotLoadCount, 2)
+        XCTAssertEqual(legacy.snapshotLoadCount, 1)
+        XCTAssertEqual(legacy.snapshot, legacySnapshot)
+        XCTAssertEqual(legacy.createIdentityCount, 0)
+        XCTAssertEqual(legacy.preserveIdentityCount, 0)
+        XCTAssertEqual(legacy.saveCount, 0)
+        XCTAssertEqual(legacy.deleteCount, 0)
+    }
+
+    func testBothEmptyNamespacesCreateIdentityOnlyInPrimary() throws {
+        let createdIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let primary = PairingNamespaceStoreSpy(
+            snapshot: .empty,
+            identityToCreate: createdIdentity
+        )
+        let legacy = PairingNamespaceStoreSpy(snapshot: .empty)
+
+        let state = ViewerPairingState(
+            store: ViewerPairingNamespaceSelectorStore(
+                primaryStore: primary,
+                legacyStore: legacy
+            )
+        )
+
+        XCTAssertEqual(state.viewerIdentity, createdIdentity)
+        XCTAssertNil(state.pairingRecord)
+        XCTAssertEqual(primary.createIdentityCount, 1)
+        XCTAssertEqual(primary.saveCount, 0)
+        XCTAssertEqual(legacy.createIdentityCount, 0)
+        XCTAssertEqual(legacy.preserveIdentityCount, 0)
+        XCTAssertEqual(legacy.saveCount, 0)
+        XCTAssertEqual(legacy.deleteCount, 0)
+    }
+
+    func testPairOnlyPrimaryFailsClosedWithoutProbingLegacyOrWriting() throws {
+        let legacyIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let legacyRecord = try makePairedMacRecord(localIdentity: legacyIdentity)
+        let primary = PairingNamespaceStoreSpy(snapshot: .empty)
+        primary.snapshotError = ViewerPairingStoreError.invalidPairedMacRecord
+        let legacySnapshot = try pairingNamespaceSnapshot(
+            identity: legacyIdentity,
+            record: legacyRecord
+        )
+        let legacy = PairingNamespaceStoreSpy(snapshot: legacySnapshot)
+        let selector = ViewerPairingNamespaceSelectorStore(
+            primaryStore: primary,
+            legacyStore: legacy
+        )
+
+        XCTAssertThrowsError(try selector.loadOrCreateViewerIdentity()) { error in
+            XCTAssertEqual(error as? ViewerPairingStoreError, .invalidPairedMacRecord)
+        }
+        XCTAssertEqual(primary.snapshotLoadCount, 1)
+        XCTAssertEqual(primary.createIdentityCount, 0)
+        XCTAssertEqual(legacy.snapshotLoadCount, 0)
+        XCTAssertEqual(legacy.snapshot, legacySnapshot)
+        XCTAssertEqual(legacy.saveCount, 0)
+    }
+
+    func testPairOnlyKeychainNamespaceFailsClosedWithoutCreatingIdentity() throws {
+        let items = makeKeychainItems(testName: #function)
+        defer { deleteKeychainItems(items) }
+        let orphanIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let orphanRecord = try makePairedMacRecord(localIdentity: orphanIdentity)
+        let orphanRecordData = try JSONEncoder().encode(orphanRecord)
+        try KeychainStore(item: items.pairedMac).saveData(orphanRecordData)
+        let store = ViewerPairingKeychainStore(
+            identityItem: items.identity,
+            pairedMacItem: items.pairedMac
+        )
+
+        XCTAssertThrowsError(try store.loadNamespaceSnapshot()) { error in
+            XCTAssertEqual(error as? ViewerPairingStoreError, .invalidPairedMacRecord)
+        }
+        XCTAssertNil(try KeychainStore(item: items.identity).loadData())
+        XCTAssertEqual(
+            try KeychainStore(item: items.pairedMac).loadData(),
+            orphanRecordData
+        )
+    }
+
+    func testCorruptPrimaryRecordFailsClosedWithoutLegacyFallback() throws {
+        let primaryItems = makeKeychainItems(testName: "\(#function)-primary")
+        let legacyItems = makeKeychainItems(testName: "\(#function)-legacy")
+        defer {
+            deleteKeychainItems(primaryItems)
+            deleteKeychainItems(legacyItems)
+        }
+        let primaryIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let legacyIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let legacyRecord = try makePairedMacRecord(localIdentity: legacyIdentity)
+        let primaryIdentityData = try JSONEncoder().encode(primaryIdentity)
+        let malformedRecordData = Data("{not-json".utf8)
+        let legacyIdentityData = try JSONEncoder().encode(legacyIdentity)
+        let legacyRecordData = try JSONEncoder().encode(legacyRecord)
+        try KeychainStore(item: primaryItems.identity).saveData(primaryIdentityData)
+        try KeychainStore(item: primaryItems.pairedMac).saveData(malformedRecordData)
+        try KeychainStore(item: legacyItems.identity).saveData(legacyIdentityData)
+        try KeychainStore(item: legacyItems.pairedMac).saveData(legacyRecordData)
+
+        let selector = makeNamespaceSelector(
+            primaryItems: primaryItems,
+            legacyItems: legacyItems
+        )
+
+        XCTAssertThrowsError(try selector.loadOrCreateViewerIdentity()) { error in
+            XCTAssertEqual(error as? ViewerPairingStoreError, .invalidPairedMacRecord)
+        }
+        XCTAssertEqual(
+            try KeychainStore(item: primaryItems.identity).loadData(),
+            primaryIdentityData
+        )
+        XCTAssertEqual(
+            try KeychainStore(item: primaryItems.pairedMac).loadData(),
+            malformedRecordData
+        )
+        XCTAssertEqual(
+            try KeychainStore(item: legacyItems.identity).loadData(),
+            legacyIdentityData
+        )
+        XCTAssertEqual(
+            try KeychainStore(item: legacyItems.pairedMac).loadData(),
+            legacyRecordData
+        )
+    }
+
+    func testPrimaryRecordBoundToAnotherIdentityFailsClosedWithoutMixing() throws {
+        let primaryItems = makeKeychainItems(testName: "\(#function)-primary")
+        let legacyItems = makeKeychainItems(testName: "\(#function)-legacy")
+        defer {
+            deleteKeychainItems(primaryItems)
+            deleteKeychainItems(legacyItems)
+        }
+        let primaryIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let otherIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let mismatchedRecord = try makePairedMacRecord(localIdentity: otherIdentity)
+        let legacyIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let legacyRecord = try makePairedMacRecord(localIdentity: legacyIdentity)
+        try seedPairingNamespace(
+            items: primaryItems,
+            identity: primaryIdentity,
+            record: mismatchedRecord
+        )
+        try seedPairingNamespace(
+            items: legacyItems,
+            identity: legacyIdentity,
+            record: legacyRecord
+        )
+
+        let selector = makeNamespaceSelector(
+            primaryItems: primaryItems,
+            legacyItems: legacyItems
+        )
+
+        XCTAssertThrowsError(try selector.loadOrCreateViewerIdentity()) { error in
+            XCTAssertEqual(error as? ViewerPairingStoreError, .invalidPairedMacRecord)
+        }
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                RemotePairedDeviceRecord.self,
+                from: XCTUnwrap(KeychainStore(item: primaryItems.pairedMac).loadData())
+            ),
+            mismatchedRecord
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                RemotePairedDeviceRecord.self,
+                from: XCTUnwrap(KeychainStore(item: legacyItems.pairedMac).loadData())
+            ),
+            legacyRecord
+        )
+    }
+
+    func testNamespaceSelectorPropagatesKeychainReadFailureWithoutFallback() throws {
+        let primary = PairingNamespaceStoreSpy(snapshot: .empty)
+        primary.snapshotError = KeychainStoreError.operationFailed(errSecInteractionNotAllowed)
+        let legacy = PairingNamespaceStoreSpy(snapshot: .empty)
+        let selector = ViewerPairingNamespaceSelectorStore(
+            primaryStore: primary,
+            legacyStore: legacy
+        )
+
+        XCTAssertThrowsError(try selector.loadOrCreateViewerIdentity()) { error in
+            XCTAssertEqual(
+                error as? KeychainStoreError,
+                .operationFailed(errSecInteractionNotAllowed)
+            )
+        }
+        XCTAssertEqual(primary.snapshotLoadCount, 1)
+        XCTAssertEqual(legacy.snapshotLoadCount, 0)
+        XCTAssertEqual(primary.createIdentityCount, 0)
+    }
+
+    func testLegacyReadFailureDoesNotCreatePrimaryIdentity() throws {
+        let primary = PairingNamespaceStoreSpy(
+            snapshot: .empty,
+            identityToCreate: try RemoteDeviceIdentity.generate(role: .viewer)
+        )
+        let legacy = PairingNamespaceStoreSpy(snapshot: .empty)
+        legacy.snapshotError = KeychainStoreError.operationFailed(errSecInteractionNotAllowed)
+        let selector = ViewerPairingNamespaceSelectorStore(
+            primaryStore: primary,
+            legacyStore: legacy
+        )
+
+        XCTAssertThrowsError(try selector.loadOrCreateViewerIdentity()) { error in
+            XCTAssertEqual(
+                error as? KeychainStoreError,
+                .operationFailed(errSecInteractionNotAllowed)
+            )
+        }
+        XCTAssertEqual(primary.snapshotLoadCount, 1)
+        XCTAssertEqual(legacy.snapshotLoadCount, 1)
+        XCTAssertEqual(primary.createIdentityCount, 0)
+        XCTAssertEqual(primary.saveCount, 0)
+    }
+
+    func testSavingAfterLegacySelectionWritesOnlyLegacyNamespace() throws {
+        let primaryItems = makeKeychainItems(testName: "\(#function)-primary")
+        let legacyItems = makeKeychainItems(testName: "\(#function)-legacy")
+        defer {
+            deleteKeychainItems(primaryItems)
+            deleteKeychainItems(legacyItems)
+        }
+        let legacyIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let originalRecord = try makePairedMacRecord(localIdentity: legacyIdentity)
+        try seedPairingNamespace(
+            items: legacyItems,
+            identity: legacyIdentity,
+            record: originalRecord
+        )
+        let selector = makeNamespaceSelector(
+            primaryItems: primaryItems,
+            legacyItems: legacyItems
+        )
+        let state = ViewerPairingState(store: selector)
+        let replacement = try makePairedMacRecord(localIdentity: legacyIdentity)
+
+        try state.saveAuthenticatedPairing(replacement)
+
+        XCTAssertEqual(state.pairedMac, replacement)
+        XCTAssertNil(try KeychainStore(item: primaryItems.identity).loadData())
+        XCTAssertNil(try KeychainStore(item: primaryItems.pairedMac).loadData())
+        XCTAssertEqual(
+            try ViewerPairingKeychainStore(
+                identityItem: legacyItems.identity,
+                pairedMacItem: legacyItems.pairedMac
+            ).loadPairedMac(for: legacyIdentity),
+            replacement
+        )
+    }
+
+    func testPrimaryForgetDeletesUnselectedLegacyPairBeforeSelectedPrimaryPair() throws {
+        let recorder = PairingNamespaceOperationRecorder()
+        let primaryIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let legacyIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let primary = PairingNamespaceStoreSpy(
+            snapshot: try pairingNamespaceSnapshot(
+                identity: primaryIdentity,
+                record: makePairedMacRecord(localIdentity: primaryIdentity)
+            ),
+            label: "primary",
+            operationRecorder: recorder
+        )
+        let legacy = PairingNamespaceStoreSpy(
+            snapshot: try pairingNamespaceSnapshot(
+                identity: legacyIdentity,
+                record: makePairedMacRecord(localIdentity: legacyIdentity)
+            ),
+            label: "legacy",
+            operationRecorder: recorder
+        )
+        let state = ViewerPairingState(
+            store: ViewerPairingNamespaceSelectorStore(
+                primaryStore: primary,
+                legacyStore: legacy
+            )
+        )
+        recorder.operations.removeAll()
+
+        try state.forgetPairedMac()
+
+        XCTAssertEqual(
+            recorder.operations,
+            ["legacy.delete-pair", "primary.delete-pair"]
+        )
+        XCTAssertNil(primary.snapshot.pairedMac)
+        XCTAssertNil(legacy.snapshot.pairedMac)
+    }
+
+    func testLegacyForgetPromotesIdentityAndDeletesSelectedLegacyPairLast() throws {
+        let recorder = PairingNamespaceOperationRecorder()
+        let legacyIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let primary = PairingNamespaceStoreSpy(
+            snapshot: .empty,
+            label: "primary",
+            operationRecorder: recorder
+        )
+        let legacy = PairingNamespaceStoreSpy(
+            snapshot: try pairingNamespaceSnapshot(
+                identity: legacyIdentity,
+                record: makePairedMacRecord(localIdentity: legacyIdentity)
+            ),
+            label: "legacy",
+            operationRecorder: recorder
+        )
+        let state = ViewerPairingState(
+            store: ViewerPairingNamespaceSelectorStore(
+                primaryStore: primary,
+                legacyStore: legacy
+            )
+        )
+        recorder.operations.removeAll()
+
+        try state.forgetPairedMac()
+
+        XCTAssertEqual(
+            recorder.operations,
+            [
+                "primary.snapshot",
+                "primary.preserve-identity",
+                "primary.delete-pair",
+                "legacy.delete-pair"
+            ]
+        )
+        XCTAssertEqual(primary.snapshot.identity, legacyIdentity)
+        XCTAssertNil(primary.snapshot.pairedMac)
+        XCTAssertNil(legacy.snapshot.pairedMac)
+    }
+
+    func testPrimarySelectedForgetDeletesBothPairsAndPreservesBothIdentities() throws {
+        let primaryItems = makeKeychainItems(testName: "\(#function)-primary")
+        let legacyItems = makeKeychainItems(testName: "\(#function)-legacy")
+        defer {
+            deleteKeychainItems(primaryItems)
+            deleteKeychainItems(legacyItems)
+        }
+        let primaryIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let primaryRecord = try makePairedMacRecord(localIdentity: primaryIdentity)
+        let legacyIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let legacyRecord = try makePairedMacRecord(localIdentity: legacyIdentity)
+        try seedPairingNamespace(
+            items: primaryItems,
+            identity: primaryIdentity,
+            record: primaryRecord
+        )
+        try seedPairingNamespace(
+            items: legacyItems,
+            identity: legacyIdentity,
+            record: legacyRecord
+        )
+        let primaryIdentityData = try XCTUnwrap(
+            KeychainStore(item: primaryItems.identity).loadData()
+        )
+        let legacyIdentityData = try XCTUnwrap(
+            KeychainStore(item: legacyItems.identity).loadData()
+        )
+        let state = ViewerPairingState(
+            store: makeNamespaceSelector(
+                primaryItems: primaryItems,
+                legacyItems: legacyItems
+            )
+        )
+
+        try state.forgetPairedMac()
+
+        XCTAssertEqual(state.viewerIdentity, primaryIdentity)
+        XCTAssertNil(state.pairingRecord)
+        XCTAssertEqual(
+            try KeychainStore(item: primaryItems.identity).loadData(),
+            primaryIdentityData
+        )
+        XCTAssertEqual(
+            try KeychainStore(item: legacyItems.identity).loadData(),
+            legacyIdentityData
+        )
+        XCTAssertNil(try KeychainStore(item: primaryItems.pairedMac).loadData())
+        XCTAssertNil(try KeychainStore(item: legacyItems.pairedMac).loadData())
+    }
+
+    func testLegacySelectedForgetPromotesExactIdentityThenDeletesBothPairs() throws {
+        let primaryItems = makeKeychainItems(testName: "\(#function)-primary")
+        let legacyItems = makeKeychainItems(testName: "\(#function)-legacy")
+        defer {
+            deleteKeychainItems(primaryItems)
+            deleteKeychainItems(legacyItems)
+        }
+        let legacyIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let legacyRecord = try makePairedMacRecord(localIdentity: legacyIdentity)
+        var identityObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(legacyIdentity)
+            ) as? [String: Any]
+        )
+        identityObject["migrationMetadata"] = ["preserveExactBytes": true]
+        let exactLegacyIdentityData = try JSONSerialization.data(
+            withJSONObject: identityObject,
+            options: [.sortedKeys]
+        )
+        try KeychainStore(item: legacyItems.identity).saveData(exactLegacyIdentityData)
+        try KeychainStore(item: legacyItems.pairedMac).saveData(
+            try JSONEncoder().encode(legacyRecord)
+        )
+        let selector = makeNamespaceSelector(
+            primaryItems: primaryItems,
+            legacyItems: legacyItems
+        )
+        let state = ViewerPairingState(store: selector)
+        XCTAssertEqual(state.viewerIdentity, legacyIdentity)
+        XCTAssertEqual(state.pairedMac, legacyRecord)
+
+        try state.forgetPairedMac()
+
+        XCTAssertEqual(
+            try KeychainStore(item: primaryItems.identity).loadData(),
+            exactLegacyIdentityData
+        )
+        XCTAssertEqual(
+            try KeychainStore(item: legacyItems.identity).loadData(),
+            exactLegacyIdentityData
+        )
+        XCTAssertNil(try KeychainStore(item: primaryItems.pairedMac).loadData())
+        XCTAssertNil(try KeychainStore(item: legacyItems.pairedMac).loadData())
+
+        let replacement = try makePairedMacRecord(localIdentity: legacyIdentity)
+        try state.saveAuthenticatedPairing(replacement)
+        XCTAssertEqual(
+            try ViewerPairingKeychainStore(
+                identityItem: primaryItems.identity,
+                pairedMacItem: primaryItems.pairedMac
+            ).loadPairedMac(for: legacyIdentity),
+            replacement
+        )
+        XCTAssertNil(try KeychainStore(item: legacyItems.pairedMac).loadData())
+    }
+
+    func testLegacySelectedForgetRejectsConflictingPrimaryIdentityBeforeDeleting() throws {
+        let primaryItems = makeKeychainItems(testName: "\(#function)-primary")
+        let legacyItems = makeKeychainItems(testName: "\(#function)-legacy")
+        defer {
+            deleteKeychainItems(primaryItems)
+            deleteKeychainItems(legacyItems)
+        }
+        let legacyIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let legacyRecord = try makePairedMacRecord(localIdentity: legacyIdentity)
+        try seedPairingNamespace(
+            items: legacyItems,
+            identity: legacyIdentity,
+            record: legacyRecord
+        )
+        let state = ViewerPairingState(
+            store: makeNamespaceSelector(
+                primaryItems: primaryItems,
+                legacyItems: legacyItems
+            )
+        )
+        let conflictingIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        try KeychainStore(item: primaryItems.identity).saveData(
+            try JSONEncoder().encode(conflictingIdentity)
+        )
+
+        XCTAssertThrowsError(try state.forgetPairedMac()) { error in
+            XCTAssertEqual(error as? ViewerPairingStoreError, .viewerIdentityConflict)
+        }
+
+        XCTAssertEqual(state.viewerIdentity, legacyIdentity)
+        XCTAssertEqual(state.pairedMac, legacyRecord)
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                RemoteDeviceIdentity.self,
+                from: XCTUnwrap(KeychainStore(item: primaryItems.identity).loadData())
+            ),
+            conflictingIdentity
+        )
+        XCTAssertEqual(
+            try ViewerPairingKeychainStore(
+                identityItem: legacyItems.identity,
+                pairedMacItem: legacyItems.pairedMac
+            ).loadPairedMac(for: legacyIdentity),
+            legacyRecord
+        )
+    }
+
+    func testLegacySelectedForgetAcceptsEqualPrimaryIdentityWithoutRewritingIt() throws {
+        let primaryItems = makeKeychainItems(testName: "\(#function)-primary")
+        let legacyItems = makeKeychainItems(testName: "\(#function)-legacy")
+        defer {
+            deleteKeychainItems(primaryItems)
+            deleteKeychainItems(legacyItems)
+        }
+        let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let legacyRecord = try makePairedMacRecord(localIdentity: identity)
+        try seedPairingNamespace(
+            items: legacyItems,
+            identity: identity,
+            record: legacyRecord
+        )
+        let state = ViewerPairingState(
+            store: makeNamespaceSelector(
+                primaryItems: primaryItems,
+                legacyItems: legacyItems
+            )
+        )
+        var primaryIdentityObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(identity)
+            ) as? [String: Any]
+        )
+        primaryIdentityObject["primaryMetadata"] = ["keepExistingEncoding": true]
+        let exactPrimaryIdentityData = try JSONSerialization.data(
+            withJSONObject: primaryIdentityObject,
+            options: [.sortedKeys]
+        )
+        try KeychainStore(item: primaryItems.identity).saveData(exactPrimaryIdentityData)
+
+        try state.forgetPairedMac()
+
+        XCTAssertEqual(state.viewerIdentity, identity)
+        XCTAssertNil(state.pairingRecord)
+        XCTAssertEqual(
+            try KeychainStore(item: primaryItems.identity).loadData(),
+            exactPrimaryIdentityData
+        )
+        XCTAssertNotNil(try KeychainStore(item: legacyItems.identity).loadData())
+        XCTAssertNil(try KeychainStore(item: primaryItems.pairedMac).loadData())
+        XCTAssertNil(try KeychainStore(item: legacyItems.pairedMac).loadData())
+    }
+
     func testAuthenticatedCompletionPersistsBeforeInvitationDeletionExactlyOnce() throws {
         let identity = try RemoteDeviceIdentity.generate(role: .viewer)
         let records = try makePairingRecords(viewerIdentity: identity)
@@ -2562,6 +3208,151 @@ private final class ViewerPairingStoreStub: ViewerPairingStoring {
     func deletePairedMac() throws {
         deleteCount += 1
         record = nil
+    }
+}
+
+private final class PairingNamespaceStoreSpy: ViewerPairingNamespaceStoring {
+    private(set) var snapshot: ViewerPairingNamespaceSnapshot
+    var snapshotError: (any Error)?
+    let identityToCreate: RemoteDeviceIdentity?
+    let label: String?
+    let operationRecorder: PairingNamespaceOperationRecorder?
+    private(set) var snapshotLoadCount = 0
+    private(set) var createIdentityCount = 0
+    private(set) var preserveIdentityCount = 0
+    private(set) var saveCount = 0
+    private(set) var deleteCount = 0
+
+    init(
+        snapshot: ViewerPairingNamespaceSnapshot,
+        identityToCreate: RemoteDeviceIdentity? = nil,
+        label: String? = nil,
+        operationRecorder: PairingNamespaceOperationRecorder? = nil
+    ) {
+        self.snapshot = snapshot
+        self.identityToCreate = identityToCreate
+        self.label = label
+        self.operationRecorder = operationRecorder
+    }
+
+    func loadNamespaceSnapshot() throws -> ViewerPairingNamespaceSnapshot {
+        record("snapshot")
+        snapshotLoadCount += 1
+        if let snapshotError { throw snapshotError }
+        return snapshot
+    }
+
+    func loadOrCreateViewerIdentity() throws -> RemoteDeviceIdentity {
+        record("create-identity")
+        createIdentityCount += 1
+        if let identity = snapshot.identity {
+            return identity
+        }
+        guard let identityToCreate else {
+            throw PairingTestFailure.load
+        }
+        snapshot = try pairingNamespaceSnapshot(
+            identity: identityToCreate,
+            record: nil
+        )
+        return identityToCreate
+    }
+
+    func preserveViewerIdentity(
+        _ identity: RemoteDeviceIdentity,
+        encodedIdentity: Data
+    ) throws {
+        record("preserve-identity")
+        preserveIdentityCount += 1
+        if let existingIdentity = snapshot.identity {
+            guard existingIdentity == identity else {
+                throw ViewerPairingStoreError.viewerIdentityConflict
+            }
+            return
+        }
+        snapshot = ViewerPairingNamespaceSnapshot(
+            identity: identity,
+            encodedIdentity: encodedIdentity,
+            pairedMac: nil
+        )
+    }
+
+    func savePairedMac(
+        _ record: RemotePairedDeviceRecord,
+        for identity: RemoteDeviceIdentity
+    ) throws {
+        self.record("save-pair")
+        saveCount += 1
+        guard snapshot.identity == identity,
+              let encodedIdentity = snapshot.encodedIdentity else {
+            throw ViewerPairingStoreError.invalidViewerIdentity
+        }
+        snapshot = ViewerPairingNamespaceSnapshot(
+            identity: identity,
+            encodedIdentity: encodedIdentity,
+            pairedMac: record
+        )
+    }
+
+    func deletePairedMac() throws {
+        record("delete-pair")
+        deleteCount += 1
+        snapshot = ViewerPairingNamespaceSnapshot(
+            identity: snapshot.identity,
+            encodedIdentity: snapshot.encodedIdentity,
+            pairedMac: nil
+        )
+    }
+
+    private func record(_ operation: String) {
+        guard let label else { return }
+        operationRecorder?.operations.append("\(label).\(operation)")
+    }
+}
+
+private final class PairingNamespaceOperationRecorder {
+    var operations: [String] = []
+}
+
+private func pairingNamespaceSnapshot(
+    identity: RemoteDeviceIdentity,
+    record: RemotePairedDeviceRecord?
+) throws -> ViewerPairingNamespaceSnapshot {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+    return ViewerPairingNamespaceSnapshot(
+        identity: identity,
+        encodedIdentity: try encoder.encode(identity),
+        pairedMac: record
+    )
+}
+
+private func makeNamespaceSelector(
+    primaryItems: PairingKeychainItems,
+    legacyItems: PairingKeychainItems
+) -> ViewerPairingNamespaceSelectorStore {
+    ViewerPairingNamespaceSelectorStore(
+        primaryStore: ViewerPairingKeychainStore(
+            identityItem: primaryItems.identity,
+            pairedMacItem: primaryItems.pairedMac
+        ),
+        legacyStore: ViewerPairingKeychainStore(
+            identityItem: legacyItems.identity,
+            pairedMacItem: legacyItems.pairedMac
+        )
+    )
+}
+
+private func seedPairingNamespace(
+    items: PairingKeychainItems,
+    identity: RemoteDeviceIdentity,
+    record: RemotePairedDeviceRecord?
+) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+    try KeychainStore(item: items.identity).saveData(try encoder.encode(identity))
+    if let record {
+        try KeychainStore(item: items.pairedMac).saveData(try encoder.encode(record))
     }
 }
 

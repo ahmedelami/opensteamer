@@ -1,6 +1,7 @@
 #!/bin/zsh
 
-# Usage: `validate-physical-update-keychain.sh <device-udid> [artifact-directory]`.
+# Usage: `validate-physical-update-keychain.sh <coredevice-identifier> <hardware-udid>
+# [artifact-directory]`.
 #
 # Prerequisites: an unlocked, connected test iPhone on the pinned iOS version; Xcode command-line
 # tools with signing access; and permission to install/uninstall the side-by-side `.dev` bundle.
@@ -24,8 +25,17 @@ SCRIPT_DIR=${0:A:h}
 PROJECT_DIR=${SCRIPT_DIR:h}
 REPOSITORY_DIR=${PROJECT_DIR:h:h}
 source "${SCRIPT_DIR}/physical-validation-helpers.zsh"
-DEVICE_UDID=${1:?usage: $0 device-udid [artifact-directory]}
-ARTIFACT_DIR=${2:-/private/tmp/opensteamer-device-Keychain-Update}
+if (( $# < 2 || $# > 3 )) \
+    || [[ -z "${1:-}" || -z "${2:-}" ]]; then
+  echo \
+    "usage: $0 coredevice-identifier hardware-udid [artifact-directory]" \
+    >&2
+  exit 2
+fi
+COREDEVICE_IDENTIFIER=$1
+HARDWARE_UDID=$2
+shift 2
+ARTIFACT_DIR=${1:-/private/tmp/opensteamer-device-Keychain-Update}
 DERIVED_DATA="${ARTIFACT_DIR}/DerivedData"
 SEED_RESULT="${ARTIFACT_DIR}/seed-build-2901.xcresult"
 VERIFY_RESULT="${ARTIFACT_DIR}/verify-build-2902.xcresult"
@@ -33,8 +43,8 @@ MISSING_IDENTITY_SEED_RESULT="${ARTIFACT_DIR}/missing-identity-seed-build-2903.x
 MISSING_IDENTITY_VERIFY_RESULT="${ARTIFACT_DIR}/missing-identity-verify-build-2904.xcresult"
 MISSING_PAIR_SEED_RESULT="${ARTIFACT_DIR}/missing-pair-seed-build-2905.xcresult"
 MISSING_PAIR_VERIFY_RESULT="${ARTIFACT_DIR}/missing-pair-verify-build-2906.xcresult"
-EXPECTED_MODEL="test iPhone"
-EXPECTED_OS="18.x"
+EXPECTED_MODEL="iPhone XR"
+EXPECTED_OS="18.7.9"
 EXPECTED_PLATFORM="iOS"
 # The product name changed, but this must remain the same container for install-over-update proof.
 VALIDATION_BUNDLE_IDENTIFIER="org.example.AudioStreamer.dev"
@@ -192,28 +202,20 @@ rm -rf \
 function capture_and_validate_device() {
   local output=$1
   xcrun devicectl device info details \
-    --device "${DEVICE_UDID}" \
+    --device "${COREDEVICE_IDENTIFIER}" \
     --timeout "${DEVICE_COMMAND_TIMEOUT_SECONDS}" \
     --json-output "${output}" >/dev/null
-  jq -e \
-    --arg udid "${DEVICE_UDID}" \
-    --arg model "${EXPECTED_MODEL}" \
-    --arg os "${EXPECTED_OS}" '
-    (.info.outcome == "success") and
-    (.result.hardwareProperties.udid == $udid) and
-    (.result.hardwareProperties.marketingName == $model) and
-    (.result.hardwareProperties.platform == "iOS") and
-    (.result.hardwareProperties.reality == "physical") and
-    (.result.deviceProperties.osVersionNumber == $os) and
-    (.result.deviceProperties.bootState == "booted")
-  ' "${output}" >/dev/null
+  opensteamer_require_physical_iphone_xr_details \
+    "${output}" \
+    "${COREDEVICE_IDENTIFIER}" \
+    "${HARDWARE_UDID}"
 }
 
 function capture_and_require_unlocked() {
   local output=$1
   local gate_name=$2
   opensteamer_require_device_unlocked \
-    "${DEVICE_UDID}" \
+    "${COREDEVICE_IDENTIFIER}" \
     "${DEVICE_COMMAND_TIMEOUT_SECONDS}" \
     "${output}" \
     "${gate_name}"
@@ -221,7 +223,7 @@ function capture_and_require_unlocked() {
 
 function remove_existing_validation_app() {
   xcrun devicectl device info apps \
-    --device "${DEVICE_UDID}" \
+    --device "${COREDEVICE_IDENTIFIER}" \
     --timeout "${DEVICE_COMMAND_TIMEOUT_SECONDS}" \
     --json-output "${INSTALLED_APPS_BEFORE}" >/dev/null
   jq -e '.info.outcome == "success" and (.result.apps | type == "array")' \
@@ -233,7 +235,7 @@ function remove_existing_validation_app() {
     # Xcode can restore a previously installed debug app after an application-hosted test.
     # Remove it before seeding so only the inert validation build can run between phases.
     xcrun devicectl device uninstall app \
-      --device "${DEVICE_UDID}" \
+      --device "${COREDEVICE_IDENTIFIER}" \
       --timeout "${DEVICE_COMMAND_TIMEOUT_SECONDS}" \
       --json-output "${UNINSTALL_RESULT}" \
       "${VALIDATION_BUNDLE_IDENTIFIER}" >/dev/null
@@ -241,7 +243,7 @@ function remove_existing_validation_app() {
   fi
 
   xcrun devicectl device info apps \
-    --device "${DEVICE_UDID}" \
+    --device "${COREDEVICE_IDENTIFIER}" \
     --timeout "${DEVICE_COMMAND_TIMEOUT_SECONDS}" \
     --json-output "${INSTALLED_APPS_AFTER_UNINSTALL}" >/dev/null
   jq -e --arg bundle "${VALIDATION_BUNDLE_IDENTIFIER}" '
@@ -278,7 +280,7 @@ function validate_xcresult() {
   # Test totals alone can produce false evidence when Xcode ran the right count on the wrong
   # destination or selected a similarly named method. Require the exact case identity and device.
   jq -e \
-    --arg udid "${DEVICE_UDID}" \
+    --arg hardware_udid "${HARDWARE_UDID}" \
     --arg model "${EXPECTED_MODEL}" \
     --arg os "${EXPECTED_OS}" \
     --arg platform "${EXPECTED_PLATFORM}" '
@@ -294,21 +296,21 @@ function validate_xcresult() {
     (.devicesAndConfigurations[0].failedTests == 0) and
     (.devicesAndConfigurations[0].skippedTests == 0) and
     (.devicesAndConfigurations[0].expectedFailures == 0) and
-    (.devicesAndConfigurations[0].device.deviceId == $udid) and
+    (.devicesAndConfigurations[0].device.deviceId == $hardware_udid) and
     (.devicesAndConfigurations[0].device.modelName == $model) and
     (.devicesAndConfigurations[0].device.osVersion == $os) and
     (.devicesAndConfigurations[0].device.platform == $platform)
   ' <<<"${summary}" >/dev/null
 
   jq -e \
-    --arg udid "${DEVICE_UDID}" \
+    --arg hardware_udid "${HARDWARE_UDID}" \
     --arg model "${EXPECTED_MODEL}" \
     --arg os "${EXPECTED_OS}" \
     --arg platform "${EXPECTED_PLATFORM}" \
     --arg node "${expected_node_identifier}" \
     --arg url "${expected_identifier_url}" '
     ((.devices | length) == 1) and
-    (.devices[0].deviceId == $udid) and
+    (.devices[0].deviceId == $hardware_udid) and
     (.devices[0].modelName == $model) and
     (.devices[0].osVersion == $os) and
     (.devices[0].platform == $platform) and
@@ -320,7 +322,7 @@ function validate_xcresult() {
 
   # Treat warnings and analyzer diagnostics as aggregate evidence issues, not harmless noise.
   jq -e \
-    --arg udid "${DEVICE_UDID}" \
+    --arg hardware_udid "${HARDWARE_UDID}" \
     --arg model "${EXPECTED_MODEL}" \
     --arg os "${EXPECTED_OS}" \
     --arg platform "${EXPECTED_PLATFORM}" '
@@ -330,7 +332,7 @@ function validate_xcresult() {
     ((.warnings | length) == 0) and
     ((.analyzerWarnings | length) == 0) and
     (.actionTitle == "Testing project opensteamer with scheme opensteamer") and
-    (.destination.deviceId == $udid) and
+    (.destination.deviceId == $hardware_udid) and
     (.destination.modelName == $model) and
     (.destination.osVersion == $os) and
     (.destination.platform == $platform)
@@ -354,7 +356,8 @@ function run_phase() {
   local watchdog_status
   local expected_watchdog_state
 
-  echo "Running ${phase} on physical device ${DEVICE_UDID}..."
+  echo \
+    "Running ${phase} on the validated physical iPhone XR; CoreDevice identifier and hardware UDID are verified separately..."
   rm -f \
     "${timeout_marker}" \
     "${locked_marker}" \
@@ -370,7 +373,7 @@ function run_phase() {
     -project "${PROJECT_DIR}/opensteamer.xcodeproj" \
     -scheme opensteamer \
     -configuration Debug \
-    -destination "platform=iOS,id=${DEVICE_UDID}" \
+    -destination "platform=iOS,id=${HARDWARE_UDID}" \
     -derivedDataPath "${DERIVED_DATA}" \
     -parallel-testing-enabled NO \
     -maximum-parallel-testing-workers 1 \
@@ -397,7 +400,7 @@ function run_phase() {
       if (( SECONDS - lock_poll_started >= DEVICE_LOCK_POLL_SECONDS )); then
         lock_poll_started=${SECONDS}
         if opensteamer_device_is_unlocked \
-            "${DEVICE_UDID}" \
+            "${COREDEVICE_IDENTIFIER}" \
             "${DEVICE_COMMAND_TIMEOUT_SECONDS}" \
             "${lock_state_during}"; then
           lock_query_failures=0

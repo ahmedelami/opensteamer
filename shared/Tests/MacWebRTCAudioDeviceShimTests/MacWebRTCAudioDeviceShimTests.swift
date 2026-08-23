@@ -1,13 +1,48 @@
 #if os(macOS)
+import Foundation
 import LiveKitWebRTC
 import MacWebRTCAudioDeviceShim
 import MacWebRTCAudioDeviceShimTestSupport
 import XCTest
 
+private final class SendableMacAudioDeviceBox: @unchecked Sendable {
+    let device: ASMacStereoAudioDevice
+
+    init(_ device: ASMacStereoAudioDevice) {
+        self.device = device
+    }
+}
+
+private final class SendablePCMContentRefBox: @unchecked Sendable {
+    let reference: ASMacAudioQueuePCMContentRef
+
+    init(_ reference: ASMacAudioQueuePCMContentRef) {
+        self.reference = reference
+    }
+}
+
+private final class SendableValueBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: Value?
+
+    func store(_ value: Value) {
+        lock.lock()
+        storedValue = value
+        lock.unlock()
+    }
+
+    func load() -> Value? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedValue
+    }
+}
+
 /// Proves the pinned Objective-C ABI preserves every stereo sample, rejects inactive delivery,
 /// and maintains a monotonic source clock across arbitrary callback sizes and restarts.
 final class MacWebRTCAudioDeviceShimTests: XCTestCase {
-    private static let channelCount = 2
+    private static let inputChannelCount = 2
+    private static let outputChannelCount = 1
 
     func testPinnedRuntimePreflightAndSwiftImporter() throws {
         var error: NSError?
@@ -24,6 +59,197 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         XCTAssertEqual(diagnostics.receivedFrameCount, 0)
         XCTAssertEqual(diagnostics.deliveredFrameCount, 0)
     }
+
+    func testAudioQueueRuntimeFailureLatchPublishesFirstStatusAndConsumesOnce() throws {
+        let latch = try XCTUnwrap(
+            ASMacAudioQueueRuntimeFailureLatchCreate()
+        )
+        defer {
+            ASMacAudioQueueRuntimeFailureLatchDestroy(latch)
+        }
+
+        let firstStatus = Int32(-66_101)
+        let repeatedStatus = Int32(-66_102)
+        ASMacAudioQueueRuntimeFailureLatchPublish(
+            latch,
+            firstStatus
+        )
+        ASMacAudioQueueRuntimeFailureLatchPublish(
+            latch,
+            repeatedStatus
+        )
+
+        var observedStatus: Int32 = 0
+        XCTAssertTrue(
+            ASMacAudioQueueRuntimeFailureLatchTake(
+                latch,
+                &observedStatus
+            )
+        )
+        XCTAssertEqual(observedStatus, firstStatus)
+        XCTAssertFalse(
+            ASMacAudioQueueRuntimeFailureLatchTake(
+                latch,
+                &observedStatus
+            )
+        )
+
+        ASMacAudioQueueRuntimeFailureLatchReset(latch)
+        ASMacAudioQueueRuntimeFailureLatchPublish(
+            latch,
+            repeatedStatus
+        )
+        XCTAssertTrue(
+            ASMacAudioQueueRuntimeFailureLatchTake(
+                latch,
+                &observedStatus
+            )
+        )
+        XCTAssertEqual(observedStatus, repeatedStatus)
+    }
+
+    func testAudioQueueProgressExcludesPrimingAndPublishesPostStartOutcomes()
+        throws {
+        let progress = try XCTUnwrap(
+            ASMacAudioQueueProgressCreate()
+        )
+        defer {
+            ASMacAudioQueueProgressDestroy(progress)
+        }
+
+        ASMacAudioQueueProgressReset(progress)
+        ASMacAudioQueueProgressPublish(
+            progress,
+            480,
+            true,
+            noErr
+        )
+        var snapshot = ASMacAudioQueueProgressRead(progress)
+        XCTAssertFalse(snapshot.queueRunning)
+        XCTAssertEqual(snapshot.postStartCallbackCount, 0)
+        XCTAssertEqual(snapshot.successfulFrameCount, 0)
+
+        ASMacAudioQueueProgressSetQueueRunning(
+            progress,
+            true
+        )
+        ASMacAudioQueueProgressPublish(
+            progress,
+            480,
+            true,
+            noErr
+        )
+        ASMacAudioQueueProgressPublish(
+            progress,
+            480,
+            false,
+            noErr
+        )
+        let failure = Int32(-66_103)
+        ASMacAudioQueueProgressPublish(
+            progress,
+            480,
+            false,
+            failure
+        )
+
+        snapshot = ASMacAudioQueueProgressRead(progress)
+        XCTAssertTrue(snapshot.queueRunning)
+        XCTAssertEqual(snapshot.postStartCallbackCount, 3)
+        XCTAssertEqual(snapshot.requestedFrameCount, 1_440)
+        XCTAssertEqual(snapshot.successfulPullCount, 1)
+        XCTAssertEqual(snapshot.successfulFrameCount, 480)
+        XCTAssertEqual(snapshot.silenceFallbackCount, 2)
+        XCTAssertEqual(snapshot.silenceFrameCount, 960)
+        XCTAssertEqual(snapshot.enqueueFailureCount, 1)
+        XCTAssertEqual(snapshot.lastEnqueueStatus, failure)
+
+        ASMacAudioQueueProgressSetQueueRunning(
+            progress,
+            false
+        )
+        ASMacAudioQueueProgressPublish(
+            progress,
+            480,
+            true,
+            noErr
+        )
+        let stopped = ASMacAudioQueueProgressRead(progress)
+        XCTAssertFalse(stopped.queueRunning)
+        XCTAssertEqual(stopped.postStartCallbackCount, 3)
+        XCTAssertEqual(stopped.successfulFrameCount, 480)
+    }
+
+    #if DEBUG
+    func testAudioQueuePCMContentConcurrentResetReadCannotABA() throws {
+        let reference = try XCTUnwrap(
+            ASMacAudioQueuePCMContentCreate()
+        )
+        defer {
+            ASMacAudioQueuePCMContentDestroy(reference)
+        }
+
+        var firstWindow = ASMacAudioQueuePCMContentRawWindow()
+        firstWindow.sourceStartFrame = 0
+        firstWindow.sourceEndFrame = 48_000
+        firstWindow.windowFingerprint = 0x1111_2222_3333_4444
+        firstWindow.frameCount = 48_000
+        firstWindow.sampleSum = 17
+        ASMacAudioQueuePCMContentPublish(reference, firstWindow)
+        let first = ASMacAudioQueuePCMContentRead(reference)
+        XCTAssertTrue(first.hasCompletedWindow)
+        XCTAssertEqual(first.lifecycleGeneration, 1)
+        XCTAssertEqual(first.windowSequence, 1)
+
+        let referenceBox = SendablePCMContentRefBox(reference)
+        let racedResult =
+            SendableValueBox<ASMacAudioQueuePCMContentSnapshot>()
+        let readReturned = DispatchSemaphore(value: 0)
+        ASMacAudioQueuePCMContentHoldReadForTesting(reference)
+        DispatchQueue.global(qos: .userInitiated).async {
+            racedResult.store(
+                ASMacAudioQueuePCMContentRead(referenceBox.reference)
+            )
+            readReturned.signal()
+        }
+
+        let heldDeadline = Date().addingTimeInterval(1)
+        while !ASMacAudioQueuePCMContentReadIsHeldForTesting(reference),
+              Date() < heldDeadline {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        XCTAssertTrue(
+            ASMacAudioQueuePCMContentReadIsHeldForTesting(reference)
+        )
+
+        ASMacAudioQueuePCMContentReset(reference)
+        var secondWindow = ASMacAudioQueuePCMContentRawWindow()
+        secondWindow.sourceStartFrame = 48_000
+        secondWindow.sourceEndFrame = 96_000
+        secondWindow.windowFingerprint = 0xaaaa_bbbb_cccc_dddd
+        secondWindow.frameCount = 48_000
+        secondWindow.sampleSum = -23
+        ASMacAudioQueuePCMContentPublish(reference, secondWindow)
+        ASMacAudioQueuePCMContentReleaseReadForTesting(reference)
+
+        XCTAssertEqual(
+            readReturned.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+        let raced = try XCTUnwrap(racedResult.load())
+        XCTAssertTrue(raced.hasCompletedWindow)
+        XCTAssertEqual(raced.lifecycleGeneration, 2)
+        XCTAssertEqual(raced.windowSequence, 2)
+        XCTAssertEqual(raced.completedFrameCount, 48_000)
+        XCTAssertEqual(raced.window.sourceStartFrame, 48_000)
+        XCTAssertEqual(raced.window.sourceEndFrame, 96_000)
+        XCTAssertEqual(
+            raced.window.windowFingerprint,
+            0xaaaa_bbbb_cccc_dddd
+        )
+        XCTAssertEqual(raced.window.sampleSum, -23)
+    }
+    #endif
 
     func testInactiveDirectDeliveryFailsClosedAndCountsRejectedPCM() throws {
         let device = try XCTUnwrap(ASMacStereoAudioDevice())
@@ -55,7 +281,7 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         XCTAssertEqual(diagnostics.renderBlockCallbackCount, 1)
         XCTAssertEqual(
             diagnostics.renderedSampleElementCount,
-            UInt64(480 * Self.channelCount)
+            UInt64(480 * Self.inputChannelCount)
         )
         XCTAssertEqual(diagnostics.frameCount, 480)
         XCTAssertEqual(diagnostics.invalidBufferListCount, 0)
@@ -234,6 +460,367 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         XCTAssertEqual(harnessDiagnostics.samplePatternMismatchCount, 0)
     }
 
+    func testCallerOwnedPlayoutPullWritesExactFrameCountWithoutFailure() throws {
+        let device = try XCTUnwrap(ASMacStereoAudioDevice())
+        let harness = ASMacStereoAudioDeviceTestHarness(device: device)
+        XCTAssertEqual(
+            ASMacStereoDeviceInputChannelCountForTesting(device),
+            2
+        )
+        XCTAssertEqual(
+            ASMacStereoDeviceOutputChannelCountForTesting(device),
+            1
+        )
+        XCTAssertTrue(harness.startPlayout())
+
+        var samples = Array(repeating: Int16.max, count: 480)
+        let rendered = samples.withUnsafeMutableBufferPointer { buffer in
+            device.renderPlayoutMonoInt16(
+                buffer.baseAddress!,
+                frameCount: 480
+            )
+        }
+
+        XCTAssertTrue(rendered)
+        XCTAssertTrue(samples.allSatisfy { $0 == 0 })
+        let native = device.diagnostics
+        let delegate = harness.diagnostics
+        XCTAssertEqual(native.playoutCallbackCount, 1)
+        XCTAssertEqual(native.playoutFrameCount, 480)
+        XCTAssertEqual(native.playoutFailureCount, 0)
+        XCTAssertEqual(delegate.playoutCallbackCount, 1)
+        XCTAssertEqual(delegate.lastPlayoutFrameCount, 480)
+        let telemetry = device.decodedPlayoutTelemetry
+        XCTAssertEqual(telemetry.latestRequestedFrameCount, 480)
+        XCTAssertEqual(telemetry.latestRequestedByteCount, 960)
+        XCTAssertEqual(telemetry.latestReturnedByteCount, 960)
+        XCTAssertEqual(
+            delegate.playoutSampleTimeDiscontinuityCount,
+            0
+        )
+        XCTAssertEqual(
+            delegate.playoutHostTimeDiscontinuityCount,
+            0
+        )
+    }
+
+    func testCallerOwnedPlayoutPullRejectsNativeSuccessWithShortBufferContract()
+        throws {
+        let device = try XCTUnwrap(ASMacStereoAudioDevice())
+        let harness = ASMacStereoAudioDeviceTestHarness(device: device)
+        harness.playoutPattern = .alternating
+        harness.playoutContractBehavior = .returnSuccessWithShortBuffer
+        XCTAssertTrue(harness.startPlayout())
+
+        var samples = Array(repeating: Int16.max, count: 480)
+        let rendered = samples.withUnsafeMutableBufferPointer { buffer in
+            device.renderPlayoutMonoInt16(
+                buffer.baseAddress!,
+                frameCount: 480
+            )
+        }
+
+        XCTAssertFalse(rendered)
+        XCTAssertTrue(samples.allSatisfy { $0 == 0 })
+        let diagnostics = device.diagnostics
+        XCTAssertEqual(diagnostics.playoutCallbackCount, 1)
+        XCTAssertEqual(diagnostics.playoutFrameCount, 0)
+        XCTAssertEqual(diagnostics.playoutFailureCount, 1)
+
+        let telemetry = device.decodedPlayoutTelemetry
+        XCTAssertEqual(telemetry.renderCallCount, 1)
+        XCTAssertEqual(telemetry.nativeSuccessRenderCallCount, 1)
+        XCTAssertEqual(telemetry.bufferContractMismatchCount, 1)
+        XCTAssertEqual(telemetry.exactBufferContractCount, 0)
+        XCTAssertEqual(telemetry.analyzedRenderCallCount, 0)
+        XCTAssertEqual(telemetry.analyzedFrameCount, 0)
+        XCTAssertFalse(telemetry.latestBufferContractWasExact)
+        XCTAssertFalse(telemetry.hasCompletedWindow)
+    }
+
+    func testCallerOwnedPlayoutPullRejectsMalformedNativeChannelContract()
+        throws {
+        let device = try XCTUnwrap(ASMacStereoAudioDevice())
+        let harness = ASMacStereoAudioDeviceTestHarness(device: device)
+        harness.playoutPattern = .alternating
+        harness.playoutContractBehavior =
+            .returnSuccessWithWrongChannelCount
+        XCTAssertTrue(harness.startPlayout())
+
+        var samples = Array(repeating: Int16.max, count: 480)
+        let rendered = samples.withUnsafeMutableBufferPointer { buffer in
+            device.renderPlayoutMonoInt16(
+                buffer.baseAddress!,
+                frameCount: 480
+            )
+        }
+
+        XCTAssertFalse(rendered)
+        XCTAssertTrue(samples.allSatisfy { $0 == 0 })
+        let telemetry = device.decodedPlayoutTelemetry
+        XCTAssertEqual(telemetry.latestRequestedFrameCount, 480)
+        XCTAssertEqual(telemetry.latestRequestedByteCount, 960)
+        XCTAssertEqual(telemetry.latestReturnedByteCount, 960)
+        XCTAssertFalse(telemetry.latestBufferContractWasExact)
+        XCTAssertEqual(telemetry.bufferContractMismatchCount, 1)
+        XCTAssertEqual(telemetry.analyzedFrameCount, 0)
+    }
+
+    func testDecodedPlayoutTelemetryPublishesExactOneSecondMonoWindow() throws {
+        let device = try XCTUnwrap(ASMacStereoAudioDevice())
+        let harness = ASMacStereoAudioDeviceTestHarness(device: device)
+        harness.playoutPattern = .alternating
+        XCTAssertTrue(harness.startPlayout())
+
+        var samples = Array(repeating: Int16.zero, count: 480)
+        for _ in 0..<100 {
+            XCTAssertTrue(samples.withUnsafeMutableBufferPointer { buffer in
+                device.renderPlayoutMonoInt16(
+                    buffer.baseAddress!,
+                    frameCount: 480
+                )
+            })
+        }
+
+        let telemetry = device.decodedPlayoutTelemetry
+        XCTAssertEqual(telemetry.playoutGeneration, 1)
+        XCTAssertEqual(telemetry.renderCallCount, 100)
+        XCTAssertEqual(telemetry.requestedFrameCount, 48_000)
+        XCTAssertEqual(telemetry.requestedByteCount, 96_000)
+        XCTAssertEqual(telemetry.returnedByteCount, 96_000)
+        XCTAssertEqual(telemetry.nativeSuccessRenderCallCount, 100)
+        XCTAssertEqual(telemetry.nativeFailureRenderCallCount, 0)
+        XCTAssertEqual(telemetry.exactBufferContractCount, 100)
+        XCTAssertEqual(telemetry.bufferContractMismatchCount, 0)
+        XCTAssertEqual(telemetry.analyzedRenderCallCount, 100)
+        XCTAssertEqual(telemetry.analyzedFrameCount, 48_000)
+        XCTAssertEqual(telemetry.analyzedByteCount, 96_000)
+        XCTAssertEqual(telemetry.droppedTelemetryRenderCallCount, 0)
+        XCTAssertEqual(telemetry.pendingWindowFrameCount, 0)
+        XCTAssertEqual(telemetry.latestRenderCall, 100)
+        XCTAssertEqual(telemetry.latestRenderStatus, noErr)
+        XCTAssertEqual(telemetry.latestRequestedFrameCount, 480)
+        XCTAssertEqual(telemetry.latestRequestedByteCount, 960)
+        XCTAssertEqual(telemetry.latestReturnedByteCount, 960)
+        XCTAssertTrue(telemetry.latestBufferContractWasExact)
+
+        XCTAssertTrue(telemetry.hasCompletedWindow)
+        XCTAssertEqual(telemetry.completedWindowSequence, 1)
+        XCTAssertEqual(telemetry.completedWindowGeneration, 1)
+        XCTAssertEqual(telemetry.completedWindowFirstRenderCall, 1)
+        XCTAssertEqual(telemetry.completedWindowLastRenderCall, 100)
+        XCTAssertEqual(telemetry.completedWindowRenderCallCount, 100)
+        XCTAssertEqual(telemetry.completedWindowFrameCount, 48_000)
+        XCTAssertEqual(telemetry.completedWindowByteCount, 96_000)
+        XCTAssertEqual(telemetry.completedWindowDurationSeconds, 1, accuracy: 0.000_001)
+        XCTAssertEqual(telemetry.rms, 0.5, accuracy: 0.000_001)
+        XCTAssertEqual(telemetry.peak, 0.5, accuracy: 0.000_001)
+        XCTAssertEqual(telemetry.dc, 0, accuracy: 0.000_001)
+        XCTAssertEqual(telemetry.zeroSampleCount, 0)
+        XCTAssertEqual(telemetry.clippedSampleCount, 0)
+        XCTAssertEqual(telemetry.frozenBlockCount, 99)
+        XCTAssertEqual(telemetry.longestFrozenBlockRun, 99)
+    }
+
+    func testDecodedPlayoutTelemetryReportsMonoSilenceClippingAndDC() throws {
+        let clipped = try completedTelemetry(pattern: .clippedDC)
+        XCTAssertEqual(clipped.clippingFraction, 1, accuracy: 0.000_001)
+        XCTAssertEqual(clipped.peak, 1, accuracy: 0.000_001)
+        XCTAssertEqual(clipped.dc, -1, accuracy: 0.000_001)
+
+        let silence = try completedTelemetry(pattern: .silence)
+        XCTAssertTrue(silence.windowIsAllZero)
+        XCTAssertEqual(silence.zeroSampleCount, 48_000)
+        XCTAssertEqual(silence.zeroFraction, 1, accuracy: 0.000_001)
+        XCTAssertEqual(silence.allZeroBlockCount, 1)
+
+        let dcNoise = try completedTelemetry(pattern: .dcOffsetNoise)
+        XCTAssertEqual(dcNoise.dc, 12_000.0 / 32_768.0, accuracy: 0.000_001)
+
+        let nearClipping = try completedTelemetry(pattern: .nearClipping)
+        XCTAssertEqual(
+            nearClipping.clippingFraction,
+            0.5,
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(
+            nearClipping.peak,
+            32_760.0 / 32_768.0,
+            accuracy: 0.000_001
+        )
+    }
+
+    func testDecodedPlayoutTelemetrySplitsArbitraryCallbacksIntoExactWindows() throws {
+        let device = try XCTUnwrap(ASMacStereoAudioDevice())
+        let harness = ASMacStereoAudioDeviceTestHarness(device: device)
+        harness.playoutPattern = .dcOffsetNoise
+        XCTAssertTrue(harness.startPlayout())
+
+        let callbackPattern = [1_024, 441, 1_536, 480, 2_048, 735, 1_000, 256]
+        var samples = Array(
+            repeating: Int16.zero,
+            count: callbackPattern.max()! * Self.outputChannelCount
+        )
+        var requestedFrameCount = 0
+        var callbackIndex = 0
+        while requestedFrameCount <= 48_000 {
+            let frameCount = callbackPattern[
+                callbackIndex % callbackPattern.count
+            ]
+            XCTAssertTrue(samples.withUnsafeMutableBufferPointer { buffer in
+                device.renderPlayoutMonoInt16(
+                    buffer.baseAddress!,
+                    frameCount: UInt(frameCount)
+                )
+            })
+            requestedFrameCount += frameCount
+            callbackIndex += 1
+        }
+
+        let telemetry = device.decodedPlayoutTelemetry
+        XCTAssertTrue(telemetry.hasCompletedWindow)
+        XCTAssertEqual(telemetry.completedWindowSequence, 1)
+        XCTAssertEqual(telemetry.completedWindowFrameCount, 48_000)
+        XCTAssertEqual(telemetry.completedWindowByteCount, 96_000)
+        XCTAssertEqual(telemetry.completedWindowSourceStartFrame, 0)
+        XCTAssertEqual(telemetry.completedWindowSourceEndFrame, 48_000)
+        XCTAssertEqual(
+            telemetry.pendingWindowFrameCount,
+            UInt64(requestedFrameCount - 48_000)
+        )
+        XCTAssertEqual(
+            telemetry.completedWindowFingerprint,
+            Self.fnv1aFingerprint(frameCount: 48_000) { frame in
+                let noise: Int16 = frame.isMultiple(of: 2) ? 512 : -512
+                return 12_000 + noise
+            }
+        )
+    }
+
+    #if DEBUG
+    func testDecodedCompletedWindowReadSpanningResetCannotABA() throws {
+        let device = try XCTUnwrap(ASMacStereoAudioDevice())
+        let harness = ASMacStereoAudioDeviceTestHarness(device: device)
+        harness.playoutPattern = .alternating
+        XCTAssertTrue(harness.startPlayout())
+        var samples = Array(repeating: Int16.zero, count: 48_000)
+        XCTAssertTrue(samples.withUnsafeMutableBufferPointer { buffer in
+            device.renderPlayoutMonoInt16(
+                buffer.baseAddress!,
+                frameCount: 48_000
+            )
+        })
+        XCTAssertEqual(device.decodedPlayoutTelemetry.completedWindowSequence, 1)
+
+        let deviceBox = SendableMacAudioDeviceBox(device)
+        let racedResult =
+            SendableValueBox<ASMacDecodedPlayoutTelemetrySnapshot>()
+        let readReturned = DispatchSemaphore(value: 0)
+        device.holdDecodedTelemetryReadsForTesting()
+        DispatchQueue.global(qos: .userInitiated).async {
+            racedResult.store(deviceBox.device.decodedPlayoutTelemetry)
+            readReturned.signal()
+        }
+
+        let heldDeadline = Date().addingTimeInterval(1)
+        while !device.decodedTelemetryReadIsHeldForTesting,
+              Date() < heldDeadline {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        XCTAssertTrue(device.decodedTelemetryReadIsHeldForTesting)
+
+        XCTAssertTrue(harness.stopPlayout())
+        harness.playoutPattern = .clippedDC
+        XCTAssertTrue(harness.startPlayout())
+        XCTAssertTrue(samples.withUnsafeMutableBufferPointer { buffer in
+            device.renderPlayoutMonoInt16(
+                buffer.baseAddress!,
+                frameCount: 48_000
+            )
+        })
+        device.releaseDecodedTelemetryReadsForTesting()
+
+        XCTAssertEqual(
+            readReturned.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+        let raced = try XCTUnwrap(racedResult.load())
+        XCTAssertFalse(
+            raced.hasCompletedWindow,
+            "A read linearized before reset must not accept the new payload under the old generation."
+        )
+
+        let fresh = device.decodedPlayoutTelemetry
+        XCTAssertTrue(fresh.hasCompletedWindow)
+        XCTAssertEqual(fresh.playoutGeneration, 2)
+        XCTAssertEqual(fresh.completedWindowGeneration, 2)
+        XCTAssertEqual(fresh.completedWindowSequence, 2)
+        XCTAssertEqual(fresh.completedWindowSourceStartFrame, 0)
+        XCTAssertEqual(fresh.completedWindowSourceEndFrame, 48_000)
+        XCTAssertEqual(fresh.dc, -1, accuracy: 0.000_001)
+    }
+    #endif
+
+    #if DEBUG
+    func testStopPlayoutFencesHeldInFlightPullBeforeReturning() throws {
+        let device = try XCTUnwrap(ASMacStereoAudioDevice())
+        let harness = ASMacStereoAudioDeviceTestHarness(device: device)
+        XCTAssertTrue(harness.startPlayout())
+        let box = SendableMacAudioDeviceBox(device)
+        let pullReturned = DispatchSemaphore(value: 0)
+        let stopReturned = DispatchSemaphore(value: 0)
+
+        device.holdPlayoutPullsForTesting()
+        DispatchQueue.global(qos: .userInitiated).async {
+            var samples = Array(repeating: Int16.max, count: 480)
+            _ = samples.withUnsafeMutableBufferPointer { buffer in
+                box.device.renderPlayoutMonoInt16(
+                    buffer.baseAddress!,
+                    frameCount: 480
+                )
+            }
+            pullReturned.signal()
+        }
+
+        let heldDeadline = Date().addingTimeInterval(1)
+        while !device.playoutPullIsHeldForTesting,
+              Date() < heldDeadline {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        XCTAssertTrue(device.playoutPullIsHeldForTesting)
+        XCTAssertEqual(device.diagnostics.playoutPullsInFlight, 1)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = box.device.stopPlayoutAndFenceForTesting()
+            stopReturned.signal()
+        }
+
+        let fenceDeadline = Date().addingTimeInterval(1)
+        while device.diagnostics.playoutFenceWaitCount == 0,
+              Date() < fenceDeadline {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        XCTAssertEqual(device.diagnostics.playoutFenceWaitCount, 1)
+        XCTAssertEqual(device.diagnostics.playoutPullsInFlight, 1)
+        XCTAssertEqual(
+            stopReturned.wait(timeout: .now() + .milliseconds(20)),
+            .timedOut
+        )
+
+        device.releasePlayoutPullsForTesting()
+        XCTAssertEqual(
+            pullReturned.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+        XCTAssertEqual(
+            stopReturned.wait(timeout: .now() + .seconds(1)),
+            .success
+        )
+        XCTAssertEqual(device.diagnostics.playoutPullsInFlight, 0)
+        XCTAssertFalse(device.diagnostics.playing)
+    }
+    #endif
+
     func testRestartRequiresFreshGenerationApprovalAndResetsTimestampsExactlyOnce() throws {
         let device = try XCTUnwrap(ASMacStereoAudioDevice())
         let harness = ASMacStereoAudioDeviceTestHarness(device: device)
@@ -282,7 +869,7 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
 
         var samples = [Int16](
             repeating: 0,
-            count: callbackFramePattern.max()! * Self.channelCount
+            count: callbackFramePattern.max()! * Self.inputChannelCount
         )
         var sourceFrame = 0
         var callbackIndex = 0
@@ -323,7 +910,7 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         XCTAssertEqual(deviceDiagnostics.renderCopiedFrameCount, UInt64(totalFrameCount))
         XCTAssertEqual(
             deviceDiagnostics.renderCopiedSampleElementCount,
-            UInt64(totalFrameCount * Self.channelCount)
+            UInt64(totalFrameCount * Self.inputChannelCount)
         )
         XCTAssertEqual(deviceDiagnostics.renderNotInvokedCount, 0)
         XCTAssertEqual(deviceDiagnostics.renderMultipleInvocationCount, 0)
@@ -420,11 +1007,43 @@ final class MacWebRTCAudioDeviceShimTests: XCTestCase {
         }
     }
 
+    private func completedTelemetry(
+        pattern: ASMacStereoAudioDeviceHarnessPlayoutPattern
+    ) throws -> ASMacDecodedPlayoutTelemetrySnapshot {
+        let device = try XCTUnwrap(ASMacStereoAudioDevice())
+        let harness = ASMacStereoAudioDeviceTestHarness(device: device)
+        harness.playoutPattern = pattern
+        XCTAssertTrue(harness.startPlayout())
+        var samples = Array(repeating: Int16.zero, count: 48_000)
+        XCTAssertTrue(samples.withUnsafeMutableBufferPointer { buffer in
+            device.renderPlayoutMonoInt16(
+                buffer.baseAddress!,
+                frameCount: 48_000
+            )
+        })
+        return device.decodedPlayoutTelemetry
+    }
+
     private static func stereoSequence(frameRange: Range<Int>) -> [Int16] {
         frameRange.flatMap { frame -> [Int16] in
             let marker = Int16((frame % 30_000) + 1)
             return [marker, -marker]
         }
+    }
+
+    private static func fnv1aFingerprint(
+        frameCount: Int,
+        samples: (Int) -> Int16
+    ) -> UInt64 {
+        var fingerprint: UInt64 = 14_695_981_039_346_656_037
+        for frame in 0..<frameCount {
+            let value = UInt16(bitPattern: samples(frame))
+            fingerprint ^= UInt64(value & 0x00ff)
+            fingerprint &*= 1_099_511_628_211
+            fingerprint ^= UInt64(value >> 8)
+            fingerprint &*= 1_099_511_628_211
+        }
+        return fingerprint
     }
 }
 #endif

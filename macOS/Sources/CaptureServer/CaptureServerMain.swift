@@ -84,7 +84,9 @@ struct CaptureServerMain {
             }
 
             let worldwideHostCoordinator: WorldwideHostCoordinator?
-            if options.worldwideEnabled, let rendezvousURL = options.rendezvousURL {
+            if options.worldwideEnabled,
+               let rendezvousURL = options.rendezvousURL,
+               let worldwideHostProcessLock {
                 let remoteInputController = MacRemoteInputController(
                     allowRemoteControl: options.allowRemoteControl
                 )
@@ -107,6 +109,15 @@ struct CaptureServerMain {
                     framesPerSecond: options.screenFramesPerSecond,
                     maximumVideoBitrate: Int(options.screenBitrate),
                     remoteInputController: remoteInputController,
+                    iPhoneMicrophoneForwardingPolicy:
+                        options.iPhoneMicrophoneForwardingPolicy,
+                    store: WorldwidePairingStore(
+                        dataStore: WorldwideKeychainDataStore()
+                    ),
+                    availabilityMarkerProcessIdentifier:
+                        ProcessInfo.processInfo.processIdentifier,
+                    availabilityMarkerGenerationNonce:
+                        worldwideHostProcessLock.generationNonce,
                     connectionTelemetry: LocalConnectionTelemetryJournal.applicationSupport(
                         component: "mac-host"
                     ),
@@ -127,6 +138,7 @@ struct CaptureServerMain {
                     print(invitationCode)
                     print("Enter this code on the iPhone before it expires.")
                     print("")
+                    fflush(stdout)
                 case .paired:
                     logger.info("Worldwide host is available for the paired iPhone")
                 }

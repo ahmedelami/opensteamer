@@ -37,6 +37,10 @@ let package = Package(
             name: "CaptureServer",
             dependencies: [
                 "CaptureCore",
+                .target(
+                    name: "MacWebRTCAudioDeviceShim",
+                    condition: .when(platforms: [.macOS])
+                ),
                 "RemoteSessionCore",
                 "Server",
                 "Streaming",
@@ -50,7 +54,7 @@ let package = Package(
                     "-Xlinker", "-sectcreate",
                     "-Xlinker", "__TEXT",
                     "-Xlinker", "__info_plist",
-                    "-Xlinker", "macOS/Sources/CaptureServer/Info.plist"
+                    "-Xlinker", "\(Context.packageDirectory)/macOS/Sources/CaptureServer/Info.plist"
                 ])
             ]
         ),
@@ -171,7 +175,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CaptureCoreTests",
-            dependencies: ["CaptureCore"],
+            dependencies: ["CaptureCore", "Streaming"],
             path: "macOS/Tests/CaptureCoreTests"
         ),
         .testTarget(
@@ -219,7 +223,13 @@ let package = Package(
                     condition: .when(platforms: [.macOS])
                 )
             ],
-            path: "shared/Tests/MacWebRTCAudioDeviceShimTests"
+            path: "shared/Tests/MacWebRTCAudioDeviceShimTests",
+            swiftSettings: [
+                .unsafeFlags(
+                    ["-Xcc", "-DDEBUG=1"],
+                    .when(configuration: .debug)
+                )
+            ]
         )
     ]
 )

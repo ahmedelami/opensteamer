@@ -306,6 +306,112 @@ public struct WebRTCControlAcknowledgement: Codable, Equatable, Sendable {
     }
 }
 
+/// Privacy-minimal viewer challenge that causally binds a later Mac process sample to one
+/// prospective next-call epoch and then one exact CallKit epoch. It contains no process,
+/// participant, handle, or contact identity.
+public struct WebRTCMacHostedCallChallenge: Codable, Equatable, Sendable {
+    public static let currentProtocolVersion = 3
+
+    public let protocolVersion: Int
+    public let sequence: UInt64
+    public let nonce: UUID
+    /// Stable privacy-random identity for one prospectively armed next-call epoch and, once the
+    /// iPhone observes its first inactive-to-active CallKit membership edge, that exact call.
+    /// Challenge nonces may rotate before admission; this epoch nonce must not cross a
+    /// contamination, peer, transport, interruption, or replacement-call boundary.
+    public let callEpochNonce: UUID
+
+    public init(
+        sequence: UInt64,
+        callEpochNonce: UUID,
+        nonce: UUID = UUID(),
+        protocolVersion: Int = Self.currentProtocolVersion
+    ) {
+        self.protocolVersion = protocolVersion
+        self.sequence = sequence
+        self.nonce = nonce
+        self.callEpochNonce = callEpochNonce
+    }
+
+    public var isValid: Bool {
+        protocolVersion == Self.currentProtocolVersion
+            && sequence > 0
+            && nonce != Self.zeroUUID
+            && callEpochNonce != Self.zeroUUID
+            && nonce != callEpochNonce
+    }
+
+    private static let zeroUUID = UUID(
+        uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    )
+}
+
+/// Privacy-minimal, transport-bound proof that the Mac freshly sampled one exact FaceTime duplex
+/// process after receiving the echoed viewer challenge. Evidence sequence numbers are monotonic
+/// for one peer lifetime.
+public struct WebRTCMacHostedCallEvidence: Codable, Equatable, Sendable {
+    public static let currentProtocolVersion = 3
+
+    public enum State: String, Codable, Sendable {
+        case active
+        /// The host installed this exact prospective challenge from a known-empty native
+        /// baseline. It is never microphone authorization by itself.
+        case preflightArmed
+        /// The exact binder is neither prospectively armed nor causally active. This includes a
+        /// poisoned/revoked transition and can never acknowledge a preflight.
+        case inactive
+    }
+
+    public let protocolVersion: Int
+    public let sequence: UInt64
+    public let challengeSequence: UInt64
+    public let challengeNonce: UUID
+    /// Echo of the challenged CallKit-call identity; it must match independently of the rotating
+    /// challenge nonce and monotonic sequence.
+    public let callEpochNonce: UUID
+    public let state: State
+
+    public init(
+        sequence: UInt64,
+        challengeSequence: UInt64,
+        challengeNonce: UUID,
+        callEpochNonce: UUID,
+        state: State,
+        protocolVersion: Int = Self.currentProtocolVersion
+    ) {
+        self.protocolVersion = protocolVersion
+        self.sequence = sequence
+        self.challengeSequence = challengeSequence
+        self.challengeNonce = challengeNonce
+        self.callEpochNonce = callEpochNonce
+        self.state = state
+    }
+
+    public var isValid: Bool {
+        protocolVersion == Self.currentProtocolVersion
+            && sequence > 0
+            && challengeSequence > 0
+            && challengeNonce != Self.zeroUUID
+            && callEpochNonce != Self.zeroUUID
+            && challengeNonce != callEpochNonce
+    }
+
+    /// Exact three-dimensional challenge identity. None of these identities may be inferred from
+    /// another: the sequence orders challenges, the nonce prevents replay, and the CallKit epoch
+    /// prevents a replacement call with the same aggregate counts from inheriting evidence.
+    func matches(_ challenge: WebRTCMacHostedCallChallenge) -> Bool {
+        isValid
+            && challenge.isValid
+            && challengeSequence == challenge.sequence
+            && challengeNonce == challenge.nonce
+            && callEpochNonce == challenge.callEpochNonce
+    }
+
+    private static let zeroUUID = UUID(
+        uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    )
+}
+
 /// A host-issued capability binding remote input to one successful Show/Active transition.
 /// It deliberately rides inside the existing v2 acknowledgement so old v2 peers remain wire
 /// compatible and never send input they do not understand.
@@ -888,6 +994,52 @@ public final class WebRTCAudioAuthorization: @unchecked Sendable {
     }
 }
 
+/// A synchronously revocable capability for one continuously monitored FaceTime/CallKit epoch
+/// proof. The host may preserve the exact instance across challenge-nonce rotations, but revokes
+/// it before poisoning, replacing, or retiring the underlying proof. `WebRTCPeer` holds this lock
+/// across its final identity/transport checks and the synchronous data-channel send, so revocation
+/// has a deterministic order against an already-queued native observation.
+public final class WebRTCMacHostedCallEvidenceAuthorization: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isRevoked = false
+    /// Stable identity of the exact CallKit epoch whose native causal binding created this token.
+    /// It is deliberately independent from rotating per-transport challenge nonces.
+    public let callEpochNonce: UUID
+
+    public init(callEpochNonce: UUID) {
+        self.callEpochNonce = callEpochNonce
+    }
+
+    public func revoke() {
+        lock.lock()
+        isRevoked = true
+        lock.unlock()
+    }
+
+    public var isValid: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !isRevoked && callEpochNonce != Self.zeroUUID
+    }
+
+    public func withValidAuthorization<T>(
+        _ operation: () throws -> T
+    ) throws -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isRevoked,
+              callEpochNonce != Self.zeroUUID else {
+            throw WebRTCTransportError
+                .macHostedCallEvidenceAuthorizationRevoked
+        }
+        return try operation()
+    }
+
+    private static let zeroUUID = UUID(
+        uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    )
+}
+
 /// A process-local, synchronously revocable gate for one remote-input generation.
 ///
 /// This is deliberately not part of the Codable wire capability. The host service and
@@ -1002,6 +1154,71 @@ public struct WebRTCVideoStatistics: Codable, Equatable, Sendable {
         self.frameHeight = frameHeight
         self.framesEncodedOrDecoded = framesEncodedOrDecoded
     }
+}
+
+/// Release-safe ownership, processing, topology, and native-delivery state for the exact current
+/// iPhone microphone sender. Native sender/track identifiers and object identities remain private
+/// to `WebRTCPeer`; this projection carries only ephemeral generations and bounded state.
+public struct WebRTCIPhoneMicrophoneSenderDiagnostics: Equatable, Sendable {
+    public let peerEpoch: UUID
+    public let bindingGeneration: UInt64
+    public let negotiationEpoch: UInt64
+    public let trackGeneration: UInt64
+    public let microphonePolicyGeneration: UInt64
+    public let senderOwnsMID: Bool
+    public let senderOwnsLocalTrack: Bool
+    public let transceiverIsStopped: Bool
+    public let preferredDirectionIncludesSending: Bool
+    public let currentDirectionIncludesSending: Bool
+    public let trackIsEnabled: Bool
+    public let rawProcessingIsLive: Bool
+    public let transportIsHealthy: Bool
+    public let authorizationIsCurrent: Bool
+    public let authorizationIsValid: Bool
+    public let senderIsAdmitted: Bool
+    public let nativeDeviceIsOpen: Bool
+    public let nativeDeviceGateIsOpen: Bool
+    public let nativeAuthorizationGateIsOpen: Bool
+    public let categoryIsPlayAndRecord: Bool
+    public let modeIsDefault: Bool
+    public let usesRemoteIO: Bool
+    public let inputBusEnabled: Bool
+    /// True only when native live-route diagnostics saw exactly the built-in iPhone microphone.
+    public let captureRouteIsBuiltInMicrophone: Bool
+    /// Ephemeral native exact-route publication generation; rotates across every revalidation.
+    public let captureRouteProofGeneration: UInt64
+    public let outputBusEnabled: Bool
+    public let categoryOptionsAreEmpty: Bool
+    public let categoryOptionsAreIPhoneMicrophoneRouting: Bool
+    public let routeSharingPolicyIsDefault: Bool
+    public let hasOutputRoute: Bool
+    public let sampleRateIs48k: Bool
+    public let ioBufferDurationIsBounded: Bool
+    public let outputChannelCountIsStereo: Bool
+    public let recoveryRequired: Bool
+    public let explicitResumeRequired: Bool
+    public let hostedCallMode: Bool
+    public let failureCode: Int
+    public let lastLifecycleStatus: Int32
+    public let recordingGeneration: UInt64
+    public let approvedRecordingGeneration: UInt64
+    public let realtimeAdmissionCount: UInt64
+    public let deliveryCallbackCount: UInt64
+    public let deliveredFrameCount: UInt64
+}
+
+/// Exact sender-scoped outbound evidence for the current admitted iPhone microphone sender.
+///
+/// This proves only that current native microphone delivery and that exact sender's outbound RTP
+/// advanced coherently. It does not claim that BlackHole or another Mac application consumed it.
+public struct WebRTCIPhoneMicrophoneSenderStatistics: Equatable, Sendable {
+    public let collectedAt: Date
+    public let sender: WebRTCIPhoneMicrophoneSenderDiagnostics
+    public let packetsSent: UInt64
+    public let bytesSent: UInt64
+    public let totalAudioEnergy: Double?
+    public let totalSamplesDuration: Double?
+    public let sourceReportWasLinked: Bool
 }
 
 /// Stable audio quality, concealment, jitter-buffer, and transport counters.
@@ -1167,6 +1384,10 @@ public enum WebRTCTransportEvent: Sendable {
     case inputFeedbackReceived(WebRTCInputFeedback)
     /// The input capability was fail-closed independently of screen media/control state.
     case inputSessionInvalidated(String)
+    /// A current-peer viewer challenge that the Mac must satisfy with a fresh native process scan.
+    case macHostedCallChallengeReceived(WebRTCMacHostedCallChallenge)
+    /// Current-peer Mac-hosted call proof, or nil when any evidence boundary is uncertain.
+    case macHostedCallEvidenceChanged(WebRTCMacHostedCallEvidence?)
     /// Legacy signaling control event. Worldwide data-channel control uses the typed request/ack events above.
     case controlReceived(RemoteControlCommand)
     case identityReceived(RemotePeerIdentity)
@@ -1202,6 +1423,7 @@ public enum WebRTCTransportError: Error, Equatable, LocalizedError, Sendable {
     case controlAuthorizationRequired
     case controlAuthorizationRevoked
     case audioAuthorizationRevoked
+    case macHostedCallEvidenceAuthorizationRevoked
     case unknownControlRequest(UInt64)
     case staleControlRequest(UInt64)
     case conflictingControlAcknowledgement(UInt64)
@@ -1257,6 +1479,8 @@ public enum WebRTCTransportError: Error, Equatable, LocalizedError, Sendable {
             "The screen-control authorization was revoked before capture could be exposed."
         case .audioAuthorizationRevoked:
             "The system-audio authorization was revoked before capture could be exposed."
+        case .macHostedCallEvidenceAuthorizationRevoked:
+            "The Mac-hosted-call evidence authorization was revoked before evidence could be published."
         case .unknownControlRequest(let id):
             "Control request \(id) is unknown."
         case .staleControlRequest(let id):

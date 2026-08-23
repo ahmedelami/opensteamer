@@ -3,14 +3,22 @@
 The product, repository, app display name, Xcode project, build products, host bundle name,
 packages, services, scripts, and documentation use the lowercase name **opensteamer**.
 
+The protected production iOS bundle identifier remains `com.elamin.AudioStreamer`; builds meant to
+update that app must keep its identity, container, and default Keychain access group. The separately
+authorized side-by-side TestFlight client uses `com.elamin.opensteamer` and must never be presented
+or installed as an update to the protected app.
+
 Some pre-rebrand identifiers are intentionally immutable compatibility data rather than branding:
 
-- The production iOS bundle identifier stays `org.example.AudioStreamer` so an App Store or
-  TestFlight release remains an update to the installed app and retains its container and default
-  Keychain access group.
-- The iOS Keychain service stays `org.example.AudioStreamer`, and the macOS host keeps its shipped
-  bundle and Keychain identifiers, so activation state, durable pairings, and macOS privacy grants
-  survive the rename.
+- The current iOS Keychain service stays `org.example.AudioStreamer`; migration code may read the
+  earlier `com.elamin.AudioStreamer` identity and paired-Mac items only as one validated,
+  same-namespace fallback pair. The macOS host keeps its shipped
+  `com.elamin.AudioStreamer.CaptureServer` bundle/signature identifier,
+  `com.elamin.AudioStreamer.CaptureServer.runtime` lock namespace. Those exact deployed identities
+  preserve macOS privacy grants and mixed-version exclusion. The protected legacy host retains
+  `com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1`, while the new host stores only in
+  `com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1`; the disjoint services preserve the
+  legacy rollback pairing while allowing the side-by-side TestFlight app to pair independently.
 - The deployed v1 WebSocket headers/subprotocols, WebRTC data-channel identifiers, invitation
   checksum domain, and cryptographic transcript labels retain their original bytes. These values
   are authenticated protocol ABI. They may change only behind a negotiated new protocol version

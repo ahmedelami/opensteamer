@@ -11,6 +11,41 @@ import XCTest
 /// child returns unexpectedly. Explicit shutdown is the sole path where child cancellation and a
 /// normal completion event are accepted.
 final class WorldwideHostCoordinatorTests: XCTestCase {
+    func testAvailabilityOnlineMarkerBindsProcessAndGenerationNonce() async throws {
+        let store = try makeActivePairingStore()
+        let client = HostAvailabilityClientStub(behavior: .validatedWaiting)
+        let logger = RecordingLogger()
+        let expectedPID: Int32 = 42_424
+        let expectedNonce = String(repeating: "a", count: 64)
+        let expectedMarker =
+            "Worldwide paired-device availability is online " +
+            "pid=\(expectedPID) nonce=\(expectedNonce)"
+        let coordinator = makeCoordinator(
+            store: store,
+            availabilityClientFactory: { _, _ in client },
+            availabilityMarkerProcessIdentifier: expectedPID,
+            availabilityMarkerGenerationNonce: expectedNonce,
+            logger: logger
+        )
+
+        let startResult = try await coordinator.start(resetPairing: false)
+        guard case .paired = startResult else {
+            return XCTFail("Expected the persisted pair to start availability")
+        }
+
+        let markerWasLogged = await eventually {
+            logger.informationMessages.contains(expectedMarker)
+        }
+        XCTAssertTrue(markerWasLogged)
+        XCTAssertEqual(
+            logger.informationMessages.filter { $0.hasPrefix(
+                "Worldwide paired-device availability is online"
+            ) },
+            [expectedMarker]
+        )
+        await coordinator.stop()
+    }
+
     func testTransportCancellationFromAvailabilityConnectRetriesWithoutCancellingHostLoop() async throws {
         let store = try makeActivePairingStore()
         let cancelledClient = HostAvailabilityClientStub(behavior: .transportCancellation)
@@ -179,7 +214,10 @@ final class WorldwideHostCoordinatorTests: XCTestCase {
         availabilityRetrySleep: @escaping @Sendable (Int) async throws -> Void = { _ in },
         availabilityLoopOverride: (@Sendable () async -> Void)? = nil,
         connectionTelemetry: any ConnectionTelemetryRecording =
-            NoopConnectionTelemetryRecorder()
+            NoopConnectionTelemetryRecorder(),
+        availabilityMarkerProcessIdentifier: Int32 = ProcessInfo.processInfo.processIdentifier,
+        availabilityMarkerGenerationNonce: String = String(repeating: "0", count: 64),
+        logger: any Logger = SilentLogger()
     ) -> WorldwideHostCoordinator {
         WorldwideHostCoordinator(
             // Reserved `.invalid` prevents accidental external I/O if a test reaches the default
@@ -193,11 +231,13 @@ final class WorldwideHostCoordinatorTests: XCTestCase {
             remoteInputController: MacRemoteInputController(allowRemoteControl: false),
             store: store,
             hostDisplayName: "Test Mac",
+            availabilityMarkerProcessIdentifier: availabilityMarkerProcessIdentifier,
+            availabilityMarkerGenerationNonce: availabilityMarkerGenerationNonce,
             availabilityClientFactory: availabilityClientFactory,
             availabilityRetrySleep: availabilityRetrySleep,
             availabilityLoopOverride: availabilityLoopOverride,
             connectionTelemetry: connectionTelemetry,
-            logger: SilentLogger()
+            logger: logger
         )
     }
 
@@ -266,6 +306,7 @@ private final class HostAvailabilityClientStub:
 {
     enum Behavior: Sendable {
         case transportCancellation
+        case validatedWaiting
         case wait
     }
 
@@ -286,6 +327,9 @@ private final class HostAvailabilityClientStub:
         }
         let pair = PairedAvailabilitySignalingClient.EventStream.makeStream()
         lock.withLock { continuation = pair.continuation }
+        if behavior == .validatedWaiting {
+            pair.continuation.yield(.waiting)
+        }
         return pair.stream
     }
 
@@ -401,6 +445,22 @@ private struct SilentLogger: Logger {
     func info(_: String) {}
     func debug(_: String) {}
     func error(_: String) {}
+}
+
+private final class RecordingLogger: Logger, @unchecked Sendable {
+    private let lock = NSLock()
+    private var information: [String] = []
+
+    func info(_ message: String) {
+        lock.withLock { information.append(message) }
+    }
+
+    func debug(_: String) {}
+    func error(_: String) {}
+
+    var informationMessages: [String] {
+        lock.withLock { information }
+    }
 }
 
 private enum CoordinatorTestError: Error {

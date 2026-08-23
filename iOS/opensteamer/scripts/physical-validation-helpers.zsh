@@ -4,8 +4,9 @@
 #
 # Usage: source this file from a strict-mode zsh driver; it is not a standalone command. Keep
 # functions free of top-level side effects so production drivers and shell regression tests can
-# safely share them. Callers need macOS system tools used by the selected helper (`python3`,
-# `xcrun devicectl`, `launchctl`, `shasum`, and process utilities) plus permission to inspect the
+# safely share them. Callers need the run-pinned Rust oracle selected by
+# `OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE`, macOS system tools used by the selected helper
+# (`xcrun devicectl`, `launchctl`, `shasum`, and process utilities), and permission to inspect the
 # target device or host service.
 #
 # Test-only environment: `OPENSTEAMER_SCRIPT_SELF_TEST` unlocks deterministic seams. The
@@ -16,6 +17,24 @@
 # Side effects are function-specific and explicit: helpers may create caller-supplied artifact
 # files, signal owned process trees, or query an attached device. A nonzero return always means the
 # requested invariant was not established; helpers do not convert a failed proof into a skip.
+
+function opensteamer_run_physical_validation_oracle() {
+  local oracle=${OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE:-}
+  local expected_metadata
+
+  if [[ -z "${oracle}" || "${oracle}" != /Volumes/t7/* \
+      || ! -f "${oracle}" || -L "${oracle}" || ! -x "${oracle}" ]]; then
+    echo "The run-pinned Rust physical-validation oracle is unavailable or unsafe." >&2
+    return 127
+  fi
+  expected_metadata="$(/usr/bin/id -u):1:500"
+  if [[ "$(/usr/bin/stat -f '%u:%l:%Lp' "${oracle}" 2>/dev/null)" \
+      != "${expected_metadata}" ]]; then
+    echo "The run-pinned Rust physical-validation oracle metadata changed." >&2
+    return 127
+  fi
+  "${oracle}" "$@"
+}
 
 function opensteamer_require_positive_integer() {
   local setting_name=$1
@@ -92,114 +111,13 @@ function opensteamer_capture_log_snapshot() {
   local -a metadata_lines
 
   rm -f "${appended_output}"
-  if ! metadata=$(/usr/bin/python3 - \
+  if ! metadata=$(opensteamer_run_physical_validation_oracle \
+      log-snapshot \
       "${log_path}" \
-      "${expected_identity}" \
+      "${expected_identity:--}" \
       "${prior_offset}" \
       "${prior_digest}" \
-      "${appended_output}" <<'PY'
-import hashlib
-import os
-import sys
-import time
-
-path, expected_identity, prior_offset_text, prior_digest, output = sys.argv[1:]
-try:
-    prior_offset = int(prior_offset_text)
-except ValueError:
-    sys.exit(2)
-if prior_offset < 0 or len(prior_digest) != 64:
-    sys.exit(2)
-
-ready_path = os.environ.get("OPENSTEAMER_LOG_SNAPSHOT_TEST_READY")
-proceed_path = os.environ.get("OPENSTEAMER_LOG_SNAPSHOT_TEST_PROCEED")
-hook_used = False
-last_reason = "log snapshot did not stabilize"
-
-for _ in range(20):
-    try:
-        descriptor = os.open(path, os.O_RDONLY)
-    except OSError as error:
-        last_reason = f"could not open log: {error}"
-        time.sleep(0.01)
-        continue
-    try:
-        before = os.fstat(descriptor)
-        identity = f"{before.st_dev}:{before.st_ino}"
-        if expected_identity and identity != expected_identity:
-            print("log path identity changed", file=sys.stderr)
-            sys.exit(3)
-        if before.st_size < prior_offset:
-            print("log became shorter than the consumed byte offset", file=sys.stderr)
-            sys.exit(3)
-
-        if ready_path and proceed_path and not hook_used:
-            hook_used = True
-            with open(ready_path, "w", encoding="utf-8") as ready:
-                ready.write("ready\n")
-            deadline = time.monotonic() + 2
-            while not os.path.exists(proceed_path) and time.monotonic() < deadline:
-                time.sleep(0.005)
-            if not os.path.exists(proceed_path):
-                print("snapshot test hook timed out", file=sys.stderr)
-                sys.exit(4)
-
-        data = os.pread(descriptor, before.st_size, 0)
-        after = os.fstat(descriptor)
-        try:
-            path_after = os.stat(path)
-        except OSError as error:
-            last_reason = f"could not restat log path: {error}"
-            time.sleep(0.01)
-            continue
-        before_version = (
-            before.st_dev,
-            before.st_ino,
-            before.st_size,
-            before.st_mtime_ns,
-            before.st_ctime_ns,
-        )
-        after_version = (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-            after.st_ctime_ns,
-        )
-        if before_version != after_version:
-            last_reason = "opened log changed during snapshot"
-            time.sleep(0.01)
-            continue
-        if (path_after.st_dev, path_after.st_ino) != (after.st_dev, after.st_ino):
-            last_reason = "log path changed during snapshot"
-            time.sleep(0.01)
-            continue
-        if len(data) != before.st_size:
-            last_reason = "short read from opened log"
-            time.sleep(0.01)
-            continue
-
-        consumed_digest = hashlib.sha256(data[:prior_offset]).hexdigest()
-        if consumed_digest != prior_digest:
-            print("consumed log prefix digest changed", file=sys.stderr)
-            sys.exit(3)
-        snapshot_digest = hashlib.sha256(data).hexdigest()
-        temporary_output = f"{output}.tmp.{os.getpid()}"
-        with open(temporary_output, "wb") as appended:
-            appended.write(data[prior_offset:])
-        os.replace(temporary_output, output)
-        print(identity)
-        print(len(data))
-        print(snapshot_digest)
-        print("1" if not data or data.endswith(b"\n") else "0")
-        sys.exit(0)
-    finally:
-        os.close(descriptor)
-
-print(last_reason, file=sys.stderr)
-sys.exit(3)
-PY
-  ); then
+      "${appended_output}"); then
     rm -f "${appended_output}"
     return 1
   fi
@@ -228,34 +146,8 @@ function opensteamer_split_completed_log_lines() {
   local partial_state=$2
   local completed_output=$3
 
-  /usr/bin/python3 - \
-      "${appended_input}" "${partial_state}" "${completed_output}" <<'PY'
-import os
-import sys
-
-appended_path, partial_path, completed_path = sys.argv[1:]
-with open(appended_path, "rb") as appended:
-    payload = appended.read()
-try:
-    with open(partial_path, "rb") as partial:
-        payload = partial.read() + payload
-except FileNotFoundError:
-    pass
-
-boundary = payload.rfind(b"\n")
-if boundary < 0:
-    completed = b""
-    partial = payload
-else:
-    completed = payload[: boundary + 1]
-    partial = payload[boundary + 1 :]
-
-for path, contents in ((completed_path, completed), (partial_path, partial)):
-    temporary = f"{path}.tmp.{os.getpid()}"
-    with open(temporary, "wb") as destination:
-        destination.write(contents)
-    os.replace(temporary, path)
-PY
+  opensteamer_run_physical_validation_oracle \
+    split-lines "${appended_input}" "${partial_state}" "${completed_output}"
 }
 
 # Validate every completed connected record in one snapshot. A single malformed or stale PID makes
@@ -343,57 +235,68 @@ function opensteamer_wait_for_final_process_status() {
   done
 }
 
+# Never enter zsh's blocking `wait` while an isolated wrapper can still be stopped or wedged. Poll
+# the whole group against one absolute monotonic deadline; only drain zsh's queued child statuses
+# after ESRCH proves the group absent. At the deadline, terminate and re-prove absence before drain.
+function opensteamer_wait_for_final_group_status_until() {
+  local process_pid=$1
+  local deadline_ns=$2
+  local termination_grace_seconds=$3
+  local now_ns
+
+  [[ -n "${process_pid}" && "${process_pid}" != *[^0-9]* \
+      && -n "${deadline_ns}" && "${deadline_ns}" != *[^0-9]* \
+      && -n "${termination_grace_seconds}" \
+      && "${termination_grace_seconds}" != *[^0-9]* ]] || return 2
+  (( process_pid > 0 && deadline_ns > 0 && termination_grace_seconds > 0 )) \
+    || return 2
+
+  while true; do
+    now_ns=$(opensteamer_run_physical_validation_oracle monotonic-ns) || return $?
+    [[ -n "${now_ns}" && "${now_ns}" != *[^0-9]* ]] || return 125
+    if (( now_ns >= deadline_ns )); then
+      if ! opensteamer_terminate_isolated_process_group \
+          "${process_pid}" "${termination_grace_seconds}"; then
+        return 125
+      fi
+      if opensteamer_process_group_exists "${process_pid}"; then
+        return 125
+      fi
+      opensteamer_wait_for_final_process_status "${process_pid}" || return $?
+      return 124
+    fi
+    if opensteamer_process_group_exists "${process_pid}"; then
+      [[ "${OPENSTEAMER_PROCESS_GROUP_STATE}" != "indeterminate" ]] || return 125
+      sleep 0.05
+      continue
+    fi
+    opensteamer_wait_for_final_process_status "${process_pid}"
+    return $?
+  done
+}
+
 # Run a small critical-section command with a hard wall-clock bound and kill its whole subprocess
 # group on timeout. This prevents a wedged system command from indefinitely holding a driver lock.
 function opensteamer_run_with_timeout() {
   local timeout_seconds=$1
   shift
-  /usr/bin/python3 -c '
-import os
-import signal
-import subprocess
-import sys
-
-timeout = float(sys.argv[1])
-command = sys.argv[2:]
-process = subprocess.Popen(command, start_new_session=True)
-try:
-    return_code = process.wait(timeout=timeout)
-except subprocess.TimeoutExpired:
-    os.killpg(process.pid, signal.SIGTERM)
-    try:
-        process.wait(timeout=1)
-    except subprocess.TimeoutExpired:
-        pass
-    # The leader may exit on TERM while a descendant in the same group ignores it. Always sweep
-    # the still-addressable group with KILL before returning the timeout status.
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    if process.poll() is None:
-        process.wait()
-    sys.exit(124)
-if return_code < 0:
-    sys.exit(128 - return_code)
-sys.exit(return_code)
-' "${timeout_seconds}" "$@"
+  opensteamer_run_physical_validation_oracle \
+    run-timeout "${timeout_seconds}" "$@"
 }
 
-# The background function is replaced by Python and then the requested executable, preserving
+# The background function is replaced by the Rust oracle and then the requested executable, preserving
 # `$!` as a dedicated session/process-group leader that the parent can safely signal as a unit.
 function opensteamer_exec_in_isolated_process_group() {
-  if [[ ! -x /usr/bin/python3 ]]; then
-    echo "/usr/bin/python3 is required to create an isolated validation process group." >&2
+  local oracle=${OPENSTEAMER_PHYSICAL_VALIDATION_ORACLE:-}
+
+  if [[ -z "${oracle}" || "${oracle}" != /Volumes/t7/* \
+      || ! -f "${oracle}" || -L "${oracle}" || ! -x "${oracle}" \
+      || "$(/usr/bin/stat -f '%u:%l:%Lp' "${oracle}" 2>/dev/null)" \
+        != "$(/usr/bin/id -u):1:500" ]]; then
+    echo "The run-pinned Rust physical-validation oracle is unavailable or unsafe." >&2
     return 127
   fi
-  exec /usr/bin/python3 -c '
-import os
-import sys
-if os.getpgrp() != os.getpid():
-    os.setsid()
-os.execvp(sys.argv[1], sys.argv[1:])
-' "$@"
+  exec "${oracle}" isolated-exec "$@"
 }
 
 # Driver globals are intentional here: setting the cleanup flag immediately after `$!` closes the
@@ -430,9 +333,58 @@ function opensteamer_require_isolated_process_group() {
   return 8
 }
 
+# Some launch wrappers deliberately stop themselves before `exec` so the caller can finish
+# publishing their PID and evidence paths before any child code runs. Merely observing the new
+# process group is not enough: a SIGCONT sent before the wrapper reaches SIGSTOP is lost and leaves
+# the wrapper stopped forever. Wait for the already-requested stop without sending another STOP,
+# then let the caller issue exactly one matching resume.
+function opensteamer_wait_for_stopped_process_group() {
+  local leader_pid=$1
+  local timeout_seconds=$2
+  local process_group
+  local process_state
+  local wait_started=${SECONDS}
+
+  while (( SECONDS - wait_started < timeout_seconds )); do
+    process_group=$(ps -o pgid= -p "${leader_pid}" 2>/dev/null \
+      | tr -d '[:space:]' || true)
+    process_state=$(ps -o state= -p "${leader_pid}" 2>/dev/null \
+      | tr -d '[:space:]' || true)
+    if [[ "${process_group}" == "${leader_pid}" \
+        && "${process_state}" == T* ]]; then
+      return 0
+    fi
+    if [[ -z "${process_group}" || -z "${process_state}" ]] \
+        || ! kill -0 "${leader_pid}" 2>/dev/null; then
+      return 8
+    fi
+    sleep 0.02
+  done
+  return 8
+}
+
 function opensteamer_process_group_exists() {
   local leader_pid=$1
-  kill -0 -- "-${leader_pid}" 2>/dev/null
+  local group_state
+  local probe_status
+
+  OPENSTEAMER_PROCESS_GROUP_STATE=indeterminate
+  if group_state=$(opensteamer_run_physical_validation_oracle \
+      process-group-state "${leader_pid}" 2>/dev/null); then
+    [[ "${group_state}" == "exists" ]] || return 125
+    OPENSTEAMER_PROCESS_GROUP_STATE=exists
+    return 0
+  else
+    probe_status=$?
+  fi
+  if (( probe_status == 1 )) && [[ "${group_state}" == "absent" ]]; then
+    OPENSTEAMER_PROCESS_GROUP_STATE=absent
+    return 1
+  fi
+  # Permission denial or any unclassified probe failure is not absence. Return true so ordinary
+  # boolean callers fail closed, while the exported state lets cleanup/wait callers report 125.
+  echo "Process-group absence for ${leader_pid} could not be proven by ESRCH." >&2
+  return 0
 }
 
 function opensteamer_wait_for_process_group_exit() {
@@ -441,6 +393,9 @@ function opensteamer_wait_for_process_group_exit() {
   local wait_started=${SECONDS}
 
   while opensteamer_process_group_exists "${leader_pid}"; do
+    if [[ "${OPENSTEAMER_PROCESS_GROUP_STATE}" == "indeterminate" ]]; then
+      return 125
+    fi
     if (( SECONDS - wait_started >= timeout_seconds )); then
       return 1
     fi
@@ -513,25 +468,59 @@ function opensteamer_terminate_isolated_process_group() {
   kill -TERM -- "-${leader_pid}" 2>/dev/null || true
   kill -CONT -- "-${leader_pid}" 2>/dev/null || true
   grace_started=${SECONDS}
-  while kill -0 -- "-${leader_pid}" 2>/dev/null \
+  while opensteamer_process_group_exists "${leader_pid}" \
+      && [[ "${OPENSTEAMER_PROCESS_GROUP_STATE}" != "indeterminate" ]] \
       && (( SECONDS - grace_started < grace_seconds )); do
     sleep 0.2
   done
-  if kill -0 -- "-${leader_pid}" 2>/dev/null; then
-    kill -KILL -- "-${leader_pid}" 2>/dev/null || true
+  # KILL is unconditional and the stable group handle is retained for one bounded re-sweep.
+  kill -KILL -- "-${leader_pid}" 2>/dev/null || true
+  if opensteamer_wait_for_process_group_exit "${leader_pid}" 1; then
+    return 0
   fi
+  kill -KILL -- "-${leader_pid}" 2>/dev/null || true
+  if opensteamer_wait_for_process_group_exit "${leader_pid}" 1; then
+    return 0
+  fi
+  echo "Process group ${leader_pid} survived or could not prove absence after repeated KILL." >&2
+  return 125
+}
+
+# Require the exact public iPhone XR release tuple while keeping the CoreDevice selector and the
+# hardware UDID in their distinct namespaces. This helper only validates a caller-owned snapshot.
+function opensteamer_require_physical_iphone_xr_details() {
+  local output=$1
+  local coredevice_identifier=$2
+  local hardware_udid=$3
+
+  jq -e \
+    --arg coredevice_identifier "${coredevice_identifier}" \
+    --arg hardware_udid "${hardware_udid}" '
+    (.info.outcome == "success") and
+    (.result.identifier == $coredevice_identifier) and
+    (.result.hardwareProperties.udid == $hardware_udid) and
+    (.result.hardwareProperties.marketingName == "iPhone XR") and
+    (.result.hardwareProperties.productType == "iPhone11,8") and
+    (.result.hardwareProperties.hardwareModel == "N841AP") and
+    (.result.hardwareProperties.platform == "iOS") and
+    (.result.hardwareProperties.reality == "physical") and
+    (.result.deviceProperties.osVersionNumber == "18.7.9") and
+    (.result.deviceProperties.osBuildUpdate == "22H355") and
+    (.result.deviceProperties.bootState == "booted") and
+    (.result.connectionProperties.pairingState == "paired")
+  ' "${output}" >/dev/null
 }
 
 # Returns 0 only for a successful, explicitly unlocked response; 5 means the device is locked,
 # and 6 means its state could not be established within the bounded devicectl call.
 function opensteamer_device_is_unlocked() {
-  local device_udid=$1
+  local coredevice_identifier=$1
   local command_timeout_seconds=$2
   local output=$3
 
   rm -f "${output}"
   if ! xcrun devicectl device info lockState \
-      --device "${device_udid}" \
+      --device "${coredevice_identifier}" \
       --timeout "${command_timeout_seconds}" \
       --json-output "${output}" >/dev/null 2>&1; then
     return 6
@@ -552,14 +541,14 @@ function opensteamer_device_is_unlocked() {
 }
 
 function opensteamer_require_device_unlocked() {
-  local device_udid=$1
+  local coredevice_identifier=$1
   local command_timeout_seconds=$2
   local output=$3
   local gate_name=$4
   local lock_result
 
   if opensteamer_device_is_unlocked \
-      "${device_udid}" "${command_timeout_seconds}" "${output}"; then
+      "${coredevice_identifier}" "${command_timeout_seconds}" "${output}"; then
     return 0
   else
     lock_result=$?

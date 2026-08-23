@@ -1,3 +1,13 @@
+# USER-DIRECTED LEGACY RUNTIME PRESERVATION — 2026-07-25
+
+The user explicitly requires the working legacy AudioStreamer Mac host and iPhone
+client to remain usable while opensteamer development continues. Before any host
+install, migration, cleanup, pairing reset, TestFlight/Release install, or process
+launch, read [USER_PROTECTED_LEGACY_RUNTIME.md](USER_PROTECTED_LEGACY_RUNTIME.md).
+That preservation instruction overrides conflicting cleanup/migration guidance.
+Do not delete, replace, move, or concurrently run against the protected legacy
+runtime without the user's explicit approval.
+
 # Agent Guidelines
 
 ## opensteamer Product Contract
@@ -60,11 +70,18 @@ manual IP addresses, router configuration, or public TCP ports.
   TestFlight app so physical validation cannot replace the user's release container
   or masquerade as a TestFlight-to-TestFlight update.
 - Run the persistent Mac service from the signed `opensteamer Host.app` bundle with
-  the intentionally preserved identifier `org.example.AudioStreamer.CaptureServer`.
+  the intentionally preserved identifier `com.elamin.AudioStreamer.CaptureServer`.
   That pre-rebrand identifier is compatibility data: changing it would detach existing
   Screen Recording, Accessibility, and Keychain grants. Keep the signed identity stable;
   an obsolete host bundle or a naked executable can bind
   Screen Recording or Accessibility permission to the wrong macOS code identity.
+- Persist the new host's identity and durable iPhone binding only in
+  `com.elamin.opensteamer.CaptureServer.WorldwidePairing.v1`. It must never read,
+  migrate, replace, or delete items in the protected legacy
+  `com.elamin.AudioStreamer.CaptureServer.WorldwidePairing.v1` service. The bundle
+  identity and shared runtime-lock namespace remain preserved compatibility data;
+  the pairing service is deliberately isolated so the side-by-side TestFlight app
+  can pair without revoking the legacy iPhone's rollback pairing.
 - Worldwide Mac system audio is an independent, send-only Opus track on the same
   peer connection. The production fidelity contract is 48 kHz interleaved Int16
   stereo from ScreenCaptureKit through a custom input-only WebRTC audio device,
@@ -75,9 +92,10 @@ manual IP addresses, router configuration, or public TCP ports.
   its internal 10 ms accumulation/splitting. Keep PCM blocked until the sender track
   is active and the live factory state proves AEC, NS, AGC, HPF, and platform voice
   processing are all off; bind that approval to the exact native StartRecording
-  generation so a later restart fails closed. Synchronously mute both sender and
-  receiver at every transport uncertainty boundary. A fresh current-generation
-  peer/ICE/control proof is required before either side re-enables audio. Show/Hide
+  generation so a later restart fails closed. Synchronously stop the system-audio
+  sender and the `iphone-microphone` receiver/sink at every transport uncertainty
+  boundary. A fresh current-generation peer/ICE/control proof is required before
+  either side re-enables audio. Show/Hide
   affects video and remote input only. Keep source-PTS and RTP concealment diagnostics
   observable, and exclude iPhone Mirroring audio dynamically so a process relaunch
   cannot create a capture/playback feedback loop.
@@ -91,19 +109,180 @@ manual IP addresses, router configuration, or public TCP ports.
   invoking the block: accept a callback only after exactly one validated render copy of
   `frameCount * 2` elements. A serial dispatch queue may change pthreads, so synchronously
   notify the delegate of input interruption before delivering on a different thread.
-- The iPhone must use one custom output-only RemoteIO device, a `.playback` audio
-  session in `.default` mode with no category options, and the Background Audio capability so a
-  user-started stream can continue across Home/lock. Do not synthesize silent audio
-  as a keepalive, open a microphone input bus, instantiate VoiceProcessingIO, use a
-  call-oriented audio-session category/mode, or add a second renderer/ring. Pull
-  decoded stereo directly from WebRTC in the RemoteIO render callback. Do not use
-  `.moviePlayback`: Apple documents route-dependent output enhancement for that mode,
-  which violates the general Mac-audio fidelity contract. Backgrounding
-  hides video and revokes input but retains healthy
-  audio; interruption, private-route loss, uncertainty, and disconnect mute the
-  native remote track itself. Never auto-resume when iOS omits `shouldResume`, and
-  never promise playback after the user force-quits the app.
-- Physical audio release validation must observe the output-only RemoteIO render-input PCM, not
+- The iPhone must use one custom RemoteIO device. With microphone intent off, it is
+  output-only and owns a `.playback` / `.default` audio session with no category
+  options. For a production session handed off by authenticated pairing or reconnect,
+  the first current-generation peer/ICE/control healthy boundary automatically
+  establishes microphone intent and, while the app is active, requests permission
+  once for that media session. The manual toggle remains an override; denial or a
+  manual turn-off must not loop or auto-resume in the same session. Granted microphone
+  permission, current session authorization, and healthy transport proof deliberately
+  rebuild that same RemoteIO as `.playAndRecord` / `.default`, enable input bus 1, and
+  deliver 48 kHz mono Int16 PCM synchronously to WebRTC as the `iphone-microphone`
+  track. Turning
+  the microphone off, beginning an iPhone call, losing transport health, or tearing
+  down the session must synchronously revoke authorization, stop input delivery, and
+  restore the output-only policy. Do not instantiate VoiceProcessingIO, synthesize
+  silent keepalive audio, add a second renderer/ring, or request a voice/chat mode.
+  Pull decoded Mac stereo directly from WebRTC in the RemoteIO render callback. Do
+  not use `.moviePlayback`: route-dependent enhancement violates the general
+  Mac-audio fidelity contract. Backgrounding hides video and revokes remote input but
+  retains healthy audio; an actual interruption, private-route loss, uncertainty, or
+  disconnect still mutes the native remote track. Never auto-resume when iOS omits
+  `shouldResume`, and never promise playback after force-quit.
+- The Mac microphone uplink targets the repo-owned
+  `OpensteamerVirtualMicrophone.driver` endpoint pair. The visible endpoint is
+  `com.elamin.opensteamer.virtual-microphone.input`, exactly input-only/mono,
+  and is the only endpoint the host may select as default input. Decoded
+  `iphone-microphone` playout is mono and may be written only to the hidden,
+  exactly output-only endpoint
+  `com.elamin.opensteamer.virtual-microphone.writer`. Require exact AudioQueue
+  current-device UID and AudioDeviceID proof before and after start. At the
+  first current-generation authenticated peer/ICE/control healthy boundary,
+  before awaiting system-audio startup, select the visible product endpoint. This
+  connection-level selection must not wait for the remote microphone track, RTP,
+  decoded PCM, successful pulls, forwarding readiness, iOS microphone permission,
+  manual microphone state, or call state. During authenticated worldwide duplex,
+  the visible product endpoint may be the default input, but neither product
+  endpoint nor either retired BlackHole endpoint may be the default output or
+  default system output; the hidden product endpoint must never be any default.
+  Before acquiring the input lease, preserve every healthy real-output selector,
+  prefer the other current usable real output when replacing a forbidden virtual
+  endpoint, and otherwise use the validated built-in speaker. The system-audio
+  process-tap clock policy must also explicitly reject all four current/retired
+  virtual-microphone UIDs, including the new output-only writer. Core Audio
+  provides no atomic compare-and-set for these selectors;
+  use the narrowest immediate comparison plus listener-sequence and readback fencing
+  to reject observable overlap, without claiming an impossible never-overwrite
+  guarantee. This invariant must not run during LAN coexistence and must never
+  address the protected legacy runtime. Keep the exact default-output and
+  system-output listeners installed for the complete microphone-routing session,
+  from before the first ownership attempt until after the writer gate is closed and
+  default-input release completes. A delivered selector notification must first close
+  one lock-free writer gate synchronously, before queuing actor reconciliation; the
+  AudioQueue must check that gate before startup, before pulling PCM, and immediately
+  before enqueue. Reopen only inside the same listener-sequence admission commit, and
+  reject queued callbacks already superseded by that exact authorization sequence.
+  Keep a separate internal PCM admission closed through priming and start. Open it
+  only after the requested and read-back queue format proves 48 kHz packed, signed,
+  interleaved Int16 mono, device readbacks prove 48 kHz/one-channel output with no
+  converter error, and two advancing
+  device sample/host-time observations prove the public 48 kHz timeline projects into
+  FaceTime's observed 24 kHz domain with at least 60 seconds remaining below
+  `Int32.max`. Recheck the clock while running and synchronously close writer
+  authorization before reporting any clock violation. Re-prove the complete format
+  contract on every fresh queue startup; do not describe that startup proof as a
+  continuous runtime format poll.
+  Continue supplementary fenced verification on healthy transport statistics. If the
+  route becomes unsafe or cannot be proven, revoke microphone forwarding and prove
+  default-input ownership released before any repair write; an unproved release leaves
+  the gate closed and forbids repair.
+  Retry mutations with capped backoff; a newly observed route or endpoint-pair
+  generation may reset that bounded retry episode. Read-only verification failures
+  must not exhaust the mutation budget. After a cap, permit only a long bounded
+  cooldown probe so unchanged UIDs can recover when their target becomes usable.
+  The output-device callback must pull into caller-owned
+  memory without allocation, logging, sleeping, network work, or a contended mutex;
+  missing PCM becomes silence. Core Audio selector notification is asynchronous and
+  AudioQueue enqueue has no conditional transaction, so describe the gate as the
+  earliest public-API fail-close boundary; never claim it can retract an already
+  in-flight HAL buffer. A missing product endpoint pair degrades only automatic
+  default-input selection and microphone forwarding.
+- Discover and validate the complete product endpoint pair through a read-only
+  Core Audio monitor. Register the exact global/main
+  `kAudioHardwarePropertyDevices` listener before the initial inventory read, resolve
+  the hidden endpoint by exact UID because it is absent from normal enumeration, and
+  reconcile both endpoint identities and topology on healthy media boundaries. Require
+  distinct device identities, exact model UID
+  `com.elamin.opensteamer.virtual-microphone.model`, visible/hidden flags, alive
+  state, exact role topology (visible 1-in/0-out; hidden 0-in/1-out), native
+  packed interleaved Float32 mono at 48 kHz,
+  and the same exact nonzero clock domain `0x6F73564D`. Bind every forwarding attempt
+  and default-input lease to the atomic pair generation. A partial or stale pair is
+  unavailable. Select only the hidden monitored UID on the output AudioQueue; a
+  separate generation-keyed default-input lease consumes only the visible UID.
+  It must register the exact default-input listener before writing, resolve devices
+  by stable UID, save the prior default-input UID before its first owned write, and
+  require bounded listener plus readback proof rather than treating `noErr` as
+  success. Worldwide microphone forwarding and default-input selection must never
+  call the legacy route-preparation, all-default mutation, or all-default monitoring
+  path.
+- Retain the installed BlackHole experiment only as historical failure evidence and
+  for the separate legacy LAN path; worldwide routing must never fall back to it.
+  BlackHole 2ch v0.7.1 resets its local timeline counter without changing the
+  zero-timestamp seed, and its observed public device time exceeded FaceTime's
+  signed-32-compatible projection even after both endpoints stopped. Do not treat
+  quiescence as recovery evidence for that driver.
+- Before the final physical call, require a bounded public VoiceProcessingIO
+  compatibility probe with exact 48 kHz mono processed-microphone capture and
+  exact 48 kHz stereo playout-client readback. The playout callback must prove
+  two-buffer bounded silence progress so the probe exercises the public asymmetric
+  microphone/playout boundary without producing test audio. This is not FaceTime
+  simulation or local/far-end acoustic proof.
+- Keep the visible product microphone selected for the healthy media connection. On
+  transport uncertainty, disconnect, peer replacement, endpoint removal, service startup
+  failure, or graceful shutdown, synchronously initiate conditional restoration of
+  the saved input UID. Resolve that UID fresh and restore only while the exact
+  current generation still owns the lease and the current input is still its
+  product target; never overwrite a newer user or application choice. A product or
+  retired hidden-writer UID is never an admissible restoration baseline. An
+  in-memory lease cannot guarantee restoration after `SIGKILL`, a crash, or power
+  loss.
+- Suppress iPhone-microphone forwarding whenever worldwide mode coexists with either
+  legacy LAN capture mode. Suppress the associated automatic default-input lease as
+  well, while worldwide signaling, system audio, screen video, control, remote input,
+  and both LAN services remain supervised normally.
+- An AudioQueue start is not forwarding-readiness evidence. Readiness requires the
+  exact current peer, transport-authorization epoch, track generation, device
+  generation, admitted track, a running queue, and successful post-start decoded pulls.
+  Continuing health requires two bounded lock-free progress snapshots whose callback
+  and successful-frame counts both advance.
+- Worldwide-only release evidence must record the original default-input UID, prove
+  the visible product microphone is the default input at the authenticated peer/ICE/control
+  boundary before track or PCM proof, prove the safe-output invariant completes
+  before the input lease, then require a current host-PID, peer-generation, and
+  atomic-pair-generation marker proving the hidden writer passed both AudioQueue
+  current-device readbacks. Prove default output and system output never change,
+  and that the hidden endpoint never becomes any default,
+  and prove the original input is restored after disconnect. Expected input
+  transition notifications are evidence, not failures; any later output or
+  system-output mutation remains a failure. Unit progress counters do not prove
+  that host
+  applications can read the forwarded microphone; use a separate physical probe
+  that opens the visible product input by stable UID and recognizes a known remote
+  challenge. The probe must not capture from the hidden writer endpoint.
+- Before another FaceTime acceptance call, a no-call oracle must open the hidden output
+  and visible input by their exact UIDs, bit-compare a mono nonce challenge, prove
+  exact queue/native formats, unity/unmuted controls, the shared clock and
+  signed-32 headroom, repeat complete quiescent lifecycles in both visible-first
+  and writer-first orders, preserve all default-device selectors, and record
+  teardown and quiescence. The
+  supervising release runner must impose its own process deadline because synchronous
+  Core Audio teardown has no in-process timeout guarantee. A failure blocks release and
+  further call trials. A pass still does not prove FaceTime adoption, far-end uplink,
+  or local FaceTime downlink; one final bidirectional FaceTime acceptance is required
+  afterward. That call must prove the far end hears intelligible local speech and the
+  local reviewed real output reproduces intelligible far-end speech while output and
+  system-output selectors remain unchanged. The oracle must not
+  launch, stop, replace, or otherwise address the protected legacy runtime.
+- The driver-local C17 tests are the authoritative seed oracle: every global
+  zero-client-to-first-client transition must establish sample frame zero with a
+  fresh anchor and increment a nonzero seed; a sibling join must preserve that
+  seed; repeated both-order restarts must expose no stale PCM. Direct wrapper tests,
+  concurrent lifecycle/I/O/timestamp stress under ThreadSanitizer, sanitizers,
+  malformed-bundle mutations, and loading the actual universal built bundle are
+  mandatory. Installed public-API validation must repeat both lifecycle orders;
+  public AudioQueue device time can reject an aged timeline but cannot expose the
+  seed itself.
+- Before the final FaceTime call, run the bounded public VoiceProcessingIO
+  compatibility probe with the exact product topology. It must keep the writer
+  silent until the visible input is ready, prove actual 48 kHz mono VPIO input,
+  advancing callbacks/timestamps, zero LastRenderError, strong nonce correlation,
+  unchanged safe outputs, exact input restoration, and drained teardown. This is a
+  deterministic check of Apple's public voice-processing boundary, not a FaceTime
+  simulation and not proof of private FaceTime adoption, network transmission,
+  local downlink acoustics, or far-end audibility.
+- Physical audio release validation must observe the RemoteIO render-input PCM, not
   merely RTP statistics or callback clocks. This is the last app-observable pre-system-output
   boundary; it does not prove what the later iOS mixer, route processing, DAC, or speaker emits.
   A claim about final acoustic output requires independent wired or external capture. Drive a
@@ -116,18 +295,30 @@ manual IP addresses, router configuration, or public TCP ports.
   flattened/square PCM, and repeated 10 ms phase-reset mutants so call-quality or audible-click
   regressions cannot pass as full fidelity.
 - An iPhone audio-session conflict must degrade audio without aborting worldwide
-  signaling, screen viewing, or remote control. Gate manual WebRTC playback before
-  signaling; never fall back from `.playback` / `.default` / no options to a movie,
-  chat, record, mixing, or call-oriented configuration. Observe only CallKit's aggregate
-  non-ended-call count—never call identities or handles. If an iPhone call already exists at
-  startup or begins later, synchronously close both the decoded-track gate and WebRTC's native
-  audio gate while leaving the peer, screen, and control alive. Rotate a dedicated audio-policy
-  generation at both call boundaries so cancelled or non-cooperative pre-call reads cannot
-  publish stale proof after a fast start/end transition. After the final call ends, rebuild audio
-  and require a new advancing RemoteIO proof window before claiming playback; never claim crisp
-  media audio during an active iPhone call. Calls running on the Mac remain supported. Own at
-  most one balanced native activation lease, recover only from explicit lifecycle/route events
-  or user action, and keep audio diagnostics separate from terminal session errors.
+  signaling, screen viewing, or remote control. Observe only CallKit's aggregate
+  non-ended-call count—never call identities or handles. A bare CallKit transition
+  must synchronously revoke the iPhone-microphone authorization and prevent RemoteIO
+  input from opening, but must not close the decoded Mac-audio track or WebRTC's
+  process-wide audio gate. If iOS leaves the current playback route uninterrupted,
+  continue incoming Mac audio best-effort and report that fidelity may be degraded.
+  An actual AVAudioSession interruption, private-route loss, transport uncertainty,
+  or native failure remains a fail-closed playout boundary and requires the existing
+  safe recovery proof or explicit user action. Never claim that the app can use the
+  iPhone microphone while a system call owns it, and never promise crisp stereo or
+  full-band output during a call. Calls running on the Mac remain supported. Own at
+  most one balanced native activation lease and keep audio diagnostics separate from
+  terminal session errors.
+- Mac-hosted FaceTime microphone admission must prospectively arm the exact current peer while
+  iPhone CallKit is inactive, using a privacy-random next-call epoch and a strict authoritative
+  known-empty Mac process baseline. Preserve that exact challenge only across the first inactive
+  to active CallKit membership edge; never enable the microphone while CallKit remains inactive.
+  Only the dedicated preflight-armed evidence state acknowledges that baseline; an inactive
+  poison/revocation state must rotate and continue preflight rather than being treated as an ack.
+  An active Mac observation received while a synchronous live CallKit read is still inactive
+  contaminates that epoch and requires a fresh preflight. Active/unknown first Mac scans remain
+  poisoned and silent, and peer, transport, interruption, call replacement, or teardown boundaries
+  retire the prospective epoch. Continue observing aggregate call counts and revisions only—never
+  call identities, handles, participants, or contacts.
 - Worldwide Show/Hide must use monotonic request IDs and host acknowledgements.
   The iPhone must not claim the screen is live until Mac capture actually starts.
   Screen capture must fail closed on peer/control uncertainty and require a fresh
@@ -195,6 +386,12 @@ rendezvous/Simulator media-and-input slice. Do not claim a public deployment or 
 input is physically validated until the matching live-service and interactive-device
 passes succeed, and do not claim "works anywhere" until TURN is active and
 unrelated-network plus forced-TURN physical-device tests pass.
+
+Every pairing-preserving installed-host update must use a fresh one-shot version
+namespace and pin the exact committed predecessor pointer, evidence, rollback app,
+and verification tools. Build only from a clean pushed commit/tree, prove pairing
+through metadata without retrieving secrets, and never reset or re-pair. Once an
+attempt leaves retained evidence, do not reuse that version for a retry.
 
 ## Commits
 

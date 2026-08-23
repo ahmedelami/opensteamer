@@ -33,9 +33,13 @@ actor WorldwideHostCoordinator {
     private let framesPerSecond: Int
     private let maximumVideoBitrate: Int
     private let remoteInputController: MacRemoteInputController
+    private let iPhoneMicrophoneForwardingPolicy:
+        WorldwideIPhoneMicrophoneForwardingPolicy
     private let store: WorldwidePairingStore
     private let logger: Logger
     private let hostDisplayName: String?
+    private let availabilityMarkerProcessIdentifier: Int32
+    private let availabilityMarkerGenerationNonce: String
     private let completionContinuation: AsyncThrowingStream<Void, Error>.Continuation
     private let makeAvailabilityClient: @Sendable (
         URL,
@@ -67,8 +71,12 @@ actor WorldwideHostCoordinator {
         framesPerSecond: Int,
         maximumVideoBitrate: Int,
         remoteInputController: MacRemoteInputController,
-        store: WorldwidePairingStore = WorldwidePairingStore(),
+        iPhoneMicrophoneForwardingPolicy:
+            WorldwideIPhoneMicrophoneForwardingPolicy = .enabled,
+        store: WorldwidePairingStore,
         hostDisplayName: String? = Host.current().localizedName,
+        availabilityMarkerProcessIdentifier: Int32 = ProcessInfo.processInfo.processIdentifier,
+        availabilityMarkerGenerationNonce: String = String(repeating: "0", count: 64),
         availabilityClientFactory: @escaping @Sendable (
             URL,
             RemoteAvailabilityLocator
@@ -99,8 +107,12 @@ actor WorldwideHostCoordinator {
         self.framesPerSecond = framesPerSecond
         self.maximumVideoBitrate = maximumVideoBitrate
         self.remoteInputController = remoteInputController
+        self.iPhoneMicrophoneForwardingPolicy =
+            iPhoneMicrophoneForwardingPolicy
         self.store = store
         self.hostDisplayName = hostDisplayName
+        self.availabilityMarkerProcessIdentifier = availabilityMarkerProcessIdentifier
+        self.availabilityMarkerGenerationNonce = availabilityMarkerGenerationNonce
         makeAvailabilityClient = availabilityClientFactory
         self.availabilityRetrySleep = availabilityRetrySleep
         self.availabilityLoopOverride = availabilityLoopOverride
@@ -181,6 +193,17 @@ actor WorldwideHostCoordinator {
     /// Performs idempotent, ordered shutdown of every child service and completion stream.
     func stop() async {
         await shutdown(throwing: nil)
+    }
+
+    /// Returns the current forwarding boundary without treating absence as failure.
+    func iPhoneMicrophoneForwardingSnapshot() async
+        -> WorldwideIPhoneMicrophoneForwardingHostSnapshot {
+        guard let mediaService else {
+            return .inactive(
+                policy: iPhoneMicrophoneForwardingPolicy
+            )
+        }
+        return await mediaService.iPhoneMicrophoneForwardingSnapshot()
     }
 
     // MARK: - Pairing completion
@@ -309,7 +332,11 @@ actor WorldwideHostCoordinator {
                     if event.validatesHostAvailability,
                        retryPolicy.observedValidAvailabilityState() {
                         retryOrdinal = 0
-                        logger.info("Worldwide paired-device availability is online")
+                        logger.info(
+                            "Worldwide paired-device availability is online " +
+                            "pid=\(availabilityMarkerProcessIdentifier) " +
+                            "nonce=\(availabilityMarkerGenerationNonce)"
+                        )
                     }
                 }
                 guard !isStopped else { return }
@@ -521,6 +548,8 @@ actor WorldwideHostCoordinator {
             framesPerSecond: framesPerSecond,
             maximumVideoBitrate: maximumVideoBitrate,
             remoteInputController: remoteInputController,
+            iPhoneMicrophoneForwardingPolicy:
+                iPhoneMicrophoneForwardingPolicy,
             logger: logger
         )
         try lifecycle.mediaStarted(exchangeID: exchangeID)

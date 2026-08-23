@@ -3,6 +3,15 @@ options:
   minimumXcodeGenVersion: 2.45.0
   deploymentTarget:
     iOS: "17.0"
+  # XcodeGen 2.45 emits runnable actions even when a top-level scheme declares only archive.
+  # Restore the reviewed archive-only scheme after every regeneration.
+  postGenCommand: /bin/zsh scripts/restore-archive-only-testflight-scheme.sh
+configs:
+  Debug: debug
+  Release: release
+  # Archive-only side-by-side distribution. The existing Release configuration intentionally
+  # retains the protected com.elamin.AudioStreamer identity and is not used by this path.
+  TestFlight: release
 packages:
   opensteamer:
     path: ../..
@@ -25,29 +34,46 @@ targets:
         product: Streaming
       - package: opensteamer
         product: WebRTCTransport
+    attributes:
+      ProvisioningStyle: Automatic
     settings:
       base:
-        # The shipped identity intentionally keeps its legacy spelling. Changing it would create a
-        # different App Store app/container and revoke access to the existing default Keychain group.
-        PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer
-        CODE_SIGN_STYLE: Automatic
         INFOPLIST_FILE: Sources/Support/Info.plist
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 1
         TARGETED_DEVICE_FAMILY: 1
         SWIFT_VERSION: 6.0
-        # Public source does not embed a maintainer endpoint. Supply this build setting locally.
+        # Development builds remain endpoint-free unless explicitly overridden.
         OPENSTEAMER_RENDEZVOUS_URL: ""
-        # One-release build-pipeline fallback. Keep the old input readable while deployments move
-        # to OPENSTEAMER_RENDEZVOUS_URL; it is not user-visible branding or a persistence key.
+        # Keep the pre-rebrand Info.plist input available in development without changing its
+        # compatibility role; Release supplies the same production origin to both inputs.
         AUDIOSTREAMER_RENDEZVOUS_URL: ""
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:
         Debug:
+          CODE_SIGN_STYLE: Automatic
           # Keep XCTest/development installs beside a distribution build instead of
           # replacing its container during physical-device validation. This identifier is also
           # stable because the install-over-update oracle addresses the same development container.
           PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev
+        Release:
+          # Protected production identity retained solely for legacy compatibility. The guarded
+          # side-by-side TestFlight path below must never archive this configuration.
+          PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer
+          DEVELOPMENT_TEAM: MSMG8CJLB3
+          CURRENT_PROJECT_VERSION: 36
+          CODE_SIGN_STYLE: Automatic
+          OPENSTEAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
+          AUDIOSTREAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
+        TestFlight:
+          # This identity must remain distinct from the protected production app so installing a
+          # TestFlight build cannot replace its app container or binary.
+          PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer
+          DEVELOPMENT_TEAM: MSMG8CJLB3
+          CURRENT_PROJECT_VERSION: 46
+          CODE_SIGN_STYLE: Automatic
+          OPENSTEAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
+          AUDIOSTREAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
     scheme:
       testTargets:
         - opensteamerTests

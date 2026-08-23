@@ -61,7 +61,7 @@ final class StreamSessionViewModel: ObservableObject {
     }
 
     init() {
-        audioSession.onInterruptionBegan = { [weak self] in
+        audioSession.onInterruptionBegan = { [weak self] _ in
             self?.handleInterruptionBegan()
         }
         audioSession.onInterruptionEnded = { [weak self] shouldResume in

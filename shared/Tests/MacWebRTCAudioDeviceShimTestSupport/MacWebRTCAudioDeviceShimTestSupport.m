@@ -49,6 +49,8 @@ typedef OSStatus (^LKRTCAudioDeviceDeliverRecordedDataBlock)(
 @end
 
 @protocol LKRTCAudioDevice <NSObject>
+- (NSInteger)inputNumberOfChannels;
+- (NSInteger)outputNumberOfChannels;
 - (BOOL)initializeWithDelegate:(id<LKRTCAudioDeviceDelegate>)delegate;
 - (BOOL)terminateDevice;
 - (BOOL)initializeRecording;
@@ -69,6 +71,9 @@ typedef OSStatus (^LKRTCAudioDeviceDeliverRecordedDataBlock)(
     Float64 _expectedPlayoutSampleTime;
     uint64_t _expectedSourceFrame;
     ASMacStereoAudioDeviceHarnessDeliveryBehavior _deliveryBehavior;
+    ASMacStereoAudioDeviceHarnessPlayoutPattern _playoutPattern;
+    ASMacStereoAudioDeviceHarnessPlayoutContractBehavior
+        _playoutContractBehavior;
     LKRTCAudioDeviceDeliverRecordedDataBlock _deliverRecordedData;
     LKRTCAudioDeviceGetPlayoutDataBlock _getPlayoutData;
 }
@@ -231,13 +236,56 @@ static void *_Nullable ASDeliverStereoSequenceOnThread(void *opaqueContext) {
             strongSelf->_diagnostics.lastPlayoutSampleTime = timestamp->mSampleTime;
             strongSelf->_diagnostics.lastPlayoutHostTime = timestamp->mHostTime;
         }
+        const uint64_t playoutSourceStartFrame =
+            (uint64_t)strongSelf->_expectedPlayoutSampleTime;
         strongSelf->_expectedPlayoutSampleTime += frameCount;
+        const ASMacStereoAudioDeviceHarnessPlayoutPattern playoutPattern =
+            strongSelf->_playoutPattern;
+        const ASMacStereoAudioDeviceHarnessPlayoutContractBehavior
+            playoutContractBehavior = strongSelf->_playoutContractBehavior;
         pthread_mutex_unlock(&strongSelf->_mutex);
-        for (UInt32 index = 0; index < outputData->mNumberBuffers; index += 1) {
-            AudioBuffer *buffer = &outputData->mBuffers[index];
-            if (buffer->mData != NULL && buffer->mDataByteSize > 0) {
-                memset(buffer->mData, 0, buffer->mDataByteSize);
+
+        const UInt32 requiredByteCount = frameCount * sizeof(int16_t);
+        if (outputData->mNumberBuffers != 1
+            || outputData->mBuffers[0].mNumberChannels != 1
+            || outputData->mBuffers[0].mData == NULL
+            || outputData->mBuffers[0].mDataByteSize < requiredByteCount) {
+            return kAudio_ParamError;
+        }
+        int16_t *samples = outputData->mBuffers[0].mData;
+        for (UInt32 frame = 0; frame < frameCount; frame += 1) {
+            const int16_t alternating = (frame & 1) == 0 ? 16384 : -16384;
+            const uint64_t sourceFrame = playoutSourceStartFrame + frame;
+            switch (playoutPattern) {
+            case ASMacStereoAudioDeviceHarnessPlayoutPatternAlternating:
+                samples[frame] = alternating;
+                break;
+            case ASMacStereoAudioDeviceHarnessPlayoutPatternClippedDC:
+                samples[frame] = INT16_MIN;
+                break;
+            case ASMacStereoAudioDeviceHarnessPlayoutPatternDCOffsetNoise: {
+                const int16_t noise = (sourceFrame & 1) == 0 ? 512 : -512;
+                samples[frame] = 12000 + noise;
+                break;
             }
+            case ASMacStereoAudioDeviceHarnessPlayoutPatternNearClipping: {
+                const int16_t magnitude = (sourceFrame & 2) == 0 ? 32759 : 32760;
+                const int16_t value = (sourceFrame & 1) == 0 ? magnitude : -magnitude;
+                samples[frame] = value;
+                break;
+            }
+            case ASMacStereoAudioDeviceHarnessPlayoutPatternSilence:
+                samples[frame] = 0;
+                break;
+            }
+        }
+        outputData->mBuffers[0].mDataByteSize = playoutContractBehavior
+                == ASMacStereoAudioDeviceHarnessPlayoutContractBehaviorReturnSuccessWithShortBuffer
+            ? requiredByteCount - (UInt32)sizeof(int16_t)
+            : requiredByteCount;
+        if (playoutContractBehavior
+            == ASMacStereoAudioDeviceHarnessPlayoutContractBehaviorReturnSuccessWithWrongChannelCount) {
+            outputData->mBuffers[0].mNumberChannels = 2;
         }
         return noErr;
     };
@@ -254,6 +302,34 @@ static void *_Nullable ASDeliverStereoSequenceOnThread(void *opaqueContext) {
 - (void)setDeliveryBehavior:(ASMacStereoAudioDeviceHarnessDeliveryBehavior)deliveryBehavior {
     pthread_mutex_lock(&_mutex);
     _deliveryBehavior = deliveryBehavior;
+    pthread_mutex_unlock(&_mutex);
+}
+
+- (ASMacStereoAudioDeviceHarnessPlayoutPattern)playoutPattern {
+    pthread_mutex_lock(&_mutex);
+    const ASMacStereoAudioDeviceHarnessPlayoutPattern value = _playoutPattern;
+    pthread_mutex_unlock(&_mutex);
+    return value;
+}
+
+- (void)setPlayoutPattern:(ASMacStereoAudioDeviceHarnessPlayoutPattern)playoutPattern {
+    pthread_mutex_lock(&_mutex);
+    _playoutPattern = playoutPattern;
+    pthread_mutex_unlock(&_mutex);
+}
+
+- (ASMacStereoAudioDeviceHarnessPlayoutContractBehavior)playoutContractBehavior {
+    pthread_mutex_lock(&_mutex);
+    const ASMacStereoAudioDeviceHarnessPlayoutContractBehavior value =
+        _playoutContractBehavior;
+    pthread_mutex_unlock(&_mutex);
+    return value;
+}
+
+- (void)setPlayoutContractBehavior:
+    (ASMacStereoAudioDeviceHarnessPlayoutContractBehavior)playoutContractBehavior {
+    pthread_mutex_lock(&_mutex);
+    _playoutContractBehavior = playoutContractBehavior;
     pthread_mutex_unlock(&_mutex);
 }
 
@@ -426,6 +502,18 @@ BOOL ASStartMacStereoDeviceRecordingWithoutStartingNativeADM(
         && [device initializeRecording]
         && [device startRecording]
         && [device approveCurrentRecordingGeneration];
+}
+
+NSInteger ASMacStereoDeviceInputChannelCountForTesting(
+    ASMacStereoAudioDevice *device
+) {
+    return device == nil ? 0 : [device inputNumberOfChannels];
+}
+
+NSInteger ASMacStereoDeviceOutputChannelCountForTesting(
+    ASMacStereoAudioDevice *device
+) {
+    return device == nil ? 0 : [device outputNumberOfChannels];
 }
 
 NS_ASSUME_NONNULL_END

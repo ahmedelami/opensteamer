@@ -50,6 +50,27 @@ struct PlayerView: View {
                     LabeledContent("State", value: worldwideViewModel.stateText)
                     LabeledContent("Route", value: worldwideViewModel.routeText)
                     LabeledContent("Audio", value: worldwideViewModel.audioStateText)
+                    LabeledContent(
+                        "iPhone Microphone",
+                        value: worldwideViewModel.microphoneStateText
+                    )
+
+                    Button {
+                        worldwideViewModel.toggleIPhoneMicrophone()
+                    } label: {
+                        Label(
+                            worldwideViewModel.iPhoneMicrophoneButtonTitle,
+                            systemImage:
+                                worldwideViewModel.iPhoneMicrophoneButtonSystemImage
+                        )
+                    }
+                    .disabled(!worldwideViewModel.canToggleIPhoneMicrophone)
+                    .accessibilityIdentifier("toggleWorldwideIPhoneMicrophone")
+
+                    if let microphoneError = worldwideViewModel.microphoneError {
+                        Label(microphoneError, systemImage: "mic.slash")
+                            .foregroundStyle(.orange)
+                    }
 
                     if let acknowledgement =
                         worldwideViewModel.screenAcknowledgementOracle {
