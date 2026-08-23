@@ -69,6 +69,57 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
         XCTAssertEqual(parsed.coherentSampleCount, 2)
     }
 
+    func testRawMicrophoneContinuityRequiresSustainedStallBeforeRecovery() {
+        func frozenSample(time: TimeInterval) -> WorldwideRawMicrophoneProofSample {
+            rawMicrophoneSample(
+                time: time,
+                sender: rawMicrophoneSender(
+                    time: time,
+                    realtimeAdmissionCount: 100,
+                    deliveryCallbackCount: 100,
+                    deliveredFrameCount: 48_000
+                ),
+                packetsSent: 50,
+                bytesSent: 8_000,
+                audioTotals: (0.25, 1)
+            )
+        }
+
+        var tracker = WorldwideRawMicrophoneContinuityTracker()
+        XCTAssertEqual(tracker.observe(rawMicrophoneSample(time: 1)), .waiting)
+        XCTAssertEqual(tracker.observe(frozenSample(time: 2)), .rejected)
+        XCTAssertEqual(tracker.observe(frozenSample(time: 3)), .rejected)
+        XCTAssertEqual(tracker.observe(frozenSample(time: 4)), .stalled)
+        XCTAssertEqual(
+            tracker.observe(rawMicrophoneSample(time: 5)),
+            .waiting,
+            "Recovery must retire the stalled counter window."
+        )
+    }
+
+    func testRawMicrophoneContinuityRecoversSustainedZeroCounterStartup() {
+        func zeroSample(time: TimeInterval) -> WorldwideRawMicrophoneProofSample {
+            rawMicrophoneSample(
+                time: time,
+                sender: rawMicrophoneSender(
+                    time: time,
+                    realtimeAdmissionCount: 0,
+                    deliveryCallbackCount: 0,
+                    deliveredFrameCount: 0
+                ),
+                packetsSent: 0,
+                bytesSent: 0,
+                audioTotals: (0, 0)
+            )
+        }
+
+        var tracker = WorldwideRawMicrophoneContinuityTracker()
+        XCTAssertEqual(tracker.observe(zeroSample(time: 1)), .waiting)
+        XCTAssertEqual(tracker.observe(zeroSample(time: 2)), .rejected)
+        XCTAssertEqual(tracker.observe(zeroSample(time: 3)), .rejected)
+        XCTAssertEqual(tracker.observe(zeroSample(time: 4)), .stalled)
+    }
+
     func testRawMicrophoneDensityRequiresRealtimeMovementAndAllowsSilence() {
         let silentPrevious = rawMicrophoneSample(
             time: 1,

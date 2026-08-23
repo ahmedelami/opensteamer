@@ -217,13 +217,17 @@ enum WorldwideRawMicrophoneOracleEvaluator {
     static func hasValidState(
         _ sample: WorldwideRawMicrophoneProofSample
     ) -> Bool {
+        hasRecoveryEligibleState(sample)
+            && containsRawCounterEvidence(sample)
+    }
+
+    /// The exact sender/native binding may be fully admitted before its first callback or RTP
+    /// packet. Recovery observes that zero-start state, while release proof still requires actual
+    /// counter evidence through `hasValidState` above.
+    static func hasRecoveryEligibleState(
+        _ sample: WorldwideRawMicrophoneProofSample
+    ) -> Bool {
         let sender = sample.statistics.sender
-        let containsRawCounterEvidence =
-            sender.realtimeAdmissionCount > 0
-                || sender.deliveryCallbackCount > 0
-                || sender.deliveredFrameCount > 0
-                || sample.statistics.packetsSent > 0
-                || sample.statistics.bytesSent > 0
         guard sample.sessionGeneration != zeroUUID,
               sample.transportAuthorizationGeneration != zeroUUID,
               sample.audioPolicyGeneration != zeroUUID,
@@ -286,13 +290,23 @@ enum WorldwideRawMicrophoneOracleEvaluator {
               sample.statistics.bytesSent
                 >= sample.statistics.packetsSent,
               sample.statistics.sourceReportWasLinked,
-              containsRawCounterEvidence,
               sample.statistics.collectedAt
                 .timeIntervalSinceReferenceDate.isFinite,
               audioTotalsAreValid(sample.statistics) else {
             return false
         }
         return true
+    }
+
+    static func containsRawCounterEvidence(
+        _ sample: WorldwideRawMicrophoneProofSample
+    ) -> Bool {
+        let sender = sample.statistics.sender
+        return sender.realtimeAdmissionCount > 0
+            || sender.deliveryCallbackCount > 0
+            || sender.deliveredFrameCount > 0
+            || sample.statistics.packetsSent > 0
+            || sample.statistics.bytesSent > 0
     }
 
     static func evaluate(
@@ -632,25 +646,43 @@ struct WorldwideRawMicrophoneOracleSnapshot: Equatable, Sendable {
 enum WorldwideRawMicrophoneContinuityResult: Equatable {
     case waiting
     case satisfied(WorldwideRawMicrophoneOracleSnapshot)
+    /// Every native delivery and exact-sender RTP counter remained frozen in the same healthy,
+    /// authorized scope. This is operational recovery evidence, not merely a missing oracle.
+    case stalled
     case rejected
 }
 
 struct WorldwideRawMicrophoneContinuityTracker {
+    private static let stalledDeltaThreshold = 3
+
     private var windowGeneration = UUID()
     private var previous: WorldwideRawMicrophoneProofSample?
     private var coherentSampleCount: UInt64 = 0
+    private var consecutiveStalledDeltaCount = 0
 
     mutating func observe(
         _ sample: WorldwideRawMicrophoneProofSample
     ) -> WorldwideRawMicrophoneContinuityResult {
         guard WorldwideRawMicrophoneOracleEvaluator
-                .hasValidState(sample) else {
+                .hasRecoveryEligibleState(sample) else {
             reset()
             return .rejected
+        }
+        guard WorldwideRawMicrophoneOracleEvaluator
+                .containsRawCounterEvidence(sample) else {
+            return observeZeroStart(sample)
         }
         guard let previous else {
             self.previous = sample
             coherentSampleCount = 1
+            return .waiting
+        }
+        guard WorldwideRawMicrophoneOracleEvaluator
+                .hasValidState(previous) else {
+            windowGeneration = UUID()
+            self.previous = sample
+            coherentSampleCount = 1
+            consecutiveStalledDeltaCount = 0
             return .waiting
         }
         let delta = WorldwideRawMicrophoneOracleEvaluator.evaluate(
@@ -668,7 +700,22 @@ struct WorldwideRawMicrophoneContinuityTracker {
             windowGeneration = UUID()
             self.previous = sample
             coherentSampleCount = 1
+            consecutiveStalledDeltaCount = 0
             return .waiting
+        }
+        if delta == .counterStalled {
+            if consecutiveStalledDeltaCount == 0 {
+                windowGeneration = UUID()
+            }
+            consecutiveStalledDeltaCount += 1
+            self.previous = sample
+            coherentSampleCount = 1
+            guard consecutiveStalledDeltaCount
+                    >= Self.stalledDeltaThreshold else {
+                return .rejected
+            }
+            reset()
+            return .stalled
         }
         guard delta == .advancing,
         coherentSampleCount < UInt64(Int64.max) else {
@@ -676,6 +723,7 @@ struct WorldwideRawMicrophoneContinuityTracker {
             return .rejected
         }
 
+        consecutiveStalledDeltaCount = 0
         coherentSampleCount += 1
         self.previous = sample
         guard let snapshot = WorldwideRawMicrophoneOracleSnapshot(
@@ -687,6 +735,82 @@ struct WorldwideRawMicrophoneContinuityTracker {
             return .rejected
         }
         return .satisfied(snapshot)
+    }
+
+    private mutating func observeZeroStart(
+        _ sample: WorldwideRawMicrophoneProofSample
+    ) -> WorldwideRawMicrophoneContinuityResult {
+        guard let previous,
+              WorldwideRawMicrophoneOracleEvaluator
+                .hasRecoveryEligibleState(previous),
+              !WorldwideRawMicrophoneOracleEvaluator
+                .containsRawCounterEvidence(previous),
+              Self.hasExactRecoveryBinding(
+                  previous: previous,
+                  current: sample
+              ) else {
+            windowGeneration = UUID()
+            self.previous = sample
+            coherentSampleCount = 0
+            consecutiveStalledDeltaCount = 0
+            return .waiting
+        }
+
+        let elapsed = sample.statistics.collectedAt
+            .timeIntervalSince(previous.statistics.collectedAt)
+        guard elapsed.isFinite,
+              elapsed > 0,
+              elapsed <= WorldwideRawMicrophoneOracleEvaluator
+                .maximumSampleInterval else {
+            windowGeneration = UUID()
+            self.previous = sample
+            coherentSampleCount = 0
+            consecutiveStalledDeltaCount = 0
+            return .rejected
+        }
+
+        consecutiveStalledDeltaCount += 1
+        self.previous = sample
+        guard consecutiveStalledDeltaCount
+                >= Self.stalledDeltaThreshold else {
+            return .rejected
+        }
+        reset()
+        return .stalled
+    }
+
+    private static func hasExactRecoveryBinding(
+        previous: WorldwideRawMicrophoneProofSample,
+        current: WorldwideRawMicrophoneProofSample
+    ) -> Bool {
+        let previousSender = previous.statistics.sender
+        let currentSender = current.statistics.sender
+        return previous.sessionGeneration == current.sessionGeneration
+            && previous.peerIdentity == current.peerIdentity
+            && previous.transportAuthorizationGeneration
+                == current.transportAuthorizationGeneration
+            && previous.audioPolicyGeneration
+                == current.audioPolicyGeneration
+            && previous.authorizationIdentity
+                == current.authorizationIdentity
+            && previous.callIsActive == current.callIsActive
+            && previous.macHostedCallEvidenceAdmitted
+                == current.macHostedCallEvidenceAdmitted
+            && previousSender.peerEpoch == currentSender.peerEpoch
+            && previousSender.bindingGeneration
+                == currentSender.bindingGeneration
+            && previousSender.negotiationEpoch
+                == currentSender.negotiationEpoch
+            && previousSender.trackGeneration
+                == currentSender.trackGeneration
+            && previousSender.microphonePolicyGeneration
+                == currentSender.microphonePolicyGeneration
+            && previousSender.recordingGeneration
+                == currentSender.recordingGeneration
+            && previousSender.approvedRecordingGeneration
+                == currentSender.approvedRecordingGeneration
+            && previousSender.captureRouteProofGeneration
+                == currentSender.captureRouteProofGeneration
     }
 
     private static func isExactCaptureRouteProofRotation(
@@ -716,6 +840,7 @@ struct WorldwideRawMicrophoneContinuityTracker {
         windowGeneration = UUID()
         previous = nil
         coherentSampleCount = 0
+        consecutiveStalledDeltaCount = 0
     }
 }
 

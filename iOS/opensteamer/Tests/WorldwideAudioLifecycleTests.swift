@@ -44,6 +44,164 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertEqual(configuration.outputNumberOfChannels, 2)
     }
 
+    func testOrdinaryPlayoutLivenessRecoversFrozenRenderCallbacks() {
+        let sessionGeneration = UUID()
+        let audioPolicyGeneration = UUID()
+        let peerIdentity = ObjectIdentifier(self)
+        var tracker = IOSOrdinaryPlayoutLivenessTracker()
+
+        XCTAssertEqual(
+            tracker.observe(
+                sessionGeneration: sessionGeneration,
+                audioPolicyGeneration: audioPolicyGeneration,
+                peerIdentity: peerIdentity,
+                collectedAt: Date(timeIntervalSince1970: 0),
+                oracle: ordinaryLivenessOracle(
+                    sessionGeneration: sessionGeneration,
+                    audioPolicyGeneration: audioPolicyGeneration,
+                    callbacks: 10,
+                    frames: 4_800,
+                    pcmNonzero: 1_000,
+                    pcmAbsolute: 1_000_000,
+                    inboundEnergy: 1
+                )
+            ),
+            .waiting
+        )
+        XCTAssertEqual(
+            tracker.observe(
+                sessionGeneration: sessionGeneration,
+                audioPolicyGeneration: audioPolicyGeneration,
+                peerIdentity: peerIdentity,
+                collectedAt: Date(timeIntervalSince1970: 1),
+                oracle: ordinaryLivenessOracle(
+                    sessionGeneration: sessionGeneration,
+                    audioPolicyGeneration: audioPolicyGeneration,
+                    callbacks: 10,
+                    frames: 4_800,
+                    pcmNonzero: 1_000,
+                    pcmAbsolute: 1_000_000,
+                    inboundEnergy: 1
+                )
+            ),
+            .waiting
+        )
+        XCTAssertEqual(
+            tracker.observe(
+                sessionGeneration: sessionGeneration,
+                audioPolicyGeneration: audioPolicyGeneration,
+                peerIdentity: peerIdentity,
+                collectedAt: Date(timeIntervalSince1970: 2),
+                oracle: ordinaryLivenessOracle(
+                    sessionGeneration: sessionGeneration,
+                    audioPolicyGeneration: audioPolicyGeneration,
+                    callbacks: 10,
+                    frames: 4_800,
+                    pcmNonzero: 1_000,
+                    pcmAbsolute: 1_000_000,
+                    inboundEnergy: 1
+                )
+            ),
+            .waiting
+        )
+        XCTAssertEqual(
+            tracker.observe(
+                sessionGeneration: sessionGeneration,
+                audioPolicyGeneration: audioPolicyGeneration,
+                peerIdentity: peerIdentity,
+                collectedAt: Date(timeIntervalSince1970: 4.6),
+                oracle: ordinaryLivenessOracle(
+                    sessionGeneration: sessionGeneration,
+                    audioPolicyGeneration: audioPolicyGeneration,
+                    callbacks: 10,
+                    frames: 4_800,
+                    pcmNonzero: 1_000,
+                    pcmAbsolute: 1_000_000,
+                    inboundEnergy: 1
+                )
+            ),
+            .recover(.callbacksFrozen)
+        )
+    }
+
+    func testOrdinaryPlayoutLivenessRecoversInboundEnergyWithoutPCM() {
+        let sessionGeneration = UUID()
+        let audioPolicyGeneration = UUID()
+        let peerIdentity = ObjectIdentifier(self)
+        var tracker = IOSOrdinaryPlayoutLivenessTracker()
+
+        let observations: [(TimeInterval, UInt64, UInt64, Double)] = [
+            (0, 10, 4_800, 1),
+            (1, 11, 5_280, 1.1),
+            (4.6, 12, 5_760, 1.2),
+        ]
+        let results = observations.map { time, callbacks, frames, energy in
+            tracker.observe(
+                sessionGeneration: sessionGeneration,
+                audioPolicyGeneration: audioPolicyGeneration,
+                peerIdentity: peerIdentity,
+                collectedAt: Date(timeIntervalSince1970: time),
+                oracle: ordinaryLivenessOracle(
+                    sessionGeneration: sessionGeneration,
+                    audioPolicyGeneration: audioPolicyGeneration,
+                    callbacks: callbacks,
+                    frames: frames,
+                    pcmNonzero: 1_000,
+                    pcmAbsolute: 1_000_000,
+                    inboundEnergy: energy
+                )
+            )
+        }
+
+        XCTAssertEqual(results[0], .waiting)
+        XCTAssertEqual(results[1], .waiting)
+        XCTAssertEqual(
+            results[2],
+            .recover(.inboundEnergyWithoutPCM)
+        )
+    }
+
+    func testOrdinaryPlayoutLivenessAcceptsAdvancingCallbacksDuringSourceSilence() {
+        let sessionGeneration = UUID()
+        let audioPolicyGeneration = UUID()
+        let peerIdentity = ObjectIdentifier(self)
+        var tracker = IOSOrdinaryPlayoutLivenessTracker()
+
+        _ = tracker.observe(
+            sessionGeneration: sessionGeneration,
+            audioPolicyGeneration: audioPolicyGeneration,
+            peerIdentity: peerIdentity,
+            collectedAt: Date(timeIntervalSince1970: 0),
+            oracle: ordinaryLivenessOracle(
+                sessionGeneration: sessionGeneration,
+                audioPolicyGeneration: audioPolicyGeneration,
+                callbacks: 10,
+                frames: 4_800,
+                pcmNonzero: 0,
+                pcmAbsolute: 0,
+                inboundEnergy: 0
+            )
+        )
+        XCTAssertEqual(
+            tracker.observe(
+                sessionGeneration: sessionGeneration,
+                audioPolicyGeneration: audioPolicyGeneration,
+                peerIdentity: peerIdentity,
+                collectedAt: Date(timeIntervalSince1970: 1),
+                oracle: ordinaryLivenessOracle(
+                    sessionGeneration: sessionGeneration,
+                    audioPolicyGeneration: audioPolicyGeneration,
+                    callbacks: 11,
+                    frames: 5_280,
+                    pcmNonzero: 0,
+                    pcmAbsolute: 0,
+                    inboundEnergy: 0
+                )
+            ),
+            .healthy
+        )
+    }
+
     func testMicrophoneTopologyCategoryOptionsMatchNativeShimContract() throws {
         // IOSWebRTCAudioDeviceShim's ASIPhoneMicrophoneCategoryOptions uses this exact union.
         XCTAssertEqual(
@@ -3461,6 +3619,117 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertTrue(nativeAuthorization === authorization)
 
         session.viewModel.toggleIPhoneMicrophone()
+        session.viewModel.disconnect()
+        await session.peer.close()
+    }
+
+    func testSustainedZeroMicrophoneStartupGetsOneAutomaticRecovery() async throws {
+        let session = try makeAutomaticMicrophonePolicyFixture(
+            provenance: .authenticatedPairedCoordinatorHandoff
+        )
+        let permissionRequested = expectation(
+            description: "zero-start microphone permission"
+        )
+        let initialCommit = expectation(
+            description: "initial zero-start microphone commit"
+        )
+        let recoveryCommit = expectation(
+            description: "automatic zero-start microphone recovery commit"
+        )
+        var enableCount = 0
+        var disableCount = 0
+        var statisticsReadCount: UInt64 = 0
+        var recordingGeneration: UInt64 = 0
+
+        session.viewModel
+            .debugInstallIPhoneMicrophonePermissionRequester {
+                permissionRequested.fulfill()
+                return true
+            }
+        session.viewModel
+            .debugInstallIPhoneMicrophoneNativeHandlers(
+                enable: { authorization in
+                    enableCount += 1
+                    recordingGeneration =
+                        0xA11C_E100 + UInt64(enableCount)
+                    authorization.debugSetRecordingGenerationForTesting(
+                        recordingGeneration
+                    )
+                },
+                disable: { authorization, _ in
+                    disableCount += 1
+                    authorization?.revoke()
+                    return true
+                }
+            )
+        session.viewModel
+            .debugInstallIPhoneMicrophoneDidCommitObserver { _ in
+                switch enableCount {
+                case 1:
+                    initialCommit.fulfill()
+                case 2:
+                    recoveryCommit.fulfill()
+                default:
+                    XCTFail(
+                        "A continuous zero-start fault must not create an automatic recovery loop."
+                    )
+                }
+            }
+        session.viewModel
+            .debugInstallIPhoneMicrophoneSenderStatisticsReader {
+                [weak self] _ in
+                guard let self else { return nil }
+                statisticsReadCount += 1
+                return self.rawMicrophoneSenderStatisticsForTests(
+                    sample: statisticsReadCount,
+                    counterSample: 0,
+                    recordingGeneration: recordingGeneration
+                )
+            }
+
+        session.viewModel.handleAppBecameActive()
+        await session.viewModel
+            .debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        await fulfillment(
+            of: [permissionRequested, initialCommit],
+            timeout: 2
+        )
+        let recoverCountBeforeStall =
+            session.fixture.playback.recoverCount
+
+        for _ in 0..<4 {
+            await session.viewModel
+                .debugRefreshRawMicrophoneOracleForTests(
+                    from: session.peer
+                )
+        }
+        await fulfillment(of: [recoveryCommit], timeout: 2)
+        XCTAssertEqual(enableCount, 2)
+        XCTAssertGreaterThanOrEqual(disableCount, 1)
+        XCTAssertEqual(
+            session.fixture.playback.recoverCount,
+            recoverCountBeforeStall + 1
+        )
+        XCTAssertTrue(session.viewModel.isMicrophoneSending)
+
+        for _ in 0..<4 {
+            await session.viewModel
+                .debugRefreshRawMicrophoneOracleForTests(
+                    from: session.peer
+                )
+        }
+        for _ in 0..<8 {
+            await Task.yield()
+        }
+        XCTAssertEqual(
+            session.fixture.playback.recoverCount,
+            recoverCountBeforeStall + 1,
+            "The same session gets only one automatic audio rebuild."
+        )
+        XCTAssertEqual(enableCount, 2)
+        XCTAssertEqual(session.viewModel.microphoneStateText, "Unavailable")
+        XCTAssertFalse(session.viewModel.isMicrophoneSending)
+
         session.viewModel.disconnect()
         await session.peer.close()
     }
@@ -8802,6 +9071,14 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertTrue(fixture.controller.snapshot.requiresExplicitResume)
         XCTAssertEqual(fixture.playback.recoverCount, recoverCountBeforeRemoval)
 
+        XCTAssertFalse(
+            fixture.controller.requestAutomaticRuntimeAudioRecovery(),
+            "Automatic liveness recovery must not cross the private-route explicit-resume boundary."
+        )
+        XCTAssertTrue(fixture.controller.snapshot.requiresExplicitResume)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertEqual(fixture.playback.recoverCount, recoverCountBeforeRemoval)
+
         fixture.events.onRouteChanged?("Audio route changed: new device")
         XCTAssertFalse(fixture.remoteAudio.isEnabled)
 
@@ -8812,6 +9089,56 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         fixture.controller.resumePlayback()
         XCTAssertTrue(fixture.remoteAudio.isEnabled)
         XCTAssertFalse(fixture.controller.snapshot.requiresExplicitResume)
+    }
+
+    func testAutomaticRuntimeAudioRecoveryRebuildsAnEligibleOrdinaryPath() {
+        let fixture = makeFixture()
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(
+            fixture.remoteAudio
+        )
+        fixture.controller.transportBecameHealthy()
+        let recoverCount = fixture.playback.recoverCount
+        let gateCloseCount =
+            fixture.playback.prepareManualAudioDisabledCount
+
+        XCTAssertTrue(
+            fixture.controller.requestAutomaticRuntimeAudioRecovery()
+        )
+        XCTAssertEqual(
+            fixture.playback.prepareManualAudioDisabledCount,
+            gateCloseCount + 1
+        )
+        XCTAssertEqual(
+            fixture.playback.recoverCount,
+            recoverCount + 1
+        )
+        XCTAssertFalse(fixture.controller.snapshot.requiresExplicitResume)
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+    }
+
+    func testAutomaticRuntimeAudioRecoveryReportsFailureAndRemainsRetryable() {
+        let fixture = makeFixture()
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(
+            fixture.remoteAudio
+        )
+        fixture.controller.transportBecameHealthy()
+        let recoverCount = fixture.playback.recoverCount
+        fixture.playback.recoverError = TestAudioError.recovery
+
+        XCTAssertFalse(
+            fixture.controller.requestAutomaticRuntimeAudioRecovery()
+        )
+        XCTAssertEqual(fixture.playback.recoverCount, recoverCount + 1)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+
+        fixture.playback.recoverError = nil
+        XCTAssertTrue(
+            fixture.controller.requestAutomaticRuntimeAudioRecovery()
+        )
+        XCTAssertEqual(fixture.playback.recoverCount, recoverCount + 2)
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
     }
 
     func testRecoveryFailureIsVisibleButSessionRemainsPreparedForRetry() {
@@ -8897,6 +9224,63 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
 
         viewModel.disconnect()
         XCTAssertFalse(viewModel.hasActiveSession)
+    }
+
+    func testReplacementConnectionWaitsForRetiredPeerCloseBeforeAudioActivation() async throws {
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        let oldPeer = try makeAudioRacePeer()
+        let retirementReached = expectation(
+            description: "retired peer close reached"
+        )
+        let retirementGate = AudioNonCooperativeGate<Void>()
+        var retirementHookCount = 0
+
+        fixture.controller.prepare(serverName: "Old Mac")
+        viewModel.debugInstallScreenSessionForTests(peer: oldPeer)
+        viewModel.debugInstallBeforeRetiredPeerClose {
+            retirementHookCount += 1
+            if retirementHookCount == 1 {
+                retirementReached.fulfill()
+            }
+            await retirementGate.wait()
+        }
+        viewModel.disconnect()
+        await fulfillment(of: [retirementReached], timeout: 2)
+
+        let activationCountBeforeReplacement =
+            fixture.playback.activateCount
+        let invitation = try RemoteInvitationCode.generate()
+        XCTAssertTrue(
+            viewModel.debugConnectWithInvitationForTests(
+                invitationCode: invitation.exportedCode,
+                debugEndpointOverride: "ws://127.0.0.1:9"
+            )
+        )
+        XCTAssertTrue(viewModel.hasActiveSession)
+        XCTAssertEqual(
+            fixture.playback.activateCount,
+            activationCountBeforeReplacement,
+            "The replacement must not open the process-global audio gate while the old peer can still reconfigure it."
+        )
+
+        await retirementGate.open(())
+        for _ in 0..<100 {
+            if fixture.playback.activateCount
+                > activationCountBeforeReplacement {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(
+            fixture.playback.activateCount,
+            activationCountBeforeReplacement + 1
+        )
+
+        viewModel.disconnect()
+        await oldPeer.close()
     }
 
     func testIdentityUpdateRepublishesNowPlayingMetadata() {
@@ -11245,12 +11629,14 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
 
     private func rawMicrophoneSenderStatisticsForTests(
         sample: UInt64,
+        counterSample: UInt64? = nil,
         recordingGeneration: UInt64,
         captureRouteIsBuiltInMicrophone: Bool = true,
         captureRouteProofGeneration: UInt64 = 13
     ) -> WebRTCIPhoneMicrophoneSenderStatistics {
-        let callbacks = sample * 100
-        let frames = sample * 48_000
+        let counterSample = counterSample ?? sample
+        let callbacks = counterSample * 100
+        let frames = counterSample * 48_000
         let sender =
             WebRTCIPhoneMicrophoneSenderDiagnostics(
                 peerEpoch: UUID(
@@ -11307,10 +11693,10 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             collectedAt:
                 Date(timeIntervalSince1970: TimeInterval(sample)),
             sender: sender,
-            packetsSent: sample * 50,
-            bytesSent: sample * 8_000,
-            totalAudioEnergy: Double(sample) * 0.25,
-            totalSamplesDuration: Double(sample),
+            packetsSent: counterSample * 50,
+            bytesSent: counterSample * 8_000,
+            totalAudioEnergy: Double(counterSample) * 0.25,
+            totalSamplesDuration: Double(counterSample),
             sourceReportWasLinked: true
         )
     }
@@ -12363,6 +12749,32 @@ private func hostedCallStatisticsSnapshot(
             totalSamplesReceived: totalSamplesReceived,
             totalAudioEnergy: totalAudioEnergy,
             totalSamplesDuration: totalSamplesDuration
+        )
+    )
+}
+
+private func ordinaryLivenessOracle(
+    sessionGeneration: UUID,
+    audioPolicyGeneration: UUID,
+    callbacks: UInt64,
+    frames: UInt64,
+    pcmNonzero: UInt64,
+    pcmAbsolute: UInt64,
+    inboundEnergy: Double
+) -> WorldwideAudioPlayoutOracleSnapshot {
+    WorldwideAudioPlayoutOracleSnapshot(
+        sessionGeneration: sessionGeneration,
+        audioPolicyGeneration: audioPolicyGeneration,
+        diagnostics: iosPlayoutDiagnostics(
+            callbacks: callbacks,
+            frames: frames,
+            failures: 0,
+            pcmNonzeroSampleCount: pcmNonzero,
+            pcmAbsoluteSampleSum: pcmAbsolute
+        ),
+        inboundAudio: WebRTCAudioStatistics(
+            totalAudioEnergy: inboundEnergy,
+            totalSamplesDuration: Double(frames) / 48_000
         )
     )
 }

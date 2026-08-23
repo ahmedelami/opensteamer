@@ -110,6 +110,182 @@ private struct IOSPlayoutRecoveryBaseline {
     let failureCount: UInt64
 }
 
+enum IOSOrdinaryPlayoutLivenessFailure: Equatable {
+    case callbacksFrozen
+    case inboundEnergyWithoutPCM
+}
+
+enum IOSOrdinaryPlayoutLivenessResult: Equatable {
+    case waiting
+    case healthy
+    case recover(IOSOrdinaryPlayoutLivenessFailure)
+}
+
+/// Statistics-clocked watchdog for the already-proven ordinary RemoteIO path. The native render
+/// callback must keep advancing even when the Mac source is silent. When WebRTC reports increasing
+/// inbound audio energy, the final decoded PCM counters must advance in the same bounded window.
+/// The tracker observes counters only; lifecycle policy still owns whether recovery is allowed.
+struct IOSOrdinaryPlayoutLivenessTracker {
+    static let failureWindow: TimeInterval = 3.5
+    private static let maximumObservationGap: TimeInterval = 5
+
+    private struct Scope: Equatable {
+        let sessionGeneration: UUID
+        let audioPolicyGeneration: UUID
+        let peerIdentity: ObjectIdentifier
+    }
+
+    private struct Floor {
+        let scope: Scope
+        let collectedAt: Date
+        let callbackCount: UInt64
+        let frameCount: UInt64
+        let failureCount: UInt64
+        let pcmNonzeroSampleCount: UInt64
+        let pcmAbsoluteSampleSum: UInt64
+        let inboundAudioEnergy: Double?
+    }
+
+    private var floor: Floor?
+    private var suspectedFailure: IOSOrdinaryPlayoutLivenessFailure?
+    private var suspectedAt: Date?
+
+    mutating func observe(
+        sessionGeneration: UUID,
+        audioPolicyGeneration: UUID,
+        peerIdentity: ObjectIdentifier,
+        collectedAt: Date,
+        oracle: WorldwideAudioPlayoutOracleSnapshot
+    ) -> IOSOrdinaryPlayoutLivenessResult {
+        let scope = Scope(
+            sessionGeneration: sessionGeneration,
+            audioPolicyGeneration: audioPolicyGeneration,
+            peerIdentity: peerIdentity
+        )
+        let current = Floor(
+            scope: scope,
+            collectedAt: collectedAt,
+            callbackCount: oracle.callbackCount,
+            frameCount: oracle.frameCount,
+            failureCount: oracle.failureCount,
+            pcmNonzeroSampleCount: oracle.pcmNonzeroSampleCount,
+            pcmAbsoluteSampleSum: oracle.pcmAbsoluteSampleSum,
+            inboundAudioEnergy: oracle.inboundAudioEnergy
+        )
+
+        guard sessionGeneration == oracle.sessionGeneration,
+              audioPolicyGeneration == oracle.audioPolicyGeneration,
+              collectedAt.timeIntervalSinceReferenceDate.isFinite,
+              oracle.fullQualityInvariantsHold,
+              let previous = floor,
+              previous.scope == scope else {
+            replaceFloor(with: current)
+            return .waiting
+        }
+
+        let elapsed = collectedAt.timeIntervalSince(previous.collectedAt)
+        guard elapsed.isFinite,
+              elapsed > 0,
+              elapsed <= Self.maximumObservationGap,
+              current.callbackCount >= previous.callbackCount,
+              current.frameCount >= previous.frameCount,
+              current.failureCount == previous.failureCount,
+              current.pcmNonzeroSampleCount
+                >= previous.pcmNonzeroSampleCount,
+              current.pcmAbsoluteSampleSum
+                >= previous.pcmAbsoluteSampleSum,
+              Self.energyDidNotRegress(
+                  previous.inboundAudioEnergy,
+                  current.inboundAudioEnergy
+              ) else {
+            replaceFloor(with: current)
+            return .waiting
+        }
+
+        let callbacksAdvanced =
+            current.callbackCount > previous.callbackCount
+                && current.frameCount > previous.frameCount
+        let pcmAdvanced =
+            current.pcmNonzeroSampleCount
+                > previous.pcmNonzeroSampleCount
+                || current.pcmAbsoluteSampleSum
+                    > previous.pcmAbsoluteSampleSum
+        let inboundEnergyAdvanced = Self.energyAdvanced(
+            previous.inboundAudioEnergy,
+            current.inboundAudioEnergy
+        )
+
+        let failure: IOSOrdinaryPlayoutLivenessFailure?
+        if !callbacksAdvanced {
+            failure = .callbacksFrozen
+        } else if inboundEnergyAdvanced && !pcmAdvanced {
+            failure = .inboundEnergyWithoutPCM
+        } else {
+            failure = nil
+        }
+
+        floor = current
+        guard let failure else {
+            suspectedFailure = nil
+            suspectedAt = nil
+            return .healthy
+        }
+
+        guard suspectedFailure == failure,
+              let suspectedAt else {
+            suspectedFailure = failure
+            self.suspectedAt = collectedAt
+            return .waiting
+        }
+        let failureElapsed = collectedAt.timeIntervalSince(suspectedAt)
+        guard failureElapsed.isFinite,
+              failureElapsed >= Self.failureWindow else {
+            return .waiting
+        }
+        return .recover(failure)
+    }
+
+    mutating func reset() {
+        floor = nil
+        suspectedFailure = nil
+        suspectedAt = nil
+    }
+
+    private mutating func replaceFloor(with floor: Floor) {
+        self.floor = floor
+        suspectedFailure = nil
+        suspectedAt = nil
+    }
+
+    private static func energyDidNotRegress(
+        _ previous: Double?,
+        _ current: Double?
+    ) -> Bool {
+        switch (previous, current) {
+        case (nil, nil):
+            return true
+        case let (.some(previous), .some(current)):
+            return previous.isFinite
+                && current.isFinite
+                && previous >= 0
+                && current >= previous
+        default:
+            return false
+        }
+    }
+
+    private static func energyAdvanced(
+        _ previous: Double?,
+        _ current: Double?
+    ) -> Bool {
+        guard let previous, let current else { return false }
+        return previous.isFinite
+            && current.isFinite
+            && previous >= 0
+            && current > previous
+    }
+}
+
 /// Mutable, attempt-scoped audio proof state confined to `WorldwideSessionViewModel`'s MainActor.
 /// UUID ownership and counter floors prevent delayed polling/statistics tasks from certifying a
 /// replacement peer or carrying pre-recovery callback progress into a new proof window.
@@ -436,6 +612,13 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
     private var rawMicrophoneContinuityTracker =
         WorldwideRawMicrophoneContinuityTracker()
+    private var ordinaryPlayoutLivenessTracker =
+        IOSOrdinaryPlayoutLivenessTracker()
+    /// One automatic recovery per continuous fault episode. These latches deliberately survive
+    /// the recovery's policy/auth rotation and reopen only after real counter advancement.
+    private var microphoneAutomaticRecoveryConsumedSessionGeneration: UUID?
+    private var ordinaryPlayoutAutomaticRecoveryConsumedSessionGeneration: UUID?
+    private var ordinaryPlayoutAutomaticFailureWasPublished = false
     private var transportAuthorizationGeneration = UUID() {
         didSet {
             guard oldValue != transportAuthorizationGeneration else { return }
@@ -450,6 +633,11 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var nextICERestartRequestID: UInt64 = 1
     private var iceIsConnected = false
     private var sessionTask: Task<Void, Never>?
+    /// Serializes process-global WebRTC audio ownership across peer replacement. A replacement
+    /// session may be accepted immediately, but it cannot open the shared audio gate until every
+    /// retiring peer has completed its terminal close.
+    private var sessionRetirementTask: Task<Void, Never>?
+    private var sessionRetirementGeneration = UUID()
     private var peerEventTask: Task<Void, Never>?
     private var audioPlayoutProofTask: Task<Void, Never>?
     private var macHostedCallEvidenceLeaseTask: Task<Void, Never>?
@@ -638,6 +826,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var debugIOSHostedCallPlayoutSteadyTimeoutWaiter:
         (@MainActor () async -> Void)?
     private var debugIOSHostedCallPlayoutClock: (@MainActor () -> Date)?
+    private var debugBeforeRetiredPeerClose:
+        (@MainActor () async -> Void)?
 
     private var debugPendingScreenVisibilityWaiters: [
         WorldwideScreenVisibilityRequestKey: [CheckedContinuation<Void, Never>]
@@ -868,6 +1058,11 @@ final class WorldwideSessionViewModel: ObservableObject {
         viewerTransportHealthProofRevision = 0
         microphoneAdmissionCleanupID = nil
         isMicrophoneAdmissionCleanupInProgress = false
+        rawMicrophoneContinuityTracker.reset()
+        ordinaryPlayoutLivenessTracker.reset()
+        microphoneAutomaticRecoveryConsumedSessionGeneration = nil
+        ordinaryPlayoutAutomaticRecoveryConsumedSessionGeneration = nil
+        ordinaryPlayoutAutomaticFailureWasPublished = false
         nextICERestartRequestID = 1
         hasHandledRemoteOffer = false
         recoveryProofEpoch = 0
@@ -875,9 +1070,25 @@ final class WorldwideSessionViewModel: ObservableObject {
         restartAnswerAwaitingSendEpoch = nil
         pendingRecoveryProbe = nil
         let generation = sessionGeneration
-        audioLifecycle.prepare(serverName: remoteDisplayName)
-        sessionTask = Task { [weak self] in
-            await self?.runSession(client: client, generation: generation)
+        if let pendingRetirement = sessionRetirementTask {
+            let retirementGeneration = sessionRetirementGeneration
+            sessionTask = Task { @MainActor [weak self] in
+                await pendingRetirement.value
+                guard let self,
+                      !Task.isCancelled,
+                      sessionGeneration == generation,
+                      signaling != nil else { return }
+                if sessionRetirementGeneration == retirementGeneration {
+                    sessionRetirementTask = nil
+                }
+                audioLifecycle.prepare(serverName: remoteDisplayName)
+                await runSession(client: client, generation: generation)
+            }
+        } else {
+            audioLifecycle.prepare(serverName: remoteDisplayName)
+            sessionTask = Task { [weak self] in
+                await self?.runSession(client: client, generation: generation)
+            }
         }
         return true
     }
@@ -1023,6 +1234,9 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     func resumeAudioPlayback() {
+        ordinaryPlayoutLivenessTracker.reset()
+        ordinaryPlayoutAutomaticRecoveryConsumedSessionGeneration = nil
+        ordinaryPlayoutAutomaticFailureWasPublished = false
         audioLifecycle.resumePlayback()
     }
 
@@ -1032,6 +1246,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         if microphoneAdmissionFailedSessionGeneration == sessionGeneration {
             microphoneAdmissionFailedSessionGeneration = nil
             microphoneAdmissionDeferredUntilTransportProof = nil
+            microphoneAutomaticRecoveryConsumedSessionGeneration = nil
+            rawMicrophoneContinuityTracker.reset()
             microphoneError = nil
             microphoneStateText = "Starting"
             continueIPhoneMicrophoneEnablementIfPossible()
@@ -1043,6 +1259,8 @@ final class WorldwideSessionViewModel: ObservableObject {
             automaticMicrophoneAttemptedSessionGeneration = sessionGeneration
             microphoneAdmissionFailedSessionGeneration = nil
             microphoneAdmissionDeferredUntilTransportProof = nil
+            microphoneAutomaticRecoveryConsumedSessionGeneration = nil
+            rawMicrophoneContinuityTracker.reset()
             microphoneError = nil
             suspendIPhoneMicrophone(
                 stateText: "Off",
@@ -1059,6 +1277,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         microphoneIntentEnabled = true
         microphoneAdmissionFailedSessionGeneration = nil
         microphoneAdmissionDeferredUntilTransportProof = nil
+        microphoneAutomaticRecoveryConsumedSessionGeneration = nil
+        rawMicrophoneContinuityTracker.reset()
         microphoneError = nil
         continueIPhoneMicrophoneEnablementIfPossible()
     }
@@ -2769,7 +2989,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         } else if !ordinaryIOSPlayoutProofIsSuppressedByHostedCall {
             await refreshIOSPlayoutOracle(
                 from: sourcePeer,
-                generation: generation
+                generation: generation,
+                statistics: snapshot
             )
             refreshIOSPlayoutProof()
         }
@@ -2877,9 +3098,40 @@ final class WorldwideSessionViewModel: ObservableObject {
             worldwideRawMicrophoneOracle = nil
         case .satisfied(let oracle):
             worldwideRawMicrophoneOracle = oracle
+            microphoneAutomaticRecoveryConsumedSessionGeneration = nil
+        case .stalled:
+            worldwideRawMicrophoneOracle = nil
+            recoverFromStalledIPhoneMicrophone(generation: generation)
         case .rejected:
             worldwideRawMicrophoneOracle = nil
         }
+    }
+
+    private func recoverFromStalledIPhoneMicrophone(generation: UUID) {
+        guard generation == sessionGeneration,
+              microphoneIntentEnabled,
+              isMicrophoneSending else { return }
+
+        if microphoneAutomaticRecoveryConsumedSessionGeneration
+            == generation {
+            microphoneAdmissionFailedSessionGeneration = generation
+            microphoneStateText = "Unavailable"
+            microphoneError =
+                "The iPhone microphone stopped delivering audio after automatic recovery. Tap Retry iPhone Microphone."
+            suspendIPhoneMicrophone(
+                stateText: "Unavailable",
+                preserveIntent: true,
+                reprovePlayout: true
+            )
+            return
+        }
+
+        guard audioLifecycle.requestAutomaticRuntimeAudioRecovery() else {
+            return
+        }
+        microphoneAutomaticRecoveryConsumedSessionGeneration = generation
+        microphoneStateText = "Recovering audio"
+        microphoneError = nil
     }
 
     private func readIPhoneMicrophoneSenderStatistics(
@@ -2910,6 +3162,10 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func tearDown(reason: RemoteSessionEndReason) {
         invalidateRawMicrophoneOracle()
+        ordinaryPlayoutLivenessTracker.reset()
+        microphoneAutomaticRecoveryConsumedSessionGeneration = nil
+        ordinaryPlayoutAutomaticRecoveryConsumedSessionGeneration = nil
+        ordinaryPlayoutAutomaticFailureWasPublished = false
         retireIOSHostedCallPlayoutAttempt()
         retireIOSPlayoutRecoveryAttempt()
         if let microphoneOutputOnlyToken {
@@ -2963,6 +3219,11 @@ final class WorldwideSessionViewModel: ObservableObject {
 
         let oldSignaling = signaling
         let oldPeer = peer
+        let precedingRetirement = sessionRetirementTask
+        sessionRetirementGeneration = UUID()
+        #if DEBUG
+        let beforeRetiredPeerClose = debugBeforeRetiredPeerClose
+        #endif
         sessionTask = nil
         peerEventTask = nil
         audioPlayoutProofTask = nil
@@ -2971,14 +3232,23 @@ final class WorldwideSessionViewModel: ObservableObject {
         iceIsConnected = false
         nextICERestartRequestID = 1
 
-        Task {
-            await oldRecoveryCoordinator?.cancel()
+        let retirementTask = Task { @MainActor in
+            await precedingRetirement?.value
+            #if DEBUG
+            await beforeRetiredPeerClose?()
+            #endif
             await oldPeer?.close(reason: reason)
+            await oldRecoveryCoordinator?.cancel()
             await oldSignaling?.close()
         }
+        sessionRetirementTask = retirementTask
     }
 
     private func resetPublishedSessionState() {
+        ordinaryPlayoutLivenessTracker.reset()
+        microphoneAutomaticRecoveryConsumedSessionGeneration = nil
+        ordinaryPlayoutAutomaticRecoveryConsumedSessionGeneration = nil
+        ordinaryPlayoutAutomaticFailureWasPublished = false
         invalidateMacHostedCallEvidence(notifyLifecycle: false)
         beginMacHostedCallNegotiationBoundary()
         currentMacHostedCallChallenge = nil
@@ -3383,6 +3653,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         audioPolicyGeneration = UUID()
         verifiedAudioPolicyGeneration = nil
         audioPlayoutOracle = nil
+        ordinaryPlayoutLivenessTracker.reset()
         audioPlayoutProofTask?.cancel()
         audioPlayoutProofTask = nil
         retireIOSHostedCallPlayoutAttempt()
@@ -3592,7 +3863,8 @@ final class WorldwideSessionViewModel: ObservableObject {
                 diagnostics,
                 from: proofPeer,
                 generation: attempt.sessionGeneration,
-                policyGeneration: attempt.audioPolicyGeneration
+                policyGeneration: attempt.audioPolicyGeneration,
+                inboundAudio: statistics?.inboundAudio
             )
         }
         return diagnostics
@@ -3611,7 +3883,8 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func refreshIOSPlayoutOracle(
         from sourcePeer: WebRTCPeer,
-        generation: UUID
+        generation: UUID,
+        statistics: WebRTCStatisticsSnapshot
     ) async {
         let expectedPolicyGeneration = audioPolicyGeneration
         guard !ordinaryIOSPlayoutProofIsSuppressedByHostedCall,
@@ -3626,38 +3899,115 @@ final class WorldwideSessionViewModel: ObservableObject {
               peer === sourcePeer,
               audioPolicyGeneration == expectedPolicyGeneration,
               verifiedAudioPolicyGeneration == expectedPolicyGeneration else { return }
-        publishIOSPlayoutOracle(
+        guard let oracle = publishIOSPlayoutOracle(
             diagnostics,
             from: sourcePeer,
             generation: generation,
-            policyGeneration: expectedPolicyGeneration
+            policyGeneration: expectedPolicyGeneration,
+            inboundAudio: statistics.inboundAudio
+        ) else { return }
+        evaluateOrdinaryPlayoutLiveness(
+            oracle,
+            from: sourcePeer,
+            generation: generation,
+            policyGeneration: expectedPolicyGeneration,
+            collectedAt: statistics.collectedAt
         )
     }
 
+    @discardableResult
     private func publishIOSPlayoutOracle(
         _ diagnostics: WebRTCIOSPlayoutDiagnostics,
         from sourcePeer: WebRTCPeer,
         generation: UUID,
-        policyGeneration: UUID
-    ) {
+        policyGeneration: UUID,
+        inboundAudio: WebRTCAudioStatistics?
+    ) -> WorldwideAudioPlayoutOracleSnapshot? {
         guard !ordinaryIOSPlayoutProofIsSuppressedByHostedCall,
               generation == sessionGeneration,
               peer === sourcePeer,
               policyGeneration == audioPolicyGeneration,
-              verifiedAudioPolicyGeneration == policyGeneration else { return }
+              verifiedAudioPolicyGeneration == policyGeneration else { return nil }
         if let current = audioPlayoutOracle,
            current.sessionGeneration == generation,
            current.audioPolicyGeneration == policyGeneration {
             guard diagnostics.playoutCallbackCount >= current.callbackCount,
                   diagnostics.playoutFrameCount >= current.frameCount,
-                  diagnostics.playoutFailureCount >= current.failureCount else { return }
+                  diagnostics.playoutFailureCount >= current.failureCount else { return nil }
         }
-        audioPlayoutOracle = WorldwideAudioPlayoutOracleSnapshot(
+        let oracle = WorldwideAudioPlayoutOracleSnapshot(
             sessionGeneration: generation,
             audioPolicyGeneration: policyGeneration,
             diagnostics: diagnostics,
-            inboundAudio: statistics?.inboundAudio
+            inboundAudio: inboundAudio
         )
+        audioPlayoutOracle = oracle
+        return oracle
+    }
+
+    private func evaluateOrdinaryPlayoutLiveness(
+        _ oracle: WorldwideAudioPlayoutOracleSnapshot,
+        from sourcePeer: WebRTCPeer,
+        generation: UUID,
+        policyGeneration: UUID,
+        collectedAt: Date
+    ) {
+        let result = ordinaryPlayoutLivenessTracker.observe(
+            sessionGeneration: generation,
+            audioPolicyGeneration: policyGeneration,
+            peerIdentity: ObjectIdentifier(sourcePeer),
+            collectedAt: collectedAt,
+            oracle: oracle
+        )
+        switch result {
+        case .waiting:
+            return
+        case .healthy:
+            ordinaryPlayoutAutomaticRecoveryConsumedSessionGeneration = nil
+            ordinaryPlayoutAutomaticFailureWasPublished = false
+        case .recover(let failure):
+            recoverFromStalledOrdinaryPlayout(
+                failure,
+                generation: generation
+            )
+        }
+    }
+
+    private func recoverFromStalledOrdinaryPlayout(
+        _ failure: IOSOrdinaryPlayoutLivenessFailure,
+        generation: UUID
+    ) {
+        guard generation == sessionGeneration else { return }
+        if ordinaryPlayoutAutomaticRecoveryConsumedSessionGeneration
+            == generation {
+            guard !ordinaryPlayoutAutomaticFailureWasPublished else {
+                return
+            }
+            ordinaryPlayoutAutomaticFailureWasPublished = true
+            let diagnostic: String
+            switch failure {
+            case .callbacksFrozen:
+                diagnostic =
+                    "RemoteIO render callbacks stayed frozen after one automatic recovery."
+            case .inboundEnergyWithoutPCM:
+                diagnostic =
+                    "WebRTC received advancing Mac audio energy, but RemoteIO decoded PCM stayed silent after one automatic recovery."
+            }
+            audioLifecycle.updateRuntimePlayout(
+                isReady: false,
+                failureMessage:
+                    "The iPhone received audio but could not render it. Tap Retry Audio.",
+                diagnostic: diagnostic
+            )
+            return
+        }
+
+        guard audioLifecycle.requestAutomaticRuntimeAudioRecovery() else {
+            return
+        }
+        ordinaryPlayoutAutomaticRecoveryConsumedSessionGeneration = generation
+        ordinaryPlayoutAutomaticFailureWasPublished = false
+        ordinaryPlayoutLivenessTracker.reset()
     }
 
     private func requestIOSPlayoutRecovery(
@@ -5202,7 +5552,8 @@ final class WorldwideSessionViewModel: ObservableObject {
                 diagnostics,
                 from: sourcePeer,
                 generation: attempt.sessionGeneration,
-                policyGeneration: attempt.audioPolicyGeneration
+                policyGeneration: attempt.audioPolicyGeneration,
+                inboundAudio: statistics?.inboundAudio
             )
         }
         retireIOSPlayoutRecoveryAttempt(attempt)
@@ -5862,6 +6213,12 @@ final class WorldwideSessionViewModel: ObservableObject {
         debugIPhoneMicrophoneSenderStatisticsReader = reader
     }
 
+    func debugInstallBeforeRetiredPeerClose(
+        _ hook: @escaping @MainActor () async -> Void
+    ) {
+        debugBeforeRetiredPeerClose = hook
+    }
+
     func debugDenyIPhoneMicrophonePermissionForTests() {
         handleIPhoneMicrophonePermissionDenied()
     }
@@ -6062,9 +6419,11 @@ final class WorldwideSessionViewModel: ObservableObject {
         // This hook tests publication/race mechanics directly; production can arm this token
         // only after a fresh proof window observes advancing callbacks and frames.
         verifiedAudioPolicyGeneration = audioPolicyGeneration
+        let snapshot = statistics ?? WebRTCStatisticsSnapshot()
         await refreshIOSPlayoutOracle(
             from: sourcePeer,
-            generation: sessionGeneration
+            generation: sessionGeneration,
+            statistics: snapshot
         )
     }
 

@@ -768,6 +768,36 @@ final class WorldwideAudioLifecycleController {
         recoverPlayback(context: "Audio resume failed")
     }
 
+    /// One guarded automatic rebuild for an already-proven native path whose realtime counters
+    /// stopped. This never clears an explicit-resume privacy boundary and never substitutes for
+    /// the user's route choice after a private output disappears.
+    @discardableResult
+    func requestAutomaticRuntimeAudioRecovery() -> Bool {
+        guard isPrepared,
+              hasRemoteAudio,
+              transportIsHealthy,
+              hostedCallPolicy == nil,
+              !isInterrupted,
+              !requiresExplicitResume,
+              !waitsForConnectedCallToEndBeforeRecovery,
+              !mediaServicesAreLost else {
+            publishSnapshot()
+            return false
+        }
+
+        closePlaybackGatesAndInvalidateProof()
+        guard retireExpectedAudioCategoryTransitionForBoundary() else {
+            publishSnapshot()
+            return false
+        }
+        _ = advanceMicrophoneTopologyGeneration()
+        publishSnapshot()
+        return recoverPlayback(
+            context: "Automatic iPhone audio liveness recovery failed",
+            proofAlreadyInvalidated: true
+        )
+    }
+
     @discardableResult
     func beginMicrophoneTopologyTransition(isEnabled: Bool) -> UInt64 {
         guard isPrepared else { return 0 }
@@ -2352,11 +2382,12 @@ final class WorldwideAudioLifecycleController {
         publishSnapshot()
     }
 
+    @discardableResult
     private func recoverPlayback(
         context: String,
         proofAlreadyInvalidated: Bool = false
-    ) {
-        guard isPrepared else { return }
+    ) -> Bool {
+        guard isPrepared else { return false }
         synchronizeLiveCallStateIfNeeded()
         guard !isInterrupted,
               hostedCallPolicy == nil,
@@ -2364,7 +2395,7 @@ final class WorldwideAudioLifecycleController {
               !waitsForConnectedCallToEndBeforeRecovery,
               !mediaServicesAreLost else {
             publishSnapshot()
-            return
+            return false
         }
 
         if !proofAlreadyInvalidated {
@@ -2382,7 +2413,7 @@ final class WorldwideAudioLifecycleController {
                 terminalCleanup: true
             ) else {
                 publishSnapshot()
-                return
+                return false
             }
         }
         guard let recoveryOperationID =
@@ -2399,7 +2430,7 @@ final class WorldwideAudioLifecycleController {
             purpose: .recovery
             ) else {
             publishSnapshot()
-            return
+            return false
         }
         guard let recoveryTransition =
                 expectedAudioCategoryTransition,
@@ -2407,7 +2438,7 @@ final class WorldwideAudioLifecycleController {
                 == recoveryOperationID else {
             failClosedAfterStaleNativeOperation()
             publishSnapshot()
-            return
+            return false
         }
         do {
             try playback.recover()
@@ -2416,7 +2447,7 @@ final class WorldwideAudioLifecycleController {
             ) else {
                 failClosedAfterStaleNativeOperation()
                 publishSnapshot()
-                return
+                return false
             }
             playbackIsReady = true
             runtimePlayoutIsReady = !playback.requiresRuntimePlayoutProof
@@ -2432,13 +2463,14 @@ final class WorldwideAudioLifecycleController {
             if isPlaying {
                 backgroundPlayback.endTransitionTask()
             }
+            return true
         } catch {
             guard consumeNativeOperationCommitIfCurrent(
                 recoveryTransition
             ) else {
                 failClosedAfterStaleNativeOperation()
                 publishSnapshot()
-                return
+                return false
             }
             cancelExpectedAudioCategoryTransition(
                 operationID: recoveryOperationID
@@ -2446,6 +2478,7 @@ final class WorldwideAudioLifecycleController {
             playbackIsReady = false
             recordPlaybackFailure(context: context, error: error)
             publishSnapshot()
+            return false
         }
     }
 
