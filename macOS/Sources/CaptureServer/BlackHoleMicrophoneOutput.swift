@@ -622,47 +622,6 @@ private final class BlackHoleMicrophoneOutputProgressStorage:
     }
 }
 
-struct BlackHoleMicrophoneOutputQueueDisposalRedriveResult:
-    Equatable,
-    Sendable
-{
-    let retainedCount: Int
-    let lastFailureStatus: OSStatus?
-
-    var permitsReplacement: Bool {
-        retainedCount == 0
-    }
-}
-
-/// Compatibility facade for older call sites. `AudioQueueDispose` is terminal in the
-/// macOS 26 SDK regardless of its returned status, so queue disposal is no longer
-/// retried or retained after the call returns.
-final class BlackHoleMicrophoneOutputQueueDisposalRetainer:
-    @unchecked Sendable
-{
-    static let shared =
-        BlackHoleMicrophoneOutputQueueDisposalRetainer()
-
-    @discardableResult
-    func redriveRetained(
-        maximumAttemptCount _: Int
-    ) -> BlackHoleMicrophoneOutputQueueDisposalRedriveResult {
-        BlackHoleMicrophoneOutputQueueDisposalRedriveResult(
-            retainedCount: 0,
-            lastFailureStatus: nil
-        )
-    }
-
-    var retainedDisposalCount: Int { 0 }
-
-    #if DEBUG
-    var debugFirstCallbackContextPointerForTesting:
-        UnsafeMutableRawPointer? {
-        nil
-    }
-    #endif
-}
-
 /// Output-device-clock sink for the decoded `iphone-microphone` track.
 
 ///
@@ -834,8 +793,6 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         "prime BlackHole output buffer"
     private static let startQueueOperation =
         "start BlackHole output queue"
-    private static let disposeQueueOperation =
-        "dispose BlackHole output queue"
     private static let runtimeEnqueueOperation =
         "re-enqueue BlackHole output buffer"
     private static let runtimeFailureReportingQueueKey =
@@ -934,7 +891,7 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         runtimeFailureHandler: @escaping RuntimeFailureHandler
     ) {
         guard expectedHiddenEndpoint.deviceUID
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .hiddenMirrorSinkDeviceUID,
               expectedHiddenEndpoint.deviceID
                 != kAudioObjectUnknown else {
@@ -984,7 +941,7 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
             BlackHoleDeviceEndpointIdentity = .init(
                 deviceID: 89,
                 deviceUID:
-                    WorldwideBlackHoleMicrophoneEndpointContract
+                    WorldwideVirtualMicrophoneEndpointContract
                         .hiddenMirrorSinkDeviceUID
             ),
         automaticallyReportsRuntimeFailures: Bool = false,
@@ -1005,17 +962,12 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         decodedPlayoutBindingForTesting:
             (() -> (generation: UInt64, renderCallCount: UInt64))? = nil,
         pcmAdmissionDidOpenForTesting: (() -> Void)? = nil,
-        queueDisposalRetainer:
-            BlackHoleMicrophoneOutputQueueDisposalRetainer =
-                .shared,
-        maximumQueueDisposalAttemptCountPerEpisode:
-            Int = 3,
         callbackContextDeinitForTesting: (@Sendable () -> Void)? = nil,
         deinitForTesting: (@Sendable () -> Void)? = nil,
         runtimeFailureHandler: @escaping RuntimeFailureHandler
     ) {
         guard expectedHiddenEndpoint.deviceUID
-                == WorldwideBlackHoleMicrophoneEndpointContract
+                == WorldwideVirtualMicrophoneEndpointContract
                     .hiddenMirrorSinkDeviceUID,
               expectedHiddenEndpoint.deviceID
                 != kAudioObjectUnknown else {
@@ -1059,8 +1011,6 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
             automaticallyReportsRuntimeFailures
         self.runtimeFailureNow = runtimeFailureNow
         self.progressStallGraceNanoseconds = progressStallGraceNanoseconds
-        _ = queueDisposalRetainer
-        _ = maximumQueueDisposalAttemptCountPerEpisode
         self.testingAudioQueueOperations = testingAudioQueueOperations
         self.renderForTesting = renderForTesting
         self.deinitForTesting = deinitForTesting
@@ -1932,22 +1882,6 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         }
     }
 
-    private func proveSharedClockSafety(
-        on queue: AudioQueueRef,
-        previous: BlackHoleFaceTimeClockObservation?
-    ) throws -> BlackHoleFaceTimeClockObservation {
-        switch sharedClockSafety(
-            on: queue,
-            previous: previous
-        ) {
-        case .success(let observation):
-            return observation
-        case .failure(let rejection):
-            throw BlackHoleMicrophoneOutputError
-                .sharedClockUnsafe(rejection)
-        }
-    }
-
     private func proveStartupClockSafety(
         on queue: AudioQueueRef
     ) throws -> BlackHoleFaceTimeClockObservation {
@@ -2438,10 +2372,6 @@ final class BlackHoleMicrophoneOutput: @unchecked Sendable {
         lifecycleCondition.lock()
         defer { lifecycleCondition.unlock() }
         return callbackContextPointer
-    }
-
-    var debugHasPendingQueueDisposalForTesting: Bool {
-        false
     }
 
     var debugLastDisposeStatusForTesting: OSStatus? {

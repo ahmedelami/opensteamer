@@ -117,7 +117,7 @@ fi
 
 # Search commit patches as well as the current tree for local home paths. `-G` catches a value that
 # was introduced and later removed, which a tip-only scanner cannot see.
-if git log --all -G '/Users/[^/[:space:]]+' --format='%H' \
+if git log --all -G '/Users/[^/$({<]+' --format='%H' \
     -- . ':!scripts/audit-public-release.sh' | grep -q .; then
     fail "an absolute macOS home path remains in reachable history"
 fi

@@ -626,23 +626,15 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var debugIOSPlayoutRecoveryRequester: (
         @MainActor (WebRTCPeer, WebRTCIOSPlayoutRecoveryAuthorization) async -> Void
     )?
-    private var debugIOSPlayoutRecoveryPendingObserver: (@MainActor () -> Void)?
     private var debugIOSHostedCallPlayoutRecoveryRequester: (
         @MainActor (
             WebRTCPeer,
             WebRTCIOSHostedCallPlayoutAuthorization
         ) -> Void
     )?
-    private var debugIOSStartupConnectedCallPlayoutArmer: (
-        @MainActor (
-            WebRTCPeer,
-            WebRTCIOSHostedCallPlayoutAuthorization
-        ) async -> Bool
-    )?
     private var debugIOSHostedCallPlayoutRequestPreflightWaiter:
         (@MainActor () async -> Void)?
     private var debugIOSHostedCallPlayoutPollWaiter: (@MainActor () async -> Void)?
-    private var debugIOSHostedCallPlayoutTimeoutWaiter: (@MainActor () async -> Void)?
     private var debugIOSHostedCallPlayoutSetupTimeoutWaiter:
         (@MainActor () async -> Void)?
     private var debugIOSHostedCallPlayoutEvidenceTimeoutWaiter:
@@ -1711,67 +1703,6 @@ final class WorldwideSessionViewModel: ObservableObject {
     /// Immediately closes the local input gate before UI code starts an asynchronous Hide.
     func suspendRemoteInputPresentation() {
         invalidateRemoteInputState()
-    }
-
-    func beginPassiveScreenTeardown() {
-        guard let lease = currentScreenPresentationLease ?? legacyScreenPresentationLease() else {
-            suspendRemoteInputPresentation()
-            return
-        }
-        _ = beginPassiveScreenTeardown(for: lease)
-    }
-
-    /// Retained only as a deterministic ordering seam for the pre-existing lifecycle test.
-    func beginPassiveScreenTeardown(
-        hideOperation: @escaping @MainActor () async -> Void
-    ) {
-        if let lease = currentScreenPresentationLease ?? legacyScreenPresentationLease() {
-            revokeScreenPresentationLocally(for: lease, clearActiveOwnership: false)
-        } else {
-            suspendRemoteInputPresentation()
-        }
-        screenVisibilityOperationGeneration = UUID()
-        completePendingScreenVisibilityRequest(success: false)
-        Task { @MainActor in
-            await hideOperation()
-        }
-    }
-
-    @discardableResult
-    func setScreenVisible(_ visible: Bool) async -> Bool {
-        if visible {
-            guard let lease = currentScreenPresentationLease
-                ?? issueScreenPresentationLease() else {
-                return false
-            }
-            return await setScreenVisible(true, for: lease)
-        }
-        guard let lease = currentScreenPresentationLease ?? legacyScreenPresentationLease() else {
-            isScreenVisible = false
-            invalidateRemoteInputState()
-            return true
-        }
-        return await setScreenVisible(false, for: lease)
-    }
-
-    private func legacyScreenPresentationLease() -> WorldwideScreenPresentationLease? {
-        guard canViewScreen || remoteHideRequired || isScreenVisible else { return nil }
-        if let currentScreenPresentationLease {
-            return currentScreenPresentationLease
-        }
-        let lease = WorldwideScreenPresentationLease(sessionGeneration: sessionGeneration)
-        currentScreenPresentationLease = lease
-        if isScreenVisible {
-            activeScreenPresentationLease = lease
-            remoteScreenOwnerLease = lease
-        }
-        #if DEBUG
-        debugCurrentScreenPresentationLease = lease
-        if isScreenVisible {
-            debugActiveScreenPresentationLease = lease
-        }
-        #endif
-        return lease
     }
 
     private func supersedeScreenShow(
@@ -3609,9 +3540,6 @@ final class WorldwideSessionViewModel: ObservableObject {
             while remainingPolls > 0 {
                 guard iosPlayoutProofAttemptIsOwned(attempt) else { return }
                 if attempt.recoveryAuthorization?.isValid == true {
-                    #if DEBUG
-                    debugIOSPlayoutRecoveryPendingObserver?()
-                    #endif
                     remainingPolls -= 1
                     guard await waitForIOSPlayoutProofPoll(attempt) else { return }
                     continue
@@ -4142,8 +4070,6 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
         if let phaseWaiter {
             await phaseWaiter()
-        } else if let debugIOSHostedCallPlayoutTimeoutWaiter {
-            await debugIOSHostedCallPlayoutTimeoutWaiter()
         } else {
             do {
                 try await Task.sleep(
@@ -4316,14 +4242,6 @@ final class WorldwideSessionViewModel: ObservableObject {
         on proofPeer: WebRTCPeer,
         authorization: WebRTCIOSHostedCallPlayoutAuthorization
     ) async -> Bool {
-        #if DEBUG
-        if let debugIOSStartupConnectedCallPlayoutArmer {
-            return await debugIOSStartupConnectedCallPlayoutArmer(
-                proofPeer,
-                authorization
-            )
-        }
-        #endif
         return await proofPeer.armIOSStartupConnectedCallPlayout(
             authorization: authorization
         )
@@ -6076,12 +5994,6 @@ final class WorldwideSessionViewModel: ObservableObject {
         debugIOSPlayoutRecoveryRequester = requester
     }
 
-    func debugInstallIOSPlayoutRecoveryPendingObserver(
-        _ observer: @escaping @MainActor () -> Void
-    ) {
-        debugIOSPlayoutRecoveryPendingObserver = observer
-    }
-
     func debugInstallIOSHostedCallPlayoutRecoveryRequester(
         _ requester: @escaping @MainActor (
             WebRTCPeer,
@@ -6089,15 +6001,6 @@ final class WorldwideSessionViewModel: ObservableObject {
         ) -> Void
     ) {
         debugIOSHostedCallPlayoutRecoveryRequester = requester
-    }
-
-    func debugInstallIOSStartupConnectedCallPlayoutArmer(
-        _ armer: @escaping @MainActor (
-            WebRTCPeer,
-            WebRTCIOSHostedCallPlayoutAuthorization
-        ) async -> Bool
-    ) {
-        debugIOSStartupConnectedCallPlayoutArmer = armer
     }
 
     func debugInstallIOSHostedCallPlayoutRequestPreflightWaiter(
@@ -6110,12 +6013,6 @@ final class WorldwideSessionViewModel: ObservableObject {
         _ waiter: @escaping @MainActor () async -> Void
     ) {
         debugIOSHostedCallPlayoutPollWaiter = waiter
-    }
-
-    func debugInstallIOSHostedCallPlayoutTimeoutWaiter(
-        _ waiter: @escaping @MainActor () async -> Void
-    ) {
-        debugIOSHostedCallPlayoutTimeoutWaiter = waiter
     }
 
     func debugInstallIOSHostedCallPlayoutSetupTimeoutWaiter(
@@ -6261,10 +6158,6 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     func debugRotateAudioPolicyForTests() {
         invalidateAudioPolicyProof(requiresFreshRecovery: false)
-    }
-
-    var debugAudioPolicyRequiresFreshRecovery: Bool {
-        audioPolicyRequiresFreshRecovery
     }
 
     var debugIOSPlayoutRecoveryAuthorizationForTests:
@@ -6535,29 +6428,6 @@ final class WorldwideSessionViewModel: ObservableObject {
             } ?? !remoteHideRequired,
             screenVisibilityOperationGeneration: screenVisibilityOperationGeneration
         )
-    }
-
-    @discardableResult
-    func debugDeliverLateActiveAcknowledgement() async -> WebRTCInputAuthorization {
-        let authorization = WebRTCInputAuthorization()
-        await handleControlAcknowledgement(
-            WebRTCControlAcknowledgement(
-                id: 74,
-                state: .active,
-                inputCapability: WebRTCInputCapability(
-                    inputSessionID: UUID(),
-                    screenRequestID: 74
-                )
-            ),
-            inputAuthorization: authorization,
-            sourcePeer: peer,
-            sourceGeneration: sessionGeneration
-        )
-        return authorization
-    }
-
-    func debugSimulateLocallyHiddenPendingShow() {
-        isScreenVisible = false
     }
 
     func debugInstallScreenSessionForTests(
@@ -7166,16 +7036,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
         #endif
 
-        // Prefer the rebranded build key. The legacy fallback is intentionally bounded to preserve
-        // connectivity for one release while archive/deployment configuration moves to opensteamer.
-        for key in ["OpensteamerRendezvousURL", "AudioStreamerRendezvousURL"] {
-            guard let configured = infoDictionary[key] as? String,
-                  let endpoint = validEndpoint(configured) else {
-                continue
-            }
-            return endpoint
+        guard let configured = infoDictionary["OpensteamerRendezvousURL"] as? String else {
+            return nil
         }
-        return nil
+        return validEndpoint(configured)
     }
 
     private static func validEndpoint(_ value: String) -> URL? {

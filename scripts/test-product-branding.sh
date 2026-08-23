@@ -54,7 +54,6 @@ targets:
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 1
         OPENSTEAMER_RENDEZVOUS_URL: ""
-        AUDIOSTREAMER_RENDEZVOUS_URL: ""
       configs:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: ${DEBUG_BUNDLE_ID}
@@ -65,7 +64,6 @@ targets:
           CURRENT_PROJECT_VERSION: 34
           CODE_SIGN_STYLE: Automatic
           OPENSTEAMER_RENDEZVOUS_URL: "${PRODUCTION_URL}"
-          AUDIOSTREAMER_RENDEZVOUS_URL: "${PRODUCTION_URL}"
 EOF
 
   cat >"$repository/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" <<EOF
@@ -75,7 +73,6 @@ EOF
 		0240299FE56B5D6503940318 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				AUDIOSTREAMER_RENDEZVOUS_URL = "";
 				CODE_SIGN_STYLE = Automatic;
 				OPENSTEAMER_RENDEZVOUS_URL = "";
 				PRODUCT_BUNDLE_IDENTIFIER = ${DEBUG_BUNDLE_ID};
@@ -85,7 +82,6 @@ EOF
 		5ADF15167753B5B287DCA772 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				AUDIOSTREAMER_RENDEZVOUS_URL = "${PRODUCTION_URL}";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 34;
 				DEVELOPMENT_TEAM = MSMG8CJLB3;
@@ -97,26 +93,6 @@ EOF
 		};
 	};
 }
-EOF
-
-  cat >"$repository/iOS/opensteamer/ExportOptions.plist" <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0">
-<dict>
-  <key>destination</key>
-  <string>upload</string>
-  <key>manageAppVersionAndBuildNumber</key>
-  <false/>
-  <key>method</key>
-  <string>app-store-connect</string>
-  <key>signingStyle</key>
-  <string>automatic</string>
-  <key>teamID</key>
-  <string>MSMG8CJLB3</string>
-  <key>testFlightInternalTestingOnly</key>
-  <true/>
-</dict>
-</plist>
 EOF
 
   cat >"$repository/README.md" <<EOF
@@ -185,11 +161,11 @@ print -r -- 'export const CHANNEL_HEADER = "x-audiostreamer-channel";' \
   >"$ALLOWED/services/Rendezvous/src/protocol.mjs"
 print -r -- 'let service = "org.example.AudioStreamer"' \
   >"$ALLOWED/iOS/opensteamer/Sources/Security/KeychainStore.swift"
-print -r -- '<key>AudioStreamerRendezvousURL</key>' \
+print -r -- '<key>OpensteamerRendezvousURL</key>' \
   >"$ALLOWED/iOS/opensteamer/Sources/Support/Info.plist"
 print -r -- 'XCTAssertEqual(Bundle.main.bundleIdentifier, "org.example.AudioStreamer.dev")' \
   >"$ALLOWED/iOS/opensteamer/Tests/AppArtifactContractTests.swift"
-print -r -- 'let legacy = environment["AUDIOSTREAMER_RENDEZVOUS_URL"]' \
+print -r -- 'let rendezvous = environment["OPENSTEAMER_RENDEZVOUS_URL"]' \
   >"$ALLOWED/macOS/Sources/CaptureServer/CaptureServerOptions.swift"
 print -r -- 'let salt = "AudioStreamer.RemoteSession.HKDF-SHA256.v1"' \
   >"$ALLOWED/shared/Sources/RemoteSessionCore/RemoteSignalingCrypto.swift"
@@ -215,6 +191,8 @@ print -r -- "\"${PRODUCTION_URL}\"," \
   >"$HOST_CONTRACTS/macOS/Tests/CaptureServerTests/MacHostDeploymentContractTests.swift"
 print -r -- "readonly REVIEWED_RENDEZVOUS_URL=\"${PRODUCTION_URL}\"" \
   >"$HOST_CONTRACTS/macOS/scripts/verify-mac-host-launch-state.sh"
+print -r -- 'forbidden_override="AUDIOSTREAMER_RENDEZVOUS_URL"' \
+  >>"$HOST_CONTRACTS/macOS/scripts/verify-mac-host-launch-state.sh"
 print -r -- "        \"${PRODUCTION_URL}\".to_owned()," \
   >"$HOST_CONTRACTS/macOS/scripts/opensteamer-host-migration-controller.rs"
 print -r -- "        \"${PRODUCTION_URL}\".to_owned()," \
@@ -257,6 +235,28 @@ commit_all "$CURRENT_COMPATIBILITY_CONTRACTS"
 "$CURRENT_COMPATIBILITY_CONTRACTS/scripts/check-product-branding.sh" \
   "$CURRENT_COMPATIBILITY_CONTRACTS" >/dev/null
 
+FROZEN_LOCAL_MONO_CONTRACTS="$TEMPORARY_ROOT/frozen-local-mono-contracts"
+initialize_repository "$FROZEN_LOCAL_MONO_CONTRACTS"
+mkdir -p "$FROZEN_LOCAL_MONO_CONTRACTS/macOS/scripts"
+print -r -- 'const LEGACY_APP: &str = "/Applications/AudioStreamer Host.app";
+const LEGACY_PLIST: &str = "/Users/example/Library/LaunchAgents/com.elamin.audiostreamer.worldwide.plist";
+const SHARED_LOCK: &str = "/Users/example/Library/Application Support/com.elamin.AudioStreamer.CaptureServer.runtime/worldwide-host.lock";
+"wss://audiostreamer-rendezvous.elaminahmed03.workers.dev",' \
+  >"$FROZEN_LOCAL_MONO_CONTRACTS/macOS/scripts/opensteamer-host-local-mono-trial-controller.rs"
+print -r -- 'Identifier=com.elamin.AudioStreamer.CaptureServer' \
+  >"$FROZEN_LOCAL_MONO_CONTRACTS/macOS/scripts/run-opensteamer-host-local-mono-trial.sh"
+print -r -- 'LEGACY_APP="/Applications/AudioStreamer Host.app"
+LEGACY_LABEL="com.elamin.audiostreamer.worldwide"
+LEGACY_PLIST="com.elamin.audiostreamer.worldwide.plist"
+grep "AudioStreamer Host|com.elamin.audiostreamer"' \
+  >"$FROZEN_LOCAL_MONO_CONTRACTS/macOS/scripts/rescue-opensteamer-host-local-mono-trial-coreaudio-sip.sh"
+print -r -- '- `/Applications/AudioStreamer Host.app`
+- `/Users/example/Library/LaunchAgents/com.elamin.audiostreamer.worldwide.plist`' \
+  >"$FROZEN_LOCAL_MONO_CONTRACTS/MAINTENANCE.md"
+commit_all "$FROZEN_LOCAL_MONO_CONTRACTS"
+"$FROZEN_LOCAL_MONO_CONTRACTS/scripts/check-product-branding.sh" \
+  "$FROZEN_LOCAL_MONO_CONTRACTS" >/dev/null
+
 PAIRED_V7_WRONG_PATH="$TEMPORARY_ROOT/paired-v7-wrong-path"
 initialize_repository "$PAIRED_V7_WRONG_PATH"
 mkdir -p "$PAIRED_V7_WRONG_PATH/macOS/scripts"
@@ -265,6 +265,42 @@ print -r -- "        \"${PRODUCTION_URL}\".to_owned()," \
 commit_all "$PAIRED_V7_WRONG_PATH"
 require_failure "$PAIRED_V7_WRONG_PATH" \
   "macOS/scripts/opensteamer-host-paired-v7-update-controller.rs:1:${PRODUCTION_HOST}"
+
+LOCAL_MONO_WRONG_HOST="$TEMPORARY_ROOT/local-mono-wrong-host"
+initialize_repository "$LOCAL_MONO_WRONG_HOST"
+mkdir -p "$LOCAL_MONO_WRONG_HOST/macOS/scripts"
+print -r -- '"wss://audiostreamer-rendezvous.elaminahmed04.workers.dev",' \
+  >"$LOCAL_MONO_WRONG_HOST/macOS/scripts/opensteamer-host-local-mono-trial-controller.rs"
+commit_all "$LOCAL_MONO_WRONG_HOST"
+require_failure "$LOCAL_MONO_WRONG_HOST" \
+  'macOS/scripts/opensteamer-host-local-mono-trial-controller.rs:1:audiostreamer-rendezvous.elaminahmed04.workers.dev'
+
+STALE_ACTIVE_RENDEZVOUS_ENV="$TEMPORARY_ROOT/stale-active-rendezvous-env"
+initialize_repository "$STALE_ACTIVE_RENDEZVOUS_ENV"
+mkdir -p "$STALE_ACTIVE_RENDEZVOUS_ENV/macOS/Sources/CaptureServer"
+print -r -- 'let endpoint = environment["AUDIOSTREAMER_RENDEZVOUS_URL"]' \
+  >"$STALE_ACTIVE_RENDEZVOUS_ENV/macOS/Sources/CaptureServer/CaptureServerOptions.swift"
+commit_all "$STALE_ACTIVE_RENDEZVOUS_ENV"
+require_failure "$STALE_ACTIVE_RENDEZVOUS_ENV" \
+  'macOS/Sources/CaptureServer/CaptureServerOptions.swift:1:AUDIOSTREAMER_RENDEZVOUS_URL'
+
+STALE_ACTIVE_RENDEZVOUS_PLIST="$TEMPORARY_ROOT/stale-active-rendezvous-plist"
+initialize_repository "$STALE_ACTIVE_RENDEZVOUS_PLIST"
+mkdir -p "$STALE_ACTIVE_RENDEZVOUS_PLIST/iOS/opensteamer/Sources/Support"
+print -r -- '<key>AudioStreamerRendezvousURL</key>' \
+  >"$STALE_ACTIVE_RENDEZVOUS_PLIST/iOS/opensteamer/Sources/Support/Info.plist"
+commit_all "$STALE_ACTIVE_RENDEZVOUS_PLIST"
+require_failure "$STALE_ACTIVE_RENDEZVOUS_PLIST" \
+  'iOS/opensteamer/Sources/Support/Info.plist:1:AudioStreamerRendezvousURL'
+
+STALE_SMOKE_RENDEZVOUS_ENV="$TEMPORARY_ROOT/stale-smoke-rendezvous-env"
+initialize_repository "$STALE_SMOKE_RENDEZVOUS_ENV"
+mkdir -p "$STALE_SMOKE_RENDEZVOUS_ENV/services/RendezvousWorker/scripts"
+print -r -- 'const endpoint = process.env.AUDIOSTREAMER_RENDEZVOUS_URL;' \
+  >"$STALE_SMOKE_RENDEZVOUS_ENV/services/RendezvousWorker/scripts/smoke-public.mjs"
+commit_all "$STALE_SMOKE_RENDEZVOUS_ENV"
+require_failure "$STALE_SMOKE_RENDEZVOUS_ENV" \
+  'services/RendezvousWorker/scripts/smoke-public.mjs:1:AUDIOSTREAMER_RENDEZVOUS_URL'
 
 HOST_CONTRACT_WRONG_CONTEXT="$TEMPORARY_ROOT/host-contract-wrong-context"
 initialize_repository "$HOST_CONTRACT_WRONG_CONTEXT"

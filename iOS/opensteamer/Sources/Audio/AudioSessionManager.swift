@@ -247,15 +247,6 @@ final class AudioSessionManager {
         )
     }
 
-    func armCategoryChangeOperation(_ operationID: UUID) {
-        armCategoryChangeOperation(
-            operationID,
-            category: "*",
-            mode: "*",
-            categoryOptionsRawValue: UInt.max
-        )
-    }
-
     func cancelCategoryChangeOperation(_ operationID: UUID) {
         guard let index = categoryChangeOperations.firstIndex(where: {
             $0.operationID == operationID

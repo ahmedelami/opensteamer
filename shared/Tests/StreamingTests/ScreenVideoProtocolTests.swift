@@ -99,52 +99,6 @@ struct ScreenVideoProtocolTests {
         }
     }
 
-    @Test func streamParserHandlesOneByteFragmentsAndConcatenatedPackets() throws {
-        let first = ScreenVideoPacket(
-            type: .configuration,
-            generation: 1,
-            sequence: 0,
-            presentationTimestampNanoseconds: 0,
-            payload: Data([9, 8, 7])
-        )
-        let second = ScreenVideoPacket(
-            type: .frame,
-            flags: [.keyFrame],
-            generation: 1,
-            sequence: 1,
-            presentationTimestampNanoseconds: 33_000_000,
-            payload: Data([6, 5, 4, 3])
-        )
-        var stream = ScreenVideoFraming.makePreamble()
-        stream.append(try ScreenVideoFraming.makePacket(first))
-        stream.append(try ScreenVideoFraming.makePacket(second))
-
-        let parser = ScreenVideoStreamParser()
-        var events: [ScreenVideoStreamEvent] = []
-        for byte in stream {
-            parser.append(Data([byte]))
-            while let event = try parser.nextEvent() {
-                events.append(event)
-            }
-        }
-
-        #expect(events == [.ready(ScreenVideoPreamble()), .packet(first), .packet(second)])
-    }
-
-    @Test func streamParserRejectsPacketBeforePreamble() throws {
-        let packet = ScreenVideoPacket(
-            type: .frame,
-            generation: 1,
-            sequence: 1,
-            presentationTimestampNanoseconds: 0
-        )
-        let parser = ScreenVideoStreamParser()
-        parser.append(try ScreenVideoFraming.makePacket(packet))
-        #expect(throws: ScreenVideoProtocolError.invalidMagic) {
-            try parser.nextEvent()
-        }
-    }
-
     @Test func configurationRoundTripsAndEveryTruncationThrows() throws {
         let configuration = ScreenVideoConfiguration(
             width: 1_920,

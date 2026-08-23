@@ -39,7 +39,7 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
                 expectedHiddenEndpoint: .init(
                     deviceID: 79,
                     deviceUID:
-                        WorldwideBlackHoleMicrophoneEndpointContract
+                        WorldwideVirtualMicrophoneEndpointContract
                             .visibleDefaultInputDeviceUID
                 ),
                 runtimeFailureHandler: { _, _ in }
@@ -1562,7 +1562,7 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
 
     func testHiddenMirrorSinkIsSelectedAndReadBackBeforeStartup()
         throws {
-        let hiddenUID = WorldwideBlackHoleMicrophoneEndpointContract
+        let hiddenUID = WorldwideVirtualMicrophoneEndpointContract
             .hiddenMirrorSinkDeviceUID
         let operations = FakeBlackHoleAudioQueueOperations(
             deviceUID: hiddenUID
@@ -1594,7 +1594,7 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
         throws {
         let operations = FakeBlackHoleAudioQueueOperations(
             currentDeviceUIDOverride:
-                WorldwideBlackHoleMicrophoneEndpointContract
+                WorldwideVirtualMicrophoneEndpointContract
                     .visibleDefaultInputDeviceUID
         )
         let output = try XCTUnwrap(
@@ -1603,7 +1603,7 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
                 expectedHiddenEndpoint: .init(
                     deviceID: 89,
                     deviceUID:
-                        WorldwideBlackHoleMicrophoneEndpointContract
+                        WorldwideVirtualMicrophoneEndpointContract
                             .hiddenMirrorSinkDeviceUID
                 ),
                 runtimeFailureHandler: { _, _ in }
@@ -1626,12 +1626,12 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
 
     func testSelectedSinkDriftAfterStartStopsAndDisposesQueue()
         throws {
-        let hiddenUID = WorldwideBlackHoleMicrophoneEndpointContract
+        let hiddenUID = WorldwideVirtualMicrophoneEndpointContract
             .hiddenMirrorSinkDeviceUID
         let operations = FakeBlackHoleAudioQueueOperations(
             currentDeviceUIDSequence: [
                 hiddenUID,
-                WorldwideBlackHoleMicrophoneEndpointContract
+                WorldwideVirtualMicrophoneEndpointContract
                     .visibleDefaultInputDeviceUID,
             ]
         )
@@ -1663,7 +1663,7 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
 
     func testSameUIDReplacementBeforeSelectionFailsBeforeCurrentDeviceMutation()
         throws {
-        let hiddenUID = WorldwideBlackHoleMicrophoneEndpointContract
+        let hiddenUID = WorldwideVirtualMicrophoneEndpointContract
             .hiddenMirrorSinkDeviceUID
         let operations = FakeBlackHoleAudioQueueOperations(
             translatedDeviceIDSequence: [90]
@@ -1698,7 +1698,7 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
 
     func testSameUIDReplacementAfterStartFailsAndNeverCommitsSelection()
         throws {
-        let hiddenUID = WorldwideBlackHoleMicrophoneEndpointContract
+        let hiddenUID = WorldwideVirtualMicrophoneEndpointContract
             .hiddenMirrorSinkDeviceUID
         let operations = FakeBlackHoleAudioQueueOperations(
             translatedDeviceIDSequence: [89, 90]
@@ -1762,7 +1762,7 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
         XCTAssertEqual(
             operations.selectedDeviceUIDs,
             [
-                WorldwideBlackHoleMicrophoneEndpointContract
+                WorldwideVirtualMicrophoneEndpointContract
                     .hiddenMirrorSinkDeviceUID,
             ]
         )
@@ -1904,8 +1904,6 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
 
     func testDisposeFailureTerminalizesQueueReleasesContextAndAllowsReplacementStart()
         throws {
-        let retainer =
-            BlackHoleMicrophoneOutputQueueDisposalRetainer()
         let operations = FakeBlackHoleAudioQueueOperations(
             disposeStatuses: [
                 Self.disposeFailure,
@@ -1917,8 +1915,6 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
         let output = try XCTUnwrap(
             BlackHoleMicrophoneOutput(
                 testingAudioQueueOperations: operations,
-                queueDisposalRetainer: retainer,
-                maximumQueueDisposalAttemptCountPerEpisode: 1,
                 callbackContextDeinitForTesting: {
                     callbackContextDeinit.record()
                 },
@@ -1937,8 +1933,6 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
 
         XCTAssertEqual(operations.disposeCallCount, 1)
         XCTAssertEqual(operations.activeAllocationCount, 0)
-        XCTAssertFalse(output.debugHasPendingQueueDisposalForTesting)
-        XCTAssertEqual(retainer.retainedDisposalCount, 0)
         XCTAssertEqual(
             output.debugLastDisposeStatusForTesting,
             Self.disposeFailure
@@ -1983,8 +1977,6 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
 
     func testFailedStartDisposeFailureReleasesContextAndAllowsLaterStart()
         throws {
-        let retainer =
-            BlackHoleMicrophoneOutputQueueDisposalRetainer()
         let operations = FakeBlackHoleAudioQueueOperations(
             enqueueStatuses: [
                 noErr,
@@ -2000,8 +1992,6 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
         let output = try XCTUnwrap(
             BlackHoleMicrophoneOutput(
                 testingAudioQueueOperations: operations,
-                queueDisposalRetainer: retainer,
-                maximumQueueDisposalAttemptCountPerEpisode: 1,
                 callbackContextDeinitForTesting: {
                     callbackContextDeinit.record()
                 },
@@ -2022,8 +2012,6 @@ final class BlackHoleMicrophoneOutputTests: XCTestCase {
         XCTAssertEqual(operations.createCallCount, 1)
         XCTAssertEqual(operations.disposeCallCount, 1)
         XCTAssertEqual(operations.activeAllocationCount, 0)
-        XCTAssertFalse(output.debugHasPendingQueueDisposalForTesting)
-        XCTAssertEqual(retainer.retainedDisposalCount, 0)
         XCTAssertEqual(callbackContextDeinit.count, 1)
 
         try output.start()
@@ -3646,7 +3634,7 @@ private final class FakeBlackHoleAudioQueueOperations:
 
     init(
         deviceUID: String =
-            WorldwideBlackHoleMicrophoneEndpointContract
+            WorldwideVirtualMicrophoneEndpointContract
                 .hiddenMirrorSinkDeviceUID,
         deviceID: AudioDeviceID = 89,
         translateDeviceStatuses: [OSStatus] = [],

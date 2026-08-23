@@ -6,28 +6,15 @@ import XCTest
 /// publish an error or connect a client after a replacement preparation owns the generation.
 @MainActor
 final class WorldwidePresentationTests: XCTestCase {
-    func testRendezvousEndpointPrefersOpensteamerConfiguration() {
+    func testRendezvousEndpointUsesOpensteamerConfiguration() {
         let endpoint = WorldwideSessionViewModel.rendezvousEndpoint(
             debugOverride: nil,
             infoDictionary: [
                 "OpensteamerRendezvousURL": "wss://opensteamer.example.test",
-                "AudioStreamerRendezvousURL": "wss://legacy.example.test",
             ]
         )
 
         XCTAssertEqual(endpoint, URL(string: "wss://opensteamer.example.test"))
-    }
-
-    func testRendezvousEndpointFallsBackToLegacyConfiguration() {
-        let endpoint = WorldwideSessionViewModel.rendezvousEndpoint(
-            debugOverride: nil,
-            infoDictionary: [
-                "OpensteamerRendezvousURL": "$(OPENSTEAMER_RENDEZVOUS_URL)",
-                "AudioStreamerRendezvousURL": "wss://legacy.example.test",
-            ]
-        )
-
-        XCTAssertEqual(endpoint, URL(string: "wss://legacy.example.test"))
     }
 
     func testSupersededPreparedSessionCannotConnectAtHandoffEntry() async {
@@ -224,6 +211,21 @@ final class WorldwidePresentationTests: XCTestCase {
         XCTAssertEqual(presentation.accessibilityValue, "preparing")
     }
 
+    func testCurrentPreparationWithoutPreparationErrorSuppressesHistoricalMediaError() {
+        let presentation = BrowserView.worldwidePresentation(
+            input(
+                isPreparingFreshSession: true,
+                mediaError: "Old media failed"
+            )
+        )
+
+        guard case .preparing = presentation.surface else {
+            return XCTFail("Current preparation must suppress a historical media failure")
+        }
+        XCTAssertNil(presentation.status)
+        XCTAssertEqual(presentation.accessibilityValue, "preparing")
+    }
+
     func testMatchingDeadlineProducesSavedPairUnavailableRecovery() {
         let pair = pairedMac()
         let presentation = BrowserView.worldwidePresentation(
@@ -250,6 +252,14 @@ final class WorldwidePresentationTests: XCTestCase {
         XCTAssertNil(presentation.invitationExpiresAt)
         XCTAssertEqual(presentation.primaryActionTitle, "Retry Saved Pairing")
         XCTAssertEqual(presentation.accessibilityValue, "savedPairUnavailable")
+
+        let lowercased = BrowserView.savedPairUnavailableMessage.lowercased()
+        for forbiddenClaim in ["expired", "deleted", "lost", "reset", "pair again"] {
+            XCTAssertFalse(
+                lowercased.contains(forbiddenClaim),
+                "Reachability alone must not claim that pairing was \(forbiddenClaim)"
+            )
+        }
     }
 
     func testPairedIdleUsesPreparationFailureBeforeCurrentMediaFailure() {

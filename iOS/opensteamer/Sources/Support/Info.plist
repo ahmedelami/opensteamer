@@ -26,9 +26,6 @@
 	<false/>
 	<key>OpensteamerRendezvousURL</key>
 	<string>$(OPENSTEAMER_RENDEZVOUS_URL)</string>
-	<!-- One-release compatibility input for archives produced by the pre-rebrand build pipeline. -->
-	<key>AudioStreamerRendezvousURL</key>
-	<string>$(AUDIOSTREAMER_RENDEZVOUS_URL)</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_mcap._tcp</string>

@@ -116,9 +116,6 @@ public final class WebRTCRemoteAudioTrack: @unchecked Sendable {
     /// Product-owned classification assigned only after the peer validates the native receiver.
     public let logicalLane: WebRTCRemoteAudioLane
 
-    /// Compatibility spelling for the native track token.
-    public var trackID: String { nativeTrackID }
-
     init(
         _ receiverTrack: WebRTCNativeRemoteAudioReceiverTrack,
         logicalLane: WebRTCRemoteAudioLane
@@ -1390,39 +1387,6 @@ private final class LiveKitWebRTCAudioSessionController: WebRTCAudioSessionContr
 }
 #endif
 
-/// Controls only WebRTC's manual global audio gate on iOS. The injected conditional-duplex
-/// device is the sole owner of AVAudioSession configuration/activation and RemoteIO.
-public enum WebRTCAudioPlaybackFailureStage: String, Sendable {
-    case configuration
-    case activation
-}
-
-/// Sanitized AVAudioSession failure evidence captured at the point of activation.
-public struct WebRTCAudioPlaybackSessionError: LocalizedError, Sendable {
-    public let stage: WebRTCAudioPlaybackFailureStage
-    public let underlyingDomain: String
-    public let underlyingCode: Int
-    public let attemptedMode: String
-    public let compatibilityFallbackAttempted: Bool
-    public let currentCategory: String
-    public let currentMode: String
-    public let currentCategoryOptions: UInt
-    public let outputRoute: String
-    public let secondaryAudioShouldBeSilenced: Bool
-    public let otherAudioIsPlaying: Bool
-
-    public var errorDescription: String? {
-        let fallback = compatibilityFallbackAttempted ? "yes" : "no"
-        return "WebRTC audio \(stage.rawValue) failed "
-            + "(\(underlyingDomain) \(underlyingCode)); "
-            + "attemptedMode=\(attemptedMode), fallback=\(fallback), "
-            + "currentCategory=\(currentCategory), currentMode=\(currentMode), "
-            + "currentOptions=\(currentCategoryOptions), route=\(outputRoute), "
-            + "secondarySilenced=\(secondaryAudioShouldBeSilenced), "
-            + "otherAudio=\(otherAudioIsPlaying)."
-    }
-}
-
 /// Owns the process-wide WebRTC gate while the custom RemoteIO device owns audio I/O.
 @MainActor
 public final class WebRTCAudioPlaybackSession {
@@ -1530,31 +1494,5 @@ public final class WebRTCAudioPlaybackSession {
         return configuration
     }
 
-    private static func sessionError(
-        stage: WebRTCAudioPlaybackFailureStage,
-        underlying error: Error,
-        attemptedMode: AVAudioSession.Mode,
-        compatibilityFallbackAttempted: Bool
-    ) -> WebRTCAudioPlaybackSessionError {
-        let underlying = error as NSError
-        let nativeSession = AVAudioSession.sharedInstance()
-        let route = nativeSession.currentRoute.outputs
-            .map { $0.portType.rawValue }
-            .joined(separator: ",")
-
-        return WebRTCAudioPlaybackSessionError(
-            stage: stage,
-            underlyingDomain: underlying.domain,
-            underlyingCode: underlying.code,
-            attemptedMode: attemptedMode.rawValue,
-            compatibilityFallbackAttempted: compatibilityFallbackAttempted,
-            currentCategory: nativeSession.category.rawValue,
-            currentMode: nativeSession.mode.rawValue,
-            currentCategoryOptions: nativeSession.categoryOptions.rawValue,
-            outputRoute: route.isEmpty ? "none" : route,
-            secondaryAudioShouldBeSilenced: nativeSession.secondaryAudioShouldBeSilencedHint,
-            otherAudioIsPlaying: nativeSession.isOtherAudioPlaying
-        )
-    }
     #endif
 }

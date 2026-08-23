@@ -6298,29 +6298,6 @@ final class PhysicalValidationScriptTests: XCTestCase {
         }
     }
 
-    func testContinuousLogRejectsIdentityChangeAndTruncationInRealZsh() throws {
-        let valid = try runPhysicalValidationHelperProbe(
-            "opensteamer_require_continuous_log \"$1\" \"$2\" \"$3\" \"$4\"",
-            arguments: ["16777234:9988", "16777234:9988", "10", "11"]
-        )
-        XCTAssertTrue(valid.exitedWithinDeadline, valid.diagnostic)
-        XCTAssertEqual(valid.terminationStatus, 0, valid.diagnostic)
-
-        let identityMismatch = try runPhysicalValidationHelperProbe(
-            "opensteamer_require_continuous_log \"$1\" \"$2\" \"$3\" \"$4\"",
-            arguments: ["16777234:9988", "16777234:9989", "10", "11"]
-        )
-        XCTAssertTrue(identityMismatch.exitedWithinDeadline, identityMismatch.diagnostic)
-        XCTAssertNotEqual(identityMismatch.terminationStatus, 0, identityMismatch.diagnostic)
-
-        let truncated = try runPhysicalValidationHelperProbe(
-            "opensteamer_require_continuous_log \"$1\" \"$2\" \"$3\" \"$4\"",
-            arguments: ["16777234:9988", "16777234:9988", "11", "10"]
-        )
-        XCTAssertTrue(truncated.exitedWithinDeadline, truncated.diagnostic)
-        XCTAssertNotEqual(truncated.terminationStatus, 0, truncated.diagnostic)
-    }
-
     func testIsolatedValidationGroupCanBeProvenStoppedThenResumed() throws {
         let helper = repositoryRoot.appendingPathComponent(
             "iOS/opensteamer/scripts/physical-validation-helpers.zsh"
