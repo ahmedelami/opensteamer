@@ -1,5 +1,13 @@
 # Contributing
 
+## Branch names
+
+Name new human-created branches `<type>/<kebab-case-description>`, using one of
+`feat`, `fix`, `chore`, `docs`, `test`, `refactor`, `perf`, `build`, `ci`,
+`release`, or `revert`. For example: `fix/microphone-reconnect`. Automated
+dependency branches may use `dependabot/`. Do not rename release-pinned legacy
+branches solely to conform.
+
 ## Documentation standard
 
 Use names and types to explain the ordinary control flow. Add documentation
