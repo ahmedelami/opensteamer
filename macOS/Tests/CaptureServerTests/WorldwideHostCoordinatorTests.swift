@@ -1,4 +1,5 @@
 import CaptureCore
+import Darwin
 import Foundation
 import RemoteSessionCore
 import XCTest
@@ -181,6 +182,39 @@ final class WorldwideHostCoordinatorTests: XCTestCase {
         _ = await observer.result
     }
 
+    func testConcurrentStopJoinsOwningCoordinatorShutdown() async throws {
+        let telemetry = SuspendedFlushConnectionTelemetry()
+        let teardownDidBegin = LockedFlag()
+        let coordinator = makeCoordinator(
+            store: try makeActivePairingStore(),
+            connectionTelemetry: telemetry,
+            teardownDidBegin: { teardownDidBegin.set() }
+        )
+        let firstFinished = LockedFlag()
+        let secondFinished = LockedFlag()
+
+        let firstStop = Task {
+            await coordinator.stop()
+            firstFinished.set()
+        }
+        for await _ in telemetry.flushStarted { break }
+        XCTAssertTrue(teardownDidBegin.value)
+
+        let secondStop = Task {
+            await coordinator.stop()
+            secondFinished.set()
+        }
+        try await Task.sleep(for: .milliseconds(10))
+        XCTAssertFalse(firstFinished.value)
+        XCTAssertFalse(secondFinished.value)
+
+        telemetry.releaseFlush()
+        await firstStop.value
+        await secondStop.value
+        XCTAssertTrue(firstFinished.value)
+        XCTAssertTrue(secondFinished.value)
+    }
+
     func testCoexistencePropagatesWorldwideSupervisorFailureBeforeLANEnds() async throws {
         let coordinator = makeCoordinator(
             store: try makeActivePairingStore(),
@@ -203,6 +237,80 @@ final class WorldwideHostCoordinatorTests: XCTestCase {
         }
     }
 
+    func testWorldwideFailureCannotHideCanceledLANNativeStopUncertainty() async throws {
+        let coordinator = makeCoordinator(
+            store: try makeActivePairingStore(),
+            availabilityLoopOverride: {}
+        )
+        _ = try await coordinator.start(resetPairing: false)
+
+        do {
+            _ = try await CaptureServerMain.runCoexistingLANAndWorldwide(
+                coordinator: coordinator
+            ) {
+                do {
+                    try await Task.sleep(for: .seconds(60))
+                } catch {
+                    throw TestCoexistenceNativeScreenStopUnconfirmedError()
+                }
+                throw CoordinatorTestError.noClient
+            }
+            XCTFail("The retained LAN native-stop error must outrank worldwide failure")
+        } catch {
+            XCTAssertTrue(
+                StreamingCaptureManager.hasUnconfirmedNativeScreenCaptureStop(error)
+            )
+        }
+    }
+
+    func testCoexistenceSignalWaitsForLANCancellationCleanup() async throws {
+        let coordinator = makeCoordinator(
+            store: try makeActivePairingStore(),
+            availabilityLoopOverride: {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(60))
+                }
+            }
+        )
+        _ = try await coordinator.start(resetPairing: false)
+        let signals = AsyncStream<Int32>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        let lanStarted = AsyncStream<Void>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        let lanCleanupFinished = LockedFlag()
+        let run = Task {
+            try await CaptureServerMain.runCoexistingLANAndWorldwide(
+                coordinator: coordinator,
+                terminationSignals: signals.stream
+            ) {
+                lanStarted.continuation.yield(())
+                do {
+                    try await Task.sleep(for: .seconds(60))
+                } catch {
+                    lanCleanupFinished.set()
+                    throw error
+                }
+                throw CoordinatorTestError.noClient
+            }
+        }
+
+        for await _ in lanStarted.stream { break }
+        signals.continuation.yield(SIGTERM)
+        signals.continuation.finish()
+        do {
+            _ = try await run.value
+            XCTFail("The signal must reach Main only after LAN cancellation is drained")
+        } catch let request as ProcessTerminationRequest {
+            XCTAssertEqual(request.signalNumber, SIGTERM)
+            XCTAssertTrue(lanCleanupFinished.value)
+        } catch {
+            XCTFail("Expected an orderly termination request, got \(error)")
+        }
+        _ = await coordinator.stop()
+    }
+
     private func makeCoordinator(
         store: WorldwidePairingStore,
         availabilityClientFactory: @escaping @Sendable (
@@ -215,6 +323,7 @@ final class WorldwideHostCoordinatorTests: XCTestCase {
         availabilityLoopOverride: (@Sendable () async -> Void)? = nil,
         connectionTelemetry: any ConnectionTelemetryRecording =
             NoopConnectionTelemetryRecorder(),
+        teardownDidBegin: @escaping @Sendable () -> Void = {},
         availabilityMarkerProcessIdentifier: Int32 = ProcessInfo.processInfo.processIdentifier,
         availabilityMarkerGenerationNonce: String = String(repeating: "0", count: 64),
         logger: any Logger = SilentLogger()
@@ -224,7 +333,8 @@ final class WorldwideHostCoordinatorTests: XCTestCase {
             // transport path instead of one of the injected stubs.
             endpoint: URL(string: "wss://example.invalid")!,
             forceRelay: false,
-            displayID: nil,
+            screenDisplayID: nil,
+            systemAudioDisplayID: nil,
             maximumWidth: 1_280,
             framesPerSecond: 30,
             maximumVideoBitrate: 4_000_000,
@@ -237,6 +347,7 @@ final class WorldwideHostCoordinatorTests: XCTestCase {
             availabilityRetrySleep: availabilityRetrySleep,
             availabilityLoopOverride: availabilityLoopOverride,
             connectionTelemetry: connectionTelemetry,
+            teardownDidBegin: teardownDidBegin,
             logger: logger
         )
     }
@@ -297,6 +408,10 @@ final class WorldwideHostCoordinatorTests: XCTestCase {
         return condition()
     }
 }
+
+private struct TestCoexistenceNativeScreenStopUnconfirmedError:
+    NativeScreenCaptureStopUnconfirmedError
+{}
 
 /// Availability transport with two intentional behaviors: a transport-originated cancellation,
 /// or an open event stream that remains alive until `close`. Locking models cross-task callbacks.
@@ -508,6 +623,46 @@ private final class RecordingConnectionTelemetry:
             droppedEventCount: 0,
             persistenceHealthy: true
         )
+    }
+}
+
+private final class SuspendedFlushConnectionTelemetry:
+    ConnectionTelemetryRecording,
+    @unchecked Sendable
+{
+    let flushStarted: AsyncStream<Void>
+
+    private let flushStartedContinuation: AsyncStream<Void>.Continuation
+    private let flushRelease: AsyncStream<Void>
+    private let flushReleaseContinuation: AsyncStream<Void>.Continuation
+
+    init() {
+        let started = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        flushStarted = started.stream
+        flushStartedContinuation = started.continuation
+        let release = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        flushRelease = release.stream
+        flushReleaseContinuation = release.continuation
+    }
+
+    func record(_: ConnectionTelemetryDraft) -> ConnectionTelemetrySnapshot {
+        .empty
+    }
+
+    func snapshot() -> ConnectionTelemetrySnapshot {
+        .empty
+    }
+
+    func flush() async -> ConnectionTelemetrySnapshot {
+        flushStartedContinuation.yield(())
+        flushStartedContinuation.finish()
+        for await _ in flushRelease { break }
+        return .empty
+    }
+
+    func releaseFlush() {
+        flushReleaseContinuation.yield(())
+        flushReleaseContinuation.finish()
     }
 }
 

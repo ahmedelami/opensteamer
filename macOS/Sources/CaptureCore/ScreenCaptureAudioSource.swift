@@ -9,17 +9,35 @@ import ScreenCaptureKit
 /// synchronously, so no CoreMedia object crosses a second concurrency boundary.
 final class ScreenCaptureAudioSource: NSObject {
     private let displayID: UInt32?
+    private let makeStopWatchdog: @Sendable () -> Task<Void, Never>?
     private let logger: Logger
     private var stream: SCStream?
     private var output: StreamOutput?
 
-    init(displayID: UInt32?, logger: Logger) {
+    init(
+        displayID: UInt32?,
+        makeStopWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
+        logger: Logger
+    ) {
         self.displayID = displayID
+        self.makeStopWatchdog = makeStopWatchdog
         self.logger = logger
     }
 
     /// Selects a display, installs the audio output, and begins asynchronous capture.
     func start(consumer: SampleBufferConsumer) async throws {
+        try await ScreenCaptureLifecycleWatchdog.perform(
+            makeWatchdog: makeStopWatchdog,
+            operation: {
+                try await self.startWithoutStartupWatchdog(consumer: consumer)
+            }
+        )
+    }
+
+    /// Runs one complete startup transaction under the caller's already-armed watchdog.
+    private func startWithoutStartupWatchdog(
+        consumer: SampleBufferConsumer
+    ) async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         let display = try selectDisplay(from: content.displays)
         logger.info("Selected display \(display.displayID) (\(display.width)x\(display.height))")
@@ -44,14 +62,39 @@ final class ScreenCaptureAudioSource: NSObject {
         self.stream = stream
 
         logger.info("Starting ScreenCaptureKit capture")
-        try await stream.startCapture()
+        do {
+            try await stream.startCapture()
+        } catch {
+            let startError = error
+            var stopFailureDescriptions: [String] = []
+            for _ in 0..<2 {
+                var stopSucceeded = false
+                do {
+                    try await stop()
+                    stopSucceeded = true
+                } catch let stopError {
+                    if self.stream == nil { throw startError }
+                    stopFailureDescriptions.append(stopError.localizedDescription)
+                }
+                if stopSucceeded { throw startError }
+            }
+            throw RetainedScreenCaptureAudioStopError(
+                source: self,
+                failureDescriptions: stopFailureDescriptions
+            )
+        }
     }
 
     /// Stops the active stream and releases objects that retain its callback consumer.
     func stop() async throws {
         guard let stream else { return }
         logger.info("Stopping ScreenCaptureKit capture")
-        try await stream.stopCapture()
+        try await ScreenCaptureLifecycleWatchdog.perform(
+            makeWatchdog: makeStopWatchdog,
+            operation: {
+                try await stream.stopCapture()
+            }
+        )
         self.stream = nil
         output = nil
     }

@@ -28,9 +28,11 @@ final class ScreenVideoService: @unchecked Sendable,
     }
 
     private let displayID: UInt32?
+    private let displayRequirement: ScreenVideoDisplayRequirement?
     private let maximumWidth: Int
     private let framesPerSecond: Int
     private let bitrate: UInt32
+    private let makeCaptureStopWatchdog: @Sendable () -> Task<Void, Never>?
     private let logger: Logger
     private let server: VideoTCPServer
     private let lock = NSLock()
@@ -43,15 +45,19 @@ final class ScreenVideoService: @unchecked Sendable,
         bonjourName: String?,
         authToken: String?,
         displayID: UInt32?,
+        displayRequirement: ScreenVideoDisplayRequirement?,
         maximumWidth: Int,
         framesPerSecond: Int,
         bitrate: UInt32,
+        makeCaptureStopWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
         logger: Logger
     ) throws {
         self.displayID = displayID
+        self.displayRequirement = displayRequirement
         self.maximumWidth = maximumWidth
         self.framesPerSecond = framesPerSecond
         self.bitrate = bitrate
+        self.makeCaptureStopWatchdog = makeCaptureStopWatchdog
         self.logger = logger
         self.server = try VideoTCPServer(
             host: host,
@@ -68,8 +74,9 @@ final class ScreenVideoService: @unchecked Sendable,
         try server.start()
     }
 
-    /// Stops accepting viewers, cancels lifecycle work, and drains pipeline teardown.
-    func stop() async {
+    /// Stops accepting viewers and synchronously revokes the active pipeline generation.
+    @discardableResult
+    func revoke() -> Task<Void, Never>? {
         server.stop()
         let lifecycleTask = lock.withLock { () -> Task<Void, Never>? in
             state.generation = UUID()
@@ -80,8 +87,29 @@ final class ScreenVideoService: @unchecked Sendable,
             return task
         }
         lifecycleTask?.cancel()
-        _ = await lifecycleTask?.result
+        return lifecycleTask
+    }
+
+    /// Stops accepting viewers, revokes the active generation, and drains native teardown.
+    @discardableResult
+    func stop() async -> Bool {
+        let lifecycleTask = revoke()
+        return await finishStop(afterRevoking: lifecycleTask)
+    }
+
+    /// Completes teardown after a caller has already synchronously revoked transport gates.
+    @discardableResult
+    func finishStop(afterRevoking lifecycleTask: Task<Void, Never>?) async -> Bool {
+        // Stop the installed source before joining a possibly wedged startup. The source's
+        // stop-during-start path owns the virtual-display watchdog and releases that startup.
         await stopPipeline()
+        _ = await lifecycleTask?.result
+        if lock.withLock({ state.source != nil }) {
+            // A failed native stop remains owned and retryable; make one final bounded attempt
+            // before the enclosing process-level teardown policy takes over.
+            await stopPipeline()
+        }
+        return lock.withLock { state.source == nil }
     }
 
     /// Returns transport counters from the underlying server.
@@ -101,7 +129,9 @@ final class ScreenVideoService: @unchecked Sendable,
             state.viewerSessionID = sessionID
             return previous
         }
+        previousTask?.cancel()
         let task = Task { [weak self] in
+            await self?.stopPipeline()
             _ = await previousTask?.result
             await self?.startPipeline(generation: generation, sessionID: sessionID)
         }
@@ -202,17 +232,47 @@ final class ScreenVideoService: @unchecked Sendable,
             return
         }
 
+        let retainedSource = lock.withLock { () -> ScreenVideoCaptureSource? in
+            guard state.sourceSessionID == nil else { return nil }
+            return state.source
+        }
+        if let retainedSource {
+            let stopped = await stopSource(
+                retainedSource,
+                context: "before replacement pipeline startup"
+            )
+            releaseSource(retainedSource, afterConfirmedStop: stopped)
+            guard stopped else {
+                let stillCurrent = lock.withLock {
+                    state.generation == generation
+                        && state.viewerConnected
+                        && state.viewerSessionID == sessionID
+                        && state.source === retainedSource
+                }
+                if stillCurrent {
+                    server.failActiveViewer(
+                        sessionID,
+                        reason: "previous screen capture stop remained unconfirmed"
+                    )
+                }
+                return
+            }
+        }
+
         let source = ScreenVideoCaptureSource(
             displayID: displayID,
+            displayRequirement: displayRequirement,
             maximumWidth: maximumWidth,
             framesPerSecond: framesPerSecond,
             consumer: self,
+            makeStopWatchdog: makeCaptureStopWatchdog,
             logger: logger
         )
         let shouldStart = lock.withLock { () -> Bool in
             guard state.generation == generation,
                   state.viewerConnected,
-                  state.viewerSessionID == sessionID else {
+                  state.viewerSessionID == sessionID,
+                  state.source == nil else {
                 return false
             }
             state.source = source
@@ -230,7 +290,8 @@ final class ScreenVideoService: @unchecked Sendable,
                     state.source === source &&
                     state.sourceSessionID == sessionID
             }) else {
-                await stopSource(source, context: "after viewer disconnect")
+                let stopped = await stopSource(source, context: "after viewer disconnect")
+                releaseSource(source, afterConfirmedStop: stopped)
                 return
             }
 
@@ -256,18 +317,21 @@ final class ScreenVideoService: @unchecked Sendable,
                 return true
             }
             if !installed {
-                await stopSource(source, context: "after stale encoder startup")
+                let stopped = await stopSource(source, context: "after stale encoder startup")
+                releaseSource(source, afterConfirmedStop: stopped)
                 encoder.finish()
             }
         } catch {
-            await stopSource(source, context: "after pipeline failure")
+            let stopped = await stopSource(source, context: "after pipeline failure")
             logger.error("Screen video pipeline failed: \(error.localizedDescription)")
             let failedSessionID = lock.withLock { () -> VideoViewerSessionID? in
                 guard state.generation == generation,
                       state.viewerSessionID == sessionID else {
                     return nil
                 }
-                state.source = nil
+                if stopped, state.source === source {
+                    state.source = nil
+                }
                 state.sourceSessionID = nil
                 state.encoder = nil
                 state.format = nil
@@ -299,9 +363,16 @@ final class ScreenVideoService: @unchecked Sendable,
             return (true, previous)
         }
         guard transition.accepted else { return }
+        transition.previousTask?.cancel()
         let task = Task { [weak self] in
-            _ = await transition.previousTask?.result
+            // Enter source.stop() before joining startup so its watchdog covers a native start
+            // that ignores cancellation. Generation revocation prevents a not-yet-installed
+            // source from appearing after this first snapshot.
             await self?.stopPipeline()
+            _ = await transition.previousTask?.result
+            if let self, lock.withLock({ state.source != nil }) {
+                await stopPipeline()
+            }
         }
         lock.withLock {
             if state.generation == generation {
@@ -312,7 +383,7 @@ final class ScreenVideoService: @unchecked Sendable,
         }
     }
 
-    /// Atomically detaches resources before invoking asynchronous native shutdown.
+    /// Revokes delivery while retaining native ownership until shutdown is confirmed.
     private func stopPipeline() async {
         let stopped = lock.withLock { () -> (
             ScreenVideoCaptureSource?,
@@ -320,7 +391,6 @@ final class ScreenVideoService: @unchecked Sendable,
             ScreenVideoFrameReservation?
         ) in
             let values = (state.source, state.encoder, state.pendingReservation)
-            state.source = nil
             state.sourceSessionID = nil
             state.encoder = nil
             state.format = nil
@@ -331,19 +401,37 @@ final class ScreenVideoService: @unchecked Sendable,
             server.cancelFrameReservation(reservation, requestKeyFrame: false)
         }
         if let source = stopped.0 {
-            await stopSource(source, context: "during pipeline teardown")
+            let didStop = await stopSource(source, context: "during pipeline teardown")
+            releaseSource(source, afterConfirmedStop: didStop)
         }
         stopped.1?.finish()
     }
 
-    /// Performs best-effort ScreenCaptureKit cleanup while retaining diagnostic context.
-    private func stopSource(_ source: ScreenVideoCaptureSource, context: String) async {
+    /// Performs ScreenCaptureKit cleanup while reporting whether native ownership may be released.
+    @discardableResult
+    private func stopSource(_ source: ScreenVideoCaptureSource, context: String) async -> Bool {
         do {
             try await source.stop()
+            return true
         } catch {
             logger.error(
                 "Could not stop screen video capture \(context): \(error.localizedDescription)"
             )
+            return false
+        }
+    }
+
+    /// Drops the source only after its exact native stream has acknowledged shutdown.
+    private func releaseSource(
+        _ source: ScreenVideoCaptureSource,
+        afterConfirmedStop didStop: Bool
+    ) {
+        guard didStop else { return }
+        lock.withLock {
+            if state.source === source {
+                state.source = nil
+                state.sourceSessionID = nil
+            }
         }
     }
 

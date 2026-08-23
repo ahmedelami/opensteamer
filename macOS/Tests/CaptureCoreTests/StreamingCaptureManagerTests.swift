@@ -177,7 +177,45 @@ final class StreamingCaptureManagerTests: XCTestCase {
 
         XCTAssertEqual(state.snapshot(), .init(starts: 1, stops: 0))
     }
+
+    func testTeardownHookRunsBeforeCancellationShieldedStop() async throws {
+        let events = CaptureLifecycleEvents()
+
+        try await StreamingCaptureManager.runStartedSource(
+            start: {},
+            wait: {},
+            teardownDidBegin: { events.append("deadline") },
+            stop: { events.append("stop") }
+        )
+
+        XCTAssertEqual(events.values, ["deadline", "stop"])
+    }
+
+    func testUnconfirmedNativeScreenStopRetainsPriorityOverWaitFailure() async {
+        do {
+            try await StreamingCaptureManager.runStartedSource(
+                start: {},
+                wait: { throw CaptureLifecycleError.waitFailed },
+                stop: { throw TestNativeScreenStopUnconfirmedError() }
+            )
+            XCTFail("Native stop uncertainty must reach the process owner")
+        } catch {
+            XCTAssertTrue(
+                StreamingCaptureManager.hasUnconfirmedNativeScreenCaptureStop(error)
+            )
+        }
+
+        XCTAssertFalse(
+            StreamingCaptureManager.hasUnconfirmedNativeScreenCaptureStop(
+                CaptureLifecycleError.cleanupFailed
+            )
+        )
+    }
 }
+
+private struct TestNativeScreenStopUnconfirmedError:
+    NativeScreenCaptureStopUnconfirmedError
+{}
 
 private enum CaptureLifecycleError: Error, Equatable {
     case startFailed
@@ -251,5 +289,22 @@ private final class CaptureLifecycleState: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return Snapshot(starts: starts, stops: stops, waits: waits)
+    }
+}
+
+private final class CaptureLifecycleEvents: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+
+    var values: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func append(_ event: String) {
+        lock.lock()
+        storage.append(event)
+        lock.unlock()
     }
 }

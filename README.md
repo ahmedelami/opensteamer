@@ -19,6 +19,9 @@ passes the unrelated-network and forced-TURN gates described in
 
 - Mac system-audio capture with ScreenCaptureKit and 48 kHz stereo Opus transport.
 - H.264 screen video with Show/Hide independent from audio playback.
+- An opt-in adjustable portrait display for a headless Mac. It replaces the sole Apple headless
+  placeholder with the same desktop plus verified iPhone-resolution choices; screen video uses
+  the active framebuffer while system-audio selection remains independent.
 - Optional, explicitly enabled tap, atomic drag, committed text, Backspace, and Return input.
 - One-use invitation bootstrap followed by durable, Keychain-backed device pairing.
 - Fresh signaling and WebRTC keys for every paired-device media connection.
@@ -168,6 +171,29 @@ The private key is stored outside the repository and must never be copied into s
 upload evidence.
 
 ## Build and test
+
+### Experimental adjustable phone display
+
+The directly distributed Mac host accepts `--virtual-phone-display`. The flag is off by default,
+conflicts with `--display-id`, and currently requires the sole Apple headless placeholder display.
+It intentionally rejects physical or multi-display workspaces until OpenSteamer has explicit
+window-placement UX for a second desktop.
+
+The host preserves the starting desktop mapping and verifies every required resolution before it
+advertises availability. macOS Display Settings then shows `opensteamer Display`, including the
+iPhone 17 Pro Retina mapping of 603x1311 logical points to 1206x2622 framebuffer pixels. Choose a
+resolution before pressing **Show** on the iPhone. After changing it during a live session, Hide
+and Show again so ScreenCaptureKit renegotiates the frame size.
+
+This compatibility path uses the exported but private macOS `CGVirtualDisplay` classes because
+Apple provides no public host virtual-display or DriverKit display family. It needs no root,
+driver installation, or reboot, but it is unsupported across macOS updates and is not suitable for
+Mac App Store distribution. Classes and selectors are resolved dynamically, and the signed
+host-app builder rejects loader-time private-class imports. The compatibility code remains
+macOS-only and is never included in the iOS/TestFlight app.
+
+The display disappears when the owning host exits. The checked-in LaunchAgent does not enable
+this experimental flag.
 
 Run the shared Swift and macOS regression suite from the repository root:
 

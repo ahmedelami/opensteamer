@@ -22,6 +22,7 @@ struct CaptureServerOptions {
     var forceRelay = false
     var duration: TimeInterval? = 30
     var displayID: UInt32?
+    var virtualPhoneDisplayEnabled = false
     var captureMode: AudioCaptureMode = .blackHoleInput
     var bonjourName: String? = Host.current().localizedName ?? "opensteamer"
     var authToken = ProcessInfo.processInfo.environment["MCAP_TOKEN"]?.nilIfEmpty
@@ -36,6 +37,10 @@ struct CaptureServerOptions {
         lanEnabled
             ? .suppressedForLANCoexistence
             : .enabled
+    }
+
+    var requiresExclusiveHostProcessLock: Bool {
+        worldwideEnabled || virtualPhoneDisplayEnabled
     }
 
     static let usage = """
@@ -64,6 +69,9 @@ struct CaptureServerOptions {
       --duration <seconds>   Run duration. Defaults to 30 for LAN-only and indefinite for worldwide. Use 0 for indefinite.
       --capture-mode <mode>  blackhole-input or screen. Defaults to blackhole-input.
       --display-id <id>      Capture a specific display ID.
+      --virtual-phone-display
+                             Replace the sole Apple headless desktop with adjustable phone modes.
+                             Uses a dynamic private macOS compatibility API; disabled by default.
       --bonjour-name <name>  Bonjour name for _mcap._tcp. Defaults to host name.
       --no-bonjour           Disable Bonjour advertisement.
       --token <token>        Require this client token. Defaults to MCAP_TOKEN if set.
@@ -179,6 +187,8 @@ struct CaptureServerOptions {
                     throw CaptureServerOptionError.invalid("--display-id requires an unsigned integer")
                 }
                 options.displayID = value
+            case "--virtual-phone-display":
+                options.virtualPhoneDisplayEnabled = true
             case "--bonjour-name":
                 index += 1
                 guard index < arguments.count else {
@@ -254,6 +264,16 @@ struct CaptureServerOptions {
 
         if !options.lanEnabled, !options.worldwideEnabled {
             throw CaptureServerOptionError.invalid("--no-lan requires --worldwide")
+        }
+        if options.virtualPhoneDisplayEnabled, options.displayID != nil {
+            throw CaptureServerOptionError.invalid(
+                "--virtual-phone-display cannot be combined with --display-id"
+            )
+        }
+        if options.virtualPhoneDisplayEnabled, !options.screenEnabled {
+            throw CaptureServerOptionError.invalid(
+                "--virtual-phone-display cannot be combined with --no-screen"
+            )
         }
 
         return options

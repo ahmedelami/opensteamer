@@ -2,71 +2,153 @@ import Darwin
 import Dispatch
 import Foundation
 
-/// Converts process termination signals into an async event while the worldwide host is active.
-/// The signal disposition is restored only after the coordinator has shut down its WebSockets.
+/// Converts process termination signals into a buffered event before mutable host state exists.
+/// Main restores the default disposition only after every native/display dependency is down.
 final class ProcessTerminationSignalMonitor: @unchecked Sendable {
-    /// Buffered stream of the most recent monitored Unix signal.
-    let events: AsyncStream<Int32>
+    /// Each read creates an independently cancellable subscription to the buffered signal.
+    var events: AsyncStream<Int32> {
+        makeEvents()
+    }
 
     private let lock = NSLock()
     private let signalNumbers: [Int32]
+    private let onSignal: @Sendable (Int32) -> Void
     private var sources: [DispatchSourceSignal]
-    private var continuation: AsyncStream<Int32>.Continuation?
+    private var continuations: [UUID: AsyncStream<Int32>.Continuation] = [:]
+    private var pendingSignalNumber: Int32?
     private var isCancelled = false
 
     /// Installs Dispatch signal sources after temporarily ignoring default dispositions.
-    init(signalNumbers: [Int32] = [SIGINT, SIGTERM]) {
-        let pair = AsyncStream<Int32>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        events = pair.stream
-        continuation = pair.continuation
+    init(
+        signalNumbers: [Int32] = [SIGINT, SIGTERM],
+        onSignal: @escaping @Sendable (Int32) -> Void = { _ in }
+    ) {
         self.signalNumbers = signalNumbers
+        self.onSignal = onSignal
+        sources = []
 
         let queue = DispatchQueue(label: "org.example.opensteamer.termination-signals")
-        var configuredSources: [DispatchSourceSignal] = []
-        configuredSources.reserveCapacity(signalNumbers.count)
+        sources.reserveCapacity(signalNumbers.count)
         for signalNumber in signalNumbers {
             Darwin.signal(signalNumber, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: queue)
-            source.setEventHandler { [continuation = pair.continuation] in
-                continuation.yield(signalNumber)
+            source.setEventHandler { [weak self] in
+                self?.receive(signalNumber)
             }
-            configuredSources.append(source)
+            sources.append(source)
             source.resume()
         }
-        sources = configuredSources
     }
 
-    /// Idempotently tears down sources, finishes events, and restores default dispositions.
-    func cancel() {
-        let resources = lock.withLock { () -> (
-            [DispatchSourceSignal],
-            AsyncStream<Int32>.Continuation?
-        )? in
-            guard !isCancelled else { return nil }
-            isCancelled = true
-            let resources = (sources, continuation)
-            sources = []
-            continuation = nil
-            return resources
+    /// Returns a buffered request without consuming it, including during synchronous startup.
+    func pendingSignal() -> Int32? {
+        lock.withLock { pendingSignalNumber }
+    }
+
+    /// Converts a buffered request into the same error used by the async service supervisors.
+    func throwIfSignaled() throws {
+        if let signalNumber = pendingSignal() {
+            throw ProcessTerminationRequest(signalNumber: signalNumber)
         }
-        guard let resources else { return }
-        resources.0.forEach { $0.cancel() }
-        resources.1?.finish()
-        signalNumbers.forEach { Darwin.signal($0, SIG_DFL) }
     }
 
-    /// Restore normal Unix termination semantics only after async worldwide cleanup completes.
-    /// This is used by the explicit worldwide + trusted-LAN coexistence mode, whose LAN capture
-    /// loop is otherwise intentionally left unchanged.
-    func resumeDefaultHandlingAndReraise(_ signalNumber: Int32) -> Never {
-        cancel()
-        Darwin.raise(signalNumber)
-        // `raise` terminates under the restored default disposition. Keep a deterministic fallback
-        // for an unusual environment that has the signal blocked at the process level.
-        Darwin._exit(128 + signalNumber)
+    /// Idempotently tears down sources, restores defaults, and returns any buffered request.
+    /// This may be called only after full cleanup has been confirmed.
+    @discardableResult
+    func cancelAndReturnPendingSignal() -> Int32? {
+        let state = lock.withLock { () -> (
+            Int32?,
+            [DispatchSourceSignal],
+            [AsyncStream<Int32>.Continuation]
+        ) in
+            guard !isCancelled else {
+                return (pendingSignalNumber, [], [])
+            }
+            isCancelled = true
+            let state = (pendingSignalNumber, sources, Array(continuations.values))
+            sources = []
+            continuations.removeAll(keepingCapacity: false)
+            return state
+        }
+        state.1.forEach { $0.cancel() }
+        state.2.forEach { $0.finish() }
+        if !state.1.isEmpty {
+            signalNumbers.forEach { Darwin.signal($0, SIG_DFL) }
+        }
+        return state.0
+    }
+
+    func cancel() {
+        cancelAndReturnPendingSignal()
     }
 
     deinit {
         cancel()
+    }
+
+    private func makeEvents() -> AsyncStream<Int32> {
+        let identifier = UUID()
+        return AsyncStream<Int32>(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            continuation.onTermination = { [weak self] _ in
+                self?.removeContinuation(identifier: identifier)
+            }
+            let state = lock.withLock { () -> (Int32?, Bool) in
+                guard !isCancelled else { return (pendingSignalNumber, true) }
+                continuations[identifier] = continuation
+                return (pendingSignalNumber, false)
+            }
+            if let pendingSignalNumber = state.0 {
+                continuation.yield(pendingSignalNumber)
+            }
+            if state.1 {
+                continuation.finish()
+            }
+        }
+    }
+
+    private func removeContinuation(identifier: UUID) {
+        _ = lock.withLock {
+            continuations.removeValue(forKey: identifier)
+        }
+    }
+
+    /// Records before publishing so cancellation of one stream consumer cannot lose the signal.
+    func receive(_ signalNumber: Int32) {
+        let state = lock.withLock { () -> (
+            Bool,
+            [AsyncStream<Int32>.Continuation]
+        ) in
+            guard !isCancelled else { return (false, []) }
+            pendingSignalNumber = signalNumber
+            return (true, Array(continuations.values))
+        }
+        guard state.0 else { return }
+        onSignal(signalNumber)
+        state.1.forEach { $0.yield(signalNumber) }
+    }
+}
+
+/// Pure ownership policy used by Main and covered without mutating process-global dispositions.
+enum ProcessTerminationSignalPolicy {
+    static func requiresMonitor(
+        virtualDisplayEnabled: Bool,
+        worldwideEnabled: Bool
+    ) -> Bool {
+        virtualDisplayEnabled || worldwideEnabled
+    }
+
+    static func mayRestoreDefaultHandling(fullCleanupIsConfirmed: Bool) -> Bool {
+        fullCleanupIsConfirmed
+    }
+
+    static func requiresIndependentFallback(
+        virtualDisplayEnabled: Bool,
+        worldwideEnabled: Bool
+    ) -> Bool {
+        !virtualDisplayEnabled
+            && requiresMonitor(
+                virtualDisplayEnabled: virtualDisplayEnabled,
+                worldwideEnabled: worldwideEnabled
+            )
     }
 }

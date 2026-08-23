@@ -511,6 +511,37 @@ enum CoreAudioProcessTapStartupTransaction {
     }
 }
 
+/// Decides which native identities must remain owned after a best-effort teardown.
+/// Destroying an aggregate device also removes any IO callback still attached to it.
+enum CoreAudioProcessTapNativeTeardownPolicy {
+    struct Resources: Equatable {
+        var hasProcessTap: Bool
+        var hasAggregateDevice: Bool
+        var hasIOCallback: Bool
+
+        var isEmpty: Bool {
+            !hasProcessTap && !hasAggregateDevice && !hasIOCallback
+        }
+    }
+
+    static func remainingResources(
+        initial: Resources,
+        didDestroyIOCallback: Bool,
+        didDestroyAggregateDevice: Bool,
+        didDestroyProcessTap: Bool
+    ) -> Resources {
+        let hasAggregateDevice = initial.hasAggregateDevice
+            && !didDestroyAggregateDevice
+        return Resources(
+            hasProcessTap: initial.hasProcessTap && !didDestroyProcessTap,
+            hasAggregateDevice: hasAggregateDevice,
+            hasIOCallback: initial.hasIOCallback
+                && !didDestroyIOCallback
+                && hasAggregateDevice
+        )
+    }
+}
+
 /// Captures the complete outgoing Core Audio process mix without changing the selected output
 /// device. Unlike a display-associated ScreenCaptureKit mix, a global process tap also contains
 /// audio rendered by headless services such as FaceTime's conversation process.
@@ -529,11 +560,32 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
         @Sendable (SystemAudioMacFaceTimeActivityObservation) -> Void
     private let queues = CoreAudioProcessTapQueueTopology()
     private let lock = NSLock()
+    private struct NativeTeardownResources {
+        var tapID: AudioObjectID
+        var aggregateDeviceID: AudioObjectID
+        var ioProcID: AudioDeviceIOProcID?
+
+        var policyResources: CoreAudioProcessTapNativeTeardownPolicy.Resources {
+            .init(
+                hasProcessTap: tapID != kAudioObjectUnknown,
+                hasAggregateDevice: aggregateDeviceID != kAudioObjectUnknown,
+                hasIOCallback: ioProcID != nil
+            )
+        }
+
+        var isEmpty: Bool {
+            policyResources.isEmpty
+        }
+    }
+
     private var tapID = AudioObjectID(kAudioObjectUnknown)
     private var tapUUID: UUID?
     private var aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
     private var ioProcID: AudioDeviceIOProcID?
     private var isRunning = false
+    /// Exact native identities whose destruction returned an error during failed startup/stop.
+    /// Keeping them attached prevents a later start from replacing potentially live callbacks.
+    private var pendingNativeTeardown: NativeTeardownResources?
     // Accessed only on queues.controlQueue.
     private struct FaceTimeProcessListenerRegistration {
         let listener: AudioObjectPropertyListenerBlock
@@ -1079,7 +1131,11 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
     /// Creates a private, unmuted global tap and starts its private aggregate device.
     @available(macOS 14.2, *)
     func start() throws -> AudioStreamBasicDescription {
-        guard lock.withLock({ !isRunning && tapID == kAudioObjectUnknown }) else {
+        guard lock.withLock({
+            !isRunning
+                && tapID == kAudioObjectUnknown
+                && pendingNativeTeardown == nil
+        }) else {
             throw CoreAudioProcessTapError.alreadyRunning
         }
 
@@ -1098,14 +1154,13 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
         )
 
         var createdTapID = AudioObjectID(kAudioObjectUnknown)
-        try Self.requireNoError(
-            AudioHardwareCreateProcessTap(tapDescription, &createdTapID),
-            operation: "create Core Audio process tap"
-        )
-
         var createdAggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
         var createdIOProcID: AudioDeviceIOProcID?
         do {
+            try Self.requireNoError(
+                AudioHardwareCreateProcessTap(tapDescription, &createdTapID),
+                operation: "create Core Audio process tap"
+            )
             let tapUID = try Self.stringProperty(
                 objectID: createdTapID,
                 selector: kAudioTapPropertyUID
@@ -1221,21 +1276,31 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
             )
             return format
         } catch {
-            if let createdIOProcID {
-                // Stop is harmless if startup failed before the device began running and keeps
-                // cleanup correct if Core Audio partially activated before returning an error.
-                AudioDeviceStop(createdAggregateDeviceID, createdIOProcID)
-                AudioDeviceDestroyIOProcID(
-                    createdAggregateDeviceID,
-                    createdIOProcID
+            let startupError = error
+            let cleanup = attemptNativeTeardown(
+                NativeTeardownResources(
+                    tapID: createdTapID,
+                    aggregateDeviceID: createdAggregateDeviceID,
+                    ioProcID: createdIOProcID
                 )
-                queues.drainIOCallbacks()
+            )
+            if !cleanup.remaining.isEmpty {
+                lock.withLock {
+                    pendingNativeTeardown = cleanup.remaining
+                }
+                throw CoreAudioProcessTapError.nativeTeardownUnconfirmed(
+                    startupFailure: startupError.localizedDescription,
+                    cleanupFailure: cleanup.firstError?.localizedDescription
+                        ?? "Core Audio retained an unknown native resource"
+                )
             }
-            if createdAggregateDeviceID != kAudioObjectUnknown {
-                AudioHardwareDestroyAggregateDevice(createdAggregateDeviceID)
+            if let cleanupError = cleanup.firstError {
+                logger.error(
+                    "Core Audio process-tap startup cleanup recovered after: "
+                        + cleanupError.localizedDescription
+                )
             }
-            AudioHardwareDestroyProcessTap(createdTapID)
-            throw error
+            throw startupError
         }
     }
 
@@ -1314,27 +1379,75 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
     /// Stops callbacks before destroying the aggregate device and process tap.
     @available(macOS 14.2, *)
     func stop() throws {
-        let resources = lock.withLock {
-            () -> (AudioObjectID, AudioObjectID, AudioDeviceIOProcID?)? in
+        let claimed = lock.withLock {
+            () -> (NativeTeardownResources, Bool)? in
+            if let pendingNativeTeardown {
+                self.pendingNativeTeardown = nil
+                return (pendingNativeTeardown, false)
+            }
             guard tapID != kAudioObjectUnknown else { return nil }
-            let resources = (tapID, aggregateDeviceID, ioProcID)
+            let resources = NativeTeardownResources(
+                tapID: tapID,
+                aggregateDeviceID: aggregateDeviceID,
+                ioProcID: ioProcID
+            )
             tapID = AudioObjectID(kAudioObjectUnknown)
             tapUUID = nil
             aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
             ioProcID = nil
             isRunning = false
-            return resources
+            return (resources, true)
         }
-        guard let (tapID, aggregateDeviceID, ioProcID) = resources else {
+        guard let (resources, wasRunning) = claimed else {
             return
         }
 
-        stopFaceTimeActivityMonitoring()
+        if wasRunning {
+            stopFaceTimeActivityMonitoring()
+        }
 
+        let cleanup = attemptNativeTeardown(resources)
+        logger.info("Stopping Core Audio global process tap")
+        guard cleanup.remaining.isEmpty else {
+            lock.withLock {
+                pendingNativeTeardown = cleanup.remaining
+            }
+            throw CoreAudioProcessTapError.nativeTeardownUnconfirmed(
+                startupFailure: "Core Audio process-tap shutdown",
+                cleanupFailure: cleanup.firstError?.localizedDescription
+                    ?? "Core Audio retained an unknown native resource"
+            )
+        }
+        if let cleanupError = cleanup.firstError {
+            logger.error(
+                "Core Audio process-tap shutdown recovered after: "
+                    + cleanupError.localizedDescription
+            )
+        }
+    }
+
+    /// Attempts every teardown layer and returns the exact identities that may still be live.
+    /// An intermediate stop error is recoverable when the callback and its parent device are
+    /// subsequently destroyed successfully.
+    @available(macOS 14.2, *)
+    private func attemptNativeTeardown(
+        _ resources: NativeTeardownResources
+    ) -> (
+        remaining: NativeTeardownResources,
+        firstError: CoreAudioProcessTapError?
+    ) {
         var firstError: CoreAudioProcessTapError?
-        if aggregateDeviceID != kAudioObjectUnknown,
-           let ioProcID {
-            let stopStatus = AudioDeviceStop(aggregateDeviceID, ioProcID)
+        var didDestroyIOCallback = resources.ioProcID == nil
+        var didDestroyAggregateDevice =
+            resources.aggregateDeviceID == kAudioObjectUnknown
+        var didDestroyProcessTap = resources.tapID == kAudioObjectUnknown
+
+        if resources.aggregateDeviceID != kAudioObjectUnknown,
+           let ioProcID = resources.ioProcID {
+            let stopStatus = AudioDeviceStop(
+                resources.aggregateDeviceID,
+                ioProcID
+            )
             if stopStatus != noErr {
                 firstError = .operationFailed(
                     operation: "stop process-tap aggregate audio device",
@@ -1342,9 +1455,10 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
                 )
             }
             let destroyIOStatus = AudioDeviceDestroyIOProcID(
-                aggregateDeviceID,
+                resources.aggregateDeviceID,
                 ioProcID
             )
+            didDestroyIOCallback = destroyIOStatus == noErr
             if destroyIOStatus != noErr, firstError == nil {
                 firstError = .operationFailed(
                     operation: "destroy process-tap IO callback",
@@ -1353,9 +1467,11 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
             }
             queues.drainIOCallbacks()
         }
-        if aggregateDeviceID != kAudioObjectUnknown {
-            let aggregateStatus =
-                AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
+        if resources.aggregateDeviceID != kAudioObjectUnknown {
+            let aggregateStatus = AudioHardwareDestroyAggregateDevice(
+                resources.aggregateDeviceID
+            )
+            didDestroyAggregateDevice = aggregateStatus == noErr
             if aggregateStatus != noErr, firstError == nil {
                 firstError = .operationFailed(
                     operation: "destroy process-tap aggregate audio device",
@@ -1363,17 +1479,38 @@ final class CoreAudioProcessTapSystemAudioSource: @unchecked Sendable {
                 )
             }
         }
-        let tapStatus = AudioHardwareDestroyProcessTap(tapID)
-        if tapStatus != noErr, firstError == nil {
-            firstError = .operationFailed(
-                operation: "destroy Core Audio process tap",
-                status: tapStatus
+        if resources.tapID != kAudioObjectUnknown {
+            let tapStatus = AudioHardwareDestroyProcessTap(resources.tapID)
+            didDestroyProcessTap = tapStatus == noErr
+            if tapStatus != noErr, firstError == nil {
+                firstError = .operationFailed(
+                    operation: "destroy Core Audio process tap",
+                    status: tapStatus
+                )
+            }
+        }
+
+        let remainingPolicy = CoreAudioProcessTapNativeTeardownPolicy
+            .remainingResources(
+                initial: resources.policyResources,
+                didDestroyIOCallback: didDestroyIOCallback,
+                didDestroyAggregateDevice: didDestroyAggregateDevice,
+                didDestroyProcessTap: didDestroyProcessTap
             )
-        }
-        logger.info("Stopping Core Audio global process tap")
-        if let firstError {
-            throw firstError
-        }
+        return (
+            remaining: NativeTeardownResources(
+                tapID: remainingPolicy.hasProcessTap
+                    ? resources.tapID
+                    : AudioObjectID(kAudioObjectUnknown),
+                aggregateDeviceID: remainingPolicy.hasAggregateDevice
+                    ? resources.aggregateDeviceID
+                    : AudioObjectID(kAudioObjectUnknown),
+                ioProcID: remainingPolicy.hasIOCallback
+                    ? resources.ioProcID
+                    : nil
+            ),
+            firstError: firstError
+        )
     }
 
     private static func processObjectIDs(
@@ -1758,6 +1895,27 @@ enum CoreAudioProcessTapError: LocalizedError {
     case missingStringProperty
     case unsupportedFormat(AudioStreamBasicDescription)
     case operationFailed(operation: String, status: OSStatus)
+    case startupFailedAfterCleanup(String)
+    case nativeTeardownUnconfirmed(
+        startupFailure: String,
+        cleanupFailure: String
+    )
+
+    var hasUnconfirmedNativeTeardown: Bool {
+        if case .nativeTeardownUnconfirmed = self {
+            true
+        } else {
+            false
+        }
+    }
+
+    var startupFailureDescription: String? {
+        if case .nativeTeardownUnconfirmed(let startupFailure, _) = self {
+            startupFailure
+        } else {
+            nil
+        }
+    }
 
     var errorDescription: String? {
         switch self {
@@ -1783,6 +1941,10 @@ enum CoreAudioProcessTapError: LocalizedError {
                 + "channels=\(format.mChannelsPerFrame)"
         case .operationFailed(let operation, let status):
             "\(operation) failed with OSStatus \(status)"
+        case .startupFailedAfterCleanup(let description):
+            "Core Audio process-tap startup failed after confirmed cleanup: \(description)"
+        case .nativeTeardownUnconfirmed(let startupFailure, let cleanupFailure):
+            "\(startupFailure); native cleanup remains unconfirmed: \(cleanupFailure)"
         }
     }
 }

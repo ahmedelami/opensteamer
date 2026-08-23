@@ -733,6 +733,56 @@ final class MacRemoteInputControllerTests: XCTestCase {
         )
     }
 
+    func testInvalidatePermanentlyRevokesPointerAndKeyboardInjection() {
+        let system = MockMacRemoteInputSystem()
+        let field = system.makeElement(role: "AXTextField", settable: true)
+        system.hitElement = field
+        system.currentFocusedElement = field
+        let controller = armedController(system: system)
+
+        XCTAssertEqual(tap(controller), .accepted(.editable(generation: 1, secure: false)))
+        XCTAssertEqual(system.postedMousePoints.count, 1)
+
+        controller.invalidate()
+
+        XCTAssertEqual(tap(controller), .rejected(.disabled))
+        XCTAssertEqual(drag(controller), .rejected(.disabled))
+        XCTAssertEqual(text(controller, generation: 1, value: "blocked"), .rejected(.disabled))
+        XCTAssertEqual(key(controller, generation: 1), .rejected(.disabled))
+        XCTAssertEqual(system.postedMousePoints.count, 1)
+        XCTAssertTrue(system.postedDragEvents.isEmpty)
+        XCTAssertTrue(system.postedTexts.isEmpty)
+        XCTAssertTrue(system.postedKeys.isEmpty)
+    }
+
+    func testInvalidateCannotBeUndoneByRevokeOrRearm() {
+        let system = MockMacRemoteInputSystem()
+        let controller = makeController(system: system)
+
+        controller.invalidate()
+        controller.revoke()
+        controller.invalidate()
+
+        let replacementSessionID = UUID()
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID + 1,
+                inputSessionID: replacementSessionID
+            ),
+            .disabled
+        )
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID + 1,
+                inputSessionID: replacementSessionID,
+                normalizedPoint: .init(x: 0.5, y: 0.5)
+            ),
+            .rejected(.disabled)
+        )
+        XCTAssertTrue(system.postedMousePoints.isEmpty)
+    }
+
     func testBackendFailuresDoNotLeaveAKeyboardGrant() {
         let system = MockMacRemoteInputSystem()
         let field = system.makeElement(role: "AXTextField", settable: true)

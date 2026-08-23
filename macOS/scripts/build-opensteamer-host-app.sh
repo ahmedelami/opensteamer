@@ -5,7 +5,9 @@ umask 077
 
 readonly ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
 readonly BUNDLE_VERIFIER="$ROOT_DIR/macOS/scripts/verify-mac-host-bundle.sh"
+readonly PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER="$ROOT_DIR/macOS/scripts/verify-no-private-virtual-display-imports.sh"
 readonly PINNED_BUNDLE_VERIFIER_SCRIPT="${OPENSTEAMER_PINNED_BUNDLE_VERIFIER_SCRIPT:-}"
+readonly PINNED_PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER_SCRIPT="${OPENSTEAMER_PINNED_PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER_SCRIPT:-}"
 readonly APP_OUTPUT_DIR="${OPENSTEAMER_HOST_APP_OUTPUT_DIR:-$ROOT_DIR/build}"
 readonly APP_DIR="$APP_OUTPUT_DIR/opensteamer Host.app"
 readonly CONTENTS_DIR="$APP_DIR/Contents"
@@ -30,6 +32,15 @@ run_bundle_verifier() {
         /bin/zsh -c "$PINNED_BUNDLE_VERIFIER_SCRIPT" "$BUNDLE_VERIFIER" "$@"
     else
         "$BUNDLE_VERIFIER" "$@"
+    fi
+}
+
+run_private_virtual_display_import_verifier() {
+    if [[ -n "$PINNED_PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER_SCRIPT" ]]; then
+        /bin/zsh -c "$PINNED_PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER_SCRIPT" \
+            "$PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER" "$@"
+    else
+        "$PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER" "$@"
     fi
 }
 
@@ -150,6 +161,12 @@ readonly WEBRTC_EXECUTABLE="$WEBRTC_FRAMEWORK/LiveKitWebRTC"
 
 [[ -f "$EXECUTABLE_SOURCE" && ! -L "$EXECUTABLE_SOURCE" && -x "$EXECUTABLE_SOURCE" ]] || fail \
     "CaptureServer build product is not a safe executable"
+[[ -f "$PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER" \
+    && ! -L "$PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER" \
+    && -x "$PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER" ]] \
+    || fail "private virtual-display import verifier is missing"
+run_private_virtual_display_import_verifier "$EXECUTABLE_SOURCE" \
+    || fail "CaptureServer private virtual-display import verification failed"
 if [[ "$REQUIRE_FRESH_RELEASE" == 1 ]]; then
     [[ "$(/usr/bin/stat -f '%m' "$EXECUTABLE_SOURCE")" -ge "$BUILD_STARTED_AT" ]] || fail \
         "CaptureServer predates this fresh Release build"

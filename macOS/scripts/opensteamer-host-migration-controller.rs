@@ -835,10 +835,14 @@ const CHFLAGS_SHA256: &str = "a67367c7fda2e962b72db6cc730173e82115f3709bf4a208d1
 const DITTO_SHA256: &str = "31a07d70d9ebea58b083e47d4fa380c1d5b8f7fe58ac3fefa9ce2714ca898ca6";
 const EMBEDDED_BUILD_SCRIPT: &[u8] = include_bytes!("build-opensteamer-host-app.sh");
 const EMBEDDED_BUILD_SCRIPT_SHA256: &str =
-    "bda01b7ec76e5112a127fd97427fbff4a23c5d352232bed64d3cc93cf44e9619";
+    "96ffbce9ecff2ece81f1901001108ad3b14d3991e0d8481341db7125fa81365a";
 const EMBEDDED_BUNDLE_VERIFIER: &[u8] = include_bytes!("verify-mac-host-bundle.sh");
 const EMBEDDED_BUNDLE_VERIFIER_SHA256: &str =
     "02a348a88d25b76ab95d45620d823339212bb53ee0f39bfb3a52f04240d3d745";
+const EMBEDDED_PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER: &[u8] =
+    include_bytes!("verify-no-private-virtual-display-imports.sh");
+const EMBEDDED_PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER_SHA256: &str =
+    "e0e54968452471c4120dce3e9fb744874882871718ba49c23c8f0adaeda823b1";
 const EMBEDDED_LAUNCH_VERIFIER: &[u8] = include_bytes!("verify-mac-host-launch-state.sh");
 const EMBEDDED_LAUNCH_VERIFIER_SHA256: &str =
     "27c36f8adec05c22216955cb404d6732ceaa6065477e5bb1570f2d41e84db7a9";
@@ -1635,6 +1639,7 @@ struct PinnedVerifierSet {
     source_manifest: File,
     build: PinnedScript,
     bundle: PinnedScript,
+    private_virtual_display_import: PinnedScript,
     launch: PinnedScript,
     deployment: PinnedScript,
     live_process: PinnedScript,
@@ -1664,6 +1669,11 @@ impl PinnedVerifierSet {
                 &scripts_directory,
                 "verify-mac-host-bundle.sh",
                 EMBEDDED_BUNDLE_VERIFIER,
+            )?,
+            private_virtual_display_import: PinnedScript::open(
+                &scripts_directory,
+                "verify-no-private-virtual-display-imports.sh",
+                EMBEDDED_PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER,
             )?,
             launch: PinnedScript::open(
                 &scripts_directory,
@@ -1716,6 +1726,7 @@ impl PinnedVerifierSet {
         for script in [
             &self.build,
             &self.bundle,
+            &self.private_virtual_display_import,
             &self.launch,
             &self.deployment,
             &self.live_process,
@@ -1732,6 +1743,10 @@ impl PinnedVerifierSet {
         environment.insert(
             "OPENSTEAMER_PINNED_BUNDLE_VERIFIER_SCRIPT".to_owned(),
             self.bundle.text.clone(),
+        );
+        environment.insert(
+            "OPENSTEAMER_PINNED_PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER_SCRIPT".to_owned(),
+            self.private_virtual_display_import.text.clone(),
         );
         environment.insert(
             "OPENSTEAMER_PINNED_LAUNCH_STATE_VERIFIER_SCRIPT".to_owned(),
@@ -1755,6 +1770,11 @@ fn verify_embedded_verifier_hashes() -> Result<()> {
             "bundle verifier",
             EMBEDDED_BUNDLE_VERIFIER,
             EMBEDDED_BUNDLE_VERIFIER_SHA256,
+        ),
+        (
+            "private virtual-display import verifier",
+            EMBEDDED_PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER,
+            EMBEDDED_PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER_SHA256,
         ),
         (
             "launch verifier",

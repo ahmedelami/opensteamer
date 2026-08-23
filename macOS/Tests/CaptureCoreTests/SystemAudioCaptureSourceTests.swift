@@ -202,6 +202,63 @@ final class SystemAudioCaptureSourceTests: XCTestCase {
         XCTAssertTrue(listenerIsInstalled)
     }
 
+    func testProcessTapTeardownRetainsOnlyNativeResourcesWhoseDestructionFailed() {
+        let initial = CoreAudioProcessTapNativeTeardownPolicy.Resources(
+            hasProcessTap: true,
+            hasAggregateDevice: true,
+            hasIOCallback: true
+        )
+
+        XCTAssertEqual(
+            CoreAudioProcessTapNativeTeardownPolicy.remainingResources(
+                initial: initial,
+                didDestroyIOCallback: true,
+                didDestroyAggregateDevice: false,
+                didDestroyProcessTap: true
+            ),
+            .init(
+                hasProcessTap: false,
+                hasAggregateDevice: true,
+                hasIOCallback: false
+            )
+        )
+        XCTAssertEqual(
+            CoreAudioProcessTapNativeTeardownPolicy.remainingResources(
+                initial: initial,
+                didDestroyIOCallback: false,
+                didDestroyAggregateDevice: false,
+                didDestroyProcessTap: false
+            ),
+            initial
+        )
+    }
+
+    func testDestroyingAggregateAlsoConfirmsAttachedIOCallbackRemoval() {
+        let remaining = CoreAudioProcessTapNativeTeardownPolicy.remainingResources(
+            initial: .init(
+                hasProcessTap: true,
+                hasAggregateDevice: true,
+                hasIOCallback: true
+            ),
+            didDestroyIOCallback: false,
+            didDestroyAggregateDevice: true,
+            didDestroyProcessTap: true
+        )
+
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
+    func testProcessTapCleanupErrorExposesUnconfirmedNativeOwnership() {
+        let error = CoreAudioProcessTapError.nativeTeardownUnconfirmed(
+            startupFailure: "start failed",
+            cleanupFailure: "destroy failed"
+        )
+
+        XCTAssertTrue(error.hasUnconfirmedNativeTeardown)
+        XCTAssertEqual(error.startupFailureDescription, "start failed")
+        XCTAssertTrue(error.localizedDescription.contains("destroy failed"))
+    }
+
     func testProcessTapControlQueueKeepsInventoryAndApplyIndivisible() {
         let queues = CoreAudioProcessTapQueueTopology(
             labelPrefix: "opensteamer.tests.ProcessTapSerialization"
