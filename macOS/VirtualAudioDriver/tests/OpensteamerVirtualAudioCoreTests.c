@@ -702,8 +702,9 @@ static bool TestZeroTimestampBoundariesAndOverflow(void) {
   CHECK_STATUS(OSVACoreGetZeroTimestampAtHostTicks(
                    &fixture.core, 1000 + (5 * period) + 1, &shared_timestamp),
                OSVA_STATUS_OK);
-  CHECK(memcmp(&clock_timestamp, &shared_timestamp, sizeof(clock_timestamp)) ==
-        0);
+  CHECK(clock_timestamp.sample_frame == shared_timestamp.sample_frame);
+  CHECK(clock_timestamp.host_ticks == shared_timestamp.host_ticks);
+  CHECK(clock_timestamp.seed == shared_timestamp.seed);
   CHECK_STATUS(OSVACoreStopClient(&fixture.core, writer), OSVA_STATUS_OK);
   CHECK_STATUS(OSVACoreStopClient(&fixture.core, reader), OSVA_STATUS_OK);
   CHECK(FixtureDestroy(&fixture));
@@ -778,6 +779,10 @@ static bool TestInputFirstSilenceAndExactMonoBits(void) {
   CHECK(read_result.requested_frames == 16);
   CHECK(read_result.delivered_frames == 0);
   CHECK(read_result.underrun_frames == 16);
+  CHECK(!read_result.has_last_transferred_frame);
+  CHECK(read_result.last_transferred_timeline_seed == 0);
+  CHECK(read_result.last_transferred_session_id == 0);
+  CHECK(read_result.last_transferred_absolute_frame == 0);
   CHECK(SamplesArePositiveZero(destination.samples, 16));
   CHECK(GuardedSamplesCanariesAreIntact(&destination));
 
@@ -803,6 +808,11 @@ static bool TestInputFirstSilenceAndExactMonoBits(void) {
   CHECK(write_result.requested_frames == ARRAY_COUNT(exact_bits));
   CHECK(write_result.written_frames == ARRAY_COUNT(exact_bits));
   CHECK(write_result.contended_frames == 0);
+  CHECK(write_result.has_last_transferred_frame);
+  CHECK(write_result.last_transferred_timeline_seed == writer.timeline_seed);
+  CHECK(write_result.last_transferred_session_id == writer.session_id);
+  CHECK(write_result.last_transferred_absolute_frame ==
+        UINT64_C(400) + ARRAY_COUNT(exact_bits) - 1);
   CHECK(GuardedSamplesCanariesAreIntact(&source));
 
   GuardedSamplesInitialize(&destination, UINT32_C(0xDEADBEEF));
@@ -812,6 +822,11 @@ static bool TestInputFirstSilenceAndExactMonoBits(void) {
                OSVA_STATUS_OK);
   CHECK(read_result.delivered_frames == ARRAY_COUNT(exact_bits));
   CHECK(read_result.underrun_frames == 0);
+  CHECK(read_result.has_last_transferred_frame);
+  CHECK(read_result.last_transferred_timeline_seed == writer.timeline_seed);
+  CHECK(read_result.last_transferred_session_id == writer.session_id);
+  CHECK(read_result.last_transferred_absolute_frame ==
+        UINT64_C(400) + ARRAY_COUNT(exact_bits) - 1);
   CHECK(SamplesHaveBits(destination.samples, exact_bits,
                         ARRAY_COUNT(exact_bits)));
   CHECK(GuardedSamplesCanariesAreIntact(&destination));
@@ -1077,11 +1092,19 @@ static bool TestFrameOverflowContentionAndBufferCanaries(void) {
                OSVA_STATUS_OK);
   CHECK(write_result.written_frames == 0);
   CHECK(write_result.contended_frames == 1);
+  CHECK(!write_result.has_last_transferred_frame);
+  CHECK(write_result.last_transferred_timeline_seed == 0);
+  CHECK(write_result.last_transferred_session_id == 0);
+  CHECK(write_result.last_transferred_absolute_frame == 0);
   destination.samples[0] = 9.0F;
   CHECK_STATUS(OSVACoreReadFrames(&fixture.core, reader, contended_frame,
                                   destination.samples, 1, &read_result),
                OSVA_STATUS_OK);
   CHECK(read_result.delivered_frames == 0);
+  CHECK(!read_result.has_last_transferred_frame);
+  CHECK(read_result.last_transferred_timeline_seed == 0);
+  CHECK(read_result.last_transferred_session_id == 0);
+  CHECK(read_result.last_transferred_absolute_frame == 0);
   CHECK(FloatBits(destination.samples[0]) == 0);
 
   atomic_store_explicit(&contended_slot->sequence, UINT64_MAX - 1,
@@ -1091,6 +1114,10 @@ static bool TestFrameOverflowContentionAndBufferCanaries(void) {
                OSVA_STATUS_OK);
   CHECK(write_result.written_frames == 0);
   CHECK(write_result.contended_frames == 1);
+  CHECK(!write_result.has_last_transferred_frame);
+  CHECK(write_result.last_transferred_timeline_seed == 0);
+  CHECK(write_result.last_transferred_session_id == 0);
+  CHECK(write_result.last_transferred_absolute_frame == 0);
   CHECK(atomic_load_explicit(&contended_slot->sequence, memory_order_acquire) ==
         UINT64_MAX - 1);
   destination.samples[0] = 9.0F;
@@ -1098,16 +1125,57 @@ static bool TestFrameOverflowContentionAndBufferCanaries(void) {
                                   destination.samples, 1, &read_result),
                OSVA_STATUS_OK);
   CHECK(read_result.delivered_frames == 0);
+  CHECK(!read_result.has_last_transferred_frame);
+  CHECK(read_result.last_transferred_timeline_seed == 0);
+  CHECK(read_result.last_transferred_session_id == 0);
+  CHECK(read_result.last_transferred_absolute_frame == 0);
   CHECK(FloatBits(destination.samples[0]) == 0);
 
   CHECK_STATUS(OSVACoreWriteFrames(&fixture.core, writer, UINT64_MAX, NULL, 0,
                                    &write_result),
                OSVA_STATUS_OK);
   CHECK(write_result.requested_frames == 0);
+  CHECK(!write_result.has_last_transferred_frame);
+  CHECK(write_result.last_transferred_timeline_seed == 0);
+  CHECK(write_result.last_transferred_session_id == 0);
+  CHECK(write_result.last_transferred_absolute_frame == 0);
   CHECK_STATUS(OSVACoreReadFrames(&fixture.core, reader, UINT64_MAX, NULL, 0,
                                   &read_result),
                OSVA_STATUS_OK);
   CHECK(read_result.requested_frames == 0);
+  CHECK(!read_result.has_last_transferred_frame);
+  CHECK(read_result.last_transferred_timeline_seed == 0);
+  CHECK(read_result.last_transferred_session_id == 0);
+  CHECK(read_result.last_transferred_absolute_frame == 0);
+
+  read_result = (OSVAReadResult){
+      .requested_frames = 99,
+      .delivered_frames = 99,
+      .underrun_frames = 99,
+      .has_last_transferred_frame = true,
+      .last_transferred_timeline_seed = 99,
+      .last_transferred_session_id = 99,
+      .last_transferred_absolute_frame = 99,
+  };
+  destination.samples[0] = 9.0F;
+  const uint64_t stable_lifecycle_sequence = atomic_load_explicit(
+      &fixture.core.lifecycle_sequence, memory_order_acquire);
+  CHECK((stable_lifecycle_sequence & UINT64_C(1)) == 0);
+  atomic_store_explicit(&fixture.core.lifecycle_sequence,
+                        stable_lifecycle_sequence + 1, memory_order_release);
+  CHECK_STATUS(OSVACoreReadFrames(&fixture.core, reader, 0,
+                                  destination.samples, 1, &read_result),
+               OSVA_STATUS_RETRY);
+  atomic_store_explicit(&fixture.core.lifecycle_sequence,
+                        stable_lifecycle_sequence, memory_order_release);
+  CHECK(read_result.requested_frames == 1);
+  CHECK(read_result.delivered_frames == 0);
+  CHECK(read_result.underrun_frames == 1);
+  CHECK(!read_result.has_last_transferred_frame);
+  CHECK(read_result.last_transferred_timeline_seed == 0);
+  CHECK(read_result.last_transferred_session_id == 0);
+  CHECK(read_result.last_transferred_absolute_frame == 0);
+  CHECK(FloatBits(destination.samples[0]) == 0);
   CHECK(GuardedSamplesCanariesAreIntact(&source));
   CHECK(GuardedSamplesCanariesAreIntact(&destination));
   CHECK(FixtureStorageIsIntact(&fixture));
@@ -1327,6 +1395,17 @@ static void *LifecycleReaderMain(void *opaque_context) {
         OSVACoreReadFrames(context->core, context->reader, 700, samples,
                            ARRAY_COUNT(samples), &result);
     if (status != OSVA_STATUS_OK && status != OSVA_STATUS_RETRY) {
+      RecordConcurrentFailure(context->failure_count);
+      break;
+    }
+    if (status == OSVA_STATUS_RETRY &&
+        (result.delivered_frames != 0 ||
+         result.underrun_frames != ARRAY_COUNT(samples) ||
+         result.has_last_transferred_frame ||
+         result.last_transferred_timeline_seed != 0 ||
+         result.last_transferred_session_id != 0 ||
+         result.last_transferred_absolute_frame != 0 ||
+         !SamplesArePositiveZero(samples, ARRAY_COUNT(samples)))) {
       RecordConcurrentFailure(context->failure_count);
       break;
     }

@@ -35,6 +35,7 @@ CORE_ASAN_BINARY := $(BUILD_DIR)/OpensteamerVirtualAudioCoreTests.asan-ubsan
 DRIVER_ASAN_BINARY := $(BUILD_DIR)/OpensteamerVirtualMicrophoneDriverTests.asan-ubsan
 CORE_TSAN_BINARY := $(BUILD_DIR)/OpensteamerVirtualAudioCoreTests.tsan
 DRIVER_TSAN_BINARY := $(BUILD_DIR)/OpensteamerVirtualMicrophoneDriverTests.tsan
+DIAGNOSTIC_READER_BINARY := $(BUILD_DIR)/opensteamer-diagnostic-snapshot-reader
 CORE_DSYM := $(CORE_BINARY).dSYM
 DRIVER_DSYM := $(DRIVER_BINARY).dSYM
 CORE_ASAN_DSYM := $(CORE_ASAN_BINARY).dSYM
@@ -42,12 +43,13 @@ DRIVER_ASAN_DSYM := $(DRIVER_ASAN_BINARY).dSYM
 CORE_TSAN_DSYM := $(CORE_TSAN_BINARY).dSYM
 DRIVER_TSAN_DSYM := $(DRIVER_TSAN_BINARY).dSYM
 
-.PHONY: all test test-core test-driver test-bundle-load test-asan-ubsan test-tsan \
-	test-sanitizers clean
+.PHONY: all test test-core test-driver test-bundle-load \
+	build-diagnostic-snapshot-reader test-diagnostic-snapshot-reader \
+	test-asan-ubsan test-tsan test-sanitizers clean
 
 all: test
 
-test: test-core test-driver test-bundle-load
+test: test-core test-driver test-bundle-load test-diagnostic-snapshot-reader
 
 test-core: $(CORE_BINARY)
 	"$(CORE_BINARY)"
@@ -57,6 +59,11 @@ test-driver: $(DRIVER_BINARY)
 
 test-bundle-load:
 	"$(CURDIR)/scripts/test-built-driver-bundle.sh"
+
+build-diagnostic-snapshot-reader: $(DIAGNOSTIC_READER_BINARY)
+
+test-diagnostic-snapshot-reader:
+	"$(CURDIR)/scripts/test-diagnostic-snapshot-reader.sh"
 
 test-asan-ubsan: $(CORE_ASAN_BINARY) $(DRIVER_ASAN_BINARY)
 	ASAN_OPTIONS=abort_on_error=1:detect_leaks=0:strict_string_checks=1 \
@@ -76,6 +83,19 @@ test-sanitizers: test-asan-ubsan test-tsan
 
 $(BUILD_DIR):
 	/bin/mkdir -p "$@"
+
+$(DIAGNOSTIC_READER_BINARY): \
+		$(CURDIR)/Probes/DiagnosticSnapshotReader.c \
+		$(INCLUDE_DIR)/OpensteamerVirtualMicrophoneDriver.h \
+		$(CURDIR)/scripts/build-diagnostic-snapshot-reader.sh | $(BUILD_DIR)
+	@if [[ -e "$@" || -L "$@" ]]; then \
+		if [[ ! -f "$@" || -L "$@" ]]; then \
+			print -u2 "refusing to replace unexpected diagnostic-reader node: $@"; \
+			exit 73; \
+		fi; \
+		/usr/bin/unlink "$@"; \
+	fi
+	"$(CURDIR)/scripts/build-diagnostic-snapshot-reader.sh" "$@"
 
 $(CORE_BINARY): $(CORE_SOURCE) $(CORE_TEST_SOURCE) \
 		$(INCLUDE_DIR)/OpensteamerVirtualAudioCore.h | $(BUILD_DIR)
@@ -136,7 +156,8 @@ clean:
 		"$(CORE_ASAN_BINARY)" \
 		"$(DRIVER_ASAN_BINARY)" \
 		"$(CORE_TSAN_BINARY)" \
-		"$(DRIVER_TSAN_BINARY)"; do \
+		"$(DRIVER_TSAN_BINARY)" \
+		"$(DIAGNOSTIC_READER_BINARY)"; do \
 		if [[ -e "$$artifact" || -L "$$artifact" ]]; then \
 			if [[ ! -f "$$artifact" || -L "$$artifact" ]]; then \
 				print -u2 "refusing to remove unexpected build artifact node: $$artifact"; \

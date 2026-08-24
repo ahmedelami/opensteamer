@@ -21,10 +21,15 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#if defined(OSVA_DRIVER_TESTING)
+#include <sched.h>
+#endif
 
 #define OSVA_DRIVER_CLIENT_SLOT_COUNT ((size_t)64)
 #define OSVA_ZERO_TIMESTAMP_RETRY_LIMIT 8U
 #define OSVA_TIMESTAMP_CACHE_ATTEMPT_LIMIT 16U
+#define OSVA_DIAGNOSTIC_RECORD_ATTEMPT_LIMIT 16U
+#define OSVA_DIAGNOSTIC_ENDPOINT_COUNT ((size_t)2)
 
 static HRESULT OSVAQueryInterface(void *driver, REFIID uuid,
                                   LPVOID *outInterface);
@@ -154,12 +159,21 @@ typedef struct {
   _Atomic(uint64_t) sample_frame;
   _Atomic(uint64_t) host_ticks;
   _Atomic(uint64_t) seed;
+  _Atomic(uint64_t) lifecycle_sequence;
 } OSVAZeroTimestampCache;
 
 static OSVAZeroTimestampCache gZeroTimestampCache;
 #if defined(OSVA_DRIVER_TESTING)
 static _Atomic(bool) gFenceNextIOForTesting = false;
 static _Atomic(uint32_t) gFenceZeroTimeStampCallCountForTesting = 0;
+static _Atomic(bool) gPauseNextZeroTimestampPublicationForTesting = false;
+static _Atomic(bool) gZeroTimestampPublicationPausedForTesting = false;
+static _Atomic(bool) gResumeZeroTimestampPublicationForTesting = false;
+static _Atomic(bool) gForceNextIOWorkLoopCurrentCountDropForTesting = false;
+static _Atomic(uint32_t) gHeldDiagnosticRecordKindForTesting = 0;
+static _Atomic(uint32_t) gHeldDiagnosticEndpointIndexForTesting = 0;
+static _Atomic(bool) gDiagnosticRecordWriterHeldForTesting = false;
+static _Atomic(bool) gResumeDiagnosticRecordWriterForTesting = false;
 static bool OSVABeginLifecycleFenceForTesting(uint64_t *oddSequenceOut);
 static void OSVAEndLifecycleFenceForTesting(uint64_t oddSequence);
 #endif
@@ -169,10 +183,703 @@ typedef struct {
   bool started;
   AudioObjectID device_object_id;
   UInt32 client_id;
+  pid_t process_id;
+  uint32_t io_start_depth;
+  uint64_t generation;
+  uint64_t registration_host_ticks;
+  uint64_t start_host_ticks;
+  uint64_t last_transition_host_ticks;
   OSVAClientLease lease;
 } OSVADriverClient;
 
 static OSVADriverClient gDriverClients[OSVA_DRIVER_CLIENT_SLOT_COUNT];
+
+typedef struct {
+  uint64_t driver_instance_generation;
+  uint64_t snapshot_observation_sequence;
+  uint64_t lifecycle_sequence;
+  uint64_t driver_client_add_attempt_count;
+  uint64_t driver_client_add_count;
+  uint64_t driver_client_remove_attempt_count;
+  uint64_t driver_client_remove_count;
+  uint64_t global_start_attempt_count;
+  uint64_t global_start_transition_count;
+  uint64_t global_stop_attempt_count;
+  uint64_t global_stop_transition_count;
+  uint64_t seed_create_count;
+  uint64_t seed_clear_count;
+  uint64_t current_seed_generation;
+  uint64_t last_seed_create_host_ticks;
+  uint64_t last_seed_clear_host_ticks;
+  uint64_t last_cleared_seed;
+  uint64_t last_cleared_seed_generation;
+  uint64_t last_cleared_anchor_host_ticks;
+  OSVADiagnosticTransitionSnapshot last_driver_transition;
+  OSVADiagnosticTransitionSnapshot last_core_transition;
+} OSVADiagnosticLifecycleState;
+
+typedef struct {
+  _Atomic(uint64_t) sequence;
+  _Atomic(uint64_t) active_publisher_count;
+  _Atomic(uint64_t) metadata_sequence;
+  _Atomic(uint64_t) metadata_dropped_update_count;
+  _Atomic(uint64_t) epoch_mapping_unavailable_count;
+  _Atomic(uint64_t) call_count;
+  _Atomic(uint64_t) successful_return_count;
+  _Atomic(uint64_t) fallback_return_count;
+  _Atomic(uint64_t) failed_return_count;
+  _Atomic(uint64_t) last_call_host_ticks;
+  _Atomic(uint64_t) last_sample_frame;
+  _Atomic(uint64_t) last_host_ticks;
+  _Atomic(uint64_t) last_seed;
+  _Atomic(uint64_t) last_seed_generation;
+  _Atomic(uint64_t) last_core_lifecycle_sequence;
+  _Atomic(uint64_t) last_call_core_lifecycle_sequence;
+  _Atomic(uint32_t) last_client_id;
+  _Atomic(int32_t) last_status;
+  _Atomic(uint32_t) flags;
+} OSVAAtomicZeroTimestampDiagnostics;
+
+typedef struct {
+  _Atomic(uint64_t) sequence;
+  _Atomic(uint64_t) active_publisher_count;
+  _Atomic(uint64_t) metadata_sequence;
+  _Atomic(uint64_t) metadata_dropped_update_count;
+  _Atomic(uint64_t) operation_call_count;
+  _Atomic(uint64_t) valid_cycle_count;
+  _Atomic(uint64_t) invalid_cycle_count;
+  _Atomic(uint64_t) lease_unavailable_count;
+  _Atomic(uint64_t) epoch_mapping_unavailable_count;
+  _Atomic(uint64_t) core_ok_count;
+  _Atomic(uint64_t) core_retry_count;
+  _Atomic(uint64_t) core_failure_count;
+  _Atomic(uint64_t) requested_frame_count;
+  _Atomic(uint64_t) transferred_frame_count;
+  _Atomic(uint64_t) gap_frame_count;
+  _Atomic(uint64_t) last_cycle_sample_frame;
+  _Atomic(uint64_t) last_cycle_host_ticks;
+  _Atomic(uint64_t) last_published_frame_seed;
+  _Atomic(uint64_t) last_published_seed_generation;
+  _Atomic(uint64_t) last_published_frame_session;
+  _Atomic(uint64_t) last_published_absolute_frame;
+  _Atomic(uint64_t) last_consumed_frame_seed;
+  _Atomic(uint64_t) last_consumed_seed_generation;
+  _Atomic(uint64_t) last_consumed_frame_session;
+  _Atomic(uint64_t) last_consumed_absolute_frame;
+  _Atomic(uint32_t) last_client_id;
+  _Atomic(int32_t) last_status;
+  _Atomic(uint32_t) flags;
+} OSVAAtomicIODiagnostics;
+
+typedef struct {
+  _Atomic(uint64_t) sequence;
+  _Atomic(uint64_t) active_publisher_count;
+  _Atomic(uint64_t) metadata_sequence;
+  _Atomic(uint64_t) metadata_dropped_update_count;
+  _Atomic(uint64_t) current_count;
+  _Atomic(uint64_t) begin_count;
+  _Atomic(uint64_t) end_count;
+  _Atomic(uint64_t) underflow_count;
+  _Atomic(uint64_t) last_transition_host_ticks;
+  _Atomic(uint32_t) last_client_id;
+  _Atomic(uint32_t) flags;
+} OSVAAtomicIOWorkLoopDiagnostics;
+
+static uint64_t gLastDriverInstanceGeneration = 0;
+static OSVADiagnosticLifecycleState gDiagnosticLifecycle;
+static OSVAAtomicZeroTimestampDiagnostics
+    gZeroTimestampDiagnostics[OSVA_DIAGNOSTIC_ENDPOINT_COUNT];
+static OSVAAtomicIODiagnostics gIODiagnostics[OSVA_DIAGNOSTIC_ENDPOINT_COUNT];
+static OSVAAtomicIOWorkLoopDiagnostics
+    gIOWorkLoopDiagnostics[OSVA_DIAGNOSTIC_ENDPOINT_COUNT];
+
+typedef struct {
+  bool valid_cycle;
+  bool lease_available;
+  bool epoch_mapping_available;
+  bool core_called;
+  bool writer;
+  bool has_transferred_frame;
+  uint64_t requested_frames;
+  uint64_t transferred_frames;
+  uint64_t gap_frames;
+  uint64_t cycle_sample_frame;
+  uint64_t cycle_host_ticks;
+  uint64_t seed_generation;
+  uint64_t transferred_seed;
+  uint64_t transferred_session;
+  uint64_t transferred_absolute_frame;
+  UInt32 client_id;
+  OSVAStatus status;
+} OSVAIODiagnosticObservation;
+
+_Static_assert(OSVA_DRIVER_CLIENT_SLOT_COUNT ==
+                   kOSVADiagnosticClientSlotCapacity,
+               "diagnostic ABI must cover every driver client slot");
+_Static_assert(sizeof(OSVADiagnosticTransitionSnapshot) == 72,
+               "diagnostic transition ABI changed without a version bump");
+_Static_assert(sizeof(OSVADiagnosticDriverClientSlotSnapshot) == 80,
+               "diagnostic driver-slot ABI changed without a version bump");
+_Static_assert(sizeof(OSVADiagnosticCoreClientSlotSnapshot) == 32,
+               "diagnostic core-slot ABI changed without a version bump");
+_Static_assert(sizeof(OSVADiagnosticZeroTimestampSnapshot) == 136,
+               "diagnostic zero-timestamp ABI changed without a version bump");
+_Static_assert(sizeof(OSVADiagnosticIOSnapshot) == 208,
+               "diagnostic I/O ABI changed without a version bump");
+_Static_assert(sizeof(OSVADiagnosticIOWorkLoopSnapshot) == 72,
+               "diagnostic I/O-work-loop ABI changed without a version bump");
+_Static_assert(sizeof(OSVADiagnosticSnapshot) ==
+                   kOSVADiagnosticSnapshotByteCount,
+               "diagnostic snapshot ABI changed without a version bump");
+
+static size_t OSVADiagnosticEndpointIndex(OSVAEndpoint endpoint) {
+  return endpoint == OSVA_ENDPOINT_HIDDEN_WRITER ? 1U : 0U;
+}
+
+static void OSVAIncrementDiagnosticCounter(uint64_t *counter) {
+  if (*counter != UINT64_MAX) {
+    *counter += 1;
+  }
+}
+
+static void OSVAAdvanceDiagnosticLifecycleSequence(void) {
+  OSVAIncrementDiagnosticCounter(&gDiagnosticLifecycle.lifecycle_sequence);
+}
+
+static void OSVARecordDiagnosticTransition(
+    OSVADiagnosticTransitionSnapshot *transition,
+    OSVADiagnosticTransitionType type, OSVAEndpoint endpoint, size_t slotIndex,
+    uint64_t clientID, pid_t processID, uint64_t driverClientGeneration,
+    uint64_t coreSessionID, uint64_t preGlobalCount, uint64_t postGlobalCount,
+    uint64_t hostTicks) {
+  *transition = (OSVADiagnosticTransitionSnapshot){
+      .host_ticks = hostTicks,
+      .client_id = clientID,
+      .pre_global_active_count = preGlobalCount,
+      .post_global_active_count = postGlobalCount,
+      .driver_client_generation = driverClientGeneration,
+      .core_session_id = coreSessionID,
+      .type = (UInt32)type,
+      .endpoint_role = (UInt32)endpoint,
+      .slot_index = slotIndex < OSVA_DRIVER_CLIENT_SLOT_COUNT
+                        ? (UInt32)slotIndex
+                        : OSVA_INVALID_CLIENT_SLOT,
+      .process_id = (SInt32)processID,
+  };
+}
+
+static bool OSVADiagnosticAtomicsAreLockFree(void) {
+  for (size_t index = 0; index < OSVA_DIAGNOSTIC_ENDPOINT_COUNT; ++index) {
+    const OSVAAtomicZeroTimestampDiagnostics *zero =
+        &gZeroTimestampDiagnostics[index];
+    const OSVAAtomicIODiagnostics *io = &gIODiagnostics[index];
+    const OSVAAtomicIOWorkLoopDiagnostics *workLoop =
+        &gIOWorkLoopDiagnostics[index];
+    if (!atomic_is_lock_free(&zero->sequence) ||
+        !atomic_is_lock_free(&zero->active_publisher_count) ||
+        !atomic_is_lock_free(&zero->metadata_sequence) ||
+        !atomic_is_lock_free(&zero->metadata_dropped_update_count) ||
+        !atomic_is_lock_free(&zero->epoch_mapping_unavailable_count) ||
+        !atomic_is_lock_free(&zero->call_count) ||
+        !atomic_is_lock_free(&zero->successful_return_count) ||
+        !atomic_is_lock_free(&zero->fallback_return_count) ||
+        !atomic_is_lock_free(&zero->failed_return_count) ||
+        !atomic_is_lock_free(&zero->last_call_host_ticks) ||
+        !atomic_is_lock_free(&zero->last_sample_frame) ||
+        !atomic_is_lock_free(&zero->last_host_ticks) ||
+        !atomic_is_lock_free(&zero->last_seed) ||
+        !atomic_is_lock_free(&zero->last_seed_generation) ||
+        !atomic_is_lock_free(&zero->last_core_lifecycle_sequence) ||
+        !atomic_is_lock_free(&zero->last_call_core_lifecycle_sequence) ||
+        !atomic_is_lock_free(&zero->last_client_id) ||
+        !atomic_is_lock_free(&zero->last_status) ||
+        !atomic_is_lock_free(&zero->flags) ||
+        !atomic_is_lock_free(&io->sequence) ||
+        !atomic_is_lock_free(&io->active_publisher_count) ||
+        !atomic_is_lock_free(&io->metadata_sequence) ||
+        !atomic_is_lock_free(&io->metadata_dropped_update_count) ||
+        !atomic_is_lock_free(&io->operation_call_count) ||
+        !atomic_is_lock_free(&io->valid_cycle_count) ||
+        !atomic_is_lock_free(&io->invalid_cycle_count) ||
+        !atomic_is_lock_free(&io->lease_unavailable_count) ||
+        !atomic_is_lock_free(&io->epoch_mapping_unavailable_count) ||
+        !atomic_is_lock_free(&io->core_ok_count) ||
+        !atomic_is_lock_free(&io->core_retry_count) ||
+        !atomic_is_lock_free(&io->core_failure_count) ||
+        !atomic_is_lock_free(&io->requested_frame_count) ||
+        !atomic_is_lock_free(&io->transferred_frame_count) ||
+        !atomic_is_lock_free(&io->gap_frame_count) ||
+        !atomic_is_lock_free(&io->last_cycle_sample_frame) ||
+        !atomic_is_lock_free(&io->last_cycle_host_ticks) ||
+        !atomic_is_lock_free(&io->last_published_frame_seed) ||
+        !atomic_is_lock_free(&io->last_published_seed_generation) ||
+        !atomic_is_lock_free(&io->last_published_frame_session) ||
+        !atomic_is_lock_free(&io->last_published_absolute_frame) ||
+        !atomic_is_lock_free(&io->last_consumed_frame_seed) ||
+        !atomic_is_lock_free(&io->last_consumed_seed_generation) ||
+        !atomic_is_lock_free(&io->last_consumed_frame_session) ||
+        !atomic_is_lock_free(&io->last_consumed_absolute_frame) ||
+        !atomic_is_lock_free(&io->last_client_id) ||
+        !atomic_is_lock_free(&io->last_status) ||
+        !atomic_is_lock_free(&io->flags) ||
+        !atomic_is_lock_free(&workLoop->sequence) ||
+        !atomic_is_lock_free(&workLoop->active_publisher_count) ||
+        !atomic_is_lock_free(&workLoop->metadata_sequence) ||
+        !atomic_is_lock_free(&workLoop->metadata_dropped_update_count) ||
+        !atomic_is_lock_free(&workLoop->current_count) ||
+        !atomic_is_lock_free(&workLoop->begin_count) ||
+        !atomic_is_lock_free(&workLoop->end_count) ||
+        !atomic_is_lock_free(&workLoop->underflow_count) ||
+        !atomic_is_lock_free(&workLoop->last_transition_host_ticks) ||
+        !atomic_is_lock_free(&workLoop->last_client_id) ||
+        !atomic_is_lock_free(&workLoop->flags)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static void OSVAResetDiagnosticAtomics(void) {
+  for (size_t index = 0; index < OSVA_DIAGNOSTIC_ENDPOINT_COUNT; ++index) {
+    OSVAAtomicZeroTimestampDiagnostics *zero =
+        &gZeroTimestampDiagnostics[index];
+    OSVAAtomicIODiagnostics *io = &gIODiagnostics[index];
+    OSVAAtomicIOWorkLoopDiagnostics *workLoop =
+        &gIOWorkLoopDiagnostics[index];
+    atomic_store_explicit(&zero->sequence, 0, memory_order_relaxed);
+    atomic_store_explicit(&zero->active_publisher_count, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&zero->metadata_sequence, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&zero->metadata_dropped_update_count, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&zero->epoch_mapping_unavailable_count, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&zero->call_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&zero->successful_return_count, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&zero->fallback_return_count, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&zero->failed_return_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&zero->last_call_host_ticks, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&zero->last_sample_frame, 0, memory_order_relaxed);
+    atomic_store_explicit(&zero->last_host_ticks, 0, memory_order_relaxed);
+    atomic_store_explicit(&zero->last_seed, 0, memory_order_relaxed);
+    atomic_store_explicit(&zero->last_seed_generation, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&zero->last_core_lifecycle_sequence, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&zero->last_call_core_lifecycle_sequence, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&zero->last_client_id, 0, memory_order_relaxed);
+    atomic_store_explicit(&zero->last_status, 0, memory_order_relaxed);
+    atomic_store_explicit(&zero->flags, 0, memory_order_relaxed);
+
+    atomic_store_explicit(&io->sequence, 0, memory_order_relaxed);
+    atomic_store_explicit(&io->active_publisher_count, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&io->metadata_sequence, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&io->metadata_dropped_update_count, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&io->operation_call_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&io->valid_cycle_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&io->invalid_cycle_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&io->lease_unavailable_count, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&io->epoch_mapping_unavailable_count, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&io->core_ok_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&io->core_retry_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&io->core_failure_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&io->requested_frame_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&io->transferred_frame_count, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&io->gap_frame_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&io->last_cycle_sample_frame, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&io->last_cycle_host_ticks, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&io->last_published_frame_seed, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&io->last_published_seed_generation, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&io->last_published_frame_session, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&io->last_published_absolute_frame, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&io->last_consumed_frame_seed, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&io->last_consumed_seed_generation, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&io->last_consumed_frame_session, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&io->last_consumed_absolute_frame, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&io->last_client_id, 0, memory_order_relaxed);
+    atomic_store_explicit(&io->last_status, 0, memory_order_relaxed);
+    atomic_store_explicit(&io->flags, 0, memory_order_relaxed);
+
+    atomic_store_explicit(&workLoop->sequence, 0, memory_order_relaxed);
+    atomic_store_explicit(&workLoop->active_publisher_count, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&workLoop->metadata_sequence, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&workLoop->metadata_dropped_update_count, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&workLoop->current_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&workLoop->begin_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&workLoop->end_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&workLoop->underflow_count, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&workLoop->last_transition_host_ticks, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&workLoop->last_client_id, 0, memory_order_relaxed);
+    atomic_store_explicit(&workLoop->flags, 0, memory_order_relaxed);
+  }
+}
+
+static bool OSVABeginDiagnosticRecord(_Atomic(uint64_t) *sequence,
+                                      uint64_t *oddSequenceOut) {
+  for (unsigned attempt = 0; attempt < OSVA_DIAGNOSTIC_RECORD_ATTEMPT_LIMIT;
+       ++attempt) {
+    uint64_t observed =
+        atomic_load_explicit(sequence, memory_order_acquire);
+    if ((observed & UINT64_C(1)) != 0 || observed > UINT64_MAX - 2) {
+      continue;
+    }
+    const uint64_t oddSequence = observed + 1;
+    if (atomic_compare_exchange_weak_explicit(
+            sequence, &observed, oddSequence, memory_order_acq_rel,
+            memory_order_acquire)) {
+      *oddSequenceOut = oddSequence;
+      return true;
+    }
+  }
+  return false;
+}
+
+static void OSVAEndDiagnosticRecord(_Atomic(uint64_t) *sequence,
+                                    uint64_t oddSequence) {
+  atomic_store_explicit(sequence, oddSequence + 1, memory_order_release);
+}
+
+#if defined(OSVA_DRIVER_TESTING)
+static void OSVAMaybeHoldDiagnosticRecordWriterForTesting(
+    UInt32 recordKind, size_t endpointIndex) {
+  if (atomic_load_explicit(&gHeldDiagnosticEndpointIndexForTesting,
+                           memory_order_acquire) != endpointIndex) {
+    return;
+  }
+  uint32_t expected = recordKind;
+  if (!atomic_compare_exchange_strong_explicit(
+          &gHeldDiagnosticRecordKindForTesting, &expected, 0,
+          memory_order_acq_rel, memory_order_acquire)) {
+    return;
+  }
+  atomic_store_explicit(&gDiagnosticRecordWriterHeldForTesting, true,
+                        memory_order_release);
+  while (!atomic_load_explicit(&gResumeDiagnosticRecordWriterForTesting,
+                               memory_order_acquire)) {
+    sched_yield();
+  }
+  atomic_store_explicit(&gResumeDiagnosticRecordWriterForTesting, false,
+                        memory_order_relaxed);
+  atomic_store_explicit(&gDiagnosticRecordWriterHeldForTesting, false,
+                        memory_order_release);
+}
+#endif
+
+static void OSVAPublishZeroTimestampDiagnostic(
+    OSVAEndpoint endpoint, UInt32 clientID, uint64_t callHostTicks,
+    uint64_t coreLifecycleSequence, OSVAStatus status,
+    const OSVAZeroTimestamp *timestamp, uint64_t seedGeneration,
+    bool epochMappingAvailable, bool usedFallback) {
+  OSVAAtomicZeroTimestampDiagnostics *record =
+      &gZeroTimestampDiagnostics[OSVADiagnosticEndpointIndex(endpoint)];
+  (void)atomic_fetch_add_explicit(&record->active_publisher_count, UINT64_C(1),
+                                  memory_order_acq_rel);
+  (void)atomic_fetch_add_explicit(&record->call_count, UINT64_C(1),
+                                  memory_order_relaxed);
+  if (status == OSVA_STATUS_OK && timestamp != NULL) {
+    (void)atomic_fetch_add_explicit(&record->successful_return_count,
+                                    UINT64_C(1), memory_order_relaxed);
+    if (usedFallback) {
+      (void)atomic_fetch_add_explicit(&record->fallback_return_count,
+                                      UINT64_C(1), memory_order_relaxed);
+    }
+    if (!epochMappingAvailable) {
+      (void)atomic_fetch_add_explicit(
+          &record->epoch_mapping_unavailable_count, UINT64_C(1),
+          memory_order_relaxed);
+    }
+  } else {
+    (void)atomic_fetch_add_explicit(&record->failed_return_count, UINT64_C(1),
+                                    memory_order_relaxed);
+  }
+
+  uint64_t oddMetadataSequence = 0;
+  if (OSVABeginDiagnosticRecord(&record->metadata_sequence,
+                                &oddMetadataSequence)) {
+#if defined(OSVA_DRIVER_TESTING)
+    OSVAMaybeHoldDiagnosticRecordWriterForTesting(
+        kOSVADriverTestDiagnosticRecordZeroTimestamp,
+        OSVADiagnosticEndpointIndex(endpoint));
+#endif
+    atomic_store_explicit(&record->last_call_host_ticks, callHostTicks,
+                          memory_order_relaxed);
+    atomic_store_explicit(&record->last_call_core_lifecycle_sequence,
+                          coreLifecycleSequence, memory_order_relaxed);
+    atomic_store_explicit(&record->last_client_id, clientID,
+                          memory_order_relaxed);
+    atomic_store_explicit(&record->last_status, (int32_t)status,
+                          memory_order_relaxed);
+    uint32_t flags =
+        atomic_load_explicit(&record->flags, memory_order_relaxed);
+    if (status == OSVA_STATUS_OK && timestamp != NULL) {
+      atomic_store_explicit(&record->last_sample_frame,
+                            timestamp->sample_frame, memory_order_relaxed);
+      atomic_store_explicit(&record->last_host_ticks, timestamp->host_ticks,
+                            memory_order_relaxed);
+      atomic_store_explicit(&record->last_seed, timestamp->seed,
+                            memory_order_relaxed);
+      atomic_store_explicit(&record->last_seed_generation, seedGeneration,
+                            memory_order_relaxed);
+      atomic_store_explicit(&record->last_core_lifecycle_sequence,
+                            coreLifecycleSequence, memory_order_relaxed);
+      flags = kOSVADiagnosticRecordPresent |
+              kOSVADiagnosticRecordLastSuccessTupleValid |
+              kOSVADiagnosticRecordLastCallValid;
+      if (epochMappingAvailable) {
+        flags |= kOSVADiagnosticRecordEpochMappingValid;
+      }
+      if (usedFallback) {
+        flags |= kOSVADiagnosticRecordUsedFallback;
+      }
+    } else {
+      /* A failed call must not destroy the last tuple that HAL did receive. */
+      flags &= kOSVADiagnosticRecordLastSuccessTupleValid |
+               kOSVADiagnosticRecordUsedFallback |
+               kOSVADiagnosticRecordEpochMappingValid;
+      flags |= kOSVADiagnosticRecordPresent;
+    }
+    atomic_store_explicit(&record->flags, flags, memory_order_relaxed);
+    OSVAEndDiagnosticRecord(&record->metadata_sequence, oddMetadataSequence);
+  } else {
+    (void)atomic_fetch_add_explicit(&record->metadata_dropped_update_count,
+                                    UINT64_C(1), memory_order_relaxed);
+  }
+  (void)atomic_fetch_add_explicit(&record->sequence, UINT64_C(1),
+                                  memory_order_release);
+  (void)atomic_fetch_sub_explicit(&record->active_publisher_count,
+                                  UINT64_C(1), memory_order_release);
+}
+
+static void OSVAPublishIODiagnostic(OSVAEndpoint endpoint,
+                                    OSVAIODiagnosticObservation observation) {
+  OSVAAtomicIODiagnostics *record =
+      &gIODiagnostics[OSVADiagnosticEndpointIndex(endpoint)];
+  (void)atomic_fetch_add_explicit(&record->active_publisher_count, UINT64_C(1),
+                                  memory_order_acq_rel);
+  (void)atomic_fetch_add_explicit(&record->operation_call_count, UINT64_C(1),
+                                  memory_order_relaxed);
+  (void)atomic_fetch_add_explicit(&record->requested_frame_count,
+                                  observation.requested_frames,
+                                  memory_order_relaxed);
+  (void)atomic_fetch_add_explicit(&record->transferred_frame_count,
+                                  observation.transferred_frames,
+                                  memory_order_relaxed);
+  (void)atomic_fetch_add_explicit(&record->gap_frame_count,
+                                  observation.gap_frames,
+                                  memory_order_relaxed);
+  if (observation.valid_cycle) {
+    (void)atomic_fetch_add_explicit(&record->valid_cycle_count, UINT64_C(1),
+                                    memory_order_relaxed);
+  } else {
+    (void)atomic_fetch_add_explicit(&record->invalid_cycle_count, UINT64_C(1),
+                                    memory_order_relaxed);
+  }
+  if (observation.valid_cycle && !observation.lease_available) {
+    (void)atomic_fetch_add_explicit(&record->lease_unavailable_count,
+                                    UINT64_C(1), memory_order_relaxed);
+  }
+  if (observation.valid_cycle && observation.lease_available &&
+      !observation.epoch_mapping_available) {
+    (void)atomic_fetch_add_explicit(
+        &record->epoch_mapping_unavailable_count, UINT64_C(1),
+        memory_order_relaxed);
+  }
+  if (observation.core_called) {
+    if (observation.status == OSVA_STATUS_OK) {
+      (void)atomic_fetch_add_explicit(&record->core_ok_count, UINT64_C(1),
+                                      memory_order_relaxed);
+    } else if (observation.status == OSVA_STATUS_RETRY) {
+      (void)atomic_fetch_add_explicit(&record->core_retry_count, UINT64_C(1),
+                                      memory_order_relaxed);
+    } else {
+      (void)atomic_fetch_add_explicit(&record->core_failure_count, UINT64_C(1),
+                                      memory_order_relaxed);
+    }
+  }
+
+  uint64_t oddMetadataSequence = 0;
+  if (OSVABeginDiagnosticRecord(&record->metadata_sequence,
+                                &oddMetadataSequence)) {
+#if defined(OSVA_DRIVER_TESTING)
+    OSVAMaybeHoldDiagnosticRecordWriterForTesting(
+        kOSVADriverTestDiagnosticRecordIO,
+        OSVADiagnosticEndpointIndex(endpoint));
+#endif
+    atomic_store_explicit(&record->last_cycle_sample_frame,
+                          observation.cycle_sample_frame,
+                          memory_order_relaxed);
+    atomic_store_explicit(&record->last_cycle_host_ticks,
+                          observation.cycle_host_ticks, memory_order_relaxed);
+    atomic_store_explicit(&record->last_client_id, observation.client_id,
+                          memory_order_relaxed);
+    atomic_store_explicit(&record->last_status, (int32_t)observation.status,
+                          memory_order_relaxed);
+    uint32_t flags =
+        atomic_load_explicit(&record->flags, memory_order_relaxed);
+    flags &= kOSVADiagnosticRecordLastSuccessTupleValid |
+             kOSVADiagnosticRecordEpochMappingValid;
+    flags |= kOSVADiagnosticRecordPresent;
+    if (observation.valid_cycle) {
+      flags |= kOSVADiagnosticRecordLastCallValid;
+    }
+    if (observation.has_transferred_frame) {
+      flags |= kOSVADiagnosticRecordLastSuccessTupleValid;
+      if (observation.epoch_mapping_available) {
+        flags |= kOSVADiagnosticRecordEpochMappingValid;
+      } else {
+        flags &= (uint32_t)~kOSVADiagnosticRecordEpochMappingValid;
+      }
+      if (observation.writer) {
+        atomic_store_explicit(&record->last_published_frame_seed,
+                              observation.transferred_seed,
+                              memory_order_relaxed);
+        atomic_store_explicit(&record->last_published_seed_generation,
+                              observation.seed_generation,
+                              memory_order_relaxed);
+        atomic_store_explicit(&record->last_published_frame_session,
+                              observation.transferred_session,
+                              memory_order_relaxed);
+        atomic_store_explicit(&record->last_published_absolute_frame,
+                              observation.transferred_absolute_frame,
+                              memory_order_relaxed);
+      } else {
+        atomic_store_explicit(&record->last_consumed_frame_seed,
+                              observation.transferred_seed,
+                              memory_order_relaxed);
+        atomic_store_explicit(&record->last_consumed_seed_generation,
+                              observation.seed_generation,
+                              memory_order_relaxed);
+        atomic_store_explicit(&record->last_consumed_frame_session,
+                              observation.transferred_session,
+                              memory_order_relaxed);
+        atomic_store_explicit(&record->last_consumed_absolute_frame,
+                              observation.transferred_absolute_frame,
+                              memory_order_relaxed);
+      }
+    }
+    atomic_store_explicit(&record->flags, flags, memory_order_relaxed);
+    OSVAEndDiagnosticRecord(&record->metadata_sequence, oddMetadataSequence);
+  } else {
+    (void)atomic_fetch_add_explicit(&record->metadata_dropped_update_count,
+                                    UINT64_C(1), memory_order_relaxed);
+  }
+  (void)atomic_fetch_add_explicit(&record->sequence, UINT64_C(1),
+                                  memory_order_release);
+  (void)atomic_fetch_sub_explicit(&record->active_publisher_count,
+                                  UINT64_C(1), memory_order_release);
+}
+
+static bool OSVAUpdateIOWorkLoopCurrentCount(
+    OSVAAtomicIOWorkLoopDiagnostics *record, bool isBegin) {
+#if defined(OSVA_DRIVER_TESTING)
+  const bool forceAllAttemptsToFail = atomic_exchange_explicit(
+      &gForceNextIOWorkLoopCurrentCountDropForTesting, false,
+      memory_order_acq_rel);
+#endif
+  for (unsigned attempt = 0; attempt < OSVA_DIAGNOSTIC_RECORD_ATTEMPT_LIMIT;
+       ++attempt) {
+    uint64_t current = atomic_load_explicit(&record->current_count,
+                                            memory_order_relaxed);
+    if (!isBegin && current == 0) {
+      (void)atomic_fetch_add_explicit(&record->underflow_count, UINT64_C(1),
+                                      memory_order_relaxed);
+      return true;
+    }
+    if (isBegin && current == UINT64_MAX) {
+      return false;
+    }
+#if defined(OSVA_DRIVER_TESTING)
+    if (forceAllAttemptsToFail) {
+      continue;
+    }
+#endif
+    const uint64_t desired = isBegin ? current + 1 : current - 1;
+    if (atomic_compare_exchange_weak_explicit(
+            &record->current_count, &current, desired, memory_order_relaxed,
+            memory_order_relaxed)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void OSVAPublishIOWorkLoopDiagnostic(OSVAEndpoint endpoint,
+                                            UInt32 clientID, bool isBegin) {
+  OSVAAtomicIOWorkLoopDiagnostics *record =
+      &gIOWorkLoopDiagnostics[OSVADiagnosticEndpointIndex(endpoint)];
+
+  /*
+   * These four counters are decisive state, so every callback updates them.
+   * active_publisher_count lets the bounded snapshot reader reject a partial
+   * multi-atomic transition without ever making the RT writer wait.
+   */
+  (void)atomic_fetch_add_explicit(&record->active_publisher_count, UINT64_C(1),
+                                  memory_order_acq_rel);
+  if (isBegin) {
+    (void)atomic_fetch_add_explicit(&record->begin_count, UINT64_C(1),
+                                    memory_order_relaxed);
+  } else {
+    (void)atomic_fetch_add_explicit(&record->end_count, UINT64_C(1),
+                                    memory_order_relaxed);
+  }
+  if (!OSVAUpdateIOWorkLoopCurrentCount(record, isBegin)) {
+    (void)atomic_fetch_add_explicit(&record->metadata_dropped_update_count,
+                                    UINT64_C(1), memory_order_relaxed);
+  }
+
+  uint64_t oddMetadataSequence = 0;
+  if (OSVABeginDiagnosticRecord(&record->metadata_sequence,
+                                &oddMetadataSequence)) {
+#if defined(OSVA_DRIVER_TESTING)
+    OSVAMaybeHoldDiagnosticRecordWriterForTesting(
+        kOSVADriverTestDiagnosticRecordIOWorkLoopMetadata,
+        OSVADiagnosticEndpointIndex(endpoint));
+#endif
+    atomic_store_explicit(&record->last_transition_host_ticks,
+                          mach_absolute_time(), memory_order_relaxed);
+    atomic_store_explicit(&record->last_client_id, clientID,
+                          memory_order_relaxed);
+    atomic_store_explicit(
+        &record->flags,
+        kOSVADiagnosticRecordPresent | kOSVADiagnosticRecordLastCallValid,
+        memory_order_relaxed);
+    OSVAEndDiagnosticRecord(&record->metadata_sequence, oddMetadataSequence);
+  } else {
+    (void)atomic_fetch_add_explicit(&record->metadata_dropped_update_count,
+                                    UINT64_C(1), memory_order_relaxed);
+  }
+
+  (void)atomic_fetch_add_explicit(&record->sequence, UINT64_C(1),
+                                  memory_order_release);
+  (void)atomic_fetch_sub_explicit(&record->active_publisher_count,
+                                  UINT64_C(1), memory_order_release);
+}
 
 typedef enum {
   kOSVAObjectInvalid = 0,
@@ -291,6 +998,9 @@ static bool OSVAHasDeviceProperty(AudioObjectID objectID,
     return false;
   }
   switch (address->mSelector) {
+  case kAudioObjectPropertyCustomPropertyInfoList:
+  case kOSVADiagnosticSnapshotProperty:
+    return OSVAIsGlobal(address);
   case kAudioObjectPropertyOwnedObjects:
   case kAudioDevicePropertyStreams:
   case kAudioObjectPropertyControlList:
@@ -398,6 +1108,480 @@ static bool OSVAHasPropertyInternal(AudioObjectID objectID,
   }
 }
 
+static bool OSVALoadZeroTimestampDiagnostic(
+    size_t index, OSVADiagnosticZeroTimestampSnapshot *snapshotOut) {
+  const OSVAAtomicZeroTimestampDiagnostics *record =
+      &gZeroTimestampDiagnostics[index];
+  for (unsigned attempt = 0; attempt < OSVA_DIAGNOSTIC_RECORD_ATTEMPT_LIMIT;
+       ++attempt) {
+    const uint64_t before =
+        atomic_load_explicit(&record->sequence, memory_order_acquire);
+    if (atomic_load_explicit(&record->active_publisher_count,
+                             memory_order_acquire) != 0) {
+      continue;
+    }
+    const uint64_t metadataBefore = atomic_load_explicit(
+        &record->metadata_sequence, memory_order_acquire);
+    if ((metadataBefore & UINT64_C(1)) != 0) {
+      continue;
+    }
+    OSVADiagnosticZeroTimestampSnapshot snapshot = {
+        .sequence = before,
+        .metadata_sequence = metadataBefore,
+        .metadata_dropped_update_count = atomic_load_explicit(
+            &record->metadata_dropped_update_count, memory_order_relaxed),
+        .epoch_mapping_unavailable_count = atomic_load_explicit(
+            &record->epoch_mapping_unavailable_count, memory_order_relaxed),
+        .call_count = atomic_load_explicit(&record->call_count,
+                                           memory_order_relaxed),
+        .successful_return_count = atomic_load_explicit(
+            &record->successful_return_count, memory_order_relaxed),
+        .fallback_return_count = atomic_load_explicit(
+            &record->fallback_return_count, memory_order_relaxed),
+        .failed_return_count = atomic_load_explicit(
+            &record->failed_return_count, memory_order_relaxed),
+        .last_call_host_ticks = atomic_load_explicit(
+            &record->last_call_host_ticks, memory_order_relaxed),
+        .last_sample_frame = atomic_load_explicit(
+            &record->last_sample_frame, memory_order_relaxed),
+        .last_host_ticks = atomic_load_explicit(&record->last_host_ticks,
+                                                memory_order_relaxed),
+        .last_seed = atomic_load_explicit(&record->last_seed,
+                                          memory_order_relaxed),
+        .last_seed_generation = atomic_load_explicit(
+            &record->last_seed_generation, memory_order_relaxed),
+        .last_core_lifecycle_sequence = atomic_load_explicit(
+            &record->last_core_lifecycle_sequence, memory_order_relaxed),
+        .last_call_core_lifecycle_sequence = atomic_load_explicit(
+            &record->last_call_core_lifecycle_sequence,
+            memory_order_relaxed),
+        .last_client_id = atomic_load_explicit(&record->last_client_id,
+                                               memory_order_relaxed),
+        .last_status = atomic_load_explicit(&record->last_status,
+                                            memory_order_relaxed),
+        .flags = atomic_load_explicit(&record->flags, memory_order_relaxed),
+    };
+    atomic_thread_fence(memory_order_acquire);
+    const uint64_t metadataAfter = atomic_load_explicit(
+        &record->metadata_sequence, memory_order_acquire);
+    const uint64_t activeAfter = atomic_load_explicit(
+        &record->active_publisher_count, memory_order_acquire);
+    const uint64_t after =
+        atomic_load_explicit(&record->sequence, memory_order_acquire);
+    if (before == after && metadataBefore == metadataAfter &&
+        (metadataAfter & UINT64_C(1)) == 0 && activeAfter == 0) {
+      *snapshotOut = snapshot;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool OSVALoadIODiagnostic(size_t index,
+                                 OSVADiagnosticIOSnapshot *snapshotOut) {
+  const OSVAAtomicIODiagnostics *record = &gIODiagnostics[index];
+  for (unsigned attempt = 0; attempt < OSVA_DIAGNOSTIC_RECORD_ATTEMPT_LIMIT;
+       ++attempt) {
+    const uint64_t before =
+        atomic_load_explicit(&record->sequence, memory_order_acquire);
+    if (atomic_load_explicit(&record->active_publisher_count,
+                             memory_order_acquire) != 0) {
+      continue;
+    }
+    const uint64_t metadataBefore = atomic_load_explicit(
+        &record->metadata_sequence, memory_order_acquire);
+    if ((metadataBefore & UINT64_C(1)) != 0) {
+      continue;
+    }
+    OSVADiagnosticIOSnapshot snapshot = {
+        .sequence = before,
+        .metadata_sequence = metadataBefore,
+        .metadata_dropped_update_count = atomic_load_explicit(
+            &record->metadata_dropped_update_count, memory_order_relaxed),
+        .operation_call_count = atomic_load_explicit(
+            &record->operation_call_count, memory_order_relaxed),
+        .valid_cycle_count = atomic_load_explicit(
+            &record->valid_cycle_count, memory_order_relaxed),
+        .invalid_cycle_count = atomic_load_explicit(
+            &record->invalid_cycle_count, memory_order_relaxed),
+        .lease_unavailable_count = atomic_load_explicit(
+            &record->lease_unavailable_count, memory_order_relaxed),
+        .epoch_mapping_unavailable_count = atomic_load_explicit(
+            &record->epoch_mapping_unavailable_count, memory_order_relaxed),
+        .core_ok_count = atomic_load_explicit(&record->core_ok_count,
+                                              memory_order_relaxed),
+        .core_retry_count = atomic_load_explicit(&record->core_retry_count,
+                                                 memory_order_relaxed),
+        .core_failure_count = atomic_load_explicit(
+            &record->core_failure_count, memory_order_relaxed),
+        .requested_frame_count = atomic_load_explicit(
+            &record->requested_frame_count, memory_order_relaxed),
+        .transferred_frame_count = atomic_load_explicit(
+            &record->transferred_frame_count, memory_order_relaxed),
+        .gap_frame_count = atomic_load_explicit(&record->gap_frame_count,
+                                                memory_order_relaxed),
+        .last_cycle_sample_frame = atomic_load_explicit(
+            &record->last_cycle_sample_frame, memory_order_relaxed),
+        .last_cycle_host_ticks = atomic_load_explicit(
+            &record->last_cycle_host_ticks, memory_order_relaxed),
+        .last_published_frame_seed = atomic_load_explicit(
+            &record->last_published_frame_seed, memory_order_relaxed),
+        .last_published_seed_generation = atomic_load_explicit(
+            &record->last_published_seed_generation, memory_order_relaxed),
+        .last_published_frame_session = atomic_load_explicit(
+            &record->last_published_frame_session, memory_order_relaxed),
+        .last_published_absolute_frame = atomic_load_explicit(
+            &record->last_published_absolute_frame, memory_order_relaxed),
+        .last_consumed_frame_seed = atomic_load_explicit(
+            &record->last_consumed_frame_seed, memory_order_relaxed),
+        .last_consumed_seed_generation = atomic_load_explicit(
+            &record->last_consumed_seed_generation, memory_order_relaxed),
+        .last_consumed_frame_session = atomic_load_explicit(
+            &record->last_consumed_frame_session, memory_order_relaxed),
+        .last_consumed_absolute_frame = atomic_load_explicit(
+            &record->last_consumed_absolute_frame, memory_order_relaxed),
+        .last_client_id = atomic_load_explicit(&record->last_client_id,
+                                               memory_order_relaxed),
+        .last_status = atomic_load_explicit(&record->last_status,
+                                            memory_order_relaxed),
+        .flags = atomic_load_explicit(&record->flags, memory_order_relaxed),
+    };
+    atomic_thread_fence(memory_order_acquire);
+    const uint64_t metadataAfter = atomic_load_explicit(
+        &record->metadata_sequence, memory_order_acquire);
+    const uint64_t activeAfter = atomic_load_explicit(
+        &record->active_publisher_count, memory_order_acquire);
+    const uint64_t after =
+        atomic_load_explicit(&record->sequence, memory_order_acquire);
+    if (before == after && metadataBefore == metadataAfter &&
+        (metadataAfter & UINT64_C(1)) == 0 && activeAfter == 0) {
+      *snapshotOut = snapshot;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool OSVALoadIOWorkLoopDiagnostic(
+    size_t index, OSVADiagnosticIOWorkLoopSnapshot *snapshotOut) {
+  const OSVAAtomicIOWorkLoopDiagnostics *record =
+      &gIOWorkLoopDiagnostics[index];
+  for (unsigned attempt = 0; attempt < OSVA_DIAGNOSTIC_RECORD_ATTEMPT_LIMIT;
+       ++attempt) {
+    const uint64_t before =
+        atomic_load_explicit(&record->sequence, memory_order_acquire);
+    if (atomic_load_explicit(&record->active_publisher_count,
+                             memory_order_acquire) != 0) {
+      continue;
+    }
+    const uint64_t metadataBefore = atomic_load_explicit(
+        &record->metadata_sequence, memory_order_acquire);
+    if ((metadataBefore & UINT64_C(1)) != 0) {
+      continue;
+    }
+    OSVADiagnosticIOWorkLoopSnapshot snapshot = {
+        .sequence = before,
+        .metadata_sequence = metadataBefore,
+        .metadata_dropped_update_count = atomic_load_explicit(
+            &record->metadata_dropped_update_count, memory_order_relaxed),
+        .current_count = atomic_load_explicit(&record->current_count,
+                                              memory_order_relaxed),
+        .begin_count = atomic_load_explicit(&record->begin_count,
+                                            memory_order_relaxed),
+        .end_count = atomic_load_explicit(&record->end_count,
+                                          memory_order_relaxed),
+        .underflow_count = atomic_load_explicit(&record->underflow_count,
+                                                memory_order_relaxed),
+        .last_transition_host_ticks = atomic_load_explicit(
+            &record->last_transition_host_ticks, memory_order_relaxed),
+        .last_client_id = atomic_load_explicit(&record->last_client_id,
+                                               memory_order_relaxed),
+        .flags = atomic_load_explicit(&record->flags, memory_order_relaxed),
+    };
+    atomic_thread_fence(memory_order_acquire);
+    const uint64_t metadataAfter = atomic_load_explicit(
+        &record->metadata_sequence, memory_order_acquire);
+    const uint64_t activeAfter = atomic_load_explicit(
+        &record->active_publisher_count, memory_order_acquire);
+    const uint64_t after =
+        atomic_load_explicit(&record->sequence, memory_order_acquire);
+    if (before == after && metadataBefore == metadataAfter &&
+        (metadataAfter & UINT64_C(1)) == 0 && activeAfter == 0) {
+      *snapshotOut = snapshot;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool OSVACopyDiagnosticSnapshot(OSVADiagnosticSnapshot *snapshotOut) {
+  if (pthread_mutex_trylock(&gStateMutex) != 0) {
+    return false;
+  }
+  if (!atomic_load_explicit(&gCoreInitialized, memory_order_acquire) ||
+      pthread_mutex_trylock(&gCore.lifecycle_mutex) != 0) {
+    (void)pthread_mutex_unlock(&gStateMutex);
+    return false;
+  }
+
+  OSVADiagnosticSnapshot snapshot;
+  memset(&snapshot, 0, sizeof(snapshot));
+  snapshot.schema_version = kOSVADiagnosticSnapshotSchemaVersion;
+  snapshot.struct_size = (UInt32)sizeof(snapshot);
+  snapshot.driver_instance_generation =
+      gDiagnosticLifecycle.driver_instance_generation;
+  snapshot.driver_lifecycle_sequence =
+      gDiagnosticLifecycle.lifecycle_sequence;
+  snapshot.core_lifecycle_sequence = atomic_load_explicit(
+      &gCore.lifecycle_sequence, memory_order_acquire);
+  snapshot.host_ticks_per_second = gCore.host_ticks_per_second;
+  snapshot.timeline_seed =
+      atomic_load_explicit(&gCore.timeline_seed, memory_order_acquire);
+  snapshot.current_seed_generation =
+      gDiagnosticLifecycle.current_seed_generation;
+  snapshot.anchor_host_ticks =
+      atomic_load_explicit(&gCore.anchor_host_ticks, memory_order_relaxed);
+  snapshot.last_issued_seed = gCore.last_issued_seed;
+  snapshot.last_issued_session_id = gCore.last_issued_session_id;
+  snapshot.active_client_count = atomic_load_explicit(
+      &gCore.active_client_count, memory_order_relaxed);
+  snapshot.visible_input_active_count = atomic_load_explicit(
+      &gCore.visible_input_client_count, memory_order_relaxed);
+  snapshot.hidden_writer_active_count = atomic_load_explicit(
+      &gCore.hidden_writer_client_count, memory_order_relaxed);
+  snapshot.driver_client_add_attempt_count =
+      gDiagnosticLifecycle.driver_client_add_attempt_count;
+  snapshot.driver_client_add_count =
+      gDiagnosticLifecycle.driver_client_add_count;
+  snapshot.driver_client_remove_attempt_count =
+      gDiagnosticLifecycle.driver_client_remove_attempt_count;
+  snapshot.driver_client_remove_count =
+      gDiagnosticLifecycle.driver_client_remove_count;
+  snapshot.global_start_attempt_count =
+      gDiagnosticLifecycle.global_start_attempt_count;
+  snapshot.global_start_transition_count =
+      gDiagnosticLifecycle.global_start_transition_count;
+  snapshot.global_stop_attempt_count =
+      gDiagnosticLifecycle.global_stop_attempt_count;
+  snapshot.global_stop_transition_count =
+      gDiagnosticLifecycle.global_stop_transition_count;
+  snapshot.seed_create_count = gDiagnosticLifecycle.seed_create_count;
+  snapshot.seed_clear_count = gDiagnosticLifecycle.seed_clear_count;
+  snapshot.last_seed_create_host_ticks =
+      gDiagnosticLifecycle.last_seed_create_host_ticks;
+  snapshot.last_seed_clear_host_ticks =
+      gDiagnosticLifecycle.last_seed_clear_host_ticks;
+  snapshot.last_cleared_seed = gDiagnosticLifecycle.last_cleared_seed;
+  snapshot.last_cleared_seed_generation =
+      gDiagnosticLifecycle.last_cleared_seed_generation;
+  snapshot.last_cleared_anchor_host_ticks =
+      gDiagnosticLifecycle.last_cleared_anchor_host_ticks;
+  snapshot.client_slot_capacity = kOSVADiagnosticClientSlotCapacity;
+  snapshot.last_driver_transition =
+      gDiagnosticLifecycle.last_driver_transition;
+  snapshot.last_core_transition = gDiagnosticLifecycle.last_core_transition;
+
+  uint64_t derivedVisibleCoreCount = 0;
+  uint64_t derivedWriterCoreCount = 0;
+  bool activeSlotsUseCurrentSeed = true;
+  for (size_t index = 0; index < OSVA_DRIVER_CLIENT_SLOT_COUNT; ++index) {
+    const OSVAClientSlot *slot = &gCoreClients[index];
+    const uint64_t sessionID =
+        atomic_load_explicit(&slot->session_id, memory_order_acquire);
+    OSVADiagnosticCoreClientSlotSnapshot *slotSnapshot =
+        &snapshot.core_client_slots[index];
+    slotSnapshot->session_id = sessionID;
+    slotSnapshot->client_id =
+        atomic_load_explicit(&slot->client_id, memory_order_relaxed);
+    slotSnapshot->timeline_seed =
+        atomic_load_explicit(&slot->timeline_seed, memory_order_relaxed);
+    slotSnapshot->endpoint_role =
+        atomic_load_explicit(&slot->endpoint, memory_order_relaxed);
+    if (sessionID == 0) {
+      continue;
+    }
+    snapshot.core_active_slot_count += 1;
+    snapshot.core_active_slot_bitmap |= UINT64_C(1) << index;
+    if (slotSnapshot->endpoint_role == OSVA_ENDPOINT_VISIBLE_INPUT) {
+      derivedVisibleCoreCount += 1;
+    } else if (slotSnapshot->endpoint_role == OSVA_ENDPOINT_HIDDEN_WRITER) {
+      derivedWriterCoreCount += 1;
+    }
+    if (slotSnapshot->timeline_seed != snapshot.timeline_seed) {
+      activeSlotsUseCurrentSeed = false;
+    }
+  }
+
+  bool driverStartsMatchCoreSlots = true;
+  uint64_t referencedCoreSlotBitmap = 0;
+  for (size_t index = 0; index < OSVA_DRIVER_CLIENT_SLOT_COUNT; ++index) {
+    const OSVADriverClient *client = &gDriverClients[index];
+    OSVADiagnosticDriverClientSlotSnapshot *slotSnapshot =
+        &snapshot.driver_client_slots[index];
+    slotSnapshot->generation = client->generation;
+    slotSnapshot->registration_host_ticks =
+        client->registration_host_ticks;
+    slotSnapshot->start_host_ticks = client->start_host_ticks;
+    slotSnapshot->last_transition_host_ticks =
+        client->last_transition_host_ticks;
+    slotSnapshot->lease_session_id = client->lease.session_id;
+    slotSnapshot->lease_timeline_seed = client->lease.timeline_seed;
+    slotSnapshot->device_object_id = client->device_object_id;
+    slotSnapshot->client_id = client->client_id;
+    slotSnapshot->process_id = (SInt32)client->process_id;
+    slotSnapshot->endpoint_role =
+        client->registered
+            ? (OSVAIsVisibleDevice(client->device_object_id)
+                   ? kOSVADiagnosticEndpointVisibleInput
+                   : kOSVADiagnosticEndpointHiddenWriter)
+            : kOSVADiagnosticEndpointNone;
+    slotSnapshot->core_client_slot =
+        client->started ? client->lease.client_slot : OSVA_INVALID_CLIENT_SLOT;
+    slotSnapshot->io_start_depth = client->io_start_depth;
+    if (!client->registered) {
+      continue;
+    }
+    slotSnapshot->flags |= kOSVADiagnosticDriverSlotRegistered;
+    snapshot.driver_registered_count += 1;
+    snapshot.driver_registered_slot_bitmap |= UINT64_C(1) << index;
+    if (OSVAIsVisibleDevice(client->device_object_id)) {
+      snapshot.visible_driver_registered_count += 1;
+    } else {
+      snapshot.hidden_driver_registered_count += 1;
+    }
+    if (!client->started) {
+      continue;
+    }
+    slotSnapshot->flags |= kOSVADiagnosticDriverSlotStarted |
+                           kOSVADiagnosticDriverSlotLeaseValid;
+    snapshot.driver_started_count += 1;
+    snapshot.driver_started_slot_bitmap |= UINT64_C(1) << index;
+    if (OSVAIsVisibleDevice(client->device_object_id)) {
+      snapshot.visible_driver_started_count += 1;
+    } else {
+      snapshot.hidden_driver_started_count += 1;
+    }
+    if (client->lease.client_slot >= OSVA_DRIVER_CLIENT_SLOT_COUNT) {
+      driverStartsMatchCoreSlots = false;
+      continue;
+    }
+    const OSVADiagnosticCoreClientSlotSnapshot *coreSlot =
+        &snapshot.core_client_slots[client->lease.client_slot];
+    const uint64_t coreSlotBit = UINT64_C(1) << client->lease.client_slot;
+    if ((referencedCoreSlotBitmap & coreSlotBit) != 0 ||
+        coreSlot->session_id != client->lease.session_id ||
+        coreSlot->client_id != client->lease.client_id ||
+        coreSlot->timeline_seed != client->lease.timeline_seed ||
+        coreSlot->endpoint_role != (UInt32)client->lease.endpoint) {
+      driverStartsMatchCoreSlots = false;
+    }
+    referencedCoreSlotBitmap |= coreSlotBit;
+  }
+  driverStartsMatchCoreSlots =
+      driverStartsMatchCoreSlots &&
+      referencedCoreSlotBitmap == snapshot.core_active_slot_bitmap;
+
+  bool recordsAvailable = true;
+  for (size_t index = 0; index < OSVA_DIAGNOSTIC_ENDPOINT_COUNT; ++index) {
+    recordsAvailable =
+        recordsAvailable &&
+        OSVALoadZeroTimestampDiagnostic(index,
+                                        &snapshot.zero_timestamp[index]) &&
+        OSVALoadIODiagnostic(index, &snapshot.io[index]) &&
+        OSVALoadIOWorkLoopDiagnostic(index, &snapshot.io_work_loop[index]);
+  }
+  if (!recordsAvailable) {
+    (void)pthread_mutex_unlock(&gCore.lifecycle_mutex);
+    (void)pthread_mutex_unlock(&gStateMutex);
+    return false;
+  }
+  if (gDiagnosticLifecycle.snapshot_observation_sequence == UINT64_MAX) {
+    (void)pthread_mutex_unlock(&gCore.lifecycle_mutex);
+    (void)pthread_mutex_unlock(&gStateMutex);
+    return false;
+  }
+  gDiagnosticLifecycle.snapshot_observation_sequence += 1;
+  snapshot.snapshot_sequence =
+      gDiagnosticLifecycle.snapshot_observation_sequence;
+  snapshot.captured_host_ticks = mach_absolute_time();
+
+  uint64_t flags = kOSVADiagnosticSnapshotCoreInitialized;
+  if (snapshot.timeline_seed != 0) {
+    flags |= kOSVADiagnosticSnapshotTimelineActive;
+  }
+  if (snapshot.active_client_count == snapshot.core_active_slot_count) {
+    flags |= kOSVADiagnosticInvariantGlobalMatchesCoreSlots;
+  }
+  if (snapshot.visible_input_active_count == derivedVisibleCoreCount &&
+      snapshot.hidden_writer_active_count == derivedWriterCoreCount) {
+    flags |= kOSVADiagnosticInvariantEndpointsMatchCoreSlots;
+  }
+  if (driverStartsMatchCoreSlots) {
+    flags |= kOSVADiagnosticInvariantDriverStartsMatchCoreSlots;
+  }
+  if (snapshot.active_client_count != 0 ||
+      (snapshot.timeline_seed == 0 && snapshot.anchor_host_ticks == 0 &&
+       snapshot.current_seed_generation == 0)) {
+    flags |= kOSVADiagnosticInvariantIdleImpliesClockCleared;
+  }
+  if (snapshot.active_client_count == 0 ||
+      (snapshot.timeline_seed != 0 && snapshot.anchor_host_ticks != 0 &&
+       snapshot.current_seed_generation != 0)) {
+    flags |= kOSVADiagnosticInvariantActiveImpliesClockValid;
+  }
+  if (snapshot.core_active_slot_count <= OSVA_DRIVER_CLIENT_SLOT_COUNT &&
+      snapshot.driver_registered_count <= OSVA_DRIVER_CLIENT_SLOT_COUNT &&
+      snapshot.driver_started_count <= OSVA_DRIVER_CLIENT_SLOT_COUNT) {
+    flags |= kOSVADiagnosticInvariantSlotCountsWithinCapacity;
+  }
+  if (snapshot.active_client_count != 0 ||
+      snapshot.global_start_transition_count ==
+          snapshot.global_stop_transition_count) {
+    flags |= kOSVADiagnosticInvariantStartStopBalancedAtIdle;
+  }
+  if (snapshot.active_client_count != 0 ||
+      snapshot.seed_create_count == snapshot.seed_clear_count) {
+    flags |= kOSVADiagnosticInvariantSeedCreateClearBalancedAtIdle;
+  }
+  const uint64_t lastPublishedSeed =
+      snapshot.io[OSVADiagnosticEndpointIndex(OSVA_ENDPOINT_HIDDEN_WRITER)]
+          .last_published_frame_seed;
+  const uint64_t lastPublishedGeneration =
+      snapshot.io[OSVADiagnosticEndpointIndex(OSVA_ENDPOINT_HIDDEN_WRITER)]
+          .last_published_seed_generation;
+  const uint64_t lastConsumedSeed =
+      snapshot.io[OSVADiagnosticEndpointIndex(OSVA_ENDPOINT_VISIBLE_INPUT)]
+          .last_consumed_frame_seed;
+  const uint64_t lastConsumedGeneration =
+      snapshot.io[OSVADiagnosticEndpointIndex(OSVA_ENDPOINT_VISIBLE_INPUT)]
+          .last_consumed_seed_generation;
+  const bool currentEpochIdentityMatches =
+      snapshot.timeline_seed == 0 ||
+      snapshot.timeline_seed == snapshot.current_seed_generation;
+  const bool publishedRecordMatches =
+      snapshot.timeline_seed == 0 ||
+      ((lastPublishedSeed == snapshot.timeline_seed) ==
+       (lastPublishedGeneration == snapshot.current_seed_generation));
+  const bool consumedRecordMatches =
+      snapshot.timeline_seed == 0 ||
+      ((lastConsumedSeed == snapshot.timeline_seed) ==
+       (lastConsumedGeneration == snapshot.current_seed_generation));
+  if (currentEpochIdentityMatches && publishedRecordMatches &&
+      consumedRecordMatches) {
+    flags |= kOSVADiagnosticInvariantRingGenerationMatchesCurrentSeed;
+  }
+  if (activeSlotsUseCurrentSeed) {
+    flags |=
+        kOSVADiagnosticInvariantNoActiveSlotReferencesRetiredGeneration;
+  }
+  snapshot.invariant_flags = flags;
+
+  (void)pthread_mutex_unlock(&gCore.lifecycle_mutex);
+  (void)pthread_mutex_unlock(&gStateMutex);
+  *snapshotOut = snapshot;
+  return true;
+}
+
 static size_t OSVADeviceRoleObjectCount(AudioObjectID objectID,
                                         AudioObjectPropertyScope scope) {
   if (scope == kAudioObjectPropertyScopeGlobal ||
@@ -423,6 +1607,10 @@ static size_t OSVADeviceRoleControlCount(AudioObjectID objectID,
 static UInt32 OSVAPropertyDataSize(AudioObjectID objectID,
                                    const AudioObjectPropertyAddress *address) {
   switch (address->mSelector) {
+  case kAudioObjectPropertyCustomPropertyInfoList:
+    return (UInt32)sizeof(AudioServerPlugInCustomPropertyInfo);
+  case kOSVADiagnosticSnapshotProperty:
+    return (UInt32)sizeof(CFPropertyListRef);
   case kAudioObjectPropertyBaseClass:
   case kAudioObjectPropertyClass:
     return (UInt32)sizeof(AudioClassID);
@@ -829,6 +2017,40 @@ static OSStatus OSVAGetPropertyData(AudioServerPlugInDriverRef driver,
   *outDataSize = 0;
 
   switch (address->mSelector) {
+  case kAudioObjectPropertyCustomPropertyInfoList: {
+    AudioServerPlugInCustomPropertyInfo value = {
+        .mSelector = kOSVADiagnosticSnapshotProperty,
+        .mPropertyDataType =
+            kAudioServerPlugInCustomPropertyDataTypeCFPropertyList,
+        .mQualifierDataType = kAudioServerPlugInCustomPropertyDataTypeNone,
+    };
+    return OSVAWriteScalar(&value, sizeof(value), dataSize, outDataSize,
+                           outData);
+  }
+  case kOSVADiagnosticSnapshotProperty: {
+    if (dataSize < sizeof(CFPropertyListRef)) {
+      return kAudioHardwareBadPropertySizeError;
+    }
+    OSVADiagnosticSnapshot snapshot;
+    if (!OSVACopyDiagnosticSnapshot(&snapshot)) {
+      return kOSVADiagnosticSnapshotUnavailableError;
+    }
+    /*
+     * AudioServerPlugIn custom-property IPC only marshals CFString or
+     * CFPropertyList values. The coherent POD capture above is stack-only and
+     * releases both lifecycle locks first; this immutable CFData creation is
+     * the sole transport allocation and is never reached from an RT callback.
+     */
+    CFDataRef data = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)&snapshot,
+                                  (CFIndex)sizeof(snapshot));
+    if (data == NULL) {
+      return kOSVADiagnosticSnapshotUnavailableError;
+    }
+    CFPropertyListRef value = data;
+    memcpy(outData, &value, sizeof(value));
+    *outDataSize = (UInt32)sizeof(value);
+    return noErr;
+  }
   case kAudioObjectPropertyBaseClass: {
     AudioClassID value = OSVABaseClassForObject(objectID);
     return OSVAWriteScalar(&value, sizeof(value), dataSize, outDataSize,
@@ -1149,13 +2371,20 @@ OSVABeginIOOperation(AudioServerPlugInDriverRef driver,
                      AudioObjectID deviceObjectID, UInt32 clientID,
                      UInt32 operationID, UInt32 ioBufferFrameSize,
                      const AudioServerPlugInIOCycleInfo *ioCycleInfo) {
-  (void)clientID;
-  (void)operationID;
   (void)ioBufferFrameSize;
   if (!OSVAIsValidDriver(driver) || !OSVAIsDevice(deviceObjectID)) {
     return kAudioHardwareBadObjectError;
   }
-  return ioCycleInfo != NULL ? noErr : kAudioHardwareIllegalOperationError;
+  if (ioCycleInfo == NULL) {
+    return kAudioHardwareIllegalOperationError;
+  }
+  if (operationID == kAudioServerPlugInIOOperationThread) {
+    const OSVAEndpoint endpoint = OSVAIsVisibleDevice(deviceObjectID)
+                                      ? OSVA_ENDPOINT_VISIBLE_INPUT
+                                      : OSVA_ENDPOINT_HIDDEN_WRITER;
+    OSVAPublishIOWorkLoopDiagnostic(endpoint, clientID, true);
+  }
+  return noErr;
 }
 
 static OSStatus OSVAStatusToOSStatus(OSVAStatus status) {
@@ -1284,7 +2513,9 @@ static OSStatus OSVAInitialize(AudioServerPlugInDriverRef driver,
   if (!atomic_is_lock_free(&gZeroTimestampCache.sequence) ||
       !atomic_is_lock_free(&gZeroTimestampCache.sample_frame) ||
       !atomic_is_lock_free(&gZeroTimestampCache.host_ticks) ||
-      !atomic_is_lock_free(&gZeroTimestampCache.seed)) {
+      !atomic_is_lock_free(&gZeroTimestampCache.seed) ||
+      !atomic_is_lock_free(&gZeroTimestampCache.lifecycle_sequence) ||
+      !OSVADiagnosticAtomicsAreLockFree()) {
     pthread_mutex_unlock(&gStateMutex);
     return kAudioHardwareUnspecifiedError;
   }
@@ -1293,6 +2524,21 @@ static OSStatus OSVAInitialize(AudioServerPlugInDriverRef driver,
   memset(gCoreClients, 0, sizeof(gCoreClients));
   memset(gRingStorage, 0, sizeof(gRingStorage));
   memset(gDriverClients, 0, sizeof(gDriverClients));
+  memset(&gDiagnosticLifecycle, 0, sizeof(gDiagnosticLifecycle));
+  uint64_t driverInstanceGeneration = mach_absolute_time();
+  if (driverInstanceGeneration == 0 ||
+      driverInstanceGeneration <= gLastDriverInstanceGeneration) {
+    if (gLastDriverInstanceGeneration == UINT64_MAX) {
+      pthread_mutex_unlock(&gStateMutex);
+      return kAudioHardwareUnspecifiedError;
+    }
+    driverInstanceGeneration = gLastDriverInstanceGeneration + 1;
+  }
+  gLastDriverInstanceGeneration = driverInstanceGeneration;
+  gDiagnosticLifecycle.driver_instance_generation =
+      driverInstanceGeneration;
+  gDiagnosticLifecycle.lifecycle_sequence = 1;
+  OSVAResetDiagnosticAtomics();
   OSVAStatus status = OSVACoreInitialize(
       &gCore, gRingStorage, OSVA_PRODUCTION_RING_CAPACITY_FRAMES, gCoreClients,
       OSVA_DRIVER_CLIENT_SLOT_COUNT, OSVAHostClockNow, NULL, hostTicksPerSecond,
@@ -1370,6 +2616,9 @@ static bool OSVAStoreZeroTimestampCache(OSVAZeroTimestamp timestamp) {
                             timestamp.host_ticks, memory_order_relaxed);
       atomic_store_explicit(&gZeroTimestampCache.seed, timestamp.seed,
                             memory_order_relaxed);
+      atomic_store_explicit(&gZeroTimestampCache.lifecycle_sequence,
+                            timestamp.lifecycle_sequence,
+                            memory_order_relaxed);
     }
     atomic_store_explicit(&gZeroTimestampCache.sequence, oddSequence + 1,
                           memory_order_release);
@@ -1393,7 +2642,10 @@ static bool OSVALoadZeroTimestampCache(OSVAZeroTimestamp *timestampOut) {
                                            memory_order_relaxed),
         .seed = atomic_load_explicit(&gZeroTimestampCache.seed,
                                      memory_order_relaxed),
+        .lifecycle_sequence = atomic_load_explicit(
+            &gZeroTimestampCache.lifecycle_sequence, memory_order_relaxed),
     };
+    atomic_thread_fence(memory_order_acquire);
     uint64_t after = atomic_load_explicit(&gZeroTimestampCache.sequence,
                                           memory_order_acquire);
     if (before == after && (after & UINT64_C(1)) == 0 && timestamp.seed != 0) {
@@ -1417,6 +2669,24 @@ static bool OSVAConsumeZeroTimeStampFenceForTesting(void) {
   }
   return false;
 }
+
+static void OSVAMaybePauseZeroTimestampPublicationForTesting(void) {
+  if (!atomic_exchange_explicit(
+          &gPauseNextZeroTimestampPublicationForTesting, false,
+          memory_order_acq_rel)) {
+    return;
+  }
+  atomic_store_explicit(&gZeroTimestampPublicationPausedForTesting, true,
+                        memory_order_release);
+  while (!atomic_load_explicit(&gResumeZeroTimestampPublicationForTesting,
+                               memory_order_acquire)) {
+    sched_yield();
+  }
+  atomic_store_explicit(&gResumeZeroTimestampPublicationForTesting, false,
+                        memory_order_relaxed);
+  atomic_store_explicit(&gZeroTimestampPublicationPausedForTesting, false,
+                        memory_order_release);
+}
 #endif
 
 static OSVAStatus OSVAGetCoreZeroTimestamp(OSVAZeroTimestamp *timestampOut) {
@@ -1438,7 +2708,6 @@ static OSStatus OSVAGetZeroTimeStamp(AudioServerPlugInDriverRef driver,
                                      AudioObjectID deviceObjectID,
                                      UInt32 clientID, Float64 *outSampleTime,
                                      UInt64 *outHostTime, UInt64 *outSeed) {
-  (void)clientID;
   if (!OSVAIsValidDriver(driver) || !OSVAIsDevice(deviceObjectID)) {
     return kAudioHardwareBadObjectError;
   }
@@ -1448,19 +2717,34 @@ static OSStatus OSVAGetZeroTimeStamp(AudioServerPlugInDriverRef driver,
   if (!gCoreInitialized) {
     return kAudioHardwareIllegalOperationError;
   }
+  const OSVAEndpoint endpoint = OSVAEndpointForDevice(deviceObjectID);
+  const uint64_t callHostTicks = mach_absolute_time();
   OSVAStatus status = OSVA_STATUS_RETRY;
   OSVAZeroTimestamp timestamp = {0};
   for (unsigned attempt = 0; attempt < OSVA_ZERO_TIMESTAMP_RETRY_LIMIT;
        ++attempt) {
     status = OSVAGetCoreZeroTimestamp(&timestamp);
     if (status == OSVA_STATUS_OK) {
+      const uint64_t seedGeneration = timestamp.seed;
+      const bool epochMappingAvailable = seedGeneration != 0;
       (void)OSVAStoreZeroTimestampCache(timestamp);
       *outSampleTime = (Float64)timestamp.sample_frame;
       *outHostTime = timestamp.host_ticks;
       *outSeed = timestamp.seed;
+#if defined(OSVA_DRIVER_TESTING)
+      OSVAMaybePauseZeroTimestampPublicationForTesting();
+#endif
+      OSVAPublishZeroTimestampDiagnostic(
+          endpoint, clientID, callHostTicks, timestamp.lifecycle_sequence,
+          status, &timestamp, seedGeneration, epochMappingAvailable, false);
       return noErr;
     }
     if (status != OSVA_STATUS_RETRY) {
+      OSVAPublishZeroTimestampDiagnostic(
+          endpoint, clientID, callHostTicks,
+          atomic_load_explicit(&gCore.lifecycle_sequence,
+                               memory_order_acquire),
+          status, NULL, 0, false, false);
       return OSVAStatusToOSStatus(status);
     }
   }
@@ -1472,11 +2756,24 @@ static OSStatus OSVAGetZeroTimeStamp(AudioServerPlugInDriverRef driver,
       atomic_load_explicit(&gCore.timeline_seed, memory_order_acquire);
   if (activeSeedBefore != 0 && activeSeedBefore == activeSeedAfter &&
       loadedCachedTimestamp && timestamp.seed == activeSeedBefore) {
+    const uint64_t seedGeneration = timestamp.seed;
+    const bool epochMappingAvailable = seedGeneration != 0;
     *outSampleTime = (Float64)timestamp.sample_frame;
     *outHostTime = timestamp.host_ticks;
     *outSeed = timestamp.seed;
+#if defined(OSVA_DRIVER_TESTING)
+    OSVAMaybePauseZeroTimestampPublicationForTesting();
+#endif
+    OSVAPublishZeroTimestampDiagnostic(
+        endpoint, clientID, callHostTicks, timestamp.lifecycle_sequence,
+        OSVA_STATUS_OK, &timestamp, seedGeneration, epochMappingAvailable,
+        true);
     return noErr;
   }
+  OSVAPublishZeroTimestampDiagnostic(
+      endpoint, clientID, callHostTicks,
+      atomic_load_explicit(&gCore.lifecycle_sequence, memory_order_acquire),
+      status, NULL, 0, false, false);
   return OSVAStatusToOSStatus(status);
 }
 
@@ -1544,7 +2841,17 @@ OSVADoIOOperation(AudioServerPlugInDriverRef driver,
   }
   size_t frameCount = (size_t)ioBufferFrameSize;
   size_t byteCount = frameCount * sizeof(Float32);
-  if (OSVAIsVisibleDevice(deviceObjectID)) {
+  const bool isVisible = OSVAIsVisibleDevice(deviceObjectID);
+  const OSVAEndpoint endpoint = OSVAEndpointForDevice(deviceObjectID);
+  OSVAIODiagnosticObservation diagnostic = {
+      .writer = !isVisible,
+      .requested_frames = (uint64_t)frameCount,
+      .gap_frames = (uint64_t)frameCount,
+      .cycle_host_ticks = mach_absolute_time(),
+      .client_id = clientID,
+      .status = OSVA_STATUS_INVALID_ARGUMENT,
+  };
+  if (isVisible) {
     memset(ioMainBuffer, 0, byteCount);
   }
 
@@ -1555,14 +2862,22 @@ OSVADoIOOperation(AudioServerPlugInDriverRef driver,
   if (!OSVAGetIntegralCycleFrame(cycleTimestamp, &startFrame)) {
     atomic_fetch_add_explicit(&gInvalidCycleTimestampCount, 1,
                               memory_order_relaxed);
+    OSVAPublishIODiagnostic(endpoint, diagnostic);
     return noErr;
   }
+  diagnostic.valid_cycle = true;
+  diagnostic.cycle_sample_frame = startFrame;
 
   OSVAClientLease lease;
   if (!OSVACopyActiveLease(deviceObjectID, clientID, &lease)) {
     /* A sibling StartIO/StopIO may temporarily fence every lease snapshot. */
+    diagnostic.status = OSVA_STATUS_INACTIVE_CLIENT;
+    OSVAPublishIODiagnostic(endpoint, diagnostic);
     return noErr;
   }
+  diagnostic.lease_available = true;
+  diagnostic.seed_generation = lease.timeline_seed;
+  diagnostic.epoch_mapping_available = diagnostic.seed_generation != 0;
 
 #if defined(OSVA_DRIVER_TESTING)
   uint64_t testingFenceSequence = 0;
@@ -1570,27 +2885,51 @@ OSVADoIOOperation(AudioServerPlugInDriverRef driver,
       &gFenceNextIOForTesting, false, memory_order_acq_rel);
   if (testingFenceActive &&
       !OSVABeginLifecycleFenceForTesting(&testingFenceSequence)) {
+    diagnostic.status = OSVA_STATUS_LIFECYCLE_ERROR;
+    OSVAPublishIODiagnostic(endpoint, diagnostic);
     return kAudioHardwareIllegalOperationError;
   }
 #endif
 
   OSVAStatus status;
-  if (OSVAIsVisibleDevice(deviceObjectID)) {
-    OSVAReadResult result;
+  diagnostic.core_called = true;
+  if (isVisible) {
+    OSVAReadResult result = {
+        .requested_frames = frameCount,
+        .underrun_frames = frameCount,
+    };
     status = OSVACoreReadFrames(&gCore, lease, startFrame,
                                 (Float32 *)ioMainBuffer, frameCount, &result);
+    diagnostic.transferred_frames = (uint64_t)result.delivered_frames;
+    diagnostic.gap_frames = (uint64_t)result.underrun_frames;
+    diagnostic.has_transferred_frame = result.has_last_transferred_frame;
+    diagnostic.transferred_seed = result.last_transferred_timeline_seed;
+    diagnostic.transferred_session = result.last_transferred_session_id;
+    diagnostic.transferred_absolute_frame =
+        result.last_transferred_absolute_frame;
   } else {
-    OSVAWriteResult result;
+    OSVAWriteResult result = {
+        .requested_frames = frameCount,
+    };
     status =
         OSVACoreWriteFrames(&gCore, lease, startFrame,
                             (const Float32 *)ioMainBuffer, frameCount, &result);
+    diagnostic.transferred_frames = (uint64_t)result.written_frames;
+    diagnostic.gap_frames = (uint64_t)result.contended_frames;
+    diagnostic.has_transferred_frame = result.has_last_transferred_frame;
+    diagnostic.transferred_seed = result.last_transferred_timeline_seed;
+    diagnostic.transferred_session = result.last_transferred_session_id;
+    diagnostic.transferred_absolute_frame =
+        result.last_transferred_absolute_frame;
   }
+  diagnostic.status = status;
 
 #if defined(OSVA_DRIVER_TESTING)
   if (testingFenceActive) {
     OSVAEndLifecycleFenceForTesting(testingFenceSequence);
   }
 #endif
+  OSVAPublishIODiagnostic(endpoint, diagnostic);
   return OSVARealTimeIOStatus(status);
 }
 
@@ -1625,6 +2964,108 @@ OSStatus OSVADriverFenceZeroTimeStampCallsForTesting(UInt32 callCount) {
   return noErr;
 }
 
+OSStatus OSVADriverPauseNextZeroTimestampPublicationForTesting(void) {
+  pthread_mutex_lock(&gStateMutex);
+  const bool initialized =
+      atomic_load_explicit(&gCoreInitialized, memory_order_acquire);
+  const bool pending = atomic_load_explicit(
+      &gPauseNextZeroTimestampPublicationForTesting, memory_order_acquire);
+  const bool paused = atomic_load_explicit(
+      &gZeroTimestampPublicationPausedForTesting, memory_order_acquire);
+  if (!initialized || pending || paused) {
+    pthread_mutex_unlock(&gStateMutex);
+    return kAudioHardwareIllegalOperationError;
+  }
+  atomic_store_explicit(&gResumeZeroTimestampPublicationForTesting, false,
+                        memory_order_relaxed);
+  atomic_store_explicit(&gPauseNextZeroTimestampPublicationForTesting, true,
+                        memory_order_release);
+  pthread_mutex_unlock(&gStateMutex);
+  return noErr;
+}
+
+Boolean OSVADriverZeroTimestampPublicationIsPausedForTesting(void) {
+  return atomic_load_explicit(&gZeroTimestampPublicationPausedForTesting,
+                              memory_order_acquire);
+}
+
+OSStatus OSVADriverResumeZeroTimestampPublicationForTesting(void) {
+  if (!atomic_load_explicit(&gZeroTimestampPublicationPausedForTesting,
+                            memory_order_acquire)) {
+    return kAudioHardwareIllegalOperationError;
+  }
+  atomic_store_explicit(&gResumeZeroTimestampPublicationForTesting, true,
+                        memory_order_release);
+  return noErr;
+}
+
+OSStatus OSVADriverForceNextIOWorkLoopCurrentCountDropForTesting(void) {
+  pthread_mutex_lock(&gStateMutex);
+  const bool initialized =
+      atomic_load_explicit(&gCoreInitialized, memory_order_acquire);
+  const bool pending = atomic_load_explicit(
+      &gForceNextIOWorkLoopCurrentCountDropForTesting, memory_order_acquire);
+  if (!initialized || pending) {
+    pthread_mutex_unlock(&gStateMutex);
+    return kAudioHardwareIllegalOperationError;
+  }
+  atomic_store_explicit(&gForceNextIOWorkLoopCurrentCountDropForTesting, true,
+                        memory_order_release);
+  pthread_mutex_unlock(&gStateMutex);
+  return noErr;
+}
+
+OSStatus OSVADriverHoldNextDiagnosticRecordWriterForTesting(
+    UInt32 recordKind, UInt32 endpointRole) {
+  const bool validKind =
+      recordKind == kOSVADriverTestDiagnosticRecordZeroTimestamp ||
+      recordKind == kOSVADriverTestDiagnosticRecordIO ||
+      recordKind == kOSVADriverTestDiagnosticRecordIOWorkLoopMetadata;
+  const bool validEndpoint =
+      endpointRole == kOSVADiagnosticEndpointVisibleInput ||
+      endpointRole == kOSVADiagnosticEndpointHiddenWriter;
+  if (!validKind || !validEndpoint) {
+    return kAudioHardwareIllegalOperationError;
+  }
+
+  pthread_mutex_lock(&gStateMutex);
+  const bool initialized =
+      atomic_load_explicit(&gCoreInitialized, memory_order_acquire);
+  const bool pending = atomic_load_explicit(
+      &gHeldDiagnosticRecordKindForTesting, memory_order_acquire) != 0;
+  const bool held = atomic_load_explicit(
+      &gDiagnosticRecordWriterHeldForTesting, memory_order_acquire);
+  if (!initialized || pending || held) {
+    pthread_mutex_unlock(&gStateMutex);
+    return kAudioHardwareIllegalOperationError;
+  }
+  const size_t endpointIndex =
+      endpointRole == kOSVADiagnosticEndpointHiddenWriter ? 1U : 0U;
+  atomic_store_explicit(&gHeldDiagnosticEndpointIndexForTesting,
+                        (uint32_t)endpointIndex, memory_order_relaxed);
+  atomic_store_explicit(&gResumeDiagnosticRecordWriterForTesting, false,
+                        memory_order_relaxed);
+  atomic_store_explicit(&gHeldDiagnosticRecordKindForTesting, recordKind,
+                        memory_order_release);
+  pthread_mutex_unlock(&gStateMutex);
+  return noErr;
+}
+
+Boolean OSVADriverDiagnosticRecordWriterIsHeldForTesting(void) {
+  return atomic_load_explicit(&gDiagnosticRecordWriterHeldForTesting,
+                              memory_order_acquire);
+}
+
+OSStatus OSVADriverResumeDiagnosticRecordWriterForTesting(void) {
+  if (!atomic_load_explicit(&gDiagnosticRecordWriterHeldForTesting,
+                            memory_order_acquire)) {
+    return kAudioHardwareIllegalOperationError;
+  }
+  atomic_store_explicit(&gResumeDiagnosticRecordWriterForTesting, true,
+                        memory_order_release);
+  return noErr;
+}
+
 OSStatus OSVADriverResetForTesting(void) {
   pthread_mutex_lock(&gStateMutex);
   OSVAStatus status = OSVA_STATUS_OK;
@@ -1650,6 +3091,8 @@ OSStatus OSVADriverResetForTesting(void) {
   memset(gCoreClients, 0, sizeof(gCoreClients));
   memset(gRingStorage, 0, sizeof(gRingStorage));
   memset(gDriverClients, 0, sizeof(gDriverClients));
+  memset(&gDiagnosticLifecycle, 0, sizeof(gDiagnosticLifecycle));
+  OSVAResetDiagnosticAtomics();
   gCoreInitialized = false;
   gHost = NULL;
   atomic_store_explicit(&gReferenceCount, 1, memory_order_relaxed);
@@ -1657,12 +3100,30 @@ OSStatus OSVADriverResetForTesting(void) {
   atomic_store_explicit(&gFenceNextIOForTesting, false, memory_order_relaxed);
   atomic_store_explicit(&gFenceZeroTimeStampCallCountForTesting, 0,
                         memory_order_relaxed);
+  atomic_store_explicit(&gPauseNextZeroTimestampPublicationForTesting, false,
+                        memory_order_relaxed);
+  atomic_store_explicit(&gZeroTimestampPublicationPausedForTesting, false,
+                        memory_order_relaxed);
+  atomic_store_explicit(&gResumeZeroTimestampPublicationForTesting, false,
+                        memory_order_relaxed);
+  atomic_store_explicit(&gForceNextIOWorkLoopCurrentCountDropForTesting, false,
+                        memory_order_relaxed);
+  atomic_store_explicit(&gHeldDiagnosticRecordKindForTesting, 0,
+                        memory_order_relaxed);
+  atomic_store_explicit(&gHeldDiagnosticEndpointIndexForTesting, 0,
+                        memory_order_relaxed);
+  atomic_store_explicit(&gDiagnosticRecordWriterHeldForTesting, false,
+                        memory_order_relaxed);
+  atomic_store_explicit(&gResumeDiagnosticRecordWriterForTesting, false,
+                        memory_order_relaxed);
   atomic_store_explicit(&gZeroTimestampCache.sequence, 0, memory_order_relaxed);
   atomic_store_explicit(&gZeroTimestampCache.sample_frame, 0,
                         memory_order_relaxed);
   atomic_store_explicit(&gZeroTimestampCache.host_ticks, 0,
                         memory_order_relaxed);
   atomic_store_explicit(&gZeroTimestampCache.seed, 0, memory_order_relaxed);
+  atomic_store_explicit(&gZeroTimestampCache.lifecycle_sequence, 0,
+                        memory_order_relaxed);
   pthread_mutex_unlock(&gStateMutex);
   return OSVAStatusToOSStatus(status);
 }
@@ -1679,6 +3140,9 @@ OSVAAddDeviceClient(AudioServerPlugInDriverRef driver,
     return kAudioHardwareIllegalOperationError;
   }
   pthread_mutex_lock(&gStateMutex);
+  OSVAIncrementDiagnosticCounter(
+      &gDiagnosticLifecycle.driver_client_add_attempt_count);
+  OSVAAdvanceDiagnosticLifecycleSequence();
   if (!gCoreInitialized ||
       OSVAFindDriverClient(deviceObjectID, clientInfo->mClientID) != NULL) {
     pthread_mutex_unlock(&gStateMutex);
@@ -1689,10 +3153,31 @@ OSVAAddDeviceClient(AudioServerPlugInDriverRef driver,
     pthread_mutex_unlock(&gStateMutex);
     return kAudioHardwareUnspecifiedError;
   }
+  if (client->generation == UINT64_MAX) {
+    pthread_mutex_unlock(&gStateMutex);
+    return kAudioHardwareUnspecifiedError;
+  }
+  const size_t slotIndex = (size_t)(client - gDriverClients);
+  const uint64_t generation = client->generation + 1;
+  const uint64_t transitionHostTicks = mach_absolute_time();
+  const uint64_t activeCount = atomic_load_explicit(
+      &gCore.active_client_count, memory_order_relaxed);
   memset(client, 0, sizeof(*client));
+  client->generation = generation;
   client->registered = true;
   client->device_object_id = deviceObjectID;
   client->client_id = clientInfo->mClientID;
+  client->process_id = clientInfo->mProcessID;
+  client->registration_host_ticks = transitionHostTicks;
+  client->last_transition_host_ticks = transitionHostTicks;
+  OSVAIncrementDiagnosticCounter(
+      &gDiagnosticLifecycle.driver_client_add_count);
+  OSVARecordDiagnosticTransition(
+      &gDiagnosticLifecycle.last_driver_transition,
+      kOSVADiagnosticTransitionDriverClientAdded,
+      OSVAEndpointForDevice(deviceObjectID), slotIndex,
+      (uint64_t)clientInfo->mClientID, clientInfo->mProcessID, generation, 0,
+      activeCount, activeCount, transitionHostTicks);
   pthread_mutex_unlock(&gStateMutex);
   return noErr;
 }
@@ -1708,13 +3193,31 @@ OSVARemoveDeviceClient(AudioServerPlugInDriverRef driver,
     return kAudioHardwareIllegalOperationError;
   }
   pthread_mutex_lock(&gStateMutex);
+  OSVAIncrementDiagnosticCounter(
+      &gDiagnosticLifecycle.driver_client_remove_attempt_count);
+  OSVAAdvanceDiagnosticLifecycleSequence();
   OSVADriverClient *client =
       OSVAFindDriverClient(deviceObjectID, clientInfo->mClientID);
   if (client == NULL || client->started) {
     pthread_mutex_unlock(&gStateMutex);
     return kAudioHardwareIllegalOperationError;
   }
+  const size_t slotIndex = (size_t)(client - gDriverClients);
+  const uint64_t generation = client->generation;
+  const uint64_t transitionHostTicks = mach_absolute_time();
+  const uint64_t activeCount = atomic_load_explicit(
+      &gCore.active_client_count, memory_order_relaxed);
+  OSVAIncrementDiagnosticCounter(
+      &gDiagnosticLifecycle.driver_client_remove_count);
+  OSVARecordDiagnosticTransition(
+      &gDiagnosticLifecycle.last_driver_transition,
+      kOSVADiagnosticTransitionDriverClientRemoved,
+      OSVAEndpointForDevice(deviceObjectID), slotIndex,
+      (uint64_t)clientInfo->mClientID, client->process_id, generation, 0,
+      activeCount, activeCount, transitionHostTicks);
   memset(client, 0, sizeof(*client));
+  client->generation = generation;
+  client->last_transition_host_ticks = transitionHostTicks;
   pthread_mutex_unlock(&gStateMutex);
   return noErr;
 }
@@ -1725,17 +3228,52 @@ static OSStatus OSVAStartIO(AudioServerPlugInDriverRef driver,
     return kAudioHardwareBadObjectError;
   }
   pthread_mutex_lock(&gStateMutex);
+  OSVAIncrementDiagnosticCounter(
+      &gDiagnosticLifecycle.global_start_attempt_count);
+  OSVAAdvanceDiagnosticLifecycleSequence();
   OSVADriverClient *client = OSVAFindDriverClient(deviceObjectID, clientID);
   if (!gCoreInitialized || client == NULL || client->started) {
     pthread_mutex_unlock(&gStateMutex);
     return kAudioHardwareIllegalOperationError;
   }
+  const OSVAEndpoint endpoint = OSVAEndpointForDevice(deviceObjectID);
+  const size_t driverSlotIndex = (size_t)(client - gDriverClients);
+  const uint64_t coreClientID = OSVACoreClientID(deviceObjectID, clientID);
+  const uint64_t transitionHostTicks = mach_absolute_time();
+  const uint64_t preActiveCount = atomic_load_explicit(
+      &gCore.active_client_count, memory_order_relaxed);
   bool notify = OSVAStartedClientCount(deviceObjectID) == 0;
   OSVAStatus status = OSVACoreStartClient(
-      &gCore, OSVAEndpointForDevice(deviceObjectID),
-      OSVACoreClientID(deviceObjectID, clientID), &client->lease);
+      &gCore, endpoint, coreClientID, &client->lease);
   if (status == OSVA_STATUS_OK) {
+    const uint64_t postActiveCount = atomic_load_explicit(
+        &gCore.active_client_count, memory_order_relaxed);
     client->started = true;
+    client->io_start_depth = 1;
+    client->start_host_ticks = transitionHostTicks;
+    client->last_transition_host_ticks = transitionHostTicks;
+    OSVAIncrementDiagnosticCounter(
+        &gDiagnosticLifecycle.global_start_transition_count);
+    const bool createdSeed = preActiveCount == 0 && postActiveCount == 1;
+    if (createdSeed) {
+      OSVAIncrementDiagnosticCounter(&gDiagnosticLifecycle.seed_create_count);
+      gDiagnosticLifecycle.current_seed_generation =
+          client->lease.timeline_seed;
+      gDiagnosticLifecycle.last_seed_create_host_ticks = transitionHostTicks;
+    }
+    OSVARecordDiagnosticTransition(
+        &gDiagnosticLifecycle.last_driver_transition,
+        kOSVADiagnosticTransitionIOStarted, endpoint, driverSlotIndex,
+        (uint64_t)clientID, client->process_id, client->generation,
+        client->lease.session_id, preActiveCount, postActiveCount,
+        transitionHostTicks);
+    OSVARecordDiagnosticTransition(
+        &gDiagnosticLifecycle.last_core_transition,
+        createdSeed ? kOSVADiagnosticTransitionSeedCreated
+                    : kOSVADiagnosticTransitionIOStarted,
+        endpoint, client->lease.client_slot, coreClientID, client->process_id,
+        client->generation, client->lease.session_id, preActiveCount,
+        postActiveCount, transitionHostTicks);
     OSVAZeroTimestamp timestamp;
     if (OSVACoreGetZeroTimestamp(&gCore, &timestamp) == OSVA_STATUS_OK) {
       (void)OSVAStoreZeroTimestampCache(timestamp);
@@ -1755,16 +3293,61 @@ static OSStatus OSVAStopIO(AudioServerPlugInDriverRef driver,
     return kAudioHardwareBadObjectError;
   }
   pthread_mutex_lock(&gStateMutex);
+  OSVAIncrementDiagnosticCounter(
+      &gDiagnosticLifecycle.global_stop_attempt_count);
+  OSVAAdvanceDiagnosticLifecycleSequence();
   OSVADriverClient *client = OSVAFindDriverClient(deviceObjectID, clientID);
   if (!gCoreInitialized || client == NULL || !client->started) {
     pthread_mutex_unlock(&gStateMutex);
     return kAudioHardwareIllegalOperationError;
   }
+  const OSVAEndpoint endpoint = OSVAEndpointForDevice(deviceObjectID);
+  const size_t driverSlotIndex = (size_t)(client - gDriverClients);
+  const uint64_t coreClientID = OSVACoreClientID(deviceObjectID, clientID);
+  const uint32_t coreSlotIndex = client->lease.client_slot;
+  const uint64_t coreSessionID = client->lease.session_id;
+  const uint64_t driverClientGeneration = client->generation;
+  const pid_t processID = client->process_id;
+  const uint64_t transitionHostTicks = mach_absolute_time();
+  const uint64_t preActiveCount = atomic_load_explicit(
+      &gCore.active_client_count, memory_order_relaxed);
+  const uint64_t retiringSeed = atomic_load_explicit(
+      &gCore.timeline_seed, memory_order_relaxed);
+  const uint64_t retiringAnchor = atomic_load_explicit(
+      &gCore.anchor_host_ticks, memory_order_relaxed);
   bool notify = OSVAStartedClientCount(deviceObjectID) == 1;
   OSVAStatus status = OSVACoreStopClient(&gCore, client->lease);
   if (status == OSVA_STATUS_OK) {
+    const uint64_t postActiveCount = atomic_load_explicit(
+        &gCore.active_client_count, memory_order_relaxed);
+    OSVAIncrementDiagnosticCounter(
+        &gDiagnosticLifecycle.global_stop_transition_count);
+    const bool clearedSeed = preActiveCount == 1 && postActiveCount == 0;
+    if (clearedSeed) {
+      OSVAIncrementDiagnosticCounter(&gDiagnosticLifecycle.seed_clear_count);
+      gDiagnosticLifecycle.last_seed_clear_host_ticks = transitionHostTicks;
+      gDiagnosticLifecycle.last_cleared_seed = retiringSeed;
+      gDiagnosticLifecycle.last_cleared_seed_generation =
+          retiringSeed;
+      gDiagnosticLifecycle.last_cleared_anchor_host_ticks = retiringAnchor;
+      gDiagnosticLifecycle.current_seed_generation = 0;
+    }
+    OSVARecordDiagnosticTransition(
+        &gDiagnosticLifecycle.last_driver_transition,
+        kOSVADiagnosticTransitionIOStopped, endpoint, driverSlotIndex,
+        (uint64_t)clientID, processID, driverClientGeneration, coreSessionID,
+        preActiveCount, postActiveCount, transitionHostTicks);
+    OSVARecordDiagnosticTransition(
+        &gDiagnosticLifecycle.last_core_transition,
+        clearedSeed ? kOSVADiagnosticTransitionSeedCleared
+                    : kOSVADiagnosticTransitionIOStopped,
+        endpoint, coreSlotIndex, coreClientID, processID,
+        driverClientGeneration, coreSessionID, preActiveCount,
+        postActiveCount, transitionHostTicks);
     memset(&client->lease, 0, sizeof(client->lease));
     client->started = false;
+    client->io_start_depth = 0;
+    client->last_transition_host_ticks = transitionHostTicks;
   }
   AudioServerPlugInHostRef host = gHost;
   pthread_mutex_unlock(&gStateMutex);
@@ -1779,11 +3362,18 @@ OSVAEndIOOperation(AudioServerPlugInDriverRef driver,
                    AudioObjectID deviceObjectID, UInt32 clientID,
                    UInt32 operationID, UInt32 ioBufferFrameSize,
                    const AudioServerPlugInIOCycleInfo *ioCycleInfo) {
-  (void)clientID;
-  (void)operationID;
   (void)ioBufferFrameSize;
   if (!OSVAIsValidDriver(driver) || !OSVAIsDevice(deviceObjectID)) {
     return kAudioHardwareBadObjectError;
   }
-  return ioCycleInfo != NULL ? noErr : kAudioHardwareIllegalOperationError;
+  if (ioCycleInfo == NULL) {
+    return kAudioHardwareIllegalOperationError;
+  }
+  if (operationID == kAudioServerPlugInIOOperationThread) {
+    const OSVAEndpoint endpoint = OSVAIsVisibleDevice(deviceObjectID)
+                                      ? OSVA_ENDPOINT_VISIBLE_INPUT
+                                      : OSVA_ENDPOINT_HIDDEN_WRITER;
+    OSVAPublishIOWorkLoopDiagnostic(endpoint, clientID, false);
+  }
+  return noErr;
 }
