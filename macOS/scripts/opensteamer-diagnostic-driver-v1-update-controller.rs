@@ -1428,17 +1428,25 @@ fn compare_tree_metadata(left: &Path, right: &Path) -> Result<()> {
             "v8 host tree metadata differs from reference".to_owned(),
         ));
     }
-    let diff = bounded_output(
-        "/usr/bin/diff",
-        &["-qr", path_text(left)?, path_text(right)?],
-        Duration::from_secs(180),
-        false,
-    )?;
-    require_success(&diff, "compare exact v8 host trees")?;
-    if !diff.stdout.is_empty() || !diff.stderr.is_empty() {
-        return Err(ControllerError(
-            "v8 host tree comparison emitted output".to_owned(),
-        ));
+    for node in &left_nodes {
+        if node.1 != 2 {
+            continue;
+        }
+        let relative = Path::new(OsStr::from_bytes(&node.0));
+        let left_file = left.join(relative);
+        let right_file = right.join(relative);
+        let comparison = bounded_output(
+            "/usr/bin/cmp",
+            &["-s", path_text(&left_file)?, path_text(&right_file)?],
+            COMMAND_TIMEOUT,
+            false,
+        )?;
+        require_success(&comparison, "compare exact v8 host file")?;
+        if !comparison.stdout.is_empty() || !comparison.stderr.is_empty() {
+            return Err(ControllerError(
+                "v8 host file comparison emitted output".to_owned(),
+            ));
+        }
     }
     Ok(())
 }
