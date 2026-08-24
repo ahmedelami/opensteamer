@@ -16,11 +16,26 @@ public struct ScreenVideoCaptureFormat: Sendable, Equatable {
 public protocol ScreenVideoSampleConsumer: AnyObject, Sendable {
     /// Accepts one complete, image-backed screen sample on the capture queue.
     func consumeScreenVideoSample(_ sampleBuffer: CMSampleBuffer)
+    /// Accepts the same sample together with its validated output-surface content geometry.
+    /// Consumers that do not map remote input can keep the original sample-only implementation.
+    func consumeScreenVideoSample(
+        _ sampleBuffer: CMSampleBuffer,
+        frameGeometry: ScreenVideoFrameGeometry?
+    )
     /// Reports a stream stop that did not originate from normal session teardown.
     func screenVideoCaptureSource(
         _ source: ScreenVideoCaptureSource,
         didStopWithErrorDescription errorDescription: String
     )
+}
+
+public extension ScreenVideoSampleConsumer {
+    func consumeScreenVideoSample(
+        _ sampleBuffer: CMSampleBuffer,
+        frameGeometry _: ScreenVideoFrameGeometry?
+    ) {
+        consumeScreenVideoSample(sampleBuffer)
+    }
 }
 
 /// Bounds one native screen-capture lifecycle call without changing its error semantics.
@@ -552,7 +567,7 @@ private final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
         guard outputType == .screen,
               sampleBuffer.isValid,
               CMSampleBufferDataIsReady(sampleBuffer),
-              CMSampleBufferGetImageBuffer(sampleBuffer) != nil,
+              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
               let attachments = CMSampleBufferGetSampleAttachmentsArray(
                 sampleBuffer,
                 createIfNecessary: false
@@ -563,8 +578,39 @@ private final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
         }
         lock.withLock {
             guard isForwarding else { return }
-            consumer.consumeScreenVideoSample(sampleBuffer)
+            consumer.consumeScreenVideoSample(
+                sampleBuffer,
+                frameGeometry: Self.frameGeometry(
+                    pixelBuffer: pixelBuffer,
+                    attachments: attachments[0]
+                )
+            )
         }
+    }
+
+    /// Parses Apple's per-frame geometry without trusting missing, malformed, or out-of-surface
+    /// attachment values. A nil result keeps media flowing but forces remote input to fail closed.
+    private static func frameGeometry(
+        pixelBuffer: CVPixelBuffer,
+        attachments: [SCStreamFrameInfo: Any]
+    ) -> ScreenVideoFrameGeometry? {
+        guard let contentRectDictionary = attachments[.contentRect] as? NSDictionary,
+              let contentRect = CGRect(
+                  dictionaryRepresentation: contentRectDictionary as CFDictionary
+              ),
+              let contentScaleNumber = attachments[.contentScale] as? NSNumber,
+              let scaleFactorNumber = attachments[.scaleFactor] as? NSNumber else {
+            return nil
+        }
+        let contentScale = CGFloat(truncating: contentScaleNumber)
+        let scaleFactor = CGFloat(truncating: scaleFactorNumber)
+        return ScreenVideoFrameGeometry(
+            surfaceWidth: CVPixelBufferGetWidth(pixelBuffer),
+            surfaceHeight: CVPixelBufferGetHeight(pixelBuffer),
+            contentRect: contentRect,
+            contentScale: contentScale,
+            scaleFactor: scaleFactor
+        )
     }
 }
 

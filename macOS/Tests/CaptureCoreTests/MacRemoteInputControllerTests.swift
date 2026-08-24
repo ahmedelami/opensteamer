@@ -126,6 +126,276 @@ final class MacRemoteInputControllerTests: XCTestCase {
         XCTAssertTrue(system.postedMousePoints.isEmpty)
     }
 
+    func testTapMapsThroughLivePillarboxInsteadOfStartupCanvas() throws {
+        let system = MockMacRemoteInputSystem()
+        system.bounds = CGRect(x: 100, y: -50, width: 414, height: 896)
+        let clock = MockMacRemoteInputClock()
+        let controller = armedController(system: system, clock: clock)
+        let geometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_080,
+                surfaceHeight: 1_920,
+                contentRect: CGRect(x: 48, y: 0, width: 444, height: 960),
+                contentScale: 1,
+                scaleFactor: 2
+            )
+        )
+        stabilize(geometry, on: controller, clock: clock)
+
+        let framePoint = MacRemoteNormalizedPoint(
+            x: (96 + (888 * 0.25)) / 1_080,
+            y: 0.75
+        )
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                normalizedPoint: framePoint
+            ),
+            .accepted(.none)
+        )
+        let posted = try XCTUnwrap(system.postedMousePoints.last)
+        XCTAssertEqual(posted.x, 203.5, accuracy: 0.000_1)
+        XCTAssertEqual(posted.y, 622, accuracy: 0.000_1)
+
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                normalizedPoint: .init(x: 0.05, y: 0.5)
+            ),
+            .rejected(.invalidPoint)
+        )
+        XCTAssertEqual(system.postedMousePoints.count, 1)
+    }
+
+    func testTapRejectsMissingOrStaleCrossAspectFrameGeometry() throws {
+        let system = MockMacRemoteInputSystem()
+        system.bounds = CGRect(x: 0, y: 0, width: 603, height: 1_311)
+        let controller = armedController(system: system)
+
+        controller.updateScreenVideoFrameGeometry(nil)
+        XCTAssertEqual(tap(controller), .rejected(.invalidPoint))
+
+        let stale = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_080,
+                surfaceHeight: 1_920,
+                contentRect: CGRect(x: 0, y: 0, width: 1_080, height: 1_920),
+                contentScale: 1,
+                scaleFactor: 1
+            )
+        )
+        controller.updateScreenVideoFrameGeometry(stale)
+        XCTAssertEqual(tap(controller), .rejected(.invalidPoint))
+        XCTAssertTrue(system.postedMousePoints.isEmpty)
+    }
+
+    func testEveryAdvertisedModeMapsRelativeCoordinatesIntoItsLiveBounds() throws {
+        let modes: [(logical: CGSize, pixels: CGSize)] = [
+            (.init(width: 1_080, height: 1_920), .init(width: 1_080, height: 1_920)),
+            (.init(width: 603, height: 1_311), .init(width: 1_206, height: 2_622)),
+            (.init(width: 540, height: 1_170), .init(width: 1_080, height: 2_340)),
+            (.init(width: 540, height: 960), .init(width: 1_080, height: 1_920)),
+            (.init(width: 414, height: 896), .init(width: 828, height: 1_792)),
+            (.init(width: 750, height: 1_334), .init(width: 750, height: 1_334))
+        ]
+
+        for mode in modes {
+            let system = MockMacRemoteInputSystem()
+            let clock = MockMacRemoteInputClock()
+            system.bounds = CGRect(
+                x: -mode.logical.width,
+                y: 200,
+                width: mode.logical.width,
+                height: mode.logical.height
+            )
+            let controller = armedController(system: system, clock: clock)
+            let geometry = try XCTUnwrap(
+                ScreenVideoFrameGeometry(
+                    surfaceWidth: Int(mode.pixels.width),
+                    surfaceHeight: Int(mode.pixels.height),
+                    contentRect: CGRect(origin: .zero, size: mode.pixels),
+                    contentScale: 1,
+                    scaleFactor: 1
+                )
+            )
+            stabilize(geometry, on: controller, clock: clock)
+
+            XCTAssertEqual(
+                controller.handleTap(
+                    screenRequestID: showID,
+                    inputSessionID: sessionID,
+                    normalizedPoint: .init(x: 0.25, y: 0.75)
+                ),
+                .accepted(.none),
+                "Rejected advertised mode \(mode)"
+            )
+            let posted = try XCTUnwrap(system.postedMousePoints.last)
+            XCTAssertEqual(
+                posted.x,
+                system.bounds!.minX + (mode.logical.width * 0.25),
+                accuracy: 0.000_1
+            )
+            XCTAssertEqual(
+                posted.y,
+                system.bounds!.minY + (mode.logical.height * 0.75),
+                accuracy: 0.000_1
+            )
+        }
+    }
+
+    func testChangedFrameGeometryFailsClosedUntilTheNewTransformIsStable() throws {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        system.bounds = CGRect(x: 0, y: 0, width: 540, height: 960)
+        let controller = armedController(system: system, clock: clock)
+        XCTAssertEqual(tap(controller), .accepted(.none))
+        XCTAssertEqual(system.postedMousePoints.count, 1)
+
+        system.bounds = CGRect(x: 0, y: 0, width: 414, height: 896)
+        let changedGeometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_080,
+                surfaceHeight: 1_920,
+                contentRect: CGRect(x: 48, y: 0, width: 444, height: 960),
+                contentScale: 1,
+                scaleFactor: 2
+            )
+        )
+        controller.updateScreenVideoFrameGeometry(changedGeometry)
+        XCTAssertEqual(tap(controller), .rejected(.invalidPoint))
+
+        clock.advance(by: 0.749)
+        controller.updateScreenVideoFrameGeometry(changedGeometry)
+        XCTAssertEqual(tap(controller), .rejected(.invalidPoint))
+
+        clock.advance(by: 0.001)
+        controller.updateScreenVideoFrameGeometry(changedGeometry)
+        let framePoint = MacRemoteNormalizedPoint(
+            x: (96 + (888 * 0.5)) / 1_080,
+            y: 0.5
+        )
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                normalizedPoint: framePoint
+            ),
+            .accepted(.none)
+        )
+        XCTAssertEqual(system.postedMousePoints.count, 2)
+        XCTAssertEqual(system.postedMousePoints.last, CGPoint(x: 207, y: 448))
+    }
+
+    func testSingleFrameGeometryPromotesLazilyAfterStabilityInterval() throws {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        system.bounds = CGRect(x: 0, y: 0, width: 414, height: 896)
+        let controller = armedController(system: system, clock: clock)
+        let geometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_080,
+                surfaceHeight: 1_920,
+                contentRect: CGRect(x: 96, y: 0, width: 888, height: 1_920),
+                contentScale: 1,
+                scaleFactor: 1
+            )
+        )
+
+        controller.updateScreenVideoFrameGeometry(geometry)
+        clock.advance(by: 0.750)
+
+        XCTAssertEqual(tap(controller), .accepted(.none))
+        XCTAssertEqual(system.postedMousePoints.last, CGPoint(x: 207, y: 448))
+    }
+
+    func testDifferentTransformRestartsStabilityInterval() throws {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        system.bounds = CGRect(x: 0, y: 0, width: 414, height: 896)
+        let controller = armedController(system: system, clock: clock)
+        let firstGeometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_080,
+                surfaceHeight: 1_920,
+                contentRect: CGRect(x: 96, y: 0, width: 888, height: 1_920),
+                contentScale: 1,
+                scaleFactor: 1
+            )
+        )
+        let secondGeometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_080,
+                surfaceHeight: 1_920,
+                contentRect: CGRect(x: 97, y: 0, width: 888, height: 1_920),
+                contentScale: 1,
+                scaleFactor: 1
+            )
+        )
+
+        controller.updateScreenVideoFrameGeometry(firstGeometry)
+        clock.advance(by: 0.749)
+        controller.updateScreenVideoFrameGeometry(secondGeometry)
+        clock.advance(by: 0.001)
+        XCTAssertEqual(tap(controller), .rejected(.invalidPoint))
+
+        clock.advance(by: 0.749)
+        XCTAssertEqual(tap(controller), .accepted(.none))
+    }
+
+    func testClearingGeometryBeforePromotionKeepsInputClosed() throws {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        system.bounds = CGRect(x: 0, y: 0, width: 414, height: 896)
+        let controller = armedController(system: system, clock: clock)
+        let geometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_080,
+                surfaceHeight: 1_920,
+                contentRect: CGRect(x: 96, y: 0, width: 888, height: 1_920),
+                contentScale: 1,
+                scaleFactor: 1
+            )
+        )
+
+        controller.updateScreenVideoFrameGeometry(geometry)
+        clock.advance(by: 0.500)
+        controller.updateScreenVideoFrameGeometry(nil)
+        clock.advance(by: 1)
+
+        XCTAssertEqual(tap(controller), .rejected(.invalidPoint))
+        XCTAssertTrue(system.postedMousePoints.isEmpty)
+    }
+
+    func testSubpixelJitterCannotAccumulateAcrossTheStabilityBaseline() throws {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        system.bounds = CGRect(x: 0, y: 0, width: 414, height: 896)
+        let controller = armedController(system: system, clock: clock)
+        func geometry(x: CGFloat) throws -> ScreenVideoFrameGeometry {
+            try XCTUnwrap(
+                ScreenVideoFrameGeometry(
+                    surfaceWidth: 1_080,
+                    surfaceHeight: 1_920,
+                    contentRect: CGRect(x: x, y: 0, width: 888, height: 1_920),
+                    contentScale: 1,
+                    scaleFactor: 1
+                )
+            )
+        }
+
+        controller.updateScreenVideoFrameGeometry(try geometry(x: 96))
+        clock.advance(by: 0.400)
+        controller.updateScreenVideoFrameGeometry(try geometry(x: 96.4))
+        clock.advance(by: 0.400)
+        controller.updateScreenVideoFrameGeometry(try geometry(x: 96.8))
+
+        XCTAssertEqual(tap(controller), .rejected(.invalidPoint))
+        clock.advance(by: 0.750)
+        XCTAssertEqual(tap(controller), .accepted(.none))
+    }
+
     // MARK: - Primary drag atomicity and authorization
 
     func testPrimaryDragMapsBothPointsAndPostsDownDragUpInOrder() {
@@ -806,7 +1076,37 @@ final class MacRemoteInputControllerTests: XCTestCase {
         system: MockMacRemoteInputSystem,
         clock: MockMacRemoteInputClock = .init()
     ) -> MacRemoteInputController {
-        MacRemoteInputController(allowRemoteControl: true, system: system, clock: clock)
+        let controller = MacRemoteInputController(
+            allowRemoteControl: true,
+            system: system,
+            clock: clock
+        )
+        if let bounds = system.bounds,
+           let geometry = fullFrameGeometry(for: bounds) {
+            stabilize(geometry, on: controller, clock: clock)
+        }
+        return controller
+    }
+
+    private func stabilize(
+        _ geometry: ScreenVideoFrameGeometry,
+        on controller: MacRemoteInputController,
+        clock: MockMacRemoteInputClock
+    ) {
+        controller.updateScreenVideoFrameGeometry(geometry)
+        clock.advance(by: 0.750)
+    }
+
+    private func fullFrameGeometry(for bounds: CGRect) -> ScreenVideoFrameGeometry? {
+        let width = max(2, Int(bounds.width.rounded()))
+        let height = max(2, Int(bounds.height.rounded()))
+        return ScreenVideoFrameGeometry(
+            surfaceWidth: width,
+            surfaceHeight: height,
+            contentRect: CGRect(x: 0, y: 0, width: width, height: height),
+            contentScale: 1,
+            scaleFactor: 1
+        )
     }
 
     private func armedController(

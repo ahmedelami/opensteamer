@@ -2911,7 +2911,8 @@ actor WorldwideScreenService {
         let inputController = remoteInputController
         let sink = WorldwideScreenSampleSink(
             capturer: capturer,
-            captureLifetime: captureLifetime
+            captureLifetime: captureLifetime,
+            remoteInputController: inputController
         ) { [weak self] source, message in
             authorization.revoke()
             inputController.revoke()
@@ -3556,6 +3557,7 @@ private struct ArmedRemoteInputSession {
 /// samples arriving after either boundary are discarded before touching WebRTC.
 private final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sendable {
     private let capturer: MacExternalVideoCapturer
+    private let remoteInputController: MacRemoteInputController
     private let didStop: @Sendable (ScreenVideoCaptureSource, String) -> Void
     private weak var captureLifetime: CaptureServiceLifetime?
     private let captureLifetimeIsRequired: Bool
@@ -3565,11 +3567,13 @@ private final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unche
     init(
         capturer: MacExternalVideoCapturer,
         captureLifetime: CaptureServiceLifetime? = nil,
+        remoteInputController: MacRemoteInputController,
         didStop: @escaping @Sendable (ScreenVideoCaptureSource, String) -> Void
     ) {
         self.capturer = capturer
         self.captureLifetime = captureLifetime
         captureLifetimeIsRequired = captureLifetime != nil
+        self.remoteInputController = remoteInputController
         self.didStop = didStop
     }
 
@@ -3579,6 +3583,7 @@ private final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unche
         guard lifetimeAllowsCapture else { return false }
         return lock.withLock {
             guard lifetimeAllowsCapture else { return false }
+            remoteInputController.updateScreenVideoFrameGeometry(nil)
             isForwarding = true
             return true
         }
@@ -3586,11 +3591,23 @@ private final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unche
 
     /// Closes the callback gate synchronously.
     func stopForwarding() {
-        lock.withLock { isForwarding = false }
+        lock.withLock {
+            isForwarding = false
+            remoteInputController.updateScreenVideoFrameGeometry(nil)
+        }
     }
 
     /// Forwards image-backed, timestamped samples only while the gate is open.
     func consumeScreenVideoSample(_ sampleBuffer: CMSampleBuffer) {
+        consumeScreenVideoSample(sampleBuffer, frameGeometry: nil)
+    }
+
+    /// Forwards the frame before publishing its geometry. The controller independently requires
+    /// a bounded propagation interval before reopening input after any transform change.
+    func consumeScreenVideoSample(
+        _ sampleBuffer: CMSampleBuffer,
+        frameGeometry: ScreenVideoFrameGeometry?
+    ) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             return
         }
@@ -3599,6 +3616,7 @@ private final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unche
         lock.withLock {
             guard isForwarding, callbackGateAllowsEntry else { return }
             capturer.capture(pixelBuffer: pixelBuffer, timestamp: timestamp)
+            remoteInputController.updateScreenVideoFrameGeometry(frameGeometry)
         }
     }
 
