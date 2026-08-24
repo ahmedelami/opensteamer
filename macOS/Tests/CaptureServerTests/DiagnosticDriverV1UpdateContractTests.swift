@@ -655,6 +655,16 @@ final class DiagnosticDriverV1UpdateContractTests: XCTestCase {
             beginningWith: "fn prove_lock_held_by_local(",
             endingBefore: "fn prove_lock_held_by("
         )
+        let lsofMetadata = try functionBody(
+            controller,
+            beginningWith: "fn require_pinned_lsof_metadata(",
+            endingBefore: "fn require_pinned_lsof("
+        )
+        let lsofProof = try functionBody(
+            controller,
+            beginningWith: "fn require_pinned_lsof(",
+            endingBefore: "fn lock_openers("
+        )
         for token in [
             "path.as_deref() != Some(HOST_PLIST)", #"job_type.as_deref() != Some("LaunchAgent")"#,
             #"state.as_deref() != Some("running")"#, "program.as_deref() != Some(HOST_EXECUTABLE)",
@@ -686,6 +696,21 @@ final class DiagnosticDriverV1UpdateContractTests: XCTestCase {
         )
         XCTAssertTrue(controller.contains("if sha256(path)? != LSOF_SHA256"))
         XCTAssertTrue(controller.contains(#"&["-n", "-Fpcufa", "--", HOST_LOCK]"#))
+        for token in [
+            "metadata.uid() != ROOT_ID", "metadata.gid() != ROOT_ID", "metadata.nlink() != 1",
+            "metadata.permissions().mode() & 0o7777 != 0o755", "metadata.len() != LSOF_SIZE",
+            "metadata.st_flags() != LSOF_FLAGS",
+        ] {
+            XCTAssertTrue(lsofMetadata.contains(token), "lsof metadata proof omits \(token)")
+        }
+        XCTAssertTrue(controller.contains("const LSOF_SIZE: u64 = 307_600;"))
+        XCTAssertTrue(controller.contains("const LSOF_FLAGS: u32 = 524_320;"))
+        XCTAssertEqual(occurrences(of: "require_pinned_lsof_metadata(path)?", in: lsofProof), 2)
+        assertOrdered(
+            ["let before = require_pinned_lsof_metadata(path)?", "sha256(path)? != LSOF_SHA256",
+             "let after = require_pinned_lsof_metadata(path)?", "before.dev() != after.dev()"],
+            in: lsofProof
+        )
     }
 
     func testFullV8HostBundleUsesDroppedUIDDescriptorManifest() throws {
