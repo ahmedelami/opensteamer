@@ -13,13 +13,58 @@ struct RestoredDesktopSnapshot: Equatable, Sendable {
     let isActive: Bool
 }
 
+/// The exact display identity and desktop mapping a fresh verifier must observe after teardown.
+public struct RestoredDesktopExpectation: Equatable, Sendable {
+    public let retiredVendorID: UInt32
+    public let retiredProductID: UInt32
+    public let retiredSerialNumber: UInt32
+    public let logicalWidth: UInt32
+    public let logicalHeight: UInt32
+    public let pixelWidth: UInt32
+    public let pixelHeight: UInt32
+
+    public init?(
+        retiredVendorID: UInt32,
+        retiredProductID: UInt32,
+        retiredSerialNumber: UInt32,
+        logicalWidth: UInt32,
+        logicalHeight: UInt32,
+        pixelWidth: UInt32,
+        pixelHeight: UInt32
+    ) {
+        guard retiredVendorID > 0, retiredProductID > 0, retiredSerialNumber > 0,
+            logicalWidth > 0, logicalHeight > 0, pixelWidth > 0, pixelHeight > 0
+        else {
+            return nil
+        }
+        self.retiredVendorID = retiredVendorID
+        self.retiredProductID = retiredProductID
+        self.retiredSerialNumber = retiredSerialNumber
+        self.logicalWidth = logicalWidth
+        self.logicalHeight = logicalHeight
+        self.pixelWidth = pixelWidth
+        self.pixelHeight = pixelHeight
+    }
+
+    public init(afterRetiring configuration: VirtualDisplayConfiguration) {
+        let expected = configuration.requiredResolvedModes[0]
+        retiredVendorID = configuration.vendorID
+        retiredProductID = configuration.productID
+        retiredSerialNumber = configuration.serialNumber
+        logicalWidth = expected.logicalWidth
+        logicalHeight = expected.logicalHeight
+        pixelWidth = expected.pixelWidth
+        pixelHeight = expected.pixelHeight
+    }
+}
+
 enum RestoredDesktopPolicy {
     private static let openSteamerVendorID: UInt32 = 0x6F73
     private static let openSteamerProductIDs: Set<UInt32> = [0x1717, 0x1718]
 
     static func accepts(
         _ displays: [RestoredDesktopSnapshot],
-        retiredConfiguration: VirtualDisplayConfiguration,
+        expectation: RestoredDesktopExpectation,
         appleHeadlessVendorID: UInt32,
         appleHeadlessProductID: UInt32
     ) -> Bool {
@@ -28,9 +73,9 @@ enum RestoredDesktopPolicy {
             let main = displays.first(where: \.isMain),
             main.isActive,
             !displays.contains(where: {
-                $0.vendorID == retiredConfiguration.vendorID
-                    && $0.productID == retiredConfiguration.productID
-                    && $0.serialNumber == retiredConfiguration.serialNumber
+                $0.vendorID == expectation.retiredVendorID
+                    && $0.productID == expectation.retiredProductID
+                    && $0.serialNumber == expectation.retiredSerialNumber
             }),
             !displays.contains(where: {
                 $0.vendorID == openSteamerVendorID
@@ -48,15 +93,27 @@ enum RestoredDesktopPolicy {
             // will legitimately remain suppressed.
             return true
         }
-        guard displays.count == 1,
-            let expected = retiredConfiguration.requiredResolvedModes.first
-        else {
+        guard displays.count == 1 else {
             return false
         }
-        return main.logicalWidth == expected.logicalWidth
-            && main.logicalHeight == expected.logicalHeight
-            && main.pixelWidth == expected.pixelWidth
-            && main.pixelHeight == expected.pixelHeight
+        return main.logicalWidth == expectation.logicalWidth
+            && main.logicalHeight == expectation.logicalHeight
+            && main.pixelWidth == expectation.pixelWidth
+            && main.pixelHeight == expectation.pixelHeight
+    }
+
+    static func accepts(
+        _ displays: [RestoredDesktopSnapshot],
+        retiredConfiguration: VirtualDisplayConfiguration,
+        appleHeadlessVendorID: UInt32,
+        appleHeadlessProductID: UInt32
+    ) -> Bool {
+        accepts(
+            displays,
+            expectation: .init(afterRetiring: retiredConfiguration),
+            appleHeadlessVendorID: appleHeadlessVendorID,
+            appleHeadlessProductID: appleHeadlessProductID
+        )
     }
 }
 
@@ -70,6 +127,14 @@ public enum HeadlessDesktopReplacement {
     static func restorationIsConfirmed(
         afterRetiring configuration: VirtualDisplayConfiguration
     ) -> Bool {
+        restorationIsConfirmed(
+            expectation: .init(afterRetiring: configuration)
+        )
+    }
+
+    static func restorationIsConfirmed(
+        expectation: RestoredDesktopExpectation
+    ) -> Bool {
         var onlineDisplays = [CGDirectDisplayID](
             repeating: kCGNullDirectDisplay,
             count: 16
@@ -81,7 +146,7 @@ public enum HeadlessDesktopReplacement {
             &onlineDisplayCount
         ) == .success,
             onlineDisplayCount > 0,
-            onlineDisplayCount <= UInt32(onlineDisplays.count)
+            onlineDisplayCount < UInt32(onlineDisplays.count)
         else {
             return false
         }
@@ -89,7 +154,7 @@ public enum HeadlessDesktopReplacement {
         let snapshots = onlineDisplays.prefix(Int(onlineDisplayCount)).compactMap {
             displayID -> RestoredDesktopSnapshot? in
             guard displayID != kCGNullDirectDisplay,
-                CGDisplayIsOnline(displayID) != 0
+                CGDisplayIsOnline(displayID) == 1
             else {
                 return nil
             }
@@ -110,13 +175,13 @@ public enum HeadlessDesktopReplacement {
                 pixelWidth: pixelWidth,
                 pixelHeight: pixelHeight,
                 isMain: displayID == mainDisplayID,
-                isActive: CGDisplayIsActive(displayID) != 0
+                isActive: CGDisplayIsActive(displayID) == 1
             )
         }
         guard snapshots.count == Int(onlineDisplayCount) else { return false }
         return RestoredDesktopPolicy.accepts(
             snapshots,
-            retiredConfiguration: configuration,
+            expectation: expectation,
             appleHeadlessVendorID: appleHeadlessVendorID,
             appleHeadlessProductID: appleHeadlessProductID
         )
@@ -131,6 +196,20 @@ public enum HeadlessDesktopReplacement {
             maximumAttempts: 60,
             isRestored: {
                 restorationIsConfirmed(afterRetiring: configuration)
+            },
+            sleeper: { Thread.sleep(forTimeInterval: 0.05) }
+        )
+    }
+
+    /// Uses a fresh process's CoreGraphics connection to prove the restored desktop. The longer
+    /// bound covers process launch plus WindowServer settlement without weakening the predicate.
+    public static func waitUntilRestored(
+        expectation: RestoredDesktopExpectation
+    ) -> Bool {
+        waitUntilRestored(
+            maximumAttempts: 200,
+            isRestored: {
+                restorationIsConfirmed(expectation: expectation)
             },
             sleeper: { Thread.sleep(forTimeInterval: 0.05) }
         )
@@ -296,8 +375,12 @@ public enum HeadlessDesktopReplacement {
                 pixelHeight: 1_792
             ),
             .init(
-                logicalWidth: 375,
-                logicalHeight: 667,
+                // macOS 26 does not synthesize a 375-point-wide HiDPI mode for this
+                // framebuffer, but it does expose the exact iPhone pixel canvas at 1x.
+                // Require the mode WindowServer actually publishes so one unsupported
+                // optional scale cannot reject the complete adjustable display.
+                logicalWidth: 750,
+                logicalHeight: 1_334,
                 pixelWidth: 750,
                 pixelHeight: 1_334
             ),

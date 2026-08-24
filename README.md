@@ -181,9 +181,11 @@ window-placement UX for a second desktop.
 
 The host preserves the starting desktop mapping and verifies every required resolution before it
 advertises availability. macOS Display Settings then shows `opensteamer Display`, including the
-iPhone 17 Pro Retina mapping of 603x1311 logical points to 1206x2622 framebuffer pixels. Choose a
-resolution before pressing **Show** on the iPhone. After changing it during a live session, Hide
-and Show again so ScreenCaptureKit renegotiates the frame size.
+iPhone 17 Pro Retina mapping of 603x1311 logical points to 1206x2622 framebuffer pixels. On the
+supported macOS host, the smallest compatibility choice is the native 750x1334 framebuffer because
+WindowServer does not publish its 375x667 HiDPI counterpart. Choose a resolution before pressing
+**Show** on the iPhone. After changing it during a live session, Hide and Show again so
+ScreenCaptureKit renegotiates the frame size.
 
 This compatibility path uses the exported but private macOS `CGVirtualDisplay` classes because
 Apple provides no public host virtual-display or DriverKit display family. It needs no root,

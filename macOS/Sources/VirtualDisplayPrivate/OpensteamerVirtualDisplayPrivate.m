@@ -347,26 +347,8 @@ static bool OpensteamerApplySettings(id display, id settings) {
     );
 }
 
-static bool OpensteamerWaitUntilDisplayIsOffline(CGDirectDisplayID displayID) {
-    for (NSUInteger attempt = 0; attempt < 60; attempt += 1) {
-        if (displayID == kCGNullDirectDisplay || !CGDisplayIsOnline(displayID)) {
-            return true;
-        }
-        [NSThread sleepForTimeInterval:0.05];
-    }
-    return false;
-}
-
-bool OpensteamerVirtualDisplayWaitUntilOffline(CGDirectDisplayID displayID) {
-    return OpensteamerWaitUntilDisplayIsOffline(displayID);
-}
-
-static void OpensteamerRetireRejectedDisplay(
-    id __strong *display,
-    CGDirectDisplayID displayID
-) {
+static void OpensteamerRetireRejectedDisplay(id __strong *display) {
     *display = nil;
-    OpensteamerWaitUntilDisplayIsOffline(displayID);
 }
 
 OpensteamerVirtualDisplayHandle *OpensteamerVirtualDisplayCreate(
@@ -492,7 +474,7 @@ OpensteamerVirtualDisplayHandle *OpensteamerVirtualDisplayCreate(
         OpensteamerSetObject(settings, "setModes:", nativeModes);
         if (!OpensteamerApplySettings(display, settings)) {
             *status = OpensteamerVirtualDisplayStatusSettingsRejected;
-            OpensteamerRetireRejectedDisplay(&display, resolvedDisplayID);
+            OpensteamerRetireRejectedDisplay(&display);
             return NULL;
         }
         if (!OpensteamerAllRequestedModesAreAvailable(
@@ -501,7 +483,7 @@ OpensteamerVirtualDisplayHandle *OpensteamerVirtualDisplayCreate(
                 requiredResolvedModeCount
             )) {
             *status = OpensteamerVirtualDisplayStatusModesUnavailable;
-            OpensteamerRetireRejectedDisplay(&display, resolvedDisplayID);
+            OpensteamerRetireRejectedDisplay(&display);
             return NULL;
         }
         if (!OpensteamerSelectInitialMode(
@@ -509,12 +491,12 @@ OpensteamerVirtualDisplayHandle *OpensteamerVirtualDisplayCreate(
                 requiredResolvedModes[0]
             )) {
             *status = OpensteamerVirtualDisplayStatusModeSelectionFailed;
-            OpensteamerRetireRejectedDisplay(&display, resolvedDisplayID);
+            OpensteamerRetireRejectedDisplay(&display);
             return NULL;
         }
         if (!OpensteamerWaitForSoleMainDisplay(resolvedDisplayID)) {
             *status = OpensteamerVirtualDisplayStatusUnsafeArrangement;
-            OpensteamerRetireRejectedDisplay(&display, resolvedDisplayID);
+            OpensteamerRetireRejectedDisplay(&display);
             return NULL;
         }
         // The headless placeholder disappears asynchronously. Re-prove the complete mode set and
@@ -525,7 +507,7 @@ OpensteamerVirtualDisplayHandle *OpensteamerVirtualDisplayCreate(
                 requiredResolvedModeCount
             )) {
             *status = OpensteamerVirtualDisplayStatusModesUnavailable;
-            OpensteamerRetireRejectedDisplay(&display, resolvedDisplayID);
+            OpensteamerRetireRejectedDisplay(&display);
             return NULL;
         }
         if (!OpensteamerSelectInitialMode(
@@ -533,14 +515,14 @@ OpensteamerVirtualDisplayHandle *OpensteamerVirtualDisplayCreate(
                 requiredResolvedModes[0]
             )) {
             *status = OpensteamerVirtualDisplayStatusModeSelectionFailed;
-            OpensteamerRetireRejectedDisplay(&display, resolvedDisplayID);
+            OpensteamerRetireRejectedDisplay(&display);
             return NULL;
         }
 
         OpensteamerVirtualDisplayHandle *handle = calloc(1, sizeof(*handle));
         if (handle == NULL) {
             *status = OpensteamerVirtualDisplayStatusAllocationFailed;
-            OpensteamerRetireRejectedDisplay(&display, resolvedDisplayID);
+            OpensteamerRetireRejectedDisplay(&display);
             return NULL;
         }
         handle->retainedDisplay = (__bridge_retained void *)display;
@@ -562,15 +544,15 @@ bool OpensteamerVirtualDisplayIsAlive(OpensteamerVirtualDisplayHandle *handle) {
         (__bridge OpensteamerVirtualDisplayTerminationState *)
             handle->retainedTerminationState;
     return !terminationState.isTerminated
-        && CGDisplayIsOnline(handle->displayID)
-        && CGDisplayIsActive(handle->displayID);
+        // Tahoe returns -1 for invalid display IDs; Boolean coercion would treat that as true.
+        && CGDisplayIsOnline(handle->displayID) == 1
+        && CGDisplayIsActive(handle->displayID) == 1;
 }
 
-bool OpensteamerVirtualDisplayDestroy(OpensteamerVirtualDisplayHandle *handle) {
+void OpensteamerVirtualDisplayDestroy(OpensteamerVirtualDisplayHandle *handle) {
     if (handle == NULL) {
-        return true;
+        return;
     }
-    CGDirectDisplayID retiredDisplayID = handle->displayID;
     if (handle->retainedDisplay != NULL) {
         id display = (__bridge_transfer id)handle->retainedDisplay;
         handle->retainedDisplay = NULL;
@@ -583,6 +565,4 @@ bool OpensteamerVirtualDisplayDestroy(OpensteamerVirtualDisplayHandle *handle) {
     }
     handle->displayID = kCGNullDirectDisplay;
     free(handle);
-
-    return OpensteamerWaitUntilDisplayIsOffline(retiredDisplayID);
 }

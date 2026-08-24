@@ -13,6 +13,12 @@ import VirtualDisplayCore
 struct CaptureServerMain {
     /// Parses configuration, starts enabled services, and exits nonzero on any fatal failure.
     static func main() async {
+        if let probeExitStatus = RestoredDesktopProbeMode.exitStatusIfRequested(
+            CommandLine.arguments
+        ) {
+            exit(probeExitStatus)
+        }
+        let restoredDesktopVerifier = RestoredDesktopSubprocessVerifier.live()
         var virtualDisplayOwner: VirtualDisplayOwner?
         var activeServiceLifetime: CaptureServiceLifetime?
         var activeVirtualDisplayLifetimeTask: Task<Void, Never>?
@@ -435,7 +441,9 @@ struct CaptureServerMain {
             }
             virtualDisplayLifetimeTask?.cancel()
             await virtualDisplayLifetimeTask?.value
-            guard virtualDisplayOwner?.close() != false else {
+            guard virtualDisplayOwner?.close(using: { expectation in
+                restoredDesktopVerifier?.verify(expectation) ?? false
+            }) != false else {
                 throw CaptureServerMainError.virtualDisplayTeardownTimedOut
             }
             await activeVirtualDisplayTeardownDeadline?.cancel()
@@ -473,14 +481,19 @@ struct CaptureServerMain {
                 activeVirtualDisplayLifetimeTask?.cancel()
                 await activeVirtualDisplayLifetimeTask?.value
                 if let virtualDisplayOwner {
-                    virtualDisplayRemovalIsConfirmed = virtualDisplayOwner.close()
+                    virtualDisplayRemovalIsConfirmed = virtualDisplayOwner.close(
+                        using: { expectation in
+                            restoredDesktopVerifier?.verify(expectation) ?? false
+                        }
+                    )
                 } else if let attemptedVirtualDisplayConfiguration {
                     // A private initializer may create and reject a display before Swift receives
                     // an owner. Prove restoration independently before treating nil as harmless.
-                    virtualDisplayRemovalIsConfirmed =
-                        HeadlessDesktopReplacement.waitUntilRestored(
+                    virtualDisplayRemovalIsConfirmed = restoredDesktopVerifier?.verify(
+                        RestoredDesktopExpectation(
                             afterRetiring: attemptedVirtualDisplayConfiguration
                         )
+                    ) ?? false
                 } else {
                     virtualDisplayRemovalIsConfirmed = true
                 }

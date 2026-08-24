@@ -110,7 +110,7 @@ final class VirtualDisplayConfigurationTests: XCTestCase {
         XCTAssertTrue(VirtualDisplayOwner.runtimeIsAvailable)
     }
 
-    func testHeadlessPlaceholderPreservesDesktopAndRequiresExactRetinaChoices() throws {
+    func testHeadlessPlaceholderPreservesDesktopAndRequiresExactSelectableChoices() throws {
         let configuration = try XCTUnwrap(
             HeadlessDesktopReplacement.makeConfiguration(
                 vendorID: HeadlessDesktopReplacement.appleHeadlessVendorID,
@@ -140,15 +140,46 @@ final class VirtualDisplayConfigurationTests: XCTestCase {
                 pixelHeight: 1_920
             )
         )
-        XCTAssertTrue(
-            configuration.requiredResolvedModes.contains(
+        XCTAssertEqual(
+            configuration.requiredResolvedModes,
+            [
+                .init(
+                    logicalWidth: 1_080,
+                    logicalHeight: 1_920,
+                    pixelWidth: 1_080,
+                    pixelHeight: 1_920
+                ),
                 .init(
                     logicalWidth: 603,
                     logicalHeight: 1_311,
                     pixelWidth: 1_206,
                     pixelHeight: 2_622
-                )
-            )
+                ),
+                .init(
+                    logicalWidth: 540,
+                    logicalHeight: 1_170,
+                    pixelWidth: 1_080,
+                    pixelHeight: 2_340
+                ),
+                .init(
+                    logicalWidth: 540,
+                    logicalHeight: 960,
+                    pixelWidth: 1_080,
+                    pixelHeight: 1_920
+                ),
+                .init(
+                    logicalWidth: 414,
+                    logicalHeight: 896,
+                    pixelWidth: 828,
+                    pixelHeight: 1_792
+                ),
+                .init(
+                    logicalWidth: 750,
+                    logicalHeight: 1_334,
+                    pixelWidth: 750,
+                    pixelHeight: 1_334
+                ),
+            ]
         )
     }
 

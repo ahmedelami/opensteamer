@@ -8,7 +8,8 @@ public final class VirtualDisplayOwner: @unchecked Sendable {
 
     private let lock = NSLock()
     private var handle: OpaquePointer?
-    private var teardownIsConfirmed = false
+    private var teardownResult: Bool?
+    private var teardownIsInProgress = false
 
     public static var runtimeIsAvailable: Bool {
         OpensteamerVirtualDisplayRuntimeIsAvailable()
@@ -110,45 +111,72 @@ public final class VirtualDisplayOwner: @unchecked Sendable {
     }
 
     deinit {
-        close()
+        let unreleasedHandle = lock.withLock { () -> OpaquePointer? in
+            defer { handle = nil }
+            return handle
+        }
+        OpensteamerVirtualDisplayDestroy(unreleasedHandle)
     }
 
-    /// Releases the display, proves its ID is offline, then proves the sole Apple headless
-    /// placeholder has returned before allowing the process lock to be released.
+    /// Releases the display exactly once, then delegates restored-topology proof to a verifier.
+    /// The executable supplies a fresh-process verifier because the owning CoreGraphics
+    /// connection can retain the retired display in its own topology snapshot.
     @discardableResult
-    public func close() -> Bool {
+    public func close(
+        using restorationVerifier: (RestoredDesktopExpectation) -> Bool
+    ) -> Bool {
         enum CloseAction {
-            case alreadyConfirmed
-            case destroy(OpaquePointer)
-            case retryOfflineProof
+            case resolved(Bool)
+            case verify(OpaquePointer?)
+            case verificationInProgress
         }
         let action = lock.withLock { () -> CloseAction in
-            if teardownIsConfirmed {
-                return .alreadyConfirmed
+            if let teardownResult {
+                return .resolved(teardownResult)
             }
-            guard let retiredHandle = handle else {
-                return .retryOfflineProof
+            guard !teardownIsInProgress else {
+                return .verificationInProgress
             }
+            teardownIsInProgress = true
+            let retiredHandle = handle
             handle = nil
-            return .destroy(retiredHandle)
+            return .verify(retiredHandle)
         }
-        let didConfirmOffline: Bool
         switch action {
-        case .alreadyConfirmed:
-            return true
-        case .destroy(let retiredHandle):
-            didConfirmOffline = OpensteamerVirtualDisplayDestroy(retiredHandle)
-        case .retryOfflineProof:
-            didConfirmOffline = OpensteamerVirtualDisplayWaitUntilOffline(displayID)
-        }
-        let didConfirmRestoration = didConfirmOffline
-            && HeadlessDesktopReplacement.waitUntilRestored(
-                afterRetiring: configuration
+        case .resolved(let result):
+            return result
+        case .verificationInProgress:
+            return false
+        case .verify(let retiredHandle):
+            OpensteamerVirtualDisplayDestroy(retiredHandle)
+            let result = restorationVerifier(
+                RestoredDesktopExpectation(afterRetiring: configuration)
             )
-        if didConfirmRestoration {
-            lock.withLock { teardownIsConfirmed = true }
+            lock.withLock {
+                // Cache only proof. A bounded miss remains fail-closed for this caller, while the
+                // enclosing fatal-cleanup path may make one final fresh-process attempt after
+                // WindowServer has had additional time to settle.
+                teardownResult = result ? true : nil
+                teardownIsInProgress = false
+            }
+            return result
         }
-        return didConfirmRestoration
+    }
+
+    @discardableResult
+    public func close() -> Bool {
+        close(using: { expectation in
+            HeadlessDesktopReplacement.waitUntilRestored(
+                expectation: expectation
+            )
+        })
+    }
+
+    @discardableResult
+    public func invalidate(
+        using restorationVerifier: (RestoredDesktopExpectation) -> Bool
+    ) -> Bool {
+        close(using: restorationVerifier)
     }
 
     @discardableResult

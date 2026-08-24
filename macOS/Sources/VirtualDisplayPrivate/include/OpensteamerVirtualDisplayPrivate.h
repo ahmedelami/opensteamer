@@ -60,11 +60,9 @@ OpensteamerVirtualDisplayHandle * _Nullable OpensteamerVirtualDisplayCreate(
     OpensteamerVirtualDisplayStatus * _Nonnull status
 );
 
-bool OpensteamerVirtualDisplayDestroy(
+void OpensteamerVirtualDisplayDestroy(
     OpensteamerVirtualDisplayHandle * _Nullable handle
 );
-
-bool OpensteamerVirtualDisplayWaitUntilOffline(CGDirectDisplayID displayID);
 
 bool OpensteamerVirtualDisplayIsAlive(
     OpensteamerVirtualDisplayHandle * _Nullable handle

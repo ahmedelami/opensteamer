@@ -395,6 +395,14 @@ final class VirtualDisplayLifetimeSupervisorTests: XCTestCase {
             VirtualDisplayTeardownBudgets.combinedVirtualTeardownEnvelope
         )
         XCTAssertEqual(
+            VirtualDisplayTeardownBudgets.combinedVirtualTeardownEnvelope,
+            .seconds(89)
+        )
+        XCTAssertEqual(
+            VirtualDisplayTeardownBudgets.terminal,
+            .seconds(105)
+        )
+        XCTAssertEqual(
             VirtualDisplayTeardownBudgets.nonVirtualProcessCleanup,
             .seconds(60)
         )
@@ -436,7 +444,10 @@ final class VirtualDisplayLifetimeSupervisorTests: XCTestCase {
         deadline.arm()
         let terminalWatchdogStart = await iterator.next()
         XCTAssertEqual(terminalWatchdogStart?.0, 4)
-        XCTAssertEqual(terminalWatchdogStart?.1, .seconds(90))
+        XCTAssertEqual(
+            terminalWatchdogStart?.1,
+            VirtualDisplayTeardownBudgets.terminal
+        )
         await deadline.cancel()
         XCTAssertEqual(starts.value, 4)
     }
