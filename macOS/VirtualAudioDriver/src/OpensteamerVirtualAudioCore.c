@@ -619,6 +619,7 @@ OSVAStatus OSVACoreGetZeroTimestampAtHostTicks(
         .sample_frame = sample_frame,
         .host_ticks = snapshot.anchor_host_ticks + host_offset,
         .seed = snapshot.timeline_seed,
+        .lifecycle_sequence = snapshot.lifecycle_sequence,
     };
     return OSVA_STATUS_OK;
 }
@@ -665,6 +666,9 @@ OSVAStatus OSVACoreWriteFrames(
     if (status != OSVA_STATUS_OK) {
         return status;
     }
+
+    bool has_last_transferred_frame = false;
+    uint64_t last_transferred_absolute_frame = 0;
 
     for (size_t index = 0; index < frame_count; ++index) {
         const uint64_t absolute_frame = start_frame + (uint64_t)index;
@@ -725,6 +729,16 @@ OSVAStatus OSVACoreWriteFrames(
             memory_order_release
         );
         result_out->written_frames += 1;
+        has_last_transferred_frame = true;
+        last_transferred_absolute_frame = absolute_frame;
+    }
+
+    if (has_last_transferred_frame) {
+        result_out->has_last_transferred_frame = true;
+        result_out->last_transferred_timeline_seed = writer.timeline_seed;
+        result_out->last_transferred_session_id = writer.session_id;
+        result_out->last_transferred_absolute_frame =
+            last_transferred_absolute_frame;
     }
 
     if (atomic_load_explicit(
@@ -792,6 +806,11 @@ OSVAStatus OSVACoreReadFrames(
         return status;
     }
 
+    bool has_last_transferred_frame = false;
+    uint64_t last_transferred_timeline_seed = 0;
+    uint64_t last_transferred_session_id = 0;
+    uint64_t last_transferred_absolute_frame = 0;
+
     for (size_t index = 0; index < frame_count; ++index) {
         const uint64_t absolute_frame = start_frame + (uint64_t)index;
         const OSVARingSlot *slot =
@@ -841,6 +860,20 @@ OSVAStatus OSVACoreReadFrames(
         samples_out[index] = OSVAFloatFromBits(sample_bits);
         result_out->delivered_frames += 1;
         result_out->underrun_frames -= 1;
+        has_last_transferred_frame = true;
+        last_transferred_timeline_seed = timeline_seed;
+        last_transferred_session_id = producer_session_id;
+        last_transferred_absolute_frame = absolute_frame;
+    }
+
+    if (has_last_transferred_frame) {
+        result_out->has_last_transferred_frame = true;
+        result_out->last_transferred_timeline_seed =
+            last_transferred_timeline_seed;
+        result_out->last_transferred_session_id =
+            last_transferred_session_id;
+        result_out->last_transferred_absolute_frame =
+            last_transferred_absolute_frame;
     }
 
     if (atomic_load_explicit(
@@ -853,6 +886,10 @@ OSVAStatus OSVACoreReadFrames(
         }
         result_out->delivered_frames = 0;
         result_out->underrun_frames = frame_count;
+        result_out->has_last_transferred_frame = false;
+        result_out->last_transferred_timeline_seed = 0;
+        result_out->last_transferred_session_id = 0;
+        result_out->last_transferred_absolute_frame = 0;
         return OSVA_STATUS_RETRY;
     }
     return OSVA_STATUS_OK;

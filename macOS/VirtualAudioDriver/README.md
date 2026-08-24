@@ -34,6 +34,23 @@ driver:
 make -C macOS/VirtualAudioDriver test test-sanitizers
 ```
 
+Build the passive diagnostic reader without loading or starting a device:
+
+```sh
+mkdir -p /private/tmp/opensteamer-diagnostic-reader
+macOS/VirtualAudioDriver/scripts/build-diagnostic-snapshot-reader.sh \
+  /private/tmp/opensteamer-diagnostic-reader/opensteamer-diagnostic-snapshot-reader
+```
+
+Its `--read-once` mode resolves only the two exact opensteamer device UIDs,
+revalidates the returned UID, and reads the versioned `osDS` property. It does
+not enumerate devices, set defaults, change routes, or start I/O. A read can
+return “snapshot unavailable” during a lifecycle transition; the reader never
+blocks the driver waiting for one. The fixed POD capture and all real-time
+recording are allocation-free. Core Audio custom-property IPC requires a
+marshalled Core Foundation value, so the non-real-time property getter creates
+one immutable `CFData` only after releasing the lifecycle locks.
+
 Build and verify a reproducible universal local bundle at a new temporary
 path:
 

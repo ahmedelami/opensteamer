@@ -80,18 +80,27 @@ typedef struct OSVAZeroTimestamp {
     uint64_t sample_frame;
     uint64_t host_ticks;
     uint64_t seed;
+    uint64_t lifecycle_sequence;
 } OSVAZeroTimestamp;
 
 typedef struct OSVAWriteResult {
     size_t requested_frames;
     size_t written_frames;
     size_t contended_frames;
+    bool has_last_transferred_frame;
+    uint64_t last_transferred_timeline_seed;
+    uint64_t last_transferred_session_id;
+    uint64_t last_transferred_absolute_frame;
 } OSVAWriteResult;
 
 typedef struct OSVAReadResult {
     size_t requested_frames;
     size_t delivered_frames;
     size_t underrun_frames;
+    bool has_last_transferred_frame;
+    uint64_t last_transferred_timeline_seed;
+    uint64_t last_transferred_session_id;
+    uint64_t last_transferred_absolute_frame;
 } OSVAReadResult;
 
 typedef struct OSVACore {
