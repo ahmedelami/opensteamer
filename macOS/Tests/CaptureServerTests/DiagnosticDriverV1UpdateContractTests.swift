@@ -710,6 +710,11 @@ final class DiagnosticDriverV1UpdateContractTests: XCTestCase {
             beginningWith: "fn verify_uid501_host_bundle_manifest(",
             endingBefore: "fn create_root_driver_directory("
         )
+        let compareReference = try functionBody(
+            controller,
+            beginningWith: "fn compare_tree_metadata(",
+            endingBefore: "fn code_hash("
+        )
         XCTAssertTrue(runtime.contains("verify_uid501_host_bundle_manifest()?"))
         XCTAssertTrue(capture.contains("getuid() } != USER_ID || unsafe { geteuid() } != USER_ID"))
         XCTAssertTrue(capture.contains("openat_component_walk_with_final_flags(Path::new(HOST_APP), O_RDONLY | O_DIRECTORY)?"))
@@ -731,6 +736,15 @@ final class DiagnosticDriverV1UpdateContractTests: XCTestCase {
         XCTAssertTrue(verify.contains("&[UID501_HOST_MANIFEST_MODE]"))
         XCTAssertTrue(verify.contains("true,"))
         XCTAssertTrue(verify.contains("sha256_bytes(&output.stdout)? != HOST_BUNDLE_MANIFEST_SHA256"))
+        XCTAssertFalse(compareReference.contains("/usr/bin/diff"))
+        for token in [
+            "if left_nodes != right_nodes", "for node in &left_nodes", "if node.1 != 2",
+            "Path::new(OsStr::from_bytes(&node.0))", #""/usr/bin/cmp""#, #"&["-s""#,
+            "require_success(&comparison, \"compare exact v8 host file\")",
+            "!comparison.stdout.is_empty() || !comparison.stderr.is_empty()",
+        ] {
+            XCTAssertTrue(compareReference.contains(token), "host reference comparison omits \(token)")
+        }
     }
 
     func testForwardOrderAndSameHostRestartContract() throws {
