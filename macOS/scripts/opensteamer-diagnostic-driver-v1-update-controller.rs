@@ -190,6 +190,8 @@ const HOST_ARGUMENTS: [&str; 7] = [
 ];
 const HOST_LOCK: &str = "/Users/ahmed/Library/Application Support/com.elamin.AudioStreamer.CaptureServer.runtime/worldwide-host.lock";
 const LSOF_SHA256: &str = "28c36d6b6dfcce1f544717b0d1961aa03441ee0a736fee3e1eaeb215c0fbff4c";
+const LSOF_SIZE: u64 = 307_600;
+const LSOF_FLAGS: u32 = 524_320;
 
 const V8_POINTER: &str =
     "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v8";
@@ -2089,15 +2091,33 @@ fn read_generation_lock(pid: u32) -> Result<(u64, u64, String)> {
     ))
 }
 
+fn require_pinned_lsof_metadata(path: &Path) -> Result<fs::Metadata> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != ROOT_ID
+        || metadata.gid() != ROOT_ID
+        || metadata.nlink() != 1
+        || metadata.permissions().mode() & 0o7777 != 0o755
+        || metadata.len() != LSOF_SIZE
+        || metadata.st_flags() != LSOF_FLAGS
+    {
+        return Err(ControllerError(
+            "lsof metadata differs from the reviewed sealed-system file".to_owned(),
+        ));
+    }
+    Ok(metadata)
+}
+
 fn require_pinned_lsof() -> Result<()> {
     let path = Path::new("/usr/sbin/lsof");
-    let before = require_regular(path, ROOT_ID, ROOT_ID, 0o755)?;
+    let before = require_pinned_lsof_metadata(path)?;
     if sha256(path)? != LSOF_SHA256 {
         return Err(ControllerError(
             "lsof differs from its exact reviewed hash".to_owned(),
         ));
     }
-    let after = require_regular(path, ROOT_ID, ROOT_ID, 0o755)?;
+    let after = require_pinned_lsof_metadata(path)?;
     if before.dev() != after.dev() || before.ino() != after.ino() || before.len() != after.len() {
         return Err(ControllerError(
             "lsof identity changed during hash proof".to_owned(),
