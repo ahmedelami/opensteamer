@@ -60,7 +60,9 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
     // object itself is never constructed with caller-controlled input.
     private static let sideBySideAppBundleIdentifier = "com.elamin.opensteamer"
     private static let guardedPhysicalEvidenceRoot = "/Volumes/t7"
-    private let app = XCUIApplication(bundleIdentifier: Self.sideBySideAppBundleIdentifier)
+    private let app = XCUIApplication(
+        bundleIdentifier: PairedReconnectPhysicalUITests.sideBySideAppBundleIdentifier
+    )
     // Audio diagnostics are published by the one-second WebRTC statistics task, so 1.5 seconds
     // permits one ordinary publication interval without allowing a late burst to launder a stall.
     private let maximumAudioOracleProgressGap: TimeInterval = 1.5
@@ -2388,3 +2390,52 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
             .firstMatch
     }
 }
+
+/// Simulator-only contract for the edge-to-edge viewer and its in-app exit control.
+#if targetEnvironment(simulator)
+@MainActor
+final class SimulatorFullscreenViewerUITests: XCTestCase {
+    private let app = XCUIApplication()
+
+    override func setUp() {
+        super.setUp()
+        continueAfterFailure = false
+        app.launchArguments.append("--opensteamer-ui-test-fullscreen-viewer")
+        app.launch()
+    }
+
+    func testRemoteScreenFillsWindowAndBackReturnsWithoutRelaunch() {
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 10))
+
+        let surface = app.otherElements["fullscreenRemoteScreenSurface"]
+        XCTAssertTrue(surface.waitForExistence(timeout: 10))
+
+        let windowFrame = window.frame
+        let surfaceFrame = surface.frame
+        XCTAssertLessThanOrEqual(abs(surfaceFrame.minX - windowFrame.minX), 1)
+        XCTAssertLessThanOrEqual(abs(surfaceFrame.minY - windowFrame.minY), 1)
+        XCTAssertLessThanOrEqual(abs(surfaceFrame.maxX - windowFrame.maxX), 1)
+        XCTAssertLessThanOrEqual(abs(surfaceFrame.maxY - windowFrame.maxY), 1)
+
+        let before = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        before.name = "Edge-to-edge remote screen with Back control"
+        before.lifetime = .keepAlways
+        add(before)
+
+        let back = app.buttons["fullscreenViewerBack"]
+        XCTAssertTrue(back.exists)
+        XCTAssertTrue(back.isHittable)
+        back.tap()
+
+        let dismissed = app.descendants(matching: .any)
+            .matching(identifier: "fullscreenViewerDismissed")
+            .firstMatch
+        XCTAssertTrue(
+            dismissed.waitForExistence(timeout: 3),
+            "Back did not leave the viewer in the same running app process"
+        )
+        XCTAssertEqual(app.state, .runningForeground)
+    }
+}
+#endif

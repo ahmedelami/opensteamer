@@ -19,11 +19,11 @@ struct WorldwideScreenViewerView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
-
-            VStack(spacing: 16) {
-                header
-
+            FullscreenViewerLayout(
+                backAccessibilityIdentifier: "hideWorldwideMacScreen",
+                backAccessibilityLabel: "Back to Player and hide Mac screen",
+                onBack: hideAndDismiss
+            ) {
                 GeometryReader { geometry in
                     if allowsRemoteScreenRendering {
                         WebRTCRemoteScreenView(
@@ -102,20 +102,53 @@ struct WorldwideScreenViewerView: View {
                 .accessibilityLabel("Mac screen video")
                 .accessibilityValue(videoRenderAccessibilityValue)
                 .accessibilityIdentifier("worldwideMacScreenVideo")
+            } statusOverlay: {
+                VStack(spacing: 4) {
+                    Text(viewModel.remoteDisplayName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
-                status
+                    Text(viewModel.stateText)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.white)
+                        .accessibilityValue(
+                            viewModel.screenAcknowledgementOracle?.accessibilityValue
+                                ?? "unavailable"
+                        )
+                        .accessibilityIdentifier("worldwideScreenAcknowledgementOracle")
 
-                Button {
-                    hideAndDismiss()
-                } label: {
-                    Label("Hide Screen", systemImage: "rectangle.slash")
-                        .frame(maxWidth: .infinity)
+                    Text(
+                        viewModel.routeText == "Unknown"
+                            ? "Finding best route"
+                            : viewModel.routeText
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                    if effectiveRemoteInputAvailable {
+                        Label(
+                            viewModel.isRemotePrimaryDragAvailable
+                                ? "Tap to click · Hold and drag to select or move"
+                                : "Touch control enabled",
+                            systemImage: "hand.tap"
+                        )
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                            .accessibilityIdentifier("worldwideRemoteInputEnabled")
+                    }
+
+                    if let lastError = viewModel.lastError {
+                        Label(lastError, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .multilineTextAlignment(.center)
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .padding(.horizontal)
-                .padding(.bottom, 8)
-                .accessibilityIdentifier("hideWorldwideMacScreen")
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .padding()
+                .accessibilityIdentifier("worldwideMacScreenStatus")
             }
 
             RemoteKeyboardInputView(
@@ -169,81 +202,13 @@ struct WorldwideScreenViewerView: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Mac Screen")
-                    .font(.headline)
-                Text(viewModel.remoteDisplayName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            Button {
-                hideAndDismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 44, height: 44)
-                    .background(.thinMaterial, in: Circle())
-            }
-            .accessibilityLabel("Hide Screen")
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal)
-        .padding(.top, 8)
-    }
-
-    private var status: some View {
-        VStack(spacing: 6) {
-            Text(viewModel.stateText)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.white)
-                .accessibilityValue(
-                    viewModel.screenAcknowledgementOracle?.accessibilityValue
-                        ?? "unavailable"
-                )
-                .accessibilityIdentifier("worldwideScreenAcknowledgementOracle")
-
-            Text(viewModel.routeText == "Unknown" ? "Finding best route" : viewModel.routeText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if effectiveRemoteInputAvailable {
-                Label(
-                    viewModel.isRemotePrimaryDragAvailable
-                        ? "Tap to click · Hold and drag to select or move"
-                        : "Touch control enabled",
-                    systemImage: "hand.tap"
-                )
-                    .font(.caption)
-                    .foregroundStyle(.green)
-                    .accessibilityIdentifier("worldwideRemoteInputEnabled")
-            }
-
-            if let lastError = viewModel.lastError {
-                Label(lastError, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-            }
-        }
-        .accessibilityIdentifier("worldwideMacScreenStatus")
-    }
-
     private func hideAndDismiss() {
-        // Close the local input gate synchronously, then dismiss after the owned remote Hide is
-        // acknowledged. If this lease already lost ownership, dismissal is safe immediately.
+        // Close rendering/input synchronously and start the fail-closed remote Hide transaction.
+        // The local cover exits immediately; the model continues requiring an authenticated Hide
+        // acknowledgement and closes the session if the Mac cannot prove capture stopped.
         allowsRemoteInputPresentation = false
-        let claimed = viewModel.beginPassiveScreenTeardown(for: lease) {
-            dismissPresentation(lease)
-        }
-        if !claimed {
-            dismissPresentation(lease)
-        }
+        _ = viewModel.beginPassiveScreenTeardown(for: lease)
+        dismissPresentation(lease)
     }
 
     private func rejectPresentationAndDismiss() {

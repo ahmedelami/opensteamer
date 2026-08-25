@@ -1743,6 +1743,10 @@ final class WorldwideSessionViewModel: ObservableObject {
             isVisible: false,
             completion: completion
         )
+        // A locally dismissed viewer must not leave an in-flight Show owning the serial drain.
+        // Queue Hide first, then retire/resume the same-lease Show so the drain advances directly
+        // into the fail-closed teardown even after the presentation lease itself is retired.
+        supersedeScreenShow(for: lease)
         return true
     }
 

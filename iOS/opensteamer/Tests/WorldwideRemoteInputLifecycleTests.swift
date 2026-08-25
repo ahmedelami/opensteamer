@@ -328,6 +328,184 @@ final class WorldwideRemoteInputLifecycleTests: XCTestCase {
     }
 
     @MainActor
+    func testBackDuringPendingShowRetiresLeaseAndDrainsExactlyOneHide() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let generation = UUID()
+        let transport = ScreenVisibilityTransportProbe()
+        let hideCompletion = MainActorCountGate()
+        viewModel.debugInstallScreenSessionForTests(
+            peer: peer,
+            generation: generation,
+            visible: false
+        )
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+        let lease = try XCTUnwrap(viewModel.issueScreenPresentationLease())
+        let show = Task { @MainActor in
+            await viewModel.setScreenVisible(true, for: lease)
+        }
+
+        await transport.waitForRequestCount(1)
+        XCTAssertTrue(transport.requests[0].isVisible)
+        let showKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: generation,
+            requestID: 551
+        )
+        await transport.resolveRequest(at: 0, with: .success(showKey.requestID))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(showKey)
+
+        XCTAssertTrue(
+            viewModel.beginPassiveScreenTeardown(for: lease) {
+                hideCompletion.increment()
+            }
+        )
+        viewModel.retireScreenPresentationLease(lease)
+        XCTAssertFalse(viewModel.beginPassiveScreenTeardown(for: lease))
+        let didShow = await show.value
+        XCTAssertFalse(didShow)
+
+        await transport.waitForRequestCount(2)
+        XCTAssertEqual(transport.requests.count, 2)
+        XCTAssertEqual(transport.requests.map(\.isVisible), [true, false])
+        XCTAssertEqual(transport.requests[1].lease, lease)
+
+        let lateAuthorization = await viewModel.debugDeliverControlAcknowledgement(
+            key: showKey,
+            state: .active,
+            inputCapability: WebRTCInputCapability(
+                inputSessionID: UUID(),
+                screenRequestID: showKey.requestID,
+                supportsPrimaryDrag: true
+            ),
+            sourcePeer: peer
+        )
+        XCTAssertFalse(lateAuthorization?.isValid ?? true)
+        XCTAssertFalse(viewModel.debugScreenPresentationState.isScreenVisible)
+        XCTAssertFalse(viewModel.debugScreenPresentationState.inputAvailable)
+
+        let hideKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: generation,
+            requestID: 552
+        )
+        await transport.resolveRequest(at: 1, with: .success(hideKey.requestID))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(hideKey)
+        await viewModel.debugDeliverControlAcknowledgement(
+            key: hideKey,
+            state: .inactive,
+            sourcePeer: peer
+        )
+        await hideCompletion.waitForCount(1)
+
+        let finalState = viewModel.debugScreenPresentationState
+        XCTAssertEqual(hideCompletion.count, 1)
+        XCTAssertNil(finalState.currentLease)
+        XCTAssertNil(finalState.activeLease)
+        XCTAssertNil(finalState.pendingRequestKey)
+        XCTAssertFalse(finalState.isScreenVisible)
+        XCTAssertFalse(finalState.inputAvailable)
+        XCTAssertFalse(finalState.remoteHideRequired)
+        XCTAssertTrue(finalState.hasActiveSession)
+        XCTAssertTrue(viewModel.debugScreenPeerIs(peer))
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    @MainActor
+    func testBackDuringPendingShowHideSendFailureClosesExactOwner() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let generation = UUID()
+        let transport = ScreenVisibilityTransportProbe()
+        let hideCompletion = MainActorCountGate()
+        viewModel.debugInstallScreenSessionForTests(
+            peer: peer,
+            generation: generation,
+            visible: false
+        )
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+        let lease = try XCTUnwrap(viewModel.issueScreenPresentationLease())
+        let show = Task { @MainActor in
+            await viewModel.setScreenVisible(true, for: lease)
+        }
+
+        await transport.waitForRequestCount(1)
+        let showKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: generation,
+            requestID: 561
+        )
+        await transport.resolveRequest(at: 0, with: .success(showKey.requestID))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(showKey)
+        XCTAssertTrue(
+            viewModel.beginPassiveScreenTeardown(for: lease) {
+                hideCompletion.increment()
+            }
+        )
+        viewModel.retireScreenPresentationLease(lease)
+        let didShow = await show.value
+        XCTAssertFalse(didShow)
+
+        await transport.waitForRequestCount(2)
+        XCTAssertEqual(transport.requests.map(\.isVisible), [true, false])
+        await transport.resolveRequest(at: 1, with: .failure(.sendFailed))
+        await hideCompletion.waitForCount(1)
+
+        XCTAssertEqual(hideCompletion.count, 1)
+        assertScreenOwnerClosed(viewModel, formerPeer: peer)
+        await peer.close()
+    }
+
+    @MainActor
+    func testBackDuringPendingShowHideTimeoutClosesExactOwner() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let generation = UUID()
+        let transport = ScreenVisibilityTransportProbe()
+        let hideCompletion = MainActorCountGate()
+        viewModel.debugInstallScreenSessionForTests(
+            peer: peer,
+            generation: generation,
+            visible: false
+        )
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+        let lease = try XCTUnwrap(viewModel.issueScreenPresentationLease())
+        let show = Task { @MainActor in
+            await viewModel.setScreenVisible(true, for: lease)
+        }
+
+        await transport.waitForRequestCount(1)
+        let showKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: generation,
+            requestID: 571
+        )
+        await transport.resolveRequest(at: 0, with: .success(showKey.requestID))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(showKey)
+        XCTAssertTrue(
+            viewModel.beginPassiveScreenTeardown(for: lease) {
+                hideCompletion.increment()
+            }
+        )
+        viewModel.retireScreenPresentationLease(lease)
+        let didShow = await show.value
+        XCTAssertFalse(didShow)
+
+        await transport.waitForRequestCount(2)
+        XCTAssertEqual(transport.requests.map(\.isVisible), [true, false])
+        let hideKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: generation,
+            requestID: 572
+        )
+        await transport.resolveRequest(at: 1, with: .success(hideKey.requestID))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(hideKey)
+        viewModel.debugTriggerScreenVisibilityTimeout(key: hideKey)
+        await hideCompletion.waitForCount(1)
+
+        XCTAssertEqual(hideCompletion.count, 1)
+        assertScreenOwnerClosed(viewModel, formerPeer: peer)
+        await peer.close()
+    }
+
+    @MainActor
     func testDuplicateHideAndDisappearClaimSendsAndCompletesOnce() async throws {
         let viewModel = WorldwideSessionViewModel()
         let peer = try makeScreenPeer()

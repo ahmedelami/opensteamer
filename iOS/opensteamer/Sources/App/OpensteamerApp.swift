@@ -44,11 +44,76 @@ struct OpensteamerApp: App {
 
     var body: some Scene {
         WindowGroup {
+            #if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains(
+                "--opensteamer-ui-test-fullscreen-viewer"
+            ) {
+                FullscreenViewerSimulatorFixtureView()
+            } else {
+                ContentView()
+                    .environmentObject(viewModel)
+                    .environmentObject(worldwideViewModel)
+                    .environmentObject(worldwideConnection)
+            }
+            #else
             ContentView()
                 .environmentObject(viewModel)
                 .environmentObject(worldwideViewModel)
                 .environmentObject(worldwideConnection)
+            #endif
         }
     }
     #endif
 }
+
+#if DEBUG && targetEnvironment(simulator)
+/// Deterministic Simulator-only surface for verifying the production full-screen viewer shell.
+/// Release/TestFlight builds compile this route out completely.
+private struct FullscreenViewerSimulatorFixtureView: View {
+    @State private var isViewerPresented = true
+
+    var body: some View {
+        if isViewerPresented {
+            FullscreenViewerLayout(
+                backAccessibilityIdentifier: "fullscreenViewerBack",
+                backAccessibilityLabel: "Back to Player",
+                onBack: { isViewerPresented = false }
+            ) {
+                ZStack {
+                    LinearGradient(
+                        colors: [.indigo, .cyan, .mint],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    VStack(spacing: 12) {
+                        Image(systemName: "rectangle.inset.filled")
+                            .font(.system(size: 64))
+                        Text("Remote Screen")
+                            .font(.title.bold())
+                    }
+                    .foregroundStyle(.white)
+                }
+                .accessibilityElement()
+                .accessibilityLabel("Full-screen remote display")
+                .accessibilityIdentifier("fullscreenRemoteScreenSurface")
+            } statusOverlay: {
+                EmptyView()
+            }
+        } else {
+            ZStack {
+                ContentUnavailableView(
+                    "Viewer Closed",
+                    systemImage: "checkmark.circle",
+                    description: Text("Returned without closing or reopening opensteamer.")
+                )
+
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .accessibilityElement()
+                    .accessibilityLabel("Viewer dismissed")
+                    .accessibilityIdentifier("fullscreenViewerDismissed")
+            }
+        }
+    }
+}
+#endif
