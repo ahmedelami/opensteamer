@@ -22,6 +22,10 @@ public protocol ScreenVideoSampleConsumer: AnyObject, Sendable {
         _ sampleBuffer: CMSampleBuffer,
         frameGeometry: ScreenVideoFrameGeometry?
     )
+    /// Reports an authoritative post-configuration mode change for this source's display.
+    func screenVideoCaptureSourceDisplayModeDidChange(
+        _ source: ScreenVideoCaptureSource
+    )
     /// Reports a stream stop that did not originate from normal session teardown.
     func screenVideoCaptureSource(
         _ source: ScreenVideoCaptureSource,
@@ -36,6 +40,10 @@ public extension ScreenVideoSampleConsumer {
     ) {
         consumeScreenVideoSample(sampleBuffer)
     }
+
+    func screenVideoCaptureSourceDisplayModeDidChange(
+        _: ScreenVideoCaptureSource
+    ) {}
 }
 
 /// Bounds one native screen-capture lifecycle call without changing its error semantics.
@@ -67,6 +75,12 @@ enum ScreenCaptureLifecycleWatchdog {
 /// concurrency and ScreenCaptureKit delegate callbacks. It is never held across an
 /// `await`; framework samples are delivered on the dedicated `sampleQueue`.
 public final class ScreenVideoCaptureSource: @unchecked Sendable {
+    private enum SampleDeliveryPhase {
+        case closed
+        case opening
+        case open
+    }
+
     private let displayID: UInt32?
     private let displayRequirement: ScreenVideoDisplayRequirement?
     private let maximumWidth: Int
@@ -78,6 +92,10 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
     private let stateLock = NSLock()
     private var stream: SCStream?
     private var output: ScreenVideoStreamOutput?
+    private var displayModeObserver: ScreenVideoDisplayModeObserver?
+    private var activeDisplayID: UInt32?
+    private var sampleDeliveryPhase = SampleDeliveryPhase.closed
+    private var displayModeChangedWhileOpeningDelivery = false
     private var isStarting = false
     private var cancellationRequested = false
     private var isStopping = false
@@ -121,11 +139,69 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
         )
     }
 
+    /// Opens sample delivery only after the owning transport has installed its new format.
+    /// The latest image-backed startup frame is replayed synchronously before live callbacks.
+    public func beginSampleDelivery() throws {
+        let resources = try stateLock.withLock { () -> (
+            ScreenVideoStreamOutput,
+            ScreenVideoDisplayModeObserver,
+            UInt32
+        ) in
+            guard let output,
+                  let displayModeObserver,
+                  let activeDisplayID,
+                  stream != nil,
+                  !isStarting,
+                  !isStopping,
+                  !cancellationRequested else {
+                throw ScreenVideoCaptureError.startCancelled
+            }
+            if sampleDeliveryPhase == .open {
+                return (output, displayModeObserver, activeDisplayID)
+            }
+            guard sampleDeliveryPhase == .closed else {
+                throw ScreenVideoCaptureError.alreadyRunning
+            }
+            sampleDeliveryPhase = .opening
+            displayModeChangedWhileOpeningDelivery = false
+            return (output, displayModeObserver, activeDisplayID)
+        }
+
+        guard resources.1.activate(), resources.1.commitActivation() else {
+            throw ScreenVideoCaptureError.displayModeChangedDuringStart(resources.2)
+        }
+
+        let deliveryError = stateLock.withLock { () -> ScreenVideoCaptureError? in
+            guard stream != nil,
+                  self.output === resources.0,
+                  self.displayModeObserver === resources.1,
+                  activeDisplayID == resources.2,
+                  !isStopping,
+                  !cancellationRequested else {
+                return .startCancelled
+            }
+            guard !displayModeChangedWhileOpeningDelivery else {
+                return .displayModeChangedDuringStart(resources.2)
+            }
+            sampleDeliveryPhase = .open
+            return nil
+        }
+        if let deliveryError {
+            throw deliveryError
+        }
+        guard resources.0.beginDelivery() else {
+            throw ScreenVideoCaptureError.startCancelled
+        }
+    }
+
     /// Runs one complete startup transaction under the caller's already-armed watchdog.
     private func startWithoutStartupWatchdog() async throws -> ScreenVideoCaptureFormat {
         guard stateLock.withLock({ () -> Bool in
             guard self.stream == nil, !isStarting, !isStopping else { return false }
             isStarting = true
+            activeDisplayID = nil
+            sampleDeliveryPhase = .closed
+            displayModeChangedWhileOpeningDelivery = false
             cancellationRequested = false
             return true
         }) else {
@@ -151,6 +227,11 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
                 height: dimensions.height,
                 framesPerSecond: framesPerSecond
             )
+            let displayModeObserver = try ScreenVideoDisplayModeObserver(
+                displayID: display.displayID
+            ) { [weak self] in
+                self?.handleDisplayModeChange()
+            }
 
             let configuration = SCStreamConfiguration()
             configuration.width = format.width
@@ -217,6 +298,21 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
                     throw ScreenVideoCaptureError.displayModeChangedDuringStart(
                         display.displayID
                     )
+                }
+
+                let observerInstalled = stateLock.withLock { () -> Bool in
+                    guard !cancellationRequested,
+                          self.stream === stream,
+                          self.displayModeObserver == nil else {
+                        return false
+                    }
+                    self.displayModeObserver = displayModeObserver
+                    self.activeDisplayID = display.displayID
+                    return true
+                }
+                guard observerInstalled else {
+                    _ = displayModeObserver.stop()
+                    throw ScreenVideoCaptureError.startCancelled
                 }
             } catch {
                 let validationError = error
@@ -294,6 +390,20 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
         output: ScreenVideoStreamOutput?
     ) async throws {
         logger.info("Stopping screen video capture")
+        let displayModeObserver = stateLock.withLock { () -> ScreenVideoDisplayModeObserver? in
+            guard self.stream === stream else { return nil }
+            let observer = self.displayModeObserver
+            self.displayModeObserver = nil
+            sampleDeliveryPhase = .closed
+            displayModeChangedWhileOpeningDelivery = false
+            return observer
+        }
+        if case .removalFailed(let error) = displayModeObserver?.stop() {
+            logger.error(
+                "Could not remove the inert display-mode observer: " +
+                "Core Graphics error \(error.rawValue)"
+            )
+        }
         let outputWasRemoved: Bool
         if let output {
             output.revoke()
@@ -325,6 +435,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
             if self.stream === stream {
                 self.stream = nil
                 self.output = nil
+                activeDisplayID = nil
             }
         }
         if !outputWasRemoved, let output {
@@ -432,19 +543,50 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
 
     /// Reports only a failure belonging to the current, non-stopping stream.
     private func handleUnexpectedStop(of stoppedStream: SCStream, errorDescription: String) {
-        let transition = stateLock.withLock { () -> (Bool, ScreenVideoStreamOutput?) in
-            guard !isStopping, stream === stoppedStream else { return (false, nil) }
+        let transition = stateLock.withLock { () -> (
+            Bool,
+            ScreenVideoStreamOutput?,
+            ScreenVideoDisplayModeObserver?
+        ) in
+            guard !isStopping, stream === stoppedStream else {
+                return (false, nil, nil)
+            }
             let retiredOutput = output
+            let retiredDisplayModeObserver = displayModeObserver
             stream = nil
             output = nil
-            return (true, retiredOutput)
+            displayModeObserver = nil
+            activeDisplayID = nil
+            sampleDeliveryPhase = .closed
+            displayModeChangedWhileOpeningDelivery = false
+            return (true, retiredOutput, retiredDisplayModeObserver)
         }
         transition.1?.revoke()
+        _ = transition.2?.stop()
         guard transition.0 else { return }
         consumer.screenVideoCaptureSource(
             self,
             didStopWithErrorDescription: errorDescription
         )
+    }
+
+    /// Delivers only a mode event belonging to this source's current, non-stopping stream.
+    private func handleDisplayModeChange() {
+        let shouldNotify = stateLock.withLock {
+            guard stream != nil,
+                  displayModeObserver != nil,
+                  !isStopping,
+                  !cancellationRequested else {
+                return false
+            }
+            if sampleDeliveryPhase == .opening {
+                displayModeChangedWhileOpeningDelivery = true
+                return false
+            }
+            return sampleDeliveryPhase == .open
+        }
+        guard shouldNotify else { return }
+        consumer.screenVideoCaptureSourceDisplayModeDidChange(self)
     }
 
     /// Resolves an explicit display or prefers the current main display.
@@ -543,11 +685,63 @@ private final class ScreenVideoStreamDelegate: NSObject, SCStreamDelegate, @unch
     }
 }
 
-/// Rejects incomplete ScreenCaptureKit frames before invoking the session consumer.
-private final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
+/// Pure startup-frame state used to replay exactly one fresh image after transport installation.
+struct ScreenVideoInitialFrameDeliveryState: Equatable, Sendable {
+    enum FrameAction: Equatable, Sendable {
+        case storeLatest
+        case forward
+        case drop
+    }
+
+    enum BeginAction: Equatable, Sendable {
+        case open
+        case replayLatest
+        case reject
+    }
+
+    private var deliveryIsOpen = false
+    private var hasPendingFrame = false
+    private var isRevoked = false
+
+    mutating func receiveFrame() -> FrameAction {
+        guard !isRevoked else { return .drop }
+        guard !deliveryIsOpen else { return .forward }
+        hasPendingFrame = true
+        return .storeLatest
+    }
+
+    mutating func beginDelivery() -> BeginAction {
+        guard !isRevoked else { return .reject }
+        deliveryIsOpen = true
+        guard hasPendingFrame else { return .open }
+        hasPendingFrame = false
+        return .replayLatest
+    }
+
+    mutating func revoke() {
+        deliveryIsOpen = false
+        hasPendingFrame = false
+        isRevoked = true
+    }
+}
+
+enum ScreenVideoFrameStatusPolicy {
+    static func admitsImageFrame(_ status: SCFrameStatus) -> Bool {
+        status == .started || status == .complete
+    }
+}
+
+/// Retains the latest image-backed ScreenCaptureKit frame until the transport format is installed.
+final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
+    private struct PendingFrame {
+        let sampleBuffer: CMSampleBuffer
+        let geometry: ScreenVideoFrameGeometry?
+    }
+
     private let consumer: ScreenVideoSampleConsumer
     private let lock = NSLock()
-    private var isForwarding = true
+    private var deliveryState = ScreenVideoInitialFrameDeliveryState()
+    private var pendingFrame: PendingFrame?
 
     init(consumer: ScreenVideoSampleConsumer) {
         self.consumer = consumer
@@ -555,17 +749,45 @@ private final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
 
     /// Permanently closes this capture generation and waits for an admitted callback to return.
     func revoke() {
-        lock.withLock { isForwarding = false }
+        lock.withLock {
+            deliveryState.revoke()
+            pendingFrame = nil
+        }
     }
 
-    /// Forwards only ready screen samples whose frame status is `.complete`.
+    /// Replays the newest startup image, then forwards future frames in callback order.
+    func beginDelivery() -> Bool {
+        lock.withLock {
+            switch deliveryState.beginDelivery() {
+            case .reject:
+                return false
+            case .open:
+                return true
+            case .replayLatest:
+                guard let pendingFrame else { return false }
+                self.pendingFrame = nil
+                consumer.consumeScreenVideoSample(
+                    pendingFrame.sampleBuffer,
+                    frameGeometry: pendingFrame.geometry
+                )
+                return true
+            }
+        }
+    }
+
+    /// Accepts image-backed first/complete frames; idle and other non-image statuses are ignored.
     func stream(
         _ stream: SCStream,
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of outputType: SCStreamOutputType
     ) {
-        guard outputType == .screen,
-              sampleBuffer.isValid,
+        guard outputType == .screen else { return }
+        consumeScreenSample(sampleBuffer)
+    }
+
+    /// Handles one native screen sample after the callback's output-type gate.
+    func consumeScreenSample(_ sampleBuffer: CMSampleBuffer) {
+        guard sampleBuffer.isValid,
               CMSampleBufferDataIsReady(sampleBuffer),
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
               let attachments = CMSampleBufferGetSampleAttachmentsArray(
@@ -573,18 +795,29 @@ private final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
                 createIfNecessary: false
               ) as? [[SCStreamFrameInfo: Any]],
               let statusRawValue = attachments.first?[.status] as? Int,
-              SCFrameStatus(rawValue: statusRawValue) == .complete else {
+              let status = SCFrameStatus(rawValue: statusRawValue),
+              ScreenVideoFrameStatusPolicy.admitsImageFrame(status) else {
             return
         }
+        let geometry = Self.frameGeometry(
+            pixelBuffer: pixelBuffer,
+            attachments: attachments[0]
+        )
         lock.withLock {
-            guard isForwarding else { return }
-            consumer.consumeScreenVideoSample(
-                sampleBuffer,
-                frameGeometry: Self.frameGeometry(
-                    pixelBuffer: pixelBuffer,
-                    attachments: attachments[0]
+            switch deliveryState.receiveFrame() {
+            case .storeLatest:
+                pendingFrame = PendingFrame(
+                    sampleBuffer: sampleBuffer,
+                    geometry: geometry
                 )
-            )
+            case .forward:
+                consumer.consumeScreenVideoSample(
+                    sampleBuffer,
+                    frameGeometry: geometry
+                )
+            case .drop:
+                break
+            }
         }
     }
 

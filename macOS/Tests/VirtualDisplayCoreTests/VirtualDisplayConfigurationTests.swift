@@ -1,3 +1,4 @@
+import CoreGraphics
 import XCTest
 
 @testable import VirtualDisplayCore
@@ -181,6 +182,34 @@ final class VirtualDisplayConfigurationTests: XCTestCase {
                 ),
             ]
         )
+    }
+
+    func testEverySelectableFramebufferAspectFitsTheNativePhoneViewportAtFullWidth() throws {
+        let configuration = try XCTUnwrap(
+            HeadlessDesktopReplacement.makeConfiguration(
+                vendorID: HeadlessDesktopReplacement.appleHeadlessVendorID,
+                productID: HeadlessDesktopReplacement.appleHeadlessProductID,
+                logicalWidth: 1_080,
+                logicalHeight: 1_920,
+                pixelWidth: 1_080,
+                pixelHeight: 1_920
+            )
+        )
+        let nativePhoneViewport = CGSize(width: 603, height: 1_311)
+
+        for mode in configuration.requiredResolvedModes {
+            let scale = min(
+                nativePhoneViewport.width / CGFloat(mode.pixelWidth),
+                nativePhoneViewport.height / CGFloat(mode.pixelHeight)
+            )
+            let renderedWidth = CGFloat(mode.pixelWidth) * scale
+            XCTAssertEqual(
+                renderedWidth,
+                nativePhoneViewport.width,
+                accuracy: 0.001,
+                "Selectable framebuffer did not fit viewport width: \(mode)"
+            )
+        }
     }
 
     func testTwoXHeadlessPlaceholderPreservesItsResolvedCurrentMode() throws {

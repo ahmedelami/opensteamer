@@ -15,6 +15,16 @@ public struct ScreenVideoFrameGeometry: Equatable, Sendable {
     public let contentScale: CGFloat
     public let scaleFactor: CGFloat
 
+    /// Whether ScreenCaptureKit is fitting the current display inside an obsolete output surface.
+    /// A half-pixel difference at any surface edge is treated as framework rounding, not an inset.
+    public var requiresCaptureFormatRenegotiation: Bool {
+        let edgeTolerance: CGFloat = 0.5
+        return abs(contentRect.minX) > edgeTolerance
+            || abs(contentRect.minY) > edgeTolerance
+            || abs(CGFloat(surfaceWidth) - contentRect.maxX) > edgeTolerance
+            || abs(CGFloat(surfaceHeight) - contentRect.maxY) > edgeTolerance
+    }
+
     public init?(
         surfaceWidth: Int,
         surfaceHeight: Int,
@@ -157,5 +167,92 @@ public struct ScreenVideoFrameGeometry: Equatable, Sendable {
             return nil
         }
         return normalized
+    }
+}
+
+/// Debounces ScreenCaptureKit's per-frame geometry before a service rebuilds its native stream.
+/// Changed frames are withheld immediately, but one transient metadata sample cannot churn capture.
+public struct ScreenVideoFormatRenegotiationDetector: Sendable {
+    public enum Action: Equatable, Sendable {
+        case forwardFrame
+        case dropFrame
+        case renegotiate
+    }
+
+    public static let requiredConsecutiveChangedFrames = 3
+    public static let fallbackDelay: TimeInterval = 0.5
+
+    private var consecutiveChangedFrames = 0
+    private var requestIssued = false
+    private var baselineGeometry: ScreenVideoFrameGeometry?
+
+    public init() {}
+
+    public mutating func observe(
+        _ geometry: ScreenVideoFrameGeometry?
+    ) -> Action {
+        guard !requestIssued else { return .dropFrame }
+        guard let geometry else {
+            // A missing attachment after a changed frame cannot prove that the old capture
+            // format became valid again. Keep the candidate count and withhold the uncertain
+            // frame until a concrete full-frame geometry clears it or renegotiation completes.
+            return consecutiveChangedFrames > 0 ? .dropFrame : .forwardFrame
+        }
+
+        if baselineGeometry == nil,
+           !geometry.requiresCaptureFormatRenegotiation {
+            baselineGeometry = geometry
+            consecutiveChangedFrames = 0
+            return .forwardFrame
+        }
+
+        let formatChanged = geometry.requiresCaptureFormatRenegotiation
+            || baselineGeometry.map { !geometry.hasSameCaptureFormat(as: $0) } == true
+        guard formatChanged else {
+            consecutiveChangedFrames = 0
+            return .forwardFrame
+        }
+
+        consecutiveChangedFrames += 1
+        guard consecutiveChangedFrames >= Self.requiredConsecutiveChangedFrames else {
+            return .dropFrame
+        }
+        requestIssued = true
+        return .renegotiate
+    }
+
+    /// True while changed geometry is withholding frames but has not yet reached the
+    /// consecutive-frame threshold. A caller can use this to arm a wall-clock fallback for
+    /// streams that become idle before ScreenCaptureKit supplies another complete frame.
+    public var hasPendingFormatChange: Bool {
+        consecutiveChangedFrames > 0 && !requestIssued
+    }
+
+    /// Latches the same one-shot renegotiation request as the frame-count threshold once a
+    /// caller-owned fallback deadline expires. Concrete compatible geometry clears the pending
+    /// candidate, so a recovered transient cannot be promoted by an obsolete deadline.
+    @discardableResult
+    public mutating func requestRenegotiationAfterFallbackDeadline() -> Bool {
+        guard hasPendingFormatChange else { return false }
+        requestIssued = true
+        return true
+    }
+
+    public mutating func reset() {
+        consecutiveChangedFrames = 0
+        requestIssued = false
+        baselineGeometry = nil
+    }
+}
+
+private extension ScreenVideoFrameGeometry {
+    /// Surface dimensions and ScreenCaptureKit scale metadata together distinguish a same-aspect
+    /// resolution change from harmless subpixel content-rectangle jitter.
+    func hasSameCaptureFormat(as other: ScreenVideoFrameGeometry) -> Bool {
+        let scaleTolerance: CGFloat = 0.005
+        return surfaceWidth == other.surfaceWidth
+            && surfaceHeight == other.surfaceHeight
+            && abs(contentScale - other.contentScale) <= scaleTolerance
+            && abs(scaleFactor - other.scaleFactor) <= scaleTolerance
     }
 }

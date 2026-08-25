@@ -2923,9 +2923,13 @@ public actor WebRTCPeer {
         state: WebRTCScreenState,
         authorization: WebRTCControlAuthorization,
         inputCapability: WebRTCInputCapability? = nil,
-        inputAuthorization: WebRTCInputAuthorization? = nil
+        inputAuthorization: WebRTCInputAuthorization? = nil,
+        finalAuthorizationCheck: @Sendable () -> Bool = { true }
     ) throws {
         try authorization.withValidAuthorization {
+            guard finalAuthorizationCheck() else {
+                throw WebRTCTransportError.controlAuthorizationRevoked
+            }
             guard isTransportHealthyForCapture() else {
                 throw WebRTCTransportError.transportNotHealthy
             }
@@ -2946,14 +2950,16 @@ public actor WebRTCPeer {
         id: UInt64,
         authorization: WebRTCControlAuthorization,
         inputCapability: WebRTCInputCapability? = nil,
-        inputAuthorization: WebRTCInputAuthorization? = nil
+        inputAuthorization: WebRTCInputAuthorization? = nil,
+        finalAuthorizationCheck: @Sendable () -> Bool = { true }
     ) throws {
         try acknowledgeControlRequestIfTransportHealthy(
             id: id,
             state: .active,
             authorization: authorization,
             inputCapability: inputCapability,
-            inputAuthorization: inputAuthorization
+            inputAuthorization: inputAuthorization,
+            finalAuthorizationCheck: finalAuthorizationCheck
         )
     }
 
@@ -5379,8 +5385,10 @@ public actor WebRTCPeer {
         }
 
         if request.command == .showScreen || request.command == .hideScreen {
-            // Revoke before the application event is yielded so a queued input cannot race a
-            // newer screen generation through lagging service state.
+            // Revoke before the application event is yielded so queued media or input cannot race
+            // a newer screen generation through lagging service state. A fresh Show/Active ACK is
+            // the only path that may re-enable the host video track.
+            localVideoTrack?.isEnabled = false
             replaceHostInputSession(capability: nil, authorization: nil)
         }
 

@@ -155,4 +155,26 @@ final class AspectFitCoordinateMapperTests: XCTestCase {
         XCTAssertEqual(endpoints.end.x, 1, accuracy: 0.000_001)
         XCTAssertEqual(endpoints.end.y, 1, accuracy: 0.000_001)
     }
+
+    func testEveryMacScaleChoiceUsesTheFullPortraitViewerWidth() throws {
+        let portraitViewer = CGSize(width: 603, height: 1_311)
+        let selectableFramebuffers = [
+            CGSize(width: 1_206, height: 2_622),
+            CGSize(width: 1_080, height: 2_340),
+            CGSize(width: 1_080, height: 1_920),
+            CGSize(width: 828, height: 1_792),
+            CGSize(width: 750, height: 1_334),
+        ]
+
+        for framebuffer in selectableFramebuffers {
+            let renderedRect = try XCTUnwrap(
+                AspectFitCoordinateMapper.visibleVideoRect(
+                    containerSize: portraitViewer,
+                    videoSize: framebuffer
+                )
+            )
+            XCTAssertEqual(renderedRect.minX, 0, accuracy: 0.001)
+            XCTAssertEqual(renderedRect.maxX, portraitViewer.width, accuracy: 0.001)
+        }
+    }
 }

@@ -2214,6 +2214,18 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         } catch let error as WebRTCTransportError {
             XCTAssertEqual(error, .controlAuthorizationRevoked)
         }
+        let closedForwardingAuthorization = WebRTCControlAuthorization()
+        do {
+            try await host.acknowledgeActiveControlRequestIfTransportHealthy(
+                id: showID,
+                authorization: closedForwardingAuthorization,
+                finalAuthorizationCheck: { false }
+            )
+            XCTFail("A closed forwarding generation must not emit an Active acknowledgement.")
+        } catch let error as WebRTCTransportError {
+            XCTAssertEqual(error, .controlAuthorizationRevoked)
+        }
+        XCTAssertTrue(closedForwardingAuthorization.isValid)
         let inputCapability = WebRTCInputCapability(
             inputSessionID: UUID(),
             screenRequestID: showID,

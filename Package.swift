@@ -199,6 +199,11 @@ let package = Package(
             path: "macOS/Tests/CaptureServerTests"
         ),
         .testTarget(
+            name: "ServerTests",
+            dependencies: ["Server", "Streaming"],
+            path: "macOS/Tests/ServerTests"
+        ),
+        .testTarget(
             name: "VirtualDisplayCoreTests",
             dependencies: ["VirtualDisplayCore"],
             path: "macOS/Tests/VirtualDisplayCoreTests"
