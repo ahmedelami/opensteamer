@@ -216,7 +216,8 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
             try ensureStartWasNotCancelled()
             let display = try selectDisplay(from: content.displays)
             try validateDisplayRequirement(for: display.displayID)
-            let sourceDimensions = try activeSourceDimensions(for: display)
+            let filter = SCContentFilter(display: display, excludingWindows: [])
+            let sourceDimensions = try activeSourceDimensions(for: display, filter: filter)
             let dimensions = try ScreenVideoOutputPolicy.outputDimensions(
                 source: sourceDimensions,
                 maximumWidth: maximumWidth
@@ -250,7 +251,6 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
             configuration.preservesAspectRatio = true
             configuration.captureResolution = .best
 
-            let filter = SCContentFilter(display: display, excludingWindows: [])
             let output = ScreenVideoStreamOutput(consumer: consumer)
             let stream = SCStream(
                 filter: filter,
@@ -290,7 +290,23 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
             do {
                 try ensureStartWasNotCancelled()
                 try validateDisplayRequirement(for: display.displayID)
-                let postStartSourceDimensions = try activeSourceDimensions(for: display)
+                let postStartContent = try await SCShareableContent.excludingDesktopWindows(
+                    false,
+                    onScreenWindowsOnly: true
+                )
+                let postStartDisplay = try selectDisplay(from: postStartContent.displays)
+                guard postStartDisplay.displayID == display.displayID else {
+                    throw ScreenVideoCaptureError.displayModeChangedDuringStart(display.displayID)
+                }
+                try validateDisplayRequirement(for: postStartDisplay.displayID)
+                let postStartFilter = SCContentFilter(
+                    display: postStartDisplay,
+                    excludingWindows: []
+                )
+                let postStartSourceDimensions = try activeSourceDimensions(
+                    for: postStartDisplay,
+                    filter: postStartFilter
+                )
                 guard ScreenVideoSourceDimensionPolicy.isStableAcrossStart(
                     before: sourceDimensions,
                     after: postStartSourceDimensions
@@ -651,24 +667,24 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
     /// Preserves ScreenCaptureKit's established logical sizing for ordinary displays while
     /// OpenSteamer virtual displays stream the active Retina framebuffer at full resolution.
     private func activeSourceDimensions(
-        for display: SCDisplay
+        for display: SCDisplay,
+        filter: SCContentFilter
     ) throws -> ScreenVideoPixelDimensions {
-        let dimensionKind = ScreenVideoSourceDimensionPolicy.dimensionKind(
+        let sourceDimensions = ScreenVideoSourceDimensionPolicy.sourceDimensions(
             vendorID: CGDisplayVendorNumber(display.displayID),
-            productID: CGDisplayModelNumber(display.displayID)
+            productID: CGDisplayModelNumber(display.displayID),
+            logicalDimensions: ScreenVideoPixelDimensions(
+                width: display.width,
+                height: display.height
+            ),
+            filterContentWidth: Double(filter.contentRect.width),
+            filterContentHeight: Double(filter.contentRect.height),
+            pointPixelScale: Double(filter.pointPixelScale)
         )
-        guard dimensionKind == .framebufferPixels else {
-            return ScreenVideoPixelDimensions(width: display.width, height: display.height)
-        }
-
-        guard let mode = CGDisplayCopyDisplayMode(display.displayID),
-              mode.pixelWidth >= 2, mode.pixelHeight >= 2 else {
+        guard let sourceDimensions else {
             throw ScreenVideoCaptureError.displayModeUnavailable(display.displayID)
         }
-        return ScreenVideoPixelDimensions(
-            width: mode.pixelWidth,
-            height: mode.pixelHeight
-        )
+        return sourceDimensions
     }
 }
 
@@ -866,7 +882,7 @@ public enum ScreenVideoCaptureError: LocalizedError {
         case .displayNotFound(let displayID):
             "ScreenCaptureKit did not find display \(displayID)"
         case .displayModeUnavailable(let displayID):
-            "CoreGraphics did not report an active pixel mode for display \(displayID)"
+            "ScreenCaptureKit did not report valid active pixel geometry for display \(displayID)"
         case .displayModeChangedDuringStart(let displayID):
             "Display \(displayID) changed resolution while screen capture was starting"
         case .displayIdentityMismatch(let displayID):

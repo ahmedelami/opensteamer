@@ -198,7 +198,8 @@ final class MacRemoteInputControllerTests: XCTestCase {
             (.init(width: 540, height: 1_170), .init(width: 1_080, height: 2_340)),
             (.init(width: 540, height: 960), .init(width: 1_080, height: 1_920)),
             (.init(width: 414, height: 896), .init(width: 828, height: 1_792)),
-            (.init(width: 750, height: 1_334), .init(width: 750, height: 1_334))
+            (.init(width: 750, height: 1_334), .init(width: 750, height: 1_334)),
+            (.init(width: 1_024, height: 768), .init(width: 1_024, height: 768))
         ]
 
         for mode in modes {

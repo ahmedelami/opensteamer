@@ -86,6 +86,45 @@ enum ScreenVideoSourceDimensionPolicy {
         return .framebufferPixels
     }
 
+    /// Resolves the source framebuffer from the same ScreenCaptureKit filter snapshot that will
+    /// configure the stream. Ordinary displays preserve the established logical-size behavior;
+    /// OpenSteamer-owned displays use the filter's documented pixel-to-point scale.
+    static func sourceDimensions(
+        vendorID: UInt32,
+        productID: UInt32,
+        logicalDimensions: ScreenVideoPixelDimensions,
+        filterContentWidth: Double,
+        filterContentHeight: Double,
+        pointPixelScale: Double
+    ) -> ScreenVideoPixelDimensions? {
+        guard dimensionKind(vendorID: vendorID, productID: productID) == .framebufferPixels else {
+            return logicalDimensions
+        }
+
+        guard logicalDimensions.width >= 2,
+              logicalDimensions.height >= 2,
+              filterContentWidth.isFinite,
+              filterContentHeight.isFinite,
+              pointPixelScale.isFinite,
+              (1 ... 4).contains(pointPixelScale),
+              abs(filterContentWidth - Double(logicalDimensions.width)) <= 0.5,
+              abs(filterContentHeight - Double(logicalDimensions.height)) <= 0.5 else {
+            return nil
+        }
+
+        let pixelWidth = (filterContentWidth * pointPixelScale).rounded()
+        let pixelHeight = (filterContentHeight * pointPixelScale).rounded()
+        guard pixelWidth.isFinite,
+              pixelHeight.isFinite,
+              let width = Int(exactly: pixelWidth),
+              let height = Int(exactly: pixelHeight),
+              width >= 2,
+              height >= 2 else {
+            return nil
+        }
+        return ScreenVideoPixelDimensions(width: width, height: height)
+    }
+
     /// A Show transaction may publish its encoder format only if the framebuffer stayed fixed
     /// throughout native SCStream startup.
     static func isStableAcrossStart(

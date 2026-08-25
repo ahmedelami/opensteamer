@@ -113,6 +113,85 @@ final class ScreenVideoOutputPolicyTests: XCTestCase {
         XCTAssertEqual(dimensionKind, .logical)
     }
 
+    func testOwnedDisplayResolvesEverySupportedSelectedFramebuffer() {
+        let modes: [(
+            logical: ScreenVideoPixelDimensions,
+            scale: Double,
+            framebuffer: ScreenVideoPixelDimensions
+        )] = [
+            (.init(width: 603, height: 1_311), 2, .init(width: 1_206, height: 2_622)),
+            (.init(width: 540, height: 1_170), 2, .init(width: 1_080, height: 2_340)),
+            (.init(width: 540, height: 960), 2, .init(width: 1_080, height: 1_920)),
+            (.init(width: 414, height: 896), 2, .init(width: 828, height: 1_792)),
+            (.init(width: 750, height: 1_334), 1, .init(width: 750, height: 1_334)),
+            (.init(width: 1_024, height: 768), 1, .init(width: 1_024, height: 768)),
+        ]
+
+        for mode in modes {
+            let dimensions = ScreenVideoSourceDimensionPolicy.sourceDimensions(
+                vendorID: 0x6F73,
+                productID: 0x1718,
+                logicalDimensions: mode.logical,
+                filterContentWidth: Double(mode.logical.width),
+                filterContentHeight: Double(mode.logical.height),
+                pointPixelScale: mode.scale
+            )
+
+            XCTAssertEqual(dimensions, mode.framebuffer)
+        }
+    }
+
+    func testOrdinaryDisplayIgnoresFilterPixelScale() {
+        let dimensions = ScreenVideoSourceDimensionPolicy.sourceDimensions(
+            vendorID: 0x610,
+            productID: 0xA0E1,
+            logicalDimensions: .init(width: 1_512, height: 982),
+            filterContentWidth: .nan,
+            filterContentHeight: 0,
+            pointPixelScale: .nan
+        )
+
+        XCTAssertEqual(dimensions, .init(width: 1_512, height: 982))
+    }
+
+    func testOwnedDisplayRejectsInvalidFilterGeometry() {
+        let logical = ScreenVideoPixelDimensions(width: 540, height: 1_170)
+        let invalidSnapshots: [(width: Double, height: Double, scale: Double)] = [
+            (.nan, 1_170, 2),
+            (540, 0, 2),
+            (540, 1_170, .nan),
+            (540, 1_170, 0),
+            (540, 1_170, 4.1),
+            (539, 1_170, 2),
+        ]
+
+        for snapshot in invalidSnapshots {
+            XCTAssertNil(
+                ScreenVideoSourceDimensionPolicy.sourceDimensions(
+                    vendorID: 0x6F73,
+                    productID: 0x1718,
+                    logicalDimensions: logical,
+                    filterContentWidth: snapshot.width,
+                    filterContentHeight: snapshot.height,
+                    pointPixelScale: snapshot.scale
+                )
+            )
+        }
+    }
+
+    func testOwnedDisplayRejectsFramebufferOverflow() {
+        XCTAssertNil(
+            ScreenVideoSourceDimensionPolicy.sourceDimensions(
+                vendorID: 0x6F73,
+                productID: 0x1718,
+                logicalDimensions: .init(width: .max, height: .max),
+                filterContentWidth: Double(Int.max),
+                filterContentHeight: Double(Int.max),
+                pointPixelScale: 4
+            )
+        )
+    }
+
     func testPhoneRetinaModeUsesFullFramebufferPixels() throws {
         let output = try ScreenVideoOutputPolicy.outputDimensions(
             source: .init(width: 1_206, height: 2_622),
