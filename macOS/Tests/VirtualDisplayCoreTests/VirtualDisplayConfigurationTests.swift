@@ -142,6 +142,15 @@ final class VirtualDisplayConfigurationTests: XCTestCase {
             )
         )
         XCTAssertEqual(
+            configuration.restoredDesktopMode,
+            .init(
+                logicalWidth: 1_080,
+                logicalHeight: 1_920,
+                pixelWidth: 1_080,
+                pixelHeight: 1_920
+            )
+        )
+        XCTAssertEqual(
             configuration.requiredResolvedModes,
             [
                 .init(
@@ -237,6 +246,96 @@ final class VirtualDisplayConfigurationTests: XCTestCase {
                 pixelHeight: 1_920
             )
         )
+    }
+
+    func testLandscapeHeadlessPlaceholderKeepsPortraitNativeModeAndRestorationMapping()
+        throws
+    {
+        let configuration = try XCTUnwrap(
+            HeadlessDesktopReplacement.makeConfiguration(
+                vendorID: HeadlessDesktopReplacement.appleHeadlessVendorID,
+                productID: HeadlessDesktopReplacement.appleHeadlessProductID,
+                logicalWidth: 1_920,
+                logicalHeight: 1_080,
+                pixelWidth: 1_920,
+                pixelHeight: 1_080
+            )
+        )
+
+        XCTAssertEqual(
+            configuration.modes.first,
+            .init(logicalWidth: 1_080, logicalHeight: 1_920)
+        )
+        XCTAssertFalse(
+            configuration.modes.contains(
+                .init(logicalWidth: 1_920, logicalHeight: 1_080)
+            )
+        )
+        XCTAssertEqual(
+            configuration.requiredResolvedModes.first,
+            .init(
+                logicalWidth: 1_080,
+                logicalHeight: 1_920,
+                pixelWidth: 1_080,
+                pixelHeight: 1_920
+            )
+        )
+        XCTAssertEqual(
+            configuration.requiredResolvedModes,
+            [
+                .init(
+                    logicalWidth: 1_080,
+                    logicalHeight: 1_920,
+                    pixelWidth: 1_080,
+                    pixelHeight: 1_920
+                ),
+                .init(
+                    logicalWidth: 603,
+                    logicalHeight: 1_311,
+                    pixelWidth: 1_206,
+                    pixelHeight: 2_622
+                ),
+                .init(
+                    logicalWidth: 540,
+                    logicalHeight: 1_170,
+                    pixelWidth: 1_080,
+                    pixelHeight: 2_340
+                ),
+                .init(
+                    logicalWidth: 540,
+                    logicalHeight: 960,
+                    pixelWidth: 1_080,
+                    pixelHeight: 1_920
+                ),
+                .init(
+                    logicalWidth: 414,
+                    logicalHeight: 896,
+                    pixelWidth: 828,
+                    pixelHeight: 1_792
+                ),
+                .init(
+                    logicalWidth: 750,
+                    logicalHeight: 1_334,
+                    pixelWidth: 750,
+                    pixelHeight: 1_334
+                ),
+            ]
+        )
+        XCTAssertEqual(
+            configuration.restoredDesktopMode,
+            .init(
+                logicalWidth: 1_920,
+                logicalHeight: 1_080,
+                pixelWidth: 1_920,
+                pixelHeight: 1_080
+            )
+        )
+
+        let restoration = RestoredDesktopExpectation(afterRetiring: configuration)
+        XCTAssertEqual(restoration.logicalWidth, 1_920)
+        XCTAssertEqual(restoration.logicalHeight, 1_080)
+        XCTAssertEqual(restoration.pixelWidth, 1_920)
+        XCTAssertEqual(restoration.pixelHeight, 1_080)
     }
 
     func testNonHeadlessDisplayDoesNotGetReplaced() throws {

@@ -47,7 +47,8 @@ public struct RestoredDesktopExpectation: Equatable, Sendable {
     }
 
     public init(afterRetiring configuration: VirtualDisplayConfiguration) {
-        let expected = configuration.requiredResolvedModes[0]
+        let expected = configuration.restoredDesktopMode
+            ?? configuration.requiredResolvedModes[0]
         retiredVendorID = configuration.vendorID
         retiredProductID = configuration.productID
         retiredSerialNumber = configuration.serialNumber
@@ -299,8 +300,27 @@ public enum HeadlessDesktopReplacement {
         else {
             throw HeadlessDesktopReplacementError.unsupportedDisplayMode
         }
-        let maximumWidth = max(currentPixelWidth, 1_206)
-        let maximumHeight = max(currentPixelHeight, 2_622)
+        let maximumWidth: UInt32 = 1_206
+        let maximumHeight: UInt32 = 2_622
+        let restoredDesktopMode = VirtualDisplayResolvedMode(
+            logicalWidth: currentLogicalWidth,
+            logicalHeight: currentLogicalHeight,
+            pixelWidth: currentPixelWidth,
+            pixelHeight: currentPixelHeight
+        )
+        let canPreserveCurrentModeInPortraitDisplay = currentPixelHeight > currentPixelWidth
+            && currentPixelWidth <= maximumWidth
+            && currentPixelHeight <= maximumHeight
+        let initialResolvedMode = canPreserveCurrentModeInPortraitDisplay
+            ? restoredDesktopMode
+            : VirtualDisplayResolvedMode(
+                logicalWidth: 1_080,
+                logicalHeight: 1_920,
+                pixelWidth: 1_080,
+                pixelHeight: 1_920
+            )
+        let initialPixelWidth = initialResolvedMode.pixelWidth
+        let initialPixelHeight = initialResolvedMode.pixelHeight
         let fractions: [(numerator: UInt32, denominator: UInt32)] = [
             (1, 1),
             (5, 6),
@@ -308,14 +328,17 @@ public enum HeadlessDesktopReplacement {
             (2, 3),
             (1, 2),
         ]
+        // Keep the owned display portrait-native even when Apple's temporary headless desktop
+        // has fallen back to 1920x1080. Advertising that landscape framebuffer makes
+        // WindowServer choose a landscape mode family and omit required phone-shaped mappings.
+        // The original desktop mapping is kept separately for exact teardown verification.
         var modes: [VirtualDisplayMode] = [
             .init(
-                logicalWidth: currentPixelWidth,
-                logicalHeight: currentPixelHeight
+                logicalWidth: initialPixelWidth,
+                logicalHeight: initialPixelHeight
             ),
             .init(logicalWidth: 1_206, logicalHeight: 2_622),
             .init(logicalWidth: 1_080, logicalHeight: 2_340),
-            .init(logicalWidth: 1_080, logicalHeight: 1_920),
             .init(logicalWidth: 828, logicalHeight: 1_792),
             .init(logicalWidth: 750, logicalHeight: 1_334),
         ]
@@ -327,11 +350,11 @@ public enum HeadlessDesktopReplacement {
         for fraction in fractions {
             guard
                 let width = UInt32(
-                    exactly: UInt64(pixelWidth) * UInt64(fraction.numerator)
+                    exactly: UInt64(initialPixelWidth) * UInt64(fraction.numerator)
                         / UInt64(fraction.denominator)
                 ),
                 let height = UInt32(
-                    exactly: UInt64(pixelHeight) * UInt64(fraction.numerator)
+                    exactly: UInt64(initialPixelHeight) * UInt64(fraction.numerator)
                         / UInt64(fraction.denominator)
                 )
             else {
@@ -344,12 +367,7 @@ public enum HeadlessDesktopReplacement {
         }
 
         var requiredResolvedModes: [VirtualDisplayResolvedMode] = [
-            .init(
-                logicalWidth: currentLogicalWidth,
-                logicalHeight: currentLogicalHeight,
-                pixelWidth: currentPixelWidth,
-                pixelHeight: currentPixelHeight
-            ),
+            initialResolvedMode,
             .init(
                 logicalWidth: 603,
                 logicalHeight: 1_311,
@@ -405,7 +423,8 @@ public enum HeadlessDesktopReplacement {
             physicalHeightMillimeters: Double(maximumHeight) / pixelsPerInch * 25.4,
             displaySettingsHiDPI: 1,
             modes: modes,
-            requiredResolvedModes: requiredResolvedModes
+            requiredResolvedModes: requiredResolvedModes,
+            restoredDesktopMode: restoredDesktopMode
         )
     }
 }
