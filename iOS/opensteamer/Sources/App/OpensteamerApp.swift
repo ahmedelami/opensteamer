@@ -70,15 +70,12 @@ struct OpensteamerApp: App {
 /// Deterministic Simulator-only surface for verifying the production full-screen viewer shell.
 /// Release/TestFlight builds compile this route out completely.
 private struct FullscreenViewerSimulatorFixtureView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var isViewerPresented = true
 
     var body: some View {
         if isViewerPresented {
-            FullscreenViewerLayout(
-                backAccessibilityIdentifier: "fullscreenViewerBack",
-                backAccessibilityLabel: "Back to Player",
-                onBack: { isViewerPresented = false }
-            ) {
+            FullscreenViewerLayout {
                 ZStack {
                     LinearGradient(
                         colors: [.indigo, .cyan, .mint],
@@ -96,15 +93,17 @@ private struct FullscreenViewerSimulatorFixtureView: View {
                 .accessibilityElement()
                 .accessibilityLabel("Full-screen remote display")
                 .accessibilityIdentifier("fullscreenRemoteScreenSurface")
-            } statusOverlay: {
-                EmptyView()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                guard newPhase != .active else { return }
+                isViewerPresented = false
             }
         } else {
             ZStack {
                 ContentUnavailableView(
                     "Viewer Closed",
                     systemImage: "checkmark.circle",
-                    description: Text("Returned without closing or reopening opensteamer.")
+                    description: Text("Returned without visible viewer controls.")
                 )
 
                 Color.clear

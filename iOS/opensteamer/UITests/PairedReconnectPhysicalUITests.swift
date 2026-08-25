@@ -1159,19 +1159,32 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
         pixelFreshnessAttachment.lifetime = .keepAlways
         activity.add(pixelFreshnessAttachment)
 
-        let hideScreen = app.buttons["hideWorldwideMacScreen"]
-        XCTAssertTrue(
-            hideScreen.exists,
-            "\(phase) displayed a live Mac screen without its explicit Hide Screen action"
+        XCTAssertFalse(
+            app.buttons["hideWorldwideMacScreen"].exists,
+            "\(phase) exposed the removed full-screen Back control"
         )
-        hideScreen.tap()
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(
+            waitForAppToLeaveForeground(timeout: 5),
+            "\(phase) did not background opensteamer to dismiss the live screen"
+        )
+        XCTAssertNotEqual(
+            app.state,
+            .notRunning,
+            "\(phase) terminated instead of preserving its background audio session"
+        )
+        app.activate()
+        XCTAssertTrue(
+            app.wait(for: .runningForeground, timeout: 8),
+            "\(phase) did not return after the background-triggered screen dismissal"
+        )
 
         let hideAcknowledgement = try XCTUnwrap(
             waitForHostAcknowledgedScreenHide(
                 after: liveScreenEvidence.showAcknowledgement,
                 timeout: 20
             ),
-            "\(phase) did not receive a newer authenticated Inactive acknowledgement before dismissing every live-screen surface. Last observation: \(liveScreenObservation)"
+            "\(phase) did not receive a newer authenticated Inactive acknowledgement after the background-triggered screen dismissal. Last observation: \(liveScreenObservation)"
         )
         let acknowledgementAttachment = XCTAttachment(
             string: "showRequest=\(liveScreenEvidence.showAcknowledgement.requestID) hideRequest=\(hideAcknowledgement.requestID) finalVideoFrames=\(liveScreenEvidence.finalVideoSnapshot.frameCount)"
@@ -1181,7 +1194,7 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
         activity.add(acknowledgementAttachment)
         XCTAssertTrue(
             showScreen.waitForExistence(timeout: 10),
-            "\(phase) did not return to Player after the host acknowledged Hide Screen"
+            "\(phase) did not return to Player after the host acknowledged the background-triggered Hide"
         )
 
         let serversTab = app.tabBars.buttons["Servers"]
@@ -1200,7 +1213,7 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
                 expectedAudioPolicyGeneration:
                     playback.finalAudioSnapshot.audioPolicyGeneration
             ),
-            "\(phase) lost its Connected session, native audio playback, or live WebRTC route after Hide Screen. Last observation: \(livePlaybackObservation)"
+            "\(phase) lost its Connected session, native audio playback, or live WebRTC route after the background-triggered Hide. Last observation: \(livePlaybackObservation)"
         )
         let elapsed = ProcessInfo.processInfo.systemUptime - audioContinuityStartedAt
         guard finalPlayback.finalAudioSnapshot.audioPolicyGeneration
@@ -2146,9 +2159,10 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
             }
 
             let screenVideo = element("worldwideMacScreenVideo")
-            let screenIsLive = app.staticTexts["Screen live"].exists
             let remoteInput = element("worldwideRemoteInputEnabled")
             let acknowledgementElement = element("worldwideScreenAcknowledgementOracle")
+            let screenIsLive = acknowledgementElement.exists
+                && acknowledgementElement.label == "Screen live"
             let screenFrameIsVisible = screenVideo.exists
                 && screenVideo.frame.width > 1
                 && screenVideo.frame.height > 1
@@ -2216,8 +2230,6 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
             let acknowledgementElement = element("worldwideScreenAcknowledgementOracle")
             if !element("worldwideMacScreenVideo").exists,
                !element("worldwideRemoteInputEnabled").exists,
-               !app.staticTexts["Screen live"].exists,
-               !app.buttons["hideWorldwideMacScreen"].exists,
                acknowledgementElement.exists,
                let encodedAcknowledgement = acknowledgementElement.value as? String,
                let acknowledgement = PhysicalScreenAcknowledgementSnapshot(
@@ -2266,12 +2278,13 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
     private var liveScreenObservation: String {
         let screenVideo = element("worldwideMacScreenVideo")
         let frame = screenVideo.exists ? String(describing: screenVideo.frame) : "missing"
-        let screenIsLive = app.staticTexts["Screen live"].exists
+        let acknowledgementElement = element("worldwideScreenAcknowledgementOracle")
+        let screenIsLive = acknowledgementElement.exists
+            && acknowledgementElement.label == "Screen live"
         let remoteInputExists = element("worldwideRemoteInputEnabled").exists
-        let hideActionExists = app.buttons["hideWorldwideMacScreen"].exists
         let videoOracle = screenVideo.value as? String ?? "missing"
-        let acknowledgement = element("worldwideScreenAcknowledgementOracle").value as? String ?? "missing"
-        return "videoExists=\(screenVideo.exists), videoFrame=\(frame), videoOracle=\(videoOracle), screenAcknowledgement=\(acknowledgement), screenLive=\(screenIsLive), remoteInputCapability=\(remoteInputExists), hideAction=\(hideActionExists), appState=\(app.state.rawValue), connectionError=\(hasConnectionError)"
+        let acknowledgement = acknowledgementElement.value as? String ?? "missing"
+        return "videoExists=\(screenVideo.exists), videoFrame=\(frame), videoOracle=\(videoOracle), screenAcknowledgement=\(acknowledgement), screenLive=\(screenIsLive), remoteInputCapability=\(remoteInputExists), appState=\(app.state.rawValue), connectionError=\(hasConnectionError)"
     }
 
     private func waitForHostFailureToReturnToSavedPair(timeout: TimeInterval) -> Bool {
@@ -2391,7 +2404,7 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
     }
 }
 
-/// Simulator-only contract for the edge-to-edge viewer and its in-app exit control.
+/// Simulator-only contract for the chrome-free, edge-to-edge viewer surface.
 #if targetEnvironment(simulator)
 @MainActor
 final class SimulatorFullscreenViewerUITests: XCTestCase {
@@ -2404,7 +2417,7 @@ final class SimulatorFullscreenViewerUITests: XCTestCase {
         app.launch()
     }
 
-    func testRemoteScreenFillsWindowAndBackReturnsWithoutRelaunch() {
+    func testRemoteScreenFillsWindowWithoutVisibleViewerChrome() {
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 10))
 
@@ -2419,23 +2432,28 @@ final class SimulatorFullscreenViewerUITests: XCTestCase {
         XCTAssertLessThanOrEqual(abs(surfaceFrame.maxY - windowFrame.maxY), 1)
 
         let before = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        before.name = "Edge-to-edge remote screen with Back control"
+        before.name = "Chrome-free edge-to-edge remote screen"
         before.lifetime = .keepAlways
         add(before)
 
-        let back = app.buttons["fullscreenViewerBack"]
-        XCTAssertTrue(back.exists)
-        XCTAssertTrue(back.isHittable)
-        back.tap()
-
-        let dismissed = app.descendants(matching: .any)
-            .matching(identifier: "fullscreenViewerDismissed")
-            .firstMatch
-        XCTAssertTrue(
-            dismissed.waitForExistence(timeout: 3),
-            "Back did not leave the viewer in the same running app process"
-        )
+        XCTAssertFalse(app.buttons["fullscreenViewerBack"].exists)
+        XCTAssertFalse(app.staticTexts["Back"].exists)
+        XCTAssertFalse(app.staticTexts["Mac mini"].exists)
+        XCTAssertFalse(app.staticTexts["Screen live"].exists)
+        XCTAssertFalse(app.staticTexts["Finding best route"].exists)
+        XCTAssertFalse(app.staticTexts["Touch control enabled"].exists)
         XCTAssertEqual(app.state, .runningForeground)
+
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 8))
+        XCTAssertTrue(
+            app.descendants(matching: .any)
+                .matching(identifier: "fullscreenViewerDismissed")
+                .firstMatch
+                .waitForExistence(timeout: 5)
+        )
+        XCTAssertFalse(app.buttons["fullscreenViewerBack"].exists)
     }
 }
 #endif

@@ -19,11 +19,7 @@ struct WorldwideScreenViewerView: View {
 
     var body: some View {
         ZStack {
-            FullscreenViewerLayout(
-                backAccessibilityIdentifier: "hideWorldwideMacScreen",
-                backAccessibilityLabel: "Back to Player and hide Mac screen",
-                onBack: hideAndDismiss
-            ) {
+            FullscreenViewerLayout {
                 GeometryReader { geometry in
                     if allowsRemoteScreenRendering {
                         WebRTCRemoteScreenView(
@@ -102,54 +98,9 @@ struct WorldwideScreenViewerView: View {
                 .accessibilityLabel("Mac screen video")
                 .accessibilityValue(videoRenderAccessibilityValue)
                 .accessibilityIdentifier("worldwideMacScreenVideo")
-            } statusOverlay: {
-                VStack(spacing: 4) {
-                    Text(viewModel.remoteDisplayName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Text(viewModel.stateText)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.white)
-                        .accessibilityValue(
-                            viewModel.screenAcknowledgementOracle?.accessibilityValue
-                                ?? "unavailable"
-                        )
-                        .accessibilityIdentifier("worldwideScreenAcknowledgementOracle")
-
-                    Text(
-                        viewModel.routeText == "Unknown"
-                            ? "Finding best route"
-                            : viewModel.routeText
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                    if effectiveRemoteInputAvailable {
-                        Label(
-                            viewModel.isRemotePrimaryDragAvailable
-                                ? "Tap to click · Hold and drag to select or move"
-                                : "Touch control enabled",
-                            systemImage: "hand.tap"
-                        )
-                            .font(.caption)
-                            .foregroundStyle(.green)
-                            .accessibilityIdentifier("worldwideRemoteInputEnabled")
-                    }
-
-                    if let lastError = viewModel.lastError {
-                        Label(lastError, systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                            .multilineTextAlignment(.center)
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                .padding()
-                .accessibilityIdentifier("worldwideMacScreenStatus")
             }
+
+            screenAccessibilityOracles
 
             RemoteKeyboardInputView(
                 inputAvailable: effectiveRemoteInputAvailable,
@@ -200,6 +151,37 @@ struct WorldwideScreenViewerView: View {
         .onChange(of: remoteVideoSize) {
             primaryDragContext = nil
         }
+    }
+
+    private var screenAccessibilityOracles: some View {
+        VStack(spacing: 0) {
+            Color.clear
+                .frame(width: 1, height: 1)
+                .accessibilityElement()
+                .accessibilityLabel(viewModel.stateText)
+                .accessibilityValue(
+                    viewModel.screenAcknowledgementOracle?.accessibilityValue
+                        ?? "unavailable"
+                )
+                .accessibilityHint(
+                    "\(viewModel.remoteDisplayName), \(viewModel.routeText)"
+                )
+                .accessibilityIdentifier("worldwideScreenAcknowledgementOracle")
+
+            if effectiveRemoteInputAvailable {
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .accessibilityElement()
+                    .accessibilityLabel(
+                        viewModel.isRemotePrimaryDragAvailable
+                            ? "Tap to click. Hold and drag to select or move."
+                            : "Touch control enabled"
+                    )
+                    .accessibilityIdentifier("worldwideRemoteInputEnabled")
+            }
+        }
+        .frame(width: 1, height: 1)
+        .allowsHitTesting(false)
     }
 
     private func hideAndDismiss() {
