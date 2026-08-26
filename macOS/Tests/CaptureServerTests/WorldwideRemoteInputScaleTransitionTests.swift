@@ -191,6 +191,55 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
         XCTAssertTrue(revocation.contains("revokeRemoteInputAuthorization()"))
     }
 
+    func testFreshCaptureBoundsReplaceStaleInputBoundsBeforeFramesCanReopen() throws {
+        let startup = try serviceSlice(
+            after: "    private func startScreenCapture(\n",
+            before: "    /// Waits only for the first exact image surface selected for this capture generation."
+        )
+        let displayIdentity = try XCTUnwrap(
+            startup.range(of: "captureDisplayID = format.displayID")
+        )
+        let boundsSnapshot = try XCTUnwrap(
+            startup.range(
+                of: "captureAuthoritativeDisplayBounds = format.authoritativeDisplayBounds",
+                range: displayIdentity.upperBound..<startup.endIndex
+            )
+        )
+        let controllerUpdate = try XCTUnwrap(
+            startup.range(
+                of: "remoteInputController.updateAuthoritativeDisplayBounds(",
+                range: boundsSnapshot.upperBound..<startup.endIndex
+            )
+        )
+        let forwardingInstall = try XCTUnwrap(
+            startup.range(
+                of: "sink.beginForwarding(",
+                range: controllerUpdate.upperBound..<startup.endIndex
+            )
+        )
+        let sampleDelivery = try XCTUnwrap(
+            startup.range(
+                of: "source.beginSampleDelivery()",
+                range: forwardingInstall.upperBound..<startup.endIndex
+            )
+        )
+
+        XCTAssertLessThan(displayIdentity.lowerBound, boundsSnapshot.lowerBound)
+        XCTAssertLessThan(boundsSnapshot.lowerBound, controllerUpdate.lowerBound)
+        XCTAssertLessThan(controllerUpdate.lowerBound, forwardingInstall.lowerBound)
+        XCTAssertLessThan(forwardingInstall.lowerBound, sampleDelivery.lowerBound)
+
+        let arm = try serviceSlice(
+            after: "    private func armRemoteInputIfAvailable(\n",
+            before: "    /// Injects one request under revocable gates"
+        )
+        XCTAssertTrue(
+            arm.contains(
+                "authoritativeDisplayBounds: captureAuthoritativeDisplayBounds"
+            )
+        )
+    }
+
     private func serviceSlice(after startMarker: String, before endMarker: String) throws -> String {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

@@ -227,13 +227,15 @@ public final class MacRemoteInputController: @unchecked Sendable {
     public func arm(
         displayID: UInt32,
         screenRequestID: UInt64,
-        inputSessionID: UUID
+        inputSessionID: UUID,
+        authoritativeDisplayBounds: CGRect? = nil
     ) -> MacRemoteInputArmResult {
         withLock {
             armLocked(
                 displayID: displayID,
                 screenRequestID: screenRequestID,
-                inputSessionID: inputSessionID
+                inputSessionID: inputSessionID,
+                authoritativeDisplayBounds: authoritativeDisplayBounds
             )
         }
     }
@@ -242,7 +244,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
     private func armLocked(
         displayID: UInt32,
         screenRequestID: UInt64,
-        inputSessionID: UUID
+        inputSessionID: UUID,
+        authoritativeDisplayBounds: CGRect?
     ) -> MacRemoteInputArmResult {
         guard !isPermanentlyInvalidated else {
             return .disabled
@@ -262,11 +265,21 @@ public final class MacRemoteInputController: @unchecked Sendable {
         guard validDisplayBounds(for: displayID) != nil else {
             return .displayUnavailable
         }
+        let validatedAuthoritativeBounds: CGRect?
+        if let authoritativeDisplayBounds {
+            guard let bounds = Self.validatedDisplayBounds(authoritativeDisplayBounds) else {
+                return .displayUnavailable
+            }
+            validatedAuthoritativeBounds = bounds
+        } else {
+            validatedAuthoritativeBounds = nil
+        }
 
         activeSession = ActiveSession(
             displayID: displayID,
             screenRequestID: screenRequestID,
-            inputSessionID: inputSessionID
+            inputSessionID: inputSessionID,
+            authoritativeDisplayBounds: validatedAuthoritativeBounds
         )
         resetRateLimits(now: clock.now())
         return .armed
@@ -276,6 +289,39 @@ public final class MacRemoteInputController: @unchecked Sendable {
     public func revoke() {
         withLock {
             revokeState()
+        }
+    }
+
+    /// Replaces stale in-process Core Graphics dimensions with the fresh bounds proven by the
+    /// capture generation. A changed mapping closes the frame gate until matching geometry has
+    /// remained stable, while the same authenticated Show/input capability stays valid.
+    public func updateAuthoritativeDisplayBounds(
+        _ bounds: CGRect?,
+        for displayID: UInt32
+    ) {
+        withLock {
+            guard var session = activeSession,
+                  session.displayID == displayID else {
+                return
+            }
+            let validatedBounds: CGRect?
+            if let bounds {
+                guard let validBounds = Self.validatedDisplayBounds(bounds) else {
+                    clearScreenVideoFrameGeometry()
+                    revokeState()
+                    return
+                }
+                validatedBounds = validBounds
+            } else {
+                validatedBounds = nil
+            }
+            guard session.authoritativeDisplayBounds != validatedBounds else {
+                return
+            }
+            session.authoritativeDisplayBounds = validatedBounds
+            activeSession = session
+            authorizedFocus = nil
+            clearScreenVideoFrameGeometry()
         }
     }
 
@@ -400,10 +446,11 @@ public final class MacRemoteInputController: @unchecked Sendable {
             revokeState()
             return .rejected(.permissionRequired)
         }
-        guard let displayBounds = validDisplayBounds(for: session.displayID) else {
+        guard let liveDisplayBounds = validDisplayBounds(for: session.displayID) else {
             revokeState()
             return .rejected(.displayUnavailable)
         }
+        let displayBounds = session.authoritativeDisplayBounds ?? liveDisplayBounds
         let frameGeometry: ScreenVideoFrameGeometry
         switch currentScreenVideoFrameGeometryResolution(compatibleWith: displayBounds) {
         case .unavailable:
@@ -570,10 +617,11 @@ public final class MacRemoteInputController: @unchecked Sendable {
             revokeState()
             return .rejected(.permissionRequired)
         }
-        guard let displayBounds = validDisplayBounds(for: session.displayID) else {
+        guard let liveDisplayBounds = validDisplayBounds(for: session.displayID) else {
             revokeState()
             return .rejected(.displayUnavailable)
         }
+        let displayBounds = session.authoritativeDisplayBounds ?? liveDisplayBounds
         let frameGeometry: ScreenVideoFrameGeometry
         switch currentScreenVideoFrameGeometryResolution(compatibleWith: displayBounds) {
         case .unavailable:
@@ -938,7 +986,11 @@ public final class MacRemoteInputController: @unchecked Sendable {
 
     /// Rejects inactive or geometrically unusable display bounds.
     private func validDisplayBounds(for displayID: UInt32) -> CGRect? {
-        guard let bounds = system.displayBounds(for: displayID),
+        Self.validatedDisplayBounds(system.displayBounds(for: displayID))
+    }
+
+    private static func validatedDisplayBounds(_ bounds: CGRect?) -> CGRect? {
+        guard let bounds,
               !bounds.isNull,
               !bounds.isInfinite,
               bounds.origin.x.isFinite,
@@ -1062,6 +1114,7 @@ private struct ActiveSession: Sendable {
     let displayID: UInt32
     let screenRequestID: UInt64
     let inputSessionID: UUID
+    var authoritativeDisplayBounds: CGRect?
 }
 
 /// AX element and monotonic generation authorized by the most recent pointer action.

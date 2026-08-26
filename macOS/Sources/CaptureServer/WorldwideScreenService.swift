@@ -401,6 +401,7 @@ actor WorldwideScreenService {
     private var captureAuthorization: WebRTCControlAuthorization?
     private var captureForwardingAuthorization: WebRTCControlAuthorization?
     private var captureDisplayID: UInt32?
+    private var captureAuthoritativeDisplayBounds: CGRect?
     private var audioSource: SystemAudioCaptureSource?
     private var audioSink: WorldwideSystemAudioSampleSink?
     private var audioAuthorization: WebRTCAudioAuthorization?
@@ -1639,7 +1640,8 @@ actor WorldwideScreenService {
         switch remoteInputController.arm(
             displayID: captureDisplayID,
             screenRequestID: screenRequestID,
-            inputSessionID: inputSessionID
+            inputSessionID: inputSessionID,
+            authoritativeDisplayBounds: captureAuthoritativeDisplayBounds
         ) {
         case .armed:
             let capability = WebRTCInputCapability(
@@ -3395,6 +3397,11 @@ actor WorldwideScreenService {
                 throw WorldwideScreenServiceError.transportUnavailable
             }
             captureDisplayID = format.displayID
+            captureAuthoritativeDisplayBounds = format.authoritativeDisplayBounds
+            remoteInputController.updateAuthoritativeDisplayBounds(
+                format.authoritativeDisplayBounds,
+                for: format.displayID
+            )
             capturer.adaptOutput(
                 width: Int32(format.width),
                 height: Int32(format.height),
@@ -3458,6 +3465,7 @@ actor WorldwideScreenService {
                     captureSource = nil
                     captureSink = nil
                     captureDisplayID = nil
+                    captureAuthoritativeDisplayBounds = nil
                 }
             } catch {
                 // Retain the exact source so session shutdown can retry its native stop before
@@ -3520,6 +3528,7 @@ actor WorldwideScreenService {
             captureSource = nil
             captureSink = nil
             captureDisplayID = nil
+            captureAuthoritativeDisplayBounds = nil
         }
     }
 
@@ -3583,6 +3592,7 @@ actor WorldwideScreenService {
 
         logger.info("Renegotiating worldwide screen capture after display mode change")
         captureDisplayID = nil
+        captureAuthoritativeDisplayBounds = nil
         captureForwardingAuthorization?.revoke()
         captureForwardingAuthorization = nil
         remoteInputController.updateScreenVideoFrameGeometry(nil)
@@ -3629,6 +3639,7 @@ actor WorldwideScreenService {
                 captureForwardingAuthorization?.revoke()
                 captureForwardingAuthorization = nil
                 captureDisplayID = nil
+                captureAuthoritativeDisplayBounds = nil
             }
             if wasSuperseded {
                 logger.info(
@@ -4151,6 +4162,7 @@ actor WorldwideScreenService {
             revokeRemoteInputAuthorization()
         }
         captureDisplayID = nil
+        captureAuthoritativeDisplayBounds = nil
         captureForwardingAuthorization?.revoke()
         captureForwardingAuthorization = nil
         captureAuthorization?.revoke()
