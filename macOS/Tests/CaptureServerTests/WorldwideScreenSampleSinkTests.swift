@@ -169,6 +169,345 @@ final class WorldwideScreenSampleSinkTests: XCTestCase {
         )
     }
 
+    func testMissingGeometryAfterProvenSurfaceReusesExactInputTransform() throws {
+        let geometryUpdater = RecordingRemoteInputGeometryUpdater()
+        let renegotiations = LockedCount()
+        let capturer = RecordingScreenFrameCapturer()
+        let sink = WorldwideScreenSampleSink(
+            capturer: capturer,
+            remoteInputController: geometryUpdater,
+            didRequireCaptureFormatRenegotiation: { _ in
+                renegotiations.increment()
+            },
+            didStop: { _, _ in }
+        )
+        let authorization = try XCTUnwrap(
+            sink.beginForwarding(
+                expectedFrameDimensions: .init(width: 640, height: 360)
+            )
+        )
+        let sample = try makeImageSample()
+        let fullFrame = try makeFullFrameGeometry()
+        sink.consumeScreenVideoSample(sample, frameGeometry: fullFrame)
+        XCTAssertTrue(sink.commitForwardingStartup(authorizedBy: authorization))
+        geometryUpdater.reset()
+
+        for _ in 0 ..< 12 {
+            sink.consumeScreenVideoSample(sample, frameGeometry: nil)
+        }
+
+        XCTAssertEqual(capturer.captureCount, 13)
+        XCTAssertEqual(renegotiations.value, 0)
+        XCTAssertTrue(authorization.isValid)
+        XCTAssertTrue(sink.allowsActiveUse(authorizedBy: authorization))
+        XCTAssertEqual(geometryUpdater.updates.count, 12)
+        XCTAssertTrue(
+            geometryUpdater.updates.allSatisfy { geometry in
+                geometry == fullFrame
+            }
+        )
+    }
+
+    func testMissingGeometryOnChangedPixelSurfaceRevokesBeforeForwarding() throws {
+        let geometryUpdater = RecordingRemoteInputGeometryUpdater()
+        let renegotiations = LockedCount()
+        let capturer = RecordingScreenFrameCapturer()
+        let sink = WorldwideScreenSampleSink(
+            capturer: capturer,
+            remoteInputController: geometryUpdater,
+            didRequireCaptureFormatRenegotiation: { _ in
+                renegotiations.increment()
+            },
+            didStop: { _, _ in }
+        )
+        let authorization = try XCTUnwrap(
+            sink.beginForwarding(
+                expectedFrameDimensions: .init(width: 640, height: 360)
+            )
+        )
+        sink.consumeScreenVideoSample(
+            try makeImageSample(),
+            frameGeometry: try makeFullFrameGeometry()
+        )
+        XCTAssertTrue(sink.commitForwardingStartup(authorizedBy: authorization))
+        geometryUpdater.reset()
+
+        sink.consumeScreenVideoSample(
+            try makeImageSample(width: 800, height: 600),
+            frameGeometry: nil
+        )
+
+        XCTAssertEqual(capturer.captureCount, 1)
+        XCTAssertEqual(renegotiations.value, 1)
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertFalse(sink.allowsActiveUse(authorizedBy: authorization))
+        XCTAssertTrue(sink.isAwaitingFormatRenegotiation)
+        XCTAssertEqual(geometryUpdater.updates, [nil])
+    }
+
+    func testMissingGeometryCannotReuseTransformWhileFormatChangeIsPending() throws {
+        let geometryUpdater = RecordingRemoteInputGeometryUpdater()
+        let renegotiations = LockedCount()
+        let capturer = RecordingScreenFrameCapturer()
+        let scheduler = ManualFormatRenegotiationFallbackScheduler()
+        let sink = WorldwideScreenSampleSink(
+            capturer: capturer,
+            remoteInputController: geometryUpdater,
+            didRequireCaptureFormatRenegotiation: { _ in
+                renegotiations.increment()
+            },
+            scheduleFormatRenegotiationFallback: { delay, action in
+                scheduler.schedule(delay, action)
+            },
+            didStop: { _, _ in }
+        )
+        let authorization = try XCTUnwrap(
+            sink.beginForwarding(
+                expectedFrameDimensions: .init(width: 640, height: 360)
+            )
+        )
+        let sample = try makeImageSample()
+        sink.consumeScreenVideoSample(
+            sample,
+            frameGeometry: try makeFullFrameGeometry()
+        )
+        XCTAssertTrue(sink.commitForwardingStartup(authorizedBy: authorization))
+        geometryUpdater.reset()
+
+        sink.consumeScreenVideoSample(
+            sample,
+            frameGeometry: try makeInsetFrameGeometry()
+        )
+        sink.consumeScreenVideoSample(sample, frameGeometry: nil)
+
+        XCTAssertEqual(capturer.captureCount, 1)
+        XCTAssertEqual(renegotiations.value, 0)
+        XCTAssertTrue(authorization.isValid)
+        XCTAssertTrue(sink.isDebouncingFormatRenegotiation)
+        XCTAssertFalse(sink.allowsActiveUse(authorizedBy: authorization))
+        XCTAssertEqual(geometryUpdater.updates, [nil, nil])
+        XCTAssertEqual(
+            scheduler.scheduledDelays,
+            [WorldwideScreenSampleSink.formatRenegotiationFallbackDelay]
+        )
+
+        scheduler.runNext()
+
+        XCTAssertEqual(capturer.captureCount, 1)
+        XCTAssertEqual(renegotiations.value, 1)
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertFalse(sink.isDebouncingFormatRenegotiation)
+        XCTAssertTrue(sink.isAwaitingFormatRenegotiation)
+        XCTAssertEqual(geometryUpdater.updates, [nil, nil, nil])
+    }
+
+    func testInvalidGeometryNeverReusesTransformAndRenegotiatesBoundedly() throws {
+        let geometryUpdater = RecordingRemoteInputGeometryUpdater()
+        let renegotiations = LockedCount()
+        let capturer = RecordingScreenFrameCapturer()
+        let sink = WorldwideScreenSampleSink(
+            capturer: capturer,
+            remoteInputController: geometryUpdater,
+            didRequireCaptureFormatRenegotiation: { _ in
+                renegotiations.increment()
+            },
+            didStop: { _, _ in }
+        )
+        let authorization = try XCTUnwrap(
+            sink.beginForwarding(
+                expectedFrameDimensions: .init(width: 640, height: 360)
+            )
+        )
+        let sample = try makeImageSample()
+        sink.consumeScreenVideoSample(
+            sample,
+            frameGeometry: try makeFullFrameGeometry()
+        )
+        XCTAssertTrue(sink.commitForwardingStartup(authorizedBy: authorization))
+        geometryUpdater.reset()
+
+        sink.consumeScreenVideoSample(sample, frameGeometryObservation: .invalid)
+
+        XCTAssertEqual(capturer.captureCount, 1)
+        XCTAssertEqual(renegotiations.value, 0)
+        XCTAssertTrue(authorization.isValid)
+        XCTAssertTrue(sink.isDebouncingFormatRenegotiation)
+        XCTAssertFalse(sink.allowsActiveUse(authorizedBy: authorization))
+        XCTAssertEqual(geometryUpdater.updates, [nil])
+
+        sink.consumeScreenVideoSample(sample, frameGeometryObservation: .invalid)
+        sink.consumeScreenVideoSample(sample, frameGeometryObservation: .invalid)
+
+        XCTAssertEqual(capturer.captureCount, 1)
+        XCTAssertEqual(renegotiations.value, 1)
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertTrue(sink.isAwaitingFormatRenegotiation)
+        XCTAssertEqual(geometryUpdater.updates, [nil, nil, nil])
+    }
+
+    func testExplicitDisplayChangeCannotBeReopenedByLateFrames() throws {
+        let geometryUpdater = RecordingRemoteInputGeometryUpdater()
+        let renegotiations = LockedCount()
+        let capturer = RecordingScreenFrameCapturer()
+        let sink = WorldwideScreenSampleSink(
+            capturer: capturer,
+            remoteInputController: geometryUpdater,
+            didRequireCaptureFormatRenegotiation: { _ in
+                renegotiations.increment()
+            },
+            didStop: { _, _ in }
+        )
+        let authorization = try XCTUnwrap(
+            sink.beginForwarding(
+                expectedFrameDimensions: .init(width: 640, height: 360)
+            )
+        )
+        let sample = try makeImageSample()
+        let fullFrame = try makeFullFrameGeometry()
+        sink.consumeScreenVideoSample(sample, frameGeometry: fullFrame)
+        XCTAssertTrue(sink.commitForwardingStartup(authorizedBy: authorization))
+        geometryUpdater.reset()
+
+        sink.displayModeDidChange()
+        sink.consumeScreenVideoSample(sample, frameGeometry: nil)
+        sink.consumeScreenVideoSample(sample, frameGeometry: fullFrame)
+
+        XCTAssertEqual(capturer.captureCount, 1)
+        XCTAssertEqual(renegotiations.value, 1)
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertFalse(sink.allowsActiveUse(authorizedBy: authorization))
+        XCTAssertTrue(sink.isAwaitingFormatRenegotiation)
+        XCTAssertEqual(geometryUpdater.updates, [nil])
+    }
+
+    func testPreConfigurationFenceDropsSameSurfaceFramesUntilSettledCallback() throws {
+        let geometryUpdater = RecordingRemoteInputGeometryUpdater()
+        let renegotiations = LockedCount()
+        let capturer = RecordingScreenFrameCapturer()
+        let sink = WorldwideScreenSampleSink(
+            capturer: capturer,
+            remoteInputController: geometryUpdater,
+            didRequireCaptureFormatRenegotiation: { _ in
+                renegotiations.increment()
+            },
+            didStop: { _, _ in }
+        )
+        let authorization = try XCTUnwrap(
+            sink.beginForwarding(
+                expectedFrameDimensions: .init(width: 640, height: 360)
+            )
+        )
+        let sample = try makeImageSample()
+        let fullFrame = try makeFullFrameGeometry()
+        sink.consumeScreenVideoSample(sample, frameGeometry: fullFrame)
+        XCTAssertTrue(sink.commitForwardingStartup(authorizedBy: authorization))
+        geometryUpdater.reset()
+
+        sink.displayConfigurationWillChange()
+        sink.displayConfigurationWillChange()
+        XCTAssertTrue(sink.isDisplayConfigurationInProgress)
+        sink.consumeScreenVideoSample(sample, frameGeometry: nil)
+        sink.consumeScreenVideoSample(sample, frameGeometry: fullFrame)
+
+        XCTAssertEqual(capturer.captureCount, 1)
+        XCTAssertEqual(renegotiations.value, 0)
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertFalse(sink.allowsActiveUse(authorizedBy: authorization))
+        XCTAssertEqual(geometryUpdater.updates, [nil])
+
+        sink.displayModeDidChange()
+
+        XCTAssertFalse(sink.isDisplayConfigurationInProgress)
+        XCTAssertEqual(capturer.captureCount, 1)
+        XCTAssertEqual(renegotiations.value, 1)
+        XCTAssertTrue(sink.isAwaitingFormatRenegotiation)
+        XCTAssertEqual(geometryUpdater.updates, [nil, nil])
+    }
+
+    func testReplacementGenerationCannotInheritRetiredGeometry() throws {
+        let geometryUpdater = RecordingRemoteInputGeometryUpdater()
+        let oldCapturer = RecordingScreenFrameCapturer()
+        let oldSink = WorldwideScreenSampleSink(
+            capturer: oldCapturer,
+            remoteInputController: geometryUpdater,
+            didRequireCaptureFormatRenegotiation: { _ in },
+            didStop: { _, _ in }
+        )
+        let oldAuthorization = try XCTUnwrap(
+            oldSink.beginForwarding(
+                expectedFrameDimensions: .init(width: 640, height: 360)
+            )
+        )
+        let oldSample = try makeImageSample()
+        let oldGeometry = try makeFullFrameGeometry()
+        oldSink.consumeScreenVideoSample(oldSample, frameGeometry: oldGeometry)
+        XCTAssertTrue(oldSink.commitForwardingStartup(authorizedBy: oldAuthorization))
+        geometryUpdater.reset()
+
+        oldSink.stopForwarding()
+
+        let replacementCapturer = RecordingScreenFrameCapturer()
+        let replacementSink = WorldwideScreenSampleSink(
+            capturer: replacementCapturer,
+            remoteInputController: geometryUpdater,
+            didRequireCaptureFormatRenegotiation: { _ in },
+            didStop: { _, _ in }
+        )
+        let replacementAuthorization = try XCTUnwrap(
+            replacementSink.beginForwarding(
+                expectedFrameDimensions: .init(width: 360, height: 640)
+            )
+        )
+        let replacementSample = try makeImageSample(width: 360, height: 640)
+
+        oldSink.consumeScreenVideoSample(oldSample, frameGeometry: oldGeometry)
+        replacementSink.consumeScreenVideoSample(
+            replacementSample,
+            frameGeometry: nil
+        )
+
+        XCTAssertFalse(oldAuthorization.isValid)
+        XCTAssertTrue(replacementAuthorization.isValid)
+        XCTAssertEqual(oldCapturer.captureCount, 1)
+        XCTAssertEqual(replacementCapturer.captureCount, 0)
+        XCTAssertEqual(
+            replacementSink.forwardingStartupProofState(
+                authorizedBy: replacementAuthorization
+            ),
+            .waiting
+        )
+        XCTAssertEqual(geometryUpdater.updates, [nil, nil])
+
+        let replacementGeometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 360,
+                surfaceHeight: 640,
+                contentRect: CGRect(x: 0, y: 0, width: 180, height: 320),
+                contentScale: 1,
+                scaleFactor: 2
+            )
+        )
+        replacementSink.consumeScreenVideoSample(
+            replacementSample,
+            frameGeometry: replacementGeometry
+        )
+
+        XCTAssertEqual(replacementCapturer.captureCount, 1)
+        XCTAssertEqual(
+            replacementSink.forwardingStartupProofState(
+                authorizedBy: replacementAuthorization
+            ),
+            .proven
+        )
+        XCTAssertTrue(
+            replacementSink.commitForwardingStartup(
+                authorizedBy: replacementAuthorization
+            )
+        )
+        XCTAssertTrue(replacementAuthorization.isValid)
+        XCTAssertEqual(geometryUpdater.updates, [nil, nil, replacementGeometry])
+    }
+
     func testDisplayModeChangeBeforeForwardingRejectsStaleStartup() {
         let renegotiations = LockedCount()
         let sink = WorldwideScreenSampleSink(
@@ -578,12 +917,15 @@ private func makeInsetFrameGeometry() throws -> ScreenVideoFrameGeometry {
     )
 }
 
-private func makeImageSample() throws -> CMSampleBuffer {
+private func makeImageSample(
+    width: Int = 640,
+    height: Int = 360
+) throws -> CMSampleBuffer {
     var pixelBuffer: CVPixelBuffer?
     var status = CVPixelBufferCreate(
         kCFAllocatorDefault,
-        640,
-        360,
+        width,
+        height,
         kCVPixelFormatType_32BGRA,
         nil,
         &pixelBuffer
@@ -619,6 +961,26 @@ private func makeImageSample() throws -> CMSampleBuffer {
         throw ImageSampleFixtureError.sampleBuffer(status)
     }
     return sampleBuffer
+}
+
+private final class RecordingRemoteInputGeometryUpdater:
+    WorldwideRemoteInputGeometryUpdating,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var recordedUpdates: [ScreenVideoFrameGeometry?] = []
+
+    var updates: [ScreenVideoFrameGeometry?] {
+        lock.withLock { recordedUpdates }
+    }
+
+    func updateScreenVideoFrameGeometry(_ geometry: ScreenVideoFrameGeometry?) {
+        lock.withLock { recordedUpdates.append(geometry) }
+    }
+
+    func reset() {
+        lock.withLock { recordedUpdates.removeAll(keepingCapacity: true) }
+    }
 }
 
 private final class RecordingScreenFrameCapturer:

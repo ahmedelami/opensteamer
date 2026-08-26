@@ -201,6 +201,18 @@ final class ScreenVideoFrameGeometryTests: XCTestCase {
         XCTAssertEqual(detector.observe(fullFrame), .forwardFrame)
     }
 
+    func testInvalidGeometryIsDroppedAndTriggersBoundedRenegotiation() {
+        var detector = ScreenVideoFormatRenegotiationDetector()
+
+        XCTAssertEqual(detector.observe(.invalid), .dropFrame)
+        XCTAssertTrue(detector.hasPendingFormatChange)
+        XCTAssertEqual(detector.observe(.absent), .dropFrame)
+        XCTAssertEqual(detector.observe(.invalid), .dropFrame)
+        XCTAssertEqual(detector.observe(.invalid), .renegotiate)
+        XCTAssertFalse(detector.hasPendingFormatChange)
+        XCTAssertEqual(detector.observe(.absent), .dropFrame)
+    }
+
     func testFallbackDeadlineLatchesPendingFormatChangeWithoutAnotherFrame() throws {
         let insetFrame = try XCTUnwrap(
             ScreenVideoFrameGeometry(

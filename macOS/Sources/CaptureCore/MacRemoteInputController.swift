@@ -98,6 +98,64 @@ public enum MacRemoteInputResult: Equatable, Sendable {
     case rejected(MacRemoteInputRejection)
 }
 
+/// Internal geometry-fence reason retained only for privacy-safe host diagnostics.
+///
+/// The wire protocol intentionally continues exposing the single stable
+/// `screenFormatChanging` rejection so older clients remain decode-compatible.
+public enum MacRemoteInputScreenFormatReason: String, Equatable, Sendable {
+    case viewerSizeMissing
+    case frameGeometryUnavailableOrUnstable
+    case displayGeometryIncompatible
+    case viewerAspectMismatch
+}
+
+/// Structural state captured atomically with a `screenFormatChanging` rejection.
+/// No pointer coordinates, display names, or session identifiers are retained.
+public struct MacRemoteInputScreenFormatDiagnostic: Equatable, Sendable {
+    public let reason: MacRemoteInputScreenFormatReason
+    public let viewerVideoSize: MacRemoteInputVideoSize?
+    public let frameSurfaceWidth: Int?
+    public let frameSurfaceHeight: Int?
+    public let stableGeometryAvailable: Bool
+    public let candidateGeometryAvailable: Bool
+    public let candidateAgeMilliseconds: UInt64?
+    public let viewerAspectRelativeDifference: Double?
+
+    public init(
+        reason: MacRemoteInputScreenFormatReason,
+        viewerVideoSize: MacRemoteInputVideoSize?,
+        frameSurfaceWidth: Int?,
+        frameSurfaceHeight: Int?,
+        stableGeometryAvailable: Bool,
+        candidateGeometryAvailable: Bool,
+        candidateAgeMilliseconds: UInt64?,
+        viewerAspectRelativeDifference: Double?
+    ) {
+        self.reason = reason
+        self.viewerVideoSize = viewerVideoSize
+        self.frameSurfaceWidth = frameSurfaceWidth
+        self.frameSurfaceHeight = frameSurfaceHeight
+        self.stableGeometryAvailable = stableGeometryAvailable
+        self.candidateGeometryAvailable = candidateGeometryAvailable
+        self.candidateAgeMilliseconds = candidateAgeMilliseconds
+        self.viewerAspectRelativeDifference = viewerAspectRelativeDifference
+    }
+}
+
+/// Local controller result with an optional non-sensitive format diagnostic.
+public struct MacRemoteInputDiagnosedResult: Equatable, Sendable {
+    public let result: MacRemoteInputResult
+    public let screenFormatDiagnostic: MacRemoteInputScreenFormatDiagnostic?
+
+    public init(
+        result: MacRemoteInputResult,
+        screenFormatDiagnostic: MacRemoteInputScreenFormatDiagnostic?
+    ) {
+        self.result = result
+        self.screenFormatDiagnostic = screenFormatDiagnostic
+    }
+}
+
 /// Serializes and authorizes remote input for one active screen-sharing session.
 ///
 /// The controller is disabled unless the host explicitly opts in. Each action must
@@ -270,12 +328,33 @@ public final class MacRemoteInputController: @unchecked Sendable {
         normalizedPoint: MacRemoteNormalizedPoint,
         viewerVideoSize: MacRemoteInputVideoSize? = nil
     ) -> MacRemoteInputResult {
+        handleTapWithDiagnostics(
+            screenRequestID: screenRequestID,
+            inputSessionID: inputSessionID,
+            normalizedPoint: normalizedPoint,
+            viewerVideoSize: viewerVideoSize
+        ).result
+    }
+
+    /// Posts one primary click and captures the exact local format fence that rejected it.
+    public func handleTapWithDiagnostics(
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        normalizedPoint: MacRemoteNormalizedPoint,
+        viewerVideoSize: MacRemoteInputVideoSize? = nil
+    ) -> MacRemoteInputDiagnosedResult {
         withLock {
-            handleTapLocked(
+            var screenFormatDiagnostic: MacRemoteInputScreenFormatDiagnostic?
+            let result = handleTapLocked(
                 screenRequestID: screenRequestID,
                 inputSessionID: inputSessionID,
                 normalizedPoint: normalizedPoint,
-                viewerVideoSize: viewerVideoSize
+                viewerVideoSize: viewerVideoSize,
+                screenFormatDiagnostic: &screenFormatDiagnostic
+            )
+            return MacRemoteInputDiagnosedResult(
+                result: result,
+                screenFormatDiagnostic: screenFormatDiagnostic
             )
         }
     }
@@ -285,7 +364,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
         screenRequestID: UInt64,
         inputSessionID: UUID,
         normalizedPoint: MacRemoteNormalizedPoint,
-        viewerVideoSize: MacRemoteInputVideoSize?
+        viewerVideoSize: MacRemoteInputVideoSize?,
+        screenFormatDiagnostic: inout MacRemoteInputScreenFormatDiagnostic?
     ) -> MacRemoteInputResult {
         // Every tap invalidates the prior keyboard grant, even when this tap is
         // malformed or rate-limited.
@@ -304,6 +384,13 @@ public final class MacRemoteInputController: @unchecked Sendable {
             return .rejected(.invalidPoint)
         }
         guard let viewerVideoSize else {
+            screenFormatDiagnostic = makeScreenFormatDiagnostic(
+                reason: .viewerSizeMissing,
+                viewerVideoSize: nil,
+                frameGeometry: screenVideoFrameGeometry
+                    ?? candidateScreenVideoFrameGeometry,
+                viewerAspectRelativeDifference: nil
+            )
             return .rejected(.screenFormatChanging)
         }
         guard viewerVideoSize.isValid else {
@@ -317,9 +404,39 @@ public final class MacRemoteInputController: @unchecked Sendable {
             revokeState()
             return .rejected(.displayUnavailable)
         }
-        guard let frameGeometry = currentScreenVideoFrameGeometry(
-            compatibleWith: displayBounds
-        ), Self.viewerVideoSize(viewerVideoSize, matches: frameGeometry) else {
+        let frameGeometry: ScreenVideoFrameGeometry
+        switch currentScreenVideoFrameGeometryResolution(compatibleWith: displayBounds) {
+        case .unavailable:
+            screenFormatDiagnostic = makeScreenFormatDiagnostic(
+                reason: .frameGeometryUnavailableOrUnstable,
+                viewerVideoSize: viewerVideoSize,
+                frameGeometry: candidateScreenVideoFrameGeometry,
+                viewerAspectRelativeDifference: nil
+            )
+            return .rejected(.screenFormatChanging)
+        case .displayIncompatible(let geometry):
+            screenFormatDiagnostic = makeScreenFormatDiagnostic(
+                reason: .displayGeometryIncompatible,
+                viewerVideoSize: viewerVideoSize,
+                frameGeometry: geometry,
+                viewerAspectRelativeDifference: nil
+            )
+            return .rejected(.screenFormatChanging)
+        case .available(let geometry):
+            frameGeometry = geometry
+        }
+        let viewerAspectComparison = Self.viewerVideoAspectComparison(
+            viewerVideoSize,
+            frameGeometry: frameGeometry
+        )
+        guard viewerAspectComparison.matches else {
+            screenFormatDiagnostic = makeScreenFormatDiagnostic(
+                reason: .viewerAspectMismatch,
+                viewerVideoSize: viewerVideoSize,
+                frameGeometry: frameGeometry,
+                viewerAspectRelativeDifference:
+                    viewerAspectComparison.relativeDifference
+            )
             return .rejected(.screenFormatChanging)
         }
         guard let contentNormalizedPoint = mappedContentPoint(
@@ -377,13 +494,36 @@ public final class MacRemoteInputController: @unchecked Sendable {
         end: MacRemoteNormalizedPoint,
         viewerVideoSize: MacRemoteInputVideoSize? = nil
     ) -> MacRemoteInputResult {
+        handlePrimaryDragWithDiagnostics(
+            screenRequestID: screenRequestID,
+            inputSessionID: inputSessionID,
+            start: start,
+            end: end,
+            viewerVideoSize: viewerVideoSize
+        ).result
+    }
+
+    /// Performs one drag and captures the exact local format fence that rejected it.
+    public func handlePrimaryDragWithDiagnostics(
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        start: MacRemoteNormalizedPoint,
+        end: MacRemoteNormalizedPoint,
+        viewerVideoSize: MacRemoteInputVideoSize? = nil
+    ) -> MacRemoteInputDiagnosedResult {
         withLock {
-            handlePrimaryDragLocked(
+            var screenFormatDiagnostic: MacRemoteInputScreenFormatDiagnostic?
+            let result = handlePrimaryDragLocked(
                 screenRequestID: screenRequestID,
                 inputSessionID: inputSessionID,
                 start: start,
                 end: end,
-                viewerVideoSize: viewerVideoSize
+                viewerVideoSize: viewerVideoSize,
+                screenFormatDiagnostic: &screenFormatDiagnostic
+            )
+            return MacRemoteInputDiagnosedResult(
+                result: result,
+                screenFormatDiagnostic: screenFormatDiagnostic
             )
         }
     }
@@ -394,7 +534,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
         inputSessionID: UUID,
         start: MacRemoteNormalizedPoint,
         end: MacRemoteNormalizedPoint,
-        viewerVideoSize: MacRemoteInputVideoSize?
+        viewerVideoSize: MacRemoteInputVideoSize?,
+        screenFormatDiagnostic: inout MacRemoteInputScreenFormatDiagnostic?
     ) -> MacRemoteInputResult {
         // Any pointer action invalidates the prior keyboard grant, including a
         // malformed, stale, denied, or rate-limited drag.
@@ -413,6 +554,13 @@ public final class MacRemoteInputController: @unchecked Sendable {
             return .rejected(.invalidPoint)
         }
         guard let viewerVideoSize else {
+            screenFormatDiagnostic = makeScreenFormatDiagnostic(
+                reason: .viewerSizeMissing,
+                viewerVideoSize: nil,
+                frameGeometry: screenVideoFrameGeometry
+                    ?? candidateScreenVideoFrameGeometry,
+                viewerAspectRelativeDifference: nil
+            )
             return .rejected(.screenFormatChanging)
         }
         guard viewerVideoSize.isValid else {
@@ -426,9 +574,39 @@ public final class MacRemoteInputController: @unchecked Sendable {
             revokeState()
             return .rejected(.displayUnavailable)
         }
-        guard let frameGeometry = currentScreenVideoFrameGeometry(
-            compatibleWith: displayBounds
-        ), Self.viewerVideoSize(viewerVideoSize, matches: frameGeometry) else {
+        let frameGeometry: ScreenVideoFrameGeometry
+        switch currentScreenVideoFrameGeometryResolution(compatibleWith: displayBounds) {
+        case .unavailable:
+            screenFormatDiagnostic = makeScreenFormatDiagnostic(
+                reason: .frameGeometryUnavailableOrUnstable,
+                viewerVideoSize: viewerVideoSize,
+                frameGeometry: candidateScreenVideoFrameGeometry,
+                viewerAspectRelativeDifference: nil
+            )
+            return .rejected(.screenFormatChanging)
+        case .displayIncompatible(let geometry):
+            screenFormatDiagnostic = makeScreenFormatDiagnostic(
+                reason: .displayGeometryIncompatible,
+                viewerVideoSize: viewerVideoSize,
+                frameGeometry: geometry,
+                viewerAspectRelativeDifference: nil
+            )
+            return .rejected(.screenFormatChanging)
+        case .available(let geometry):
+            frameGeometry = geometry
+        }
+        let viewerAspectComparison = Self.viewerVideoAspectComparison(
+            viewerVideoSize,
+            frameGeometry: frameGeometry
+        )
+        guard viewerAspectComparison.matches else {
+            screenFormatDiagnostic = makeScreenFormatDiagnostic(
+                reason: .viewerAspectMismatch,
+                viewerVideoSize: viewerVideoSize,
+                frameGeometry: frameGeometry,
+                viewerAspectRelativeDifference:
+                    viewerAspectComparison.relativeDifference
+            )
             return .rejected(.screenFormatChanging)
         }
         guard let contentStart = mappedContentPoint(
@@ -646,10 +824,25 @@ public final class MacRemoteInputController: @unchecked Sendable {
         return activeSession
     }
 
-    /// Promotes a stable frame transform and proves it still describes the live display.
-    private func currentScreenVideoFrameGeometry(
+    private enum ScreenVideoFrameGeometryResolution {
+        case unavailable
+        case displayIncompatible(ScreenVideoFrameGeometry)
+        case available(ScreenVideoFrameGeometry)
+    }
+
+    private struct ViewerVideoAspectComparison {
+        let relativeDifference: Double
+        let tolerance: Double
+
+        var matches: Bool {
+            relativeDifference <= tolerance
+        }
+    }
+
+    /// Promotes a stable frame transform and classifies the exact geometry fence atomically.
+    private func currentScreenVideoFrameGeometryResolution(
         compatibleWith displayBounds: CGRect
-    ) -> ScreenVideoFrameGeometry? {
+    ) -> ScreenVideoFrameGeometryResolution {
         if screenVideoFrameGeometry == nil,
            let candidateScreenVideoFrameGeometry,
            let candidateScreenVideoFrameGeometrySince,
@@ -657,21 +850,22 @@ public final class MacRemoteInputController: @unchecked Sendable {
             >= Self.minimumFrameGeometryStability {
             screenVideoFrameGeometry = candidateScreenVideoFrameGeometry
         }
-        guard let screenVideoFrameGeometry,
-              screenVideoFrameGeometry.hasCompatibleAspectRatio(with: displayBounds) else {
-            return nil
+        guard let screenVideoFrameGeometry else {
+            return .unavailable
         }
-        return screenVideoFrameGeometry
+        guard screenVideoFrameGeometry.hasCompatibleAspectRatio(with: displayBounds) else {
+            return .displayIncompatible(screenVideoFrameGeometry)
+        }
+        return .available(screenVideoFrameGeometry)
     }
 
     /// Accepts WebRTC's bounded alignment/crop rounding while rejecting a delayed frame from a
     /// materially different display shape. Exact aspect equality is unsafe because adaptation
     /// can round each output edge independently.
-    private static func viewerVideoSize(
+    private static func viewerVideoAspectComparison(
         _ viewerVideoSize: MacRemoteInputVideoSize,
-        matches frameGeometry: ScreenVideoFrameGeometry
-    ) -> Bool {
-        guard viewerVideoSize.isValid else { return false }
+        frameGeometry: ScreenVideoFrameGeometry
+    ) -> ViewerVideoAspectComparison {
         let viewerAspect = Double(viewerVideoSize.width) / Double(viewerVideoSize.height)
         let frameAspect = Double(frameGeometry.surfaceWidth)
             / Double(frameGeometry.surfaceHeight)
@@ -685,7 +879,34 @@ public final class MacRemoteInputController: @unchecked Sendable {
             2 / Double(min(viewerVideoSize.width, viewerVideoSize.height))
                 + 2 / Double(min(frameGeometry.surfaceWidth, frameGeometry.surfaceHeight))
         )
-        return relativeDifference <= alignmentTolerance
+        return ViewerVideoAspectComparison(
+            relativeDifference: relativeDifference,
+            tolerance: alignmentTolerance
+        )
+    }
+
+    /// Snapshots only bounded structural state while the controller lock still owns the result.
+    private func makeScreenFormatDiagnostic(
+        reason: MacRemoteInputScreenFormatReason,
+        viewerVideoSize: MacRemoteInputVideoSize?,
+        frameGeometry: ScreenVideoFrameGeometry?,
+        viewerAspectRelativeDifference: Double?
+    ) -> MacRemoteInputScreenFormatDiagnostic {
+        let candidateAgeMilliseconds = candidateScreenVideoFrameGeometrySince.map { since in
+            let milliseconds = max(0, (clock.now() - since) * 1_000)
+            // Keep telemetry bounded even if a custom or suspended clock jumps far forward.
+            return UInt64(min(milliseconds, 86_400_000).rounded(.down))
+        }
+        return MacRemoteInputScreenFormatDiagnostic(
+            reason: reason,
+            viewerVideoSize: viewerVideoSize,
+            frameSurfaceWidth: frameGeometry?.surfaceWidth,
+            frameSurfaceHeight: frameGeometry?.surfaceHeight,
+            stableGeometryAvailable: screenVideoFrameGeometry != nil,
+            candidateGeometryAvailable: candidateScreenVideoFrameGeometry != nil,
+            candidateAgeMilliseconds: candidateAgeMilliseconds,
+            viewerAspectRelativeDifference: viewerAspectRelativeDifference
+        )
     }
 
     /// Removes ScreenCaptureKit's inner content inset before mapping into live display bounds.

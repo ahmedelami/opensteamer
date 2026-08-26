@@ -1,13 +1,12 @@
 import CoreGraphics
 import Foundation
 
-/// Reports completed mode changes for one display through Core Graphics' authoritative
-/// reconfiguration callback.
+/// Reports the begin and settled boundaries of one display's Core Graphics reconfiguration.
 ///
 /// Registration happens during initialization, but delivery remains closed until `activate()`.
 /// Capture startup can therefore install the callback before starting ScreenCaptureKit, validate
-/// that the display mode stayed stable, and only then arm live mode-change delivery. `stop()` is
-/// permanent and idempotent after successful callback removal.
+/// that the display mode stayed stable, and only then arm live reconfiguration delivery. `stop()`
+/// is permanent and idempotent after successful callback removal.
 public final class ScreenVideoDisplayModeObserver: @unchecked Sendable {
     public typealias Observer = @Sendable () -> Void
 
@@ -20,11 +19,13 @@ public final class ScreenVideoDisplayModeObserver: @unchecked Sendable {
     /// Registers an initially inactive callback for `displayID`.
     public convenience init(
         displayID: CGDirectDisplayID,
+        willReconfigure: @escaping Observer = {},
         observer: @escaping Observer
     ) throws {
         try self.init(
             displayID: displayID,
             operations: SystemScreenVideoDisplayModeObservingOperations(),
+            willReconfigure: willReconfigure,
             observer: observer
         )
     }
@@ -32,11 +33,13 @@ public final class ScreenVideoDisplayModeObserver: @unchecked Sendable {
     init(
         displayID: CGDirectDisplayID,
         operations: any ScreenVideoDisplayModeObservingOperations,
+        willReconfigure: @escaping Observer = {},
         observer: @escaping Observer
     ) throws {
         self.operations = operations
         callbackGate = ScreenVideoDisplayModeCallbackGate(
             displayID: displayID,
+            willReconfigure: willReconfigure,
             observer: observer
         )
 
@@ -71,7 +74,7 @@ public final class ScreenVideoDisplayModeObserver: @unchecked Sendable {
     }
 
     /// Commits live callback delivery after the owner has installed every downstream format gate.
-    /// A completed mode change admitted between `activate()` and this call rejects the commit.
+    /// A display configuration admitted between `activate()` and this call rejects the commit.
     @discardableResult
     public func commitActivation() -> Bool {
         registrationLock.withLock {
@@ -157,7 +160,13 @@ private struct SystemScreenVideoDisplayModeObservingOperations:
 
 /// Lock-serialized activation, event classification, and notification for the C callback context.
 private final class ScreenVideoDisplayModeCallbackGate: @unchecked Sendable {
+    private enum Delivery {
+        case willReconfigure
+        case didSettle
+    }
+
     private let displayID: CGDirectDisplayID
+    private let willReconfigure: ScreenVideoDisplayModeObserver.Observer
     private let observer: ScreenVideoDisplayModeObserver.Observer
     private let lock = NSLock()
     private enum ActivationPhase {
@@ -169,14 +178,17 @@ private final class ScreenVideoDisplayModeCallbackGate: @unchecked Sendable {
     private var activationPhase = ActivationPhase.inactive
     private var isStopped = false
     private var configurationBeganBeforeCommit = false
-    private var modeChangedBeforeCommit = false
+    private var configurationSettledBeforeCommit = false
+    private var activeConfigurationIsInProgress = false
     private var deliveredForCurrentConfiguration = false
 
     init(
         displayID: CGDirectDisplayID,
+        willReconfigure: @escaping ScreenVideoDisplayModeObserver.Observer,
         observer: @escaping ScreenVideoDisplayModeObserver.Observer
     ) {
         self.displayID = displayID
+        self.willReconfigure = willReconfigure
         self.observer = observer
     }
 
@@ -184,7 +196,7 @@ private final class ScreenVideoDisplayModeCallbackGate: @unchecked Sendable {
         lock.withLock {
             guard !isStopped,
                   !configurationBeganBeforeCommit,
-                  !modeChangedBeforeCommit else {
+                  !configurationSettledBeforeCommit else {
                 return false
             }
             if activationPhase == .inactive {
@@ -198,7 +210,7 @@ private final class ScreenVideoDisplayModeCallbackGate: @unchecked Sendable {
         lock.withLock {
             guard !isStopped,
                   !configurationBeganBeforeCommit,
-                  !modeChangedBeforeCommit else {
+                  !configurationSettledBeforeCommit else {
                 return false
             }
             switch activationPhase {
@@ -220,41 +232,53 @@ private final class ScreenVideoDisplayModeCallbackGate: @unchecked Sendable {
         }
     }
 
-    /// Emits once for the target display's post-configuration set-mode callback.
+    /// Emits once before and once after each target-display configuration while active.
     ///
-    /// Apple invokes the registration before and after each display reconfiguration. The begin
-    /// callback resets transaction deduplication but never emits, even if it also carries set-mode.
+    /// Apple's begin callback cannot say what the transaction will change, so it closes consumers
+    /// immediately. The first target post callback settles that fence after Core Graphics state is
+    /// current, regardless of which post-configuration flags it carries.
     func consume(
         displayID eventDisplayID: CGDirectDisplayID,
         flags: CGDisplayChangeSummaryFlags
     ) {
-        let shouldNotify = lock.withLock { () -> Bool in
-            guard eventDisplayID == displayID else { return false }
+        let delivery = lock.withLock { () -> Delivery? in
+            guard eventDisplayID == displayID else { return nil }
             if flags.contains(.beginConfigurationFlag) {
                 deliveredForCurrentConfiguration = false
                 if activationPhase == .inactive || activationPhase == .provisional {
                     configurationBeganBeforeCommit = true
                 }
-                return false
+                guard activationPhase == .active,
+                      !isStopped,
+                      !activeConfigurationIsInProgress else {
+                    return nil
+                }
+                activeConfigurationIsInProgress = true
+                return .willReconfigure
             }
             guard !isStopped,
-                  flags.contains(.setModeFlag),
                   !deliveredForCurrentConfiguration else {
-                return false
+                return nil
             }
             deliveredForCurrentConfiguration = true
+            activeConfigurationIsInProgress = false
             switch activationPhase {
             case .inactive, .provisional:
-                modeChangedBeforeCommit = true
-                return false
+                configurationSettledBeforeCommit = true
+                return nil
             case .active:
-                return true
+                return .didSettle
             case .stopped:
-                return false
+                return nil
             }
         }
-        if shouldNotify {
+        switch delivery {
+        case .willReconfigure:
+            willReconfigure()
+        case .didSettle:
             observer()
+        case nil:
+            break
         }
     }
 }

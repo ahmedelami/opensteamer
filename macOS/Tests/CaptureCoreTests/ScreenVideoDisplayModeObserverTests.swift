@@ -4,34 +4,81 @@ import XCTest
 @testable import CaptureCore
 
 final class ScreenVideoDisplayModeObserverTests: XCTestCase {
-    func testOnlyActiveTargetPostConfigurationModeChangeIsDelivered() throws {
+    func testOnlyActiveTargetConfigurationEventsAreDelivered() throws {
         let operations = ScreenVideoDisplayModeObservingOperationsFake()
-        let observations = LockedDisplayModeObservationCount()
+        let willReconfigurations = LockedDisplayModeObservationCount()
+        let settledConfigurations = LockedDisplayModeObservationCount()
         let targetDisplayID: CGDirectDisplayID = 73
         let observer = try ScreenVideoDisplayModeObserver(
             displayID: targetDisplayID,
-            operations: operations
+            operations: operations,
+            willReconfigure: {
+                willReconfigurations.increment()
+            }
         ) {
-            observations.increment()
+            settledConfigurations.increment()
         }
 
         XCTAssertEqual(operations.registrationCount, 1)
-        XCTAssertEqual(observations.value, 0, "Registration must begin inactive")
+        XCTAssertEqual(willReconfigurations.value, 0, "Registration must begin inactive")
+        XCTAssertEqual(settledConfigurations.value, 0, "Registration must begin inactive")
 
         XCTAssertTrue(observer.activate())
         XCTAssertTrue(observer.activate(), "Activation must be idempotent")
         XCTAssertTrue(observer.commitActivation())
         XCTAssertTrue(observer.commitActivation(), "Commit must be idempotent")
+        operations.emit(displayID: 99, flags: [.beginConfigurationFlag])
         operations.emit(displayID: 99, flags: [.setModeFlag])
-        operations.emit(displayID: targetDisplayID, flags: [.movedFlag])
+        XCTAssertEqual(willReconfigurations.value, 0)
+        XCTAssertEqual(settledConfigurations.value, 0)
         operations.emit(
             displayID: targetDisplayID,
             flags: [.beginConfigurationFlag, .setModeFlag]
         )
-        XCTAssertEqual(observations.value, 0)
+        operations.emit(
+            displayID: targetDisplayID,
+            flags: [.beginConfigurationFlag]
+        )
+        XCTAssertEqual(willReconfigurations.value, 1)
+        XCTAssertEqual(settledConfigurations.value, 0)
 
+        // The first target post callback settles the transaction even without set-mode.
+        operations.emit(displayID: targetDisplayID, flags: [.movedFlag])
         operations.emit(displayID: targetDisplayID, flags: [.setModeFlag])
-        XCTAssertEqual(observations.value, 1)
+        XCTAssertEqual(willReconfigurations.value, 1)
+        XCTAssertEqual(settledConfigurations.value, 1)
+    }
+
+    func testActiveBeginAndPostCallbacksAreEachDeduplicatedPerConfiguration() throws {
+        let operations = ScreenVideoDisplayModeObservingOperationsFake()
+        let willReconfigurations = LockedDisplayModeObservationCount()
+        let settledConfigurations = LockedDisplayModeObservationCount()
+        let observer = try ScreenVideoDisplayModeObserver(
+            displayID: 73,
+            operations: operations,
+            willReconfigure: {
+                willReconfigurations.increment()
+            }
+        ) {
+            settledConfigurations.increment()
+        }
+        XCTAssertTrue(observer.activate())
+        XCTAssertTrue(observer.commitActivation())
+
+        operations.emit(displayID: 73, flags: [.beginConfigurationFlag])
+        operations.emit(displayID: 73, flags: [.beginConfigurationFlag])
+        XCTAssertEqual(willReconfigurations.value, 1)
+        XCTAssertEqual(settledConfigurations.value, 0)
+
+        operations.emit(displayID: 73, flags: [])
+        operations.emit(displayID: 73, flags: [.desktopShapeChangedFlag])
+        XCTAssertEqual(willReconfigurations.value, 1)
+        XCTAssertEqual(settledConfigurations.value, 1)
+
+        operations.emit(displayID: 73, flags: [.beginConfigurationFlag])
+        operations.emit(displayID: 73, flags: [.setModeFlag])
+        XCTAssertEqual(willReconfigurations.value, 2)
+        XCTAssertEqual(settledConfigurations.value, 2)
     }
 
     func testModeChangeBeforeActivationRejectsTheStartupFence() throws {
@@ -79,10 +126,14 @@ final class ScreenVideoDisplayModeObserverTests: XCTestCase {
 
     func testActivationDuringAnInProgressConfigurationIsRejected() throws {
         let operations = ScreenVideoDisplayModeObservingOperationsFake()
+        let willReconfigurations = LockedDisplayModeObservationCount()
         let observations = LockedDisplayModeObservationCount()
         let observer = try ScreenVideoDisplayModeObserver(
             displayID: 73,
-            operations: operations
+            operations: operations,
+            willReconfigure: {
+                willReconfigurations.increment()
+            }
         ) {
             observations.increment()
         }
@@ -92,6 +143,7 @@ final class ScreenVideoDisplayModeObserverTests: XCTestCase {
         XCTAssertFalse(observer.activate())
         operations.emit(displayID: 73, flags: [.setModeFlag])
 
+        XCTAssertEqual(willReconfigurations.value, 0)
         XCTAssertEqual(observations.value, 0)
     }
 
@@ -129,10 +181,14 @@ final class ScreenVideoDisplayModeObserverTests: XCTestCase {
 
     func testStopClosesDeliveryRemovesExactRegistrationAndRejectsReactivation() throws {
         let operations = ScreenVideoDisplayModeObservingOperationsFake()
+        let willReconfigurations = LockedDisplayModeObservationCount()
         let observations = LockedDisplayModeObservationCount()
         let observer = try ScreenVideoDisplayModeObserver(
             displayID: 73,
-            operations: operations
+            operations: operations,
+            willReconfigure: {
+                willReconfigurations.increment()
+            }
         ) {
             observations.increment()
         }
@@ -147,6 +203,7 @@ final class ScreenVideoDisplayModeObserverTests: XCTestCase {
 
         operations.emit(displayID: 73, flags: [.beginConfigurationFlag])
         operations.emit(displayID: 73, flags: [.setModeFlag])
+        XCTAssertEqual(willReconfigurations.value, 0)
         XCTAssertEqual(observations.value, 0)
     }
 

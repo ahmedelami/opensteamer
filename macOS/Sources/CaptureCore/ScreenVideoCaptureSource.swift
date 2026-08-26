@@ -32,7 +32,16 @@ public protocol ScreenVideoSampleConsumer: AnyObject, Sendable {
         _ sampleBuffer: CMSampleBuffer,
         frameGeometry: ScreenVideoFrameGeometry?
     )
-    /// Reports an authoritative post-configuration mode change for this source's display.
+    /// Accepts the same sample while preserving absent-versus-invalid attachment semantics.
+    func consumeScreenVideoSample(
+        _ sampleBuffer: CMSampleBuffer,
+        frameGeometryObservation: ScreenVideoFrameGeometryObservation
+    )
+    /// Reports that Core Graphics is about to reconfigure this source's display.
+    func screenVideoCaptureSourceDisplayConfigurationWillChange(
+        _ source: ScreenVideoCaptureSource
+    )
+    /// Reports that Core Graphics has settled a display reconfiguration for this source.
     func screenVideoCaptureSourceDisplayModeDidChange(
         _ source: ScreenVideoCaptureSource
     )
@@ -46,12 +55,26 @@ public protocol ScreenVideoSampleConsumer: AnyObject, Sendable {
 public extension ScreenVideoSampleConsumer {
     func consumeScreenVideoSample(
         _ sampleBuffer: CMSampleBuffer,
+        frameGeometryObservation: ScreenVideoFrameGeometryObservation
+    ) {
+        consumeScreenVideoSample(
+            sampleBuffer,
+            frameGeometry: frameGeometryObservation.geometry
+        )
+    }
+
+    func consumeScreenVideoSample(
+        _ sampleBuffer: CMSampleBuffer,
         frameGeometry _: ScreenVideoFrameGeometry?
     ) {
         consumeScreenVideoSample(sampleBuffer)
     }
 
     func screenVideoCaptureSourceDisplayModeDidChange(
+        _: ScreenVideoCaptureSource
+    ) {}
+
+    func screenVideoCaptureSourceDisplayConfigurationWillChange(
         _: ScreenVideoCaptureSource
     ) {}
 }
@@ -260,7 +283,10 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
                 }
             )
             let displayModeObserver = try ScreenVideoDisplayModeObserver(
-                displayID: display.displayID
+                displayID: display.displayID,
+                willReconfigure: { [weak self] in
+                    self?.handleDisplayConfigurationWillChange()
+                }
             ) { [weak self] in
                 self?.handleDisplayModeChange()
             }
@@ -617,7 +643,26 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
         )
     }
 
-    /// Delivers only a mode event belonging to this source's current, non-stopping stream.
+    /// Delivers only a pre-configuration event belonging to the current open source generation.
+    private func handleDisplayConfigurationWillChange() {
+        let shouldNotify = stateLock.withLock {
+            guard stream != nil,
+                  displayModeObserver != nil,
+                  !isStopping,
+                  !cancellationRequested else {
+                return false
+            }
+            if sampleDeliveryPhase == .opening {
+                displayModeChangedWhileOpeningDelivery = true
+                return false
+            }
+            return sampleDeliveryPhase == .open
+        }
+        guard shouldNotify else { return }
+        consumer.screenVideoCaptureSourceDisplayConfigurationWillChange(self)
+    }
+
+    /// Delivers only a settled event belonging to this source's current, non-stopping stream.
     private func handleDisplayModeChange() {
         let shouldNotify = stateLock.withLock {
             guard stream != nil,
@@ -819,7 +864,7 @@ enum ScreenVideoFrameStatusPolicy {
 final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
     private struct PendingFrame {
         let sampleBuffer: CMSampleBuffer
-        let geometry: ScreenVideoFrameGeometry?
+        let geometryObservation: ScreenVideoFrameGeometryObservation
     }
 
     private let consumer: ScreenVideoSampleConsumer
@@ -852,7 +897,7 @@ final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
                 self.pendingFrame = nil
                 consumer.consumeScreenVideoSample(
                     pendingFrame.sampleBuffer,
-                    frameGeometry: pendingFrame.geometry
+                    frameGeometryObservation: pendingFrame.geometryObservation
                 )
                 return true
             }
@@ -883,7 +928,7 @@ final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
               ScreenVideoFrameStatusPolicy.admitsImageFrame(status) else {
             return
         }
-        let geometry = Self.frameGeometry(
+        let geometryObservation = Self.frameGeometryObservation(
             pixelBuffer: pixelBuffer,
             attachments: attachments[0]
         )
@@ -892,12 +937,12 @@ final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
             case .storeLatest:
                 pendingFrame = PendingFrame(
                     sampleBuffer: sampleBuffer,
-                    geometry: geometry
+                    geometryObservation: geometryObservation
                 )
             case .forward:
                 consumer.consumeScreenVideoSample(
                     sampleBuffer,
-                    frameGeometry: geometry
+                    frameGeometryObservation: geometryObservation
                 )
             case .drop:
                 break
@@ -905,29 +950,87 @@ final class ScreenVideoStreamOutput: NSObject, SCStreamOutput {
         }
     }
 
-    /// Parses Apple's per-frame geometry without trusting missing, malformed, or out-of-surface
-    /// attachment values. A nil result keeps media flowing but forces remote input to fail closed.
-    private static func frameGeometry(
+    /// Parses Apple's optional geometry while distinguishing absence from unsafe present values.
+    private static func frameGeometryObservation(
         pixelBuffer: CVPixelBuffer,
         attachments: [SCStreamFrameInfo: Any]
-    ) -> ScreenVideoFrameGeometry? {
-        guard let contentRectDictionary = attachments[.contentRect] as? NSDictionary,
-              let contentRect = CGRect(
-                  dictionaryRepresentation: contentRectDictionary as CFDictionary
-              ),
-              let contentScaleNumber = attachments[.contentScale] as? NSNumber,
-              let scaleFactorNumber = attachments[.scaleFactor] as? NSNumber else {
-            return nil
+    ) -> ScreenVideoFrameGeometryObservation {
+        let contentRect: CGRect?
+        if let contentRectValue = attachments[.contentRect] {
+            guard let contentRectDictionary = contentRectValue as? NSDictionary,
+                  let parsedContentRect = CGRect(
+                      dictionaryRepresentation: contentRectDictionary as CFDictionary
+                  ),
+                  parsedContentRect.origin.x.isFinite,
+                  parsedContentRect.origin.y.isFinite,
+                  parsedContentRect.width.isFinite,
+                  parsedContentRect.height.isFinite,
+                  parsedContentRect.width > 0,
+                  parsedContentRect.height > 0 else {
+                return .invalid
+            }
+            contentRect = parsedContentRect
+        } else {
+            contentRect = nil
         }
-        let contentScale = CGFloat(truncating: contentScaleNumber)
-        let scaleFactor = CGFloat(truncating: scaleFactorNumber)
-        return ScreenVideoFrameGeometry(
+
+        let contentScale: CGFloat?
+        if let contentScaleValue = attachments[.contentScale] {
+            guard let contentScaleNumber = contentScaleValue as? NSNumber else {
+                return .invalid
+            }
+            let parsedContentScale = CGFloat(truncating: contentScaleNumber)
+            guard parsedContentScale.isFinite, parsedContentScale > 0 else {
+                return .invalid
+            }
+            contentScale = parsedContentScale
+        } else {
+            contentScale = nil
+        }
+
+        let scaleFactor: CGFloat?
+        if let scaleFactorValue = attachments[.scaleFactor] {
+            guard let scaleFactorNumber = scaleFactorValue as? NSNumber else {
+                return .invalid
+            }
+            let parsedScaleFactor = CGFloat(truncating: scaleFactorNumber)
+            guard parsedScaleFactor.isFinite,
+                  (1 ... 4).contains(parsedScaleFactor) else {
+                return .invalid
+            }
+            scaleFactor = parsedScaleFactor
+        } else {
+            scaleFactor = nil
+        }
+
+        if let contentRect {
+            // `contentScale` does not affect the input rectangle, and one is the minimum supported
+            // scale factor. Even with another attachment missing, reject any present rectangle
+            // that the available evidence already proves cannot describe this pixel surface.
+            guard ScreenVideoFrameGeometry(
+                surfaceWidth: CVPixelBufferGetWidth(pixelBuffer),
+                surfaceHeight: CVPixelBufferGetHeight(pixelBuffer),
+                contentRect: contentRect,
+                contentScale: contentScale ?? 1,
+                scaleFactor: scaleFactor ?? 1
+            ) != nil else {
+                return .invalid
+            }
+        }
+
+        guard let contentRect, let contentScale, let scaleFactor else {
+            return .absent
+        }
+        guard let geometry = ScreenVideoFrameGeometry(
             surfaceWidth: CVPixelBufferGetWidth(pixelBuffer),
             surfaceHeight: CVPixelBufferGetHeight(pixelBuffer),
             contentRect: contentRect,
             contentScale: contentScale,
             scaleFactor: scaleFactor
-        )
+        ) else {
+            return .invalid
+        }
+        return .valid(geometry)
     }
 }
 

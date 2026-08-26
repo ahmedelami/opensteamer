@@ -170,6 +170,22 @@ public struct ScreenVideoFrameGeometry: Equatable, Sendable {
     }
 }
 
+/// Distinguishes trustworthy geometry, benign attachment absence, and contradictory metadata.
+///
+/// ScreenCaptureKit's geometry attachments are optional. A settled frame that omits them supplies
+/// no new evidence and may preserve an already-proven transform; a present but malformed value is
+/// unsafe evidence and must instead enter bounded fail-closed recovery.
+public enum ScreenVideoFrameGeometryObservation: Equatable, Sendable {
+    case valid(ScreenVideoFrameGeometry)
+    case absent
+    case invalid
+
+    public var geometry: ScreenVideoFrameGeometry? {
+        guard case .valid(let geometry) = self else { return nil }
+        return geometry
+    }
+}
+
 /// Debounces ScreenCaptureKit's per-frame geometry before a service rebuilds its native stream.
 /// Changed frames are withheld immediately, but one transient metadata sample cannot churn capture.
 public struct ScreenVideoFormatRenegotiationDetector: Sendable {
@@ -189,16 +205,42 @@ public struct ScreenVideoFormatRenegotiationDetector: Sendable {
     public init() {}
 
     public mutating func observe(
-        _ geometry: ScreenVideoFrameGeometry?
+        _ observation: ScreenVideoFrameGeometryObservation
     ) -> Action {
         guard !requestIssued else { return .dropFrame }
-        guard let geometry else {
+        switch observation {
+        case .absent:
             // A missing attachment after a changed frame cannot prove that the old capture
             // format became valid again. Keep the candidate count and withhold the uncertain
             // frame until a concrete full-frame geometry clears it or renegotiation completes.
             return consecutiveChangedFrames > 0 ? .dropFrame : .forwardFrame
-        }
 
+        case .invalid:
+            // Present-but-invalid metadata is contradictory evidence, not ordinary absence.
+            // Withhold it immediately and use the same bounded frame/deadline recovery as a
+            // concrete changed format so an invalid stream cannot silently run forever.
+            consecutiveChangedFrames += 1
+            guard consecutiveChangedFrames >= Self.requiredConsecutiveChangedFrames else {
+                return .dropFrame
+            }
+            requestIssued = true
+            return .renegotiate
+
+        case .valid(let geometry):
+            return observeValidGeometry(geometry)
+        }
+    }
+
+    /// Compatibility entry point for consumers that do not distinguish absent from invalid.
+    public mutating func observe(
+        _ geometry: ScreenVideoFrameGeometry?
+    ) -> Action {
+        observe(geometry.map(ScreenVideoFrameGeometryObservation.valid) ?? .absent)
+    }
+
+    private mutating func observeValidGeometry(
+        _ geometry: ScreenVideoFrameGeometry
+    ) -> Action {
         if baselineGeometry == nil,
            !geometry.requiresCaptureFormatRenegotiation {
             baselineGeometry = geometry
