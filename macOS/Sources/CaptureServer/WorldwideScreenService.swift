@@ -5,6 +5,53 @@ import Foundation
 import RemoteSessionCore
 import WebRTCTransport
 
+enum WorldwideRemoteInputFormatOrigin: Equatable, Sendable {
+    case captureGateUnavailable(WorldwideScreenCaptureGateDiagnostic?)
+    case controller(MacRemoteInputScreenFormatDiagnostic)
+    case controllerUnknown
+}
+
+enum WorldwideScreenFrameMetadataDiagnosticState: String, Equatable, Sendable {
+    case none
+    case valid
+    case absent
+    case invalid
+}
+
+struct WorldwideScreenCaptureGateDiagnostic: Equatable, Sendable {
+    let phase: String
+    let formatIsProven: Bool
+    let displayConfigurationInProgress: Bool
+    let frameMetadataState: WorldwideScreenFrameMetadataDiagnosticState
+    let frameSurfaceWidth: Int?
+    let frameSurfaceHeight: Int?
+    let retainedProvenGeometry: Bool
+}
+
+struct WorldwideRemoteInputInjectionOutcome: Equatable, Sendable {
+    let result: MacRemoteInputResult
+    let formatOrigin: WorldwideRemoteInputFormatOrigin?
+
+    init(
+        _ result: MacRemoteInputResult,
+        formatOrigin: WorldwideRemoteInputFormatOrigin? = nil
+    ) {
+        self.result = result
+        self.formatOrigin = formatOrigin
+    }
+
+    init(_ diagnosedResult: MacRemoteInputDiagnosedResult) {
+        result = diagnosedResult.result
+        if let diagnostic = diagnosedResult.screenFormatDiagnostic {
+            formatOrigin = .controller(diagnostic)
+        } else if case .rejected(.screenFormatChanging) = diagnosedResult.result {
+            formatOrigin = .controllerUnknown
+        } else {
+            formatOrigin = nil
+        }
+    }
+}
+
 /// Owns one consume-once rendezvous and its Mac-side WebRTC screen session.
 ///
 /// The invitation authenticates and encrypts signaling. Reachability still comes from
@@ -29,6 +76,67 @@ actor WorldwideScreenService {
         processIdentifier: Int32
     ) -> String {
         "Worldwide WebRTC peer state: \(state) pid=\(processIdentifier)"
+    }
+
+    /// Adds only structural state when a pointer action fails the screen-format fence.
+    /// Coordinates, display names, session identifiers, and content remain excluded.
+    nonisolated static func remoteInputFormatDiagnostic(
+        viewerVideoSize: WebRTCInputVideoSize?,
+        outcome: WorldwideRemoteInputInjectionOutcome
+    ) -> String? {
+        guard case .rejected(.screenFormatChanging) = outcome.result else {
+            return nil
+        }
+        let viewerSize = viewerVideoSize.map {
+            "\($0.width)x\($0.height)"
+        } ?? "missing"
+        switch outcome.formatOrigin {
+        case .captureGateUnavailable(let diagnostic):
+            let frameSurface = if let width = diagnostic?.frameSurfaceWidth,
+                                  let height = diagnostic?.frameSurfaceHeight {
+                "\(width)x\(height)"
+            } else {
+                "missing"
+            }
+            let capturePhase = diagnostic?.phase ?? "missing"
+            let formatProven = diagnostic?.formatIsProven.description ?? "missing"
+            let configurationInProgress =
+                diagnostic?.displayConfigurationInProgress.description ?? "missing"
+            let metadataState = diagnostic?.frameMetadataState.rawValue ?? "missing"
+            let retainedGeometry =
+                diagnostic?.retainedProvenGeometry.description ?? "missing"
+            return "formatOrigin=captureGateUnavailable " +
+                "viewerVideoSize=\(viewerSize) " +
+                "capturePhase=\(capturePhase) " +
+                "formatProven=\(formatProven) " +
+                "displayConfigurationInProgress=\(configurationInProgress) " +
+                "frameMetadata=\(metadataState) " +
+                "frameSurface=\(frameSurface) " +
+                "retainedProvenGeometry=\(retainedGeometry)"
+
+        case .controller(let diagnostic):
+            let frameSurface = if let width = diagnostic.frameSurfaceWidth,
+                                  let height = diagnostic.frameSurfaceHeight {
+                "\(width)x\(height)"
+            } else {
+                "missing"
+            }
+            let candidateAge = diagnostic.candidateAgeMilliseconds.map(String.init)
+                ?? "missing"
+            let aspectDeltaPPM = diagnostic.viewerAspectRelativeDifference.map {
+                String(Int((min(max($0, 0), 1) * 1_000_000).rounded()))
+            } ?? "missing"
+            return "formatOrigin=controller.\(diagnostic.reason.rawValue) " +
+                "viewerVideoSize=\(viewerSize) " +
+                "frameSurface=\(frameSurface) " +
+                "stableGeometry=\(diagnostic.stableGeometryAvailable) " +
+                "candidateGeometry=\(diagnostic.candidateGeometryAvailable) " +
+                "candidateAgeMs=\(candidateAge) " +
+                "viewerAspectDeltaPPM=\(aspectDeltaPPM)"
+
+        case .controllerUnknown, .none:
+            return "formatOrigin=controller.unknown viewerVideoSize=\(viewerSize)"
+        }
     }
 
     /// Binds the physical default-input boundary to the exact host process and peer.
@@ -1577,16 +1685,21 @@ actor WorldwideScreenService {
         // Keep both revocable gates held through controller validation and OS event injection.
         // The lock order is always input then capture. The first suspension is the feedback send
         // below, after the irreversible operation has either completed or been rejected.
-        let inputResult = injectRemoteInputIfAuthorized(
+        let inputOutcome = injectRemoteInputIfAuthorized(
             request,
             authorization: authorization
         )
+        let formatDiagnostic = Self.remoteInputFormatDiagnostic(
+            viewerVideoSize: request.viewerVideoSize,
+            outcome: inputOutcome
+        )
         logger.debug(
             "Worldwide remote input \(diagnosticName(for: request.action)): " +
-            diagnosticName(for: inputResult)
+            diagnosticName(for: inputOutcome.result) +
+            (formatDiagnostic.map { " \($0)" } ?? "")
         )
 
-        let feedback = transportFeedback(for: inputResult)
+        let feedback = transportFeedback(for: inputOutcome.result)
         if feedback.revokesSession {
             revokeRemoteInputAuthorization()
         }
@@ -1611,18 +1724,18 @@ actor WorldwideScreenService {
     private func injectRemoteInputIfAuthorized(
         _ request: WebRTCInputRequest,
         authorization: WebRTCInputAuthorization
-    ) -> MacRemoteInputResult {
+    ) -> WorldwideRemoteInputInjectionOutcome {
         guard let capability = activeInputCapability,
               let expectedInputAuthorization = activeInputAuthorization,
               expectedInputAuthorization === authorization,
               capability.screenRequestID == request.screenRequestID,
               capability.inputSessionID == request.inputSessionID,
               transportAllowsCapture else {
-            return .rejected(.staleSession)
+            return WorldwideRemoteInputInjectionOutcome(.rejected(.staleSession))
         }
         if case .primaryDrag = request.action,
            !capability.supportsPrimaryDrag {
-            return .rejected(.staleSession)
+            return WorldwideRemoteInputInjectionOutcome(.rejected(.staleSession))
         }
         guard
               captureDisplayID != nil,
@@ -1637,7 +1750,8 @@ actor WorldwideScreenService {
         }
 
         do {
-            let result: MacRemoteInputResult? = try authorization.withValidAuthorization {
+            let result: WorldwideRemoteInputInjectionOutcome? =
+                try authorization.withValidAuthorization {
                 try expectedCaptureAuthorization.withValidAuthorization {
                     try expectedForwardingAuthorization.withValidAuthorization {
                         guard activeInputAuthorization === authorization,
@@ -1663,7 +1777,7 @@ actor WorldwideScreenService {
             guard authorization.isValid,
                   activeInputAuthorization === authorization,
                   activeInputCapability == capability else {
-                return .rejected(.staleSession)
+                return WorldwideRemoteInputInjectionOutcome(.rejected(.staleSession))
             }
             return remoteInputCaptureUnavailableResult()
         }
@@ -1671,60 +1785,76 @@ actor WorldwideScreenService {
 
     /// A live, actor-owned display rebuild is a dropped input action, not a stale Show session.
     /// Keeping the input capability armed lets the next gesture use the replacement frame.
-    private func remoteInputCaptureUnavailableResult() -> MacRemoteInputResult {
-        .rejected(
-            screenCaptureTransitionIsOwned
-                ? .screenFormatChanging
-                : .staleSession
+    private func remoteInputCaptureUnavailableResult() -> WorldwideRemoteInputInjectionOutcome {
+        guard screenCaptureTransitionIsOwned else {
+            return WorldwideRemoteInputInjectionOutcome(.rejected(.staleSession))
+        }
+        return WorldwideRemoteInputInjectionOutcome(
+            .rejected(.screenFormatChanging),
+            formatOrigin: .captureGateUnavailable(
+                captureSink?.remoteInputFormatDiagnosticSnapshot()
+            )
         )
     }
 
     /// Maps validated wire actions onto the narrow macOS input controller surface.
-    private func injectRemoteInput(_ request: WebRTCInputRequest) -> MacRemoteInputResult {
+    private func injectRemoteInput(
+        _ request: WebRTCInputRequest
+    ) -> WorldwideRemoteInputInjectionOutcome {
         switch request.action {
         case .tap(let point):
-            remoteInputController.handleTap(
-                screenRequestID: request.screenRequestID,
-                inputSessionID: request.inputSessionID,
-                normalizedPoint: .init(x: point.x, y: point.y),
-                viewerVideoSize: request.viewerVideoSize.map {
-                    .init(width: $0.width, height: $0.height)
-                }
+            WorldwideRemoteInputInjectionOutcome(
+                remoteInputController.handleTapWithDiagnostics(
+                    screenRequestID: request.screenRequestID,
+                    inputSessionID: request.inputSessionID,
+                    normalizedPoint: .init(x: point.x, y: point.y),
+                    viewerVideoSize: request.viewerVideoSize.map {
+                        .init(width: $0.width, height: $0.height)
+                    }
+                )
             )
 
         case .primaryDrag(let start, let end):
-            remoteInputController.handlePrimaryDrag(
-                screenRequestID: request.screenRequestID,
-                inputSessionID: request.inputSessionID,
-                start: .init(x: start.x, y: start.y),
-                end: .init(x: end.x, y: end.y),
-                viewerVideoSize: request.viewerVideoSize.map {
-                    .init(width: $0.width, height: $0.height)
-                }
+            WorldwideRemoteInputInjectionOutcome(
+                remoteInputController.handlePrimaryDragWithDiagnostics(
+                    screenRequestID: request.screenRequestID,
+                    inputSessionID: request.inputSessionID,
+                    start: .init(x: start.x, y: start.y),
+                    end: .init(x: end.x, y: end.y),
+                    viewerVideoSize: request.viewerVideoSize.map {
+                        .init(width: $0.width, height: $0.height)
+                    }
+                )
             )
 
         case .insertText(let text, let focusGeneration):
-            remoteInputController.insertText(
-                screenRequestID: request.screenRequestID,
-                inputSessionID: request.inputSessionID,
-                focusGeneration: focusGeneration,
-                text: text
+            WorldwideRemoteInputInjectionOutcome(
+                remoteInputController.insertText(
+                    screenRequestID: request.screenRequestID,
+                    inputSessionID: request.inputSessionID,
+                    focusGeneration: focusGeneration,
+                    text: text
+                )
             )
 
         case .backspace(let focusGeneration):
-            remoteInputController.pressKey(
-                screenRequestID: request.screenRequestID,
-                inputSessionID: request.inputSessionID,
-                focusGeneration: focusGeneration,
-                key: .backspace
+            WorldwideRemoteInputInjectionOutcome(
+                remoteInputController.pressKey(
+                    screenRequestID: request.screenRequestID,
+                    inputSessionID: request.inputSessionID,
+                    focusGeneration: focusGeneration,
+                    key: .backspace
+                )
             )
 
         case .returnKey(let focusGeneration):
-            remoteInputController.pressKey(
-                screenRequestID: request.screenRequestID,
-                inputSessionID: request.inputSessionID,
-                focusGeneration: focusGeneration,
-                key: .returnKey
+            WorldwideRemoteInputInjectionOutcome(
+                remoteInputController.pressKey(
+                    screenRequestID: request.screenRequestID,
+                    inputSessionID: request.inputSessionID,
+                    focusGeneration: focusGeneration,
+                    key: .returnKey
+                )
             )
         }
     }
@@ -3084,6 +3214,7 @@ actor WorldwideScreenService {
                 && (
                     currentSink.isAwaitingFormatRenegotiation
                         || currentSink.isDebouncingFormatRenegotiation
+                        || currentSink.isDisplayConfigurationInProgress
                 )
         }
     }
@@ -4175,6 +4306,14 @@ extension MacExternalVideoCapturer: WorldwideScreenFrameCapturing {
     }
 }
 
+/// The only remote-input capability needed by the screen-sample boundary. Keeping this narrow
+/// makes geometry continuity independently testable without exposing input injection itself.
+protocol WorldwideRemoteInputGeometryUpdating: Sendable {
+    func updateScreenVideoFrameGeometry(_ geometry: ScreenVideoFrameGeometry?)
+}
+
+extension MacRemoteInputController: WorldwideRemoteInputGeometryUpdating {}
+
 final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sendable {
     typealias FormatRenegotiationFallbackScheduler =
         @Sendable (
@@ -4191,6 +4330,16 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
         case active
         case renegotiating
         case stopped
+
+        var diagnosticName: String {
+            switch self {
+            case .ready: "ready"
+            case .starting: "starting"
+            case .active: "active"
+            case .renegotiating: "renegotiating"
+            case .stopped: "stopped"
+            }
+        }
     }
 
     enum ForwardingStartupProofState: Equatable {
@@ -4200,7 +4349,7 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
     }
 
     private let capturer: any WorldwideScreenFrameCapturing
-    private let remoteInputController: MacRemoteInputController
+    private let remoteInputController: any WorldwideRemoteInputGeometryUpdating
     private let didRequireCaptureFormatRenegotiation:
         @Sendable (WorldwideScreenSampleSink) -> Void
     private let didStop: @Sendable (ScreenVideoCaptureSource, String) -> Void
@@ -4211,9 +4360,19 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
     private let lock = NSLock()
     private var forwardingPhase = ForwardingPhase.ready
     private var formatIsProven = false
+    /// Set by Core Graphics' begin-configuration callback before any same-surface transition
+    /// frame can inherit the preceding coordinate transform. Only the settled callback clears it.
+    private var displayConfigurationInProgress = false
     private var expectedFrameDimensions: ScreenVideoPixelDimensions?
     private var expectedFrameScaleFactor: Double?
     private var expectedFrameContentScale: Double?
+    /// Last concrete geometry admitted by the format detector for the current forwarding
+    /// generation. A later frame whose optional ScreenCaptureKit geometry is absent may inherit
+    /// this transform only while its pixel surface is still exactly the same size.
+    private var lastProvenFrameGeometry: ScreenVideoFrameGeometry?
+    private var lastFrameMetadataState = WorldwideScreenFrameMetadataDiagnosticState.none
+    private var lastFrameSurfaceWidth: Int?
+    private var lastFrameSurfaceHeight: Int?
     private var forwardingAuthorization: WebRTCControlAuthorization?
     private var formatRenegotiationDetector = ScreenVideoFormatRenegotiationDetector()
     private var nextFormatRenegotiationFallbackToken: UInt64 = 0
@@ -4222,7 +4381,7 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
     init(
         capturer: any WorldwideScreenFrameCapturing,
         captureLifetime: CaptureServiceLifetime? = nil,
-        remoteInputController: MacRemoteInputController,
+        remoteInputController: any WorldwideRemoteInputGeometryUpdating,
         didRequireCaptureFormatRenegotiation: @escaping @Sendable (
             WorldwideScreenSampleSink
         ) -> Void,
@@ -4267,9 +4426,14 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
             let retiredAuthorization = forwardingAuthorization
             forwardingAuthorization = authorization
             forwardingPhase = .starting
+            displayConfigurationInProgress = false
             self.expectedFrameDimensions = expectedFrameDimensions
             expectedFrameScaleFactor = expectedScaleFactor
             expectedFrameContentScale = expectedContentScale
+            lastProvenFrameGeometry = nil
+            lastFrameMetadataState = .none
+            lastFrameSurfaceWidth = nil
+            lastFrameSurfaceHeight = nil
             formatIsProven = expectedFrameDimensions == nil
             return (true, retiredAuthorization)
         }
@@ -4342,6 +4506,31 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
         }
     }
 
+    /// Keeps the already-acknowledged screen/input generation owned after Core Graphics begins a
+    /// display transaction and before its settled callback can start the exact capture rebuild.
+    var isDisplayConfigurationInProgress: Bool {
+        lock.withLock {
+            displayConfigurationInProgress
+                && (forwardingPhase == .starting || forwardingPhase == .active)
+                && callbackGateAllowsEntry
+        }
+    }
+
+    /// Privacy-safe capture state sampled by the actor only after admission rejected an input.
+    func remoteInputFormatDiagnosticSnapshot() -> WorldwideScreenCaptureGateDiagnostic {
+        lock.withLock {
+            WorldwideScreenCaptureGateDiagnostic(
+                phase: forwardingPhase.diagnosticName,
+                formatIsProven: formatIsProven,
+                displayConfigurationInProgress: displayConfigurationInProgress,
+                frameMetadataState: lastFrameMetadataState,
+                frameSurfaceWidth: lastFrameSurfaceWidth,
+                frameSurfaceHeight: lastFrameSurfaceHeight,
+                retainedProvenGeometry: lastProvenFrameGeometry != nil
+            )
+        }
+    }
+
     /// Atomically proves that a control/input operation belongs to the current visible format.
     func allowsActiveUse(
         authorizedBy authorization: WebRTCControlAuthorization
@@ -4369,9 +4558,14 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
         let retiredAuthorization = lock.withLock { () -> WebRTCControlAuthorization? in
             forwardingPhase = .stopped
             formatIsProven = false
+            displayConfigurationInProgress = false
             expectedFrameDimensions = nil
             expectedFrameScaleFactor = nil
             expectedFrameContentScale = nil
+            lastProvenFrameGeometry = nil
+            lastFrameMetadataState = .none
+            lastFrameSurfaceWidth = nil
+            lastFrameSurfaceHeight = nil
             invalidateFormatRenegotiationFallbackLocked()
             let authorization = forwardingAuthorization
             forwardingAuthorization = nil
@@ -4383,18 +4577,33 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
 
     /// Forwards image-backed, timestamped samples only while the gate is open.
     func consumeScreenVideoSample(_ sampleBuffer: CMSampleBuffer) {
-        consumeScreenVideoSample(sampleBuffer, frameGeometry: nil)
+        consumeScreenVideoSample(sampleBuffer, frameGeometryObservation: .absent)
+    }
+
+    /// Compatibility entry point for deterministic callers that have optional geometry only.
+    func consumeScreenVideoSample(
+        _ sampleBuffer: CMSampleBuffer,
+        frameGeometry: ScreenVideoFrameGeometry?
+    ) {
+        consumeScreenVideoSample(
+            sampleBuffer,
+            frameGeometryObservation:
+                frameGeometry.map(ScreenVideoFrameGeometryObservation.valid) ?? .absent
+        )
     }
 
     /// Forwards the frame before publishing its geometry. The controller independently requires
     /// a bounded propagation interval before reopening input after any transform change.
     func consumeScreenVideoSample(
         _ sampleBuffer: CMSampleBuffer,
-        frameGeometry: ScreenVideoFrameGeometry?
+        frameGeometryObservation: ScreenVideoFrameGeometryObservation
     ) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             return
         }
+        let frameGeometry = frameGeometryObservation.geometry
+        let surfaceWidth = CVPixelBufferGetWidth(pixelBuffer)
+        let surfaceHeight = CVPixelBufferGetHeight(pixelBuffer)
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard timestamp.isValid else { return }
         let transition = lock.withLock { () -> (
@@ -4405,6 +4614,29 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
             guard forwardingPhase == .starting || forwardingPhase == .active,
                   callbackGateAllowsEntry else {
                 return (false, nil, nil)
+            }
+            switch frameGeometryObservation {
+            case .valid: lastFrameMetadataState = .valid
+            case .absent: lastFrameMetadataState = .absent
+            case .invalid: lastFrameMetadataState = .invalid
+            }
+            lastFrameSurfaceWidth = surfaceWidth
+            lastFrameSurfaceHeight = surfaceHeight
+            guard !displayConfigurationInProgress else {
+                return (false, nil, nil)
+            }
+            if frameGeometry == nil,
+               let lastProvenFrameGeometry,
+               (lastProvenFrameGeometry.surfaceWidth != surfaceWidth
+                   || lastProvenFrameGeometry.surfaceHeight != surfaceHeight) {
+                // Pixel dimensions are authoritative even when optional SCK attachments vanish.
+                // A different surface cannot reuse the prior coordinate transform.
+                let suspension = suspendForFormatRenegotiationLocked()
+                return (
+                    suspension.requiresRenegotiation,
+                    suspension.retiredAuthorization,
+                    nil
+                )
             }
             if forwardingPhase == .starting,
                let expectedFrameDimensions,
@@ -4426,12 +4658,31 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
                 formatIsProven = false
                 return (false, nil, nil)
             }
-            switch formatRenegotiationDetector.observe(frameGeometry) {
+            switch formatRenegotiationDetector.observe(frameGeometryObservation) {
             case .forwardFrame:
+                if case .invalid = frameGeometryObservation {
+                    // Defensive backstop: invalid metadata must never enter media/input admission
+                    // even if the detector's classification changes in a future refactor.
+                    formatIsProven = false
+                    remoteInputController.updateScreenVideoFrameGeometry(nil)
+                    return (false, nil, armFormatRenegotiationFallbackLocked())
+                }
                 invalidateFormatRenegotiationFallbackLocked()
                 formatIsProven = true
                 capturer.captureScreenFrame(pixelBuffer: pixelBuffer, timestamp: timestamp)
-                remoteInputController.updateScreenVideoFrameGeometry(frameGeometry)
+                if let frameGeometry {
+                    lastProvenFrameGeometry = frameGeometry
+                    remoteInputController.updateScreenVideoFrameGeometry(frameGeometry)
+                } else if let lastProvenFrameGeometry {
+                    // Missing per-frame attachments are not themselves a format transition. The
+                    // exact pixel-surface check above and the authoritative display-mode callback
+                    // fence this reuse to the currently proven capture generation.
+                    remoteInputController.updateScreenVideoFrameGeometry(
+                        lastProvenFrameGeometry
+                    )
+                } else {
+                    remoteInputController.updateScreenVideoFrameGeometry(nil)
+                }
                 return (false, nil, nil)
             case .dropFrame:
                 formatIsProven = false
@@ -4466,6 +4717,38 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
         displayModeDidChange()
     }
 
+    func screenVideoCaptureSourceDisplayConfigurationWillChange(
+        _: ScreenVideoCaptureSource
+    ) {
+        displayConfigurationWillChange()
+    }
+
+    /// Closes the coordinate generation at Core Graphics' pre-configuration boundary without
+    /// rebuilding against display state that is not settled yet. The post callback performs the
+    /// existing authoritative renegotiation after the transaction completes.
+    func displayConfigurationWillChange() {
+        let transition = lock.withLock { () -> (
+            didLatch: Bool,
+            retiredAuthorization: WebRTCControlAuthorization?
+        ) in
+            guard !displayConfigurationInProgress,
+                  forwardingPhase == .starting || forwardingPhase == .active else {
+                return (false, nil)
+            }
+            displayConfigurationInProgress = true
+            formatIsProven = false
+            lastProvenFrameGeometry = nil
+            invalidateFormatRenegotiationFallbackLocked()
+            let authorization = forwardingAuthorization
+            forwardingAuthorization = nil
+            return (true, authorization)
+        }
+        guard transition.didLatch else { return }
+        // Clear the old transform before revocation waits for an already-linearized input action.
+        remoteInputController.updateScreenVideoFrameGeometry(nil)
+        transition.retiredAuthorization?.revoke()
+    }
+
     /// Shared authoritative trigger used by the source callback and deterministic lifecycle tests.
     func displayModeDidChange() {
         let transition = lock.withLock { () -> (
@@ -4473,6 +4756,7 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
             retiredAuthorization: WebRTCControlAuthorization?
         ) in
             invalidateFormatRenegotiationFallbackLocked()
+            displayConfigurationInProgress = false
             if forwardingPhase == .starting || forwardingPhase == .active {
                 // Core Graphics can invoke this callback from inside its reconfiguration
                 // transaction. Remote input acquires the control token before this sink lock, so
@@ -4480,6 +4764,7 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
                 let shouldNotify = forwardingPhase == .active
                 forwardingPhase = .renegotiating
                 formatIsProven = false
+                lastProvenFrameGeometry = nil
                 let authorization = forwardingAuthorization
                 forwardingAuthorization = nil
                 return (shouldNotify, authorization)
@@ -4487,6 +4772,7 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
             guard forwardingPhase == .ready else { return (false, nil) }
             forwardingPhase = .renegotiating
             formatIsProven = false
+            lastProvenFrameGeometry = nil
             let authorization = forwardingAuthorization
             forwardingAuthorization = nil
             return (false, authorization)
@@ -4573,6 +4859,8 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
         let shouldNotify = forwardingPhase == .active
         forwardingPhase = .renegotiating
         formatIsProven = false
+        displayConfigurationInProgress = false
+        lastProvenFrameGeometry = nil
         let authorization = forwardingAuthorization
         forwardingAuthorization = nil
         return (shouldNotify, authorization)

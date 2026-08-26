@@ -1,7 +1,9 @@
+import CoreVideo
 import RemoteSessionCore
 import SwiftUI
-import WebRTCTransport
+@preconcurrency import LiveKitWebRTC
 import XCTest
+@testable import WebRTCTransport
 @testable import opensteamer
 
 /// Concurrency regression suite for screen leases, visibility acknowledgements, and remote input.
@@ -895,6 +897,273 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
         )
     }
 
+    func testTouchObservationRequiresZeroRotationVideoDimensions() throws {
+        XCTAssertEqual(
+            try XCTUnwrap(
+                WebRTCVideoPresentationDimensions(
+                    unrotatedWidth: 1_080,
+                    unrotatedHeight: 2_340,
+                    rotation: ._0
+                )
+            ).size,
+            CGSize(width: 1_080, height: 2_340)
+        )
+        XCTAssertNil(
+            WebRTCVideoPresentationDimensions(
+                unrotatedWidth: 1_080,
+                unrotatedHeight: 2_340,
+                rotation: ._180
+            )
+        )
+        XCTAssertNil(
+            WebRTCVideoPresentationDimensions(
+                unrotatedWidth: 2_340,
+                unrotatedHeight: 1_080,
+                rotation: ._90
+            )
+        )
+        XCTAssertNil(
+            WebRTCVideoPresentationDimensions(
+                unrotatedWidth: 2_340,
+                unrotatedHeight: 1_080,
+                rotation: ._270
+            )
+        )
+        XCTAssertNil(
+            WebRTCVideoPresentationDimensions(
+                unrotatedWidth: 1_080,
+                unrotatedHeight: 2_340,
+                rotation: try XCTUnwrap(LKRTCVideoRotation(rawValue: 999))
+            )
+        )
+        XCTAssertNil(
+            WebRTCVideoPresentationDimensions(
+                unrotatedWidth: 0,
+                unrotatedHeight: 2_340,
+                rotation: ._0
+            )
+        )
+    }
+
+    func testPresentationGenerationFenceOrdersInvalidationAndPublication() {
+        let observation = WebRTCVideoRenderObservation(
+            frameCount: 1,
+            timestampNanoseconds: 42,
+            width: 1_080,
+            height: 2_340,
+            contentDigest: 7,
+            contentSampleCount: 1,
+            contentChangeCount: 0
+        )
+        var fence = WebRTCVideoPresentationGenerationFence()
+        let binding = fence.advanceBinding()
+        var cachedObservation: WebRTCVideoRenderObservation? = observation
+
+        if fence.acceptsInvalidation(
+            bindingGeneration: binding,
+            dimensionGeneration: 1,
+            isCurrentRendererGeneration: true
+        ) {
+            cachedObservation = nil
+        }
+        XCTAssertNil(cachedObservation)
+
+        cachedObservation = observation
+        if fence.acceptsInvalidation(
+            bindingGeneration: binding &+ 1,
+            dimensionGeneration: 2,
+            isCurrentRendererGeneration: true
+        ) {
+            cachedObservation = nil
+        }
+        if fence.acceptsInvalidation(
+            bindingGeneration: binding,
+            dimensionGeneration: 1,
+            isCurrentRendererGeneration: false
+        ) {
+            cachedObservation = nil
+        }
+        XCTAssertNotNil(cachedObservation)
+
+        XCTAssertTrue(
+            fence.acceptsPublication(
+                bindingGeneration: binding,
+                dimensionGeneration: 2,
+                isCurrentRendererGeneration: true
+            )
+        )
+        if fence.acceptsInvalidation(
+            bindingGeneration: binding,
+            dimensionGeneration: 2,
+            isCurrentRendererGeneration: true
+        ) {
+            cachedObservation = nil
+        }
+        XCTAssertNotNil(cachedObservation)
+
+        let replacementBinding = fence.advanceBinding()
+        if fence.acceptsInvalidation(
+            bindingGeneration: binding,
+            dimensionGeneration: 3,
+            isCurrentRendererGeneration: true
+        ) {
+            cachedObservation = nil
+        }
+        XCTAssertNotNil(cachedObservation)
+        XCTAssertNotEqual(binding, replacementBinding)
+    }
+
+    func testDelayedNativeSizeCallbackCannotRevokePresentedGeneration() throws {
+        let oldSize = CGSize(width: 1_080, height: 2_340)
+        let newSize = CGSize(width: 720, height: 1_560)
+        let oldObservation = WebRTCVideoRenderObservation(
+            frameCount: 1,
+            timestampNanoseconds: 42,
+            width: 1_080,
+            height: 2_340,
+            contentDigest: 7,
+            contentSampleCount: 1,
+            contentChangeCount: 0
+        )
+        let newObservation = WebRTCVideoRenderObservation(
+            frameCount: 2,
+            timestampNanoseconds: 99,
+            width: 720,
+            height: 1_560,
+            contentDigest: 8,
+            contentSampleCount: 2,
+            contentChangeCount: 1
+        )
+        let renderer = ObservedVideoRenderer(
+            downstream: SilentVideoRenderer(),
+            invalidatePresentation: { _ in },
+            publish: { _, _ in }
+        )
+        var fence = WebRTCVideoPresentationGenerationFence()
+        let binding = fence.advanceBinding()
+        var cachedObservation: WebRTCVideoRenderObservation? = oldObservation
+
+        renderer.setSize(oldSize)
+        let oldGeneration = try XCTUnwrap(
+            renderer.currentDimensionGeneration(matchingPresentationSize: oldSize)
+        )
+        XCTAssertTrue(
+            fence.acceptsPublication(
+                bindingGeneration: binding,
+                dimensionGeneration: oldGeneration,
+                isCurrentRendererGeneration: true
+            )
+        )
+
+        renderer.setSize(newSize)
+        let newGeneration = try XCTUnwrap(
+            renderer.currentDimensionGeneration(matchingPresentationSize: newSize)
+        )
+        if fence.acceptsInvalidation(
+            bindingGeneration: binding,
+            dimensionGeneration: newGeneration,
+            isCurrentRendererGeneration:
+                renderer.isCurrentDimensionGeneration(newGeneration)
+        ) {
+            cachedObservation = nil
+        }
+        XCTAssertNil(cachedObservation)
+
+        cachedObservation = newObservation
+        XCTAssertTrue(
+            fence.acceptsPublication(
+                bindingGeneration: binding,
+                dimensionGeneration: newGeneration,
+                isCurrentRendererGeneration:
+                    renderer.isCurrentDimensionGeneration(newGeneration)
+            )
+        )
+
+        if let delayedOldGeneration = renderer.currentDimensionGeneration(
+            matchingPresentationSize: oldSize
+        ), fence.acceptsInvalidation(
+            bindingGeneration: binding,
+            dimensionGeneration: delayedOldGeneration,
+            isCurrentRendererGeneration:
+                renderer.isCurrentDimensionGeneration(delayedOldGeneration)
+        ) {
+            cachedObservation = nil
+        }
+        if let delayedCurrentGeneration = renderer.currentDimensionGeneration(
+            matchingPresentationSize: newSize
+        ), fence.acceptsInvalidation(
+            bindingGeneration: binding,
+            dimensionGeneration: delayedCurrentGeneration,
+            isCurrentRendererGeneration:
+                renderer.isCurrentDimensionGeneration(delayedCurrentGeneration)
+        ) {
+            cachedObservation = nil
+        }
+
+        XCTAssertEqual(cachedObservation, newObservation)
+    }
+
+    func testNonzeroRotationFrameRevokesCachedTouchObservation() throws {
+        let cachedObservation = WebRTCVideoRenderObservation(
+            frameCount: 12,
+            timestampNanoseconds: 42,
+            width: 64,
+            height: 128,
+            contentDigest: 7,
+            contentSampleCount: 12,
+            contentChangeCount: 4
+        )
+        let observationCache = VideoPresentationObservationCache(cachedObservation)
+        let orderingProbe = VideoPresentationOrderingProbe()
+        let downstream = OrderedVideoRenderer(orderingProbe: orderingProbe)
+        let renderer = ObservedVideoRenderer(
+            downstream: downstream,
+            invalidatePresentation: { generation in
+                orderingProbe.record(.invalidation(generation))
+                observationCache.invalidate(generation: generation)
+            },
+            publish: { _, _ in
+                observationCache.recordPublication()
+            }
+        )
+        renderer.setSize(CGSize(width: 64, height: 128))
+        // Model SwiftUI caching the first drawable only after the valid generation presented.
+        observationCache.install(cachedObservation)
+        orderingProbe.reset()
+        XCTAssertEqual(
+            WorldwideScreenViewerView.renderedVideoSize(from: observationCache.observation),
+            CGSize(width: 64, height: 128)
+        )
+
+        var pixelBuffer: CVPixelBuffer?
+        XCTAssertEqual(
+            CVPixelBufferCreate(
+                kCFAllocatorDefault,
+                64,
+                128,
+                kCVPixelFormatType_32BGRA,
+                nil,
+                &pixelBuffer
+            ),
+            kCVReturnSuccess
+        )
+        let frame = LKRTCVideoFrame(
+            buffer: LKRTCCVPixelBuffer(pixelBuffer: try XCTUnwrap(pixelBuffer)),
+            rotation: ._180,
+            timeStampNs: 99
+        )
+
+        renderer.renderFrame(frame)
+
+        XCTAssertEqual(downstream.renderedFrameCount, 1)
+        XCTAssertEqual(orderingProbe.events, [.invalidation(2), .downstreamRender])
+        XCTAssertEqual(observationCache.invalidatedGenerations, [2])
+        XCTAssertEqual(observationCache.publicationCount, 0)
+        XCTAssertNil(
+            WorldwideScreenViewerView.renderedVideoSize(from: observationCache.observation)
+        )
+    }
+
     @MainActor
     func testQueuedPointerCarriesTheViewerObservedVideoSizeToTheWireBoundary() async throws {
         let viewModel = WorldwideSessionViewModel()
@@ -1004,6 +1273,102 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
 @MainActor
 private final class LifecycleProbe {
     var visibilityRequests: [Bool] = []
+}
+
+private final class SilentVideoRenderer: NSObject, LKRTCVideoRenderer {
+    private(set) var renderedFrameCount = 0
+
+    func setSize(_ size: CGSize) {}
+
+    func renderFrame(_ frame: LKRTCVideoFrame?) {
+        renderedFrameCount += 1
+    }
+}
+
+private final class OrderedVideoRenderer: NSObject, LKRTCVideoRenderer {
+    private let orderingProbe: VideoPresentationOrderingProbe
+    private(set) var renderedFrameCount = 0
+
+    init(orderingProbe: VideoPresentationOrderingProbe) {
+        self.orderingProbe = orderingProbe
+    }
+
+    func setSize(_ size: CGSize) {}
+
+    func renderFrame(_ frame: LKRTCVideoFrame?) {
+        orderingProbe.record(.downstreamRender)
+        renderedFrameCount += 1
+    }
+}
+
+private final class VideoPresentationOrderingProbe: @unchecked Sendable {
+    enum Event: Equatable {
+        case invalidation(UInt64)
+        case downstreamRender
+    }
+
+    private let lock = NSLock()
+    private var recordedEvents: [Event] = []
+
+    var events: [Event] {
+        lock.withLock { recordedEvents }
+    }
+
+    func record(_ event: Event) {
+        lock.withLock {
+            recordedEvents.append(event)
+        }
+    }
+
+    func reset() {
+        lock.withLock {
+            recordedEvents.removeAll(keepingCapacity: true)
+        }
+    }
+}
+
+private final class VideoPresentationObservationCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cachedObservation: WebRTCVideoRenderObservation?
+    private var generations: [UInt64] = []
+    private var publications = 0
+
+    init(_ observation: WebRTCVideoRenderObservation) {
+        cachedObservation = observation
+    }
+
+    var observation: WebRTCVideoRenderObservation? {
+        lock.withLock { cachedObservation }
+    }
+
+    var invalidatedGenerations: [UInt64] {
+        lock.withLock { generations }
+    }
+
+    var publicationCount: Int {
+        lock.withLock { publications }
+    }
+
+    func install(_ observation: WebRTCVideoRenderObservation) {
+        lock.withLock {
+            cachedObservation = observation
+            generations.removeAll(keepingCapacity: true)
+            publications = 0
+        }
+    }
+
+    func invalidate(generation: UInt64) {
+        lock.withLock {
+            cachedObservation = nil
+            generations.append(generation)
+        }
+    }
+
+    func recordPublication() {
+        lock.withLock {
+            publications += 1
+        }
+    }
 }
 
 /// Checked continuations intentionally do not observe task cancellation. This models the exact

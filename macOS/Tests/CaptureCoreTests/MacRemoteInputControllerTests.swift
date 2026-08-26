@@ -269,6 +269,73 @@ final class MacRemoteInputControllerTests: XCTestCase {
         XCTAssertTrue(system.postedDragEvents.isEmpty)
     }
 
+    func testDiagnosedPointerResultIdentifiesExactFormatFence() throws {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        system.bounds = CGRect(x: 0, y: 0, width: 1_920, height: 1_080)
+        let controller = armedController(system: system, clock: clock)
+
+        var outcome = controller.handleTapWithDiagnostics(
+            screenRequestID: showID,
+            inputSessionID: sessionID,
+            normalizedPoint: .init(x: 0.25, y: 0.75)
+        )
+        XCTAssertEqual(outcome.result, .rejected(.screenFormatChanging))
+        XCTAssertEqual(outcome.screenFormatDiagnostic?.reason, .viewerSizeMissing)
+        XCTAssertFalse(outcome.screenFormatDiagnostic?.stableGeometryAvailable == true)
+        XCTAssertTrue(outcome.screenFormatDiagnostic?.candidateGeometryAvailable == true)
+        XCTAssertEqual(outcome.screenFormatDiagnostic?.candidateAgeMilliseconds, 750)
+
+        controller.updateScreenVideoFrameGeometry(nil)
+        outcome = controller.handleTapWithDiagnostics(
+            screenRequestID: showID,
+            inputSessionID: sessionID,
+            normalizedPoint: .init(x: 0.25, y: 0.75),
+            viewerVideoSize: .init(width: 1_920, height: 1_080)
+        )
+        XCTAssertEqual(
+            outcome.screenFormatDiagnostic?.reason,
+            .frameGeometryUnavailableOrUnstable
+        )
+        XCTAssertFalse(outcome.screenFormatDiagnostic?.stableGeometryAvailable == true)
+
+        let staleLandscape = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_920,
+                surfaceHeight: 1_080,
+                contentRect: CGRect(x: 0, y: 0, width: 1_920, height: 1_080),
+                contentScale: 1,
+                scaleFactor: 1
+            )
+        )
+        stabilize(staleLandscape, on: controller, clock: clock)
+        system.bounds = CGRect(x: 0, y: 0, width: 1_080, height: 1_920)
+        outcome = controller.handleTapWithDiagnostics(
+            screenRequestID: showID,
+            inputSessionID: sessionID,
+            normalizedPoint: .init(x: 0.25, y: 0.75),
+            viewerVideoSize: .init(width: 1_920, height: 1_080)
+        )
+        XCTAssertEqual(
+            outcome.screenFormatDiagnostic?.reason,
+            .displayGeometryIncompatible
+        )
+
+        system.bounds = CGRect(x: 0, y: 0, width: 1_920, height: 1_080)
+        outcome = controller.handleTapWithDiagnostics(
+            screenRequestID: showID,
+            inputSessionID: sessionID,
+            normalizedPoint: .init(x: 0.25, y: 0.75),
+            viewerVideoSize: .init(width: 1_000, height: 1_000)
+        )
+        XCTAssertEqual(outcome.screenFormatDiagnostic?.reason, .viewerAspectMismatch)
+        XCTAssertGreaterThan(
+            outcome.screenFormatDiagnostic?.viewerAspectRelativeDifference ?? 0,
+            0.4
+        )
+        XCTAssertTrue(system.postedMousePoints.isEmpty)
+    }
+
     func testEveryAdvertisedModeMapsRelativeCoordinatesIntoItsLiveBounds() throws {
         let modes: [(logical: CGSize, pixels: CGSize)] = [
             (.init(width: 540, height: 960), .init(width: 540, height: 960)),
@@ -401,6 +468,119 @@ final class MacRemoteInputControllerTests: XCTestCase {
         )
         XCTAssertEqual(system.postedMousePoints.count, 2)
         XCTAssertEqual(system.postedMousePoints.last, CGPoint(x: 207, y: 448))
+    }
+
+    func testPortraitToLandscapeReplacementRecoversNoncentralMapping() throws {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        system.bounds = CGRect(x: 100, y: -50, width: 540, height: 1_170)
+        let controller = MacRemoteInputController(
+            allowRemoteControl: true,
+            system: system,
+            clock: clock
+        )
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID
+            ),
+            .armed
+        )
+        let portraitGeometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_080,
+                surfaceHeight: 2_340,
+                contentRect: CGRect(x: 0, y: 0, width: 540, height: 1_170),
+                contentScale: 1,
+                scaleFactor: 2
+            )
+        )
+        stabilize(portraitGeometry, on: controller, clock: clock)
+        let noncentralPoint = MacRemoteNormalizedPoint(x: 0.25, y: 0.75)
+
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                normalizedPoint: noncentralPoint,
+                viewerVideoSize: .init(width: 1_080, height: 2_340)
+            ),
+            .accepted(.none)
+        )
+        let portraitPostedPoint = try XCTUnwrap(system.postedMousePoints.last)
+        XCTAssertEqual(portraitPostedPoint.x, 235, accuracy: 0.000_1)
+        XCTAssertEqual(portraitPostedPoint.y, 827.5, accuracy: 0.000_1)
+
+        system.bounds = CGRect(x: -200, y: 75, width: 1_170, height: 540)
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                normalizedPoint: noncentralPoint,
+                viewerVideoSize: .init(width: 1_080, height: 2_340)
+            ),
+            .rejected(.screenFormatChanging)
+        )
+        XCTAssertEqual(system.postedMousePoints.count, 1)
+
+        controller.updateScreenVideoFrameGeometry(nil)
+        let landscapeGeometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 2_340,
+                surfaceHeight: 1_080,
+                contentRect: CGRect(x: 0, y: 0, width: 1_170, height: 540),
+                contentScale: 1,
+                scaleFactor: 2
+            )
+        )
+        controller.updateScreenVideoFrameGeometry(landscapeGeometry)
+
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                normalizedPoint: noncentralPoint,
+                viewerVideoSize: .init(width: 2_340, height: 1_080)
+            ),
+            .rejected(.screenFormatChanging)
+        )
+        clock.advance(by: 0.749)
+        controller.updateScreenVideoFrameGeometry(landscapeGeometry)
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                normalizedPoint: noncentralPoint,
+                viewerVideoSize: .init(width: 2_340, height: 1_080)
+            ),
+            .rejected(.screenFormatChanging)
+        )
+        clock.advance(by: 0.001)
+        controller.updateScreenVideoFrameGeometry(landscapeGeometry)
+
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                normalizedPoint: noncentralPoint,
+                viewerVideoSize: .init(width: 1_080, height: 2_340)
+            ),
+            .rejected(.screenFormatChanging)
+        )
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                normalizedPoint: noncentralPoint,
+                viewerVideoSize: .init(width: 2_340, height: 1_080)
+            ),
+            .accepted(.none)
+        )
+        XCTAssertEqual(system.postedMousePoints.count, 2)
+        let landscapePostedPoint = try XCTUnwrap(system.postedMousePoints.last)
+        XCTAssertEqual(landscapePostedPoint.x, 92.5, accuracy: 0.000_1)
+        XCTAssertEqual(landscapePostedPoint.y, 480, accuracy: 0.000_1)
     }
 
     func testSingleFrameGeometryPromotesLazilyAfterStabilityInterval() throws {

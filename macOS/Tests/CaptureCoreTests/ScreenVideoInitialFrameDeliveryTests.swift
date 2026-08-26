@@ -94,6 +94,72 @@ final class ScreenVideoInitialFrameDeliveryTests: XCTestCase {
         )
     }
 
+    func testNativeGeometryParserDistinguishesAbsentFromInvalidMetadata() throws {
+        let consumer = RecordingScreenVideoSampleConsumer()
+        let output = ScreenVideoStreamOutput(consumer: consumer)
+        XCTAssertTrue(output.beginDelivery())
+        let absent = try makeScreenSample(
+            presentationValue: 1,
+            status: .complete,
+            contentRect: CGRect(x: 0, y: 0, width: 320, height: 180),
+            contentScale: 1,
+            scaleFactor: 2
+        )
+        try frameAttachments(in: absent).removeObject(
+            forKey: SCStreamFrameInfo.contentScale
+        )
+        let invalid = try makeScreenSample(
+            presentationValue: 2,
+            status: .complete,
+            contentRect: CGRect(x: 0, y: 0, width: 320, height: 180),
+            contentScale: 1,
+            scaleFactor: 2
+        )
+        try frameAttachments(in: invalid).addEntries(
+            from: [SCStreamFrameInfo.scaleFactor: "unexpected"]
+        )
+        let mixedMissingAndMalformed = try makeScreenSample(
+            presentationValue: 3,
+            status: .complete,
+            contentRect: CGRect(x: 0, y: 0, width: 320, height: 180),
+            contentScale: 1,
+            scaleFactor: 2
+        )
+        let mixedAttachments = try frameAttachments(in: mixedMissingAndMalformed)
+        mixedAttachments.removeObject(forKey: SCStreamFrameInfo.contentScale)
+        mixedAttachments.addEntries(
+            from: [SCStreamFrameInfo.scaleFactor: "unexpected"]
+        )
+        let mixedMissingAndOutOfSurface = try makeScreenSample(
+            presentationValue: 4,
+            status: .complete,
+            contentRect: CGRect(x: 0, y: 0, width: 320, height: 180),
+            contentScale: 1,
+            scaleFactor: 2
+        )
+        let outOfSurfaceAttachments = try frameAttachments(
+            in: mixedMissingAndOutOfSurface
+        )
+        outOfSurfaceAttachments.removeObject(forKey: SCStreamFrameInfo.contentScale)
+        outOfSurfaceAttachments.addEntries(
+            from: [
+                SCStreamFrameInfo.contentRect:
+                    CGRect(x: 0, y: 0, width: 400, height: 180)
+                        .dictionaryRepresentation,
+            ]
+        )
+
+        output.consumeScreenSample(absent)
+        output.consumeScreenSample(invalid)
+        output.consumeScreenSample(mixedMissingAndMalformed)
+        output.consumeScreenSample(mixedMissingAndOutOfSurface)
+
+        XCTAssertEqual(
+            consumer.records.map(\.geometryObservation),
+            [.absent, .invalid, .invalid, .invalid]
+        )
+    }
+
     func testNativePendingSampleCannotReplayAfterRevocation() throws {
         let consumer = RecordingScreenVideoSampleConsumer()
         let output = ScreenVideoStreamOutput(consumer: consumer)
@@ -128,7 +194,11 @@ private final class RecordingScreenVideoSampleConsumer: ScreenVideoSampleConsume
 {
     struct Record {
         let sampleBuffer: CMSampleBuffer
-        let geometry: ScreenVideoFrameGeometry?
+        let geometryObservation: ScreenVideoFrameGeometryObservation
+
+        var geometry: ScreenVideoFrameGeometry? {
+            geometryObservation.geometry
+        }
     }
 
     private let lock = NSLock()
@@ -146,8 +216,24 @@ private final class RecordingScreenVideoSampleConsumer: ScreenVideoSampleConsume
         _ sampleBuffer: CMSampleBuffer,
         frameGeometry: ScreenVideoFrameGeometry?
     ) {
+        consumeScreenVideoSample(
+            sampleBuffer,
+            frameGeometryObservation:
+                frameGeometry.map(ScreenVideoFrameGeometryObservation.valid) ?? .absent
+        )
+    }
+
+    func consumeScreenVideoSample(
+        _ sampleBuffer: CMSampleBuffer,
+        frameGeometryObservation: ScreenVideoFrameGeometryObservation
+    ) {
         lock.withLock {
-            storedRecords.append(Record(sampleBuffer: sampleBuffer, geometry: frameGeometry))
+            storedRecords.append(
+                Record(
+                    sampleBuffer: sampleBuffer,
+                    geometryObservation: frameGeometryObservation
+                )
+            )
         }
     }
 
@@ -162,6 +248,22 @@ private enum ScreenSampleFixtureError: Error {
     case formatDescription(OSStatus)
     case sampleBuffer(OSStatus)
     case attachmentsUnavailable
+}
+
+private func frameAttachments(
+    in sampleBuffer: CMSampleBuffer
+) throws -> NSMutableDictionary {
+    guard let attachmentArray = CMSampleBufferGetSampleAttachmentsArray(
+        sampleBuffer,
+        createIfNecessary: false
+    ) else {
+        throw ScreenSampleFixtureError.attachmentsUnavailable
+    }
+    let attachments = attachmentArray as NSArray
+    guard let frameAttachments = attachments.firstObject as? NSMutableDictionary else {
+        throw ScreenSampleFixtureError.attachmentsUnavailable
+    }
+    return frameAttachments
 }
 
 private func makeScreenSample(

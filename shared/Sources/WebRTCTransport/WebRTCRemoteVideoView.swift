@@ -9,7 +9,9 @@ import UIKit
 public struct WebRTCVideoRenderObservation: Equatable, Sendable {
     public let frameCount: UInt64
     public let timestampNanoseconds: Int64
+    /// Width of the accepted zero-rotation frame as presented.
     public let width: Int
+    /// Height of the accepted zero-rotation frame as presented.
     public let height: Int
     /// A renderer-local, salted digest of a bounded grid of decoded pixels. It is useful only for
     /// comparing frames from this renderer instance; the salt prevents it from becoming a stable
@@ -36,6 +38,41 @@ public struct WebRTCVideoRenderObservation: Equatable, Sendable {
         self.contentDigest = contentDigest
         self.contentSampleCount = contentSampleCount
         self.contentChangeCount = contentChangeCount
+    }
+}
+
+/// Integer dimensions in the same orientation that WebRTC presents to the viewer.
+///
+/// The Mac screen source currently sends only zero-rotation frames, and the remote-input wire
+/// contract carries no rotation with which the host could invert presentation-space coordinates.
+/// Reject every other rotation so a future or anomalous frame cannot authorize mis-mapped touch.
+struct WebRTCVideoPresentationDimensions: Equatable, Sendable {
+    let width: Int
+    let height: Int
+
+    init?(
+        unrotatedWidth: Int,
+        unrotatedHeight: Int,
+        rotation: LKRTCVideoRotation
+    ) {
+        guard (2 ... 32_768).contains(unrotatedWidth),
+              (2 ... 32_768).contains(unrotatedHeight) else {
+            return nil
+        }
+
+        switch rotation {
+        case ._0:
+            width = unrotatedWidth
+            height = unrotatedHeight
+        case ._90, ._180, ._270:
+            return nil
+        @unknown default:
+            return nil
+        }
+    }
+
+    var size: CGSize {
+        CGSize(width: width, height: height)
     }
 }
 
@@ -245,22 +282,24 @@ private enum MTLDrawablePresentationObserver {
 /// observations are throttled, but a dimension change is published after its first presented
 /// frame without delay. WebRTC and Metal callbacks can use different threads, so all state uses
 /// one lock.
-private final class ObservedVideoRenderer: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
+final class ObservedVideoRenderer: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
     private struct PendingFrame {
         let sequence: UInt64
         let dimensionGeneration: UInt64
+        let presentationDimensions: WebRTCVideoPresentationDimensions
         let frame: LKRTCVideoFrame
     }
 
     private static let minimumPublicationIntervalNanoseconds: UInt64 = 250_000_000
 
     private let downstream: LKRTCVideoRenderer
+    private let invalidatePresentation: @Sendable (UInt64) -> Void
     private let publish: @Sendable (WebRTCVideoRenderObservation, UInt64) -> Void
     private let lock = NSLock()
     private let contentDigestSalt = UInt64.random(in: UInt64.min...UInt64.max)
     private var nextFrameSequence: UInt64 = 0
     private var dimensionGeneration: UInt64 = 0
-    private var decodedSize = CGSize.zero
+    private var presentationSize = CGSize.zero
     private var pendingFrame: PendingFrame?
     private var lastSubmittedTimestampNanoseconds: Int64?
     private var lastPublishedFrameSequence: UInt64 = 0
@@ -275,18 +314,24 @@ private final class ObservedVideoRenderer: NSObject, LKRTCVideoRenderer, @unchec
 
     init(
         downstream: LKRTCVideoRenderer,
+        invalidatePresentation: @escaping @Sendable (UInt64) -> Void,
         publish: @escaping @Sendable (WebRTCVideoRenderObservation, UInt64) -> Void
     ) {
         self.downstream = downstream
+        self.invalidatePresentation = invalidatePresentation
         self.publish = publish
         super.init()
     }
 
     func setSize(_ size: CGSize) {
-        lock.withLock {
-            guard !isInvalidated else { return }
-            advanceDimensionGenerationIfNeeded(to: size)
+        let invalidatedGeneration: UInt64? = lock.withLock {
+            guard !isInvalidated else { return nil }
+            let invalidatedGeneration = advanceDimensionGenerationIfNeeded(to: size)
             downstream.setSize(size)
+            return invalidatedGeneration
+        }
+        if let invalidatedGeneration {
+            invalidatePresentation(invalidatedGeneration)
         }
     }
 
@@ -298,43 +343,81 @@ private final class ObservedVideoRenderer: NSObject, LKRTCVideoRenderer, @unchec
     }
 
     func renderFrame(_ frame: LKRTCVideoFrame?) {
-        lock.withLock {
-            guard !isInvalidated else { return }
+        let invalidatedGeneration: UInt64? = lock.withLock {
+            guard !isInvalidated else { return nil }
             if let frame {
+                guard let presentationDimensions = WebRTCVideoPresentationDimensions(
+                    unrotatedWidth: Int(frame.width),
+                    unrotatedHeight: Int(frame.height),
+                    rotation: frame.rotation
+                ) else {
+                    // Retire every drawable from the last understood presentation shape. The
+                    // native renderer may keep showing media, but invalid dimensions or any
+                    // rotation outside the Mac source's zero-rotation contract must not publish
+                    // another observation under the previous touch generation.
+                    let invalidatedGeneration = advanceDimensionGenerationIfNeeded(to: .zero)
+                    pendingFrame = nil
+                    if let invalidatedGeneration {
+                        // Enqueue revocation while this lock still serializes native frame
+                        // replacement. The production callback only hops to the MainActor; it must
+                        // be issued before Metal can receive and present the anomalous frame.
+                        invalidatePresentation(invalidatedGeneration)
+                    }
+                    downstream.renderFrame(frame)
+                    return nil
+                }
                 nextFrameSequence &+= 1
                 if nextFrameSequence == 0 {
                     nextFrameSequence = 1
                 }
-                advanceDimensionGenerationIfNeeded(
-                    to: CGSize(width: Int(frame.width), height: Int(frame.height))
+                let invalidatedGeneration = advanceDimensionGenerationIfNeeded(
+                    to: presentationDimensions.size
                 )
                 pendingFrame = PendingFrame(
                     sequence: nextFrameSequence,
                     dimensionGeneration: dimensionGeneration,
+                    presentationDimensions: presentationDimensions,
                     frame: frame
                 )
+                downstream.renderFrame(frame)
+                return invalidatedGeneration
             } else {
                 pendingFrame = nil
+                downstream.renderFrame(nil)
+                return nil
             }
-            downstream.renderFrame(frame)
+        }
+        if let invalidatedGeneration {
+            invalidatePresentation(invalidatedGeneration)
         }
     }
 
     /// The native adapter calls `setSize` immediately before the first frame of a new shape.
     /// Advancing there closes the interval in which an older drawable could otherwise publish
     /// after UIKit had already cleared touch for the new dimensions.
-    private func advanceDimensionGenerationIfNeeded(to size: CGSize) {
-        guard size != decodedSize else { return }
+    @discardableResult
+    private func advanceDimensionGenerationIfNeeded(to size: CGSize) -> UInt64? {
+        guard size != presentationSize else { return nil }
         dimensionGeneration &+= 1
         if dimensionGeneration == 0 {
             dimensionGeneration = 1
         }
-        decodedSize = size
+        presentationSize = size
+        return dimensionGeneration
     }
 
     func isCurrentDimensionGeneration(_ generation: UInt64) -> Bool {
         lock.withLock {
             !isInvalidated && dimensionGeneration == generation
+        }
+    }
+
+    /// Resolves a native size-delegate callback to this renderer's current generation. A delayed
+    /// callback from a retired shape cannot be mistaken for the dimensions now on screen.
+    func currentDimensionGeneration(matchingPresentationSize size: CGSize) -> UInt64? {
+        lock.withLock {
+            guard !isInvalidated, presentationSize == size else { return nil }
+            return dimensionGeneration
         }
     }
 
@@ -379,8 +462,8 @@ private final class ObservedVideoRenderer: NSObject, LKRTCVideoRenderer, @unchec
             lastPublishedFrameSequence = presentedFrame.sequence
             let frame = presentedFrame.frame
             frameCount &+= 1
-            let width = Int(frame.width)
-            let height = Int(frame.height)
+            let width = presentedFrame.presentationDimensions.width
+            let height = presentedFrame.presentationDimensions.height
             let dimensionsChanged = width != lastPublishedWidth
                 || height != lastPublishedHeight
             guard frameCount == 1
@@ -420,6 +503,43 @@ private final class ObservedVideoRenderer: NSObject, LKRTCVideoRenderer, @unchec
     }
 }
 
+/// Orders renderer callbacks after their hop to the MainActor. Dimension callbacks and Metal
+/// presentation callbacks can originate on different threads, so task enqueue order alone cannot
+/// decide whether a delayed invalidation is still allowed to revoke touch.
+struct WebRTCVideoPresentationGenerationFence: Sendable {
+    private(set) var bindingGeneration: UInt64 = 0
+    private var lastPresentedDimensionGeneration: UInt64 = 0
+
+    mutating func advanceBinding() -> UInt64 {
+        bindingGeneration &+= 1
+        lastPresentedDimensionGeneration = 0
+        return bindingGeneration
+    }
+
+    func acceptsInvalidation(
+        bindingGeneration: UInt64,
+        dimensionGeneration: UInt64,
+        isCurrentRendererGeneration: Bool
+    ) -> Bool {
+        self.bindingGeneration == bindingGeneration
+            && isCurrentRendererGeneration
+            && lastPresentedDimensionGeneration < dimensionGeneration
+    }
+
+    mutating func acceptsPublication(
+        bindingGeneration: UInt64,
+        dimensionGeneration: UInt64,
+        isCurrentRendererGeneration: Bool
+    ) -> Bool {
+        guard self.bindingGeneration == bindingGeneration,
+              isCurrentRendererGeneration else {
+            return false
+        }
+        lastPresentedDimensionGeneration = dimensionGeneration
+        return true
+    }
+}
+
 /// The narrow UIKit boundary used by the SwiftUI iPhone client to render a remote track.
 @MainActor
 public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
@@ -428,7 +548,7 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
     private var metalDelegateProxy: ObservedMTKViewDelegateProxy?
     private var observedRenderer: ObservedVideoRenderer?
     private var currentTrack: WebRTCRemoteVideoTrack?
-    private var bindingGeneration: UInt64 = 0
+    private var presentationGenerationFence = WebRTCVideoPresentationGenerationFence()
     private var currentVideoSize = CGSize.zero
 
     /// Reports the decoded frame size used by the aspect-fit renderer.
@@ -452,8 +572,7 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
     /// Atomically detaches the previous renderer binding and attaches `track`.
     public func setTrack(_ track: WebRTCRemoteVideoTrack?) {
         guard currentTrack !== track else { return }
-        bindingGeneration &+= 1
-        let generation = bindingGeneration
+        let generation = presentationGenerationFence.advanceBinding()
 
         // Retire and drain the old renderer before attaching a new generation. Its already-
         // queued MainActor publication still carries the old generation and is rejected below.
@@ -463,12 +582,10 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
         }
         metalDelegateProxy?.installDrawHandler(nil)
         observedRenderer = nil
-        presentationCover.isHidden = false
-        currentVideoSize = .zero
         // A binding reset must not be deduplicated against LiveKit's asynchronous size callback.
-        onVideoSizeChanged?(.zero)
+        invalidateCurrentPresentation()
 
-        guard generation == bindingGeneration else { return }
+        guard generation == presentationGenerationFence.bindingGeneration else { return }
         currentTrack = track
         guard let track else { return }
         if metalDelegateProxy == nil {
@@ -478,14 +595,37 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
         }
         let observedRenderer = ObservedVideoRenderer(
             downstream: renderer,
+            invalidatePresentation: { [weak self] dimensionGeneration in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.currentTrack != nil,
+                          let observedRenderer = self.observedRenderer,
+                          self.presentationGenerationFence.acceptsInvalidation(
+                              bindingGeneration: generation,
+                              dimensionGeneration: dimensionGeneration,
+                              isCurrentRendererGeneration:
+                                  observedRenderer.isCurrentDimensionGeneration(
+                                      dimensionGeneration
+                                  )
+                          ) else {
+                        return
+                    }
+                    self.invalidateCurrentPresentation()
+                }
+            },
             publish: { [weak self] observation, dimensionGeneration in
                 Task { @MainActor [weak self] in
                     guard let self,
-                          self.bindingGeneration == generation,
                           self.currentTrack != nil,
-                          self.observedRenderer?.isCurrentDimensionGeneration(
-                              dimensionGeneration
-                          ) == true else {
+                          let observedRenderer = self.observedRenderer,
+                          self.presentationGenerationFence.acceptsPublication(
+                              bindingGeneration: generation,
+                              dimensionGeneration: dimensionGeneration,
+                              isCurrentRendererGeneration:
+                                  observedRenderer.isCurrentDimensionGeneration(
+                                      dimensionGeneration
+                                  )
+                          ) else {
                         return
                     }
                     self.presentationCover.isHidden = true
@@ -556,6 +696,18 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
     }
 
     private func publishVideoSize(_ size: CGSize) {
+        guard let observedRenderer,
+              let dimensionGeneration = observedRenderer.currentDimensionGeneration(
+                  matchingPresentationSize: size
+              ),
+              presentationGenerationFence.acceptsInvalidation(
+                  bindingGeneration: presentationGenerationFence.bindingGeneration,
+                  dimensionGeneration: dimensionGeneration,
+                  isCurrentRendererGeneration:
+                      observedRenderer.isCurrentDimensionGeneration(dimensionGeneration)
+              ) else {
+            return
+        }
         guard size != currentVideoSize else { return }
         currentVideoSize = size
         if metalDelegateProxy != nil {
@@ -563,6 +715,16 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
             presentationCover.isHidden = false
         }
         onVideoSizeChanged?(size)
+    }
+
+    /// Revokes the SwiftUI owner's cached post-presentation observation. A matching generation
+    /// can authorize touch again only after Metal confirms that generation's drawable presented.
+    private func invalidateCurrentPresentation() {
+        currentVideoSize = .zero
+        if metalDelegateProxy != nil {
+            presentationCover.isHidden = false
+        }
+        onVideoSizeChanged?(.zero)
     }
 }
 #endif

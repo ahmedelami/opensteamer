@@ -1,3 +1,5 @@
+import CaptureCore
+import WebRTCTransport
 import XCTest
 @testable import CaptureServer
 
@@ -17,6 +19,71 @@ final class WorldwideHostLifecycleTests: XCTestCase {
                 processIdentifier: 42_071
             ),
             "Worldwide WebRTC peer state: connected pid=42071"
+        )
+    }
+
+    func testRemoteInputFormatDiagnosticReportsBoundedOriginAndGeometryState() {
+        let portrait = WebRTCInputVideoSize(width: 1_080, height: 2_340)
+        let captureGate = WorldwideRemoteInputInjectionOutcome(
+            .rejected(.screenFormatChanging),
+            formatOrigin: .captureGateUnavailable(
+                .init(
+                    phase: "active",
+                    formatIsProven: false,
+                    displayConfigurationInProgress: false,
+                    frameMetadataState: .invalid,
+                    frameSurfaceWidth: 1_206,
+                    frameSurfaceHeight: 2_622,
+                    retainedProvenGeometry: true
+                )
+            )
+        )
+        let controllerDiagnostic = MacRemoteInputScreenFormatDiagnostic(
+            reason: .viewerAspectMismatch,
+            viewerVideoSize: .init(width: 1_080, height: 2_340),
+            frameSurfaceWidth: 2_340,
+            frameSurfaceHeight: 1_080,
+            stableGeometryAvailable: true,
+            candidateGeometryAvailable: true,
+            candidateAgeMilliseconds: 812,
+            viewerAspectRelativeDifference: 0.7869822485
+        )
+        let controller = WorldwideRemoteInputInjectionOutcome(
+            .rejected(.screenFormatChanging),
+            formatOrigin: .controller(controllerDiagnostic)
+        )
+
+        XCTAssertEqual(
+            WorldwideScreenService.remoteInputFormatDiagnostic(
+                viewerVideoSize: portrait,
+                outcome: captureGate
+            ),
+            "formatOrigin=captureGateUnavailable viewerVideoSize=1080x2340 " +
+                "capturePhase=active formatProven=false " +
+                "displayConfigurationInProgress=false frameMetadata=invalid " +
+                "frameSurface=1206x2622 retainedProvenGeometry=true"
+        )
+        XCTAssertEqual(
+            WorldwideScreenService.remoteInputFormatDiagnostic(
+                viewerVideoSize: portrait,
+                outcome: controller
+            ),
+            "formatOrigin=controller.viewerAspectMismatch " +
+                "viewerVideoSize=1080x2340 frameSurface=2340x1080 " +
+                "stableGeometry=true candidateGeometry=true " +
+                "candidateAgeMs=812 viewerAspectDeltaPPM=786982"
+        )
+        XCTAssertNil(
+            WorldwideScreenService.remoteInputFormatDiagnostic(
+                viewerVideoSize: portrait,
+                outcome: .init(.accepted(.none))
+            )
+        )
+        XCTAssertNil(
+            WorldwideScreenService.remoteInputFormatDiagnostic(
+                viewerVideoSize: portrait,
+                outcome: .init(.rejected(.invalidPoint))
+            )
         )
     }
 

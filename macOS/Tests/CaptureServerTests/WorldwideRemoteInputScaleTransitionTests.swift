@@ -10,7 +10,7 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
         )
         let inputAuthorization = try XCTUnwrap(
             method.range(
-                of: "let result: MacRemoteInputResult? = try authorization.withValidAuthorization {"
+                of: "let result: WorldwideRemoteInputInjectionOutcome? ="
             )
         )
         let captureAuthorization = try XCTUnwrap(
@@ -100,7 +100,8 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
             before: "    /// Maps validated wire actions onto the narrow macOS input controller surface."
         )
         XCTAssertTrue(unavailable.contains("screenCaptureTransitionIsOwned"))
-        XCTAssertTrue(unavailable.contains("? .screenFormatChanging"))
+        XCTAssertTrue(unavailable.contains(".rejected(.screenFormatChanging)"))
+        XCTAssertTrue(unavailable.contains("formatOrigin: .captureGateUnavailable"))
 
         let feedback = try serviceSlice(
             after: "    private func transportFeedback(",
@@ -122,6 +123,52 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
             )
         )
         XCTAssertLessThan(rateLimited.lowerBound, nonRevoking.lowerBound)
+    }
+
+    func testPreConfigurationFenceRemainsOwnedAndNonTerminalForInputCapability() throws {
+        let ownership = try serviceSlice(
+            after: "    private var screenCaptureTransitionIsOwned: Bool {",
+            before: "    /// A newer ordered request owns the screen state"
+        )
+        XCTAssertTrue(
+            ownership.contains("currentSink.isDisplayConfigurationInProgress")
+        )
+
+        let sinkState = try serviceSlice(
+            after: "    var isDisplayConfigurationInProgress: Bool {",
+            before: "    /// Privacy-safe capture state sampled"
+        )
+        XCTAssertTrue(sinkState.contains("displayConfigurationInProgress"))
+        XCTAssertTrue(sinkState.contains("forwardingPhase == .starting"))
+        XCTAssertTrue(sinkState.contains("forwardingPhase == .active"))
+        XCTAssertTrue(sinkState.contains("callbackGateAllowsEntry"))
+
+        let request = try serviceSlice(
+            after: "    private func handleRemoteInputRequest(",
+            before: "    /// Holds input, capture, then the exact forwarding authorization"
+        )
+        XCTAssertTrue(request.contains("if feedback.revokesSession"))
+
+        let unavailable = try serviceSlice(
+            after: "    private func remoteInputCaptureUnavailableResult()",
+            before: "    /// Maps validated wire actions onto the narrow macOS input controller surface."
+        )
+        XCTAssertTrue(unavailable.contains(".rejected(.screenFormatChanging)"))
+
+        let feedback = try serviceSlice(
+            after: "    private func transportFeedback(",
+            before: "    /// Revokes the transport token and controller state synchronously."
+        )
+        let transitionCase = try XCTUnwrap(
+            feedback.range(of: "case .screenFormatChanging:")
+        )
+        let nonRevoking = try XCTUnwrap(
+            feedback.range(
+                of: "revokesSession = false",
+                range: transitionCase.upperBound..<feedback.endIndex
+            )
+        )
+        XCTAssertLessThan(transitionCase.lowerBound, nonRevoking.lowerBound)
     }
 
     func testNativeRestartRetryPreservesInputOnlyForAnOwnedFormatTransition() throws {
