@@ -227,6 +227,63 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         )
     }
 
+    func testPointerRequestBindsToViewerObservedVideoAspectWithoutChangingEnvelopeVersion() throws {
+        let request = WebRTCInputRequest(
+            id: 8,
+            screenRequestID: 3,
+            inputSessionID: sessionID,
+            action: .tap(.init(x: 0.25, y: 0.75)),
+            viewerVideoSize: .init(width: 1_080, height: 2_340)
+        )
+
+        let data = try JSONEncoder().encode(ControlChannelMessage.input(request))
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        XCTAssertEqual(object["version"] as? Int, 2)
+        let encodedRequest = try XCTUnwrap(object["input"] as? [String: Any])
+        let encodedSize = try XCTUnwrap(
+            encodedRequest["viewerVideoSize"] as? [String: Any]
+        )
+        XCTAssertEqual(encodedSize["width"] as? Int, 1_080)
+        XCTAssertEqual(encodedSize["height"] as? Int, 2_340)
+        XCTAssertEqual(
+            try JSONDecoder().decode(ControlChannelMessage.self, from: data),
+            .input(request)
+        )
+    }
+
+    func testLegacyPointerRequestWithoutViewerVideoSizeStillDecodes() throws {
+        let data = Data(
+            #"{"id":8,"screenRequestID":3,"inputSessionID":"8D18B56A-302A-4EC2-A3DA-1070491D7814","action":{"kind":"tap","point":{"x":0.25,"y":0.75}}}"#.utf8
+        )
+
+        let request = try JSONDecoder().decode(WebRTCInputRequest.self, from: data)
+
+        XCTAssertNil(request.viewerVideoSize)
+        XCTAssertEqual(request.action, .tap(.init(x: 0.25, y: 0.75)))
+    }
+
+    func testViewerVideoSizeIsRejectedForKeyboardAndOutsideSafeBounds() {
+        let keyboardRequest = WebRTCInputRequest(
+            id: 9,
+            screenRequestID: 3,
+            inputSessionID: sessionID,
+            action: .returnKey(focusGeneration: 9),
+            viewerVideoSize: .init(width: 1_080, height: 2_340)
+        )
+        XCTAssertThrowsError(try JSONEncoder().encode(keyboardRequest))
+
+        let invalidSizeRequest = WebRTCInputRequest(
+            id: 10,
+            screenRequestID: 3,
+            inputSessionID: sessionID,
+            action: .tap(.init(x: 0.5, y: 0.5)),
+            viewerVideoSize: .init(width: 1, height: 2_340)
+        )
+        XCTAssertThrowsError(try JSONEncoder().encode(invalidSizeRequest))
+    }
+
     func testLegacyV2AcknowledgementWithoutCapabilityStillDecodes() throws {
         let data = Data(#"{"version":2,"kind":"ack","acknowledgement":{"id":4,"state":"active"}}"#.utf8)
         XCTAssertEqual(

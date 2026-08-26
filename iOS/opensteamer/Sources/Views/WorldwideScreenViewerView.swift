@@ -11,7 +11,6 @@ struct WorldwideScreenViewerView: View {
     @EnvironmentObject private var viewModel: WorldwideSessionViewModel
     let lease: WorldwideScreenPresentationLease
     let dismissPresentation: (WorldwideScreenPresentationLease) -> Void
-    @State private var remoteVideoSize = CGSize.zero
     @State private var videoRendererID = UUID()
     @State private var videoRenderObservation: WebRTCVideoRenderObservation?
     @State private var allowsRemoteInputPresentation = true
@@ -19,17 +18,23 @@ struct WorldwideScreenViewerView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
-
-            VStack(spacing: 16) {
-                header
-
+            FullscreenViewerLayout {
                 GeometryReader { geometry in
                     if allowsRemoteScreenRendering {
                         WebRTCRemoteScreenView(
                             track: viewModel.remoteVideoTrack,
-                            onVideoSizeChanged: { remoteVideoSize = $0 },
-                            onVideoFrameRendered: { videoRenderObservation = $0 }
+                            // Any decoded-size transition clears touch immediately. Size callbacks
+                            // precede presentation and therefore cannot authorize the new mapping.
+                            onVideoSizeChanged: { _ in
+                                videoRenderObservation = nil
+                            },
+                            onVideoFrameRendered: { observation in
+                                if videoRenderObservation.map({
+                                    observation.frameCount > $0.frameCount
+                                }) != false {
+                                    videoRenderObservation = observation
+                                }
+                            }
                         )
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .background(.black)
@@ -55,13 +60,14 @@ struct WorldwideScreenViewerView: View {
                                     guard case .second(true, .some) = value,
                                           primaryDragContext == nil,
                                           viewModel.isRemotePrimaryDragAvailable,
-                                          let inputSessionID = viewModel.remoteInputCapability?.inputSessionID else {
+                                          let inputSessionID = viewModel.remoteInputCapability?.inputSessionID,
+                                          let renderedVideoSize else {
                                         return
                                     }
                                     primaryDragContext = PrimaryDragContext(
                                         inputSessionID: inputSessionID,
                                         containerSize: geometry.size,
-                                        videoSize: remoteVideoSize
+                                        videoSize: renderedVideoSize
                                     )
                                 }
                                 .onEnded { value in
@@ -70,7 +76,8 @@ struct WorldwideScreenViewerView: View {
                                           let context = primaryDragContext,
                                           context.inputSessionID == viewModel.remoteInputCapability?.inputSessionID,
                                           context.containerSize == geometry.size,
-                                          context.videoSize == remoteVideoSize else {
+                                          let renderedVideoSize,
+                                          context.videoSize == renderedVideoSize else {
                                         return
                                     }
                                     forwardPrimaryDrag(
@@ -102,21 +109,9 @@ struct WorldwideScreenViewerView: View {
                 .accessibilityLabel("Mac screen video")
                 .accessibilityValue(videoRenderAccessibilityValue)
                 .accessibilityIdentifier("worldwideMacScreenVideo")
-
-                status
-
-                Button {
-                    hideAndDismiss()
-                } label: {
-                    Label("Hide Screen", systemImage: "rectangle.slash")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .padding(.horizontal)
-                .padding(.bottom, 8)
-                .accessibilityIdentifier("hideWorldwideMacScreen")
             }
+
+            screenAccessibilityOracles
 
             RemoteKeyboardInputView(
                 inputAvailable: effectiveRemoteInputAvailable,
@@ -164,86 +159,49 @@ struct WorldwideScreenViewerView: View {
                 videoRenderObservation = nil
             }
         }
-        .onChange(of: remoteVideoSize) {
+        .onChange(of: renderedVideoSize) {
             primaryDragContext = nil
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Mac Screen")
-                    .font(.headline)
-                Text(viewModel.remoteDisplayName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            Button {
-                hideAndDismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 44, height: 44)
-                    .background(.thinMaterial, in: Circle())
-            }
-            .accessibilityLabel("Hide Screen")
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal)
-        .padding(.top, 8)
-    }
-
-    private var status: some View {
-        VStack(spacing: 6) {
-            Text(viewModel.stateText)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.white)
+    private var screenAccessibilityOracles: some View {
+        VStack(spacing: 0) {
+            Color.clear
+                .frame(width: 1, height: 1)
+                .accessibilityElement()
+                .accessibilityLabel(viewModel.stateText)
                 .accessibilityValue(
                     viewModel.screenAcknowledgementOracle?.accessibilityValue
                         ?? "unavailable"
                 )
+                .accessibilityHint(
+                    "\(viewModel.remoteDisplayName), \(viewModel.routeText)"
+                )
                 .accessibilityIdentifier("worldwideScreenAcknowledgementOracle")
 
-            Text(viewModel.routeText == "Unknown" ? "Finding best route" : viewModel.routeText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
             if effectiveRemoteInputAvailable {
-                Label(
-                    viewModel.isRemotePrimaryDragAvailable
-                        ? "Tap to click · Hold and drag to select or move"
-                        : "Touch control enabled",
-                    systemImage: "hand.tap"
-                )
-                    .font(.caption)
-                    .foregroundStyle(.green)
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .accessibilityElement()
+                    .accessibilityLabel(
+                        viewModel.isRemotePrimaryDragAvailable
+                            ? "Tap to click. Hold and drag to select or move."
+                            : "Touch control enabled"
+                    )
                     .accessibilityIdentifier("worldwideRemoteInputEnabled")
             }
-
-            if let lastError = viewModel.lastError {
-                Label(lastError, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-            }
         }
-        .accessibilityIdentifier("worldwideMacScreenStatus")
+        .frame(width: 1, height: 1)
+        .allowsHitTesting(false)
     }
 
     private func hideAndDismiss() {
-        // Close the local input gate synchronously, then dismiss after the owned remote Hide is
-        // acknowledged. If this lease already lost ownership, dismissal is safe immediately.
+        // Close rendering/input synchronously and start the fail-closed remote Hide transaction.
+        // The local cover exits immediately; the model continues requiring an authenticated Hide
+        // acknowledgement and closes the session if the Mac cannot prove capture stopped.
         allowsRemoteInputPresentation = false
-        let claimed = viewModel.beginPassiveScreenTeardown(for: lease) {
-            dismissPresentation(lease)
-        }
-        if !claimed {
-            dismissPresentation(lease)
-        }
+        _ = viewModel.beginPassiveScreenTeardown(for: lease)
+        dismissPresentation(lease)
     }
 
     private func rejectPresentationAndDismiss() {
@@ -254,14 +212,18 @@ struct WorldwideScreenViewerView: View {
 
     private func forwardTap(_ location: CGPoint, containerSize: CGSize) {
         guard effectiveRemoteInputAvailable,
+              let renderedVideoSize,
               let normalizedPoint = AspectFitCoordinateMapper.normalizedPoint(
                 for: location,
                 containerSize: containerSize,
-                videoSize: remoteVideoSize
+                videoSize: renderedVideoSize
               ) else {
             return
         }
-        viewModel.sendRemoteTap(normalizedPoint: normalizedPoint)
+        viewModel.sendRemoteTap(
+            normalizedPoint: normalizedPoint,
+            viewerVideoSize: renderedVideoSize
+        )
     }
 
     private func forwardPrimaryDrag(
@@ -282,14 +244,36 @@ struct WorldwideScreenViewerView: View {
         }
         viewModel.sendRemotePrimaryDrag(
             startNormalizedPoint: endpoints.start,
-            endNormalizedPoint: endpoints.end
+            endNormalizedPoint: endpoints.end,
+            viewerVideoSize: videoSize
         )
     }
 
     private var effectiveRemoteInputAvailable: Bool {
         viewModel.remoteInputIsAvailable(for: lease)
+            && renderedVideoSize != nil
             && allowsRemoteInputPresentation
             && scenePhase == .active
+    }
+
+    /// Touch is bound only to dimensions observed after a decoded frame was presented by Metal.
+    /// `didChangeVideoSize` may run ahead of that visible frame during a format transition.
+    private var renderedVideoSize: CGSize? {
+        Self.renderedVideoSize(from: videoRenderObservation)
+    }
+
+    static func renderedVideoSize(
+        from observation: WebRTCVideoRenderObservation?
+    ) -> CGSize? {
+        guard let observation,
+              observation.width >= 2,
+              observation.height >= 2 else {
+            return nil
+        }
+        return CGSize(
+            width: observation.width,
+            height: observation.height
+        )
     }
 
     private var allowsRemoteScreenRendering: Bool {

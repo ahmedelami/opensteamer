@@ -659,6 +659,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         @MainActor (
             WebRTCPeer,
             WebRTCInputAction,
+            WebRTCInputVideoSize?,
             WebRTCInputCapability,
             WebRTCInputAuthorization
         ) async throws -> UInt64
@@ -1743,6 +1744,10 @@ final class WorldwideSessionViewModel: ObservableObject {
             isVisible: false,
             completion: completion
         )
+        // A locally dismissed viewer must not leave an in-flight Show owning the serial drain.
+        // Queue Hide first, then retire/resume the same-lease Show so the drain advances directly
+        // into the fail-closed teardown even after the presentation lease itself is retired.
+        supersedeScreenShow(for: lease)
         return true
     }
 
@@ -2107,10 +2112,14 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     // MARK: - Remote input serialization
 
-    func sendRemoteTap(normalizedPoint: CGPoint) {
+    func sendRemoteTap(
+        normalizedPoint: CGPoint,
+        viewerVideoSize: CGSize
+    ) {
         guard isRemoteInputAvailable,
               normalizedPoint.x.isFinite,
-              normalizedPoint.y.isFinite else {
+              normalizedPoint.y.isFinite,
+              let viewerVideoSize = Self.remoteInputVideoSize(from: viewerVideoSize) else {
             return
         }
 
@@ -2122,19 +2131,22 @@ final class WorldwideSessionViewModel: ObservableObject {
                     y: Double(normalizedPoint.y)
                 )
             ),
-            pointerIntentID: pointerIntentID
+            pointerIntentID: pointerIntentID,
+            viewerVideoSize: viewerVideoSize
         )
     }
 
     func sendRemotePrimaryDrag(
         startNormalizedPoint: CGPoint,
-        endNormalizedPoint: CGPoint
+        endNormalizedPoint: CGPoint,
+        viewerVideoSize: CGSize
     ) {
         guard isRemotePrimaryDragAvailable,
               startNormalizedPoint.x.isFinite,
               startNormalizedPoint.y.isFinite,
               endNormalizedPoint.x.isFinite,
-              endNormalizedPoint.y.isFinite else {
+              endNormalizedPoint.y.isFinite,
+              let viewerVideoSize = Self.remoteInputVideoSize(from: viewerVideoSize) else {
             return
         }
 
@@ -2150,8 +2162,21 @@ final class WorldwideSessionViewModel: ObservableObject {
                     y: Double(endNormalizedPoint.y)
                 )
             ),
-            pointerIntentID: pointerIntentID
+            pointerIntentID: pointerIntentID,
+            viewerVideoSize: viewerVideoSize
         )
+    }
+
+    private static func remoteInputVideoSize(
+        from size: CGSize
+    ) -> WebRTCInputVideoSize? {
+        guard size.width.isFinite,
+              size.height.isFinite else { return nil }
+        let width = size.width.rounded()
+        let height = size.height.rounded()
+        guard (2 ... 32_768).contains(width),
+              (2 ... 32_768).contains(height) else { return nil }
+        return WebRTCInputVideoSize(width: Int(width), height: Int(height))
     }
 
     private func beginRemotePointerIntent() -> UInt64 {
@@ -2179,7 +2204,8 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func enqueueRemoteInput(
         _ action: WebRTCInputAction,
-        pointerIntentID: UInt64? = nil
+        pointerIntentID: UInt64? = nil,
+        viewerVideoSize: WebRTCInputVideoSize? = nil
     ) {
         guard let capability = remoteInputCapability,
               let authorization = remoteInputAuthorization,
@@ -2200,7 +2226,8 @@ final class WorldwideSessionViewModel: ObservableObject {
                 authorization: authorization,
                 sessionGeneration: sessionGeneration,
                 inputGeneration: remoteInputGeneration,
-                pointerIntentID: pointerIntentID
+                pointerIntentID: pointerIntentID,
+                viewerVideoSize: viewerVideoSize
             )
         )
         startRemoteInputDrainIfNeeded()
@@ -2258,6 +2285,7 @@ final class WorldwideSessionViewModel: ObservableObject {
                 guard !Task.isCancelled, queued.authorization.isValid else { return }
                 let requestID = try await sendRemoteInput(
                     queued.action,
+                    viewerVideoSize: queued.viewerVideoSize,
                     peer: peer,
                     capability: queued.capability,
                     authorization: queued.authorization
@@ -2310,6 +2338,7 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func sendRemoteInput(
         _ action: WebRTCInputAction,
+        viewerVideoSize: WebRTCInputVideoSize?,
         peer: WebRTCPeer,
         capability: WebRTCInputCapability,
         authorization: WebRTCInputAuthorization
@@ -2319,6 +2348,7 @@ final class WorldwideSessionViewModel: ObservableObject {
             return try await debugRemoteInputSender(
                 peer,
                 action,
+                viewerVideoSize,
                 capability,
                 authorization
             )
@@ -2326,6 +2356,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         #endif
         return try await peer.sendInput(
             action,
+            viewerVideoSize: viewerVideoSize,
             capability: capability,
             authorization: authorization
         )
@@ -6304,6 +6335,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         _ sender: @escaping @MainActor (
             WebRTCPeer,
             WebRTCInputAction,
+            WebRTCInputVideoSize?,
             WebRTCInputCapability,
             WebRTCInputAuthorization
         ) async throws -> UInt64
@@ -6317,7 +6349,9 @@ final class WorldwideSessionViewModel: ObservableObject {
     func debugInstallQueuedRemoteInputSessionForRaceTests(
         peer newPeer: WebRTCPeer,
         focusGeneration: UInt64,
-        diagnostic: String
+        diagnostic: String,
+        queuedAction: WebRTCInputAction? = nil,
+        viewerVideoSize: WebRTCInputVideoSize? = nil
     ) -> WebRTCInputAuthorization {
         invalidateRemoteInputState()
         sessionGeneration = UUID()
@@ -6346,14 +6380,16 @@ final class WorldwideSessionViewModel: ObservableObject {
         debugActiveScreenPresentationLease = lease
         #endif
         lastDiagnostic = diagnostic
+        let action = queuedAction ?? .returnKey(focusGeneration: focusGeneration)
         remoteInputQueue = [
             QueuedRemoteInput(
-                action: .returnKey(focusGeneration: focusGeneration),
+                action: action,
                 capability: capability,
                 authorization: authorization,
                 sessionGeneration: sessionGeneration,
                 inputGeneration: remoteInputGeneration,
-                pointerIntentID: nil
+                pointerIntentID: action.requiresRemoteFocus ? nil : 1,
+                viewerVideoSize: viewerVideoSize
             )
         ]
         return authorization
@@ -6404,7 +6440,8 @@ final class WorldwideSessionViewModel: ObservableObject {
                 authorization: authorization,
                 sessionGeneration: sessionGeneration,
                 inputGeneration: remoteInputGeneration,
-                pointerIntentID: nil
+                pointerIntentID: nil,
+                viewerVideoSize: nil
             )
         ]
         return authorization
@@ -7112,6 +7149,7 @@ private struct QueuedRemoteInput {
     let sessionGeneration: UUID
     let inputGeneration: UUID
     let pointerIntentID: UInt64?
+    let viewerVideoSize: WebRTCInputVideoSize?
 }
 
 private extension WebRTCInputAction {

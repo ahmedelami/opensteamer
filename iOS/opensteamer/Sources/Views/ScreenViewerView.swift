@@ -5,6 +5,7 @@ import SwiftUI
 /// presented and stopping it on every dismissal path.
 struct ScreenViewerView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var viewModel: ScreenSessionViewModel
 
     init(descriptor: ScreenVideoConnectionDescriptor) {
@@ -13,42 +14,30 @@ struct ScreenViewerView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
-
-            VStack(spacing: 16) {
-                header
-
-                Spacer(minLength: 0)
-
-                SampleBufferScreenView(renderer: viewModel.renderer)
-                    .aspectRatio(viewModel.aspectRatio, contentMode: .fit)
-                    .frame(maxWidth: .infinity)
-                    .background(.black)
-                    .overlay {
-                        if viewModel.frameCount == 0 {
-                            ProgressView()
-                                .tint(.white)
-                                .accessibilityLabel(viewModel.stateText)
+            FullscreenViewerLayout {
+                GeometryReader { geometry in
+                    SampleBufferScreenView(renderer: viewModel.renderer)
+                        .aspectRatio(viewModel.aspectRatio, contentMode: .fit)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .background(.black)
+                        .overlay {
+                            if viewModel.frameCount == 0 {
+                                ProgressView()
+                                    .tint(.white)
+                                    .accessibilityLabel(viewModel.stateText)
+                            }
                         }
-                    }
-                    .accessibilityIdentifier("macScreenVideo")
-
-                status
-
-                Spacer(minLength: 0)
-
-                Button {
-                    dismiss()
-                } label: {
-                    Label("Hide Screen", systemImage: "rectangle.slash")
-                        .frame(maxWidth: .infinity)
+                        .accessibilityIdentifier("macScreenVideo")
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .padding(.horizontal)
-                .padding(.bottom, 8)
-                .accessibilityIdentifier("hideMacScreen")
             }
+
+            Color.clear
+                .frame(width: 1, height: 1)
+                .accessibilityElement()
+                .accessibilityLabel("\(viewModel.displayName), \(viewModel.stateText)")
+                .accessibilityValue(viewModel.lastError ?? viewModel.stateText)
+                .accessibilityIdentifier("macScreenStatus")
+                .allowsHitTesting(false)
         }
         .task {
             viewModel.start()
@@ -56,49 +45,33 @@ struct ScreenViewerView: View {
         .onDisappear {
             viewModel.stop()
         }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase != .active else { return }
+            viewModel.stop()
+            dismiss()
+        }
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Mac Screen")
-                    .font(.headline)
-                Text(viewModel.displayName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+}
 
-            Spacer()
+/// Edge-to-edge viewer shell shared by the local and worldwide screen paths.
+///
+/// The streamed image is the only visible content and owns the complete display surface.
+struct FullscreenViewerLayout<Content: View>: View {
+    @ViewBuilder let content: Content
 
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 44, height: 44)
-                    .background(.thinMaterial, in: Circle())
-            }
-            .accessibilityLabel("Hide Screen")
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal)
-        .padding(.top, 8)
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
     }
 
-    private var status: some View {
-        VStack(spacing: 6) {
-            Text(viewModel.stateText)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.white)
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
 
-            if let lastError = viewModel.lastError {
-                Label(lastError, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-            }
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
         }
-        .accessibilityIdentifier("macScreenStatus")
+        .statusBarHidden(true)
     }
 }

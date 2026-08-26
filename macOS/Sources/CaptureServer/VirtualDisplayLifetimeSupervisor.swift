@@ -196,9 +196,9 @@ enum VirtualDisplayTeardownBudgets {
     static let mediaService: Duration = .seconds(45)
     static let initialization: Duration = .seconds(40)
     static let nonVirtualProcessCleanup: Duration = .seconds(60)
-    // Two LAN native attempts, one whole worldwide close, then offline/restoration polling.
-    static let combinedVirtualTeardownEnvelope: Duration = .seconds(71)
-    static let terminal: Duration = .seconds(90)
+    // Two LAN native attempts, one whole worldwide close, then at most two restoration probes.
+    static let combinedVirtualTeardownEnvelope: Duration = .seconds(89)
+    static let terminal: Duration = .seconds(105)
 }
 
 /// One buffered wake-up that makes an owned-display failure observable by Main's async run loop.

@@ -56,13 +56,7 @@ public final class VideoTCPServer: @unchecked Sendable {
     private var listener: NWListener?
     private var client: VideoClientConnection?
     private var activeViewerSessionID: VideoViewerSessionID?
-    private var generation: UInt32 = 0
-    private var nextSequence: UInt32 = 0
-    private var nextReservationID: UInt64 = 1
-    private var activeReservationID: UInt64?
-    private var awaitingAcknowledgement: UInt32?
-    private var forceNextKeyFrame = true
-    private var lastSentConfiguration: ScreenVideoConfiguration?
+    private var frameFlow = VideoFrameFlowState()
     private var acknowledgementTimeoutWorkItem: DispatchWorkItem?
     private var reconnects = 0
     private var framesSent: Int64 = 0
@@ -196,24 +190,40 @@ public final class VideoTCPServer: @unchecked Sendable {
         }
     }
 
+    /// Starts a fresh decoder/flow-control generation for an in-place capture format rebuild.
+    /// Delayed acknowledgements from the retired canvas are ignored by their old generation.
+    public func beginCaptureFormatDiscontinuity(
+        for expectedSessionID: VideoViewerSessionID
+    ) -> Bool {
+        queue.sync {
+            guard activeViewerSessionID == expectedSessionID,
+                  let client,
+                  client.isAuthorized else {
+                return false
+            }
+            beginNewFrameGeneration()
+            return true
+        }
+    }
+
     /// Reserves the sole encoding slot when no frame or acknowledgement is outstanding.
     public func reserveFrameForEncoding() -> ScreenVideoFrameReservation? {
         queue.sync {
             guard let client,
                   client.isAuthorized,
-                  activeReservationID == nil,
-                  awaitingAcknowledgement == nil else {
+                  frameFlow.activeReservationID == nil,
+                  frameFlow.awaitingAcknowledgement == nil else {
                 return nil
             }
-            let reservationID = nextReservationID
-            nextReservationID &+= 1
+            let reservationID = frameFlow.nextReservationID
+            frameFlow.nextReservationID &+= 1
             let reservation = ScreenVideoFrameReservation(
                 id: reservationID,
-                generation: generation,
-                forceKeyFrame: forceNextKeyFrame
+                generation: frameFlow.generation,
+                forceKeyFrame: frameFlow.forceNextKeyFrame
             )
-            activeReservationID = reservationID
-            forceNextKeyFrame = false
+            frameFlow.activeReservationID = reservationID
+            frameFlow.forceNextKeyFrame = false
             return reservation
         }
     }
@@ -224,11 +234,11 @@ public final class VideoTCPServer: @unchecked Sendable {
         requestKeyFrame: Bool
     ) {
         queue.async {
-            guard reservation.generation == self.generation,
-                  self.activeReservationID == reservation.id else { return }
-            self.activeReservationID = nil
+            guard reservation.generation == self.frameFlow.generation,
+                  self.frameFlow.activeReservationID == reservation.id else { return }
+            self.frameFlow.activeReservationID = nil
             if requestKeyFrame {
-                self.forceNextKeyFrame = true
+                self.frameFlow.forceNextKeyFrame = true
                 self.eventHandler?.videoServerRequestedKeyFrame()
             }
         }
@@ -242,22 +252,22 @@ public final class VideoTCPServer: @unchecked Sendable {
         bitrate: UInt32
     ) {
         queue.async {
-            guard reservation.generation == self.generation,
-                  self.activeReservationID == reservation.id,
+            guard reservation.generation == self.frameFlow.generation,
+                  self.frameFlow.activeReservationID == reservation.id,
                   let client = self.client,
                   client.isAuthorized else {
                 return
             }
-            self.activeReservationID = nil
+            self.frameFlow.activeReservationID = nil
 
             if reservation.forceKeyFrame && !frame.isKeyFrame {
-                self.forceNextKeyFrame = true
+                self.frameFlow.forceNextKeyFrame = true
                 self.eventHandler?.videoServerRequestedKeyFrame()
                 return
             }
 
-            let sequence = self.nextSequence
-            self.nextSequence &+= 1
+            let sequence = self.frameFlow.nextSequence
+            self.frameFlow.nextSequence &+= 1
 
             do {
                 if frame.isKeyFrame {
@@ -277,35 +287,39 @@ public final class VideoTCPServer: @unchecked Sendable {
                             )
                         }
                     )
-                    if self.lastSentConfiguration != configuration {
+                    if self.frameFlow.lastSentConfiguration != configuration {
                         let configurationPacket = ScreenVideoPacket(
                             type: .configuration,
                             flags: [.discontinuity],
-                            generation: self.generation,
+                            generation: self.frameFlow.generation,
                             sequence: sequence,
                             presentationTimestampNanoseconds: frame.presentationTimestampNanoseconds,
                             payload: try ScreenVideoFraming.makeConfiguration(configuration)
                         )
                         try client.sendPacket(configurationPacket)
-                        self.lastSentConfiguration = configuration
+                        self.frameFlow.lastSentConfiguration = configuration
                     }
                 }
 
                 let framePacket = ScreenVideoPacket(
                     type: .frame,
                     flags: frame.isKeyFrame ? [.keyFrame] : [],
-                    generation: self.generation,
+                    generation: self.frameFlow.generation,
                     sequence: sequence,
                     presentationTimestampNanoseconds: frame.presentationTimestampNanoseconds,
                     payload: frame.bytes
                 )
                 try client.sendPacket(framePacket)
                 self.framesSent += 1
-                self.awaitingAcknowledgement = sequence
-                self.scheduleAcknowledgementTimeout(sequence: sequence, client: client)
+                self.frameFlow.awaitingAcknowledgement = sequence
+                self.scheduleAcknowledgementTimeout(
+                    generation: self.frameFlow.generation,
+                    sequence: sequence,
+                    client: client
+                )
             } catch {
                 self.logger.error("Could not send screen frame: \(error.localizedDescription)")
-                self.forceNextKeyFrame = true
+                self.frameFlow.forceNextKeyFrame = true
                 client.cancel(reason: "screen frame serialization failed")
             }
         }
@@ -320,7 +334,8 @@ public final class VideoTCPServer: @unchecked Sendable {
                 queuedPackets: client?.queuedPackets ?? 0,
                 framesSent: framesSent,
                 bytesSent: closedClientBytesSent + (client?.bytesSent ?? 0),
-                framesAwaitingAcknowledgement: awaitingAcknowledgement == nil ? 0 : 1
+                framesAwaitingAcknowledgement:
+                    frameFlow.awaitingAcknowledgement == nil ? 0 : 1
             )
         }
     }
@@ -374,11 +389,7 @@ public final class VideoTCPServer: @unchecked Sendable {
         guard client === authorizedClient, activeViewerSessionID == nil else { return }
         let sessionID = VideoViewerSessionID()
         activeViewerSessionID = sessionID
-        generation &+= 1
-        if generation == 0 {
-            generation = 1
-        }
-        resetFrameFlow()
+        beginNewFrameGeneration()
         eventHandler?.videoServerViewerConnected(sessionID)
     }
 
@@ -393,20 +404,27 @@ public final class VideoTCPServer: @unchecked Sendable {
 
         switch packet.type {
         case .acknowledgement:
-            guard packet.generation == generation else { return }
-            guard let awaitingAcknowledgement else { return }
-            guard packet.sequence == awaitingAcknowledgement else {
-                if packet.sequence > awaitingAcknowledgement {
+            guard frameFlow.acknowledgementMatches(
+                generation: packet.generation,
+                sequence: packet.sequence
+            ) else {
+                if packet.generation == frameFlow.generation,
+                   let awaitingAcknowledgement = frameFlow.awaitingAcknowledgement,
+                   packet.sequence > awaitingAcknowledgement {
                     controlClient.cancel(reason: "screen acknowledgement is ahead of the stream")
                 }
+                return
+            }
+            guard let awaitingAcknowledgement = frameFlow.awaitingAcknowledgement else { return }
+            guard packet.sequence == awaitingAcknowledgement else {
                 // Duplicate ACKs for an older frame are harmless.
                 return
             }
             acknowledgementTimeoutWorkItem?.cancel()
             acknowledgementTimeoutWorkItem = nil
-            self.awaitingAcknowledgement = nil
+            frameFlow.awaitingAcknowledgement = nil
         case .keyFrameRequest:
-            guard packet.generation == generation else {
+            guard packet.generation == frameFlow.generation else {
                 // A request from before configuration, or from an abandoned
                 // recovery generation, cannot describe the current stream.
                 return
@@ -432,27 +450,27 @@ public final class VideoTCPServer: @unchecked Sendable {
 
     /// Starts a new generation and requires configuration plus a key frame.
     private func forceRecovery() {
-        generation &+= 1
-        if generation == 0 {
-            generation = 1
-        }
-        resetFrameFlow()
+        beginNewFrameGeneration()
         eventHandler?.videoServerRequestedKeyFrame()
+    }
+
+    /// Rolls generation and clears all state that can refer to the retired decoder canvas.
+    private func beginNewFrameGeneration() {
+        acknowledgementTimeoutWorkItem?.cancel()
+        acknowledgementTimeoutWorkItem = nil
+        frameFlow.beginNewGeneration()
     }
 
     /// Clears reservations, acknowledgements, and decoder configuration for a generation.
     private func resetFrameFlow() {
         acknowledgementTimeoutWorkItem?.cancel()
         acknowledgementTimeoutWorkItem = nil
-        nextSequence = 0
-        activeReservationID = nil
-        awaitingAcknowledgement = nil
-        forceNextKeyFrame = true
-        lastSentConfiguration = nil
+        frameFlow.resetWithinGeneration()
     }
 
     /// Disconnects a viewer that does not acknowledge the one outstanding frame.
     private func scheduleAcknowledgementTimeout(
+        generation: UInt32,
         sequence: UInt32,
         client timeoutClient: VideoClientConnection
     ) {
@@ -461,13 +479,45 @@ public final class VideoTCPServer: @unchecked Sendable {
             guard let self,
                   let timeoutClient,
                   self.client === timeoutClient,
-                  self.awaitingAcknowledgement == sequence else {
+                  self.frameFlow.generation == generation,
+                  self.frameFlow.awaitingAcknowledgement == sequence else {
                 return
             }
             timeoutClient.cancel(reason: "screen frame acknowledgement timeout")
         }
         acknowledgementTimeoutWorkItem = timeout
         queue.asyncAfter(deadline: .now() + .seconds(2), execute: timeout)
+    }
+}
+
+/// Pure decoder/flow state shared by live transport and discontinuity regression tests.
+struct VideoFrameFlowState {
+    var generation: UInt32 = 0
+    var nextSequence: UInt32 = 0
+    var nextReservationID: UInt64 = 1
+    var activeReservationID: UInt64?
+    var awaitingAcknowledgement: UInt32?
+    var forceNextKeyFrame = true
+    var lastSentConfiguration: ScreenVideoConfiguration?
+
+    mutating func beginNewGeneration() {
+        generation &+= 1
+        if generation == 0 {
+            generation = 1
+        }
+        resetWithinGeneration()
+    }
+
+    mutating func resetWithinGeneration() {
+        nextSequence = 0
+        activeReservationID = nil
+        awaitingAcknowledgement = nil
+        forceNextKeyFrame = true
+        lastSentConfiguration = nil
+    }
+
+    func acknowledgementMatches(generation: UInt32, sequence: UInt32) -> Bool {
+        generation == self.generation && sequence == awaitingAcknowledgement
     }
 }
 

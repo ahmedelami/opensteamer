@@ -52,6 +52,9 @@ public struct VirtualDisplayConfiguration: Equatable, Sendable {
     public let displaySettingsHiDPI: UInt32
     public let modes: [VirtualDisplayMode]
     public let requiredResolvedModes: [VirtualDisplayResolvedMode]
+    /// The underlying desktop mapping expected after this owned virtual display retires.
+    /// It can be larger than the virtual display's framebuffer limits.
+    public let restoredDesktopMode: VirtualDisplayResolvedMode?
 
     public init(
         name: String,
@@ -64,7 +67,8 @@ public struct VirtualDisplayConfiguration: Equatable, Sendable {
         physicalHeightMillimeters: Double,
         displaySettingsHiDPI: UInt32,
         modes: [VirtualDisplayMode],
-        requiredResolvedModes: [VirtualDisplayResolvedMode]
+        requiredResolvedModes: [VirtualDisplayResolvedMode],
+        restoredDesktopMode: VirtualDisplayResolvedMode? = nil
     ) throws {
         self.name = name
         self.vendorID = vendorID
@@ -77,6 +81,7 @@ public struct VirtualDisplayConfiguration: Equatable, Sendable {
         self.displaySettingsHiDPI = displaySettingsHiDPI
         self.modes = modes
         self.requiredResolvedModes = requiredResolvedModes
+        self.restoredDesktopMode = restoredDesktopMode
         try validate()
     }
 
@@ -176,6 +181,19 @@ public struct VirtualDisplayConfiguration: Equatable, Sendable {
             }
             guard uniqueResolvedModes.insert(mode).inserted else {
                 throw VirtualDisplayConfigurationError.duplicateResolvedMode
+            }
+        }
+
+        if let restoredDesktopMode {
+            guard restoredDesktopMode.logicalWidth > 0,
+                restoredDesktopMode.logicalHeight > 0,
+                restoredDesktopMode.pixelWidth > 0,
+                restoredDesktopMode.pixelHeight > 0
+            else {
+                throw VirtualDisplayConfigurationError.invalidResolvedModeDimensions
+            }
+            guard Self.validRefreshRate(restoredDesktopMode.refreshRate) else {
+                throw VirtualDisplayConfigurationError.invalidRefreshRate
             }
         }
     }

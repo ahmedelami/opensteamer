@@ -121,7 +121,7 @@ The authoritative values for the maintainer build are:
 | Configuration field | Checked-in value |
 | --- | --- |
 | Protected legacy Release bundle | <code>com.elamin.AudioStreamer</code>, build `36` |
-| Side-by-side TestFlight bundle | <code>com.elamin.opensteamer</code>, build `46` |
+| Side-by-side TestFlight bundle | <code>com.elamin.opensteamer</code>, build `50` |
 | Development team | `MSMG8CJLB3` |
 | Marketing version | `0.1.0` |
 | Release rendezvous | `OPENSTEAMER_RENDEZVOUS_URL` uses the production WSS Worker origin declared in [`project.yml`](iOS/opensteamer/project.yml) |
@@ -181,9 +181,13 @@ window-placement UX for a second desktop.
 
 The host preserves the starting desktop mapping and verifies every required resolution before it
 advertises availability. macOS Display Settings then shows `opensteamer Display`, including the
-iPhone 17 Pro Retina mapping of 603x1311 logical points to 1206x2622 framebuffer pixels. Choose a
-resolution before pressing **Show** on the iPhone. After changing it during a live session, Hide
-and Show again so ScreenCaptureKit renegotiates the frame size.
+iPhone 17 Pro Retina mapping of 603x1311 logical points to 1206x2622 framebuffer pixels. On the
+supported macOS host, the smallest compatibility choice is the native 750x1334 framebuffer because
+WindowServer does not publish its 375x667 HiDPI counterpart. A resolution selected before
+**Show** is used for the initial stream. Changing it while the screen is already visible now
+automatically closes the old delivery generation and rebuilds capture at the new framebuffer size.
+Valid inset geometry is also suppressed during that handoff, so the iPhone does not need a manual
+Hide/Show cycle.
 
 This compatibility path uses the exported but private macOS `CGVirtualDisplay` classes because
 Apple provides no public host virtual-display or DriverKit display family. It needs no root,

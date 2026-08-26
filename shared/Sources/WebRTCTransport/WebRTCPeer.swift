@@ -2923,9 +2923,13 @@ public actor WebRTCPeer {
         state: WebRTCScreenState,
         authorization: WebRTCControlAuthorization,
         inputCapability: WebRTCInputCapability? = nil,
-        inputAuthorization: WebRTCInputAuthorization? = nil
+        inputAuthorization: WebRTCInputAuthorization? = nil,
+        finalAuthorizationCheck: @Sendable () -> Bool = { true }
     ) throws {
         try authorization.withValidAuthorization {
+            guard finalAuthorizationCheck() else {
+                throw WebRTCTransportError.controlAuthorizationRevoked
+            }
             guard isTransportHealthyForCapture() else {
                 throw WebRTCTransportError.transportNotHealthy
             }
@@ -2946,27 +2950,33 @@ public actor WebRTCPeer {
         id: UInt64,
         authorization: WebRTCControlAuthorization,
         inputCapability: WebRTCInputCapability? = nil,
-        inputAuthorization: WebRTCInputAuthorization? = nil
+        inputAuthorization: WebRTCInputAuthorization? = nil,
+        finalAuthorizationCheck: @Sendable () -> Bool = { true }
     ) throws {
         try acknowledgeControlRequestIfTransportHealthy(
             id: id,
             state: .active,
             authorization: authorization,
             inputCapability: inputCapability,
-            inputAuthorization: inputAuthorization
+            inputAuthorization: inputAuthorization,
+            finalAuthorizationCheck: finalAuthorizationCheck
         )
     }
 
     /// Sends one input operation using the capability from the most recent Show/Active ACK.
     /// Input IDs are monotonic independently of screen-control request IDs.
     @discardableResult
-    public func requestInput(_ action: WebRTCInputAction) throws -> UInt64 {
+    public func requestInput(
+        _ action: WebRTCInputAction,
+        viewerVideoSize: WebRTCInputVideoSize? = nil
+    ) throws -> UInt64 {
         guard let activeViewerInputCapability,
               let activeViewerInputAuthorization else {
             throw WebRTCTransportError.inputUnavailable
         }
         return try requestInput(
             action,
+            viewerVideoSize: viewerVideoSize,
             capability: activeViewerInputCapability,
             authorization: activeViewerInputAuthorization
         )
@@ -2977,6 +2987,7 @@ public actor WebRTCPeer {
     @discardableResult
     public func requestInput(
         _ action: WebRTCInputAction,
+        viewerVideoSize: WebRTCInputVideoSize? = nil,
         capability: WebRTCInputCapability
     ) throws -> UInt64 {
         guard let activeViewerInputAuthorization else {
@@ -2984,6 +2995,7 @@ public actor WebRTCPeer {
         }
         return try requestInput(
             action,
+            viewerVideoSize: viewerVideoSize,
             capability: capability,
             authorization: activeViewerInputAuthorization
         )
@@ -2994,6 +3006,7 @@ public actor WebRTCPeer {
     @discardableResult
     public func requestInput(
         _ action: WebRTCInputAction,
+        viewerVideoSize: WebRTCInputVideoSize? = nil,
         capability: WebRTCInputCapability,
         authorization: WebRTCInputAuthorization
     ) throws -> UInt64 {
@@ -3022,8 +3035,12 @@ public actor WebRTCPeer {
             id: nextInputRequestID,
             screenRequestID: capability.screenRequestID,
             inputSessionID: capability.inputSessionID,
-            action: action
+            action: action,
+            viewerVideoSize: viewerVideoSize
         )
+        guard request.isValid else {
+            throw WebRTCTransportError.invalidInputRequest
+        }
         let data = try JSONEncoder().encode(ControlChannelMessage.input(request))
         guard data.count <= capability.maxMessageBytes else {
             throw WebRTCTransportError.invalidInputRequest
@@ -3042,26 +3059,36 @@ public actor WebRTCPeer {
     }
 
     @discardableResult
-    public func sendInput(_ action: WebRTCInputAction) throws -> UInt64 {
-        try requestInput(action)
+    public func sendInput(
+        _ action: WebRTCInputAction,
+        viewerVideoSize: WebRTCInputVideoSize? = nil
+    ) throws -> UInt64 {
+        try requestInput(action, viewerVideoSize: viewerVideoSize)
     }
 
     @discardableResult
     public func sendInput(
         _ action: WebRTCInputAction,
+        viewerVideoSize: WebRTCInputVideoSize? = nil,
         capability: WebRTCInputCapability
     ) throws -> UInt64 {
-        try requestInput(action, capability: capability)
+        try requestInput(
+            action,
+            viewerVideoSize: viewerVideoSize,
+            capability: capability
+        )
     }
 
     @discardableResult
     public func sendInput(
         _ action: WebRTCInputAction,
+        viewerVideoSize: WebRTCInputVideoSize? = nil,
         capability: WebRTCInputCapability,
         authorization: WebRTCInputAuthorization
     ) throws -> UInt64 {
         try requestInput(
             action,
+            viewerVideoSize: viewerVideoSize,
             capability: capability,
             authorization: authorization
         )
@@ -5379,8 +5406,10 @@ public actor WebRTCPeer {
         }
 
         if request.command == .showScreen || request.command == .hideScreen {
-            // Revoke before the application event is yielded so a queued input cannot race a
-            // newer screen generation through lagging service state.
+            // Revoke before the application event is yielded so queued media or input cannot race
+            // a newer screen generation through lagging service state. A fresh Show/Active ACK is
+            // the only path that may re-enable the host video track.
+            localVideoTrack?.isEnabled = false
             replaceHostInputSession(capability: nil, authorization: nil)
         }
 

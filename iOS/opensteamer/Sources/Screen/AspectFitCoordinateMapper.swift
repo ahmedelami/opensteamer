@@ -50,17 +50,20 @@ enum AspectFitCoordinateMapper {
             return nil
         }
 
-        let normalized = CGPoint(
+        let rawNormalized = CGPoint(
             x: (location.x - visibleRect.minX) / visibleRect.width,
             y: (location.y - visibleRect.minY) / visibleRect.height
         )
-        guard normalized.x.isFinite,
-              normalized.y.isFinite,
-              (0...1).contains(normalized.x),
-              (0...1).contains(normalized.y) else {
+        guard rawNormalized.x.isFinite,
+              rawNormalized.y.isFinite else {
             return nil
         }
-        return normalized
+        // The location has already been proven inside `visibleRect`. Clamp only the tiny
+        // floating-point overshoot that can occur when an exact maximum edge is normalized.
+        return CGPoint(
+            x: min(max(rawNormalized.x, 0), 1),
+            y: min(max(rawNormalized.y, 0), 1)
+        )
     }
 
     /// Maps an active drag to the nearest video edge after its origin has already

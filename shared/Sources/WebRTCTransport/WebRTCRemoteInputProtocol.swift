@@ -134,6 +134,62 @@ public struct WebRTCNormalizedPoint: Codable, Equatable, Sendable {
     }
 }
 
+/// The decoded video dimensions the viewer used to normalize a pointer action.
+///
+/// WebRTC may adapt and align the exact pixel count in transit, so the host permits only bounded
+/// alignment error around this shape. Binding every tap and drag to the frame that was actually
+/// visible rejects a delayed materially different gesture after a live display-mode change.
+public struct WebRTCInputVideoSize: Codable, Equatable, Sendable {
+    public let width: Int
+    public let height: Int
+
+    public init(width: Int, height: Int) {
+        self.width = width
+        self.height = height
+    }
+
+    private enum CodingKeys: String, CodingKey { case width, height }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let width = try container.decode(Int.self, forKey: .width)
+        let height = try container.decode(Int.self, forKey: .height)
+        guard Self.isValid(width: width, height: height) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .width,
+                in: container,
+                debugDescription: "Invalid viewer video dimensions."
+            )
+        }
+        self.init(width: width, height: height)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        guard Self.isValid(width: width, height: height) else {
+            throw EncodingError.invalidValue(
+                self,
+                .init(
+                    codingPath: encoder.codingPath,
+                    debugDescription: "Invalid viewer video dimensions."
+                )
+            )
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(width, forKey: .width)
+        try container.encode(height, forKey: .height)
+    }
+
+    var isValid: Bool {
+        Self.isValid(width: width, height: height)
+    }
+
+    private static func isValid(width: Int, height: Int) -> Bool {
+        // The upper bound keeps an untrusted wire value away from integer/ratio extremes while
+        // remaining far above every supported WebRTC and Apple display dimension.
+        (2 ... 32_768).contains(width) && (2 ... 32_768).contains(height)
+    }
+}
+
 /// The intentionally small remote-input vocabulary. Return is distinct from inserted text so
 /// control characters never enter the text path.
 public enum WebRTCInputAction: Codable, Equatable, Sendable {
@@ -281,17 +337,20 @@ public struct WebRTCInputRequest: Codable, Equatable, Sendable {
     public let screenRequestID: UInt64
     public let inputSessionID: UUID
     public let action: WebRTCInputAction
+    public let viewerVideoSize: WebRTCInputVideoSize?
 
     public init(
         id: UInt64,
         screenRequestID: UInt64,
         inputSessionID: UUID,
-        action: WebRTCInputAction
+        action: WebRTCInputAction,
+        viewerVideoSize: WebRTCInputVideoSize? = nil
     ) {
         self.id = id
         self.screenRequestID = screenRequestID
         self.inputSessionID = inputSessionID
         self.action = action
+        self.viewerVideoSize = viewerVideoSize
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -299,6 +358,7 @@ public struct WebRTCInputRequest: Codable, Equatable, Sendable {
         case screenRequestID
         case inputSessionID
         case action
+        case viewerVideoSize
     }
 
     public init(from decoder: any Decoder) throws {
@@ -307,10 +367,15 @@ public struct WebRTCInputRequest: Codable, Equatable, Sendable {
         let screenRequestID = try container.decode(UInt64.self, forKey: .screenRequestID)
         let inputSessionID = try container.decode(UUID.self, forKey: .inputSessionID)
         let action = try container.decode(WebRTCInputAction.self, forKey: .action)
+        let viewerVideoSize = try container.decodeIfPresent(
+            WebRTCInputVideoSize.self,
+            forKey: .viewerVideoSize
+        )
         guard id > 0,
               screenRequestID > 0,
               inputSessionID != WebRTCInputCapability.zeroUUIDForValidation,
-              action.isValid else {
+              action.isValid,
+              Self.viewerVideoSize(viewerVideoSize, isValidFor: action) else {
             throw DecodingError.dataCorruptedError(
                 forKey: .id,
                 in: container,
@@ -321,7 +386,8 @@ public struct WebRTCInputRequest: Codable, Equatable, Sendable {
             id: id,
             screenRequestID: screenRequestID,
             inputSessionID: inputSessionID,
-            action: action
+            action: action,
+            viewerVideoSize: viewerVideoSize
         )
     }
 
@@ -337,6 +403,7 @@ public struct WebRTCInputRequest: Codable, Equatable, Sendable {
         try container.encode(screenRequestID, forKey: .screenRequestID)
         try container.encode(inputSessionID, forKey: .inputSessionID)
         try container.encode(action, forKey: .action)
+        try container.encodeIfPresent(viewerVideoSize, forKey: .viewerVideoSize)
     }
 
     var isValid: Bool {
@@ -344,6 +411,21 @@ public struct WebRTCInputRequest: Codable, Equatable, Sendable {
             && screenRequestID > 0
             && inputSessionID != WebRTCInputCapability.zeroUUIDForValidation
             && action.isValid
+            && Self.viewerVideoSize(viewerVideoSize, isValidFor: action)
+    }
+
+    private static func viewerVideoSize(
+        _ viewerVideoSize: WebRTCInputVideoSize?,
+        isValidFor action: WebRTCInputAction
+    ) -> Bool {
+        guard let viewerVideoSize else { return true }
+        guard viewerVideoSize.isValid else { return false }
+        switch action {
+        case .tap, .primaryDrag:
+            return true
+        case .insertText, .backspace, .returnKey:
+            return false
+        }
     }
 }
 
