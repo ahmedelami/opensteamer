@@ -61,6 +61,69 @@ final class WorldwideScreenFormatRenegotiationSupersessionTests: XCTestCase {
         XCTAssertFalse(protectedRegion.contains("await stop()"))
     }
 
+    func testDisplayModeRetryCannotRestartAfterItsLifecycleOwnerChanges() throws {
+        let source = try serviceSource()
+        let retry = try sourceSlice(
+            in: source,
+            after: "    private func startScreenCaptureWithDisplayModeRetries(",
+            before: "    private nonisolated static func isDisplayModeChangedDuringScreenStart("
+        )
+        let entryCheck = try XCTUnwrap(
+            retry.range(of: "guard screenCaptureStartupOwnerIsCurrent(owner) else")
+        )
+        let nativeStart = try XCTUnwrap(
+            retry.range(
+                of: "let authorization = try await startScreenCapture(",
+                range: entryCheck.upperBound..<retry.endIndex
+            )
+        )
+        let postStartCheck = try XCTUnwrap(
+            retry.range(
+                of: "guard screenCaptureStartupOwnerIsCurrent(owner) else",
+                range: nativeStart.upperBound..<retry.endIndex
+            )
+        )
+        let retrySleep = try XCTUnwrap(
+            retry.range(
+                of: "try await Task.sleep(for: .milliseconds(125))",
+                range: postStartCheck.upperBound..<retry.endIndex
+            )
+        )
+        let postSleepCheck = try XCTUnwrap(
+            retry.range(
+                of: "guard screenCaptureStartupOwnerIsCurrent(owner)",
+                range: retrySleep.upperBound..<retry.endIndex
+            )
+        )
+        let recursiveStart = try XCTUnwrap(
+            retry.range(
+                of: "return try await startScreenCaptureWithDisplayModeRetries(",
+                range: postSleepCheck.upperBound..<retry.endIndex
+            )
+        )
+        let recursiveOwner = try XCTUnwrap(
+            retry.range(
+                of: "owner: owner",
+                range: recursiveStart.upperBound..<retry.endIndex
+            )
+        )
+
+        XCTAssertLessThan(entryCheck.lowerBound, nativeStart.lowerBound)
+        XCTAssertLessThan(nativeStart.lowerBound, postStartCheck.lowerBound)
+        XCTAssertLessThan(postStartCheck.lowerBound, retrySleep.lowerBound)
+        XCTAssertLessThan(retrySleep.lowerBound, postSleepCheck.lowerBound)
+        XCTAssertLessThan(postSleepCheck.lowerBound, recursiveStart.lowerBound)
+        XCTAssertLessThan(recursiveStart.lowerBound, recursiveOwner.lowerBound)
+
+        let renegotiation = try sourceSlice(
+            in: source,
+            after: "    private func renegotiateScreenCaptureFormat(",
+            before: "    /// A newer visibility command, peer, recovery epoch, or completed service owns any failure"
+        )
+        XCTAssertTrue(renegotiation.contains("let startupOwner = ScreenCaptureStartupOwner("))
+        XCTAssertTrue(renegotiation.contains("owner: startupOwner"))
+    }
+
     private func superseded(
         visibilityCommandEpoch: UInt64 = 7,
         currentVisibilityCommandEpoch: UInt64 = 7,

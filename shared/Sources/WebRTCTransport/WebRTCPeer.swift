@@ -2966,13 +2966,17 @@ public actor WebRTCPeer {
     /// Sends one input operation using the capability from the most recent Show/Active ACK.
     /// Input IDs are monotonic independently of screen-control request IDs.
     @discardableResult
-    public func requestInput(_ action: WebRTCInputAction) throws -> UInt64 {
+    public func requestInput(
+        _ action: WebRTCInputAction,
+        viewerVideoSize: WebRTCInputVideoSize? = nil
+    ) throws -> UInt64 {
         guard let activeViewerInputCapability,
               let activeViewerInputAuthorization else {
             throw WebRTCTransportError.inputUnavailable
         }
         return try requestInput(
             action,
+            viewerVideoSize: viewerVideoSize,
             capability: activeViewerInputCapability,
             authorization: activeViewerInputAuthorization
         )
@@ -2983,6 +2987,7 @@ public actor WebRTCPeer {
     @discardableResult
     public func requestInput(
         _ action: WebRTCInputAction,
+        viewerVideoSize: WebRTCInputVideoSize? = nil,
         capability: WebRTCInputCapability
     ) throws -> UInt64 {
         guard let activeViewerInputAuthorization else {
@@ -2990,6 +2995,7 @@ public actor WebRTCPeer {
         }
         return try requestInput(
             action,
+            viewerVideoSize: viewerVideoSize,
             capability: capability,
             authorization: activeViewerInputAuthorization
         )
@@ -3000,6 +3006,7 @@ public actor WebRTCPeer {
     @discardableResult
     public func requestInput(
         _ action: WebRTCInputAction,
+        viewerVideoSize: WebRTCInputVideoSize? = nil,
         capability: WebRTCInputCapability,
         authorization: WebRTCInputAuthorization
     ) throws -> UInt64 {
@@ -3028,8 +3035,12 @@ public actor WebRTCPeer {
             id: nextInputRequestID,
             screenRequestID: capability.screenRequestID,
             inputSessionID: capability.inputSessionID,
-            action: action
+            action: action,
+            viewerVideoSize: viewerVideoSize
         )
+        guard request.isValid else {
+            throw WebRTCTransportError.invalidInputRequest
+        }
         let data = try JSONEncoder().encode(ControlChannelMessage.input(request))
         guard data.count <= capability.maxMessageBytes else {
             throw WebRTCTransportError.invalidInputRequest
@@ -3048,26 +3059,36 @@ public actor WebRTCPeer {
     }
 
     @discardableResult
-    public func sendInput(_ action: WebRTCInputAction) throws -> UInt64 {
-        try requestInput(action)
+    public func sendInput(
+        _ action: WebRTCInputAction,
+        viewerVideoSize: WebRTCInputVideoSize? = nil
+    ) throws -> UInt64 {
+        try requestInput(action, viewerVideoSize: viewerVideoSize)
     }
 
     @discardableResult
     public func sendInput(
         _ action: WebRTCInputAction,
+        viewerVideoSize: WebRTCInputVideoSize? = nil,
         capability: WebRTCInputCapability
     ) throws -> UInt64 {
-        try requestInput(action, capability: capability)
+        try requestInput(
+            action,
+            viewerVideoSize: viewerVideoSize,
+            capability: capability
+        )
     }
 
     @discardableResult
     public func sendInput(
         _ action: WebRTCInputAction,
+        viewerVideoSize: WebRTCInputVideoSize? = nil,
         capability: WebRTCInputCapability,
         authorization: WebRTCInputAuthorization
     ) throws -> UInt64 {
         try requestInput(
             action,
+            viewerVideoSize: viewerVideoSize,
             capability: capability,
             authorization: authorization
         )

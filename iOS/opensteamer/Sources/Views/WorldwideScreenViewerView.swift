@@ -11,7 +11,6 @@ struct WorldwideScreenViewerView: View {
     @EnvironmentObject private var viewModel: WorldwideSessionViewModel
     let lease: WorldwideScreenPresentationLease
     let dismissPresentation: (WorldwideScreenPresentationLease) -> Void
-    @State private var remoteVideoSize = CGSize.zero
     @State private var videoRendererID = UUID()
     @State private var videoRenderObservation: WebRTCVideoRenderObservation?
     @State private var allowsRemoteInputPresentation = true
@@ -24,8 +23,18 @@ struct WorldwideScreenViewerView: View {
                     if allowsRemoteScreenRendering {
                         WebRTCRemoteScreenView(
                             track: viewModel.remoteVideoTrack,
-                            onVideoSizeChanged: { remoteVideoSize = $0 },
-                            onVideoFrameRendered: { videoRenderObservation = $0 }
+                            // Any decoded-size transition clears touch immediately. Size callbacks
+                            // precede presentation and therefore cannot authorize the new mapping.
+                            onVideoSizeChanged: { _ in
+                                videoRenderObservation = nil
+                            },
+                            onVideoFrameRendered: { observation in
+                                if videoRenderObservation.map({
+                                    observation.frameCount > $0.frameCount
+                                }) != false {
+                                    videoRenderObservation = observation
+                                }
+                            }
                         )
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .background(.black)
@@ -51,13 +60,14 @@ struct WorldwideScreenViewerView: View {
                                     guard case .second(true, .some) = value,
                                           primaryDragContext == nil,
                                           viewModel.isRemotePrimaryDragAvailable,
-                                          let inputSessionID = viewModel.remoteInputCapability?.inputSessionID else {
+                                          let inputSessionID = viewModel.remoteInputCapability?.inputSessionID,
+                                          let renderedVideoSize else {
                                         return
                                     }
                                     primaryDragContext = PrimaryDragContext(
                                         inputSessionID: inputSessionID,
                                         containerSize: geometry.size,
-                                        videoSize: remoteVideoSize
+                                        videoSize: renderedVideoSize
                                     )
                                 }
                                 .onEnded { value in
@@ -66,7 +76,8 @@ struct WorldwideScreenViewerView: View {
                                           let context = primaryDragContext,
                                           context.inputSessionID == viewModel.remoteInputCapability?.inputSessionID,
                                           context.containerSize == geometry.size,
-                                          context.videoSize == remoteVideoSize else {
+                                          let renderedVideoSize,
+                                          context.videoSize == renderedVideoSize else {
                                         return
                                     }
                                     forwardPrimaryDrag(
@@ -148,7 +159,7 @@ struct WorldwideScreenViewerView: View {
                 videoRenderObservation = nil
             }
         }
-        .onChange(of: remoteVideoSize) {
+        .onChange(of: renderedVideoSize) {
             primaryDragContext = nil
         }
     }
@@ -201,14 +212,18 @@ struct WorldwideScreenViewerView: View {
 
     private func forwardTap(_ location: CGPoint, containerSize: CGSize) {
         guard effectiveRemoteInputAvailable,
+              let renderedVideoSize,
               let normalizedPoint = AspectFitCoordinateMapper.normalizedPoint(
                 for: location,
                 containerSize: containerSize,
-                videoSize: remoteVideoSize
+                videoSize: renderedVideoSize
               ) else {
             return
         }
-        viewModel.sendRemoteTap(normalizedPoint: normalizedPoint)
+        viewModel.sendRemoteTap(
+            normalizedPoint: normalizedPoint,
+            viewerVideoSize: renderedVideoSize
+        )
     }
 
     private func forwardPrimaryDrag(
@@ -229,14 +244,36 @@ struct WorldwideScreenViewerView: View {
         }
         viewModel.sendRemotePrimaryDrag(
             startNormalizedPoint: endpoints.start,
-            endNormalizedPoint: endpoints.end
+            endNormalizedPoint: endpoints.end,
+            viewerVideoSize: videoSize
         )
     }
 
     private var effectiveRemoteInputAvailable: Bool {
         viewModel.remoteInputIsAvailable(for: lease)
+            && renderedVideoSize != nil
             && allowsRemoteInputPresentation
             && scenePhase == .active
+    }
+
+    /// Touch is bound only to dimensions observed after a decoded frame was presented by Metal.
+    /// `didChangeVideoSize` may run ahead of that visible frame during a format transition.
+    private var renderedVideoSize: CGSize? {
+        Self.renderedVideoSize(from: videoRenderObservation)
+    }
+
+    static func renderedVideoSize(
+        from observation: WebRTCVideoRenderObservation?
+    ) -> CGSize? {
+        guard let observation,
+              observation.width >= 2,
+              observation.height >= 2 else {
+            return nil
+        }
+        return CGSize(
+            width: observation.width,
+            height: observation.height
+        )
     }
 
     private var allowsRemoteScreenRendering: Bool {

@@ -10,6 +10,16 @@ public struct ScreenVideoCaptureFormat: Sendable, Equatable {
     public let width: Int
     public let height: Int
     public let framesPerSecond: Int
+    /// Present for an OpenSteamer-owned display whose Core Graphics logical-to-pixel scale must
+    /// be proved again by the first ScreenCaptureKit frame.
+    public let expectedScaleFactor: Double?
+    /// Expected scaling from the selected Core Graphics framebuffer into the configured surface.
+    public let expectedContentScale: Double?
+}
+
+private struct ScreenVideoActiveSourceFormat {
+    let dimensions: ScreenVideoPixelDimensions
+    let expectedScaleFactor: Double?
 }
 
 /// Receives complete display frames and unexpected native stream failures.
@@ -217,16 +227,20 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
             let display = try selectDisplay(from: content.displays)
             try validateDisplayRequirement(for: display.displayID)
             let filter = SCContentFilter(display: display, excludingWindows: [])
-            let sourceDimensions = try activeSourceDimensions(for: display, filter: filter)
+            let sourceFormat = try activeSourceFormat(for: display, filter: filter)
             let dimensions = try ScreenVideoOutputPolicy.outputDimensions(
-                source: sourceDimensions,
+                source: sourceFormat.dimensions,
                 maximumWidth: maximumWidth
             )
             let format = ScreenVideoCaptureFormat(
                 displayID: display.displayID,
                 width: dimensions.width,
                 height: dimensions.height,
-                framesPerSecond: framesPerSecond
+                framesPerSecond: framesPerSecond,
+                expectedScaleFactor: sourceFormat.expectedScaleFactor,
+                expectedContentScale: sourceFormat.expectedScaleFactor.map { _ in
+                    Double(dimensions.width) / Double(sourceFormat.dimensions.width)
+                }
             )
             let displayModeObserver = try ScreenVideoDisplayModeObserver(
                 displayID: display.displayID
@@ -303,14 +317,14 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
                     display: postStartDisplay,
                     excludingWindows: []
                 )
-                let postStartSourceDimensions = try activeSourceDimensions(
+                let postStartSourceFormat = try activeSourceFormat(
                     for: postStartDisplay,
                     filter: postStartFilter
                 )
                 guard ScreenVideoSourceDimensionPolicy.isStableAcrossStart(
-                    before: sourceDimensions,
-                    after: postStartSourceDimensions
-                ) else {
+                    before: sourceFormat.dimensions,
+                    after: postStartSourceFormat.dimensions
+                ), sourceFormat.expectedScaleFactor == postStartSourceFormat.expectedScaleFactor else {
                     throw ScreenVideoCaptureError.displayModeChangedDuringStart(
                         display.displayID
                     )
@@ -666,25 +680,66 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
 
     /// Preserves ScreenCaptureKit's established logical sizing for ordinary displays while
     /// OpenSteamer virtual displays stream the active Retina framebuffer at full resolution.
-    private func activeSourceDimensions(
+    private func activeSourceFormat(
         for display: SCDisplay,
         filter: SCContentFilter
-    ) throws -> ScreenVideoPixelDimensions {
+    ) throws -> ScreenVideoActiveSourceFormat {
+        let vendorID = CGDisplayVendorNumber(display.displayID)
+        let productID = CGDisplayModelNumber(display.displayID)
+        guard ScreenVideoSourceDimensionPolicy.dimensionKind(
+            vendorID: vendorID,
+            productID: productID
+        ) == .framebufferPixels else {
+            return ScreenVideoActiveSourceFormat(
+                dimensions: ScreenVideoPixelDimensions(
+                    width: display.width,
+                    height: display.height
+                ),
+                expectedScaleFactor: nil
+            )
+        }
+        guard let mode = CGDisplayCopyDisplayMode(display.displayID),
+              mode.width >= 2,
+              mode.height >= 2,
+              mode.pixelWidth >= 2,
+              mode.pixelHeight >= 2 else {
+            throw ScreenVideoCaptureError.displayModeUnavailable(display.displayID)
+        }
         let sourceDimensions = ScreenVideoSourceDimensionPolicy.sourceDimensions(
-            vendorID: CGDisplayVendorNumber(display.displayID),
-            productID: CGDisplayModelNumber(display.displayID),
+            vendorID: vendorID,
+            productID: productID,
             logicalDimensions: ScreenVideoPixelDimensions(
                 width: display.width,
                 height: display.height
             ),
             filterContentWidth: Double(filter.contentRect.width),
             filterContentHeight: Double(filter.contentRect.height),
-            pointPixelScale: Double(filter.pointPixelScale)
+            pointPixelScale: Double(filter.pointPixelScale),
+            coreGraphicsLogicalDimensions: ScreenVideoPixelDimensions(
+                width: mode.width,
+                height: mode.height
+            ),
+            coreGraphicsPixelDimensions: ScreenVideoPixelDimensions(
+                width: mode.pixelWidth,
+                height: mode.pixelHeight
+            )
         )
         guard let sourceDimensions else {
-            throw ScreenVideoCaptureError.displayModeUnavailable(display.displayID)
+            // The logical display identity itself is unsettled. The service can tolerate stale
+            // ScreenCaptureKit scale metadata, but never a disagreement about which display or
+            // logical canvas is being captured.
+            throw ScreenVideoCaptureError.displayModeChangedDuringStart(display.displayID)
         }
-        return sourceDimensions
+        let horizontalScale = Double(mode.pixelWidth) / Double(mode.width)
+        let verticalScale = Double(mode.pixelHeight) / Double(mode.height)
+        guard (1 ... 4).contains(horizontalScale),
+              abs(horizontalScale - verticalScale) <= 0.005 else {
+            throw ScreenVideoCaptureError.displayModeChangedDuringStart(display.displayID)
+        }
+        return ScreenVideoActiveSourceFormat(
+            dimensions: sourceDimensions,
+            expectedScaleFactor: horizontalScale
+        )
     }
 }
 

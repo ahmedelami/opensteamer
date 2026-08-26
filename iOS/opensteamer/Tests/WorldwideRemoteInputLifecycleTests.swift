@@ -875,6 +875,55 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
         try await assertStaleInputFailureCannotMutateReplacement(.invalidInputRequest)
     }
 
+    func testTouchSizeRequiresAPostRenderObservation() {
+        // A native didChangeVideoSize callback can report the replacement dimensions before its
+        // first pixels reach Metal. With no post-render observation, touch stays unavailable.
+        XCTAssertNil(WorldwideScreenViewerView.renderedVideoSize(from: nil))
+
+        let rendered = WebRTCVideoRenderObservation(
+            frameCount: 1,
+            timestampNanoseconds: 42,
+            width: 1_080,
+            height: 2_340,
+            contentDigest: 7,
+            contentSampleCount: 1,
+            contentChangeCount: 0
+        )
+        XCTAssertEqual(
+            WorldwideScreenViewerView.renderedVideoSize(from: rendered),
+            CGSize(width: 1_080, height: 2_340)
+        )
+    }
+
+    @MainActor
+    func testQueuedPointerCarriesTheViewerObservedVideoSizeToTheWireBoundary() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let expectedSize = WebRTCInputVideoSize(width: 1_080, height: 2_340)
+        var sentAction: WebRTCInputAction?
+        var sentSize: WebRTCInputVideoSize?
+        viewModel.debugInstallRemoteInputSender { _, action, viewerVideoSize, _, _ in
+            sentAction = action
+            sentSize = viewerVideoSize
+            return 1
+        }
+
+        let peer = try makeViewerPeer()
+        _ = viewModel.debugInstallQueuedRemoteInputSessionForRaceTests(
+            peer: peer,
+            focusGeneration: 303,
+            diagnostic: "Pointer geometry queued",
+            queuedAction: .tap(.init(x: 0.25, y: 0.75)),
+            viewerVideoSize: expectedSize
+        )
+
+        await viewModel.debugDrainRemoteInputQueueForRaceTests()
+
+        XCTAssertEqual(sentAction, .tap(.init(x: 0.25, y: 0.75)))
+        XCTAssertEqual(sentSize, expectedSize)
+        viewModel.disconnect()
+        await peer.close(reason: .viewerDisconnected)
+    }
+
     private func assertStaleInputFailureCannotMutateReplacement(
         _ error: WebRTCTransportError,
         file: StaticString = #filePath,
@@ -884,7 +933,7 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
         let sendStarted = expectation(description: "old input send suspended")
         let oldDrainFinished = expectation(description: "old input drain finished")
         let gate = NonCooperativeAsyncGate()
-        viewModel.debugInstallRemoteInputSender { _, _, _, _ in
+        viewModel.debugInstallRemoteInputSender { _, _, _, _, _ in
             sendStarted.fulfill()
             await gate.wait()
             throw error

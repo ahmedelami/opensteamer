@@ -24,6 +24,22 @@ public struct MacRemoteNormalizedPoint: Equatable, Sendable {
     }
 }
 
+/// Decoded viewer-frame dimensions captured with one remote pointer intent.
+/// Exact pixels and ratio may be WebRTC-adapted; their bounded shape remains a transition fence.
+public struct MacRemoteInputVideoSize: Equatable, Sendable {
+    public let width: Int
+    public let height: Int
+
+    public init(width: Int, height: Int) {
+        self.width = width
+        self.height = height
+    }
+
+    var isValid: Bool {
+        (2 ... 32_768).contains(width) && (2 ... 32_768).contains(height)
+    }
+}
+
 /// Snapshot of the macOS grants needed to synthesize and target remote input.
 public struct MacRemoteInputPermissionStatus: Equatable, Sendable {
     public let accessibilityTrusted: Bool
@@ -66,6 +82,7 @@ public enum MacRemoteInputRejection: Equatable, Sendable {
     case disabled
     case permissionRequired
     case staleSession
+    case screenFormatChanging
     case invalidPoint
     case invalidText
     case rateLimited
@@ -250,13 +267,15 @@ public final class MacRemoteInputController: @unchecked Sendable {
     public func handleTap(
         screenRequestID: UInt64,
         inputSessionID: UUID,
-        normalizedPoint: MacRemoteNormalizedPoint
+        normalizedPoint: MacRemoteNormalizedPoint,
+        viewerVideoSize: MacRemoteInputVideoSize? = nil
     ) -> MacRemoteInputResult {
         withLock {
             handleTapLocked(
                 screenRequestID: screenRequestID,
                 inputSessionID: inputSessionID,
-                normalizedPoint: normalizedPoint
+                normalizedPoint: normalizedPoint,
+                viewerVideoSize: viewerVideoSize
             )
         }
     }
@@ -265,7 +284,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
     private func handleTapLocked(
         screenRequestID: UInt64,
         inputSessionID: UUID,
-        normalizedPoint: MacRemoteNormalizedPoint
+        normalizedPoint: MacRemoteNormalizedPoint,
+        viewerVideoSize: MacRemoteInputVideoSize?
     ) -> MacRemoteInputResult {
         // Every tap invalidates the prior keyboard grant, even when this tap is
         // malformed or rate-limited.
@@ -283,6 +303,12 @@ public final class MacRemoteInputController: @unchecked Sendable {
         guard normalizedPoint.isValid else {
             return .rejected(.invalidPoint)
         }
+        guard let viewerVideoSize else {
+            return .rejected(.screenFormatChanging)
+        }
+        guard viewerVideoSize.isValid else {
+            return .rejected(.invalidPoint)
+        }
         guard hasCurrentPermissions() else {
             revokeState()
             return .rejected(.permissionRequired)
@@ -291,9 +317,14 @@ public final class MacRemoteInputController: @unchecked Sendable {
             revokeState()
             return .rejected(.displayUnavailable)
         }
+        guard let frameGeometry = currentScreenVideoFrameGeometry(
+            compatibleWith: displayBounds
+        ), Self.viewerVideoSize(viewerVideoSize, matches: frameGeometry) else {
+            return .rejected(.screenFormatChanging)
+        }
         guard let contentNormalizedPoint = mappedContentPoint(
             normalizedPoint,
-            displayBounds: displayBounds,
+            frameGeometry: frameGeometry,
             clampToContent: false
         ) else {
             return .rejected(.invalidPoint)
@@ -343,14 +374,16 @@ public final class MacRemoteInputController: @unchecked Sendable {
         screenRequestID: UInt64,
         inputSessionID: UUID,
         start: MacRemoteNormalizedPoint,
-        end: MacRemoteNormalizedPoint
+        end: MacRemoteNormalizedPoint,
+        viewerVideoSize: MacRemoteInputVideoSize? = nil
     ) -> MacRemoteInputResult {
         withLock {
             handlePrimaryDragLocked(
                 screenRequestID: screenRequestID,
                 inputSessionID: inputSessionID,
                 start: start,
-                end: end
+                end: end,
+                viewerVideoSize: viewerVideoSize
             )
         }
     }
@@ -360,7 +393,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
         screenRequestID: UInt64,
         inputSessionID: UUID,
         start: MacRemoteNormalizedPoint,
-        end: MacRemoteNormalizedPoint
+        end: MacRemoteNormalizedPoint,
+        viewerVideoSize: MacRemoteInputVideoSize?
     ) -> MacRemoteInputResult {
         // Any pointer action invalidates the prior keyboard grant, including a
         // malformed, stale, denied, or rate-limited drag.
@@ -378,6 +412,12 @@ public final class MacRemoteInputController: @unchecked Sendable {
         guard start.isValid, end.isValid else {
             return .rejected(.invalidPoint)
         }
+        guard let viewerVideoSize else {
+            return .rejected(.screenFormatChanging)
+        }
+        guard viewerVideoSize.isValid else {
+            return .rejected(.invalidPoint)
+        }
         guard hasCurrentPermissions() else {
             revokeState()
             return .rejected(.permissionRequired)
@@ -386,13 +426,18 @@ public final class MacRemoteInputController: @unchecked Sendable {
             revokeState()
             return .rejected(.displayUnavailable)
         }
+        guard let frameGeometry = currentScreenVideoFrameGeometry(
+            compatibleWith: displayBounds
+        ), Self.viewerVideoSize(viewerVideoSize, matches: frameGeometry) else {
+            return .rejected(.screenFormatChanging)
+        }
         guard let contentStart = mappedContentPoint(
             start,
-            displayBounds: displayBounds,
+            frameGeometry: frameGeometry,
             clampToContent: false
         ), let contentEnd = mappedContentPoint(
             end,
-            displayBounds: displayBounds,
+            frameGeometry: frameGeometry,
             clampToContent: true
         ) else {
             return .rejected(.invalidPoint)
@@ -601,13 +646,10 @@ public final class MacRemoteInputController: @unchecked Sendable {
         return activeSession
     }
 
-    /// Removes ScreenCaptureKit's inner content inset before mapping into live display bounds.
-    /// Cross-aspect geometry is rejected while the bounded transition gate settles.
-    private func mappedContentPoint(
-        _ frameNormalizedPoint: MacRemoteNormalizedPoint,
-        displayBounds: CGRect,
-        clampToContent: Bool
-    ) -> MacRemoteNormalizedPoint? {
+    /// Promotes a stable frame transform and proves it still describes the live display.
+    private func currentScreenVideoFrameGeometry(
+        compatibleWith displayBounds: CGRect
+    ) -> ScreenVideoFrameGeometry? {
         if screenVideoFrameGeometry == nil,
            let candidateScreenVideoFrameGeometry,
            let candidateScreenVideoFrameGeometrySince,
@@ -619,10 +661,43 @@ public final class MacRemoteInputController: @unchecked Sendable {
               screenVideoFrameGeometry.hasCompatibleAspectRatio(with: displayBounds) else {
             return nil
         }
+        return screenVideoFrameGeometry
+    }
+
+    /// Accepts WebRTC's bounded alignment/crop rounding while rejecting a delayed frame from a
+    /// materially different display shape. Exact aspect equality is unsafe because adaptation
+    /// can round each output edge independently.
+    private static func viewerVideoSize(
+        _ viewerVideoSize: MacRemoteInputVideoSize,
+        matches frameGeometry: ScreenVideoFrameGeometry
+    ) -> Bool {
+        guard viewerVideoSize.isValid else { return false }
+        let viewerAspect = Double(viewerVideoSize.width) / Double(viewerVideoSize.height)
+        let frameAspect = Double(frameGeometry.surfaceWidth)
+            / Double(frameGeometry.surfaceHeight)
+        let relativeDifference = abs(viewerAspect - frameAspect)
+            / max(viewerAspect, frameAspect)
+        // WebRTC aligns encoded edges to even pixels. Bound the resulting aspect error by two
+        // pixels on each smaller edge, capped so an implausibly tiny wire size cannot weaken the
+        // transition fence for the supported display modes.
+        let alignmentTolerance = min(
+            0.02,
+            2 / Double(min(viewerVideoSize.width, viewerVideoSize.height))
+                + 2 / Double(min(frameGeometry.surfaceWidth, frameGeometry.surfaceHeight))
+        )
+        return relativeDifference <= alignmentTolerance
+    }
+
+    /// Removes ScreenCaptureKit's inner content inset before mapping into live display bounds.
+    private func mappedContentPoint(
+        _ frameNormalizedPoint: MacRemoteNormalizedPoint,
+        frameGeometry: ScreenVideoFrameGeometry,
+        clampToContent: Bool
+    ) -> MacRemoteNormalizedPoint? {
         let point = CGPoint(x: frameNormalizedPoint.x, y: frameNormalizedPoint.y)
         let mapped = clampToContent
-            ? screenVideoFrameGeometry.clampedContentNormalizedPoint(for: point)
-            : screenVideoFrameGeometry.contentNormalizedPoint(for: point)
+            ? frameGeometry.clampedContentNormalizedPoint(for: point)
+            : frameGeometry.contentNormalizedPoint(for: point)
         guard let mapped else { return nil }
         return MacRemoteNormalizedPoint(
             x: Double(mapped.x),

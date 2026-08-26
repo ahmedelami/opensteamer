@@ -5,6 +5,148 @@ import XCTest
 @testable import CaptureServer
 
 final class WorldwideScreenSampleSinkTests: XCTestCase {
+    func testExpectedStartupSurfaceMustBeRenderedBeforeForwardingCanCommit() throws {
+        let capturer = RecordingScreenFrameCapturer()
+        let sink = WorldwideScreenSampleSink(
+            capturer: capturer,
+            remoteInputController: MacRemoteInputController(allowRemoteControl: false),
+            didRequireCaptureFormatRenegotiation: { _ in },
+            didStop: { _, _ in }
+        )
+        let authorization = try XCTUnwrap(
+            sink.beginForwarding(
+                expectedFrameDimensions: .init(width: 1_080, height: 2_340),
+                expectedScaleFactor: 2,
+                expectedContentScale: 1
+            )
+        )
+
+        XCTAssertEqual(
+            sink.forwardingStartupProofState(authorizedBy: authorization),
+            .waiting
+        )
+        XCTAssertFalse(sink.commitForwardingStartup(authorizedBy: authorization))
+        XCTAssertEqual(capturer.captureCount, 0)
+
+        let exactFrame = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_080,
+                surfaceHeight: 2_340,
+                contentRect: CGRect(x: 0, y: 0, width: 540, height: 1_170),
+                contentScale: 1,
+                scaleFactor: 2
+            )
+        )
+        sink.consumeScreenVideoSample(try makeImageSample(), frameGeometry: exactFrame)
+
+        XCTAssertEqual(
+            sink.forwardingStartupProofState(authorizedBy: authorization),
+            .proven
+        )
+        XCTAssertEqual(capturer.captureCount, 1)
+        XCTAssertTrue(sink.commitForwardingStartup(authorizedBy: authorization))
+        XCTAssertTrue(sink.allowsActiveUse(authorizedBy: authorization))
+    }
+
+    func testUpscaledStaleStartupSourceCannotProveSelectedFramebuffer() throws {
+        let capturer = RecordingScreenFrameCapturer()
+        let sink = WorldwideScreenSampleSink(
+            capturer: capturer,
+            remoteInputController: MacRemoteInputController(allowRemoteControl: false),
+            didRequireCaptureFormatRenegotiation: { _ in },
+            didStop: { _, _ in }
+        )
+        let authorization = try XCTUnwrap(
+            sink.beginForwarding(
+                expectedFrameDimensions: .init(width: 1_080, height: 2_340),
+                expectedScaleFactor: 2,
+                expectedContentScale: 1
+            )
+        )
+        let upscaledStaleSource = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_080,
+                surfaceHeight: 2_340,
+                contentRect: CGRect(x: 0, y: 0, width: 1_080, height: 2_340),
+                contentScale: 2,
+                scaleFactor: 1
+            )
+        )
+
+        sink.consumeScreenVideoSample(
+            try makeImageSample(),
+            frameGeometry: upscaledStaleSource
+        )
+
+        XCTAssertEqual(capturer.captureCount, 0)
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertTrue(sink.requiresForwardingStartupRetry)
+        XCTAssertEqual(
+            sink.forwardingStartupProofState(authorizedBy: authorization),
+            .rejected
+        )
+    }
+
+    func testUnexpectedStartupSurfaceIsNeverForwardedAndRequestsTypedRetry() throws {
+        let renegotiations = LockedCount()
+        let capturer = RecordingScreenFrameCapturer()
+        let sink = WorldwideScreenSampleSink(
+            capturer: capturer,
+            remoteInputController: MacRemoteInputController(allowRemoteControl: false),
+            didRequireCaptureFormatRenegotiation: { _ in
+                renegotiations.increment()
+            },
+            didStop: { _, _ in }
+        )
+        let authorization = try XCTUnwrap(
+            sink.beginForwarding(
+                expectedFrameDimensions: .init(width: 1_080, height: 2_340)
+            )
+        )
+        let staleSurface = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 540,
+                surfaceHeight: 1_170,
+                contentRect: CGRect(x: 0, y: 0, width: 540, height: 1_170),
+                contentScale: 1,
+                scaleFactor: 1
+            )
+        )
+
+        sink.consumeScreenVideoSample(try makeImageSample(), frameGeometry: staleSurface)
+
+        XCTAssertEqual(capturer.captureCount, 0)
+        XCTAssertEqual(renegotiations.value, 0)
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertTrue(sink.requiresForwardingStartupRetry)
+        XCTAssertEqual(
+            sink.forwardingStartupProofState(authorizedBy: authorization),
+            .rejected
+        )
+        XCTAssertFalse(sink.commitForwardingStartup(authorizedBy: authorization))
+    }
+
+    func testMissingStartupGeometryCannotProveTheSelectedSurface() throws {
+        let capturer = RecordingScreenFrameCapturer()
+        let sink = WorldwideScreenSampleSink(
+            capturer: capturer,
+            remoteInputController: MacRemoteInputController(allowRemoteControl: false),
+            didRequireCaptureFormatRenegotiation: { _ in },
+            didStop: { _, _ in }
+        )
+        let authorization = try XCTUnwrap(
+            sink.beginForwarding(
+                expectedFrameDimensions: .init(width: 640, height: 360)
+            )
+        )
+
+        sink.consumeScreenVideoSample(try makeImageSample(), frameGeometry: nil)
+
+        XCTAssertEqual(capturer.captureCount, 0)
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertTrue(sink.requiresForwardingStartupRetry)
+    }
+
     func testDisplayModeChangeBeforeForwardingRejectsStaleStartup() {
         let renegotiations = LockedCount()
         let sink = WorldwideScreenSampleSink(
@@ -107,8 +249,6 @@ final class WorldwideScreenSampleSinkTests: XCTestCase {
             },
             didStop: { _, _ in }
         )
-        let authorization = try XCTUnwrap(sink.beginForwarding())
-        XCTAssertTrue(sink.commitForwardingStartup(authorizedBy: authorization))
         let sample = try makeImageSample()
         let fullFrame = try XCTUnwrap(
             ScreenVideoFrameGeometry(
@@ -117,6 +257,11 @@ final class WorldwideScreenSampleSinkTests: XCTestCase {
                 contentRect: CGRect(x: 0, y: 0, width: 320, height: 180),
                 contentScale: 1,
                 scaleFactor: 2
+            )
+        )
+        let authorization = try XCTUnwrap(
+            sink.beginForwarding(
+                expectedFrameDimensions: .init(width: 640, height: 360)
             )
         )
         let insetFrame = try XCTUnwrap(
@@ -130,6 +275,7 @@ final class WorldwideScreenSampleSinkTests: XCTestCase {
         )
         sink.consumeScreenVideoSample(sample, frameGeometry: fullFrame)
         XCTAssertEqual(capturer.captureCount, 1)
+        XCTAssertTrue(sink.commitForwardingStartup(authorizedBy: authorization))
 
         sink.consumeScreenVideoSample(sample, frameGeometry: insetFrame)
         XCTAssertTrue(sink.isDebouncingFormatRenegotiation)

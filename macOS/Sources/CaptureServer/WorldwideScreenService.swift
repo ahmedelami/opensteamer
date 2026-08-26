@@ -11,6 +11,14 @@ import WebRTCTransport
 /// ICE/STUN and, when a direct candidate pair is impossible, the configured TURN service.
 actor WorldwideScreenService {
     private static let maximumDisplayModeStartupRetries = 3
+    private static let maximumForwardingStartupProofPolls = 40
+    private static let forwardingStartupProofPollInterval = Duration.milliseconds(25)
+
+    private struct ScreenCaptureStartupOwner: Equatable {
+        let visibilityCommandEpoch: UInt64
+        let peerGeneration: UInt64
+        let recoveryEpoch: UInt64
+    }
 
     /// Finishes once the consume-once media rendezvous has been fully torn down.
     nonisolated let completion: AsyncStream<Void>
@@ -1609,13 +1617,6 @@ actor WorldwideScreenService {
               expectedInputAuthorization === authorization,
               capability.screenRequestID == request.screenRequestID,
               capability.inputSessionID == request.inputSessionID,
-              captureDisplayID != nil,
-              captureSource != nil,
-              let expectedCaptureAuthorization = captureAuthorization,
-              let expectedForwardingAuthorization = captureForwardingAuthorization,
-              captureSink?.allowsActiveUse(
-                  authorizedBy: expectedForwardingAuthorization
-              ) == true,
               transportAllowsCapture else {
             return .rejected(.staleSession)
         }
@@ -1623,9 +1624,20 @@ actor WorldwideScreenService {
            !capability.supportsPrimaryDrag {
             return .rejected(.staleSession)
         }
+        guard
+              captureDisplayID != nil,
+              captureSource != nil,
+              let expectedCaptureAuthorization = captureAuthorization,
+              let expectedForwardingAuthorization = captureForwardingAuthorization,
+              captureSink?.allowsActiveUse(
+                  authorizedBy: expectedForwardingAuthorization
+              ) == true
+        else {
+            return remoteInputCaptureUnavailableResult()
+        }
 
         do {
-            return try authorization.withValidAuthorization {
+            let result: MacRemoteInputResult? = try authorization.withValidAuthorization {
                 try expectedCaptureAuthorization.withValidAuthorization {
                     try expectedForwardingAuthorization.withValidAuthorization {
                         guard activeInputAuthorization === authorization,
@@ -1639,15 +1651,32 @@ actor WorldwideScreenService {
                               captureSource != nil,
                               captureDisplayID != nil,
                               transportAllowsCapture else {
-                            return .rejected(.staleSession)
+                            return nil
                         }
                         return injectRemoteInput(request)
                     }
                 }
             }
+            // Classify a transition only after every nonrecursive authorization lock is released.
+            return result ?? remoteInputCaptureUnavailableResult()
         } catch {
-            return .rejected(.staleSession)
+            guard authorization.isValid,
+                  activeInputAuthorization === authorization,
+                  activeInputCapability == capability else {
+                return .rejected(.staleSession)
+            }
+            return remoteInputCaptureUnavailableResult()
         }
+    }
+
+    /// A live, actor-owned display rebuild is a dropped input action, not a stale Show session.
+    /// Keeping the input capability armed lets the next gesture use the replacement frame.
+    private func remoteInputCaptureUnavailableResult() -> MacRemoteInputResult {
+        .rejected(
+            screenCaptureTransitionIsOwned
+                ? .screenFormatChanging
+                : .staleSession
+        )
     }
 
     /// Maps validated wire actions onto the narrow macOS input controller surface.
@@ -1657,7 +1686,10 @@ actor WorldwideScreenService {
             remoteInputController.handleTap(
                 screenRequestID: request.screenRequestID,
                 inputSessionID: request.inputSessionID,
-                normalizedPoint: .init(x: point.x, y: point.y)
+                normalizedPoint: .init(x: point.x, y: point.y),
+                viewerVideoSize: request.viewerVideoSize.map {
+                    .init(width: $0.width, height: $0.height)
+                }
             )
 
         case .primaryDrag(let start, let end):
@@ -1665,7 +1697,10 @@ actor WorldwideScreenService {
                 screenRequestID: request.screenRequestID,
                 inputSessionID: request.inputSessionID,
                 start: .init(x: start.x, y: start.y),
-                end: .init(x: end.x, y: end.y)
+                end: .init(x: end.x, y: end.y),
+                viewerVideoSize: request.viewerVideoSize.map {
+                    .init(width: $0.width, height: $0.height)
+                }
             )
 
         case .insertText(let text, let focusGeneration):
@@ -1748,6 +1783,11 @@ actor WorldwideScreenService {
             case .staleSession, .displayUnavailable:
                 reason = .staleSession
                 revokesSession = true
+            case .screenFormatChanging:
+                // Reuse the established non-terminal wire reason so older TestFlight clients
+                // remain decode-compatible during host-first rollout.
+                reason = .rateLimited
+                revokesSession = false
             case .invalidPoint, .invalidText:
                 reason = .invalidRequest
                 revokesSession = false
@@ -3069,10 +3109,25 @@ actor WorldwideScreenService {
     /// Retries a startup whose observer proves that Display Settings changed mode mid-flight.
     private func startScreenCaptureWithDisplayModeRetries(
         requiredDisplayID: UInt32? = nil,
-        remainingRetries: Int = maximumDisplayModeStartupRetries
+        remainingRetries: Int = maximumDisplayModeStartupRetries,
+        owner requestedOwner: ScreenCaptureStartupOwner? = nil
     ) async throws -> WebRTCControlAuthorization {
+        let owner = requestedOwner ?? ScreenCaptureStartupOwner(
+            visibilityCommandEpoch: screenVisibilityCommandEpoch,
+            peerGeneration: peerGeneration,
+            recoveryEpoch: recoveryProofEpoch
+        )
+        guard screenCaptureStartupOwnerIsCurrent(owner) else {
+            throw CancellationError()
+        }
         do {
-            return try await startScreenCapture(requiredDisplayID: requiredDisplayID)
+            let authorization = try await startScreenCapture(
+                requiredDisplayID: requiredDisplayID
+            )
+            guard screenCaptureStartupOwnerIsCurrent(owner) else {
+                throw CancellationError()
+            }
+            return authorization
         } catch {
             guard remainingRetries > 0,
                   Self.isDisplayModeChangedDuringScreenStart(error),
@@ -3081,11 +3136,34 @@ actor WorldwideScreenService {
                 throw error
             }
             logger.info("Retrying worldwide screen startup after another display mode change")
+            // Let ScreenCaptureKit's filter snapshot catch up with the already-notified
+            // CoreGraphics mode. The bounded, throwing sleep preserves cancellation semantics.
+            try await Task.sleep(for: .milliseconds(125))
+            guard screenCaptureStartupOwnerIsCurrent(owner),
+                  captureSource == nil,
+                  transportAllowsCapture else {
+                throw CancellationError()
+            }
             return try await startScreenCaptureWithDisplayModeRetries(
                 requiredDisplayID: requiredDisplayID,
-                remainingRetries: remainingRetries - 1
+                remainingRetries: remainingRetries - 1,
+                owner: owner
             )
         }
+    }
+
+    private func screenCaptureStartupOwnerIsCurrent(
+        _ owner: ScreenCaptureStartupOwner
+    ) -> Bool {
+        !Self.screenFormatRenegotiationWasSuperseded(
+            visibilityCommandEpoch: owner.visibilityCommandEpoch,
+            currentVisibilityCommandEpoch: screenVisibilityCommandEpoch,
+            peerGeneration: owner.peerGeneration,
+            currentPeerGeneration: peerGeneration,
+            recoveryEpoch: owner.recoveryEpoch,
+            currentRecoveryEpoch: recoveryProofEpoch,
+            serviceIsStopped: isStopped
+        )
     }
 
     private nonisolated static func isDisplayModeChangedDuringScreenStart(
@@ -3184,7 +3262,14 @@ actor WorldwideScreenService {
                 height: Int32(format.height),
                 framesPerSecond: Int32(format.framesPerSecond)
             )
-            guard let forwardingAuthorization = sink.beginForwarding() else {
+            guard let forwardingAuthorization = sink.beginForwarding(
+                expectedFrameDimensions: ScreenVideoPixelDimensions(
+                    width: format.width,
+                    height: format.height
+                ),
+                expectedScaleFactor: format.expectedScaleFactor,
+                expectedContentScale: format.expectedContentScale
+            ) else {
                 if sink.requiresForwardingStartupRetry {
                     throw ScreenVideoCaptureError.displayModeChangedDuringStart(
                         format.displayID
@@ -3194,6 +3279,13 @@ actor WorldwideScreenService {
             }
             captureForwardingAuthorization = forwardingAuthorization
             try source.beginSampleDelivery()
+            try await waitForForwardingStartupProof(
+                sink: sink,
+                source: source,
+                captureAuthorization: authorization,
+                forwardingAuthorization: forwardingAuthorization,
+                displayID: format.displayID
+            )
             guard sink.commitForwardingStartup(
                 authorizedBy: forwardingAuthorization
             ) else {
@@ -3212,7 +3304,12 @@ actor WorldwideScreenService {
         } catch {
             let startError = error
             if captureSource === source {
-                revokeCaptureAuthorization()
+                // A current live format rebuild keeps the acknowledged Show/input generation.
+                // Native capture retries roll only capture tokens; terminal rebuild failure is
+                // handled by the owner and closes the full session below that boundary.
+                revokeCaptureAuthorization(
+                    preservingRemoteInput: screenCaptureTransitionIsOwned
+                )
             }
             sink.stopForwarding()
             do {
@@ -3230,6 +3327,41 @@ actor WorldwideScreenService {
                 throw WorldwideScreenServiceError.nativeScreenStopFailed(error)
             }
             throw startError
+        }
+    }
+
+    /// Waits only for the first exact image surface selected for this capture generation. No
+    /// frame or geometry becomes control-visible until this proof succeeds; a mismatch is a typed
+    /// display transition so the bounded owner can rebuild without publishing stale dimensions.
+    private func waitForForwardingStartupProof(
+        sink: WorldwideScreenSampleSink,
+        source: ScreenVideoCaptureSource,
+        captureAuthorization authorization: WebRTCControlAuthorization,
+        forwardingAuthorization: WebRTCControlAuthorization,
+        displayID: UInt32
+    ) async throws {
+        for poll in 0...Self.maximumForwardingStartupProofPolls {
+            guard captureSink === sink,
+                  captureSource === source,
+                  captureAuthorization === authorization,
+                  authorization.isValid,
+                  captureForwardingAuthorization === forwardingAuthorization,
+                  transportAllowsCapture else {
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
+            switch sink.forwardingStartupProofState(
+                authorizedBy: forwardingAuthorization
+            ) {
+            case .proven:
+                return
+            case .rejected:
+                throw ScreenVideoCaptureError.displayModeChangedDuringStart(displayID)
+            case .waiting:
+                guard poll < Self.maximumForwardingStartupProofPolls else {
+                    throw ScreenVideoCaptureError.displayModeChangedDuringStart(displayID)
+                }
+                try await Task.sleep(for: Self.forwardingStartupProofPollInterval)
+            }
         }
     }
 
@@ -3298,6 +3430,11 @@ actor WorldwideScreenService {
         let visibilityCommandEpoch = screenVisibilityCommandEpoch
         let renegotiationPeerGeneration = peerGeneration
         let renegotiationRecoveryEpoch = recoveryProofEpoch
+        let startupOwner = ScreenCaptureStartupOwner(
+            visibilityCommandEpoch: visibilityCommandEpoch,
+            peerGeneration: renegotiationPeerGeneration,
+            recoveryEpoch: renegotiationRecoveryEpoch
+        )
         defer {
             if let pendingSink = screenFormatRenegotiation.finish(owner: sink) {
                 Task { [weak self] in
@@ -3329,7 +3466,8 @@ actor WorldwideScreenService {
             captureAuthorization = nil
 
             _ = try await startScreenCaptureWithDisplayModeRetries(
-                requiredDisplayID: replacementDisplayID
+                requiredDisplayID: replacementDisplayID,
+                owner: startupOwner
             )
             logger.info("Worldwide screen capture format renegotiation completed")
         } catch {
@@ -3866,10 +4004,14 @@ actor WorldwideScreenService {
     }
 
     /// Revokes remote input before the screen capability that authorized it.
-    private func revokeCaptureAuthorization() {
+    private func revokeCaptureAuthorization(
+        preservingRemoteInput: Bool = false
+    ) {
         // Input revocation is first and synchronous: no queued tap or key may outlive the
         // screen authorization boundary that made the capability valid.
-        revokeRemoteInputAuthorization()
+        if !preservingRemoteInput {
+            revokeRemoteInputAuthorization()
+        }
         captureDisplayID = nil
         captureForwardingAuthorization?.revoke()
         captureForwardingAuthorization = nil
@@ -4044,6 +4186,12 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
         case stopped
     }
 
+    enum ForwardingStartupProofState: Equatable {
+        case waiting
+        case proven
+        case rejected
+    }
+
     private let capturer: any WorldwideScreenFrameCapturing
     private let remoteInputController: MacRemoteInputController
     private let didRequireCaptureFormatRenegotiation:
@@ -4056,6 +4204,9 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
     private let lock = NSLock()
     private var forwardingPhase = ForwardingPhase.ready
     private var formatIsProven = false
+    private var expectedFrameDimensions: ScreenVideoPixelDimensions?
+    private var expectedFrameScaleFactor: Double?
+    private var expectedFrameContentScale: Double?
     private var forwardingAuthorization: WebRTCControlAuthorization?
     private var formatRenegotiationDetector = ScreenVideoFormatRenegotiationDetector()
     private var nextFormatRenegotiationFallbackToken: UInt64 = 0
@@ -4089,7 +4240,11 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
     }
 
     /// Opens the callback gate after capture and transport health are proven.
-    func beginForwarding() -> WebRTCControlAuthorization? {
+    func beginForwarding(
+        expectedFrameDimensions: ScreenVideoPixelDimensions? = nil,
+        expectedScaleFactor: Double? = nil,
+        expectedContentScale: Double? = nil
+    ) -> WebRTCControlAuthorization? {
         guard lifetimeAllowsCapture else { return nil }
         let authorization = WebRTCControlAuthorization()
         let transition = lock.withLock { () -> (
@@ -4105,11 +4260,35 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
             let retiredAuthorization = forwardingAuthorization
             forwardingAuthorization = authorization
             forwardingPhase = .starting
-            formatIsProven = true
+            self.expectedFrameDimensions = expectedFrameDimensions
+            expectedFrameScaleFactor = expectedScaleFactor
+            expectedFrameContentScale = expectedContentScale
+            formatIsProven = expectedFrameDimensions == nil
             return (true, retiredAuthorization)
         }
         transition.retiredAuthorization?.revoke()
         return transition.installed ? authorization : nil
+    }
+
+    /// Reports whether a delivered frame has proved the exact output surface selected at start.
+    /// Authorization validity is checked before taking the sink lock, preserving the global
+    /// authorization-then-sink lock order used by remote input.
+    func forwardingStartupProofState(
+        authorizedBy authorization: WebRTCControlAuthorization
+    ) -> ForwardingStartupProofState {
+        guard authorization.isValid else { return .rejected }
+        return lock.withLock {
+            guard forwardingAuthorization === authorization,
+                  callbackGateAllowsEntry else {
+                return .rejected
+            }
+            guard forwardingPhase == .starting else {
+                return forwardingPhase == .active && formatIsProven
+                    ? .proven
+                    : .rejected
+            }
+            return formatIsProven ? .proven : .waiting
+        }
     }
 
     /// Publishes the control-visible generation only after source delivery is fully armed.
@@ -4124,6 +4303,9 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
                 return false
             }
             forwardingPhase = .active
+            expectedFrameDimensions = nil
+            expectedFrameScaleFactor = nil
+            expectedFrameContentScale = nil
             return true
         }
         return committed && authorization.isValid
@@ -4180,6 +4362,9 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
         let retiredAuthorization = lock.withLock { () -> WebRTCControlAuthorization? in
             forwardingPhase = .stopped
             formatIsProven = false
+            expectedFrameDimensions = nil
+            expectedFrameScaleFactor = nil
+            expectedFrameContentScale = nil
             invalidateFormatRenegotiationFallbackLocked()
             let authorization = forwardingAuthorization
             forwardingAuthorization = nil
@@ -4213,6 +4398,26 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
             guard forwardingPhase == .starting || forwardingPhase == .active,
                   callbackGateAllowsEntry else {
                 return (false, nil, nil)
+            }
+            if forwardingPhase == .starting,
+               let expectedFrameDimensions,
+               frameGeometry.map({ geometry in
+                   geometry.surfaceWidth == expectedFrameDimensions.width
+                       && geometry.surfaceHeight == expectedFrameDimensions.height
+                       && !geometry.requiresCaptureFormatRenegotiation
+                       && (expectedFrameScaleFactor.map { expectedScaleFactor in
+                           abs(Double(geometry.scaleFactor) - expectedScaleFactor) <= 0.005
+                       } ?? true)
+                       && (expectedFrameContentScale.map { expectedContentScale in
+                           abs(Double(geometry.contentScale) - expectedContentScale) <= 0.005
+                       } ?? true)
+               }) != true {
+                let suspension = suspendForFormatRenegotiationLocked()
+                return (
+                    suspension.requiresRenegotiation,
+                    suspension.retiredAuthorization,
+                    nil
+                )
             }
             switch formatRenegotiationDetector.observe(frameGeometry) {
             case .forwardFrame:
