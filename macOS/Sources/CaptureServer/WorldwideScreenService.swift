@@ -3230,12 +3230,19 @@ actor WorldwideScreenService {
                 )
             }
         }
+        let displayModeRequirement = screenDisplayRequirement
         let source = ScreenVideoCaptureSource(
             displayID: requiredDisplayID ?? screenDisplayID,
             displayRequirement: screenDisplayRequirement,
             maximumWidth: maximumWidth,
             framesPerSecond: framesPerSecond,
             consumer: sink,
+            displayModeSnapshotProvider: { displayID in
+                try await ScreenVideoDisplayModeSubprocessResolver.resolveLive(
+                    displayID,
+                    displayRequirement: displayModeRequirement
+                )
+            },
             makeStopWatchdog: makeNativeCaptureWatchdog,
             logger: logger
         )
@@ -4412,12 +4419,12 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
                            abs(Double(geometry.contentScale) - expectedContentScale) <= 0.005
                        } ?? true)
                }) != true {
-                let suspension = suspendForFormatRenegotiationLocked()
-                return (
-                    suspension.requiresRenegotiation,
-                    suspension.retiredAuthorization,
-                    nil
-                )
+                // ScreenCaptureKit can replay one image-backed `.started` sample whose geometry
+                // still describes the preceding surface. Keep the generation closed and wait for
+                // the first exact frame; the actor's bounded startup-proof deadline handles a
+                // persistently stale stream, while the display-mode observer remains immediate.
+                formatIsProven = false
+                return (false, nil, nil)
             }
             switch formatRenegotiationDetector.observe(frameGeometry) {
             case .forwardFrame:

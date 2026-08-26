@@ -435,12 +435,19 @@ final class ScreenVideoService: @unchecked Sendable,
             }
         }
 
+        let displayModeRequirement = displayRequirement
         let source = ScreenVideoCaptureSource(
             displayID: displayID,
             displayRequirement: displayRequirement,
             maximumWidth: maximumWidth,
             framesPerSecond: framesPerSecond,
             consumer: self,
+            displayModeSnapshotProvider: { displayID in
+                try await ScreenVideoDisplayModeSubprocessResolver.resolveLive(
+                    displayID,
+                    displayRequirement: displayModeRequirement
+                )
+            },
             makeStopWatchdog: makeCaptureStopWatchdog,
             logger: logger
         )

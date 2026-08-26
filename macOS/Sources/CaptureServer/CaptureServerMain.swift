@@ -13,6 +13,15 @@ import VirtualDisplayCore
 struct CaptureServerMain {
     /// Parses configuration, starts enabled services, and exits nonzero on any fatal failure.
     static func main() async {
+        if let probe = ScreenVideoDisplayModeProbeMode.executionIfRequested(
+            CommandLine.arguments
+        ) {
+            if let output = probe.output,
+               let data = output.data(using: .utf8) {
+                FileHandle.standardOutput.write(data)
+            }
+            exit(probe.exitStatus)
+        }
         if let probeExitStatus = RestoredDesktopProbeMode.exitStatusIfRequested(
             CommandLine.arguments
         ) {

@@ -11,6 +11,26 @@ public struct ScreenVideoPixelDimensions: Equatable, Sendable {
     }
 }
 
+/// Logical and framebuffer dimensions read from one authoritative display-mode snapshot.
+public struct ScreenVideoDisplayModeSnapshot: Equatable, Sendable {
+    public let logicalDimensions: ScreenVideoPixelDimensions
+    public let pixelDimensions: ScreenVideoPixelDimensions
+
+    public init(
+        logicalDimensions: ScreenVideoPixelDimensions,
+        pixelDimensions: ScreenVideoPixelDimensions
+    ) {
+        self.logicalDimensions = logicalDimensions
+        self.pixelDimensions = pixelDimensions
+    }
+}
+
+/// Resolves a display mode without prescribing whether the caller uses its current process or a
+/// fresh helper process. The worldwide host uses a fresh process because the virtual-display
+/// owner's CoreGraphics connection can retain an older mode after Display Settings changes it.
+public typealias ScreenVideoDisplayModeSnapshotProvider =
+    @Sendable (UInt32) async throws -> ScreenVideoDisplayModeSnapshot
+
 /// Immutable identity and topology requirements for a display selected by numeric ID.
 ///
 /// WindowServer may recycle display IDs after a virtual display terminates. Callers that own a
