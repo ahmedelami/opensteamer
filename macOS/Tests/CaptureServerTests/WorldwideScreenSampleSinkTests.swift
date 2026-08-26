@@ -48,7 +48,7 @@ final class WorldwideScreenSampleSinkTests: XCTestCase {
         XCTAssertTrue(sink.allowsActiveUse(authorizedBy: authorization))
     }
 
-    func testUpscaledStaleStartupSourceCannotProveSelectedFramebuffer() throws {
+    func testUpscaledStaleStartupSourceWaitsForSelectedFramebuffer() throws {
         let capturer = RecordingScreenFrameCapturer()
         let sink = WorldwideScreenSampleSink(
             capturer: capturer,
@@ -79,15 +79,33 @@ final class WorldwideScreenSampleSinkTests: XCTestCase {
         )
 
         XCTAssertEqual(capturer.captureCount, 0)
-        XCTAssertFalse(authorization.isValid)
+        XCTAssertTrue(authorization.isValid)
         XCTAssertTrue(sink.requiresForwardingStartupRetry)
         XCTAssertEqual(
             sink.forwardingStartupProofState(authorizedBy: authorization),
-            .rejected
+            .waiting
         )
+
+        let exactFrame = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_080,
+                surfaceHeight: 2_340,
+                contentRect: CGRect(x: 0, y: 0, width: 540, height: 1_170),
+                contentScale: 1,
+                scaleFactor: 2
+            )
+        )
+        sink.consumeScreenVideoSample(try makeImageSample(), frameGeometry: exactFrame)
+
+        XCTAssertEqual(capturer.captureCount, 1)
+        XCTAssertEqual(
+            sink.forwardingStartupProofState(authorizedBy: authorization),
+            .proven
+        )
+        XCTAssertTrue(sink.commitForwardingStartup(authorizedBy: authorization))
     }
 
-    func testUnexpectedStartupSurfaceIsNeverForwardedAndRequestsTypedRetry() throws {
+    func testUnexpectedStartupSurfaceIsDroppedWhileStartupProofWaits() throws {
         let renegotiations = LockedCount()
         let capturer = RecordingScreenFrameCapturer()
         let sink = WorldwideScreenSampleSink(
@@ -117,11 +135,11 @@ final class WorldwideScreenSampleSinkTests: XCTestCase {
 
         XCTAssertEqual(capturer.captureCount, 0)
         XCTAssertEqual(renegotiations.value, 0)
-        XCTAssertFalse(authorization.isValid)
+        XCTAssertTrue(authorization.isValid)
         XCTAssertTrue(sink.requiresForwardingStartupRetry)
         XCTAssertEqual(
             sink.forwardingStartupProofState(authorizedBy: authorization),
-            .rejected
+            .waiting
         )
         XCTAssertFalse(sink.commitForwardingStartup(authorizedBy: authorization))
     }
@@ -143,8 +161,12 @@ final class WorldwideScreenSampleSinkTests: XCTestCase {
         sink.consumeScreenVideoSample(try makeImageSample(), frameGeometry: nil)
 
         XCTAssertEqual(capturer.captureCount, 0)
-        XCTAssertFalse(authorization.isValid)
+        XCTAssertTrue(authorization.isValid)
         XCTAssertTrue(sink.requiresForwardingStartupRetry)
+        XCTAssertEqual(
+            sink.forwardingStartupProofState(authorizedBy: authorization),
+            .waiting
+        )
     }
 
     func testDisplayModeChangeBeforeForwardingRejectsStaleStartup() {

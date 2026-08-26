@@ -96,6 +96,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
     private let maximumWidth: Int
     private let framesPerSecond: Int
     private let consumer: ScreenVideoSampleConsumer
+    private let displayModeSnapshotProvider: ScreenVideoDisplayModeSnapshotProvider
     private let makeStopWatchdog: @Sendable () -> Task<Void, Never>?
     private let logger: Logger
     private let sampleQueue = DispatchQueue(label: "opensteamer.ScreenVideoCapture")
@@ -122,6 +123,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
         maximumWidth: Int,
         framesPerSecond: Int,
         consumer: ScreenVideoSampleConsumer,
+        displayModeSnapshotProvider: ScreenVideoDisplayModeSnapshotProvider? = nil,
         makeStopWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
         logger: Logger
     ) {
@@ -130,6 +132,21 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
         self.maximumWidth = maximumWidth
         self.framesPerSecond = framesPerSecond
         self.consumer = consumer
+        self.displayModeSnapshotProvider = displayModeSnapshotProvider ?? { displayID in
+            guard let mode = CGDisplayCopyDisplayMode(displayID) else {
+                throw ScreenVideoCaptureError.displayModeUnavailable(displayID)
+            }
+            return ScreenVideoDisplayModeSnapshot(
+                logicalDimensions: ScreenVideoPixelDimensions(
+                    width: mode.width,
+                    height: mode.height
+                ),
+                pixelDimensions: ScreenVideoPixelDimensions(
+                    width: mode.pixelWidth,
+                    height: mode.pixelHeight
+                )
+            )
+        }
         self.makeStopWatchdog = makeStopWatchdog
         self.logger = logger
     }
@@ -227,7 +244,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
             let display = try selectDisplay(from: content.displays)
             try validateDisplayRequirement(for: display.displayID)
             let filter = SCContentFilter(display: display, excludingWindows: [])
-            let sourceFormat = try activeSourceFormat(for: display, filter: filter)
+            let sourceFormat = try await activeSourceFormat(for: display, filter: filter)
             let dimensions = try ScreenVideoOutputPolicy.outputDimensions(
                 source: sourceFormat.dimensions,
                 maximumWidth: maximumWidth
@@ -317,7 +334,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
                     display: postStartDisplay,
                     excludingWindows: []
                 )
-                let postStartSourceFormat = try activeSourceFormat(
+                let postStartSourceFormat = try await activeSourceFormat(
                     for: postStartDisplay,
                     filter: postStartFilter
                 )
@@ -683,7 +700,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
     private func activeSourceFormat(
         for display: SCDisplay,
         filter: SCContentFilter
-    ) throws -> ScreenVideoActiveSourceFormat {
+    ) async throws -> ScreenVideoActiveSourceFormat {
         let vendorID = CGDisplayVendorNumber(display.displayID)
         let productID = CGDisplayModelNumber(display.displayID)
         guard ScreenVideoSourceDimensionPolicy.dimensionKind(
@@ -698,11 +715,11 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
                 expectedScaleFactor: nil
             )
         }
-        guard let mode = CGDisplayCopyDisplayMode(display.displayID),
-              mode.width >= 2,
-              mode.height >= 2,
-              mode.pixelWidth >= 2,
-              mode.pixelHeight >= 2 else {
+        let mode = try await displayModeSnapshotProvider(display.displayID)
+        guard mode.logicalDimensions.width >= 2,
+              mode.logicalDimensions.height >= 2,
+              mode.pixelDimensions.width >= 2,
+              mode.pixelDimensions.height >= 2 else {
             throw ScreenVideoCaptureError.displayModeUnavailable(display.displayID)
         }
         let sourceDimensions = ScreenVideoSourceDimensionPolicy.sourceDimensions(
@@ -715,14 +732,8 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
             filterContentWidth: Double(filter.contentRect.width),
             filterContentHeight: Double(filter.contentRect.height),
             pointPixelScale: Double(filter.pointPixelScale),
-            coreGraphicsLogicalDimensions: ScreenVideoPixelDimensions(
-                width: mode.width,
-                height: mode.height
-            ),
-            coreGraphicsPixelDimensions: ScreenVideoPixelDimensions(
-                width: mode.pixelWidth,
-                height: mode.pixelHeight
-            )
+            coreGraphicsLogicalDimensions: mode.logicalDimensions,
+            coreGraphicsPixelDimensions: mode.pixelDimensions
         )
         guard let sourceDimensions else {
             // The logical display identity itself is unsettled. The service can tolerate stale
@@ -730,8 +741,10 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
             // logical canvas is being captured.
             throw ScreenVideoCaptureError.displayModeChangedDuringStart(display.displayID)
         }
-        let horizontalScale = Double(mode.pixelWidth) / Double(mode.width)
-        let verticalScale = Double(mode.pixelHeight) / Double(mode.height)
+        let horizontalScale = Double(mode.pixelDimensions.width)
+            / Double(mode.logicalDimensions.width)
+        let verticalScale = Double(mode.pixelDimensions.height)
+            / Double(mode.logicalDimensions.height)
         guard (1 ... 4).contains(horizontalScale),
               abs(horizontalScale - verticalScale) <= 0.005 else {
             throw ScreenVideoCaptureError.displayModeChangedDuringStart(display.displayID)
