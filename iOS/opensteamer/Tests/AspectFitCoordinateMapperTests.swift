@@ -51,6 +51,20 @@ final class AspectFitCoordinateMapperTests: XCTestCase {
                 videoSize: video
             )
         )
+        for justOutside in [
+            CGPoint(x: visibleRect.minX.nextDown, y: visibleRect.midY),
+            CGPoint(x: visibleRect.maxX.nextUp, y: visibleRect.midY),
+            CGPoint(x: visibleRect.midX, y: visibleRect.minY.nextDown),
+            CGPoint(x: visibleRect.midX, y: visibleRect.maxY.nextUp),
+        ] {
+            XCTAssertNil(
+                AspectFitCoordinateMapper.normalizedPoint(
+                    for: justOutside,
+                    containerSize: container,
+                    videoSize: video
+                )
+            )
+        }
         let minimum = try XCTUnwrap(
             AspectFitCoordinateMapper.normalizedPoint(
                 for: CGPoint(x: visibleRect.minX, y: visibleRect.minY),
@@ -175,6 +189,67 @@ final class AspectFitCoordinateMapperTests: XCTestCase {
             )
             XCTAssertEqual(renderedRect.minX, 0, accuracy: 0.001)
             XCTAssertEqual(renderedRect.maxX, portraitViewer.width, accuracy: 0.001)
+        }
+    }
+
+    func testEverySelectableFramebufferPreservesTheNormalizedTouchGrid() throws {
+        let viewerSizes = [
+            CGSize(width: 603, height: 1_311),
+            CGSize(width: 390, height: 844),
+            CGSize(width: 844, height: 390),
+        ]
+        // Includes the fixed-size and synthesized mode families currently exposed by the
+        // OpenSteamer display. The odd 603x1312 source is encoded as the nearest even 602x1310.
+        let encodedFramebuffers = [
+            CGSize(width: 540, height: 960),
+            CGSize(width: 602, height: 1_310),
+            CGSize(width: 640, height: 480),
+            CGSize(width: 640, height: 1_392),
+            CGSize(width: 720, height: 1_280),
+            CGSize(width: 750, height: 1_334),
+            CGSize(width: 800, height: 600),
+            CGSize(width: 800, height: 1_740),
+            CGSize(width: 810, height: 1_440),
+            CGSize(width: 828, height: 1_792),
+            CGSize(width: 900, height: 1_600),
+            CGSize(width: 1_024, height: 768),
+            CGSize(width: 1_024, height: 2_226),
+            CGSize(width: 1_080, height: 1_920),
+            CGSize(width: 1_080, height: 2_340),
+            CGSize(width: 1_206, height: 2_622),
+            CGSize(width: 1_280, height: 960),
+            CGSize(width: 1_344, height: 1_008),
+            CGSize(width: 1_600, height: 1_200),
+        ]
+        let normalizedValues: [CGFloat] = [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1]
+
+        for viewerSize in viewerSizes {
+            for framebuffer in encodedFramebuffers {
+                let visibleRect = try XCTUnwrap(
+                    AspectFitCoordinateMapper.visibleVideoRect(
+                        containerSize: viewerSize,
+                        videoSize: framebuffer
+                    )
+                )
+                for expectedX in normalizedValues {
+                    for expectedY in normalizedValues {
+                        let location = CGPoint(
+                            x: visibleRect.minX + (visibleRect.width * expectedX),
+                            y: visibleRect.minY + (visibleRect.height * expectedY)
+                        )
+                        let normalized = try XCTUnwrap(
+                            AspectFitCoordinateMapper.normalizedPoint(
+                                for: location,
+                                containerSize: viewerSize,
+                                videoSize: framebuffer
+                            ),
+                            "Rejected \(framebuffer) at \(expectedX),\(expectedY)"
+                        )
+                        XCTAssertEqual(normalized.x, expectedX, accuracy: 0.000_001)
+                        XCTAssertEqual(normalized.y, expectedY, accuracy: 0.000_001)
+                    }
+                }
+            }
         }
     }
 }
