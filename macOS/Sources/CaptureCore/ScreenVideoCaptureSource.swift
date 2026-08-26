@@ -15,11 +15,15 @@ public struct ScreenVideoCaptureFormat: Sendable, Equatable {
     public let expectedScaleFactor: Double?
     /// Expected scaling from the selected Core Graphics framebuffer into the configured surface.
     public let expectedContentScale: Double?
+    /// Fresh logical bounds for an identity-checked sole-main display. The virtual-display owner
+    /// must not derive these from its long-lived Core Graphics connection after a mode change.
+    public let authoritativeDisplayBounds: CGRect?
 }
 
 private struct ScreenVideoActiveSourceFormat {
     let dimensions: ScreenVideoPixelDimensions
     let expectedScaleFactor: Double?
+    let authoritativeDisplayBounds: CGRect?
 }
 
 /// Receives complete display frames and unexpected native stream failures.
@@ -280,7 +284,8 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
                 expectedScaleFactor: sourceFormat.expectedScaleFactor,
                 expectedContentScale: sourceFormat.expectedScaleFactor.map { _ in
                     Double(dimensions.width) / Double(sourceFormat.dimensions.width)
-                }
+                },
+                authoritativeDisplayBounds: sourceFormat.authoritativeDisplayBounds
             )
             let displayModeObserver = try ScreenVideoDisplayModeObserver(
                 displayID: display.displayID,
@@ -367,7 +372,9 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
                 guard ScreenVideoSourceDimensionPolicy.isStableAcrossStart(
                     before: sourceFormat.dimensions,
                     after: postStartSourceFormat.dimensions
-                ), sourceFormat.expectedScaleFactor == postStartSourceFormat.expectedScaleFactor else {
+                ), sourceFormat.expectedScaleFactor == postStartSourceFormat.expectedScaleFactor,
+                   sourceFormat.authoritativeDisplayBounds
+                    == postStartSourceFormat.authoritativeDisplayBounds else {
                     throw ScreenVideoCaptureError.displayModeChangedDuringStart(
                         display.displayID
                     )
@@ -757,7 +764,8 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
                     width: display.width,
                     height: display.height
                 ),
-                expectedScaleFactor: nil
+                expectedScaleFactor: nil,
+                authoritativeDisplayBounds: nil
             )
         }
         let mode = try await displayModeSnapshotProvider(display.displayID)
@@ -794,9 +802,31 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
               abs(horizontalScale - verticalScale) <= 0.005 else {
             throw ScreenVideoCaptureError.displayModeChangedDuringStart(display.displayID)
         }
+        let authoritativeDisplayBounds: CGRect?
+        if displayRequirement?.requiresSoleMainDisplay == true {
+            let frame = display.frame
+            guard !frame.isNull,
+                  !frame.isInfinite,
+                  frame.origin.x.isFinite,
+                  frame.origin.y.isFinite,
+                  frame.width.isFinite,
+                  frame.height.isFinite,
+                  frame.width > 0,
+                  frame.height > 0,
+                  abs(frame.minX) <= 0.5,
+                  abs(frame.minY) <= 0.5,
+                  abs(frame.width - CGFloat(mode.logicalDimensions.width)) <= 0.5,
+                  abs(frame.height - CGFloat(mode.logicalDimensions.height)) <= 0.5 else {
+                throw ScreenVideoCaptureError.displayModeChangedDuringStart(display.displayID)
+            }
+            authoritativeDisplayBounds = frame
+        } else {
+            authoritativeDisplayBounds = nil
+        }
         return ScreenVideoActiveSourceFormat(
             dimensions: sourceDimensions,
-            expectedScaleFactor: horizontalScale
+            expectedScaleFactor: horizontalScale,
+            authoritativeDisplayBounds: authoritativeDisplayBounds
         )
     }
 }

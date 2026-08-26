@@ -85,6 +85,135 @@ final class MacRemoteInputControllerTests: XCTestCase {
         XCTAssertEqual(system.postedMousePoints[0].y, 410, accuracy: 0.0001)
     }
 
+    func testFreshCaptureBoundsOverrideStaleOwnerProcessBounds() throws {
+        let system = MockMacRemoteInputSystem()
+        // Reproduces the virtual-display owner's cached pre-transition Core Graphics mode.
+        system.bounds = CGRect(x: 0, y: 0, width: 1_920, height: 1_080)
+        let clock = MockMacRemoteInputClock()
+        let controller = MacRemoteInputController(
+            allowRemoteControl: true,
+            system: system,
+            clock: clock
+        )
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                authoritativeDisplayBounds: CGRect(x: 0, y: 0, width: 603, height: 1_311)
+            ),
+            .armed
+        )
+        let geometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_206,
+                surfaceHeight: 2_622,
+                contentRect: CGRect(x: 0, y: 0, width: 603, height: 1_311),
+                contentScale: 1,
+                scaleFactor: 2
+            )
+        )
+        stabilize(geometry, on: controller, clock: clock)
+
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                normalizedPoint: .init(x: 0.25, y: 0.75),
+                viewerVideoSize: .init(width: 1_206, height: 2_622)
+            ),
+            .accepted(.none)
+        )
+        let posted = try XCTUnwrap(system.postedMousePoints.last)
+        XCTAssertEqual(posted.x, 150.75, accuracy: 0.000_1)
+        XCTAssertEqual(posted.y, 983.25, accuracy: 0.000_1)
+    }
+
+    func testFreshCaptureBoundsUpdateFencesAndThenMapsLiveModeChange() throws {
+        let system = MockMacRemoteInputSystem()
+        system.bounds = CGRect(x: 0, y: 0, width: 1_920, height: 1_080)
+        let clock = MockMacRemoteInputClock()
+        let controller = MacRemoteInputController(
+            allowRemoteControl: true,
+            system: system,
+            clock: clock
+        )
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                authoritativeDisplayBounds: CGRect(x: 0, y: 0, width: 540, height: 1_170)
+            ),
+            .armed
+        )
+        let oldGeometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_080,
+                surfaceHeight: 2_340,
+                contentRect: CGRect(x: 0, y: 0, width: 540, height: 1_170),
+                contentScale: 1,
+                scaleFactor: 2
+            )
+        )
+        stabilize(oldGeometry, on: controller, clock: clock)
+        XCTAssertEqual(
+            tap(controller, viewerVideoSize: .init(width: 1_080, height: 2_340)),
+            .accepted(.none)
+        )
+
+        controller.updateAuthoritativeDisplayBounds(
+            CGRect(x: 0, y: 0, width: 603, height: 1_311),
+            for: displayID
+        )
+        XCTAssertEqual(
+            tap(controller, viewerVideoSize: .init(width: 1_206, height: 2_622)),
+            .rejected(.screenFormatChanging)
+        )
+
+        let newGeometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_206,
+                surfaceHeight: 2_622,
+                contentRect: CGRect(x: 0, y: 0, width: 603, height: 1_311),
+                contentScale: 1,
+                scaleFactor: 2
+            )
+        )
+        stabilize(newGeometry, on: controller, clock: clock)
+        XCTAssertEqual(
+            tap(controller, viewerVideoSize: .init(width: 1_206, height: 2_622)),
+            .accepted(.none)
+        )
+        let posted = try XCTUnwrap(system.postedMousePoints.last)
+        XCTAssertEqual(posted.x, 301.5, accuracy: 0.000_1)
+        XCTAssertEqual(posted.y, 655.5, accuracy: 0.000_1)
+    }
+
+    func testArmRejectsMalformedAuthoritativeDisplayBounds() {
+        let system = MockMacRemoteInputSystem()
+        let controller = makeController(system: system)
+
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                authoritativeDisplayBounds: CGRect(
+                    x: 0,
+                    y: 0,
+                    width: CGFloat.nan,
+                    height: 1_311
+                )
+            ),
+            .displayUnavailable
+        )
+        XCTAssertEqual(
+            tap(controller, viewerVideoSize: .init(width: 1_206, height: 2_622)),
+            .rejected(.staleSession)
+        )
+    }
+
     func testBottomRightNormalizedEdgeStaysInsideCapturedDisplay() {
         let system = MockMacRemoteInputSystem()
         system.bounds = CGRect(x: 1_920, y: -200, width: 1_280, height: 720)
