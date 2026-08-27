@@ -55,7 +55,7 @@ const ACL_FIRST_ENTRY: i32 = 0;
 const ENOENT: i32 = 2;
 const APPLICATIONS_DEVICE: u64 = 16_777_229;
 const APPLICATIONS_INODE: u64 = 4_982_341;
-const APPLICATIONS_NLINK: u64 = 28;
+const APPLICATIONS_NLINK: u64 = 38;
 const APPLICATIONS_FLAGS: u32 = 1_048_576;
 const LOCK_EX: i32 = 2;
 const LOCK_NB: i32 = 4;
@@ -133,6 +133,7 @@ const LOCK_RECORD_PROBE_MODE: &str = "--read-diagnostic-driver-v3-host-lock-reco
 const UID501_PINNED_READ_MODE: &str = "--uid501-openat-read-pinned-file";
 const UID501_GENERATED_READ_MODE: &str = "--uid501-openat-read-generated-file";
 const UID501_HOST_MANIFEST_MODE: &str = "--uid501-openat-host-bundle-manifest";
+const UID501_V21_BOUNDARY_MODE: &str = "--uid501-verify-current-v21-release-boundary";
 const UID501_DISPLAY_SNAPSHOT_MODE: &str = "--uid501-current-virtual-display-snapshot";
 const UID501_DISPLAY_RESTORE_MODE: &str = "--uid501-restore-current-virtual-display";
 
@@ -307,16 +308,16 @@ const HOST_PLIST: &str =
     "/Users/ahmed/Library/LaunchAgents/org.example.opensteamer.worldwide.plist";
 const HOST_LABEL: &str = "org.example.opensteamer.worldwide";
 const HOST_EXECUTABLE_SHA256: &str =
-    "7c8af9bebb748083020762ffca4511eee3445f97f817f29d6fc28d275471496a";
-const HOST_EXECUTABLE_SIZE: u64 = 6_688_032;
+    "26b9e45bed5d33d8f9a78e848a4b9fe6c9a8e0dfd10784c569e47c5532e3a64d";
+const HOST_EXECUTABLE_SIZE: u64 = 7_123_616;
 const HOST_INFO_PLIST_SHA256: &str =
     "3c017d9cf034cbc864fc19103a0919f296930f0752f8ecfedcb1c93fbbc9694d";
 const HOST_INFO_PLIST_SIZE: u64 = 1_477;
 const HOST_BUNDLE_MANIFEST_SHA256: &str =
-    "8a74ca1217a0f80de1cf0e5e038b9585e24bea0ab6364905510b3439dbd7db0e";
+    "cfa32cd5dd2fe535aa899ac5aefaeaf06c9039843e43181c8e2fb64774d183bc";
 const HOST_PLIST_SHA256: &str = "aebb2e1fdb680bca9c5df06d2ef5a35275e852b08b9c305ecfe80b11b8c9848e";
 const HOST_PLIST_SIZE: u64 = 1_180;
-const HOST_CDHASH: &str = "734e415c6719360a230709ea90e5b08e9665da96";
+const HOST_CDHASH: &str = "f5bfda9a6060a6d2c730c4882274763a4351dd46";
 const HOST_IDENTIFIER: &str = "com.elamin.AudioStreamer.CaptureServer";
 const TEAM_ID: &str = "MSMG8CJLB3";
 const HOST_RENDEZVOUS_URL: &str = "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev";
@@ -354,6 +355,33 @@ const V8_BUILD_STDERR_SHA256: &str =
 const V8_INSTALL_HOLD_NAME_SHA256: &str =
     "ff6032f897db0c43e16dabf368fff2a3cc9643d13d2fb2f2ca069c0b2fa17542";
 const V8_ROLLBACK_RESERVE_INODE: u64 = 28_002_131;
+
+const V21_UPDATE_ROOT: &str =
+    "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v21";
+const V21_UPDATE_ROOT_INODE: u64 = 29_332_297;
+const V21_POINTER: &str =
+    "/Users/ahmed/Library/Application Support/opensteamer/active-paired-host-update-v21";
+const V21_POINTER_INODE: u64 = 29_332_324;
+const V21_POINTER_SHA256: &str = "a9eab1b18f68c11bde41cd827413c683a92fb6347368f297d997788b74ece315";
+const V21_EVIDENCE: &str = "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v21/paired-v21-update-1787836777-57058db8-4349-4cfd-9c4e-bff0d5e811bd";
+const V21_EVIDENCE_INODE: u64 = 29_332_298;
+const V21_INSTALL_HOLD: &str =
+    "/Applications/.opensteamer-paired-v21-install-57058db8-4349-4cfd-9c4e-bff0d5e811bd";
+const V21_INSTALL_HOLD_INODE: u64 = 29_332_299;
+const V21_ROLLBACK_APP: &str = "/Applications/.opensteamer-paired-v21-install-57058db8-4349-4cfd-9c4e-bff0d5e811bd/rollback/opensteamer Host.app";
+const V21_ROLLBACK_APP_INODE: u64 = 29_188_825;
+const V21_ROLLBACK_EXECUTABLE_INODE: u64 = 29_188_830;
+const V21_ROLLBACK_FRAMEWORK_INODE: u64 = 29_188_841;
+const V21_ROLLBACK_BUNDLE_MANIFEST_SHA256: &str =
+    "a9a60ead3edf9ec93023fd072b63c7af16c4d338b6edc0b8934f5ebb189a7102";
+const V21_ROLLBACK_EXECUTABLE_SHA256: &str =
+    "a5092ae26e46838bd3e5346b54f7a83b52bd23e1b756de7d43c5ba0cef21f97e";
+const V21_ROLLBACK_FRAMEWORK_SHA256: &str =
+    "bd3041662b7ba29736b8cda3694dbd93b8181b60009a9a99f4742f7f557b3d9e";
+const V21_ROLLBACK_CDHASH: &str = "aa0942189f867158160a242231039320c8ab289e";
+const V21_PREDECESSOR_EVIDENCE: &str = "/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v20/paired-v20-update-1787775974-0e79544b-f857-4e1a-975f-cd1c64b06601";
+const V21_CANDIDATE_COMMIT: &str = "11d53e77fa3cc210ee001712b9ed891a298cb95f";
+const V21_CANDIDATE_TREE: &str = "d7209c1f5a28a6f117da46e2a653909007009633";
 
 const LEGACY_EXECUTABLE: &str = "/Applications/AudioStreamer Host.app/Contents/MacOS/CaptureServer";
 const LEGACY_PLIST: &str =
@@ -672,6 +700,11 @@ fn real_main() -> Result<()> {
             uid501_openat_read_helper(Path::new(path), file_mode, group, maximum, None)
         }
         [_, mode] if mode == UID501_HOST_MANIFEST_MODE => uid501_host_bundle_manifest_helper(),
+        [_, mode] if mode == UID501_V21_BOUNDARY_MODE => {
+            verify_current_v21_release_boundary()?;
+            println!("OPENSTEAMER_CURRENT_V21_RELEASE_BOUNDARY_OK");
+            Ok(())
+        }
         [_, mode] if mode == UID501_DISPLAY_SNAPSHOT_MODE => {
             require_uid501_display_helper_identity()?;
             let topology = read_current_virtual_display_topology_local()?;
@@ -1763,6 +1796,469 @@ fn verify_retained_v8_evidence() -> Result<()> {
     )
 }
 
+fn require_exact_v21_record(text: &str, record: &str, label: &str) -> Result<()> {
+    if text.lines().filter(|line| *line == record).count() != 1 {
+        return Err(ControllerError(format!(
+            "current v21 {label} lost exact record: {record}"
+        )));
+    }
+    Ok(())
+}
+
+fn verify_current_v21_evidence_files() -> Result<()> {
+    let evidence = Path::new(V21_EVIDENCE);
+    require_exact_child_names(
+        evidence,
+        &[
+            "SwitchAudioSource",
+            "activate-opensteamer-shared-clock-v21.sh",
+            "build-opensteamer-host-app.sh",
+            "candidate-app-manifest.txt",
+            "candidate-audio-routes.txt",
+            "candidate-stderr-suffix.tmp",
+            "candidate-stderr-suffix.txt",
+            "candidate-stdout-suffix.tmp",
+            "candidate-stdout-suffix.txt",
+            "candidate-topology.txt",
+            "controller",
+            "install-hold-name.txt",
+            "journal.log",
+            "launchctl-final-summary.txt",
+            "launchctl-final.txt",
+            "launchctl-sample.tmp",
+            "live-bundle-verification.txt",
+            "live-process-final.txt",
+            "live-process-initial.txt",
+            "lock-owner.txt",
+            "predecessor-app-manifest.txt",
+            "predecessor-audio-routes.txt",
+            "predecessor-topology.txt",
+            "probe-worldwide-lock-v21",
+            "probe-worldwide-lock-v21.swift",
+            "provenance.txt",
+            "result.txt",
+            "select-live-display-mode-v21",
+            "select-live-display-mode-v21.swift",
+            "selector-result.txt",
+            "verify-live-display-topology-v21",
+            "verify-live-display-topology-v21.swift",
+            "verify-live-mac-host-process.sh",
+            "verify-mac-host-bundle.sh",
+            "verify-no-private-virtual-display-imports.sh",
+        ],
+        "current v21 evidence",
+    )?;
+    for (name, mode, size, digest) in [
+        (
+            "SwitchAudioSource",
+            0o500,
+            55_920,
+            "9a29148a58b91c6ac13281b3cc1915922bdadd00ab09b3267271e5925d52fb64",
+        ),
+        (
+            "activate-opensteamer-shared-clock-v21.sh",
+            0o400,
+            144_688,
+            "8e8d30badf887b37a3d612c62a81e316963fc74a94d1c8b25cd5e6836f6d133d",
+        ),
+        (
+            "build-opensteamer-host-app.sh",
+            0o400,
+            17_275,
+            "96ffbce9ecff2ece81f1901001108ad3b14d3991e0d8481341db7125fa81365a",
+        ),
+        (
+            "candidate-app-manifest.txt",
+            0o600,
+            20_054,
+            "b603128623164ae069873434b30e39352da00b80e3a1cbf1846afc3b6886ba67",
+        ),
+        (
+            "candidate-audio-routes.txt",
+            0o600,
+            286,
+            "d232bcc03482413057bd23cb150aa331c956aa9eca9bf1ec6e29d0e2612a3c0a",
+        ),
+        (
+            "candidate-stderr-suffix.tmp",
+            0o600,
+            134,
+            "a89eb84315355a9773a1edb88f5e05ae12d41fefbfc5f35f5e2df1f907783e8d",
+        ),
+        (
+            "candidate-stderr-suffix.txt",
+            0o600,
+            134,
+            "a89eb84315355a9773a1edb88f5e05ae12d41fefbfc5f35f5e2df1f907783e8d",
+        ),
+        (
+            "candidate-stdout-suffix.tmp",
+            0o600,
+            85_981,
+            "862a388e3304c5f6dd72f1d052e3829d4594afb37c79b992cd02fc2721e4821a",
+        ),
+        (
+            "candidate-stdout-suffix.txt",
+            0o600,
+            85_981,
+            "862a388e3304c5f6dd72f1d052e3829d4594afb37c79b992cd02fc2721e4821a",
+        ),
+        (
+            "candidate-topology.txt",
+            0o600,
+            838,
+            "61a15123d6ed991a59558a97dde8452d1af94cbadc51757200f302ae40efdd29",
+        ),
+        (
+            "controller",
+            0o500,
+            840_056,
+            "0beb8e96aabd059ee5f108dfd05d7d5d99fa52b58f56ab942a31ee8efd33f528",
+        ),
+        (
+            "install-hold-name.txt",
+            0o600,
+            83,
+            "a364a367269f530de753022e953fab52eb824ecb8265d78ce3581e95c618a57a",
+        ),
+        (
+            "journal.log",
+            0o600,
+            869,
+            "91b1ab4cf34e79b013adc74679f3b1e1a72ce81228818d54cfebea128f4e4e4f",
+        ),
+        (
+            "launchctl-final-summary.txt",
+            0o600,
+            8,
+            "1692c5244809fa6594a44faaef95c209a8dd21705b7d0f212c5b17532391a1ce",
+        ),
+        (
+            "launchctl-final.txt",
+            0o600,
+            1_877,
+            "14ec62b8018a174b3bf5754c44c0d104f65976d49f8c05fdcd0760db6c7fcdc6",
+        ),
+        (
+            "launchctl-sample.tmp",
+            0o600,
+            1_877,
+            "14ec62b8018a174b3bf5754c44c0d104f65976d49f8c05fdcd0760db6c7fcdc6",
+        ),
+        (
+            "live-bundle-verification.txt",
+            0o600,
+            1_022,
+            "9e601a5716530bff9cb77d9ac74105f2e0181cf68df3e1a2348656c111704a0f",
+        ),
+        (
+            "live-process-final.txt",
+            0o600,
+            633,
+            "a3584176fefe190fa2a546ea49a182ec9dd914cf000930d67b5324cd8a5b658d",
+        ),
+        (
+            "live-process-initial.txt",
+            0o600,
+            633,
+            "a3584176fefe190fa2a546ea49a182ec9dd914cf000930d67b5324cd8a5b658d",
+        ),
+        (
+            "lock-owner.txt",
+            0o600,
+            18,
+            "a5e65cd2fd246de444e1eb705c39c92045f161020f49c3f23bfce595392462dc",
+        ),
+        (
+            "predecessor-app-manifest.txt",
+            0o600,
+            20_054,
+            "4dded656e5c65d6a40b4e2e0769ac325426b1ccf417365228aadcfedfca42837",
+        ),
+        (
+            "predecessor-audio-routes.txt",
+            0o600,
+            286,
+            "d232bcc03482413057bd23cb150aa331c956aa9eca9bf1ec6e29d0e2612a3c0a",
+        ),
+        (
+            "predecessor-topology.txt",
+            0o600,
+            838,
+            "7848f720fbe78d61fb686c08996a4f336045a3cce56d856c8ebe8a9274c83a91",
+        ),
+        (
+            "probe-worldwide-lock-v21",
+            0o500,
+            59_272,
+            "a2202cbf416b5e04b3b81f33cca59572d60ae20fa858fff2539fddf87c978e4f",
+        ),
+        (
+            "probe-worldwide-lock-v21.swift",
+            0o400,
+            3_233,
+            "16c61b3b156a3367bcc8c41d5c284e301d23e7e7a47115d2bc86576c6ccf5ca4",
+        ),
+        (
+            "provenance.txt",
+            0o600,
+            4_074,
+            "d03b6c8b131b63a0639b5c16138a50c01e357c3b58bd2aa93ab5abeb9886de16",
+        ),
+        (
+            "result.txt",
+            0o600,
+            395,
+            "40648e08d32207ee009a30d43cc7398977af0f6bd1c12240306246b4648fc2a5",
+        ),
+        (
+            "select-live-display-mode-v21",
+            0o500,
+            58_192,
+            "c99df9a42b15f6b255f15d4d7674fc1a2145b73b85a4763097e830172c284e03",
+        ),
+        (
+            "select-live-display-mode-v21.swift",
+            0o400,
+            2_264,
+            "b178c177afe85c443dd4fe7157e7c897443ba9ceb1a7e99bd711160216762321",
+        ),
+        (
+            "selector-result.txt",
+            0o600,
+            35,
+            "968c541bfa143e047bceed9f5e89eb6226250e511067e51a4e4c99f64921ad34",
+        ),
+        (
+            "verify-live-display-topology-v21",
+            0o500,
+            79_968,
+            "6f78c8c165798485b2c7ae32f40d945407936a4c726d48f8f8fe4517cc868631",
+        ),
+        (
+            "verify-live-display-topology-v21.swift",
+            0o400,
+            3_429,
+            "4164527db1a95ac7322a6a0ab3fde7a129b0bffe422ff3139ec40ffa676b8921",
+        ),
+        (
+            "verify-live-mac-host-process.sh",
+            0o500,
+            8_005,
+            "0e56403570362c6d59ea86dc10d3cc53d7a5461d4a2f6c78d6e6c86dd13a4b41",
+        ),
+        (
+            "verify-mac-host-bundle.sh",
+            0o500,
+            30_728,
+            "02a348a88d25b76ab95d45620d823339212bb53ee0f39bfb3a52f04240d3d745",
+        ),
+        (
+            "verify-no-private-virtual-display-imports.sh",
+            0o400,
+            745,
+            "e0e54968452471c4120dce3e9fb744874882871718ba49c23c8f0adaeda823b1",
+        ),
+    ] {
+        let path = evidence.join(name);
+        let metadata = require_regular(&path, USER_ID, USER_GROUP, mode)?;
+        if metadata.len() != size || sha256(&path)? != digest {
+            return Err(ControllerError(format!(
+                "current v21 evidence changed: {name}"
+            )));
+        }
+        require_no_acl_or_xattrs(&path)?;
+    }
+    Ok(())
+}
+
+fn verify_current_v21_release_boundary() -> Result<()> {
+    if unsafe { getuid() } != USER_ID || unsafe { geteuid() } != USER_ID {
+        return Err(ControllerError(
+            "current v21 release verification requires exact UID501".to_owned(),
+        ));
+    }
+    let update_root = require_directory(Path::new(V21_UPDATE_ROOT), USER_ID, USER_GROUP, 0o700)?;
+    if update_root.dev() != APPLICATIONS_DEVICE || update_root.ino() != V21_UPDATE_ROOT_INODE {
+        return Err(ControllerError(
+            "current v21 update-root identity changed".to_owned(),
+        ));
+    }
+    require_no_acl_or_xattrs(Path::new(V21_UPDATE_ROOT))?;
+    require_exact_child_names(
+        Path::new(V21_UPDATE_ROOT),
+        &["paired-v21-update-1787836777-57058db8-4349-4cfd-9c4e-bff0d5e811bd"],
+        "current v21 update root",
+    )?;
+
+    let pointer = require_regular(Path::new(V21_POINTER), USER_ID, USER_GROUP, 0o600)?;
+    if pointer.dev() != APPLICATIONS_DEVICE
+        || pointer.ino() != V21_POINTER_INODE
+        || sha256(Path::new(V21_POINTER))? != V21_POINTER_SHA256
+        || read_bounded_utf8(Path::new(V21_POINTER), 512)? != format!("{V21_EVIDENCE}\n")
+    {
+        return Err(ControllerError(
+            "current v21 active pointer changed".to_owned(),
+        ));
+    }
+    require_no_acl_or_xattrs(Path::new(V21_POINTER))?;
+
+    let evidence = require_directory(Path::new(V21_EVIDENCE), USER_ID, USER_GROUP, 0o700)?;
+    if evidence.dev() != APPLICATIONS_DEVICE || evidence.ino() != V21_EVIDENCE_INODE {
+        return Err(ControllerError(
+            "current v21 evidence identity changed".to_owned(),
+        ));
+    }
+    require_no_acl_or_xattrs(Path::new(V21_EVIDENCE))?;
+    verify_current_v21_evidence_files()?;
+
+    let journal = read_bounded_utf8(&Path::new(V21_EVIDENCE).join("journal.log"), 4_096)?;
+    if !journal.ends_with("STATE COMMITTED\n") {
+        return Err(ControllerError(
+            "current v21 journal is not exactly committed".to_owned(),
+        ));
+    }
+    let result = read_bounded_utf8(&Path::new(V21_EVIDENCE).join("result.txt"), 4_096)?;
+    for record in [
+        "result=success",
+        &format!("executable_sha256={HOST_EXECUTABLE_SHA256}"),
+        "selected_mode=603x1312@603x1312 60.00Hz",
+        &format!("supersedes_successful_v20={V21_PREDECESSOR_EVIDENCE}"),
+    ] {
+        require_exact_v21_record(&result, record, "result")?;
+    }
+    let provenance = read_bounded_utf8(&Path::new(V21_EVIDENCE).join("provenance.txt"), 8_192)?;
+    for record in [
+        &format!("candidate_commit={V21_CANDIDATE_COMMIT}"),
+        &format!("candidate_tree={V21_CANDIDATE_TREE}"),
+        &format!("candidate_executable_sha256={HOST_EXECUTABLE_SHA256}"),
+        "candidate_manifest_sha256=b603128623164ae069873434b30e39352da00b80e3a1cbf1846afc3b6886ba67",
+        &format!("candidate_cdhash={HOST_CDHASH}"),
+        &format!("supersedes_successful_v20={V21_PREDECESSOR_EVIDENCE}"),
+        "product_driver_manifest_sha256=709c982ded0b1a1518b0554870c2bad0c35ef3dd8817697cb12fe70ba620e335",
+        &format!(
+            "product_driver_executable_sha256={INSTALLED_DRIVER_EXECUTABLE_SHA256}"
+        ),
+    ] {
+        require_exact_v21_record(&provenance, record, "provenance")?;
+    }
+    if read_bounded_utf8(&Path::new(V21_EVIDENCE).join("install-hold-name.txt"), 512)?
+        != format!("{V21_INSTALL_HOLD}\n")
+    {
+        return Err(ControllerError(
+            "current v21 install-hold record changed".to_owned(),
+        ));
+    }
+
+    let hold = require_directory(
+        Path::new(V21_INSTALL_HOLD),
+        USER_ID,
+        LEGACY_EXECUTABLE_GROUP,
+        0o700,
+    )?;
+    if hold.dev() != APPLICATIONS_DEVICE || hold.ino() != V21_INSTALL_HOLD_INODE {
+        return Err(ControllerError(
+            "current v21 install-hold identity changed".to_owned(),
+        ));
+    }
+    require_no_acl_or_xattrs(Path::new(V21_INSTALL_HOLD))?;
+    require_exact_child_names(
+        Path::new(V21_INSTALL_HOLD),
+        &["failed", "rollback", "staged"],
+        "current v21 install hold",
+    )?;
+    for empty in ["failed", "staged"] {
+        let path = Path::new(V21_INSTALL_HOLD).join(empty);
+        require_directory(&path, USER_ID, LEGACY_EXECUTABLE_GROUP, 0o700)?;
+        require_no_acl_or_xattrs(&path)?;
+        require_exact_child_names(&path, &[], "current v21 empty install-hold directory")?;
+    }
+    let rollback = Path::new(V21_INSTALL_HOLD).join("rollback");
+    require_directory(&rollback, USER_ID, LEGACY_EXECUTABLE_GROUP, 0o700)?;
+    require_no_acl_or_xattrs(&rollback)?;
+    require_exact_child_names(
+        &rollback,
+        &["opensteamer Host.app"],
+        "current v21 rollback directory",
+    )?;
+
+    let rollback_app = require_directory(Path::new(V21_ROLLBACK_APP), USER_ID, USER_GROUP, 0o755)?;
+    if rollback_app.dev() != APPLICATIONS_DEVICE || rollback_app.ino() != V21_ROLLBACK_APP_INODE {
+        return Err(ControllerError(
+            "current v21 rollback app identity changed".to_owned(),
+        ));
+    }
+    if sha256_bytes(&capture_uid501_host_bundle_manifest_at(Path::new(
+        V21_ROLLBACK_APP,
+    ))?)?
+        != V21_ROLLBACK_BUNDLE_MANIFEST_SHA256
+    {
+        return Err(ControllerError(
+            "current v21 rollback app descriptor manifest changed".to_owned(),
+        ));
+    }
+    for (path, mode, size, inode, digest, label) in [
+        (
+            Path::new(V21_ROLLBACK_APP).join("Contents/MacOS/CaptureServer"),
+            0o755,
+            7_011_664,
+            V21_ROLLBACK_EXECUTABLE_INODE,
+            V21_ROLLBACK_EXECUTABLE_SHA256,
+            "executable",
+        ),
+        (
+            Path::new(V21_ROLLBACK_APP)
+                .join("Contents/Frameworks/LiveKitWebRTC.framework/Versions/A/LiveKitWebRTC"),
+            0o755,
+            28_702_256,
+            V21_ROLLBACK_FRAMEWORK_INODE,
+            V21_ROLLBACK_FRAMEWORK_SHA256,
+            "framework",
+        ),
+        (
+            Path::new(V21_ROLLBACK_APP).join("Contents/Info.plist"),
+            0o644,
+            HOST_INFO_PLIST_SIZE,
+            29_188_958,
+            HOST_INFO_PLIST_SHA256,
+            "Info.plist",
+        ),
+    ] {
+        let metadata = require_regular(&path, USER_ID, USER_GROUP, mode)?;
+        if metadata.dev() != APPLICATIONS_DEVICE
+            || metadata.ino() != inode
+            || metadata.len() != size
+            || sha256(&path)? != digest
+        {
+            return Err(ControllerError(format!(
+                "current v21 rollback {label} changed"
+            )));
+        }
+    }
+    if code_hash(Path::new(V21_ROLLBACK_APP))? != V21_ROLLBACK_CDHASH {
+        return Err(ControllerError(
+            "current v21 rollback app code identity changed".to_owned(),
+        ));
+    }
+    let signature = bounded_output(
+        "/usr/bin/codesign",
+        &["--verify", "--deep", "--strict", V21_ROLLBACK_APP],
+        COMMAND_TIMEOUT,
+        false,
+    )?;
+    require_success(&signature, "verify current v21 rollback app signature")?;
+    verify_current_v21_evidence_files()?;
+    if sha256(Path::new(V21_POINTER))? != V21_POINTER_SHA256
+        || exact_child_names(Path::new(V21_UPDATE_ROOT))?
+            != ["paired-v21-update-1787836777-57058db8-4349-4cfd-9c4e-bff0d5e811bd"]
+    {
+        return Err(ControllerError(
+            "current v21 release boundary changed during verification".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn launchctl_print(target: &str) -> Result<Output> {
     bounded_output("/bin/launchctl", &["print", target], COMMAND_TIMEOUT, false)
 }
@@ -2568,10 +3064,10 @@ fn prove_lock_free(expected_device: u64, expected_inode: u64) -> Result<()> {
 const CURRENT_VIRTUAL_DISPLAY_VENDOR: u32 = 0x6F73;
 const CURRENT_VIRTUAL_DISPLAY_PRODUCT: u32 = 0x1718;
 const CURRENT_VIRTUAL_DISPLAY_SERIAL: u32 = 1;
-const CURRENT_VIRTUAL_DISPLAY_LOGICAL_WIDTH: usize = 540;
-const CURRENT_VIRTUAL_DISPLAY_LOGICAL_HEIGHT: usize = 960;
-const CURRENT_VIRTUAL_DISPLAY_PIXEL_WIDTH: usize = 540;
-const CURRENT_VIRTUAL_DISPLAY_PIXEL_HEIGHT: usize = 960;
+const CURRENT_VIRTUAL_DISPLAY_LOGICAL_WIDTH: usize = 603;
+const CURRENT_VIRTUAL_DISPLAY_LOGICAL_HEIGHT: usize = 1_312;
+const CURRENT_VIRTUAL_DISPLAY_PIXEL_WIDTH: usize = 603;
+const CURRENT_VIRTUAL_DISPLAY_PIXEL_HEIGHT: usize = 1_312;
 const CURRENT_VIRTUAL_DISPLAY_REFRESH_MILLIHERTZ: u32 = 60_000;
 const DISPLAY_CONFIGURATION_FOR_SESSION: u32 = 1;
 const DISPLAY_SNAPSHOT_HEADER: &str = "OPENSTEAMER_CURRENT_VIRTUAL_DISPLAY_SNAPSHOT_V1";
@@ -2815,7 +3311,7 @@ fn capture_current_virtual_display_topology_local() -> Result<VirtualDisplayTopo
     {
         unsafe { CFRelease(mode) };
         return Err(ControllerError(format!(
-            "current virtual display lacks one of the six required v11 mappings: {available_set:?}"
+            "current virtual display lacks one of the six required capability mappings: {available_set:?}"
         )));
     }
     let topology = VirtualDisplayTopology {
@@ -4626,6 +5122,7 @@ fn verify_complete_preflight(
     verify_candidate()?;
     verify_installed_v7_driver()?;
     verify_retained_v8_evidence()?;
+    verify_current_v21_release_boundary()?;
     let host = verify_live_current_host()?;
     verify_pairing_metadata_only()?;
     verify_reader_inputs(&repo)?;
@@ -7594,19 +8091,19 @@ fn walk_host_bundle_directory(
     Ok(())
 }
 
-fn capture_uid501_host_bundle_manifest() -> Result<Vec<u8>> {
+fn capture_uid501_host_bundle_manifest_at(bundle: &Path) -> Result<Vec<u8>> {
     if unsafe { getuid() } != USER_ID || unsafe { geteuid() } != USER_ID {
         return Err(ControllerError(
             "host bundle manifest helper requires exact UID501".to_owned(),
         ));
     }
     let (root, ancestry_before) =
-        openat_component_walk_with_final_flags(Path::new(HOST_APP), O_RDONLY | O_DIRECTORY)?;
+        openat_component_walk_with_final_flags(bundle, O_RDONLY | O_DIRECTORY)?;
     let mut output = b"OPENSTEAMER_CURRENT_HOST_BUNDLE_FD_MANIFEST_V1\n".to_vec();
     let mut nodes = 0;
     walk_host_bundle_directory(&root, ".", 0, &mut nodes, &mut output)?;
     let (named_again, ancestry_after) =
-        openat_component_walk_with_final_flags(Path::new(HOST_APP), O_RDONLY | O_DIRECTORY)?;
+        openat_component_walk_with_final_flags(bundle, O_RDONLY | O_DIRECTORY)?;
     if nodes == 0
         || ancestry_before != ancestry_after
         || identity_from_metadata(&root.metadata()?)
@@ -7618,6 +8115,10 @@ fn capture_uid501_host_bundle_manifest() -> Result<Vec<u8>> {
     }
     write!(output, "END\0nodes={nodes}\0")?;
     Ok(output)
+}
+
+fn capture_uid501_host_bundle_manifest() -> Result<Vec<u8>> {
+    capture_uid501_host_bundle_manifest_at(Path::new(HOST_APP))
 }
 
 fn uid501_host_bundle_manifest_helper() -> Result<()> {
@@ -11505,8 +12006,8 @@ fn self_test() -> Result<()> {
     }
     require_self_test_rejection(
         parse_virtual_display_snapshot_text(&display_snapshot.replace(
-            "selected=540:960:540:960:60000",
-            "selected=603:1311:1206:2622:60000",
+            "selected=603:1312:603:1312:60000",
+            "selected=540:960:1080:1920:60000",
         )),
         "virtual-display snapshot target substitution",
     )?;
