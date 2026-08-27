@@ -1164,6 +1164,7 @@ struct HostGeneration {
     nonce: String,
     lock_device: u64,
     lock_inode: u64,
+    display_mode: DisplayModeIdentity,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1251,6 +1252,7 @@ struct RootRequest {
     reader_sha256: String,
     authorized_commit: String,
     authorized_tree: String,
+    display_topology: VirtualDisplayTopology,
 }
 
 fn main() -> ExitCode {
@@ -1404,10 +1406,16 @@ fn real_main() -> Result<()> {
             print!("{}", virtual_display_snapshot_text(&topology));
             Ok(())
         }
-        [_, mode] if mode == UID501_DISPLAY_RESTORE_MODE => {
+        [_, mode, target] if mode == UID501_DISPLAY_RESTORE_MODE => {
             require_uid501_display_helper_identity()?;
-            apply_pinned_current_virtual_display_mode_local()?;
+            let target = parse_virtual_display_restore_target_text(target)?;
+            apply_exact_current_virtual_display_mode_local(&target)?;
             let topology = read_current_virtual_display_topology_local()?;
+            if !restored_virtual_display_matches_target(&topology, &target) {
+                return Err(ControllerError(
+                    "UID501 virtual-display restore result substituted its target".to_owned(),
+                ));
+            }
             print!("{}", virtual_display_snapshot_text(&topology));
             Ok(())
         }
@@ -4230,13 +4238,11 @@ fn prove_lock_free(expected_device: u64, expected_inode: u64) -> Result<()> {
 const CURRENT_VIRTUAL_DISPLAY_VENDOR: u32 = 0x6F73;
 const CURRENT_VIRTUAL_DISPLAY_PRODUCT: u32 = 0x1718;
 const CURRENT_VIRTUAL_DISPLAY_SERIAL: u32 = 1;
-const CURRENT_VIRTUAL_DISPLAY_LOGICAL_WIDTH: usize = 720;
-const CURRENT_VIRTUAL_DISPLAY_LOGICAL_HEIGHT: usize = 1_280;
-const CURRENT_VIRTUAL_DISPLAY_PIXEL_WIDTH: usize = 720;
-const CURRENT_VIRTUAL_DISPLAY_PIXEL_HEIGHT: usize = 1_280;
 const CURRENT_VIRTUAL_DISPLAY_REFRESH_MILLIHERTZ: u32 = 60_000;
 const DISPLAY_CONFIGURATION_FOR_SESSION: u32 = 1;
 const DISPLAY_SNAPSHOT_HEADER: &str = "OPENSTEAMER_CURRENT_VIRTUAL_DISPLAY_SNAPSHOT_V1";
+const DISPLAY_RESTORE_TARGET_HEADER: &str =
+    "OPENSTEAMER_CURRENT_VIRTUAL_DISPLAY_RESTORE_TARGET_V1";
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct DisplayModeIdentity {
@@ -4333,14 +4339,84 @@ fn required_current_virtual_display_modes() -> Vec<DisplayModeIdentity> {
     ]
 }
 
-fn pinned_current_virtual_display_selection() -> DisplayModeIdentity {
+fn selected_virtual_display_mode(topology: &VirtualDisplayTopology) -> DisplayModeIdentity {
     DisplayModeIdentity {
-        logical_width: CURRENT_VIRTUAL_DISPLAY_LOGICAL_WIDTH,
-        logical_height: CURRENT_VIRTUAL_DISPLAY_LOGICAL_HEIGHT,
-        pixel_width: CURRENT_VIRTUAL_DISPLAY_PIXEL_WIDTH,
-        pixel_height: CURRENT_VIRTUAL_DISPLAY_PIXEL_HEIGHT,
-        refresh_millihertz: CURRENT_VIRTUAL_DISPLAY_REFRESH_MILLIHERTZ,
+        logical_width: topology.logical_width,
+        logical_height: topology.logical_height,
+        pixel_width: topology.pixel_width,
+        pixel_height: topology.pixel_height,
+        refresh_millihertz: topology.refresh_millihertz,
     }
+}
+
+fn current_virtual_display_mode_is_reviewed(mode: &DisplayModeIdentity) -> bool {
+    required_current_virtual_display_modes().contains(mode)
+}
+
+fn virtual_display_topology_for_selected(
+    selected: &DisplayModeIdentity,
+) -> Result<VirtualDisplayTopology> {
+    if !current_virtual_display_mode_is_reviewed(selected) {
+        return Err(ControllerError(
+            "virtual-display selected mode is outside the six reviewed mappings".to_owned(),
+        ));
+    }
+    Ok(VirtualDisplayTopology {
+        vendor: CURRENT_VIRTUAL_DISPLAY_VENDOR,
+        product: CURRENT_VIRTUAL_DISPLAY_PRODUCT,
+        serial: CURRENT_VIRTUAL_DISPLAY_SERIAL,
+        logical_width: selected.logical_width,
+        logical_height: selected.logical_height,
+        pixel_width: selected.pixel_width,
+        pixel_height: selected.pixel_height,
+        refresh_millihertz: selected.refresh_millihertz,
+        available_modes: required_current_virtual_display_modes(),
+    })
+}
+
+fn display_mode_identity_token(mode: &DisplayModeIdentity) -> String {
+    format!(
+        "{}:{}:{}:{}:{}",
+        mode.logical_width,
+        mode.logical_height,
+        mode.pixel_width,
+        mode.pixel_height,
+        mode.refresh_millihertz
+    )
+}
+
+fn parse_canonical_display_mode_identity(value: &str, label: &str) -> Result<DisplayModeIdentity> {
+    let fields = value.split(':').collect::<Vec<_>>();
+    if fields.len() != 5 {
+        return Err(ControllerError(format!(
+            "{label} does not contain exactly five fields"
+        )));
+    }
+    for field in &fields {
+        require_canonical_positive_decimal(field, label)?;
+    }
+    let parse_usize = |value: &str| {
+        value
+            .parse::<usize>()
+            .map_err(|_| ControllerError(format!("{label} dimension overflowed")))
+    };
+    let mode = DisplayModeIdentity {
+        logical_width: parse_usize(fields[0])?,
+        logical_height: parse_usize(fields[1])?,
+        pixel_width: parse_usize(fields[2])?,
+        pixel_height: parse_usize(fields[3])?,
+        refresh_millihertz: fields[4]
+            .parse::<u32>()
+            .map_err(|_| ControllerError(format!("{label} refresh rate overflowed")))?,
+    };
+    if display_mode_identity_token(&mode) != value
+        || !current_virtual_display_mode_is_reviewed(&mode)
+    {
+        return Err(ControllerError(format!(
+            "{label} is not one of the six canonical reviewed mappings"
+        )));
+    }
+    Ok(mode)
 }
 
 fn normalize_display_refresh_millihertz(refresh_rate: f64) -> Result<u32> {
@@ -4401,7 +4477,25 @@ fn copy_current_virtual_display_modes_with_duplicates(
     Ok(modes)
 }
 
-fn capture_current_virtual_display_topology_local() -> Result<VirtualDisplayTopology> {
+fn observed_virtual_display_capability_set_is_exact(
+    available_modes: &[DisplayModeIdentity],
+    selected_mode: &DisplayModeIdentity,
+    allow_restart_interim_selected_mode: bool,
+) -> bool {
+    let mut expected = required_current_virtual_display_modes()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    if allow_restart_interim_selected_mode
+        && !current_virtual_display_mode_is_reviewed(selected_mode)
+    {
+        expected.insert(selected_mode.clone());
+    }
+    available_modes.iter().cloned().collect::<BTreeSet<_>>() == expected
+}
+
+fn capture_current_virtual_display_topology_local_with_policy(
+    allow_restart_interim_selected_mode: bool,
+) -> Result<VirtualDisplayTopology> {
     let mut displays = [0_u32; 4];
     let mut count = 0_u32;
     let status =
@@ -4429,6 +4523,7 @@ fn capture_current_virtual_display_topology_local() -> Result<VirtualDisplayTopo
             "current virtual display has no selected mode".to_owned(),
         ));
     }
+    let selected_mode = display_mode_identity(mode)?;
     let all_modes = copy_current_virtual_display_modes_with_duplicates(display)?;
     let mode_count = unsafe { CFArrayGetCount(all_modes) };
     if !(1..=256).contains(&mode_count) {
@@ -4441,8 +4536,6 @@ fn capture_current_virtual_display_topology_local() -> Result<VirtualDisplayTopo
         ));
     }
     let mut available_modes = Vec::with_capacity(mode_count as usize);
-    let restore_target = pinned_current_virtual_display_selection();
-    let mut raw_restore_target_matches = 0_usize;
     for index in 0..mode_count {
         let available = unsafe { CFArrayGetValueAtIndex(all_modes, index) };
         if available.is_null() {
@@ -4455,43 +4548,46 @@ fn capture_current_virtual_display_topology_local() -> Result<VirtualDisplayTopo
             ));
         }
         let identity = display_mode_identity(available)?;
-        if identity == restore_target {
-            raw_restore_target_matches += 1;
-        }
         available_modes.push(identity);
     }
+    let raw_selected_mode_matches =
+        exact_raw_display_mode_match_count(&available_modes, &selected_mode);
     available_modes.sort();
     available_modes.dedup();
     unsafe { CFRelease(all_modes) };
-    if raw_restore_target_matches != 1 {
+    if raw_selected_mode_matches != 1 {
         unsafe { CFRelease(mode) };
         return Err(ControllerError(format!(
-            "pinned display restoration target is missing or ambiguous before stop: matches={raw_restore_target_matches}"
+            "selected display mode is missing or ambiguous before stop: matches={raw_selected_mode_matches}"
         )));
     }
-    let required_modes = required_current_virtual_display_modes();
-    let available_set = available_modes.into_iter().collect::<BTreeSet<_>>();
-    if required_modes
-        .iter()
-        .any(|required| !available_set.contains(required))
+    if !observed_virtual_display_capability_set_is_exact(
+        &available_modes,
+        &selected_mode,
+        allow_restart_interim_selected_mode,
+    ) {
+        unsafe { CFRelease(mode) };
+        return Err(ControllerError(format!(
+            "current virtual display capability set is not exactly authorized for this phase: {available_modes:?}"
+        )));
+    }
+    let authenticated_available_modes = if allow_restart_interim_selected_mode
+        && !current_virtual_display_mode_is_reviewed(&selected_mode)
     {
-        unsafe { CFRelease(mode) };
-        return Err(ControllerError(format!(
-            "current virtual display lacks one of the six required capability mappings: {available_set:?}"
-        )));
-    }
+        available_modes
+    } else {
+        required_current_virtual_display_modes()
+    };
     let topology = VirtualDisplayTopology {
         vendor: unsafe { CGDisplayVendorNumber(display) },
         product: unsafe { CGDisplayModelNumber(display) },
         serial: unsafe { CGDisplaySerialNumber(display) },
-        logical_width: unsafe { CGDisplayModeGetWidth(mode) },
-        logical_height: unsafe { CGDisplayModeGetHeight(mode) },
-        pixel_width: unsafe { CGDisplayModeGetPixelWidth(mode) },
-        pixel_height: unsafe { CGDisplayModeGetPixelHeight(mode) },
-        refresh_millihertz: normalize_display_refresh_millihertz(unsafe {
-            CGDisplayModeGetRefreshRate(mode)
-        })?,
-        available_modes: required_modes,
+        logical_width: selected_mode.logical_width,
+        logical_height: selected_mode.logical_height,
+        pixel_width: selected_mode.pixel_width,
+        pixel_height: selected_mode.pixel_height,
+        refresh_millihertz: selected_mode.refresh_millihertz,
+        available_modes: authenticated_available_modes,
     };
     unsafe { CFRelease(mode) };
     if topology.vendor != CURRENT_VIRTUAL_DISPLAY_VENDOR
@@ -4505,12 +4601,23 @@ fn capture_current_virtual_display_topology_local() -> Result<VirtualDisplayTopo
     Ok(topology)
 }
 
+fn capture_current_virtual_display_topology_local() -> Result<VirtualDisplayTopology> {
+    capture_current_virtual_display_topology_local_with_policy(false)
+}
+
 fn current_virtual_display_selected_mode_is_exact(topology: &VirtualDisplayTopology) -> bool {
-    topology.logical_width == CURRENT_VIRTUAL_DISPLAY_LOGICAL_WIDTH
-        && topology.logical_height == CURRENT_VIRTUAL_DISPLAY_LOGICAL_HEIGHT
-        && topology.pixel_width == CURRENT_VIRTUAL_DISPLAY_PIXEL_WIDTH
-        && topology.pixel_height == CURRENT_VIRTUAL_DISPLAY_PIXEL_HEIGHT
-        && topology.refresh_millihertz == CURRENT_VIRTUAL_DISPLAY_REFRESH_MILLIHERTZ
+    topology.vendor == CURRENT_VIRTUAL_DISPLAY_VENDOR
+        && topology.product == CURRENT_VIRTUAL_DISPLAY_PRODUCT
+        && topology.serial == CURRENT_VIRTUAL_DISPLAY_SERIAL
+        && current_virtual_display_mode_is_reviewed(&selected_virtual_display_mode(topology))
+        && topology.available_modes == required_current_virtual_display_modes()
+}
+
+fn exact_raw_display_mode_match_count(
+    observed: &[DisplayModeIdentity],
+    target: &DisplayModeIdentity,
+) -> usize {
+    observed.iter().filter(|mode| *mode == target).count()
 }
 
 fn read_current_virtual_display_topology_local() -> Result<VirtualDisplayTopology> {
@@ -4523,43 +4630,170 @@ fn read_current_virtual_display_topology_local() -> Result<VirtualDisplayTopolog
     Ok(topology)
 }
 
-fn pinned_current_virtual_display_topology() -> VirtualDisplayTopology {
-    VirtualDisplayTopology {
-        vendor: CURRENT_VIRTUAL_DISPLAY_VENDOR,
-        product: CURRENT_VIRTUAL_DISPLAY_PRODUCT,
-        serial: CURRENT_VIRTUAL_DISPLAY_SERIAL,
-        logical_width: CURRENT_VIRTUAL_DISPLAY_LOGICAL_WIDTH,
-        logical_height: CURRENT_VIRTUAL_DISPLAY_LOGICAL_HEIGHT,
-        pixel_width: CURRENT_VIRTUAL_DISPLAY_PIXEL_WIDTH,
-        pixel_height: CURRENT_VIRTUAL_DISPLAY_PIXEL_HEIGHT,
-        refresh_millihertz: CURRENT_VIRTUAL_DISPLAY_REFRESH_MILLIHERTZ,
-        available_modes: required_current_virtual_display_modes(),
-    }
+fn display_capability_set_token(modes: &[DisplayModeIdentity]) -> String {
+    modes
+        .iter()
+        .map(display_mode_identity_token)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn virtual_display_snapshot_text(topology: &VirtualDisplayTopology) -> String {
     format!(
-        "{DISPLAY_SNAPSHOT_HEADER}\nidentity={}:{}:{}\nselected={}:{}:{}:{}:{}\nrequired_mappings={}\n",
+        "{DISPLAY_SNAPSHOT_HEADER}\nidentity={}:{}:{}\nselected={}\nrequired_mappings={}\n",
         topology.vendor,
         topology.product,
         topology.serial,
-        topology.logical_width,
-        topology.logical_height,
-        topology.pixel_width,
-        topology.pixel_height,
-        topology.refresh_millihertz,
-        topology.available_modes.len()
+        display_mode_identity_token(&selected_virtual_display_mode(topology)),
+        display_capability_set_token(&topology.available_modes)
     )
 }
 
 fn parse_virtual_display_snapshot_text(text: &str) -> Result<VirtualDisplayTopology> {
-    let expected = pinned_current_virtual_display_topology();
-    if text != virtual_display_snapshot_text(&expected) {
+    let mut lines = text.lines();
+    if lines.next() != Some(DISPLAY_SNAPSHOT_HEADER) || !text.ends_with('\n') {
         return Err(ControllerError(
-            "UID501 virtual-display snapshot marker changed".to_owned(),
+            "UID501 virtual-display snapshot header/termination changed".to_owned(),
         ));
     }
-    Ok(expected)
+    let mut values = BTreeMap::new();
+    for line in lines {
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            ControllerError("UID501 virtual-display snapshot line is malformed".to_owned())
+        })?;
+        if values.insert(key.to_owned(), value.to_owned()).is_some() {
+            return Err(ControllerError(
+                "UID501 virtual-display snapshot contains a duplicate key".to_owned(),
+            ));
+        }
+    }
+    if values.keys().map(String::as_str).collect::<BTreeSet<_>>()
+        != ["identity", "required_mappings", "selected"]
+            .into_iter()
+            .collect()
+    {
+        return Err(ControllerError(
+            "UID501 virtual-display snapshot key set is not exact".to_owned(),
+        ));
+    }
+    let identity = values.remove("identity").unwrap_or_default();
+    let identity_fields = identity.split(':').collect::<Vec<_>>();
+    if identity_fields.len() != 3 {
+        return Err(ControllerError(
+            "UID501 virtual-display identity is malformed".to_owned(),
+        ));
+    }
+    for field in &identity_fields {
+        require_canonical_positive_decimal(field, "UID501 virtual-display identity")?;
+    }
+    let vendor = identity_fields[0]
+        .parse::<u32>()
+        .map_err(|_| ControllerError("virtual-display vendor overflowed".to_owned()))?;
+    let product = identity_fields[1]
+        .parse::<u32>()
+        .map_err(|_| ControllerError("virtual-display product overflowed".to_owned()))?;
+    let serial = identity_fields[2]
+        .parse::<u32>()
+        .map_err(|_| ControllerError("virtual-display serial overflowed".to_owned()))?;
+    if vendor != CURRENT_VIRTUAL_DISPLAY_VENDOR
+        || product != CURRENT_VIRTUAL_DISPLAY_PRODUCT
+        || serial != CURRENT_VIRTUAL_DISPLAY_SERIAL
+    {
+        return Err(ControllerError(
+            "UID501 virtual-display identity changed".to_owned(),
+        ));
+    }
+    let selected = parse_canonical_display_mode_identity(
+        &values.remove("selected").unwrap_or_default(),
+        "UID501 virtual-display selected mode",
+    )?;
+    let mappings = values.remove("required_mappings").unwrap_or_default();
+    let expected_mappings = required_current_virtual_display_modes();
+    if mappings != display_capability_set_token(&expected_mappings) {
+        return Err(ControllerError(
+            "UID501 virtual-display capability set or ordering changed".to_owned(),
+        ));
+    }
+    let topology = virtual_display_topology_for_selected(&selected)?;
+    if virtual_display_snapshot_text(&topology) != text {
+        return Err(ControllerError(
+            "UID501 virtual-display snapshot is not canonical".to_owned(),
+        ));
+    }
+    Ok(topology)
+}
+
+fn virtual_display_restore_target_text(target: &DisplayModeIdentity) -> Result<String> {
+    if !current_virtual_display_mode_is_reviewed(target) {
+        return Err(ControllerError(
+            "virtual-display restore target is outside the six reviewed mappings".to_owned(),
+        ));
+    }
+    Ok(format!(
+        "{DISPLAY_RESTORE_TARGET_HEADER}\nselected={}\n",
+        display_mode_identity_token(target)
+    ))
+}
+
+fn parse_virtual_display_restore_target_text(text: &str) -> Result<DisplayModeIdentity> {
+    let mut lines = text.lines();
+    if lines.next() != Some(DISPLAY_RESTORE_TARGET_HEADER)
+        || !text.ends_with('\n')
+        || lines.clone().count() != 1
+    {
+        return Err(ControllerError(
+            "UID501 virtual-display restore target shape changed".to_owned(),
+        ));
+    }
+    let selected = lines
+        .next()
+        .and_then(|line| line.strip_prefix("selected="))
+        .ok_or_else(|| {
+            ControllerError("UID501 virtual-display restore target key changed".to_owned())
+        })?;
+    let target = parse_canonical_display_mode_identity(
+        selected,
+        "UID501 virtual-display restore target",
+    )?;
+    if virtual_display_restore_target_text(&target)? != text {
+        return Err(ControllerError(
+            "UID501 virtual-display restore target is not canonical".to_owned(),
+        ));
+    }
+    Ok(target)
+}
+
+fn restored_virtual_display_matches_target(
+    topology: &VirtualDisplayTopology,
+    target: &DisplayModeIdentity,
+) -> bool {
+    topology.vendor == CURRENT_VIRTUAL_DISPLAY_VENDOR
+        && topology.product == CURRENT_VIRTUAL_DISPLAY_PRODUCT
+        && topology.serial == CURRENT_VIRTUAL_DISPLAY_SERIAL
+        && topology.available_modes == required_current_virtual_display_modes()
+        && selected_virtual_display_mode(topology) == *target
+}
+
+fn root_request_display_matches_generation(
+    request: &RootRequest,
+    generation: &HostGeneration,
+) -> bool {
+    virtual_display_topology_for_selected(&generation.display_mode)
+        .is_ok_and(|topology| topology == request.display_topology)
+}
+
+fn request_journal_state_display_binding_is_exact(
+    request: &RootRequest,
+    journal_display_mode: &str,
+    state_generation: &HostGeneration,
+) -> bool {
+    root_request_display_matches_generation(request, state_generation)
+        && journal_display_mode == display_mode_identity_token(&state_generation.display_mode)
+        && parse_canonical_display_mode_identity(
+            journal_display_mode,
+            "authenticated journal display mode",
+        )
+        .is_ok_and(|mode| mode == state_generation.display_mode)
 }
 
 fn require_uid501_display_helper_identity() -> Result<()> {
@@ -4571,9 +4805,25 @@ fn require_uid501_display_helper_identity() -> Result<()> {
     Ok(())
 }
 
-fn run_uid501_display_helper(mode: &str, label: &str) -> Result<VirtualDisplayTopology> {
+fn run_uid501_display_helper(
+    mode: &str,
+    arguments: &[&str],
+    label: &str,
+) -> Result<VirtualDisplayTopology> {
     let executable = env::current_exe()?;
-    let output = bounded_output(path_text(&executable)?, &[mode], HOST_TIMEOUT, true)?;
+    let mut helper_arguments = Vec::with_capacity(arguments.len() + 1);
+    helper_arguments.push(mode);
+    helper_arguments.extend_from_slice(arguments);
+    let output = require_completed_hal_child(
+        bounded_aqua_uid501_hal_output_in_directory(
+        path_text(&executable)?,
+        &helper_arguments,
+        HOST_TIMEOUT,
+            Path::new("/"),
+            16 * 1_024,
+        ),
+        label,
+    )?;
     require_success(&output, label)?;
     if !output.stderr.is_empty() {
         return Err(ControllerError(format!("{label} wrote stderr")));
@@ -4590,13 +4840,19 @@ fn read_current_virtual_display_topology() -> Result<VirtualDisplayTopology> {
     }
     run_uid501_display_helper(
         UID501_DISPLAY_SNAPSHOT_MODE,
+        &[],
         "snapshot exact current virtual display as UID501",
     )
 }
 
-fn apply_pinned_current_virtual_display_mode_local() -> Result<()> {
-    let topology = capture_current_virtual_display_topology_local()?;
-    if current_virtual_display_selected_mode_is_exact(&topology) {
+fn apply_exact_current_virtual_display_mode_local(target: &DisplayModeIdentity) -> Result<()> {
+    if !current_virtual_display_mode_is_reviewed(target) {
+        return Err(ControllerError(
+            "exact selected-mode restoration target is outside the reviewed mappings".to_owned(),
+        ));
+    }
+    let topology = capture_current_virtual_display_topology_local_with_policy(true)?;
+    if selected_virtual_display_mode(&topology) == *target {
         return Ok(());
     }
     let mut displays = [0_u32; 4];
@@ -4619,23 +4875,56 @@ fn apply_pinned_current_virtual_display_mode_local() -> Result<()> {
     }
     let display = displays[0];
     let all_modes = copy_current_virtual_display_modes_with_duplicates(display)?;
-    let target = pinned_current_virtual_display_selection();
     let mode_count = unsafe { CFArrayGetCount(all_modes) };
-    let mut target_mode = std::ptr::null();
-    let mut matches = 0_usize;
-    for index in 0..mode_count {
-        let candidate = unsafe { CFArrayGetValueAtIndex(all_modes, index) };
-        if !candidate.is_null() && display_mode_identity(candidate)? == target {
-            target_mode = candidate;
-            matches += 1;
-        }
-    }
-    if matches != 1 {
+    if !(1..=256).contains(&mode_count) {
         unsafe { CFRelease(all_modes) };
         return Err(ControllerError(
-            "exact selected-mode restoration target is missing or ambiguous".to_owned(),
+            "selected-mode restoration capability count is outside its bound".to_owned(),
         ));
     }
+    let mut target_mode = std::ptr::null();
+    let mut observed_modes = Vec::with_capacity(mode_count as usize);
+    for index in 0..mode_count {
+        let candidate = unsafe { CFArrayGetValueAtIndex(all_modes, index) };
+        if candidate.is_null() {
+            unsafe { CFRelease(all_modes) };
+            return Err(ControllerError(
+                "selected-mode restoration capability set contains a null mode".to_owned(),
+            ));
+        }
+        let identity = display_mode_identity(candidate)?;
+        if identity == *target {
+            target_mode = candidate;
+        }
+        observed_modes.push(identity);
+    }
+    let matches = exact_raw_display_mode_match_count(&observed_modes, target);
+    if matches != 1
+        || !observed_virtual_display_capability_set_is_exact(
+            &observed_modes,
+            &selected_virtual_display_mode(&topology),
+            true,
+        )
+    {
+        unsafe { CFRelease(all_modes) };
+        return Err(ControllerError(
+            "exact selected-mode restoration target/capability set is missing or ambiguous"
+                .to_owned(),
+        ));
+    }
+    let selected_again = unsafe { CGDisplayCopyDisplayMode(display) };
+    if selected_again.is_null()
+        || display_mode_identity(selected_again)? != selected_virtual_display_mode(&topology)
+    {
+        if !selected_again.is_null() {
+            unsafe { CFRelease(selected_again) };
+        }
+        unsafe { CFRelease(all_modes) };
+        return Err(ControllerError(
+            "current virtual-display selection changed before exact restoration".to_owned(),
+        ));
+    }
+    unsafe { CFRelease(selected_again) };
     let mut configuration = std::ptr::null_mut();
     let begin = unsafe { CGBeginDisplayConfiguration(&mut configuration) };
     if begin != 0 || configuration.is_null() {
@@ -4668,8 +4957,10 @@ fn apply_pinned_current_virtual_display_mode_local() -> Result<()> {
             ControllerError("display-mode restoration deadline overflowed".to_owned())
         })?;
     loop {
-        if read_current_virtual_display_topology_local().is_ok() {
-            return Ok(());
+        if let Ok(topology) = read_current_virtual_display_topology_local() {
+            if selected_virtual_display_mode(&topology) == *target {
+                return Ok(());
+            }
         }
         if Instant::now() >= deadline {
             return Err(ControllerError(
@@ -4680,26 +4971,30 @@ fn apply_pinned_current_virtual_display_mode_local() -> Result<()> {
     }
 }
 
-fn restore_pinned_current_virtual_display_mode_after_host_restart() -> Result<()> {
+fn restore_exact_current_virtual_display_mode_after_host_restart(
+    target: &DisplayModeIdentity,
+) -> Result<()> {
+    let target_text = virtual_display_restore_target_text(target)?;
     let deadline = Instant::now()
         .checked_add(HOST_TIMEOUT)
         .ok_or_else(|| ControllerError("display restoration deadline overflowed".to_owned()))?;
     loop {
         let attempt = if unsafe { geteuid() } == USER_ID {
             require_uid501_display_helper_identity()
-                .and_then(|()| apply_pinned_current_virtual_display_mode_local())
+                .and_then(|()| apply_exact_current_virtual_display_mode_local(target))
                 .and_then(|()| read_current_virtual_display_topology_local())
         } else {
             run_uid501_display_helper(
                 UID501_DISPLAY_RESTORE_MODE,
+                &[&target_text],
                 "restore exact current virtual display as UID501",
             )
         };
         let last_error = match attempt {
-            Ok(topology) if current_virtual_display_selected_mode_is_exact(&topology) => {
+            Ok(topology) if restored_virtual_display_matches_target(&topology, target) => {
                 return Ok(())
             }
-            Ok(_) => "restored display marker was not exact".to_owned(),
+            Ok(_) => "restored display marker substituted its exact target".to_owned(),
             Err(error) => error.0,
         };
         if Instant::now() >= deadline {
@@ -4711,7 +5006,14 @@ fn restore_pinned_current_virtual_display_mode_after_host_restart() -> Result<()
     }
 }
 
-fn verify_live_current_host_generation_only() -> Result<HostGeneration> {
+fn verify_live_current_host_generation_only(
+    expected_display_mode: &DisplayModeIdentity,
+) -> Result<HostGeneration> {
+    if !current_virtual_display_mode_is_reviewed(expected_display_mode) {
+        return Err(ControllerError(
+            "expected host display mode is outside the six reviewed mappings".to_owned(),
+        ));
+    }
     verify_installed_current_host_bytes()?;
     require_legacy_disabled_and_absent()?;
     let (pid, runs) = read_host_launch_state()?;
@@ -4726,6 +5028,7 @@ fn verify_live_current_host_generation_only() -> Result<HostGeneration> {
         nonce,
         lock_device,
         lock_inode,
+        display_mode: expected_display_mode.clone(),
     };
     thread::sleep(Duration::from_millis(250));
     let (second_pid, second_runs) = read_host_launch_state()?;
@@ -4748,7 +5051,8 @@ fn verify_live_current_host_generation_only() -> Result<HostGeneration> {
 
 fn verify_live_current_host() -> Result<HostGeneration> {
     let initial_display_topology = read_current_virtual_display_topology()?;
-    let generation = verify_live_current_host_generation_only()?;
+    let selected_mode = selected_virtual_display_mode(&initial_display_topology);
+    let generation = verify_live_current_host_generation_only(&selected_mode)?;
     if read_current_virtual_display_topology()? != initial_display_topology {
         return Err(ControllerError(
             "current virtual display changed during host-generation proof".to_owned(),
@@ -4757,12 +5061,15 @@ fn verify_live_current_host() -> Result<HostGeneration> {
     Ok(generation)
 }
 
-fn restore_and_verify_live_current_host() -> Result<HostGeneration> {
-    let generation = verify_live_current_host_generation_only()?;
-    restore_pinned_current_virtual_display_mode_after_host_restart()?;
+fn restore_and_verify_live_current_host(
+    expected_display_mode: &DisplayModeIdentity,
+) -> Result<HostGeneration> {
+    let generation = verify_live_current_host_generation_only(expected_display_mode)?;
+    restore_exact_current_virtual_display_mode_after_host_restart(expected_display_mode)?;
     if verify_live_current_host()? != generation {
         return Err(ControllerError(
-            "host generation changed while restoring its pinned display selection".to_owned(),
+            "host generation or captured display changed while restoring its exact selection"
+                .to_owned(),
         ));
     }
     Ok(generation)
@@ -13265,9 +13572,10 @@ fn preflight(repo: &Path) -> Result<()> {
     )?;
     let coreaudio = stable_coreaudio_generation()?;
     println!(
-        "DIAGNOSTIC_DRIVER_V9_PREFLIGHT_OK host_pid={} host_runs={} coreaudiod_pid={} coreaudiod_runs={} installed_driver={}:{} candidate_commit={} candidate_tree={} release_commit={} release_tree={} pairing=metadata-only legacy=protected retained_v1_v2_v3_v4_v5_v6_v7_v8=immutable reader=passive both_order=no-default-mutation namespaces=fresh",
+        "DIAGNOSTIC_DRIVER_V9_PREFLIGHT_OK host_pid={} host_runs={} display_mode={} coreaudiod_pid={} coreaudiod_runs={} installed_driver={}:{} candidate_commit={} candidate_tree={} release_commit={} release_tree={} pairing=metadata-only legacy=protected retained_v1_v2_v3_v4_v5_v6_v7_v8=immutable reader=passive both_order=no-default-mutation namespaces=fresh",
         host.pid,
         host.runs,
+        display_mode_identity_token(&host.display_mode),
         coreaudio.pid,
         coreaudio.runs,
         INSTALLED_DRIVER_DEVICE,
@@ -13378,6 +13686,7 @@ fn validate_journal_fields(
             Authenticated => &[
                 "coreaudiod_pid",
                 "coreaudiod_runs",
+                "display_mode",
                 "host_pid",
                 "host_runs",
                 "release_commit",
@@ -13433,7 +13742,13 @@ fn validate_journal_fields(
         }
     } else if header == JOURNAL_HEADER {
         match state {
-            Authenticated => &["host_pid", "nonce", "release_commit", "release_tree"],
+            Authenticated => &[
+                "display_mode",
+                "host_pid",
+                "nonce",
+                "release_commit",
+                "release_tree",
+            ],
             _ => &[],
         }
     } else {
@@ -13479,6 +13794,9 @@ fn validate_journal_fields(
             }
             "nonce" if state == Authenticated => {
                 require_lower_hex(value, 32, "journal transaction nonce")?
+            }
+            "display_mode" => {
+                parse_canonical_display_mode_identity(value, "journal display mode")?;
             }
             "nonce" => require_lower_hex(value, 64, "journal host generation nonce")?,
             "host_pid"
@@ -13948,15 +14266,30 @@ fn current_binary_identity() -> Result<(PathBuf, String, Vec<u8>)> {
 }
 
 fn root_request_text(request: &RootRequest) -> Result<String> {
+    let canonical_display = virtual_display_topology_for_selected(
+        &selected_virtual_display_mode(&request.display_topology),
+    )?;
+    if request.display_topology != canonical_display {
+        return Err(ControllerError(
+            "root request display topology is not the exact reviewed snapshot".to_owned(),
+        ));
+    }
     Ok(format!(
-        "OPENSTEAMER_DIAGNOSTIC_DRIVER_ROOT_REQUEST_V9\nnonce={}\nevidence={}\ncontroller_sha256={}\nroot_controller={}\nreader_sha256={}\nauthorized_commit={}\nauthorized_tree={}\n",
+        "OPENSTEAMER_DIAGNOSTIC_DRIVER_ROOT_REQUEST_V9\nnonce={}\nevidence={}\ncontroller_sha256={}\nroot_controller={}\nreader_sha256={}\nauthorized_commit={}\nauthorized_tree={}\ndisplay_identity={}:{}:{}\ndisplay_selected={}\ndisplay_capabilities={}\n",
         request.nonce,
         path_text(&request.evidence)?,
         request.controller_sha256,
         path_text(&request.root_controller)?,
         request.reader_sha256,
         request.authorized_commit,
-        request.authorized_tree
+        request.authorized_tree,
+        request.display_topology.vendor,
+        request.display_topology.product,
+        request.display_topology.serial,
+        display_mode_identity_token(&selected_virtual_display_mode(
+            &request.display_topology
+        )),
+        display_capability_set_token(&request.display_topology.available_modes)
     ))
 }
 
@@ -14018,6 +14351,9 @@ fn parse_root_request_text(text: &str) -> Result<RootRequest> {
                 "authorized_commit",
                 "authorized_tree",
                 "controller_sha256",
+                "display_capabilities",
+                "display_identity",
+                "display_selected",
                 "evidence",
                 "nonce",
                 "reader_sha256",
@@ -14030,6 +14366,12 @@ fn parse_root_request_text(text: &str) -> Result<RootRequest> {
             "root request key set is not exact".to_owned(),
         ));
     }
+    let display_snapshot = format!(
+        "{DISPLAY_SNAPSHOT_HEADER}\nidentity={}\nselected={}\nrequired_mappings={}\n",
+        values.remove("display_identity").unwrap_or_default(),
+        values.remove("display_selected").unwrap_or_default(),
+        values.remove("display_capabilities").unwrap_or_default()
+    );
     let request = RootRequest {
         nonce: values.remove("nonce").unwrap_or_default(),
         evidence: PathBuf::from(values.remove("evidence").unwrap_or_default()),
@@ -14038,6 +14380,7 @@ fn parse_root_request_text(text: &str) -> Result<RootRequest> {
         reader_sha256: values.remove("reader_sha256").unwrap_or_default(),
         authorized_commit: values.remove("authorized_commit").unwrap_or_default(),
         authorized_tree: values.remove("authorized_tree").unwrap_or_default(),
+        display_topology: parse_virtual_display_snapshot_text(&display_snapshot)?,
     };
     validate_nonce(&request.nonce)?;
     require_lower_hex(&request.controller_sha256, 64, "controller SHA-256")?;
@@ -14062,7 +14405,87 @@ fn parse_root_request_text(text: &str) -> Result<RootRequest> {
             "root request escaped its reviewed binding".to_owned(),
         ));
     }
+    if root_request_text(&request)? != text {
+        return Err(ControllerError(
+            "root request is not in its exact canonical serialization".to_owned(),
+        ));
+    }
     Ok(request)
+}
+
+fn user_authenticated_root_dispatch_binding_is_exact(
+    request: &RootRequest,
+    authenticated: &BTreeMap<String, String>,
+    initial: &HostGeneration,
+) -> bool {
+    let expected_keys = [
+        "display_mode",
+        "host_pid",
+        "nonce",
+        "release_commit",
+        "release_tree",
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    authenticated.keys().map(String::as_str).collect::<BTreeSet<_>>() == expected_keys
+        && root_request_display_matches_generation(request, initial)
+        && authenticated.get("nonce") == Some(&request.nonce)
+        && authenticated.get("host_pid") == Some(&initial.pid.to_string())
+        && authenticated.get("display_mode")
+            == Some(&display_mode_identity_token(&initial.display_mode))
+        && authenticated.get("release_commit") == Some(&request.authorized_commit)
+        && authenticated.get("release_tree") == Some(&request.authorized_tree)
+}
+
+fn verify_user_authenticated_root_dispatch_binding(
+    layout: &UserLayout,
+    journal: &Journal,
+    expected_request: &RootRequest,
+    initial: &HostGeneration,
+) -> Result<()> {
+    if journal.state != UpdateState::Authenticated {
+        return Err(ControllerError(
+            "user journal escaped AUTHENTICATED immediately before root dispatch".to_owned(),
+        ));
+    }
+    require_directory(&layout.evidence, USER_ID, USER_GROUP, 0o700)?;
+    require_no_acl_or_xattrs(&layout.evidence)?;
+    let request_before = require_regular(&layout.request, USER_ID, USER_GROUP, 0o400)?;
+    require_no_acl_or_xattrs(&layout.request)?;
+    let request_text = read_bounded_utf8(&layout.request, 4_096)?;
+    let request_after = require_regular(&layout.request, USER_ID, USER_GROUP, 0o400)?;
+    if identity_from_metadata(&request_before) != identity_from_metadata(&request_after) {
+        return Err(ControllerError(
+            "user root request changed during final dispatch reread".to_owned(),
+        ));
+    }
+    let reread_request = parse_root_request_text(&request_text)?;
+    if root_request_text(&reread_request)? != root_request_text(expected_request)? {
+        return Err(ControllerError(
+            "user root request changed before root dispatch".to_owned(),
+        ));
+    }
+
+    let journal_before = require_regular(&layout.journal, USER_ID, USER_GROUP, 0o600)?;
+    require_no_acl_or_xattrs(&layout.journal)?;
+    let authenticated = journal.exact_fields_for_state(UpdateState::Authenticated)?;
+    let journal_after = require_regular(&layout.journal, USER_ID, USER_GROUP, 0o600)?;
+    if identity_from_metadata(&journal_before) != identity_from_metadata(&journal_after) {
+        return Err(ControllerError(
+            "user authenticated journal changed during final dispatch reread".to_owned(),
+        ));
+    }
+    if !user_authenticated_root_dispatch_binding_is_exact(
+        &reread_request,
+        &authenticated,
+        initial,
+    ) {
+        return Err(ControllerError(
+            "user request and AUTHENTICATED journal differ from the final host/release baseline"
+                .to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn acquire_user_update_lock() -> Result<File> {
@@ -16123,6 +16546,11 @@ fn write_root_state_tracked(
     route: Option<&RouteSnapshot>,
     mut durable_publication: Option<&mut bool>,
 ) -> Result<()> {
+    if !current_virtual_display_mode_is_reviewed(&initial_host.display_mode) {
+        return Err(ControllerError(
+            "root state refused an unsupported initial display mode".to_owned(),
+        ));
+    }
     if let Some(published) = durable_publication.as_mut() {
         **published = false;
     }
@@ -16165,7 +16593,7 @@ fn write_root_state_tracked(
         }
     };
     let bytes = format!(
-        "OPENSTEAMER_DIAGNOSTIC_DRIVER_ROOT_STATE_V9\nstate={}\ninitial_host_pid={}\ninitial_host_runs={}\ninitial_host_start={}\ninitial_host_nonce={}\ninitial_host_lock_device={}\ninitial_host_lock_inode={}\n{}{}",
+        "OPENSTEAMER_DIAGNOSTIC_DRIVER_ROOT_STATE_V9\nstate={}\ninitial_host_pid={}\ninitial_host_runs={}\ninitial_host_start={}\ninitial_host_nonce={}\ninitial_host_lock_device={}\ninitial_host_lock_inode={}\ninitial_host_display_mode={}\n{}{}",
         state.token(),
         initial_host.pid,
         initial_host.runs,
@@ -16173,6 +16601,7 @@ fn write_root_state_tracked(
         initial_host.nonce,
         initial_host.lock_device,
         initial_host.lock_inode,
+        display_mode_identity_token(&initial_host.display_mode),
         reserve,
         route
     );
@@ -16340,6 +16769,12 @@ fn parse_root_state_text(
     let lock_inode = lock_inode_text
         .parse::<u64>()
         .map_err(|_| ControllerError("initial host lock inode overflowed".to_owned()))?;
+    let display_mode = parse_canonical_display_mode_identity(
+        &values
+            .remove("initial_host_display_mode")
+            .unwrap_or_default(),
+        "initial host display mode",
+    )?;
     let reserve = match values.remove("rollback_reserve") {
         Some(value) if value == "unavailable" => {
             if values.contains_key("rollback_reserve_status")
@@ -16442,6 +16877,7 @@ fn parse_root_state_text(
             nonce,
             lock_device,
             lock_inode,
+            display_mode,
         },
         route,
         reserve,
@@ -18425,7 +18861,7 @@ fn restart_exact_current_host(initial: &HostGeneration) -> Result<HostGeneration
     }
     let deadline = Instant::now() + HOST_TIMEOUT;
     let generation = loop {
-        match verify_live_current_host_generation_only() {
+        match verify_live_current_host_generation_only(&initial.display_mode) {
             Ok(generation)
                 if replacement_current_host_generation_is_exact(initial, &generation) =>
             {
@@ -18442,7 +18878,7 @@ fn restart_exact_current_host(initial: &HostGeneration) -> Result<HostGeneration
             }
         }
     };
-    restore_pinned_current_virtual_display_mode_after_host_restart()?;
+    restore_exact_current_virtual_display_mode_after_host_restart(&initial.display_mode)?;
     if verify_live_current_host()? != generation {
         return Err(ControllerError(
             "replacement host changed while restoring its pinned display selection".to_owned(),
@@ -18468,6 +18904,7 @@ fn replacement_current_host_generation_is_exact(
         && replacement.lock_device == initial.lock_device
         && replacement.lock_inode == initial.lock_inode
         && replacement.runs == 1
+        && replacement.display_mode == initial.display_mode
 }
 
 fn replacement_current_host_startup_identity_is_exact(
@@ -18681,13 +19118,13 @@ fn restart_or_recover_exact_current_host(initial: &HostGeneration) -> Result<Hos
         .checked_add(HOST_TIMEOUT)
         .ok_or_else(|| ControllerError("host recovery deadline overflowed".to_owned()))?;
     loop {
-        if let Ok(generation) = verify_live_current_host_generation_only() {
+        if let Ok(generation) = verify_live_current_host_generation_only(&initial.display_mode) {
             if !replacement_current_host_generation_is_exact(initial, &generation) {
                 return Err(ControllerError(
                     "running rollback host is not the exact replacement generation".to_owned(),
                 ));
             }
-            restore_pinned_current_virtual_display_mode_after_host_restart()?;
+            restore_exact_current_virtual_display_mode_after_host_restart(&initial.display_mode)?;
             if verify_live_current_host()? != generation {
                 return Err(ControllerError(
                     "recovered rollback host changed during display restoration".to_owned(),
@@ -18709,14 +19146,28 @@ fn restart_or_recover_exact_current_host(initial: &HostGeneration) -> Result<Hos
     }
 }
 
+fn rollback_host_requires_exact_display_restore(
+    observed: &HostGeneration,
+    initial: &HostGeneration,
+) -> bool {
+    observed.display_mode != initial.display_mode
+}
+
 fn stop_current_host_for_rollback(initial: &HostGeneration) -> Result<()> {
-    let exact_live = verify_live_current_host().or_else(|_| restore_and_verify_live_current_host());
+    let exact_live = match verify_live_current_host() {
+        Ok(generation) if !rollback_host_requires_exact_display_restore(&generation, initial) => {
+            Ok(generation)
+        }
+        Ok(_) | Err(_) => restore_and_verify_live_current_host(&initial.display_mode),
+    };
     if let Ok(generation) = exact_live {
         if generation.lock_device != initial.lock_device
             || generation.lock_inode != initial.lock_inode
+            || generation.display_mode != initial.display_mode
         {
             return Err(ControllerError(
-                "rollback host generation uses a different shared-lock inode".to_owned(),
+                "rollback host generation changed its shared-lock inode or captured display mode"
+                    .to_owned(),
             ));
         }
         return stop_exact_current_host(&generation);
@@ -18883,6 +19334,7 @@ fn rollback_route_status(baseline: Option<&RouteSnapshot>) -> RollbackRouteStatu
 fn finalize_prestop_preserving_host(
     layout: &RootLayout,
     journal: &mut Journal,
+    expected_display_topology: &VirtualDisplayTopology,
     durable: Option<(
         UpdateState,
         HostGeneration,
@@ -18901,6 +19353,13 @@ fn finalize_prestop_preserving_host(
         require_absent(&layout.prior_driver, "prestop retained-driver destination")?;
         require_absent(&layout.failed_driver, "prestop failed-driver destination")?;
         let host = verify_live_current_host()?;
+        if virtual_display_topology_for_selected(&host.display_mode)?
+            != *expected_display_topology
+        {
+            return Err(ControllerError(
+                "prestop live display differs from its sealed baseline".to_owned(),
+            ));
+        }
         verify_pairing_metadata_only()?;
         let (initial, baseline_route, durable_reserve) = match durable {
             Some((UpdateState::Authenticated, initial, route, reserve)) => {
@@ -19005,7 +19464,13 @@ fn finalize_prestop_preserving_exact_baseline(
                 .to_owned(),
         ));
     }
-    let outcome = finalize_prestop_preserving_host(layout, journal, durable)?;
+    let expected_display_topology = virtual_display_topology_for_selected(&initial.display_mode)?;
+    let outcome = finalize_prestop_preserving_host(
+        layout,
+        journal,
+        &expected_display_topology,
+        durable,
+    )?;
     if outcome.host != *initial
         || outcome.route_status != RollbackRouteStatus::Unchanged
         || verify_live_current_host()? != *initial
@@ -19053,7 +19518,7 @@ fn repair_committed_terminal_state(
         CANDIDATE_DRIVER_TREE_SHA256,
         CANDIDATE_DRIVER_EXECUTABLE_SHA256,
     )?;
-    let host = restore_and_verify_live_current_host()?;
+    let host = restore_and_verify_live_current_host(&initial.display_mode)?;
     verify_pairing_metadata_only()?;
     write_root_state(layout, UpdateState::Committed, &initial, route.as_ref())?;
     let route_status = rollback_route_status(route.as_ref());
@@ -19097,7 +19562,7 @@ fn repair_rolled_back_terminal_state(
         ));
     }
     verify_installed_v7_driver()?;
-    let host = restore_and_verify_live_current_host()?;
+    let host = restore_and_verify_live_current_host(&initial.display_mode)?;
     verify_pairing_metadata_only()?;
     write_root_state(layout, UpdateState::RolledBack, &initial, route.as_ref())?;
     let route_status = rollback_route_status(route.as_ref());
@@ -19219,7 +19684,7 @@ fn rollback_root_transaction(
         }
         if action == RollbackResumeAction::AlreadyComplete {
             verify_installed_v7_driver()?;
-            let host = restore_and_verify_live_current_host()?;
+            let host = restore_and_verify_live_current_host(&initial.display_mode)?;
             verify_pairing_metadata_only()?;
             return Ok(RollbackOutcome {
                 host,
@@ -19228,7 +19693,7 @@ fn rollback_root_transaction(
         }
         if action == RollbackResumeAction::FinalizePreservingHost {
             verify_installed_v7_driver()?;
-            let host = restore_and_verify_live_current_host()?;
+            let host = restore_and_verify_live_current_host(&initial.display_mode)?;
             verify_pairing_metadata_only()?;
             journal.record(UpdateState::RolledBack, &[])?;
             write_root_state(layout, UpdateState::RolledBack, initial, baseline_route)?;
@@ -19402,7 +19867,7 @@ fn rollback_root_transaction(
             )?;
             host
         } else {
-            restore_and_verify_live_current_host()?
+            restore_and_verify_live_current_host(&initial.display_mode)?
         };
         verify_pairing_metadata_only()?;
         let route_status = rollback_route_status(baseline_route);
@@ -19629,6 +20094,10 @@ fn root_authenticated_journal_fields(
     vec![
         ("host_pid", initial.pid.to_string()),
         ("host_runs", initial.runs.to_string()),
+        (
+            "display_mode",
+            display_mode_identity_token(&initial.display_mode),
+        ),
         ("coreaudiod_pid", baseline_coreaudio.pid.to_string()),
         ("coreaudiod_runs", baseline_coreaudio.runs.to_string()),
         ("release_commit", request.authorized_commit.clone()),
@@ -19796,6 +20265,11 @@ fn perform_root_transaction(request_path: &Path) -> Result<HostGeneration> {
     let retained_v7 = verify_retained_v7_root_rolled_back(&retained_v7_root_lock)?;
     let retained_v8 = verify_retained_v8_root_rolled_back(&retained_v8_root_lock)?;
     let initial = verify_live_current_host()?;
+    if !root_request_display_matches_generation(&request, &initial) {
+        return Err(ControllerError(
+            "root display baseline differs from the sealed UID501 preflight snapshot".to_owned(),
+        ));
+    }
     let baseline_coreaudio = stable_coreaudio_generation()?;
     let baseline_route = stable_fresh_route_snapshot_for_generation(&baseline_coreaudio)?;
 
@@ -19835,6 +20309,12 @@ fn perform_root_transaction(request_path: &Path) -> Result<HostGeneration> {
         UpdateState::Authenticated,
         &initial,
         Some(&baseline_route),
+    )?;
+    verify_durable_root_display_binding(
+        &request,
+        &journal,
+        UpdateState::Authenticated,
+        &initial,
     )?;
     if verify_live_current_host()? != initial
         || stable_coreaudio_generation()? != baseline_coreaudio
@@ -19898,6 +20378,11 @@ fn perform_root_transaction(request_path: &Path) -> Result<HostGeneration> {
         }
     };
     let prestop_revalidation = (|| -> Result<u64> {
+        if !root_request_display_matches_generation(&request, &initial) {
+            return Err(ControllerError(
+                "sealed display baseline changed before durable stop intent".to_owned(),
+            ));
+        }
         write_root_state(
             &layout,
             UpdateState::Authenticated,
@@ -20175,8 +20660,10 @@ fn root_authorized_update(request_path: &Path) -> Result<()> {
     let _root_lock = acquire_root_update_lock()?;
     let host = perform_root_transaction(request_path)?;
     println!(
-        "DIAGNOSTIC_DRIVER_V9_UPDATE_COMMITTED host_pid={} host_runs={} pairing=preserved routes=unchanged legacy=protected",
-        host.pid, host.runs
+        "DIAGNOSTIC_DRIVER_V9_UPDATE_COMMITTED host_pid={} host_runs={} display_mode={} pairing=preserved routes=unchanged legacy=protected",
+        host.pid,
+        host.runs,
+        display_mode_identity_token(&host.display_mode)
     );
     Ok(())
 }
@@ -20278,6 +20765,7 @@ fn execute_authorized_update(
         reader_sha256: DIAGNOSTIC_READER_SHA256.to_owned(),
         authorized_commit: commit.clone(),
         authorized_tree: tree.clone(),
+        display_topology: virtual_display_topology_for_selected(&initial.display_mode)?,
     };
     let request_text = root_request_text(&request)?;
     write_new_private(
@@ -20293,6 +20781,10 @@ fn execute_authorized_update(
         &[
             ("nonce", nonce.clone()),
             ("host_pid", initial.pid.to_string()),
+            (
+                "display_mode",
+                display_mode_identity_token(&initial.display_mode),
+            ),
             ("release_commit", commit.clone()),
             ("release_tree", tree.clone()),
         ],
@@ -20420,6 +20912,7 @@ fn execute_authorized_update(
                 .to_owned(),
         ));
     }
+    verify_user_authenticated_root_dispatch_binding(&layout, &journal, &request, &initial)?;
     let output = run_sudo_helper(&root_controller, ROOT_MODE, Some(&root_bootstrap_request))?;
     let post_dispatch_retained_v5_guard =
         verify_retained_v5_user_prestop_attempt_once(&retained_v5_lock)?;
@@ -20488,6 +20981,12 @@ fn execute_authorized_update(
             "root transaction success marker is not exact".to_owned(),
         ));
     }
+    let root_display_mode = stdout
+        .split_ascii_whitespace()
+        .find_map(|field| field.strip_prefix("display_mode="))
+        .ok_or_else(|| ControllerError("root success marker has no display mode".to_owned()))?;
+    let root_display_mode =
+        parse_canonical_display_mode_identity(root_display_mode, "root success display mode")?;
     verify_driver_bundle(
         Path::new(PRODUCT_DRIVER),
         ROOT_ID,
@@ -20496,16 +20995,26 @@ fn execute_authorized_update(
         CANDIDATE_DRIVER_EXECUTABLE_SHA256,
     )?;
     let host = verify_live_current_host()?;
+    if host.display_mode != initial.display_mode || host.display_mode != root_display_mode {
+        return Err(ControllerError(
+            "committed host did not preserve the sealed preflight display mode".to_owned(),
+        ));
+    }
     verify_pairing_metadata_only()?;
     write_user_result(
         &layout,
         "success",
-        &format!("candidate-committed host-pid={}", host.pid),
+        &format!(
+            "candidate-committed host-pid={} display-mode={}",
+            host.pid,
+            display_mode_identity_token(&host.display_mode)
+        ),
     )?;
     println!(
-        "DIAGNOSTIC_DRIVER_V9_UPDATE_COMPLETE evidence={} host_pid={} pairing=preserved routes=unchanged legacy=protected",
+        "DIAGNOSTIC_DRIVER_V9_UPDATE_COMPLETE evidence={} host_pid={} display_mode={} pairing=preserved routes=unchanged legacy=protected",
         layout.evidence.display(),
-        host.pid
+        host.pid,
+        display_mode_identity_token(&host.display_mode)
     );
     Ok(())
 }
@@ -20687,6 +21196,14 @@ fn rollback_authorized_update(repo: &Path) -> Result<()> {
             "root rollback marker has no canonical route status".to_owned(),
         ));
     };
+    let recovery_display_mode = line
+        .split_ascii_whitespace()
+        .find_map(|field| field.strip_prefix("display_mode="))
+        .ok_or_else(|| ControllerError("root recovery marker has no display mode".to_owned()))?;
+    let recovery_display_mode = parse_canonical_display_mode_identity(
+        recovery_display_mode,
+        "root recovery display mode",
+    )?;
     if recovery_kind == "committed" {
         verify_driver_bundle(
             Path::new(PRODUCT_DRIVER),
@@ -20699,24 +21216,74 @@ fn rollback_authorized_update(repo: &Path) -> Result<()> {
         verify_installed_v7_driver()?;
     }
     let host = verify_live_current_host()?;
+    if host.display_mode != recovery_display_mode {
+        return Err(ControllerError(
+            "live recovered host display differs from the durable root recovery marker".to_owned(),
+        ));
+    }
     verify_pairing_metadata_only()?;
     println!(
-        "DIAGNOSTIC_DRIVER_V9_RECOVERY_COMPLETE outcome={recovery_kind} host_pid={} pairing=preserved routes={route_status} legacy=protected",
-        host.pid
+        "DIAGNOSTIC_DRIVER_V9_RECOVERY_COMPLETE outcome={recovery_kind} host_pid={} display_mode={} pairing=preserved routes={route_status} legacy=protected",
+        host.pid,
+        display_mode_identity_token(&host.display_mode)
     );
     Ok(())
 }
 
-fn complete_root_recovery(_request: RootRequest, layout: RootLayout) -> Result<()> {
+fn verify_durable_root_display_binding(
+    request: &RootRequest,
+    journal: &Journal,
+    durable_state: UpdateState,
+    initial: &HostGeneration,
+) -> Result<()> {
+    if !root_request_display_matches_generation(request, initial) {
+        return Err(ControllerError(
+            "sealed request, authenticated journal, and durable display baseline differ"
+                .to_owned(),
+        ));
+    }
+    match journal.exact_fields_for_state(UpdateState::Authenticated) {
+        Ok(authenticated)
+            if authenticated.get("display_mode").is_some_and(|journal_mode| {
+                request_journal_state_display_binding_is_exact(request, journal_mode, initial)
+            }) => Ok(()),
+        Ok(_) => Err(ControllerError(
+            "authenticated journal display differs from request/root state".to_owned(),
+        )),
+        Err(_authentication_error)
+            if durable_state == UpdateState::PrestopAborted
+                && journal.state == UpdateState::PrestopAborted
+                && read_bounded_utf8(&journal.path, 128 * 1_024)?
+                    == format!(
+                        "{ROOT_JOURNAL_HEADER}\nSTATE BEGUN\nSTATE PRESTOP_ABORTED\n"
+                    ) =>
+        {
+            Ok(())
+        }
+        Err(authentication_error) => Err(ControllerError(format!(
+            "durable display baseline has no authenticated journal binding: {authentication_error}"
+        ))),
+    }
+}
+
+fn complete_root_recovery(request: RootRequest, layout: RootLayout) -> Result<()> {
     require_directory(&layout.root, ROOT_ID, ROOT_ID, 0o700)?;
     verify_root_pointer(&layout)?;
     let mut journal = Journal::open(&layout.journal, ROOT_JOURNAL_HEADER, ROOT_ID, ROOT_ID)?;
     let durable = parse_optional_root_state(&layout)?;
+    if let Some((state, initial, _, _)) = durable.as_ref() {
+        verify_durable_root_display_binding(&request, &journal, *state, initial)?;
+    }
     let effective_journal = journal.effective_state_with_pending()?;
     let plan = root_recovery_plan(effective_journal, durable.as_ref().map(|value| value.0));
     let (outcome, marker) = match plan {
         RootRecoveryPlan::PrestopPreserveHost => (
-            finalize_prestop_preserving_host(&layout, &mut journal, durable)?,
+            finalize_prestop_preserving_host(
+                &layout,
+                &mut journal,
+                &request.display_topology,
+                durable,
+            )?,
             "DIAGNOSTIC_DRIVER_V9_ROOT_PRESTOP_ABORTED",
         ),
         RootRecoveryPlan::RepairCommittedState | RootRecoveryPlan::ReportCommitted => (
@@ -20794,11 +21361,17 @@ fn complete_root_recovery(_request: RootRequest, layout: RootLayout) -> Result<(
     write_root_recovery_result(
         &layout,
         recovery_outcome,
-        &format!("host-pid={};routes={route_status}", outcome.host.pid),
+        &format!(
+            "host-pid={};display-mode={};routes={route_status}",
+            outcome.host.pid,
+            display_mode_identity_token(&outcome.host.display_mode)
+        ),
     )?;
     println!(
-        "{marker} host_pid={} host_runs={} pairing=preserved routes={route_status} legacy=protected",
-        outcome.host.pid, outcome.host.runs
+        "{marker} host_pid={} host_runs={} display_mode={} pairing=preserved routes={route_status} legacy=protected",
+        outcome.host.pid,
+        outcome.host.runs,
+        display_mode_identity_token(&outcome.host.display_mode)
     );
     Ok(())
 }
@@ -20988,6 +21561,12 @@ fn finalize_sealed_bootstrap_without_root_pointer(fixed_digest: &str) -> Result<
     verify_installed_v7_driver()?;
     require_legacy_disabled_and_absent()?;
     let host = verify_live_current_host()?;
+    if !root_request_display_matches_generation(&request, &host) {
+        return Err(ControllerError(
+            "pointerless bootstrap live display differs from its sealed preflight baseline"
+                .to_owned(),
+        ));
+    }
     verify_pairing_metadata_only()?;
 
     let layout = root_layout(&request.nonce)?;
@@ -21049,8 +21628,10 @@ fn finalize_sealed_bootstrap_without_root_pointer(fixed_digest: &str) -> Result<
     }
     let abort_result = controller_support.join("bootstrap-abort-result.txt");
     let bytes = format!(
-        "OPENSTEAMER_DIAGNOSTIC_DRIVER_BOOTSTRAP_ABORT_V9\nnonce={}\nhost_pid={}\noutcome=prestop-aborted\n",
-        request.nonce, host.pid
+        "OPENSTEAMER_DIAGNOSTIC_DRIVER_BOOTSTRAP_ABORT_V9\nnonce={}\nhost_pid={}\ndisplay_mode={}\noutcome=prestop-aborted\n",
+        request.nonce,
+        host.pid,
+        display_mode_identity_token(&host.display_mode)
     );
     match fs::symlink_metadata(&abort_result) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -21068,8 +21649,9 @@ fn finalize_sealed_bootstrap_without_root_pointer(fixed_digest: &str) -> Result<
         }
     }
     println!(
-        "DIAGNOSTIC_DRIVER_V9_ROOT_PRESTOP_ABORTED host_pid={} routes=unproved pairing=preserved",
-        host.pid
+        "DIAGNOSTIC_DRIVER_V9_ROOT_PRESTOP_ABORTED host_pid={} display_mode={} routes=unproved pairing=preserved",
+        host.pid,
+        display_mode_identity_token(&host.display_mode)
     );
     Ok(())
 }
@@ -21355,6 +21937,7 @@ fn self_test_post_bootstrap_pre_lock_recovery_admission() -> Result<()> {
         nonce: "initial".to_owned(),
         lock_device: 11,
         lock_inode: 12,
+        display_mode: required_current_virtual_display_modes()[0].clone(),
     };
     let exact = HostStartupIdentity {
         pid: 101,
@@ -21367,6 +21950,9 @@ fn self_test_post_bootstrap_pre_lock_recovery_admission() -> Result<()> {
     same_start.process_start = initial.process_start.clone();
     let mut wrong_runs = exact.clone();
     wrong_runs.runs = 2;
+    let same_display_host = initial.clone();
+    let mut wrong_reviewed_display_host = initial.clone();
+    wrong_reviewed_display_host.display_mode = required_current_virtual_display_modes()[1].clone();
     let waiting_job = LoadedHostLaunchJob {
         state: "waiting".to_owned(),
         pid: None,
@@ -21376,7 +21962,9 @@ fn self_test_post_bootstrap_pre_lock_recovery_admission() -> Result<()> {
     job_with_pid.pid = Some(101);
     let mut job_without_runs = waiting_job.clone();
     job_without_runs.runs = None;
-    if !replacement_current_host_startup_identity_is_exact(&initial, &exact)
+    if rollback_host_requires_exact_display_restore(&same_display_host, &initial)
+        || !rollback_host_requires_exact_display_restore(&wrong_reviewed_display_host, &initial)
+        || !replacement_current_host_startup_identity_is_exact(&initial, &exact)
         || replacement_current_host_startup_identity_is_exact(&initial, &same_pid)
         || replacement_current_host_startup_identity_is_exact(&initial, &same_start)
         || replacement_current_host_startup_identity_is_exact(&initial, &wrong_runs)
@@ -22045,6 +22633,260 @@ fn uid501_can_modify(ancestor_mode: u32, artifact_mode: u32) -> bool {
     ancestor_mode & 0o002 != 0 || artifact_mode & 0o002 != 0
 }
 
+fn self_test_dynamic_selected_virtual_display_protocol() -> Result<()> {
+    let modes = required_current_virtual_display_modes();
+    if modes
+        != vec![
+            DisplayModeIdentity {
+                logical_width: 1_080,
+                logical_height: 1_920,
+                pixel_width: 1_080,
+                pixel_height: 1_920,
+                refresh_millihertz: 60_000,
+            },
+            DisplayModeIdentity {
+                logical_width: 603,
+                logical_height: 1_311,
+                pixel_width: 1_206,
+                pixel_height: 2_622,
+                refresh_millihertz: 60_000,
+            },
+            DisplayModeIdentity {
+                logical_width: 540,
+                logical_height: 1_170,
+                pixel_width: 1_080,
+                pixel_height: 2_340,
+                refresh_millihertz: 60_000,
+            },
+            DisplayModeIdentity {
+                logical_width: 540,
+                logical_height: 960,
+                pixel_width: 1_080,
+                pixel_height: 1_920,
+                refresh_millihertz: 60_000,
+            },
+            DisplayModeIdentity {
+                logical_width: 414,
+                logical_height: 896,
+                pixel_width: 828,
+                pixel_height: 1_792,
+                refresh_millihertz: 60_000,
+            },
+            DisplayModeIdentity {
+                logical_width: 750,
+                logical_height: 1_334,
+                pixel_width: 750,
+                pixel_height: 1_334,
+                refresh_millihertz: 60_000,
+            },
+        ]
+        || modes.iter().cloned().collect::<BTreeSet<_>>().len() != 6
+    {
+        return Err(ControllerError(
+            "six reviewed virtual-display capability tuples changed".to_owned(),
+        ));
+    }
+    for (index, mode) in modes.iter().enumerate() {
+        let topology = virtual_display_topology_for_selected(mode)?;
+        let snapshot = virtual_display_snapshot_text(&topology);
+        let restore_target = virtual_display_restore_target_text(mode)?;
+        if parse_virtual_display_snapshot_text(&snapshot)? != topology
+            || parse_virtual_display_restore_target_text(&restore_target)? != *mode
+            || parse_canonical_display_mode_identity(
+                &display_mode_identity_token(mode),
+                "self-test reviewed display mode",
+            )? != *mode
+            || !restored_virtual_display_matches_target(&topology, mode)
+            || restored_virtual_display_matches_target(&topology, &modes[(index + 1) % modes.len()])
+        {
+            return Err(ControllerError(format!(
+                "dynamic virtual-display protocol round trip failed for mapping {index}"
+            )));
+        }
+    }
+    let topology = virtual_display_topology_for_selected(&modes[0])?;
+    let snapshot = virtual_display_snapshot_text(&topology);
+    let capability_token = display_capability_set_token(&modes);
+    let mut reordered_modes = modes.clone();
+    reordered_modes.swap(0, 1);
+    for (fixture, label) in [
+        (
+            snapshot.replace("selected=1080:1920:1080:1920:60000\n", ""),
+            "virtual-display snapshot missing field",
+        ),
+        (
+            snapshot.replace("identity=28531:5912:1", "identity=028531:5912:1"),
+            "virtual-display snapshot noncanonical identity",
+        ),
+        (
+            snapshot.replace("identity=28531:5912:1", "identity=28532:5912:1"),
+            "virtual-display snapshot identity substitution",
+        ),
+        (
+            snapshot.replace("identity=28531:5912:1", "identity=28531:5912:0"),
+            "virtual-display snapshot zero identity field",
+        ),
+        (
+            snapshot.replace(
+                "selected=1080:1920:1080:1920:60000",
+                "selected=01080:1920:1080:1920:60000",
+            ),
+            "virtual-display snapshot noncanonical selected tuple",
+        ),
+        (
+            snapshot.replace(
+                "selected=1080:1920:1080:1920:60000",
+                "selected=720:1280:720:1280:60000",
+            ),
+            "virtual-display snapshot unsupported selected tuple",
+        ),
+        (
+            snapshot.replace(
+                "selected=1080:1920:1080:1920:60000",
+                "selected=1920:1080:1920:1080:60000",
+            ),
+            "virtual-display snapshot transposed selected tuple",
+        ),
+        (
+            snapshot.replace(
+                "selected=1080:1920:1080:1920:60000",
+                "selected=603:1312:1206:2622:60000",
+            ),
+            "virtual-display snapshot rounded alias selected tuple",
+        ),
+        (
+            snapshot.replace(
+                "selected=1080:1920:1080:1920:60000",
+                "selected=999999999999999999999999:1920:1080:1920:60000",
+            ),
+            "virtual-display snapshot dimension overflow",
+        ),
+        (
+            snapshot.replace(
+                "selected=1080:1920:1080:1920:60000",
+                "selected=1080:1920:1080:1920:999999999999999999999999",
+            ),
+            "virtual-display snapshot refresh overflow",
+        ),
+        (
+            snapshot.replace(
+                "selected=1080:1920:1080:1920:60000",
+                "selected=1080:1920:1080:1920:59999",
+            ),
+            "virtual-display snapshot bad refresh",
+        ),
+        (
+            snapshot.replace(
+                &format!("required_mappings={capability_token}"),
+                &format!(
+                    "required_mappings={}",
+                    display_capability_set_token(&reordered_modes)
+                ),
+            ),
+            "virtual-display snapshot reordered capability tuples",
+        ),
+        (
+            snapshot.replace(
+                &format!("required_mappings={capability_token}"),
+                &format!(
+                    "required_mappings={}",
+                    display_capability_set_token(&modes[..5])
+                ),
+            ),
+            "virtual-display snapshot missing capability tuple",
+        ),
+        (
+            snapshot.replace(
+                "selected=1080:1920:1080:1920:60000\n",
+                "selected=1080:1920:1080:1920:60000\nselected=1080:1920:1080:1920:60000\n",
+            ),
+            "virtual-display snapshot duplicate selected key",
+        ),
+        (
+            format!("{snapshot}extra=1\n"),
+            "virtual-display snapshot extra key",
+        ),
+        (
+            snapshot.trim_end_matches('\n').to_owned(),
+            "virtual-display snapshot missing newline",
+        ),
+        (
+            snapshot.replace('\n', "\r\n"),
+            "virtual-display snapshot CRLF",
+        ),
+    ] {
+        require_self_test_rejection(parse_virtual_display_snapshot_text(&fixture), label)?;
+    }
+    let restore_target = virtual_display_restore_target_text(&modes[0])?;
+    for (fixture, label) in [
+        (
+            restore_target.replace(
+                "selected=1080:1920:1080:1920:60000",
+                "selected=720:1280:720:1280:60000",
+            ),
+            "virtual-display restore unsupported target",
+        ),
+        (
+            restore_target.replace(
+                "selected=1080:1920:1080:1920:60000",
+                "selected=1080:1920:1080:1920:060000",
+            ),
+            "virtual-display restore noncanonical number",
+        ),
+        (
+            format!("{restore_target}extra=1\n"),
+            "virtual-display restore extra key",
+        ),
+        (
+            restore_target.replace(
+                "selected=1080:1920:1080:1920:60000\n",
+                "selected=1080:1920:1080:1920:60000\nselected=1080:1920:1080:1920:60000\n",
+            ),
+            "virtual-display restore duplicate target",
+        ),
+        (
+            restore_target.trim_end_matches('\n').to_owned(),
+            "virtual-display restore missing newline",
+        ),
+    ] {
+        require_self_test_rejection(parse_virtual_display_restore_target_text(&fixture), label)?;
+    }
+    let unsupported = DisplayModeIdentity {
+        logical_width: 720,
+        logical_height: 1_280,
+        pixel_width: 720,
+        pixel_height: 1_280,
+        refresh_millihertz: 60_000,
+    };
+    let mut seven_modes = modes.clone();
+    seven_modes.push(unsupported.clone());
+    let duplicate_target_modes = vec![modes[0].clone(), modes[0].clone()];
+    let mut wrong_identity_topology = topology.clone();
+    wrong_identity_topology.vendor += 1;
+    if current_virtual_display_mode_is_reviewed(&unsupported)
+        || virtual_display_topology_for_selected(&unsupported).is_ok()
+        || virtual_display_restore_target_text(&unsupported).is_ok()
+        || observed_virtual_display_capability_set_is_exact(
+            &seven_modes,
+            &modes[0],
+            false,
+        )
+        || observed_virtual_display_capability_set_is_exact(&seven_modes, &modes[0], true)
+        || observed_virtual_display_capability_set_is_exact(&seven_modes, &unsupported, false)
+        || !observed_virtual_display_capability_set_is_exact(&seven_modes, &unsupported, true)
+        || exact_raw_display_mode_match_count(&[], &modes[0]) != 0
+        || exact_raw_display_mode_match_count(&modes, &modes[0]) != 1
+        || exact_raw_display_mode_match_count(&duplicate_target_modes, &modes[0]) != 2
+        || current_virtual_display_selected_mode_is_exact(&wrong_identity_topology)
+    {
+        return Err(ControllerError(
+            "unsupported/seventh virtual-display capability entered a stable reviewed snapshot"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn self_test() -> Result<()> {
     self_test_hal_child_process_group_kill_and_reap()?;
     self_test_root_sudo_supervisor_timeout_recovery_states()?;
@@ -22332,9 +23174,12 @@ fn self_test() -> Result<()> {
         reader_sha256: DIAGNOSTIC_READER_SHA256.to_owned(),
         authorized_commit: "2".repeat(40),
         authorized_tree: "3".repeat(40),
+        display_topology: virtual_display_topology_for_selected(
+            &required_current_virtual_display_modes()[0],
+        )?,
     };
     let request_text = root_request_text(&synthetic)?;
-    if request_text.lines().count() != 8 || !request_text.ends_with('\n') {
+    if request_text.lines().count() != 11 || !request_text.ends_with('\n') {
         return Err(ControllerError(
             "root request serialization is not exact".to_owned(),
         ));
@@ -22343,9 +23188,100 @@ fn self_test() -> Result<()> {
     if parsed_request.nonce != synthetic.nonce
         || parsed_request.evidence != synthetic.evidence
         || parsed_request.root_controller != synthetic.root_controller
+        || parsed_request.display_topology != synthetic.display_topology
     {
         return Err(ControllerError(
             "pure root request round trip changed its binding".to_owned(),
+        ));
+    }
+    let synthetic_generation = HostGeneration {
+        pid: 123,
+        runs: 1,
+        process_start: "Sat Aug 23 12:34:56 2026".to_owned(),
+        nonce: "a".repeat(64),
+        lock_device: 16_777_229,
+        lock_inode: 28_002_132,
+        display_mode: required_current_virtual_display_modes()[0].clone(),
+    };
+    let mut substituted_request = synthetic.clone();
+    substituted_request.display_topology = virtual_display_topology_for_selected(
+        &required_current_virtual_display_modes()[1],
+    )?;
+    let journal_mode = display_mode_identity_token(&synthetic_generation.display_mode);
+    let substituted_journal_mode =
+        display_mode_identity_token(&required_current_virtual_display_modes()[1]);
+    let mut substituted_state_generation = synthetic_generation.clone();
+    substituted_state_generation.display_mode = required_current_virtual_display_modes()[1].clone();
+    let authenticated_dispatch = BTreeMap::from([
+        (
+            "display_mode".to_owned(),
+            display_mode_identity_token(&synthetic_generation.display_mode),
+        ),
+        ("host_pid".to_owned(), synthetic_generation.pid.to_string()),
+        ("nonce".to_owned(), synthetic.nonce.clone()),
+        (
+            "release_commit".to_owned(),
+            synthetic.authorized_commit.clone(),
+        ),
+        (
+            "release_tree".to_owned(),
+            synthetic.authorized_tree.clone(),
+        ),
+    ]);
+    let mut substituted_dispatch = authenticated_dispatch.clone();
+    substituted_dispatch.insert(
+        "display_mode".to_owned(),
+        substituted_journal_mode.clone(),
+    );
+    let mut extra_dispatch = authenticated_dispatch.clone();
+    extra_dispatch.insert("extra".to_owned(), "1".to_owned());
+    if !root_request_display_matches_generation(&synthetic, &synthetic_generation)
+        || root_request_display_matches_generation(&substituted_request, &synthetic_generation)
+        || parse_root_request_text(&root_request_text(&substituted_request)?)?.display_topology
+            != substituted_request.display_topology
+        || !request_journal_state_display_binding_is_exact(
+            &synthetic,
+            &journal_mode,
+            &synthetic_generation,
+        )
+        || request_journal_state_display_binding_is_exact(
+            &synthetic,
+            &substituted_journal_mode,
+            &synthetic_generation,
+        )
+        || request_journal_state_display_binding_is_exact(
+            &synthetic,
+            &journal_mode,
+            &substituted_state_generation,
+        )
+        || !user_authenticated_root_dispatch_binding_is_exact(
+            &synthetic,
+            &authenticated_dispatch,
+            &synthetic_generation,
+        )
+        || user_authenticated_root_dispatch_binding_is_exact(
+            &synthetic,
+            &substituted_dispatch,
+            &synthetic_generation,
+        )
+        || user_authenticated_root_dispatch_binding_is_exact(
+            &substituted_request,
+            &authenticated_dispatch,
+            &synthetic_generation,
+        )
+        || user_authenticated_root_dispatch_binding_is_exact(
+            &synthetic,
+            &authenticated_dispatch,
+            &substituted_state_generation,
+        )
+        || user_authenticated_root_dispatch_binding_is_exact(
+            &synthetic,
+            &extra_dispatch,
+            &synthetic_generation,
+        )
+    {
+        return Err(ControllerError(
+            "request/journal/state display mismatch was not rejected".to_owned(),
         ));
     }
     let request_tree_line = format!("authorized_tree={}\n", synthetic.authorized_tree);
@@ -22401,6 +23337,27 @@ fn self_test() -> Result<()> {
                 "nonce=0123456789abcdef0123456789abcdeg\n",
             ),
             "request invalid nonce",
+        ),
+        (
+            request_text.replace(
+                "display_selected=1080:1920:1080:1920:60000\n",
+                "display_selected=720:1280:720:1280:60000\n",
+            ),
+            "request unsupported display selection",
+        ),
+        (
+            request_text.replace(
+                "display_identity=28531:5912:1\n",
+                "display_identity=028531:5912:1\n",
+            ),
+            "request noncanonical display identity",
+        ),
+        (
+            request_text.replace(
+                "display_selected=1080:1920:1080:1920:60000\n",
+                "display_selected=1080:1920:1080:1920:060000\n",
+            ),
+            "request noncanonical display selection",
         ),
     ] {
         require_self_test_rejection(parse_root_request_text(&fixture), label)?;
@@ -22565,13 +23522,14 @@ fn self_test() -> Result<()> {
     }
 
     let root_state = format!(
-        "OPENSTEAMER_DIAGNOSTIC_DRIVER_ROOT_STATE_V9\nstate=COREAUDIO_RELOADED\ninitial_host_pid=123\ninitial_host_runs=1\ninitial_host_start=Sat Aug 23 12:34:56 2026\ninitial_host_nonce={}\ninitial_host_lock_device=16777229\ninitial_host_lock_inode=28002132\nrollback_reserve_status=allocated\nrollback_reserve_device=16777229\nrollback_reserve_inode=28009999\nrollback_reserve_bytes=8388608\ninput_uid=com.apple.BuiltInMicrophoneDevice\noutput_uid=com.apple.BuiltInSpeakerDevice\nsystem_output_uid=com.apple.BuiltInSpeakerDevice\n",
+        "OPENSTEAMER_DIAGNOSTIC_DRIVER_ROOT_STATE_V9\nstate=COREAUDIO_RELOADED\ninitial_host_pid=123\ninitial_host_runs=1\ninitial_host_start=Sat Aug 23 12:34:56 2026\ninitial_host_nonce={}\ninitial_host_lock_device=16777229\ninitial_host_lock_inode=28002132\ninitial_host_display_mode=1080:1920:1080:1920:60000\nrollback_reserve_status=allocated\nrollback_reserve_device=16777229\nrollback_reserve_inode=28009999\nrollback_reserve_bytes=8388608\ninput_uid=com.apple.BuiltInMicrophoneDevice\noutput_uid=com.apple.BuiltInSpeakerDevice\nsystem_output_uid=com.apple.BuiltInSpeakerDevice\n",
         "a".repeat(64)
     );
     let (root_state_token, root_state_host, root_state_route, root_state_reserve) =
         parse_root_state_text(&root_state)?;
     if root_state_token != UpdateState::CoreAudioReloaded
         || root_state_host.pid != 123
+        || root_state_host.display_mode != required_current_virtual_display_modes()[0]
         || root_state_route.is_none()
         || root_state_reserve.is_none_or(|reserve| reserve.released)
     {
@@ -22594,6 +23552,20 @@ fn self_test() -> Result<()> {
         (
             root_state.replace("initial_host_runs=1\n", ""),
             "root state missing key",
+        ),
+        (
+            root_state.replace(
+                "initial_host_display_mode=1080:1920:1080:1920:60000\n",
+                "",
+            ),
+            "root state missing display mode",
+        ),
+        (
+            root_state.replace(
+                "initial_host_display_mode=1080:1920:1080:1920:60000\n",
+                "initial_host_display_mode=1080:1920:1080:1920:60000\ninitial_host_display_mode=1080:1920:1080:1920:60000\n",
+            ),
+            "root state duplicate display mode",
         ),
         (
             format!("{root_state}unexpected=1\n"),
@@ -22632,12 +23604,47 @@ fn self_test() -> Result<()> {
             ),
             "root state malformed process start",
         ),
+        (
+            root_state.replace(
+                "initial_host_display_mode=1080:1920:1080:1920:60000\n",
+                "initial_host_display_mode=01080:1920:1080:1920:60000\n",
+            ),
+            "root state noncanonical display mode",
+        ),
+        (
+            root_state.replace(
+                "initial_host_display_mode=1080:1920:1080:1920:60000\n",
+                "initial_host_display_mode=720:1280:720:1280:60000\n",
+            ),
+            "root state unsupported display mode",
+        ),
+        (
+            root_state.replace(
+                "initial_host_display_mode=1080:1920:1080:1920:60000\n",
+                "initial_host_display_mode=603:1312:1206:2622:60000\n",
+            ),
+            "root state rounded display alias",
+        ),
+        (
+            root_state.replace(
+                "initial_host_display_mode=1080:1920:1080:1920:60000\n",
+                "initial_host_display_mode=999999999999999999999999:1920:1080:1920:60000\n",
+            ),
+            "root state display dimension overflow",
+        ),
+        (
+            root_state.replace(
+                "initial_host_display_mode=1080:1920:1080:1920:60000\n",
+                "initial_host_display_mode=1080:1920:1080:1920:59999\n",
+            ),
+            "root state bad display refresh",
+        ),
     ] {
         require_self_test_rejection(parse_root_state_text(&fixture), label)?;
     }
 
     let root_journal = format!(
-        "{ROOT_JOURNAL_HEADER}\nSTATE BEGUN\nSTATE AUTHENTICATED host_pid=123 host_runs=1 coreaudiod_pid=456 coreaudiod_runs=2 release_commit={} release_tree={} retained_v1_journal_sha256={} retained_v1_locator_device=16777229 retained_v1_locator_inode=28503621 retained_v1_locator_sha256={} retained_v1_request_sha256={} retained_v3_journal_sha256={} retained_v3_locator_device=16777229 retained_v3_locator_inode=29359033 retained_v3_locator_sha256={} retained_v3_request_sha256={} retained_v4_journal_sha256={} retained_v4_locator_device=16777229 retained_v4_locator_inode=29375727 retained_v4_request_sha256={} retained_v4_root_journal_sha256={} retained_v5_journal_sha256={} retained_v5_root_journal_sha256={} retained_v5_locator_device=16777229 retained_v5_locator_inode=29407517 retained_v5_request_sha256={} retained_v6_journal_sha256={} retained_v6_root_journal_sha256={} retained_v6_locator_device=16777229 retained_v6_locator_inode=29444464 retained_v6_request_sha256={} retained_v7_journal_sha256={} retained_v7_root_journal_sha256={} retained_v7_locator_device=16777229 retained_v7_locator_inode=29479827 retained_v7_request_sha256={} retained_v8_journal_sha256={} retained_v8_root_journal_sha256={} retained_v8_locator_device=16777229 retained_v8_locator_inode=29507360 retained_v8_request_sha256={}\nSTATE HOST_STOP_INITIATED available_bytes=1073741824 reserve_bytes=8388608 reserve_device=16777229 reserve_inode=28009999\nSTATE HOST_STOPPED\nSTATE PRIOR_DRIVER_RETAINED device=16777229 inode=27877539\nSTATE CANDIDATE_PUBLISHED\nSTATE COREAUDIO_RELOADED old_pid=456 new_pid=457 new_runs=3\nSTATE DRIVER_VALIDATED driver_generation=99\nSTATE HOST_BOOTSTRAPPED pid=789 runs=1 nonce={}\nSTATE READY_VERIFIED\nSTATE COMMITTED\n",
+        "{ROOT_JOURNAL_HEADER}\nSTATE BEGUN\nSTATE AUTHENTICATED host_pid=123 host_runs=1 display_mode=1080:1920:1080:1920:60000 coreaudiod_pid=456 coreaudiod_runs=2 release_commit={} release_tree={} retained_v1_journal_sha256={} retained_v1_locator_device=16777229 retained_v1_locator_inode=28503621 retained_v1_locator_sha256={} retained_v1_request_sha256={} retained_v3_journal_sha256={} retained_v3_locator_device=16777229 retained_v3_locator_inode=29359033 retained_v3_locator_sha256={} retained_v3_request_sha256={} retained_v4_journal_sha256={} retained_v4_locator_device=16777229 retained_v4_locator_inode=29375727 retained_v4_request_sha256={} retained_v4_root_journal_sha256={} retained_v5_journal_sha256={} retained_v5_root_journal_sha256={} retained_v5_locator_device=16777229 retained_v5_locator_inode=29407517 retained_v5_request_sha256={} retained_v6_journal_sha256={} retained_v6_root_journal_sha256={} retained_v6_locator_device=16777229 retained_v6_locator_inode=29444464 retained_v6_request_sha256={} retained_v7_journal_sha256={} retained_v7_root_journal_sha256={} retained_v7_locator_device=16777229 retained_v7_locator_inode=29479827 retained_v7_request_sha256={} retained_v8_journal_sha256={} retained_v8_root_journal_sha256={} retained_v8_locator_device=16777229 retained_v8_locator_inode=29507360 retained_v8_request_sha256={}\nSTATE HOST_STOP_INITIATED available_bytes=1073741824 reserve_bytes=8388608 reserve_device=16777229 reserve_inode=28009999\nSTATE HOST_STOPPED\nSTATE PRIOR_DRIVER_RETAINED device=16777229 inode=27877539\nSTATE CANDIDATE_PUBLISHED\nSTATE COREAUDIO_RELOADED old_pid=456 new_pid=457 new_runs=3\nSTATE DRIVER_VALIDATED driver_generation=99\nSTATE HOST_BOOTSTRAPPED pid=789 runs=1 nonce={}\nSTATE READY_VERIFIED\nSTATE COMMITTED\n",
         "b".repeat(40),
         "c".repeat(40),
         "1".repeat(64),
@@ -22669,7 +23676,7 @@ fn self_test() -> Result<()> {
         ));
     }
     let authenticated_line = format!(
-        "STATE AUTHENTICATED host_pid=123 host_runs=1 coreaudiod_pid=456 coreaudiod_runs=2 release_commit={} release_tree={} retained_v1_journal_sha256={} retained_v1_locator_device=16777229 retained_v1_locator_inode=28503621 retained_v1_locator_sha256={} retained_v1_request_sha256={} retained_v3_journal_sha256={} retained_v3_locator_device=16777229 retained_v3_locator_inode=29359033 retained_v3_locator_sha256={} retained_v3_request_sha256={} retained_v4_journal_sha256={} retained_v4_locator_device=16777229 retained_v4_locator_inode=29375727 retained_v4_request_sha256={} retained_v4_root_journal_sha256={} retained_v5_journal_sha256={} retained_v5_root_journal_sha256={} retained_v5_locator_device=16777229 retained_v5_locator_inode=29407517 retained_v5_request_sha256={} retained_v6_journal_sha256={} retained_v6_root_journal_sha256={} retained_v6_locator_device=16777229 retained_v6_locator_inode=29444464 retained_v6_request_sha256={} retained_v7_journal_sha256={} retained_v7_root_journal_sha256={} retained_v7_locator_device=16777229 retained_v7_locator_inode=29479827 retained_v7_request_sha256={} retained_v8_journal_sha256={} retained_v8_root_journal_sha256={} retained_v8_locator_device=16777229 retained_v8_locator_inode=29507360 retained_v8_request_sha256={}\n",
+        "STATE AUTHENTICATED host_pid=123 host_runs=1 display_mode=1080:1920:1080:1920:60000 coreaudiod_pid=456 coreaudiod_runs=2 release_commit={} release_tree={} retained_v1_journal_sha256={} retained_v1_locator_device=16777229 retained_v1_locator_inode=28503621 retained_v1_locator_sha256={} retained_v1_request_sha256={} retained_v3_journal_sha256={} retained_v3_locator_device=16777229 retained_v3_locator_inode=29359033 retained_v3_locator_sha256={} retained_v3_request_sha256={} retained_v4_journal_sha256={} retained_v4_locator_device=16777229 retained_v4_locator_inode=29375727 retained_v4_request_sha256={} retained_v4_root_journal_sha256={} retained_v5_journal_sha256={} retained_v5_root_journal_sha256={} retained_v5_locator_device=16777229 retained_v5_locator_inode=29407517 retained_v5_request_sha256={} retained_v6_journal_sha256={} retained_v6_root_journal_sha256={} retained_v6_locator_device=16777229 retained_v6_locator_inode=29444464 retained_v6_request_sha256={} retained_v7_journal_sha256={} retained_v7_root_journal_sha256={} retained_v7_locator_device=16777229 retained_v7_locator_inode=29479827 retained_v7_request_sha256={} retained_v8_journal_sha256={} retained_v8_root_journal_sha256={} retained_v8_locator_device=16777229 retained_v8_locator_inode=29507360 retained_v8_request_sha256={}\n",
         "b".repeat(40),
         "c".repeat(40),
         "1".repeat(64),
@@ -22739,6 +23746,24 @@ fn self_test() -> Result<()> {
         (
             root_journal.replace("host_pid=123 ", "host_pid=0123 "),
             "journal noncanonical number",
+        ),
+        (
+            root_journal.replace(" display_mode=1080:1920:1080:1920:60000", ""),
+            "journal missing display mode",
+        ),
+        (
+            root_journal.replace(
+                "display_mode=1080:1920:1080:1920:60000",
+                "display_mode=01080:1920:1080:1920:60000",
+            ),
+            "journal noncanonical display mode",
+        ),
+        (
+            root_journal.replace(
+                "display_mode=1080:1920:1080:1920:60000",
+                "display_mode=720:1280:720:1280:60000",
+            ),
+            "journal unsupported display mode",
         ),
     ] {
         require_self_test_rejection(parse_journal_text(&fixture, ROOT_JOURNAL_HEADER), label)?;
@@ -23818,38 +24843,17 @@ fn self_test() -> Result<()> {
             "UID501 openat lexical scope accepted a hostile path".to_owned(),
         ));
     }
-    let pinned_display = pinned_current_virtual_display_topology();
-    let pinned_selection = pinned_current_virtual_display_selection();
-    let display_snapshot = virtual_display_snapshot_text(&pinned_display);
-    if parse_virtual_display_snapshot_text(&display_snapshot)? != pinned_display
-        || pinned_selection.logical_width != CURRENT_VIRTUAL_DISPLAY_LOGICAL_WIDTH
-        || pinned_selection.logical_height != CURRENT_VIRTUAL_DISPLAY_LOGICAL_HEIGHT
-        || pinned_selection.pixel_width != CURRENT_VIRTUAL_DISPLAY_PIXEL_WIDTH
-        || pinned_selection.pixel_height != CURRENT_VIRTUAL_DISPLAY_PIXEL_HEIGHT
-        || pinned_selection.refresh_millihertz != CURRENT_VIRTUAL_DISPLAY_REFRESH_MILLIHERTZ
-        || required_current_virtual_display_modes().len() != 6
-        || required_current_virtual_display_modes()
-            .into_iter()
-            .collect::<BTreeSet<_>>()
-            .len()
-            != 6
-        || normalize_display_refresh_millihertz(59.96)?
+    self_test_dynamic_selected_virtual_display_protocol()?;
+    if normalize_display_refresh_millihertz(59.96)?
             != CURRENT_VIRTUAL_DISPLAY_REFRESH_MILLIHERTZ
         || normalize_display_refresh_millihertz(60.04)?
             != CURRENT_VIRTUAL_DISPLAY_REFRESH_MILLIHERTZ
         || DISPLAY_CONFIGURATION_FOR_SESSION != 1
     {
         return Err(ControllerError(
-            "pinned current virtual-display policy changed".to_owned(),
+            "dynamic current virtual-display policy changed".to_owned(),
         ));
     }
-    require_self_test_rejection(
-        parse_virtual_display_snapshot_text(&display_snapshot.replace(
-            "selected=720:1280:720:1280:60000",
-            "selected=540:960:1080:1920:60000",
-        )),
-        "virtual-display snapshot target substitution",
-    )?;
     require_self_test_rejection(
         normalize_display_refresh_millihertz(59.90),
         "virtual-display low refresh drift",
@@ -23967,10 +24971,11 @@ fn self_test() -> Result<()> {
         || !source.contains("UID501_DISPLAY_SNAPSHOT_MODE")
         || !source.contains("UID501_DISPLAY_RESTORE_MODE")
         || !source.contains("kCGDisplayShowDuplicateLowResolutionModes")
-        || !source.contains("raw_restore_target_matches != 1")
+        || !source.contains("raw_selected_mode_matches != 1")
         || !source.contains("DISPLAY_CONFIGURATION_FOR_SESSION")
-        || !source.contains("required_current_virtual_display_modes().len() != 6")
-        || !source.contains("restore_pinned_current_virtual_display_mode_after_host_restart")
+        || !source.contains("restore_exact_current_virtual_display_mode_after_host_restart")
+        || !source.contains("self_test_dynamic_selected_virtual_display_protocol")
+        || !source.contains("verify_durable_root_display_binding")
         || !source.contains("restart_or_recover_exact_current_host")
         || !source.contains("EXPECTED_RELEASE_BRANCH")
     {

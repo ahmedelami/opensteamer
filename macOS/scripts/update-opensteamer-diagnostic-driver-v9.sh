@@ -28,8 +28,8 @@ EXPECTED_RUSTC_SHA256='d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9
 EXPECTED_RUSTC_DRIVER_SHA256='aa8f5e89644f6d54fd3f1c4d4031bbda10ff750984cede4a75c7addee27e15df'
 EXPECTED_MACOSX_DEPLOYMENT_TARGET='26.0'
 RELEASE_PIN_STATUS='PINNED_FINAL_REVIEW'
-EXPECTED_SOURCE_SHA256='e94f9be013924ac88750b71b63f56adcc7a3dbc23f6ed4d7a4cc45b94ffeb698'
-EXPECTED_BINARY_SHA256='447d5911ffa274c8dfef1522ae412f584ab5f46a19aab880fd1693fd0d5b04f5'
+EXPECTED_SOURCE_SHA256='d1f32a41c00f4f5dcab3c239a5ca8f81d56505848fb04d7a1201cf2bee0957ab'
+EXPECTED_BINARY_SHA256='46566c774dd897e69f7dfc1e239a675bb69d86d9f0c1407bf3c9e1ef10a03b56'
 BUILD_PARENT='/Volumes/t7/opensteamer-diagnostic-driver-v9-controller-builds'
 
 usage() {
@@ -72,7 +72,7 @@ if [ "$MODE" = "$ROLLBACK_MODE" ]; then
         LOCATOR_READY=0
         if [ -f "$ROOT_BOOTSTRAP_LOCATOR" ] && [ ! -L "$ROOT_BOOTSTRAP_LOCATOR" ] \
             && [ "$(/usr/bin/stat -f '%u:%g:%l:%Lp' "$ROOT_BOOTSTRAP_LOCATOR")" = '0:0:1:444' ] \
-            && [ "$(/usr/bin/wc -l < "$ROOT_BOOTSTRAP_LOCATOR" | /usr/bin/tr -d ' ')" = 8 ] \
+            && [ "$(/usr/bin/wc -l < "$ROOT_BOOTSTRAP_LOCATOR" | /usr/bin/tr -d ' ')" = 11 ] \
             && [ "$(/usr/bin/sed -n '1p' "$ROOT_BOOTSTRAP_LOCATOR")" = 'OPENSTEAMER_DIAGNOSTIC_DRIVER_ROOT_REQUEST_V9' ]; then
             LOCATOR_NONCE=$(/usr/bin/sed -n '2s/^nonce=//p' "$ROOT_BOOTSTRAP_LOCATOR")
             LOCATOR_EVIDENCE=$(/usr/bin/sed -n '3s/^evidence=//p' "$ROOT_BOOTSTRAP_LOCATOR")
@@ -81,6 +81,9 @@ if [ "$MODE" = "$ROLLBACK_MODE" ]; then
             LOCATOR_READER=$(/usr/bin/sed -n '6s/^reader_sha256=//p' "$ROOT_BOOTSTRAP_LOCATOR")
             LOCATOR_COMMIT=$(/usr/bin/sed -n '7s/^authorized_commit=//p' "$ROOT_BOOTSTRAP_LOCATOR")
             LOCATOR_TREE=$(/usr/bin/sed -n '8s/^authorized_tree=//p' "$ROOT_BOOTSTRAP_LOCATOR")
+            LOCATOR_DISPLAY_IDENTITY=$(/usr/bin/sed -n '9s/^display_identity=//p' "$ROOT_BOOTSTRAP_LOCATOR")
+            LOCATOR_DISPLAY_SELECTED=$(/usr/bin/sed -n '10s/^display_selected=//p' "$ROOT_BOOTSTRAP_LOCATOR")
+            LOCATOR_DISPLAY_CAPABILITIES=$(/usr/bin/sed -n '11s/^display_capabilities=//p' "$ROOT_BOOTSTRAP_LOCATOR")
             case "$LOCATOR_NONCE:$LOCATOR_DIGEST:$LOCATOR_COMMIT:$LOCATOR_TREE" in
                 *[!0-9a-f:]*) ;;
                 *)
@@ -89,9 +92,15 @@ if [ "$MODE" = "$ROLLBACK_MODE" ]; then
                         && [ "${#LOCATOR_COMMIT}" -eq 40 ] \
                         && [ "${#LOCATOR_TREE}" -eq 40 ] \
                         && [ "$LOCATOR_CONTROLLER" = "$ROOT_CONTROLLER_PARENT/controller-$LOCATOR_NONCE/controller" ] \
-                        && [ "$LOCATOR_READER" = "$DIAGNOSTIC_READER_SHA256" ]; then
-                        case "$LOCATOR_EVIDENCE" in
-                            "$USER_UPDATE_ROOT"/diagnostic-driver-v9-*"$LOCATOR_NONCE") LOCATOR_READY=1 ;;
+                        && [ "$LOCATOR_READER" = "$DIAGNOSTIC_READER_SHA256" ] \
+                        && [ "$LOCATOR_DISPLAY_IDENTITY" = '28531:5912:1' ] \
+                        && [ "$LOCATOR_DISPLAY_CAPABILITIES" = '1080:1920:1080:1920:60000,603:1311:1206:2622:60000,540:1170:1080:2340:60000,540:960:1080:1920:60000,414:896:828:1792:60000,750:1334:750:1334:60000' ]; then
+                        case "$LOCATOR_DISPLAY_SELECTED" in
+                            1080:1920:1080:1920:60000|603:1311:1206:2622:60000|540:1170:1080:2340:60000|540:960:1080:1920:60000|414:896:828:1792:60000|750:1334:750:1334:60000)
+                                case "$LOCATOR_EVIDENCE" in
+                                    "$USER_UPDATE_ROOT"/diagnostic-driver-v9-*"$LOCATOR_NONCE") LOCATOR_READY=1 ;;
+                                esac
+                                ;;
                         esac
                     fi
                     ;;

@@ -1334,7 +1334,8 @@ final class DiagnosticDriverV9UpdateContractTests: XCTestCase {
             endingBefore: "fn verify_retained_v7_driver("
         )
         assertOrdered([
-            "verify_live_current_host().or_else(|_| restore_and_verify_live_current_host())",
+            "verify_live_current_host()",
+            "restore_and_verify_live_current_host(&initial.display_mode)",
             "stop_exact_current_host(&generation)",
             "reconcile_post_bootstrap_pre_lock_host_for_rollback(initial)",
         ], in: rollbackStop)
@@ -1675,6 +1676,667 @@ final class DiagnosticDriverV9UpdateContractTests: XCTestCase {
             "complete={}", "transient={}", "timeout={}", "fatal={}",
         ] {
             XCTAssertTrue(attemptRecord.contains(field), "attempt record omits \(field)")
+        }
+    }
+
+    func testDynamicSelectedDisplayPinsExactlySixCanonicalMappingsAndRejectsAliases() throws {
+        let controller = try source(controllerPath)
+        let constants = try functionBody(
+            controller,
+            beginningWith: "const CURRENT_VIRTUAL_DISPLAY_VENDOR:",
+            endingBefore: "#[link(name = \"CoreGraphics\""
+        )
+        for token in [
+            "const CURRENT_VIRTUAL_DISPLAY_VENDOR: u32 = 0x6F73;",
+            "const CURRENT_VIRTUAL_DISPLAY_PRODUCT: u32 = 0x1718;",
+            "const CURRENT_VIRTUAL_DISPLAY_SERIAL: u32 = 1;",
+            "const CURRENT_VIRTUAL_DISPLAY_REFRESH_MILLIHERTZ: u32 = 60_000;",
+            "const DISPLAY_CONFIGURATION_FOR_SESSION: u32 = 1;",
+            #"const DISPLAY_SNAPSHOT_HEADER: &str = "OPENSTEAMER_CURRENT_VIRTUAL_DISPLAY_SNAPSHOT_V1";"#,
+            #""OPENSTEAMER_CURRENT_VIRTUAL_DISPLAY_RESTORE_TARGET_V1";"#,
+        ] {
+            XCTAssertTrue(constants.contains(token), "missing selected-display constant: \(token)")
+        }
+
+        let requiredModes = try functionBody(
+            controller,
+            beginningWith: "fn required_current_virtual_display_modes()",
+            endingBefore: "fn selected_virtual_display_mode("
+        )
+        XCTAssertEqual(occurrences(of: "        mode(", in: requiredModes), 6)
+        assertOrdered([
+            "mode(1_080, 1_920, 1_080, 1_920)",
+            "mode(603, 1_311, 1_206, 2_622)",
+            "mode(540, 1_170, 1_080, 2_340)",
+            "mode(540, 960, 1_080, 1_920)",
+            "mode(414, 896, 828, 1_792)",
+            "mode(750, 1_334, 750, 1_334)",
+        ], in: requiredModes)
+        XCTAssertTrue(requiredModes.contains(
+            "refresh_millihertz: CURRENT_VIRTUAL_DISPLAY_REFRESH_MILLIHERTZ"
+        ))
+
+        let reviewed = try functionBody(
+            controller,
+            beginningWith: "fn current_virtual_display_mode_is_reviewed(",
+            endingBefore: "fn virtual_display_topology_for_selected("
+        )
+        XCTAssertTrue(reviewed.contains("required_current_virtual_display_modes().contains(mode)"))
+
+        let topology = try functionBody(
+            controller,
+            beginningWith: "fn virtual_display_topology_for_selected(",
+            endingBefore: "fn display_mode_identity_token("
+        )
+        assertOrdered([
+            "if !current_virtual_display_mode_is_reviewed(selected)",
+            "vendor: CURRENT_VIRTUAL_DISPLAY_VENDOR",
+            "product: CURRENT_VIRTUAL_DISPLAY_PRODUCT",
+            "serial: CURRENT_VIRTUAL_DISPLAY_SERIAL",
+            "logical_width: selected.logical_width",
+            "logical_height: selected.logical_height",
+            "pixel_width: selected.pixel_width",
+            "pixel_height: selected.pixel_height",
+            "refresh_millihertz: selected.refresh_millihertz",
+            "available_modes: required_current_virtual_display_modes()",
+        ], in: topology)
+
+        let parser = try functionBody(
+            controller,
+            beginningWith: "fn parse_canonical_display_mode_identity(",
+            endingBefore: "fn normalize_display_refresh_millihertz("
+        )
+        assertOrdered([
+            "value.split(':').collect::<Vec<_>>()",
+            "fields.len() != 5",
+            "require_canonical_positive_decimal(field, label)?",
+            ".parse::<usize>()",
+            "dimension overflowed",
+            ".parse::<u32>()",
+            "refresh rate overflowed",
+            "display_mode_identity_token(&mode) != value",
+            "!current_virtual_display_mode_is_reviewed(&mode)",
+        ], in: parser)
+
+        let refresh = try functionBody(
+            controller,
+            beginningWith: "fn normalize_display_refresh_millihertz(",
+            endingBefore: "fn display_mode_identity("
+        )
+        XCTAssertTrue(refresh.contains("!refresh_rate.is_finite()"))
+        XCTAssertTrue(refresh.contains("(refresh_rate - 60.0).abs() > 0.05"))
+        XCTAssertTrue(refresh.contains("Ok(CURRENT_VIRTUAL_DISPLAY_REFRESH_MILLIHERTZ)"))
+
+        let exactCapabilities = try functionBody(
+            controller,
+            beginningWith: "fn observed_virtual_display_capability_set_is_exact(",
+            endingBefore: "fn capture_current_virtual_display_topology_local_with_policy("
+        )
+        assertOrdered([
+            "required_current_virtual_display_modes()",
+            ".collect::<BTreeSet<_>>()",
+            "allow_restart_interim_selected_mode",
+            "!current_virtual_display_mode_is_reviewed(selected_mode)",
+            "expected.insert(selected_mode.clone())",
+            "available_modes.iter().cloned().collect::<BTreeSet<_>>() == expected",
+        ], in: exactCapabilities)
+        XCTAssertEqual(
+            occurrences(
+                of: "capture_current_virtual_display_topology_local_with_policy(true)",
+                in: controller
+            ),
+            1
+        )
+        XCTAssertEqual(
+            occurrences(
+                of: "capture_current_virtual_display_topology_local_with_policy(false)",
+                in: controller
+            ),
+            1
+        )
+
+        let semantic = try functionBody(
+            controller,
+            beginningWith: "fn self_test_dynamic_selected_virtual_display_protocol()",
+            endingBefore: "fn self_test()"
+        )
+        for token in [
+            "modes.iter().cloned().collect::<BTreeSet<_>>().len() != 6",
+            "for (index, mode) in modes.iter().enumerate()",
+            "parse_virtual_display_snapshot_text(&snapshot)? != topology",
+            "parse_virtual_display_restore_target_text(&restore_target)? != *mode",
+            "dynamic virtual-display protocol round trip failed for mapping {index}",
+            "selected=720:1280:720:1280:60000",
+            "selected=1920:1080:1920:1080:60000",
+            "selected=603:1312:1206:2622:60000",
+            "virtual-display snapshot zero identity field",
+            "virtual-display snapshot noncanonical selected tuple",
+            "virtual-display snapshot dimension overflow",
+            "virtual-display snapshot refresh overflow",
+            "virtual-display snapshot bad refresh",
+            "virtual-display snapshot missing field",
+            "virtual-display snapshot identity substitution",
+            "virtual-display snapshot reordered capability tuples",
+            "virtual-display snapshot missing capability tuple",
+            "virtual-display snapshot duplicate selected key",
+            "virtual-display snapshot extra key",
+            "virtual-display restore noncanonical number",
+            "exact_raw_display_mode_match_count(&[], &modes[0]) != 0",
+            "exact_raw_display_mode_match_count(&modes, &modes[0]) != 1",
+            "exact_raw_display_mode_match_count(&duplicate_target_modes, &modes[0]) != 2",
+            "current_virtual_display_selected_mode_is_exact(&wrong_identity_topology)",
+            "unsupported/seventh virtual-display capability entered a stable reviewed snapshot",
+        ] {
+            XCTAssertTrue(semantic.contains(token), "missing dynamic-display case: \(token)")
+        }
+        XCTAssertTrue(controller.contains("self_test_dynamic_selected_virtual_display_protocol()?;"))
+    }
+
+    func testUID501DisplaySnapshotRestoreBindsExactIdentityCapabilitiesAndUniqueRawModes() throws {
+        let controller = try source(controllerPath)
+        for token in [
+            #"const UID501_DISPLAY_SNAPSHOT_MODE: &str = "--uid501-current-virtual-display-snapshot";"#,
+            #"const UID501_DISPLAY_RESTORE_MODE: &str = "--uid501-restore-current-virtual-display";"#,
+        ] {
+            XCTAssertTrue(controller.contains(token), "missing UID501 display mode: \(token)")
+        }
+
+        let dispatch = try functionBody(
+            controller,
+            beginningWith: "[_, mode] if mode == UID501_DISPLAY_SNAPSHOT_MODE",
+            endingBefore: "_ => Err(ControllerError(format!("
+        )
+        assertOrdered([
+            "require_uid501_display_helper_identity()?",
+            "read_current_virtual_display_topology_local()?",
+            "print!(\"{}\", virtual_display_snapshot_text(&topology))",
+            "UID501_DISPLAY_RESTORE_MODE",
+            "require_uid501_display_helper_identity()?",
+            "parse_virtual_display_restore_target_text(target)?",
+            "apply_exact_current_virtual_display_mode_local(&target)?",
+            "read_current_virtual_display_topology_local()?",
+            "restored_virtual_display_matches_target(&topology, &target)",
+            "print!(\"{}\", virtual_display_snapshot_text(&topology))",
+        ], in: dispatch)
+
+        let capture = try functionBody(
+            controller,
+            beginningWith: "fn capture_current_virtual_display_topology_local_with_policy(",
+            endingBefore: "fn display_capability_set_token("
+        )
+        for token in [
+            "count != 1",
+            "CGMainDisplayID()",
+            "CGDisplayIsOnline",
+            "CGDisplayIsActive",
+            "CGDisplayMirrorsDisplay",
+            "CGDisplayVendorNumber",
+            "CGDisplayModelNumber",
+            "CGDisplaySerialNumber",
+            "copy_current_virtual_display_modes_with_duplicates(display)?",
+            "if !(1..=256).contains(&mode_count)",
+            "exact_raw_display_mode_match_count(&available_modes, &selected_mode)",
+            "raw_selected_mode_matches != 1",
+            "available_modes.sort()",
+            "available_modes.dedup()",
+            "observed_virtual_display_capability_set_is_exact(",
+            "capture_current_virtual_display_topology_local_with_policy(false)",
+            "topology.available_modes == required_current_virtual_display_modes()",
+        ] {
+            XCTAssertTrue(capture.contains(token), "missing exact capture proof: \(token)")
+        }
+        XCTAssertFalse(capture.contains(
+            "available_modes.len() == required_current_virtual_display_modes().len()"
+        ))
+
+        let snapshot = try functionBody(
+            controller,
+            beginningWith: "fn virtual_display_snapshot_text(",
+            endingBefore: "fn virtual_display_restore_target_text("
+        )
+        assertOrdered([
+            "{DISPLAY_SNAPSHOT_HEADER}",
+            "identity={}:{}:{}",
+            "selected={}",
+            "required_mappings={}",
+            "lines.next() != Some(DISPLAY_SNAPSHOT_HEADER)",
+            "!text.ends_with('\\n')",
+            "values.insert(key.to_owned(), value.to_owned()).is_some()",
+            "[\"identity\", \"required_mappings\", \"selected\"]",
+            "identity_fields.len() != 3",
+            "require_canonical_positive_decimal(field, \"UID501 virtual-display identity\")?",
+            "vendor != CURRENT_VIRTUAL_DISPLAY_VENDOR",
+            "product != CURRENT_VIRTUAL_DISPLAY_PRODUCT",
+            "serial != CURRENT_VIRTUAL_DISPLAY_SERIAL",
+            "parse_canonical_display_mode_identity(",
+            "mappings != display_capability_set_token(&expected_mappings)",
+            "virtual_display_snapshot_text(&topology) != text",
+        ], in: snapshot)
+
+        let restore = try functionBody(
+            controller,
+            beginningWith: "fn virtual_display_restore_target_text(",
+            endingBefore: "fn root_request_display_matches_generation("
+        )
+        for token in [
+            "if !current_virtual_display_mode_is_reviewed(target)",
+            "{DISPLAY_RESTORE_TARGET_HEADER}\\nselected={}\\n",
+            "lines.clone().count() != 1",
+            ".strip_prefix(\"selected=\")",
+            "parse_canonical_display_mode_identity(",
+            "virtual_display_restore_target_text(&target)? != text",
+            "topology.vendor == CURRENT_VIRTUAL_DISPLAY_VENDOR",
+            "topology.product == CURRENT_VIRTUAL_DISPLAY_PRODUCT",
+            "topology.serial == CURRENT_VIRTUAL_DISPLAY_SERIAL",
+            "topology.available_modes == required_current_virtual_display_modes()",
+            "selected_virtual_display_mode(topology) == *target",
+        ] {
+            XCTAssertTrue(restore.contains(token), "missing exact restore protocol: \(token)")
+        }
+
+        let helper = try functionBody(
+            controller,
+            beginningWith: "fn require_uid501_display_helper_identity()",
+            endingBefore: "fn apply_exact_current_virtual_display_mode_local("
+        )
+        assertOrdered([
+            "getuid() } != USER_ID",
+            "geteuid() } != USER_ID",
+            "fn run_uid501_display_helper(",
+            "bounded_aqua_uid501_hal_output_in_directory(",
+            "path_text(&executable)?",
+            "HOST_TIMEOUT",
+            "require_success(&output, label)?",
+            "if !output.stderr.is_empty()",
+            "String::from_utf8(output.stdout)",
+            "parse_virtual_display_snapshot_text(&text)",
+            "UID501_DISPLAY_SNAPSHOT_MODE",
+        ], in: helper)
+
+        let apply = try functionBody(
+            controller,
+            beginningWith: "fn apply_exact_current_virtual_display_mode_local(",
+            endingBefore: "fn restore_exact_current_virtual_display_mode_after_host_restart("
+        )
+        assertOrdered([
+            "if !current_virtual_display_mode_is_reviewed(target)",
+            "capture_current_virtual_display_topology_local_with_policy(true)?",
+            "CGDisplayVendorNumber",
+            "CGDisplayModelNumber",
+            "CGDisplaySerialNumber",
+            "copy_current_virtual_display_modes_with_duplicates(display)?",
+            "exact_raw_display_mode_match_count(&observed_modes, target)",
+            "if matches != 1",
+            "CGBeginDisplayConfiguration",
+            "CGConfigureDisplayWithDisplayMode",
+            "CGCompleteDisplayConfiguration(configuration, DISPLAY_CONFIGURATION_FOR_SESSION)",
+            "read_current_virtual_display_topology_local()",
+            "selected_virtual_display_mode(&topology) == *target",
+        ], in: apply)
+
+        let displayOnly = [capture, snapshot, restore, helper, apply].joined(separator: "\n")
+        for forbidden in [
+            "AudioObjectSetPropertyData",
+            "reload_coreaudio_exact",
+            "stable_fresh_route_snapshot_for_generation",
+            "SwitchAudioSource",
+            "set_default_route",
+        ] {
+            XCTAssertFalse(displayOnly.contains(forbidden), "display protocol mutated route: \(forbidden)")
+        }
+    }
+
+    func testDisplayBaselineIsDurableAcrossPreflightForwardRollbackAndSealedRecovery() throws {
+        let controller = try source(controllerPath)
+        let hostType = try functionBody(
+            controller,
+            beginningWith: "struct HostGeneration {",
+            endingBefore: "struct HostStartupIdentity {"
+        )
+        XCTAssertTrue(hostType.contains("display_mode: DisplayModeIdentity"))
+        let requestType = try functionBody(
+            controller,
+            beginningWith: "struct RootRequest {",
+            endingBefore: "fn main()"
+        )
+        XCTAssertTrue(requestType.contains("display_topology: VirtualDisplayTopology"))
+
+        let liveHost = try functionBody(
+            controller,
+            beginningWith: "fn verify_live_current_host()",
+            endingBefore: "fn restore_and_verify_live_current_host("
+        )
+        assertOrdered([
+            "read_current_virtual_display_topology()?",
+            "selected_virtual_display_mode(&initial_display_topology)",
+            "verify_live_current_host_generation_only(&selected_mode)?",
+            "read_current_virtual_display_topology()? != initial_display_topology",
+        ], in: liveHost)
+
+        let requestProtocol = try functionBody(
+            controller,
+            beginningWith: "fn root_request_text(",
+            endingBefore: "fn acquire_user_update_lock("
+        )
+        for token in [
+            "display_identity={}:{}:{}",
+            "display_selected={}",
+            "display_capabilities={}",
+            "display_mode_identity_token(&selected_virtual_display_mode(",
+            "display_capability_set_token(&request.display_topology.available_modes)",
+            "\"display_capabilities\"",
+            "\"display_identity\"",
+            "\"display_selected\"",
+            "parse_virtual_display_snapshot_text(&display_snapshot)?",
+        ] {
+            XCTAssertTrue(requestProtocol.contains(token), "missing sealed display binding: \(token)")
+        }
+
+        let journalValidation = try functionBody(
+            controller,
+            beginningWith: "fn validate_journal_fields(",
+            endingBefore: "fn parse_journal_text("
+        )
+        XCTAssertGreaterThanOrEqual(occurrences(of: "\"display_mode\"", in: journalValidation), 3)
+        XCTAssertTrue(journalValidation.contains(
+            "parse_canonical_display_mode_identity(value, \"journal display mode\")?"
+        ))
+
+        let rootState = try functionBody(
+            controller,
+            beginningWith: "fn write_root_state_tracked(",
+            endingBefore: "fn journal_and_root_state_are_crash_coherent("
+        )
+        for token in [
+            "initial_host: &HostGeneration",
+            "initial_host_display_mode={}",
+            "display_mode_identity_token(&initial_host.display_mode)",
+            "fn write_root_state(",
+            "write_root_state_tracked(layout, state, initial_host, route, None)",
+            ".remove(\"initial_host_display_mode\")",
+            "parse_canonical_display_mode_identity(",
+            "display_mode,",
+        ] {
+            XCTAssertTrue(rootState.contains(token), "missing durable state display binding: \(token)")
+        }
+
+        let execute = try functionBody(
+            controller,
+            beginningWith: "fn execute_authorized_update(",
+            endingBefore: "fn rollback_authorized_update("
+        )
+        assertOrdered([
+            "= verify_complete_preflight(",
+            "display_topology: virtual_display_topology_for_selected(&initial.display_mode)?",
+            "display_mode_identity_token(&initial.display_mode)",
+            "= verify_complete_preflight(",
+            "final_host != initial",
+            "run_sudo_helper(&root_controller, ROOT_MODE",
+        ], in: execute)
+
+        let authenticatedFields = try functionBody(
+            controller,
+            beginningWith: "fn root_authenticated_journal_fields(",
+            endingBefore: "fn perform_root_transaction("
+        )
+        assertOrdered([
+            "\"display_mode\"",
+            "display_mode_identity_token(&initial.display_mode)",
+        ], in: authenticatedFields)
+
+        let transaction = try functionBody(
+            controller,
+            beginningWith: "fn perform_root_transaction(",
+            endingBefore: "fn root_authorized_update("
+        )
+        assertOrdered([
+            "let request = parse_bootstrap_root_request(request_path)?",
+            "let initial = verify_live_current_host()?",
+            "if !root_request_display_matches_generation(&request, &initial)",
+            "root_authenticated_journal_fields(",
+            "journal.record(UpdateState::Authenticated, &authenticated_fields)?",
+            "write_root_state(",
+            "UpdateState::Authenticated",
+            "if verify_live_current_host()? != initial",
+            "if !root_request_display_matches_generation(&request, &initial)",
+            "write_root_state(",
+            "UpdateState::Authenticated",
+            "write_root_state_tracked(",
+            "UpdateState::HostStopInitiated",
+            "&initial",
+        ], in: transaction)
+        XCTAssertTrue(transaction.contains("stable_fresh_route_snapshot_for_generation(&baseline_coreaudio)?"))
+        XCTAssertTrue(transaction.contains("stable_fresh_route_snapshot_for_generation(&new_coreaudio)?"))
+
+        let forwardRestart = try functionBody(
+            controller,
+            beginningWith: "fn restart_exact_current_host(",
+            endingBefore: "fn replacement_current_host_startup_identity_is_exact("
+        )
+        for token in [
+            "verify_live_current_host_generation_only(&initial.display_mode)",
+            "replacement.display_mode == initial.display_mode",
+            "restore_exact_current_virtual_display_mode_after_host_restart(&initial.display_mode)?",
+            "verify_live_current_host()? != generation",
+        ] {
+            XCTAssertTrue(forwardRestart.contains(token), "forward restart lost display target: \(token)")
+        }
+
+        let rollbackRestart = try functionBody(
+            controller,
+            beginningWith: "fn restart_or_recover_exact_current_host(",
+            endingBefore: "fn stop_current_host_for_rollback("
+        )
+        assertOrdered([
+            "verify_live_current_host_generation_only(&initial.display_mode)",
+            "replacement_current_host_generation_is_exact(initial, &generation)",
+            "restore_exact_current_virtual_display_mode_after_host_restart(&initial.display_mode)?",
+            "verify_live_current_host()? != generation",
+            "restart_exact_current_host(initial)",
+        ], in: rollbackRestart)
+
+        let rollback = try functionBody(
+            controller,
+            beginningWith: "fn rollback_root_transaction(",
+            endingBefore: "fn verify_root_pointer("
+        )
+        for token in [
+            "if durable_initial != *initial",
+            "restore_and_verify_live_current_host(&initial.display_mode)?",
+            "restart_or_recover_exact_current_host(initial)?",
+            "UpdateState::HostRebootstrapped",
+            "write_root_state(layout, UpdateState::RolledBack, initial, baseline_route)?",
+        ] {
+            XCTAssertTrue(rollback.contains(token), "rollback lost display target: \(token)")
+        }
+
+        let terminalRepair = try functionBody(
+            controller,
+            beginningWith: "fn repair_committed_terminal_state(",
+            endingBefore: "fn rollback_resume_action("
+        )
+        XCTAssertEqual(
+            occurrences(
+                of: "restore_and_verify_live_current_host(&initial.display_mode)?",
+                in: terminalRepair
+            ),
+            2
+        )
+        XCTAssertTrue(terminalRepair.contains("write_root_state(layout, UpdateState::Committed, &initial"))
+        XCTAssertTrue(terminalRepair.contains("write_root_state(layout, UpdateState::RolledBack, &initial"))
+        XCTAssertTrue(terminalRepair.contains("if host != initial"))
+
+        let durableBinding = try functionBody(
+            controller,
+            beginningWith: "fn verify_durable_root_display_binding(",
+            endingBefore: "fn read_root_active_layout("
+        )
+        assertOrdered([
+            "journal.exact_fields_for_state(UpdateState::Authenticated)",
+            "authenticated.get(\"display_mode\")",
+            "request_journal_state_display_binding_is_exact(",
+            "durable_state == UpdateState::PrestopAborted",
+            "journal.state == UpdateState::PrestopAborted",
+            "fn complete_root_recovery(",
+            "verify_durable_root_display_binding(&request, &journal, *state, initial)?",
+            "let effective_journal = journal.effective_state_with_pending()?",
+            "let plan = root_recovery_plan(",
+            "rollback_root_transaction(&layout, &mut journal, &initial, route.as_ref())?",
+        ], in: durableBinding)
+
+        for semanticCase in [
+            "request/journal/state display mismatch was not rejected",
+            "root display baseline differs from the sealed UID501 preflight snapshot",
+            "sealed display baseline changed before durable stop intent",
+            "sealed request, authenticated journal, and durable display baseline differ",
+        ] {
+            XCTAssertTrue(controller.contains(semanticCase), "missing durable display case: \(semanticCase)")
+        }
+    }
+
+    func testDisplayRecoveryRepairsWrongReviewedModeAndAuthenticatesEveryAbortDispatchBoundary() throws {
+        let controller = try source(controllerPath)
+
+        let rollbackStop = try functionBody(
+            controller,
+            beginningWith: "fn rollback_host_requires_exact_display_restore(",
+            endingBefore: "fn verify_retained_v7_driver("
+        )
+        assertOrdered([
+            "observed.display_mode != initial.display_mode",
+            "fn stop_current_host_for_rollback(",
+            "match verify_live_current_host()",
+            "Ok(generation) if !rollback_host_requires_exact_display_restore(&generation, initial)",
+            "Ok(_) | Err(_) => restore_and_verify_live_current_host(&initial.display_mode)",
+            "generation.display_mode != initial.display_mode",
+            "stop_exact_current_host(&generation)",
+            "reconcile_post_bootstrap_pre_lock_host_for_rollback(initial)",
+        ], in: rollbackStop)
+
+        let rollbackFixture = try functionBody(
+            controller,
+            beginningWith: "fn self_test_post_bootstrap_pre_lock_recovery_admission()",
+            endingBefore: "fn self_test_uid501_blocking_mutating_sudo_staging_guard("
+        )
+        assertOrdered([
+            "let same_display_host = initial.clone()",
+            "wrong_reviewed_display_host.display_mode = required_current_virtual_display_modes()[1].clone()",
+            "rollback_host_requires_exact_display_restore(&same_display_host, &initial)",
+            "!rollback_host_requires_exact_display_restore(&wrong_reviewed_display_host, &initial)",
+        ], in: rollbackFixture)
+
+        let pointerless = try functionBody(
+            controller,
+            beginningWith: "fn finalize_sealed_bootstrap_without_root_pointer(",
+            endingBefore: "fn root_sealed_rollback_authorized_update("
+        )
+        assertOrdered([
+            "let request = parse_root_request_text(",
+            "let host = verify_live_current_host()?",
+            "if !root_request_display_matches_generation(&request, &host)",
+            "verify_pairing_metadata_only()?",
+            "let layout = root_layout(&request.nonce)?",
+            "journal.record(UpdateState::PrestopAborted, &[])?",
+            "write_root_state(&layout, UpdateState::PrestopAborted, &host, None)?",
+            "write_root_recovery_result(",
+            "display_mode={}",
+            "display_mode_identity_token(&host.display_mode)",
+            "DIAGNOSTIC_DRIVER_V9_ROOT_PRESTOP_ABORTED host_pid={} display_mode={}",
+            "display_mode_identity_token(&host.display_mode)",
+        ], in: pointerless)
+
+        let rootBinding = try functionBody(
+            controller,
+            beginningWith: "fn verify_durable_root_display_binding(",
+            endingBefore: "fn read_root_active_layout("
+        )
+        for token in [
+            "if !root_request_display_matches_generation(request, initial)",
+            "match journal.exact_fields_for_state(UpdateState::Authenticated)",
+            "request_journal_state_display_binding_is_exact(request, journal_mode, initial)",
+            "durable_state == UpdateState::PrestopAborted",
+            "journal.state == UpdateState::PrestopAborted",
+            "{ROOT_JOURNAL_HEADER}\\nSTATE BEGUN\\nSTATE PRESTOP_ABORTED\\n",
+            "durable display baseline has no authenticated journal binding",
+            "verify_durable_root_display_binding(&request, &journal, *state, initial)?",
+        ] {
+            XCTAssertTrue(rootBinding.contains(token), "missing abort/recovery binding: \(token)")
+        }
+        let bindingPosition = rootBinding.range(
+            of: "verify_durable_root_display_binding(&request, &journal, *state, initial)?"
+        )
+        let planPosition = rootBinding.range(of: "let plan = root_recovery_plan(")
+        XCTAssertNotNil(bindingPosition)
+        XCTAssertNotNil(planPosition)
+        if let bindingPosition, let planPosition {
+            XCTAssertLessThan(bindingPosition.lowerBound, planPosition.lowerBound)
+        }
+
+        let userDispatch = try functionBody(
+            controller,
+            beginningWith: "fn user_authenticated_root_dispatch_binding_is_exact(",
+            endingBefore: "fn acquire_user_update_lock("
+        )
+        for token in [
+            "\"display_mode\"",
+            "\"host_pid\"",
+            "\"nonce\"",
+            "\"release_commit\"",
+            "\"release_tree\"",
+            "authenticated.keys().map(String::as_str).collect::<BTreeSet<_>>() == expected_keys",
+            "root_request_display_matches_generation(request, initial)",
+            "authenticated.get(\"nonce\") == Some(&request.nonce)",
+            "authenticated.get(\"host_pid\") == Some(&initial.pid.to_string())",
+            "authenticated.get(\"display_mode\")",
+            "display_mode_identity_token(&initial.display_mode)",
+            "authenticated.get(\"release_commit\") == Some(&request.authorized_commit)",
+            "authenticated.get(\"release_tree\") == Some(&request.authorized_tree)",
+            "fn verify_user_authenticated_root_dispatch_binding(",
+            "journal.state != UpdateState::Authenticated",
+            "let request_before = require_regular(&layout.request",
+            "let request_text = read_bounded_utf8(&layout.request, 4_096)?",
+            "let request_after = require_regular(&layout.request",
+            "identity_from_metadata(&request_before) != identity_from_metadata(&request_after)",
+            "let reread_request = parse_root_request_text(&request_text)?",
+            "root_request_text(&reread_request)? != root_request_text(expected_request)?",
+            "let journal_before = require_regular(&layout.journal",
+            "journal.exact_fields_for_state(UpdateState::Authenticated)?",
+            "let journal_after = require_regular(&layout.journal",
+            "identity_from_metadata(&journal_before) != identity_from_metadata(&journal_after)",
+            "user_authenticated_root_dispatch_binding_is_exact(",
+        ] {
+            XCTAssertTrue(userDispatch.contains(token), "missing user dispatch binding: \(token)")
+        }
+
+        let execute = try functionBody(
+            controller,
+            beginningWith: "fn execute_authorized_update(",
+            endingBefore: "fn rollback_authorized_update("
+        )
+        assertOrdered([
+            "final_host != initial",
+            "verify_user_authenticated_root_dispatch_binding(&layout, &journal, &request, &initial)?",
+            "run_sudo_helper(&root_controller, ROOT_MODE, Some(&root_bootstrap_request))?",
+        ], in: execute)
+
+        let semantic = try functionBody(
+            controller,
+            beginningWith: "let authenticated_dispatch = BTreeMap::from([",
+            endingBefore: "let request_tree_line = format!("
+        )
+        for token in [
+            "let mut substituted_dispatch = authenticated_dispatch.clone()",
+            "substituted_dispatch.insert(",
+            "let mut extra_dispatch = authenticated_dispatch.clone()",
+            "extra_dispatch.insert(\"extra\".to_owned(), \"1\".to_owned())",
+            "!user_authenticated_root_dispatch_binding_is_exact(",
+            "user_authenticated_root_dispatch_binding_is_exact(",
+            "&substituted_request",
+            "&substituted_state_generation",
+            "&extra_dispatch",
+            "request/journal/state display mismatch was not rejected",
+        ] {
+            XCTAssertTrue(semantic.contains(token), "missing hostile dispatch case: \(token)")
         }
     }
 
