@@ -1171,26 +1171,24 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         XCTAssertEqual(afterTrackChurn.phase, .sharedClockUnsafe)
         XCTAssertEqual(factory.requestCount, 1)
 
-        await harness.updateDevice(
-            snapshot(
-                epoch: epoch,
-                generation: 1,
-                available: true
-            )
-        )
-        XCTAssertEqual(factory.requestCount, 1)
-
-        await harness.updateDevice(
-            snapshot(
-                epoch: epoch,
-                generation: 2,
-                available: true
-            )
-        )
-        XCTAssertEqual(factory.requestCount, 1)
         await harness.authorize(peer: peer, generation: 1)
         XCTAssertEqual(factory.requestCount, 2)
         XCTAssertTrue(replacementTrack.isEnabled)
+        let recovered = await harness.snapshot()
+        XCTAssertEqual(recovered.deviceGeneration, 1)
+        XCTAssertEqual(
+            recovered.currentKey?.transportAuthorizationEpoch,
+            2,
+            "Recovery must mint a new transport key without pretending the endpoint pair changed."
+        )
+
+        await harness.invalidateTransport()
+        let invalidatedAfterRecovery = await harness.snapshot()
+        XCTAssertEqual(
+            invalidatedAfterRecovery.phase,
+            .waitingForTransport,
+            "A replacement that passed startup clock proof must clear the stale shared-clock presentation fence."
+        )
     }
 
     func testRuntimeFailureTreatsDisposeReturnAsTerminalBeforeReplacementQueueCreation()
@@ -2081,6 +2079,174 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         await harness.beginMonitoring(epoch)
         await harness.replacePeer(peer, generation: 1)
         await harness.installTrack(track)
+    }
+
+    func testSharedClockParkingRetainsOneLeaseAcrossExactReacquisition() {
+        let lease = DefaultInputCoordinatorLeaseFake()
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled,
+            lease: lease
+        )
+        let epoch = UUID()
+        let deviceSnapshot = snapshot(
+            epoch: epoch,
+            generation: 1,
+            available: true
+        )
+
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(deviceSnapshot)
+        guard case .selected(let selected) =
+                coordinator.transportDidBecomeHealthy(
+                    peerGeneration: 1
+                ) else {
+            return XCTFail("Expected the initial exact input lease.")
+        }
+        guard case .parked(let proof) =
+                coordinator.parkForSharedClockEpochRecovery(
+                    peerGeneration: 1
+                ) else {
+            return XCTFail("Expected a listener-bound parking proof.")
+        }
+
+        XCTAssertEqual(proof.leaseGeneration, selected.leaseGeneration)
+        XCTAssertTrue(
+            coordinator.sharedClockParkingProofIsCurrent(
+                proof,
+                peerGeneration: 1,
+                snapshot: deviceSnapshot
+            )
+        )
+        let ownedParkingEvent =
+            BlackHoleDefaultInputLeaseUncertaintyEvent(
+                leaseGeneration: proof.leaseGeneration,
+                listenerRegistrationID:
+                    proof.listenerRegistrationID,
+                listenerSequence:
+                    proof.acceptedListenerSequence
+            )
+        XCTAssertEqual(
+            coordinator.defaultInputDidBecomeUncertain(
+                ownedParkingEvent
+            ),
+            .noChange,
+            "The parking write's listener event is already incorporated."
+        )
+        XCTAssertTrue(
+            coordinator.sharedClockParkingProofIsCurrent(
+                proof,
+                peerGeneration: 1,
+                snapshot: deviceSnapshot
+            ),
+            "An owned parking callback must not release the retained listener."
+        )
+        XCTAssertEqual(
+            coordinator.transportDidBecomeHealthy(
+                peerGeneration: 1
+            ),
+            .degraded,
+            "Ordinary admission cannot consume or release a recovery parking proof."
+        )
+        guard case .selected(let reacquired) =
+                coordinator
+                    .transportDidBecomeHealthyAfterSharedClockRecovery(
+                        peerGeneration: 1,
+                        parkingProof: proof
+                    ) else {
+            return XCTFail("Expected exact parked-listener reacquisition.")
+        }
+        XCTAssertEqual(reacquired.leaseGeneration, selected.leaseGeneration)
+        XCTAssertEqual(lease.acquisitions.count, 1)
+        XCTAssertEqual(lease.releases.count, 0)
+    }
+
+    func testSharedClockParkingExternalChoiceCannotBeReacquired() {
+        let lease = DefaultInputCoordinatorLeaseFake()
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled,
+            lease: lease
+        )
+        let epoch = UUID()
+        let deviceSnapshot = snapshot(
+            epoch: epoch,
+            generation: 1,
+            available: true
+        )
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(deviceSnapshot)
+        _ = coordinator.transportDidBecomeHealthy(peerGeneration: 1)
+        guard case .parked(let proof) =
+                coordinator.parkForSharedClockEpochRecovery(
+                    peerGeneration: 1
+                ) else {
+            return XCTFail("Expected a listener-bound parking proof.")
+        }
+
+        lease.invalidateParkingProof()
+
+        XCTAssertFalse(
+            coordinator.sharedClockParkingProofIsCurrent(
+                proof,
+                peerGeneration: 1,
+                snapshot: deviceSnapshot
+            )
+        )
+        XCTAssertEqual(
+            coordinator
+                .transportDidBecomeHealthyAfterSharedClockRecovery(
+                    peerGeneration: 1,
+                    parkingProof: proof
+                ),
+            .degraded
+        )
+        XCTAssertEqual(lease.acquisitions.count, 1)
+        XCTAssertEqual(lease.releases.count, 1)
+    }
+
+    func testRetryableClockParkingCleanupIsRedrivenExactly() {
+        let lease = DefaultInputCoordinatorLeaseFake(
+            releaseResults: [.retryableFailure, .released]
+        )
+        lease.makeNextClockEpochParkingRetryable()
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled,
+            lease: lease
+        )
+        let epoch = UUID()
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+        guard case .selected(let selected) =
+                coordinator.transportDidBecomeHealthy(
+                    peerGeneration: 1
+                ) else {
+            return XCTFail("Expected the initial exact input lease.")
+        }
+
+        XCTAssertEqual(
+            coordinator.parkForSharedClockEpochRecovery(
+                peerGeneration: 1
+            ),
+            .degraded
+        )
+        XCTAssertEqual(lease.releases, [selected.leaseGeneration])
+        XCTAssertEqual(
+            coordinator.transportDidBecomeUnhealthy(
+                peerGeneration: 1
+            ),
+            .released
+        )
+        XCTAssertEqual(
+            lease.releases,
+            [selected.leaseGeneration, selected.leaseGeneration],
+            "The service-level redrive must clean only the retained generation."
+        )
+        XCTAssertEqual(lease.acquisitions.count, 1)
     }
 
     private func snapshot(
@@ -3678,6 +3844,9 @@ private final class DefaultInputCoordinatorLeaseFake:
     private(set) var shutdownCallCount = 0
     private var listenerRegistrationIDs: [UInt64: UUID] = [:]
     private(set) var authorizationProofCallCount = 0
+    private var parkingProof:
+        BlackHoleDefaultInputLeaseParkingProof?
+    private var nextClockEpochParkingIsRetryable = false
 
     init(
         acquisitionResults:
@@ -3738,6 +3907,59 @@ private final class DefaultInputCoordinatorLeaseFake:
             return .released
         }
         return releaseResults.removeFirst()
+    }
+
+    func parkForClockEpochRecovery(
+        generation: UInt64,
+        targetEndpoint: BlackHoleDeviceEndpointIdentity
+    ) -> BlackHoleDefaultInputLeaseParkingResult {
+        if nextClockEpochParkingIsRetryable {
+            nextClockEpochParkingIsRetryable = false
+            return .retryableFailure
+        }
+        let registrationID =
+            listenerRegistrationIDs[generation] ?? UUID()
+        listenerRegistrationIDs[generation] = registrationID
+        let proof = BlackHoleDefaultInputLeaseParkingProof(
+            leaseGeneration: generation,
+            listenerRegistrationID: registrationID,
+            acceptedListenerSequence: 2,
+            parkingEndpoint: BlackHoleDeviceEndpointIdentity(
+                deviceID: 91,
+                deviceUID:
+                    WorldwideVirtualMicrophoneEndpointContract
+                        .retiredLegacyVisibleDeviceUID
+            ),
+            targetEndpoint: targetEndpoint
+        )
+        parkingProof = proof
+        return .parked(proof)
+    }
+
+    func clockEpochParkingProofIsCurrent(
+        _ proof: BlackHoleDefaultInputLeaseParkingProof
+    ) -> Bool {
+        parkingProof == proof
+    }
+
+    func reacquisitionResult(
+        parkingProof proof: BlackHoleDefaultInputLeaseParkingProof,
+        targetEndpoint: BlackHoleDeviceEndpointIdentity
+    ) -> BlackHoleDefaultInputLeaseAcquisitionResult {
+        guard parkingProof == proof,
+              proof.targetEndpoint == targetEndpoint else {
+            return .terminalFailure
+        }
+        parkingProof = nil
+        return .acquired
+    }
+
+    func invalidateParkingProof() {
+        parkingProof = nil
+    }
+
+    func makeNextClockEpochParkingRetryable() {
+        nextClockEpochParkingIsRetryable = true
     }
 
     func shutdown()

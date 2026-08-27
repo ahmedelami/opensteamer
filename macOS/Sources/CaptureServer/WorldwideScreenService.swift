@@ -60,6 +60,10 @@ actor WorldwideScreenService {
     private static let maximumDisplayModeStartupRetries = 3
     private static let maximumForwardingStartupProofPolls = 40
     private static let forwardingStartupProofPollInterval = Duration.milliseconds(25)
+    private static let maximumSharedClockEpochQuiescencePolls = 20
+    private static let sharedClockEpochQuiescencePollInterval =
+        Duration.milliseconds(50)
+    private static let requiredSharedClockIdleObservations = 2
 
     private struct ScreenCaptureStartupOwner: Equatable {
         let visibilityCommandEpoch: UInt64
@@ -185,7 +189,15 @@ actor WorldwideScreenService {
                 "is unsafe; automatic restart is blocked until the peer or " +
                 "pair generation changes: " +
                 error.localizedDescription
-        case .sharedClockUnsafe:
+        case .sharedClockUnsafe(let rejection):
+            if WorldwideSharedClockEpochRecoveryPolicy
+                .canRecover(rejection) {
+                return "iPhone microphone forwarding found an expired " +
+                    "virtual microphone clock epoch; bounded idle proof and " +
+                    "exact route cleanup are required before one fresh-epoch " +
+                    "recovery attempt: " +
+                    error.localizedDescription
+            }
             return "iPhone microphone forwarding rejected the current " +
                 "peer and virtual microphone pair because its shared clock is " +
                 "unsafe for FaceTime; automatic restart is blocked until " +
@@ -430,7 +442,7 @@ actor WorldwideScreenService {
         BlackHoleEndpointPairAuthorization?
     private var blackHoleDefaultInputAuthorization:
         BlackHoleDefaultInputLeaseAuthorization?
-    struct SharedClockBlockedPeerPair: Equatable {
+    struct SharedClockBlockedPeerPair: Equatable, Sendable {
         let monitorEpoch: UUID
         let deviceGeneration: UInt64
         let peerGeneration: UInt64
@@ -477,6 +489,19 @@ actor WorldwideScreenService {
         }
     }
     private var sharedClockBlockedPeerPair:
+        SharedClockBlockedPeerPair?
+    private let virtualMicrophoneEpochStateReader =
+        WorldwideVirtualMicrophoneEpochStateReader()
+    private var sharedClockEpochRecoveryPolicy =
+        WorldwideSharedClockEpochRecoveryPolicy()
+    private var sharedClockEpochRecoveryTask:
+        Task<Void, Never>?
+    private var sharedClockEpochRecoveryTaskGeneration: UInt64 = 0
+    private var sharedClockEpochRecoveryKey:
+        WorldwideIPhoneMicrophoneForwardingKey?
+    private var sharedClockEpochRecoveryReadmissionTaskGeneration:
+        UInt64?
+    private var sharedClockEpochCleanupPendingPair:
         SharedClockBlockedPeerPair?
     private var formatUnsafeBlockedPeerPair:
         FormatUnsafeBlockedPeerPair?
@@ -727,6 +752,10 @@ actor WorldwideScreenService {
         safeOutputInvariantNeedsRedrive = false
         safeOutputInvariantVerificationWasFailing = false
         safeOutputInvariantRetryPolicy.reset()
+        cancelSharedClockEpochRecovery(
+            resetPolicy: true,
+            clearCompatibilityBlock: true
+        )
 
         shutdownBlackHoleAudioRouting()
         iPhoneMicrophoneForwarding.shutdown()
@@ -923,6 +952,10 @@ actor WorldwideScreenService {
                 icePolicy: icePolicy,
                 maximumVideoBitrate: maximumVideoBitrate
             )
+        )
+        cancelSharedClockEpochRecovery(
+            resetPolicy: true,
+            clearCompatibilityBlock: true
         )
         recordBlackHoleDefaultInputOutcome(
             blackHoleDefaultInput.invalidateCurrentConnection()
@@ -2162,7 +2195,11 @@ actor WorldwideScreenService {
 
     /// Keeps the exact output listeners registered through input-only admission.
     /// LAN coexistence retains its legacy policy and never reaches this ownership path.
-    private func admitBlackHoleInputWithinSafeOutputFence()
+    private func admitBlackHoleInputWithinSafeOutputFence(
+        sharedClockRecoveryTaskGeneration: UInt64? = nil,
+        sharedClockRecoveryParkingProof:
+            BlackHoleDefaultInputLeaseParkingProof? = nil
+    )
         -> (
             outputsAreSafe: Bool,
             snapshot: BlackHoleDeviceAvailabilitySnapshot?
@@ -2174,6 +2211,17 @@ actor WorldwideScreenService {
             return (false, nil)
         }
         guard transportAllowsCapture else {
+            return (false, nil)
+        }
+        if let activeRecoveryTaskGeneration =
+                sharedClockEpochRecoveryReadmissionTaskGeneration {
+            guard sharedClockRecoveryTaskGeneration
+                    == activeRecoveryTaskGeneration,
+                  sharedClockRecoveryParkingProof != nil else {
+                return (false, nil)
+            }
+        } else if sharedClockRecoveryTaskGeneration != nil
+                    || sharedClockRecoveryParkingProof != nil {
             return (false, nil)
         }
         guard let monitoringEpoch =
@@ -2219,12 +2267,29 @@ actor WorldwideScreenService {
                         self.blackHoleDefaultInputAuthorization = nil
                         self.iPhoneMicrophoneForwarding
                             .invalidateTransport()
-                        let outcome =
-                            self.blackHoleDefaultInput
+                        let outcome:
+                            WorldwideBlackHoleDefaultInputOutcome
+                        if let sharedClockRecoveryParkingProof,
+                           let snapshot = self
+                            .blackHoleDeviceAvailabilityMonitor
+                            .currentSnapshot(),
+                           self.blackHoleDefaultInput
+                            .sharedClockParkingProofIsCurrent(
+                                sharedClockRecoveryParkingProof,
+                                peerGeneration:
+                                    self.peerGeneration,
+                                snapshot: snapshot
+                            ) {
+                            outcome = .released
+                        } else if sharedClockRecoveryParkingProof != nil {
+                            outcome = .degraded
+                        } else {
+                            outcome = self.blackHoleDefaultInput
                                 .transportDidBecomeUnhealthy(
                                     peerGeneration:
                                         self.peerGeneration
                                 )
+                        }
                         preMutationOutcome = outcome
                         if outcome == .degraded {
                             throw WorldwideScreenServiceError
@@ -2244,11 +2309,23 @@ actor WorldwideScreenService {
                         admittedOutcomes.append(
                             initialRevalidation.outcome
                         )
-                        let initialOutcome = self.blackHoleDefaultInput
-                            .transportDidBecomeHealthy(
-                                peerGeneration:
-                                    self.peerGeneration
-                            )
+                        let initialOutcome:
+                            WorldwideBlackHoleDefaultInputOutcome
+                        if let sharedClockRecoveryParkingProof {
+                            initialOutcome = self.blackHoleDefaultInput
+                                .transportDidBecomeHealthyAfterSharedClockRecovery(
+                                    peerGeneration:
+                                        self.peerGeneration,
+                                    parkingProof:
+                                        sharedClockRecoveryParkingProof
+                                )
+                        } else {
+                            initialOutcome = self.blackHoleDefaultInput
+                                .transportDidBecomeHealthy(
+                                    peerGeneration:
+                                        self.peerGeneration
+                                )
+                        }
                         admittedOutcomes.append(initialOutcome)
                         guard case .selected = initialOutcome else {
                             return nil
@@ -2405,10 +2482,13 @@ actor WorldwideScreenService {
     /// synchronously revokes microphone admission and default-input ownership before
     /// a capped, backed-off mutation attempt can run.
     private func maintainWorldwideSafeOutputInvariant() async {
-        guard iPhoneMicrophoneForwardingPolicy == .enabled,
-              transportAllowsCapture else {
+        guard iPhoneMicrophoneForwardingPolicy == .enabled else {
             return
         }
+        if redriveSharedClockEpochCleanupIfNeeded() {
+            return
+        }
+        guard transportAllowsCapture else { return }
         guard let monitoringEpoch =
                 safeOutputInvariantMonitoringEpoch else {
             safeOutputInvariantNeedsRedrive = true
@@ -2488,17 +2568,20 @@ actor WorldwideScreenService {
         await resumeWorldwideMicrophoneAfterSafeOutputInvariant()
     }
 
-    private func revokeWorldwideMicrophoneForUnsafeOutputInvariant() {
+    @discardableResult
+    private func revokeWorldwideMicrophoneForUnsafeOutputInvariant()
+        -> WorldwideBlackHoleDefaultInputOutcome {
         revokeWorldwideMicrophoneForUnsafeOutputInvariant(
             preservingSharedClockUnsafeFailure: false,
             preservingFormatUnsafeFailure: false
         )
     }
 
+    @discardableResult
     private func revokeWorldwideMicrophoneForUnsafeOutputInvariant(
         preservingSharedClockUnsafeFailure: Bool,
         preservingFormatUnsafeFailure: Bool = false
-    ) {
+    ) -> WorldwideBlackHoleDefaultInputOutcome {
         blackHoleMicrophoneOutputAuthorizationGate?.close()
         safeOutputInvariantAuthorization = nil
         blackHoleEndpointPairAuthorization = nil
@@ -2509,31 +2592,66 @@ actor WorldwideScreenService {
             preservingFormatUnsafeFailure:
                 preservingFormatUnsafeFailure
         )
-        recordBlackHoleDefaultInputOutcome(
-            blackHoleDefaultInput.transportDidBecomeUnhealthy(
-                peerGeneration: peerGeneration
-            )
+        let outcome = blackHoleDefaultInput.transportDidBecomeUnhealthy(
+            peerGeneration: peerGeneration
         )
+        recordBlackHoleDefaultInputOutcome(outcome)
+        return outcome
     }
 
-    private func resumeWorldwideMicrophoneAfterSafeOutputInvariant()
+    private func parkWorldwideMicrophoneForSharedClockRecovery()
+        -> WorldwideBlackHoleClockEpochParkingOutcome {
+        blackHoleMicrophoneOutputAuthorizationGate?.close()
+        safeOutputInvariantAuthorization = nil
+        blackHoleEndpointPairAuthorization = nil
+        blackHoleDefaultInputAuthorization = nil
+        iPhoneMicrophoneForwarding.invalidateTransport(
+            preservingSharedClockUnsafeFailure: true
+        )
+        let outcome = blackHoleDefaultInput
+            .parkForSharedClockEpochRecovery(
+                peerGeneration: peerGeneration
+            )
+        switch outcome {
+        case .parked:
+            recordBlackHoleDefaultInputOutcome(.released)
+        case .degraded:
+            recordBlackHoleDefaultInputOutcome(.degraded)
+        }
+        return outcome
+    }
+
+    private func resumeWorldwideMicrophoneAfterSafeOutputInvariant(
+        sharedClockRecoveryTaskGeneration: UInt64? = nil,
+        sharedClockRecoveryParkingProof:
+            BlackHoleDefaultInputLeaseParkingProof? = nil
+    )
         async {
         guard transportAllowsCapture else { return }
         let routingAdmission =
-            admitBlackHoleInputWithinSafeOutputFence()
+            admitBlackHoleInputWithinSafeOutputFence(
+                sharedClockRecoveryTaskGeneration:
+                    sharedClockRecoveryTaskGeneration,
+                sharedClockRecoveryParkingProof:
+                    sharedClockRecoveryParkingProof
+            )
         guard routingAdmission.outputsAreSafe else { return }
         let currentBlackHoleSnapshot = routingAdmission.snapshot
         if let currentBlackHoleSnapshot {
             await iPhoneMicrophoneForwarding.updateDeviceSnapshot(
                 currentBlackHoleSnapshot
             )
-            await authorizeIPhoneMicrophoneForwardingIfPossible()
+            await authorizeIPhoneMicrophoneForwardingIfPossible(
+                sharedClockRecoveryTaskGeneration:
+                    sharedClockRecoveryTaskGeneration
+            )
         }
     }
 
     /// Holds the captured clock rejection across statistics ticks and transport
-    /// epochs. A genuinely new peer or atomic endpoint-pair generation is the
-    /// only automatic retry boundary for this deterministic incompatibility.
+    /// epochs. Signed-32 headroom exhaustion gets one release-and-idle recovery
+    /// episode; every other rejection, and a repeated exhaustion, remains
+    /// blocked until a genuinely new peer or atomic endpoint-pair generation.
     private func sharedClockBlocksCurrentPeerAndPair() -> Bool {
         Self.sharedClockBlockRemainsActive(
             &sharedClockBlockedPeerPair,
@@ -2620,16 +2738,461 @@ actor WorldwideScreenService {
             }
         }
 
-        sharedClockBlockedPeerPair =
+        let blockedPair =
             SharedClockBlockedPeerPair(forwardingKey: key)
-        revokeWorldwideMicrophoneForUnsafeOutputInvariant(
-            preservingSharedClockUnsafeFailure: true
-        )
+        sharedClockBlockedPeerPair = blockedPair
+        let recoveryDecision = sharedClockEpochRecoveryPolicy
+            .registerFailure(
+                key: key,
+                rejection: rejection
+            )
+        switch recoveryDecision {
+        case .recover(let attempt, let maximumAttemptCount):
+            // Preserve the captured failure while this exact owner releases
+            // both endpoints and proves a real idle gap. No route can reopen
+            // until the task clears the service-level peer/pair block.
+            let parkingOutcome =
+                parkWorldwideMicrophoneForSharedClockRecovery()
+            guard case .parked(let parkingProof) = parkingOutcome,
+                  let parkingRoute =
+                    WorldwideSharedClockEpochRecoveryParkingRoute(
+                        defaultInputUID:
+                            parkingProof.parkingEndpoint.deviceUID
+                    ) else {
+                cancelSharedClockEpochRecovery(
+                    resetPolicy: false,
+                    clearCompatibilityBlock: false
+                )
+                _ = revokeWorldwideMicrophoneForSharedClockFailure(
+                    blockedPair: blockedPair
+                )
+                break
+            }
+            guard scheduleSharedClockEpochRecovery(
+                key: key,
+                blockedPair: blockedPair,
+                parkingProof: parkingProof,
+                parkingRoute: parkingRoute,
+                attempt: attempt,
+                maximumAttemptCount: maximumAttemptCount
+            ) else {
+                _ = revokeWorldwideMicrophoneForSharedClockFailure(
+                    blockedPair: blockedPair
+                )
+                break
+            }
+
+        case .failClosed:
+            cancelSharedClockEpochRecovery(
+                resetPolicy: false,
+                clearCompatibilityBlock: false
+            )
+            revokeWorldwideMicrophoneForSharedClockFailure(
+                blockedPair: blockedPair
+            )
+        }
         logger.error(
             Self.iPhoneMicrophoneRuntimeFailureLogMessage(
                 error: .sharedClockUnsafe(rejection)
             )
         )
+    }
+
+    private func scheduleSharedClockEpochRecovery(
+        key: WorldwideIPhoneMicrophoneForwardingKey,
+        blockedPair: SharedClockBlockedPeerPair,
+        parkingProof: BlackHoleDefaultInputLeaseParkingProof,
+        parkingRoute:
+            WorldwideSharedClockEpochRecoveryParkingRoute,
+        attempt: Int,
+        maximumAttemptCount: Int
+    ) -> Bool {
+        guard let snapshot =
+                blackHoleDeviceAvailabilityMonitor.currentSnapshot(),
+              blockedPair.matches(
+                peerGeneration: peerGeneration,
+                snapshot: snapshot
+              ),
+              let visibleInputEndpoint =
+                snapshot.defaultInputEndpoint,
+              let hiddenWriterEndpoint =
+                snapshot.hiddenMirrorSinkEndpoint else {
+            return false
+        }
+
+        sharedClockEpochRecoveryTask?.cancel()
+        let taskGeneration =
+            advanceSharedClockEpochRecoveryTaskGeneration()
+        sharedClockEpochRecoveryKey = key
+        sharedClockEpochRecoveryTask = Task { [weak self] in
+            await self?.runSharedClockEpochRecovery(
+                key: key,
+                blockedPair: blockedPair,
+                parkingProof: parkingProof,
+                parkingRoute: parkingRoute,
+                visibleInputEndpoint: visibleInputEndpoint,
+                hiddenWriterEndpoint: hiddenWriterEndpoint,
+                taskGeneration: taskGeneration
+            )
+        }
+        logger.info(
+            "Worldwide iPhone microphone released its expired clock " +
+                "epoch and began bounded idle recovery attempt " +
+                "\(attempt)/\(maximumAttemptCount)"
+        )
+        return true
+    }
+
+    private func runSharedClockEpochRecovery(
+        key: WorldwideIPhoneMicrophoneForwardingKey,
+        blockedPair: SharedClockBlockedPeerPair,
+        parkingProof: BlackHoleDefaultInputLeaseParkingProof,
+        parkingRoute:
+            WorldwideSharedClockEpochRecoveryParkingRoute,
+        visibleInputEndpoint: BlackHoleDeviceEndpointIdentity,
+        hiddenWriterEndpoint: BlackHoleDeviceEndpointIdentity,
+        taskGeneration: UInt64
+    ) async {
+        let poller = WorldwideSharedClockEpochRecoveryPoller(
+            maximumPollCount:
+                Self.maximumSharedClockEpochQuiescencePolls,
+            requiredConsecutiveIdleObservations:
+                Self.requiredSharedClockIdleObservations
+        )
+        let pollOutcome = await poller.wait(
+            sleep: {
+                try await Task.sleep(
+                    for: Self.sharedClockEpochQuiescencePollInterval
+                )
+            },
+            isCurrent: {
+                sharedClockEpochRecoveryIsCurrent(
+                    key: key,
+                    blockedPair: blockedPair,
+                    parkingProof: parkingProof,
+                    visibleInputEndpoint: visibleInputEndpoint,
+                    hiddenWriterEndpoint: hiddenWriterEndpoint,
+                    taskGeneration: taskGeneration
+                )
+            },
+            sample: {
+                switch virtualMicrophoneEpochStateReader.observe(
+                    visibleInputDeviceID:
+                        visibleInputEndpoint.deviceID,
+                    hiddenWriterDeviceID:
+                        hiddenWriterEndpoint.deviceID
+                ) {
+                case .success(let observation):
+                    return observation.provesGlobalIdleCandidate(
+                        parkedOn: parkingRoute
+                    )
+                        ? .idle
+                        : .active
+                case .failure:
+                    return .unreadable
+                }
+            }
+        )
+
+        switch pollOutcome {
+        case .idleProven:
+            guard sharedClockEpochRecoveryIsCurrent(
+                key: key,
+                blockedPair: blockedPair,
+                parkingProof: parkingProof,
+                visibleInputEndpoint: visibleInputEndpoint,
+                hiddenWriterEndpoint: hiddenWriterEndpoint,
+                taskGeneration: taskGeneration
+            ) else {
+                if sharedClockEpochRecoveryEpisodeIsCurrent(
+                    key: key,
+                    blockedPair: blockedPair,
+                    visibleInputEndpoint: visibleInputEndpoint,
+                    hiddenWriterEndpoint: hiddenWriterEndpoint,
+                    taskGeneration: taskGeneration
+                ) {
+                    _ = revokeWorldwideMicrophoneForSharedClockFailure(
+                        blockedPair: blockedPair
+                    )
+                }
+                finishSharedClockEpochRecoveryTaskIfCurrent(
+                    taskGeneration: taskGeneration
+                )
+                return
+            }
+
+            // A stable public idle candidate warrants this one bounded retry.
+            // Keep the exact rejected full key until readmission returns: a
+            // track or authorization change during the await must not be
+            // mistaken for this recovery's newly proven clock epoch.
+            sharedClockEpochRecoveryReadmissionTaskGeneration =
+                taskGeneration
+            sharedClockBlockedPeerPair = nil
+            await resumeWorldwideMicrophoneAfterSafeOutputInvariant(
+                sharedClockRecoveryTaskGeneration: taskGeneration,
+                sharedClockRecoveryParkingProof: parkingProof
+            )
+
+            guard sharedClockEpochRecoveryEpisodeIsCurrent(
+                key: key,
+                blockedPair: blockedPair,
+                visibleInputEndpoint: visibleInputEndpoint,
+                hiddenWriterEndpoint: hiddenWriterEndpoint,
+                taskGeneration: taskGeneration
+            ) else {
+                finishSharedClockEpochRecoveryTaskIfCurrent(
+                    taskGeneration: taskGeneration
+                )
+                return
+            }
+
+            let forwarding = iPhoneMicrophoneForwarding.snapshot()
+            guard WorldwideSharedClockEpochRecoveryAdmissionPolicy
+                .accepts(snapshot: forwarding, after: key) else {
+                // This exact peer/pair spent its only recovery attempt. Restore
+                // the compatibility fence before revoking any mismatched route.
+                sharedClockBlockedPeerPair = blockedPair
+                _ = revokeWorldwideMicrophoneForSharedClockFailure(
+                    blockedPair: blockedPair
+                )
+                finishSharedClockEpochRecoveryTaskIfCurrent(
+                    taskGeneration: taskGeneration
+                )
+                logger.error(
+                    "Worldwide iPhone microphone fresh-epoch recovery " +
+                        "failed closed because track or transport ownership " +
+                        "changed during exact readmission"
+                )
+                return
+            }
+
+            cancelSharedClockEpochRecovery(
+                resetPolicy: false,
+                clearCompatibilityBlock: true
+            )
+            logger.info(
+                "Worldwide iPhone microphone established a fresh " +
+                    "FaceTime-safe virtual microphone clock epoch"
+            )
+            return
+
+        case .cancelled, .staleOwner:
+            if sharedClockEpochRecoveryEpisodeIsCurrent(
+                key: key,
+                blockedPair: blockedPair,
+                visibleInputEndpoint: visibleInputEndpoint,
+                hiddenWriterEndpoint: hiddenWriterEndpoint,
+                taskGeneration: taskGeneration
+            ) {
+                _ = revokeWorldwideMicrophoneForSharedClockFailure(
+                    blockedPair: blockedPair
+                )
+            }
+            finishSharedClockEpochRecoveryTaskIfCurrent(
+                taskGeneration: taskGeneration
+            )
+            return
+
+        case .timedOut:
+            if sharedClockEpochRecoveryEpisodeIsCurrent(
+                key: key,
+                blockedPair: blockedPair,
+                visibleInputEndpoint: visibleInputEndpoint,
+                hiddenWriterEndpoint: hiddenWriterEndpoint,
+                taskGeneration: taskGeneration
+            ) {
+                _ = revokeWorldwideMicrophoneForSharedClockFailure(
+                    blockedPair: blockedPair
+                )
+            }
+            finishSharedClockEpochRecoveryTaskIfCurrent(
+                taskGeneration: taskGeneration
+            )
+            logger.error(
+                "Worldwide iPhone microphone fresh-epoch recovery remained " +
+                    "blocked because both virtual endpoints did not become " +
+                    "stably idle on the exact parking route within the " +
+                    "bounded wait"
+            )
+            return
+        }
+    }
+
+    private func sharedClockEpochRecoveryIsCurrent(
+        key: WorldwideIPhoneMicrophoneForwardingKey,
+        blockedPair: SharedClockBlockedPeerPair,
+        parkingProof: BlackHoleDefaultInputLeaseParkingProof,
+        visibleInputEndpoint: BlackHoleDeviceEndpointIdentity,
+        hiddenWriterEndpoint: BlackHoleDeviceEndpointIdentity,
+        taskGeneration: UInt64
+    ) -> Bool {
+        guard !isStopped,
+              transportAllowsCapture,
+              sharedClockEpochRecoveryTaskGeneration
+                == taskGeneration,
+              sharedClockEpochRecoveryKey == key,
+              sharedClockBlockedPeerPair == blockedPair,
+              peerGeneration == key.peerGeneration,
+              safeOutputInvariantAuthorization == nil,
+              blackHoleEndpointPairAuthorization == nil,
+              blackHoleDefaultInputAuthorization == nil,
+              let authorizationGate =
+                blackHoleMicrophoneOutputAuthorizationGate,
+              !authorizationGate.isOpen,
+              let snapshot =
+                blackHoleDeviceAvailabilityMonitor.currentSnapshot(),
+              blockedPair.matches(
+                peerGeneration: peerGeneration,
+                snapshot: snapshot
+              ),
+              snapshot.defaultInputEndpoint
+                == visibleInputEndpoint,
+              snapshot.hiddenMirrorSinkEndpoint
+                == hiddenWriterEndpoint,
+              blackHoleDefaultInput.sharedClockParkingProofIsCurrent(
+                parkingProof,
+                peerGeneration: peerGeneration,
+                snapshot: snapshot
+              ) else {
+            return false
+        }
+
+        let forwarding = iPhoneMicrophoneForwarding.snapshot()
+        return forwarding.monitorEpoch == key.monitorEpoch
+            && forwarding.deviceGeneration
+                == key.deviceGeneration
+            && forwarding.peerGeneration == key.peerGeneration
+            && forwarding.transportAuthorizationEpoch
+                == key.transportAuthorizationEpoch
+            && forwarding.trackGeneration == key.trackGeneration
+            && !forwarding.transportAuthorized
+            && !forwarding.queueRunning
+    }
+
+    private func sharedClockEpochRecoveryEpisodeIsCurrent(
+        key: WorldwideIPhoneMicrophoneForwardingKey,
+        blockedPair: SharedClockBlockedPeerPair,
+        visibleInputEndpoint: BlackHoleDeviceEndpointIdentity,
+        hiddenWriterEndpoint: BlackHoleDeviceEndpointIdentity,
+        taskGeneration: UInt64
+    ) -> Bool {
+        guard !isStopped,
+              transportAllowsCapture,
+              sharedClockEpochRecoveryTaskGeneration
+                == taskGeneration,
+              sharedClockEpochRecoveryKey == key,
+              peerGeneration == key.peerGeneration,
+              let snapshot =
+                blackHoleDeviceAvailabilityMonitor.currentSnapshot(),
+              blockedPair.matches(
+                peerGeneration: peerGeneration,
+                snapshot: snapshot
+              ),
+              snapshot.defaultInputEndpoint
+                == visibleInputEndpoint,
+              snapshot.hiddenMirrorSinkEndpoint
+                == hiddenWriterEndpoint else {
+            return false
+        }
+        return true
+    }
+
+    @discardableResult
+    private func advanceSharedClockEpochRecoveryTaskGeneration()
+        -> UInt64 {
+        sharedClockEpochRecoveryTaskGeneration &+= 1
+        if sharedClockEpochRecoveryTaskGeneration == 0 {
+            sharedClockEpochRecoveryTaskGeneration = 1
+        }
+        return sharedClockEpochRecoveryTaskGeneration
+    }
+
+    private func finishSharedClockEpochRecoveryTaskIfCurrent(
+        taskGeneration: UInt64
+    ) {
+        guard sharedClockEpochRecoveryTaskGeneration
+                == taskGeneration else {
+            return
+        }
+        sharedClockEpochRecoveryTask = nil
+        sharedClockEpochRecoveryKey = nil
+        if sharedClockEpochRecoveryReadmissionTaskGeneration
+                == taskGeneration {
+            sharedClockEpochRecoveryReadmissionTaskGeneration = nil
+        }
+    }
+
+    /// A failed clock-epoch parking transition may retain the exact lease when
+    /// Core Audio is temporarily unreadable. Retry cleanup immediately, then
+    /// retain only the blocked peer/pair identity so statistics ticks can keep
+    /// redriving the safe compare-and-restore path without touching a successor.
+    @discardableResult
+    private func revokeWorldwideMicrophoneForSharedClockFailure(
+        blockedPair: SharedClockBlockedPeerPair
+    ) -> WorldwideBlackHoleDefaultInputOutcome {
+        let outcome =
+            revokeWorldwideMicrophoneForUnsafeOutputInvariant(
+                preservingSharedClockUnsafeFailure: true
+            )
+        switch outcome {
+        case .degraded:
+            sharedClockEpochCleanupPendingPair = blockedPair
+        case .selected, .noChange, .waitingForMonitor,
+             .waitingForDevice, .released, .suppressed:
+            if sharedClockEpochCleanupPendingPair == blockedPair {
+                sharedClockEpochCleanupPendingPair = nil
+            }
+        }
+        return outcome
+    }
+
+    /// Returns true when a still-current cleanup fence consumed this tick. The
+    /// lease release is listener-fenced: an external selector choice
+    /// terminalizes ownership and is never restored over.
+    private func redriveSharedClockEpochCleanupIfNeeded() -> Bool {
+        guard let blockedPair =
+                sharedClockEpochCleanupPendingPair else {
+            return false
+        }
+        guard sharedClockBlockedPeerPair == blockedPair,
+              blockedPair.peerGeneration == peerGeneration else {
+            sharedClockEpochCleanupPendingPair = nil
+            return false
+        }
+        if let snapshot =
+                blackHoleDeviceAvailabilityMonitor.currentSnapshot(),
+           !blockedPair.matches(
+                peerGeneration: peerGeneration,
+                snapshot: snapshot
+           ) {
+            sharedClockEpochCleanupPendingPair = nil
+            return false
+        }
+
+        _ = revokeWorldwideMicrophoneForSharedClockFailure(
+            blockedPair: blockedPair
+        )
+        return true
+    }
+
+    private func cancelSharedClockEpochRecovery(
+        resetPolicy: Bool,
+        clearCompatibilityBlock: Bool
+    ) {
+        sharedClockEpochRecoveryTask?.cancel()
+        sharedClockEpochRecoveryTask = nil
+        sharedClockEpochRecoveryKey = nil
+        sharedClockEpochRecoveryReadmissionTaskGeneration = nil
+        _ = advanceSharedClockEpochRecoveryTaskGeneration()
+        if resetPolicy {
+            sharedClockEpochRecoveryPolicy.reset()
+        }
+        if clearCompatibilityBlock {
+            sharedClockBlockedPeerPair = nil
+        }
+        if resetPolicy || clearCompatibilityBlock {
+            sharedClockEpochCleanupPendingPair = nil
+        }
     }
 
     private func iPhoneMicrophoneFormatDidFail(
@@ -2922,10 +3485,29 @@ actor WorldwideScreenService {
         iPhoneMicrophoneForwarding.snapshot()
     }
 
-    private func authorizeIPhoneMicrophoneForwardingIfPossible()
+    private func authorizeIPhoneMicrophoneForwardingIfPossible(
+        sharedClockRecoveryTaskGeneration: UInt64? = nil
+    )
         async {
+        if let activeRecoveryTaskGeneration =
+                sharedClockEpochRecoveryReadmissionTaskGeneration {
+            guard sharedClockRecoveryTaskGeneration
+                    == activeRecoveryTaskGeneration else {
+                return
+            }
+        } else if sharedClockRecoveryTaskGeneration != nil {
+            return
+        }
         guard transportAllowsCapture,
-              let peer else {
+              let peer,
+              safeOutputInvariantAuthorization != nil,
+              blackHoleEndpointPairAuthorization != nil,
+              blackHoleDefaultInputAuthorization != nil,
+              let authorizationGate =
+                blackHoleMicrophoneOutputAuthorizationGate,
+              authorizationGate.isOpen,
+              !sharedClockBlocksCurrentPeerAndPair(),
+              !formatUnsafeBlocksCurrentPeerAndPair() else {
             return
         }
         await iPhoneMicrophoneForwarding.authorizeTransport(

@@ -1029,6 +1029,11 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             finishSupersededAttempt(attempt)
             return
         }
+        // A replacement output reaches this point only after its queue has
+        // committed the authoritative startup format and shared-clock proof.
+        // The prior epoch rejection must not leak back into status if this
+        // newly authorized route is later invalidated for another reason.
+        preserveSharedClockUnsafePhaseUntilPeerOrPairChanges = false
 
         phase = .admittingTrack
         do {
@@ -1709,6 +1714,17 @@ protocol WorldwideBlackHoleDefaultInputLeasing:
     func release(
         generation: UInt64
     ) -> BlackHoleDefaultInputLeaseReleaseResult
+    func parkForClockEpochRecovery(
+        generation: UInt64,
+        targetEndpoint: BlackHoleDeviceEndpointIdentity
+    ) -> BlackHoleDefaultInputLeaseParkingResult
+    func clockEpochParkingProofIsCurrent(
+        _ proof: BlackHoleDefaultInputLeaseParkingProof
+    ) -> Bool
+    func reacquisitionResult(
+        parkingProof: BlackHoleDefaultInputLeaseParkingProof,
+        targetEndpoint: BlackHoleDeviceEndpointIdentity
+    ) -> BlackHoleDefaultInputLeaseAcquisitionResult
     func shutdown()
         -> BlackHoleDefaultInputLeaseReleaseResult
 }
@@ -1746,6 +1762,14 @@ enum WorldwideBlackHoleDefaultInputOutcome:
     case released
     case degraded
     case suppressed
+}
+
+enum WorldwideBlackHoleClockEpochParkingOutcome:
+    Equatable,
+    Sendable
+{
+    case parked(BlackHoleDefaultInputLeaseParkingProof)
+    case degraded
 }
 
 enum WorldwideBlackHoleAudioRoutingCleanupResult:
@@ -2030,6 +2054,8 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
     private var activeKey: WorldwideBlackHoleDefaultInputKey?
     private var pendingKey: LeaseKey?
     private var releaseIsPending = false
+    private var clockEpochParkingProof:
+        BlackHoleDefaultInputLeaseParkingProof?
     private var terminalConnectionGeneration: UInt64?
     private var externallySupersededPeerGeneration: UInt64?
     private var lastAttemptedIdentity: CandidateIdentity?
@@ -2157,6 +2183,9 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         guard policy == .enabled else {
             return .suppressed
         }
+        guard clockEpochParkingProof == nil else {
+            return .degraded
+        }
         guard peerGeneration
                 >= highestPeerGenerationSeen else {
             return .noChange
@@ -2235,6 +2264,130 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
             return releaseOutcome
         }
         return replacementOutcome
+    }
+
+    func parkForSharedClockEpochRecovery(
+        peerGeneration: UInt64
+    ) -> WorldwideBlackHoleClockEpochParkingOutcome {
+        guard !isStopped,
+              policy == .enabled,
+              healthyPeerGeneration == peerGeneration,
+              let activeKey,
+              activeKey.peerGeneration == peerGeneration,
+              pendingKey == nil,
+              !releaseIsPending,
+              clockEpochParkingProof == nil else {
+            return .degraded
+        }
+
+        healthyPeerGeneration = nil
+        resetAcquisitionAttempts()
+        switch lease.parkForClockEpochRecovery(
+            generation: activeKey.leaseGeneration,
+            targetEndpoint: activeKey.deviceEndpoint
+        ) {
+        case .parked(let proof)
+            where proof.leaseGeneration
+                == activeKey.leaseGeneration
+                && proof.targetEndpoint
+                    == activeKey.deviceEndpoint:
+            self.activeKey = LeaseKey(activeKey).authorized(
+                by: BlackHoleDefaultInputLeaseAuthorization(
+                    leaseGeneration: proof.leaseGeneration,
+                    listenerRegistrationID:
+                        proof.listenerRegistrationID,
+                    acceptedListenerSequence:
+                        proof.acceptedListenerSequence,
+                    targetEndpoint: proof.targetEndpoint
+                )
+            )
+            clockEpochParkingProof = proof
+            return .parked(proof)
+
+        case .parked, .retryableFailure, .terminalFailure:
+            _ = releaseActiveBounded()
+            return .degraded
+        }
+    }
+
+    func sharedClockParkingProofIsCurrent(
+        _ proof: BlackHoleDefaultInputLeaseParkingProof,
+        peerGeneration: UInt64,
+        snapshot: BlackHoleDeviceAvailabilitySnapshot
+    ) -> Bool {
+        guard clockEpochParkingProof == proof,
+              healthyPeerGeneration == nil,
+              let activeKey,
+              activeKey.leaseGeneration == proof.leaseGeneration,
+              activeKey.peerGeneration == peerGeneration,
+              activeKey.monitorEpoch == snapshot.monitorEpoch,
+              activeKey.deviceGeneration
+                == snapshot.deviceGeneration,
+              activeKey.deviceEndpoint
+                == snapshot.defaultInputEndpoint,
+              proof.targetEndpoint == activeKey.deviceEndpoint else {
+            return false
+        }
+        guard lease.clockEpochParkingProofIsCurrent(proof) else {
+            _ = releaseActiveBounded()
+            return false
+        }
+        return true
+    }
+
+    func transportDidBecomeHealthyAfterSharedClockRecovery(
+        peerGeneration: UInt64,
+        parkingProof: BlackHoleDefaultInputLeaseParkingProof
+    ) -> WorldwideBlackHoleDefaultInputOutcome {
+        guard !isStopped,
+              policy == .enabled,
+              healthyPeerGeneration == nil,
+              clockEpochParkingProof == parkingProof,
+              let snapshot = monitorSnapshot,
+              snapshot.isAvailable,
+              let activeKey,
+              activeKey.peerGeneration == peerGeneration,
+              activeKey.monitorEpoch == snapshot.monitorEpoch,
+              activeKey.deviceGeneration
+                == snapshot.deviceGeneration,
+              activeKey.deviceEndpoint
+                == snapshot.defaultInputEndpoint,
+              parkingProof.targetEndpoint
+                == activeKey.deviceEndpoint,
+              !releaseIsPending else {
+            return .degraded
+        }
+        guard lease.clockEpochParkingProofIsCurrent(
+            parkingProof
+        ) else {
+            _ = releaseActiveBounded()
+            return .degraded
+        }
+
+        switch lease.reacquisitionResult(
+            parkingProof: parkingProof,
+            targetEndpoint: activeKey.deviceEndpoint
+        ) {
+        case .acquired:
+            guard let authorization =
+                    authorizationProof(
+                        for: LeaseKey(activeKey)
+                    ) else {
+                _ = releaseActiveBounded()
+                return .degraded
+            }
+            let refreshedKey = LeaseKey(activeKey).authorized(
+                by: authorization
+            )
+            self.activeKey = refreshedKey
+            clockEpochParkingProof = nil
+            healthyPeerGeneration = peerGeneration
+            return .selected(refreshedKey)
+
+        case .retryableFailure, .terminalFailure:
+            _ = releaseActiveBounded()
+            return .degraded
+        }
     }
 
     /// Consumes a raw exact-listener event after the realtime writer gate has
@@ -2341,6 +2494,9 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         -> WorldwideBlackHoleDefaultInputOutcome {
         guard !isStopped else {
             return .noChange
+        }
+        guard clockEpochParkingProof == nil else {
+            return .degraded
         }
         guard let activeMonitorEpoch,
               let monitorSnapshot else {
@@ -2506,6 +2662,7 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         guard let leaseKey =
                 activeKey.map(LeaseKey.init) ?? pendingKey else {
             releaseIsPending = false
+            clockEpochParkingProof = nil
             return .noChange
         }
         switch lease.release(
@@ -2515,6 +2672,7 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
             self.activeKey = nil
             pendingKey = nil
             releaseIsPending = false
+            clockEpochParkingProof = nil
             return .released
 
         case .retryableFailure:
@@ -2525,6 +2683,7 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
             self.activeKey = nil
             pendingKey = nil
             releaseIsPending = false
+            clockEpochParkingProof = nil
             terminalConnectionGeneration =
                 leaseKey.connectionGeneration
             recordExternalSupersession(

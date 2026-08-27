@@ -300,7 +300,18 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
             )
         )
         XCTAssertTrue(
-            clockMessage.contains("automatic restart is blocked")
+            clockMessage.contains("bounded idle proof")
+        )
+        let nonrecoverableClockMessage = WorldwideScreenService
+            .iPhoneMicrophoneRuntimeFailureLogMessage(
+                error: .sharedClockUnsafe(
+                    .startupClockContinuityTimedOut
+                )
+            )
+        XCTAssertTrue(
+            nonrecoverableClockMessage.contains(
+                "automatic restart is blocked"
+            )
         )
         XCTAssertFalse(clockMessage.contains("BlackHole2ch_UID"))
         XCTAssertFalse(clockMessage.contains("BlackHole2ch_2_UID"))
@@ -488,9 +499,9 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
                 of: "sharedClockBlockedPeerPair ="
             )
         )
-        let routeRevocation = try XCTUnwrap(
+        let listenerBoundParking = try XCTUnwrap(
             clockFailureHandler.range(
-                of: "revokeWorldwideMicrophoneForUnsafeOutputInvariant("
+                of: "parkWorldwideMicrophoneForSharedClockRecovery()"
             )
         )
         XCTAssertTrue(
@@ -500,8 +511,173 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
         )
         XCTAssertLessThan(
             blockPublication.lowerBound,
-            routeRevocation.lowerBound,
-            "The exact peer/pair generation must be blocked before route ownership is revoked."
+            listenerBoundParking.lowerBound,
+            "The exact peer/pair generation must be blocked before its listener-bound parking transition."
+        )
+        let provedParking = try XCTUnwrap(
+            clockFailureHandler.range(
+                of: "guard case .parked(let parkingProof) = parkingOutcome"
+            )
+        )
+        let failedParkingCleanup = try sourceSlice(
+            in: clockFailureHandler,
+            after:
+                "guard case .parked(let parkingProof) = parkingOutcome",
+            before: "            guard scheduleSharedClockEpochRecovery("
+        )
+        XCTAssertTrue(
+            failedParkingCleanup.contains(
+                "revokeWorldwideMicrophoneForSharedClockFailure("
+            ),
+            "A retryable parking or restore failure must arm exact cleanup redrive."
+        )
+        XCTAssertTrue(
+            serviceSource.contains(
+                "if redriveSharedClockEpochCleanupIfNeeded()"
+            ),
+            "Pending same-pair cleanup must be retried on later statistics ticks."
+        )
+        let cleanupStatePublication = try sourceSlice(
+            in: serviceSource,
+            after:
+                "    private func revokeWorldwideMicrophoneForSharedClockFailure(",
+            before:
+                "    private func redriveSharedClockEpochCleanupIfNeeded()"
+        )
+        XCTAssertTrue(
+            cleanupStatePublication.contains(
+                "case .degraded:\n            sharedClockEpochCleanupPendingPair = blockedPair"
+            ),
+            "A retryable exact release must retain the blocked pair for redrive."
+        )
+        let cleanupRedrive = try sourceSlice(
+            in: serviceSource,
+            after:
+                "    private func redriveSharedClockEpochCleanupIfNeeded()",
+            before:
+                "    private func cancelSharedClockEpochRecovery("
+        )
+        XCTAssertTrue(
+            cleanupRedrive.contains(
+                "sharedClockBlockedPeerPair == blockedPair"
+            )
+        )
+        XCTAssertTrue(
+            cleanupRedrive.contains(
+                "blockedPair.peerGeneration == peerGeneration"
+            )
+        )
+        XCTAssertTrue(
+            cleanupRedrive.contains("blockedPair.matches(")
+        )
+        XCTAssertTrue(
+            cleanupRedrive.contains(
+                "revokeWorldwideMicrophoneForSharedClockFailure("
+            )
+        )
+        let invariantMaintenance = try sourceSlice(
+            in: serviceSource,
+            after:
+                "    private func maintainWorldwideSafeOutputInvariant() async {",
+            before:
+                "    private func safeOutputInvariantDidBecomeUncertain("
+        )
+        let cleanupBeforeCaptureGuard = try XCTUnwrap(
+            invariantMaintenance.range(
+                of: "redriveSharedClockEpochCleanupIfNeeded()"
+            )
+        )
+        let captureGuard = try XCTUnwrap(
+            invariantMaintenance.range(
+                of: "guard transportAllowsCapture else"
+            )
+        )
+        XCTAssertLessThan(
+            cleanupBeforeCaptureGuard.lowerBound,
+            captureGuard.lowerBound,
+            "Exact cleanup must continue even after capture transport closes."
+        )
+        let recoverySchedule = try XCTUnwrap(
+            clockFailureHandler.range(
+                of: "scheduleSharedClockEpochRecovery("
+            )
+        )
+        let parkingRouteProof = try XCTUnwrap(
+            clockFailureHandler.range(
+                of: "parkingProof.parkingEndpoint.deviceUID"
+            )
+        )
+        XCTAssertLessThan(
+            listenerBoundParking.lowerBound,
+            provedParking.lowerBound
+        )
+        XCTAssertLessThan(
+            provedParking.lowerBound,
+            parkingRouteProof.lowerBound
+        )
+        XCTAssertLessThan(
+            parkingRouteProof.lowerBound,
+            recoverySchedule.lowerBound,
+            "A degraded or unproved listener-bound parking transition must never start clock recovery."
+        )
+        let idleRead = try XCTUnwrap(
+            clockFailureHandler.range(
+                of: "virtualMicrophoneEpochStateReader.observe("
+            )
+        )
+        let compatibilityBlockClear = try XCTUnwrap(
+            clockFailureHandler.range(
+                of: "sharedClockBlockedPeerPair = nil"
+            )
+        )
+        let safeReadmission = try XCTUnwrap(
+            clockFailureHandler.range(
+                of: "await resumeWorldwideMicrophoneAfterSafeOutputInvariant("
+            )
+        )
+        XCTAssertLessThan(recoverySchedule.lowerBound, idleRead.lowerBound)
+        XCTAssertLessThan(idleRead.lowerBound, compatibilityBlockClear.lowerBound)
+        XCTAssertLessThan(
+            compatibilityBlockClear.lowerBound,
+            safeReadmission.lowerBound,
+            "Only the idle-qualified owner may clear its block before the full safe-output readmission transaction."
+        )
+        let exactAdmissionProof = try XCTUnwrap(
+            clockFailureHandler.range(
+                of: "WorldwideSharedClockEpochRecoveryAdmissionPolicy"
+            )
+        )
+        XCTAssertLessThan(
+            safeReadmission.lowerBound,
+            exactAdmissionProof.lowerBound,
+            "Readmission success must be checked only after the awaited driver transition returns."
+        )
+        XCTAssertTrue(
+            clockFailureHandler.contains(
+                "forwarding.transportAuthorizationEpoch"
+            )
+        )
+        XCTAssertTrue(
+            clockFailureHandler.contains(
+                "forwarding.trackGeneration == key.trackGeneration"
+            )
+        )
+        XCTAssertTrue(
+            clockFailureHandler.contains(
+                ".accepts(snapshot: forwarding, after: key)"
+            ),
+            "Same-pair identity is insufficient; recovery must prove the exact next authorization and unchanged track."
+        )
+        XCTAssertTrue(
+            clockFailureHandler.contains(
+                "sharedClockParkingProofIsCurrent("
+            ),
+            "Polling must retain and re-prove the exact lease listener across the parking interval."
+        )
+        XCTAssertEqual(
+            WorldwideSharedClockEpochRecoveryPolicy
+                .maximumAttemptCount,
+            1
         )
 
         let formatFailureHandler = try sourceSlice(
@@ -542,7 +718,7 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
             after:
                 "    private func revokeWorldwideMicrophoneForUnsafeOutputInvariant()",
             before:
-                "    private func resumeWorldwideMicrophoneAfterSafeOutputInvariant()"
+                "    private func resumeWorldwideMicrophoneAfterSafeOutputInvariant("
         )
         let writerClose = try XCTUnwrap(
             routeRevocationHandler.range(
@@ -572,7 +748,7 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
         let admission = try sourceSlice(
             in: serviceSource,
             after:
-                "    private func admitBlackHoleInputWithinSafeOutputFence()",
+                "    private func admitBlackHoleInputWithinSafeOutputFence(",
             before:
                 "    /// Continuously verifies the output invariant."
         )
@@ -805,7 +981,7 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
         let admission = try sourceSlice(
             in: serviceSource,
             after:
-                "    private func admitBlackHoleInputWithinSafeOutputFence()",
+                "    private func admitBlackHoleInputWithinSafeOutputFence(",
             before:
                 "    /// Continuously verifies the output invariant."
         )
