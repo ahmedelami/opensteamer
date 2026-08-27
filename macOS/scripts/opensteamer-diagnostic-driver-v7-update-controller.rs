@@ -3550,10 +3550,10 @@ fn prove_lock_free(expected_device: u64, expected_inode: u64) -> Result<()> {
 const CURRENT_VIRTUAL_DISPLAY_VENDOR: u32 = 0x6F73;
 const CURRENT_VIRTUAL_DISPLAY_PRODUCT: u32 = 0x1718;
 const CURRENT_VIRTUAL_DISPLAY_SERIAL: u32 = 1;
-const CURRENT_VIRTUAL_DISPLAY_LOGICAL_WIDTH: usize = 603;
-const CURRENT_VIRTUAL_DISPLAY_LOGICAL_HEIGHT: usize = 1_312;
-const CURRENT_VIRTUAL_DISPLAY_PIXEL_WIDTH: usize = 603;
-const CURRENT_VIRTUAL_DISPLAY_PIXEL_HEIGHT: usize = 1_312;
+const CURRENT_VIRTUAL_DISPLAY_LOGICAL_WIDTH: usize = 720;
+const CURRENT_VIRTUAL_DISPLAY_LOGICAL_HEIGHT: usize = 1_280;
+const CURRENT_VIRTUAL_DISPLAY_PIXEL_WIDTH: usize = 720;
+const CURRENT_VIRTUAL_DISPLAY_PIXEL_HEIGHT: usize = 1_280;
 const CURRENT_VIRTUAL_DISPLAY_REFRESH_MILLIHERTZ: u32 = 60_000;
 const DISPLAY_CONFIGURATION_FOR_SESSION: u32 = 1;
 const DISPLAY_SNAPSHOT_HEADER: &str = "OPENSTEAMER_CURRENT_VIRTUAL_DISPLAY_SNAPSHOT_V1";
@@ -17489,7 +17489,7 @@ fn self_test() -> Result<()> {
     }
     require_self_test_rejection(
         parse_virtual_display_snapshot_text(&display_snapshot.replace(
-            "selected=603:1312:603:1312:60000",
+            "selected=720:1280:720:1280:60000",
             "selected=540:960:1080:1920:60000",
         )),
         "virtual-display snapshot target substitution",

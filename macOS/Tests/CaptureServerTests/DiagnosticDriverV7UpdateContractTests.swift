@@ -1462,12 +1462,12 @@ final class DiagnosticDriverV7UpdateContractTests: XCTestCase {
             XCTAssertTrue(controller.contains(mode))
         }
         for selectedPin in [
-            "const CURRENT_VIRTUAL_DISPLAY_LOGICAL_WIDTH: usize = 603;",
-            "const CURRENT_VIRTUAL_DISPLAY_LOGICAL_HEIGHT: usize = 1_312;",
-            "const CURRENT_VIRTUAL_DISPLAY_PIXEL_WIDTH: usize = 603;",
-            "const CURRENT_VIRTUAL_DISPLAY_PIXEL_HEIGHT: usize = 1_312;",
+            "const CURRENT_VIRTUAL_DISPLAY_LOGICAL_WIDTH: usize = 720;",
+            "const CURRENT_VIRTUAL_DISPLAY_LOGICAL_HEIGHT: usize = 1_280;",
+            "const CURRENT_VIRTUAL_DISPLAY_PIXEL_WIDTH: usize = 720;",
+            "const CURRENT_VIRTUAL_DISPLAY_PIXEL_HEIGHT: usize = 1_280;",
         ] {
-            XCTAssertTrue(controller.contains(selectedPin), "missing selected v21 mode pin")
+            XCTAssertTrue(controller.contains(selectedPin), "missing selected current mode pin")
         }
         let dispatch = try functionBody(
             controller,
@@ -1518,6 +1518,8 @@ final class DiagnosticDriverV7UpdateContractTests: XCTestCase {
             "raw_restore_target_matches += 1",
             "if raw_restore_target_matches != 1",
         ], in: topologyCapture)
+        XCTAssertTrue(controller.contains(#""selected=720:1280:720:1280:60000""#))
+        XCTAssertTrue(controller.contains(#""virtual-display snapshot target substitution""#))
         XCTAssertTrue(controller.contains("const DISPLAY_CONFIGURATION_FOR_SESSION: u32 = 1;"))
         XCTAssertTrue(controller.contains(
             "CGCompleteDisplayConfiguration(configuration, DISPLAY_CONFIGURATION_FOR_SESSION)"
