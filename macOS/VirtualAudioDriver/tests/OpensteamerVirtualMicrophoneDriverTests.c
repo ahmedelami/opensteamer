@@ -1728,7 +1728,7 @@ static bool TestSeedGenerationDriverInstanceDisambiguation(void) {
   return true;
 }
 
-static bool TestClientLifecycleAndRunningNotifications(void) {
+static bool TestClientLifecycleWithoutRunningNotifications(void) {
   AudioServerPlugInDriverRef driver = FreshDriver();
   CHECK(driver != NULL);
   AudioServerPlugInClientInfo first = ClientInfo(301);
@@ -1748,10 +1748,7 @@ static bool TestClientLifecycleAndRunningNotifications(void) {
   CHECK_STATUS((*driver)->StartIO(driver, kOSVAObjectIDVisibleInputDevice,
                                   first.mClientID),
                noErr);
-  CHECK(gFakeHostState.notificationCount == 1);
-  CHECK(gFakeHostState.lastObjectID == kOSVAObjectIDVisibleInputDevice);
-  CHECK(gFakeHostState.lastAddress.mSelector ==
-        kAudioDevicePropertyDeviceIsRunning);
+  CHECK(gFakeHostState.notificationCount == 0);
   CHECK(GetUInt32(driver, kOSVAObjectIDVisibleInputDevice,
                   Address(kAudioDevicePropertyDeviceIsRunning,
                           kAudioObjectPropertyScopeGlobal),
@@ -1762,7 +1759,7 @@ static bool TestClientLifecycleAndRunningNotifications(void) {
   CHECK_STATUS((*driver)->StartIO(driver, kOSVAObjectIDVisibleInputDevice,
                                   second.mClientID),
                noErr);
-  CHECK(gFakeHostState.notificationCount == 1);
+  CHECK(gFakeHostState.notificationCount == 0);
   CHECK_STATUS((*driver)->RemoveDeviceClient(
                    driver, kOSVAObjectIDVisibleInputDevice, &first),
                kAudioHardwareIllegalOperationError);
@@ -1770,11 +1767,11 @@ static bool TestClientLifecycleAndRunningNotifications(void) {
   CHECK_STATUS((*driver)->StopIO(driver, kOSVAObjectIDVisibleInputDevice,
                                  first.mClientID),
                noErr);
-  CHECK(gFakeHostState.notificationCount == 1);
+  CHECK(gFakeHostState.notificationCount == 0);
   CHECK_STATUS((*driver)->StopIO(driver, kOSVAObjectIDVisibleInputDevice,
                                  second.mClientID),
                noErr);
-  CHECK(gFakeHostState.notificationCount == 2);
+  CHECK(gFakeHostState.notificationCount == 0);
   CHECK(GetUInt32(driver, kOSVAObjectIDVisibleInputDevice,
                   Address(kAudioDevicePropertyDeviceIsRunning,
                           kAudioObjectPropertyScopeGlobal),
@@ -1782,6 +1779,21 @@ static bool TestClientLifecycleAndRunningNotifications(void) {
   CHECK_STATUS((*driver)->StopIO(driver, kOSVAObjectIDVisibleInputDevice,
                                  second.mClientID),
                kAudioHardwareIllegalOperationError);
+  CHECK_STATUS((*driver)->StartIO(driver, kOSVAObjectIDVisibleInputDevice,
+                                  first.mClientID),
+               noErr);
+  CHECK(GetUInt32(driver, kOSVAObjectIDVisibleInputDevice,
+                  Address(kAudioDevicePropertyDeviceIsRunning,
+                          kAudioObjectPropertyScopeGlobal),
+                  1));
+  CHECK_STATUS((*driver)->StopIO(driver, kOSVAObjectIDVisibleInputDevice,
+                                 first.mClientID),
+               noErr);
+  CHECK(GetUInt32(driver, kOSVAObjectIDVisibleInputDevice,
+                  Address(kAudioDevicePropertyDeviceIsRunning,
+                          kAudioObjectPropertyScopeGlobal),
+                  0));
+  CHECK(gFakeHostState.notificationCount == 0);
   CHECK_STATUS((*driver)->RemoveDeviceClient(
                    driver, kOSVAObjectIDVisibleInputDevice, &first),
                noErr);
@@ -2136,7 +2148,7 @@ static bool TestDiagnosticSnapshotLifecycleAndAudioRecords(void) {
         kOSVADiagnosticTransitionDriverClientRemoved);
   CHECK(snapshot.last_driver_transition.client_id == writer.mClientID);
   CHECK(snapshot.driver_lifecycle_sequence > bothStoppedLifecycleSequence);
-  CHECK(gFakeHostState.notificationCount == 4);
+  CHECK(gFakeHostState.notificationCount == 0);
   return true;
 }
 
@@ -3863,8 +3875,8 @@ int main(void) {
        TestSharedTimelineBothStartOrdersAndRestartSeed},
       {"seed generation driver-instance disambiguation",
        TestSeedGenerationDriverInstanceDisambiguation},
-      {"client lifecycle and running notifications",
-       TestClientLifecycleAndRunningNotifications},
+      {"client lifecycle without running notifications",
+       TestClientLifecycleWithoutRunningNotifications},
       {"production I/O transfer and stale silence",
        TestProductionIOTransferAndStaleSilence},
       {"diagnostic snapshot lifecycle and audio records",

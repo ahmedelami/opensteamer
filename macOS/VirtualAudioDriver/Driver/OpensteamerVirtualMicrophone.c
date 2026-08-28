@@ -146,7 +146,6 @@ static AudioServerPlugInDriverRef gDriverRef = &gDriverInterfacePointer;
 
 static _Atomic(ULONG) gReferenceCount = 1;
 static pthread_mutex_t gStateMutex = PTHREAD_MUTEX_INITIALIZER;
-static AudioServerPlugInHostRef gHost = NULL;
 
 static OSVACore gCore;
 static OSVAClientSlot gCoreClients[OSVA_DRIVER_CLIENT_SLOT_COUNT];
@@ -2457,30 +2456,6 @@ static OSVADriverClient *OSVAFindFreeDriverClient(void) {
   return NULL;
 }
 
-static size_t OSVAStartedClientCount(AudioObjectID deviceObjectID) {
-  size_t count = 0;
-  for (size_t index = 0; index < OSVA_DRIVER_CLIENT_SLOT_COUNT; ++index) {
-    if (gDriverClients[index].registered && gDriverClients[index].started &&
-        gDriverClients[index].device_object_id == deviceObjectID) {
-      count += 1;
-    }
-  }
-  return count;
-}
-
-static void OSVANotifyRunningChanged(AudioServerPlugInHostRef host,
-                                     AudioObjectID deviceObjectID) {
-  if (host == NULL || host->PropertiesChanged == NULL) {
-    return;
-  }
-  AudioObjectPropertyAddress address = {
-      .mSelector = kAudioDevicePropertyDeviceIsRunning,
-      .mScope = kAudioObjectPropertyScopeGlobal,
-      .mElement = kAudioObjectPropertyElementMain,
-  };
-  (void)host->PropertiesChanged(host, deviceObjectID, 1, &address);
-}
-
 static OSStatus OSVAInitialize(AudioServerPlugInDriverRef driver,
                                AudioServerPlugInHostRef host) {
   if (!OSVAIsValidDriver(driver)) {
@@ -2544,7 +2519,6 @@ static OSStatus OSVAInitialize(AudioServerPlugInDriverRef driver,
       OSVA_DRIVER_CLIENT_SLOT_COUNT, OSVAHostClockNow, NULL, hostTicksPerSecond,
       0);
   if (status == OSVA_STATUS_OK) {
-    gHost = host;
     gCoreInitialized = true;
   }
   pthread_mutex_unlock(&gStateMutex);
@@ -3094,7 +3068,6 @@ OSStatus OSVADriverResetForTesting(void) {
   memset(&gDiagnosticLifecycle, 0, sizeof(gDiagnosticLifecycle));
   OSVAResetDiagnosticAtomics();
   gCoreInitialized = false;
-  gHost = NULL;
   atomic_store_explicit(&gReferenceCount, 1, memory_order_relaxed);
   atomic_store_explicit(&gInvalidCycleTimestampCount, 0, memory_order_relaxed);
   atomic_store_explicit(&gFenceNextIOForTesting, false, memory_order_relaxed);
@@ -3242,7 +3215,6 @@ static OSStatus OSVAStartIO(AudioServerPlugInDriverRef driver,
   const uint64_t transitionHostTicks = mach_absolute_time();
   const uint64_t preActiveCount = atomic_load_explicit(
       &gCore.active_client_count, memory_order_relaxed);
-  bool notify = OSVAStartedClientCount(deviceObjectID) == 0;
   OSVAStatus status = OSVACoreStartClient(
       &gCore, endpoint, coreClientID, &client->lease);
   if (status == OSVA_STATUS_OK) {
@@ -3279,11 +3251,7 @@ static OSStatus OSVAStartIO(AudioServerPlugInDriverRef driver,
       (void)OSVAStoreZeroTimestampCache(timestamp);
     }
   }
-  AudioServerPlugInHostRef host = gHost;
   pthread_mutex_unlock(&gStateMutex);
-  if (status == OSVA_STATUS_OK && notify) {
-    OSVANotifyRunningChanged(host, deviceObjectID);
-  }
   return OSVAStatusToOSStatus(status);
 }
 
@@ -3315,7 +3283,6 @@ static OSStatus OSVAStopIO(AudioServerPlugInDriverRef driver,
       &gCore.timeline_seed, memory_order_relaxed);
   const uint64_t retiringAnchor = atomic_load_explicit(
       &gCore.anchor_host_ticks, memory_order_relaxed);
-  bool notify = OSVAStartedClientCount(deviceObjectID) == 1;
   OSVAStatus status = OSVACoreStopClient(&gCore, client->lease);
   if (status == OSVA_STATUS_OK) {
     const uint64_t postActiveCount = atomic_load_explicit(
@@ -3349,11 +3316,7 @@ static OSStatus OSVAStopIO(AudioServerPlugInDriverRef driver,
     client->io_start_depth = 0;
     client->last_transition_host_ticks = transitionHostTicks;
   }
-  AudioServerPlugInHostRef host = gHost;
   pthread_mutex_unlock(&gStateMutex);
-  if (status == OSVA_STATUS_OK && notify) {
-    OSVANotifyRunningChanged(host, deviceObjectID);
-  }
   return OSVAStatusToOSStatus(status);
 }
 
