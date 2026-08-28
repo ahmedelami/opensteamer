@@ -23,6 +23,7 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         case manualMicrophoneOff
         case permissionDenial
         case transportUncertainty
+        case audioPolicyRotation
         case peerReplacement
         case teardown
     }
@@ -3017,6 +3018,138 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         await session.peer.close()
     }
 
+    func testTransportUncertaintyRetiresEstablishedMicrophoneBeforeHealthyReAdmission() async throws {
+        let session = try makeAutomaticMicrophonePolicyFixture(
+            provenance: .authenticatedPairedCoordinatorHandoff
+        )
+        let permissionRequested = expectation(
+            description: "reconnect microphone permission"
+        )
+        let initialCommit = expectation(
+            description: "initial reconnect microphone commit"
+        )
+        let retiredAuthorizationDisabled = expectation(
+            description: "reconnect retired authorization disabled"
+        )
+        retiredAuthorizationDisabled.assertForOverFulfill = false
+        let recoveredCommit = expectation(
+            description: "reconnect fresh microphone commit"
+        )
+        var enableAuthorizations:
+            [WebRTCIOSMicrophoneAuthorization] = []
+        var committedAuthorizations:
+            [WebRTCIOSMicrophoneAuthorization] = []
+
+        session.viewModel
+            .debugInstallIPhoneMicrophonePermissionRequester {
+                permissionRequested.fulfill()
+                return true
+            }
+        session.viewModel
+            .debugInstallIPhoneMicrophoneNativeHandlers(
+                enable: { authorization in
+                    enableAuthorizations.append(authorization)
+                    authorization
+                        .debugSetRecordingGenerationForTesting(
+                            0xA11C_E500
+                                + UInt64(
+                                    enableAuthorizations.count
+                                )
+                        )
+                },
+                disable: { authorization, _ in
+                    if authorization
+                        === enableAuthorizations.first {
+                        retiredAuthorizationDisabled.fulfill()
+                    }
+                    authorization?.revoke()
+                    return true
+                }
+            )
+        session.viewModel
+            .debugInstallIPhoneMicrophoneDidCommitObserver {
+                authorization in
+                committedAuthorizations.append(authorization)
+                switch committedAuthorizations.count {
+                case 1:
+                    initialCommit.fulfill()
+                case 2:
+                    recoveredCommit.fulfill()
+                default:
+                    XCTFail(
+                        "Reconnect committed more than one replacement microphone."
+                    )
+                }
+            }
+
+        session.viewModel.handleAppBecameActive()
+        await session.viewModel
+            .debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        await fulfillment(
+            of: [permissionRequested, initialCommit],
+            timeout: 2
+        )
+        let retiredAuthorization = try XCTUnwrap(
+            session.viewModel
+                .debugIPhoneMicrophoneAuthorizationForTests
+        )
+        XCTAssertTrue(retiredAuthorization.isValid)
+        XCTAssertTrue(session.viewModel.isMicrophoneSending)
+
+        session.viewModel
+            .debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+
+        XCTAssertFalse(retiredAuthorization.isValid)
+        XCTAssertNil(
+            session.viewModel
+                .debugIPhoneMicrophoneAuthorizationForTests
+        )
+        XCTAssertFalse(session.viewModel.isMicrophoneSending)
+        XCTAssertEqual(
+            session.viewModel.microphoneStateText,
+            "Paused — reconnecting"
+        )
+        await fulfillment(
+            of: [retiredAuthorizationDisabled],
+            timeout: 2
+        )
+
+        await session.viewModel
+            .debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        await fulfillment(of: [recoveredCommit], timeout: 2)
+        let recoveredAuthorization = try XCTUnwrap(
+            session.viewModel
+                .debugIPhoneMicrophoneAuthorizationForTests
+        )
+
+        XCTAssertFalse(
+            recoveredAuthorization === retiredAuthorization
+        )
+        XCTAssertNotEqual(
+            recoveredAuthorization.recordingGeneration,
+            retiredAuthorization.recordingGeneration
+        )
+        XCTAssertTrue(recoveredAuthorization.isValid)
+        XCTAssertEqual(enableAuthorizations.count, 2)
+        XCTAssertEqual(committedAuthorizations.count, 2)
+        XCTAssertTrue(session.viewModel.isMicrophoneSending)
+        XCTAssertEqual(session.viewModel.microphoneStateText, "On")
+
+        await session.viewModel
+            .debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        XCTAssertEqual(enableAuthorizations.count, 2)
+        XCTAssertEqual(committedAuthorizations.count, 2)
+        XCTAssertTrue(
+            session.viewModel
+                .debugIPhoneMicrophoneAuthorizationForTests
+                === recoveredAuthorization
+        )
+
+        session.viewModel.toggleIPhoneMicrophone()
+        session.viewModel.disconnect()
+        await session.peer.close()
+    }
+
     func testAutomaticMicrophoneStartsAfterAuthenticatedRecoveryProofWithoutRemoteAudio()
         async throws {
         let session = try makeAutomaticMicrophonePolicyFixture(
@@ -3734,6 +3867,442 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         await session.peer.close()
     }
 
+    func testSustainedMissingExactMicrophoneSenderStatisticsGetsOneAutomaticRecoveryAndThenFailsBoundedly() async throws {
+        let session = try makeAutomaticMicrophonePolicyFixture(
+            provenance: .authenticatedPairedCoordinatorHandoff,
+            installsRemoteAudioTrack: false
+        )
+        let permissionRequested = expectation(
+            description: "missing-sender microphone permission"
+        )
+        let initialCommit = expectation(
+            description: "initial missing-sender microphone commit"
+        )
+        let recoveryCommit = expectation(
+            description: "missing-sender automatic recovery commit"
+        )
+        var enableCount = 0
+        var disableCount = 0
+        var recordingGeneration: UInt64 = 0
+        var observationTime: TimeInterval = 1
+
+        session.viewModel
+            .debugInstallIPhoneMicrophonePermissionRequester {
+                permissionRequested.fulfill()
+                return true
+            }
+        session.viewModel
+            .debugInstallIPhoneMicrophoneNativeHandlers(
+                enable: { authorization in
+                    enableCount += 1
+                    recordingGeneration =
+                        0xA11C_E200 + UInt64(enableCount)
+                    authorization.debugSetRecordingGenerationForTesting(
+                        recordingGeneration
+                    )
+                },
+                disable: { authorization, _ in
+                    disableCount += 1
+                    authorization?.revoke()
+                    return true
+                }
+            )
+        session.viewModel
+            .debugInstallIPhoneMicrophoneDidCommitObserver { _ in
+                switch enableCount {
+                case 1:
+                    initialCommit.fulfill()
+                case 2:
+                    recoveryCommit.fulfill()
+                default:
+                    XCTFail(
+                        "A missing sender must not create an automatic recovery loop."
+                    )
+                }
+            }
+        session.viewModel
+            .debugInstallIPhoneMicrophoneSenderStatisticsReader { _ in
+                nil
+            }
+        session.viewModel
+            .debugInstallRawMicrophoneMissingStatisticsUptimeClock {
+                defer { observationTime += 1 }
+                return observationTime
+            }
+
+        session.viewModel.handleAppBecameActive()
+        await session.viewModel
+            .debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        await fulfillment(
+            of: [permissionRequested, initialCommit],
+            timeout: 2
+        )
+        let recoverCountBeforeStall =
+            session.fixture.playback.recoverCount
+
+        for _ in 0..<4 {
+            await session.viewModel
+                .debugRefreshRawMicrophoneOracleForTests(
+                    from: session.peer
+                )
+        }
+        await fulfillment(of: [recoveryCommit], timeout: 2)
+        XCTAssertEqual(enableCount, 2)
+        XCTAssertGreaterThanOrEqual(disableCount, 1)
+        XCTAssertEqual(
+            session.fixture.playback.recoverCount,
+            recoverCountBeforeStall + 1
+        )
+        XCTAssertTrue(session.viewModel.isMicrophoneSending)
+
+        for _ in 0..<4 {
+            await session.viewModel
+                .debugRefreshRawMicrophoneOracleForTests(
+                    from: session.peer
+                )
+        }
+        for _ in 0..<8 {
+            await Task.yield()
+        }
+        XCTAssertEqual(
+            session.fixture.playback.recoverCount,
+            recoverCountBeforeStall + 1,
+            "The same session gets only one automatic audio rebuild."
+        )
+        XCTAssertEqual(enableCount, 2)
+        XCTAssertEqual(
+            session.viewModel.microphoneStateText,
+            "Unavailable"
+        )
+        XCTAssertFalse(session.viewModel.isMicrophoneSending)
+
+        session.viewModel.disconnect()
+        await session.peer.close()
+    }
+
+    func testIntermittentExactSenderStatisticsAvailabilityResetsMissingRecoveryWindow() async throws {
+        let session = try makeAutomaticMicrophonePolicyFixture(
+            provenance: .authenticatedPairedCoordinatorHandoff
+        )
+        let permissionRequested = expectation(
+            description: "intermittent sender permission"
+        )
+        let microphoneCommitted = expectation(
+            description: "intermittent sender microphone commit"
+        )
+        let recordingGeneration: UInt64 = 0xA11C_E301
+        var statisticsReadCount: UInt64 = 0
+        var missingObservationTime: TimeInterval = 1
+
+        session.viewModel
+            .debugInstallIPhoneMicrophonePermissionRequester {
+                permissionRequested.fulfill()
+                return true
+            }
+        session.viewModel
+            .debugInstallIPhoneMicrophoneNativeHandlers(
+                enable: { authorization in
+                    authorization.debugSetRecordingGenerationForTesting(
+                        recordingGeneration
+                    )
+                },
+                disable: { authorization, _ in
+                    authorization?.revoke()
+                    return true
+                }
+            )
+        session.viewModel
+            .debugInstallIPhoneMicrophoneDidCommitObserver { _ in
+                microphoneCommitted.fulfill()
+            }
+        session.viewModel
+            .debugInstallIPhoneMicrophoneSenderStatisticsReader {
+                [weak self] _ in
+                statisticsReadCount += 1
+                guard statisticsReadCount == 4,
+                      let self else {
+                    return nil
+                }
+                return self.rawMicrophoneSenderStatisticsForTests(
+                    sample: 1,
+                    recordingGeneration: recordingGeneration
+                )
+            }
+        session.viewModel
+            .debugInstallRawMicrophoneMissingStatisticsUptimeClock {
+                defer { missingObservationTime += 1 }
+                return missingObservationTime
+            }
+
+        session.viewModel.handleAppBecameActive()
+        await session.viewModel
+            .debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        await fulfillment(
+            of: [permissionRequested, microphoneCommitted],
+            timeout: 2
+        )
+        let recoverCount = session.fixture.playback.recoverCount
+
+        for _ in 0..<7 {
+            await session.viewModel
+                .debugRefreshRawMicrophoneOracleForTests(
+                    from: session.peer
+                )
+        }
+
+        XCTAssertEqual(
+            session.fixture.playback.recoverCount,
+            recoverCount,
+            "One exact sender sample must reset the missing-statistics fault window."
+        )
+        XCTAssertTrue(session.viewModel.isMicrophoneSending)
+        XCTAssertEqual(session.viewModel.microphoneStateText, "On")
+
+        session.viewModel.disconnect()
+        await session.peer.close()
+    }
+
+    func testInterleavedMissingAndFrozenExactSenderStatisticsStillRecover() async throws {
+        let session = try makeAutomaticMicrophonePolicyFixture(
+            provenance: .authenticatedPairedCoordinatorHandoff
+        )
+        let permissionRequested = expectation(
+            description: "interleaved sender permission"
+        )
+        let initialCommit = expectation(
+            description: "interleaved sender initial commit"
+        )
+        let recoveryCommit = expectation(
+            description: "interleaved sender recovery commit"
+        )
+        var enableCount = 0
+        var statisticsReadCount: UInt64 = 0
+        var recordingGeneration: UInt64 = 0
+        var missingObservationTime: TimeInterval = 1
+
+        session.viewModel
+            .debugInstallIPhoneMicrophonePermissionRequester {
+                permissionRequested.fulfill()
+                return true
+            }
+        session.viewModel
+            .debugInstallIPhoneMicrophoneNativeHandlers(
+                enable: { authorization in
+                    enableCount += 1
+                    recordingGeneration =
+                        0xA11C_E350 + UInt64(enableCount)
+                    authorization.debugSetRecordingGenerationForTesting(
+                        recordingGeneration
+                    )
+                },
+                disable: { authorization, _ in
+                    authorization?.revoke()
+                    return true
+                }
+            )
+        session.viewModel
+            .debugInstallIPhoneMicrophoneDidCommitObserver { _ in
+                switch enableCount {
+                case 1:
+                    initialCommit.fulfill()
+                case 2:
+                    recoveryCommit.fulfill()
+                default:
+                    XCTFail(
+                        "Interleaved evidence created an automatic recovery loop."
+                    )
+                }
+            }
+        session.viewModel
+            .debugInstallIPhoneMicrophoneSenderStatisticsReader {
+                [weak self] _ in
+                statisticsReadCount += 1
+                guard statisticsReadCount.isMultiple(of: 2),
+                      let self else {
+                    return nil
+                }
+                return self.rawMicrophoneSenderStatisticsForTests(
+                    sample: statisticsReadCount,
+                    counterSample: 0,
+                    recordingGeneration: recordingGeneration
+                )
+            }
+        session.viewModel
+            .debugInstallRawMicrophoneMissingStatisticsUptimeClock {
+                defer { missingObservationTime += 1 }
+                return missingObservationTime
+            }
+
+        session.viewModel.handleAppBecameActive()
+        await session.viewModel
+            .debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        await fulfillment(
+            of: [permissionRequested, initialCommit],
+            timeout: 2
+        )
+        let recoverCount = session.fixture.playback.recoverCount
+
+        for _ in 0..<8 {
+            await session.viewModel
+                .debugRefreshRawMicrophoneOracleForTests(
+                    from: session.peer
+                )
+        }
+        await fulfillment(of: [recoveryCommit], timeout: 2)
+
+        XCTAssertEqual(enableCount, 2)
+        XCTAssertEqual(
+            session.fixture.playback.recoverCount,
+            recoverCount + 1
+        )
+        XCTAssertTrue(session.viewModel.isMicrophoneSending)
+
+        session.viewModel.disconnect()
+        await session.peer.close()
+    }
+
+    func testSuspendedMissingStatisticsReadCannotRecoverAcrossEveryRevocationBoundary() async throws {
+        for boundary in RawMicrophoneReadRevocationBoundary.allCases {
+            let session = try makeAutomaticMicrophonePolicyFixture(
+                provenance: .authenticatedPairedCoordinatorHandoff
+            )
+            let permissionRequested = expectation(
+                description: "\(boundary.rawValue) missing permission"
+            )
+            let microphoneCommitted = expectation(
+                description: "\(boundary.rawValue) missing commit"
+            )
+            let staleReadStarted = expectation(
+                description: "\(boundary.rawValue) missing read started"
+            )
+            staleReadStarted.assertForOverFulfill = false
+            let readGate = AudioNonCooperativeGate<Void>()
+            let recordingGeneration: UInt64 = 0xA11C_E401
+            var readOrdinal = 0
+            var missingObservationTime: TimeInterval = 1
+            var stalledRecoveryAttemptCount = 0
+
+            session.viewModel
+                .debugInstallIPhoneMicrophonePermissionRequester {
+                    permissionRequested.fulfill()
+                    return true
+                }
+            session.viewModel
+                .debugInstallIPhoneMicrophoneNativeHandlers(
+                    enable: { authorization in
+                        authorization
+                            .debugSetRecordingGenerationForTesting(
+                                recordingGeneration
+                            )
+                    },
+                    disable: { authorization, _ in
+                        authorization?.revoke()
+                        return true
+                    }
+                )
+            session.viewModel
+                .debugInstallIPhoneMicrophoneDidCommitObserver { _ in
+                    microphoneCommitted.fulfill()
+                }
+            session.viewModel
+                .debugInstallIPhoneMicrophoneSenderStatisticsReader {
+                    requestedPeer in
+                    XCTAssertTrue(requestedPeer === session.peer)
+                    readOrdinal += 1
+                    guard readOrdinal == 4 else { return nil }
+                    staleReadStarted.fulfill()
+                    await readGate.wait()
+                    return nil
+                }
+            session.viewModel
+                .debugInstallRawMicrophoneMissingStatisticsUptimeClock {
+                    defer { missingObservationTime += 1 }
+                    return missingObservationTime
+                }
+            session.viewModel
+                .debugInstallStalledIPhoneMicrophoneRecoveryObserver {
+                    stalledRecoveryAttemptCount += 1
+                }
+
+            session.viewModel.handleAppBecameActive()
+            await session.viewModel
+                .debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+            await fulfillment(
+                of: [permissionRequested, microphoneCommitted],
+                timeout: 2
+            )
+
+            for _ in 0..<3 {
+                await session.viewModel
+                    .debugRefreshRawMicrophoneOracleForTests(
+                        from: session.peer
+                    )
+            }
+            XCTAssertEqual(stalledRecoveryAttemptCount, 0)
+
+            let staleRead = Task { @MainActor in
+                await session.viewModel
+                    .debugRefreshRawMicrophoneOracleForTests(
+                        from: session.peer
+                    )
+            }
+            await fulfillment(of: [staleReadStarted], timeout: 2)
+            await readGate.waitUntilBlocked()
+
+            var replacementPeer: WebRTCPeer?
+            switch boundary {
+            case .callStart:
+                session.fixture.callActivity.setCallSnapshot(
+                    nonEndedCallCount: 1,
+                    connectedNonEndedCallCount: 1
+                )
+
+            case .manualMicrophoneOff:
+                session.viewModel.toggleIPhoneMicrophone()
+
+            case .permissionDenial:
+                session.viewModel
+                    .debugDenyIPhoneMicrophonePermissionForTests()
+
+            case .transportUncertainty:
+                session.viewModel
+                    .debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+
+            case .audioPolicyRotation:
+                session.viewModel.debugRotateAudioPolicyForTests()
+
+            case .peerReplacement:
+                let replacement = try makeAudioRacePeer()
+                replacementPeer = replacement
+                session.viewModel.debugInstallScreenSessionForTests(
+                    peer: replacement,
+                    provenance:
+                        .authenticatedPairedCoordinatorHandoff
+                )
+
+            case .teardown:
+                session.viewModel.disconnect()
+            }
+
+            await readGate.open(())
+            await staleRead.value
+
+            XCTAssertEqual(
+                stalledRecoveryAttemptCount,
+                0,
+                "A stale nil read crossed \(boundary.rawValue)."
+            )
+
+            if boundary != .teardown {
+                session.viewModel.disconnect()
+            }
+            await session.peer.close()
+            if let replacementPeer {
+                await replacementPeer.close()
+            }
+        }
+    }
+
     func testRawMicrophoneOraclePublishesAfterTwoExactSamplesAndRevokesAtCallStartWithoutMutingPlayout() async throws {
         let session = try makeAutomaticMicrophonePolicyFixture(
             provenance: .authenticatedPairedCoordinatorHandoff
@@ -4026,6 +4595,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             case .transportUncertainty:
                 session.viewModel
                     .debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+
+            case .audioPolicyRotation:
+                session.viewModel.debugRotateAudioPolicyForTests()
 
             case .peerReplacement:
                 let replacement = try makeAudioRacePeer()

@@ -773,8 +773,33 @@ final class WorldwideAudioLifecycleController {
     /// the user's route choice after a private output disappears.
     @discardableResult
     func requestAutomaticRuntimeAudioRecovery() -> Bool {
+        requestAutomaticRuntimeRecovery(
+            requiresRemoteAudio: true,
+            context: "Automatic iPhone audio liveness recovery failed"
+        )
+    }
+
+    /// The microphone sender can remain useful in a session that has no negotiated Mac-audio
+    /// downlink. Preserve the same privacy and interruption gates as ordinary audio recovery, but
+    /// bind eligibility to the app-owned microphone topology instead of a remote audio track.
+    @discardableResult
+    func requestAutomaticRuntimeMicrophoneRecovery() -> Bool {
+        requestAutomaticRuntimeRecovery(
+            requiresRemoteAudio: false,
+            context: "Automatic iPhone microphone liveness recovery failed"
+        )
+    }
+
+    @discardableResult
+    private func requestAutomaticRuntimeRecovery(
+        requiresRemoteAudio: Bool,
+        context: String
+    ) -> Bool {
+        let hasEligibleRealtimePath = requiresRemoteAudio
+            ? hasRemoteAudio
+            : microphoneTopologyIsEnabled
         guard isPrepared,
-              hasRemoteAudio,
+              hasEligibleRealtimePath,
               transportIsHealthy,
               hostedCallPolicy == nil,
               !isInterrupted,
@@ -793,7 +818,7 @@ final class WorldwideAudioLifecycleController {
         _ = advanceMicrophoneTopologyGeneration()
         publishSnapshot()
         return recoverPlayback(
-            context: "Automatic iPhone audio liveness recovery failed",
+            context: context,
             proofAlreadyInvalidated: true
         )
     }

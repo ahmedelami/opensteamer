@@ -436,6 +436,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
     private var rawMicrophoneContinuityTracker =
         WorldwideRawMicrophoneContinuityTracker()
+    private var rawMicrophoneMissingStatisticsTracker =
+        WorldwideRawMicrophoneMissingStatisticsTracker()
     private var ordinaryPlayoutLivenessTracker =
         IOSOrdinaryPlayoutLivenessTracker()
     /// One automatic recovery per continuous fault episode. These latches deliberately survive
@@ -620,6 +622,10 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var debugIPhoneMicrophoneSenderStatisticsReader:
         (@MainActor (WebRTCPeer) async
             -> WebRTCIPhoneMicrophoneSenderStatistics?)?
+    private var debugRawMicrophoneMissingStatisticsUptimeClock:
+        (@MainActor () -> TimeInterval)?
+    private var debugStalledIPhoneMicrophoneRecoveryObserver:
+        (@MainActor () -> Void)?
     private var debugIOSPlayoutDiagnosticsReader: (
         @MainActor (WebRTCPeer) async -> WebRTCIOSPlayoutDiagnostics?
     )?
@@ -2815,16 +2821,18 @@ final class WorldwideSessionViewModel: ObservableObject {
             audioPolicyGeneration
         let expectedTransportAuthorizationGeneration =
             transportAuthorizationGeneration
+        let expectedMicrophoneOperationGeneration =
+            microphoneOperationGeneration
         let expectedAuthorizationIdentity =
             ObjectIdentifier(authorization)
-        guard let exactStatistics =
+        let expectedRecordingGeneration =
+            authorization.recordingGeneration
+        let expectedMicrophoneCallDisposition =
+            currentMicrophoneCallDisposition
+        let exactStatistics =
             await readIPhoneMicrophoneSenderStatistics(
                 from: sourcePeer
-            ) else {
-            invalidateRawMicrophoneOracle()
-            return
-        }
-
+            )
         guard automaticMicrophoneEligibleSessionGeneration
                 == generation,
               generation == sessionGeneration,
@@ -2833,6 +2841,8 @@ final class WorldwideSessionViewModel: ObservableObject {
                 == expectedAudioPolicyGeneration,
               transportAuthorizationGeneration
                 == expectedTransportAuthorizationGeneration,
+              microphoneOperationGeneration
+                == expectedMicrophoneOperationGeneration,
               microphoneIntentEnabled,
               microphonePermissionGranted,
               isMicrophoneSending,
@@ -2848,6 +2858,45 @@ final class WorldwideSessionViewModel: ObservableObject {
                 == expectedAuthorizationIdentity,
               authorization.isValid,
               authorization.recordingGeneration
+                == expectedRecordingGeneration,
+              currentMicrophoneCallDisposition
+                == expectedMicrophoneCallDisposition else {
+            return
+        }
+
+        guard let exactStatistics else {
+            revokePublishedRawMicrophoneOracle()
+            let binding =
+                WorldwideRawMicrophoneMissingStatisticsBinding(
+                    sessionGeneration: generation,
+                    peerIdentity: ObjectIdentifier(sourcePeer),
+                    transportAuthorizationGeneration:
+                        expectedTransportAuthorizationGeneration,
+                    audioPolicyGeneration:
+                        expectedAudioPolicyGeneration,
+                    microphoneOperationGeneration:
+                        expectedMicrophoneOperationGeneration,
+                    authorizationIdentity:
+                        expectedAuthorizationIdentity,
+                    recordingGeneration:
+                        expectedRecordingGeneration,
+                    microphoneCallDisposition:
+                        expectedMicrophoneCallDisposition
+                )
+            if rawMicrophoneMissingStatisticsTracker.observe(
+                binding: binding,
+                observedAt:
+                    rawMicrophoneMissingStatisticsObservationUptime()
+            ) == .stalled {
+                recoverFromStalledIPhoneMicrophone(
+                    generation: generation
+                )
+            }
+            return
+        }
+        rawMicrophoneMissingStatisticsTracker.reset()
+
+        guard authorization.recordingGeneration
                 == exactStatistics.sender.recordingGeneration,
               exactStatistics.sender.recordingGeneration
                 == exactStatistics.sender
@@ -2873,9 +2922,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             microphoneIntentIsCurrent: true,
             microphonePermissionGranted: true,
             callIsActive:
-                currentMicrophoneCallDisposition != .inactive,
+                expectedMicrophoneCallDisposition != .inactive,
             macHostedCallEvidenceAdmitted:
-                currentMicrophoneCallDisposition == .macHosted,
+                expectedMicrophoneCallDisposition == .macHosted,
             transportIsHealthy: true,
             statistics: exactStatistics
         )
@@ -2894,6 +2943,9 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     private func recoverFromStalledIPhoneMicrophone(generation: UUID) {
+        #if DEBUG
+        debugStalledIPhoneMicrophoneRecoveryObserver?()
+        #endif
         guard generation == sessionGeneration,
               microphoneIntentEnabled,
               isMicrophoneSending else { return }
@@ -2912,7 +2964,8 @@ final class WorldwideSessionViewModel: ObservableObject {
             return
         }
 
-        guard audioLifecycle.requestAutomaticRuntimeAudioRecovery() else {
+        guard audioLifecycle
+                .requestAutomaticRuntimeMicrophoneRecovery() else {
             return
         }
         microphoneAutomaticRecoveryConsumedSessionGeneration = generation
@@ -2933,9 +2986,28 @@ final class WorldwideSessionViewModel: ObservableObject {
             .iPhoneMicrophoneSenderStatistics()
     }
 
-    private func invalidateRawMicrophoneOracle() {
-        rawMicrophoneContinuityTracker.reset()
+    private func rawMicrophoneMissingStatisticsObservationUptime()
+        -> TimeInterval {
+        #if DEBUG
+        if let debugRawMicrophoneMissingStatisticsUptimeClock {
+            return debugRawMicrophoneMissingStatisticsUptimeClock()
+        }
+        #endif
+        return ProcessInfo.processInfo.systemUptime
+    }
+
+    private func revokePublishedRawMicrophoneOracle() {
         worldwideRawMicrophoneOracle = nil
+    }
+
+    private func clearRawMicrophoneOracle() {
+        rawMicrophoneContinuityTracker.reset()
+        revokePublishedRawMicrophoneOracle()
+    }
+
+    private func invalidateRawMicrophoneOracle() {
+        clearRawMicrophoneOracle()
+        rawMicrophoneMissingStatisticsTracker.reset()
     }
 
     private func failSession(_ message: String, generation: UUID) {
@@ -5984,6 +6056,18 @@ final class WorldwideSessionViewModel: ObservableObject {
         ) async -> WebRTCIPhoneMicrophoneSenderStatistics?
     ) {
         debugIPhoneMicrophoneSenderStatisticsReader = reader
+    }
+
+    func debugInstallRawMicrophoneMissingStatisticsUptimeClock(
+        _ clock: @escaping @MainActor () -> TimeInterval
+    ) {
+        debugRawMicrophoneMissingStatisticsUptimeClock = clock
+    }
+
+    func debugInstallStalledIPhoneMicrophoneRecoveryObserver(
+        _ observer: @escaping @MainActor () -> Void
+    ) {
+        debugStalledIPhoneMicrophoneRecoveryObserver = observer
     }
 
     func debugInstallBeforeRetiredPeerClose(
