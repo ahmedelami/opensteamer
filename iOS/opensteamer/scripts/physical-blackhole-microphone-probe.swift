@@ -7916,7 +7916,7 @@ private enum MirrorLoopbackFailureBuilder {
     }
 }
 
-private enum MirrorLoopbackWriter {
+private enum MirrorLoopbackSelfTestResultWriter {
     static func write(_ result: MirrorLoopbackResult, to url: URL) throws {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
@@ -7958,11 +7958,186 @@ private enum MirrorLoopbackWriter {
     }
 }
 
+private enum MirrorLoopbackWriter {
+    static let resultLeaf = "both-order.json"
+    private static let maximumEncodedByteCount = 1_048_576
+
+    enum Failure: Error {
+        case invalidLeaf
+        case invalidEncodedResult
+        case directoryOpen
+        case temporaryOpen
+        case write
+        case fileSync
+        case fileClose
+        case rename
+        case directorySync
+        case cleanupClose
+        case cleanupUnlink
+        case cleanupDirectorySync
+        case selfTestWrite
+
+        var stage: String {
+            switch self {
+            case .invalidLeaf: return "invalid-leaf"
+            case .invalidEncodedResult: return "invalid-encoded-result"
+            case .directoryOpen: return "directory-open"
+            case .temporaryOpen: return "temporary-open"
+            case .write: return "write"
+            case .fileSync: return "file-sync"
+            case .fileClose: return "file-close"
+            case .rename: return "rename"
+            case .directorySync: return "directory-sync"
+            case .cleanupClose: return "cleanup-close"
+            case .cleanupUnlink: return "cleanup-unlink"
+            case .cleanupDirectorySync: return "cleanup-directory-sync"
+            case .selfTestWrite: return "self-test-write"
+            }
+        }
+    }
+
+    private static func cleanupTemporary(
+        directoryDescriptor: Int32,
+        outputDescriptor: Int32,
+        outputIsOpen: inout Bool,
+        temporaryLeaf: String,
+        temporaryExists: inout Bool
+    ) -> Failure? {
+        var cleanupFailure: Failure?
+        if outputIsOpen {
+            let closeStatus = Darwin.close(outputDescriptor)
+            outputIsOpen = false
+            if closeStatus != 0 {
+                cleanupFailure = .cleanupClose
+            }
+        }
+        if temporaryExists {
+            let unlinkStatus = Darwin.unlinkat(
+                directoryDescriptor,
+                temporaryLeaf,
+                0
+            )
+            if unlinkStatus == 0 {
+                temporaryExists = false
+            } else if cleanupFailure == nil {
+                cleanupFailure = .cleanupUnlink
+            }
+        }
+        if Darwin.fsync(directoryDescriptor) != 0,
+           cleanupFailure == nil {
+            cleanupFailure = .cleanupDirectorySync
+        }
+        return cleanupFailure
+    }
+
+    static func write(_ encodedResult: [UInt8], resultLeaf: String) throws {
+        guard resultLeaf == Self.resultLeaf else {
+            throw Failure.invalidLeaf
+        }
+        guard !encodedResult.isEmpty,
+              encodedResult.count <= maximumEncodedByteCount else {
+            throw Failure.invalidEncodedResult
+        }
+
+        let directoryDescriptor = Darwin.open(
+            ".",
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard directoryDescriptor >= 0 else {
+            throw Failure.directoryOpen
+        }
+        defer { _ = Darwin.close(directoryDescriptor) }
+
+        var randomSuffix: UInt64 = 0
+        withUnsafeMutableBytes(of: &randomSuffix) { buffer in
+            Darwin.arc4random_buf(buffer.baseAddress, buffer.count)
+        }
+        let temporaryLeaf = ".both-order.json.\(getpid()).\(randomSuffix).tmp"
+        let outputDescriptor = Darwin.openat(
+            directoryDescriptor,
+            temporaryLeaf,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            mode_t(0o600)
+        )
+        guard outputDescriptor >= 0 else {
+            throw Failure.temporaryOpen
+        }
+
+        var outputIsOpen = true
+        var temporaryExists = true
+        do {
+            var writeFailed = false
+            encodedResult.withUnsafeBytes { buffer in
+                guard let baseAddress = buffer.baseAddress else {
+                    writeFailed = true
+                    return
+                }
+                var offset = 0
+                while offset < buffer.count {
+                    let byteCount = Darwin.write(
+                        outputDescriptor,
+                        baseAddress.advanced(by: offset),
+                        buffer.count - offset
+                    )
+                    if byteCount < 0 {
+                        if errno == EINTR { continue }
+                        writeFailed = true
+                        return
+                    }
+                    guard byteCount > 0 else {
+                        writeFailed = true
+                        return
+                    }
+                    offset += byteCount
+                }
+            }
+            guard !writeFailed else { throw Failure.write }
+            guard Darwin.fsync(outputDescriptor) == 0 else {
+                throw Failure.fileSync
+            }
+            let closeStatus = Darwin.close(outputDescriptor)
+            outputIsOpen = false
+            guard closeStatus == 0 else { throw Failure.fileClose }
+
+            let renameStatus = Darwin.renameatx_np(
+                directoryDescriptor,
+                temporaryLeaf,
+                directoryDescriptor,
+                resultLeaf,
+                UInt32(RENAME_EXCL)
+            )
+            guard renameStatus == 0 else { throw Failure.rename }
+            temporaryExists = false
+        } catch let originalFailure as Failure {
+            if let cleanupFailure = cleanupTemporary(
+                directoryDescriptor: directoryDescriptor,
+                outputDescriptor: outputDescriptor,
+                outputIsOpen: &outputIsOpen,
+                temporaryLeaf: temporaryLeaf,
+                temporaryExists: &temporaryExists
+            ) {
+                throw cleanupFailure
+            }
+            throw originalFailure
+        }
+        guard Darwin.fsync(directoryDescriptor) == 0 else {
+            throw Failure.directorySync
+        }
+    }
+}
+
+private struct MirrorLoopbackWriterCanaryResult: Encodable {
+    let nonce: String
+    let schema = "opensteamer.mirror-loopback-relative-writer-canary.v1"
+    let status = "passed"
+}
+
 private enum MirrorLoopbackProgram {
     static let usage = """
     Usage:
-      physical-blackhole-microphone-probe mirror-loopback --nonce <fresh-nonsecret-token> --required-headroom-seconds <60...86400> --result <json-path>
+      physical-blackhole-microphone-probe mirror-loopback --nonce <fresh-nonsecret-token> --required-headroom-seconds <60...86400> --result both-order.json
       physical-blackhole-microphone-probe mirror-loopback-self-test --case <case> --nonce <fresh-nonsecret-token> --required-headroom-seconds <0...86400> --result <json-path>
+      physical-blackhole-microphone-probe mirror-loopback-writer-canary --nonce <fresh-nonsecret-token> --result both-order.json
 
     mirror-loopback requires both exact repo-owned virtual-microphone endpoints to be quiescent. It exercises complete visible-first and hidden-first restart lifecycles, then opens queue-local writer-output and visible-input AudioQueues for one bounded mono challenge. It never changes a default device and fails closed on any role, model, clock-domain, format, timestamp, PCM, default-route, lifecycle, or teardown mismatch. The public API cannot expose the zero-timestamp seed, so the artifact reports near-zero shared restart clocks without claiming seed identity.
     """
@@ -7971,21 +8146,45 @@ private enum MirrorLoopbackProgram {
         let arguments = Array(CommandLine.arguments.dropFirst())
         guard let command = arguments.first,
               command == "mirror-loopback"
-                || command == "mirror-loopback-self-test" else {
+                || command == "mirror-loopback-self-test"
+                || command == "mirror-loopback-writer-canary" else {
             return nil
         }
         do {
             let pairs = try parsePairs(Array(arguments.dropFirst()))
-            let expectedKeys: Set<String> = command == "mirror-loopback"
-                ? ["--nonce", "--required-headroom-seconds", "--result"]
-                : [
+            let expectedKeys: Set<String>
+            switch command {
+            case "mirror-loopback":
+                expectedKeys = [
+                    "--nonce", "--required-headroom-seconds", "--result",
+                ]
+            case "mirror-loopback-self-test":
+                expectedKeys = [
                     "--case", "--nonce", "--required-headroom-seconds",
                     "--result",
                 ]
+            default:
+                expectedKeys = ["--nonce", "--result"]
+            }
             guard Set(pairs.keys) == expectedKeys,
                   let nonce = pairs["--nonce"],
-                  let resultPath = pairs["--result"],
-                  let headroomText = pairs["--required-headroom-seconds"],
+                  let resultPath = pairs["--result"] else {
+                throw ProbeError(code: "usage")
+            }
+            try validateNonce(nonce)
+            if command == "mirror-loopback-writer-canary" {
+                try validateResultLeaf(resultPath)
+                let encodedCanary = try encodeForRelativeWriter(
+                    MirrorLoopbackWriterCanaryResult(nonce: nonce)
+                )
+                try MirrorLoopbackWriter.write(
+                    encodedCanary,
+                    resultLeaf: resultPath
+                )
+                return 0
+            }
+
+            guard let headroomText = pairs["--required-headroom-seconds"],
                   let requiredHeadroomSeconds = Double(headroomText),
                   requiredHeadroomSeconds.isFinite,
                   requiredHeadroomSeconds >= (command == "mirror-loopback"
@@ -7995,8 +8194,11 @@ private enum MirrorLoopbackProgram {
                     <= MirrorLoopbackPolicy.maximumHeadroomSeconds else {
                 throw ProbeError(code: "usage")
             }
-            try validateNonce(nonce)
-            try validateResultPath(resultPath)
+            if command == "mirror-loopback" {
+                try validateResultLeaf(resultPath)
+            } else {
+                try validateResultPath(resultPath)
+            }
             let result: MirrorLoopbackResult
             if command == "mirror-loopback-self-test" {
                 guard MirrorLoopbackLiveSeamSelfTest.passes(nonce: nonce) else {
@@ -8038,10 +8240,22 @@ private enum MirrorLoopbackProgram {
                     )
                 }
             }
-            try MirrorLoopbackWriter.write(
-                result,
-                to: URL(fileURLWithPath: resultPath)
-            )
+            if command == "mirror-loopback" {
+                let encodedResult = try encodeForRelativeWriter(result)
+                try MirrorLoopbackWriter.write(
+                    encodedResult,
+                    resultLeaf: resultPath
+                )
+            } else {
+                do {
+                    try MirrorLoopbackSelfTestResultWriter.write(
+                        result,
+                        to: URL(fileURLWithPath: resultPath)
+                    )
+                } catch {
+                    throw MirrorLoopbackWriter.Failure.selfTestWrite
+                }
+            }
             switch result.status {
             case "passed": return 0
             default: return 1
@@ -8049,7 +8263,11 @@ private enum MirrorLoopbackProgram {
         } catch let error as ProbeError where error.code == "usage" {
             FileHandle.standardError.write(Data(usage.utf8))
             return 64
+        } catch let error as MirrorLoopbackWriter.Failure {
+            reportWriterFailure(stage: error.stage)
+            return 74
         } catch {
+            reportWriterFailure(stage: "program")
             return 74
         }
     }
@@ -8091,6 +8309,46 @@ private enum MirrorLoopbackProgram {
     private static func validateResultPath(_ path: String) throws {
         guard !path.isEmpty, path.utf8.count <= 4_096 else {
             throw ProbeError(code: "usage")
+        }
+    }
+
+    private static func validateResultLeaf(_ path: String) throws {
+        guard path == MirrorLoopbackWriter.resultLeaf else {
+            throw ProbeError(code: "usage")
+        }
+    }
+
+    private static func encodeForRelativeWriter<Value: Encodable>(
+        _ value: Value
+    ) throws -> [UInt8] {
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            return Array(try encoder.encode(value))
+        } catch {
+            throw MirrorLoopbackWriter.Failure.invalidEncodedResult
+        }
+    }
+
+    private static func reportWriterFailure(stage: String) {
+        let message = "OPENSTEAMER_MIRROR_LOOPBACK_WRITER_ERROR_V1 stage=\(stage)\n"
+        let bytes = Array(message.utf8.prefix(160))
+        bytes.withUnsafeBytes { buffer in
+            guard let baseAddress = buffer.baseAddress else { return }
+            var offset = 0
+            while offset < buffer.count {
+                let byteCount = Darwin.write(
+                    STDERR_FILENO,
+                    baseAddress.advanced(by: offset),
+                    buffer.count - offset
+                )
+                if byteCount < 0 {
+                    if errno == EINTR { continue }
+                    return
+                }
+                guard byteCount > 0 else { return }
+                offset += byteCount
+            }
         }
     }
 }
