@@ -1679,7 +1679,7 @@ final class DiagnosticDriverV9UpdateContractTests: XCTestCase {
         }
     }
 
-    func testDynamicSelectedDisplayPinsExactlySixCanonicalMappingsAndRejectsAliases() throws {
+    func testDynamicSelectedDisplayNormalizesSixMappingsAllowsRawExtrasAndRejectsAliases() throws {
         let controller = try source(controllerPath)
         let constants = try functionBody(
             controller,
@@ -1761,11 +1761,25 @@ final class DiagnosticDriverV9UpdateContractTests: XCTestCase {
         let refresh = try functionBody(
             controller,
             beginningWith: "fn normalize_display_refresh_millihertz(",
-            endingBefore: "fn display_mode_identity("
+            endingBefore: "fn copy_current_virtual_display_modes_with_duplicates("
         )
         XCTAssertTrue(refresh.contains("!refresh_rate.is_finite()"))
         XCTAssertTrue(refresh.contains("(refresh_rate - 60.0).abs() > 0.05"))
         XCTAssertTrue(refresh.contains("Ok(CURRENT_VIRTUAL_DISPLAY_REFRESH_MILLIHERTZ)"))
+        assertOrdered([
+            "fn raw_display_mode_observation_from_values(",
+            "let strict_identity = normalize_display_refresh_millihertz(refresh_rate)",
+            ".ok()",
+            "refresh_rate_bits: refresh_rate.to_bits()",
+            "strict_identity,",
+            "fn raw_display_mode_observation(",
+            "CGDisplayModeGetRefreshRate(mode)",
+            "fn strict_display_mode_identity_from_observation(",
+            "observation.strict_identity.clone().ok_or_else",
+            "selected virtual-display mode is not a strict 60 Hz identity",
+            "fn display_mode_identity(",
+            "strict_display_mode_identity_from_observation(&raw_display_mode_observation(mode))",
+        ], in: refresh)
 
         let exactCapabilities = try functionBody(
             controller,
@@ -1774,11 +1788,14 @@ final class DiagnosticDriverV9UpdateContractTests: XCTestCase {
         )
         assertOrdered([
             "required_current_virtual_display_modes()",
-            ".collect::<BTreeSet<_>>()",
+            ".iter()",
+            ".all(|required| exact_raw_display_mode_match_count(available_modes, required) == 1)",
+            "exact_raw_display_mode_match_count(available_modes, selected_mode) == 1",
+            "current_virtual_display_mode_is_reviewed(selected_mode)",
             "allow_restart_interim_selected_mode",
-            "!current_virtual_display_mode_is_reviewed(selected_mode)",
-            "expected.insert(selected_mode.clone())",
-            "available_modes.iter().cloned().collect::<BTreeSet<_>>() == expected",
+            "fn normalized_reviewed_virtual_display_capabilities(",
+            "observed_virtual_display_capability_set_is_exact(",
+            ".then(required_current_virtual_display_modes)",
         ], in: exactCapabilities)
         XCTAssertEqual(
             occurrences(
@@ -1821,18 +1838,284 @@ final class DiagnosticDriverV9UpdateContractTests: XCTestCase {
             "virtual-display snapshot duplicate selected key",
             "virtual-display snapshot extra key",
             "virtual-display restore noncanonical number",
+            "let reviewed_raw_modes = modes.iter().map(strict_observation).collect::<Vec<_>>()",
+            "let zero_hz_extra = raw_display_mode_observation_from_values(640, 480, 640, 480, 0.0)",
+            "raw_display_mode_observation_from_values(800, 600, 1_600, 1_200, 30.0)",
+            "f64::NAN",
+            "f64::INFINITY",
+            "let mut raw_modes_with_irrelevant_extras = reviewed_raw_modes.clone()",
+            "unsupported_selected_observation.clone()",
+            "zero_hz_extra.clone()",
+            "non_sixty_extra.clone()",
+            "nonfinite_extra.clone()",
+            "unknown_extra.clone()",
+            "let mut missing_required_modes = raw_modes_with_irrelevant_extras.clone()",
+            "missing_required_modes.remove(2)",
+            "duplicate_required_modes.push(strict_observation(&modes[2]))",
+            "duplicate_interim_selected_modes.push(unsupported_selected_observation.clone())",
+            "!observed_virtual_display_capability_set_is_exact(",
+            "&raw_modes_with_irrelevant_extras",
+            "normalized_reviewed_virtual_display_capabilities(",
+            "Some(modes.clone())",
+            "&missing_required_modes",
+            "&duplicate_required_modes",
             "exact_raw_display_mode_match_count(&[], &modes[0]) != 0",
-            "exact_raw_display_mode_match_count(&modes, &modes[0]) != 1",
+            "exact_raw_display_mode_match_count(&reviewed_raw_modes, &modes[0]) != 1",
             "exact_raw_display_mode_match_count(&duplicate_target_modes, &modes[0]) != 2",
+            "zero_hz_extra.strict_identity.is_some()",
+            "non_sixty_extra.strict_identity.is_some()",
+            "nonfinite_extra.strict_identity.is_some()",
+            "unknown_extra.strict_identity.is_some()",
+            "zero_hz_extra.refresh_rate_bits != 0.0_f64.to_bits()",
+            "non_sixty_extra.refresh_rate_bits != 30.0_f64.to_bits()",
+            "nonfinite_extra.refresh_rate_bits != f64::NAN.to_bits()",
+            "unknown_extra.refresh_rate_bits != f64::INFINITY.to_bits()",
+            "strict_display_mode_identity_from_observation(&zero_hz_extra).is_ok()",
+            "strict_display_mode_identity_from_observation(&non_sixty_extra).is_ok()",
+            "strict_display_mode_identity_from_observation(&nonfinite_extra).is_ok()",
             "current_virtual_display_selected_mode_is_exact(&wrong_identity_topology)",
-            "unsupported/seventh virtual-display capability entered a stable reviewed snapshot",
+            "raw virtual-display inventory did not ignore lossless unknown/zero/non-60 extras or rejected exact required-mode semantics",
         ] {
             XCTAssertTrue(semantic.contains(token), "missing dynamic-display case: \(token)")
         }
+        assertOrdered([
+            "|| !observed_virtual_display_capability_set_is_exact(",
+            "&raw_modes_with_irrelevant_extras",
+            "&modes[0]",
+            "false",
+            "&raw_modes_with_irrelevant_extras",
+            "&modes[0]",
+            "true",
+            "&raw_modes_with_irrelevant_extras",
+            "&unsupported",
+            "false",
+            "&raw_modes_with_irrelevant_extras",
+            "&unsupported",
+            "true",
+            "normalized_reviewed_virtual_display_capabilities(",
+            "&raw_modes_with_irrelevant_extras",
+            "&modes[0]",
+            "false",
+            ") != Some(modes.clone())",
+        ], in: semantic)
+        XCTAssertFalse(semantic.contains(
+            "unsupported/seventh virtual-display capability entered a stable reviewed snapshot"
+        ))
         XCTAssertTrue(controller.contains("self_test_dynamic_selected_virtual_display_protocol()?;"))
+        try assertRawDisplayExtrasAndOwnedCoreGraphicsResources(controller)
     }
 
-    func testUID501DisplaySnapshotRestoreBindsExactIdentityCapabilitiesAndUniqueRawModes() throws {
+    private func assertRawDisplayExtrasAndOwnedCoreGraphicsResources(
+        _ controller: String
+    ) throws {
+        let observationType = try functionBody(
+            controller,
+            beginningWith: "struct RawDisplayModeObservation {",
+            endingBefore: "struct VirtualDisplayTopology {"
+        )
+        for token in [
+            "logical_width: usize",
+            "logical_height: usize",
+            "pixel_width: usize",
+            "pixel_height: usize",
+            "refresh_rate_bits: u64",
+            "strict_identity: Option<DisplayModeIdentity>",
+        ] {
+            XCTAssertTrue(observationType.contains(token), "raw observation lost field: \(token)")
+        }
+
+        let rawClassifier = try functionBody(
+            controller,
+            beginningWith: "fn normalize_display_refresh_millihertz(",
+            endingBefore: "fn copy_current_virtual_display_modes_with_duplicates("
+        )
+        assertOrdered([
+            "!refresh_rate.is_finite()",
+            "(refresh_rate - 60.0).abs() > 0.05",
+            "fn raw_display_mode_observation_from_values(",
+            "normalize_display_refresh_millihertz(refresh_rate)",
+            ".ok()",
+            ".map(|refresh_millihertz| DisplayModeIdentity",
+            "refresh_rate_bits: refresh_rate.to_bits()",
+            "strict_identity",
+            "fn raw_display_mode_observation(",
+            "CGDisplayModeGetWidth(mode)",
+            "CGDisplayModeGetHeight(mode)",
+            "CGDisplayModeGetPixelWidth(mode)",
+            "CGDisplayModeGetPixelHeight(mode)",
+            "CGDisplayModeGetRefreshRate(mode)",
+            "fn strict_display_mode_identity_from_observation(",
+            "observation.strict_identity.clone().ok_or_else",
+            "selected virtual-display mode is not a strict 60 Hz identity",
+            "fn display_mode_identity(",
+            "strict_display_mode_identity_from_observation(&raw_display_mode_observation(mode))",
+        ], in: rawClassifier)
+        XCTAssertFalse(rawClassifier.contains("normalize_display_refresh_millihertz(refresh_rate)?"))
+
+        let scoped = try functionBody(
+            controller,
+            beginningWith: "struct ScopedResource<T, F: FnMut(T)> {",
+            endingBefore: "fn release_owned_cf_object("
+        )
+        assertOrdered([
+            "value: Option<T>",
+            "fn new(value: T, cleanup: F)",
+            "value: Some(value)",
+            "fn take(&mut self) -> T",
+            "self.value",
+            ".take()",
+            "impl<T, F: FnMut(T)> Drop for ScopedResource<T, F>",
+            "if let Some(value) = self.value.take()",
+            "(self.cleanup)(value)",
+        ], in: scoped)
+        XCTAssertEqual(occurrences(of: "(self.cleanup)(value)", in: scoped), 1)
+
+        let owned = try functionBody(
+            controller,
+            beginningWith: "fn release_owned_cf_object(",
+            endingBefore: "fn cancel_pending_display_configuration("
+        )
+        assertOrdered([
+            "unsafe { CFRelease(pointer.as_ptr()) }",
+            "struct OwnedCfObject",
+            "fn from_copy(pointer: *const std::ffi::c_void, label: &str) -> Result<Self>",
+            "std::ptr::NonNull::new(pointer.cast_mut())",
+            "ScopedResource::new(",
+            "release_owned_cf_object",
+            "fn as_ptr(&self) -> *const std::ffi::c_void",
+            "self.resource.value().as_ptr()",
+        ], in: owned)
+        XCTAssertEqual(occurrences(of: "CFRelease(", in: owned), 1)
+
+        let configurationGuard = try functionBody(
+            controller,
+            beginningWith: "fn cancel_pending_display_configuration(",
+            endingBefore: "fn required_current_virtual_display_modes()"
+        )
+        assertOrdered([
+            "CGCancelDisplayConfiguration(pointer.as_ptr())",
+            "struct PendingDisplayConfiguration",
+            "fn begin() -> Result<Self>",
+            "CGBeginDisplayConfiguration(&mut pointer)",
+            "let pending = std::ptr::NonNull::new(pointer).map(|pointer| Self",
+            "ScopedResource::new(",
+            "cancel_pending_display_configuration",
+            "if status != 0",
+            "pending.ok_or_else",
+            "fn complete_for_session(mut self) -> i32",
+            "let pointer = self.resource.take()",
+            "CGCompleteDisplayConfiguration(pointer.as_ptr(), DISPLAY_CONFIGURATION_FOR_SESSION)",
+        ], in: configurationGuard)
+        XCTAssertEqual(
+            occurrences(of: "CGCancelDisplayConfiguration(", in: configurationGuard),
+            1
+        )
+        XCTAssertEqual(
+            occurrences(of: "CGCompleteDisplayConfiguration(", in: configurationGuard),
+            1
+        )
+
+        let copyModes = try functionBody(
+            controller,
+            beginningWith: "fn copy_current_virtual_display_modes_with_duplicates(",
+            endingBefore: "fn observed_virtual_display_capability_set_is_exact("
+        )
+        assertOrdered([
+            "let options = OwnedCfObject::from_copy",
+            "CFDictionaryCreate(",
+            "CGDisplayCopyAllDisplayModes(display, options.as_ptr())",
+            "current virtual display mode set",
+        ], in: copyModes)
+        XCTAssertEqual(occurrences(of: "OwnedCfObject::from_copy", in: copyModes), 2)
+        XCTAssertFalse(copyModes.contains("CFRelease("))
+
+        let capture = try functionBody(
+            controller,
+            beginningWith: "fn capture_current_virtual_display_topology_local_with_policy(",
+            endingBefore: "fn display_capability_set_token("
+        )
+        assertOrdered([
+            "let mode = OwnedCfObject::from_copy(",
+            "CGDisplayCopyDisplayMode(display)",
+            "let selected_mode = display_mode_identity(mode.as_ptr())?",
+            "let all_modes = copy_current_virtual_display_modes_with_duplicates(display)?",
+            "CFArrayGetCount(all_modes.as_ptr())",
+            "let available = unsafe { CFArrayGetValueAtIndex(all_modes.as_ptr(), index) }",
+            "if available.is_null()",
+            "available_modes.push(raw_display_mode_observation(available))",
+            "exact_raw_display_mode_match_count(&available_modes, &selected_mode)",
+            "raw_selected_mode_matches != 1",
+            "normalized_reviewed_virtual_display_capabilities(",
+            "available_modes: authenticated_available_modes",
+        ], in: capture)
+        XCTAssertEqual(occurrences(of: "OwnedCfObject::from_copy", in: capture), 1)
+        XCTAssertFalse(capture.contains("OwnedCfObject::from_copy(available"))
+        XCTAssertFalse(capture.contains("CFRelease("))
+
+        let apply = try functionBody(
+            controller,
+            beginningWith: "fn apply_exact_current_virtual_display_mode_local(",
+            endingBefore: "fn restore_exact_current_virtual_display_mode_after_host_restart("
+        )
+        assertOrdered([
+            "if !current_virtual_display_mode_is_reviewed(target)",
+            "capture_current_virtual_display_topology_local_with_policy(true)?",
+            "let all_modes = copy_current_virtual_display_modes_with_duplicates(display)?",
+            "let candidate = unsafe { CFArrayGetValueAtIndex(all_modes.as_ptr(), index) }",
+            "if candidate.is_null()",
+            "let observation = raw_display_mode_observation(candidate)",
+            "observation.strict_identity.as_ref() == Some(target)",
+            "let matches = exact_raw_display_mode_match_count(&observed_modes, target)",
+            "if matches != 1",
+            "let selected_again = OwnedCfObject::from_copy(",
+            "display_mode_identity(selected_again.as_ptr())?",
+            "drop(selected_again)",
+            "let configuration = PendingDisplayConfiguration::begin()?",
+            "CGConfigureDisplayWithDisplayMode(",
+            "if configure != 0",
+            "let complete = configuration.complete_for_session()",
+            "drop(all_modes)",
+            "if complete != 0",
+            "read_current_virtual_display_topology_local()",
+            "selected_virtual_display_mode(&topology) == *target",
+        ], in: apply)
+        XCTAssertEqual(occurrences(of: "OwnedCfObject::from_copy", in: apply), 1)
+        XCTAssertFalse(apply.contains("OwnedCfObject::from_copy(candidate"))
+        XCTAssertFalse(apply.contains("CFRelease("))
+        XCTAssertFalse(apply.contains("CGCancelDisplayConfiguration("))
+
+        let ownershipFixture = try functionBody(
+            controller,
+            beginningWith: "fn self_test_core_graphics_scoped_resource_ownership()",
+            endingBefore: "fn self_test_dynamic_selected_virtual_display_protocol()"
+        )
+        for token in [
+            "normal_cleanup_count.get() != 1",
+            "injected_error.is_ok()",
+            "error_cleanup_count.get() != 1",
+            "disarmed_cleanup_count.get() != 0",
+            "CoreGraphics scoped resource single-release/disarm model failed",
+            "capture_body.contains(\"OwnedCfObject::from_copy\")",
+            "capture_body.contains(\"raw_display_mode_observation(available)\")",
+            "capture_body.contains(\"CFRelease(\")",
+            "apply_body.contains(\"PendingDisplayConfiguration::begin()\")",
+            "apply_body.contains(\"CFRelease(\")",
+            "let begin_position = configuration_body.find(\"CGBeginDisplayConfiguration\")",
+            "let guarded_position = configuration_body.find(\"let pending = std::ptr::NonNull::new(pointer)\")",
+            "let error_position = configuration_body.find(\"if status != 0\")",
+            "let disarm_position = configuration_body.find(\"let pointer = self.resource.take();\")",
+            "let complete_position = configuration_body.find(\"CGCompleteDisplayConfiguration\")",
+            "begin < guarded && guarded < error",
+            "disarm < complete",
+            "configuration_body.contains(\"cancel_pending_display_configuration\")",
+            "CoreGraphics owned-CF/configuration cancellation structure changed",
+        ] {
+            XCTAssertTrue(ownershipFixture.contains(token), "missing cleanup fixture: \(token)")
+        }
+        XCTAssertTrue(controller.contains("self_test_core_graphics_scoped_resource_ownership()?;"))
+    }
+
+    func testUID501DisplaySnapshotRestoreBindsIdentityNormalizedCapabilitiesAndUniqueRequiredModes() throws {
         let controller = try source(controllerPath)
         for token in [
             #"const UID501_DISPLAY_SNAPSHOT_MODE: &str = "--uid501-current-virtual-display-snapshot";"#,
@@ -1877,9 +2160,10 @@ final class DiagnosticDriverV9UpdateContractTests: XCTestCase {
             "if !(1..=256).contains(&mode_count)",
             "exact_raw_display_mode_match_count(&available_modes, &selected_mode)",
             "raw_selected_mode_matches != 1",
-            "available_modes.sort()",
-            "available_modes.dedup()",
-            "observed_virtual_display_capability_set_is_exact(",
+            "normalized_reviewed_virtual_display_capabilities(",
+            "&available_modes",
+            "&selected_mode",
+            "available_modes: authenticated_available_modes",
             "capture_current_virtual_display_topology_local_with_policy(false)",
             "topology.available_modes == required_current_virtual_display_modes()",
         ] {
@@ -1967,9 +2251,12 @@ final class DiagnosticDriverV9UpdateContractTests: XCTestCase {
             "copy_current_virtual_display_modes_with_duplicates(display)?",
             "exact_raw_display_mode_match_count(&observed_modes, target)",
             "if matches != 1",
-            "CGBeginDisplayConfiguration",
+            "!observed_virtual_display_capability_set_is_exact(",
+            "&observed_modes",
+            "&selected_virtual_display_mode(&topology)",
+            "PendingDisplayConfiguration::begin()?",
             "CGConfigureDisplayWithDisplayMode",
-            "CGCompleteDisplayConfiguration(configuration, DISPLAY_CONFIGURATION_FOR_SESSION)",
+            "configuration.complete_for_session()",
             "read_current_virtual_display_topology_local()",
             "selected_virtual_display_mode(&topology) == *target",
         ], in: apply)

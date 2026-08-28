@@ -4254,6 +4254,16 @@ struct DisplayModeIdentity {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct RawDisplayModeObservation {
+    logical_width: usize,
+    logical_height: usize,
+    pixel_width: usize,
+    pixel_height: usize,
+    refresh_rate_bits: u64,
+    strict_identity: Option<DisplayModeIdentity>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct VirtualDisplayTopology {
     vendor: u32,
     product: u32,
@@ -4319,6 +4329,115 @@ unsafe extern "C" {
         value_callbacks: *const std::ffi::c_void,
     ) -> *const std::ffi::c_void;
     static kCFBooleanTrue: *const std::ffi::c_void;
+}
+
+struct ScopedResource<T, F: FnMut(T)> {
+    value: Option<T>,
+    cleanup: F,
+}
+
+impl<T, F: FnMut(T)> ScopedResource<T, F> {
+    fn new(value: T, cleanup: F) -> Self {
+        Self {
+            value: Some(value),
+            cleanup,
+        }
+    }
+
+    fn value(&self) -> &T {
+        self.value
+            .as_ref()
+            .expect("scoped resource was accessed after disarm")
+    }
+
+    fn take(&mut self) -> T {
+        self.value
+            .take()
+            .expect("scoped resource was disarmed more than once")
+    }
+}
+
+impl<T, F: FnMut(T)> Drop for ScopedResource<T, F> {
+    fn drop(&mut self) {
+        if let Some(value) = self.value.take() {
+            (self.cleanup)(value);
+        }
+    }
+}
+
+fn release_owned_cf_object(pointer: std::ptr::NonNull<std::ffi::c_void>) {
+    unsafe { CFRelease(pointer.as_ptr()) };
+}
+
+struct OwnedCfObject {
+    resource: ScopedResource<
+        std::ptr::NonNull<std::ffi::c_void>,
+        fn(std::ptr::NonNull<std::ffi::c_void>),
+    >,
+}
+
+impl OwnedCfObject {
+    fn from_copy(pointer: *const std::ffi::c_void, label: &str) -> Result<Self> {
+        let pointer = std::ptr::NonNull::new(pointer.cast_mut())
+            .ok_or_else(|| ControllerError(format!("{label} is unavailable")))?;
+        Ok(Self {
+            resource: ScopedResource::new(
+                pointer,
+                release_owned_cf_object as fn(std::ptr::NonNull<std::ffi::c_void>),
+            ),
+        })
+    }
+
+    fn as_ptr(&self) -> *const std::ffi::c_void {
+        self.resource.value().as_ptr()
+    }
+}
+
+fn cancel_pending_display_configuration(pointer: std::ptr::NonNull<std::ffi::c_void>) {
+    let _ = unsafe { CGCancelDisplayConfiguration(pointer.as_ptr()) };
+}
+
+struct PendingDisplayConfiguration {
+    resource: ScopedResource<
+        std::ptr::NonNull<std::ffi::c_void>,
+        fn(std::ptr::NonNull<std::ffi::c_void>),
+    >,
+}
+
+impl PendingDisplayConfiguration {
+    fn begin() -> Result<Self> {
+        let mut pointer = std::ptr::null_mut();
+        let status = unsafe { CGBeginDisplayConfiguration(&mut pointer) };
+        let pending = std::ptr::NonNull::new(pointer).map(|pointer| Self {
+            resource: ScopedResource::new(
+                pointer,
+                cancel_pending_display_configuration
+                    as fn(std::ptr::NonNull<std::ffi::c_void>),
+            ),
+        });
+        if status != 0 {
+            return Err(ControllerError(format!(
+                "cannot begin selected-mode restoration: status={status}"
+            )));
+        }
+        pending.ok_or_else(|| {
+            ControllerError(
+                "cannot begin selected-mode restoration: successful call returned no configuration"
+                    .to_owned(),
+            )
+        })
+    }
+
+    fn as_ptr(&self) -> *mut std::ffi::c_void {
+        self.resource.value().as_ptr()
+    }
+
+    fn complete_for_session(mut self) -> i32 {
+        let pointer = self.resource.take();
+        unsafe {
+            CGCompleteDisplayConfiguration(pointer.as_ptr(), DISPLAY_CONFIGURATION_FOR_SESSION)
+        }
+    }
 }
 
 fn required_current_virtual_display_modes() -> Vec<DisplayModeIdentity> {
@@ -4428,21 +4547,61 @@ fn normalize_display_refresh_millihertz(refresh_rate: f64) -> Result<u32> {
     Ok(CURRENT_VIRTUAL_DISPLAY_REFRESH_MILLIHERTZ)
 }
 
-fn display_mode_identity(mode: *const std::ffi::c_void) -> Result<DisplayModeIdentity> {
-    Ok(DisplayModeIdentity {
-        logical_width: unsafe { CGDisplayModeGetWidth(mode) },
-        logical_height: unsafe { CGDisplayModeGetHeight(mode) },
-        pixel_width: unsafe { CGDisplayModeGetPixelWidth(mode) },
-        pixel_height: unsafe { CGDisplayModeGetPixelHeight(mode) },
-        refresh_millihertz: normalize_display_refresh_millihertz(unsafe {
-            CGDisplayModeGetRefreshRate(mode)
-        })?,
+fn raw_display_mode_observation_from_values(
+    logical_width: usize,
+    logical_height: usize,
+    pixel_width: usize,
+    pixel_height: usize,
+    refresh_rate: f64,
+) -> RawDisplayModeObservation {
+    let strict_identity = normalize_display_refresh_millihertz(refresh_rate)
+        .ok()
+        .map(|refresh_millihertz| DisplayModeIdentity {
+            logical_width,
+            logical_height,
+            pixel_width,
+            pixel_height,
+            refresh_millihertz,
+        });
+    RawDisplayModeObservation {
+        logical_width,
+        logical_height,
+        pixel_width,
+        pixel_height,
+        refresh_rate_bits: refresh_rate.to_bits(),
+        strict_identity,
+    }
+}
+
+fn raw_display_mode_observation(
+    mode: *const std::ffi::c_void,
+) -> RawDisplayModeObservation {
+    raw_display_mode_observation_from_values(
+        unsafe { CGDisplayModeGetWidth(mode) },
+        unsafe { CGDisplayModeGetHeight(mode) },
+        unsafe { CGDisplayModeGetPixelWidth(mode) },
+        unsafe { CGDisplayModeGetPixelHeight(mode) },
+        unsafe { CGDisplayModeGetRefreshRate(mode) },
+    )
+}
+
+fn strict_display_mode_identity_from_observation(
+    observation: &RawDisplayModeObservation,
+) -> Result<DisplayModeIdentity> {
+    observation.strict_identity.clone().ok_or_else(|| {
+        ControllerError(
+            "selected virtual-display mode is not a strict 60 Hz identity".to_owned(),
+        )
     })
+}
+
+fn display_mode_identity(mode: *const std::ffi::c_void) -> Result<DisplayModeIdentity> {
+    strict_display_mode_identity_from_observation(&raw_display_mode_observation(mode))
 }
 
 fn copy_current_virtual_display_modes_with_duplicates(
     display: u32,
-) -> Result<*const std::ffi::c_void> {
+) -> Result<OwnedCfObject> {
     let key = unsafe { kCGDisplayShowDuplicateLowResolutionModes };
     let value = unsafe { kCFBooleanTrue };
     if key.is_null() || value.is_null() {
@@ -4452,7 +4611,7 @@ fn copy_current_virtual_display_modes_with_duplicates(
     }
     let keys = [key];
     let values = [value];
-    let options = unsafe {
+    let options = OwnedCfObject::from_copy(unsafe {
         CFDictionaryCreate(
             std::ptr::null(),
             keys.as_ptr(),
@@ -4461,36 +4620,37 @@ fn copy_current_virtual_display_modes_with_duplicates(
             std::ptr::null(),
             std::ptr::null(),
         )
-    };
-    if options.is_null() {
-        return Err(ControllerError(
-            "cannot create duplicate-low-resolution display options".to_owned(),
-        ));
-    }
-    let modes = unsafe { CGDisplayCopyAllDisplayModes(display, options) };
-    unsafe { CFRelease(options) };
-    if modes.is_null() {
-        return Err(ControllerError(
-            "current virtual display mode set is unavailable".to_owned(),
-        ));
-    }
-    Ok(modes)
+    }, "duplicate-low-resolution display options")?;
+    OwnedCfObject::from_copy(
+        unsafe { CGDisplayCopyAllDisplayModes(display, options.as_ptr()) },
+        "current virtual display mode set",
+    )
 }
 
 fn observed_virtual_display_capability_set_is_exact(
-    available_modes: &[DisplayModeIdentity],
+    available_modes: &[RawDisplayModeObservation],
     selected_mode: &DisplayModeIdentity,
     allow_restart_interim_selected_mode: bool,
 ) -> bool {
-    let mut expected = required_current_virtual_display_modes()
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    if allow_restart_interim_selected_mode
-        && !current_virtual_display_mode_is_reviewed(selected_mode)
-    {
-        expected.insert(selected_mode.clone());
-    }
-    available_modes.iter().cloned().collect::<BTreeSet<_>>() == expected
+    required_current_virtual_display_modes()
+        .iter()
+        .all(|required| exact_raw_display_mode_match_count(available_modes, required) == 1)
+        && exact_raw_display_mode_match_count(available_modes, selected_mode) == 1
+        && (current_virtual_display_mode_is_reviewed(selected_mode)
+            || allow_restart_interim_selected_mode)
+}
+
+fn normalized_reviewed_virtual_display_capabilities(
+    available_modes: &[RawDisplayModeObservation],
+    selected_mode: &DisplayModeIdentity,
+    allow_restart_interim_selected_mode: bool,
+) -> Option<Vec<DisplayModeIdentity>> {
+    observed_virtual_display_capability_set_is_exact(
+        available_modes,
+        selected_mode,
+        allow_restart_interim_selected_mode,
+    )
+    .then(required_current_virtual_display_modes)
 }
 
 fn capture_current_virtual_display_topology_local_with_policy(
@@ -4517,67 +4677,43 @@ fn capture_current_virtual_display_topology_local_with_policy(
         ));
     }
     let display = displays[0];
-    let mode = unsafe { CGDisplayCopyDisplayMode(display) };
-    if mode.is_null() {
-        return Err(ControllerError(
-            "current virtual display has no selected mode".to_owned(),
-        ));
-    }
-    let selected_mode = display_mode_identity(mode)?;
+    let mode = OwnedCfObject::from_copy(
+        unsafe { CGDisplayCopyDisplayMode(display) },
+        "current virtual display selected mode",
+    )?;
+    let selected_mode = display_mode_identity(mode.as_ptr())?;
     let all_modes = copy_current_virtual_display_modes_with_duplicates(display)?;
-    let mode_count = unsafe { CFArrayGetCount(all_modes) };
+    let mode_count = unsafe { CFArrayGetCount(all_modes.as_ptr()) };
     if !(1..=256).contains(&mode_count) {
-        unsafe {
-            CFRelease(all_modes);
-            CFRelease(mode);
-        }
         return Err(ControllerError(
             "current virtual display mode count is outside its bound".to_owned(),
         ));
     }
     let mut available_modes = Vec::with_capacity(mode_count as usize);
     for index in 0..mode_count {
-        let available = unsafe { CFArrayGetValueAtIndex(all_modes, index) };
+        let available = unsafe { CFArrayGetValueAtIndex(all_modes.as_ptr(), index) };
         if available.is_null() {
-            unsafe {
-                CFRelease(all_modes);
-                CFRelease(mode);
-            }
             return Err(ControllerError(
                 "current virtual display mode set contains a null mode".to_owned(),
             ));
         }
-        let identity = display_mode_identity(available)?;
-        available_modes.push(identity);
+        available_modes.push(raw_display_mode_observation(available));
     }
     let raw_selected_mode_matches =
         exact_raw_display_mode_match_count(&available_modes, &selected_mode);
-    available_modes.sort();
-    available_modes.dedup();
-    unsafe { CFRelease(all_modes) };
     if raw_selected_mode_matches != 1 {
-        unsafe { CFRelease(mode) };
         return Err(ControllerError(format!(
             "selected display mode is missing or ambiguous before stop: matches={raw_selected_mode_matches}"
         )));
     }
-    if !observed_virtual_display_capability_set_is_exact(
+    let authenticated_available_modes = normalized_reviewed_virtual_display_capabilities(
         &available_modes,
         &selected_mode,
         allow_restart_interim_selected_mode,
-    ) {
-        unsafe { CFRelease(mode) };
-        return Err(ControllerError(format!(
-            "current virtual display capability set is not exactly authorized for this phase: {available_modes:?}"
-        )));
-    }
-    let authenticated_available_modes = if allow_restart_interim_selected_mode
-        && !current_virtual_display_mode_is_reviewed(&selected_mode)
-    {
-        available_modes
-    } else {
-        required_current_virtual_display_modes()
-    };
+    )
+    .ok_or_else(|| ControllerError(format!(
+            "current virtual display raw inventory does not contain each reviewed mapping exactly once for this phase: {available_modes:?}"
+        )))?;
     let topology = VirtualDisplayTopology {
         vendor: unsafe { CGDisplayVendorNumber(display) },
         product: unsafe { CGDisplayModelNumber(display) },
@@ -4589,7 +4725,6 @@ fn capture_current_virtual_display_topology_local_with_policy(
         refresh_millihertz: selected_mode.refresh_millihertz,
         available_modes: authenticated_available_modes,
     };
-    unsafe { CFRelease(mode) };
     if topology.vendor != CURRENT_VIRTUAL_DISPLAY_VENDOR
         || topology.product != CURRENT_VIRTUAL_DISPLAY_PRODUCT
         || topology.serial != CURRENT_VIRTUAL_DISPLAY_SERIAL
@@ -4614,10 +4749,13 @@ fn current_virtual_display_selected_mode_is_exact(topology: &VirtualDisplayTopol
 }
 
 fn exact_raw_display_mode_match_count(
-    observed: &[DisplayModeIdentity],
+    observed: &[RawDisplayModeObservation],
     target: &DisplayModeIdentity,
 ) -> usize {
-    observed.iter().filter(|mode| *mode == target).count()
+    observed
+        .iter()
+        .filter(|mode| mode.strict_identity.as_ref() == Some(target))
+        .count()
 }
 
 fn read_current_virtual_display_topology_local() -> Result<VirtualDisplayTopology> {
@@ -4875,9 +5013,8 @@ fn apply_exact_current_virtual_display_mode_local(target: &DisplayModeIdentity) 
     }
     let display = displays[0];
     let all_modes = copy_current_virtual_display_modes_with_duplicates(display)?;
-    let mode_count = unsafe { CFArrayGetCount(all_modes) };
+    let mode_count = unsafe { CFArrayGetCount(all_modes.as_ptr()) };
     if !(1..=256).contains(&mode_count) {
-        unsafe { CFRelease(all_modes) };
         return Err(ControllerError(
             "selected-mode restoration capability count is outside its bound".to_owned(),
         ));
@@ -4885,18 +5022,17 @@ fn apply_exact_current_virtual_display_mode_local(target: &DisplayModeIdentity) 
     let mut target_mode = std::ptr::null();
     let mut observed_modes = Vec::with_capacity(mode_count as usize);
     for index in 0..mode_count {
-        let candidate = unsafe { CFArrayGetValueAtIndex(all_modes, index) };
+        let candidate = unsafe { CFArrayGetValueAtIndex(all_modes.as_ptr(), index) };
         if candidate.is_null() {
-            unsafe { CFRelease(all_modes) };
             return Err(ControllerError(
                 "selected-mode restoration capability set contains a null mode".to_owned(),
             ));
         }
-        let identity = display_mode_identity(candidate)?;
-        if identity == *target {
+        let observation = raw_display_mode_observation(candidate);
+        if observation.strict_identity.as_ref() == Some(target) {
             target_mode = candidate;
         }
-        observed_modes.push(identity);
+        observed_modes.push(observation);
     }
     let matches = exact_raw_display_mode_match_count(&observed_modes, target);
     if matches != 1
@@ -4906,46 +5042,37 @@ fn apply_exact_current_virtual_display_mode_local(target: &DisplayModeIdentity) 
             true,
         )
     {
-        unsafe { CFRelease(all_modes) };
         return Err(ControllerError(
             "exact selected-mode restoration target/capability set is missing or ambiguous"
                 .to_owned(),
         ));
     }
-    let selected_again = unsafe { CGDisplayCopyDisplayMode(display) };
-    if selected_again.is_null()
-        || display_mode_identity(selected_again)? != selected_virtual_display_mode(&topology)
-    {
-        if !selected_again.is_null() {
-            unsafe { CFRelease(selected_again) };
-        }
-        unsafe { CFRelease(all_modes) };
+    let selected_again = OwnedCfObject::from_copy(
+        unsafe { CGDisplayCopyDisplayMode(display) },
+        "current virtual-display selection recheck",
+    )?;
+    if display_mode_identity(selected_again.as_ptr())? != selected_virtual_display_mode(&topology) {
         return Err(ControllerError(
             "current virtual-display selection changed before exact restoration".to_owned(),
         ));
     }
-    unsafe { CFRelease(selected_again) };
-    let mut configuration = std::ptr::null_mut();
-    let begin = unsafe { CGBeginDisplayConfiguration(&mut configuration) };
-    if begin != 0 || configuration.is_null() {
-        unsafe { CFRelease(all_modes) };
-        return Err(ControllerError(format!(
-            "cannot begin selected-mode restoration: status={begin}"
-        )));
-    }
+    drop(selected_again);
+    let configuration = PendingDisplayConfiguration::begin()?;
     let configure = unsafe {
-        CGConfigureDisplayWithDisplayMode(configuration, display, target_mode, std::ptr::null())
+        CGConfigureDisplayWithDisplayMode(
+            configuration.as_ptr(),
+            display,
+            target_mode,
+            std::ptr::null(),
+        )
     };
     if configure != 0 {
-        let _ = unsafe { CGCancelDisplayConfiguration(configuration) };
-        unsafe { CFRelease(all_modes) };
         return Err(ControllerError(format!(
             "cannot stage selected-mode restoration: status={configure}"
         )));
     }
-    let complete =
-        unsafe { CGCompleteDisplayConfiguration(configuration, DISPLAY_CONFIGURATION_FOR_SESSION) };
-    unsafe { CFRelease(all_modes) };
+    let complete = configuration.complete_for_session();
+    drop(all_modes);
     if complete != 0 {
         return Err(ControllerError(format!(
             "cannot commit selected-mode restoration for the login session: status={complete}"
@@ -22633,6 +22760,93 @@ fn uid501_can_modify(ancestor_mode: u32, artifact_mode: u32) -> bool {
     ancestor_mode & 0o002 != 0 || artifact_mode & 0o002 != 0
 }
 
+fn self_test_core_graphics_scoped_resource_ownership() -> Result<()> {
+    let normal_cleanup_count = std::cell::Cell::new(0_u32);
+    {
+        let _guard = ScopedResource::new(7_u32, |_| {
+            normal_cleanup_count.set(normal_cleanup_count.get() + 1)
+        });
+    }
+    let error_cleanup_count = std::cell::Cell::new(0_u32);
+    let injected_error: Result<()> = (|| {
+        let _guard = ScopedResource::new(8_u32, |_| {
+            error_cleanup_count.set(error_cleanup_count.get() + 1)
+        });
+        Err(ControllerError(
+            "injected scoped-resource error".to_owned(),
+        ))
+    })();
+    let disarmed_cleanup_count = std::cell::Cell::new(0_u32);
+    let disarmed_value = {
+        let mut guard = ScopedResource::new(9_u32, |_| {
+            disarmed_cleanup_count.set(disarmed_cleanup_count.get() + 1)
+        });
+        guard.take()
+    };
+    if normal_cleanup_count.get() != 1
+        || injected_error.is_ok()
+        || error_cleanup_count.get() != 1
+        || disarmed_value != 9
+        || disarmed_cleanup_count.get() != 0
+    {
+        return Err(ControllerError(
+            "CoreGraphics scoped resource single-release/disarm model failed".to_owned(),
+        ));
+    }
+
+    let source = include_str!("opensteamer-diagnostic-driver-v9-update-controller.rs");
+    let capture_start = source
+        .find("fn capture_current_virtual_display_topology_local_with_policy(")
+        .ok_or_else(|| ControllerError("CoreGraphics capture source is absent".to_owned()))?;
+    let capture_end = source[capture_start..]
+        .find("fn capture_current_virtual_display_topology_local()")
+        .map(|offset| capture_start + offset)
+        .ok_or_else(|| ControllerError("CoreGraphics capture source is unbounded".to_owned()))?;
+    let capture_body = &source[capture_start..capture_end];
+    let apply_start = source
+        .find("fn apply_exact_current_virtual_display_mode_local(")
+        .ok_or_else(|| ControllerError("CoreGraphics restore source is absent".to_owned()))?;
+    let apply_end = source[apply_start..]
+        .find("fn restore_exact_current_virtual_display_mode_after_host_restart(")
+        .map(|offset| apply_start + offset)
+        .ok_or_else(|| ControllerError("CoreGraphics restore source is unbounded".to_owned()))?;
+    let apply_body = &source[apply_start..apply_end];
+    let configuration_start = source
+        .find("impl PendingDisplayConfiguration {")
+        .ok_or_else(|| ControllerError("display configuration guard is absent".to_owned()))?;
+    let configuration_end = source[configuration_start..]
+        .find("fn required_current_virtual_display_modes()")
+        .map(|offset| configuration_start + offset)
+        .ok_or_else(|| ControllerError("display configuration guard is unbounded".to_owned()))?;
+    let configuration_body = &source[configuration_start..configuration_end];
+    let begin_position = configuration_body.find("CGBeginDisplayConfiguration");
+    let guarded_position = configuration_body.find("let pending = std::ptr::NonNull::new(pointer)");
+    let error_position = configuration_body.find("if status != 0");
+    let disarm_position = configuration_body.find("let pointer = self.resource.take();");
+    let complete_position = configuration_body.find("CGCompleteDisplayConfiguration");
+    if !capture_body.contains("OwnedCfObject::from_copy")
+        || !capture_body.contains("raw_display_mode_observation(available)")
+        || capture_body.contains("CFRelease(")
+        || !apply_body.contains("OwnedCfObject::from_copy")
+        || !apply_body.contains("PendingDisplayConfiguration::begin()")
+        || apply_body.contains("CFRelease(")
+        || !matches!(
+            (begin_position, guarded_position, error_position),
+            (Some(begin), Some(guarded), Some(error)) if begin < guarded && guarded < error
+        )
+        || !matches!(
+            (disarm_position, complete_position),
+            (Some(disarm), Some(complete)) if disarm < complete
+        )
+        || !configuration_body.contains("cancel_pending_display_configuration")
+    {
+        return Err(ControllerError(
+            "CoreGraphics owned-CF/configuration cancellation structure changed".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn self_test_dynamic_selected_virtual_display_protocol() -> Result<()> {
     let modes = required_current_virtual_display_modes();
     if modes
@@ -22858,29 +23072,135 @@ fn self_test_dynamic_selected_virtual_display_protocol() -> Result<()> {
         pixel_height: 1_280,
         refresh_millihertz: 60_000,
     };
-    let mut seven_modes = modes.clone();
-    seven_modes.push(unsupported.clone());
-    let duplicate_target_modes = vec![modes[0].clone(), modes[0].clone()];
+    let strict_observation = |mode: &DisplayModeIdentity| {
+        raw_display_mode_observation_from_values(
+            mode.logical_width,
+            mode.logical_height,
+            mode.pixel_width,
+            mode.pixel_height,
+            mode.refresh_millihertz as f64 / 1_000.0,
+        )
+    };
+    let reviewed_raw_modes = modes.iter().map(strict_observation).collect::<Vec<_>>();
+    let unsupported_selected_observation = strict_observation(&unsupported);
+    let zero_hz_extra = raw_display_mode_observation_from_values(640, 480, 640, 480, 0.0);
+    let non_sixty_extra =
+        raw_display_mode_observation_from_values(800, 600, 1_600, 1_200, 30.0);
+    let nonfinite_extra = raw_display_mode_observation_from_values(
+        1_024,
+        768,
+        2_048,
+        1_536,
+        f64::NAN,
+    );
+    let unknown_extra = raw_display_mode_observation_from_values(
+        1_280,
+        720,
+        2_560,
+        1_440,
+        f64::INFINITY,
+    );
+    let mut raw_modes_with_irrelevant_extras = reviewed_raw_modes.clone();
+    raw_modes_with_irrelevant_extras.extend([
+        unsupported_selected_observation.clone(),
+        zero_hz_extra.clone(),
+        non_sixty_extra.clone(),
+        nonfinite_extra.clone(),
+        unknown_extra.clone(),
+    ]);
+    let mut missing_required_modes = raw_modes_with_irrelevant_extras.clone();
+    missing_required_modes.remove(2);
+    let mut duplicate_required_modes = raw_modes_with_irrelevant_extras.clone();
+    duplicate_required_modes.push(strict_observation(&modes[2]));
+    let mut duplicate_interim_selected_modes = raw_modes_with_irrelevant_extras.clone();
+    duplicate_interim_selected_modes.push(unsupported_selected_observation.clone());
+    let duplicate_target_modes = vec![strict_observation(&modes[0]); 2];
     let mut wrong_identity_topology = topology.clone();
     wrong_identity_topology.vendor += 1;
     if current_virtual_display_mode_is_reviewed(&unsupported)
         || virtual_display_topology_for_selected(&unsupported).is_ok()
         || virtual_display_restore_target_text(&unsupported).is_ok()
-        || observed_virtual_display_capability_set_is_exact(
-            &seven_modes,
+        || !observed_virtual_display_capability_set_is_exact(
+            &raw_modes_with_irrelevant_extras,
             &modes[0],
             false,
         )
-        || observed_virtual_display_capability_set_is_exact(&seven_modes, &modes[0], true)
-        || observed_virtual_display_capability_set_is_exact(&seven_modes, &unsupported, false)
-        || !observed_virtual_display_capability_set_is_exact(&seven_modes, &unsupported, true)
+        || !observed_virtual_display_capability_set_is_exact(
+            &raw_modes_with_irrelevant_extras,
+            &modes[0],
+            true,
+        )
+        || observed_virtual_display_capability_set_is_exact(
+            &raw_modes_with_irrelevant_extras,
+            &unsupported,
+            false,
+        )
+        || !observed_virtual_display_capability_set_is_exact(
+            &raw_modes_with_irrelevant_extras,
+            &unsupported,
+            true,
+        )
+        || observed_virtual_display_capability_set_is_exact(
+            &missing_required_modes,
+            &modes[0],
+            false,
+        )
+        || observed_virtual_display_capability_set_is_exact(
+            &duplicate_required_modes,
+            &modes[0],
+            false,
+        )
+        || observed_virtual_display_capability_set_is_exact(
+            &duplicate_interim_selected_modes,
+            &unsupported,
+            true,
+        )
+        || normalized_reviewed_virtual_display_capabilities(
+            &raw_modes_with_irrelevant_extras,
+            &modes[0],
+            false,
+        ) != Some(modes.clone())
+        || normalized_reviewed_virtual_display_capabilities(
+            &raw_modes_with_irrelevant_extras,
+            &unsupported,
+            false,
+        )
+        .is_some()
+        || normalized_reviewed_virtual_display_capabilities(
+            &raw_modes_with_irrelevant_extras,
+            &unsupported,
+            true,
+        ) != Some(modes.clone())
+        || normalized_reviewed_virtual_display_capabilities(
+            &missing_required_modes,
+            &modes[0],
+            false,
+        )
+        .is_some()
+        || normalized_reviewed_virtual_display_capabilities(
+            &duplicate_required_modes,
+            &modes[0],
+            false,
+        )
+        .is_some()
         || exact_raw_display_mode_match_count(&[], &modes[0]) != 0
-        || exact_raw_display_mode_match_count(&modes, &modes[0]) != 1
+        || exact_raw_display_mode_match_count(&reviewed_raw_modes, &modes[0]) != 1
         || exact_raw_display_mode_match_count(&duplicate_target_modes, &modes[0]) != 2
+        || zero_hz_extra.strict_identity.is_some()
+        || non_sixty_extra.strict_identity.is_some()
+        || nonfinite_extra.strict_identity.is_some()
+        || unknown_extra.strict_identity.is_some()
+        || zero_hz_extra.refresh_rate_bits != 0.0_f64.to_bits()
+        || non_sixty_extra.refresh_rate_bits != 30.0_f64.to_bits()
+        || nonfinite_extra.refresh_rate_bits != f64::NAN.to_bits()
+        || unknown_extra.refresh_rate_bits != f64::INFINITY.to_bits()
+        || strict_display_mode_identity_from_observation(&zero_hz_extra).is_ok()
+        || strict_display_mode_identity_from_observation(&non_sixty_extra).is_ok()
+        || strict_display_mode_identity_from_observation(&nonfinite_extra).is_ok()
         || current_virtual_display_selected_mode_is_exact(&wrong_identity_topology)
     {
         return Err(ControllerError(
-            "unsupported/seventh virtual-display capability entered a stable reviewed snapshot"
+            "raw virtual-display inventory did not ignore lossless unknown/zero/non-60 extras or rejected exact required-mode semantics"
                 .to_owned(),
         ));
     }
@@ -22888,6 +23208,7 @@ fn self_test_dynamic_selected_virtual_display_protocol() -> Result<()> {
 }
 
 fn self_test() -> Result<()> {
+    self_test_core_graphics_scoped_resource_ownership()?;
     self_test_hal_child_process_group_kill_and_reap()?;
     self_test_root_sudo_supervisor_timeout_recovery_states()?;
     self_test_post_bootstrap_pre_lock_recovery_admission()?;
