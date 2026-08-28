@@ -5944,6 +5944,18 @@ fn required_current_virtual_display_modes() -> Vec<DisplayModeIdentity> {
     ]
 }
 
+fn reviewed_current_virtual_display_selected_modes() -> Vec<DisplayModeIdentity> {
+    let mut modes = required_current_virtual_display_modes();
+    modes.push(DisplayModeIdentity {
+        logical_width: 720,
+        logical_height: 1_280,
+        pixel_width: 720,
+        pixel_height: 1_280,
+        refresh_millihertz: CURRENT_VIRTUAL_DISPLAY_REFRESH_MILLIHERTZ,
+    });
+    modes
+}
+
 fn selected_virtual_display_mode(topology: &VirtualDisplayTopology) -> DisplayModeIdentity {
     DisplayModeIdentity {
         logical_width: topology.logical_width,
@@ -5955,7 +5967,7 @@ fn selected_virtual_display_mode(topology: &VirtualDisplayTopology) -> DisplayMo
 }
 
 fn current_virtual_display_mode_is_reviewed(mode: &DisplayModeIdentity) -> bool {
-    required_current_virtual_display_modes().contains(mode)
+    reviewed_current_virtual_display_selected_modes().contains(mode)
 }
 
 fn virtual_display_topology_for_selected(
@@ -5963,7 +5975,7 @@ fn virtual_display_topology_for_selected(
 ) -> Result<VirtualDisplayTopology> {
     if !current_virtual_display_mode_is_reviewed(selected) {
         return Err(ControllerError(
-            "virtual-display selected mode is outside the six reviewed mappings".to_owned(),
+            "virtual-display selected mode is outside the reviewed selected mappings".to_owned(),
         ));
     }
     Ok(VirtualDisplayTopology {
@@ -6018,7 +6030,7 @@ fn parse_canonical_display_mode_identity(value: &str, label: &str) -> Result<Dis
         || !current_virtual_display_mode_is_reviewed(&mode)
     {
         return Err(ControllerError(format!(
-            "{label} is not one of the six canonical reviewed mappings"
+            "{label} is not one of the canonical reviewed selected mappings"
         )));
     }
     Ok(mode)
@@ -6348,7 +6360,7 @@ fn parse_virtual_display_snapshot_text(text: &str) -> Result<VirtualDisplayTopol
 fn virtual_display_restore_target_text(target: &DisplayModeIdentity) -> Result<String> {
     if !current_virtual_display_mode_is_reviewed(target) {
         return Err(ControllerError(
-            "virtual-display restore target is outside the six reviewed mappings".to_owned(),
+            "virtual-display restore target is outside the reviewed selected mappings".to_owned(),
         ));
     }
     Ok(format!(
@@ -6621,7 +6633,7 @@ fn verify_live_current_host_generation_only(
 ) -> Result<HostGeneration> {
     if !current_virtual_display_mode_is_reviewed(expected_display_mode) {
         return Err(ControllerError(
-            "expected host display mode is outside the six reviewed mappings".to_owned(),
+            "expected host display mode is outside the reviewed selected mappings".to_owned(),
         ));
     }
     verify_installed_current_host_bytes()?;
@@ -32676,7 +32688,28 @@ fn self_test_dynamic_selected_virtual_display_protocol() -> Result<()> {
         || modes.iter().cloned().collect::<BTreeSet<_>>().len() != 6
     {
         return Err(ControllerError(
-            "six reviewed virtual-display capability tuples changed".to_owned(),
+            "six required virtual-display capability tuples changed".to_owned(),
+        ));
+    }
+    let alternate_selected = DisplayModeIdentity {
+        logical_width: 720,
+        logical_height: 1_280,
+        pixel_width: 720,
+        pixel_height: 1_280,
+        refresh_millihertz: 60_000,
+    };
+    let mut expected_selected_modes = modes.clone();
+    expected_selected_modes.push(alternate_selected.clone());
+    if reviewed_current_virtual_display_selected_modes() != expected_selected_modes
+        || expected_selected_modes
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .len()
+            != 7
+    {
+        return Err(ControllerError(
+            "seven reviewed virtual-display selected tuples changed".to_owned(),
         ));
     }
     for (index, mode) in modes.iter().enumerate() {
@@ -32729,7 +32762,7 @@ fn self_test_dynamic_selected_virtual_display_protocol() -> Result<()> {
         (
             snapshot.replace(
                 "selected=1080:1920:1080:1920:60000",
-                "selected=720:1280:720:1280:60000",
+                "selected=721:1281:721:1281:60000",
             ),
             "virtual-display snapshot unsupported selected tuple",
         ),
@@ -32815,7 +32848,7 @@ fn self_test_dynamic_selected_virtual_display_protocol() -> Result<()> {
         (
             restore_target.replace(
                 "selected=1080:1920:1080:1920:60000",
-                "selected=720:1280:720:1280:60000",
+                "selected=721:1281:721:1281:60000",
             ),
             "virtual-display restore unsupported target",
         ),
@@ -32845,10 +32878,10 @@ fn self_test_dynamic_selected_virtual_display_protocol() -> Result<()> {
         require_self_test_rejection(parse_virtual_display_restore_target_text(&fixture), label)?;
     }
     let unsupported = DisplayModeIdentity {
-        logical_width: 720,
-        logical_height: 1_280,
-        pixel_width: 720,
-        pixel_height: 1_280,
+        logical_width: 721,
+        logical_height: 1_281,
+        pixel_width: 721,
+        pixel_height: 1_281,
         refresh_millihertz: 60_000,
     };
     let strict_observation = |mode: &DisplayModeIdentity| {
@@ -32861,6 +32894,7 @@ fn self_test_dynamic_selected_virtual_display_protocol() -> Result<()> {
         )
     };
     let reviewed_raw_modes = modes.iter().map(strict_observation).collect::<Vec<_>>();
+    let alternate_selected_observation = strict_observation(&alternate_selected);
     let unsupported_selected_observation = strict_observation(&unsupported);
     let zero_hz_extra = raw_display_mode_observation_from_values(640, 480, 640, 480, 0.0);
     let non_sixty_extra = raw_display_mode_observation_from_values(800, 600, 1_600, 1_200, 30.0);
@@ -32870,6 +32904,7 @@ fn self_test_dynamic_selected_virtual_display_protocol() -> Result<()> {
         raw_display_mode_observation_from_values(1_280, 720, 2_560, 1_440, f64::INFINITY);
     let mut raw_modes_with_irrelevant_extras = reviewed_raw_modes.clone();
     raw_modes_with_irrelevant_extras.extend([
+        alternate_selected_observation.clone(),
         unsupported_selected_observation.clone(),
         zero_hz_extra.clone(),
         non_sixty_extra.clone(),
@@ -32882,10 +32917,26 @@ fn self_test_dynamic_selected_virtual_display_protocol() -> Result<()> {
     duplicate_required_modes.push(strict_observation(&modes[2]));
     let mut duplicate_interim_selected_modes = raw_modes_with_irrelevant_extras.clone();
     duplicate_interim_selected_modes.push(unsupported_selected_observation.clone());
+    let mut duplicate_alternate_selected_modes = raw_modes_with_irrelevant_extras.clone();
+    duplicate_alternate_selected_modes.push(alternate_selected_observation.clone());
     let duplicate_target_modes = vec![strict_observation(&modes[0]); 2];
     let mut wrong_identity_topology = topology.clone();
     wrong_identity_topology.vendor += 1;
-    if current_virtual_display_mode_is_reviewed(&unsupported)
+    let alternate_topology = virtual_display_topology_for_selected(&alternate_selected)?;
+    let alternate_snapshot = virtual_display_snapshot_text(&alternate_topology);
+    let alternate_restore_target = virtual_display_restore_target_text(&alternate_selected)?;
+    if !current_virtual_display_mode_is_reviewed(&alternate_selected)
+        || selected_virtual_display_mode(&alternate_topology) != alternate_selected
+        || alternate_topology.available_modes != modes
+        || !current_virtual_display_selected_mode_is_exact(&alternate_topology)
+        || parse_virtual_display_snapshot_text(&alternate_snapshot)? != alternate_topology
+        || parse_virtual_display_restore_target_text(&alternate_restore_target)?
+            != alternate_selected
+        || parse_canonical_display_mode_identity(
+            &display_mode_identity_token(&alternate_selected),
+            "self-test alternate reviewed display mode",
+        )? != alternate_selected
+        || current_virtual_display_mode_is_reviewed(&unsupported)
         || virtual_display_topology_for_selected(&unsupported).is_ok()
         || virtual_display_restore_target_text(&unsupported).is_ok()
         || !observed_virtual_display_capability_set_is_exact(
@@ -32897,6 +32948,16 @@ fn self_test_dynamic_selected_virtual_display_protocol() -> Result<()> {
             &raw_modes_with_irrelevant_extras,
             &modes[0],
             true,
+        )
+        || !observed_virtual_display_capability_set_is_exact(
+            &raw_modes_with_irrelevant_extras,
+            &alternate_selected,
+            false,
+        )
+        || observed_virtual_display_capability_set_is_exact(
+            &duplicate_alternate_selected_modes,
+            &alternate_selected,
+            false,
         )
         || observed_virtual_display_capability_set_is_exact(
             &raw_modes_with_irrelevant_extras,
@@ -32926,6 +32987,11 @@ fn self_test_dynamic_selected_virtual_display_protocol() -> Result<()> {
         || normalized_reviewed_virtual_display_capabilities(
             &raw_modes_with_irrelevant_extras,
             &modes[0],
+            false,
+        ) != Some(modes.clone())
+        || normalized_reviewed_virtual_display_capabilities(
+            &raw_modes_with_irrelevant_extras,
+            &alternate_selected,
             false,
         ) != Some(modes.clone())
         || normalized_reviewed_virtual_display_capabilities(
@@ -33780,10 +33846,19 @@ fn self_test() -> Result<()> {
         ));
     }
     let parsed_request = parse_root_request_text(&request_text)?;
+    let reviewed_alternate_display_mode = reviewed_current_virtual_display_selected_modes()
+        .last()
+        .cloned()
+        .ok_or_else(|| ControllerError("reviewed alternate display mode is absent".to_owned()))?;
+    let mut alternate_request = synthetic.clone();
+    alternate_request.display_topology =
+        virtual_display_topology_for_selected(&reviewed_alternate_display_mode)?;
+    let parsed_alternate_request = parse_root_request_text(&root_request_text(&alternate_request)?)?;
     if parsed_request.nonce != synthetic.nonce
         || parsed_request.evidence != synthetic.evidence
         || parsed_request.root_controller != synthetic.root_controller
         || parsed_request.display_topology != synthetic.display_topology
+        || parsed_alternate_request.display_topology != alternate_request.display_topology
     {
         return Err(ControllerError(
             "pure root request round trip changed its binding".to_owned(),
@@ -33798,6 +33873,9 @@ fn self_test() -> Result<()> {
         lock_inode: 28_002_132,
         display_mode: required_current_virtual_display_modes()[0].clone(),
     };
+    let mut alternate_generation = synthetic_generation.clone();
+    alternate_generation.display_mode = reviewed_alternate_display_mode.clone();
+    let alternate_journal_mode = display_mode_identity_token(&reviewed_alternate_display_mode);
     let mut substituted_request = synthetic.clone();
     substituted_request.display_topology =
         virtual_display_topology_for_selected(&required_current_virtual_display_modes()[1])?;
@@ -33824,6 +33902,7 @@ fn self_test() -> Result<()> {
     let mut extra_dispatch = authenticated_dispatch.clone();
     extra_dispatch.insert("extra".to_owned(), "1".to_owned());
     if !root_request_display_matches_generation(&synthetic, &synthetic_generation)
+        || !root_request_display_matches_generation(&alternate_request, &alternate_generation)
         || root_request_display_matches_generation(&substituted_request, &synthetic_generation)
         || parse_root_request_text(&root_request_text(&substituted_request)?)?.display_topology
             != substituted_request.display_topology
@@ -33831,6 +33910,11 @@ fn self_test() -> Result<()> {
             &synthetic,
             &journal_mode,
             &synthetic_generation,
+        )
+        || !request_journal_state_display_binding_is_exact(
+            &alternate_request,
+            &alternate_journal_mode,
+            &alternate_generation,
         )
         || request_journal_state_display_binding_is_exact(
             &synthetic,
@@ -33929,7 +34013,7 @@ fn self_test() -> Result<()> {
         (
             request_text.replace(
                 "display_selected=1080:1920:1080:1920:60000\n",
-                "display_selected=720:1280:720:1280:60000\n",
+                "display_selected=721:1281:721:1281:60000\n",
             ),
             "request unsupported display selection",
         ),
@@ -34175,9 +34259,15 @@ fn self_test() -> Result<()> {
     );
     let (root_state_token, root_state_host, root_state_route, root_state_reserve) =
         parse_root_state_text(&root_state)?;
+    let alternate_root_state = root_state.replace(
+        "initial_host_display_mode=1080:1920:1080:1920:60000\n",
+        "initial_host_display_mode=720:1280:720:1280:60000\n",
+    );
+    let (_, alternate_root_state_host, _, _) = parse_root_state_text(&alternate_root_state)?;
     if root_state_token != UpdateState::CoreAudioReloaded
         || root_state_host.pid != 123
         || root_state_host.display_mode != required_current_virtual_display_modes()[0]
+        || alternate_root_state_host.display_mode != reviewed_alternate_display_mode
         || root_state_route.is_none()
         || root_state_reserve.is_none_or(|reserve| reserve.released)
     {
@@ -34262,7 +34352,7 @@ fn self_test() -> Result<()> {
         (
             root_state.replace(
                 "initial_host_display_mode=1080:1920:1080:1920:60000\n",
-                "initial_host_display_mode=720:1280:720:1280:60000\n",
+                "initial_host_display_mode=721:1281:721:1281:60000\n",
             ),
             "root state unsupported display mode",
         ),
@@ -34356,7 +34446,14 @@ fn self_test() -> Result<()> {
         "8".repeat(64),
         "3".repeat(64)
     );
-    if parse_journal_text(&root_journal, ROOT_JOURNAL_HEADER)? != UpdateState::Committed {
+    let alternate_root_journal = root_journal.replace(
+        "display_mode=1080:1920:1080:1920:60000",
+        "display_mode=720:1280:720:1280:60000",
+    );
+    if parse_journal_text(&root_journal, ROOT_JOURNAL_HEADER)? != UpdateState::Committed
+        || parse_journal_text(&alternate_root_journal, ROOT_JOURNAL_HEADER)?
+            != UpdateState::Committed
+    {
         return Err(ControllerError(
             "pure forward journal did not reach committed".to_owned(),
         ));
@@ -34450,7 +34547,7 @@ fn self_test() -> Result<()> {
         (
             root_journal.replace(
                 "display_mode=1080:1920:1080:1920:60000",
-                "display_mode=720:1280:720:1280:60000",
+                "display_mode=721:1281:721:1281:60000",
             ),
             "journal unsupported display mode",
         ),

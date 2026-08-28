@@ -232,6 +232,38 @@ final class DiagnosticDriverV15UpdateContractTests: XCTestCase {
         XCTAssertEqual(permissions, 0o755)
     }
 
+    func testCurrent720SelectionIsReviewedWithoutExpandingRequiredCapabilities() throws {
+        let controller = try source(controllerPath)
+        let launcher = try source(launcherPath)
+        let requiredModes = try functionBody(
+            controller,
+            beginningWith: "fn required_current_virtual_display_modes()",
+            endingBefore: "fn reviewed_current_virtual_display_selected_modes()"
+        )
+        let selectedModes = try functionBody(
+            controller,
+            beginningWith: "fn reviewed_current_virtual_display_selected_modes()",
+            endingBefore: "fn selected_virtual_display_mode("
+        )
+        let fixedCapabilities =
+            "1080:1920:1080:1920:60000,603:1311:1206:2622:60000,"
+            + "540:1170:1080:2340:60000,540:960:1080:1920:60000,"
+            + "414:896:828:1792:60000,750:1334:750:1334:60000"
+
+        XCTAssertFalse(requiredModes.contains("logical_width: 720"))
+        XCTAssertTrue(selectedModes.contains("logical_width: 720"))
+        XCTAssertTrue(selectedModes.contains("logical_height: 1_280"))
+        XCTAssertTrue(selectedModes.contains("pixel_width: 720"))
+        XCTAssertTrue(selectedModes.contains("pixel_height: 1_280"))
+        XCTAssertTrue(launcher.contains(
+            #"[ "$LOCATOR_DISPLAY_CAPABILITIES" = '\#(fixedCapabilities)' ]"#
+        ))
+        XCTAssertTrue(launcher.contains(
+            "750:1334:750:1334:60000|720:1280:720:1280:60000)"
+        ))
+        XCTAssertFalse(launcher.contains("\(fixedCapabilities),720:1280:720:1280:60000"))
+    }
+
     func testV15PinsExactV14ReleaseBytesAndTerminalRollbackEvidence() throws {
         let controller = try source(controllerPath)
         let retainedFiles: [(String, Int, String)] = [
