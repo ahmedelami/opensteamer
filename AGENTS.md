@@ -402,6 +402,33 @@ and verification tools. Build only from a clean pushed commit/tree, prove pairin
 through metadata without retrieving secrets, and never reset or re-pair. Once an
 attempt leaves retained evidence, do not reuse that version for a retry.
 
+## Efficient Internal Releases
+
+Routine internal releases run on Ahmed's single trusted Mac from one clean,
+pushed commit. Optimize that path for this actual threat model; do not repeatedly
+audit immutable local dependencies as though each release ran on an untrusted CI
+worker.
+
+- The TestFlight controller must not recursively hash, stat, or deep-verify the
+  complete Xcode bundle during a routine release. At every Xcode boundary, retain
+  the pinned alias and filesystem identities, external-volume identity, version
+  plist hashes, exact `xcodebuild` hash and signing identity, scrubbed environment,
+  exact action arguments, sandbox, and destination proofs.
+- Run a full `codesign --verify --deep --strict` audit only when Xcode is installed,
+  replaced, moved, or its reviewed pins change. A routine release uses the pinned
+  evidence recorded in source; a fresh shell process does not make the same Xcode
+  installation a new trust decision.
+- Reuse gates already proven for the same immutable commit and invocation. Do not
+  rerun unchanged test suites, source audits, account checks, or artifact checks
+  unless their bound identity changed or the previous check failed.
+- Run independent work concurrently. Archive/upload, App Store Connect processing
+  observation, and read-only host preparation need not wait on one another.
+- Report only meaningful stage changes, failures, required user action, and final
+  proof. Prefer targeted queries and log suffixes to broad repeated reads.
+- Keep routine release orchestration separate from exceptional recovery. A changed
+  identity, failed preflight, consumed one-shot namespace, or ambiguous live state
+  still requires the complete guarded recovery path.
+
 ## Commits
 
 Release validation must follow [TESTING_ORACLES.md](TESTING_ORACLES.md). A source string, mocked

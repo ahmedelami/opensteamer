@@ -181,7 +181,6 @@ typeset TESTFLIGHT_XCODE_VOLUME_DEVICE_IDENTIFIER=""
 typeset TESTFLIGHT_XCODE_VOLUME_PARENT_WHOLE_DISK=""
 typeset TESTFLIGHT_XCODE_PHYSICAL_STORE_IDENTIFIER=""
 typeset TESTFLIGHT_XCODE_PHYSICAL_WHOLE_DISK=""
-typeset -i TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=0
 typeset TESTFLIGHT_IMAGE_DEVICE=""
 typeset TESTFLIGHT_IMAGE_PARTITION_DEVICE=""
 typeset TESTFLIGHT_MOUNTED_DEVICE=""
@@ -1081,25 +1080,6 @@ function verify_reviewed_xcode_volume_identity() {
         "${disk_info}" RemovableMediaOrExternalDevice)" == 'true' ]]
 }
 
-function verify_reviewed_xcode_deep_signature() {
-  /usr/bin/codesign --verify --deep --strict --verbose=4 \
-    "${EXPECTED_XCODE_REAL_BUNDLE_PATH}" >/dev/null 2>&1
-}
-
-function verify_or_reuse_reviewed_xcode_deep_signature() {
-  case ${TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED} in
-    0)
-      verify_reviewed_xcode_deep_signature || return 1
-      TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1
-      ;;
-    1)
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 function verify_reviewed_xcode_toolchain_identity() {
   local selected_developer_path
   selected_developer_path=$(/usr/bin/xcode-select -p 2>/dev/null) || return 2
@@ -1148,7 +1128,8 @@ function verify_reviewed_xcode_toolchain_identity() {
         "${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/version.plist" \
         ProductBuildVersion)" == "${EXPECTED_XCODE_BUILD_VERSION}" ]] || return 1
   verify_reviewed_xcode_volume_identity || return $?
-  verify_or_reuse_reviewed_xcode_deep_signature || return 1
+  # Full-bundle deep verification is an enrollment check when the pinned Xcode
+  # changes; routine releases verify the exact executable and recorded identity.
   /usr/bin/codesign --verify --strict --verbose=4 \
     "${EXPECTED_XCODEBUILD_REAL_PATH}" >/dev/null 2>&1 || return 1
   local bundle_metadata
@@ -2208,14 +2189,6 @@ function run_pinned_xcodebuild() {
     "${destination_contract}" "$@" || return 1
   verify_pinned_xcodebuild_filesystem_contract || return 1
   case "${destination_contract}" in
-    archive|export)
-      # Settings resolution may reuse the process-local deep seal, but any command
-      # that creates or distributes the release gets a fresh whole-Xcode seal.
-      verify_reviewed_xcode_deep_signature || return 1
-      verify_pinned_xcodebuild_filesystem_contract || return 1
-      ;;
-  esac
-  case "${destination_contract}" in
     resolve|settings)
       verify_control_directory_identity || return 1
       ;;
@@ -2240,11 +2213,6 @@ function run_pinned_xcodebuild() {
     "${destination_contract}" "${pinned_command[@]}" || command_status=$?
   verify_xcodebuild_action_arguments \
     "${destination_contract}" "$@" || command_status=1
-  case "${destination_contract}" in
-    archive|export)
-      verify_reviewed_xcode_deep_signature || command_status=1
-      ;;
-  esac
   verify_pinned_xcodebuild_filesystem_contract || command_status=1
   case "${destination_contract}" in
     resolve|settings)

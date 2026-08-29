@@ -1130,7 +1130,7 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   $'  verify_xcodebuild_action_arguments \\\n    "${destination_contract}" "$@" || command_status=1' \
   '  true # post-command action verification bypassed'
 require_rejection "$CASE" \
-  'side-by-side TestFlight post-command action, deep-seal, and filesystem proof'
+  'side-by-side TestFlight complete pre/post action argument proof'
 
 CASE=$(new_case testflight-export-routed-through-outer-sandbox)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -1167,12 +1167,12 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
 require_rejection "$CASE" \
   'side-by-side TestFlight exact supported export invocation vector'
 
-CASE=$(new_case testflight-export-post-deep-seal)
+CASE=$(new_case testflight-export-post-filesystem-proof)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  '      verify_reviewed_xcode_deep_signature || command_status=1' \
-  '      true # fresh post-command deep seal bypassed'
+  '  verify_pinned_xcodebuild_filesystem_contract || command_status=1' \
+  '  true # post-command filesystem proof bypassed'
 require_rejection "$CASE" \
-  'side-by-side TestFlight post-command action, deep-seal, and filesystem proof'
+  'side-by-side TestFlight post-command action and filesystem proof'
 
 CASE=$(new_case testflight-persistent-export-default)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -1356,17 +1356,65 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   'EXPECTED_XCODEBUILD_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
 require_rejection "$CASE" 'side-by-side TestFlight reviewed real xcodebuild digest'
 
-CASE=$(new_case testflight-deep-xcode-signature-state)
-replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  'typeset -i TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=0' \
-  'typeset -i TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1'
-require_rejection "$CASE" 'side-by-side TestFlight deep Xcode signature state initialization'
-
-CASE=$(new_case testflight-fresh-release-xcode-seal)
-replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  $'    archive|export)\n      # Settings resolution may reuse the process-local deep seal, but any command' \
-  $'    ignored-release-operation)\n      # Settings resolution may reuse the process-local deep seal, but any command'
-require_rejection "$CASE" 'side-by-side TestFlight fresh pre-release Xcode signature verification'
+typeset -a FAST_XCODE_PIN_NAMES=(
+  selected-developer-path
+  canonical-developer-path
+  alias-filesystem-identity
+  bundle-filesystem-identity
+  bundle-volume-binding
+  developer-filesystem-identity
+  xcodebuild-filesystem-identity
+  info-plist-digest-use
+  version-plist-digest-use
+  xcodebuild-digest-use
+  bundle-identifier-plist
+  bundle-version-plist
+  bundle-build-version-plist
+  volume-verifier-call
+  xcodebuild-signature
+  bundle-signing-identifier
+  bundle-signing-team
+  bundle-cdhash
+  xcodebuild-signing-identifier
+  xcodebuild-signing-team
+  xcodebuild-cdhash
+)
+typeset -a FAST_XCODE_PIN_LITERALS=(
+  '"${selected_developer_path}" == "${EXPECTED_XCODE_SELECTED_DEVELOPER_PATH}"'
+  $'"${selected_developer_path:A}" \\\n        == "${EXPECTED_XCODE_REAL_DEVELOPER_PATH}"'
+  $'"$(stat_identity "${EXPECTED_XCODE_ALIAS_PATH}")" \\\n        == "${TESTFLIGHT_XCODE_ALIAS_IDENTITY}"'
+  $'"$(stat_identity "${EXPECTED_XCODE_REAL_BUNDLE_PATH}")" \\\n        == "${TESTFLIGHT_XCODE_BUNDLE_IDENTITY}"'
+  $'      && "${TESTFLIGHT_XCODE_BUNDLE_IDENTITY%%:*}" \\\n        == "${TESTFLIGHT_XCODE_VOLUME_ROOT_IDENTITY%%:*}"'
+  $'"$(stat_identity "${EXPECTED_XCODE_REAL_DEVELOPER_PATH}")" \\\n        == "${TESTFLIGHT_XCODE_DEVELOPER_IDENTITY}"'
+  $'"$(stat_identity "${EXPECTED_XCODEBUILD_REAL_PATH}")" \\\n        == "${TESTFLIGHT_XCODEBUILD_IDENTITY}"'
+  $'"$(sha256_file \\\n        "${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/Info.plist")" \\\n        == "${EXPECTED_XCODE_INFO_SHA256}"'
+  $'"$(sha256_file \\\n        "${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/version.plist")" \\\n        == "${EXPECTED_XCODE_VERSION_SHA256}"'
+  $'"$(sha256_file "${EXPECTED_XCODEBUILD_REAL_PATH}")" \\\n        == "${EXPECTED_XCODEBUILD_SHA256}"'
+  $'CFBundleIdentifier)" == "${EXPECTED_XCODE_BUNDLE_IDENTIFIER}"'
+  $'CFBundleShortVersionString)" == "${EXPECTED_XCODE_VERSION}"'
+  $'ProductBuildVersion)" == "${EXPECTED_XCODE_BUILD_VERSION}"'
+  'verify_reviewed_xcode_volume_identity || return $?'
+  $'/usr/bin/codesign --verify --strict --verbose=4 \\\n    "${EXPECTED_XCODEBUILD_REAL_PATH}"'
+  $'codesign_metadata_value "${bundle_metadata}" Identifier)" \\\n        == "${EXPECTED_XCODE_BUNDLE_IDENTIFIER}"'
+  $'codesign_metadata_value "${bundle_metadata}" TeamIdentifier)" \\\n        == "${EXPECTED_XCODE_SIGNING_TEAM_ID}"'
+  $'codesign_metadata_value "${bundle_metadata}" CDHash)" \\\n        == "${EXPECTED_XCODE_BUNDLE_CD_HASH}"'
+  $'codesign_metadata_value "${executable_metadata}" Identifier)" \\\n        == "${EXPECTED_XCODEBUILD_IDENTIFIER}"'
+  $'codesign_metadata_value "${executable_metadata}" TeamIdentifier)" \\\n        == "${EXPECTED_XCODE_SIGNING_TEAM_ID}"'
+  $'codesign_metadata_value "${executable_metadata}" CDHash)" \\\n        == "${EXPECTED_XCODEBUILD_CD_HASH}"'
+)
+(( ${#FAST_XCODE_PIN_NAMES[@]} == ${#FAST_XCODE_PIN_LITERALS[@]} ))
+for (( FAST_XCODE_PIN_INDEX = 1;
+    FAST_XCODE_PIN_INDEX <= ${#FAST_XCODE_PIN_NAMES[@]};
+    FAST_XCODE_PIN_INDEX += 1 )); do
+  CASE=$(new_case \
+    "testflight-fast-xcode-${FAST_XCODE_PIN_NAMES[FAST_XCODE_PIN_INDEX]}")
+  replace_once \
+    "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+    "${FAST_XCODE_PIN_LITERALS[FAST_XCODE_PIN_INDEX]}" \
+    "removed_fast_xcode_pin_${FAST_XCODE_PIN_INDEX}"
+  require_rejection "$CASE" \
+    'side-by-side TestFlight complete fast Xcode identity contract'
+done
 
 CASE=$(new_case testflight-real-xcode-filesystem-device)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -1379,12 +1427,6 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   'function verify_reviewed_xcode_volume_identity() {' \
   'function ignore_reviewed_xcode_volume_identity() {'
 require_rejection "$CASE" 'side-by-side TestFlight real-Xcode T7 volume and store verification'
-
-CASE=$(new_case testflight-full-xcode-seal)
-replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  $'  /usr/bin/codesign --verify --deep --strict --verbose=4 \\\n    "${EXPECTED_XCODE_REAL_BUNDLE_PATH}"' \
-  $'  /usr/bin/codesign -dv --verbose=4 \\\n    "${EXPECTED_XCODE_REAL_BUNDLE_PATH}"'
-require_rejection "$CASE" 'side-by-side TestFlight full Xcode bundle seal verification'
 
 CASE=$(new_case testflight-pinned-xcode-entrypoint)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -2689,26 +2731,9 @@ if verify_pinned_xcodebuild_filesystem_contract >/dev/null 2>&1; then
 fi
 DIGESTTEST
 
-WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'DEEPSIGNATURETEST'
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'XCODECONTRACTTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
 trap - EXIT HUP INT QUIT TERM
-
-typeset -gi DEEP_SIGNATURE_CALLS=0
-function verify_reviewed_xcode_deep_signature() {
-  (( DEEP_SIGNATURE_CALLS += 1 ))
-}
-
-TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=0
-verify_or_reuse_reviewed_xcode_deep_signature
-verify_or_reuse_reviewed_xcode_deep_signature
-[[ "$DEEP_SIGNATURE_CALLS" == 1 \
-    && "$TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED" == 1 ]]
-
-TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=2
-if verify_or_reuse_reviewed_xcode_deep_signature >/dev/null 2>&1; then
-  print -u2 -r -- 'invalid deep Xcode signature state was reused'
-  exit 1
-fi
 
 typeset -gi PINNED_CONTRACT_CALLS=0
 function verify_pinned_xcodebuild_filesystem_contract() {
@@ -2725,14 +2750,13 @@ function run_xcodebuild_command_for_destination_contract() {
   (( DESTINATION_COMMAND_CALLS += 1 ))
 }
 
-TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1
+run_pinned_xcodebuild resolve ignored
 run_pinned_xcodebuild settings ignored
 run_pinned_xcodebuild archive ignored
 run_pinned_xcodebuild export ignored
-[[ "$DEEP_SIGNATURE_CALLS" == 5 \
-    && "$PINNED_CONTRACT_CALLS" == 8 \
-    && "$DESTINATION_COMMAND_CALLS" == 3 ]]
-DEEPSIGNATURETEST
+[[ "$PINNED_CONTRACT_CALLS" == 8 \
+    && "$DESTINATION_COMMAND_CALLS" == 4 ]]
+XCODECONTRACTTEST
 
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'DESTINATIONROUTINGTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
