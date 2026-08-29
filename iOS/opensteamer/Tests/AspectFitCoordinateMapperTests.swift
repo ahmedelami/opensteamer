@@ -1,4 +1,5 @@
 import CoreGraphics
+import UIKit
 import XCTest
 @testable import opensteamer
 
@@ -251,5 +252,338 @@ final class AspectFitCoordinateMapperTests: XCTestCase {
                 }
             }
         }
+    }
+
+    func testScrollAccumulatorScalesToFramebufferAndPreservesFractionalRemainder() throws {
+        var accumulator = try XCTUnwrap(
+            RemoteScrollDeltaAccumulator(
+                containerSize: CGSize(width: 100, height: 100),
+                videoSize: CGSize(width: 1_000, height: 1_000)
+            )
+        )
+
+        XCTAssertTrue(accumulator.append(viewDelta: CGSize(width: 0.04, height: 0.06)))
+        XCTAssertNil(accumulator.takeNextPacket(finalizing: false))
+        XCTAssertEqual(accumulator.pendingPixelDelta.width, 0.4, accuracy: 0.000_001)
+        XCTAssertEqual(accumulator.pendingPixelDelta.height, 0.6, accuracy: 0.000_001)
+
+        XCTAssertTrue(accumulator.append(viewDelta: CGSize(width: 0.04, height: 0.06)))
+        XCTAssertEqual(
+            accumulator.takeNextPacket(finalizing: false),
+            RemoteScrollPixelDelta(x: 0, y: 1)
+        )
+        XCTAssertTrue(accumulator.append(viewDelta: CGSize(width: 0.04, height: 0.06)))
+        XCTAssertEqual(
+            accumulator.takeNextPacket(finalizing: true),
+            RemoteScrollPixelDelta(x: 1, y: 1)
+        )
+        XCTAssertFalse(accumulator.hasPacket(finalizing: true))
+    }
+
+    func testScrollAccumulatorBoundsPacketsWithoutLosingOverflow() throws {
+        var accumulator = try XCTUnwrap(
+            RemoteScrollDeltaAccumulator(
+                containerSize: CGSize(width: 100, height: 100),
+                videoSize: CGSize(width: 100, height: 100)
+            )
+        )
+        XCTAssertTrue(
+            accumulator.append(viewDelta: CGSize(width: 9_000.25, height: -5_000.75))
+        )
+
+        XCTAssertEqual(
+            accumulator.takeNextPacket(finalizing: false),
+            RemoteScrollPixelDelta(x: 4_096, y: -4_096)
+        )
+        XCTAssertEqual(
+            accumulator.takeNextPacket(finalizing: false),
+            RemoteScrollPixelDelta(x: 4_096, y: -904)
+        )
+        XCTAssertEqual(
+            accumulator.takeNextPacket(finalizing: true),
+            RemoteScrollPixelDelta(x: 808, y: -1)
+        )
+    }
+
+    func testUpwardFingerMovementStaysNegativeAtTheProtocolBoundary() throws {
+        var accumulator = try XCTUnwrap(
+            RemoteScrollDeltaAccumulator(
+                containerSize: CGSize(width: 100, height: 100),
+                videoSize: CGSize(width: 1_000, height: 1_000)
+            )
+        )
+        XCTAssertTrue(accumulator.append(viewDelta: CGSize(width: -4, height: -3)))
+
+        XCTAssertEqual(
+            accumulator.takeNextPacket(finalizing: false),
+            RemoteScrollPixelDelta(x: -40, y: -30),
+            "The Mac maps protocol deltas directly to CG wheel2/wheel1 pixel units."
+        )
+    }
+
+    func testScrollAccumulatorRejectsInvalidGeometryAndNonfiniteMovement() throws {
+        XCTAssertNil(
+            RemoteScrollDeltaAccumulator(
+                containerSize: .zero,
+                videoSize: CGSize(width: 1_000, height: 1_000)
+            )
+        )
+        var accumulator = try XCTUnwrap(
+            RemoteScrollDeltaAccumulator(
+                containerSize: CGSize(width: 100, height: 100),
+                videoSize: CGSize(width: 1_000, height: 1_000)
+            )
+        )
+        XCTAssertFalse(
+            accumulator.append(
+                viewDelta: CGSize(width: CGFloat.infinity, height: 1)
+            )
+        )
+        XCTAssertEqual(accumulator.pendingPixelDelta, .zero)
+    }
+
+    @MainActor
+    func testNativeGestureSurfaceInstallsOneAuthoritativeRecognizer() {
+        let trackIdentity = NSObject()
+        var invalidationCount = 0
+        let configuration = RemotePointerGestureConfiguration(
+            presentationID: UUID(),
+            inputSessionID: UUID(),
+            trackIdentity: ObjectIdentifier(trackIdentity),
+            containerSize: CGSize(width: 390, height: 844),
+            videoSize: CGSize(width: 1_080, height: 2_340),
+            allowsPrimaryDrag: true,
+            allowsScroll: false
+        )
+        let surface = RemotePointerGestureSurface(
+            configuration: configuration,
+            onTap: { _ in },
+            onScrollBegan: { _ in nil },
+            onScrollChanged: { _, _ in },
+            onScrollEnded: { _ in },
+            onScrollCancelled: { _ in },
+            onPrimaryDrag: { _, _ in },
+            onConfigurationInvalidated: { invalidationCount += 1 }
+        )
+        let coordinator = surface.makeCoordinator()
+        let view = UIView(frame: .zero)
+        coordinator.install(on: view)
+
+        XCTAssertEqual(view.gestureRecognizers?.count, 1)
+        XCTAssertEqual(
+            coordinator.debugRecognizerConfiguration,
+            RemotePointerGestureRecognizerDebugSnapshot(
+                recognizerCount: 1,
+                movementThreshold: 12,
+                holdDuration: 0.35,
+                allowsScroll: false,
+                allowsPrimaryDrag: true
+            )
+        )
+
+        coordinator.update(
+            from: RemotePointerGestureSurface(
+                configuration: RemotePointerGestureConfiguration(
+                    presentationID: configuration.presentationID,
+                    inputSessionID: configuration.inputSessionID,
+                    trackIdentity: configuration.trackIdentity,
+                    containerSize: configuration.containerSize,
+                    videoSize: configuration.videoSize,
+                    allowsPrimaryDrag: configuration.allowsPrimaryDrag,
+                    allowsScroll: true
+                ),
+                onTap: surface.onTap,
+                onScrollBegan: surface.onScrollBegan,
+                onScrollChanged: surface.onScrollChanged,
+                onScrollEnded: surface.onScrollEnded,
+                onScrollCancelled: surface.onScrollCancelled,
+                onPrimaryDrag: surface.onPrimaryDrag,
+                onConfigurationInvalidated: surface.onConfigurationInvalidated
+            )
+        )
+
+        XCTAssertEqual(invalidationCount, 1)
+        XCTAssertEqual(view.gestureRecognizers?.count, 1)
+        XCTAssertTrue(coordinator.debugRecognizerConfiguration.allowsScroll)
+        XCTAssertTrue(coordinator.debugRecognizerConfiguration.allowsPrimaryDrag)
+    }
+
+    func testUnifiedGestureReleaseBelowThresholdIsTapBeforeDeadline() {
+        var machine = RemotePointerGestureStateMachine(
+            allowsScroll: true,
+            allowsPrimaryDrag: true
+        )
+
+        XCTAssertEqual(machine.begin(at: .zero, timestamp: 0), [])
+        XCTAssertEqual(
+            machine.move(to: CGPoint(x: 11.99, y: 0), timestamp: 0.349),
+            []
+        )
+        XCTAssertEqual(
+            machine.end(at: CGPoint(x: 11.99, y: 0), timestamp: 0.349),
+            [.tap(CGPoint(x: 11.99, y: 0))]
+        )
+    }
+
+    func testUnifiedGestureExactThresholdStartsScrollBeforeDeadline() {
+        var machine = RemotePointerGestureStateMachine(
+            allowsScroll: true,
+            allowsPrimaryDrag: true
+        )
+
+        XCTAssertEqual(machine.begin(at: .zero, timestamp: 0), [])
+        XCTAssertEqual(
+            machine.move(to: CGPoint(x: 12, y: 0), timestamp: 0.349),
+            [
+                .scrollBegan(.zero),
+                .scrollChanged(CGSize(width: 12, height: 0)),
+            ]
+        )
+        XCTAssertEqual(
+            machine.end(at: CGPoint(x: 12, y: 0), timestamp: 0.349),
+            [.scrollEnded]
+        )
+    }
+
+    func testUnifiedGestureExactMovementAndHoldBoundaryLetsMovementWin() {
+        var machine = RemotePointerGestureStateMachine(
+            allowsScroll: true,
+            allowsPrimaryDrag: true
+        )
+
+        XCTAssertEqual(machine.begin(at: .zero, timestamp: 0), [])
+        XCTAssertEqual(
+            machine.move(to: CGPoint(x: 12, y: 0), timestamp: 0.35),
+            [
+                .scrollBegan(.zero),
+                .scrollChanged(CGSize(width: 12, height: 0)),
+            ]
+        )
+        XCTAssertEqual(machine.phase, .scrolling)
+    }
+
+    func testUnifiedGestureEndOnlyThresholdCrossingDeliversCompleteScroll() {
+        var machine = RemotePointerGestureStateMachine(
+            allowsScroll: true,
+            allowsPrimaryDrag: true
+        )
+
+        XCTAssertEqual(machine.begin(at: .zero, timestamp: 0), [])
+        XCTAssertEqual(
+            machine.end(at: CGPoint(x: 13, y: 0), timestamp: 0.2),
+            [
+                .scrollBegan(.zero),
+                .scrollChanged(CGSize(width: 13, height: 0)),
+                .scrollEnded,
+            ]
+        )
+    }
+
+    func testUnifiedGestureBothCapabilitiesScrollBeforeDeadlineAndDragAfterIt() {
+        var scrollMachine = RemotePointerGestureStateMachine(
+            allowsScroll: true,
+            allowsPrimaryDrag: true
+        )
+        XCTAssertEqual(scrollMachine.begin(at: .zero, timestamp: 0), [])
+        XCTAssertTrue(scrollMachine.shouldScheduleHoldDeadline)
+        XCTAssertEqual(
+            scrollMachine.move(to: CGPoint(x: 12.01, y: 0), timestamp: 0.349),
+            [
+                .scrollBegan(.zero),
+                .scrollChanged(CGSize(width: 12.01, height: 0)),
+            ]
+        )
+        XCTAssertFalse(scrollMachine.shouldScheduleHoldDeadline)
+
+        var dragMachine = RemotePointerGestureStateMachine(
+            allowsScroll: true,
+            allowsPrimaryDrag: true
+        )
+        XCTAssertEqual(dragMachine.begin(at: .zero, timestamp: 0), [])
+        XCTAssertEqual(
+            dragMachine.move(to: CGPoint(x: 4, y: 0), timestamp: 0.35),
+            [.primaryDragArmed(.zero)]
+        )
+        XCTAssertEqual(
+            dragMachine.move(to: CGPoint(x: 40, y: 0), timestamp: 0.4),
+            []
+        )
+        XCTAssertEqual(
+            dragMachine.end(at: CGPoint(x: 80, y: 0), timestamp: 0.5),
+            [.primaryDrag(start: .zero, end: CGPoint(x: 80, y: 0))]
+        )
+    }
+
+    func testUnifiedGestureScrollOnlyNeverArmsHoldAndCanScrollLater() {
+        var machine = RemotePointerGestureStateMachine(
+            allowsScroll: true,
+            allowsPrimaryDrag: false
+        )
+
+        XCTAssertEqual(machine.begin(at: .zero, timestamp: 0), [])
+        XCTAssertFalse(machine.shouldScheduleHoldDeadline)
+        XCTAssertEqual(
+            machine.move(to: CGPoint(x: 5, y: 0), timestamp: 1),
+            []
+        )
+        XCTAssertEqual(
+            machine.move(to: CGPoint(x: 13, y: 0), timestamp: 2),
+            [
+                .scrollBegan(.zero),
+                .scrollChanged(CGSize(width: 13, height: 0)),
+            ]
+        )
+    }
+
+    func testUnifiedGestureDragOnlyMovementBeforeHoldProducesNoAction() {
+        var machine = RemotePointerGestureStateMachine(
+            allowsScroll: false,
+            allowsPrimaryDrag: true
+        )
+
+        XCTAssertEqual(machine.begin(at: .zero, timestamp: 0), [])
+        XCTAssertTrue(machine.shouldScheduleHoldDeadline)
+        XCTAssertEqual(
+            machine.move(to: CGPoint(x: 13, y: 0), timestamp: 0.2),
+            []
+        )
+        XCTAssertEqual(machine.phase, .suppressed)
+        XCTAssertFalse(machine.shouldScheduleHoldDeadline)
+        XCTAssertEqual(
+            machine.end(at: CGPoint(x: 20, y: 0), timestamp: 0.4),
+            []
+        )
+    }
+
+    func testUnifiedGestureNeitherCapabilityStillPermitsStationaryTap() {
+        var machine = RemotePointerGestureStateMachine(
+            allowsScroll: false,
+            allowsPrimaryDrag: false
+        )
+
+        XCTAssertEqual(machine.begin(at: CGPoint(x: 7, y: 9), timestamp: 0), [])
+        XCTAssertFalse(machine.shouldScheduleHoldDeadline)
+        XCTAssertEqual(
+            machine.end(at: CGPoint(x: 7, y: 9), timestamp: 2),
+            [.tap(CGPoint(x: 7, y: 9))]
+        )
+    }
+
+    func testUnifiedGestureCancellationTerminatesActiveScroll() {
+        var machine = RemotePointerGestureStateMachine(
+            allowsScroll: true,
+            allowsPrimaryDrag: true
+        )
+
+        XCTAssertEqual(machine.begin(at: .zero, timestamp: 0), [])
+        XCTAssertFalse(
+            machine.move(to: CGPoint(x: 13, y: 0), timestamp: 0.2).isEmpty
+        )
+        XCTAssertEqual(machine.cancel(), [.scrollCancelled])
+        XCTAssertEqual(machine.phase, .cancelled)
+        XCTAssertEqual(
+            machine.end(at: CGPoint(x: 20, y: 0), timestamp: 0.3),
+            []
+        )
     }
 }

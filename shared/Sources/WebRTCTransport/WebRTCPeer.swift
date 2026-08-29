@@ -3001,14 +3001,16 @@ public actor WebRTCPeer {
         )
     }
 
-    /// The explicit authorization closes the gap between UI cancellation and the final native
-    /// data-channel send. Revocation waits for an in-progress send, or wins before it starts.
+    /// The explicit session authorization closes the gap between UI cancellation and the final
+    /// native data-channel send. A narrower local authorization can additionally retire queued
+    /// work across a rendered-configuration change without revoking the whole input session.
     @discardableResult
     public func requestInput(
         _ action: WebRTCInputAction,
         viewerVideoSize: WebRTCInputVideoSize? = nil,
         capability: WebRTCInputCapability,
-        authorization: WebRTCInputAuthorization
+        authorization: WebRTCInputAuthorization,
+        sendAuthorization: WebRTCInputSendAuthorization? = nil
     ) throws -> UInt64 {
         try ensureOpen()
         guard role == .viewer else { throw WebRTCTransportError.invalidRole }
@@ -3026,11 +3028,6 @@ public actor WebRTCPeer {
             throw WebRTCTransportError.inputRequestIDExhausted
         }
 
-        guard prepareSentInputHistoryForNewRequest() else {
-            failCloseInput("Remote-input send backlog exceeded its safe bound.")
-            throw WebRTCTransportError.dataChannelBackpressured
-        }
-
         let request = WebRTCInputRequest(
             id: nextInputRequestID,
             screenRequestID: capability.screenRequestID,
@@ -3045,15 +3042,30 @@ public actor WebRTCPeer {
         guard data.count <= capability.maxMessageBytes else {
             throw WebRTCTransportError.invalidInputRequest
         }
-        try authorization.withValidAuthorization {
-            guard capability == activeViewerInputCapability,
-                  authorization === activeViewerInputAuthorization else {
-                throw WebRTCTransportError.inputUnavailable
+        var inputHistoryOverflowed = false
+        do {
+            try WebRTCInputSendAuthorizationOrder.withValidAuthorizations(
+                inputAuthorization: authorization,
+                sendAuthorization: sendAuthorization
+            ) {
+                guard capability == activeViewerInputCapability,
+                      authorization === activeViewerInputAuthorization else {
+                    throw WebRTCTransportError.inputUnavailable
+                }
+                guard prepareSentInputHistoryForNewRequest() else {
+                    inputHistoryOverflowed = true
+                    throw WebRTCTransportError.dataChannelBackpressured
+                }
+                try delegateProxy.sendControlData(data)
+                nextInputRequestID += 1
+                sentInputRequests[request.id] = WebRTCInputRequestBinding(request)
+                sentInputRequestOrder.append(request.id)
             }
-            try delegateProxy.sendControlData(data)
-            nextInputRequestID += 1
-            sentInputRequests[request.id] = WebRTCInputRequestBinding(request)
-            sentInputRequestOrder.append(request.id)
+        } catch {
+            if inputHistoryOverflowed {
+                failCloseInput("Remote-input send backlog exceeded its safe bound.")
+            }
+            throw error
         }
         return request.id
     }
@@ -3084,13 +3096,15 @@ public actor WebRTCPeer {
         _ action: WebRTCInputAction,
         viewerVideoSize: WebRTCInputVideoSize? = nil,
         capability: WebRTCInputCapability,
-        authorization: WebRTCInputAuthorization
+        authorization: WebRTCInputAuthorization,
+        sendAuthorization: WebRTCInputSendAuthorization? = nil
     ) throws -> UInt64 {
         try requestInput(
             action,
             viewerVideoSize: viewerVideoSize,
             capability: capability,
-            authorization: authorization
+            authorization: authorization,
+            sendAuthorization: sendAuthorization
         )
     }
 
@@ -5547,6 +5561,8 @@ public actor WebRTCPeer {
         switch action {
         case .primaryDrag:
             capability.supportsPrimaryDrag
+        case .scroll:
+            capability.supportsScroll
         case .tap, .insertText, .backspace, .returnKey:
             true
         }

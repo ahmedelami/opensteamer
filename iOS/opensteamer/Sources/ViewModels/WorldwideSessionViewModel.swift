@@ -364,6 +364,8 @@ struct WorldwideIOSHostedCallPlayoutDebugProjection: Equatable {
 final class WorldwideSessionViewModel: ObservableObject {
     private static let macHostedCallChallengeAutomaticRetryDelay:
         Duration = .milliseconds(250)
+    /// Never outrun the host's 60 Hz scroll budget during a sustained gesture.
+    static let remoteScrollFlushInterval: Duration = .milliseconds(17)
 
     private struct MacHostedCallAnswerForwardedBinding: Equatable {
         let peerIdentity: ObjectIdentifier
@@ -392,7 +394,14 @@ final class WorldwideSessionViewModel: ObservableObject {
     @Published private(set) var isPeerConnected = false
     @Published private(set) var isControlChannelReady = false
     @Published private(set) var isScreenVisible = false
-    @Published private(set) var remoteVideoTrack: WebRTCRemoteVideoTrack?
+    @Published private(set) var remoteVideoTrack: WebRTCRemoteVideoTrack? {
+        willSet {
+            let currentIdentity = remoteVideoTrack.map { ObjectIdentifier($0) }
+            let nextIdentity = newValue.map { ObjectIdentifier($0) }
+            guard currentIdentity != nextIdentity else { return }
+            discardPendingRemoteScrolls()
+        }
+    }
     @Published private(set) var screenAcknowledgementOracle:
         WorldwideScreenAcknowledgementOracleSnapshot?
     @Published private(set) var audioStateText = "Inactive"
@@ -574,6 +583,9 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var remoteInputQueue: [QueuedRemoteInput] = []
     private var remoteInputDrainTask: Task<Void, Never>?
     private var remoteInputGeneration = UUID()
+    private var activeRemoteScroll: ActiveRemoteScroll?
+    private var remoteScrollFlushTask: Task<Void, Never>?
+    private var remoteScrollSendAuthorization: WebRTCInputSendAuthorization?
     private var pendingRemoteInputs: [UInt64: PendingRemoteInput] = [:]
     private var pendingRemoteInputOrder: [UInt64] = []
     private var earlyRemoteInputFeedback: [UInt64: WebRTCInputFeedback] = [:]
@@ -661,7 +673,8 @@ final class WorldwideSessionViewModel: ObservableObject {
             WebRTCInputAction,
             WebRTCInputVideoSize?,
             WebRTCInputCapability,
-            WebRTCInputAuthorization
+            WebRTCInputAuthorization,
+            WebRTCInputSendAuthorization?
         ) async throws -> UInt64
     )?
     private var debugMacHostedCallChallengeSender: (
@@ -765,6 +778,10 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     var isRemotePrimaryDragAvailable: Bool {
         isRemoteInputAvailable && remoteInputCapability?.supportsPrimaryDrag == true
+    }
+
+    var isRemoteScrollAvailable: Bool {
+        isRemoteInputAvailable && remoteInputCapability?.supportsScroll == true
     }
 
     var canResumeAudioPlayback: Bool {
@@ -2167,6 +2184,200 @@ final class WorldwideSessionViewModel: ObservableObject {
         )
     }
 
+    /// Begins one pointer intent for the complete swipe. Incremental updates reuse its identifier
+    /// while the framebuffer-scaled accumulator coalesces movement before the existing queue.
+    func beginRemoteScroll(
+        normalizedAnchor: CGPoint,
+        containerSize: CGSize,
+        viewerVideoSize: CGSize
+    ) -> UUID? {
+        guard isRemoteScrollAvailable,
+              normalizedAnchor.x.isFinite,
+              normalizedAnchor.y.isFinite,
+              (0 ... 1).contains(normalizedAnchor.x),
+              (0 ... 1).contains(normalizedAnchor.y),
+              let protocolVideoSize = Self.remoteInputVideoSize(from: viewerVideoSize),
+              let accumulator = RemoteScrollDeltaAccumulator(
+                containerSize: containerSize,
+                videoSize: viewerVideoSize
+              ),
+              let capability = remoteInputCapability,
+              capability.supportsScroll,
+              let authorization = remoteInputAuthorization,
+              authorization.isValid else {
+            return nil
+        }
+
+        if activeRemoteScroll != nil {
+            discardPendingRemoteScrolls()
+        }
+        let sendAuthorization = currentRemoteScrollSendAuthorization()
+        let gestureID = UUID()
+        activeRemoteScroll = ActiveRemoteScroll(
+            gestureID: gestureID,
+            anchor: WebRTCNormalizedPoint(
+                x: Double(normalizedAnchor.x),
+                y: Double(normalizedAnchor.y)
+            ),
+            containerSize: containerSize,
+            viewerVideoSize: viewerVideoSize,
+            protocolVideoSize: protocolVideoSize,
+            capability: capability,
+            authorization: authorization,
+            sessionGeneration: sessionGeneration,
+            inputGeneration: remoteInputGeneration,
+            pointerIntentID: beginRemotePointerIntent(),
+            sendAuthorization: sendAuthorization,
+            accumulator: accumulator,
+            isEnding: false
+        )
+        return gestureID
+    }
+
+    func appendRemoteScroll(
+        gestureID: UUID,
+        viewDelta: CGSize,
+        containerSize: CGSize,
+        viewerVideoSize: CGSize
+    ) {
+        guard var scroll = activeRemoteScroll,
+              scroll.gestureID == gestureID else { return }
+        guard remoteScrollIsCurrent(scroll),
+              !scroll.isEnding,
+              scroll.containerSize == containerSize,
+              scroll.viewerVideoSize == viewerVideoSize,
+              scroll.accumulator.append(viewDelta: viewDelta) else {
+            cancelRemoteScroll(gestureID: gestureID)
+            return
+        }
+
+        activeRemoteScroll = scroll
+        scheduleRemoteScrollFlush(for: scroll)
+    }
+
+    func endRemoteScroll(gestureID: UUID) {
+        guard var scroll = activeRemoteScroll,
+              scroll.gestureID == gestureID,
+              remoteScrollIsCurrent(scroll) else {
+            cancelRemoteScroll(gestureID: gestureID)
+            return
+        }
+        remoteScrollFlushTask?.cancel()
+        remoteScrollFlushTask = nil
+        scroll.isEnding = true
+        activeRemoteScroll = scroll
+        flushRemoteScroll(gestureID: gestureID)
+    }
+
+    func cancelRemoteScroll(gestureID: UUID) {
+        guard activeRemoteScroll?.gestureID == gestureID
+                || remoteInputQueue.contains(where: { $0.scrollGestureID == gestureID }) else {
+            return
+        }
+        revokeRemoteScrollSendAuthorization()
+        discardActiveRemoteScroll(removingQueuedPackets: false)
+        remoteInputQueue.removeAll(where: { $0.scrollGestureID != nil })
+    }
+
+    func discardPendingRemoteScrolls() {
+        revokeRemoteScrollSendAuthorization()
+        discardActiveRemoteScroll(removingQueuedPackets: false)
+        remoteInputQueue.removeAll(where: { $0.scrollGestureID != nil })
+    }
+
+    private func scheduleRemoteScrollFlush(for scroll: ActiveRemoteScroll) {
+        guard remoteScrollFlushTask == nil,
+              activeRemoteScroll?.gestureID == scroll.gestureID else { return }
+        let gestureID = scroll.gestureID
+        let inputGeneration = scroll.inputGeneration
+        remoteScrollFlushTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: Self.remoteScrollFlushInterval)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  let self,
+                  inputGeneration == self.remoteInputGeneration else { return }
+            self.remoteScrollFlushTask = nil
+            self.flushRemoteScroll(gestureID: gestureID)
+        }
+    }
+
+    private func flushRemoteScroll(gestureID: UUID) {
+        guard var scroll = activeRemoteScroll,
+              scroll.gestureID == gestureID,
+              remoteScrollIsCurrent(scroll) else {
+            cancelRemoteScroll(gestureID: gestureID)
+            return
+        }
+
+        let finalizing = scroll.isEnding
+        guard let delta = scroll.accumulator.takeNextPacket(finalizing: finalizing) else {
+            if finalizing {
+                activeRemoteScroll = nil
+            } else {
+                activeRemoteScroll = scroll
+            }
+            return
+        }
+
+        activeRemoteScroll = scroll
+        enqueueRemoteInput(
+            .scroll(
+                anchor: scroll.anchor,
+                deltaX: delta.x,
+                deltaY: delta.y
+            ),
+            pointerIntentID: scroll.pointerIntentID,
+            viewerVideoSize: scroll.protocolVideoSize,
+            scrollGestureID: scroll.gestureID,
+            sendAuthorization: scroll.sendAuthorization
+        )
+
+        guard activeRemoteScroll?.gestureID == gestureID else { return }
+        if scroll.accumulator.hasPacket(finalizing: finalizing) {
+            scheduleRemoteScrollFlush(for: scroll)
+        } else if finalizing {
+            activeRemoteScroll = nil
+        }
+    }
+
+    private func remoteScrollIsCurrent(_ scroll: ActiveRemoteScroll) -> Bool {
+        scroll.sessionGeneration == sessionGeneration
+            && scroll.inputGeneration == remoteInputGeneration
+            && scroll.capability == remoteInputCapability
+            && scroll.authorization === remoteInputAuthorization
+            && scroll.authorization.isValid
+            && scroll.sendAuthorization === remoteScrollSendAuthorization
+            && scroll.sendAuthorization.isValid
+            && isRemoteScrollAvailable
+    }
+
+    private func discardActiveRemoteScroll(removingQueuedPackets: Bool) {
+        remoteScrollFlushTask?.cancel()
+        remoteScrollFlushTask = nil
+        if removingQueuedPackets, let gestureID = activeRemoteScroll?.gestureID {
+            remoteInputQueue.removeAll(where: { $0.scrollGestureID == gestureID })
+        }
+        activeRemoteScroll = nil
+    }
+
+    private func currentRemoteScrollSendAuthorization() -> WebRTCInputSendAuthorization {
+        if let remoteScrollSendAuthorization,
+           remoteScrollSendAuthorization.isValid {
+            return remoteScrollSendAuthorization
+        }
+        let authorization = WebRTCInputSendAuthorization()
+        remoteScrollSendAuthorization = authorization
+        return authorization
+    }
+
+    private func revokeRemoteScrollSendAuthorization() {
+        remoteScrollSendAuthorization?.revoke()
+        remoteScrollSendAuthorization = nil
+    }
+
     private static func remoteInputVideoSize(
         from size: CGSize
     ) -> WebRTCInputVideoSize? {
@@ -2205,7 +2416,9 @@ final class WorldwideSessionViewModel: ObservableObject {
     private func enqueueRemoteInput(
         _ action: WebRTCInputAction,
         pointerIntentID: UInt64? = nil,
-        viewerVideoSize: WebRTCInputVideoSize? = nil
+        viewerVideoSize: WebRTCInputVideoSize? = nil,
+        scrollGestureID: UUID? = nil,
+        sendAuthorization: WebRTCInputSendAuthorization? = nil
     ) {
         guard let capability = remoteInputCapability,
               let authorization = remoteInputAuthorization,
@@ -2227,7 +2440,9 @@ final class WorldwideSessionViewModel: ObservableObject {
                 sessionGeneration: sessionGeneration,
                 inputGeneration: remoteInputGeneration,
                 pointerIntentID: pointerIntentID,
-                viewerVideoSize: viewerVideoSize
+                viewerVideoSize: viewerVideoSize,
+                scrollGestureID: scrollGestureID,
+                sendAuthorization: sendAuthorization
             )
         )
         startRemoteInputDrainIfNeeded()
@@ -2243,7 +2458,7 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func remoteInputActionMatchesCurrentFocus(_ action: WebRTCInputAction) -> Bool {
         switch action {
-        case .tap, .primaryDrag:
+        case .tap, .primaryDrag, .scroll:
             return true
         case .insertText(_, let generation),
              .backspace(let generation),
@@ -2269,6 +2484,7 @@ final class WorldwideSessionViewModel: ObservableObject {
                   queued.capability == remoteInputCapability,
                   queued.authorization === remoteInputAuthorization,
                   queued.authorization.isValid,
+                  queued.sendAuthorization?.isValid != false,
                   let peer,
                   isRemoteInputAvailable,
                   remoteInputActionMatchesCurrentFocus(queued.action) else {
@@ -2282,13 +2498,16 @@ final class WorldwideSessionViewModel: ObservableObject {
             }
 
             do {
-                guard !Task.isCancelled, queued.authorization.isValid else { return }
+                guard !Task.isCancelled,
+                      queued.authorization.isValid,
+                      queued.sendAuthorization?.isValid != false else { continue }
                 let requestID = try await sendRemoteInput(
                     queued.action,
                     viewerVideoSize: queued.viewerVideoSize,
                     peer: peer,
                     capability: queued.capability,
-                    authorization: queued.authorization
+                    authorization: queued.authorization,
+                    sendAuthorization: queued.sendAuthorization
                 )
                 guard !Task.isCancelled,
                       inputGeneration == remoteInputGeneration,
@@ -2301,7 +2520,8 @@ final class WorldwideSessionViewModel: ObservableObject {
                 }
                 pendingRemoteInputs[requestID] = PendingRemoteInput(
                     kind: PendingRemoteInputKind(queued.action),
-                    pointerIntentID: queued.pointerIntentID
+                    pointerIntentID: queued.pointerIntentID,
+                    sendAuthorization: queued.sendAuthorization
                 )
                 pendingRemoteInputOrder.append(requestID)
 
@@ -2322,6 +2542,9 @@ final class WorldwideSessionViewModel: ObservableObject {
                       queued.authorization.isValid else {
                     return
                 }
+                if queued.sendAuthorization?.isValid == false {
+                    continue
+                }
                 if let transportError = error as? WebRTCTransportError,
                    transportError == .invalidInputRequest {
                     clearRemoteKeyboardFocus()
@@ -2341,7 +2564,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         viewerVideoSize: WebRTCInputVideoSize?,
         peer: WebRTCPeer,
         capability: WebRTCInputCapability,
-        authorization: WebRTCInputAuthorization
+        authorization: WebRTCInputAuthorization,
+        sendAuthorization: WebRTCInputSendAuthorization?
     ) async throws -> UInt64 {
         #if DEBUG
         if let debugRemoteInputSender {
@@ -2350,7 +2574,8 @@ final class WorldwideSessionViewModel: ObservableObject {
                 action,
                 viewerVideoSize,
                 capability,
-                authorization
+                authorization,
+                sendAuthorization
             )
         }
         #endif
@@ -2358,7 +2583,8 @@ final class WorldwideSessionViewModel: ObservableObject {
             action,
             viewerVideoSize: viewerVideoSize,
             capability: capability,
-            authorization: authorization
+            authorization: authorization,
+            sendAuthorization: sendAuthorization
         )
     }
 
@@ -5782,6 +6008,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         if let index = pendingRemoteInputOrder.firstIndex(of: feedback.id) {
             pendingRemoteInputOrder.remove(at: index)
         }
+        guard pending.sendAuthorization?.isValid != false else { return }
 
         guard feedback.result == .accepted else {
             clearRemoteKeyboardFocus()
@@ -5814,7 +6041,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         case .staleSession:
             invalidateRemoteInputState()
         case .rateLimited:
-            lastDiagnostic = "Remote input was rate-limited; tap the field again before typing."
+            lastDiagnostic = "Remote input was rate-limited."
         case .injectionFailed:
             lastError = "The Mac could not post that remote input event."
         case .invalidRequest:
@@ -5851,13 +6078,15 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     private func invalidateRemoteInputState() {
-        // Revoke the exact peer-shared send gate before cancelling actor work. A send already
-        // inside the gate linearizes before this call; a queued send cannot enter afterward.
+        // Revoke both final-send gates before cancelling actor work. A send already inside the
+        // gates linearizes before this call; queued work cannot enter afterward.
+        revokeRemoteScrollSendAuthorization()
         remoteInputAuthorization?.revoke()
         remoteInputAuthorization = nil
         remoteInputGeneration = UUID()
         remoteInputDrainTask?.cancel()
         remoteInputDrainTask = nil
+        discardActiveRemoteScroll(removingQueuedPackets: false)
         remoteInputQueue.removeAll(keepingCapacity: false)
         pendingRemoteInputs.removeAll(keepingCapacity: false)
         pendingRemoteInputOrder.removeAll(keepingCapacity: false)
@@ -6337,7 +6566,8 @@ final class WorldwideSessionViewModel: ObservableObject {
             WebRTCInputAction,
             WebRTCInputVideoSize?,
             WebRTCInputCapability,
-            WebRTCInputAuthorization
+            WebRTCInputAuthorization,
+            WebRTCInputSendAuthorization?
         ) async throws -> UInt64
     ) {
         debugRemoteInputSender = sender
@@ -6359,7 +6589,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         let capability = WebRTCInputCapability(
             inputSessionID: UUID(),
             screenRequestID: focusGeneration,
-            supportsPrimaryDrag: true
+            supportsPrimaryDrag: true,
+            supportsScroll: true
         )
         let authorization = WebRTCInputAuthorization()
         remoteInputCapability = capability
@@ -6389,7 +6620,9 @@ final class WorldwideSessionViewModel: ObservableObject {
                 sessionGeneration: sessionGeneration,
                 inputGeneration: remoteInputGeneration,
                 pointerIntentID: action.requiresRemoteFocus ? nil : 1,
-                viewerVideoSize: viewerVideoSize
+                viewerVideoSize: viewerVideoSize,
+                scrollGestureID: nil,
+                sendAuthorization: nil
             )
         ]
         return authorization
@@ -6397,6 +6630,10 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     func debugDrainRemoteInputQueueForRaceTests() async {
         await drainRemoteInputQueue(inputGeneration: remoteInputGeneration)
+    }
+
+    func debugDeliverRemoteInputFeedbackForRaceTests(_ feedback: WebRTCInputFeedback) {
+        handleRemoteInputFeedback(feedback)
     }
 
     /// Routes tests through the production terminal-session path without requiring live media.
@@ -6441,7 +6678,9 @@ final class WorldwideSessionViewModel: ObservableObject {
                 sessionGeneration: sessionGeneration,
                 inputGeneration: remoteInputGeneration,
                 pointerIntentID: nil,
-                viewerVideoSize: nil
+                viewerVideoSize: nil,
+                scrollGestureID: nil,
+                sendAuthorization: nil
             )
         ]
         return authorization
@@ -6457,6 +6696,8 @@ final class WorldwideSessionViewModel: ObservableObject {
             queuedActionCount: remoteInputQueue.count,
             pendingActionCount: pendingRemoteInputs.count,
             inputGeneration: remoteInputGeneration,
+            activeScrollGestureID: activeRemoteScroll?.gestureID,
+            latestPointerIntentID: latestPointerIntentID,
             inputAvailable: isRemoteInputAvailable,
             acceptsActiveScreenAcknowledgement: acceptsActiveScreenAcknowledgement,
             remoteHideRequired: remoteHideRequired,
@@ -6544,7 +6785,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         peer newPeer: WebRTCPeer,
         generation: UUID = UUID(),
         leaseID: UUID = UUID(),
-        screenRequestID: UInt64 = 1
+        screenRequestID: UInt64 = 1,
+        supportsScroll: Bool = false
     ) -> WorldwideScreenPresentationDebugFixture {
         debugInstallScreenSessionForTests(
             peer: newPeer,
@@ -6558,7 +6800,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         let capability = WebRTCInputCapability(
             inputSessionID: UUID(),
             screenRequestID: screenRequestID,
-            supportsPrimaryDrag: true
+            supportsPrimaryDrag: true,
+            supportsScroll: supportsScroll
         )
         let authorization = WebRTCInputAuthorization()
         remoteInputCapability = capability
@@ -7121,6 +7364,8 @@ struct WorldwideRemoteInputDebugState: Equatable {
     let queuedActionCount: Int
     let pendingActionCount: Int
     let inputGeneration: UUID
+    let activeScrollGestureID: UUID?
+    let latestPointerIntentID: UInt64
     let inputAvailable: Bool
     let acceptsActiveScreenAcknowledgement: Bool
     let remoteHideRequired: Bool
@@ -7150,12 +7395,30 @@ private struct QueuedRemoteInput {
     let inputGeneration: UUID
     let pointerIntentID: UInt64?
     let viewerVideoSize: WebRTCInputVideoSize?
+    let scrollGestureID: UUID?
+    let sendAuthorization: WebRTCInputSendAuthorization?
+}
+
+private struct ActiveRemoteScroll {
+    let gestureID: UUID
+    let anchor: WebRTCNormalizedPoint
+    let containerSize: CGSize
+    let viewerVideoSize: CGSize
+    let protocolVideoSize: WebRTCInputVideoSize
+    let capability: WebRTCInputCapability
+    let authorization: WebRTCInputAuthorization
+    let sessionGeneration: UUID
+    let inputGeneration: UUID
+    let pointerIntentID: UInt64
+    let sendAuthorization: WebRTCInputSendAuthorization
+    var accumulator: RemoteScrollDeltaAccumulator
+    var isEnding: Bool
 }
 
 private extension WebRTCInputAction {
     var requiresRemoteFocus: Bool {
         switch self {
-        case .tap, .primaryDrag:
+        case .tap, .primaryDrag, .scroll:
             false
         case .insertText, .backspace, .returnKey:
             true
@@ -7168,6 +7431,7 @@ private struct PendingRemoteInput {
     // in the bounded pre-send queue and the native send window; correlation needs this metadata.
     let kind: PendingRemoteInputKind
     let pointerIntentID: UInt64?
+    let sendAuthorization: WebRTCInputSendAuthorization?
 }
 
 enum PendingRemoteInputKind: Equatable {
@@ -7176,7 +7440,7 @@ enum PendingRemoteInputKind: Equatable {
 
     init(_ action: WebRTCInputAction) {
         switch action {
-        case .tap, .primaryDrag:
+        case .tap, .primaryDrag, .scroll:
             self = .pointer
         case .insertText(_, let focusGeneration),
              .backspace(let focusGeneration),

@@ -12,19 +12,22 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
     public let screenRequestID: UInt64
     public let maxMessageBytes: Int
     public let supportsPrimaryDrag: Bool
+    public let supportsScroll: Bool
 
     public init(
         inputSessionID: UUID,
         screenRequestID: UInt64,
         protocolVersion: Int = Self.currentProtocolVersion,
         maxMessageBytes: Int = Self.maximumMessageBytes,
-        supportsPrimaryDrag: Bool = false
+        supportsPrimaryDrag: Bool = false,
+        supportsScroll: Bool = false
     ) {
         self.protocolVersion = protocolVersion
         self.inputSessionID = inputSessionID
         self.screenRequestID = screenRequestID
         self.maxMessageBytes = maxMessageBytes
         self.supportsPrimaryDrag = supportsPrimaryDrag
+        self.supportsScroll = supportsScroll
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -33,6 +36,7 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
         case screenRequestID
         case maxMessageBytes
         case supportsPrimaryDrag
+        case supportsScroll
     }
 
     public init(from decoder: any Decoder) throws {
@@ -43,6 +47,11 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
         let maxMessageBytes = try container.decode(Int.self, forKey: .maxMessageBytes)
         let supportsPrimaryDrag = if container.contains(.supportsPrimaryDrag) {
             try container.decode(Bool.self, forKey: .supportsPrimaryDrag)
+        } else {
+            false
+        }
+        let supportsScroll = if container.contains(.supportsScroll) {
+            try container.decode(Bool.self, forKey: .supportsScroll)
         } else {
             false
         }
@@ -61,7 +70,8 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
             screenRequestID: screenRequestID,
             protocolVersion: protocolVersion,
             maxMessageBytes: maxMessageBytes,
-            supportsPrimaryDrag: supportsPrimaryDrag
+            supportsPrimaryDrag: supportsPrimaryDrag,
+            supportsScroll: supportsScroll
         )
     }
 
@@ -78,6 +88,7 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
         try container.encode(screenRequestID, forKey: .screenRequestID)
         try container.encode(maxMessageBytes, forKey: .maxMessageBytes)
         try container.encode(supportsPrimaryDrag, forKey: .supportsPrimaryDrag)
+        try container.encode(supportsScroll, forKey: .supportsScroll)
     }
 
     var isValid: Bool {
@@ -193,8 +204,14 @@ public struct WebRTCInputVideoSize: Codable, Equatable, Sendable {
 /// The intentionally small remote-input vocabulary. Return is distinct from inserted text so
 /// control characters never enter the text path.
 public enum WebRTCInputAction: Codable, Equatable, Sendable {
+    /// Maximum absolute pixel-unit delta accepted in one atomic scroll request.
+    public static let maximumScrollDeltaMagnitude: Int32 = 4_096
+
     case tap(WebRTCNormalizedPoint)
     case primaryDrag(start: WebRTCNormalizedPoint, end: WebRTCNormalizedPoint)
+    /// Incremental finger displacement in rendered-video pixel units: positive x is right and
+    /// positive y is down. The host owns the single conversion to native scroll-wheel semantics.
+    case scroll(anchor: WebRTCNormalizedPoint, deltaX: Int32, deltaY: Int32)
     case insertText(String, focusGeneration: UInt64)
     case backspace(focusGeneration: UInt64)
     case returnKey(focusGeneration: UInt64)
@@ -202,6 +219,7 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
     private enum Kind: String, Codable {
         case tap
         case primaryDrag
+        case scroll
         case text
         case backspace
         case returnKey = "return"
@@ -212,6 +230,9 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
         case point
         case start
         case end
+        case anchor
+        case deltaX
+        case deltaY
         case text
         case focusGeneration
     }
@@ -221,12 +242,16 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
         switch try container.decode(Kind.self, forKey: .kind) {
         case .tap:
             guard !container.contains(.start), !container.contains(.end),
+                  !container.contains(.anchor), !container.contains(.deltaX),
+                  !container.contains(.deltaY),
                   !container.contains(.text), !container.contains(.focusGeneration) else {
                 throw Self.invalidAction(in: container)
             }
             self = .tap(try container.decode(WebRTCNormalizedPoint.self, forKey: .point))
         case .primaryDrag:
             guard !container.contains(.point), !container.contains(.text),
+                  !container.contains(.anchor), !container.contains(.deltaX),
+                  !container.contains(.deltaY),
                   !container.contains(.focusGeneration) else {
                 throw Self.invalidAction(in: container)
             }
@@ -234,9 +259,23 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
                 start: try container.decode(WebRTCNormalizedPoint.self, forKey: .start),
                 end: try container.decode(WebRTCNormalizedPoint.self, forKey: .end)
             )
+        case .scroll:
+            guard !container.contains(.point), !container.contains(.start),
+                  !container.contains(.end), !container.contains(.text),
+                  !container.contains(.focusGeneration) else {
+                throw Self.invalidAction(in: container)
+            }
+            let anchor = try container.decode(WebRTCNormalizedPoint.self, forKey: .anchor)
+            let deltaX = try container.decode(Int32.self, forKey: .deltaX)
+            let deltaY = try container.decode(Int32.self, forKey: .deltaY)
+            guard Self.isValidScrollDelta(deltaX: deltaX, deltaY: deltaY) else {
+                throw Self.invalidAction(in: container)
+            }
+            self = .scroll(anchor: anchor, deltaX: deltaX, deltaY: deltaY)
         case .text:
             guard !container.contains(.point), !container.contains(.start),
-                  !container.contains(.end) else {
+                  !container.contains(.end), !container.contains(.anchor),
+                  !container.contains(.deltaX), !container.contains(.deltaY) else {
                 throw Self.invalidAction(in: container)
             }
             let text = try container.decode(String.self, forKey: .text)
@@ -247,7 +286,9 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
             self = .insertText(text, focusGeneration: generation)
         case .backspace:
             guard !container.contains(.point), !container.contains(.start),
-                  !container.contains(.end), !container.contains(.text) else {
+                  !container.contains(.end), !container.contains(.anchor),
+                  !container.contains(.deltaX), !container.contains(.deltaY),
+                  !container.contains(.text) else {
                 throw Self.invalidAction(in: container)
             }
             let generation = try container.decode(UInt64.self, forKey: .focusGeneration)
@@ -255,7 +296,9 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
             self = .backspace(focusGeneration: generation)
         case .returnKey:
             guard !container.contains(.point), !container.contains(.start),
-                  !container.contains(.end), !container.contains(.text) else {
+                  !container.contains(.end), !container.contains(.anchor),
+                  !container.contains(.deltaX), !container.contains(.deltaY),
+                  !container.contains(.text) else {
                 throw Self.invalidAction(in: container)
             }
             let generation = try container.decode(UInt64.self, forKey: .focusGeneration)
@@ -280,6 +323,11 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
             try container.encode(Kind.primaryDrag, forKey: .kind)
             try container.encode(start, forKey: .start)
             try container.encode(end, forKey: .end)
+        case .scroll(let anchor, let deltaX, let deltaY):
+            try container.encode(Kind.scroll, forKey: .kind)
+            try container.encode(anchor, forKey: .anchor)
+            try container.encode(deltaX, forKey: .deltaX)
+            try container.encode(deltaY, forKey: .deltaY)
         case .insertText(let text, let focusGeneration):
             try container.encode(Kind.text, forKey: .kind)
             try container.encode(text, forKey: .text)
@@ -299,6 +347,8 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
             point.isValid
         case .primaryDrag(let start, let end):
             start.isValid && end.isValid
+        case .scroll(let anchor, let deltaX, let deltaY):
+            anchor.isValid && Self.isValidScrollDelta(deltaX: deltaX, deltaY: deltaY)
         case .insertText(let text, let focusGeneration):
             focusGeneration > 0 && Self.isValidCommittedText(text)
         case .backspace(let focusGeneration), .returnKey(let focusGeneration):
@@ -318,6 +368,13 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
                     || (0x7F ... 0x9F).contains($0.value)
                     || (0xF700 ... 0xF8FF).contains($0.value)
             })
+    }
+
+    private static func isValidScrollDelta(deltaX: Int32, deltaY: Int32) -> Bool {
+        let validRange = -maximumScrollDeltaMagnitude ... maximumScrollDeltaMagnitude
+        return (deltaX != 0 || deltaY != 0)
+            && validRange.contains(deltaX)
+            && validRange.contains(deltaY)
     }
 
     private static func invalidAction(
@@ -418,13 +475,13 @@ public struct WebRTCInputRequest: Codable, Equatable, Sendable {
         _ viewerVideoSize: WebRTCInputVideoSize?,
         isValidFor action: WebRTCInputAction
     ) -> Bool {
-        guard let viewerVideoSize else { return true }
-        guard viewerVideoSize.isValid else { return false }
         switch action {
         case .tap, .primaryDrag:
-            return true
+            return viewerVideoSize?.isValid ?? true
+        case .scroll:
+            return viewerVideoSize?.isValid == true
         case .insertText, .backspace, .returnKey:
-            return false
+            return viewerVideoSize == nil
         }
     }
 }

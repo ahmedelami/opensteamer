@@ -84,6 +84,7 @@ public enum MacRemoteInputRejection: Equatable, Sendable {
     case staleSession
     case screenFormatChanging
     case invalidPoint
+    case invalidScrollDelta
     case invalidText
     case rateLimited
     case displayUnavailable
@@ -169,6 +170,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
     private static let maximumFocusWait: TimeInterval = 0.050
     private static let maximumEditableAncestorDepth = 12
     private static let minimumFrameGeometryStability: TimeInterval = 0.750
+    private static let maximumScrollDeltaMagnitude: Int32 = 4_096
 
     private let allowRemoteControl: Bool
     private let system: any MacRemoteInputSystem
@@ -184,8 +186,10 @@ public final class MacRemoteInputController: @unchecked Sendable {
     private var nextFocusGeneration: UInt64 = 0
 
     private var tapBucket: TokenBucket
+    private var scrollBucket: TokenBucket
     private var keyBucket: TokenBucket
     private var textBucket: TokenBucket
+    private var scrollDeltaConversionState: ScrollDeltaConversionState?
 
     /// Creates a controller backed by macOS Accessibility and Core Graphics APIs.
     public init(allowRemoteControl: Bool) {
@@ -195,6 +199,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         self.clock = clock
         let now = clock.now()
         self.tapBucket = TokenBucket(capacity: 12, refillPerSecond: 8, now: now)
+        self.scrollBucket = TokenBucket(capacity: 8, refillPerSecond: 60, now: now)
         self.keyBucket = TokenBucket(capacity: 40, refillPerSecond: 25, now: now)
         self.textBucket = TokenBucket(capacity: 4_096, refillPerSecond: 2_048, now: now)
     }
@@ -210,6 +215,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         self.clock = clock
         let now = clock.now()
         self.tapBucket = TokenBucket(capacity: 12, refillPerSecond: 8, now: now)
+        self.scrollBucket = TokenBucket(capacity: 8, refillPerSecond: 60, now: now)
         self.keyBucket = TokenBucket(capacity: 40, refillPerSecond: 25, now: now)
         self.textBucket = TokenBucket(capacity: 4_096, refillPerSecond: 2_048, now: now)
     }
@@ -710,6 +716,281 @@ public final class MacRemoteInputController: @unchecked Sendable {
         return .accepted(.editable(generation: focus.generation, secure: false))
     }
 
+    /// Posts one stateless pixel scroll at the initial remote touch anchor.
+    public func handleScroll(
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        anchor: MacRemoteNormalizedPoint,
+        deltaX: Int32,
+        deltaY: Int32,
+        viewerVideoSize: MacRemoteInputVideoSize? = nil
+    ) -> MacRemoteInputResult {
+        handleScrollWithDiagnostics(
+            screenRequestID: screenRequestID,
+            inputSessionID: inputSessionID,
+            anchor: anchor,
+            deltaX: deltaX,
+            deltaY: deltaY,
+            viewerVideoSize: viewerVideoSize
+        ).result
+    }
+
+    /// Posts one scroll and captures the exact local format fence that rejected it.
+    public func handleScrollWithDiagnostics(
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        anchor: MacRemoteNormalizedPoint,
+        deltaX: Int32,
+        deltaY: Int32,
+        viewerVideoSize: MacRemoteInputVideoSize? = nil
+    ) -> MacRemoteInputDiagnosedResult {
+        withLock {
+            var screenFormatDiagnostic: MacRemoteInputScreenFormatDiagnostic?
+            let result = handleScrollLocked(
+                screenRequestID: screenRequestID,
+                inputSessionID: inputSessionID,
+                anchor: anchor,
+                deltaX: deltaX,
+                deltaY: deltaY,
+                viewerVideoSize: viewerVideoSize,
+                screenFormatDiagnostic: &screenFormatDiagnostic
+            )
+            return MacRemoteInputDiagnosedResult(
+                result: result,
+                screenFormatDiagnostic: screenFormatDiagnostic
+            )
+        }
+    }
+
+    /// Performs the complete scroll authorization and injection transaction under `lock`.
+    private func handleScrollLocked(
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        anchor: MacRemoteNormalizedPoint,
+        deltaX: Int32,
+        deltaY: Int32,
+        viewerVideoSize: MacRemoteInputVideoSize?,
+        screenFormatDiagnostic: inout MacRemoteInputScreenFormatDiagnostic?
+    ) -> MacRemoteInputResult {
+        // Scrolling never grants keyboard authority, and any pointer intent retires a prior grant.
+        authorizedFocus = nil
+
+        guard !isPermanentlyInvalidated, allowRemoteControl else {
+            return .rejected(.disabled)
+        }
+        guard let session = matchingSession(
+            screenRequestID: screenRequestID,
+            inputSessionID: inputSessionID
+        ) else {
+            return .rejected(.staleSession)
+        }
+        guard anchor.isValid else {
+            return .rejected(.invalidPoint)
+        }
+        guard Self.isValidScrollDelta(deltaX: deltaX, deltaY: deltaY) else {
+            return .rejected(.invalidScrollDelta)
+        }
+        guard let viewerVideoSize else {
+            screenFormatDiagnostic = makeScreenFormatDiagnostic(
+                reason: .viewerSizeMissing,
+                viewerVideoSize: nil,
+                frameGeometry: screenVideoFrameGeometry
+                    ?? candidateScreenVideoFrameGeometry,
+                viewerAspectRelativeDifference: nil
+            )
+            return .rejected(.screenFormatChanging)
+        }
+        guard viewerVideoSize.isValid else {
+            return .rejected(.invalidPoint)
+        }
+        guard hasCurrentPermissions() else {
+            revokeState()
+            return .rejected(.permissionRequired)
+        }
+        guard let liveDisplayBounds = validDisplayBounds(for: session.displayID) else {
+            revokeState()
+            return .rejected(.displayUnavailable)
+        }
+        let displayBounds = session.authoritativeDisplayBounds ?? liveDisplayBounds
+        let frameGeometry: ScreenVideoFrameGeometry
+        switch currentScreenVideoFrameGeometryResolution(compatibleWith: displayBounds) {
+        case .unavailable:
+            screenFormatDiagnostic = makeScreenFormatDiagnostic(
+                reason: .frameGeometryUnavailableOrUnstable,
+                viewerVideoSize: viewerVideoSize,
+                frameGeometry: candidateScreenVideoFrameGeometry,
+                viewerAspectRelativeDifference: nil
+            )
+            return .rejected(.screenFormatChanging)
+        case .displayIncompatible(let geometry):
+            screenFormatDiagnostic = makeScreenFormatDiagnostic(
+                reason: .displayGeometryIncompatible,
+                viewerVideoSize: viewerVideoSize,
+                frameGeometry: geometry,
+                viewerAspectRelativeDifference: nil
+            )
+            return .rejected(.screenFormatChanging)
+        case .available(let geometry):
+            frameGeometry = geometry
+        }
+        let viewerAspectComparison = Self.viewerVideoAspectComparison(
+            viewerVideoSize,
+            frameGeometry: frameGeometry
+        )
+        guard viewerAspectComparison.matches else {
+            screenFormatDiagnostic = makeScreenFormatDiagnostic(
+                reason: .viewerAspectMismatch,
+                viewerVideoSize: viewerVideoSize,
+                frameGeometry: frameGeometry,
+                viewerAspectRelativeDifference: viewerAspectComparison.relativeDifference
+            )
+            return .rejected(.screenFormatChanging)
+        }
+        guard let contentAnchor = mappedContentPoint(
+            anchor,
+            frameGeometry: frameGeometry,
+            clampToContent: false
+        ) else {
+            return .rejected(.invalidPoint)
+        }
+        guard scrollBucket.consume(1, at: clock.now()) else {
+            return .rejected(.rateLimited)
+        }
+
+        let globalAnchor = MacRemoteInputCoordinateMapper.globalPoint(
+            contentAnchor,
+            in: displayBounds
+        )
+        guard let preparedDelta = prepareLogicalScrollDelta(
+            screenRequestID: screenRequestID,
+            inputSessionID: inputSessionID,
+            viewerVideoSize: viewerVideoSize,
+            frameGeometry: frameGeometry,
+            displayBounds: displayBounds,
+            deltaX: deltaX,
+            deltaY: deltaY
+        ) else {
+            return .rejected(.invalidScrollDelta)
+        }
+        guard preparedDelta.x != 0 || preparedDelta.y != 0 else {
+            scrollDeltaConversionState = preparedDelta.nextState
+            return .accepted(.none)
+        }
+        guard system.postScroll(
+            at: globalAnchor,
+            deltaX: preparedDelta.x,
+            deltaY: preparedDelta.y
+        ) else {
+            return .rejected(.injectionFailed)
+        }
+        scrollDeltaConversionState = preparedDelta.nextState
+        return .accepted(.none)
+    }
+
+    /// Mirrors the wire bound at the native injection boundary without depending on transport code.
+    private static func isValidScrollDelta(deltaX: Int32, deltaY: Int32) -> Bool {
+        guard deltaX != 0 || deltaY != 0 else { return false }
+        return abs(Int64(deltaX)) <= Int64(maximumScrollDeltaMagnitude)
+            && abs(Int64(deltaY)) <= Int64(maximumScrollDeltaMagnitude)
+    }
+
+    /// Converts decoded viewer-frame pixels into the logical content units consumed by AppKit.
+    ///
+    /// The viewer may receive either a 1x frame, a HiDPI framebuffer, or an independently adapted
+    /// WebRTC frame. The captured content rectangle identifies what fraction of the source surface
+    /// represents the live logical display. Fractional logical units carry across otherwise
+    /// stateless packets so repeated sub-point deltas retain their total without remote gesture or
+    /// mouse-button state.
+    private func prepareLogicalScrollDelta(
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        viewerVideoSize: MacRemoteInputVideoSize,
+        frameGeometry: ScreenVideoFrameGeometry,
+        displayBounds: CGRect,
+        deltaX: Int32,
+        deltaY: Int32
+    ) -> PreparedLogicalScrollDelta? {
+        let surfaceWidth = Double(frameGeometry.surfaceWidth)
+        let surfaceHeight = Double(frameGeometry.surfaceHeight)
+        let viewerWidth = Double(viewerVideoSize.width)
+        let viewerHeight = Double(viewerVideoSize.height)
+        let viewerContentWidth = Double(frameGeometry.contentRect.width)
+            * viewerWidth / surfaceWidth
+        let viewerContentHeight = Double(frameGeometry.contentRect.height)
+            * viewerHeight / surfaceHeight
+        guard viewerContentWidth.isFinite,
+              viewerContentHeight.isFinite,
+              viewerContentWidth > 0,
+              viewerContentHeight > 0 else {
+            return nil
+        }
+
+        let horizontalScale = Double(displayBounds.width) / viewerContentWidth
+        let verticalScale = Double(displayBounds.height) / viewerContentHeight
+        guard horizontalScale.isFinite,
+              verticalScale.isFinite,
+              horizontalScale > 0,
+              verticalScale > 0 else {
+            return nil
+        }
+
+        let candidateBinding = ScrollDeltaConversionBinding(
+            screenRequestID: screenRequestID,
+            inputSessionID: inputSessionID,
+            viewerVideoSize: viewerVideoSize,
+            frameGeometry: frameGeometry,
+            logicalDisplaySize: displayBounds.size,
+            horizontalScale: horizontalScale,
+            verticalScale: verticalScale
+        )
+        var nextState: ScrollDeltaConversionState
+        if let current = scrollDeltaConversionState,
+           current.binding.matches(candidateBinding) {
+            nextState = current
+        } else {
+            nextState = ScrollDeltaConversionState(
+                binding: candidateBinding,
+                horizontalRemainder: 0,
+                verticalRemainder: 0
+            )
+        }
+
+        let unroundedX = Double(deltaX) * nextState.binding.horizontalScale
+            + nextState.horizontalRemainder
+        let unroundedY = Double(deltaY) * nextState.binding.verticalScale
+            + nextState.verticalRemainder
+        guard unroundedX.isFinite, unroundedY.isFinite else { return nil }
+
+        let roundedX = Self.integralScrollComponent(unroundedX)
+        let roundedY = Self.integralScrollComponent(unroundedY)
+        let nativeLimit = Double(Self.maximumScrollDeltaMagnitude)
+        guard abs(roundedX) <= nativeLimit,
+              abs(roundedY) <= nativeLimit else {
+            return nil
+        }
+
+        let emittedX = Int32(roundedX)
+        let emittedY = Int32(roundedY)
+        nextState.horizontalRemainder = unroundedX - roundedX
+        nextState.verticalRemainder = unroundedY - roundedY
+        return PreparedLogicalScrollDelta(
+            x: emittedX,
+            y: emittedY,
+            nextState: nextState
+        )
+    }
+
+    /// Truncation delays a sub-point event until enough accepted motion accumulates. Snap values
+    /// already within floating-point noise of an integer so exact mode ratios do not lose a unit.
+    private static func integralScrollComponent(_ value: Double) -> Double {
+        let nearest = value.rounded()
+        let tolerance = 1e-9 * max(1, abs(value))
+        if abs(value - nearest) <= tolerance {
+            return nearest
+        }
+        return value.rounded(.towardZero)
+    }
+
     // MARK: - Keyboard actions
 
     /// Inserts bounded Unicode text into the exact focus generation granted by a tap.
@@ -978,6 +1259,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         screenVideoFrameGeometry = nil
         candidateScreenVideoFrameGeometry = nil
         candidateScreenVideoFrameGeometrySince = nil
+        scrollDeltaConversionState = nil
     }
 
     private func hasCurrentPermissions() -> Bool {
@@ -1083,6 +1365,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
 
     private func resetRateLimits(now: TimeInterval) {
         tapBucket.reset(at: now)
+        scrollBucket.reset(at: now)
         keyBucket.reset(at: now)
         textBucket.reset(at: now)
     }
@@ -1092,6 +1375,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         activeSession = nil
         authorizedFocus = nil
         nextFocusGeneration = 0
+        scrollDeltaConversionState = nil
         resetRateLimits(now: clock.now())
     }
 
@@ -1115,6 +1399,42 @@ private struct ActiveSession: Sendable {
     let screenRequestID: UInt64
     let inputSessionID: UUID
     var authoritativeDisplayBounds: CGRect?
+}
+
+/// Stable conversion identity for fractional logical scroll carry.
+private struct ScrollDeltaConversionBinding: Sendable {
+    let screenRequestID: UInt64
+    let inputSessionID: UUID
+    let viewerVideoSize: MacRemoteInputVideoSize
+    let frameGeometry: ScreenVideoFrameGeometry
+    let logicalDisplaySize: CGSize
+    let horizontalScale: Double
+    let verticalScale: Double
+
+    /// ScreenCaptureKit metadata can jitter by a subpixel without changing the input transform.
+    /// Retain the original scale/remainder across that benign variation, but reset for every
+    /// session, decoded-size, logical-size, or material frame-transform transition.
+    func matches(_ other: ScrollDeltaConversionBinding) -> Bool {
+        screenRequestID == other.screenRequestID
+            && inputSessionID == other.inputSessionID
+            && viewerVideoSize == other.viewerVideoSize
+            && logicalDisplaySize == other.logicalDisplaySize
+            && frameGeometry.hasSameInputTransform(as: other.frameGeometry)
+    }
+}
+
+/// Numeric quantization carry only; this owns no remote gesture or mouse-button lifecycle.
+private struct ScrollDeltaConversionState: Sendable {
+    let binding: ScrollDeltaConversionBinding
+    var horizontalRemainder: Double
+    var verticalRemainder: Double
+}
+
+/// One converted event plus the state committed only after that packet is accepted locally.
+private struct PreparedLogicalScrollDelta: Sendable {
+    let x: Int32
+    let y: Int32
+    let nextState: ScrollDeltaConversionState
 }
 
 /// AX element and monotonic generation authorized by the most recent pointer action.
@@ -1155,7 +1475,7 @@ enum MacRemoteInputDragPath {
     }
 }
 
-/// Monotonic token bucket used to bound pointer, key, and text injection rates.
+/// Monotonic token bucket used to bound pointer, scroll, key, and text injection rates.
 private struct TokenBucket {
     let capacity: Double
     let refillPerSecond: Double
@@ -1235,6 +1555,7 @@ protocol MacRemoteInputSystem: Sendable {
 
     func postMouseClick(at point: CGPoint) -> Bool
     func postPrimaryDrag(from start: CGPoint, to end: CGPoint) -> Bool
+    func postScroll(at point: CGPoint, deltaX: Int32, deltaY: Int32) -> Bool
     func postUnicodeText(_ text: String) -> Bool
     func postKey(_ key: MacRemoteInputKey) -> Bool
 }
@@ -1407,6 +1728,25 @@ private struct CoreGraphicsMacRemoteInputSystem: MacRemoteInputSystem {
             event.post(tap: .cghidEventTap)
         }
         up.post(tap: .cghidEventTap)
+        return true
+    }
+
+    /// Posts one location-targeted smooth scroll without synthesizing mouse-button state.
+    func postScroll(at point: CGPoint, deltaX: Int32, deltaY: Int32) -> Bool {
+        guard let source = CGEventSource(stateID: .privateState),
+              let event = CGEvent(
+                  scrollWheelEvent2Source: source,
+                  units: .pixel,
+                  wheelCount: 2,
+                  wheel1: deltaY,
+                  wheel2: deltaX,
+                  wheel3: 0
+              ) else {
+            return false
+        }
+        event.location = point
+        event.flags = []
+        event.post(tap: .cghidEventTap)
         return true
     }
 
