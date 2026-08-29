@@ -235,7 +235,7 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
             )
         }
 
-        for boundaryTime in [2.5, 6.0] {
+        for boundaryTime in [2.5, 14.0] {
             var tracker =
                 WorldwideRawMicrophoneMissingStatisticsTracker()
             for time in 1...3 {
@@ -250,9 +250,26 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
                     observedAt: boundaryTime
                 ),
                 .waiting,
-                "A regressed or overlong sample interval must rebase."
+                "A regressed or suspension-length sample interval must rebase."
             )
         }
+
+        var delayedPollTracker =
+            WorldwideRawMicrophoneMissingStatisticsTracker()
+        for time in 1...3 {
+            _ = delayedPollTracker.observe(
+                binding: original,
+                observedAt: Double(time)
+            )
+        }
+        XCTAssertEqual(
+            delayedPollTracker.observe(
+                binding: original,
+                observedAt: 6
+            ),
+            .stalled,
+            "A moderately delayed statistics poll must not erase sustained no-progress evidence."
+        )
     }
 
     func testRawMicrophoneContinuityRecoversSustainedZeroCounterStartup() {

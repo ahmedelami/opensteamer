@@ -1751,12 +1751,17 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         watchdog.advance(to: UInt64.max)
     }
 
-    func testStaleSamplesBeforeFirstInboundAdvanceDoNotConsumeRetryBudget()
+    func testStaleSamplesBeforeFirstInboundAdvanceRedriveTheReceiver()
         async {
-        let output = DriverTestOutput(
+        let first = DriverTestOutput(
             progressSnapshots: readyProgressSnapshots()
         )
-        let factory = DriverTestOutputFactory(outputs: [output])
+        let replacement = DriverTestOutput(
+            progressSnapshots: readyProgressSnapshots()
+        )
+        let factory = DriverTestOutputFactory(
+            outputs: [first, replacement]
+        )
         let harness = DriverTestHarness(
             factory: factory,
             maximumAttemptCountPerKey: 2,
@@ -1781,25 +1786,90 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
                 available: true
             )
         )
-        let attemptID = await harness.snapshot().currentAttemptID
+        let firstAttemptID = await harness.snapshot().currentAttemptID
 
-        for _ in 0..<8 {
+        for _ in 0..<2 {
             await harness.publishInboundMedia(
                 packets: 400,
                 bytes: 32_000
             )
         }
 
-        let waiting = await harness.snapshot()
-        XCTAssertEqual(factory.requestCount, 1)
-        XCTAssertEqual(waiting.currentAttemptID, attemptID)
-        XCTAssertEqual(waiting.phase, .awaitingFrames)
-        XCTAssertEqual(waiting.inboundMediaAdvancementCount, 0)
-        XCTAssertEqual(waiting.consecutiveStaleInboundMediaSamples, 0)
-        XCTAssertFalse(waiting.inboundMediaFresh)
-        XCTAssertNil(waiting.lastFailureCategory)
+        let redriven = await harness.snapshot()
+        XCTAssertEqual(factory.requestCount, 2)
+        XCTAssertNotEqual(redriven.currentAttemptID, firstAttemptID)
+        XCTAssertEqual(redriven.phase, .awaitingFrames)
+        XCTAssertEqual(redriven.inboundMediaAdvancementCount, 0)
+        XCTAssertEqual(redriven.consecutiveStaleInboundMediaSamples, 0)
+        XCTAssertFalse(redriven.inboundMediaFresh)
+        XCTAssertEqual(redriven.lastFailureCategory, .sourceMediaStalled)
         XCTAssertTrue(track.isEnabled)
-        XCTAssertEqual(output.stopCount, 0)
+        XCTAssertEqual(first.stopCount, 1)
+        XCTAssertEqual(replacement.stopCount, 0)
+    }
+
+    func testFirstInboundMediaDeadlineExhaustsWhenNoStatisticsEverArrive()
+        async {
+        let watchdog = DriverTestMediaFreshnessWatchdog()
+        let outputs = (0..<3).map { _ in
+            DriverTestOutput(
+                progressSnapshots: readyProgressSnapshots()
+            )
+        }
+        let factory = DriverTestOutputFactory(outputs: outputs)
+        let harness = DriverTestHarness(
+            factory: factory,
+            maximumAttemptCountPerKey: 3,
+            mediaFreshnessTimeoutNanoseconds: 100,
+            mediaFreshnessWatchdog: watchdog,
+            automaticallyAdvanceInboundMedia: false
+        )
+        let peer = DriverTestPeer()
+        let track = DriverTestTrack()
+        let epoch = UUID()
+
+        await prepare(
+            harness: harness,
+            epoch: epoch,
+            peer: peer,
+            track: track
+        )
+        await harness.authorize(peer: peer, generation: 1)
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+
+        let firstDeadlineReady = await eventually {
+            watchdog.scheduleCount >= 1
+        }
+        XCTAssertTrue(firstDeadlineReady)
+
+        for (deadline, expectedAttemptCount) in [
+            (UInt64(100), 2),
+            (UInt64(200), 3),
+        ] {
+            watchdog.advance(to: deadline)
+            let replacementReady = await eventually {
+                factory.requestCount == expectedAttemptCount
+                    && watchdog.scheduleCount >= expectedAttemptCount
+            }
+            XCTAssertTrue(replacementReady)
+        }
+
+        watchdog.advance(to: 300)
+        let exhausted = await eventually {
+            let snapshot = await harness.snapshot()
+            return snapshot.phase == .sourceMediaStalled
+                && snapshot.currentAttemptID == nil
+        }
+        XCTAssertTrue(exhausted)
+        XCTAssertEqual(factory.requestCount, 3)
+        XCTAssertEqual(outputs.map(\.stopCount), [1, 1, 1])
+        XCTAssertFalse(track.isEnabled)
     }
 
     func testAdvancingSilentQueueAwaitsDelayedFirstPCMWithoutRetiringAttempt()

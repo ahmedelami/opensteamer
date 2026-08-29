@@ -51,11 +51,11 @@ struct WorldwideRawMicrophoneProofSample: Equatable {
     }
 }
 
-/// Exact app-owned scope in which a missing sender-statistics report can become recovery
-/// evidence. A nil report is intentionally not treated as a synthetic zero sample: it can mean
-/// that the negotiated sender disappeared, native admission closed, or WebRTC could not link one
-/// unambiguous outbound RTP record. Only sustained absence in one unchanged healthy scope may
-/// request the existing bounded audio rebuild.
+/// Exact app-owned scope in which a sender report that does not prove forward progress can become
+/// recovery evidence. A nil report is intentionally not treated as a synthetic zero sample: it
+/// can mean that the negotiated sender disappeared, native admission closed, a callback timed
+/// out, or WebRTC could not link one unambiguous outbound RTP record. Frozen and isolated exact
+/// reports are also unproven until a coherent advancing pair is observed.
 struct WorldwideRawMicrophoneMissingStatisticsBinding: Equatable {
     let sessionGeneration: UUID
     let peerIdentity: ObjectIdentifier
@@ -73,12 +73,15 @@ enum WorldwideRawMicrophoneMissingStatisticsResult: Equatable {
     case stalled
 }
 
-/// Requires a baseline plus three timely missing samples, matching the existing exact-counter
-/// stall policy. Identity changes and sampling gaps begin a new window rather than carrying fault
-/// evidence across a reconnect, authorization, policy, or microphone-operation boundary.
+/// Requires a baseline plus three sustained unproven observations, matching the existing
+/// exact-counter stall policy. Identity changes begin a new window rather than carrying fault
+/// evidence across a reconnect, authorization, policy, or microphone-operation boundary. A
+/// moderate delayed poll no longer erases the fault window, while a true suspension-length gap
+/// starts a new window so elapsed suspension time cannot trigger recovery.
 struct WorldwideRawMicrophoneMissingStatisticsTracker {
     private static let missingSampleThreshold = 4
     private static let minimumMissingDuration: TimeInterval = 2.5
+    private static let maximumObservationGap: TimeInterval = 10
 
     private var binding: WorldwideRawMicrophoneMissingStatisticsBinding?
     private var windowStartedAt: TimeInterval?
@@ -105,7 +108,7 @@ struct WorldwideRawMicrophoneMissingStatisticsTracker {
         let elapsed = observedAt - previousObservedAt
         guard elapsed.isFinite,
               elapsed > 0,
-              elapsed <= WorldwideRawMicrophoneRatePolicy.maximumSampleInterval else {
+              elapsed <= Self.maximumObservationGap else {
             beginWindow(binding: binding, observedAt: observedAt)
             return .waiting
         }

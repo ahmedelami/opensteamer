@@ -786,18 +786,33 @@ final class WorldwideAudioLifecycleController {
     func requestAutomaticRuntimeMicrophoneRecovery() -> Bool {
         requestAutomaticRuntimeRecovery(
             requiresRemoteAudio: false,
+            requiresMicrophoneTopology: true,
             context: "Automatic iPhone microphone liveness recovery failed"
+        )
+    }
+
+    /// One bounded output-only rebuild after native microphone staging reports that RemoteIO was
+    /// not ready. The failed authorization has already been retired, so this recovery deliberately
+    /// does not require an active microphone topology; the caller may readmit only after success.
+    @discardableResult
+    func requestAutomaticMicrophoneAdmissionRecovery() -> Bool {
+        requestAutomaticRuntimeRecovery(
+            requiresRemoteAudio: false,
+            requiresMicrophoneTopology: false,
+            context: "Automatic iPhone microphone startup recovery failed"
         )
     }
 
     @discardableResult
     private func requestAutomaticRuntimeRecovery(
         requiresRemoteAudio: Bool,
+        requiresMicrophoneTopology: Bool = true,
         context: String
     ) -> Bool {
         let hasEligibleRealtimePath = requiresRemoteAudio
             ? hasRemoteAudio
-            : microphoneTopologyIsEnabled
+            : (!requiresMicrophoneTopology
+                || microphoneTopologyIsEnabled)
         guard isPrepared,
               hasEligibleRealtimePath,
               transportIsHealthy,

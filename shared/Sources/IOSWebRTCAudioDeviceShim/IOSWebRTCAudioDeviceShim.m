@@ -2284,6 +2284,7 @@ typedef struct ASLifecycleDiagnostics {
 @public
     ASRealtimeGate _realtimeGate;
     atomic_uint_fast64_t _microphoneRecordingGeneration;
+    atomic_int_fast32_t _microphoneStageFailureReason;
 @private
     os_unfair_lock _lock;
 #if DEBUG
@@ -2294,6 +2295,8 @@ typedef struct ASLifecycleDiagnostics {
 - (BOOL)performWhileValid:(NS_NOESCAPE dispatch_block_t)operation;
 - (void)clearMicrophoneRecordingGeneration;
 - (BOOL)bindMicrophoneRecordingGeneration:(uint64_t)recordingGeneration;
+- (void)setMicrophoneStageFailureReason:
+    (ASIOSMicrophoneStageFailureReason)reason;
 @end
 
 @interface ASIOSStereoPlayoutRecoveryAuthorization () {
@@ -2673,6 +2676,31 @@ static BOOL ASMicrophoneAuthorizationIsValid(
         && !ASRealtimeGateIsClosed(&authorization->_realtimeGate);
 }
 
+/// Privacy/lifecycle boundaries always outrank a merely stopped playout request. A caller may
+/// automatically recover the latter once, but interruption and explicit-resume ownership must
+/// wait for their dedicated lifecycle transitions.
+static ASIOSMicrophoneStageFailureReason
+ASClassifyMicrophoneStageBlockingReason(
+    BOOL wantsPlayout,
+    BOOL interrupted,
+    BOOL explicitResumeRequired,
+    BOOL recoveryRequired
+) {
+    if (interrupted) {
+        return ASIOSMicrophoneStageFailureInterrupted;
+    }
+    if (explicitResumeRequired) {
+        return ASIOSMicrophoneStageFailureExplicitResumeRequired;
+    }
+    if (recoveryRequired) {
+        return ASIOSMicrophoneStageFailureNativeRecoveryRequired;
+    }
+    if (!wantsPlayout) {
+        return ASIOSMicrophoneStageFailurePlayoutNotReady;
+    }
+    return ASIOSMicrophoneStageFailureNone;
+}
+
 @implementation ASIOSMicrophoneAuthorization
 
 - (instancetype)init {
@@ -2681,6 +2709,10 @@ static BOOL ASMicrophoneAuthorizationIsValid(
         _lock = OS_UNFAIR_LOCK_INIT;
         ASInitializeRealtimeGateOpen(&_realtimeGate);
         atomic_init(&_microphoneRecordingGeneration, 0);
+        atomic_init(
+            &_microphoneStageFailureReason,
+            ASIOSMicrophoneStageFailureNone
+        );
 #if DEBUG
         _debugAuthorizationGateClosureSemaphore = dispatch_semaphore_create(0);
         atomic_init(&_debugAuthorizationGateClosureSignaled, false);
@@ -2697,6 +2729,22 @@ static BOOL ASMicrophoneAuthorizationIsValid(
     return atomic_load_explicit(
         &_microphoneRecordingGeneration,
         memory_order_acquire
+    );
+}
+
+- (ASIOSMicrophoneStageFailureReason)microphoneStageFailureReason {
+    return (ASIOSMicrophoneStageFailureReason)atomic_load_explicit(
+        &_microphoneStageFailureReason,
+        memory_order_acquire
+    );
+}
+
+- (void)setMicrophoneStageFailureReason:
+    (ASIOSMicrophoneStageFailureReason)reason {
+    atomic_store_explicit(
+        &_microphoneStageFailureReason,
+        reason,
+        memory_order_release
     );
 }
 
@@ -4040,6 +4088,23 @@ static uint64_t ASAllocatePlayoutRecoveryAuthorizationGeneration(void) {
 
 - (ASIOSStereoPlayoutDiagnostics)diagnostics {
     return self.device.diagnostics;
+}
+
+- (ASIOSMicrophoneStageFailureReason)
+    debugClassifyMicrophoneStageFailureForTestingWithWantsPlayout:
+        (BOOL)wantsPlayout
+                                                       interrupted:
+        (BOOL)interrupted
+                                            explicitResumeRequired:
+        (BOOL)explicitResumeRequired
+                                                  recoveryRequired:
+        (BOOL)recoveryRequired {
+    return ASClassifyMicrophoneStageBlockingReason(
+        wantsPlayout,
+        interrupted,
+        explicitResumeRequired,
+        recoveryRequired
+    );
 }
 
 - (NSUInteger)queuedOperationCount {
@@ -6069,17 +6134,30 @@ static OSStatus ASRemoteIOInput(
     id<LKRTCAudioDeviceDelegate> delegate = self.delegate;
     if (delegate == nil) {
         [authorization revoke];
+        [authorization setMicrophoneStageFailureReason:
+            ASIOSMicrophoneStageFailureDelegateUnavailable];
         return 0;
     }
 
     __block uint64_t stagedGeneration = 0;
+    __block ASIOSMicrophoneStageFailureReason stageFailure =
+        ASIOSMicrophoneStageFailureNone;
     [delegate dispatchSync:^{
-        if (!self->_initialized || !authorization.isValid) {
+        if (!self->_initialized) {
+            stageFailure =
+                ASIOSMicrophoneStageFailureDeviceNotInitialized;
+            [authorization revoke];
+            return;
+        }
+        if (!authorization.isValid) {
+            stageFailure =
+                ASIOSMicrophoneStageFailureAuthorizationInvalid;
             [authorization revoke];
             return;
         }
 
         if ([self hostedCallModeIsAuthorized]) {
+            stageFailure = ASIOSMicrophoneStageFailureHostedCall;
             atomic_fetch_add_explicit(
                 &self->_realtime.recordingRequestCount,
                 1,
@@ -6107,6 +6185,8 @@ static OSStatus ASRemoteIOInput(
             self->_wantsRecording = YES;
         }];
         if (!installed) {
+            stageFailure =
+                ASIOSMicrophoneStageFailureAuthorizationInvalid;
             [authorization revoke];
             return;
         }
@@ -6125,14 +6205,27 @@ static OSStatus ASRemoteIOInput(
         BOOL topologyStaged =
             [self microphoneTopologyIsStagedAllowingDebugOverride:
                 allowDebugTopology];
-        if (!topologyStaged
-            && self->_wantsPlayout
-            && !self->_interrupted
-            && !self->_recoveryRequired
-            && !self->_explicitResumeRequired) {
-            topologyStaged = [self rebuildForCurrentPolicy]
-                && [self microphoneTopologyIsStagedAllowingDebugOverride:
-                    allowDebugTopology];
+        if (!topologyStaged) {
+            stageFailure = ASClassifyMicrophoneStageBlockingReason(
+                self->_wantsPlayout,
+                self->_interrupted,
+                self->_explicitResumeRequired,
+                self->_recoveryRequired
+            );
+            if (stageFailure == ASIOSMicrophoneStageFailureNone
+                && ![self rebuildForCurrentPolicy]) {
+                stageFailure =
+                    ASIOSMicrophoneStageFailureTopologyRebuildFailed;
+            } else if (stageFailure
+                == ASIOSMicrophoneStageFailureNone) {
+                topologyStaged = [self
+                    microphoneTopologyIsStagedAllowingDebugOverride:
+                        allowDebugTopology];
+                if (!topologyStaged) {
+                    stageFailure =
+                        ASIOSMicrophoneStageFailureTopologyStillNotStaged;
+                }
+            }
         }
 
         if (topologyStaged
@@ -6143,7 +6236,15 @@ static OSStatus ASRemoteIOInput(
             if ([authorization
                     bindMicrophoneRecordingGeneration:generation]) {
                 stagedGeneration = generation;
+                stageFailure = ASIOSMicrophoneStageFailureNone;
+            } else {
+                stageFailure =
+                    ASIOSMicrophoneStageFailureRecordingGenerationBindFailed;
             }
+        } else if (stageFailure == ASIOSMicrophoneStageFailureNone) {
+            stageFailure = authorization.isValid
+                ? ASIOSMicrophoneStageFailureTopologyStillNotStaged
+                : ASIOSMicrophoneStageFailureAuthorizationInvalid;
         }
 
         if (stagedGeneration == 0
@@ -6156,6 +6257,7 @@ static OSStatus ASRemoteIOInput(
             [authorization revoke];
         }
     }];
+    [authorization setMicrophoneStageFailureReason:stageFailure];
     return stagedGeneration;
 }
 

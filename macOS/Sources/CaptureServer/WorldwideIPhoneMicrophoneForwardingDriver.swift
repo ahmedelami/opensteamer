@@ -386,7 +386,6 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     private struct AttemptHistory {
         var count: Int
         var mayRetry: Bool
-        var hasObservedInboundMediaAdvance: Bool
     }
 
     private var attemptHistory:
@@ -755,7 +754,6 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
                     )
                 attempt.consecutiveStaleInboundMediaSamples = 0
                 attempt.requiresFreshInboundMediaAdvance = false
-                markInboundMediaAdvanceObserved(attempt.key)
                 armMediaFreshnessWatchdog(
                     for: attempt,
                     isolation: isolation
@@ -975,9 +973,10 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
                         ? sample
                         : nil
                 } ?? nil,
-            requiresFreshInboundMediaAdvance:
-                attemptHistory[candidate.key]?
-                    .hasObservedInboundMediaAdvance ?? false
+            // Every admitted receiver must prove one fresh RTP advance. Without this initial
+            // watchdog, a newly negotiated track that never produces its first packet can leave
+            // the virtual microphone indefinitely visible but silent in `awaitingFrames`.
+            requiresFreshInboundMediaAdvance: true
         )
         currentAttempt = attempt
         phase = .starting
@@ -1063,12 +1062,10 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         attempt.inboundMediaAdvancementCount = 0
         attempt.consecutiveStaleInboundMediaSamples = 0
         phase = .checkingReadiness
-        if attempt.requiresFreshInboundMediaAdvance {
-            armMediaFreshnessWatchdog(
-                for: attempt,
-                isolation: isolation
-            )
-        }
+        armMediaFreshnessWatchdog(
+            for: attempt,
+            isolation: isolation
+        )
         await awaitReadiness(
             for: attempt,
             isolation: isolation
@@ -1433,14 +1430,6 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         mediaFreshnessWatchdogTask = nil
     }
 
-    private func markInboundMediaAdvanceObserved(
-        _ key: WorldwideIPhoneMicrophoneForwardingKey
-    ) {
-        guard var history = attemptHistory[key] else { return }
-        history.hasObservedInboundMediaAdvance = true
-        attemptHistory[key] = history
-    }
-
     private func invalidateCurrentAttempt() {
         guard let attempt = currentAttempt else { return }
         cancelMediaFreshnessWatchdog()
@@ -1528,8 +1517,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         } else {
             attemptHistory[key] = AttemptHistory(
                 count: 1,
-                mayRetry: false,
-                hasObservedInboundMediaAdvance: false
+                mayRetry: false
             )
             attemptedKeyOrder.append(key)
         }
