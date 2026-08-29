@@ -51,6 +51,101 @@ struct WorldwideRawMicrophoneProofSample: Equatable {
     }
 }
 
+/// Exact app-owned scope in which a sender report that does not prove forward progress can become
+/// recovery evidence. A nil report is intentionally not treated as a synthetic zero sample: it
+/// can mean that the negotiated sender disappeared, native admission closed, a callback timed
+/// out, or WebRTC could not link one unambiguous outbound RTP record. Frozen and isolated exact
+/// reports are also unproven until a coherent advancing pair is observed.
+struct WorldwideRawMicrophoneMissingStatisticsBinding: Equatable {
+    let sessionGeneration: UUID
+    let peerIdentity: ObjectIdentifier
+    let transportAuthorizationGeneration: UUID
+    let audioPolicyGeneration: UUID
+    let microphoneOperationGeneration: UUID
+    let authorizationIdentity: ObjectIdentifier
+    let recordingGeneration: UInt64
+    let microphoneCallDisposition:
+        WorldwideMicrophoneCallDisposition
+}
+
+enum WorldwideRawMicrophoneMissingStatisticsResult: Equatable {
+    case waiting
+    case stalled
+}
+
+/// Requires a baseline plus three sustained unproven observations, matching the existing
+/// exact-counter stall policy. Identity changes begin a new window rather than carrying fault
+/// evidence across a reconnect, authorization, policy, or microphone-operation boundary. A
+/// moderate delayed poll no longer erases the fault window, while a true suspension-length gap
+/// starts a new window so elapsed suspension time cannot trigger recovery.
+struct WorldwideRawMicrophoneMissingStatisticsTracker {
+    private static let missingSampleThreshold = 4
+    private static let minimumMissingDuration: TimeInterval = 2.5
+    private static let maximumObservationGap: TimeInterval = 10
+
+    private var binding: WorldwideRawMicrophoneMissingStatisticsBinding?
+    private var windowStartedAt: TimeInterval?
+    private var previousObservedAt: TimeInterval?
+    private var consecutiveMissingSampleCount = 0
+
+    mutating func observe(
+        binding: WorldwideRawMicrophoneMissingStatisticsBinding,
+        observedAt: TimeInterval
+    ) -> WorldwideRawMicrophoneMissingStatisticsResult {
+        guard observedAt.isFinite,
+              observedAt >= 0 else {
+            reset()
+            return .waiting
+        }
+
+        guard self.binding == binding,
+              let windowStartedAt,
+              let previousObservedAt else {
+            beginWindow(binding: binding, observedAt: observedAt)
+            return .waiting
+        }
+
+        let elapsed = observedAt - previousObservedAt
+        guard elapsed.isFinite,
+              elapsed > 0,
+              elapsed <= Self.maximumObservationGap else {
+            beginWindow(binding: binding, observedAt: observedAt)
+            return .waiting
+        }
+
+        self.previousObservedAt = observedAt
+        consecutiveMissingSampleCount += 1
+        let windowDuration = observedAt - windowStartedAt
+        guard consecutiveMissingSampleCount
+                >= Self.missingSampleThreshold,
+              windowDuration.isFinite,
+              windowDuration
+                >= Self.minimumMissingDuration else {
+            return .waiting
+        }
+
+        reset()
+        return .stalled
+    }
+
+    mutating func reset() {
+        binding = nil
+        windowStartedAt = nil
+        previousObservedAt = nil
+        consecutiveMissingSampleCount = 0
+    }
+
+    private mutating func beginWindow(
+        binding: WorldwideRawMicrophoneMissingStatisticsBinding,
+        observedAt: TimeInterval
+    ) {
+        self.binding = binding
+        windowStartedAt = observedAt
+        previousObservedAt = observedAt
+        consecutiveMissingSampleCount = 1
+    }
+}
+
 enum WorldwideRawMicrophoneRateAssessment: Equatable {
     case advancing
     case insufficientDensity

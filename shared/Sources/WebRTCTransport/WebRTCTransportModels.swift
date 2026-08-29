@@ -66,6 +66,67 @@ public enum WebRTCDataChannelState: String, Codable, Sendable {
     case closed
 }
 
+/// Typed native boundary for a staged iPhone microphone request. Only the first six reasons are
+/// eligible for one bounded audio-recovery retry; lifecycle and authorization reasons remain
+/// fail-closed until their owning boundary changes.
+public enum WebRTCIOSMicrophoneStageFailureReason:
+    String,
+    Equatable,
+    Sendable
+{
+    case delegateUnavailable
+    case deviceNotInitialized
+    case playoutNotReady
+    case nativeRecoveryRequired
+    case topologyRebuildFailed
+    case topologyStillNotStaged
+    case hostedCall
+    case interrupted
+    case explicitResumeRequired
+    case authorizationInvalid
+    case recordingGenerationBindFailed
+    case deviceUnavailable
+    case unknown
+
+    public var permitsAutomaticAudioRecovery: Bool {
+        switch self {
+        case .delegateUnavailable,
+             .deviceNotInitialized,
+             .playoutNotReady,
+             .nativeRecoveryRequired,
+             .topologyRebuildFailed,
+             .topologyStillNotStaged:
+            true
+        case .hostedCall,
+             .interrupted,
+             .explicitResumeRequired,
+             .authorizationInvalid,
+             .recordingGenerationBindFailed,
+             .deviceUnavailable,
+             .unknown:
+            false
+        }
+    }
+
+    public var isLifecycleControlled: Bool {
+        switch self {
+        case .hostedCall, .interrupted, .explicitResumeRequired:
+            true
+        case .delegateUnavailable,
+             .deviceNotInitialized,
+             .playoutNotReady,
+             .nativeRecoveryRequired,
+             .topologyRebuildFailed,
+             .topologyStillNotStaged,
+             .authorizationInvalid,
+             .recordingGenerationBindFailed,
+             .deviceUnavailable,
+             .unknown:
+            false
+        }
+    }
+}
+
 
 /// Bounded events emitted by `WebRTCPeer` to its signaling and media owner.
 public enum WebRTCTransportEvent: Sendable {
@@ -141,6 +202,10 @@ public enum WebRTCTransportError: Error, Equatable, LocalizedError, Sendable {
     case staleInputRequest(UInt64)
     case conflictingInputFeedback(UInt64)
     case transportClosed
+    case iPhoneMicrophoneStageFailed(
+        reason: WebRTCIOSMicrophoneStageFailureReason,
+        message: String
+    )
     case nativeFailure(String)
 
     public var errorDescription: String? {
@@ -209,6 +274,8 @@ public enum WebRTCTransportError: Error, Equatable, LocalizedError, Sendable {
             "Remote-input request \(id) was already completed with different feedback."
         case .transportClosed:
             "The WebRTC transport is closed."
+        case .iPhoneMicrophoneStageFailed(_, let message):
+            message
         case .nativeFailure(let message):
             message
         }

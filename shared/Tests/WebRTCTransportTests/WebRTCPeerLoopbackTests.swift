@@ -10,6 +10,24 @@ import XCTest
 
 private final class SenderStatisticsIdentity {}
 
+private final class BoundedCallbackProbe<Value: Sendable>:
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var callback: (@Sendable (Value) -> Void)?
+
+    func install(_ callback: @escaping @Sendable (Value) -> Void) {
+        lock.withLock {
+            self.callback = callback
+        }
+    }
+
+    func resolve(_ value: Value) {
+        let callback = lock.withLock { self.callback }
+        callback?(value)
+    }
+}
+
 private final class SemanticNativeWrapper: NSObject {
     let stableIdentity: String
 
@@ -181,6 +199,75 @@ private func sampleIPhoneMicrophoneSenderStatistics(
 /// Exercises two real in-process native peers. Milestones, exact signaling counts, decoded PCM
 /// waveform evidence, media frames, and authorization revocation form the end-to-end oracles.
 final class WebRTCPeerLoopbackTests: XCTestCase {
+    func testBoundedCallbackReturnsNilWhenNativeCallbackNeverArrives()
+        async {
+        let result: Int? = await WebRTCBoundedCallback.value(
+            timeout: .milliseconds(5),
+            register: { _ in }
+        )
+        XCTAssertNil(result)
+    }
+
+    func testBoundedCallbackResumesExactlyOnceAcrossBothRaceOrders()
+        async throws {
+        let callbackFirst: Int? = await WebRTCBoundedCallback.value(
+            timeout: .milliseconds(5),
+            register: { resolve in resolve(41) }
+        )
+        XCTAssertEqual(callbackFirst, 41)
+        try await Task.sleep(for: .milliseconds(10))
+
+        let lateCallback = BoundedCallbackProbe<Int>()
+        let timeoutFirst: Int? = await WebRTCBoundedCallback.value(
+            timeout: .milliseconds(5),
+            register: { resolve in lateCallback.install(resolve) }
+        )
+        XCTAssertNil(timeoutFirst)
+        lateCallback.resolve(42)
+        try await Task.sleep(for: .milliseconds(10))
+    }
+
+    func testIPhoneMicrophoneStageRecoveryClassificationIsFailClosed() {
+        let retryable: [WebRTCIOSMicrophoneStageFailureReason] = [
+            .delegateUnavailable,
+            .deviceNotInitialized,
+            .playoutNotReady,
+            .nativeRecoveryRequired,
+            .topologyRebuildFailed,
+            .topologyStillNotStaged,
+        ]
+        let lifecycleControlled: [WebRTCIOSMicrophoneStageFailureReason] = [
+            .hostedCall,
+            .interrupted,
+            .explicitResumeRequired,
+        ]
+        let terminal: [WebRTCIOSMicrophoneStageFailureReason] = [
+            .authorizationInvalid,
+            .recordingGenerationBindFailed,
+            .deviceUnavailable,
+            .unknown,
+        ]
+
+        XCTAssertTrue(
+            retryable.allSatisfy(\.permitsAutomaticAudioRecovery)
+        )
+        XCTAssertTrue(
+            retryable.allSatisfy { !$0.isLifecycleControlled }
+        )
+        XCTAssertTrue(
+            lifecycleControlled.allSatisfy {
+                !$0.permitsAutomaticAudioRecovery
+                    && $0.isLifecycleControlled
+            }
+        )
+        XCTAssertTrue(
+            terminal.allSatisfy {
+                !$0.permitsAutomaticAudioRecovery
+                    && !$0.isLifecycleControlled
+            }
+        )
+    }
+
     func testIPhoneMicrophoneTrackCreationPolicyMatchesPlatformAndConfiguration() {
         #if os(iOS)
         XCTAssertTrue(

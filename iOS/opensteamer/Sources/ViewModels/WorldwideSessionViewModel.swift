@@ -445,11 +445,25 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
     private var rawMicrophoneContinuityTracker =
         WorldwideRawMicrophoneContinuityTracker()
+    private var rawMicrophoneMissingStatisticsTracker =
+        WorldwideRawMicrophoneMissingStatisticsTracker()
     private var ordinaryPlayoutLivenessTracker =
         IOSOrdinaryPlayoutLivenessTracker()
     /// One automatic recovery per continuous fault episode. These latches deliberately survive
     /// the recovery's policy/auth rotation and reopen only after real counter advancement.
-    private var microphoneAutomaticRecoveryConsumedSessionGeneration: UUID?
+    private struct MicrophoneAutomaticRecoveryBinding: Equatable {
+        let sessionGeneration: UUID
+        let peerIdentity: ObjectIdentifier
+        let transportAuthorizationGeneration: UUID
+    }
+    private var microphoneAutomaticRecoveryConsumedBinding:
+        MicrophoneAutomaticRecoveryBinding?
+    /// Holds admission closed while the output-only RemoteIO recovery is still being proved.
+    /// It intentionally survives the recovery's audio-policy rotation, but not a peer/session or
+    /// transport-authorization boundary.
+    private var microphoneAdmissionRecoveryPendingBinding:
+        MicrophoneAutomaticRecoveryBinding?
+    private var microphoneAdmissionRecoveryProofAttemptID: UUID?
     private var ordinaryPlayoutAutomaticRecoveryConsumedSessionGeneration: UUID?
     private var ordinaryPlayoutAutomaticFailureWasPublished = false
     private var transportAuthorizationGeneration = UUID() {
@@ -632,6 +646,10 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var debugIPhoneMicrophoneSenderStatisticsReader:
         (@MainActor (WebRTCPeer) async
             -> WebRTCIPhoneMicrophoneSenderStatistics?)?
+    private var debugRawMicrophoneMissingStatisticsUptimeClock:
+        (@MainActor () -> TimeInterval)?
+    private var debugStalledIPhoneMicrophoneRecoveryObserver:
+        (@MainActor () -> Void)?
     private var debugIOSPlayoutDiagnosticsReader: (
         @MainActor (WebRTCPeer) async -> WebRTCIOSPlayoutDiagnostics?
     )?
@@ -894,7 +912,9 @@ final class WorldwideSessionViewModel: ObservableObject {
         isMicrophoneAdmissionCleanupInProgress = false
         rawMicrophoneContinuityTracker.reset()
         ordinaryPlayoutLivenessTracker.reset()
-        microphoneAutomaticRecoveryConsumedSessionGeneration = nil
+        microphoneAutomaticRecoveryConsumedBinding = nil
+        microphoneAdmissionRecoveryPendingBinding = nil
+        microphoneAdmissionRecoveryProofAttemptID = nil
         ordinaryPlayoutAutomaticRecoveryConsumedSessionGeneration = nil
         ordinaryPlayoutAutomaticFailureWasPublished = false
         nextICERestartRequestID = 1
@@ -1056,6 +1076,16 @@ final class WorldwideSessionViewModel: ObservableObject {
     private func pausePendingIPhoneMicrophoneForInactiveApp() {
         guard !isMicrophoneSending else { return }
 
+        if microphoneAdmissionRecoveryPendingBinding
+            == currentMicrophoneAutomaticRecoveryBinding() {
+            microphoneAdmissionRecoveryPendingBinding = nil
+            microphoneAdmissionRecoveryProofAttemptID = nil
+            microphoneAdmissionFailedSessionGeneration =
+                sessionGeneration
+            microphoneError =
+                "Automatic microphone recovery was interrupted. Tap Retry iPhone Microphone."
+        }
+
         if microphoneAuthorization != nil {
             suspendIPhoneMicrophone(
                 stateText: "Paused — waiting for app",
@@ -1080,7 +1110,9 @@ final class WorldwideSessionViewModel: ObservableObject {
         if microphoneAdmissionFailedSessionGeneration == sessionGeneration {
             microphoneAdmissionFailedSessionGeneration = nil
             microphoneAdmissionDeferredUntilTransportProof = nil
-            microphoneAutomaticRecoveryConsumedSessionGeneration = nil
+            microphoneAutomaticRecoveryConsumedBinding = nil
+            microphoneAdmissionRecoveryPendingBinding = nil
+            microphoneAdmissionRecoveryProofAttemptID = nil
             rawMicrophoneContinuityTracker.reset()
             microphoneError = nil
             microphoneStateText = "Starting"
@@ -1093,7 +1125,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             automaticMicrophoneAttemptedSessionGeneration = sessionGeneration
             microphoneAdmissionFailedSessionGeneration = nil
             microphoneAdmissionDeferredUntilTransportProof = nil
-            microphoneAutomaticRecoveryConsumedSessionGeneration = nil
+            microphoneAutomaticRecoveryConsumedBinding = nil
+            microphoneAdmissionRecoveryPendingBinding = nil
+            microphoneAdmissionRecoveryProofAttemptID = nil
             rawMicrophoneContinuityTracker.reset()
             microphoneError = nil
             suspendIPhoneMicrophone(
@@ -1111,7 +1145,9 @@ final class WorldwideSessionViewModel: ObservableObject {
         microphoneIntentEnabled = true
         microphoneAdmissionFailedSessionGeneration = nil
         microphoneAdmissionDeferredUntilTransportProof = nil
-        microphoneAutomaticRecoveryConsumedSessionGeneration = nil
+        microphoneAutomaticRecoveryConsumedBinding = nil
+        microphoneAdmissionRecoveryPendingBinding = nil
+        microphoneAdmissionRecoveryProofAttemptID = nil
         rawMicrophoneContinuityTracker.reset()
         microphoneError = nil
         continueIPhoneMicrophoneEnablementIfPossible()
@@ -1236,14 +1272,22 @@ final class WorldwideSessionViewModel: ObservableObject {
     private func reconcileIPhoneMicrophone(
         for audioSnapshot: WorldwideAudioLifecycleSnapshot? = nil
     ) {
-        if let audioSnapshot,
-           audioSnapshot.errorText != nil,
-           microphoneAuthorization != nil {
-            suspendIPhoneMicrophone(
-                stateText: "Paused — audio unavailable",
-                preserveIntent: true,
-                reprovePlayout: false
-            )
+        let effectiveAudioSnapshot =
+            audioSnapshot ?? audioLifecycle.snapshot
+        if effectiveAudioSnapshot.errorText != nil {
+            if microphoneAuthorization != nil {
+                suspendIPhoneMicrophone(
+                    stateText: "Paused — audio unavailable",
+                    preserveIntent: true,
+                    reprovePlayout: false
+                )
+            } else if microphoneIntentEnabled {
+                microphoneStateText =
+                    microphoneAdmissionFailedSessionGeneration
+                        == sessionGeneration
+                        ? "Unavailable"
+                        : "Paused — audio unavailable"
+            }
             return
         }
 
@@ -1277,6 +1321,16 @@ final class WorldwideSessionViewModel: ObservableObject {
             microphoneStateText = "Recovering audio"
             return
         }
+        if let pendingBinding =
+            microphoneAdmissionRecoveryPendingBinding {
+            if pendingBinding
+                == currentMicrophoneAutomaticRecoveryBinding() {
+                microphoneStateText = "Recovering audio"
+                return
+            }
+            microphoneAdmissionRecoveryPendingBinding = nil
+            microphoneAdmissionRecoveryProofAttemptID = nil
+        }
         guard microphoneAdmissionDeferredUntilTransportProof?
             .sessionGeneration != sessionGeneration else {
             microphoneStateText = "Paused — waiting for healthy connection"
@@ -1296,6 +1350,8 @@ final class WorldwideSessionViewModel: ObservableObject {
 
         let operationGeneration = UUID()
         let expectedSessionGeneration = sessionGeneration
+        let expectedTransportAuthorizationGeneration =
+            transportAuthorizationGeneration
         let authorization = WebRTCIOSMicrophoneAuthorization()
         invalidateRawMicrophoneOracle()
         if let outputOnlyToken = microphoneOutputOnlyToken {
@@ -1350,6 +1406,19 @@ final class WorldwideSessionViewModel: ObservableObject {
                 self.invalidateRawMicrophoneOracle()
                 let shouldDeferUntilTransportProof =
                     (error as? WebRTCTransportError) == .transportNotHealthy
+                let stageFailureReason:
+                    WebRTCIOSMicrophoneStageFailureReason?
+                if case let WebRTCTransportError
+                    .iPhoneMicrophoneStageFailed(reason, _) = error {
+                    stageFailureReason = reason
+                } else {
+                    stageFailureReason = nil
+                }
+                let shouldRecoverNativeStage =
+                    stageFailureReason?
+                        .permitsAutomaticAudioRecovery == true
+                let stageFailureIsLifecycleControlled =
+                    stageFailureReason?.isLifecycleControlled == true
                 let transportProofRevisionAtFailure =
                     viewerTransportHealthProofRevision
                 let outputOnlyToken =
@@ -1405,10 +1474,26 @@ final class WorldwideSessionViewModel: ObservableObject {
                         microphoneError = nil
                         microphoneStateText = "Starting"
                     }
+                } else if shouldRecoverNativeStage {
+                    microphoneStateText = "Recovering audio"
+                    microphoneError = nil
+                } else if stageFailureIsLifecycleControlled {
+                    microphoneStateText =
+                        "Paused — audio unavailable"
                 } else {
                     microphoneAdmissionFailedSessionGeneration =
                         expectedSessionGeneration
                     microphoneStateText = "Unavailable"
+                }
+                if shouldRecoverNativeStage {
+                    recoverFromRetryableIPhoneMicrophoneAdmissionFailure(
+                        generation: expectedSessionGeneration,
+                        sourcePeer: expectedPeer,
+                        transportAuthorizationGeneration:
+                            expectedTransportAuthorizationGeneration,
+                        operationGeneration: operationGeneration
+                    )
+                    return
                 }
                 beginIOSPlayoutProof(requestRecovery: true)
                 if shouldDeferUntilTransportProof,
@@ -1480,6 +1565,82 @@ final class WorldwideSessionViewModel: ObservableObject {
         #endif
         try await peer.enableIPhoneMicrophone(
             authorization: authorization
+        )
+    }
+
+    private func recoverFromRetryableIPhoneMicrophoneAdmissionFailure(
+        generation: UUID,
+        sourcePeer: WebRTCPeer,
+        transportAuthorizationGeneration expectedTransportGeneration: UUID,
+        operationGeneration expectedOperationGeneration: UUID
+    ) {
+        guard generation == sessionGeneration,
+              peer === sourcePeer,
+              transportAuthorizationGeneration
+                == expectedTransportGeneration,
+              microphoneOperationGeneration
+                == expectedOperationGeneration,
+              microphoneAuthorization == nil,
+              microphoneIntentEnabled,
+              microphonePermissionGranted,
+              applicationIsActive,
+              !microphoneAwaitsPostCallRecovery,
+              !microphoneIsBlockedByCall,
+              audioLifecycle.microphoneActivationIsAllowed(),
+              isPeerConnected,
+              iceIsConnected,
+              isControlChannelReady,
+              !recoveryProofRequired,
+              canViewScreen else {
+            reconcileIPhoneMicrophone()
+            return
+        }
+
+        let binding = MicrophoneAutomaticRecoveryBinding(
+            sessionGeneration: generation,
+            peerIdentity: ObjectIdentifier(sourcePeer),
+            transportAuthorizationGeneration:
+                expectedTransportGeneration
+        )
+        guard microphoneAutomaticRecoveryConsumedBinding
+                != binding else {
+            microphoneAdmissionFailedSessionGeneration = generation
+            microphoneStateText = "Unavailable"
+            microphoneError =
+                "The iPhone microphone could not start after automatic audio recovery. Tap Retry iPhone Microphone."
+            return
+        }
+
+        // Consume before the synchronous lifecycle callbacks can reenter and create the fresh
+        // authorization. The recovery itself intentionally rotates audio-policy and authorization
+        // generations, so only a real transport generation or advancing sender proof reopens it.
+        microphoneAutomaticRecoveryConsumedBinding = binding
+        microphoneAdmissionRecoveryPendingBinding = binding
+        microphoneAdmissionRecoveryProofAttemptID = nil
+        microphoneStateText = "Recovering audio"
+        microphoneError = nil
+        guard audioLifecycle
+                .requestAutomaticMicrophoneAdmissionRecovery() else {
+            if microphoneAdmissionRecoveryPendingBinding == binding {
+                microphoneAdmissionRecoveryPendingBinding = nil
+                microphoneAdmissionRecoveryProofAttemptID = nil
+            }
+            microphoneAdmissionFailedSessionGeneration = generation
+            microphoneStateText = "Unavailable"
+            microphoneError =
+                "The iPhone microphone audio path could not recover automatically. Tap Retry iPhone Microphone."
+            return
+        }
+    }
+
+    private func currentMicrophoneAutomaticRecoveryBinding()
+        -> MicrophoneAutomaticRecoveryBinding? {
+        guard let peer else { return nil }
+        return MicrophoneAutomaticRecoveryBinding(
+            sessionGeneration: sessionGeneration,
+            peerIdentity: ObjectIdentifier(peer),
+            transportAuthorizationGeneration:
+                transportAuthorizationGeneration
         )
     }
 
@@ -3069,16 +3230,35 @@ final class WorldwideSessionViewModel: ObservableObject {
             audioPolicyGeneration
         let expectedTransportAuthorizationGeneration =
             transportAuthorizationGeneration
+        let expectedMicrophoneOperationGeneration =
+            microphoneOperationGeneration
         let expectedAuthorizationIdentity =
             ObjectIdentifier(authorization)
-        guard let exactStatistics =
+        let expectedRecordingGeneration =
+            authorization.recordingGeneration
+        let expectedMicrophoneCallDisposition =
+            currentMicrophoneCallDisposition
+        let unprovenProgressBinding =
+            WorldwideRawMicrophoneMissingStatisticsBinding(
+                sessionGeneration: generation,
+                peerIdentity: ObjectIdentifier(sourcePeer),
+                transportAuthorizationGeneration:
+                    expectedTransportAuthorizationGeneration,
+                audioPolicyGeneration:
+                    expectedAudioPolicyGeneration,
+                microphoneOperationGeneration:
+                    expectedMicrophoneOperationGeneration,
+                authorizationIdentity:
+                    expectedAuthorizationIdentity,
+                recordingGeneration:
+                    expectedRecordingGeneration,
+                microphoneCallDisposition:
+                    expectedMicrophoneCallDisposition
+            )
+        let exactStatistics =
             await readIPhoneMicrophoneSenderStatistics(
                 from: sourcePeer
-            ) else {
-            invalidateRawMicrophoneOracle()
-            return
-        }
-
+            )
         guard automaticMicrophoneEligibleSessionGeneration
                 == generation,
               generation == sessionGeneration,
@@ -3087,6 +3267,8 @@ final class WorldwideSessionViewModel: ObservableObject {
                 == expectedAudioPolicyGeneration,
               transportAuthorizationGeneration
                 == expectedTransportAuthorizationGeneration,
+              microphoneOperationGeneration
+                == expectedMicrophoneOperationGeneration,
               microphoneIntentEnabled,
               microphonePermissionGranted,
               isMicrophoneSending,
@@ -3102,6 +3284,21 @@ final class WorldwideSessionViewModel: ObservableObject {
                 == expectedAuthorizationIdentity,
               authorization.isValid,
               authorization.recordingGeneration
+                == expectedRecordingGeneration,
+              currentMicrophoneCallDisposition
+                == expectedMicrophoneCallDisposition else {
+            return
+        }
+
+        guard let exactStatistics else {
+            observeUnprovenRawMicrophoneProgress(
+                binding: unprovenProgressBinding,
+                generation: generation
+            )
+            return
+        }
+
+        guard authorization.recordingGeneration
                 == exactStatistics.sender.recordingGeneration,
               exactStatistics.sender.recordingGeneration
                 == exactStatistics.sender
@@ -3110,7 +3307,11 @@ final class WorldwideSessionViewModel: ObservableObject {
                 .captureRouteIsBuiltInMicrophone,
               exactStatistics.sender
                 .captureRouteProofGeneration > 0 else {
-            invalidateRawMicrophoneOracle()
+            rawMicrophoneContinuityTracker.reset()
+            observeUnprovenRawMicrophoneProgress(
+                binding: unprovenProgressBinding,
+                generation: generation
+            )
             return
         }
 
@@ -3127,33 +3328,69 @@ final class WorldwideSessionViewModel: ObservableObject {
             microphoneIntentIsCurrent: true,
             microphonePermissionGranted: true,
             callIsActive:
-                currentMicrophoneCallDisposition != .inactive,
+                expectedMicrophoneCallDisposition != .inactive,
             macHostedCallEvidenceAdmitted:
-                currentMicrophoneCallDisposition == .macHosted,
+                expectedMicrophoneCallDisposition == .macHosted,
             transportIsHealthy: true,
             statistics: exactStatistics
         )
         switch rawMicrophoneContinuityTracker.observe(sample) {
         case .waiting:
-            worldwideRawMicrophoneOracle = nil
+            observeUnprovenRawMicrophoneProgress(
+                binding: unprovenProgressBinding,
+                generation: generation
+            )
         case .satisfied(let oracle):
             worldwideRawMicrophoneOracle = oracle
-            microphoneAutomaticRecoveryConsumedSessionGeneration = nil
+            rawMicrophoneMissingStatisticsTracker.reset()
+            microphoneAutomaticRecoveryConsumedBinding = nil
         case .stalled:
             worldwideRawMicrophoneOracle = nil
+            rawMicrophoneMissingStatisticsTracker.reset()
             recoverFromStalledIPhoneMicrophone(generation: generation)
         case .rejected:
-            worldwideRawMicrophoneOracle = nil
+            observeUnprovenRawMicrophoneProgress(
+                binding: unprovenProgressBinding,
+                generation: generation
+            )
+        }
+    }
+
+    private func observeUnprovenRawMicrophoneProgress(
+        binding: WorldwideRawMicrophoneMissingStatisticsBinding,
+        generation: UUID
+    ) {
+        revokePublishedRawMicrophoneOracle()
+        if rawMicrophoneMissingStatisticsTracker.observe(
+            binding: binding,
+            observedAt:
+                rawMicrophoneMissingStatisticsObservationUptime()
+        ) == .stalled {
+            rawMicrophoneContinuityTracker.reset()
+            recoverFromStalledIPhoneMicrophone(
+                generation: generation
+            )
         }
     }
 
     private func recoverFromStalledIPhoneMicrophone(generation: UUID) {
+        #if DEBUG
+        debugStalledIPhoneMicrophoneRecoveryObserver?()
+        #endif
         guard generation == sessionGeneration,
               microphoneIntentEnabled,
-              isMicrophoneSending else { return }
+              isMicrophoneSending,
+              let sourcePeer = peer else { return }
 
-        if microphoneAutomaticRecoveryConsumedSessionGeneration
-            == generation {
+        let recoveryBinding = MicrophoneAutomaticRecoveryBinding(
+            sessionGeneration: generation,
+            peerIdentity: ObjectIdentifier(sourcePeer),
+            transportAuthorizationGeneration:
+                transportAuthorizationGeneration
+        )
+
+        if microphoneAutomaticRecoveryConsumedBinding
+            == recoveryBinding {
             microphoneAdmissionFailedSessionGeneration = generation
             microphoneStateText = "Unavailable"
             microphoneError =
@@ -3166,10 +3403,22 @@ final class WorldwideSessionViewModel: ObservableObject {
             return
         }
 
-        guard audioLifecycle.requestAutomaticRuntimeAudioRecovery() else {
+        microphoneAutomaticRecoveryConsumedBinding = recoveryBinding
+        microphoneAdmissionRecoveryPendingBinding = recoveryBinding
+        microphoneAdmissionRecoveryProofAttemptID = nil
+        guard audioLifecycle
+                .requestAutomaticRuntimeMicrophoneRecovery() else {
+            if microphoneAdmissionRecoveryPendingBinding
+                == recoveryBinding {
+                microphoneAdmissionRecoveryPendingBinding = nil
+                microphoneAdmissionRecoveryProofAttemptID = nil
+            }
+            if microphoneAutomaticRecoveryConsumedBinding
+                == recoveryBinding {
+                microphoneAutomaticRecoveryConsumedBinding = nil
+            }
             return
         }
-        microphoneAutomaticRecoveryConsumedSessionGeneration = generation
         microphoneStateText = "Recovering audio"
         microphoneError = nil
     }
@@ -3187,9 +3436,28 @@ final class WorldwideSessionViewModel: ObservableObject {
             .iPhoneMicrophoneSenderStatistics()
     }
 
-    private func invalidateRawMicrophoneOracle() {
-        rawMicrophoneContinuityTracker.reset()
+    private func rawMicrophoneMissingStatisticsObservationUptime()
+        -> TimeInterval {
+        #if DEBUG
+        if let debugRawMicrophoneMissingStatisticsUptimeClock {
+            return debugRawMicrophoneMissingStatisticsUptimeClock()
+        }
+        #endif
+        return ProcessInfo.processInfo.systemUptime
+    }
+
+    private func revokePublishedRawMicrophoneOracle() {
         worldwideRawMicrophoneOracle = nil
+    }
+
+    private func clearRawMicrophoneOracle() {
+        rawMicrophoneContinuityTracker.reset()
+        revokePublishedRawMicrophoneOracle()
+    }
+
+    private func invalidateRawMicrophoneOracle() {
+        clearRawMicrophoneOracle()
+        rawMicrophoneMissingStatisticsTracker.reset()
     }
 
     private func failSession(_ message: String, generation: UUID) {
@@ -3203,7 +3471,9 @@ final class WorldwideSessionViewModel: ObservableObject {
     private func tearDown(reason: RemoteSessionEndReason) {
         invalidateRawMicrophoneOracle()
         ordinaryPlayoutLivenessTracker.reset()
-        microphoneAutomaticRecoveryConsumedSessionGeneration = nil
+        microphoneAutomaticRecoveryConsumedBinding = nil
+        microphoneAdmissionRecoveryPendingBinding = nil
+        microphoneAdmissionRecoveryProofAttemptID = nil
         ordinaryPlayoutAutomaticRecoveryConsumedSessionGeneration = nil
         ordinaryPlayoutAutomaticFailureWasPublished = false
         retireIOSHostedCallPlayoutAttempt()
@@ -3286,7 +3556,9 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func resetPublishedSessionState() {
         ordinaryPlayoutLivenessTracker.reset()
-        microphoneAutomaticRecoveryConsumedSessionGeneration = nil
+        microphoneAutomaticRecoveryConsumedBinding = nil
+        microphoneAdmissionRecoveryPendingBinding = nil
+        microphoneAdmissionRecoveryProofAttemptID = nil
         ordinaryPlayoutAutomaticRecoveryConsumedSessionGeneration = nil
         ordinaryPlayoutAutomaticFailureWasPublished = false
         invalidateMacHostedCallEvidence(notifyLifecycle: false)
@@ -3715,6 +3987,19 @@ final class WorldwideSessionViewModel: ObservableObject {
         guard !ordinaryIOSPlayoutProofIsSuppressedByHostedCall else {
             return nil
         }
+        let pendingMicrophoneRecoveryIsCurrent =
+            microphoneAdmissionRecoveryPendingBinding
+                == currentMicrophoneAutomaticRecoveryBinding()
+        if pendingMicrophoneRecoveryIsCurrent,
+           categoryProofClaim == nil,
+           let currentAttempt = iosPlayoutProofAttempt,
+           microphoneAdmissionRecoveryProofAttemptID
+                == currentAttempt.proofAttemptID,
+           iosPlayoutProofAttemptIsOwned(currentAttempt) {
+            // A remote-track/statistics refresh is observational. It must not replace the exact
+            // recovery-backed proof that owns microphone readmission.
+            return audioPlayoutProofTask
+        }
         retireIOSPlayoutRecoveryAttempt()
         audioPlayoutProofTask?.cancel()
         audioPlayoutProofTask = nil
@@ -3736,7 +4021,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             return nil
         }
 
-        let requiresRecovery = requestRecovery || audioPolicyRequiresFreshRecovery
+        let requiresRecovery = requestRecovery
+            || audioPolicyRequiresFreshRecovery
+            || pendingMicrophoneRecoveryIsCurrent
         let proofAudioPolicyGeneration = audioPolicyGeneration
         verifiedAudioPolicyGeneration = nil
         audioPlayoutOracle = nil
@@ -3756,6 +4043,10 @@ final class WorldwideSessionViewModel: ObservableObject {
             stage: requiresRecovery ? .awaitingRecoveryBaseline : .awaitingInitialFloor
         )
         iosPlayoutProofAttempt = attempt
+        if pendingMicrophoneRecoveryIsCurrent {
+            microphoneAdmissionRecoveryProofAttemptID =
+                attempt.proofAttemptID
+        }
         audioPlayoutProofTimeoutTask?.cancel()
         audioPlayoutProofTimeoutTask = Task { [weak self, weak attempt] in
             do {
@@ -5435,6 +5726,11 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func failIOSPlayoutProofTimeout(_ attempt: IOSPlayoutProofAttempt) {
         guard iosPlayoutProofAttemptIsOwned(attempt) else { return }
+        failPendingMicrophoneAdmissionRecoveryIfOwned(
+            by: attempt,
+            message:
+                "The iPhone microphone audio path did not recover in time. Tap Retry iPhone Microphone."
+        )
         retireIOSPlayoutRecoveryAttempt(attempt)
         audioLifecycle.updateRuntimePlayout(
             isReady: false,
@@ -5570,6 +5866,10 @@ final class WorldwideSessionViewModel: ObservableObject {
             return false
         }
 
+        let completedMicrophoneAdmissionRecovery =
+            completePendingMicrophoneAdmissionRecoveryIfOwned(
+                by: attempt
+            )
         verifiedAudioPolicyGeneration = attempt.audioPolicyGeneration
         if attempt.recoveryBaseline != nil {
             audioPolicyRequiresFreshRecovery = false
@@ -5588,6 +5888,12 @@ final class WorldwideSessionViewModel: ObservableObject {
             isReady: true,
             categoryProofClaim: attempt.categoryProofClaim
         )
+        if completedMicrophoneAdmissionRecovery {
+            // Runtime-proof publication normally reconciles synchronously. Redrive explicitly as
+            // well so a lifecycle observer that coalesces an unchanged snapshot cannot strand the
+            // proven admission in "Starting".
+            reconcileIPhoneMicrophone(for: audioLifecycle.snapshot)
+        }
         return true
     }
 
@@ -5648,6 +5954,11 @@ final class WorldwideSessionViewModel: ObservableObject {
         let diagnostic = diagnosticOverride
             ?? diagnostics.failureMessage
             ?? "RemoteIO failure=\(diagnostics.failureCode), status=\(diagnostics.lastLifecycleStatus), renderStatus=\(diagnostics.lastPlayoutStatus), callbacks=\(diagnostics.playoutCallbackCount), failures=\(diagnostics.playoutFailureCount), recordRequests=\(diagnostics.unexpectedRecordingRequestCount)."
+        failPendingMicrophoneAdmissionRecoveryIfOwned(
+            by: attempt,
+            message:
+                "The iPhone microphone audio path could not recover automatically. Tap Retry iPhone Microphone."
+        )
         retireIOSPlayoutRecoveryAttempt(attempt)
         audioLifecycle.updateRuntimePlayout(
             isReady: false,
@@ -5656,6 +5967,51 @@ final class WorldwideSessionViewModel: ObservableObject {
             categoryProofClaim: attempt.categoryProofClaim
         )
         return true
+    }
+
+    private func completePendingMicrophoneAdmissionRecoveryIfOwned(
+        by attempt: IOSPlayoutProofAttempt
+    ) -> Bool {
+        guard let pendingBinding =
+                microphoneAdmissionRecoveryPendingBinding,
+              attempt.sessionGeneration == sessionGeneration,
+              attempt.expectedPeer === peer,
+              microphoneAdmissionRecoveryProofAttemptID
+                == attempt.proofAttemptID,
+              attempt.recoveryBaseline != nil,
+              attempt.recoveryAuthorization?
+                .hasAcceptedTerminalOutcome == true,
+              pendingBinding
+                == currentMicrophoneAutomaticRecoveryBinding() else {
+            return false
+        }
+        microphoneAdmissionRecoveryPendingBinding = nil
+        microphoneAdmissionRecoveryProofAttemptID = nil
+        microphoneAdmissionFailedSessionGeneration = nil
+        microphoneStateText = "Starting"
+        microphoneError = nil
+        return true
+    }
+
+    private func failPendingMicrophoneAdmissionRecoveryIfOwned(
+        by attempt: IOSPlayoutProofAttempt,
+        message: String
+    ) {
+        guard let pendingBinding =
+                microphoneAdmissionRecoveryPendingBinding,
+              attempt.sessionGeneration == sessionGeneration,
+              attempt.expectedPeer === peer,
+              microphoneAdmissionRecoveryProofAttemptID
+                == attempt.proofAttemptID,
+              pendingBinding
+                == currentMicrophoneAutomaticRecoveryBinding() else {
+            return
+        }
+        microphoneAdmissionRecoveryPendingBinding = nil
+        microphoneAdmissionRecoveryProofAttemptID = nil
+        microphoneAdmissionFailedSessionGeneration = sessionGeneration
+        microphoneStateText = "Unavailable"
+        microphoneError = message
     }
 
     // MARK: - Control acknowledgements and ICE recovery
@@ -6241,6 +6597,18 @@ final class WorldwideSessionViewModel: ObservableObject {
         ) async -> WebRTCIPhoneMicrophoneSenderStatistics?
     ) {
         debugIPhoneMicrophoneSenderStatisticsReader = reader
+    }
+
+    func debugInstallRawMicrophoneMissingStatisticsUptimeClock(
+        _ clock: @escaping @MainActor () -> TimeInterval
+    ) {
+        debugRawMicrophoneMissingStatisticsUptimeClock = clock
+    }
+
+    func debugInstallStalledIPhoneMicrophoneRecoveryObserver(
+        _ observer: @escaping @MainActor () -> Void
+    ) {
+        debugStalledIPhoneMicrophoneRecoveryObserver = observer
     }
 
     func debugInstallBeforeRetiredPeerClose(

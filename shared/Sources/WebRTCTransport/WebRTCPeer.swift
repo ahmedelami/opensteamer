@@ -554,6 +554,54 @@ private struct WebRTCIPhoneMicrophoneSenderStatisticsReportCapture: Sendable {
     let callbackCompletedAt: Date
 }
 
+/// Bridges native callbacks without allowing a lost callback to suspend an actor forever.
+/// Callback and deadline may race on unrelated queues, so the continuation is claimed under one
+/// lock and always resumed outside that lock.
+enum WebRTCBoundedCallback {
+    static func value<Value: Sendable>(
+        timeout: Duration,
+        register: (@escaping @Sendable (Value) -> Void) -> Void
+    ) async -> Value? {
+        precondition(timeout > .zero)
+        return await withCheckedContinuation { continuation in
+            let resolver = WebRTCOneShotContinuation<Value?>(
+                continuation
+            )
+            register { value in
+                resolver.resolve(value)
+            }
+            Task.detached {
+                do {
+                    try await Task.sleep(for: timeout)
+                } catch {
+                    return
+                }
+                resolver.resolve(nil)
+            }
+        }
+    }
+}
+
+private final class WebRTCOneShotContinuation<Value: Sendable>:
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Never>?
+
+    init(_ continuation: CheckedContinuation<Value, Never>) {
+        self.continuation = continuation
+    }
+
+    func resolve(_ value: Value) {
+        let claimed = lock.withLock {
+            let claimed = continuation
+            continuation = nil
+            return claimed
+        }
+        claimed?.resume(returning: value)
+    }
+}
+
 struct WebRTCIPhoneMicrophoneReceiverStatisticsValidation: Equatable, Sendable {
     let peerEpoch: UUID
     let negotiationEpoch: UInt64
@@ -982,6 +1030,46 @@ public struct WebRTCIOSMicrophonePolicyCompletionStamp: Equatable, Sendable {
         self.nativeResult = nativeResult
     }
 }
+
+#if os(iOS)
+private struct WebRTCIOSMicrophoneNativeStageResult {
+    let recordingGeneration: UInt64
+    let failureReason: WebRTCIOSMicrophoneStageFailureReason?
+}
+
+private extension WebRTCIOSMicrophoneStageFailureReason {
+    init(native: ASIOSMicrophoneStageFailureReason) {
+        switch native {
+        case .none:
+            self = .unknown
+        case .delegateUnavailable:
+            self = .delegateUnavailable
+        case .deviceNotInitialized:
+            self = .deviceNotInitialized
+        case .playoutNotReady:
+            self = .playoutNotReady
+        case .nativeRecoveryRequired:
+            self = .nativeRecoveryRequired
+        case .topologyRebuildFailed:
+            self = .topologyRebuildFailed
+        case .topologyStillNotStaged:
+            self = .topologyStillNotStaged
+        case .hostedCall:
+            self = .hostedCall
+        case .interrupted:
+            self = .interrupted
+        case .explicitResumeRequired:
+            self = .explicitResumeRequired
+        case .authorizationInvalid:
+            self = .authorizationInvalid
+        case .recordingGenerationBindFailed:
+            self = .recordingGenerationBindFailed
+        @unknown default:
+            self = .unknown
+        }
+    }
+}
+#endif
 
 /// Deterministic policy state used by race tests without depending on AVAudioSession hardware.
 public struct WebRTCIOSMicrophonePolicySnapshot: Equatable, Sendable {
@@ -2109,6 +2197,8 @@ public actor WebRTCPeer {
         (@Sendable (Bool) -> Bool)?
     private var debugIPhoneMicrophoneStageFailureDiagnostics:
         WebRTCIOSPlayoutDiagnostics?
+    private var debugIPhoneMicrophoneStageFailureReason:
+        WebRTCIOSMicrophoneStageFailureReason?
     #endif
     #endif
 
@@ -3817,7 +3907,7 @@ public actor WebRTCPeer {
             authorizationIdentity
 
         do {
-            let recordingGeneration =
+            let stageResult =
                 performIPhoneMicrophoneStageAttempt(
                     authorization,
                     origin: .publicRequest,
@@ -3828,13 +3918,24 @@ public actor WebRTCPeer {
                 previousAuthorization?.revoke()
             }
 
+            let recordingGeneration =
+                stageResult.recordingGeneration
             guard recordingGeneration != 0 else {
-                throw WebRTCTransportError.nativeFailure(
+                let description =
                     WebRTCIOSMicrophoneAdmissionDiagnostics
                         .failureDescription(
                             iPhoneMicrophoneAdmissionFailureDiagnostics()
                         )
-                )
+                guard let reason = stageResult.failureReason else {
+                    throw WebRTCTransportError.nativeFailure(
+                        description
+                    )
+                }
+                throw WebRTCTransportError
+                    .iPhoneMicrophoneStageFailed(
+                        reason: reason,
+                        message: description
+                    )
             }
 
             activeIPhoneMicrophoneAuthorization = authorization
@@ -4230,9 +4331,9 @@ public actor WebRTCPeer {
         _ authorization: WebRTCIOSMicrophoneAuthorization,
         origin: WebRTCIOSMicrophonePolicyAttemptOrigin,
         retiredAuthorizationIdentity: ObjectIdentifier?
-    ) -> UInt64 {
+    ) -> WebRTCIOSMicrophoneNativeStageResult {
         let sequence = advanceIPhoneMicrophonePolicySequence()
-        let recordingGeneration =
+        let result =
             stageNativeIPhoneMicrophonePolicy(authorization)
         latestIPhoneMicrophonePolicyCompletionStamp =
             WebRTCIOSMicrophonePolicyCompletionStamp(
@@ -4243,9 +4344,9 @@ public actor WebRTCPeer {
                 retiredAuthorizationIdentity:
                     retiredAuthorizationIdentity,
                 tokenID: nil,
-                nativeResult: recordingGeneration != 0
+                nativeResult: result.recordingGeneration != 0
             )
-        return recordingGeneration
+        return result
     }
 
     private func performIPhoneMicrophonePolicyAttempt(
@@ -4274,18 +4375,36 @@ public actor WebRTCPeer {
 
     private func stageNativeIPhoneMicrophonePolicy(
         _ authorization: WebRTCIOSMicrophoneAuthorization
-    ) -> UInt64 {
+    ) -> WebRTCIOSMicrophoneNativeStageResult {
         #if DEBUG
         if debugIPhoneMicrophoneStageFailureDiagnostics != nil {
             authorization.revoke()
-            return 0
+            return WebRTCIOSMicrophoneNativeStageResult(
+                recordingGeneration: 0,
+                failureReason:
+                    debugIPhoneMicrophoneStageFailureReason
+            )
         }
         #endif
         guard let device = iOSStereoPlayoutAudioDevice else {
             authorization.revoke()
-            return 0
+            return WebRTCIOSMicrophoneNativeStageResult(
+                recordingGeneration: 0,
+                failureReason: .deviceUnavailable
+            )
         }
-        return device.stageMicrophoneAuthorization(authorization.native)
+        let recordingGeneration =
+            device.stageMicrophoneAuthorization(authorization.native)
+        return WebRTCIOSMicrophoneNativeStageResult(
+            recordingGeneration: recordingGeneration,
+            failureReason: recordingGeneration == 0
+                ? WebRTCIOSMicrophoneStageFailureReason(
+                    native:
+                        authorization.native
+                            .microphoneStageFailureReason
+                )
+                : nil
+        )
     }
 
     private func iPhoneMicrophoneAdmissionFailureDiagnostics()
@@ -4294,6 +4413,7 @@ public actor WebRTCPeer {
         #if DEBUG
         if let diagnostics = debugIPhoneMicrophoneStageFailureDiagnostics {
             debugIPhoneMicrophoneStageFailureDiagnostics = nil
+            debugIPhoneMicrophoneStageFailureReason = nil
             return diagnostics
         }
         #endif
@@ -4488,8 +4608,13 @@ public actor WebRTCPeer {
     ) async -> WebRTCStatisticsSnapshot {
         let nativeSnapshot = await withCheckedContinuation {
             (continuation: CheckedContinuation<WebRTCStatisticsSnapshot, Never>) in
+            let resolver = WebRTCOneShotContinuation(continuation)
             peerConnection.statistics { report in
-                continuation.resume(returning: WebRTCStatisticsParser.parse(report))
+                resolver.resolve(WebRTCStatisticsParser.parse(report))
+            }
+            Task.detached {
+                try? await Task.sleep(for: .seconds(1))
+                resolver.resolve(WebRTCStatisticsSnapshot())
             }
         }
 
@@ -4511,17 +4636,21 @@ public actor WebRTCPeer {
                             Never
                         >
                 ) in
+                let resolver = WebRTCOneShotContinuation(continuation)
                 peerConnection.statistics(for: capture.receiver) { report in
-                    continuation.resume(
-                        returning:
-                            WebRTCStatisticsParser
-                                .parseIPhoneMicrophoneReceiver(
-                                    report,
-                                    expectedTrackID:
-                                        capture.validation.remoteTrackID,
-                                    expectedMID: capture.validation.mid
-                                )
+                    resolver.resolve(
+                        WebRTCStatisticsParser
+                            .parseIPhoneMicrophoneReceiver(
+                                report,
+                                expectedTrackID:
+                                    capture.validation.remoteTrackID,
+                                expectedMID: capture.validation.mid
+                            )
                     )
+                }
+                Task.detached {
+                    try? await Task.sleep(for: .seconds(1))
+                    resolver.resolve(nil)
                 }
             }
             receiverReport = (capture, parsed)
@@ -4695,33 +4824,36 @@ public actor WebRTCPeer {
             return nil
         }
 
-        let reportCapture = await withCheckedContinuation {
-            (
-                continuation:
-                    CheckedContinuation<
-                        WebRTCIPhoneMicrophoneSenderStatisticsReportCapture,
-                        Never
-                    >
-            ) in
-            peerConnection.statistics(for: captured.sender) { report in
-                let parsed =
-                    WebRTCStatisticsParser.parseIPhoneMicrophoneSender(
-                        report,
-                        expectedSenderID:
-                            captured.validation.senderID,
-                        expectedTrackID:
-                            captured.validation.localTrackID,
-                        expectedMID:
-                            captured.validation.mid
-                    )
-                continuation.resume(
-                    returning:
+        let reportCapture: WebRTCIPhoneMicrophoneSenderStatisticsReportCapture? =
+            await withCheckedContinuation { continuation in
+                let resolver = WebRTCOneShotContinuation(
+                    continuation
+                )
+                peerConnection.statistics(for: captured.sender) { report in
+                    let parsed =
+                        WebRTCStatisticsParser.parseIPhoneMicrophoneSender(
+                            report,
+                            expectedSenderID:
+                                captured.validation.senderID,
+                            expectedTrackID:
+                                captured.validation.localTrackID,
+                            expectedMID:
+                                captured.validation.mid
+                        )
+                    resolver.resolve(
                         WebRTCIPhoneMicrophoneSenderStatisticsReportCapture(
                             parsed: parsed,
                             callbackCompletedAt: Date()
                         )
-                )
+                    )
+                }
+                Task.detached {
+                    try? await Task.sleep(for: .seconds(1))
+                    resolver.resolve(nil)
+                }
             }
+        guard let reportCapture else {
+            return nil
         }
 
         let currentTime = Date()
@@ -6885,6 +7017,15 @@ public actor WebRTCPeer {
         _ diagnostics: WebRTCIOSPlayoutDiagnostics
     ) {
         debugIPhoneMicrophoneStageFailureDiagnostics = diagnostics
+        debugIPhoneMicrophoneStageFailureReason = nil
+    }
+
+    func debugInstallIPhoneMicrophoneStageFailureForTesting(
+        _ diagnostics: WebRTCIOSPlayoutDiagnostics,
+        reason: WebRTCIOSMicrophoneStageFailureReason
+    ) {
+        debugIPhoneMicrophoneStageFailureDiagnostics = diagnostics
+        debugIPhoneMicrophoneStageFailureReason = reason
     }
 
     func debugEnableIPhoneMicrophoneThroughNativeStageForTesting(

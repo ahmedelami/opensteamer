@@ -18,6 +18,7 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
     private let rawTransport = UUID(uuidString: "dddddddd-eeee-ffff-0000-000000000002")!
     private let rawAudioPolicy = UUID(uuidString: "dddddddd-eeee-ffff-0000-000000000003")!
     private let rawPeerEpoch = UUID(uuidString: "dddddddd-eeee-ffff-0000-000000000004")!
+    private let rawMicrophoneOperation = UUID(uuidString: "dddddddd-eeee-ffff-0000-000000000005")!
     private let rawPeerIdentity = RawMicrophoneOracleIdentity()
     private let rawAuthorizationIdentity =
         RawMicrophoneOracleIdentity()
@@ -94,6 +95,180 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
             tracker.observe(rawMicrophoneSample(time: 5)),
             .waiting,
             "Recovery must retire the stalled counter window."
+        )
+    }
+
+    func testMissingRawMicrophoneStatisticsRequiresFourTimelySamplesInOneExactBinding() {
+        let binding = rawMissingStatisticsBinding()
+        var tracker =
+            WorldwideRawMicrophoneMissingStatisticsTracker()
+
+        XCTAssertEqual(
+            tracker.observe(
+                binding: binding,
+                observedAt: 1
+            ),
+            .waiting
+        )
+        XCTAssertEqual(
+            tracker.observe(
+                binding: binding,
+                observedAt: 2
+            ),
+            .waiting
+        )
+        XCTAssertEqual(
+            tracker.observe(
+                binding: binding,
+                observedAt: 3
+            ),
+            .waiting
+        )
+        XCTAssertEqual(
+            tracker.observe(
+                binding: binding,
+                observedAt: 4
+            ),
+            .stalled
+        )
+
+        XCTAssertEqual(
+            tracker.observe(
+                binding: binding,
+                observedAt: 5
+            ),
+            .waiting,
+            "A reported stall must reset instead of firing on every later poll."
+        )
+
+        var rapidTracker =
+            WorldwideRawMicrophoneMissingStatisticsTracker()
+        for time in [10.0, 10.1, 10.2, 10.3] {
+            XCTAssertEqual(
+                rapidTracker.observe(
+                    binding: binding,
+                    observedAt: time
+                ),
+                .waiting,
+                "Rapid queued observations are not sustained fault evidence."
+            )
+        }
+    }
+
+    func testMissingRawMicrophoneStatisticsRebasesAcrossEveryIdentityGenerationAndTimeBoundary() {
+        let original = rawMissingStatisticsBinding()
+        let replacements: [
+            (String, WorldwideRawMicrophoneMissingStatisticsBinding)
+        ] = [
+            (
+                "session",
+                rawMissingStatisticsBinding(
+                    sessionGeneration: UUID()
+                )
+            ),
+            (
+                "peer",
+                rawMissingStatisticsBinding(
+                    peerIdentity:
+                        ObjectIdentifier(rawReplacementIdentity)
+                )
+            ),
+            (
+                "transport authorization",
+                rawMissingStatisticsBinding(
+                    transportAuthorizationGeneration: UUID()
+                )
+            ),
+            (
+                "audio policy",
+                rawMissingStatisticsBinding(
+                    audioPolicyGeneration: UUID()
+                )
+            ),
+            (
+                "microphone operation",
+                rawMissingStatisticsBinding(
+                    microphoneOperationGeneration: UUID()
+                )
+            ),
+            (
+                "authorization",
+                rawMissingStatisticsBinding(
+                    authorizationIdentity:
+                        ObjectIdentifier(rawReplacementIdentity)
+                )
+            ),
+            (
+                "recording generation",
+                rawMissingStatisticsBinding(
+                    recordingGeneration: 14
+                )
+            ),
+            (
+                "call disposition",
+                rawMissingStatisticsBinding(
+                    microphoneCallDisposition: .macHosted
+                )
+            )
+        ]
+
+        for (name, replacement) in replacements {
+            var tracker =
+                WorldwideRawMicrophoneMissingStatisticsTracker()
+            for time in 1...3 {
+                XCTAssertEqual(
+                    tracker.observe(
+                        binding: original,
+                        observedAt: Double(time)
+                    ),
+                    .waiting,
+                    name
+                )
+            }
+            XCTAssertEqual(
+                tracker.observe(
+                    binding: replacement,
+                    observedAt: 4
+                ),
+                .waiting,
+                "A \(name) change must start a new baseline."
+            )
+        }
+
+        for boundaryTime in [2.5, 14.0] {
+            var tracker =
+                WorldwideRawMicrophoneMissingStatisticsTracker()
+            for time in 1...3 {
+                _ = tracker.observe(
+                    binding: original,
+                    observedAt: Double(time)
+                )
+            }
+            XCTAssertEqual(
+                tracker.observe(
+                    binding: original,
+                    observedAt: boundaryTime
+                ),
+                .waiting,
+                "A regressed or suspension-length sample interval must rebase."
+            )
+        }
+
+        var delayedPollTracker =
+            WorldwideRawMicrophoneMissingStatisticsTracker()
+        for time in 1...3 {
+            _ = delayedPollTracker.observe(
+                binding: original,
+                observedAt: Double(time)
+            )
+        }
+        XCTAssertEqual(
+            delayedPollTracker.observe(
+                binding: original,
+                observedAt: 6
+            ),
+            .stalled,
+            "A moderately delayed statistics poll must not erase sustained no-progress evidence."
         )
     }
 
@@ -3199,6 +3374,37 @@ final class PhysicalOracleEvaluatorTests: XCTestCase {
 
     private var hostedBooleanKeys: [String] {
         hostedTrueInvariantKeys + ["input"]
+    }
+
+    private func rawMissingStatisticsBinding(
+        sessionGeneration: UUID? = nil,
+        peerIdentity: ObjectIdentifier? = nil,
+        transportAuthorizationGeneration: UUID? = nil,
+        audioPolicyGeneration: UUID? = nil,
+        microphoneOperationGeneration: UUID? = nil,
+        authorizationIdentity: ObjectIdentifier? = nil,
+        recordingGeneration: UInt64 = 13,
+        microphoneCallDisposition:
+            WorldwideMicrophoneCallDisposition = .inactive
+    ) -> WorldwideRawMicrophoneMissingStatisticsBinding {
+        WorldwideRawMicrophoneMissingStatisticsBinding(
+            sessionGeneration: sessionGeneration ?? session,
+            peerIdentity:
+                peerIdentity ?? ObjectIdentifier(rawPeerIdentity),
+            transportAuthorizationGeneration:
+                transportAuthorizationGeneration ?? rawTransport,
+            audioPolicyGeneration:
+                audioPolicyGeneration ?? rawAudioPolicy,
+            microphoneOperationGeneration:
+                microphoneOperationGeneration
+                    ?? rawMicrophoneOperation,
+            authorizationIdentity:
+                authorizationIdentity
+                    ?? ObjectIdentifier(rawAuthorizationIdentity),
+            recordingGeneration: recordingGeneration,
+            microphoneCallDisposition:
+                microphoneCallDisposition
+        )
     }
 
     private func rawMicrophoneSender(
