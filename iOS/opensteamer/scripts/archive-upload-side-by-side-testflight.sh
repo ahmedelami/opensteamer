@@ -182,6 +182,7 @@ typeset TESTFLIGHT_XCODE_VOLUME_PARENT_WHOLE_DISK=""
 typeset TESTFLIGHT_XCODE_PHYSICAL_STORE_IDENTIFIER=""
 typeset TESTFLIGHT_XCODE_PHYSICAL_WHOLE_DISK=""
 typeset -i TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=0
+typeset TESTFLIGHT_XCODE_SEALED_TREE_METADATA_SHA256=""
 typeset TESTFLIGHT_IMAGE_DEVICE=""
 typeset TESTFLIGHT_IMAGE_PARTITION_DEVICE=""
 typeset TESTFLIGHT_MOUNTED_DEVICE=""
@@ -1086,13 +1087,54 @@ function verify_reviewed_xcode_deep_signature() {
     "${EXPECTED_XCODE_REAL_BUNDLE_PATH}" >/dev/null 2>&1
 }
 
+function filesystem_tree_metadata_sha256() {
+  local tree_root=$1
+  [[ -d "${tree_root}" && ! -L "${tree_root}" ]] || return 1
+  local digest
+  digest=$(
+    setopt localoptions pipefail
+    export LC_ALL=C
+    /usr/bin/find -s "${tree_root}" -xdev -print0 2>/dev/null \
+      | /usr/bin/xargs -0 /usr/bin/stat -f \
+        '%d:%i:%u:%g:%p:%HT:%l:%z:%b:%k:%Fm:%Fc:%FB:%f:%v:%N:%Y' \
+        2>/dev/null \
+      | /usr/bin/shasum -a 256 \
+      | /usr/bin/awk \
+        'NR == 1 && NF == 2 && $2 == "-" { print $1 }'
+  ) || return 1
+  string_is_lowercase_sha256 "${digest}" || return 1
+  print -r -- "${digest}"
+}
+
+function reviewed_xcode_tree_metadata_sha256() {
+  filesystem_tree_metadata_sha256 "${EXPECTED_XCODE_REAL_BUNDLE_PATH}"
+}
+
 function verify_or_reuse_reviewed_xcode_deep_signature() {
   case ${TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED} in
     0)
+      [[ -z "${TESTFLIGHT_XCODE_SEALED_TREE_METADATA_SHA256}" ]] \
+        || return 1
+      local metadata_before_signature
+      local metadata_after_signature
+      metadata_before_signature=$(reviewed_xcode_tree_metadata_sha256) \
+        || return 1
+      string_is_lowercase_sha256 "${metadata_before_signature}" || return 1
       verify_reviewed_xcode_deep_signature || return 1
+      metadata_after_signature=$(reviewed_xcode_tree_metadata_sha256) \
+        || return 1
+      [[ "${metadata_after_signature}" == "${metadata_before_signature}" ]] \
+        || return 1
+      TESTFLIGHT_XCODE_SEALED_TREE_METADATA_SHA256=${metadata_after_signature}
       TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1
       ;;
     1)
+      string_is_lowercase_sha256 \
+        "${TESTFLIGHT_XCODE_SEALED_TREE_METADATA_SHA256}" || return 1
+      local current_metadata
+      current_metadata=$(reviewed_xcode_tree_metadata_sha256) || return 1
+      [[ "${current_metadata}" \
+          == "${TESTFLIGHT_XCODE_SEALED_TREE_METADATA_SHA256}" ]]
       ;;
     *)
       return 1
@@ -2208,14 +2250,6 @@ function run_pinned_xcodebuild() {
     "${destination_contract}" "$@" || return 1
   verify_pinned_xcodebuild_filesystem_contract || return 1
   case "${destination_contract}" in
-    archive|export)
-      # Settings resolution may reuse the process-local deep seal, but any command
-      # that creates or distributes the release gets a fresh whole-Xcode seal.
-      verify_reviewed_xcode_deep_signature || return 1
-      verify_pinned_xcodebuild_filesystem_contract || return 1
-      ;;
-  esac
-  case "${destination_contract}" in
     resolve|settings)
       verify_control_directory_identity || return 1
       ;;
@@ -2240,11 +2274,6 @@ function run_pinned_xcodebuild() {
     "${destination_contract}" "${pinned_command[@]}" || command_status=$?
   verify_xcodebuild_action_arguments \
     "${destination_contract}" "$@" || command_status=1
-  case "${destination_contract}" in
-    archive|export)
-      verify_reviewed_xcode_deep_signature || command_status=1
-      ;;
-  esac
   verify_pinned_xcodebuild_filesystem_contract || command_status=1
   case "${destination_contract}" in
     resolve|settings)

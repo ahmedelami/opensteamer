@@ -1052,8 +1052,8 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   $'    settings|archive)\n      run_with_pinned_xcode_sandbox_profile "${destination_contract}" "$@"\n      ;;\n    export)\n      # The supported upload action launches Xcode\'s distribution service. Its\n      # launchd job cannot be authorized by a filtered Seatbelt rule, so run only\n      # this exact, fully pinned export vector without the outer profile.\n      "$@"\n      ;;' 1 \
   'side-by-side TestFlight export-only outer-sandbox bypass'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'  verify_xcodebuild_action_arguments \\\n    "${destination_contract}" "$@" || command_status=1\n  case "${destination_contract}" in\n    archive|export)\n      verify_reviewed_xcode_deep_signature || command_status=1\n      ;;\n  esac\n  verify_pinned_xcodebuild_filesystem_contract || command_status=1' 1 \
-  'side-by-side TestFlight post-command action, deep-seal, and filesystem proof'
+  $'  verify_xcodebuild_action_arguments \\\n    "${destination_contract}" "$@" || command_status=1\n  verify_pinned_xcodebuild_filesystem_contract || command_status=1' 1 \
+  'side-by-side TestFlight post-command action and sealed-filesystem proof'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   $'    export)\n      verify_export_destination_identity || command_status=1' 1 \
   'side-by-side TestFlight post-export destination proof'
@@ -1079,8 +1079,20 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'typeset -i TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=0' 1 \
   'side-by-side TestFlight deep Xcode signature state initialization'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'typeset TESTFLIGHT_XCODE_SEALED_TREE_METADATA_SHA256=""' 1 \
+  'side-by-side TestFlight sealed Xcode tree-metadata state initialization'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function verify_reviewed_xcode_deep_signature() {' 1 \
   'side-by-side TestFlight isolated deep Xcode signature verification'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function filesystem_tree_metadata_sha256() {' 1 \
+  'side-by-side TestFlight recursive filesystem-metadata seal'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'reviewed_xcode_tree_metadata_sha256' 4 \
+  'side-by-side TestFlight metadata seal precheck postcheck and reuse checks'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  "'%d:%i:%u:%g:%p:%HT:%l:%z:%b:%k:%Fm:%Fc:%FB:%f:%v:%N:%Y'" 1 \
+  'side-by-side TestFlight exact nanosecond tree-metadata vector'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function verify_or_reuse_reviewed_xcode_deep_signature() {' 1 \
   'side-by-side TestFlight process-local deep Xcode signature pin'
@@ -1088,8 +1100,17 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1' 1 \
   'side-by-side TestFlight one-way deep Xcode signature transition'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'    archive|export)\n      # Settings resolution may reuse the process-local deep seal, but any command\n      # that creates or distributes the release gets a fresh whole-Xcode seal.\n      verify_reviewed_xcode_deep_signature || return 1\n      verify_pinned_xcodebuild_filesystem_contract || return 1' 1 \
-  'side-by-side TestFlight fresh pre-release Xcode signature verification'
+  'TESTFLIGHT_XCODE_SEALED_TREE_METADATA_SHA256=${metadata_after_signature}' 1 \
+  'side-by-side TestFlight deep signature bound to stable tree metadata'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '[[ "${metadata_after_signature}" == "${metadata_before_signature}" ]]' 1 \
+  'side-by-side TestFlight stable metadata around deep signature'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '== "${TESTFLIGHT_XCODE_SEALED_TREE_METADATA_SHA256}" ]]' 1 \
+  'side-by-side TestFlight cached seal metadata revalidation'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'verify_reviewed_xcode_deep_signature ||' 1 \
+  'side-by-side TestFlight single deep Xcode signature call site'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '/usr/bin/codesign --verify --deep --strict --verbose=4 \' 1 \
   'side-by-side TestFlight full Xcode bundle seal verification'

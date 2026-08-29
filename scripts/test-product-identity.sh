@@ -1130,7 +1130,7 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   $'  verify_xcodebuild_action_arguments \\\n    "${destination_contract}" "$@" || command_status=1' \
   '  true # post-command action verification bypassed'
 require_rejection "$CASE" \
-  'side-by-side TestFlight post-command action, deep-seal, and filesystem proof'
+  'side-by-side TestFlight complete pre/post action argument proof'
 
 CASE=$(new_case testflight-export-routed-through-outer-sandbox)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -1167,12 +1167,12 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
 require_rejection "$CASE" \
   'side-by-side TestFlight exact supported export invocation vector'
 
-CASE=$(new_case testflight-export-post-deep-seal)
+CASE=$(new_case testflight-export-post-sealed-filesystem-proof)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  '      verify_reviewed_xcode_deep_signature || command_status=1' \
-  '      true # fresh post-command deep seal bypassed'
+  '  verify_pinned_xcodebuild_filesystem_contract || command_status=1' \
+  '  true # post-command sealed filesystem proof bypassed'
 require_rejection "$CASE" \
-  'side-by-side TestFlight post-command action, deep-seal, and filesystem proof'
+  'side-by-side TestFlight post-command action and sealed-filesystem proof'
 
 CASE=$(new_case testflight-persistent-export-default)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -1362,11 +1362,12 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   'typeset -i TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1'
 require_rejection "$CASE" 'side-by-side TestFlight deep Xcode signature state initialization'
 
-CASE=$(new_case testflight-fresh-release-xcode-seal)
+CASE=$(new_case testflight-stable-deep-xcode-seal-metadata)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  $'    archive|export)\n      # Settings resolution may reuse the process-local deep seal, but any command' \
-  $'    ignored-release-operation)\n      # Settings resolution may reuse the process-local deep seal, but any command'
-require_rejection "$CASE" 'side-by-side TestFlight fresh pre-release Xcode signature verification'
+  '[[ "${metadata_after_signature}" == "${metadata_before_signature}" ]]' \
+  '[[ -n "${metadata_after_signature}" ]]'
+require_rejection "$CASE" \
+  'side-by-side TestFlight stable metadata around deep signature'
 
 CASE=$(new_case testflight-real-xcode-filesystem-device)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -2689,6 +2690,43 @@ if verify_pinned_xcodebuild_filesystem_contract >/dev/null 2>&1; then
 fi
 DIGESTTEST
 
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'TREEMETADATATEST'
+source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
+trap - EXIT HUP INT QUIT TERM
+
+TREE_ROOT=$(/usr/bin/mktemp -d \
+  /private/tmp/opensteamer-xcode-tree-metadata.XXXXXX)
+TREE_MTIME_REFERENCE=$(/usr/bin/mktemp \
+  /private/tmp/opensteamer-xcode-tree-mtime.XXXXXX)
+/bin/mkdir "$TREE_ROOT/nested"
+print -rn -- 'sealed-v1' >"$TREE_ROOT/nested/tool"
+/bin/cp -p "$TREE_ROOT/nested/tool" "$TREE_MTIME_REFERENCE"
+
+TREE_METADATA_BASELINE=$(filesystem_tree_metadata_sha256 "$TREE_ROOT")
+[[ "${#TREE_METADATA_BASELINE}" == 64 \
+    && "$(filesystem_tree_metadata_sha256 "$TREE_ROOT")" \
+      == "$TREE_METADATA_BASELINE" ]]
+
+print -rn -- 'changed!!' >"$TREE_ROOT/nested/tool"
+/usr/bin/touch -r "$TREE_MTIME_REFERENCE" "$TREE_ROOT/nested/tool"
+[[ "$(/usr/bin/stat -f '%z:%Fm' "$TREE_ROOT/nested/tool")" \
+      == "$(/usr/bin/stat -f '%z:%Fm' "$TREE_MTIME_REFERENCE")" ]]
+if [[ "$(filesystem_tree_metadata_sha256 "$TREE_ROOT")" \
+    == "$TREE_METADATA_BASELINE" ]]; then
+  print -u2 -r -- \
+    'same-size Xcode mutation with restored mtime passed tree metadata seal'
+  exit 1
+fi
+
+/bin/ln -s "$TREE_ROOT" "$TREE_ROOT-link"
+if filesystem_tree_metadata_sha256 "$TREE_ROOT-link" >/dev/null 2>&1; then
+  print -u2 -r -- 'symlinked Xcode tree root passed metadata sealing'
+  exit 1
+fi
+/bin/rm "$TREE_ROOT-link" "$TREE_MTIME_REFERENCE"
+/bin/rm -rf "$TREE_ROOT"
+TREEMETADATATEST
+
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'DEEPSIGNATURETEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
 trap - EXIT HUP INT QUIT TERM
@@ -2697,12 +2735,26 @@ typeset -gi DEEP_SIGNATURE_CALLS=0
 function verify_reviewed_xcode_deep_signature() {
   (( DEEP_SIGNATURE_CALLS += 1 ))
 }
+typeset TREE_METADATA_DIGEST='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+function reviewed_xcode_tree_metadata_sha256() {
+  print -r -- "$TREE_METADATA_DIGEST"
+}
 
 TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=0
+TESTFLIGHT_XCODE_SEALED_TREE_METADATA_SHA256=''
 verify_or_reuse_reviewed_xcode_deep_signature
 verify_or_reuse_reviewed_xcode_deep_signature
 [[ "$DEEP_SIGNATURE_CALLS" == 1 \
-    && "$TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED" == 1 ]]
+    && "$TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED" == 1 \
+    && "$TESTFLIGHT_XCODE_SEALED_TREE_METADATA_SHA256" \
+      == "$TREE_METADATA_DIGEST" ]]
+
+TREE_METADATA_DIGEST='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+if verify_or_reuse_reviewed_xcode_deep_signature >/dev/null 2>&1; then
+  print -u2 -r -- 'mutated Xcode tree metadata reused a cached deep seal'
+  exit 1
+fi
+[[ "$DEEP_SIGNATURE_CALLS" == 1 ]]
 
 TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=2
 if verify_or_reuse_reviewed_xcode_deep_signature >/dev/null 2>&1; then
@@ -2729,8 +2781,8 @@ TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1
 run_pinned_xcodebuild settings ignored
 run_pinned_xcodebuild archive ignored
 run_pinned_xcodebuild export ignored
-[[ "$DEEP_SIGNATURE_CALLS" == 5 \
-    && "$PINNED_CONTRACT_CALLS" == 8 \
+[[ "$DEEP_SIGNATURE_CALLS" == 1 \
+    && "$PINNED_CONTRACT_CALLS" == 6 \
     && "$DESTINATION_COMMAND_CALLS" == 3 ]]
 DEEPSIGNATURETEST
 
