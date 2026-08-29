@@ -221,6 +221,29 @@ assert_literal_count() {
   assert_equal "$description" "$expected_count" "$actual_count"
 }
 
+assert_function_sha256() {
+  local relative_path=$1
+  local function_name=$2
+  local expected_sha256=$3
+  local description=$4
+  local actual_sha256
+
+  require_file "$relative_path" || return
+  if [[ "$function_name" != [A-Za-z_]* \
+      || "$function_name" == *[^A-Za-z0-9_]* ]]; then
+    fail "$description: invalid function name"
+    return
+  fi
+  if ! actual_sha256=$(LC_ALL=C /usr/bin/sed -n \
+      "/^function ${function_name}() {$/,/^}$/p" "$ROOT/$relative_path" \
+      | /usr/bin/shasum -a 256 \
+      | /usr/bin/awk 'NR == 1 && NF == 2 && $2 == "-" { print $1 }'); then
+    fail "$description: could not hash $function_name in $relative_path"
+    return
+  fi
+  assert_equal "$description" "$expected_sha256" "$actual_sha256"
+}
+
 toml_root_name() {
   awk '
     BEGIN { in_section = 0; count = 0 }
@@ -725,8 +748,32 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'TESTFLIGHT_BUILD_IMAGE_SIZE="64g"' 1 \
   'side-by-side TestFlight fixed sparse-image capacity'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'TESTFLIGHT_BUILD_IMAGE_BASENAME="opensteamer-testflight-build"' 1 \
+  'TESTFLIGHT_BUILD_IMAGE_TOTAL_BYTES="68719476736"' 1 \
+  'side-by-side TestFlight exact sparse-image byte capacity'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TESTFLIGHT_BUILD_IMAGE_SECTOR_COUNT="134217728"' 1 \
+  'side-by-side TestFlight exact sparse-image sector capacity'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TESTFLIGHT_BUILD_IMAGE_ENCRYPTION="AES-256"' 1 \
+  'side-by-side TestFlight exact sparse-image encryption algorithm'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TESTFLIGHT_BUILD_IMAGE_BASENAME="opensteamer-testflight-build-cache-v1"' 1 \
   'side-by-side TestFlight fixed sparse-image basename'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TESTFLIGHT_BUILD_CACHE_SCHEMA="opensteamer-testflight-build-cache-v1"' 1 \
+  'side-by-side TestFlight persistent cache schema'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TESTFLIGHT_BUILD_CACHE_ROOT="${TESTFLIGHT_BUILD_ROOT}/.${TESTFLIGHT_BUILD_CACHE_SCHEMA}"' 1 \
+  'side-by-side TestFlight fixed persistent cache root'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_TESTFLIGHT_BUILD_KEY_PATH="${EXPECTED_ASC_API_KEY_DIRECTORY}/${TESTFLIGHT_BUILD_CACHE_SCHEMA}.key"' 1 \
+  'side-by-side TestFlight fixed persistent cache key'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH="${EXPECTED_ASC_API_KEY_DIRECTORY}/${TESTFLIGHT_BUILD_CACHE_SCHEMA}.lock"' 1 \
+  'side-by-side TestFlight fixed persistent cache lock'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TESTFLIGHT_BUILD_MOUNT_ROOT="${PRIVATE_TEMPORARY_ROOT}/${TESTFLIGHT_BUILD_CACHE_SCHEMA}"' 1 \
+  'side-by-side TestFlight stable persistent cache mount root'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'TESTFLIGHT_BUILD_VOLUME_NAME="opensteamer-testflight-build"' 1 \
   'side-by-side TestFlight fixed private volume name'
@@ -788,19 +835,25 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'Properties.Encrypted' 1 \
   'side-by-side TestFlight created-image encryption proof'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  "'Backing Store Information.Encryption'" 1 \
+  'side-by-side TestFlight exact AES-256 reuse proof'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  "'Size Information.Total Bytes'" 1 \
+  'side-by-side TestFlight exact 64 GiB reuse proof'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'images.${image_index}.image-encrypted' 1 \
   'side-by-side TestFlight attached-image encryption proof'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '|true|true" ]]' 1 \
   'side-by-side TestFlight encrypted writable attachment acceptance'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'TESTFLIGHT_BUILD_CREATE_ATTEMPTED=1' 1 \
+  'TESTFLIGHT_BUILD_CREATE_ATTEMPTED=1' 2 \
   'side-by-side TestFlight pre-create cleanup state'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'TESTFLIGHT_BUILD_CREATE_ATTEMPTED == 1' 1 \
   'side-by-side TestFlight attempted-create cleanup reachability'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=1' 1 \
+  'TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=1' 3 \
   'side-by-side TestFlight pre-attach cleanup state'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function find_current_attachment_root_device() {' 1 \
@@ -820,6 +873,9 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'for (( image_index = 0; image_index < image_count; image_index += 1 )); do' 3 \
   'side-by-side TestFlight unbounded image enumeration'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '[[ "${image_path}" == "${TESTFLIGHT_BUILD_IMAGE_PATH}" ]] || continue' 3 \
+  'side-by-side TestFlight exact-path filtering before entity parsing'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'for (( entity_index = 0; entity_index < entity_count; entity_index += 1 )); do' 2 \
   'side-by-side TestFlight unbounded system-entity enumeration'
@@ -845,11 +901,164 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function verify_build_key_identity() {' 1 \
   'side-by-side TestFlight private key identity guard'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'verify_build_key_identity \\\n    || fail "build-image key changed before encrypted image creation"\n  TESTFLIGHT_BUILD_CREATE_ATTEMPTED=1\n  run_with_pinned_build_key_stdin /usr/bin/hdiutil create' 1 \
+  $'    verify_build_key_identity \\\n      || fail "build-image key changed before encrypted image creation"\n    TESTFLIGHT_BUILD_CREATE_ATTEMPTED=1\n    run_with_pinned_build_key_stdin /usr/bin/hdiutil create' 1 \
   'side-by-side TestFlight key-bound create ordering'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   $'verify_build_key_identity \\\n    || fail "build-image key changed before attachment"\n  TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=1\n  write_private_plist "${attachment_plist}" run_with_pinned_build_key_stdin \\\n    /usr/bin/hdiutil attach' 1 \
   'side-by-side TestFlight key-bound attach ordering'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function acquire_persistent_build_cache_lock() {' 1 \
+  'side-by-side TestFlight persistent cache lock acquisition'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'function initialize_or_pin_persistent_build_cache_storage() {\n  acquire_persistent_build_cache_lock\n' 1 \
+  'side-by-side TestFlight persistent cache acquisition reachability and order'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'zsystem flock -t 0 -f TESTFLIGHT_BUILD_CACHE_LOCK_FD' 1 \
+  'side-by-side TestFlight nonblocking persistent cache lock'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'zsystem flock -u "${TESTFLIGHT_BUILD_CACHE_LOCK_FD}"' 1 \
+  'side-by-side TestFlight persistent cache lock release'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'persistent build cache is not enrolled; run --initialize-build-cache once' 1 \
+  'side-by-side TestFlight explicit cache enrollment requirement'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'persistent build-cache enrollment requires clean absent state' 1 \
+  'side-by-side TestFlight retry-safe enrollment precondition'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH="${EXPECTED_ASC_API_KEY_DIRECTORY}/${TESTFLIGHT_BUILD_CACHE_SCHEMA}.enrollment.pending"' 1 \
+  'side-by-side TestFlight fixed durable enrollment marker path'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH="${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}.new"' 1 \
+  'side-by-side TestFlight fixed durable enrollment marker staging path'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TESTFLIGHT_BUILD_ENROLLMENT_MARKER_SHA256="1f3fc23b862c584e8bb6bd35883cca75543ac74657869ef92bdb97da8206d00e"' 1 \
+  'side-by-side TestFlight exact durable enrollment marker bytes'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TESTFLIGHT_BUILD_ENROLLMENT_MARKER_CONTENT="opensteamer-testflight-build-cache-enrollment-v1"' 1 \
+  'side-by-side TestFlight exact durable enrollment marker content'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function verify_pending_enrollment_marker() {' 1 \
+  'side-by-side TestFlight durable enrollment marker identity verifier'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'      && "$(sha256_file "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}")" \\\n        == "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_SHA256}" \\\n      && ${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_FD} -ge 0' 1 \
+  'side-by-side TestFlight durable enrollment marker content verification'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function remove_pending_enrollment_marker_staging_if_safe() {' 1 \
+  'side-by-side TestFlight interrupted enrollment marker staging recovery'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'sysopen -w -o creat,excl,nofollow -m 600 -u marker_writer_fd' 1 \
+  'side-by-side TestFlight exclusive durable enrollment marker creation'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  /bin/sync\n  /bin/mv -- "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" \\\n    "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" || return 1\n  /bin/sync' 1 \
+  'side-by-side TestFlight fsynced atomic durable enrollment marker publication'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function recover_interrupted_build_cache_enrollment() {' 1 \
+  'side-by-side TestFlight interrupted enrollment recovery'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'function recover_interrupted_build_cache_enrollment() {\n  remove_pending_enrollment_marker_staging_if_safe || return 1\n  if [[ ! -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}"' 1 \
+  'side-by-side TestFlight staging-only interrupted enrollment recovery reachability'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    recover_interrupted_build_cache_enrollment \\\n      || fail "interrupted persistent build-cache enrollment was not safe to recover"\n    [[ ! -e "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}"' 1 \
+  'side-by-side TestFlight interrupted enrollment recovery before absent-state enrollment'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'      || fail "persistent build-cache enrollment requires clean absent state"\n    reserve_pending_enrollment_marker \\\n      || fail "could not publish the durable build-cache enrollment marker"' 1 \
+  'side-by-side TestFlight durable marker reservation before enrollment mutation'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'        && ! -L "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" \\\n        && ! -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \\\n        && ! -L "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \\\n        && ! -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" \\\n        && ! -L "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" \\\n        && -f "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}"' 1 \
+  'side-by-side TestFlight routine mode rejects pending enrollment markers'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    image_lsof_output=$(/usr/sbin/lsof -n -P -- \\\n      "${TESTFLIGHT_BUILD_IMAGE_PATH}" 2>/dev/null) || image_lsof_status=$?\n    (( image_lsof_status == 1 )) && [[ -z "${image_lsof_output}" ]] || return 1' 1 \
+  'side-by-side TestFlight interrupted enrollment image idle-user guard'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    key_lsof_output=$(/usr/sbin/lsof -n -P -- \\\n      "${TESTFLIGHT_BUILD_KEY_PATH}" 2>/dev/null) || key_lsof_status=$?\n    (( key_lsof_status == 1 )) && [[ -z "${key_lsof_output}" ]] || return 1' 1 \
+  'side-by-side TestFlight interrupted enrollment key idle-user guard'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    /bin/rmdir -- "${TESTFLIGHT_BUILD_CACHE_ROOT}" || return 1\n  fi\n\n  if [[ -e "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}"' 1 \
+  'side-by-side TestFlight interrupted enrollment root rollback before key'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    /bin/rm -- "${TESTFLIGHT_BUILD_KEY_PATH}" || return 1\n  fi\n\n  remove_pending_enrollment_marker || return 1\n  /bin/sync' 1 \
+  'side-by-side TestFlight interrupted enrollment key and marker rollback order'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  mask_release_cleanup_signals\n  /bin/sync\n  remove_pending_enrollment_marker \\\n    || fail "could not commit the persistent build-cache enrollment marker"\n  /bin/sync\n  TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED=1\n  install_release_signal_traps' 1 \
+  'side-by-side TestFlight durable enrollment commit ordering and sync barriers'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  if (( cleanup_failed == 0 \\\n      && TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 \\\n      && TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED == 0 \\\n      && TESTFLIGHT_BUILD_CACHE_LOCK_FD >= 0 )); then\n    verify_build_cache_lock_identity || cleanup_failed=1\n  fi\n  if (( cleanup_failed == 0 \\\n      && TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 \\\n      && TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED == 0 \\\n      && TESTFLIGHT_BUILD_CACHE_LOCK_FD >= 0 )); then\n    if [[ -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}"' 1 \
+  'side-by-side TestFlight lock-owned enrollment journal cleanup'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED=1' 1 \
+  'side-by-side TestFlight enrollment completion publication'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function recover_stale_persistent_build_cache_state() {' 1 \
+  'side-by-side TestFlight killed-run cache recovery'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  initialize_or_pin_persistent_build_cache_storage\n  recover_stale_persistent_build_cache_state \\\n    || fail "stale persistent build-cache state was not identity-safe to recover"\n  create_stable_build_mount_underlay' 1 \
+  'side-by-side TestFlight stale recovery reachability and order'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    lsof_output=$(/usr/sbin/lsof -n -P +D \\\n      "${TESTFLIGHT_BUILD_MOUNT_POINT}" 2>/dev/null) || lsof_status=$?\n    (( lsof_status == 1 )) && [[ -z "${lsof_output}" ]] || return 1\n\n    # The nonblocking lock proves no conforming release is active.' 1 \
+  'side-by-side TestFlight stale recovery idle-user guard'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function remove_exact_stale_build_mount_underlay() {' 1 \
+  'side-by-side TestFlight exact stale-underlay recovery'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function verify_persistent_build_cache_contract() {' 1 \
+  'side-by-side TestFlight persistent cache contract verifier'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function verify_reviewed_cache_directory_metadata() {' 1 \
+  'side-by-side TestFlight reviewed cache-directory metadata verifier'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TESTFLIGHT_DERIVED_DATA_BACKUP_EXCLUSION_XATTR="com.apple.metadata:com_apple_backup_excludeItem"' 1 \
+  'side-by-side TestFlight exact Xcode backup-exclusion xattr'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TESTFLIGHT_DERIVED_DATA_BACKUP_EXCLUSION_XATTR_SHA256="1cb8eb62affde4c49d785fafeddd9b210838894d525505fe9cf448c7ecf9970c"' 1 \
+  'side-by-side TestFlight exact Xcode backup-exclusion xattr bytes'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '/usr/bin/plutil -insert' 10 \
+  'side-by-side TestFlight exact persistent cache contract fields'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'local pending_contract="${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}.pending"' 1 \
+  'side-by-side TestFlight atomic cache-contract staging'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '/bin/mv -- "${pending_contract}" "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}"' 1 \
+  'side-by-side TestFlight atomic cache-contract publication'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"${EXPECTED_PACKAGE_MANIFEST_SHA256}"' 3 \
+  'side-by-side TestFlight cache and release package-manifest binding'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"${EXPECTED_PACKAGE_RESOLVED_SHA256}"' 3 \
+  'side-by-side TestFlight cache and release resolved-package binding'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TESTFLIGHT_BUILD_WORKSPACE_KEY=$(string_vector_sha256 "${REPOSITORY_ROOT}")' 1 \
+  'side-by-side TestFlight checkout-specific DerivedData identity'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'local shared_root="${cache_v1}/shared"' 1 \
+  'side-by-side TestFlight cross-iteration shared dependency cache'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'local workspace_root="${workspaces_root}/${TESTFLIGHT_BUILD_WORKSPACE_KEY}"' 1 \
+  'side-by-side TestFlight stable checkout workspace cache'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'remove_exact_private_file "${TESTFLIGHT_BUILD_KEY_PATH}"' 1 \
+  'side-by-side TestFlight failed-enrollment key rollback'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function print_release_stage_timing() {' 1 \
+  'side-by-side TestFlight release-stage timing evidence'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'print_release_stage_timing ' 8 \
+  'side-by-side TestFlight complete routine stage timing'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function remove_current_run_tmp_directory() {' 1 \
+  'side-by-side TestFlight fresh per-run TMPDIR cleanup'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'      && [[ -n "${TESTFLIGHT_BUILD_TMP_DIRECTORY:-}" ]]; then\n    remove_current_run_tmp_directory || cleanup_failed=1\n  fi' 1 \
+  'side-by-side TestFlight current run-TMP cleanup reachability and order'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function initialize_or_migrate_run_tmp_parent_directory() {' 1 \
+  'side-by-side TestFlight legacy-cache run-TMP migration'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '  initialize_or_migrate_run_tmp_parent_directory \' 1 \
+  'side-by-side TestFlight scoped legacy-cache run-TMP migration'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}/run.XXXXXX"' 1 \
+  'side-by-side TestFlight fresh encrypted per-run TMPDIR'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '-owners on' 1 \
   'side-by-side TestFlight ownership-enforcing mount'
@@ -923,13 +1132,19 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function verify_pinned_xcodebuild_filesystem_contract() {' 1 \
   'side-by-side TestFlight pinned Xcode filesystem contract'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'verify_pinned_xcodebuild_filesystem_contract' 3 \
+  'side-by-side TestFlight single pre-and-post Xcode filesystem checks'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'verify_export_exec_destinations' 3 \
+  'side-by-side TestFlight single pre-and-post export destination checks'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS_SHA256' 6 \
   'side-by-side TestFlight immutable Xcode argument vector'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT_SHA256' 6 \
   'side-by-side TestFlight immutable scrubbed Xcode environment'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '/usr/bin/env -i' 1 \
+  '/usr/bin/env -i' 2 \
   'side-by-side TestFlight empty inherited Xcode environment'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function run_xcodebuild_command_for_destination_contract() {' 1 \
@@ -1052,8 +1267,8 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   $'    settings|archive)\n      run_with_pinned_xcode_sandbox_profile "${destination_contract}" "$@"\n      ;;\n    export)\n      # The supported upload action launches Xcode\'s distribution service. Its\n      # launchd job cannot be authorized by a filtered Seatbelt rule, so run only\n      # this exact, fully pinned export vector without the outer profile.\n      "$@"\n      ;;' 1 \
   'side-by-side TestFlight export-only outer-sandbox bypass'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'  verify_xcodebuild_action_arguments \\\n    "${destination_contract}" "$@" || command_status=1\n  case "${destination_contract}" in\n    archive|export)\n      verify_reviewed_xcode_deep_signature || command_status=1\n      ;;\n  esac\n  verify_pinned_xcodebuild_filesystem_contract || command_status=1' 1 \
-  'side-by-side TestFlight post-command action, deep-seal, and filesystem proof'
+  $'  verify_xcodebuild_action_arguments \\\n    "${destination_contract}" "$@" || command_status=1\n  verify_pinned_xcodebuild_filesystem_contract || command_status=1' 1 \
+  'side-by-side TestFlight post-command action and filesystem proof'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   $'    export)\n      verify_export_destination_identity || command_status=1' 1 \
   'side-by-side TestFlight post-export destination proof'
@@ -1075,29 +1290,33 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function verify_reviewed_xcode_toolchain_identity() {' 1 \
   'side-by-side TestFlight real-Xcode identity verification'
+assert_function_sha256 "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  verify_reviewed_xcode_toolchain_identity \
+  'd889d1e2b09e92c27ca612cc46f77d1f6251eb36624448bfedbc33e5f660df75' \
+  'side-by-side TestFlight complete fast Xcode identity contract'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'typeset -i TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=0' 1 \
-  'side-by-side TestFlight deep Xcode signature state initialization'
+  'TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED' 0 \
+  'side-by-side TestFlight no process-local deep Xcode state'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'function verify_reviewed_xcode_deep_signature() {' 1 \
-  'side-by-side TestFlight isolated deep Xcode signature verification'
+  'verify_reviewed_xcode_deep_signature' 0 \
+  'side-by-side TestFlight no routine deep Xcode verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'function verify_or_reuse_reviewed_xcode_deep_signature() {' 1 \
-  'side-by-side TestFlight process-local deep Xcode signature pin'
+  '/usr/bin/codesign --verify --deep --strict --verbose=4 \' 0 \
+  'side-by-side TestFlight no routine full-bundle traversal'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1' 1 \
-  'side-by-side TestFlight one-way deep Xcode signature transition'
+  $'  /usr/bin/codesign --verify --strict --verbose=4 \\\n    "${EXPECTED_XCODEBUILD_REAL_PATH}"' 1 \
+  'side-by-side TestFlight pinned xcodebuild signature verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'    archive|export)\n      # Settings resolution may reuse the process-local deep seal, but any command\n      # that creates or distributes the release gets a fresh whole-Xcode seal.\n      verify_reviewed_xcode_deep_signature || return 1\n      verify_pinned_xcodebuild_filesystem_contract || return 1' 1 \
-  'side-by-side TestFlight fresh pre-release Xcode signature verification'
+  'filesystem_tree_metadata_sha256' 0 \
+  'side-by-side TestFlight no recursive Xcode metadata scan'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '/usr/bin/codesign --verify --deep --strict --verbose=4 \' 1 \
-  'side-by-side TestFlight full Xcode bundle seal verification'
+  'TESTFLIGHT_XCODE_SEALED_TREE_METADATA_SHA256' 0 \
+  'side-by-side TestFlight no recursive Xcode metadata seal state'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '"${TESTFLIGHT_XCODE_BUNDLE_IDENTITY%%:*}"' 2 \
   'side-by-side TestFlight real-Xcode filesystem-device binding'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'verify_reviewed_xcode_toolchain_identity' 3 \
+  'verify_reviewed_xcode_toolchain_identity' 5 \
   'side-by-side TestFlight initial and immediate real-Xcode revalidation'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '"DEVELOPER_DIR=${EXPECTED_XCODE_REAL_DEVELOPER_PATH}"' 1 \
@@ -1154,7 +1373,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'GlobalPermissionsEnabled' 2 \
   'side-by-side TestFlight ownership-state validation'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'verify_archive_exec_destinations' 4 \
+  'verify_archive_exec_destinations' 3 \
   'side-by-side TestFlight archive destination reservation and exec revalidation'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '|| fail "private build volume changed during archive"' 1 \
@@ -1181,7 +1400,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'zmodload zsh/system' 1 \
   'side-by-side TestFlight no-follow descriptor support'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'sysopen -r -o nofollow -u TESTFLIGHT_' 8 \
+  'sysopen -r -o nofollow -u TESTFLIGHT_' 7 \
   'side-by-side TestFlight no-follow directory and profile descriptor pinning'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'sysopen -a -o nofollow -u TESTFLIGHT_' 2 \
@@ -1358,10 +1577,10 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'LC_ALL=C /bin/ls -lde "$1" 2>/dev/null \' 1 \
   'side-by-side TestFlight ACL-aware metadata inspection'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '== '\''drwx------'\''' 2 \
+  '== '\''drwx------'\''' 6 \
   'side-by-side TestFlight API-key directory ACL absence'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '== '\''-rw-------'\''' 2 \
+  '== '\''-rw-------'\''' 12 \
   'side-by-side TestFlight API-key file ACL absence'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'sysopen -r -o nofollow,cloexec -u TESTFLIGHT_ASC_API_KEY_FD \' 1 \
@@ -1375,6 +1594,12 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '"(deny file-write* (subpath \"${EXPECTED_ASC_API_KEY_DIRECTORY}\"))"' 1 \
   'side-by-side TestFlight API-key subtree write denial'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"(deny file-read* (literal \"${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}\"))"' 1 \
+  'side-by-side TestFlight build-image key read denial for build actions'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"(deny file-read* (literal \"${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}\"))"' 1 \
+  'side-by-side TestFlight build-cache lock read denial for build actions'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   $'-allowProvisioningUpdates \\\n    "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_ARGUMENTS[@]}" \\' 2 \
   'side-by-side TestFlight exact API-key vector on archive and export'
@@ -1397,8 +1622,92 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'iTMSTransporter' 0 \
   'side-by-side TestFlight direct Transporter bypass rejection'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'altool' 0 \
-  'side-by-side TestFlight direct altool bypass rejection'
+  'EXPECTED_ALTOOL_REAL_PATH="${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/SharedFrameworks/ContentDelivery.framework/Versions/A/Resources/altool"' 1 \
+  'side-by-side TestFlight exact pinned altool path'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_ALTOOL_SHA256="600c9117df7fa1be881fbf8d4df746b31fd6d6e35c71d8eeff8a26f600c7a2d5"' 1 \
+  'side-by-side TestFlight exact pinned altool bytes'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_ALTOOL_CD_HASH="cab578a19665f314251768644dfd34092d09e926"' 1 \
+  'side-by-side TestFlight exact pinned altool signature'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function wait_for_app_store_processing() {' 1 \
+  'side-by-side TestFlight automated Apple processing wait'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'APP_STORE_PROCESSING_WAIT_TIMEOUT_SECONDS=1800' 1 \
+  'side-by-side TestFlight bounded Apple processing deadline'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'APP_STORE_PROCESSING_WAIT_POLL_SECONDS=5' 1 \
+  'side-by-side TestFlight bounded Apple processing poll interval'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'APP_STORE_PROCESSING_TERMINATION_GRACE_SECONDS=5' 1 \
+  'side-by-side TestFlight bounded Apple processing termination grace'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function processing_query_is_running() {' 1 \
+  'side-by-side TestFlight processing-query liveness verifier'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function terminate_processing_query() {' 1 \
+  'side-by-side TestFlight bounded processing-query termination'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  mask_release_cleanup_signals\n  /usr/bin/env -i \\\n    LC_ALL=C' 1 \
+  'side-by-side TestFlight signal-masked processing-query launch'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    >"/dev/fd/${TESTFLIGHT_PROCESSING_STATUS_FD}" &\n  TESTFLIGHT_PROCESSING_QUERY_PID=$!\n  TESTFLIGHT_PROCESSING_QUERY_RUNNING=1\n  install_release_signal_traps' 1 \
+  'side-by-side TestFlight processing-query atomic state publication'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    /bin/kill -KILL "${TESTFLIGHT_PROCESSING_QUERY_PID}" 2>/dev/null || return 1\n    termination_deadline=$((\n      SECONDS + APP_STORE_PROCESSING_TERMINATION_GRACE_SECONDS\n    ))\n    while processing_query_is_running \\\n        && (( SECONDS < termination_deadline )); do\n      /bin/sleep 1\n    done\n    processing_query_is_running && return 1' 1 \
+  'side-by-side TestFlight bounded post-SIGKILL processing-query termination'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  wait "${TESTFLIGHT_PROCESSING_QUERY_PID}" 2>/dev/null || true\n  TESTFLIGHT_PROCESSING_QUERY_RUNNING=0\n  TESTFLIGHT_PROCESSING_QUERY_PID=-1' 1 \
+  'side-by-side TestFlight terminated-query reaped state ordering'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  local -i query_deadline=$((\n    SECONDS + APP_STORE_PROCESSING_WAIT_TIMEOUT_SECONDS\n  ))' 1 \
+  'side-by-side TestFlight processing-query absolute deadline'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  while processing_query_is_running \\\n      && (( SECONDS < query_deadline )); do\n    /bin/sleep "${APP_STORE_PROCESSING_WAIT_POLL_SECONDS}"\n  done\n  if processing_query_is_running; then\n    terminate_processing_query || query_status=1\n    (( query_status != 0 )) || query_status=124' 1 \
+  'side-by-side TestFlight processing-query timeout enforcement'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    wait "${TESTFLIGHT_PROCESSING_QUERY_PID}" || query_status=$?\n    TESTFLIGHT_PROCESSING_QUERY_RUNNING=0\n    TESTFLIGHT_PROCESSING_QUERY_PID=-1' 1 \
+  'side-by-side TestFlight completed-query reaped state ordering'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function verify_processing_tmp_directory() {' 1 \
+  'side-by-side TestFlight independent processing TMPDIR verifier'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  TESTFLIGHT_PROCESSING_TMP_DIRECTORY=$(/usr/bin/mktemp -d \\\n    "${TESTFLIGHT_OUTPUT_DIRECTORY}/app-store-processing-tmp.XXXXXX")' 1 \
+  'side-by-side TestFlight output-scoped processing TMPDIR reservation'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TMPDIR="${TESTFLIGHT_PROCESSING_TMP_DIRECTORY}"' 1 \
+  'side-by-side TestFlight independent processing TMPDIR use'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function remove_processing_tmp_directory() {' 1 \
+  'side-by-side TestFlight processing TMPDIR cleanup'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  terminate_processing_query || cleanup_failed=1\n  if (( TESTFLIGHT_PROCESSING_STATUS_FD >= 0 )); then\n    exec {TESTFLIGHT_PROCESSING_STATUS_FD}>&- || cleanup_failed=1\n    TESTFLIGHT_PROCESSING_STATUS_FD=-1\n  fi\n  remove_processing_tmp_directory || cleanup_failed=1\n  cleanup_release_scratch || cleanup_failed=1' 1 \
+  'side-by-side TestFlight exit cleanup terminates processing before release cleanup'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  exec {TESTFLIGHT_PROCESSING_STATUS_FD}>&-\n  TESTFLIGHT_PROCESSING_STATUS_FD=-1\n  remove_processing_tmp_directory || query_status=1\n  (( query_status == 0 )) || return ${query_status}' 1 \
+  'side-by-side TestFlight bounded processing-query cleanup order'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    stage_started_at=${SECONDS}\n    wait_for_app_store_processing \\\n      || fail "Apple did not confirm the uploaded internal build as VALID"\n    print_release_stage_timing app_store_processing "${stage_started_at}"' 1 \
+  'side-by-side TestFlight API-key processing wait reachability and order'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '--build-status' 1 \
+  'side-by-side TestFlight exact App Store build-status operation'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '--delivery-id "${TESTFLIGHT_DELIVERY_ID}"' 1 \
+  'side-by-side TestFlight upload-bound processing wait'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '--wait' 1 \
+  'side-by-side TestFlight terminal Apple processing wait'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function verify_app_store_processing_status() {' 1 \
+  'side-by-side TestFlight terminal VALID status verifier'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '/usr/bin/plutil -convert xml1 -o /dev/null -- \' 1 \
+  'side-by-side TestFlight JSON processing-status parser'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  "== 'INTERNAL_ONLY'" 2 \
+  'side-by-side TestFlight internal-only processing proof'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '-username' 0 \
   'side-by-side TestFlight username authentication rejection'
@@ -1424,13 +1733,19 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '== "${TESTFLIGHT_ARCHIVE_INFO_WITHOUT_DISTRIBUTIONS_SHA256}"' 1 \
   'side-by-side TestFlight post-upload metadata equality excluding Distributions'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'verify_archive_payload_after_upload' 3 \
+  'verify_archive_payload_after_upload' 2 \
   'side-by-side TestFlight post-upload payload and distribution verification'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  verify_archive\n' 1 \
+  'side-by-side TestFlight single full-tree pre-upload revalidation'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  cleanup_private_build_volume_signal_masked \\\n    || fail "could not clean the exact private build volume before Apple processing"\n  if [[ "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_MODE}" \\' 1 \
+  'side-by-side TestFlight cache cleanup before processing and no post-cleanup archive rescan'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function verify_export_options_identity() {' 1 \
   'side-by-side TestFlight pinned export-options identity'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'verify_export_options_identity \\\n    || fail "export options changed after reviewed configuration validation"\n  verify_archive\n  verify_xcodebuild_authentication_contract \\\n    || fail "release authentication identity changed before upload"\n  verify_export_exec_destinations' 1 \
+  $'verify_export_options_identity \\\n    || fail "export options changed after reviewed configuration validation"\n  verify_archive\n  verify_xcodebuild_authentication_contract \\\n    || fail "release authentication identity changed before upload"' 1 \
   'side-by-side TestFlight immediate pre-upload revalidation'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   "trap '' HUP INT QUIT TERM" 1 \
@@ -1442,17 +1757,17 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'cleanup_release_scratch || cleanup_status=1' 1 \
   'side-by-side TestFlight idempotent masked normal cleanup'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'cleanup_private_build_volume_signal_masked' 3 \
+  'cleanup_private_build_volume_signal_masked' 4 \
   'side-by-side TestFlight masked explicit cleanup calls'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '/usr/bin/hdiutil detach "${TESTFLIGHT_IMAGE_DEVICE}"' 1 \
+  '/usr/bin/hdiutil detach "${TESTFLIGHT_IMAGE_DEVICE}"' 3 \
   'side-by-side TestFlight exact image-device detach'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '/bin/rm -- "${TESTFLIGHT_BUILD_IMAGE_PATH}"' 1 \
-  'side-by-side TestFlight exact sparse-image removal'
+  '/bin/rm -- "${TESTFLIGHT_BUILD_IMAGE_PATH}"' 3 \
+  'side-by-side TestFlight failed-enrollment image rollback'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '/bin/rmdir -- "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}"' 1 \
-  'side-by-side TestFlight exact image-container cleanup'
+  'side-by-side TestFlight failed-enrollment container rollback'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '.opensteamer-testflight-derived-data.' 0 \
   'side-by-side TestFlight direct no-owners T7 DerivedData rejection'

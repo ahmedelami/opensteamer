@@ -55,8 +55,22 @@ readonly PRIVATE_TEMPORARY_ROOT="/private/tmp"
 readonly XCODE_TMP_ALIAS_ROOT="/tmp"
 readonly TESTFLIGHT_BUILD_ROOT="/Volumes/t7"
 readonly TESTFLIGHT_BUILD_IMAGE_SIZE="64g"
-readonly TESTFLIGHT_BUILD_IMAGE_BASENAME="opensteamer-testflight-build"
+readonly TESTFLIGHT_BUILD_IMAGE_TOTAL_BYTES="68719476736"
+readonly TESTFLIGHT_BUILD_IMAGE_SECTOR_COUNT="134217728"
+readonly TESTFLIGHT_BUILD_IMAGE_ENCRYPTION="AES-256"
+readonly TESTFLIGHT_BUILD_IMAGE_BASENAME="opensteamer-testflight-build-cache-v1"
 readonly TESTFLIGHT_BUILD_VOLUME_NAME="opensteamer-testflight-build"
+readonly TESTFLIGHT_BUILD_CACHE_SCHEMA="opensteamer-testflight-build-cache-v1"
+readonly TESTFLIGHT_DERIVED_DATA_BACKUP_EXCLUSION_XATTR="com.apple.metadata:com_apple_backup_excludeItem"
+readonly TESTFLIGHT_DERIVED_DATA_BACKUP_EXCLUSION_XATTR_SHA256="1cb8eb62affde4c49d785fafeddd9b210838894d525505fe9cf448c7ecf9970c"
+readonly TESTFLIGHT_BUILD_CACHE_ROOT="${TESTFLIGHT_BUILD_ROOT}/.${TESTFLIGHT_BUILD_CACHE_SCHEMA}"
+readonly EXPECTED_TESTFLIGHT_BUILD_KEY_PATH="${EXPECTED_ASC_API_KEY_DIRECTORY}/${TESTFLIGHT_BUILD_CACHE_SCHEMA}.key"
+readonly EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH="${EXPECTED_ASC_API_KEY_DIRECTORY}/${TESTFLIGHT_BUILD_CACHE_SCHEMA}.lock"
+readonly EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH="${EXPECTED_ASC_API_KEY_DIRECTORY}/${TESTFLIGHT_BUILD_CACHE_SCHEMA}.enrollment.pending"
+readonly EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH="${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}.new"
+readonly TESTFLIGHT_BUILD_ENROLLMENT_MARKER_CONTENT="opensteamer-testflight-build-cache-enrollment-v1"
+readonly TESTFLIGHT_BUILD_ENROLLMENT_MARKER_SHA256="1f3fc23b862c584e8bb6bd35883cca75543ac74657869ef92bdb97da8206d00e"
+readonly TESTFLIGHT_BUILD_MOUNT_ROOT="${PRIVATE_TEMPORARY_ROOT}/${TESTFLIGHT_BUILD_CACHE_SCHEMA}"
 # hdiutil's public single-file sparse creation mode is called UDSP, while
 # `hdiutil imageinfo -plist` identifies the resulting single-file sparse
 # container with the exact on-disk FourCC `SPRS` on this pinned macOS runtime.
@@ -74,16 +88,23 @@ readonly EXPECTED_XCODE_SELECTED_DEVELOPER_PATH="${EXPECTED_XCODE_ALIAS_PATH}/Co
 readonly EXPECTED_XCODE_REAL_BUNDLE_PATH="${TESTFLIGHT_BUILD_ROOT}/opensteamer-space-recovery-20260804/nonrepo/Xcode-26.6.0.app"
 readonly EXPECTED_XCODE_REAL_DEVELOPER_PATH="${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/Developer"
 readonly EXPECTED_XCODEBUILD_REAL_PATH="${EXPECTED_XCODE_REAL_DEVELOPER_PATH}/usr/bin/xcodebuild"
+readonly EXPECTED_ALTOOL_REAL_PATH="${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/SharedFrameworks/ContentDelivery.framework/Versions/A/Resources/altool"
 readonly EXPECTED_XCODE_BUNDLE_IDENTIFIER="com.apple.dt.Xcode"
 readonly EXPECTED_XCODEBUILD_IDENTIFIER="com.apple.dt.xcodebuild"
+readonly EXPECTED_ALTOOL_IDENTIFIER="com.apple.itunes.altool"
 readonly EXPECTED_XCODE_SIGNING_TEAM_ID="59GAB85EFG"
 readonly EXPECTED_XCODE_VERSION="26.6"
 readonly EXPECTED_XCODE_BUILD_VERSION="17F113"
 readonly EXPECTED_XCODE_BUNDLE_CD_HASH="2c63b15a7f956c25ec75238dc1006a0f6227589a"
 readonly EXPECTED_XCODEBUILD_CD_HASH="335573a2d481a0021e20d7c8b6e2768e407e0f26"
+readonly EXPECTED_ALTOOL_CD_HASH="cab578a19665f314251768644dfd34092d09e926"
 readonly EXPECTED_XCODE_INFO_SHA256="224c27a718df1d8b4e785d29d06259e0a9326c424e70d30efab9c587463f719a"
 readonly EXPECTED_XCODE_VERSION_SHA256="951ddf34d65d84d57684bd083ca7deebf8d5722eefb074f3cdf00f8304d5f511"
 readonly EXPECTED_XCODEBUILD_SHA256="d508f0e1901151843804e4af512d4587ad0e422039e43e14abf22792360ad3d4"
+readonly EXPECTED_ALTOOL_SHA256="600c9117df7fa1be881fbf8d4df746b31fd6d6e35c71d8eeff8a26f600c7a2d5"
+readonly -i APP_STORE_PROCESSING_WAIT_TIMEOUT_SECONDS=1800
+readonly -i APP_STORE_PROCESSING_WAIT_POLL_SECONDS=5
+readonly -i APP_STORE_PROCESSING_TERMINATION_GRACE_SECONDS=5
 readonly PACKAGE_MANIFEST_PATH="${REPOSITORY_ROOT}/Package.swift"
 readonly PACKAGE_RESOLVED_PATH="${REPOSITORY_ROOT}/Package.resolved"
 readonly EXPECTED_PACKAGE_MANIFEST_SHA256="b1bbbff9772b71d850ffec63a8fb1afef9d5e470c1abcedaeb7373b2c98d6d44"
@@ -151,6 +172,7 @@ readonly -a REJECTED_BUILD_ENVIRONMENT_VARIABLES=(
 typeset TESTFLIGHT_CONTROL_DIRECTORY=""
 typeset TESTFLIGHT_CONTROL_DIRECTORY_IDENTITY=""
 typeset TESTFLIGHT_CONTROL_PARENT_IDENTITY=""
+typeset TESTFLIGHT_BUILD_MOUNT_ROOT_IDENTITY=""
 typeset TESTFLIGHT_BUILD_MOUNT_POINT=""
 typeset TESTFLIGHT_BUILD_MOUNT_POINT_UNDERLAY_IDENTITY=""
 typeset TESTFLIGHT_BUILD_IMAGE_CONTAINER=""
@@ -172,16 +194,30 @@ typeset TESTFLIGHT_BUILD_ROOT_PARENT_WHOLE_DISK=""
 typeset TESTFLIGHT_BUILD_ROOT_VOLUME_UUID=""
 typeset TESTFLIGHT_BUILD_ROOT_PHYSICAL_STORE_IDENTIFIER=""
 typeset TESTFLIGHT_BUILD_ROOT_PHYSICAL_WHOLE_DISK=""
+typeset TESTFLIGHT_BUILD_CACHE_ROOT_IDENTITY=""
+typeset TESTFLIGHT_BUILD_CACHE_LOCK_IDENTITY=""
+typeset -i TESTFLIGHT_BUILD_CACHE_LOCK_FD=-1
+typeset TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH=""
+typeset TESTFLIGHT_BUILD_ENROLLMENT_MARKER_IDENTITY=""
+typeset -i TESTFLIGHT_BUILD_ENROLLMENT_MARKER_FD=-1
+typeset TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH=""
+typeset TESTFLIGHT_BUILD_CACHE_CONTRACT_IDENTITY=""
+typeset TESTFLIGHT_BUILD_CACHE_CONTRACT_SHA256=""
+typeset TESTFLIGHT_BUILD_WORKSPACE_KEY=""
+typeset -i TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=0
+typeset -i TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED=0
+typeset -i TESTFLIGHT_BUILD_CACHE_ROOT_CREATED=0
+typeset -i TESTFLIGHT_BUILD_KEY_CREATED=0
 typeset TESTFLIGHT_XCODE_ALIAS_IDENTITY=""
 typeset TESTFLIGHT_XCODE_BUNDLE_IDENTITY=""
 typeset TESTFLIGHT_XCODE_DEVELOPER_IDENTITY=""
 typeset TESTFLIGHT_XCODEBUILD_IDENTITY=""
+typeset TESTFLIGHT_ALTOOL_IDENTITY=""
 typeset TESTFLIGHT_XCODE_VOLUME_ROOT_IDENTITY=""
 typeset TESTFLIGHT_XCODE_VOLUME_DEVICE_IDENTIFIER=""
 typeset TESTFLIGHT_XCODE_VOLUME_PARENT_WHOLE_DISK=""
 typeset TESTFLIGHT_XCODE_PHYSICAL_STORE_IDENTIFIER=""
 typeset TESTFLIGHT_XCODE_PHYSICAL_WHOLE_DISK=""
-typeset -i TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=0
 typeset TESTFLIGHT_IMAGE_DEVICE=""
 typeset TESTFLIGHT_IMAGE_PARTITION_DEVICE=""
 typeset TESTFLIGHT_MOUNTED_DEVICE=""
@@ -193,7 +229,10 @@ typeset TESTFLIGHT_DERIVED_DATA_DIRECTORY=""
 typeset TESTFLIGHT_DERIVED_DATA_IDENTITY=""
 typeset TESTFLIGHT_BUILD_SANDBOX_DIRECTORY=""
 typeset TESTFLIGHT_BUILD_SANDBOX_IDENTITY=""
+typeset TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY=""
+typeset TESTFLIGHT_BUILD_RUN_TMP_PARENT_IDENTITY=""
 typeset TESTFLIGHT_BUILD_TMP_DIRECTORY=""
+typeset TESTFLIGHT_BUILD_TMP_IDENTITY=""
 typeset TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY=""
 typeset TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY=""
 typeset TESTFLIGHT_BUILD_DSTROOT_DIRECTORY=""
@@ -226,6 +265,14 @@ typeset -i TESTFLIGHT_EXPORT_DIRECTORY_FD=-1
 typeset TESTFLIGHT_UPLOAD_LOG_PATH=""
 typeset TESTFLIGHT_UPLOAD_LOG_IDENTITY=""
 typeset -i TESTFLIGHT_UPLOAD_LOG_FD=-1
+typeset TESTFLIGHT_PROCESSING_STATUS_PATH=""
+typeset TESTFLIGHT_PROCESSING_STATUS_IDENTITY=""
+typeset -i TESTFLIGHT_PROCESSING_STATUS_FD=-1
+typeset TESTFLIGHT_PROCESSING_TMP_DIRECTORY=""
+typeset TESTFLIGHT_PROCESSING_TMP_DIRECTORY_IDENTITY=""
+typeset -i TESTFLIGHT_PROCESSING_QUERY_PID=-1
+typeset -i TESTFLIGHT_PROCESSING_QUERY_RUNNING=0
+typeset TESTFLIGHT_DELIVERY_ID=""
 typeset TESTFLIGHT_ARCHIVE_PATH=""
 typeset TESTFLIGHT_ARCHIVE_IDENTITY=""
 typeset TESTFLIGHT_ARCHIVE_APP_IDENTITY=""
@@ -260,6 +307,12 @@ typeset -i RELEASE_EXIT_CLEANUP_COMPLETE=0
 function fail() {
   print -u2 -r -- "side-by-side TestFlight guard failed: $1"
   exit 1
+}
+
+function print_release_stage_timing() {
+  local stage=$1
+  local -i started_at=$2
+  print -r -- "release timing: ${stage}=$(( SECONDS - started_at ))s"
 }
 
 function stat_identity() {
@@ -748,19 +801,164 @@ function require_private_regular_file() {
         == "${EUID}:600:Regular File" ]]
 }
 
+function verify_release_credentials_directory_permissions() {
+  [[ -d "${EXPECTED_ASC_API_KEY_DIRECTORY}" \
+      && ! -L "${EXPECTED_ASC_API_KEY_DIRECTORY}" \
+      && "${EXPECTED_ASC_API_KEY_DIRECTORY:A}" \
+        == "${EXPECTED_ASC_API_KEY_DIRECTORY}" \
+      && "$(/usr/bin/stat -f '%u:%g:%Lp:%HT' \
+        "${EXPECTED_ASC_API_KEY_DIRECTORY}" 2>/dev/null)" \
+        == "${EXPECTED_ASC_API_KEY_OWNER_UID}:${EXPECTED_ASC_API_KEY_OWNER_GID}:${EXPECTED_ASC_API_KEY_DIRECTORY_MODE}:Directory" \
+      && "$(ls_mode_token "${EXPECTED_ASC_API_KEY_DIRECTORY}")" \
+        == 'drwx------' ]]
+}
+
+function verify_build_key_contents() {
+  require_private_regular_file "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}" \
+    || return 1
+  [[ "$(/usr/bin/stat -f '%z:%l' \
+        "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}" 2>/dev/null)" == '65:1' ]] \
+    || return 1
+  LC_ALL=C /usr/bin/grep -Eq '^[0-9a-f]{64}$' \
+    "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}"
+}
+
 function verify_build_key_identity() {
   verify_control_directory_identity || return 1
+  verify_release_credentials_directory_permissions || return 1
   [[ -n "${TESTFLIGHT_BUILD_KEY_PATH:-}" \
       && -n "${TESTFLIGHT_BUILD_KEY_IDENTITY:-}" \
       && "${TESTFLIGHT_BUILD_KEY_PATH}" \
-        == "${TESTFLIGHT_CONTROL_DIRECTORY}/image.key" \
+        == "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}" \
+      && "${TESTFLIGHT_BUILD_KEY_PATH:A}" \
+        == "${TESTFLIGHT_BUILD_KEY_PATH}" \
       && "$(stat_identity "${TESTFLIGHT_BUILD_KEY_PATH}")" \
         == "${TESTFLIGHT_BUILD_KEY_IDENTITY}" \
       && ${TESTFLIGHT_BUILD_KEY_FD} -ge 0 \
       && -e "/dev/fd/${TESTFLIGHT_BUILD_KEY_FD}" \
       && "${TESTFLIGHT_BUILD_KEY_PATH}" \
         -ef "/dev/fd/${TESTFLIGHT_BUILD_KEY_FD}" ]] \
-    && require_private_regular_file "${TESTFLIGHT_BUILD_KEY_PATH}"
+    && verify_build_key_contents
+}
+
+function verify_build_cache_lock_identity() {
+  verify_release_credentials_directory_permissions || return 1
+  [[ -n "${TESTFLIGHT_BUILD_CACHE_LOCK_IDENTITY:-}" \
+      && "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH:A}" \
+        == "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" \
+      && -f "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" \
+      && ! -L "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" \
+      && "$(stat_identity "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}")" \
+        == "${TESTFLIGHT_BUILD_CACHE_LOCK_IDENTITY}" \
+      && "$(/usr/bin/stat -f '%u:%g:%Lp:%HT:%l' \
+        "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" 2>/dev/null)" \
+        == "${EXPECTED_ASC_API_KEY_OWNER_UID}:${EXPECTED_ASC_API_KEY_OWNER_GID}:600:Regular File:1" \
+      && "$(ls_mode_token "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}")" \
+        == '-rw-------' \
+      && ${TESTFLIGHT_BUILD_CACHE_LOCK_FD} -ge 0 \
+      && -e "/dev/fd/${TESTFLIGHT_BUILD_CACHE_LOCK_FD}" \
+      && "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" \
+        -ef "/dev/fd/${TESTFLIGHT_BUILD_CACHE_LOCK_FD}" ]]
+}
+
+function verify_pending_enrollment_marker() {
+  verify_release_credentials_directory_permissions || return 1
+  [[ "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH:-}" \
+        == "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \
+      && "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH:A}" \
+        == "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \
+      && -n "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_IDENTITY:-}" \
+      && -f "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \
+      && ! -L "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \
+      && "$(stat_identity "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}")" \
+        == "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_IDENTITY}" \
+      && "$(/usr/bin/stat -f '%u:%g:%Lp:%HT:%l:%z' \
+        "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" 2>/dev/null)" \
+        == "${EXPECTED_ASC_API_KEY_OWNER_UID}:${EXPECTED_ASC_API_KEY_OWNER_GID}:600:Regular File:1:49" \
+      && "$(ls_mode_token "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}")" \
+        == '-rw-------' \
+      && "$(sha256_file "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}")" \
+        == "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_SHA256}" \
+      && ${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_FD} -ge 0 \
+      && -e "/dev/fd/${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_FD}" \
+      && "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \
+        -ef "/dev/fd/${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_FD}" ]]
+}
+
+function pin_existing_pending_enrollment_marker() {
+  TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH="${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}"
+  TESTFLIGHT_BUILD_ENROLLMENT_MARKER_IDENTITY=$(stat_identity \
+    "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}") || return 1
+  sysopen -r -o nofollow,cloexec -u TESTFLIGHT_BUILD_ENROLLMENT_MARKER_FD \
+    "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" || return 1
+  verify_pending_enrollment_marker
+}
+
+function remove_pending_enrollment_marker_staging_if_safe() {
+  [[ -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" \
+      || -L "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" ]] \
+    || return 0
+  [[ ! -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \
+      && ! -L "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \
+      && ! -e "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}" \
+      && ! -L "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}" \
+      && ! -e "${TESTFLIGHT_BUILD_CACHE_ROOT}" \
+      && ! -L "${TESTFLIGHT_BUILD_CACHE_ROOT}" \
+      && -f "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" \
+      && ! -L "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" \
+      && "$(/usr/bin/stat -f '%u:%g:%Lp:%HT:%l' \
+        "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" 2>/dev/null)" \
+        == "${EXPECTED_ASC_API_KEY_OWNER_UID}:${EXPECTED_ASC_API_KEY_OWNER_GID}:600:Regular File:1" \
+      && "$(ls_mode_token \
+        "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}")" \
+        == '-rw-------' ]] || return 1
+  local -i staging_size
+  staging_size=$(/usr/bin/stat -f '%z' \
+    "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}") || return 1
+  (( staging_size >= 0 && staging_size <= 49 )) || return 1
+  /bin/rm -- "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" \
+    || return 1
+}
+
+function reserve_pending_enrollment_marker() {
+  remove_pending_enrollment_marker_staging_if_safe || return 1
+  [[ ! -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \
+      && ! -L "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" ]] \
+    || return 1
+  local -i marker_writer_fd=-1
+  mask_release_cleanup_signals
+  sysopen -w -o creat,excl,nofollow -m 600 -u marker_writer_fd \
+    "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" || return 1
+  print -r -- "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_CONTENT}" \
+    >"/dev/fd/${marker_writer_fd}" || return 1
+  /bin/chmod 600 "/dev/fd/${marker_writer_fd}" || return 1
+  exec {marker_writer_fd}>&-
+  [[ "$(sha256_file \
+        "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}")" \
+        == "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_SHA256}" ]] || return 1
+  /bin/sync
+  /bin/mv -- "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" \
+    "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" || return 1
+  /bin/sync
+  TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH="${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}"
+  TESTFLIGHT_BUILD_ENROLLMENT_MARKER_IDENTITY=$(stat_identity \
+    "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}") || return 1
+  sysopen -r -o nofollow,cloexec -u TESTFLIGHT_BUILD_ENROLLMENT_MARKER_FD \
+    "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" || return 1
+  verify_pending_enrollment_marker || return 1
+  install_release_signal_traps
+}
+
+function remove_pending_enrollment_marker() {
+  [[ -n "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH:-}" ]] || return 0
+  verify_pending_enrollment_marker || return 1
+  exec {TESTFLIGHT_BUILD_ENROLLMENT_MARKER_FD}>&- || return 1
+  TESTFLIGHT_BUILD_ENROLLMENT_MARKER_FD=-1
+  /bin/rm -- "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" || return 1
+  [[ ! -e "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \
+      && ! -L "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" ]] || return 1
+  TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH=""
+  TESTFLIGHT_BUILD_ENROLLMENT_MARKER_IDENTITY=""
 }
 
 function verify_xcode_sandbox_profile_identity() {
@@ -811,6 +1009,12 @@ function create_xcode_sandbox_profile() {
       "(deny file-write* (literal \"${EXPECTED_ASC_API_KEY_DIRECTORY}\"))"
     print -r -- \
       "(deny file-write* (subpath \"${EXPECTED_ASC_API_KEY_DIRECTORY}\"))"
+    # Xcode needs the App Store Connect key for provisioning, but it never needs
+    # the independent disk-image credential or release-lock contents.
+    print -r -- \
+      "(deny file-read* (literal \"${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}\"))"
+    print -r -- \
+      "(deny file-read* (literal \"${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}\"))"
     print -r -- \
       "(deny file-write* (subpath \"${EXPECTED_XCODE_REAL_BUNDLE_PATH}\"))"
   } >"/dev/fd/${profile_writer_fd}" || {
@@ -1081,25 +1285,6 @@ function verify_reviewed_xcode_volume_identity() {
         "${disk_info}" RemovableMediaOrExternalDevice)" == 'true' ]]
 }
 
-function verify_reviewed_xcode_deep_signature() {
-  /usr/bin/codesign --verify --deep --strict --verbose=4 \
-    "${EXPECTED_XCODE_REAL_BUNDLE_PATH}" >/dev/null 2>&1
-}
-
-function verify_or_reuse_reviewed_xcode_deep_signature() {
-  case ${TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED} in
-    0)
-      verify_reviewed_xcode_deep_signature || return 1
-      TESTFLIGHT_XCODE_DEEP_SIGNATURE_VERIFIED=1
-      ;;
-    1)
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 function verify_reviewed_xcode_toolchain_identity() {
   local selected_developer_path
   selected_developer_path=$(/usr/bin/xcode-select -p 2>/dev/null) || return 2
@@ -1120,6 +1305,9 @@ function verify_reviewed_xcode_toolchain_identity() {
       && -x "${EXPECTED_XCODEBUILD_REAL_PATH}" \
       && -f "${EXPECTED_XCODEBUILD_REAL_PATH}" \
       && ! -L "${EXPECTED_XCODEBUILD_REAL_PATH}" \
+      && -x "${EXPECTED_ALTOOL_REAL_PATH}" \
+      && -f "${EXPECTED_ALTOOL_REAL_PATH}" \
+      && ! -L "${EXPECTED_ALTOOL_REAL_PATH}" \
       && "$(stat_identity "${EXPECTED_XCODE_ALIAS_PATH}")" \
         == "${TESTFLIGHT_XCODE_ALIAS_IDENTITY}" \
       && "$(stat_identity "${EXPECTED_XCODE_REAL_BUNDLE_PATH}")" \
@@ -1130,6 +1318,8 @@ function verify_reviewed_xcode_toolchain_identity() {
         == "${TESTFLIGHT_XCODE_DEVELOPER_IDENTITY}" \
       && "$(stat_identity "${EXPECTED_XCODEBUILD_REAL_PATH}")" \
         == "${TESTFLIGHT_XCODEBUILD_IDENTITY}" \
+      && "$(stat_identity "${EXPECTED_ALTOOL_REAL_PATH}")" \
+        == "${TESTFLIGHT_ALTOOL_IDENTITY}" \
       && "$(sha256_file \
         "${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/Info.plist")" \
         == "${EXPECTED_XCODE_INFO_SHA256}" \
@@ -1138,6 +1328,8 @@ function verify_reviewed_xcode_toolchain_identity() {
         == "${EXPECTED_XCODE_VERSION_SHA256}" \
       && "$(sha256_file "${EXPECTED_XCODEBUILD_REAL_PATH}")" \
         == "${EXPECTED_XCODEBUILD_SHA256}" \
+      && "$(sha256_file "${EXPECTED_ALTOOL_REAL_PATH}")" \
+        == "${EXPECTED_ALTOOL_SHA256}" \
       && "$(plist_raw_value \
         "${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/Info.plist" \
         CFBundleIdentifier)" == "${EXPECTED_XCODE_BUNDLE_IDENTIFIER}" \
@@ -1148,15 +1340,21 @@ function verify_reviewed_xcode_toolchain_identity() {
         "${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/version.plist" \
         ProductBuildVersion)" == "${EXPECTED_XCODE_BUILD_VERSION}" ]] || return 1
   verify_reviewed_xcode_volume_identity || return $?
-  verify_or_reuse_reviewed_xcode_deep_signature || return 1
+  # Full-bundle deep verification is an enrollment check when the pinned Xcode
+  # changes; routine releases verify the exact executable and recorded identity.
   /usr/bin/codesign --verify --strict --verbose=4 \
     "${EXPECTED_XCODEBUILD_REAL_PATH}" >/dev/null 2>&1 || return 1
+  /usr/bin/codesign --verify --strict --verbose=4 \
+    "${EXPECTED_ALTOOL_REAL_PATH}" >/dev/null 2>&1 || return 1
   local bundle_metadata
   local executable_metadata
+  local altool_metadata
   bundle_metadata=$(/usr/bin/codesign -dv --verbose=4 \
     "${EXPECTED_XCODE_REAL_BUNDLE_PATH}" 2>&1) || return 1
   executable_metadata=$(/usr/bin/codesign -dv --verbose=4 \
     "${EXPECTED_XCODEBUILD_REAL_PATH}" 2>&1) || return 1
+  altool_metadata=$(/usr/bin/codesign -dv --verbose=4 \
+    "${EXPECTED_ALTOOL_REAL_PATH}" 2>&1) || return 1
   [[ "$(codesign_metadata_value "${bundle_metadata}" Identifier)" \
         == "${EXPECTED_XCODE_BUNDLE_IDENTIFIER}" \
       && "$(codesign_metadata_value "${bundle_metadata}" TeamIdentifier)" \
@@ -1168,7 +1366,13 @@ function verify_reviewed_xcode_toolchain_identity() {
       && "$(codesign_metadata_value "${executable_metadata}" TeamIdentifier)" \
         == "${EXPECTED_XCODE_SIGNING_TEAM_ID}" \
       && "$(codesign_metadata_value "${executable_metadata}" CDHash)" \
-        == "${EXPECTED_XCODEBUILD_CD_HASH}" ]]
+        == "${EXPECTED_XCODEBUILD_CD_HASH}" \
+      && "$(codesign_metadata_value "${altool_metadata}" Identifier)" \
+        == "${EXPECTED_ALTOOL_IDENTIFIER}" \
+      && "$(codesign_metadata_value "${altool_metadata}" TeamIdentifier)" \
+        == "${EXPECTED_XCODE_SIGNING_TEAM_ID}" \
+      && "$(codesign_metadata_value "${altool_metadata}" CDHash)" \
+        == "${EXPECTED_ALTOOL_CD_HASH}" ]]
 }
 
 function pin_reviewed_xcode_toolchain_identity() {
@@ -1180,7 +1384,9 @@ function pin_reviewed_xcode_toolchain_identity() {
       && -d "${EXPECTED_XCODE_REAL_DEVELOPER_PATH}" \
       && ! -L "${EXPECTED_XCODE_REAL_DEVELOPER_PATH}" \
       && -f "${EXPECTED_XCODEBUILD_REAL_PATH}" \
-      && ! -L "${EXPECTED_XCODEBUILD_REAL_PATH}" ]] || return 1
+      && ! -L "${EXPECTED_XCODEBUILD_REAL_PATH}" \
+      && -f "${EXPECTED_ALTOOL_REAL_PATH}" \
+      && ! -L "${EXPECTED_ALTOOL_REAL_PATH}" ]] || return 1
   TESTFLIGHT_XCODE_ALIAS_IDENTITY=$(stat_identity "${EXPECTED_XCODE_ALIAS_PATH}") \
     || return 1
   TESTFLIGHT_XCODE_BUNDLE_IDENTITY=$(stat_identity \
@@ -1189,6 +1395,8 @@ function pin_reviewed_xcode_toolchain_identity() {
     "${EXPECTED_XCODE_REAL_DEVELOPER_PATH}") || return 1
   TESTFLIGHT_XCODEBUILD_IDENTITY=$(stat_identity \
     "${EXPECTED_XCODEBUILD_REAL_PATH}") || return 1
+  TESTFLIGHT_ALTOOL_IDENTITY=$(stat_identity \
+    "${EXPECTED_ALTOOL_REAL_PATH}") || return 1
   TESTFLIGHT_XCODE_VOLUME_ROOT_IDENTITY=$(stat_identity "${TESTFLIGHT_BUILD_ROOT}") \
     || return 1
   [[ "${TESTFLIGHT_XCODE_BUNDLE_IDENTITY%%:*}" \
@@ -1223,17 +1431,40 @@ function pin_reviewed_xcode_toolchain_identity() {
   verify_reviewed_xcode_toolchain_identity
 }
 
-function verify_image_container_identity() {
+function require_owned_private_directory() {
+  local directory=$1
+  [[ -d "${directory}" \
+      && ! -L "${directory}" \
+      && "${directory:A}" == "${directory}" \
+      && "$(/usr/bin/stat -f '%u:%Lp:%HT' "${directory}" 2>/dev/null)" \
+        == "${EUID}:700:Directory" \
+      && "$(ls_mode_token "${directory}")" == 'drwx------' ]]
+}
+
+function verify_persistent_build_cache_root_identity() {
   verify_backing_build_root_identity || return 1
+  verify_build_cache_lock_identity || return 1
+  [[ -n "${TESTFLIGHT_BUILD_CACHE_ROOT_IDENTITY:-}" \
+      && "${TESTFLIGHT_BUILD_CACHE_ROOT}" \
+        == "${TESTFLIGHT_BUILD_ROOT}/.${TESTFLIGHT_BUILD_CACHE_SCHEMA}" \
+      && "$(stat_identity "${TESTFLIGHT_BUILD_CACHE_ROOT}")" \
+        == "${TESTFLIGHT_BUILD_CACHE_ROOT_IDENTITY}" ]] \
+    && require_owned_private_directory "${TESTFLIGHT_BUILD_CACHE_ROOT}"
+}
+
+function verify_image_container_identity() {
+  verify_persistent_build_cache_root_identity || return 1
   [[ -n "${TESTFLIGHT_BUILD_IMAGE_CONTAINER:-}" \
       && "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}" \
-        == "${TESTFLIGHT_BUILD_ROOT}"/.opensteamer-testflight-build-image.* \
+        == "${TESTFLIGHT_BUILD_CACHE_ROOT}" \
       && "${TESTFLIGHT_BUILD_IMAGE_CONTAINER:A}" \
         == "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}" \
       && -d "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}" \
       && ! -L "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}" \
       && "$(stat_identity "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}")" \
-        == "${TESTFLIGHT_BUILD_IMAGE_CONTAINER_IDENTITY}" ]]
+        == "${TESTFLIGHT_BUILD_IMAGE_CONTAINER_IDENTITY}" \
+      && "${TESTFLIGHT_BUILD_IMAGE_CONTAINER_IDENTITY}" \
+        == "${TESTFLIGHT_BUILD_CACHE_ROOT_IDENTITY}" ]]
 }
 
 function verify_image_storage_identity() {
@@ -1244,6 +1475,11 @@ function verify_image_storage_identity() {
       && "${TESTFLIGHT_BUILD_IMAGE_PATH:A}" == "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
       && -f "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
       && ! -L "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
+      && "$(/usr/bin/stat -f '%u:%Lp:%HT:%l' \
+        "${TESTFLIGHT_BUILD_IMAGE_PATH}" 2>/dev/null)" \
+        == "${EUID}:600:Regular File:1" \
+      && "$(ls_mode_token "${TESTFLIGHT_BUILD_IMAGE_PATH}")" \
+        == '-rw-------' \
       && "$(stat_identity "${TESTFLIGHT_BUILD_IMAGE_PATH}")" \
         == "${TESTFLIGHT_BUILD_IMAGE_IDENTITY}" ]]
 }
@@ -1310,7 +1546,20 @@ function write_and_verify_created_image_info() {
   verify_build_key_identity || return 1
   [[ "$(plist_raw_value "${destination}" Properties.Encrypted)" == 'true' \
       && "$(plist_raw_value "${destination}" Format)" \
-        == "${TESTFLIGHT_BUILD_IMAGE_FORMAT}" ]] || return 1
+        == "${TESTFLIGHT_BUILD_IMAGE_FORMAT}" \
+      && "$(plist_raw_value \
+        "${destination}" 'Backing Store Information.Class Name')" \
+        == 'CEncryptedEncoding' \
+      && "$(plist_raw_value \
+        "${destination}" 'Backing Store Information.Encryption')" \
+        == "${TESTFLIGHT_BUILD_IMAGE_ENCRYPTION}" \
+      && "$(plist_raw_value \
+        "${destination}" 'Backing Store Information.Backing Store Information.Class Name')" \
+        == 'CBSDBackingStore' \
+      && "$(plist_raw_value "${destination}" 'Size Information.Total Bytes')" \
+        == "${TESTFLIGHT_BUILD_IMAGE_TOTAL_BYTES}" \
+      && "$(plist_raw_value "${destination}" 'Size Information.Sector Count')" \
+        == "${TESTFLIGHT_BUILD_IMAGE_SECTOR_COUNT}" ]] || return 1
   TESTFLIGHT_BUILD_IMAGE_PARTITION_UUID=$(apfs_partition_uuid_from_image_info \
     "${destination}") || return 1
   [[ ${#TESTFLIGHT_BUILD_IMAGE_PARTITION_UUID} == 36 ]]
@@ -1434,18 +1683,17 @@ function find_current_attachment_record() {
     image_path=$(plist_typed_raw_value \
       "${info}" "images.${image_index}.image-path" string) \
       || return 2
+    [[ "${image_path}" == "${TESTFLIGHT_BUILD_IMAGE_PATH}" ]] || continue
     enumerated_root=$(attachment_root_device_from_plist \
       "${info}" "images.${image_index}") || return 2
-    if [[ "${image_path}" == "${TESTFLIGHT_BUILD_IMAGE_PATH}" ]]; then
-      devices=$(attachment_devices_from_plist \
-        "${info}" ":images:${image_index}" "images.${image_index}") || return 2
-      image_encrypted=$(plist_typed_raw_value \
-        "${info}" "images.${image_index}.image-encrypted" bool) || return 2
-      image_writeable=$(plist_typed_raw_value \
-        "${info}" "images.${image_index}.writeable" bool) || return 2
-      record="${devices}|${image_encrypted:l}|${image_writeable:l}"
-      (( match_count += 1 ))
-    fi
+    devices=$(attachment_devices_from_plist \
+      "${info}" ":images:${image_index}" "images.${image_index}") || return 2
+    image_encrypted=$(plist_typed_raw_value \
+      "${info}" "images.${image_index}.image-encrypted" bool) || return 2
+    image_writeable=$(plist_typed_raw_value \
+      "${info}" "images.${image_index}.writeable" bool) || return 2
+    record="${devices}|${image_encrypted:l}|${image_writeable:l}"
+    (( match_count += 1 ))
   done
   (( match_count == 1 )) || {
     (( match_count == 0 )) && return 1
@@ -1469,12 +1717,11 @@ function find_current_attachment_root_device() {
     image_path=$(plist_typed_raw_value \
       "${info}" "images.${image_index}.image-path" string) \
       || return 2
+    [[ "${image_path}" == "${TESTFLIGHT_BUILD_IMAGE_PATH}" ]] || continue
     enumerated_root=$(attachment_root_device_from_plist \
       "${info}" "images.${image_index}") || return 2
-    if [[ "${image_path}" == "${TESTFLIGHT_BUILD_IMAGE_PATH}" ]]; then
-      root_device=${enumerated_root}
-      (( match_count += 1 ))
-    fi
+    root_device=${enumerated_root}
+    (( match_count += 1 ))
   done
   (( match_count == 1 )) || {
     (( match_count == 0 )) && return 1
@@ -1496,10 +1743,10 @@ function current_attachment_is_absent() {
     image_path=$(plist_typed_raw_value \
       "${info}" "images.${image_index}.image-path" string) \
       || return 2
+    [[ "${image_path}" == "${TESTFLIGHT_BUILD_IMAGE_PATH}" ]] || continue
     enumerated_root=$(attachment_root_device_from_plist \
       "${info}" "images.${image_index}") || return 2
-    [[ "${image_path}" != "${TESTFLIGHT_BUILD_IMAGE_PATH}" ]] \
-      || (( match_count += 1 ))
+    (( match_count += 1 ))
   done
   (( match_count == 0 )) && return 0
   (( match_count == 1 )) && return 1
@@ -1528,19 +1775,47 @@ function write_mounted_volume_info() {
     "${destination}" /usr/sbin/diskutil info -plist "${TESTFLIGHT_MOUNTED_DEVICE}"
 }
 
-function pin_private_build_directory() {
+function initialize_or_pin_cache_directory() {
   local directory=$1
   local required_parent=$2
   require_canonical_safe_path "${directory}" "${required_parent}" || return 1
-  [[ ! -e "${directory}" && ! -L "${directory}" ]] || return 1
-  /bin/mkdir -m 700 "${directory}" || return 1
-  /bin/chmod 700 "${directory}" || return 1
+  if (( TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 )); then
+    [[ ! -e "${directory}" && ! -L "${directory}" ]] || return 1
+    /bin/mkdir -m 700 "${directory}" || return 1
+    /bin/chmod 700 "${directory}" || return 1
+  else
+    [[ -d "${directory}" && ! -L "${directory}" ]] || return 1
+  fi
   local identity
   identity=$(stat_identity "${directory}") || return 1
-  [[ -n "${identity}" \
+  [[ -n "${identity}" ]] || return 1
+  verify_reviewed_cache_directory_metadata "${directory}" || return 1
+  TESTFLIGHT_PINNED_BUILD_DIRECTORIES+=("${directory}|${identity}")
+}
+
+function verify_reviewed_cache_directory_metadata() {
+  local directory=$1
+  [[ -d "${directory}" \
+      && ! -L "${directory}" \
+      && "${directory:A}" == "${directory}" \
       && "$(/usr/bin/stat -f '%u:%Lp:%HT' "${directory}" 2>/dev/null)" \
         == "${EUID}:700:Directory" ]] || return 1
-  TESTFLIGHT_PINNED_BUILD_DIRECTORIES+=("${directory}|${identity}")
+  local mode_token
+  mode_token=$(ls_mode_token "${directory}") || return 1
+  [[ "${mode_token}" == 'drwx------' ]] && return 0
+  [[ "${directory}" == "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}" \
+      && "${mode_token}" == 'drwx------@' ]] || return 1
+  local xattr_names
+  xattr_names=$(/usr/bin/xattr "${directory}" 2>/dev/null) || return 1
+  [[ "${xattr_names}" == "${TESTFLIGHT_DERIVED_DATA_BACKUP_EXCLUSION_XATTR}" ]] \
+    || return 1
+  /usr/bin/xattr -p \
+    "${TESTFLIGHT_DERIVED_DATA_BACKUP_EXCLUSION_XATTR}" \
+    "${directory}" 2>/dev/null \
+    | /usr/bin/shasum -a 256 \
+    | /usr/bin/awk \
+      -v expected="${TESTFLIGHT_DERIVED_DATA_BACKUP_EXCLUSION_XATTR_SHA256}" \
+      'NR == 1 && NF == 2 && $1 == expected { matched = 1 } END { exit matched ? 0 : 1 }'
 }
 
 function verify_pinned_build_directories() {
@@ -1565,12 +1840,10 @@ function verify_pinned_build_directories() {
     [[ -n "${directory}" \
         && -n "${identity}" \
         && "${directory:A}" == "${directory}" \
-        && "${directory}" == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/"* \
         && -d "${directory}" \
         && ! -L "${directory}" \
-        && "$(stat_identity "${directory}")" == "${identity}" \
-        && "$(/usr/bin/stat -f '%u:%Lp:%HT' "${directory}" 2>/dev/null)" \
-          == "${EUID}:700:Directory" ]] || return 1
+        && "$(stat_identity "${directory}")" == "${identity}" ]] || return 1
+    verify_reviewed_cache_directory_metadata "${directory}" || return 1
   done
   local expected_directory
   local occurrence_count
@@ -1584,9 +1857,223 @@ function verify_pinned_build_directories() {
   done
 }
 
+function verify_persistent_build_cache_contract() {
+  verify_image_storage_identity || return 1
+  [[ -n "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH:-}" \
+      && -n "${TESTFLIGHT_BUILD_CACHE_CONTRACT_IDENTITY:-}" \
+      && "${#TESTFLIGHT_BUILD_CACHE_CONTRACT_SHA256}" == 64 \
+      && "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" \
+        == "${TESTFLIGHT_BUILD_MOUNT_POINT}/BuildCache/v1/cache-contract.plist" \
+      && -f "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" \
+      && ! -L "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" \
+      && "$(stat_identity "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}")" \
+        == "${TESTFLIGHT_BUILD_CACHE_CONTRACT_IDENTITY}" \
+      && "$(/usr/bin/stat -f '%u:%Lp:%HT:%l' \
+        "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" 2>/dev/null)" \
+        == "${EUID}:600:Regular File:1" \
+      && "$(ls_mode_token "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}")" \
+        == '-rw-------' \
+      && "$(sha256_file "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}")" \
+        == "${TESTFLIGHT_BUILD_CACHE_CONTRACT_SHA256}" \
+      && "$(/usr/bin/xmllint --xpath 'count(/plist/dict/key)' \
+        "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" 2>/dev/null)" == '10' \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" schema string)" \
+        == "${TESTFLIGHT_BUILD_CACHE_SCHEMA}" \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" xcodeVersion string)" \
+        == "${EXPECTED_XCODE_VERSION}" \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" xcodeBuild string)" \
+        == "${EXPECTED_XCODE_BUILD_VERSION}" \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" xcodebuildSHA256 string)" \
+        == "${EXPECTED_XCODEBUILD_SHA256}" \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" packageManifestSHA256 string)" \
+        == "${EXPECTED_PACKAGE_MANIFEST_SHA256}" \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" packageResolvedSHA256 string)" \
+        == "${EXPECTED_PACKAGE_RESOLVED_SHA256}" \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" scheme string)" \
+        == "${EXPECTED_SCHEME}" \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" configuration string)" \
+        == "${EXPECTED_CONFIGURATION}" \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" sdk string)" == 'iphoneos' \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" partitionUUID string)" \
+        == "${TESTFLIGHT_BUILD_IMAGE_PARTITION_UUID}" ]]
+}
+
+function initialize_or_require_cache_parent_directory() {
+  local directory=$1
+  local required_parent=$2
+  require_canonical_safe_path "${directory}" "${required_parent}" || return 1
+  if (( TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 )); then
+    [[ ! -e "${directory}" && ! -L "${directory}" ]] || return 1
+    /bin/mkdir -m 700 "${directory}" || return 1
+    /bin/chmod 700 "${directory}" || return 1
+  fi
+  require_owned_private_directory "${directory}"
+}
+
+function initialize_or_migrate_run_tmp_parent_directory() {
+  local directory=$1
+  local required_parent=$2
+  require_canonical_safe_path "${directory}" "${required_parent}" || return 1
+  if (( TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 )); then
+    [[ ! -e "${directory}" && ! -L "${directory}" ]] || return 1
+    /bin/mkdir -m 700 "${directory}" || return 1
+    /bin/chmod 700 "${directory}" || return 1
+  elif [[ ! -e "${directory}" && ! -L "${directory}" ]]; then
+    # Cache schema v1 predates the per-run TMPDIR parent. This exact empty
+    # directory is safe to add under the already identity-pinned workspace;
+    # every other missing or mismatched persistent-cache node still fails.
+    /bin/mkdir -m 700 "${directory}" || return 1
+    /bin/chmod 700 "${directory}" || return 1
+  fi
+  require_owned_private_directory "${directory}"
+}
+
+function create_persistent_build_cache_contract() {
+  local pending_contract="${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}.pending"
+  [[ "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" \
+        == "${TESTFLIGHT_BUILD_MOUNT_POINT}/BuildCache/v1/cache-contract.plist" \
+      && ! -e "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" \
+      && ! -L "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" \
+      && "${pending_contract}" \
+        == "${TESTFLIGHT_BUILD_MOUNT_POINT}/BuildCache/v1/cache-contract.plist.pending" \
+      && ! -e "${pending_contract}" \
+      && ! -L "${pending_contract}" ]] || return 1
+  /usr/bin/plutil -create xml1 "${pending_contract}" \
+    || return 1
+  /bin/chmod 600 "${pending_contract}" || return 1
+  /usr/bin/plutil -insert schema -string "${TESTFLIGHT_BUILD_CACHE_SCHEMA}" \
+    "${pending_contract}" || return 1
+  /usr/bin/plutil -insert xcodeVersion -string "${EXPECTED_XCODE_VERSION}" \
+    "${pending_contract}" || return 1
+  /usr/bin/plutil -insert xcodeBuild -string "${EXPECTED_XCODE_BUILD_VERSION}" \
+    "${pending_contract}" || return 1
+  /usr/bin/plutil -insert xcodebuildSHA256 -string "${EXPECTED_XCODEBUILD_SHA256}" \
+    "${pending_contract}" || return 1
+  /usr/bin/plutil -insert packageManifestSHA256 -string \
+    "${EXPECTED_PACKAGE_MANIFEST_SHA256}" \
+    "${pending_contract}" || return 1
+  /usr/bin/plutil -insert packageResolvedSHA256 -string \
+    "${EXPECTED_PACKAGE_RESOLVED_SHA256}" \
+    "${pending_contract}" || return 1
+  /usr/bin/plutil -insert scheme -string "${EXPECTED_SCHEME}" \
+    "${pending_contract}" || return 1
+  /usr/bin/plutil -insert configuration -string "${EXPECTED_CONFIGURATION}" \
+    "${pending_contract}" || return 1
+  /usr/bin/plutil -insert sdk -string iphoneos \
+    "${pending_contract}" || return 1
+  /usr/bin/plutil -insert partitionUUID -string \
+    "${TESTFLIGHT_BUILD_IMAGE_PARTITION_UUID}" \
+    "${pending_contract}" || return 1
+  [[ "$(/usr/bin/xmllint --xpath 'count(/plist/dict/key)' \
+        "${pending_contract}" 2>/dev/null)" == '10' \
+      && "$(/usr/bin/stat -f '%u:%Lp:%HT:%l' \
+        "${pending_contract}" 2>/dev/null)" \
+        == "${EUID}:600:Regular File:1" \
+      && "$(ls_mode_token "${pending_contract}")" == '-rw-------' ]] \
+    || return 1
+  # The immutable contract is the enrollment completion marker. Publish it in
+  # one same-volume rename only after the persistent directory layout exists.
+  /bin/mv -- "${pending_contract}" "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}"
+}
+
+function initialize_or_pin_persistent_build_cache_layout() {
+  local cache_base="${TESTFLIGHT_BUILD_MOUNT_POINT}/BuildCache"
+  local cache_v1="${cache_base}/v1"
+  local shared_root="${cache_v1}/shared"
+  local workspaces_root="${cache_v1}/workspaces"
+  TESTFLIGHT_BUILD_WORKSPACE_KEY=$(string_vector_sha256 "${REPOSITORY_ROOT}") \
+    || return 1
+  string_is_lowercase_sha256 "${TESTFLIGHT_BUILD_WORKSPACE_KEY}" || return 1
+  local workspace_root="${workspaces_root}/${TESTFLIGHT_BUILD_WORKSPACE_KEY}"
+  initialize_or_require_cache_parent_directory \
+    "${cache_base}" "${TESTFLIGHT_BUILD_MOUNT_POINT}" || return 1
+  initialize_or_require_cache_parent_directory \
+    "${cache_v1}" "${cache_base}" || return 1
+  initialize_or_require_cache_parent_directory \
+    "${shared_root}" "${cache_v1}" || return 1
+  initialize_or_require_cache_parent_directory \
+    "${workspaces_root}" "${cache_v1}" || return 1
+  initialize_or_require_cache_parent_directory \
+    "${workspace_root}" "${workspaces_root}" || return 1
+
+  TESTFLIGHT_BUILD_SANDBOX_DIRECTORY="${workspace_root}"
+  TESTFLIGHT_BUILD_SANDBOX_IDENTITY=$(stat_identity \
+    "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}") || return 1
+  TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY="${workspace_root}/run-tmp"
+  initialize_or_migrate_run_tmp_parent_directory \
+    "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}" "${workspace_root}" || return 1
+  TESTFLIGHT_BUILD_RUN_TMP_PARENT_IDENTITY=$(stat_identity \
+    "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}") || return 1
+  TESTFLIGHT_DERIVED_DATA_DIRECTORY="${workspace_root}/DerivedData"
+  TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY="${workspace_root}/Products"
+  TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY="${workspace_root}/Intermediates"
+  TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY="${shared_root}/SharedPrecompiledHeaders"
+  TESTFLIGHT_BUILD_CACHE_DIRECTORY="${shared_root}/Caches"
+  TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY="${shared_root}/ModuleCache.noindex"
+  TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY="${shared_root}/PackageCache"
+  TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY="${shared_root}/SourcePackages"
+  TESTFLIGHT_PINNED_BUILD_DIRECTORIES=()
+  local build_record
+  local build_directory
+  local build_parent
+  for build_record in \
+      "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}|${workspace_root}" \
+      "${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}|${workspace_root}" \
+      "${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}|${workspace_root}" \
+      "${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}|${shared_root}" \
+      "${TESTFLIGHT_BUILD_CACHE_DIRECTORY}|${shared_root}" \
+      "${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}|${shared_root}" \
+      "${TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY}|${shared_root}" \
+      "${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}|${shared_root}"; do
+    build_directory=${build_record%%|*}
+    build_parent=${build_record#*|}
+    initialize_or_pin_cache_directory \
+      "${build_directory}" "${build_parent}" || return 1
+  done
+  TESTFLIGHT_BUILD_TMP_DIRECTORY=$(/usr/bin/mktemp -d \
+    "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}/run.XXXXXX") || return 1
+  /bin/chmod 700 "${TESTFLIGHT_BUILD_TMP_DIRECTORY}" || return 1
+  TESTFLIGHT_BUILD_TMP_IDENTITY=$(stat_identity \
+    "${TESTFLIGHT_BUILD_TMP_DIRECTORY}") || return 1
+  verify_reviewed_cache_directory_metadata \
+    "${TESTFLIGHT_BUILD_TMP_DIRECTORY}" || return 1
+  TESTFLIGHT_PINNED_BUILD_DIRECTORIES=(
+    "${TESTFLIGHT_BUILD_TMP_DIRECTORY}|${TESTFLIGHT_BUILD_TMP_IDENTITY}"
+    "${TESTFLIGHT_PINNED_BUILD_DIRECTORIES[@]}"
+  )
+
+  TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH="${cache_v1}/cache-contract.plist"
+  if (( TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 )); then
+    create_persistent_build_cache_contract || return 1
+  fi
+  [[ -f "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" \
+      && ! -L "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" ]] || return 1
+  TESTFLIGHT_BUILD_CACHE_CONTRACT_IDENTITY=$(stat_identity \
+    "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}") || return 1
+  TESTFLIGHT_BUILD_CACHE_CONTRACT_SHA256=$(sha256_file \
+    "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}") || return 1
+  TESTFLIGHT_DERIVED_DATA_IDENTITY=$(stat_identity \
+    "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}") || return 1
+  verify_persistent_build_cache_contract \
+    && verify_pinned_build_directories
+}
+
 function verify_private_build_volume_identity() {
   verify_hdiutil_attachment_identity || return 1
   verify_pinned_build_directories || return 1
+  verify_persistent_build_cache_contract || return 1
+  require_owned_private_directory \
+    "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}" || return 1
   write_image_partition_info || return 1
   write_mounted_volume_info || return 1
   local partition_info="${TESTFLIGHT_CONTROL_DIRECTORY}/image-partition-info.plist"
@@ -1618,12 +2105,24 @@ function verify_private_build_volume_identity() {
       && ! -L "${TESTFLIGHT_BUILD_MOUNT_POINT}" \
       && "$(stat_identity "${TESTFLIGHT_BUILD_MOUNT_POINT}")" \
         == "${TESTFLIGHT_MOUNTED_VOLUME_ROOT_IDENTITY}" \
+      && "${TESTFLIGHT_BUILD_MOUNT_POINT}" \
+        == "${TESTFLIGHT_BUILD_MOUNT_ROOT}/mount" \
+      && "$(stat_identity "${TESTFLIGHT_BUILD_MOUNT_ROOT}")" \
+        == "${TESTFLIGHT_BUILD_MOUNT_ROOT_IDENTITY}" \
       && "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}" \
-        == "${TESTFLIGHT_BUILD_MOUNT_POINT}/BuildSandbox" \
+        == "${TESTFLIGHT_BUILD_MOUNT_POINT}/BuildCache/v1/workspaces/${TESTFLIGHT_BUILD_WORKSPACE_KEY}" \
       && -d "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}" \
       && ! -L "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}" \
       && "$(stat_identity "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}")" \
         == "${TESTFLIGHT_BUILD_SANDBOX_IDENTITY}" \
+      && "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}" \
+        == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/run-tmp" \
+      && "$(stat_identity "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}")" \
+        == "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_IDENTITY}" \
+      && "${TESTFLIGHT_BUILD_TMP_DIRECTORY}" \
+        == "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}"/run.* \
+      && "$(stat_identity "${TESTFLIGHT_BUILD_TMP_DIRECTORY}")" \
+        == "${TESTFLIGHT_BUILD_TMP_IDENTITY}" \
       && "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}" \
         == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/DerivedData" \
       && "${TESTFLIGHT_DERIVED_DATA_DIRECTORY:A}" \
@@ -1643,6 +2142,33 @@ function remove_exact_private_file() {
   require_private_regular_file "${file}" || return 1
   /bin/rm -- "${file}" || return 1
   [[ ! -e "${file}" && ! -L "${file}" ]]
+}
+
+function remove_current_run_tmp_directory() {
+  [[ -z "${TESTFLIGHT_BUILD_TMP_DIRECTORY:-}" ]] && return 0
+  [[ -n "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY:-}" \
+      && -n "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_IDENTITY:-}" \
+      && "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}" \
+        == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/run-tmp" \
+      && "$(stat_identity "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}")" \
+        == "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_IDENTITY}" \
+      && "${TESTFLIGHT_BUILD_TMP_DIRECTORY}" \
+        == "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}"/run.* \
+      && -d "${TESTFLIGHT_BUILD_TMP_DIRECTORY}" \
+      && ! -L "${TESTFLIGHT_BUILD_TMP_DIRECTORY}" ]] || return 1
+  if [[ -z "${TESTFLIGHT_BUILD_TMP_IDENTITY:-}" ]]; then
+    verify_reviewed_cache_directory_metadata \
+      "${TESTFLIGHT_BUILD_TMP_DIRECTORY}" || return 1
+    TESTFLIGHT_BUILD_TMP_IDENTITY=$(stat_identity \
+      "${TESTFLIGHT_BUILD_TMP_DIRECTORY}") || return 1
+  fi
+  [[ "$(stat_identity "${TESTFLIGHT_BUILD_TMP_DIRECTORY}")" \
+      == "${TESTFLIGHT_BUILD_TMP_IDENTITY}" ]] || return 1
+  /bin/rm -R -- "${TESTFLIGHT_BUILD_TMP_DIRECTORY}" || return 1
+  [[ ! -e "${TESTFLIGHT_BUILD_TMP_DIRECTORY}" \
+      && ! -L "${TESTFLIGHT_BUILD_TMP_DIRECTORY}" ]] || return 1
+  TESTFLIGHT_BUILD_TMP_DIRECTORY=""
+  TESTFLIGHT_BUILD_TMP_IDENTITY=""
 }
 
 function cleanup_private_build_volume() {
@@ -1666,9 +2192,30 @@ function cleanup_private_build_volume() {
     fi
     verify_control_directory_identity || cleanup_failed=1
   fi
+  if (( cleanup_failed == 0 \
+      && TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 \
+      && TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED == 0 \
+      && TESTFLIGHT_BUILD_CACHE_ROOT_CREATED == 1 )) \
+      && [[ "${TESTFLIGHT_BUILD_IMAGE_CONTAINER:-}" \
+          == "${TESTFLIGHT_BUILD_CACHE_ROOT}" \
+        && -z "${TESTFLIGHT_BUILD_IMAGE_CONTAINER_IDENTITY:-}" ]]; then
+    require_owned_private_directory "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}" \
+      || cleanup_failed=1
+    if (( cleanup_failed == 0 )); then
+      TESTFLIGHT_BUILD_CACHE_ROOT_IDENTITY=$(stat_identity \
+        "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}") || cleanup_failed=1
+      TESTFLIGHT_BUILD_IMAGE_CONTAINER_IDENTITY="${TESTFLIGHT_BUILD_CACHE_ROOT_IDENTITY}"
+    fi
+  fi
   if (( cleanup_failed == 0 )) \
       && [[ -n "${TESTFLIGHT_BUILD_IMAGE_CONTAINER:-}" ]]; then
     verify_image_container_identity || cleanup_failed=1
+  fi
+
+  if (( cleanup_failed == 0 \
+      && TESTFLIGHT_BUILD_ATTACHMENT_ACTIVE == 1 )) \
+      && [[ -n "${TESTFLIGHT_BUILD_TMP_DIRECTORY:-}" ]]; then
+    remove_current_run_tmp_directory || cleanup_failed=1
   fi
 
   # ATTACH_ATTEMPTED is set before hdiutil starts. A signal may be delivered after the kernel
@@ -1728,26 +2275,34 @@ function cleanup_private_build_volume() {
       && [[ -n "${TESTFLIGHT_BUILD_IMAGE_PATH:-}" ]]; then
     if [[ -e "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
         || -L "${TESTFLIGHT_BUILD_IMAGE_PATH}" ]]; then
-      (( TESTFLIGHT_BUILD_CREATE_ATTEMPTED == 1 \
-          || TESTFLIGHT_BUILD_IMAGE_CREATED == 1 )) \
-        || cleanup_failed=1
-      if [[ -z "${TESTFLIGHT_BUILD_IMAGE_IDENTITY:-}" ]]; then
+      if (( TESTFLIGHT_BUILD_IMAGE_CREATED == 1 )); then
+        verify_image_storage_identity || cleanup_failed=1
         (( cleanup_failed != 0 )) \
-          || pin_partial_image_identity_for_cleanup || cleanup_failed=1
+          || current_attachment_is_absent || cleanup_failed=1
+        if (( cleanup_failed == 0 \
+            && TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 \
+            && TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED == 0 )); then
+          /bin/rm -- "${TESTFLIGHT_BUILD_IMAGE_PATH}" || cleanup_failed=1
+          (( cleanup_failed != 0 )) \
+            || [[ ! -e "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
+              && ! -L "${TESTFLIGHT_BUILD_IMAGE_PATH}" ]] \
+            || cleanup_failed=1
+        fi
+      elif (( TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 \
+          && TESTFLIGHT_BUILD_CREATE_ATTEMPTED == 1 )); then
+        pin_partial_image_identity_for_cleanup || cleanup_failed=1
+        (( cleanup_failed != 0 )) \
+          || current_attachment_is_absent || cleanup_failed=1
+        (( cleanup_failed != 0 )) \
+          || /bin/rm -- "${TESTFLIGHT_BUILD_IMAGE_PATH}" || cleanup_failed=1
+        if (( cleanup_failed == 0 )); then
+          [[ ! -e "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
+              && ! -L "${TESTFLIGHT_BUILD_IMAGE_PATH}" ]] || cleanup_failed=1
+        fi
       else
-        (( cleanup_failed != 0 )) \
-          || verify_image_storage_identity || cleanup_failed=1
-      fi
-      (( cleanup_failed != 0 )) \
-        || current_attachment_is_absent || cleanup_failed=1
-      (( cleanup_failed != 0 )) \
-        || /bin/rm -- "${TESTFLIGHT_BUILD_IMAGE_PATH}" || cleanup_failed=1
-      if (( cleanup_failed == 0 )); then
-        [[ ! -e "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
-            && ! -L "${TESTFLIGHT_BUILD_IMAGE_PATH}" ]] || cleanup_failed=1
+        cleanup_failed=1
       fi
     elif (( TESTFLIGHT_BUILD_IMAGE_CREATED == 1 )); then
-      # A completed image may be absent only after this masked cleanup removed and cleared it.
       cleanup_failed=1
     fi
     if (( cleanup_failed == 0 )); then
@@ -1760,8 +2315,14 @@ function cleanup_private_build_volume() {
   if (( cleanup_failed == 0 )) \
       && [[ -n "${TESTFLIGHT_BUILD_IMAGE_CONTAINER:-}" ]]; then
     verify_image_container_identity || cleanup_failed=1
-    if (( cleanup_failed == 0 )); then
-      /bin/rmdir -- "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}" \
+    if (( cleanup_failed == 0 \
+        && TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 \
+        && TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED == 0 \
+        && TESTFLIGHT_BUILD_CACHE_ROOT_CREATED == 1 )); then
+      /bin/rmdir -- "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}" || cleanup_failed=1
+      (( cleanup_failed != 0 )) \
+        || [[ ! -e "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}" \
+          && ! -L "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}" ]] \
         || cleanup_failed=1
     fi
     if (( cleanup_failed == 0 )); then
@@ -1780,7 +2341,7 @@ function cleanup_private_build_volume() {
           && ! -L "${TESTFLIGHT_BUILD_MOUNT_POINT}" ]]; then
         if [[ -z "${TESTFLIGHT_BUILD_MOUNT_POINT_UNDERLAY_IDENTITY:-}" \
             && "${TESTFLIGHT_BUILD_MOUNT_POINT:h}" \
-              == "${TESTFLIGHT_CONTROL_DIRECTORY}" \
+              == "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
             && "$(/usr/bin/stat -f '%u:%Lp:%HT' \
               "${TESTFLIGHT_BUILD_MOUNT_POINT}" 2>/dev/null)" \
               == "${EUID}:700:Directory" ]]; then
@@ -1861,8 +2422,14 @@ function cleanup_private_build_volume() {
           && [[ -n "${TESTFLIGHT_BUILD_KEY_PATH:-}" ]]; then
         if [[ -z "${TESTFLIGHT_BUILD_KEY_IDENTITY:-}" \
             && "${TESTFLIGHT_BUILD_KEY_PATH}" \
-              == "${TESTFLIGHT_CONTROL_DIRECTORY}/image.key" ]] \
-            && require_private_regular_file "${TESTFLIGHT_BUILD_KEY_PATH}"; then
+              == "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}" ]] \
+            && -f "${TESTFLIGHT_BUILD_KEY_PATH}" \
+            && ! -L "${TESTFLIGHT_BUILD_KEY_PATH}" \
+            && "$(/usr/bin/stat -f '%u:%g:%Lp:%HT:%l' \
+              "${TESTFLIGHT_BUILD_KEY_PATH}" 2>/dev/null)" \
+              == "${EXPECTED_ASC_API_KEY_OWNER_UID}:${EXPECTED_ASC_API_KEY_OWNER_GID}:600:Regular File:1" \
+            && "$(ls_mode_token "${TESTFLIGHT_BUILD_KEY_PATH}")" \
+              == '-rw-------'; then
           TESTFLIGHT_BUILD_KEY_IDENTITY=$(stat_identity \
             "${TESTFLIGHT_BUILD_KEY_PATH}")
         fi
@@ -1870,15 +2437,31 @@ function cleanup_private_build_volume() {
           sysopen -r -o nofollow -u TESTFLIGHT_BUILD_KEY_FD \
             "${TESTFLIGHT_BUILD_KEY_PATH}" || cleanup_failed=1
         fi
-        verify_build_key_identity || cleanup_failed=1
-        (( cleanup_failed != 0 )) \
-          || remove_exact_private_file "${TESTFLIGHT_BUILD_KEY_PATH}" \
-          || cleanup_failed=1
+        if (( TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 \
+            && TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED == 0 \
+            && TESTFLIGHT_BUILD_KEY_CREATED == 1 )); then
+          [[ -n "${TESTFLIGHT_BUILD_KEY_IDENTITY:-}" \
+              && "$(stat_identity "${TESTFLIGHT_BUILD_KEY_PATH}")" \
+                == "${TESTFLIGHT_BUILD_KEY_IDENTITY}" \
+              && "${TESTFLIGHT_BUILD_KEY_PATH}" \
+                -ef "/dev/fd/${TESTFLIGHT_BUILD_KEY_FD}" ]] \
+            || cleanup_failed=1
+        else
+          verify_build_key_identity || cleanup_failed=1
+        fi
         if (( cleanup_failed == 0 )); then
           if (( TESTFLIGHT_BUILD_KEY_FD >= 0 )); then
             exec {TESTFLIGHT_BUILD_KEY_FD}>&-
             TESTFLIGHT_BUILD_KEY_FD=-1
           fi
+          if (( TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 \
+              && TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED == 0 \
+              && TESTFLIGHT_BUILD_KEY_CREATED == 1 )); then
+            remove_exact_private_file "${TESTFLIGHT_BUILD_KEY_PATH}" \
+              || cleanup_failed=1
+          fi
+        fi
+        if (( cleanup_failed == 0 )); then
           TESTFLIGHT_BUILD_KEY_PATH=""
           TESTFLIGHT_BUILD_KEY_IDENTITY=""
         fi
@@ -1894,12 +2477,58 @@ function cleanup_private_build_volume() {
         TESTFLIGHT_BUILD_MOUNT_POINT_UNDERLAY_IDENTITY=""
       fi
     fi
+    if (( cleanup_failed == 0 )) \
+        && [[ -n "${TESTFLIGHT_BUILD_MOUNT_ROOT_IDENTITY:-}" ]]; then
+      [[ -d "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+          && ! -L "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+          && "$(stat_identity "${TESTFLIGHT_BUILD_MOUNT_ROOT}")" \
+            == "${TESTFLIGHT_BUILD_MOUNT_ROOT_IDENTITY}" ]] \
+        || cleanup_failed=1
+      (( cleanup_failed != 0 )) \
+        || /bin/rmdir -- "${TESTFLIGHT_BUILD_MOUNT_ROOT}" || cleanup_failed=1
+      if (( cleanup_failed == 0 )); then
+        TESTFLIGHT_BUILD_MOUNT_ROOT_IDENTITY=""
+      fi
+    fi
     if (( cleanup_failed == 0 )); then
       /bin/rmdir -- "${TESTFLIGHT_CONTROL_DIRECTORY}" || cleanup_failed=1
       if (( cleanup_failed == 0 )); then
         TESTFLIGHT_CONTROL_DIRECTORY=""
         TESTFLIGHT_CONTROL_DIRECTORY_IDENTITY=""
       fi
+    fi
+  fi
+
+  if (( cleanup_failed == 0 \
+      && TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 \
+      && TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED == 0 \
+      && TESTFLIGHT_BUILD_CACHE_LOCK_FD >= 0 )); then
+    verify_build_cache_lock_identity || cleanup_failed=1
+  fi
+  if (( cleanup_failed == 0 \
+      && TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 \
+      && TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED == 0 \
+      && TESTFLIGHT_BUILD_CACHE_LOCK_FD >= 0 )); then
+    if [[ -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \
+        || -L "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" ]]; then
+      if [[ -z "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH:-}" ]]; then
+        pin_existing_pending_enrollment_marker || cleanup_failed=1
+      fi
+      (( cleanup_failed != 0 )) \
+        || remove_pending_enrollment_marker || cleanup_failed=1
+    else
+      remove_pending_enrollment_marker_staging_if_safe || cleanup_failed=1
+    fi
+  fi
+
+  if (( cleanup_failed == 0 && TESTFLIGHT_BUILD_CACHE_LOCK_FD >= 0 )); then
+    verify_build_cache_lock_identity || cleanup_failed=1
+    (( cleanup_failed != 0 )) \
+      || zsystem flock -u "${TESTFLIGHT_BUILD_CACHE_LOCK_FD}" \
+      || cleanup_failed=1
+    if (( cleanup_failed == 0 )); then
+      TESTFLIGHT_BUILD_CACHE_LOCK_FD=-1
+      TESTFLIGHT_BUILD_CACHE_LOCK_IDENTITY=""
     fi
   fi
 
@@ -1914,10 +2543,26 @@ function cleanup_private_build_volume() {
   TESTFLIGHT_BUILD_IMAGE_PATH=""
   TESTFLIGHT_BUILD_KEY_PATH=""
   TESTFLIGHT_BUILD_KEY_FD=-1
+  TESTFLIGHT_BUILD_CACHE_ROOT_IDENTITY=""
+  TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH=""
+  TESTFLIGHT_BUILD_CACHE_CONTRACT_IDENTITY=""
+  TESTFLIGHT_BUILD_CACHE_CONTRACT_SHA256=""
+  TESTFLIGHT_BUILD_WORKSPACE_KEY=""
+  TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=0
+  TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED=0
+  TESTFLIGHT_BUILD_CACHE_ROOT_CREATED=0
+  TESTFLIGHT_BUILD_KEY_CREATED=0
+  TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH=""
+  TESTFLIGHT_BUILD_ENROLLMENT_MARKER_IDENTITY=""
+  TESTFLIGHT_BUILD_ENROLLMENT_MARKER_FD=-1
+  TESTFLIGHT_BUILD_MOUNT_ROOT_IDENTITY=""
   TESTFLIGHT_BUILD_MOUNT_POINT=""
   TESTFLIGHT_DERIVED_DATA_DIRECTORY=""
   TESTFLIGHT_BUILD_SANDBOX_DIRECTORY=""
+  TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY=""
+  TESTFLIGHT_BUILD_RUN_TMP_PARENT_IDENTITY=""
   TESTFLIGHT_BUILD_TMP_DIRECTORY=""
+  TESTFLIGHT_BUILD_TMP_IDENTITY=""
   TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY=""
   TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY=""
   TESTFLIGHT_BUILD_DSTROOT_DIRECTORY=""
@@ -1973,6 +2618,86 @@ function cleanup_private_build_volume_signal_masked() {
   return ${cleanup_status}
 }
 
+function processing_query_is_running() {
+  (( TESTFLIGHT_PROCESSING_QUERY_RUNNING == 1 \
+      && TESTFLIGHT_PROCESSING_QUERY_PID > 1 )) || return 1
+  local process_state=''
+  process_state=$(/bin/ps -o state= -p \
+    "${TESTFLIGHT_PROCESSING_QUERY_PID}" 2>/dev/null) \
+    || { /bin/kill -0 "${TESTFLIGHT_PROCESSING_QUERY_PID}" 2>/dev/null; return $?; }
+  process_state=${process_state//[[:space:]]/}
+  [[ -n "${process_state}" && "${process_state}" != Z* ]]
+}
+
+function terminate_processing_query() {
+  (( TESTFLIGHT_PROCESSING_QUERY_RUNNING == 1 )) || return 0
+  (( TESTFLIGHT_PROCESSING_QUERY_PID > 1 )) || return 1
+  local -i termination_deadline=$((
+    SECONDS + APP_STORE_PROCESSING_TERMINATION_GRACE_SECONDS
+  ))
+  if processing_query_is_running; then
+    /bin/kill -TERM "${TESTFLIGHT_PROCESSING_QUERY_PID}" 2>/dev/null || return 1
+    while processing_query_is_running \
+        && (( SECONDS < termination_deadline )); do
+      /bin/sleep 1
+    done
+  fi
+  if processing_query_is_running; then
+    /bin/kill -KILL "${TESTFLIGHT_PROCESSING_QUERY_PID}" 2>/dev/null || return 1
+    termination_deadline=$((
+      SECONDS + APP_STORE_PROCESSING_TERMINATION_GRACE_SECONDS
+    ))
+    while processing_query_is_running \
+        && (( SECONDS < termination_deadline )); do
+      /bin/sleep 1
+    done
+    processing_query_is_running && return 1
+  fi
+  wait "${TESTFLIGHT_PROCESSING_QUERY_PID}" 2>/dev/null || true
+  TESTFLIGHT_PROCESSING_QUERY_RUNNING=0
+  TESTFLIGHT_PROCESSING_QUERY_PID=-1
+}
+
+function verify_processing_tmp_directory() {
+  verify_output_directory_identity || return 1
+  [[ -n "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY:-}" \
+      && -n "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY_IDENTITY:-}" \
+      && "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY}" \
+        == "${TESTFLIGHT_OUTPUT_DIRECTORY}"/app-store-processing-tmp.* \
+      && "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY:A}" \
+        == "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY}" \
+      && -d "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY}" \
+      && ! -L "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY}" \
+      && "$(stat_identity "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY}")" \
+        == "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY_IDENTITY}" \
+      && "$(/usr/bin/stat -f '%u:%Lp:%HT' \
+        "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY}" 2>/dev/null)" \
+        == "${EUID}:700:Directory" \
+      && "$(ls_mode_token "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY}")" \
+        == 'drwx------' ]]
+}
+
+function reserve_processing_tmp_directory() {
+  verify_output_directory_identity || return 1
+  TESTFLIGHT_PROCESSING_TMP_DIRECTORY=$(/usr/bin/mktemp -d \
+    "${TESTFLIGHT_OUTPUT_DIRECTORY}/app-store-processing-tmp.XXXXXX") || return 1
+  /bin/chmod 700 "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY}" || return 1
+  TESTFLIGHT_PROCESSING_TMP_DIRECTORY_IDENTITY=$(stat_identity \
+    "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY}") || return 1
+  verify_processing_tmp_directory
+}
+
+function remove_processing_tmp_directory() {
+  [[ -n "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY:-}" ]] || return 0
+  (( TESTFLIGHT_PROCESSING_QUERY_RUNNING == 0 )) || return 1
+  verify_processing_tmp_directory || return 1
+  /bin/rm -R -- "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY}" || return 1
+  [[ ! -e "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY}" \
+      && ! -L "${TESTFLIGHT_PROCESSING_TMP_DIRECTORY}" ]] || return 1
+  TESTFLIGHT_PROCESSING_TMP_DIRECTORY=""
+  TESTFLIGHT_PROCESSING_TMP_DIRECTORY_IDENTITY=""
+}
+
 function cleanup_on_exit() {
   local original_status=$?
   mask_release_cleanup_signals
@@ -1985,6 +2710,12 @@ function cleanup_on_exit() {
   fi
   RELEASE_EXIT_CLEANUP_RUNNING=1
   local cleanup_failed=0
+  terminate_processing_query || cleanup_failed=1
+  if (( TESTFLIGHT_PROCESSING_STATUS_FD >= 0 )); then
+    exec {TESTFLIGHT_PROCESSING_STATUS_FD}>&- || cleanup_failed=1
+    TESTFLIGHT_PROCESSING_STATUS_FD=-1
+  fi
+  remove_processing_tmp_directory || cleanup_failed=1
   cleanup_release_scratch || cleanup_failed=1
   if (( TESTFLIGHT_ASC_API_KEY_FD >= 0 )); then
     exec {TESTFLIGHT_ASC_API_KEY_FD}>&- || cleanup_failed=1
@@ -2145,16 +2876,25 @@ function verify_pinned_xcodebuild_filesystem_contract() {
   verify_xcode_sandbox_profile_identity || return 1
   verify_package_dependency_contract || return 1
   verify_xcodebuild_authentication_contract || return 1
+  require_owned_private_directory \
+    "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}" || return 1
   (( ${#TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[@]} > 0 )) || return 1
   (( ${#TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT[@]} > 0 )) || return 1
+  local shared_cache_root="${TESTFLIGHT_BUILD_MOUNT_POINT}/BuildCache/v1/shared"
   [[ "${#TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS_SHA256}" == 64 \
       && "$(xcodebuild_pinned_arguments_sha256)" \
         == "${TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS_SHA256}" \
       && "${#TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT_SHA256}" == 64 \
       && "$(xcodebuild_pinned_environment_sha256)" \
         == "${TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT_SHA256}" ]] || return 1
-  [[ "${TESTFLIGHT_BUILD_TMP_DIRECTORY}" \
-        == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/tmp" \
+  [[ "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}" \
+        == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/run-tmp" \
+      && "$(stat_identity "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}")" \
+        == "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_IDENTITY}" \
+      && "${TESTFLIGHT_BUILD_TMP_DIRECTORY}" \
+        == "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}"/run.* \
+      && "$(stat_identity "${TESTFLIGHT_BUILD_TMP_DIRECTORY}")" \
+        == "${TESTFLIGHT_BUILD_TMP_IDENTITY}" \
       && "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}" \
         == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/DerivedData" \
       && "${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}" \
@@ -2164,15 +2904,15 @@ function verify_pinned_xcodebuild_filesystem_contract() {
       && "${TESTFLIGHT_BUILD_DSTROOT_DIRECTORY}" \
         == "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}/Build/Intermediates.noindex/ArchiveIntermediates/${EXPECTED_SCHEME}/InstallationBuildProductsLocation" \
       && "${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}" \
-        == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/SharedPrecompiledHeaders" \
+        == "${shared_cache_root}/SharedPrecompiledHeaders" \
       && "${TESTFLIGHT_BUILD_CACHE_DIRECTORY}" \
-        == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/Caches" \
+        == "${shared_cache_root}/Caches" \
       && "${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}" \
-        == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/ModuleCache.noindex" \
+        == "${shared_cache_root}/ModuleCache.noindex" \
       && "${TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY}" \
-        == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/PackageCache" \
+        == "${shared_cache_root}/PackageCache" \
       && "${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}" \
-        == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/SourcePackages" ]]
+        == "${shared_cache_root}/SourcePackages" ]]
 }
 
 function run_xcodebuild_command_for_destination_contract() {
@@ -2208,14 +2948,6 @@ function run_pinned_xcodebuild() {
     "${destination_contract}" "$@" || return 1
   verify_pinned_xcodebuild_filesystem_contract || return 1
   case "${destination_contract}" in
-    archive|export)
-      # Settings resolution may reuse the process-local deep seal, but any command
-      # that creates or distributes the release gets a fresh whole-Xcode seal.
-      verify_reviewed_xcode_deep_signature || return 1
-      verify_pinned_xcodebuild_filesystem_contract || return 1
-      ;;
-  esac
-  case "${destination_contract}" in
     resolve|settings)
       verify_control_directory_identity || return 1
       ;;
@@ -2240,11 +2972,6 @@ function run_pinned_xcodebuild() {
     "${destination_contract}" "${pinned_command[@]}" || command_status=$?
   verify_xcodebuild_action_arguments \
     "${destination_contract}" "$@" || command_status=1
-  case "${destination_contract}" in
-    archive|export)
-      verify_reviewed_xcode_deep_signature || command_status=1
-      ;;
-  esac
   verify_pinned_xcodebuild_filesystem_contract || command_status=1
   case "${destination_contract}" in
     resolve|settings)
@@ -2264,9 +2991,7 @@ function resolve_pinned_package_dependencies() {
   verify_package_dependency_contract || return 1
   run_pinned_xcodebuild resolve \
     -resolvePackageDependencies \
-    "${TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[@]}" \
-    || return 1
-  verify_pinned_xcodebuild_filesystem_contract
+    "${TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[@]}"
 }
 
 function verify_effective_archive_build_roots() {
@@ -2475,6 +3200,389 @@ function verify_export_options_identity() {
       && "${EXPORT_OPTIONS_PATH}" -ef "/dev/fd/${EXPORT_OPTIONS_FD}" ]]
 }
 
+function recover_interrupted_build_cache_enrollment() {
+  remove_pending_enrollment_marker_staging_if_safe || return 1
+  if [[ ! -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \
+      && ! -L "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" ]]; then
+    return 0
+  fi
+  pin_existing_pending_enrollment_marker || return 1
+
+  TESTFLIGHT_BUILD_IMAGE_CONTAINER="${TESTFLIGHT_BUILD_CACHE_ROOT}"
+  TESTFLIGHT_BUILD_IMAGE_PATH="${TESTFLIGHT_BUILD_CACHE_ROOT}/${TESTFLIGHT_BUILD_IMAGE_BASENAME}.sparseimage"
+  TESTFLIGHT_BUILD_MOUNT_POINT="${TESTFLIGHT_BUILD_MOUNT_ROOT}/mount"
+  require_canonical_safe_path \
+    "${TESTFLIGHT_BUILD_IMAGE_PATH}" "${TESTFLIGHT_BUILD_CACHE_ROOT}" \
+    || return 1
+  require_canonical_safe_path \
+    "${TESTFLIGHT_BUILD_MOUNT_POINT}" "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+    || return 1
+
+  if [[ -e "${TESTFLIGHT_BUILD_CACHE_ROOT}" \
+      || -L "${TESTFLIGHT_BUILD_CACHE_ROOT}" ]]; then
+    require_owned_private_directory "${TESTFLIGHT_BUILD_CACHE_ROOT}" || return 1
+    TESTFLIGHT_BUILD_CACHE_ROOT_CREATED=1
+    TESTFLIGHT_BUILD_CACHE_ROOT_IDENTITY=$(stat_identity \
+      "${TESTFLIGHT_BUILD_CACHE_ROOT}") || return 1
+    TESTFLIGHT_BUILD_IMAGE_CONTAINER_IDENTITY="${TESTFLIGHT_BUILD_CACHE_ROOT_IDENTITY}"
+    local -a cache_root_children=("${TESTFLIGHT_BUILD_CACHE_ROOT}"/*(ND))
+    (( ${#cache_root_children[@]} <= 1 )) || return 1
+    if (( ${#cache_root_children[@]} == 1 )); then
+      [[ "${cache_root_children[1]}" == "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
+          && -f "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
+          && ! -L "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
+          && "$(/usr/bin/stat -f '%u:%HT:%l' \
+            "${TESTFLIGHT_BUILD_IMAGE_PATH}" 2>/dev/null)" \
+            == "${EUID}:Regular File:1" ]] || return 1
+      TESTFLIGHT_BUILD_CREATE_ATTEMPTED=1
+      TESTFLIGHT_BUILD_IMAGE_IDENTITY=$(stat_identity \
+        "${TESTFLIGHT_BUILD_IMAGE_PATH}") || return 1
+    fi
+  fi
+
+  local attachment_record=''
+  local attachment_status=0
+  if attachment_record=$(find_current_attachment_record); then
+    local -a attachment_fields=("${(@s:|:)attachment_record}")
+    (( ${#attachment_fields[@]} == 5 )) || return 1
+    [[ "${attachment_fields[1]}" == /dev/disk<-> \
+        && "${attachment_fields[2]}" == /dev/disk<->* \
+        && "${attachment_fields[3]}" == "${attachment_fields[1]}"s<-> \
+        && "${attachment_fields[4]}" == true \
+        && "${attachment_fields[5]}" == true \
+        && -d "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+        && ! -L "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+        && -d "${TESTFLIGHT_BUILD_MOUNT_POINT}" \
+        && ! -L "${TESTFLIGHT_BUILD_MOUNT_POINT}" ]] || return 1
+    local lsof_output=''
+    local lsof_status=0
+    lsof_output=$(/usr/sbin/lsof -n -P +D \
+      "${TESTFLIGHT_BUILD_MOUNT_POINT}" 2>/dev/null) || lsof_status=$?
+    (( lsof_status == 1 )) && [[ -z "${lsof_output}" ]] || return 1
+    TESTFLIGHT_IMAGE_DEVICE=${attachment_fields[1]}
+    TESTFLIGHT_MOUNTED_DEVICE=${attachment_fields[2]}
+    TESTFLIGHT_IMAGE_PARTITION_DEVICE=${attachment_fields[3]}
+    TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=1
+    TESTFLIGHT_BUILD_ATTACHMENT_ACTIVE=1
+    /usr/bin/hdiutil detach "${TESTFLIGHT_IMAGE_DEVICE}" || return 1
+    current_attachment_is_absent || return 1
+    TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=0
+    TESTFLIGHT_BUILD_ATTACHMENT_ACTIVE=0
+    TESTFLIGHT_IMAGE_DEVICE=""
+    TESTFLIGHT_IMAGE_PARTITION_DEVICE=""
+    TESTFLIGHT_MOUNTED_DEVICE=""
+  else
+    attachment_status=$?
+    (( attachment_status == 1 )) || return 1
+  fi
+  if [[ -e "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+      || -L "${TESTFLIGHT_BUILD_MOUNT_ROOT}" ]]; then
+    remove_exact_stale_build_mount_underlay || return 1
+  fi
+
+  if [[ -e "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
+      || -L "${TESTFLIGHT_BUILD_IMAGE_PATH}" ]]; then
+    [[ -f "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
+        && ! -L "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
+        && "$(stat_identity "${TESTFLIGHT_BUILD_IMAGE_PATH}")" \
+          == "${TESTFLIGHT_BUILD_IMAGE_IDENTITY}" ]] || return 1
+    local image_lsof_output=''
+    local image_lsof_status=0
+    image_lsof_output=$(/usr/sbin/lsof -n -P -- \
+      "${TESTFLIGHT_BUILD_IMAGE_PATH}" 2>/dev/null) || image_lsof_status=$?
+    (( image_lsof_status == 1 )) && [[ -z "${image_lsof_output}" ]] || return 1
+    /bin/rm -- "${TESTFLIGHT_BUILD_IMAGE_PATH}" || return 1
+  fi
+  if [[ -e "${TESTFLIGHT_BUILD_CACHE_ROOT}" \
+      || -L "${TESTFLIGHT_BUILD_CACHE_ROOT}" ]]; then
+    [[ "$(stat_identity "${TESTFLIGHT_BUILD_CACHE_ROOT}")" \
+        == "${TESTFLIGHT_BUILD_CACHE_ROOT_IDENTITY}" ]] || return 1
+    /bin/rmdir -- "${TESTFLIGHT_BUILD_CACHE_ROOT}" || return 1
+  fi
+
+  if [[ -e "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}" \
+      || -L "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}" ]]; then
+    [[ -f "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}" \
+        && ! -L "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}" \
+        && "$(/usr/bin/stat -f '%u:%g:%Lp:%HT:%l' \
+          "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}" 2>/dev/null)" \
+          == "${EXPECTED_ASC_API_KEY_OWNER_UID}:${EXPECTED_ASC_API_KEY_OWNER_GID}:600:Regular File:1" \
+        && "$(ls_mode_token "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}")" \
+          == '-rw-------' ]] || return 1
+    TESTFLIGHT_BUILD_KEY_PATH="${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}"
+    TESTFLIGHT_BUILD_KEY_IDENTITY=$(stat_identity \
+      "${TESTFLIGHT_BUILD_KEY_PATH}") || return 1
+    sysopen -r -o nofollow,cloexec -u TESTFLIGHT_BUILD_KEY_FD \
+      "${TESTFLIGHT_BUILD_KEY_PATH}" || return 1
+    [[ "${TESTFLIGHT_BUILD_KEY_PATH}" \
+        -ef "/dev/fd/${TESTFLIGHT_BUILD_KEY_FD}" ]] || return 1
+    exec {TESTFLIGHT_BUILD_KEY_FD}>&-
+    TESTFLIGHT_BUILD_KEY_FD=-1
+    local key_lsof_output=''
+    local key_lsof_status=0
+    key_lsof_output=$(/usr/sbin/lsof -n -P -- \
+      "${TESTFLIGHT_BUILD_KEY_PATH}" 2>/dev/null) || key_lsof_status=$?
+    (( key_lsof_status == 1 )) && [[ -z "${key_lsof_output}" ]] || return 1
+    /bin/rm -- "${TESTFLIGHT_BUILD_KEY_PATH}" || return 1
+  fi
+
+  remove_pending_enrollment_marker || return 1
+  /bin/sync
+  TESTFLIGHT_BUILD_IMAGE_CONTAINER=""
+  TESTFLIGHT_BUILD_IMAGE_CONTAINER_IDENTITY=""
+  TESTFLIGHT_BUILD_IMAGE_PATH=""
+  TESTFLIGHT_BUILD_IMAGE_IDENTITY=""
+  TESTFLIGHT_BUILD_KEY_PATH=""
+  TESTFLIGHT_BUILD_KEY_IDENTITY=""
+  TESTFLIGHT_BUILD_CACHE_ROOT_IDENTITY=""
+  TESTFLIGHT_BUILD_CACHE_ROOT_CREATED=0
+  TESTFLIGHT_BUILD_CREATE_ATTEMPTED=0
+  print -r -- 'release cache recovery: interrupted_enrollment_rolled_back=true'
+}
+
+function acquire_persistent_build_cache_lock() {
+  verify_release_credentials_directory_permissions \
+    || fail "release-credentials directory is unavailable or unsafe"
+  local expected_image_path="${TESTFLIGHT_BUILD_CACHE_ROOT}/${TESTFLIGHT_BUILD_IMAGE_BASENAME}.sparseimage"
+  if (( TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 )); then
+    if [[ ! -e "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" \
+        && ! -L "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" ]]; then
+      local -i lock_writer_fd=-1
+      sysopen -w -o creat,excl,nofollow -m 600 -u lock_writer_fd \
+        "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" \
+        || fail "could not exclusively create the persistent build-cache lock"
+      /bin/chmod 600 "/dev/fd/${lock_writer_fd}" \
+        || fail "could not protect the persistent build-cache lock"
+      exec {lock_writer_fd}>&-
+    fi
+  else
+    [[ -f "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" \
+        && ! -L "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" \
+        && ! -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \
+        && ! -L "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \
+        && ! -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" \
+        && ! -L "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" \
+        && -f "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}" \
+        && ! -L "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}" \
+        && -d "${TESTFLIGHT_BUILD_CACHE_ROOT}" \
+        && ! -L "${TESTFLIGHT_BUILD_CACHE_ROOT}" \
+        && -f "${expected_image_path}" \
+        && ! -L "${expected_image_path}" ]] \
+      || fail "persistent build cache is not enrolled; run --initialize-build-cache once"
+  fi
+  [[ -f "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" \
+      && ! -L "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" \
+      && "$(/usr/bin/stat -f '%u:%g:%Lp:%HT:%l' \
+        "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" 2>/dev/null)" \
+        == "${EXPECTED_ASC_API_KEY_OWNER_UID}:${EXPECTED_ASC_API_KEY_OWNER_GID}:600:Regular File:1" \
+      && "$(ls_mode_token "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}")" \
+        == '-rw-------' ]] \
+    || fail "persistent build-cache lock is missing, changed, or unsafe"
+  TESTFLIGHT_BUILD_CACHE_LOCK_IDENTITY=$(stat_identity \
+    "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}") \
+    || fail "could not pin the persistent build-cache lock"
+  zsystem flock -t 0 -f TESTFLIGHT_BUILD_CACHE_LOCK_FD \
+    "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" 2>/dev/null \
+    || fail "another TestFlight release owns the persistent build cache"
+  verify_build_cache_lock_identity \
+    || fail "persistent build-cache lock changed during acquisition"
+}
+
+function initialize_or_pin_persistent_build_cache_storage() {
+  acquire_persistent_build_cache_lock
+  if (( TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 )); then
+    recover_interrupted_build_cache_enrollment \
+      || fail "interrupted persistent build-cache enrollment was not safe to recover"
+    [[ ! -e "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}" \
+        && ! -L "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}" \
+        && ! -e "${TESTFLIGHT_BUILD_CACHE_ROOT}" \
+        && ! -L "${TESTFLIGHT_BUILD_CACHE_ROOT}" \
+        && ! -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \
+        && ! -L "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \
+        && ! -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" \
+        && ! -L "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" ]] \
+      || fail "persistent build-cache enrollment requires clean absent state"
+    reserve_pending_enrollment_marker \
+      || fail "could not publish the durable build-cache enrollment marker"
+    # Ignore termination only across the two exclusive-create/state-publication windows. Once the
+    # corresponding rollback flag and identity are populated, normal signal handling resumes.
+    mask_release_cleanup_signals
+    /bin/mkdir -m 700 "${TESTFLIGHT_BUILD_CACHE_ROOT}" \
+      || fail "could not create the persistent T7 build-cache root"
+    TESTFLIGHT_BUILD_CACHE_ROOT_CREATED=1
+    TESTFLIGHT_BUILD_IMAGE_CONTAINER="${TESTFLIGHT_BUILD_CACHE_ROOT}"
+    TESTFLIGHT_BUILD_CACHE_ROOT_IDENTITY=$(stat_identity \
+      "${TESTFLIGHT_BUILD_CACHE_ROOT}") \
+      || fail "could not pin the new persistent T7 build-cache root"
+    TESTFLIGHT_BUILD_IMAGE_CONTAINER="${TESTFLIGHT_BUILD_CACHE_ROOT}"
+    TESTFLIGHT_BUILD_IMAGE_CONTAINER_IDENTITY="${TESTFLIGHT_BUILD_CACHE_ROOT_IDENTITY}"
+    /bin/chmod 700 "${TESTFLIGHT_BUILD_CACHE_ROOT}" \
+      || fail "could not protect the persistent T7 build-cache root"
+    install_release_signal_traps
+    local -i build_key_write_fd=-1
+    mask_release_cleanup_signals
+    sysopen -w -o creat,excl,nofollow -m 600 -u build_key_write_fd \
+      "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}" \
+      || fail "could not exclusively create the persistent build-cache key"
+    TESTFLIGHT_BUILD_KEY_PATH="${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}"
+    TESTFLIGHT_BUILD_KEY_CREATED=1
+    install_release_signal_traps
+    /usr/bin/openssl rand -hex 32 >"/dev/fd/${build_key_write_fd}" \
+      || fail "could not populate the persistent build-cache key"
+    /bin/chmod 600 "/dev/fd/${build_key_write_fd}" \
+      || fail "could not protect the persistent build-cache key"
+    exec {build_key_write_fd}>&-
+  fi
+  TESTFLIGHT_BUILD_CACHE_ROOT_IDENTITY=$(stat_identity \
+    "${TESTFLIGHT_BUILD_CACHE_ROOT}") \
+    || fail "could not pin the persistent T7 build-cache root"
+  TESTFLIGHT_BUILD_IMAGE_CONTAINER="${TESTFLIGHT_BUILD_CACHE_ROOT}"
+  TESTFLIGHT_BUILD_IMAGE_CONTAINER_IDENTITY="${TESTFLIGHT_BUILD_CACHE_ROOT_IDENTITY}"
+  verify_persistent_build_cache_root_identity \
+    || fail "persistent T7 build-cache root changed during initialization"
+  TESTFLIGHT_BUILD_KEY_PATH="${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}"
+  TESTFLIGHT_BUILD_KEY_IDENTITY=$(stat_identity "${TESTFLIGHT_BUILD_KEY_PATH}") \
+    || fail "could not pin the persistent build-cache key"
+  sysopen -r -o nofollow,cloexec -u TESTFLIGHT_BUILD_KEY_FD \
+    "${TESTFLIGHT_BUILD_KEY_PATH}" \
+    || fail "could not hold the persistent build-cache key"
+  verify_build_key_identity \
+    || fail "persistent build-cache key failed identity validation"
+  TESTFLIGHT_BUILD_IMAGE_PATH="${TESTFLIGHT_BUILD_IMAGE_CONTAINER}/${TESTFLIGHT_BUILD_IMAGE_BASENAME}.sparseimage"
+  require_canonical_safe_path \
+    "${TESTFLIGHT_BUILD_IMAGE_PATH}" "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}" \
+    || fail "persistent T7 build-image path is not canonical"
+  if (( TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 0 )); then
+    TESTFLIGHT_BUILD_IMAGE_IDENTITY=$(stat_identity \
+      "${TESTFLIGHT_BUILD_IMAGE_PATH}") \
+      || fail "could not pin the persistent build-cache image"
+    TESTFLIGHT_BUILD_IMAGE_CREATED=1
+    verify_image_storage_identity \
+      || fail "persistent T7 build-cache image failed identity validation"
+    write_and_verify_created_image_info \
+      || fail "persistent build cache is not the exact 64 GiB AES-256 APFS content"
+  fi
+}
+
+function remove_exact_stale_build_mount_underlay() {
+  [[ "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+        == "${PRIVATE_TEMPORARY_ROOT}/${TESTFLIGHT_BUILD_CACHE_SCHEMA}" \
+      && "${TESTFLIGHT_BUILD_MOUNT_ROOT:A}" \
+        == "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+      && "$(stat_identity "${PRIVATE_TEMPORARY_ROOT}")" \
+        == "${TESTFLIGHT_CONTROL_PARENT_IDENTITY}" ]] || return 1
+  [[ -d "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+      && ! -L "${TESTFLIGHT_BUILD_MOUNT_ROOT}" ]] || return 1
+  require_owned_private_directory "${TESTFLIGHT_BUILD_MOUNT_ROOT}" || return 1
+  local -a children=("${TESTFLIGHT_BUILD_MOUNT_ROOT}"/*(ND))
+  if (( ${#children[@]} == 1 )); then
+    [[ "${children[1]}" == "${TESTFLIGHT_BUILD_MOUNT_POINT}" \
+        && -d "${TESTFLIGHT_BUILD_MOUNT_POINT}" \
+        && ! -L "${TESTFLIGHT_BUILD_MOUNT_POINT}" ]] || return 1
+    require_owned_private_directory "${TESTFLIGHT_BUILD_MOUNT_POINT}" || return 1
+    TESTFLIGHT_BUILD_MOUNT_POINT_UNDERLAY_IDENTITY=$(stat_identity \
+      "${TESTFLIGHT_BUILD_MOUNT_POINT}") || return 1
+    /bin/rmdir -- "${TESTFLIGHT_BUILD_MOUNT_POINT}" || return 1
+  elif (( ${#children[@]} != 0 )); then
+    return 1
+  fi
+  TESTFLIGHT_BUILD_MOUNT_ROOT_IDENTITY=$(stat_identity \
+    "${TESTFLIGHT_BUILD_MOUNT_ROOT}") || return 1
+  /bin/rmdir -- "${TESTFLIGHT_BUILD_MOUNT_ROOT}" || return 1
+  [[ ! -e "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+      && ! -L "${TESTFLIGHT_BUILD_MOUNT_ROOT}" ]] || return 1
+  TESTFLIGHT_BUILD_MOUNT_ROOT_IDENTITY=""
+  TESTFLIGHT_BUILD_MOUNT_POINT_UNDERLAY_IDENTITY=""
+}
+
+function recover_stale_persistent_build_cache_state() {
+  (( TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 0 )) || return 0
+  verify_build_cache_lock_identity || return 1
+  verify_image_storage_identity || return 1
+  TESTFLIGHT_BUILD_MOUNT_POINT="${TESTFLIGHT_BUILD_MOUNT_ROOT}/mount"
+  require_canonical_safe_path \
+    "${TESTFLIGHT_BUILD_MOUNT_POINT}" "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+    || return 1
+
+  local record=''
+  local discovery_status=0
+  if record=$(find_current_attachment_record); then
+    local -a fields=("${(@s:|:)record}")
+    (( ${#fields[@]} == 5 )) || return 1
+    [[ "${fields[1]}" == /dev/disk<-> \
+        && "${fields[2]}" == /dev/disk<->* \
+        && "${fields[3]}" == "${fields[1]}"s<-> \
+        && "${fields[4]}" == 'true' \
+        && "${fields[5]}" == 'true' \
+        && -d "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+        && ! -L "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+        && -d "${TESTFLIGHT_BUILD_MOUNT_POINT}" \
+        && ! -L "${TESTFLIGHT_BUILD_MOUNT_POINT}" ]] || return 1
+    TESTFLIGHT_IMAGE_DEVICE=${fields[1]}
+    TESTFLIGHT_MOUNTED_DEVICE=${fields[2]}
+    TESTFLIGHT_IMAGE_PARTITION_DEVICE=${fields[3]}
+    verify_hdiutil_attachment_identity || return 1
+
+    local lsof_output=''
+    local lsof_status=0
+    lsof_output=$(/usr/sbin/lsof -n -P +D \
+      "${TESTFLIGHT_BUILD_MOUNT_POINT}" 2>/dev/null) || lsof_status=$?
+    (( lsof_status == 1 )) && [[ -z "${lsof_output}" ]] || return 1
+
+    # The nonblocking lock proves no conforming release is active. Mark the
+    # reviewed stale association before detach so EXIT cleanup can retry safely
+    # if hdiutil itself is interrupted.
+    TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=1
+    TESTFLIGHT_BUILD_ATTACHMENT_ACTIVE=1
+    /usr/bin/hdiutil detach "${TESTFLIGHT_IMAGE_DEVICE}" || return 1
+    current_attachment_is_absent || return 1
+    TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=0
+    TESTFLIGHT_BUILD_ATTACHMENT_ACTIVE=0
+    TESTFLIGHT_IMAGE_DEVICE=""
+    TESTFLIGHT_IMAGE_PARTITION_DEVICE=""
+    TESTFLIGHT_MOUNTED_DEVICE=""
+    remove_exact_stale_build_mount_underlay || return 1
+    print -r -- 'release cache recovery: stale_attachment_detached=true'
+    return 0
+  else
+    discovery_status=$?
+  fi
+  (( discovery_status == 1 )) || return 1
+  if [[ -e "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+      || -L "${TESTFLIGHT_BUILD_MOUNT_ROOT}" ]]; then
+    remove_exact_stale_build_mount_underlay || return 1
+    print -r -- 'release cache recovery: stale_underlay_removed=true'
+  fi
+}
+
+function create_stable_build_mount_underlay() {
+  [[ ! -e "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+      && ! -L "${TESTFLIGHT_BUILD_MOUNT_ROOT}" ]] \
+    || fail "stable build-cache mount root is already occupied"
+  /bin/mkdir -m 700 "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+    || fail "could not create stable build-cache mount root"
+  /bin/chmod 700 "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+    || fail "could not protect stable build-cache mount root"
+  TESTFLIGHT_BUILD_MOUNT_ROOT_IDENTITY=$(stat_identity \
+    "${TESTFLIGHT_BUILD_MOUNT_ROOT}") \
+    || fail "could not pin stable build-cache mount root"
+  TESTFLIGHT_BUILD_MOUNT_POINT="${TESTFLIGHT_BUILD_MOUNT_ROOT}/mount"
+  require_canonical_safe_path \
+    "${TESTFLIGHT_BUILD_MOUNT_POINT}" "${TESTFLIGHT_BUILD_MOUNT_ROOT}" \
+    || fail "stable build-cache mount path is not canonical"
+  /bin/mkdir -m 700 "${TESTFLIGHT_BUILD_MOUNT_POINT}" \
+    || fail "could not create stable build-cache mount point"
+  /bin/chmod 700 "${TESTFLIGHT_BUILD_MOUNT_POINT}" \
+    || fail "could not protect stable build-cache mount point"
+  TESTFLIGHT_BUILD_MOUNT_POINT_UNDERLAY_IDENTITY=$(stat_identity \
+    "${TESTFLIGHT_BUILD_MOUNT_POINT}")
+  [[ -n "${TESTFLIGHT_BUILD_MOUNT_POINT_UNDERLAY_IDENTITY}" \
+      && "$(/usr/bin/stat -f '%u:%Lp:%HT' \
+        "${TESTFLIGHT_BUILD_MOUNT_POINT}" 2>/dev/null)" \
+        == "${EUID}:700:Directory" ]] \
+    || fail "stable build-cache mount point failed identity validation"
+}
+
 function initialize_private_testflight_build_volume() {
   [[ "${PRIVATE_TEMPORARY_ROOT:A}" == "${PRIVATE_TEMPORARY_ROOT}" \
       && -d "${PRIVATE_TEMPORARY_ROOT}" \
@@ -2498,39 +3606,6 @@ function initialize_private_testflight_build_volume() {
     || fail "build-volume control directory failed identity validation"
   create_xcode_sandbox_profile \
     || fail "could not create the protected-path Xcode sandbox profile"
-
-  TESTFLIGHT_BUILD_MOUNT_POINT="${TESTFLIGHT_CONTROL_DIRECTORY}/mount"
-  require_canonical_safe_path \
-    "${TESTFLIGHT_BUILD_MOUNT_POINT}" "${TESTFLIGHT_CONTROL_DIRECTORY}" \
-    || fail "private build mount path is not canonical"
-  /bin/mkdir -m 700 "${TESTFLIGHT_BUILD_MOUNT_POINT}" \
-    || fail "could not create private build mount point"
-  /bin/chmod 700 "${TESTFLIGHT_BUILD_MOUNT_POINT}" \
-    || fail "could not protect private build mount point"
-  TESTFLIGHT_BUILD_MOUNT_POINT_UNDERLAY_IDENTITY=$(stat_identity \
-    "${TESTFLIGHT_BUILD_MOUNT_POINT}")
-  [[ -n "${TESTFLIGHT_BUILD_MOUNT_POINT_UNDERLAY_IDENTITY}" \
-      && "$(/usr/bin/stat -f '%u:%Lp:%HT' \
-        "${TESTFLIGHT_BUILD_MOUNT_POINT}" 2>/dev/null)" \
-        == "${EUID}:700:Directory" ]] \
-    || fail "private build mount point failed identity validation"
-
-  TESTFLIGHT_BUILD_KEY_PATH="${TESTFLIGHT_CONTROL_DIRECTORY}/image.key"
-  local -i build_key_write_fd=-1
-  sysopen -w -o creat,excl,nofollow -m 600 -u build_key_write_fd \
-    "${TESTFLIGHT_BUILD_KEY_PATH}" \
-    || fail "could not exclusively create a private build-image key"
-  /usr/bin/openssl rand -hex 32 >"/dev/fd/${build_key_write_fd}" \
-    || fail "could not populate the private build-image key"
-  /bin/chmod 600 "/dev/fd/${build_key_write_fd}" \
-    || fail "could not protect the build-image key"
-  exec {build_key_write_fd}>&-
-  sysopen -r -o nofollow -u TESTFLIGHT_BUILD_KEY_FD \
-    "${TESTFLIGHT_BUILD_KEY_PATH}" \
-    || fail "could not pin the private build-image key"
-  require_private_regular_file "${TESTFLIGHT_BUILD_KEY_PATH}" \
-    || fail "build-image key failed private-file validation"
-  TESTFLIGHT_BUILD_KEY_IDENTITY=$(stat_identity "${TESTFLIGHT_BUILD_KEY_PATH}")
 
   [[ "${TESTFLIGHT_BUILD_ROOT:A}" == "${TESTFLIGHT_BUILD_ROOT}" \
       && "${TESTFLIGHT_BUILD_ROOT:h}" == '/Volumes' \
@@ -2584,49 +3659,43 @@ function initialize_private_testflight_build_volume() {
   verify_backing_build_root_identity \
     || fail "T7 build root changed during initialization"
 
-  TESTFLIGHT_BUILD_IMAGE_CONTAINER=$(/usr/bin/mktemp -d \
-    "${TESTFLIGHT_BUILD_ROOT}/.opensteamer-testflight-build-image.XXXXXX") \
-    || fail "could not create unique T7 build-image container"
-  /bin/chmod 700 "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}" \
-    || fail "could not protect T7 build-image container metadata"
-  require_canonical_safe_path \
-    "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}" "${TESTFLIGHT_BUILD_ROOT}" \
-    || fail "T7 build-image container path is not canonical"
-  TESTFLIGHT_BUILD_IMAGE_CONTAINER_IDENTITY=$(stat_identity \
-    "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}")
-  [[ -n "${TESTFLIGHT_BUILD_IMAGE_CONTAINER_IDENTITY}" ]] \
-    || fail "could not pin T7 build-image container"
-
-  TESTFLIGHT_BUILD_IMAGE_PATH="${TESTFLIGHT_BUILD_IMAGE_CONTAINER}/${TESTFLIGHT_BUILD_IMAGE_BASENAME}.sparseimage"
-  require_canonical_safe_path \
-    "${TESTFLIGHT_BUILD_IMAGE_PATH}" "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}" \
-    || fail "T7 build-image path is not canonical"
-  [[ ! -e "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
-      && ! -L "${TESTFLIGHT_BUILD_IMAGE_PATH}" ]] \
-    || fail "unique T7 build-image path already exists"
-  verify_build_key_identity \
-    || fail "build-image key changed before encrypted image creation"
-  TESTFLIGHT_BUILD_CREATE_ATTEMPTED=1
-  run_with_pinned_build_key_stdin /usr/bin/hdiutil create \
-    -size "${TESTFLIGHT_BUILD_IMAGE_SIZE}" \
-    -type SPARSE \
-    -fs APFS \
-    -volname "${TESTFLIGHT_BUILD_VOLUME_NAME}" \
-    -encryption AES-256 \
-    -stdinpass \
-    "${TESTFLIGHT_BUILD_IMAGE_PATH}" >/dev/null \
-    || fail "could not create encrypted sparse APFS build image"
-  TESTFLIGHT_BUILD_IMAGE_CREATED=1
-  /bin/chmod 600 "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
-    || fail "could not protect T7 build-image metadata"
+  initialize_or_pin_persistent_build_cache_storage
+  recover_stale_persistent_build_cache_state \
+    || fail "stale persistent build-cache state was not identity-safe to recover"
+  create_stable_build_mount_underlay
+  if (( TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 )); then
+    [[ ! -e "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
+        && ! -L "${TESTFLIGHT_BUILD_IMAGE_PATH}" ]] \
+      || fail "persistent build-cache image appeared during enrollment"
+    verify_build_key_identity \
+      || fail "build-image key changed before encrypted image creation"
+    TESTFLIGHT_BUILD_CREATE_ATTEMPTED=1
+    run_with_pinned_build_key_stdin /usr/bin/hdiutil create \
+      -size "${TESTFLIGHT_BUILD_IMAGE_SIZE}" \
+      -type SPARSE \
+      -fs APFS \
+      -volname "${TESTFLIGHT_BUILD_VOLUME_NAME}" \
+      -encryption AES-256 \
+      -stdinpass \
+      "${TESTFLIGHT_BUILD_IMAGE_PATH}" >/dev/null \
+      || fail "could not create encrypted persistent APFS build cache"
+    /bin/chmod 600 "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
+      || fail "could not protect persistent T7 build-cache image"
+  fi
   [[ -f "${TESTFLIGHT_BUILD_IMAGE_PATH}" \
       && ! -L "${TESTFLIGHT_BUILD_IMAGE_PATH}" ]] \
-    || fail "encrypted sparse APFS build image is missing or unsafe"
-  TESTFLIGHT_BUILD_IMAGE_IDENTITY=$(stat_identity "${TESTFLIGHT_BUILD_IMAGE_PATH}")
-  verify_image_storage_identity \
-    || fail "T7 build-image identity changed after creation"
-  write_and_verify_created_image_info \
-    || fail "created sparse image is not the exact encrypted APFS content"
+    || fail "persistent encrypted APFS build cache is missing or unsafe"
+  if (( TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 )); then
+    TESTFLIGHT_BUILD_IMAGE_IDENTITY=$(stat_identity "${TESTFLIGHT_BUILD_IMAGE_PATH}")
+    TESTFLIGHT_BUILD_IMAGE_CREATED=1
+    verify_image_storage_identity \
+      || fail "persistent T7 build-cache image failed identity validation"
+    write_and_verify_created_image_info \
+      || fail "persistent build cache is not the exact 64 GiB AES-256 APFS content"
+  else
+    verify_image_storage_identity \
+      || fail "persistent T7 build-cache image changed before attachment"
+  fi
 
   local attachment_plist="${TESTFLIGHT_CONTROL_DIRECTORY}/attachment.plist"
   (
@@ -2701,51 +3770,13 @@ function initialize_private_testflight_build_volume() {
   TESTFLIGHT_MOUNTED_VOLUME_ROOT_IDENTITY=$(stat_identity \
     "${TESTFLIGHT_BUILD_MOUNT_POINT}")
 
-  TESTFLIGHT_BUILD_SANDBOX_DIRECTORY="${TESTFLIGHT_BUILD_MOUNT_POINT}/BuildSandbox"
-  require_canonical_safe_path \
-    "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}" "${TESTFLIGHT_BUILD_MOUNT_POINT}" \
-    || fail "build sandbox path is not canonical inside the private build volume"
-  /bin/mkdir -m 700 "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}" \
-    || fail "could not create the private build sandbox"
-  /bin/chmod 700 "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}" \
-    || fail "could not protect the private build sandbox"
-  TESTFLIGHT_BUILD_SANDBOX_IDENTITY=$(stat_identity \
-    "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}")
-  [[ -n "${TESTFLIGHT_BUILD_SANDBOX_IDENTITY}" ]] \
-    || fail "could not pin the private build sandbox"
-
-  TESTFLIGHT_BUILD_TMP_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/tmp"
-  TESTFLIGHT_DERIVED_DATA_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/DerivedData"
-  TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/Products"
-  TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/Intermediates"
+  initialize_or_pin_persistent_build_cache_layout \
+    || fail "persistent build-cache contract or directory layout is invalid"
   # Xcode's archive action must own its product, intermediate, and installation
   # topology. Overriding SYMROOT, OBJROOT, DSTROOT, INSTALL_ROOT, or INSTALL_DIR
   # splits compilation from archive finalization and leaves an incomplete archive
   # even after compilation and signing pass.
   TESTFLIGHT_BUILD_DSTROOT_DIRECTORY="${TESTFLIGHT_DERIVED_DATA_DIRECTORY}/Build/Intermediates.noindex/ArchiveIntermediates/${EXPECTED_SCHEME}/InstallationBuildProductsLocation"
-  TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/SharedPrecompiledHeaders"
-  TESTFLIGHT_BUILD_CACHE_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/Caches"
-  TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/ModuleCache.noindex"
-  TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/PackageCache"
-  TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY="${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/SourcePackages"
-  TESTFLIGHT_PINNED_BUILD_DIRECTORIES=()
-  local build_directory
-  for build_directory in \
-      "${TESTFLIGHT_BUILD_TMP_DIRECTORY}" \
-      "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}" \
-      "${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}" \
-      "${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}" \
-      "${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}" \
-      "${TESTFLIGHT_BUILD_CACHE_DIRECTORY}" \
-      "${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}" \
-      "${TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY}" \
-      "${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}"; do
-    pin_private_build_directory \
-      "${build_directory}" "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}" \
-      || fail "could not atomically create and pin private build directory ${build_directory:t}"
-  done
-  TESTFLIGHT_DERIVED_DATA_IDENTITY=$(stat_identity \
-    "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}")
   TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS=(
     -project "${PROJECT_PATH}"
     -scheme "${EXPECTED_SCHEME}"
@@ -2978,6 +4009,141 @@ function reserve_export_exec_destinations() {
   TESTFLIGHT_UPLOAD_LOG_IDENTITY=$(stat_identity \
     "${TESTFLIGHT_UPLOAD_LOG_PATH}") || return 1
   verify_export_exec_destinations
+}
+
+function verify_processing_status_destination() {
+  verify_output_directory_identity || return 1
+  [[ -n "${TESTFLIGHT_PROCESSING_STATUS_PATH:-}" \
+      && -n "${TESTFLIGHT_PROCESSING_STATUS_IDENTITY:-}" \
+      && "${TESTFLIGHT_PROCESSING_STATUS_PATH}" \
+        == "${TESTFLIGHT_OUTPUT_DIRECTORY}/app-store-processing-status.json" \
+      && "${TESTFLIGHT_PROCESSING_STATUS_PATH:A}" \
+        == "${TESTFLIGHT_PROCESSING_STATUS_PATH}" \
+      && -f "${TESTFLIGHT_PROCESSING_STATUS_PATH}" \
+      && ! -L "${TESTFLIGHT_PROCESSING_STATUS_PATH}" \
+      && "$(stat_identity "${TESTFLIGHT_PROCESSING_STATUS_PATH}")" \
+        == "${TESTFLIGHT_PROCESSING_STATUS_IDENTITY}" \
+      && "$(/usr/bin/stat -f '%u:%Lp:%HT:%l' \
+        "${TESTFLIGHT_PROCESSING_STATUS_PATH}" 2>/dev/null)" \
+        == "${EUID}:600:Regular File:1" \
+      && "$(ls_mode_token "${TESTFLIGHT_PROCESSING_STATUS_PATH}")" \
+        == '-rw-------' ]] || return 1
+  if (( TESTFLIGHT_PROCESSING_STATUS_FD >= 0 )); then
+    [[ -e "/dev/fd/${TESTFLIGHT_PROCESSING_STATUS_FD}" \
+        && "${TESTFLIGHT_PROCESSING_STATUS_PATH}" \
+          -ef "/dev/fd/${TESTFLIGHT_PROCESSING_STATUS_FD}" ]] || return 1
+  fi
+}
+
+function reserve_processing_status_destination() {
+  verify_output_directory_identity || return 1
+  TESTFLIGHT_PROCESSING_STATUS_PATH="${TESTFLIGHT_OUTPUT_DIRECTORY}/app-store-processing-status.json"
+  [[ ! -e "${TESTFLIGHT_PROCESSING_STATUS_PATH}" \
+      && ! -L "${TESTFLIGHT_PROCESSING_STATUS_PATH}" ]] || return 1
+  sysopen -w -o creat,excl,nofollow -m 600 \
+    -u TESTFLIGHT_PROCESSING_STATUS_FD \
+    "${TESTFLIGHT_PROCESSING_STATUS_PATH}" || return 1
+  /bin/chmod 600 "/dev/fd/${TESTFLIGHT_PROCESSING_STATUS_FD}" || return 1
+  TESTFLIGHT_PROCESSING_STATUS_IDENTITY=$(stat_identity \
+    "${TESTFLIGHT_PROCESSING_STATUS_PATH}") || return 1
+  verify_processing_status_destination
+}
+
+function verify_app_store_processing_status() {
+  verify_processing_status_destination || return 1
+  [[ -n "${TESTFLIGHT_DELIVERY_ID:-}" \
+      && "${#TESTFLIGHT_DELIVERY_ID}" == 36 ]] || return 1
+  print -rn -- "${TESTFLIGHT_DELIVERY_ID}" \
+    | /usr/bin/grep -Eq \
+      '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
+    || return 1
+  /usr/bin/plutil -convert xml1 -o /dev/null -- \
+    "${TESTFLIGHT_PROCESSING_STATUS_PATH}" \
+    >/dev/null 2>&1 || return 1
+  [[ "$(plist_typed_raw_value \
+        "${TESTFLIGHT_PROCESSING_STATUS_PATH}" delivery-uuid string)" \
+        == "${TESTFLIGHT_DELIVERY_ID}" \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_PROCESSING_STATUS_PATH}" build-status string)" == 'VALID' \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_PROCESSING_STATUS_PATH}" import-status string)" == 'VALID' \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_PROCESSING_STATUS_PATH}" is-on-app-store-connect bool)" \
+        == 'true' \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_PROCESSING_STATUS_PATH}" build-audience-type string)" \
+        == 'INTERNAL_ONLY' \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_PROCESSING_STATUS_PATH}" \
+        app-store-attributes.buildAudienceType string)" == 'INTERNAL_ONLY' \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_PROCESSING_STATUS_PATH}" \
+        app-store-attributes.processingState string)" == 'VALID' \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_PROCESSING_STATUS_PATH}" \
+        app-store-attributes.version string)" == "${EXPECTED_BUILD_NUMBER}" \
+      && "$(plist_typed_raw_value \
+        "${TESTFLIGHT_PROCESSING_STATUS_PATH}" \
+        app-store-attributes.expired bool)" == 'false' ]] \
+    || return 1
+}
+
+function wait_for_app_store_processing() {
+  verify_app_store_connect_api_key_identity || return 1
+  verify_reviewed_xcode_toolchain_identity || return 1
+  verify_archive_destination_identity || return 1
+  local archive_info="${TESTFLIGHT_ARCHIVE_PATH}/Info.plist"
+  verify_successful_upload_distribution_record "${archive_info}" || return 1
+  TESTFLIGHT_DELIVERY_ID=$(plist_typed_raw_value \
+    "${archive_info}" Distributions.0.identifier string) || return 1
+  print -rn -- "${TESTFLIGHT_DELIVERY_ID}" \
+    | /usr/bin/grep -Eq \
+      '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
+    || return 1
+  reserve_processing_status_destination || return 1
+  reserve_processing_tmp_directory || return 1
+  local query_status=0
+  local -i query_deadline=$((
+    SECONDS + APP_STORE_PROCESSING_WAIT_TIMEOUT_SECONDS
+  ))
+  mask_release_cleanup_signals
+  /usr/bin/env -i \
+    LC_ALL=C \
+    PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    HOME=/Users/ahmed \
+    TMPDIR="${TESTFLIGHT_PROCESSING_TMP_DIRECTORY}" \
+    "${EXPECTED_ALTOOL_REAL_PATH}" \
+    --build-status \
+    --delivery-id "${TESTFLIGHT_DELIVERY_ID}" \
+    --wait \
+    --api-key "${EXPECTED_ASC_API_KEY_ID}" \
+    --api-issuer "${EXPECTED_ASC_TEAM_ISSUER_ID}" \
+    --p8-file-path "${EXPECTED_ASC_API_KEY_PATH}" \
+    --output-format json \
+    >"/dev/fd/${TESTFLIGHT_PROCESSING_STATUS_FD}" &
+  TESTFLIGHT_PROCESSING_QUERY_PID=$!
+  TESTFLIGHT_PROCESSING_QUERY_RUNNING=1
+  install_release_signal_traps
+  while processing_query_is_running \
+      && (( SECONDS < query_deadline )); do
+    /bin/sleep "${APP_STORE_PROCESSING_WAIT_POLL_SECONDS}"
+  done
+  if processing_query_is_running; then
+    terminate_processing_query || query_status=1
+    (( query_status != 0 )) || query_status=124
+  else
+    wait "${TESTFLIGHT_PROCESSING_QUERY_PID}" || query_status=$?
+    TESTFLIGHT_PROCESSING_QUERY_RUNNING=0
+    TESTFLIGHT_PROCESSING_QUERY_PID=-1
+  fi
+  verify_app_store_connect_api_key_identity || query_status=1
+  verify_reviewed_xcode_toolchain_identity || query_status=1
+  verify_processing_status_destination || query_status=1
+  exec {TESTFLIGHT_PROCESSING_STATUS_FD}>&-
+  TESTFLIGHT_PROCESSING_STATUS_FD=-1
+  remove_processing_tmp_directory || query_status=1
+  (( query_status == 0 )) || return ${query_status}
+  verify_app_store_processing_status
 }
 
 function verify_archive_filesystem_identity() {
@@ -3465,6 +4631,13 @@ function verify_successful_upload_distribution_record() {
   distribution_count=$(plist_array_count "${archive_info}" Distributions) \
     || return 1
   (( distribution_count == 1 )) || return 1
+  local delivery_id
+  delivery_id=$(plist_typed_raw_value \
+    "${archive_info}" Distributions.0.identifier string) || return 1
+  print -rn -- "${delivery_id}" \
+    | /usr/bin/grep -Eq \
+      '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
+    || return 1
   [[ "$(plist_raw_value "${archive_info}" Distributions.0.adamId)" \
         == "${EXPECTED_ASC_APPLE_ID}" \
       && "$(plist_raw_value "${archive_info}" Distributions.0.destination)" \
@@ -3576,9 +4749,14 @@ function archive_side_by_side_app() {
     || fail "archive destination parent is not the pinned private output directory"
   reserve_archive_exec_destinations \
     || fail "could not atomically reserve archive and log destinations"
+  local -i stage_started_at=${SECONDS}
   initialize_private_testflight_build_volume
+  print_release_stage_timing cache_attach "${stage_started_at}"
+  stage_started_at=${SECONDS}
   resolve_pinned_package_dependencies \
     || fail "could not resolve the pinned package graph into the encrypted cache"
+  print_release_stage_timing package_resolve "${stage_started_at}"
+  stage_started_at=${SECONDS}
   local effective_roots_status=0
   verify_effective_archive_build_roots || effective_roots_status=$?
   if (( effective_roots_status == 2 )); then
@@ -3586,11 +4764,9 @@ function archive_side_by_side_app() {
   elif (( effective_roots_status != 0 )); then
     fail "effective archive build/cache roots escaped the encrypted build volume"
   fi
-  verify_archive_exec_destinations \
-    || fail "reserved archive or log destination changed immediately before archive"
-  verify_pinned_xcodebuild_filesystem_contract \
-    || fail "private build filesystem contract changed immediately before archive"
+  print_release_stage_timing build_settings "${stage_started_at}"
   local archive_status=0
+  stage_started_at=${SECONDS}
   run_pinned_xcodebuild archive archive \
     "${TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[@]}" \
     -archivePath "${TESTFLIGHT_ARCHIVE_PATH}" \
@@ -3601,6 +4777,8 @@ function archive_side_by_side_app() {
   verify_xcodebuild_authentication_contract \
     || fail "release authentication identity changed during archive"
   (( archive_status == 0 )) || return ${archive_status}
+  print_release_stage_timing archive "${stage_started_at}"
+  stage_started_at=${SECONDS}
   verify_archive_destination_identity \
     || fail "archive or pinned log destination changed during archive"
   exec {TESTFLIGHT_ARCHIVE_LOG_FD}>&-
@@ -3615,7 +4793,8 @@ function archive_side_by_side_app() {
     || fail "private build volume changed during archive"
   pin_archive_filesystem_identity \
     || fail "could not pin the completed archive filesystem identity"
-  verify_archive
+  verify_archive_contents_at_path "${TESTFLIGHT_ARCHIVE_PATH}"
+  print_release_stage_timing archive_verification "${stage_started_at}"
 }
 
 function run_archive_only() {
@@ -3625,8 +4804,24 @@ function run_archive_only() {
   archive_side_by_side_app "${output_directory}"
   cleanup_private_build_volume_signal_masked \
     || fail "could not clean the exact private build volume"
-  verify_archive
   print -- "side-by-side TestFlight archive verified: ${TESTFLIGHT_ARCHIVE_PATH}"
+}
+
+function run_initialize_build_cache() {
+  TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=1
+  initialize_private_testflight_build_volume
+  verify_private_build_volume_identity \
+    || fail "new persistent build cache failed final enrollment verification"
+  mask_release_cleanup_signals
+  /bin/sync
+  remove_pending_enrollment_marker \
+    || fail "could not commit the persistent build-cache enrollment marker"
+  /bin/sync
+  TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED=1
+  install_release_signal_traps
+  cleanup_private_build_volume_signal_masked \
+    || fail "could not detach the enrolled persistent build cache"
+  print -- "side-by-side TestFlight persistent build cache initialized"
 }
 
 function run_authorized_upload() {
@@ -3646,11 +4841,8 @@ function run_authorized_upload() {
   verify_archive
   verify_xcodebuild_authentication_contract \
     || fail "release authentication identity changed before upload"
-  verify_export_exec_destinations \
-    || fail "reserved export or upload-log destination changed immediately before upload"
-  verify_pinned_xcodebuild_filesystem_contract \
-    || fail "private build filesystem contract changed immediately before upload"
   local upload_status=0
+  local -i stage_started_at=${SECONDS}
   run_pinned_xcodebuild export -exportArchive \
     -archivePath "${TESTFLIGHT_ARCHIVE_PATH}" \
     -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \
@@ -3662,6 +4854,8 @@ function run_authorized_upload() {
   verify_xcodebuild_authentication_contract \
     || fail "release authentication identity changed during upload"
   (( upload_status == 0 )) || return ${upload_status}
+  print_release_stage_timing export_upload "${stage_started_at}"
+  stage_started_at=${SECONDS}
   verify_export_destination_identity \
     || fail "export or pinned upload-log destination changed during upload"
   exec {TESTFLIGHT_UPLOAD_LOG_FD}>&-
@@ -3675,11 +4869,19 @@ function run_authorized_upload() {
   verify_archive_payload_after_upload \
     || fail "archived application payload changed during upload"
   verify_archive_contents_at_path "${TESTFLIGHT_ARCHIVE_PATH}"
+  print_release_stage_timing upload_verification "${stage_started_at}"
   cleanup_private_build_volume_signal_masked \
-    || fail "could not clean the exact private build volume"
-  verify_archive_payload_after_upload \
-    || fail "archived application payload changed after private-build cleanup"
-  verify_archive_contents_at_path "${TESTFLIGHT_ARCHIVE_PATH}"
+    || fail "could not clean the exact private build volume before Apple processing"
+  if [[ "${TESTFLIGHT_XCODEBUILD_AUTHENTICATION_MODE}" \
+      == 'app-store-connect-api-key' ]]; then
+    stage_started_at=${SECONDS}
+    wait_for_app_store_processing \
+      || fail "Apple did not confirm the uploaded internal build as VALID"
+    print_release_stage_timing app_store_processing "${stage_started_at}"
+  else
+    print -r -- \
+      'App Store processing wait skipped: use the API-key upload mode for end-to-end delivery proof'
+  fi
   print -- "side-by-side TestFlight upload completed; evidence: ${output_directory}"
 }
 
@@ -3716,6 +4918,11 @@ case "${1:-}" in
     (( $# == 1 )) || fail "--archive-only accepts no additional arguments"
     run_archive_only
     ;;
+  --initialize-build-cache)
+    (( $# == 1 )) || fail \
+      "--initialize-build-cache accepts no additional arguments"
+    run_initialize_build_cache
+    ;;
   --upload-authorized-side-by-side-testflight)
     (( $# == 1 )) || fail \
       "--upload-authorized-side-by-side-testflight accepts no additional arguments"
@@ -3728,6 +4935,6 @@ case "${1:-}" in
     ;;
   *)
     fail \
-      "usage: $0 --verify-config-only | --verify-api-key-config-only | --archive-only | --upload-authorized-side-by-side-testflight | --upload-authorized-side-by-side-testflight-with-api-key"
+      "usage: $0 --verify-config-only | --verify-api-key-config-only | --initialize-build-cache | --archive-only | --upload-authorized-side-by-side-testflight | --upload-authorized-side-by-side-testflight-with-api-key"
     ;;
 esac
