@@ -2229,6 +2229,7 @@ final class WorldwideSessionViewModel: ObservableObject {
             pointerIntentID: beginRemotePointerIntent(),
             sendAuthorization: sendAuthorization,
             accumulator: accumulator,
+            canFlushImmediately: true,
             isEnding: false
         )
         return gestureID
@@ -2251,8 +2252,22 @@ final class WorldwideSessionViewModel: ObservableObject {
             return
         }
 
+        let shouldFlushImmediately = scroll.canFlushImmediately
+        if shouldFlushImmediately {
+            scroll.canFlushImmediately = false
+        }
         activeRemoteScroll = scroll
-        scheduleRemoteScrollFlush(for: scroll)
+
+        if shouldFlushImmediately {
+            flushRemoteScroll(
+                gestureID: gestureID,
+                reopenImmediateWindowWhenEmpty: false
+            )
+        }
+        if let activeScroll = activeRemoteScroll,
+           activeScroll.gestureID == gestureID {
+            scheduleRemoteScrollFlush(for: activeScroll)
+        }
     }
 
     func endRemoteScroll(gestureID: UUID) {
@@ -2300,11 +2315,17 @@ final class WorldwideSessionViewModel: ObservableObject {
                   let self,
                   inputGeneration == self.remoteInputGeneration else { return }
             self.remoteScrollFlushTask = nil
-            self.flushRemoteScroll(gestureID: gestureID)
+            self.flushRemoteScroll(
+                gestureID: gestureID,
+                reopenImmediateWindowWhenEmpty: true
+            )
         }
     }
 
-    private func flushRemoteScroll(gestureID: UUID) {
+    private func flushRemoteScroll(
+        gestureID: UUID,
+        reopenImmediateWindowWhenEmpty: Bool = false
+    ) {
         guard var scroll = activeRemoteScroll,
               scroll.gestureID == gestureID,
               remoteScrollIsCurrent(scroll) else {
@@ -2317,6 +2338,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             if finalizing {
                 activeRemoteScroll = nil
             } else {
+                if reopenImmediateWindowWhenEmpty {
+                    scroll.canFlushImmediately = true
+                }
                 activeRemoteScroll = scroll
             }
             return
@@ -2336,10 +2360,14 @@ final class WorldwideSessionViewModel: ObservableObject {
         )
 
         guard activeRemoteScroll?.gestureID == gestureID else { return }
-        if scroll.accumulator.hasPacket(finalizing: finalizing) {
+        if finalizing {
+            if scroll.accumulator.hasPacket(finalizing: true) {
+                scheduleRemoteScrollFlush(for: scroll)
+            } else {
+                activeRemoteScroll = nil
+            }
+        } else {
             scheduleRemoteScrollFlush(for: scroll)
-        } else if finalizing {
-            activeRemoteScroll = nil
         }
     }
 
@@ -7412,6 +7440,7 @@ private struct ActiveRemoteScroll {
     let pointerIntentID: UInt64
     let sendAuthorization: WebRTCInputSendAuthorization
     var accumulator: RemoteScrollDeltaAccumulator
+    var canFlushImmediately: Bool
     var isEnding: Bool
 }
 

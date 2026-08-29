@@ -1249,6 +1249,54 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
     }
 
     @MainActor
+    func testFirstScrollPacketEntersTheInputQueueImmediately() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeViewerPeer()
+        let sent = expectation(description: "initial scroll sent")
+        viewModel.debugInstallRemoteInputSender { _, action, _, _, _, _ in
+            XCTAssertEqual(
+                action,
+                .scroll(
+                    anchor: .init(x: 0.5, y: 0.5),
+                    deltaX: 40,
+                    deltaY: -60
+                )
+            )
+            sent.fulfill()
+            return 1
+        }
+        _ = viewModel.debugInstallActiveScreenPresentationForTests(
+            peer: peer,
+            supportsScroll: true
+        )
+
+        let gestureID = try XCTUnwrap(
+            viewModel.beginRemoteScroll(
+                normalizedAnchor: CGPoint(x: 0.5, y: 0.5),
+                containerSize: CGSize(width: 100, height: 100),
+                viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+            )
+        )
+        viewModel.appendRemoteScroll(
+            gestureID: gestureID,
+            viewDelta: CGSize(width: 4, height: -6),
+            containerSize: CGSize(width: 100, height: 100),
+            viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+        )
+
+        XCTAssertEqual(
+            viewModel.debugRemoteInputState.queuedActionCount,
+            1,
+            "The first usable delta must not wait for the 17 ms cadence timer."
+        )
+        viewModel.endRemoteScroll(gestureID: gestureID)
+        await fulfillment(of: [sent], timeout: 2)
+
+        viewModel.disconnect()
+        await peer.close(reason: .viewerDisconnected)
+    }
+
+    @MainActor
     func testScrollRequiresAdvertisedCapability() async throws {
         let viewModel = WorldwideSessionViewModel()
         let peer = try makeViewerPeer()
