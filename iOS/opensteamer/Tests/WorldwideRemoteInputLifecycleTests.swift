@@ -1170,7 +1170,7 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
         let expectedSize = WebRTCInputVideoSize(width: 1_080, height: 2_340)
         var sentAction: WebRTCInputAction?
         var sentSize: WebRTCInputVideoSize?
-        viewModel.debugInstallRemoteInputSender { _, action, viewerVideoSize, _, _ in
+        viewModel.debugInstallRemoteInputSender { _, action, viewerVideoSize, _, _, _ in
             sentAction = action
             sentSize = viewerVideoSize
             return 1
@@ -1193,6 +1193,357 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
         await peer.close(reason: .viewerDisconnected)
     }
 
+    @MainActor
+    func testScrollCoalescesFractionalViewerMovementBeforeTheInputQueue() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeViewerPeer()
+        var sentActions: [WebRTCInputAction] = []
+        var sentSizes: [WebRTCInputVideoSize?] = []
+        let sent = expectation(description: "coalesced scroll sent")
+        viewModel.debugInstallRemoteInputSender { _, action, viewerVideoSize, _, _, _ in
+            sentActions.append(action)
+            sentSizes.append(viewerVideoSize)
+            sent.fulfill()
+            return 1
+        }
+        _ = viewModel.debugInstallActiveScreenPresentationForTests(
+            peer: peer,
+            supportsScroll: true
+        )
+
+        let gestureID = try XCTUnwrap(
+            viewModel.beginRemoteScroll(
+                normalizedAnchor: CGPoint(x: 0.25, y: 0.75),
+                containerSize: CGSize(width: 100, height: 100),
+                viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+            )
+        )
+        for _ in 0 ..< 3 {
+            viewModel.appendRemoteScroll(
+                gestureID: gestureID,
+                viewDelta: CGSize(width: 0.04, height: 0.06),
+                containerSize: CGSize(width: 100, height: 100),
+                viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+            )
+        }
+        XCTAssertEqual(viewModel.debugRemoteInputState.latestPointerIntentID, 1)
+        viewModel.endRemoteScroll(gestureID: gestureID)
+
+        await fulfillment(of: [sent], timeout: 2)
+        XCTAssertEqual(
+            sentActions,
+            [
+                .scroll(
+                    anchor: .init(x: 0.25, y: 0.75),
+                    deltaX: 1,
+                    deltaY: 2
+                )
+            ]
+        )
+        XCTAssertEqual(sentSizes, [.init(width: 1_000, height: 1_000)])
+        XCTAssertNil(viewModel.debugRemoteInputState.activeScrollGestureID)
+        XCTAssertEqual(viewModel.debugRemoteInputState.latestPointerIntentID, 1)
+
+        viewModel.disconnect()
+        await peer.close(reason: .viewerDisconnected)
+    }
+
+    @MainActor
+    func testFirstScrollPacketEntersTheInputQueueImmediately() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeViewerPeer()
+        let sent = expectation(description: "initial scroll sent")
+        viewModel.debugInstallRemoteInputSender { _, action, _, _, _, _ in
+            XCTAssertEqual(
+                action,
+                .scroll(
+                    anchor: .init(x: 0.5, y: 0.5),
+                    deltaX: 40,
+                    deltaY: -60
+                )
+            )
+            sent.fulfill()
+            return 1
+        }
+        _ = viewModel.debugInstallActiveScreenPresentationForTests(
+            peer: peer,
+            supportsScroll: true
+        )
+
+        let gestureID = try XCTUnwrap(
+            viewModel.beginRemoteScroll(
+                normalizedAnchor: CGPoint(x: 0.5, y: 0.5),
+                containerSize: CGSize(width: 100, height: 100),
+                viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+            )
+        )
+        viewModel.appendRemoteScroll(
+            gestureID: gestureID,
+            viewDelta: CGSize(width: 4, height: -6),
+            containerSize: CGSize(width: 100, height: 100),
+            viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+        )
+
+        XCTAssertEqual(
+            viewModel.debugRemoteInputState.queuedActionCount,
+            1,
+            "The first usable delta must not wait for the 17 ms cadence timer."
+        )
+        viewModel.endRemoteScroll(gestureID: gestureID)
+        await fulfillment(of: [sent], timeout: 2)
+
+        viewModel.disconnect()
+        await peer.close(reason: .viewerDisconnected)
+    }
+
+    @MainActor
+    func testScrollRequiresAdvertisedCapability() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeViewerPeer()
+        _ = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+
+        XCTAssertFalse(viewModel.isRemoteScrollAvailable)
+        XCTAssertNil(
+            viewModel.beginRemoteScroll(
+                normalizedAnchor: CGPoint(x: 0.5, y: 0.5),
+                containerSize: CGSize(width: 100, height: 100),
+                viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+            )
+        )
+        XCTAssertEqual(viewModel.debugRemoteInputState.latestPointerIntentID, 0)
+
+        viewModel.disconnect()
+        await peer.close(reason: .viewerDisconnected)
+    }
+
+    @MainActor
+    func testScrollFlushCadenceDoesNotOutrunHostSixtyHertzBudget() {
+        XCTAssertGreaterThanOrEqual(
+            WorldwideSessionViewModel.remoteScrollFlushInterval,
+            .milliseconds(17)
+        )
+    }
+
+    @MainActor
+    func testScrollGeometryTransitionDiscardsAccumulatedAndQueuedDeltas() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeViewerPeer()
+        var sentActions: [WebRTCInputAction] = []
+        viewModel.debugInstallRemoteInputSender { _, action, _, _, _, _ in
+            sentActions.append(action)
+            return 1
+        }
+        _ = viewModel.debugInstallActiveScreenPresentationForTests(
+            peer: peer,
+            supportsScroll: true
+        )
+
+        let gestureID = try XCTUnwrap(
+            viewModel.beginRemoteScroll(
+                normalizedAnchor: CGPoint(x: 0.5, y: 0.5),
+                containerSize: CGSize(width: 100, height: 100),
+                viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+            )
+        )
+        viewModel.appendRemoteScroll(
+            gestureID: gestureID,
+            viewDelta: CGSize(width: 10, height: -20),
+            containerSize: CGSize(width: 100, height: 100),
+            viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+        )
+        viewModel.discardPendingRemoteScrolls()
+        viewModel.endRemoteScroll(gestureID: gestureID)
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertTrue(sentActions.isEmpty)
+        XCTAssertNil(viewModel.debugRemoteInputState.activeScrollGestureID)
+        XCTAssertEqual(viewModel.debugRemoteInputState.queuedActionCount, 0)
+
+        viewModel.disconnect()
+        await peer.close(reason: .viewerDisconnected)
+    }
+
+    @MainActor
+    func testScrollConfigurationRevocationDropsDelayedSendAndAllowsFreshGesture() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeViewerPeer()
+        let oldSendReachedActorHop = expectation(description: "old scroll reached actor hop")
+        let oldSendRejected = expectation(description: "old scroll rejected at final send gate")
+        let freshScrollSent = expectation(description: "fresh scroll sent")
+        let oldSendGate = NonCooperativeAsyncGate()
+        var attemptedSendCount = 0
+        var sentActions: [WebRTCInputAction] = []
+
+        viewModel.debugInstallRemoteInputSender {
+            _, action, _, _, _, sendAuthorization in
+            attemptedSendCount += 1
+            let authorization = try XCTUnwrap(sendAuthorization)
+            if attemptedSendCount == 1 {
+                oldSendReachedActorHop.fulfill()
+                await oldSendGate.wait()
+                do {
+                    return try authorization.withValidAuthorization {
+                        sentActions.append(action)
+                        return 1
+                    }
+                } catch {
+                    oldSendRejected.fulfill()
+                    throw error
+                }
+            }
+
+            let requestID = try authorization.withValidAuthorization {
+                sentActions.append(action)
+                return UInt64(attemptedSendCount)
+            }
+            freshScrollSent.fulfill()
+            return requestID
+        }
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(
+            peer: peer,
+            supportsScroll: true
+        )
+
+        let staleGesture = try XCTUnwrap(
+            viewModel.beginRemoteScroll(
+                normalizedAnchor: CGPoint(x: 0.25, y: 0.75),
+                containerSize: CGSize(width: 100, height: 100),
+                viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+            )
+        )
+        viewModel.appendRemoteScroll(
+            gestureID: staleGesture,
+            viewDelta: CGSize(width: 4, height: 6),
+            containerSize: CGSize(width: 100, height: 100),
+            viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+        )
+        viewModel.endRemoteScroll(gestureID: staleGesture)
+        await fulfillment(of: [oldSendReachedActorHop], timeout: 2)
+
+        viewModel.discardPendingRemoteScrolls()
+        XCTAssertTrue(fixture.authorization.isValid)
+        XCTAssertTrue(viewModel.isRemoteScrollAvailable)
+        await oldSendGate.open()
+        await fulfillment(of: [oldSendRejected], timeout: 2)
+
+        let freshGesture = try XCTUnwrap(
+            viewModel.beginRemoteScroll(
+                normalizedAnchor: CGPoint(x: 0.5, y: 0.5),
+                containerSize: CGSize(width: 100, height: 100),
+                viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+            )
+        )
+        viewModel.appendRemoteScroll(
+            gestureID: freshGesture,
+            viewDelta: CGSize(width: -3, height: -7),
+            containerSize: CGSize(width: 100, height: 100),
+            viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+        )
+        viewModel.endRemoteScroll(gestureID: freshGesture)
+        await fulfillment(of: [freshScrollSent], timeout: 2)
+
+        XCTAssertEqual(attemptedSendCount, 2)
+        XCTAssertEqual(
+            sentActions,
+            [
+                .scroll(
+                    anchor: .init(x: 0.5, y: 0.5),
+                    deltaX: -30,
+                    deltaY: -70
+                )
+            ]
+        )
+        XCTAssertTrue(fixture.authorization.isValid)
+        XCTAssertTrue(viewModel.isRemoteScrollAvailable)
+
+        viewModel.disconnect()
+        await peer.close(reason: .viewerDisconnected)
+    }
+
+    @MainActor
+    func testRevokedScrollFeedbackCannotInvalidateSessionAndFreshGestureStillSends() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeViewerPeer()
+        let oldScrollSent = expectation(description: "old scroll sent")
+        let freshScrollSent = expectation(description: "fresh scroll sent")
+        var sentActions: [WebRTCInputAction] = []
+
+        viewModel.debugInstallRemoteInputSender { _, action, _, _, _, _ in
+            sentActions.append(action)
+            if sentActions.count == 1 {
+                oldScrollSent.fulfill()
+            } else {
+                freshScrollSent.fulfill()
+            }
+            return UInt64(sentActions.count)
+        }
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(
+            peer: peer,
+            supportsScroll: true
+        )
+        let capability = try XCTUnwrap(viewModel.debugRemoteInputState.capability)
+
+        let staleGesture = try XCTUnwrap(
+            viewModel.beginRemoteScroll(
+                normalizedAnchor: CGPoint(x: 0.25, y: 0.75),
+                containerSize: CGSize(width: 100, height: 100),
+                viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+            )
+        )
+        viewModel.appendRemoteScroll(
+            gestureID: staleGesture,
+            viewDelta: CGSize(width: 0, height: 5),
+            containerSize: CGSize(width: 100, height: 100),
+            viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+        )
+        viewModel.endRemoteScroll(gestureID: staleGesture)
+        await fulfillment(of: [oldScrollSent], timeout: 2)
+        for _ in 0 ..< 20 where viewModel.debugRemoteInputState.pendingActionCount == 0 {
+            await Task.yield()
+        }
+        XCTAssertEqual(viewModel.debugRemoteInputState.pendingActionCount, 1)
+
+        let errorBeforeFeedback = viewModel.lastError
+        viewModel.discardPendingRemoteScrolls()
+        viewModel.debugDeliverRemoteInputFeedbackForRaceTests(
+            WebRTCInputFeedback(
+                id: 1,
+                screenRequestID: capability.screenRequestID,
+                inputSessionID: capability.inputSessionID,
+                result: .rejected,
+                rejectionReason: .inputDisabled
+            )
+        )
+
+        XCTAssertEqual(viewModel.debugRemoteInputState.pendingActionCount, 0)
+        XCTAssertEqual(viewModel.lastError, errorBeforeFeedback)
+        XCTAssertTrue(fixture.authorization.isValid)
+        XCTAssertTrue(viewModel.isRemoteScrollAvailable)
+
+        let freshGesture = try XCTUnwrap(
+            viewModel.beginRemoteScroll(
+                normalizedAnchor: CGPoint(x: 0.5, y: 0.5),
+                containerSize: CGSize(width: 100, height: 100),
+                viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+            )
+        )
+        viewModel.appendRemoteScroll(
+            gestureID: freshGesture,
+            viewDelta: CGSize(width: 0, height: -5),
+            containerSize: CGSize(width: 100, height: 100),
+            viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+        )
+        viewModel.endRemoteScroll(gestureID: freshGesture)
+        await fulfillment(of: [freshScrollSent], timeout: 2)
+
+        XCTAssertEqual(sentActions.count, 2)
+        XCTAssertTrue(fixture.authorization.isValid)
+        XCTAssertTrue(viewModel.isRemoteScrollAvailable)
+
+        viewModel.disconnect()
+        await peer.close(reason: .viewerDisconnected)
+    }
+
     private func assertStaleInputFailureCannotMutateReplacement(
         _ error: WebRTCTransportError,
         file: StaticString = #filePath,
@@ -1202,7 +1553,7 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
         let sendStarted = expectation(description: "old input send suspended")
         let oldDrainFinished = expectation(description: "old input drain finished")
         let gate = NonCooperativeAsyncGate()
-        viewModel.debugInstallRemoteInputSender { _, _, _, _, _ in
+        viewModel.debugInstallRemoteInputSender { _, _, _, _, _, _ in
             sendStarted.fulfill()
             await gate.wait()
             throw error

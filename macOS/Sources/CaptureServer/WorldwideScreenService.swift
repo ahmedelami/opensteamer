@@ -1677,10 +1677,9 @@ actor WorldwideScreenService {
             authoritativeDisplayBounds: captureAuthoritativeDisplayBounds
         ) {
         case .armed:
-            let capability = WebRTCInputCapability(
+            let capability = Self.remoteInputCapability(
                 inputSessionID: inputSessionID,
-                screenRequestID: screenRequestID,
-                supportsPrimaryDrag: true
+                screenRequestID: screenRequestID
             )
             let authorization = WebRTCInputAuthorization()
             activeInputCapability = capability
@@ -1729,7 +1728,7 @@ actor WorldwideScreenService {
             outcome: inputOutcome
         )
         logger.debug(
-            "Worldwide remote input \(diagnosticName(for: request.action)): " +
+            "Worldwide remote input \(Self.remoteInputDiagnosticName(for: request.action)): " +
             diagnosticName(for: inputOutcome.result) +
             (formatDiagnostic.map { " \($0)" } ?? "")
         )
@@ -1768,8 +1767,7 @@ actor WorldwideScreenService {
               transportAllowsCapture else {
             return WorldwideRemoteInputInjectionOutcome(.rejected(.staleSession))
         }
-        if case .primaryDrag = request.action,
-           !capability.supportsPrimaryDrag {
+        guard Self.remoteInputActionIsSupported(request.action, capability: capability) else {
             return WorldwideRemoteInputInjectionOutcome(.rejected(.staleSession))
         }
         guard
@@ -1862,6 +1860,20 @@ actor WorldwideScreenService {
                 )
             )
 
+        case .scroll(let anchor, let deltaX, let deltaY):
+            WorldwideRemoteInputInjectionOutcome(
+                remoteInputController.handleScrollWithDiagnostics(
+                    screenRequestID: request.screenRequestID,
+                    inputSessionID: request.inputSessionID,
+                    anchor: .init(x: anchor.x, y: anchor.y),
+                    deltaX: deltaX,
+                    deltaY: deltaY,
+                    viewerVideoSize: request.viewerVideoSize.map {
+                        .init(width: $0.width, height: $0.height)
+                    }
+                )
+            )
+
         case .insertText(let text, let focusGeneration):
             WorldwideRemoteInputInjectionOutcome(
                 remoteInputController.insertText(
@@ -1895,12 +1907,14 @@ actor WorldwideScreenService {
     }
 
     /// Verbose acceptance diagnostics deliberately contain neither text payloads nor field data.
-    private func diagnosticName(for action: WebRTCInputAction) -> String {
+    nonisolated static func remoteInputDiagnosticName(for action: WebRTCInputAction) -> String {
         switch action {
         case .tap:
             return "tap"
         case .primaryDrag:
             return "primary-drag"
+        case .scroll:
+            return "scroll"
         case .insertText:
             return "committed-text"
         case .backspace:
@@ -1908,6 +1922,34 @@ actor WorldwideScreenService {
         case .returnKey:
             return "return"
         }
+    }
+
+    /// Keeps additive input actions behind the exact capability acknowledged to the viewer.
+    nonisolated static func remoteInputActionIsSupported(
+        _ action: WebRTCInputAction,
+        capability: WebRTCInputCapability
+    ) -> Bool {
+        switch action {
+        case .primaryDrag:
+            capability.supportsPrimaryDrag
+        case .scroll:
+            capability.supportsScroll
+        case .tap, .insertText, .backspace, .returnKey:
+            true
+        }
+    }
+
+    /// Builds the additive host capability installed only after the controller arms successfully.
+    nonisolated static func remoteInputCapability(
+        inputSessionID: UUID,
+        screenRequestID: UInt64
+    ) -> WebRTCInputCapability {
+        WebRTCInputCapability(
+            inputSessionID: inputSessionID,
+            screenRequestID: screenRequestID,
+            supportsPrimaryDrag: true,
+            supportsScroll: true
+        )
     }
 
     /// Reduces controller results to non-sensitive operational descriptions.
@@ -1953,7 +1995,7 @@ actor WorldwideScreenService {
                 // remain decode-compatible during host-first rollout.
                 reason = .rateLimited
                 revokesSession = false
-            case .invalidPoint, .invalidText:
+            case .invalidPoint, .invalidScrollDelta, .invalidText:
                 reason = .invalidRequest
                 revokesSession = false
             case .rateLimited:

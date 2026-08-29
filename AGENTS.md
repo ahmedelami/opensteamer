@@ -342,13 +342,22 @@ manual IP addresses, router configuration, or public TCP ports.
   successful only after an explicit Inactive acknowledgement; a failed send, timeout,
   or Active-for-Hide acknowledgement closes the peer fail closed. Do not render even
   retained remote frames unless the scene is active and the current Show is confirmed.
-- Only atomic primary taps, atomic primary drags, bounded committed text, Backspace,
-  and Return belong in the first input protocol. Primary drag is an explicitly
-  advertised optional capability: the iPhone sends one bounded start/end action only
+- Only atomic primary taps, atomic primary drags, bounded incremental scroll deltas,
+  bounded committed text, Backspace, and Return belong in the input protocol. Primary
+  drag and scroll are explicitly advertised optional capabilities. For primary drag,
+  the iPhone sends one bounded start/end action only
   after a long-press drag finishes, and the Mac constructs down/dragged/up before
   posting any of them inside one authorization window. No mouse-down state may persist
   across requests. Drag origins must be inside the aspect-fit image; completed endpoints
-  may clamp to its edge. The Mac must revalidate Accessibility focus identity and
+  may clamp to its edge. One native iOS gesture coordinator must arbitrate tap,
+  immediate pan, and hold-then-drag so one touch produces only one remote intent.
+  Scroll packets must carry the initial normalized anchor, the exact viewer frame size,
+  and bounded incremental pixel deltas coalesced before the input queue. Each packet is
+  stateless: the Mac maps the anchor under the current frame-geometry fence and posts
+  one pixel-unit scroll-wheel event without persisting a remote gesture or mouse-button
+  state. Scroll needs its own rate limit, and any input-session, presentation, scene,
+  track, or rendered-size transition discards pending deltas. The Mac must revalidate
+  Accessibility focus identity and
   a host-issued focus generation before every keyboard event. Secure AX text fields
   stay local and must never receive a remote focus generation; AppKit private-use
   function-key scalars are commands rather than text and must be rejected. Never transmit or log

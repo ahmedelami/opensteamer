@@ -2316,7 +2316,8 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         let inputCapability = WebRTCInputCapability(
             inputSessionID: UUID(),
             screenRequestID: showID,
-            supportsPrimaryDrag: true
+            supportsPrimaryDrag: true,
+            supportsScroll: true
         )
         let hostInputAuthorization = WebRTCInputAuthorization()
         try await host.acknowledgeActiveControlRequestIfTransportHealthy(
@@ -2341,14 +2342,17 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         XCTAssertTrue(hostInputAuthorization.isValid)
         XCTAssertFalse(viewerInputAuthorization === hostInputAuthorization)
 
+        let liveInputSendAuthorization = WebRTCInputSendAuthorization()
         let inputID = try await viewer.sendInput(
-            .primaryDrag(
-                start: .init(x: 0.25, y: 0.75),
-                end: .init(x: 0.75, y: 0.25)
+            .scroll(
+                anchor: .init(x: 0.25, y: 0.75),
+                deltaX: -24,
+                deltaY: 72
             ),
             viewerVideoSize: .init(width: 450, height: 981),
             capability: inputCapability,
-            authorization: viewerInputAuthorization
+            authorization: viewerInputAuthorization,
+            sendAuthorization: liveInputSendAuthorization
         )
         await fulfillment(of: [expectations.inputRequestReceived], timeout: 3)
         let inputRequestSnapshot = await recorder.snapshot()
@@ -2357,9 +2361,10 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
                 id: inputID,
                 screenRequestID: showID,
                 inputSessionID: inputCapability.inputSessionID,
-                action: .primaryDrag(
-                    start: .init(x: 0.25, y: 0.75),
-                    end: .init(x: 0.75, y: 0.25)
+                action: .scroll(
+                    anchor: .init(x: 0.25, y: 0.75),
+                    deltaX: -24,
+                    deltaY: 72
                 ),
                 viewerVideoSize: .init(width: 450, height: 981)
             )
@@ -2367,6 +2372,116 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         XCTAssertTrue(
             inputRequestSnapshot.hostInputAuthorizations.first === hostInputAuthorization
         )
+        XCTAssertTrue(liveInputSendAuthorization.isValid)
+
+        let revokedInputSendAuthorization = WebRTCInputSendAuthorization()
+        revokedInputSendAuthorization.revoke()
+        do {
+            _ = try await viewer.sendInput(
+                .scroll(
+                    anchor: .init(x: 0.5, y: 0.5),
+                    deltaX: 12,
+                    deltaY: -36
+                ),
+                viewerVideoSize: .init(width: 450, height: 981),
+                capability: inputCapability,
+                authorization: viewerInputAuthorization,
+                sendAuthorization: revokedInputSendAuthorization
+            )
+            XCTFail("A revoked configuration authorization must not emit remote input.")
+        } catch let error as WebRTCTransportError {
+            XCTAssertEqual(error, .inputUnavailable)
+        }
+        XCTAssertTrue(viewerInputAuthorization.isValid)
+        XCTAssertTrue(hostInputAuthorization.isValid)
+        let capabilityAfterRevokedSend = await viewer.currentInputCapability()
+        XCTAssertEqual(capabilityAfterRevokedSend, inputCapability)
+        let snapshotAfterRevokedSend = await recorder.snapshot()
+        XCTAssertEqual(snapshotAfterRevokedSend.inputRequests, inputRequestSnapshot.inputRequests)
+
+        let freshInputSendAuthorization = WebRTCInputSendAuthorization()
+        let freshInputID = try await viewer.sendInput(
+            .scroll(
+                anchor: .init(x: 0.5, y: 0.5),
+                deltaX: 12,
+                deltaY: -36
+            ),
+            viewerVideoSize: .init(width: 450, height: 981),
+            capability: inputCapability,
+            authorization: viewerInputAuthorization,
+            sendAuthorization: freshInputSendAuthorization
+        )
+        XCTAssertEqual(freshInputID, inputID + 1)
+
+        var freshInputSnapshot = await recorder.snapshot()
+        for _ in 0..<300 where freshInputSnapshot.inputRequests.count < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+            freshInputSnapshot = await recorder.snapshot()
+        }
+        XCTAssertEqual(
+            freshInputSnapshot.inputRequests,
+            inputRequestSnapshot.inputRequests + [
+                WebRTCInputRequest(
+                    id: freshInputID,
+                    screenRequestID: showID,
+                    inputSessionID: inputCapability.inputSessionID,
+                    action: .scroll(
+                        anchor: .init(x: 0.5, y: 0.5),
+                        deltaX: 12,
+                        deltaY: -36
+                    ),
+                    viewerVideoSize: .init(width: 450, height: 981)
+                )
+            ]
+        )
+        XCTAssertEqual(freshInputSnapshot.hostInputAuthorizations.count, 2)
+        XCTAssertTrue(
+            freshInputSnapshot.hostInputAuthorizations.allSatisfy {
+                $0 === hostInputAuthorization
+            }
+        )
+        XCTAssertTrue(freshInputSendAuthorization.isValid)
+        XCTAssertTrue(viewerInputAuthorization.isValid)
+        XCTAssertTrue(hostInputAuthorization.isValid)
+
+        let dragInputID = try await viewer.sendInput(
+            .primaryDrag(
+                start: .init(x: 0.25, y: 0.75),
+                end: .init(x: 0.75, y: 0.25)
+            ),
+            viewerVideoSize: .init(width: 450, height: 981),
+            capability: inputCapability,
+            authorization: viewerInputAuthorization
+        )
+        XCTAssertEqual(dragInputID, freshInputID + 1)
+
+        var dragInputSnapshot = await recorder.snapshot()
+        for _ in 0..<300 where dragInputSnapshot.inputRequests.count < 3 {
+            try await Task.sleep(for: .milliseconds(10))
+            dragInputSnapshot = await recorder.snapshot()
+        }
+        XCTAssertEqual(
+            dragInputSnapshot.inputRequests,
+            freshInputSnapshot.inputRequests + [
+                WebRTCInputRequest(
+                    id: dragInputID,
+                    screenRequestID: showID,
+                    inputSessionID: inputCapability.inputSessionID,
+                    action: .primaryDrag(
+                        start: .init(x: 0.25, y: 0.75),
+                        end: .init(x: 0.75, y: 0.25)
+                    ),
+                    viewerVideoSize: .init(width: 450, height: 981)
+                )
+            ]
+        )
+        XCTAssertEqual(dragInputSnapshot.hostInputAuthorizations.count, 3)
+        XCTAssertTrue(
+            dragInputSnapshot.hostInputAuthorizations.allSatisfy {
+                $0 === hostInputAuthorization
+            }
+        )
+
         try await host.sendInputFeedback(
             for: inputID,
             result: .accepted,

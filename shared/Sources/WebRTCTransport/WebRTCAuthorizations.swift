@@ -141,3 +141,54 @@ public final class WebRTCInputAuthorization: @unchecked Sendable {
         return try operation()
     }
 }
+
+/// A viewer-local, synchronously revocable gate for input already admitted to one session.
+///
+/// The session authorization remains valid across rendered-size and track transitions so fresh
+/// pointer input can resume without another Show. Scroll packets therefore carry this narrower
+/// gate through the local queue and actor hop. Revoking it linearizes configuration invalidation
+/// against the peer's final data-channel send without revoking unrelated tap or keyboard input.
+public final class WebRTCInputSendAuthorization: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isRevoked = false
+
+    public init() {}
+
+    public func revoke() {
+        lock.lock()
+        isRevoked = true
+        lock.unlock()
+    }
+
+    public var isValid: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !isRevoked
+    }
+
+    public func withValidAuthorization<T>(_ operation: () throws -> T) throws -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isRevoked else {
+            throw WebRTCTransportError.inputUnavailable
+        }
+        return try operation()
+    }
+}
+
+/// Establishes one lock order for the session and narrower local-send authorization gates.
+/// Revocation never holds both locks, so this order cannot form an ABBA cycle.
+enum WebRTCInputSendAuthorizationOrder {
+    static func withValidAuthorizations<Result>(
+        inputAuthorization: WebRTCInputAuthorization,
+        sendAuthorization: WebRTCInputSendAuthorization?,
+        operation: () throws -> Result
+    ) throws -> Result {
+        try inputAuthorization.withValidAuthorization {
+            guard let sendAuthorization else {
+                return try operation()
+            }
+            return try sendAuthorization.withValidAuthorization(operation)
+        }
+    }
+}
