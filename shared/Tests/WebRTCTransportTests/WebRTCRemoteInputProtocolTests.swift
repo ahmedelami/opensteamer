@@ -39,6 +39,65 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         )
     }
 
+    func testInputSendAuthorizationRejectsRevokedWorkWithoutRevokingSession() {
+        let inputAuthorization = WebRTCInputAuthorization()
+        let sendAuthorization = WebRTCInputSendAuthorization()
+        sendAuthorization.revoke()
+
+        XCTAssertThrowsError(
+            try WebRTCInputSendAuthorizationOrder.withValidAuthorizations(
+                inputAuthorization: inputAuthorization,
+                sendAuthorization: sendAuthorization
+            ) {
+                XCTFail("A revoked configuration must not reach the final send boundary.")
+            }
+        ) { error in
+            XCTAssertEqual(error as? WebRTCTransportError, .inputUnavailable)
+        }
+        XCTAssertTrue(inputAuthorization.isValid)
+    }
+
+    func testInputSendAuthorizationLinearizesRevocationAtFinalSendBoundary() async throws {
+        let inputAuthorization = WebRTCInputAuthorization()
+        let sendAuthorization = WebRTCInputSendAuthorization()
+        let operationEntered = DispatchSemaphore(value: 0)
+        let allowOperationToFinish = DispatchSemaphore(value: 0)
+        let revocationFinished = DispatchSemaphore(value: 0)
+
+        let operation = Task.detached {
+            try WebRTCInputSendAuthorizationOrder.withValidAuthorizations(
+                inputAuthorization: inputAuthorization,
+                sendAuthorization: sendAuthorization
+            ) {
+                operationEntered.signal()
+                allowOperationToFinish.wait()
+                return true
+            }
+        }
+        XCTAssertEqual(operationEntered.wait(timeout: .now() + 1), .success)
+
+        DispatchQueue.global().async {
+            sendAuthorization.revoke()
+            revocationFinished.signal()
+        }
+        XCTAssertEqual(revocationFinished.wait(timeout: .now() + 0.05), .timedOut)
+
+        allowOperationToFinish.signal()
+        let operationCompleted = try await operation.value
+        XCTAssertTrue(operationCompleted)
+        XCTAssertEqual(revocationFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertFalse(sendAuthorization.isValid)
+        XCTAssertTrue(inputAuthorization.isValid)
+        XCTAssertThrowsError(
+            try WebRTCInputSendAuthorizationOrder.withValidAuthorizations(
+                inputAuthorization: inputAuthorization,
+                sendAuthorization: sendAuthorization
+            ) {
+                XCTFail("Revoked work must not run.")
+            }
+        )
+    }
+
 #if DEBUG
     func testViewerRejectsPrimaryDragWhenCapabilityDoesNotAdvertiseIt() async throws {
         let viewer = try WebRTCPeer(
@@ -147,6 +206,107 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         XCTAssertTrue(dragAuthorization.isValid)
         let activeCapability = await host.currentInputCapability()
         XCTAssertEqual(activeCapability, capabilityWithDrag)
+
+        await host.close(reason: .hostStopped)
+    }
+
+    func testViewerRejectsScrollWhenCapabilityDoesNotAdvertiseIt() async throws {
+        let viewer = try WebRTCPeer(
+            configuration: .init(role: .viewer, iceServers: [])
+        )
+        let capability = WebRTCInputCapability(
+            inputSessionID: sessionID,
+            screenRequestID: 13
+        )
+        let authorization = WebRTCInputAuthorization()
+        try await viewer.installViewerInputSessionForTesting(
+            capability: capability,
+            authorization: authorization
+        )
+
+        do {
+            _ = try await viewer.requestInput(
+                .scroll(
+                    anchor: .init(x: 0.5, y: 0.5),
+                    deltaX: -12,
+                    deltaY: 48
+                ),
+                viewerVideoSize: .init(width: 1_080, height: 2_340),
+                capability: capability,
+                authorization: authorization
+            )
+            XCTFail("An unadvertised scroll must not reach the native send boundary.")
+        } catch WebRTCTransportError.invalidInputRequest {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        XCTAssertTrue(authorization.isValid)
+        let activeCapability = await viewer.currentInputCapability()
+        XCTAssertEqual(activeCapability, capability)
+        await viewer.close(reason: .viewerDisconnected)
+    }
+
+    func testHostEnforcesScrollCapability() async throws {
+        let host = try WebRTCPeer(
+            configuration: .init(role: .host, iceServers: [])
+        )
+        let capabilityWithoutScroll = WebRTCInputCapability(
+            inputSessionID: sessionID,
+            screenRequestID: 14
+        )
+        let rejectedAuthorization = WebRTCInputAuthorization()
+        try await host.installHostInputSessionForTesting(
+            capability: capabilityWithoutScroll,
+            authorization: rejectedAuthorization
+        )
+
+        let scrollWasAccepted = await host.receiveInputRequestForTesting(
+            .init(
+                id: 1,
+                screenRequestID: capabilityWithoutScroll.screenRequestID,
+                inputSessionID: capabilityWithoutScroll.inputSessionID,
+                action: .scroll(
+                    anchor: .init(x: 0.5, y: 0.5),
+                    deltaX: 0,
+                    deltaY: 32
+                ),
+                viewerVideoSize: .init(width: 1_080, height: 2_340)
+            )
+        )
+        XCTAssertFalse(scrollWasAccepted)
+        XCTAssertFalse(rejectedAuthorization.isValid)
+        let capabilityAfterRejectedScroll = await host.currentInputCapability()
+        XCTAssertNil(capabilityAfterRejectedScroll)
+
+        let capabilityWithScroll = WebRTCInputCapability(
+            inputSessionID: UUID(),
+            screenRequestID: 15,
+            supportsScroll: true
+        )
+        let acceptedAuthorization = WebRTCInputAuthorization()
+        try await host.installHostInputSessionForTesting(
+            capability: capabilityWithScroll,
+            authorization: acceptedAuthorization
+        )
+        let advertisedScrollWasAccepted = await host.receiveInputRequestForTesting(
+            .init(
+                id: 2,
+                screenRequestID: capabilityWithScroll.screenRequestID,
+                inputSessionID: capabilityWithScroll.inputSessionID,
+                action: .scroll(
+                    anchor: .init(x: 0.25, y: 0.75),
+                    deltaX: -24,
+                    deltaY: 64
+                ),
+                viewerVideoSize: .init(width: 750, height: 1_334)
+            )
+        )
+        XCTAssertTrue(advertisedScrollWasAccepted)
+        XCTAssertTrue(acceptedAuthorization.isValid)
+        let activeCapability = await host.currentInputCapability()
+        XCTAssertEqual(activeCapability, capabilityWithScroll)
 
         await host.close(reason: .hostStopped)
     }
@@ -284,6 +444,42 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         XCTAssertThrowsError(try JSONEncoder().encode(invalidSizeRequest))
     }
 
+    func testScrollRequiresViewerVideoSize() throws {
+        let action = WebRTCInputAction.scroll(
+            anchor: .init(x: 0.5, y: 0.5),
+            deltaX: 0,
+            deltaY: 48
+        )
+        let missingSizeRequest = WebRTCInputRequest(
+            id: 11,
+            screenRequestID: 3,
+            inputSessionID: sessionID,
+            action: action
+        )
+        XCTAssertThrowsError(try JSONEncoder().encode(missingSizeRequest))
+        let missingSizePayload = Data(
+            #"{"id":11,"screenRequestID":3,"inputSessionID":"8D18B56A-302A-4EC2-A3DA-1070491D7814","action":{"kind":"scroll","anchor":{"x":0.5,"y":0.5},"deltaX":0,"deltaY":48}}"#.utf8
+        )
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(WebRTCInputRequest.self, from: missingSizePayload)
+        )
+
+        let boundRequest = WebRTCInputRequest(
+            id: 11,
+            screenRequestID: 3,
+            inputSessionID: sessionID,
+            action: action,
+            viewerVideoSize: .init(width: 1_080, height: 2_340)
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                WebRTCInputRequest.self,
+                from: JSONEncoder().encode(boundRequest)
+            ),
+            boundRequest
+        )
+    }
+
     func testLegacyV2AcknowledgementWithoutCapabilityStillDecodes() throws {
         let data = Data(#"{"version":2,"kind":"ack","acknowledgement":{"id":4,"state":"active"}}"#.utf8)
         XCTAssertEqual(
@@ -296,7 +492,8 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         let capability = WebRTCInputCapability(
             inputSessionID: sessionID,
             screenRequestID: 11,
-            supportsPrimaryDrag: true
+            supportsPrimaryDrag: true,
+            supportsScroll: true
         )
         let acknowledgement = WebRTCControlAcknowledgement(
             id: 11,
@@ -313,7 +510,7 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         )
     }
 
-    func testCapabilityDefaultsPrimaryDragToFalseForLegacyPayload() throws {
+    func testCapabilityDefaultsOptionalInputActionsToFalseForLegacyPayload() throws {
         let data = Data(
             #"{"protocolVersion":1,"inputSessionID":"8D18B56A-302A-4EC2-A3DA-1070491D7814","screenRequestID":11,"maxMessageBytes":4096}"#.utf8
         )
@@ -321,20 +518,23 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         let capability = try JSONDecoder().decode(WebRTCInputCapability.self, from: data)
 
         XCTAssertFalse(capability.supportsPrimaryDrag)
+        XCTAssertFalse(capability.supportsScroll)
         XCTAssertEqual(capability.protocolVersion, WebRTCInputCapability.currentProtocolVersion)
     }
 
-    func testCapabilityEncodesAndDecodesPrimaryDragSupport() throws {
+    func testCapabilityEncodesAndDecodesOptionalInputSupport() throws {
         let capability = WebRTCInputCapability(
             inputSessionID: sessionID,
             screenRequestID: 11,
-            supportsPrimaryDrag: true
+            supportsPrimaryDrag: true,
+            supportsScroll: true
         )
 
         let data = try JSONEncoder().encode(capability)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
         XCTAssertEqual(object["supportsPrimaryDrag"] as? Bool, true)
+        XCTAssertEqual(object["supportsScroll"] as? Bool, true)
         XCTAssertEqual(try JSONDecoder().decode(WebRTCInputCapability.self, from: data), capability)
     }
 
@@ -342,6 +542,7 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         let actions: [WebRTCInputAction] = [
             .tap(.init(x: 0, y: 1)),
             .primaryDrag(start: .init(x: 0.1, y: 0.2), end: .init(x: 0.8, y: 0.9)),
+            .scroll(anchor: .init(x: 0.25, y: 0.75), deltaX: -32, deltaY: 96),
             .insertText("Hello 👋", focusGeneration: 2),
             .backspace(focusGeneration: 3),
             .returnKey(focusGeneration: 4)
@@ -366,6 +567,24 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         XCTAssertEqual(object["kind"] as? String, "primaryDrag")
         XCTAssertNotNil(object["start"] as? [String: Any])
         XCTAssertNotNil(object["end"] as? [String: Any])
+        XCTAssertEqual(try JSONDecoder().decode(WebRTCInputAction.self, from: data), action)
+    }
+
+    func testScrollUsesStrictWireShape() throws {
+        let action = WebRTCInputAction.scroll(
+            anchor: .init(x: 0.25, y: 0.75),
+            deltaX: -32,
+            deltaY: 96
+        )
+
+        let data = try JSONEncoder().encode(action)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(Set(object.keys), Set(["kind", "anchor", "deltaX", "deltaY"]))
+        XCTAssertEqual(object["kind"] as? String, "scroll")
+        XCTAssertNotNil(object["anchor"] as? [String: Any])
+        XCTAssertEqual(object["deltaX"] as? Int, -32)
+        XCTAssertEqual(object["deltaY"] as? Int, 96)
         XCTAssertEqual(try JSONDecoder().decode(WebRTCInputAction.self, from: data), action)
     }
 
@@ -463,14 +682,53 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         }
     }
 
+    func testScrollEncoderRejectsInvalidAnchorZeroAndOutOfRangeDeltas() {
+        let maximum = WebRTCInputAction.maximumScrollDeltaMagnitude
+        let invalidActions: [WebRTCInputAction] = [
+            .scroll(anchor: .init(x: -.ulpOfOne, y: 0.5), deltaX: 0, deltaY: 1),
+            .scroll(anchor: .init(x: 0.5, y: 0.5), deltaX: 0, deltaY: 0),
+            .scroll(anchor: .init(x: 0.5, y: 0.5), deltaX: maximum + 1, deltaY: 0),
+            .scroll(anchor: .init(x: 0.5, y: 0.5), deltaX: 0, deltaY: -maximum - 1)
+        ]
+
+        for action in invalidActions {
+            XCTAssertThrowsError(try JSONEncoder().encode(action))
+        }
+    }
+
+    func testScrollDecoderRejectsMalformedMixedZeroAndOutOfRangePayloads() {
+        let invalidPayloads = [
+            #"{"kind":"scroll","deltaX":0,"deltaY":1}"#,
+            #"{"kind":"scroll","anchor":{"x":0.5,"y":0.5},"deltaY":1}"#,
+            #"{"kind":"scroll","anchor":{"x":0.5,"y":0.5},"deltaX":0}"#,
+            #"{"kind":"scroll","anchor":{"x":0.5,"y":0.5},"deltaX":0,"deltaY":0}"#,
+            #"{"kind":"scroll","anchor":{"x":0.5,"y":0.5},"deltaX":4097,"deltaY":0}"#,
+            #"{"kind":"scroll","anchor":{"x":0.5,"y":0.5},"deltaX":0,"deltaY":-4097}"#,
+            #"{"kind":"scroll","anchor":{"x":1.1,"y":0.5},"deltaX":0,"deltaY":1}"#,
+            #"{"kind":"scroll","anchor":{"x":0.5,"y":0.5},"deltaX":0,"deltaY":1,"point":{"x":0.5,"y":0.5}}"#,
+            #"{"kind":"scroll","anchor":{"x":0.5,"y":0.5},"deltaX":0,"deltaY":1,"start":{"x":0.1,"y":0.1}}"#,
+            #"{"kind":"scroll","anchor":{"x":0.5,"y":0.5},"deltaX":0,"deltaY":1,"text":"mixed"}"#,
+            #"{"kind":"scroll","anchor":{"x":0.5,"y":0.5},"deltaX":2147483648,"deltaY":1}"#
+        ]
+
+        for payload in invalidPayloads {
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(WebRTCInputAction.self, from: Data(payload.utf8)),
+                "Expected rejection for \(payload)"
+            )
+        }
+    }
+
     func testDecoderRejectsMixedActionPayloadsAndControlText() {
         let mixed = Data(#"{"kind":"tap","point":{"x":0.5,"y":0.5},"focusGeneration":1}"#.utf8)
         let tapWithDrag = Data(#"{"kind":"tap","point":{"x":0.5,"y":0.5},"start":{"x":0.1,"y":0.1},"end":{"x":0.9,"y":0.9}}"#.utf8)
+        let tapWithScroll = Data(#"{"kind":"tap","point":{"x":0.5,"y":0.5},"deltaX":0,"deltaY":1}"#.utf8)
         let newline = Data(#"{"kind":"text","text":"line\nfeed","focusGeneration":1}"#.utf8)
         let zeroGeneration = Data(#"{"kind":"backspace","focusGeneration":0}"#.utf8)
 
         XCTAssertThrowsError(try JSONDecoder().decode(WebRTCInputAction.self, from: mixed))
         XCTAssertThrowsError(try JSONDecoder().decode(WebRTCInputAction.self, from: tapWithDrag))
+        XCTAssertThrowsError(try JSONDecoder().decode(WebRTCInputAction.self, from: tapWithScroll))
         XCTAssertThrowsError(try JSONDecoder().decode(WebRTCInputAction.self, from: newline))
         XCTAssertThrowsError(try JSONDecoder().decode(WebRTCInputAction.self, from: zeroGeneration))
     }

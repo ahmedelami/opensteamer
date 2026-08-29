@@ -54,12 +54,14 @@
 		D1336366C939E9D02ECF6925 /* WorldwideScreenViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22BA2C0E3FA5E56CBEFF2B54 /* WorldwideScreenViewerView.swift */; };
 		D2FB014BB9E23EC04BBBE548 /* ScreenVideoClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BDB3748CE96A0E684F2EF76 /* ScreenVideoClient.swift */; };
 		D4EAE6BA0BBBC5807F6B32F6 /* WorldwideRemoteInputLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11FA42392B5E334511C469E /* WorldwideRemoteInputLifecycleTests.swift */; };
+		D7DA2F47EE5B5EF6EBCF40C7 /* RemoteScrollGesturePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4F9F8CF671205198FE2CCDB /* RemoteScrollGesturePolicy.swift */; };
 		D89D6AFCD4145A0A6EF255D9 /* PhysicalOracleEvaluator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77E21C152BA0763A029B6EA5 /* PhysicalOracleEvaluator.swift */; };
 		DB46B27CD3BB1CC0812D07A0 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B627D77889C9E574BD3AF2F5 /* KeychainStore.swift */; };
 		DCC8E31D0010C395981E59BC /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CA340C807653853951DB090 /* DiagnosticsView.swift */; };
 		DFD966915181FF541A343040 /* BonjourBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65CCD3F1ABD9D4172744A0F4 /* BonjourBrowser.swift */; };
 		E0CFAFCA3B3074DC9A70FEC2 /* BackgroundPlaybackCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 093577922497DF95FEAFD8EF /* BackgroundPlaybackCoordinator.swift */; };
 		E70EEBCEDCB6197A7AF99513 /* RemoteSessionCore in Frameworks */ = {isa = PBXBuildFile; productRef = C90C3F3FA906FF223BDF865B /* RemoteSessionCore */; };
+		EA28552E783109EE7CEB283A /* RemotePointerGestureSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4AE757E2363D02C7C78F641 /* RemotePointerGestureSurface.swift */; };
 		F5EC00BDA63D36E530D77711 /* WorldwideAudioLifecycleController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D8B7D553630E727E5BA02A0 /* WorldwideAudioLifecycleController.swift */; };
 /* End PBXBuildFile section */
 
@@ -117,6 +119,8 @@
 		8CAA833D0E3961518CB2AF39 /* InvitationAcceptanceAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InvitationAcceptanceAction.swift; sourceTree = "<group>"; };
 		90600912C0AAEC02C723EDA9 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A452CD7D5104C509DB5D168E /* ScreenViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenViewerView.swift; sourceTree = "<group>"; };
+		A4AE757E2363D02C7C78F641 /* RemotePointerGestureSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotePointerGestureSurface.swift; sourceTree = "<group>"; };
+		A4F9F8CF671205198FE2CCDB /* RemoteScrollGesturePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteScrollGesturePolicy.swift; sourceTree = "<group>"; };
 		B627D77889C9E574BD3AF2F5 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		B740987453823FD64F7C0982 /* RemoteKeyboardInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteKeyboardInputView.swift; sourceTree = "<group>"; };
 		C9E111D70F8EAA03A7EE07F2 /* opensteamerTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = opensteamerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -193,7 +197,9 @@
 				6F7ADE624FB3E8EF2976F099 /* AspectFitCoordinateMapper.swift */,
 				3509D44693CBE35F3D3D8633 /* H264SampleBuilder.swift */,
 				B740987453823FD64F7C0982 /* RemoteKeyboardInputView.swift */,
+				A4AE757E2363D02C7C78F641 /* RemotePointerGestureSurface.swift */,
 				89D2E46B6C68480FE21BE89A /* RemotePrimaryDragGesturePolicy.swift */,
+				A4F9F8CF671205198FE2CCDB /* RemoteScrollGesturePolicy.swift */,
 				FE5308EFBD1542023CA23117 /* SampleBufferScreenView.swift */,
 				CCF50C685C4CBFD9F3AC8546 /* ScreenVideoRenderer.swift */,
 				FB6E5C0C5FD82651759A73F3 /* WebRTCRemoteScreenView.swift */,
@@ -497,7 +503,9 @@
 				70D49162C0A5742D3966087D /* OpensteamerApp.swift in Sources */,
 				9D6CA655E54E17D37AC4035E /* PlayerView.swift in Sources */,
 				0A6518B4EB4B3E68DC6BD363 /* RemoteKeyboardInputView.swift in Sources */,
+				EA28552E783109EE7CEB283A /* RemotePointerGestureSurface.swift in Sources */,
 				BBADB8147D541A4D9973FD50 /* RemotePrimaryDragGesturePolicy.swift in Sources */,
+				D7DA2F47EE5B5EF6EBCF40C7 /* RemoteScrollGesturePolicy.swift in Sources */,
 				683C25329BC8E20088E6116B /* RemoteTokenState.swift in Sources */,
 				AB264D96599E5BE958D377C3 /* SampleBufferScreenView.swift in Sources */,
 				70C2F5089C84108917111CF0 /* ScreenSessionViewModel.swift in Sources */,

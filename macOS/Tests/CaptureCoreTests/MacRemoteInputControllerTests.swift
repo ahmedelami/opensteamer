@@ -1039,6 +1039,268 @@ final class MacRemoteInputControllerTests: XCTestCase {
         XCTAssertEqual(system.postedDragEvents.count, 8)
     }
 
+    // MARK: - Stateless scrolling
+
+    func testScrollMapsAnchorAndPreservesExactViewerDeltasAtOneX() throws {
+        let system = MockMacRemoteInputSystem()
+        system.bounds = CGRect(x: -1_920, y: -400, width: 1_920, height: 1_080)
+        let controller = armedController(system: system)
+
+        XCTAssertEqual(
+            scroll(
+                controller,
+                anchor: .init(x: 0.25, y: 0.75),
+                deltaX: -17,
+                deltaY: 29
+            ),
+            .accepted(.none)
+        )
+        XCTAssertEqual(system.postedScrollEvents.count, 1)
+        let posted = try XCTUnwrap(system.postedScrollEvents.first)
+        XCTAssertEqual(posted.point.x, -1_440, accuracy: 0.0001)
+        XCTAssertEqual(posted.point.y, 410, accuracy: 0.0001)
+        XCTAssertEqual(posted.deltaX, -17)
+        XCTAssertEqual(posted.deltaY, 29)
+        XCTAssertTrue(system.postedMousePoints.isEmpty)
+        XCTAssertTrue(system.postedDragEvents.isEmpty)
+    }
+
+    func testScrollConvertsTwoXFramebufferPixelsWithCumulativeRemainders() throws {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        system.bounds = CGRect(x: 0, y: 0, width: 540, height: 1_170)
+        let controller = MacRemoteInputController(
+            allowRemoteControl: true,
+            system: system,
+            clock: clock
+        )
+        XCTAssertEqual(
+            controller.arm(displayID: displayID, screenRequestID: showID, inputSessionID: sessionID),
+            .armed
+        )
+        let geometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_080,
+                surfaceHeight: 2_340,
+                contentRect: CGRect(x: 0, y: 0, width: 540, height: 1_170),
+                contentScale: 1,
+                scaleFactor: 2
+            )
+        )
+        stabilize(geometry, on: controller, clock: clock)
+        let viewerSize = MacRemoteInputVideoSize(width: 1_080, height: 2_340)
+
+        XCTAssertEqual(
+            scroll(controller, deltaX: 3, deltaY: -5, viewerVideoSize: viewerSize),
+            .accepted(.none)
+        )
+        XCTAssertEqual(
+            scroll(controller, deltaX: 3, deltaY: -5, viewerVideoSize: viewerSize),
+            .accepted(.none)
+        )
+
+        XCTAssertEqual(system.postedScrollEvents.map(\.deltaX), [1, 2])
+        XCTAssertEqual(system.postedScrollEvents.map(\.deltaY), [-2, -3])
+        XCTAssertEqual(system.postedScrollEvents.reduce(0) { $0 + $1.deltaX }, 3)
+        XCTAssertEqual(system.postedScrollEvents.reduce(0) { $0 + $1.deltaY }, -5)
+    }
+
+    func testScrollUsesAxisAwareScaleForAdaptedDecoderFrame() throws {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        system.bounds = CGRect(x: 0, y: 0, width: 603, height: 1_311)
+        let controller = MacRemoteInputController(
+            allowRemoteControl: true,
+            system: system,
+            clock: clock
+        )
+        XCTAssertEqual(
+            controller.arm(displayID: displayID, screenRequestID: showID, inputSessionID: sessionID),
+            .armed
+        )
+        let geometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_206,
+                surfaceHeight: 2_622,
+                contentRect: CGRect(x: 0, y: 0, width: 603, height: 1_311),
+                contentScale: 1,
+                scaleFactor: 2
+            )
+        )
+        stabilize(geometry, on: controller, clock: clock)
+
+        XCTAssertEqual(
+            scroll(
+                controller,
+                deltaX: 602,
+                deltaY: -1_310,
+                viewerVideoSize: .init(width: 602, height: 1_310)
+            ),
+            .accepted(.none)
+        )
+
+        let posted = try XCTUnwrap(system.postedScrollEvents.first)
+        XCTAssertEqual(posted.deltaX, 603)
+        XCTAssertEqual(posted.deltaY, -1_311)
+    }
+
+    func testCoreGraphicsScrollUsesPixelUnitsAtAnchorWithoutMouseButtonEvents() throws {
+        let implementation = try controllerSourceSlice(
+            after: "    /// Posts one location-targeted smooth scroll without synthesizing mouse-button state.",
+            before: "    /// Posts prevalidated UTF-16 text as a balanced keyboard event pair."
+        )
+
+        XCTAssertTrue(implementation.contains("scrollWheelEvent2Source: source"))
+        XCTAssertTrue(implementation.contains("units: .pixel"))
+        XCTAssertTrue(implementation.contains("wheel1: deltaY"))
+        XCTAssertTrue(implementation.contains("wheel2: deltaX"))
+        XCTAssertTrue(implementation.contains("event.location = point"))
+        XCTAssertTrue(implementation.contains("event.post(tap: .cghidEventTap)"))
+        XCTAssertFalse(implementation.contains("mouseEventSource:"))
+        XCTAssertFalse(implementation.contains("leftMouseDown"))
+        XCTAssertFalse(implementation.contains("leftMouseUp"))
+    }
+
+    func testScrollRequiresViewerSizeAndStableCompatibleFrameGeometry() throws {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        let controller = armedController(system: system, clock: clock)
+
+        let missingSize = controller.handleScrollWithDiagnostics(
+            screenRequestID: showID,
+            inputSessionID: sessionID,
+            anchor: .init(x: 0.5, y: 0.5),
+            deltaX: 0,
+            deltaY: 12
+        )
+        XCTAssertEqual(missingSize.result, .rejected(.screenFormatChanging))
+        XCTAssertEqual(missingSize.screenFormatDiagnostic?.reason, .viewerSizeMissing)
+
+        let replacement = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_080,
+                surfaceHeight: 1_920,
+                contentRect: CGRect(x: 0, y: 0, width: 1_080, height: 1_920),
+                contentScale: 1,
+                scaleFactor: 1
+            )
+        )
+        controller.updateScreenVideoFrameGeometry(replacement)
+        XCTAssertEqual(scroll(controller), .rejected(.screenFormatChanging))
+        clock.advance(by: 0.750)
+        XCTAssertEqual(
+            scroll(controller, viewerVideoSize: .init(width: 1_080, height: 1_920)),
+            .rejected(.screenFormatChanging),
+            "A frame shape incompatible with the captured display remains fenced"
+        )
+        XCTAssertTrue(system.postedScrollEvents.isEmpty)
+    }
+
+    func testScrollRejectsStaleSessionInvalidAnchorAndOutOfContractDeltas() {
+        let system = MockMacRemoteInputSystem()
+        let controller = armedController(system: system)
+
+        XCTAssertEqual(
+            controller.handleScroll(
+                screenRequestID: showID + 1,
+                inputSessionID: sessionID,
+                anchor: .init(x: 0.5, y: 0.5),
+                deltaX: 1,
+                deltaY: 1,
+                viewerVideoSize: .init(width: 1_920, height: 1_080)
+            ),
+            .rejected(.staleSession)
+        )
+        XCTAssertEqual(
+            scroll(controller, anchor: .init(x: .nan, y: 0.5)),
+            .rejected(.invalidPoint)
+        )
+        XCTAssertEqual(scroll(controller, deltaX: 0, deltaY: 0), .rejected(.invalidScrollDelta))
+        XCTAssertEqual(
+            scroll(controller, deltaX: 4_097, deltaY: 0),
+            .rejected(.invalidScrollDelta)
+        )
+        XCTAssertEqual(
+            scroll(controller, deltaX: 0, deltaY: -4_097),
+            .rejected(.invalidScrollDelta)
+        )
+        XCTAssertEqual(
+            scroll(
+                controller,
+                deltaX: 4_096,
+                deltaY: 0,
+                viewerVideoSize: .init(width: 32, height: 18)
+            ),
+            .rejected(.invalidScrollDelta),
+            "An untrusted adapted-frame size cannot amplify a bounded wire delta"
+        )
+        XCTAssertTrue(system.postedScrollEvents.isEmpty)
+
+        XCTAssertEqual(scroll(controller, deltaX: 4_096, deltaY: -4_096), .accepted(.none))
+    }
+
+    func testScrollRechecksPermissionsAndDisplayBeforePosting() {
+        let system = MockMacRemoteInputSystem()
+        let controller = armedController(system: system)
+
+        system.permissions = .init(accessibilityTrusted: true, postEventAllowed: false)
+        XCTAssertEqual(scroll(controller), .rejected(.permissionRequired))
+        XCTAssertTrue(system.postedScrollEvents.isEmpty)
+
+        system.permissions = .init(accessibilityTrusted: true, postEventAllowed: true)
+        XCTAssertEqual(scroll(controller), .rejected(.staleSession))
+        XCTAssertEqual(
+            controller.arm(displayID: displayID, screenRequestID: showID, inputSessionID: sessionID),
+            .armed
+        )
+        system.bounds = nil
+        XCTAssertEqual(scroll(controller), .rejected(.displayUnavailable))
+        XCTAssertTrue(system.postedScrollEvents.isEmpty)
+    }
+
+    func testScrollHasIndependentSixtyHertzBudgetWithBoundedBurstAndClearsKeyboardGrant() {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        let field = system.makeElement(role: "AXTextField", settable: true)
+        system.hitElement = field
+        system.currentFocusedElement = field
+        let controller = armedController(system: system, clock: clock)
+        XCTAssertEqual(tap(controller), .accepted(.editable(generation: 1, secure: false)))
+
+        for _ in 0..<8 {
+            XCTAssertEqual(scroll(controller), .accepted(.none))
+        }
+        XCTAssertEqual(scroll(controller), .rejected(.rateLimited))
+        XCTAssertEqual(system.postedScrollEvents.count, 8)
+        XCTAssertEqual(
+            text(controller, generation: 1, value: "blocked after scroll"),
+            .rejected(.focusChanged)
+        )
+
+        // Scroll does not consume the tap/drag budget, and one token refills per display frame.
+        XCTAssertEqual(tap(controller), .accepted(.editable(generation: 2, secure: false)))
+        clock.advance(by: 0.017)
+        XCTAssertEqual(scroll(controller), .accepted(.none))
+    }
+
+    func testScrollBackendFailurePostsNoOtherPointerActionAndGrantsNoFocus() {
+        let system = MockMacRemoteInputSystem()
+        let field = system.makeElement(role: "AXTextField", settable: true)
+        system.hitElement = field
+        system.currentFocusedElement = field
+        system.scrollPostSucceeds = false
+        let controller = armedController(system: system)
+
+        XCTAssertEqual(scroll(controller), .rejected(.injectionFailed))
+        XCTAssertTrue(system.postedScrollEvents.isEmpty)
+        XCTAssertTrue(system.postedMousePoints.isEmpty)
+        XCTAssertTrue(system.postedDragEvents.isEmpty)
+        XCTAssertEqual(
+            text(controller, generation: 1, value: "blocked"),
+            .rejected(.focusChanged)
+        )
+    }
+
     // MARK: - Accessibility focus and keyboard capability
 
     func testSecureEditableAncestorNeverGrantsRemoteKeyboardFocus() {
@@ -1224,7 +1486,9 @@ final class MacRemoteInputControllerTests: XCTestCase {
 
         controller.revoke()
         XCTAssertEqual(tap(controller), .rejected(.staleSession))
+        XCTAssertEqual(scroll(controller), .rejected(.staleSession))
         XCTAssertEqual(system.postedMousePoints.count, 3)
+        XCTAssertTrue(system.postedScrollEvents.isEmpty)
     }
 
     func testPermissionsAreRecheckedForEveryAction() {
@@ -1461,10 +1725,12 @@ final class MacRemoteInputControllerTests: XCTestCase {
 
         XCTAssertEqual(tap(controller), .rejected(.disabled))
         XCTAssertEqual(drag(controller), .rejected(.disabled))
+        XCTAssertEqual(scroll(controller), .rejected(.disabled))
         XCTAssertEqual(text(controller, generation: 1, value: "blocked"), .rejected(.disabled))
         XCTAssertEqual(key(controller, generation: 1), .rejected(.disabled))
         XCTAssertEqual(system.postedMousePoints.count, 1)
         XCTAssertTrue(system.postedDragEvents.isEmpty)
+        XCTAssertTrue(system.postedScrollEvents.isEmpty)
         XCTAssertTrue(system.postedTexts.isEmpty)
         XCTAssertTrue(system.postedKeys.isEmpty)
     }
@@ -1592,6 +1858,23 @@ final class MacRemoteInputControllerTests: XCTestCase {
         )
     }
 
+    private func scroll(
+        _ controller: MacRemoteInputController,
+        anchor: MacRemoteNormalizedPoint = .init(x: 0.5, y: 0.5),
+        deltaX: Int32 = 0,
+        deltaY: Int32 = 12,
+        viewerVideoSize: MacRemoteInputVideoSize = .init(width: 1_920, height: 1_080)
+    ) -> MacRemoteInputResult {
+        controller.handleScroll(
+            screenRequestID: showID,
+            inputSessionID: sessionID,
+            anchor: anchor,
+            deltaX: deltaX,
+            deltaY: deltaY,
+            viewerVideoSize: viewerVideoSize
+        )
+    }
+
     private func key(
         _ controller: MacRemoteInputController,
         generation: UInt64
@@ -1615,6 +1898,28 @@ final class MacRemoteInputControllerTests: XCTestCase {
             focusGeneration: generation,
             text: value
         )
+    }
+
+    private func controllerSourceSlice(
+        after startMarker: String,
+        before endMarker: String
+    ) throws -> String {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "macOS/Sources/CaptureCore/MacRemoteInputController.swift"
+            ),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: startMarker)?.upperBound)
+        let end = try XCTUnwrap(
+            source.range(of: endMarker, range: start..<source.endIndex)?.lowerBound
+        )
+        return String(source[start..<end])
     }
 }
 
@@ -1651,6 +1956,12 @@ private final class MockMacRemoteInputSystem: @unchecked Sendable, MacRemoteInpu
         case up(CGPoint)
     }
 
+    struct PostedScrollEvent: Equatable {
+        let point: CGPoint
+        let deltaX: Int32
+        let deltaY: Int32
+    }
+
     struct Node {
         // Parent links model field editors and nested secure/editable accessibility containers.
         var parent: MacRemoteAccessibilityElement?
@@ -1673,11 +1984,13 @@ private final class MockMacRemoteInputSystem: @unchecked Sendable, MacRemoteInpu
 
     var mousePostSucceeds = true
     var dragPostSucceeds = true
+    var scrollPostSucceeds = true
     var textPostSucceeds = true
     var keyPostSucceeds = true
 
     private(set) var postedMousePoints: [CGPoint] = []
     private(set) var postedDragEvents: [PostedDragEvent] = []
+    private(set) var postedScrollEvents: [PostedScrollEvent] = []
     private(set) var postedTexts: [String] = []
     private(set) var postedKeys: [MacRemoteInputKey] = []
     private var nodes: [ObjectIdentifier: Node] = [:]
@@ -1783,6 +2096,14 @@ private final class MockMacRemoteInputSystem: @unchecked Sendable, MacRemoteInpu
             }
         )
         postedDragEvents.append(.up(end))
+        return true
+    }
+
+    func postScroll(at point: CGPoint, deltaX: Int32, deltaY: Int32) -> Bool {
+        guard scrollPostSucceeds else { return false }
+        postedScrollEvents.append(
+            PostedScrollEvent(point: point, deltaX: deltaX, deltaY: deltaY)
+        )
         return true
     }
 
