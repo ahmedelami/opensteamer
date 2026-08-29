@@ -2140,12 +2140,15 @@ public actor WebRTCPeer {
     #endif
 
     private let role: RemotePeerRole
+    private let configuredMaximumVideoBitrate: Int?
     private let eventContinuation: AsyncStream<WebRTCTransportEvent>.Continuation
     private let factory: LKRTCPeerConnectionFactory
     private let peerConnection: LKRTCPeerConnection
     private let delegateProxy: WebRTCDelegateProxy
     private let localAudioTrack: LKRTCAudioTrack?
     private let localVideoTrack: LKRTCVideoTrack?
+    private let localVideoSender: LKRTCRtpSender?
+    private var screenVideoEncodingUpdateGeneration: UInt64 = 0
     private let localIPhoneMicrophoneTrack: LKRTCAudioTrack?
     private let iPhoneMicrophoneReceiverID: String?
     private let iPhoneMicrophonePeerEpoch = UUID()
@@ -2285,6 +2288,7 @@ public actor WebRTCPeer {
         events = eventPair.stream
         eventContinuation = eventPair.continuation
         role = configuration.role
+        configuredMaximumVideoBitrate = configuration.maximumVideoBitrate
 
         let encoderFactory = LKRTCDefaultVideoEncoderFactory()
         if let h264 = LKRTCDefaultVideoEncoderFactory.supportedCodecs().first(where: {
@@ -2579,6 +2583,7 @@ public actor WebRTCPeer {
                 )
             )
             localVideoTrack = videoTrack
+            localVideoSender = videoTransceiver.sender
             externalVideoCapturer = MacExternalVideoCapturer(source: videoSource)
 
             let dataChannelConfiguration = LKRTCDataChannelConfiguration()
@@ -2598,16 +2603,22 @@ public actor WebRTCPeer {
             localAudioTrack = nil
             externalAudioCapturer = nil
             localVideoTrack = nil
+            localVideoSender = nil
             externalVideoCapturer = nil
         }
         iPhoneMicrophoneReceiverID = configuredIPhoneMicrophoneReceiverID
 
         if let maximumVideoBitrate = configuration.maximumVideoBitrate {
-            _ = nativePeer.setBweMinBitrateBps(
+            guard maximumVideoBitrate > 0,
+                  nativePeer.setBweMinBitrateBps(
                 nil,
                 currentBitrateBps: nil,
                 maxBitrateBps: NSNumber(value: maximumVideoBitrate)
-            )
+                  ) else {
+                throw WebRTCTransportError.nativeFailure(
+                    "WebRTC rejected the configured total RTP bandwidth ceiling."
+                )
+            }
         }
     }
 
@@ -4579,6 +4590,208 @@ public actor WebRTCPeer {
     /// keep these states connected while a restart is being negotiated.
     public func isTransportHealthyForCapture() -> Bool {
         role == .host && isTransportHealthyForMedia()
+    }
+
+    /// Applies proportional, single-layer screen-video ceilings without changing the capture
+    /// surface or its remote-input coordinate space.
+    public func applyScreenVideoEncodingLimits(
+        _ limits: WebRTCScreenVideoEncodingLimits
+    ) throws -> WebRTCScreenVideoEncodingUpdate {
+        try ensureOpen()
+        guard role == .host, let localVideoSender else {
+            throw WebRTCTransportError.invalidRole
+        }
+        let maximumAllowedBitrate = configuredMaximumVideoBitrate ?? Int.max
+        guard limits.maximumBitrateBps >= 1,
+              limits.maximumBitrateBps <= maximumAllowedBitrate,
+              (1 ... 240).contains(limits.maximumFramesPerSecond),
+              limits.scaleResolutionDownBy.isFinite,
+              (1 ... 16).contains(limits.scaleResolutionDownBy) else {
+            throw WebRTCTransportError.nativeFailure(
+                "Invalid screen-video encoding limits."
+            )
+        }
+
+        guard let previousState = Self.screenVideoEncodingState(
+            from: localVideoSender
+        ) else {
+            throw WebRTCTransportError.nativeFailure(
+                "The screen-video sender did not expose exactly one RTP encoding."
+            )
+        }
+        let requestedState = ScreenVideoNativeEncodingState(
+            maximumBitrateBps: limits.maximumBitrateBps,
+            minimumBitrateBps: nil,
+            maximumFramesPerSecond: limits.maximumFramesPerSecond,
+            scaleResolutionDownBy: limits.scaleResolutionDownBy
+        )
+        guard Self.setScreenVideoEncodingState(
+            requestedState,
+            on: localVideoSender
+        ) else {
+            let restored = Self.setScreenVideoEncodingState(
+                previousState,
+                on: localVideoSender
+            )
+            throw WebRTCTransportError.nativeFailure(
+                restored
+                    ? "WebRTC rejected the screen-video encoding limits."
+                    : "WebRTC rejected the screen-video encoding limits and their rollback."
+            )
+        }
+
+        screenVideoEncodingUpdateGeneration &+= 1
+        return WebRTCScreenVideoEncodingUpdate(
+            generation: screenVideoEncodingUpdateGeneration,
+            previousMaximumBitrateBps: previousState.maximumBitrateBps,
+            previousMinimumBitrateBps: previousState.minimumBitrateBps,
+            previousMaximumFramesPerSecond:
+                previousState.maximumFramesPerSecond,
+            previousScaleResolutionDownBy:
+                previousState.scaleResolutionDownBy,
+            appliedLimits: limits
+        )
+    }
+
+    /// Reverts one stale cross-actor update only if no newer sender mutation has won.
+    @discardableResult
+    public func rollbackScreenVideoEncodingUpdateIfCurrent(
+        _ update: WebRTCScreenVideoEncodingUpdate
+    ) throws -> Bool {
+        try ensureOpen()
+        guard role == .host, let localVideoSender else {
+            throw WebRTCTransportError.invalidRole
+        }
+        guard update.generation == screenVideoEncodingUpdateGeneration else {
+            return false
+        }
+        let appliedState = ScreenVideoNativeEncodingState(
+            maximumBitrateBps: update.appliedLimits.maximumBitrateBps,
+            minimumBitrateBps: nil,
+            maximumFramesPerSecond:
+                update.appliedLimits.maximumFramesPerSecond,
+            scaleResolutionDownBy:
+                update.appliedLimits.scaleResolutionDownBy
+        )
+        guard let currentState = Self.screenVideoEncodingState(
+            from: localVideoSender
+        ), Self.screenVideoEncodingStatesMatch(currentState, appliedState) else {
+            return false
+        }
+        let previousState = ScreenVideoNativeEncodingState(
+            maximumBitrateBps: update.previousMaximumBitrateBps,
+            minimumBitrateBps: update.previousMinimumBitrateBps,
+            maximumFramesPerSecond:
+                update.previousMaximumFramesPerSecond,
+            scaleResolutionDownBy:
+                update.previousScaleResolutionDownBy
+        )
+        guard Self.setScreenVideoEncodingState(
+            previousState,
+            on: localVideoSender
+        ) else {
+            throw WebRTCTransportError.nativeFailure(
+                "WebRTC rejected a stale screen-video encoding rollback."
+            )
+        }
+        screenVideoEncodingUpdateGeneration &+= 1
+        return true
+    }
+
+    #if DEBUG
+    func screenVideoEncodingLimitsForTesting()
+        -> WebRTCScreenVideoEncodingLimits? {
+        localVideoSender.flatMap(Self.screenVideoEncodingLimits)
+    }
+    #endif
+
+    private static func screenVideoEncodingLimits(
+        from sender: LKRTCRtpSender
+    ) -> WebRTCScreenVideoEncodingLimits? {
+        guard let state = screenVideoEncodingState(from: sender),
+              state.minimumBitrateBps == nil,
+              let maximumBitrateBps = state.maximumBitrateBps,
+              let maximumFramesPerSecond = state.maximumFramesPerSecond,
+              let scaleResolutionDownBy = state.scaleResolutionDownBy else {
+            return nil
+        }
+        return WebRTCScreenVideoEncodingLimits(
+            maximumBitrateBps: maximumBitrateBps,
+            maximumFramesPerSecond: maximumFramesPerSecond,
+            scaleResolutionDownBy: scaleResolutionDownBy
+        )
+    }
+
+    private struct ScreenVideoNativeEncodingState {
+        let maximumBitrateBps: Int?
+        let minimumBitrateBps: Int?
+        let maximumFramesPerSecond: Int?
+        let scaleResolutionDownBy: Double?
+    }
+
+    private static func screenVideoEncodingState(
+        from sender: LKRTCRtpSender
+    ) -> ScreenVideoNativeEncodingState? {
+        let encodings = sender.parameters.encodings
+        guard encodings.count == 1,
+              let encoding = encodings.first else {
+            return nil
+        }
+        return ScreenVideoNativeEncodingState(
+            maximumBitrateBps: encoding.maxBitrateBps?.intValue,
+            minimumBitrateBps: encoding.minBitrateBps?.intValue,
+            maximumFramesPerSecond: encoding.maxFramerate?.intValue,
+            scaleResolutionDownBy:
+                encoding.scaleResolutionDownBy?.doubleValue
+        )
+    }
+
+    private static func setScreenVideoEncodingState(
+        _ state: ScreenVideoNativeEncodingState,
+        on sender: LKRTCRtpSender
+    ) -> Bool {
+        let parameters = sender.parameters
+        guard parameters.encodings.count == 1,
+              let encoding = parameters.encodings.first else {
+            return false
+        }
+        encoding.maxBitrateBps = state.maximumBitrateBps.map(NSNumber.init)
+        encoding.minBitrateBps = state.minimumBitrateBps.map(NSNumber.init)
+        encoding.maxFramerate = state.maximumFramesPerSecond.map(NSNumber.init)
+        encoding.scaleResolutionDownBy =
+            state.scaleResolutionDownBy.map(NSNumber.init)
+        sender.parameters = parameters
+        guard let applied = screenVideoEncodingState(from: sender) else {
+            return false
+        }
+        return screenVideoEncodingStatesMatch(applied, state)
+    }
+
+    private static func screenVideoEncodingStatesMatch(
+        _ lhs: ScreenVideoNativeEncodingState,
+        _ rhs: ScreenVideoNativeEncodingState
+    ) -> Bool {
+        lhs.maximumBitrateBps == rhs.maximumBitrateBps
+            && lhs.minimumBitrateBps == rhs.minimumBitrateBps
+            && lhs.maximumFramesPerSecond == rhs.maximumFramesPerSecond
+            && optionalEncodingScaleMatches(
+                lhs.scaleResolutionDownBy,
+                rhs.scaleResolutionDownBy
+            )
+    }
+
+    private static func optionalEncodingScaleMatches(
+        _ lhs: Double?,
+        _ rhs: Double?
+    ) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil):
+            true
+        case let (lhs?, rhs?):
+            abs(lhs - rhs) <= 0.000_001
+        default:
+            false
+        }
     }
 
     private func isTransportHealthyForMedia() -> Bool {

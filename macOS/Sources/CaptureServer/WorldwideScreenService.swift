@@ -363,6 +363,8 @@ actor WorldwideScreenService {
     private let maximumWidth: Int
     private let framesPerSecond: Int
     private let maximumVideoBitrate: Int
+    private var screenVideoAdaptationPolicy:
+        WorldwideScreenVideoAdaptationPolicy
     private let remoteInputController: MacRemoteInputController
     private weak var captureLifetime: CaptureServiceLifetime?
     private let captureLifetimeIsRequired: Bool
@@ -414,6 +416,9 @@ actor WorldwideScreenService {
     private var captureForwardingAuthorization: WebRTCControlAuthorization?
     private var captureDisplayID: UInt32?
     private var captureAuthoritativeDisplayBounds: CGRect?
+    private var captureVideoBaseDimensions: ScreenVideoPixelDimensions?
+    private var appliedScreenVideoRecommendation:
+        WorldwideScreenVideoEncodingRecommendation?
     private var audioSource: SystemAudioCaptureSource?
     private var audioSink: WorldwideSystemAudioSampleSink?
     private var audioAuthorization: WebRTCAudioAuthorization?
@@ -622,6 +627,10 @@ actor WorldwideScreenService {
         self.maximumWidth = maximumWidth
         self.framesPerSecond = framesPerSecond
         self.maximumVideoBitrate = maximumVideoBitrate
+        screenVideoAdaptationPolicy = WorldwideScreenVideoAdaptationPolicy(
+            configuredTotalRTPBitrateBps: maximumVideoBitrate,
+            baseFramesPerSecond: framesPerSecond
+        )
         self.remoteInputController = remoteInputController
         self.captureLifetime = captureLifetime
         captureLifetimeIsRequired = captureLifetime != nil
@@ -669,6 +678,10 @@ actor WorldwideScreenService {
         self.maximumWidth = maximumWidth
         self.framesPerSecond = framesPerSecond
         self.maximumVideoBitrate = maximumVideoBitrate
+        screenVideoAdaptationPolicy = WorldwideScreenVideoAdaptationPolicy(
+            configuredTotalRTPBitrateBps: maximumVideoBitrate,
+            baseFramesPerSecond: framesPerSecond
+        )
         self.remoteInputController = remoteInputController
         self.captureLifetime = captureLifetime
         captureLifetimeIsRequired = captureLifetime != nil
@@ -965,6 +978,8 @@ actor WorldwideScreenService {
         safeOutputInvariantRetryPolicy.reset()
         peerGeneration &+= 1
         let generation = peerGeneration
+        screenVideoAdaptationPolicy.bind(toPeerGeneration: generation)
+        appliedScreenVideoRecommendation = nil
         highestRestartRequestID = nil
         peerIsConnected = false
         iceIsConnected = false
@@ -1199,6 +1214,7 @@ actor WorldwideScreenService {
 
         case .routeChanged(let route):
             logger.info("Worldwide WebRTC route: \(route.kind.rawValue)")
+            screenVideoAdaptationPolicy.invalidateSelectedRoute()
 
         case .statistics(let snapshot):
             guard peer === sourcePeer,
@@ -1300,6 +1316,15 @@ actor WorldwideScreenService {
                 logger.info(selection)
             }
             await maintainWorldwideSafeOutputInvariant()
+            guard peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration else {
+                return
+            }
+            await adaptScreenVideoForNetworkConditions(
+                snapshot,
+                sourcePeer: sourcePeer,
+                sourcePeerGeneration: sourcePeerGeneration
+            )
 
         case .iceCandidateError(let error):
             logger.error(
@@ -1318,6 +1343,117 @@ actor WorldwideScreenService {
 
         case .identityReceived, .remoteVideoTrack, .negotiationNeeded:
             break
+        }
+    }
+
+    /// Applies a new sender ceiling only after the current capture and peer identities survive
+    /// the cross-actor parameter update. Failed native updates are retried by the next sample.
+    private func adaptScreenVideoForNetworkConditions(
+        _ snapshot: WebRTCStatisticsSnapshot,
+        sourcePeer: WebRTCPeer,
+        sourcePeerGeneration: UInt64
+    ) async {
+        let forwardingAuthorization = captureForwardingAuthorization
+        let isCaptureActive = captureSource != nil
+            && captureSink != nil
+            && captureAuthorization?.isValid == true
+            && forwardingAuthorization?.isValid == true
+            && forwardingAuthorization.map {
+                captureSink?.allowsActiveUse(authorizedBy: $0) == true
+            } == true
+
+        var proposedPolicy = screenVideoAdaptationPolicy
+        let changedRecommendation = proposedPolicy.update(
+            peerGeneration: sourcePeerGeneration,
+            isCaptureActive: isCaptureActive,
+            availableOutgoingBitrateBps: snapshot.availableOutgoingBitrate,
+            currentRoundTripTimeSeconds: snapshot.currentRoundTripTime,
+            selectedRoute: snapshot.route,
+            outboundVideoPacketsSent: snapshot.outboundVideo?.packets,
+            outboundVideoTotalPacketSendDelaySeconds:
+                snapshot.outboundVideo?.totalPacketSendDelay
+        )
+        let recommendation = changedRecommendation
+            ?? proposedPolicy.currentRecommendation
+        guard isCaptureActive else {
+            if peer === sourcePeer,
+               peerGeneration == sourcePeerGeneration {
+                screenVideoAdaptationPolicy = proposedPolicy
+            }
+            return
+        }
+        guard changedRecommendation != nil
+                || appliedScreenVideoRecommendation != recommendation else {
+            if peer === sourcePeer,
+               peerGeneration == sourcePeerGeneration {
+                screenVideoAdaptationPolicy = proposedPolicy
+            }
+            return
+        }
+        guard isCaptureActive,
+              let source = captureSource,
+              let sink = captureSink,
+              let captureAuthorization,
+              let forwardingAuthorization,
+              let baseDimensions = captureVideoBaseDimensions,
+              let capturer = sourcePeer.externalVideoCapturer else {
+            return
+        }
+
+        do {
+            let senderUpdate = try await sourcePeer.applyScreenVideoEncodingLimits(
+                recommendation.webRTCLimits
+            )
+            guard peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration,
+                  captureSource === source,
+                  captureSink === sink,
+                  self.captureAuthorization === captureAuthorization,
+                  self.captureForwardingAuthorization
+                    === forwardingAuthorization,
+                  captureAuthorization.isValid,
+                  forwardingAuthorization.isValid,
+                  sink.allowsActiveUse(
+                      authorizedBy: forwardingAuthorization
+                  ),
+                  captureVideoBaseDimensions == baseDimensions else {
+                do {
+                    _ = try await sourcePeer
+                        .rollbackScreenVideoEncodingUpdateIfCurrent(
+                            senderUpdate
+                        )
+                } catch {
+                    logger.error(
+                        "Worldwide screen video stale-update rollback failed: "
+                            + error.localizedDescription
+                    )
+                }
+                return
+            }
+            capturer.adaptOutput(
+                width: Int32(baseDimensions.width),
+                height: Int32(baseDimensions.height),
+                framesPerSecond: Int32(
+                    recommendation.maximumFramesPerSecond
+                )
+            )
+            screenVideoAdaptationPolicy = proposedPolicy
+            appliedScreenVideoRecommendation = recommendation
+            logger.info(
+                "Worldwide screen video tier=\(String(describing: recommendation.tier)) "
+                    + "maxKbps=\(recommendation.maximumBitrateBps / 1_000) "
+                    + "fps=\(recommendation.maximumFramesPerSecond) "
+                    + "scale=\(String(format: "%.2f", recommendation.scaleResolutionDownBy))"
+            )
+        } catch {
+            guard peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration else {
+                return
+            }
+            logger.error(
+                "Worldwide screen video adaptation held its previous tier: "
+                    + error.localizedDescription
+            )
         }
     }
 
@@ -4020,16 +4156,60 @@ actor WorldwideScreenService {
                   transportAllowsCapture else {
                 throw WorldwideScreenServiceError.transportUnavailable
             }
+            let baseDimensions = ScreenVideoPixelDimensions(
+                width: format.width,
+                height: format.height
+            )
+            let encodingRecommendation =
+                screenVideoAdaptationPolicy.currentRecommendation
+            let senderUpdate: WebRTCScreenVideoEncodingUpdate?
+            do {
+                senderUpdate = try await peer.applyScreenVideoEncodingLimits(
+                    encodingRecommendation.webRTCLimits
+                )
+            } catch {
+                senderUpdate = nil
+                logger.error(
+                    "Worldwide screen video retained its native sender limits at startup: "
+                        + error.localizedDescription
+                )
+            }
+            guard self.peer === peer,
+                  captureSource === source,
+                  captureAuthorization === authorization,
+                  authorization.isValid,
+                  transportAllowsCapture else {
+                if let senderUpdate {
+                    do {
+                        _ = try await peer
+                            .rollbackScreenVideoEncodingUpdateIfCurrent(
+                                senderUpdate
+                            )
+                    } catch {
+                        logger.error(
+                            "Worldwide screen video startup rollback failed: "
+                                + error.localizedDescription
+                        )
+                    }
+                }
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
+            if senderUpdate != nil {
+                appliedScreenVideoRecommendation = encodingRecommendation
+            }
             captureDisplayID = format.displayID
             captureAuthoritativeDisplayBounds = format.authoritativeDisplayBounds
+            captureVideoBaseDimensions = baseDimensions
             remoteInputController.updateAuthoritativeDisplayBounds(
                 format.authoritativeDisplayBounds,
                 for: format.displayID
             )
             capturer.adaptOutput(
-                width: Int32(format.width),
-                height: Int32(format.height),
-                framesPerSecond: Int32(format.framesPerSecond)
+                width: Int32(baseDimensions.width),
+                height: Int32(baseDimensions.height),
+                framesPerSecond: Int32(
+                    encodingRecommendation.maximumFramesPerSecond
+                )
             )
             guard let forwardingAuthorization = sink.beginForwarding(
                 expectedFrameDimensions: ScreenVideoPixelDimensions(
@@ -4066,8 +4246,11 @@ actor WorldwideScreenService {
                 throw WorldwideScreenServiceError.transportUnavailable
             }
             logger.info(
-                "Worldwide screen capture is visible at " +
-                "\(format.width)x\(format.height)@\(format.framesPerSecond)"
+                "Worldwide screen capture is visible at "
+                    + "\(format.width)x\(format.height)@\(format.framesPerSecond) "
+                    + "encoderTier=\(String(describing: encodingRecommendation.tier)) "
+                    + "encoderFPS=\(encodingRecommendation.maximumFramesPerSecond) "
+                    + "encoderScale=\(String(format: "%.2f", encodingRecommendation.scaleResolutionDownBy))"
             )
             return forwardingAuthorization
         } catch {
@@ -4090,6 +4273,7 @@ actor WorldwideScreenService {
                     captureSink = nil
                     captureDisplayID = nil
                     captureAuthoritativeDisplayBounds = nil
+                    captureVideoBaseDimensions = nil
                 }
             } catch {
                 // Retain the exact source so session shutdown can retry its native stop before
@@ -4153,6 +4337,7 @@ actor WorldwideScreenService {
             captureSink = nil
             captureDisplayID = nil
             captureAuthoritativeDisplayBounds = nil
+            captureVideoBaseDimensions = nil
         }
     }
 
@@ -4168,6 +4353,7 @@ actor WorldwideScreenService {
         captureSink?.stopForwarding()
         captureSink = nil
         captureSource = nil
+        captureVideoBaseDimensions = nil
         logger.error("Worldwide screen capture stopped unexpectedly: \(message)")
         // The viewer's already-acknowledged Show cannot be contradicted by an unsolicited
         // Inactive ACK. Close the session so it cannot retain a frozen visible frame.
@@ -4236,6 +4422,7 @@ actor WorldwideScreenService {
             captureSource = nil
             captureSink = nil
             captureAuthorization = nil
+            captureVideoBaseDimensions = nil
 
             _ = try await startScreenCaptureWithDisplayModeRetries(
                 requiredDisplayID: replacementDisplayID,

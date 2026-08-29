@@ -5,6 +5,84 @@ import XCTest
 /// Uses platform-neutral records to verify extraction of route, concealment, jitter-buffer,
 /// sender, and remote-inbound evidence without requiring a live connection.
 final class WebRTCStatisticsParserTests: XCTestCase {
+    func testParsesOutboundVideoPacketQueueDelay() throws {
+        let snapshot = WebRTCStatisticsParser.parse(records: [
+            WebRTCStatisticsRecord(
+                id: "screen-video-out",
+                type: "outbound-rtp",
+                values: [
+                    "kind": "video",
+                    "packetsSent": NSNumber(value: 120),
+                    "totalPacketSendDelay": NSNumber(value: 1.25),
+                ]
+            ),
+        ])
+
+        let video = try XCTUnwrap(snapshot.outboundVideo)
+        XCTAssertEqual(video.packets, 120)
+        XCTAssertEqual(video.totalPacketSendDelay, 1.25)
+    }
+
+    func testPrimaryVideoStatisticsExcludeRTXIndependentOfRecordOrder() throws {
+        let primaryCodec = WebRTCStatisticsRecord(
+            id: "primary-codec",
+            type: "codec",
+            values: ["mimeType": "video/H264"]
+        )
+        let repairCodec = WebRTCStatisticsRecord(
+            id: "repair-codec",
+            type: "codec",
+            values: ["mimeType": "video/rtx"]
+        )
+        let primary = WebRTCStatisticsRecord(
+            id: "screen-video-out",
+            type: "outbound-rtp",
+            values: [
+                "kind": "video",
+                "codecId": "primary-codec",
+                "packetsSent": NSNumber(value: 120),
+                "totalPacketSendDelay": NSNumber(value: 1.25),
+            ]
+        )
+        let repair = WebRTCStatisticsRecord(
+            id: "screen-video-rtx",
+            type: "outbound-rtp",
+            values: [
+                "kind": "video",
+                "codecId": "repair-codec",
+                "packetsSent": NSNumber(value: 999),
+                "totalPacketSendDelay": NSNumber(value: 99),
+            ]
+        )
+        let records = [primaryCodec, repairCodec, primary, repair]
+
+        for orderedRecords in [records, Array(records.reversed())] {
+            let video = try XCTUnwrap(
+                WebRTCStatisticsParser.parse(records: orderedRecords)
+                    .outboundVideo
+            )
+            XCTAssertEqual(video.packets, 120)
+            XCTAssertEqual(video.totalPacketSendDelay, 1.25)
+        }
+    }
+
+    func testPrimaryVideoStatisticsFailClosedOnUnclassifiedAmbiguity() {
+        let snapshot = WebRTCStatisticsParser.parse(records: [
+            WebRTCStatisticsRecord(
+                id: "video-one",
+                type: "outbound-rtp",
+                values: ["kind": "video"]
+            ),
+            WebRTCStatisticsRecord(
+                id: "video-two",
+                type: "outbound-rtp",
+                values: ["kind": "video"]
+            ),
+        ])
+
+        XCTAssertNil(snapshot.outboundVideo)
+    }
+
     func testParsesOnlyOneExactReceiverScopedIPhoneMicrophoneInboundRecord() throws {
         let parsed = WebRTCStatisticsParser.parseIPhoneMicrophoneReceiver(
             records: [
