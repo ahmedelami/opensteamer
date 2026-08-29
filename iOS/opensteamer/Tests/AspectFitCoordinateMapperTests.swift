@@ -170,6 +170,60 @@ final class AspectFitCoordinateMapperTests: XCTestCase {
         XCTAssertEqual(endpoints.end.y, 1, accuracy: 0.000_001)
     }
 
+    func testRemotePointerMovementThresholdSeparatesTapFromScroll() {
+        let start = CGPoint(x: 100, y: 200)
+        XCTAssertFalse(
+            RemotePointerGesturePolicy.exceededMovementThreshold(
+                from: start,
+                to: CGPoint(x: 111.9, y: 200)
+            )
+        )
+        XCTAssertTrue(
+            RemotePointerGesturePolicy.exceededMovementThreshold(
+                from: start,
+                to: CGPoint(x: 112, y: 200)
+            )
+        )
+    }
+
+    func testRemoteScrollSamplesAreIncrementalAndBoundToTheTouchAnchor() throws {
+        let container = CGSize(width: 390, height: 700)
+        let video = CGSize(width: 1_920, height: 1_080)
+        let visibleRect = try XCTUnwrap(
+            AspectFitCoordinateMapper.visibleVideoRect(
+                containerSize: container,
+                videoSize: video
+            )
+        )
+        let anchor = CGPoint(x: visibleRect.midX, y: visibleRect.midY)
+        let sample = try XCTUnwrap(
+            RemotePointerGesturePolicy.normalizedScrollSample(
+                anchorLocation: anchor,
+                previousLocation: anchor,
+                location: CGPoint(
+                    x: anchor.x + (visibleRect.width * 0.1),
+                    y: anchor.y - (visibleRect.height * 0.2)
+                ),
+                containerSize: container,
+                videoSize: video
+            )
+        )
+
+        XCTAssertEqual(sample.anchor.x, 0.5, accuracy: 0.000_001)
+        XCTAssertEqual(sample.anchor.y, 0.5, accuracy: 0.000_001)
+        XCTAssertEqual(sample.deltaX, 0.1, accuracy: 0.000_001)
+        XCTAssertEqual(sample.deltaY, -0.2, accuracy: 0.000_001)
+        XCTAssertNil(
+            RemotePointerGesturePolicy.normalizedScrollSample(
+                anchorLocation: anchor,
+                previousLocation: anchor,
+                location: anchor,
+                containerSize: container,
+                videoSize: video
+            )
+        )
+    }
+
     func testEveryMacScaleChoiceUsesTheFullPortraitViewerWidth() throws {
         let portraitViewer = CGSize(width: 603, height: 1_311)
         let selectableFramebuffers = [

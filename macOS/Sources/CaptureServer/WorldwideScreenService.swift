@@ -1647,7 +1647,8 @@ actor WorldwideScreenService {
             let capability = WebRTCInputCapability(
                 inputSessionID: inputSessionID,
                 screenRequestID: screenRequestID,
-                supportsPrimaryDrag: true
+                supportsPrimaryDrag: true,
+                supportsScroll: true
             )
             let authorization = WebRTCInputAuthorization()
             activeInputCapability = capability
@@ -1737,6 +1738,10 @@ actor WorldwideScreenService {
         }
         if case .primaryDrag = request.action,
            !capability.supportsPrimaryDrag {
+            return WorldwideRemoteInputInjectionOutcome(.rejected(.staleSession))
+        }
+        if case .scroll = request.action,
+           !capability.supportsScroll {
             return WorldwideRemoteInputInjectionOutcome(.rejected(.staleSession))
         }
         guard
@@ -1829,6 +1834,20 @@ actor WorldwideScreenService {
                 )
             )
 
+        case .scroll(let anchor, let deltaX, let deltaY):
+            WorldwideRemoteInputInjectionOutcome(
+                remoteInputController.handleScrollWithDiagnostics(
+                    screenRequestID: request.screenRequestID,
+                    inputSessionID: request.inputSessionID,
+                    anchor: .init(x: anchor.x, y: anchor.y),
+                    deltaX: deltaX,
+                    deltaY: deltaY,
+                    viewerVideoSize: request.viewerVideoSize.map {
+                        .init(width: $0.width, height: $0.height)
+                    }
+                )
+            )
+
         case .insertText(let text, let focusGeneration):
             WorldwideRemoteInputInjectionOutcome(
                 remoteInputController.insertText(
@@ -1868,6 +1887,8 @@ actor WorldwideScreenService {
             return "tap"
         case .primaryDrag:
             return "primary-drag"
+        case .scroll:
+            return "scroll"
         case .insertText:
             return "committed-text"
         case .backspace:

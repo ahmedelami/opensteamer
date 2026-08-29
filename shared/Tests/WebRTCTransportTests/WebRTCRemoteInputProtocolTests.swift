@@ -296,7 +296,8 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         let capability = WebRTCInputCapability(
             inputSessionID: sessionID,
             screenRequestID: 11,
-            supportsPrimaryDrag: true
+            supportsPrimaryDrag: true,
+            supportsScroll: true
         )
         let acknowledgement = WebRTCControlAcknowledgement(
             id: 11,
@@ -313,7 +314,7 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         )
     }
 
-    func testCapabilityDefaultsPrimaryDragToFalseForLegacyPayload() throws {
+    func testCapabilityDefaultsAdditivePointerFeaturesToFalseForLegacyPayload() throws {
         let data = Data(
             #"{"protocolVersion":1,"inputSessionID":"8D18B56A-302A-4EC2-A3DA-1070491D7814","screenRequestID":11,"maxMessageBytes":4096}"#.utf8
         )
@@ -321,20 +322,23 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         let capability = try JSONDecoder().decode(WebRTCInputCapability.self, from: data)
 
         XCTAssertFalse(capability.supportsPrimaryDrag)
+        XCTAssertFalse(capability.supportsScroll)
         XCTAssertEqual(capability.protocolVersion, WebRTCInputCapability.currentProtocolVersion)
     }
 
-    func testCapabilityEncodesAndDecodesPrimaryDragSupport() throws {
+    func testCapabilityEncodesAndDecodesPointerFeatureSupport() throws {
         let capability = WebRTCInputCapability(
             inputSessionID: sessionID,
             screenRequestID: 11,
-            supportsPrimaryDrag: true
+            supportsPrimaryDrag: true,
+            supportsScroll: true
         )
 
         let data = try JSONEncoder().encode(capability)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
         XCTAssertEqual(object["supportsPrimaryDrag"] as? Bool, true)
+        XCTAssertEqual(object["supportsScroll"] as? Bool, true)
         XCTAssertEqual(try JSONDecoder().decode(WebRTCInputCapability.self, from: data), capability)
     }
 
@@ -342,6 +346,7 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         let actions: [WebRTCInputAction] = [
             .tap(.init(x: 0, y: 1)),
             .primaryDrag(start: .init(x: 0.1, y: 0.2), end: .init(x: 0.8, y: 0.9)),
+            .scroll(anchor: .init(x: 0.5, y: 0.5), deltaX: 0.1, deltaY: -0.2),
             .insertText("Hello 👋", focusGeneration: 2),
             .backspace(focusGeneration: 3),
             .returnKey(focusGeneration: 4)
@@ -367,6 +372,39 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         XCTAssertNotNil(object["start"] as? [String: Any])
         XCTAssertNotNil(object["end"] as? [String: Any])
         XCTAssertEqual(try JSONDecoder().decode(WebRTCInputAction.self, from: data), action)
+    }
+
+    func testScrollUsesStrictWireShapeAndRejectsInvalidDeltas() throws {
+        let action = WebRTCInputAction.scroll(
+            anchor: .init(x: 0.25, y: 0.75),
+            deltaX: 0.1,
+            deltaY: -0.2
+        )
+        let data = try JSONEncoder().encode(action)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(Set(object.keys), Set(["kind", "anchor", "deltaX", "deltaY"]))
+        XCTAssertEqual(object["kind"] as? String, "scroll")
+        XCTAssertEqual(try JSONDecoder().decode(WebRTCInputAction.self, from: data), action)
+
+        XCTAssertThrowsError(
+            try JSONEncoder().encode(
+                WebRTCInputAction.scroll(
+                    anchor: .init(x: 0.5, y: 0.5),
+                    deltaX: .infinity,
+                    deltaY: 0
+                )
+            )
+        )
+        XCTAssertThrowsError(
+            try JSONEncoder().encode(
+                WebRTCInputAction.scroll(
+                    anchor: .init(x: 0.5, y: 0.5),
+                    deltaX: 0,
+                    deltaY: 0
+                )
+            )
+        )
     }
 
     func testRequestHistoryBindingDoesNotRetainCommittedText() {

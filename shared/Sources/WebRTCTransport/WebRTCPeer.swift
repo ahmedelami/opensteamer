@@ -5547,6 +5547,8 @@ public actor WebRTCPeer {
         switch action {
         case .primaryDrag:
             capability.supportsPrimaryDrag
+        case .scroll:
+            capability.supportsScroll
         case .tap, .insertText, .backspace, .returnKey:
             true
         }

@@ -767,6 +767,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         isRemoteInputAvailable && remoteInputCapability?.supportsPrimaryDrag == true
     }
 
+    var isRemoteScrollAvailable: Bool {
+        isRemoteInputAvailable && remoteInputCapability?.supportsScroll == true
+    }
+
     var canResumeAudioPlayback: Bool {
         hasActiveSession
             && (audioRequiresExplicitResume || audioStateText == "Playback unavailable")
@@ -2186,6 +2190,39 @@ final class WorldwideSessionViewModel: ObservableObject {
         return latestPointerIntentID
     }
 
+    func sendRemoteScroll(
+        anchorNormalizedPoint: CGPoint,
+        deltaX: Double,
+        deltaY: Double,
+        viewerVideoSize: CGSize
+    ) {
+        guard isRemoteScrollAvailable,
+              anchorNormalizedPoint.x.isFinite,
+              anchorNormalizedPoint.y.isFinite,
+              deltaX.isFinite,
+              deltaY.isFinite,
+              abs(deltaX) <= 1,
+              abs(deltaY) <= 1,
+              deltaX != 0 || deltaY != 0,
+              let viewerVideoSize = Self.remoteInputVideoSize(from: viewerVideoSize) else {
+            return
+        }
+
+        let pointerIntentID = beginRemotePointerIntent()
+        enqueueRemoteInput(
+            .scroll(
+                anchor: .init(
+                    x: Double(anchorNormalizedPoint.x),
+                    y: Double(anchorNormalizedPoint.y)
+                ),
+                deltaX: deltaX,
+                deltaY: deltaY
+            ),
+            pointerIntentID: pointerIntentID,
+            viewerVideoSize: viewerVideoSize
+        )
+    }
+
     func sendRemoteText(_ text: String, focusGeneration: UInt64) {
         guard focusedInputGeneration == focusGeneration,
               WebRTCInputAction.isValidCommittedText(text) else { return }
@@ -2243,7 +2280,7 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func remoteInputActionMatchesCurrentFocus(_ action: WebRTCInputAction) -> Bool {
         switch action {
-        case .tap, .primaryDrag:
+        case .tap, .primaryDrag, .scroll:
             return true
         case .insertText(_, let generation),
              .backspace(let generation),
@@ -7155,7 +7192,7 @@ private struct QueuedRemoteInput {
 private extension WebRTCInputAction {
     var requiresRemoteFocus: Bool {
         switch self {
-        case .tap, .primaryDrag:
+        case .tap, .primaryDrag, .scroll:
             false
         case .insertText, .backspace, .returnKey:
             true
@@ -7176,7 +7213,7 @@ enum PendingRemoteInputKind: Equatable {
 
     init(_ action: WebRTCInputAction) {
         switch action {
-        case .tap, .primaryDrag:
+        case .tap, .primaryDrag, .scroll:
             self = .pointer
         case .insertText(_, let focusGeneration),
              .backspace(let focusGeneration),

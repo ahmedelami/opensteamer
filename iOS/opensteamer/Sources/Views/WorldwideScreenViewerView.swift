@@ -14,7 +14,8 @@ struct WorldwideScreenViewerView: View {
     @State private var videoRendererID = UUID()
     @State private var videoRenderObservation: WebRTCVideoRenderObservation?
     @State private var allowsRemoteInputPresentation = true
-    @State private var primaryDragContext: PrimaryDragContext?
+    @State private var remotePointerContext: RemotePointerContext?
+    @State private var remotePointerHoldTask: Task<Void, Never>?
 
     var body: some View {
         ZStack {
@@ -39,52 +40,20 @@ struct WorldwideScreenViewerView: View {
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .background(.black)
                         .contentShape(Rectangle())
-                        .simultaneousGesture(
-                            SpatialTapGesture()
-                                .onEnded { value in
-                                    forwardTap(value.location, containerSize: geometry.size)
-                                }
-                        )
-                        .simultaneousGesture(
-                            // Long press distinguishes intentional selection/drag from an ordinary
-                            // tap. Capturing the input-session ID and geometry at recognition time
-                            // fences a gesture that outlives focus, peer, or orientation changes.
-                            LongPressGesture(minimumDuration: 0.35, maximumDistance: 12)
-                                .sequenced(
-                                    before: DragGesture(
-                                        minimumDistance: RemotePrimaryDragGesturePolicy.minimumMovement,
-                                        coordinateSpace: .local
-                                    )
-                                )
+                        .gesture(
+                            // One recognizer owns tap, scroll, and held primary drag so an input
+                            // sequence can never be classified as more than one remote action.
+                            DragGesture(minimumDistance: 0, coordinateSpace: .local)
                                 .onChanged { value in
-                                    guard case .second(true, .some) = value,
-                                          primaryDragContext == nil,
-                                          viewModel.isRemotePrimaryDragAvailable,
-                                          let inputSessionID = viewModel.remoteInputCapability?.inputSessionID,
-                                          let renderedVideoSize else {
-                                        return
-                                    }
-                                    primaryDragContext = PrimaryDragContext(
-                                        inputSessionID: inputSessionID,
-                                        containerSize: geometry.size,
-                                        videoSize: renderedVideoSize
+                                    updateRemotePointerGesture(
+                                        value,
+                                        containerSize: geometry.size
                                     )
                                 }
                                 .onEnded { value in
-                                    defer { primaryDragContext = nil }
-                                    guard case .second(true, let drag?) = value,
-                                          let context = primaryDragContext,
-                                          context.inputSessionID == viewModel.remoteInputCapability?.inputSessionID,
-                                          context.containerSize == geometry.size,
-                                          let renderedVideoSize,
-                                          context.videoSize == renderedVideoSize else {
-                                        return
-                                    }
-                                    forwardPrimaryDrag(
-                                        from: drag.startLocation,
-                                        to: drag.location,
-                                        containerSize: context.containerSize,
-                                        videoSize: context.videoSize
+                                    endRemotePointerGesture(
+                                        value,
+                                        containerSize: geometry.size
                                     )
                                 }
                         )
@@ -140,27 +109,27 @@ struct WorldwideScreenViewerView: View {
             }
         }
         .onDisappear {
-            primaryDragContext = nil
+            cancelRemotePointerGesture()
             allowsRemoteInputPresentation = false
             _ = viewModel.beginPassiveScreenTeardown(for: lease)
         }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase != .active else { return }
-            primaryDragContext = nil
+            cancelRemotePointerGesture()
             hideAndDismiss()
         }
         .onChange(of: viewModel.remoteInputCapability?.inputSessionID) {
-            primaryDragContext = nil
+            cancelRemotePointerGesture()
         }
         .onChange(of: viewModel.remoteVideoTrack == nil) {
-            primaryDragContext = nil
+            cancelRemotePointerGesture()
             if viewModel.remoteVideoTrack == nil {
                 videoRendererID = UUID()
                 videoRenderObservation = nil
             }
         }
         .onChange(of: renderedVideoSize) {
-            primaryDragContext = nil
+            cancelRemotePointerGesture()
         }
     }
 
@@ -184,9 +153,13 @@ struct WorldwideScreenViewerView: View {
                     .frame(width: 1, height: 1)
                     .accessibilityElement()
                     .accessibilityLabel(
-                        viewModel.isRemotePrimaryDragAvailable
-                            ? "Tap to click. Hold and drag to select or move."
-                            : "Touch control enabled"
+                        viewModel.isRemoteScrollAvailable
+                            ? (viewModel.isRemotePrimaryDragAvailable
+                                ? "Tap to click. Swipe to scroll. Hold and drag to select or move."
+                                : "Tap to click. Swipe to scroll.")
+                            : (viewModel.isRemotePrimaryDragAvailable
+                                ? "Tap to click. Hold and drag to select or move."
+                                : "Touch control enabled")
                     )
                     .accessibilityIdentifier("worldwideRemoteInputEnabled")
             }
@@ -210,6 +183,170 @@ struct WorldwideScreenViewerView: View {
         dismissPresentation(lease)
     }
 
+    private func updateRemotePointerGesture(
+        _ value: DragGesture.Value,
+        containerSize: CGSize
+    ) {
+        guard effectiveRemoteInputAvailable,
+              let inputSessionID = viewModel.remoteInputCapability?.inputSessionID,
+              let renderedVideoSize else {
+            cancelRemotePointerGesture()
+            return
+        }
+
+        if remotePointerContext == nil {
+            guard AspectFitCoordinateMapper.normalizedPoint(
+                for: value.startLocation,
+                containerSize: containerSize,
+                videoSize: renderedVideoSize
+            ) != nil else {
+                return
+            }
+            remotePointerContext = RemotePointerContext(
+                inputSessionID: inputSessionID,
+                containerSize: containerSize,
+                videoSize: renderedVideoSize,
+                startLocation: value.startLocation,
+                previousLocation: value.startLocation,
+                mode: .pending
+            )
+            scheduleRemotePrimaryDragArm()
+        }
+
+        guard var context = remotePointerContext,
+              context.inputSessionID == inputSessionID,
+              context.containerSize == containerSize,
+              context.videoSize == renderedVideoSize else {
+            cancelRemotePointerGesture()
+            return
+        }
+
+        switch context.mode {
+        case .pending:
+            if RemotePointerGesturePolicy.exceededMovementThreshold(
+                from: context.startLocation,
+                to: value.location
+            ) {
+                remotePointerHoldTask?.cancel()
+                remotePointerHoldTask = nil
+                if viewModel.isRemoteScrollAvailable {
+                    context.mode = .scrolling
+                    forwardScroll(
+                        anchorLocation: context.startLocation,
+                        from: context.startLocation,
+                        to: value.location,
+                        containerSize: context.containerSize,
+                        videoSize: context.videoSize
+                    )
+                } else {
+                    // Movement already disproved a tap. Do not reinterpret it as a click merely
+                    // because the connected host does not advertise scrolling.
+                    context.mode = .cancelled
+                }
+            }
+
+        case .scrolling:
+            forwardScroll(
+                anchorLocation: context.startLocation,
+                from: context.previousLocation,
+                to: value.location,
+                containerSize: context.containerSize,
+                videoSize: context.videoSize
+            )
+
+        case .primaryDragging, .cancelled:
+            break
+        }
+
+        context.previousLocation = value.location
+        remotePointerContext = context
+    }
+
+    private func endRemotePointerGesture(
+        _ value: DragGesture.Value,
+        containerSize: CGSize
+    ) {
+        defer { cancelRemotePointerGesture() }
+        guard let context = remotePointerContext,
+              context.inputSessionID == viewModel.remoteInputCapability?.inputSessionID,
+              context.containerSize == containerSize,
+              let renderedVideoSize,
+              context.videoSize == renderedVideoSize else {
+            return
+        }
+
+        switch context.mode {
+        case .pending:
+            if RemotePointerGesturePolicy.exceededMovementThreshold(
+                from: context.startLocation,
+                to: value.location
+            ) {
+                if viewModel.isRemoteScrollAvailable {
+                    forwardScroll(
+                        anchorLocation: context.startLocation,
+                        from: context.previousLocation,
+                        to: value.location,
+                        containerSize: context.containerSize,
+                        videoSize: context.videoSize
+                    )
+                }
+            } else {
+                forwardTap(value.location, containerSize: context.containerSize)
+            }
+
+        case .scrolling:
+            forwardScroll(
+                anchorLocation: context.startLocation,
+                from: context.previousLocation,
+                to: value.location,
+                containerSize: context.containerSize,
+                videoSize: context.videoSize
+            )
+
+        case .primaryDragging:
+            if hypot(
+                value.location.x - context.startLocation.x,
+                value.location.y - context.startLocation.y
+            ) >= RemotePrimaryDragGesturePolicy.minimumMovement {
+                forwardPrimaryDrag(
+                    from: context.startLocation,
+                    to: value.location,
+                    containerSize: context.containerSize,
+                    videoSize: context.videoSize
+                )
+            } else {
+                forwardTap(value.location, containerSize: context.containerSize)
+            }
+
+        case .cancelled:
+            break
+        }
+    }
+
+    private func scheduleRemotePrimaryDragArm() {
+        remotePointerHoldTask?.cancel()
+        remotePointerHoldTask = Task { @MainActor in
+            try? await Task.sleep(for: RemotePointerGesturePolicy.holdDuration)
+            guard !Task.isCancelled,
+                  var context = remotePointerContext,
+                  context.mode == .pending,
+                  viewModel.isRemotePrimaryDragAvailable,
+                  context.inputSessionID == viewModel.remoteInputCapability?.inputSessionID,
+                  renderedVideoSize == context.videoSize else {
+                return
+            }
+            context.mode = .primaryDragging
+            remotePointerContext = context
+            remotePointerHoldTask = nil
+        }
+    }
+
+    private func cancelRemotePointerGesture() {
+        remotePointerHoldTask?.cancel()
+        remotePointerHoldTask = nil
+        remotePointerContext = nil
+    }
+
     private func forwardTap(_ location: CGPoint, containerSize: CGSize) {
         guard effectiveRemoteInputAvailable,
               let renderedVideoSize,
@@ -223,6 +360,32 @@ struct WorldwideScreenViewerView: View {
         viewModel.sendRemoteTap(
             normalizedPoint: normalizedPoint,
             viewerVideoSize: renderedVideoSize
+        )
+    }
+
+    private func forwardScroll(
+        anchorLocation: CGPoint,
+        from previousLocation: CGPoint,
+        to location: CGPoint,
+        containerSize: CGSize,
+        videoSize: CGSize
+    ) {
+        guard effectiveRemoteInputAvailable,
+              viewModel.isRemoteScrollAvailable,
+              let sample = RemotePointerGesturePolicy.normalizedScrollSample(
+                  anchorLocation: anchorLocation,
+                  previousLocation: previousLocation,
+                  location: location,
+                  containerSize: containerSize,
+                  videoSize: videoSize
+              ) else {
+            return
+        }
+        viewModel.sendRemoteScroll(
+            anchorNormalizedPoint: sample.anchor,
+            deltaX: sample.deltaX,
+            deltaY: sample.deltaY,
+            viewerVideoSize: videoSize
         )
     }
 
@@ -313,9 +476,19 @@ struct WorldwideScreenViewerView: View {
     }
 }
 
-/// Snapshot of gesture ownership that must remain unchanged until a primary drag completes.
-private struct PrimaryDragContext: Equatable {
+/// Snapshot of gesture ownership that must remain unchanged until the touch completes.
+private struct RemotePointerContext {
+    enum Mode: Equatable {
+        case pending
+        case scrolling
+        case primaryDragging
+        case cancelled
+    }
+
     let inputSessionID: UUID
     let containerSize: CGSize
     let videoSize: CGSize
+    let startLocation: CGPoint
+    var previousLocation: CGPoint
+    var mode: Mode
 }

@@ -169,6 +169,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
     private static let maximumFocusWait: TimeInterval = 0.050
     private static let maximumEditableAncestorDepth = 12
     private static let minimumFrameGeometryStability: TimeInterval = 0.750
+    private static let maximumNormalizedScrollDelta = 1.0
+    private static let maximumPixelScrollDelta: Double = 120
 
     private let allowRemoteControl: Bool
     private let system: any MacRemoteInputSystem
@@ -184,6 +186,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
     private var nextFocusGeneration: UInt64 = 0
 
     private var tapBucket: TokenBucket
+    private var scrollBucket: TokenBucket
     private var keyBucket: TokenBucket
     private var textBucket: TokenBucket
 
@@ -195,6 +198,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         self.clock = clock
         let now = clock.now()
         self.tapBucket = TokenBucket(capacity: 12, refillPerSecond: 8, now: now)
+        self.scrollBucket = TokenBucket(capacity: 180, refillPerSecond: 120, now: now)
         self.keyBucket = TokenBucket(capacity: 40, refillPerSecond: 25, now: now)
         self.textBucket = TokenBucket(capacity: 4_096, refillPerSecond: 2_048, now: now)
     }
@@ -210,6 +214,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         self.clock = clock
         let now = clock.now()
         self.tapBucket = TokenBucket(capacity: 12, refillPerSecond: 8, now: now)
+        self.scrollBucket = TokenBucket(capacity: 180, refillPerSecond: 120, now: now)
         self.keyBucket = TokenBucket(capacity: 40, refillPerSecond: 25, now: now)
         self.textBucket = TokenBucket(capacity: 4_096, refillPerSecond: 2_048, now: now)
     }
@@ -710,6 +715,195 @@ public final class MacRemoteInputController: @unchecked Sendable {
         return .accepted(.editable(generation: focus.generation, secure: false))
     }
 
+    /// Posts one atomic pixel-scroll sample at the touched remote-screen location.
+    public func handleScroll(
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        anchor: MacRemoteNormalizedPoint,
+        deltaX: Double,
+        deltaY: Double,
+        viewerVideoSize: MacRemoteInputVideoSize? = nil
+    ) -> MacRemoteInputResult {
+        handleScrollWithDiagnostics(
+            screenRequestID: screenRequestID,
+            inputSessionID: inputSessionID,
+            anchor: anchor,
+            deltaX: deltaX,
+            deltaY: deltaY,
+            viewerVideoSize: viewerVideoSize
+        ).result
+    }
+
+    public func handleScrollWithDiagnostics(
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        anchor: MacRemoteNormalizedPoint,
+        deltaX: Double,
+        deltaY: Double,
+        viewerVideoSize: MacRemoteInputVideoSize? = nil
+    ) -> MacRemoteInputDiagnosedResult {
+        withLock {
+            var screenFormatDiagnostic: MacRemoteInputScreenFormatDiagnostic?
+            let result = handleScrollLocked(
+                screenRequestID: screenRequestID,
+                inputSessionID: inputSessionID,
+                anchor: anchor,
+                deltaX: deltaX,
+                deltaY: deltaY,
+                viewerVideoSize: viewerVideoSize,
+                screenFormatDiagnostic: &screenFormatDiagnostic
+            )
+            return MacRemoteInputDiagnosedResult(
+                result: result,
+                screenFormatDiagnostic: screenFormatDiagnostic
+            )
+        }
+    }
+
+    private func handleScrollLocked(
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        anchor: MacRemoteNormalizedPoint,
+        deltaX: Double,
+        deltaY: Double,
+        viewerVideoSize: MacRemoteInputVideoSize?,
+        screenFormatDiagnostic: inout MacRemoteInputScreenFormatDiagnostic?
+    ) -> MacRemoteInputResult {
+        authorizedFocus = nil
+
+        guard !isPermanentlyInvalidated, allowRemoteControl else {
+            return .rejected(.disabled)
+        }
+        guard let session = matchingSession(
+            screenRequestID: screenRequestID,
+            inputSessionID: inputSessionID
+        ) else {
+            return .rejected(.staleSession)
+        }
+        guard anchor.isValid,
+              Self.scrollDeltaIsValid(deltaX, deltaY) else {
+            return .rejected(.invalidPoint)
+        }
+        guard let viewerVideoSize else {
+            screenFormatDiagnostic = makeScreenFormatDiagnostic(
+                reason: .viewerSizeMissing,
+                viewerVideoSize: nil,
+                frameGeometry: screenVideoFrameGeometry
+                    ?? candidateScreenVideoFrameGeometry,
+                viewerAspectRelativeDifference: nil
+            )
+            return .rejected(.screenFormatChanging)
+        }
+        guard viewerVideoSize.isValid else {
+            return .rejected(.invalidPoint)
+        }
+        guard hasCurrentPermissions() else {
+            revokeState()
+            return .rejected(.permissionRequired)
+        }
+        guard let liveDisplayBounds = validDisplayBounds(for: session.displayID) else {
+            revokeState()
+            return .rejected(.displayUnavailable)
+        }
+        let displayBounds = session.authoritativeDisplayBounds ?? liveDisplayBounds
+        let frameGeometry: ScreenVideoFrameGeometry
+        switch currentScreenVideoFrameGeometryResolution(compatibleWith: displayBounds) {
+        case .unavailable:
+            screenFormatDiagnostic = makeScreenFormatDiagnostic(
+                reason: .frameGeometryUnavailableOrUnstable,
+                viewerVideoSize: viewerVideoSize,
+                frameGeometry: candidateScreenVideoFrameGeometry,
+                viewerAspectRelativeDifference: nil
+            )
+            return .rejected(.screenFormatChanging)
+        case .displayIncompatible(let geometry):
+            screenFormatDiagnostic = makeScreenFormatDiagnostic(
+                reason: .displayGeometryIncompatible,
+                viewerVideoSize: viewerVideoSize,
+                frameGeometry: geometry,
+                viewerAspectRelativeDifference: nil
+            )
+            return .rejected(.screenFormatChanging)
+        case .available(let geometry):
+            frameGeometry = geometry
+        }
+        let viewerAspectComparison = Self.viewerVideoAspectComparison(
+            viewerVideoSize,
+            frameGeometry: frameGeometry
+        )
+        guard viewerAspectComparison.matches else {
+            screenFormatDiagnostic = makeScreenFormatDiagnostic(
+                reason: .viewerAspectMismatch,
+                viewerVideoSize: viewerVideoSize,
+                frameGeometry: frameGeometry,
+                viewerAspectRelativeDifference:
+                    viewerAspectComparison.relativeDifference
+            )
+            return .rejected(.screenFormatChanging)
+        }
+        guard let contentAnchor = mappedContentPoint(
+            anchor,
+            frameGeometry: frameGeometry,
+            clampToContent: false
+        ) else {
+            return .rejected(.invalidPoint)
+        }
+        guard scrollBucket.consume(1, at: clock.now()) else {
+            return .rejected(.rateLimited)
+        }
+
+        let pixelDeltaX = Self.pixelScrollDelta(
+            normalizedDelta: deltaX,
+            displayExtent: displayBounds.width
+        )
+        let pixelDeltaY = Self.pixelScrollDelta(
+            normalizedDelta: deltaY,
+            displayExtent: displayBounds.height
+        )
+        guard pixelDeltaX != 0 || pixelDeltaY != 0 else {
+            return .rejected(.invalidPoint)
+        }
+        let globalAnchor = MacRemoteInputCoordinateMapper.globalPoint(
+            contentAnchor,
+            in: displayBounds
+        )
+        guard system.postScroll(
+            at: globalAnchor,
+            deltaX: pixelDeltaX,
+            deltaY: pixelDeltaY
+        ) else {
+            return .rejected(.injectionFailed)
+        }
+        return .accepted(.none)
+    }
+
+    private static func scrollDeltaIsValid(_ deltaX: Double, _ deltaY: Double) -> Bool {
+        deltaX.isFinite
+            && deltaY.isFinite
+            && abs(deltaX) <= maximumNormalizedScrollDelta
+            && abs(deltaY) <= maximumNormalizedScrollDelta
+            && (deltaX != 0 || deltaY != 0)
+    }
+
+    private static func pixelScrollDelta(
+        normalizedDelta: Double,
+        displayExtent: CGFloat
+    ) -> Int32 {
+        guard normalizedDelta != 0,
+              normalizedDelta.isFinite,
+              displayExtent.isFinite,
+              displayExtent > 0 else {
+            return 0
+        }
+        let raw = normalizedDelta * Double(displayExtent)
+        let bounded = min(max(raw, -maximumPixelScrollDelta), maximumPixelScrollDelta)
+        let rounded = bounded.rounded()
+        if rounded == 0 {
+            return normalizedDelta > 0 ? 1 : -1
+        }
+        return Int32(rounded)
+    }
+
     // MARK: - Keyboard actions
 
     /// Inserts bounded Unicode text into the exact focus generation granted by a tap.
@@ -1083,6 +1277,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
 
     private func resetRateLimits(now: TimeInterval) {
         tapBucket.reset(at: now)
+        scrollBucket.reset(at: now)
         keyBucket.reset(at: now)
         textBucket.reset(at: now)
     }
@@ -1235,6 +1430,7 @@ protocol MacRemoteInputSystem: Sendable {
 
     func postMouseClick(at point: CGPoint) -> Bool
     func postPrimaryDrag(from start: CGPoint, to end: CGPoint) -> Bool
+    func postScroll(at point: CGPoint, deltaX: Int32, deltaY: Int32) -> Bool
     func postUnicodeText(_ text: String) -> Bool
     func postKey(_ key: MacRemoteInputKey) -> Bool
 }
@@ -1407,6 +1603,28 @@ private struct CoreGraphicsMacRemoteInputSystem: MacRemoteInputSystem {
             event.post(tap: .cghidEventTap)
         }
         up.post(tap: .cghidEventTap)
+        return true
+    }
+
+    /// Posts a location-targeted smooth scroll. Each packet is complete and carries no remotely
+    /// held state, so interruption cannot strand a gesture in the window server.
+    func postScroll(at point: CGPoint, deltaX: Int32, deltaY: Int32) -> Bool {
+        guard deltaX != 0 || deltaY != 0,
+              let source = CGEventSource(stateID: .privateState),
+              let event = CGEvent(
+                  scrollWheelEvent2Source: source,
+                  units: .pixel,
+                  wheelCount: 2,
+                  wheel1: deltaY,
+                  wheel2: deltaX,
+                  wheel3: 0
+              ) else {
+            return false
+        }
+        event.location = point
+        event.flags = []
+        event.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+        event.post(tap: .cghidEventTap)
         return true
     }
 

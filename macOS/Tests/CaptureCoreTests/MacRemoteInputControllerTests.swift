@@ -398,6 +398,58 @@ final class MacRemoteInputControllerTests: XCTestCase {
         XCTAssertTrue(system.postedDragEvents.isEmpty)
     }
 
+    func testScrollMapsAnchorAndIncrementalNormalizedDeltaToPixelEvent() {
+        let system = MockMacRemoteInputSystem()
+        system.bounds = CGRect(x: -1_920, y: -400, width: 1_920, height: 1_080)
+        let controller = armedController(system: system)
+
+        XCTAssertEqual(
+            controller.handleScroll(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                anchor: .init(x: 0.25, y: 0.75),
+                deltaX: 0.02,
+                deltaY: -0.03,
+                viewerVideoSize: .init(width: 1_920, height: 1_080)
+            ),
+            .accepted(.none)
+        )
+
+        let posted = try! XCTUnwrap(system.postedScrollEvents.first)
+        XCTAssertEqual(posted.point.x, -1_440, accuracy: 0.0001)
+        XCTAssertEqual(posted.point.y, 410, accuracy: 0.0001)
+        XCTAssertEqual(posted.deltaX, 38)
+        XCTAssertEqual(posted.deltaY, -32)
+    }
+
+    func testScrollRejectsInvalidDeltaAndMissingViewerGeometry() {
+        let system = MockMacRemoteInputSystem()
+        let controller = armedController(system: system)
+
+        XCTAssertEqual(
+            controller.handleScroll(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                anchor: .init(x: 0.5, y: 0.5),
+                deltaX: 0,
+                deltaY: 0,
+                viewerVideoSize: .init(width: 1_920, height: 1_080)
+            ),
+            .rejected(.invalidPoint)
+        )
+        XCTAssertEqual(
+            controller.handleScroll(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                anchor: .init(x: 0.5, y: 0.5),
+                deltaX: 0,
+                deltaY: -0.1
+            ),
+            .rejected(.screenFormatChanging)
+        )
+        XCTAssertTrue(system.postedScrollEvents.isEmpty)
+    }
+
     func testDiagnosedPointerResultIdentifiesExactFormatFence() throws {
         let system = MockMacRemoteInputSystem()
         let clock = MockMacRemoteInputClock()
@@ -1651,6 +1703,12 @@ private final class MockMacRemoteInputSystem: @unchecked Sendable, MacRemoteInpu
         case up(CGPoint)
     }
 
+    struct PostedScrollEvent: Equatable {
+        let point: CGPoint
+        let deltaX: Int32
+        let deltaY: Int32
+    }
+
     struct Node {
         // Parent links model field editors and nested secure/editable accessibility containers.
         var parent: MacRemoteAccessibilityElement?
@@ -1673,11 +1731,13 @@ private final class MockMacRemoteInputSystem: @unchecked Sendable, MacRemoteInpu
 
     var mousePostSucceeds = true
     var dragPostSucceeds = true
+    var scrollPostSucceeds = true
     var textPostSucceeds = true
     var keyPostSucceeds = true
 
     private(set) var postedMousePoints: [CGPoint] = []
     private(set) var postedDragEvents: [PostedDragEvent] = []
+    private(set) var postedScrollEvents: [PostedScrollEvent] = []
     private(set) var postedTexts: [String] = []
     private(set) var postedKeys: [MacRemoteInputKey] = []
     private var nodes: [ObjectIdentifier: Node] = [:]
@@ -1783,6 +1843,14 @@ private final class MockMacRemoteInputSystem: @unchecked Sendable, MacRemoteInpu
             }
         )
         postedDragEvents.append(.up(end))
+        return true
+    }
+
+    func postScroll(at point: CGPoint, deltaX: Int32, deltaY: Int32) -> Bool {
+        guard scrollPostSucceeds else { return false }
+        postedScrollEvents.append(
+            PostedScrollEvent(point: point, deltaX: deltaX, deltaY: deltaY)
+        )
         return true
     }
 
