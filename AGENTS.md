@@ -393,6 +393,26 @@ and verification tools. Build only from a clean pushed commit/tree, prove pairin
 through metadata without retrieving secrets, and never reset or re-pair. Once an
 attempt leaves retained evidence, do not reuse that version for a retry.
 
+## Efficient Internal Releases
+
+Keep ordinary internal TestFlight deployments and routine paired-host updates
+short, parallel, and token-efficient without weakening fail-closed boundaries.
+
+- Reuse a gate already proven within the same immutable release invocation. Do not
+  rerun full-tree signatures, unchanged test suites, account checks, or source
+  audits unless their bound identity changed or the previous check failed.
+- Perform one full pinned-Xcode deep verification per release invocation, bind it
+  to the reviewed filesystem seal, and use the cheap sealed-identity check at later
+  archive/export boundaries.
+- Run independent work concurrently: archive/upload, App Store Connect processing
+  observation, and read-only host preparation should not wait on one another.
+- Report only meaningful stage changes, failures, required user action, and final
+  proof. Prefer targeted queries and log suffixes over repeated broad reads or
+  narrating unchanged polling results.
+- Keep the simple internal-release path separate from exceptional recovery. A
+  changed identity, failed preflight, consumed one-shot namespace, or ambiguous
+  live state still requires the full guarded recovery path.
+
 ## Commits
 
 Release validation must follow [TESTING_ORACLES.md](TESTING_ORACLES.md). A source string, mocked
