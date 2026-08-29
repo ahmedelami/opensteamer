@@ -742,6 +742,140 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   $'function run_authorized_api_key_upload() {\n  run_authorized_upload\n}'
 require_rejection "$CASE" 'side-by-side TestFlight API-key pin-before-upload wrapper'
 
+CASE=$(new_case testflight-app-store-processing-wait)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'function wait_for_app_store_processing() {' \
+  'function skip_app_store_processing() {'
+require_rejection "$CASE" 'side-by-side TestFlight automated Apple processing wait'
+
+CASE=$(new_case testflight-app-store-processing-wait-reachability)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    stage_started_at=${SECONDS}\n    wait_for_app_store_processing \\\n      || fail "Apple did not confirm the uploaded internal build as VALID"\n    print_release_stage_timing app_store_processing "${stage_started_at}"' \
+  $'    stage_started_at=${SECONDS}\n    true # Apple processing wait omitted\n    print_release_stage_timing app_store_processing "${stage_started_at}"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight API-key processing wait reachability and order'
+
+CASE=$(new_case testflight-app-store-processing-deadline)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'APP_STORE_PROCESSING_WAIT_TIMEOUT_SECONDS=1800' \
+  'APP_STORE_PROCESSING_WAIT_TIMEOUT_SECONDS=86400'
+require_rejection "$CASE" \
+  'side-by-side TestFlight bounded Apple processing deadline'
+
+CASE=$(new_case testflight-app-store-processing-poll-interval)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'APP_STORE_PROCESSING_WAIT_POLL_SECONDS=5' \
+  'APP_STORE_PROCESSING_WAIT_POLL_SECONDS=300'
+require_rejection "$CASE" \
+  'side-by-side TestFlight bounded Apple processing poll interval'
+
+CASE=$(new_case testflight-app-store-processing-termination-grace)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'APP_STORE_PROCESSING_TERMINATION_GRACE_SECONDS=5' \
+  'APP_STORE_PROCESSING_TERMINATION_GRACE_SECONDS=300'
+require_rejection "$CASE" \
+  'side-by-side TestFlight bounded Apple processing termination grace'
+
+CASE=$(new_case testflight-app-store-processing-signal-masked-launch)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'  mask_release_cleanup_signals\n  /usr/bin/env -i \\\n    LC_ALL=C' \
+  $'  /usr/bin/env -i \\\n    LC_ALL=C'
+require_rejection "$CASE" \
+  'side-by-side TestFlight signal-masked processing-query launch'
+
+CASE=$(new_case testflight-app-store-processing-state-publication)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    >"/dev/fd/${TESTFLIGHT_PROCESSING_STATUS_FD}" &\n  TESTFLIGHT_PROCESSING_QUERY_PID=$!\n  TESTFLIGHT_PROCESSING_QUERY_RUNNING=1\n  install_release_signal_traps' \
+  $'    >"/dev/fd/${TESTFLIGHT_PROCESSING_STATUS_FD}" &\n  TESTFLIGHT_PROCESSING_QUERY_PID=$!\n  install_release_signal_traps\n  TESTFLIGHT_PROCESSING_QUERY_RUNNING=1'
+require_rejection "$CASE" \
+  'side-by-side TestFlight processing-query atomic state publication'
+
+CASE=$(new_case testflight-app-store-processing-terminated-state-order)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'  wait "${TESTFLIGHT_PROCESSING_QUERY_PID}" 2>/dev/null || true\n  TESTFLIGHT_PROCESSING_QUERY_RUNNING=0\n  TESTFLIGHT_PROCESSING_QUERY_PID=-1' \
+  $'  wait "${TESTFLIGHT_PROCESSING_QUERY_PID}" 2>/dev/null || true\n  TESTFLIGHT_PROCESSING_QUERY_PID=-1\n  TESTFLIGHT_PROCESSING_QUERY_RUNNING=0'
+require_rejection "$CASE" \
+  'side-by-side TestFlight terminated-query reaped state ordering'
+
+CASE=$(new_case testflight-app-store-processing-completed-state-order)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    wait "${TESTFLIGHT_PROCESSING_QUERY_PID}" || query_status=$?\n    TESTFLIGHT_PROCESSING_QUERY_RUNNING=0\n    TESTFLIGHT_PROCESSING_QUERY_PID=-1' \
+  $'    wait "${TESTFLIGHT_PROCESSING_QUERY_PID}" || query_status=$?\n    TESTFLIGHT_PROCESSING_QUERY_PID=-1\n    TESTFLIGHT_PROCESSING_QUERY_RUNNING=0'
+require_rejection "$CASE" \
+  'side-by-side TestFlight completed-query reaped state ordering'
+
+CASE=$(new_case testflight-app-store-processing-post-kill-bound)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    /bin/kill -KILL "${TESTFLIGHT_PROCESSING_QUERY_PID}" 2>/dev/null || return 1\n    termination_deadline=$((\n      SECONDS + APP_STORE_PROCESSING_TERMINATION_GRACE_SECONDS\n    ))\n    while processing_query_is_running \\\n        && (( SECONDS < termination_deadline )); do\n      /bin/sleep 1\n    done\n    processing_query_is_running && return 1' \
+  $'    /bin/kill -KILL "${TESTFLIGHT_PROCESSING_QUERY_PID}" 2>/dev/null || return 1\n    true # post-SIGKILL child liveness was not bounded'
+require_rejection "$CASE" \
+  'side-by-side TestFlight bounded post-SIGKILL processing-query termination'
+
+CASE=$(new_case testflight-app-store-processing-timeout-enforcement)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'  while processing_query_is_running \\\n      && (( SECONDS < query_deadline )); do\n    /bin/sleep "${APP_STORE_PROCESSING_WAIT_POLL_SECONDS}"\n  done\n  if processing_query_is_running; then\n    terminate_processing_query || query_status=1\n    (( query_status != 0 )) || query_status=124' \
+  $'  while processing_query_is_running; do\n    /bin/sleep "${APP_STORE_PROCESSING_WAIT_POLL_SECONDS}"\n  done\n  if processing_query_is_running; then\n    terminate_processing_query || query_status=1\n    (( query_status != 0 )) || query_status=124'
+require_rejection "$CASE" \
+  'side-by-side TestFlight processing-query timeout enforcement'
+
+CASE=$(new_case testflight-app-store-processing-independent-tmp)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '    TMPDIR="${TESTFLIGHT_PROCESSING_TMP_DIRECTORY}" \' \
+  '    TMPDIR="${TESTFLIGHT_BUILD_TMP_DIRECTORY}" \'
+require_rejection "$CASE" \
+  'side-by-side TestFlight independent processing TMPDIR use'
+
+CASE=$(new_case testflight-app-store-processing-tmp-cleanup)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'  exec {TESTFLIGHT_PROCESSING_STATUS_FD}>&-\n  TESTFLIGHT_PROCESSING_STATUS_FD=-1\n  remove_processing_tmp_directory || query_status=1\n  (( query_status == 0 )) || return ${query_status}' \
+  $'  exec {TESTFLIGHT_PROCESSING_STATUS_FD}>&-\n  TESTFLIGHT_PROCESSING_STATUS_FD=-1\n  true # processing TMPDIR cleanup omitted\n  (( query_status == 0 )) || return ${query_status}'
+require_rejection "$CASE" \
+  'side-by-side TestFlight bounded processing-query cleanup order'
+
+CASE=$(new_case testflight-app-store-processing-exit-cleanup)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '  terminate_processing_query || cleanup_failed=1' \
+  '  true # processing-query exit cleanup omitted'
+require_rejection "$CASE" \
+  'side-by-side TestFlight exit cleanup terminates processing before release cleanup'
+
+CASE=$(new_case testflight-build-cache-cleanup-before-processing)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'  cleanup_private_build_volume_signal_masked \\\n    || fail "could not clean the exact private build volume before Apple processing"' \
+  '  true # private build cache cleanup omitted'
+require_rejection "$CASE" \
+  'side-by-side TestFlight cache cleanup before processing and no post-cleanup archive rescan'
+
+CASE=$(new_case testflight-app-store-build-status-operation)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '    --build-status \' \
+  '    --list-providers \'
+require_rejection "$CASE" 'side-by-side TestFlight exact App Store build-status operation'
+
+CASE=$(new_case testflight-app-store-delivery-binding)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '    --delivery-id "${TESTFLIGHT_DELIVERY_ID}" \' \
+  '    --delivery-id "00000000-0000-0000-0000-000000000000" \'
+require_rejection "$CASE" 'side-by-side TestFlight upload-bound processing wait'
+
+CASE=$(new_case testflight-app-store-terminal-wait)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '    --wait \' \
+  '    --show-progress \'
+require_rejection "$CASE" 'side-by-side TestFlight terminal Apple processing wait'
+
+CASE=$(new_case testflight-app-store-valid-status-verifier)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'function verify_app_store_processing_status() {' \
+  'function accept_app_store_processing_status() {'
+require_rejection "$CASE" 'side-by-side TestFlight terminal VALID status verifier'
+
+CASE=$(new_case testflight-app-store-json-status-parser)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '/usr/bin/plutil -convert xml1 -o /dev/null -- \' \
+  '/usr/bin/plutil -lint \'
+require_rejection "$CASE" 'side-by-side TestFlight JSON processing-status parser'
+
 CASE=$(new_case testflight-build-root)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
   'TESTFLIGHT_BUILD_ROOT="/Volumes/t7"' \
@@ -771,6 +905,314 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   'EXPECTED_TESTFLIGHT_BUILD_ROOT_PHYSICAL_SIZE="1000204886016"' \
   'EXPECTED_TESTFLIGHT_BUILD_ROOT_PHYSICAL_SIZE="0"'
 require_rejection "$CASE" 'side-by-side TestFlight reviewed T7 physical size'
+
+CASE=$(new_case testflight-build-image-total-bytes)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'TESTFLIGHT_BUILD_IMAGE_TOTAL_BYTES="68719476736"' \
+  'TESTFLIGHT_BUILD_IMAGE_TOTAL_BYTES="68719476735"'
+require_rejection "$CASE" 'side-by-side TestFlight exact sparse-image byte capacity'
+
+CASE=$(new_case testflight-build-image-sector-count)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'TESTFLIGHT_BUILD_IMAGE_SECTOR_COUNT="134217728"' \
+  'TESTFLIGHT_BUILD_IMAGE_SECTOR_COUNT="134217727"'
+require_rejection "$CASE" 'side-by-side TestFlight exact sparse-image sector capacity'
+
+CASE=$(new_case testflight-build-image-encryption-algorithm)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'TESTFLIGHT_BUILD_IMAGE_ENCRYPTION="AES-256"' \
+  'TESTFLIGHT_BUILD_IMAGE_ENCRYPTION="AES-128"'
+require_rejection "$CASE" 'side-by-side TestFlight exact sparse-image encryption algorithm'
+
+CASE=$(new_case testflight-persistent-cache-schema)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'TESTFLIGHT_BUILD_CACHE_SCHEMA="opensteamer-testflight-build-cache-v1"' \
+  'TESTFLIGHT_BUILD_CACHE_SCHEMA="opensteamer-testflight-build-cache-unreviewed"'
+require_rejection "$CASE" 'side-by-side TestFlight persistent cache schema'
+
+CASE=$(new_case testflight-persistent-cache-root)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'TESTFLIGHT_BUILD_CACHE_ROOT="${TESTFLIGHT_BUILD_ROOT}/.${TESTFLIGHT_BUILD_CACHE_SCHEMA}"' \
+  'TESTFLIGHT_BUILD_CACHE_ROOT="/Applications/AudioStreamer Host.app"'
+require_rejection "$CASE" 'side-by-side TestFlight fixed persistent cache root'
+
+CASE=$(new_case testflight-persistent-cache-key)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_TESTFLIGHT_BUILD_KEY_PATH="${EXPECTED_ASC_API_KEY_DIRECTORY}/${TESTFLIGHT_BUILD_CACHE_SCHEMA}.key"' \
+  'EXPECTED_TESTFLIGHT_BUILD_KEY_PATH="/private/tmp/unreviewed.key"'
+require_rejection "$CASE" 'side-by-side TestFlight fixed persistent cache key'
+
+CASE=$(new_case testflight-persistent-cache-lock)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH="${EXPECTED_ASC_API_KEY_DIRECTORY}/${TESTFLIGHT_BUILD_CACHE_SCHEMA}.lock"' \
+  'EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH="/private/tmp/unreviewed.lock"'
+require_rejection "$CASE" 'side-by-side TestFlight fixed persistent cache lock'
+
+CASE=$(new_case testflight-persistent-cache-mount-root)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'TESTFLIGHT_BUILD_MOUNT_ROOT="${PRIVATE_TEMPORARY_ROOT}/${TESTFLIGHT_BUILD_CACHE_SCHEMA}"' \
+  'TESTFLIGHT_BUILD_MOUNT_ROOT="/Applications/AudioStreamer Host.app"'
+require_rejection "$CASE" 'side-by-side TestFlight stable persistent cache mount root'
+
+CASE=$(new_case testflight-persistent-cache-lock-acquisition)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'zsystem flock -t 0 -f TESTFLIGHT_BUILD_CACHE_LOCK_FD' \
+  'true # persistent cache lock bypassed'
+require_rejection "$CASE" 'side-by-side TestFlight nonblocking persistent cache lock'
+
+CASE=$(new_case testflight-persistent-cache-lock-acquisition-reachability)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'function initialize_or_pin_persistent_build_cache_storage() {\n  acquire_persistent_build_cache_lock\n' \
+  $'function initialize_or_pin_persistent_build_cache_storage() {\n  true # persistent cache lock acquisition omitted\n'
+require_rejection "$CASE" \
+  'side-by-side TestFlight persistent cache acquisition reachability and order'
+
+CASE=$(new_case testflight-persistent-cache-lock-release)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'zsystem flock -u "${TESTFLIGHT_BUILD_CACHE_LOCK_FD}"' \
+  'true # persistent cache lock leaked'
+require_rejection "$CASE" 'side-by-side TestFlight persistent cache lock release'
+
+CASE=$(new_case testflight-persistent-cache-partial-enrollment)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'persistent build-cache enrollment requires clean absent state' \
+  'partial cache state accepted'
+require_rejection "$CASE" 'side-by-side TestFlight retry-safe enrollment precondition'
+
+CASE=$(new_case testflight-persistent-cache-enrollment-marker-path)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH="${EXPECTED_ASC_API_KEY_DIRECTORY}/${TESTFLIGHT_BUILD_CACHE_SCHEMA}.enrollment.pending"' \
+  'EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH="/private/tmp/unreviewed.enrollment.pending"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight fixed durable enrollment marker path'
+
+CASE=$(new_case testflight-persistent-cache-enrollment-marker-content)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'TESTFLIGHT_BUILD_ENROLLMENT_MARKER_CONTENT="opensteamer-testflight-build-cache-enrollment-v1"' \
+  'TESTFLIGHT_BUILD_ENROLLMENT_MARKER_CONTENT="opensteamer-testflight-build-cache-enrollment-v0"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight exact durable enrollment marker content'
+
+CASE=$(new_case testflight-persistent-cache-enrollment-marker-verification)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'      && "$(sha256_file "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}")" \\\n        == "${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_SHA256}" \\\n      && ${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_FD} -ge 0' \
+  $'      && true # durable marker content accepted without verification \\\n      && ${TESTFLIGHT_BUILD_ENROLLMENT_MARKER_FD} -ge 0'
+require_rejection "$CASE" \
+  'side-by-side TestFlight durable enrollment marker content verification'
+
+CASE=$(new_case testflight-persistent-cache-enrollment-marker-exclusive-create)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'sysopen -w -o creat,excl,nofollow -m 600 -u marker_writer_fd' \
+  'sysopen -w -o creat,trunc,nofollow -m 600 -u marker_writer_fd'
+require_rejection "$CASE" \
+  'side-by-side TestFlight exclusive durable enrollment marker creation'
+
+CASE=$(new_case testflight-persistent-cache-enrollment-marker-publication)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'  /bin/sync\n  /bin/mv -- "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" \\\n    "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" || return 1\n  /bin/sync' \
+  $'  true # pre-publication sync omitted\n  /bin/mv -- "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" \\\n    "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" || return 1\n  /bin/sync'
+require_rejection "$CASE" \
+  'side-by-side TestFlight fsynced atomic durable enrollment marker publication'
+
+CASE=$(new_case testflight-persistent-cache-enrollment-staging-recovery)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'function recover_interrupted_build_cache_enrollment() {\n  remove_pending_enrollment_marker_staging_if_safe || return 1\n  if [[ ! -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}"' \
+  $'function recover_interrupted_build_cache_enrollment() {\n  true # staging-only enrollment recovery omitted\n  if [[ ! -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight staging-only interrupted enrollment recovery reachability'
+
+CASE=$(new_case testflight-persistent-cache-interrupted-enrollment-reachability)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    recover_interrupted_build_cache_enrollment \\\n      || fail "interrupted persistent build-cache enrollment was not safe to recover"\n    [[ ! -e "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}"' \
+  $'    true # interrupted enrollment recovery omitted\n    [[ ! -e "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight interrupted enrollment recovery before absent-state enrollment'
+
+CASE=$(new_case testflight-persistent-cache-enrollment-marker-reservation)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'      || fail "persistent build-cache enrollment requires clean absent state"\n    reserve_pending_enrollment_marker \\\n      || fail "could not publish the durable build-cache enrollment marker"' \
+  $'      || fail "persistent build-cache enrollment requires clean absent state"\n    true # durable enrollment marker reservation omitted'
+require_rejection "$CASE" \
+  'side-by-side TestFlight durable marker reservation before enrollment mutation'
+
+CASE=$(new_case testflight-persistent-cache-routine-pending-marker-rejection)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'        && ! -L "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" \\\n        && ! -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \\\n        && ! -L "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}" \\\n        && ! -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" \\\n        && ! -L "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH}" \\\n        && -f "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}"' \
+  $'        && ! -L "${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}" \\\n        && -f "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight routine mode rejects pending enrollment markers'
+
+CASE=$(new_case testflight-persistent-cache-interrupted-image-idle-guard)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    image_lsof_output=$(/usr/sbin/lsof -n -P -- \\\n      "${TESTFLIGHT_BUILD_IMAGE_PATH}" 2>/dev/null) || image_lsof_status=$?\n    (( image_lsof_status == 1 )) && [[ -z "${image_lsof_output}" ]] || return 1' \
+  $'    image_lsof_output=\x27\x27\n    image_lsof_status=1\n    true # busy interrupted-enrollment image accepted'
+require_rejection "$CASE" \
+  'side-by-side TestFlight interrupted enrollment image idle-user guard'
+
+CASE=$(new_case testflight-persistent-cache-interrupted-key-idle-guard)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    key_lsof_output=$(/usr/sbin/lsof -n -P -- \\\n      "${TESTFLIGHT_BUILD_KEY_PATH}" 2>/dev/null) || key_lsof_status=$?\n    (( key_lsof_status == 1 )) && [[ -z "${key_lsof_output}" ]] || return 1' \
+  $'    key_lsof_output=\x27\x27\n    key_lsof_status=1\n    true # busy interrupted-enrollment key accepted'
+require_rejection "$CASE" \
+  'side-by-side TestFlight interrupted enrollment key idle-user guard'
+
+CASE=$(new_case testflight-persistent-cache-interrupted-root-rollback-order)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    /bin/rmdir -- "${TESTFLIGHT_BUILD_CACHE_ROOT}" || return 1\n  fi\n\n  if [[ -e "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}"' \
+  $'    true # interrupted enrollment root preserved\n  fi\n\n  if [[ -e "${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight interrupted enrollment root rollback before key'
+
+CASE=$(new_case testflight-persistent-cache-interrupted-key-marker-order)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    /bin/rm -- "${TESTFLIGHT_BUILD_KEY_PATH}" || return 1\n  fi\n\n  remove_pending_enrollment_marker || return 1\n  /bin/sync' \
+  $'    true # interrupted enrollment key preserved\n  fi\n\n  remove_pending_enrollment_marker || return 1\n  /bin/sync'
+require_rejection "$CASE" \
+  'side-by-side TestFlight interrupted enrollment key and marker rollback order'
+
+CASE=$(new_case testflight-persistent-cache-enrollment-marker-pre-remove-sync)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'  mask_release_cleanup_signals\n  /bin/sync\n  remove_pending_enrollment_marker \\\n    || fail "could not commit the persistent build-cache enrollment marker"\n  /bin/sync\n  TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED=1\n  install_release_signal_traps' \
+  $'  mask_release_cleanup_signals\n  remove_pending_enrollment_marker \\\n    || fail "could not commit the persistent build-cache enrollment marker"\n  /bin/sync\n  TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED=1\n  install_release_signal_traps'
+require_rejection "$CASE" \
+  'side-by-side TestFlight durable enrollment commit ordering and sync barriers'
+
+CASE=$(new_case testflight-persistent-cache-enrollment-marker-post-remove-sync)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'  mask_release_cleanup_signals\n  /bin/sync\n  remove_pending_enrollment_marker \\\n    || fail "could not commit the persistent build-cache enrollment marker"\n  /bin/sync\n  TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED=1\n  install_release_signal_traps' \
+  $'  mask_release_cleanup_signals\n  /bin/sync\n  remove_pending_enrollment_marker \\\n    || fail "could not commit the persistent build-cache enrollment marker"\n  TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED=1\n  install_release_signal_traps'
+require_rejection "$CASE" \
+  'side-by-side TestFlight durable enrollment commit ordering and sync barriers'
+
+CASE=$(new_case testflight-persistent-cache-enrollment-marker-lock-owned-cleanup)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'  if (( cleanup_failed == 0 \\\n      && TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 \\\n      && TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED == 0 \\\n      && TESTFLIGHT_BUILD_CACHE_LOCK_FD >= 0 )); then\n    verify_build_cache_lock_identity || cleanup_failed=1\n  fi\n  if (( cleanup_failed == 0 \\\n      && TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 \\\n      && TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED == 0 \\\n      && TESTFLIGHT_BUILD_CACHE_LOCK_FD >= 0 )); then\n    if [[ -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}"' \
+  $'  if (( cleanup_failed == 0 \\\n      && TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 1 \\\n      && TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED == 0 )); then\n    if [[ -e "${EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH}"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight lock-owned enrollment journal cleanup'
+
+CASE=$(new_case testflight-persistent-cache-contract-verifier)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'function verify_persistent_build_cache_contract() {' \
+  'function ignore_persistent_build_cache_contract() {'
+require_rejection "$CASE" 'side-by-side TestFlight persistent cache contract verifier'
+
+CASE=$(new_case testflight-persistent-cache-recovery)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'function recover_stale_persistent_build_cache_state() {' \
+  'function ignore_stale_persistent_build_cache_state() {'
+require_rejection "$CASE" 'side-by-side TestFlight killed-run cache recovery'
+
+CASE=$(new_case testflight-persistent-cache-recovery-reachability)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'  initialize_or_pin_persistent_build_cache_storage\n  recover_stale_persistent_build_cache_state \\\n    || fail "stale persistent build-cache state was not identity-safe to recover"\n  create_stable_build_mount_underlay' \
+  $'  initialize_or_pin_persistent_build_cache_storage\n  true # stale persistent cache recovery omitted\n  create_stable_build_mount_underlay'
+require_rejection "$CASE" \
+  'side-by-side TestFlight stale recovery reachability and order'
+
+CASE=$(new_case testflight-persistent-cache-recovery-idle-user-guard)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    lsof_output=$(/usr/sbin/lsof -n -P +D \\\n      "${TESTFLIGHT_BUILD_MOUNT_POINT}" 2>/dev/null) || lsof_status=$?\n    (( lsof_status == 1 )) && [[ -z "${lsof_output}" ]] || return 1\n\n    # The nonblocking lock proves no conforming release is active.' \
+  $'    lsof_output=\x27\x27\n    lsof_status=1\n    true # busy stale attachment accepted\n\n    # The nonblocking lock proves no conforming release is active.'
+require_rejection "$CASE" \
+  'side-by-side TestFlight stale recovery idle-user guard'
+
+CASE=$(new_case testflight-persistent-cache-underlay-recovery)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'function remove_exact_stale_build_mount_underlay() {' \
+  'function ignore_exact_stale_build_mount_underlay() {'
+require_rejection "$CASE" 'side-by-side TestFlight exact stale-underlay recovery'
+
+CASE=$(new_case testflight-persistent-cache-enrollment-commit)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '  TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED=1' \
+  '  true # enrollment completion not published'
+require_rejection "$CASE" 'side-by-side TestFlight enrollment completion publication'
+
+CASE=$(new_case testflight-persistent-cache-contract-fields)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '/usr/bin/plutil -insert sdk -string iphoneos' \
+  '/usr/bin/plutil -replace sdk -string iphoneos'
+require_rejection "$CASE" 'side-by-side TestFlight exact persistent cache contract fields'
+
+CASE=$(new_case testflight-persistent-cache-contract-staging)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'local pending_contract="${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}.pending"' \
+  'local pending_contract="${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}"'
+require_rejection "$CASE" 'side-by-side TestFlight atomic cache-contract staging'
+
+CASE=$(new_case testflight-persistent-cache-contract-publication)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '/bin/mv -- "${pending_contract}" "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}"' \
+  '/bin/cp -- "${pending_contract}" "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}"'
+require_rejection "$CASE" 'side-by-side TestFlight atomic cache-contract publication'
+
+CASE=$(new_case testflight-persistent-cache-workspace-identity)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'TESTFLIGHT_BUILD_WORKSPACE_KEY=$(string_vector_sha256 "${REPOSITORY_ROOT}")' \
+  'TESTFLIGHT_BUILD_WORKSPACE_KEY=$(string_vector_sha256 "${EXPECTED_BUILD_NUMBER}")'
+require_rejection "$CASE" 'side-by-side TestFlight checkout-specific DerivedData identity'
+
+CASE=$(new_case testflight-persistent-cache-shared-root)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'local shared_root="${cache_v1}/shared"' \
+  'local shared_root="${workspace_root}/shared"'
+require_rejection "$CASE" 'side-by-side TestFlight cross-iteration shared dependency cache'
+
+CASE=$(new_case testflight-persistent-cache-run-tmp)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '"${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}/run.XXXXXX"' \
+  '"${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}/shared"'
+require_rejection "$CASE" 'side-by-side TestFlight fresh encrypted per-run TMPDIR'
+
+CASE=$(new_case testflight-persistent-cache-run-tmp-migration)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'function initialize_or_migrate_run_tmp_parent_directory() {' \
+  'function refuse_legacy_run_tmp_parent_migration() {'
+require_rejection "$CASE" 'side-by-side TestFlight legacy-cache run-TMP migration'
+
+CASE=$(new_case testflight-persistent-cache-run-tmp-cleanup)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'function remove_current_run_tmp_directory() {' \
+  'function preserve_current_run_tmp_directory() {'
+require_rejection "$CASE" 'side-by-side TestFlight fresh per-run TMPDIR cleanup'
+
+CASE=$(new_case testflight-persistent-cache-run-tmp-cleanup-reachability)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'      && [[ -n "${TESTFLIGHT_BUILD_TMP_DIRECTORY:-}" ]]; then\n    remove_current_run_tmp_directory || cleanup_failed=1\n  fi' \
+  $'      && [[ -n "${TESTFLIGHT_BUILD_TMP_DIRECTORY:-}" ]]; then\n    true # current run-TMP cleanup omitted\n  fi'
+require_rejection "$CASE" \
+  'side-by-side TestFlight current run-TMP cleanup reachability and order'
+
+CASE=$(new_case testflight-derived-data-xattr-name)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'TESTFLIGHT_DERIVED_DATA_BACKUP_EXCLUSION_XATTR="com.apple.metadata:com_apple_backup_excludeItem"' \
+  'TESTFLIGHT_DERIVED_DATA_BACKUP_EXCLUSION_XATTR="com.example.unreviewed"'
+require_rejection "$CASE" 'side-by-side TestFlight exact Xcode backup-exclusion xattr'
+
+CASE=$(new_case testflight-derived-data-xattr-digest)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'TESTFLIGHT_DERIVED_DATA_BACKUP_EXCLUSION_XATTR_SHA256="1cb8eb62affde4c49d785fafeddd9b210838894d525505fe9cf448c7ecf9970c"' \
+  'TESTFLIGHT_DERIVED_DATA_BACKUP_EXCLUSION_XATTR_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
+require_rejection "$CASE" 'side-by-side TestFlight exact Xcode backup-exclusion xattr bytes'
+
+CASE=$(new_case testflight-persistent-cache-key-rollback)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '            remove_exact_private_file "${TESTFLIGHT_BUILD_KEY_PATH}"' \
+  '            remove_exact_private_file "/Applications/AudioStreamer Host.app"'
+require_rejection "$CASE" 'side-by-side TestFlight failed-enrollment key rollback'
+
+CASE=$(new_case testflight-release-stage-timing-evidence)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'function print_release_stage_timing() {' \
+  'function ignore_release_stage_timing() {'
+require_rejection "$CASE" 'side-by-side TestFlight release-stage timing evidence'
+
+CASE=$(new_case testflight-complete-release-stage-timing)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '  print_release_stage_timing build_settings "${stage_started_at}"' \
+  '  true # build-settings timing omitted'
+require_rejection "$CASE" 'side-by-side TestFlight complete routine stage timing'
 
 CASE=$(new_case testflight-build-image-type)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -852,8 +1294,8 @@ require_rejection "$CASE" 'side-by-side TestFlight encrypted writable attachment
 
 CASE=$(new_case testflight-pre-create-cleanup-state)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  'TESTFLIGHT_BUILD_CREATE_ATTEMPTED=1' \
-  'TESTFLIGHT_BUILD_CREATE_ATTEMPTED=0'
+  $'    verify_build_key_identity \\\n      || fail "build-image key changed before encrypted image creation"\n    TESTFLIGHT_BUILD_CREATE_ATTEMPTED=1\n    run_with_pinned_build_key_stdin /usr/bin/hdiutil create' \
+  $'    verify_build_key_identity \\\n      || fail "build-image key changed before encrypted image creation"\n    TESTFLIGHT_BUILD_CREATE_ATTEMPTED=0\n    run_with_pinned_build_key_stdin /usr/bin/hdiutil create'
 require_rejection "$CASE" 'side-by-side TestFlight pre-create cleanup state'
 
 CASE=$(new_case testflight-create-cleanup-reachability)
@@ -864,8 +1306,8 @@ require_rejection "$CASE" 'side-by-side TestFlight attempted-create cleanup reac
 
 CASE=$(new_case testflight-pre-attach-cleanup-state)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  'TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=1' \
-  'TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=0'
+  $'  verify_build_key_identity \\\n    || fail "build-image key changed before attachment"\n  TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=1\n  write_private_plist "${attachment_plist}" run_with_pinned_build_key_stdin' \
+  $'  verify_build_key_identity \\\n    || fail "build-image key changed before attachment"\n  TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=0\n  write_private_plist "${attachment_plist}" run_with_pinned_build_key_stdin'
 require_rejection "$CASE" 'side-by-side TestFlight pre-attach cleanup state'
 
 CASE=$(new_case testflight-attach-cleanup-reachability)
@@ -888,8 +1330,8 @@ require_rejection "$CASE" 'side-by-side TestFlight private key identity guard'
 
 CASE=$(new_case testflight-key-bound-create-ordering)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  $'verify_build_key_identity \\\n    || fail "build-image key changed before encrypted image creation"\n  TESTFLIGHT_BUILD_CREATE_ATTEMPTED=1\n  run_with_pinned_build_key_stdin /usr/bin/hdiutil create' \
-  $'verify_build_key_identity || true\n  TESTFLIGHT_BUILD_CREATE_ATTEMPTED=1\n  /usr/bin/hdiutil create'
+  $'    verify_build_key_identity \\\n      || fail "build-image key changed before encrypted image creation"\n    TESTFLIGHT_BUILD_CREATE_ATTEMPTED=1\n    run_with_pinned_build_key_stdin /usr/bin/hdiutil create' \
+  $'    verify_build_key_identity || true\n    TESTFLIGHT_BUILD_CREATE_ATTEMPTED=1\n    /usr/bin/hdiutil create'
 require_rejection "$CASE" 'side-by-side TestFlight key-bound create ordering'
 
 CASE=$(new_case testflight-key-bound-attach-ordering)
@@ -1067,6 +1509,20 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   'function ignore_archive_payload_after_upload() {'
 require_rejection "$CASE" 'side-by-side TestFlight post-upload payload and distribution verification'
 
+CASE=$(new_case testflight-redundant-post-cleanup-archive-rescan)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'  fi\n  print -- "side-by-side TestFlight upload completed; evidence: ${output_directory}"' \
+  $'  fi\n  verify_archive_payload_after_upload || fail "redundant rescan"\n  print -- "side-by-side TestFlight upload completed; evidence: ${output_directory}"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight post-upload payload and distribution verification'
+
+CASE=$(new_case testflight-redundant-initial-archive-tree-rescan)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'  pin_archive_filesystem_identity \\\n    || fail "could not pin the completed archive filesystem identity"\n  verify_archive_contents_at_path "${TESTFLIGHT_ARCHIVE_PATH}"\n  print_release_stage_timing archive_verification "${stage_started_at}"' \
+  $'  pin_archive_filesystem_identity \\\n    || fail "could not pin the completed archive filesystem identity"\n  verify_archive\n  print_release_stage_timing archive_verification "${stage_started_at}"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight single full-tree pre-upload revalidation'
+
 CASE=$(new_case testflight-export-options-identity)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
   'function verify_export_options_identity() {' \
@@ -1075,7 +1531,7 @@ require_rejection "$CASE" 'side-by-side TestFlight pinned export-options identit
 
 CASE=$(new_case testflight-immediate-preupload-revalidation)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  $'verify_export_options_identity \\\n    || fail "export options changed after reviewed configuration validation"\n  verify_archive\n  verify_xcodebuild_authentication_contract \\\n    || fail "release authentication identity changed before upload"\n  verify_export_exec_destinations' \
+  $'verify_export_options_identity \\\n    || fail "export options changed after reviewed configuration validation"\n  verify_archive\n  verify_xcodebuild_authentication_contract \\\n    || fail "release authentication identity changed before upload"' \
   $'verify_export_options_identity || true\n  verify_archive\n  verify_output_directory_identity'
 require_rejection "$CASE" 'side-by-side TestFlight immediate pre-upload revalidation'
 
@@ -1087,8 +1543,8 @@ require_rejection "$CASE" 'side-by-side TestFlight caller build-environment reje
 
 CASE=$(new_case testflight-empty-xcode-environment)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  '/usr/bin/env -i' \
-  '/usr/bin/env'
+  $'  local -a pinned_command=(\n    /usr/bin/env -i\n    "${TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT[@]}"' \
+  $'  local -a pinned_command=(\n    /usr/bin/env\n    "${TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT[@]}"'
 require_rejection "$CASE" 'side-by-side TestFlight empty inherited Xcode environment'
 
 CASE=$(new_case testflight-xcode-sandbox)
@@ -1173,6 +1629,20 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   '  true # post-command filesystem proof bypassed'
 require_rejection "$CASE" \
   'side-by-side TestFlight post-command action and filesystem proof'
+
+CASE=$(new_case testflight-redundant-outer-filesystem-check)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '  local archive_status=0' \
+  $'  verify_pinned_xcodebuild_filesystem_contract || return 1\n  local archive_status=0'
+require_rejection "$CASE" \
+  'side-by-side TestFlight single pre-and-post Xcode filesystem checks'
+
+CASE=$(new_case testflight-redundant-outer-export-destination-check)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '  local upload_status=0' \
+  $'  verify_export_exec_destinations || return 1\n  local upload_status=0'
+require_rejection "$CASE" \
+  'side-by-side TestFlight single pre-and-post export destination checks'
 
 CASE=$(new_case testflight-persistent-export-default)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -1302,6 +1772,20 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   '(allow file-write* (subpath \"${PROTECTED_OPENSTEAMER_APPLICATION_SUPPORT_DIRECTORY}\"))'
 require_rejection "$CASE" 'side-by-side TestFlight kernel-enforced application-support subtree write denial'
 
+CASE=$(new_case testflight-build-key-read-denial)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '(deny file-read* (literal \"${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}\"))' \
+  '(allow file-read* (literal \"${EXPECTED_TESTFLIGHT_BUILD_KEY_PATH}\"))'
+require_rejection "$CASE" \
+  'side-by-side TestFlight build-image key read denial for build actions'
+
+CASE=$(new_case testflight-build-lock-read-denial)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '(deny file-read* (literal \"${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}\"))' \
+  '(allow file-read* (literal \"${EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH}\"))'
+require_rejection "$CASE" \
+  'side-by-side TestFlight build-cache lock read denial for build actions'
+
 CASE=$(new_case testflight-executable-scheme-actions)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
   'count(/Scheme//PreActions | /Scheme//PostActions | /Scheme//ExecutionAction)' \
@@ -1356,6 +1840,24 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   'EXPECTED_XCODEBUILD_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
 require_rejection "$CASE" 'side-by-side TestFlight reviewed real xcodebuild digest'
 
+CASE=$(new_case testflight-real-altool-path)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_ALTOOL_REAL_PATH="${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/SharedFrameworks/ContentDelivery.framework/Versions/A/Resources/altool"' \
+  'EXPECTED_ALTOOL_REAL_PATH="/usr/bin/unreviewed-altool"'
+require_rejection "$CASE" 'side-by-side TestFlight exact pinned altool path'
+
+CASE=$(new_case testflight-real-altool-digest)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_ALTOOL_SHA256="600c9117df7fa1be881fbf8d4df746b31fd6d6e35c71d8eeff8a26f600c7a2d5"' \
+  'EXPECTED_ALTOOL_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
+require_rejection "$CASE" 'side-by-side TestFlight exact pinned altool bytes'
+
+CASE=$(new_case testflight-real-altool-cdhash)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_ALTOOL_CD_HASH="cab578a19665f314251768644dfd34092d09e926"' \
+  'EXPECTED_ALTOOL_CD_HASH="0000000000000000000000000000000000000000"'
+require_rejection "$CASE" 'side-by-side TestFlight exact pinned altool signature'
+
 typeset -a FAST_XCODE_PIN_NAMES=(
   selected-developer-path
   canonical-developer-path
@@ -1364,20 +1866,26 @@ typeset -a FAST_XCODE_PIN_NAMES=(
   bundle-volume-binding
   developer-filesystem-identity
   xcodebuild-filesystem-identity
+  altool-filesystem-identity
   info-plist-digest-use
   version-plist-digest-use
   xcodebuild-digest-use
+  altool-digest-use
   bundle-identifier-plist
   bundle-version-plist
   bundle-build-version-plist
   volume-verifier-call
   xcodebuild-signature
+  altool-signature
   bundle-signing-identifier
   bundle-signing-team
   bundle-cdhash
   xcodebuild-signing-identifier
   xcodebuild-signing-team
   xcodebuild-cdhash
+  altool-signing-identifier
+  altool-signing-team
+  altool-cdhash
 )
 typeset -a FAST_XCODE_PIN_LITERALS=(
   '"${selected_developer_path}" == "${EXPECTED_XCODE_SELECTED_DEVELOPER_PATH}"'
@@ -1387,20 +1895,26 @@ typeset -a FAST_XCODE_PIN_LITERALS=(
   $'      && "${TESTFLIGHT_XCODE_BUNDLE_IDENTITY%%:*}" \\\n        == "${TESTFLIGHT_XCODE_VOLUME_ROOT_IDENTITY%%:*}"'
   $'"$(stat_identity "${EXPECTED_XCODE_REAL_DEVELOPER_PATH}")" \\\n        == "${TESTFLIGHT_XCODE_DEVELOPER_IDENTITY}"'
   $'"$(stat_identity "${EXPECTED_XCODEBUILD_REAL_PATH}")" \\\n        == "${TESTFLIGHT_XCODEBUILD_IDENTITY}"'
+  $'"$(stat_identity "${EXPECTED_ALTOOL_REAL_PATH}")" \\\n        == "${TESTFLIGHT_ALTOOL_IDENTITY}"'
   $'"$(sha256_file \\\n        "${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/Info.plist")" \\\n        == "${EXPECTED_XCODE_INFO_SHA256}"'
   $'"$(sha256_file \\\n        "${EXPECTED_XCODE_REAL_BUNDLE_PATH}/Contents/version.plist")" \\\n        == "${EXPECTED_XCODE_VERSION_SHA256}"'
   $'"$(sha256_file "${EXPECTED_XCODEBUILD_REAL_PATH}")" \\\n        == "${EXPECTED_XCODEBUILD_SHA256}"'
+  $'"$(sha256_file "${EXPECTED_ALTOOL_REAL_PATH}")" \\\n        == "${EXPECTED_ALTOOL_SHA256}"'
   $'CFBundleIdentifier)" == "${EXPECTED_XCODE_BUNDLE_IDENTIFIER}"'
   $'CFBundleShortVersionString)" == "${EXPECTED_XCODE_VERSION}"'
   $'ProductBuildVersion)" == "${EXPECTED_XCODE_BUILD_VERSION}"'
   'verify_reviewed_xcode_volume_identity || return $?'
   $'/usr/bin/codesign --verify --strict --verbose=4 \\\n    "${EXPECTED_XCODEBUILD_REAL_PATH}"'
+  $'/usr/bin/codesign --verify --strict --verbose=4 \\\n    "${EXPECTED_ALTOOL_REAL_PATH}"'
   $'codesign_metadata_value "${bundle_metadata}" Identifier)" \\\n        == "${EXPECTED_XCODE_BUNDLE_IDENTIFIER}"'
   $'codesign_metadata_value "${bundle_metadata}" TeamIdentifier)" \\\n        == "${EXPECTED_XCODE_SIGNING_TEAM_ID}"'
   $'codesign_metadata_value "${bundle_metadata}" CDHash)" \\\n        == "${EXPECTED_XCODE_BUNDLE_CD_HASH}"'
   $'codesign_metadata_value "${executable_metadata}" Identifier)" \\\n        == "${EXPECTED_XCODEBUILD_IDENTIFIER}"'
   $'codesign_metadata_value "${executable_metadata}" TeamIdentifier)" \\\n        == "${EXPECTED_XCODE_SIGNING_TEAM_ID}"'
   $'codesign_metadata_value "${executable_metadata}" CDHash)" \\\n        == "${EXPECTED_XCODEBUILD_CD_HASH}"'
+  $'codesign_metadata_value "${altool_metadata}" Identifier)" \\\n        == "${EXPECTED_ALTOOL_IDENTIFIER}"'
+  $'codesign_metadata_value "${altool_metadata}" TeamIdentifier)" \\\n        == "${EXPECTED_XCODE_SIGNING_TEAM_ID}"'
+  $'codesign_metadata_value "${altool_metadata}" CDHash)" \\\n        == "${EXPECTED_ALTOOL_CD_HASH}"'
 )
 (( ${#FAST_XCODE_PIN_NAMES[@]} == ${#FAST_XCODE_PIN_LITERALS[@]} ))
 for (( FAST_XCODE_PIN_INDEX = 1;
@@ -1541,21 +2055,22 @@ require_rejection "$CASE" 'side-by-side TestFlight complete Mach-O magic set'
 
 CASE=$(new_case testflight-exact-image-detach)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  '/usr/bin/hdiutil detach "${TESTFLIGHT_IMAGE_DEVICE}"' \
-  '/usr/bin/hdiutil detach "/Applications/AudioStreamer Host.app"'
+  $'    TESTFLIGHT_IMAGE_DEVICE=${attachment_fields[1]}\n    TESTFLIGHT_MOUNTED_DEVICE=${attachment_fields[2]}\n    TESTFLIGHT_IMAGE_PARTITION_DEVICE=${attachment_fields[3]}\n    TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=1\n    TESTFLIGHT_BUILD_ATTACHMENT_ACTIVE=1\n    /usr/bin/hdiutil detach "${TESTFLIGHT_IMAGE_DEVICE}" || return 1' \
+  $'    TESTFLIGHT_IMAGE_DEVICE=${attachment_fields[1]}\n    TESTFLIGHT_MOUNTED_DEVICE=${attachment_fields[2]}\n    TESTFLIGHT_IMAGE_PARTITION_DEVICE=${attachment_fields[3]}\n    TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=1\n    TESTFLIGHT_BUILD_ATTACHMENT_ACTIVE=1\n    /usr/bin/hdiutil detach "/Applications/AudioStreamer Host.app" || return 1'
 require_rejection "$CASE" 'side-by-side TestFlight exact image-device detach'
 
 CASE=$(new_case testflight-exact-image-removal)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  '/bin/rm -- "${TESTFLIGHT_BUILD_IMAGE_PATH}"' \
-  '/bin/rm -- "/Applications/AudioStreamer Host.app"'
-require_rejection "$CASE" 'side-by-side TestFlight exact sparse-image removal'
+  $'            && TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED == 0 )); then\n          /bin/rm -- "${TESTFLIGHT_BUILD_IMAGE_PATH}" || cleanup_failed=1' \
+  $'            && TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED == 0 )); then\n          /bin/rm -- "/Applications/AudioStreamer Host.app" || cleanup_failed=1'
+require_rejection "$CASE" 'side-by-side TestFlight failed-enrollment image rollback'
 
-CASE=$(new_case testflight-exact-image-container-cleanup)
+CASE=$(new_case testflight-failed-enrollment-container-rollback)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
   '/bin/rmdir -- "${TESTFLIGHT_BUILD_IMAGE_CONTAINER}"' \
   '/bin/rmdir -- "/Applications/AudioStreamer Host.app"'
-require_rejection "$CASE" 'side-by-side TestFlight exact image-container cleanup'
+require_rejection "$CASE" \
+  'side-by-side TestFlight failed-enrollment container rollback'
 
 CASE=$(new_case testflight-derived-data-path)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -2299,10 +2814,16 @@ SNAPSHOT=$SNAP_ZERO
 expect_status 1 find_current_attachment_root_device
 expect_status 0 current_attachment_is_absent
 
-for SNAPSHOT in "$SNAP_SCALAR" "$SNAP_MISSING_PATH" "$SNAP_BAD_ENTITIES"; do
+for SNAPSHOT in "$SNAP_SCALAR" "$SNAP_MISSING_PATH"; do
   expect_status 2 find_current_attachment_root_device
   expect_status 2 current_attachment_is_absent
 done
+
+# A malformed unrelated image must not make the exact cache image indeterminate.
+SNAPSHOT=$SNAP_BAD_ENTITIES
+expect_status 1 find_current_attachment_root_device
+expect_status 1 find_current_attachment_record
+expect_status 0 current_attachment_is_absent
 
 function write_private_plist() { return 1 }
 expect_status 2 find_current_attachment_root_device
@@ -2580,6 +3101,7 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <key>CreationDate</key><date>2026-08-04T12:00:00Z</date>
 <key>Distributions</key><array><dict>
 <key>adamId</key><string>6797410161</string>
+<key>identifier</key><string>082360c7-b3ee-45dc-9264-68604218c97e</string>
 <key>certificateSHA1</key><string>CEB61B792A7A5848E9E797BB2E44EA2642611A6F</string>
 <key>destination</key><string>upload</string>
 <key>preparationEvent</key><dict><key>errors</key><array/><key>state</key><string>success</string></dict>
@@ -2640,6 +3162,12 @@ fi
 expect_distribution_rejection apple-id
 /usr/bin/plutil -replace Distributions.0.adamId -string 6797410161 \
   "$POSTUPLOAD_ARCHIVE_INFO"
+/usr/bin/plutil -replace Distributions.0.identifier -string malformed \
+  "$POSTUPLOAD_ARCHIVE_INFO"
+expect_distribution_rejection identifier
+/usr/bin/plutil -replace Distributions.0.identifier \
+  -string 082360c7-b3ee-45dc-9264-68604218c97e \
+  "$POSTUPLOAD_ARCHIVE_INFO"
 /usr/bin/plutil -replace Distributions.0.uploadedBuildNumber -string 40 \
   "$POSTUPLOAD_ARCHIVE_INFO"
 expect_distribution_rejection build
@@ -2692,7 +3220,20 @@ for BUILD_OVERRIDE in \
   fi
 done
 
-WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'DIGESTTEST'
+DIGEST_BUILD_MOUNT="$BEHAVIOR_ROOT/digest-build-volume"
+DIGEST_BUILD_SANDBOX="$DIGEST_BUILD_MOUNT/BuildSandbox"
+DIGEST_RUN_TMP_PARENT="$DIGEST_BUILD_SANDBOX/run-tmp"
+DIGEST_RUN_TMP="$DIGEST_RUN_TMP_PARENT/run.fixture"
+/bin/mkdir -m 700 "$DIGEST_BUILD_MOUNT"
+/bin/mkdir -m 700 "$DIGEST_BUILD_SANDBOX"
+/bin/mkdir -m 700 "$DIGEST_RUN_TMP_PARENT"
+/bin/mkdir -m 700 "$DIGEST_RUN_TMP"
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" \
+DIGEST_BUILD_MOUNT="$DIGEST_BUILD_MOUNT" \
+DIGEST_BUILD_SANDBOX="$DIGEST_BUILD_SANDBOX" \
+DIGEST_RUN_TMP_PARENT="$DIGEST_RUN_TMP_PARENT" \
+DIGEST_RUN_TMP="$DIGEST_RUN_TMP" \
+/bin/zsh <<'DIGESTTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
 trap - EXIT HUP INT QUIT TERM
 function reject_unsafe_build_environment() { return 0 }
@@ -2701,17 +3242,24 @@ function verify_private_build_volume_identity() { return 0 }
 function verify_xcode_sandbox_profile_identity() { return 0 }
 function verify_package_dependency_contract() { return 0 }
 
-TESTFLIGHT_BUILD_SANDBOX_DIRECTORY=/Volumes/t7/BuildSandbox
-TESTFLIGHT_BUILD_TMP_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/tmp
+TESTFLIGHT_BUILD_MOUNT_POINT=$DIGEST_BUILD_MOUNT
+TESTFLIGHT_BUILD_SANDBOX_DIRECTORY=$DIGEST_BUILD_SANDBOX
+TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY=$DIGEST_RUN_TMP_PARENT
+TESTFLIGHT_BUILD_RUN_TMP_PARENT_IDENTITY=$(stat_identity \
+  "$TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY")
+TESTFLIGHT_BUILD_TMP_DIRECTORY=$DIGEST_RUN_TMP
+TESTFLIGHT_BUILD_TMP_IDENTITY=$(stat_identity \
+  "$TESTFLIGHT_BUILD_TMP_DIRECTORY")
 TESTFLIGHT_DERIVED_DATA_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/DerivedData
 TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Products
 TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Intermediates
 TESTFLIGHT_BUILD_DSTROOT_DIRECTORY=$TESTFLIGHT_DERIVED_DATA_DIRECTORY/Build/Intermediates.noindex/ArchiveIntermediates/$EXPECTED_SCHEME/InstallationBuildProductsLocation
-TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/SharedPrecompiledHeaders
-TESTFLIGHT_BUILD_CACHE_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/Caches
-TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/ModuleCache.noindex
-TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/PackageCache
-TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY=$TESTFLIGHT_BUILD_SANDBOX_DIRECTORY/SourcePackages
+typeset shared_cache_root=$TESTFLIGHT_BUILD_MOUNT_POINT/BuildCache/v1/shared
+TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY=$shared_cache_root/SharedPrecompiledHeaders
+TESTFLIGHT_BUILD_CACHE_DIRECTORY=$shared_cache_root/Caches
+TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY=$shared_cache_root/ModuleCache.noindex
+TESTFLIGHT_BUILD_PACKAGE_CACHE_DIRECTORY=$shared_cache_root/PackageCache
+TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY=$shared_cache_root/SourcePackages
 TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS=(one two)
 TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT=('LC_ALL=C' 'PATH=/usr/bin:/bin')
 TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS_SHA256=$(xcodebuild_pinned_arguments_sha256)
@@ -3011,6 +3559,7 @@ WRAPPER_PATH="$BEHAVIOR_WRAPPER" FD_CONTROL="$FD_CONTROL" \
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
 trap - EXIT HUP INT QUIT TERM
 function verify_control_directory_identity() { return 0 }
+function verify_build_key_identity() { return 0 }
 
 TESTFLIGHT_CONTROL_DIRECTORY=$FD_CONTROL
 TESTFLIGHT_BUILD_KEY_PATH="$FD_CONTROL/image.key"
@@ -3124,8 +3673,8 @@ if cleanup_private_build_volume_signal_masked >/dev/null 2>&1; then
   print -u2 -r -- 'injected late cleanup failure unexpectedly passed'
   exit 1
 fi
-[[ ! -e "$LATE_IMAGE" \
-    && ! -e "$LATE_CONTAINER" \
+[[ -f "$LATE_IMAGE" \
+    && -d "$LATE_CONTAINER" \
     && -z "$TESTFLIGHT_BUILD_IMAGE_PATH" \
     && -z "$TESTFLIGHT_BUILD_IMAGE_CONTAINER" \
     && "$TESTFLIGHT_BUILD_IMAGE_CREATED" == 0 \
@@ -3134,6 +3683,8 @@ fi
     && "$RELEASE_SCRATCH_CLEANUP_COMPLETE" == 0 ]]
 cleanup_private_build_volume_signal_masked
 [[ ! -e "$LATE_CONTROL" \
+    && -f "$LATE_IMAGE" \
+    && -d "$LATE_CONTAINER" \
     && -z "$TESTFLIGHT_CONTROL_DIRECTORY" \
     && "$RELEASE_SCRATCH_CLEANUP_RUNNING" == 0 \
     && "$RELEASE_SCRATCH_CLEANUP_COMPLETE" == 1 ]]
@@ -3142,6 +3693,754 @@ cleanup_private_build_volume_signal_masked
 [[ "$REMOVE_CALLS" == "$calls_after_success" ]]
 [[ "$(grep -c '^container$' "$LATE_MARKER")" == 2 ]]
 LATECLEANUPTEST
+
+IMAGE_INFO_CONTROL="$BEHAVIOR_ROOT/image-info-control"
+IMAGE_INFO_FIXTURE="$BEHAVIOR_ROOT/image-info.plist"
+/bin/mkdir -m 700 "$IMAGE_INFO_CONTROL"
+print -r -- '<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>Format</key><string>SPRS</string>
+<key>Properties</key><dict><key>Encrypted</key><true/></dict>
+<key>Backing Store Information</key><dict>
+<key>Class Name</key><string>CEncryptedEncoding</string>
+<key>Encryption</key><string>AES-256</string>
+<key>Backing Store Information</key><dict>
+<key>Class Name</key><string>CBSDBackingStore</string>
+</dict></dict>
+<key>Size Information</key><dict>
+<key>Total Bytes</key><integer>68719476736</integer>
+<key>Sector Count</key><integer>134217728</integer>
+</dict>
+<key>partitions</key><dict><key>partitions</key><array><dict>
+<key>partition-hint</key><string>Apple_APFS</string>
+<key>partition-UUID</key><string>11111111-2222-3333-4444-555555555555</string>
+</dict></array></dict>
+</dict></plist>' >"$IMAGE_INFO_FIXTURE"
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" \
+IMAGE_INFO_CONTROL="$IMAGE_INFO_CONTROL" \
+IMAGE_INFO_FIXTURE="$IMAGE_INFO_FIXTURE" \
+/bin/zsh <<'IMAGEINFOTEST'
+source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
+trap - EXIT HUP INT QUIT TERM
+
+function verify_image_storage_identity() { return 0 }
+function verify_build_key_identity() { return 0 }
+function write_private_plist() {
+  local destination=$1
+  /bin/cp -- "$IMAGE_INFO_FIXTURE" "$destination"
+  /bin/chmod 600 "$destination"
+}
+function expect_image_info_rejection() {
+  if write_and_verify_created_image_info >/dev/null 2>&1; then
+    print -u2 -r -- "image-info mutation unexpectedly passed: $1"
+    exit 1
+  fi
+}
+
+TESTFLIGHT_CONTROL_DIRECTORY=$IMAGE_INFO_CONTROL
+TESTFLIGHT_BUILD_IMAGE_PATH=$IMAGE_INFO_CONTROL/fake.sparseimage
+write_and_verify_created_image_info
+[[ "$TESTFLIGHT_BUILD_IMAGE_PARTITION_UUID" \
+    == '11111111-2222-3333-4444-555555555555' ]]
+
+/usr/bin/plutil -replace 'Backing Store Information.Class Name' \
+  -string CUnencryptedEncoding "$IMAGE_INFO_FIXTURE"
+expect_image_info_rejection outer-backing-class
+/usr/bin/plutil -replace 'Backing Store Information.Class Name' \
+  -string CEncryptedEncoding "$IMAGE_INFO_FIXTURE"
+/usr/bin/plutil -replace \
+  'Backing Store Information.Backing Store Information.Class Name' \
+  -string CUnknownBackingStore "$IMAGE_INFO_FIXTURE"
+expect_image_info_rejection nested-backing-class
+/usr/bin/plutil -replace \
+  'Backing Store Information.Backing Store Information.Class Name' \
+  -string CBSDBackingStore "$IMAGE_INFO_FIXTURE"
+/usr/bin/plutil -replace 'Backing Store Information.Encryption' \
+  -string AES-128 "$IMAGE_INFO_FIXTURE"
+expect_image_info_rejection encryption
+/usr/bin/plutil -replace 'Backing Store Information.Encryption' \
+  -string AES-256 "$IMAGE_INFO_FIXTURE"
+/usr/bin/plutil -replace 'Size Information.Total Bytes' \
+  -integer 34359738368 "$IMAGE_INFO_FIXTURE"
+expect_image_info_rejection total-bytes
+/usr/bin/plutil -replace 'Size Information.Total Bytes' \
+  -integer 68719476736 "$IMAGE_INFO_FIXTURE"
+/usr/bin/plutil -replace 'Size Information.Sector Count' \
+  -integer 67108864 "$IMAGE_INFO_FIXTURE"
+expect_image_info_rejection sector-count
+/usr/bin/plutil -replace 'Size Information.Sector Count' \
+  -integer 134217728 "$IMAGE_INFO_FIXTURE"
+/usr/bin/plutil -insert partitions.partitions.1 -xml \
+  '<dict><key>partition-hint</key><string>Apple_APFS</string><key>partition-UUID</key><string>AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE</string></dict>' \
+  "$IMAGE_INFO_FIXTURE"
+expect_image_info_rejection duplicate-apfs-partition
+/usr/bin/plutil -remove partitions.partitions.1 "$IMAGE_INFO_FIXTURE"
+write_and_verify_created_image_info
+IMAGEINFOTEST
+
+STALE_RECOVERY_ROOT="$BEHAVIOR_ROOT/stale-recovery-root"
+STALE_RECOVERY_MOUNT="$STALE_RECOVERY_ROOT/mount"
+STALE_RECOVERY_MARKER="$BEHAVIOR_ROOT/stale-recovery-marker"
+/bin/mkdir -m 700 "$STALE_RECOVERY_ROOT"
+/bin/mkdir -m 700 "$STALE_RECOVERY_MOUNT"
+print -r -- busy >"$STALE_RECOVERY_MOUNT/busy"
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" \
+STALE_RECOVERY_ROOT="$STALE_RECOVERY_ROOT" \
+STALE_RECOVERY_MOUNT="$STALE_RECOVERY_MOUNT" \
+STALE_RECOVERY_MARKER="$STALE_RECOVERY_MARKER" \
+/bin/zsh <<'STALERECOVERYTEST'
+source <(/usr/bin/sed \
+  -e 's|^readonly TESTFLIGHT_BUILD_MOUNT_ROOT=.*$|readonly TESTFLIGHT_BUILD_MOUNT_ROOT="${STALE_RECOVERY_ROOT}"|' \
+  -e 's|/usr/bin/hdiutil detach "${TESTFLIGHT_IMAGE_DEVICE}"|mock_hdiutil_detach "${TESTFLIGHT_IMAGE_DEVICE}"|g' \
+  -e '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
+trap - EXIT HUP INT QUIT TERM
+
+function verify_build_cache_lock_identity() { return 0 }
+function verify_image_storage_identity() { return 0 }
+function find_current_attachment_record() {
+  print -r -- '/dev/disk41|/dev/disk41s2|/dev/disk41s1|true|true'
+}
+function verify_hdiutil_attachment_identity() { return 0 }
+function current_attachment_is_absent() { return 0 }
+function remove_exact_stale_build_mount_underlay() {
+  print -r -- underlay >>"$STALE_RECOVERY_MARKER"
+}
+function mock_hdiutil_detach() {
+  [[ "$1" == /dev/disk41 ]] || return 1
+  print -r -- "detach:$1" >>"$STALE_RECOVERY_MARKER"
+}
+
+TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=0
+typeset -i stale_busy_fd=-1
+sysopen -r -o nofollow -u stale_busy_fd "$STALE_RECOVERY_MOUNT/busy"
+if recover_stale_persistent_build_cache_state >/dev/null 2>&1; then
+  print -u2 -r -- 'busy stale attachment unexpectedly detached'
+  exit 1
+fi
+[[ ! -e "$STALE_RECOVERY_MARKER" ]]
+exec {stale_busy_fd}>&-
+
+recover_stale_persistent_build_cache_state >/dev/null
+[[ "$(/usr/bin/sed -n '1p' "$STALE_RECOVERY_MARKER")" \
+      == 'detach:/dev/disk41' \
+    && "$(/usr/bin/sed -n '2p' "$STALE_RECOVERY_MARKER")" == underlay \
+    && "$(/usr/bin/wc -l <"$STALE_RECOVERY_MARKER" | /usr/bin/tr -d ' ')" == 2 ]]
+STALERECOVERYTEST
+
+RUN_TMP_MIGRATION_PARENT="$BEHAVIOR_ROOT/run-tmp-migration-workspace"
+RUN_TMP_MIGRATION_TARGET="$RUN_TMP_MIGRATION_PARENT/run-tmp"
+/bin/mkdir -m 700 "$RUN_TMP_MIGRATION_PARENT"
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" \
+RUN_TMP_MIGRATION_PARENT="$RUN_TMP_MIGRATION_PARENT" \
+RUN_TMP_MIGRATION_TARGET="$RUN_TMP_MIGRATION_TARGET" \
+/bin/zsh <<'RUNTMPMIGRATIONTEST'
+source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
+trap - EXIT HUP INT QUIT TERM
+
+TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=0
+initialize_or_migrate_run_tmp_parent_directory \
+  "$RUN_TMP_MIGRATION_TARGET" "$RUN_TMP_MIGRATION_PARENT"
+require_owned_private_directory "$RUN_TMP_MIGRATION_TARGET"
+/bin/rmdir -- "$RUN_TMP_MIGRATION_TARGET"
+
+/bin/ln -s "$RUN_TMP_MIGRATION_PARENT" "$RUN_TMP_MIGRATION_TARGET"
+if initialize_or_migrate_run_tmp_parent_directory \
+    "$RUN_TMP_MIGRATION_TARGET" "$RUN_TMP_MIGRATION_PARENT" \
+    >/dev/null 2>&1; then
+  print -u2 -r -- 'symlink run-TMP migration target unexpectedly passed'
+  exit 1
+fi
+/bin/rm -- "$RUN_TMP_MIGRATION_TARGET"
+
+/bin/mkdir -m 755 "$RUN_TMP_MIGRATION_TARGET"
+if initialize_or_migrate_run_tmp_parent_directory \
+    "$RUN_TMP_MIGRATION_TARGET" "$RUN_TMP_MIGRATION_PARENT" \
+    >/dev/null 2>&1; then
+  print -u2 -r -- 'public run-TMP migration target unexpectedly passed'
+  exit 1
+fi
+/bin/rmdir -- "$RUN_TMP_MIGRATION_TARGET"
+/bin/rmdir -- "$RUN_TMP_MIGRATION_PARENT"
+RUNTMPMIGRATIONTEST
+
+RUN_TMP_SANDBOX="$BEHAVIOR_ROOT/run-tmp-sandbox"
+RUN_TMP_PARENT="$RUN_TMP_SANDBOX/run-tmp"
+RUN_TMP_CURRENT="$RUN_TMP_PARENT/run.current"
+RUN_TMP_SIBLING="$RUN_TMP_PARENT/run.sibling"
+/bin/mkdir -m 700 "$RUN_TMP_SANDBOX"
+/bin/mkdir -m 700 "$RUN_TMP_PARENT"
+/bin/mkdir -m 700 "$RUN_TMP_CURRENT"
+/bin/mkdir -m 700 "$RUN_TMP_SIBLING"
+/bin/mkdir -m 700 "$RUN_TMP_CURRENT/nested"
+print -r -- transient >"$RUN_TMP_CURRENT/nested/file"
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" \
+RUN_TMP_SANDBOX="$RUN_TMP_SANDBOX" \
+RUN_TMP_PARENT="$RUN_TMP_PARENT" \
+RUN_TMP_CURRENT="$RUN_TMP_CURRENT" \
+RUN_TMP_SIBLING="$RUN_TMP_SIBLING" \
+/bin/zsh <<'RUNTMPCLEANUPTEST'
+source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
+trap - EXIT HUP INT QUIT TERM
+
+TESTFLIGHT_BUILD_SANDBOX_DIRECTORY=$RUN_TMP_SANDBOX
+TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY=$RUN_TMP_PARENT
+TESTFLIGHT_BUILD_RUN_TMP_PARENT_IDENTITY=$(stat_identity "$RUN_TMP_PARENT")
+TESTFLIGHT_BUILD_TMP_DIRECTORY=$RUN_TMP_CURRENT
+TESTFLIGHT_BUILD_TMP_IDENTITY=$(stat_identity "$RUN_TMP_CURRENT")
+remove_current_run_tmp_directory
+[[ ! -e "$RUN_TMP_CURRENT" \
+    && -d "$RUN_TMP_SIBLING" \
+    && -z "$TESTFLIGHT_BUILD_TMP_DIRECTORY" \
+    && -z "$TESTFLIGHT_BUILD_TMP_IDENTITY" ]]
+/bin/rmdir -- "$RUN_TMP_SIBLING"
+/bin/rmdir -- "$RUN_TMP_PARENT"
+/bin/rmdir -- "$RUN_TMP_SANDBOX"
+RUNTMPCLEANUPTEST
+
+PROCESSING_QUERY_OUTPUT="$BEHAVIOR_ROOT/processing-query-output"
+PROCESSING_QUERY_BUILD_TMP="$BEHAVIOR_ROOT/processing-query-build-tmp"
+PROCESSING_QUERY_MOCK="$BEHAVIOR_ROOT/mock-processing-query.zsh"
+/bin/mkdir -m 700 "$PROCESSING_QUERY_OUTPUT"
+/bin/mkdir -m 700 "$PROCESSING_QUERY_BUILD_TMP"
+print -r -- preserve >"$PROCESSING_QUERY_BUILD_TMP/sentinel"
+print -r -- '#!/bin/zsh
+print -r -- "${TMPDIR}"
+trap "" TERM
+while true; do
+  /bin/sleep 1
+done' >"$PROCESSING_QUERY_MOCK"
+/bin/chmod 700 "$PROCESSING_QUERY_MOCK"
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" \
+PROCESSING_QUERY_OUTPUT="$PROCESSING_QUERY_OUTPUT" \
+PROCESSING_QUERY_BUILD_TMP="$PROCESSING_QUERY_BUILD_TMP" \
+PROCESSING_QUERY_MOCK="$PROCESSING_QUERY_MOCK" \
+/bin/zsh <<'PROCESSINGQUERYTEST'
+source <(/usr/bin/sed \
+  -e 's|^readonly EXPECTED_ALTOOL_REAL_PATH=.*$|readonly EXPECTED_ALTOOL_REAL_PATH="${PROCESSING_QUERY_MOCK}"|' \
+  -e 's|^readonly -i APP_STORE_PROCESSING_WAIT_TIMEOUT_SECONDS=1800$|readonly -i APP_STORE_PROCESSING_WAIT_TIMEOUT_SECONDS=1|' \
+  -e 's|^readonly -i APP_STORE_PROCESSING_WAIT_POLL_SECONDS=5$|readonly -i APP_STORE_PROCESSING_WAIT_POLL_SECONDS=1|' \
+  -e 's|^readonly -i APP_STORE_PROCESSING_TERMINATION_GRACE_SECONDS=5$|readonly -i APP_STORE_PROCESSING_TERMINATION_GRACE_SECONDS=1|' \
+  -e '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
+trap - EXIT HUP INT QUIT TERM
+
+function verify_app_store_connect_api_key_identity() { return 0 }
+function verify_reviewed_xcode_toolchain_identity() { return 0 }
+function verify_archive_destination_identity() { return 0 }
+function verify_successful_upload_distribution_record() { return 0 }
+function verify_output_directory_identity() { return 0 }
+function verify_processing_status_destination() { return 0 }
+function plist_typed_raw_value() {
+  [[ "$2" == Distributions.0.identifier && "$3" == string ]] || return 1
+  print -r -- 082360c7-b3ee-45dc-9264-68604218c97e
+}
+typeset PROCESSING_SIGNAL_STATE=unmasked
+function mask_release_cleanup_signals() {
+  [[ "$PROCESSING_SIGNAL_STATE" == unmasked ]] || return 1
+  PROCESSING_SIGNAL_STATE=masked
+}
+function install_release_signal_traps() {
+  if ! [[ "$PROCESSING_SIGNAL_STATE" == masked \
+      && $TESTFLIGHT_PROCESSING_QUERY_PID -gt 1 \
+      && $TESTFLIGHT_PROCESSING_QUERY_RUNNING == 1 ]]; then
+    print -u2 -r -- \
+      'processing query published incomplete state before restoring signal traps'
+    return 1
+  fi
+  PROCESSING_SIGNAL_STATE=installed
+}
+
+TESTFLIGHT_OUTPUT_DIRECTORY=$PROCESSING_QUERY_OUTPUT
+TESTFLIGHT_ARCHIVE_PATH=$PROCESSING_QUERY_OUTPUT/fake.xcarchive
+TESTFLIGHT_BUILD_TMP_DIRECTORY=$PROCESSING_QUERY_BUILD_TMP
+typeset -i processing_wait_started=$SECONDS
+typeset -i processing_wait_status=0
+wait_for_app_store_processing >/dev/null 2>&1 || processing_wait_status=$?
+typeset -i processing_wait_elapsed=$((SECONDS - processing_wait_started))
+if [[ $processing_wait_status != 124 \
+    || $processing_wait_elapsed -lt 1 \
+    || $processing_wait_elapsed -gt 10 ]]; then
+  print -u2 -r -- \
+    "bounded processing query returned ${processing_wait_status} after ${processing_wait_elapsed}s"
+  exit 1
+fi
+typeset observed_processing_tmp=''
+observed_processing_tmp=$(/usr/bin/sed -n '1p' \
+  "$TESTFLIGHT_PROCESSING_STATUS_PATH")
+if ! [[ "$observed_processing_tmp" \
+      == "$PROCESSING_QUERY_OUTPUT"/app-store-processing-tmp.* \
+    && "$observed_processing_tmp" != "$PROCESSING_QUERY_BUILD_TMP" \
+    && ! -e "$observed_processing_tmp" \
+    && ! -L "$observed_processing_tmp" \
+    && -d "$PROCESSING_QUERY_BUILD_TMP" \
+    && "$(<"$PROCESSING_QUERY_BUILD_TMP/sentinel")" == preserve \
+    && -z "$TESTFLIGHT_PROCESSING_TMP_DIRECTORY" \
+    && -z "$TESTFLIGHT_PROCESSING_TMP_DIRECTORY_IDENTITY" \
+    && $TESTFLIGHT_PROCESSING_QUERY_PID == -1 \
+    && $TESTFLIGHT_PROCESSING_QUERY_RUNNING == 0 \
+    && "$PROCESSING_SIGNAL_STATE" == installed \
+    && $TESTFLIGHT_PROCESSING_STATUS_FD == -1 ]]; then
+  print -u2 -r -- \
+    "bounded processing query did not isolate and clean TMPDIR: ${observed_processing_tmp}"
+  exit 1
+fi
+PROCESSINGQUERYTEST
+
+ENROLLMENT_RECOVERY_CREDENTIALS="$BEHAVIOR_ROOT/enrollment-recovery-credentials"
+ENROLLMENT_RECOVERY_BUILD_ROOT="$BEHAVIOR_ROOT/enrollment-recovery-build-root"
+ENROLLMENT_RECOVERY_MOUNT_ROOT="$BEHAVIOR_ROOT/enrollment-recovery-mount-root"
+ENROLLMENT_RECOVERY_COMMIT_MARKER="$BEHAVIOR_ROOT/enrollment-recovery-commit.log"
+/bin/mkdir -m 700 "$ENROLLMENT_RECOVERY_CREDENTIALS"
+/bin/mkdir -m 700 "$ENROLLMENT_RECOVERY_BUILD_ROOT"
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" \
+ENROLLMENT_RECOVERY_CREDENTIALS="$ENROLLMENT_RECOVERY_CREDENTIALS" \
+ENROLLMENT_RECOVERY_BUILD_ROOT="$ENROLLMENT_RECOVERY_BUILD_ROOT" \
+ENROLLMENT_RECOVERY_MOUNT_ROOT="$ENROLLMENT_RECOVERY_MOUNT_ROOT" \
+ENROLLMENT_RECOVERY_COMMIT_MARKER="$ENROLLMENT_RECOVERY_COMMIT_MARKER" \
+/bin/zsh <<'ENROLLMENTRECOVERYTEST'
+source <(/usr/bin/sed \
+  -e 's|^readonly EXPECTED_ASC_API_KEY_DIRECTORY=.*$|readonly EXPECTED_ASC_API_KEY_DIRECTORY="${ENROLLMENT_RECOVERY_CREDENTIALS}"|' \
+  -e 's|^readonly TESTFLIGHT_BUILD_ROOT=.*$|readonly TESTFLIGHT_BUILD_ROOT="${ENROLLMENT_RECOVERY_BUILD_ROOT}"|' \
+  -e 's|^readonly TESTFLIGHT_BUILD_MOUNT_ROOT=.*$|readonly TESTFLIGHT_BUILD_MOUNT_ROOT="${ENROLLMENT_RECOVERY_MOUNT_ROOT}"|' \
+  -e '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
+trap - EXIT HUP INT QUIT TERM
+
+function find_current_attachment_record() { return 1 }
+function reset_enrollment_recovery_state() {
+  if (( TESTFLIGHT_BUILD_ENROLLMENT_MARKER_FD >= 0 )); then
+    exec {TESTFLIGHT_BUILD_ENROLLMENT_MARKER_FD}>&-
+  fi
+  if (( TESTFLIGHT_BUILD_KEY_FD >= 0 )); then
+    exec {TESTFLIGHT_BUILD_KEY_FD}>&-
+  fi
+  TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH=''
+  TESTFLIGHT_BUILD_ENROLLMENT_MARKER_IDENTITY=''
+  TESTFLIGHT_BUILD_ENROLLMENT_MARKER_FD=-1
+  TESTFLIGHT_BUILD_IMAGE_CONTAINER=''
+  TESTFLIGHT_BUILD_IMAGE_CONTAINER_IDENTITY=''
+  TESTFLIGHT_BUILD_IMAGE_PATH=''
+  TESTFLIGHT_BUILD_IMAGE_IDENTITY=''
+  TESTFLIGHT_BUILD_KEY_PATH=''
+  TESTFLIGHT_BUILD_KEY_IDENTITY=''
+  TESTFLIGHT_BUILD_KEY_FD=-1
+  TESTFLIGHT_BUILD_CACHE_ROOT_IDENTITY=''
+  TESTFLIGHT_BUILD_CACHE_ROOT_CREATED=0
+  TESTFLIGHT_BUILD_CREATE_ATTEMPTED=0
+  TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=0
+  TESTFLIGHT_BUILD_ATTACHMENT_ACTIVE=0
+  TESTFLIGHT_IMAGE_DEVICE=''
+  TESTFLIGHT_IMAGE_PARTITION_DEVICE=''
+  TESTFLIGHT_MOUNTED_DEVICE=''
+}
+
+typeset enrollment_marker=$EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_PATH
+typeset enrollment_marker_staging=$EXPECTED_TESTFLIGHT_BUILD_ENROLLMENT_MARKER_STAGING_PATH
+typeset enrollment_cache_root=$TESTFLIGHT_BUILD_CACHE_ROOT
+typeset enrollment_image="$enrollment_cache_root/${TESTFLIGHT_BUILD_IMAGE_BASENAME}.sparseimage"
+typeset enrollment_key=$EXPECTED_TESTFLIGHT_BUILD_KEY_PATH
+typeset enrollment_lock=$EXPECTED_TESTFLIGHT_BUILD_LOCK_PATH
+
+# A killed writer can leave only the bounded .new file; the next initializer removes it.
+print -rn -- partial >"$enrollment_marker_staging"
+/bin/chmod 600 "$enrollment_marker_staging"
+recover_interrupted_build_cache_enrollment >/dev/null
+[[ ! -e "$enrollment_marker_staging" && ! -L "$enrollment_marker_staging" ]]
+
+/bin/mkdir -m 700 "$enrollment_cache_root"
+print -r -- image >"$enrollment_image"
+/bin/chmod 600 "$enrollment_image"
+print -r -- 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  >"$enrollment_key"
+/bin/chmod 600 "$enrollment_key"
+print -rn -- '' >"$enrollment_lock"
+/bin/chmod 600 "$enrollment_lock"
+reserve_pending_enrollment_marker
+reset_enrollment_recovery_state
+
+# Routine releases must reject an otherwise complete cache while its journal is pending.
+TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=0
+if ( acquire_persistent_build_cache_lock ) >/dev/null 2>&1; then
+  print -u2 -r -- 'routine cache acquisition accepted a pending enrollment marker'
+  exit 1
+fi
+/bin/mv -- "$enrollment_marker" "$enrollment_marker_staging"
+if ( acquire_persistent_build_cache_lock ) >/dev/null 2>&1; then
+  print -u2 -r -- 'routine cache acquisition accepted a staged enrollment marker'
+  exit 1
+fi
+/bin/mv -- "$enrollment_marker_staging" "$enrollment_marker"
+
+# A malformed final marker authorizes no rollback at all.
+print -r -- opensteamer-testflight-build-cache-enrollment-v0 \
+  >"$enrollment_marker"
+if recover_interrupted_build_cache_enrollment >/dev/null 2>&1; then
+  print -u2 -r -- 'malformed enrollment marker unexpectedly authorized recovery'
+  exit 1
+fi
+[[ -d "$enrollment_cache_root" \
+    && -f "$enrollment_image" \
+    && -f "$enrollment_key" \
+    && -f "$enrollment_marker" ]]
+reset_enrollment_recovery_state
+/bin/rm -- "$enrollment_marker"
+reserve_pending_enrollment_marker
+reset_enrollment_recovery_state
+TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=1
+
+# A surviving image user blocks rollback before any persistent object is removed.
+typeset -i enrollment_image_busy_fd=-1
+sysopen -r -o nofollow -u enrollment_image_busy_fd "$enrollment_image"
+if recover_interrupted_build_cache_enrollment >/dev/null 2>&1; then
+  print -u2 -r -- 'busy interrupted-enrollment image unexpectedly rolled back'
+  exit 1
+fi
+[[ -d "$enrollment_cache_root" \
+    && -f "$enrollment_image" \
+    && -f "$enrollment_key" \
+    && -f "$enrollment_marker" ]]
+reset_enrollment_recovery_state
+exec {enrollment_image_busy_fd}>&-
+
+# A surviving key user blocks key deletion; the durable marker makes the partial rollback retryable.
+typeset -i enrollment_key_busy_fd=-1
+sysopen -r -o nofollow -u enrollment_key_busy_fd "$enrollment_key"
+if recover_interrupted_build_cache_enrollment >/dev/null 2>&1; then
+  print -u2 -r -- 'busy interrupted-enrollment key unexpectedly rolled back'
+  exit 1
+fi
+[[ ! -e "$enrollment_cache_root" \
+    && ! -L "$enrollment_cache_root" \
+    && ! -e "$enrollment_image" \
+    && ! -L "$enrollment_image" \
+    && -f "$enrollment_key" \
+    && -f "$enrollment_marker" ]]
+reset_enrollment_recovery_state
+exec {enrollment_key_busy_fd}>&-
+
+recover_interrupted_build_cache_enrollment >/dev/null
+[[ ! -e "$enrollment_cache_root" \
+    && ! -L "$enrollment_cache_root" \
+    && ! -e "$enrollment_key" \
+    && ! -L "$enrollment_key" \
+    && ! -e "$enrollment_marker" \
+    && ! -L "$enrollment_marker" ]]
+
+# A cleanup process that does not own the cache lock cannot erase another initializer's journal.
+reserve_pending_enrollment_marker
+reset_enrollment_recovery_state
+TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=1
+TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED=0
+TESTFLIGHT_BUILD_CACHE_LOCK_FD=-1
+cleanup_private_build_volume
+[[ -f "$enrollment_marker" \
+    && "$(sha256_file "$enrollment_marker")" \
+      == "$TESTFLIGHT_BUILD_ENROLLMENT_MARKER_SHA256" ]]
+/bin/rm -- "$enrollment_marker"
+print -rn -- partial >"$enrollment_marker_staging"
+/bin/chmod 600 "$enrollment_marker_staging"
+TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=1
+TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED=0
+TESTFLIGHT_BUILD_CACHE_LOCK_FD=-1
+cleanup_private_build_volume
+[[ -f "$enrollment_marker_staging" ]]
+/bin/rm -- "$enrollment_marker_staging"
+
+# The public initializer removes the durable marker before publishing committed state.
+functions -c remove_pending_enrollment_marker \
+  production_remove_pending_enrollment_marker
+function remove_pending_enrollment_marker() {
+  [[ $TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED == 0 ]] || return 1
+  print -r -- remove >>"$ENROLLMENT_RECOVERY_COMMIT_MARKER"
+  production_remove_pending_enrollment_marker
+}
+function initialize_private_testflight_build_volume() {
+  reserve_pending_enrollment_marker
+  print -r -- initialize >>"$ENROLLMENT_RECOVERY_COMMIT_MARKER"
+}
+function verify_private_build_volume_identity() {
+  verify_pending_enrollment_marker
+  print -r -- verify >>"$ENROLLMENT_RECOVERY_COMMIT_MARKER"
+}
+function cleanup_private_build_volume() {
+  [[ $TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED == 1 \
+      && ! -e "$enrollment_marker" \
+      && ! -L "$enrollment_marker" \
+      && ! -e "$enrollment_marker_staging" \
+      && ! -L "$enrollment_marker_staging" ]] || return 1
+  print -r -- cleanup >>"$ENROLLMENT_RECOVERY_COMMIT_MARKER"
+}
+RELEASE_SCRATCH_CLEANUP_COMPLETE=0
+RELEASE_SCRATCH_CLEANUP_RUNNING=0
+run_initialize_build_cache >/dev/null
+[[ "$(<"$ENROLLMENT_RECOVERY_COMMIT_MARKER")" \
+    == $'initialize\nverify\nremove\ncleanup' ]]
+ENROLLMENTRECOVERYTEST
+
+ROLLBACK_CONTROL="$BEHAVIOR_ROOT/rollback-control"
+ROLLBACK_CONTAINER="$BEHAVIOR_ROOT/rollback-cache-root"
+ROLLBACK_IMAGE="$ROLLBACK_CONTAINER/cache.sparseimage"
+ROLLBACK_KEY="$BEHAVIOR_ROOT/rollback.key"
+ROLLBACK_LOCK="$BEHAVIOR_ROOT/rollback.lock"
+ROLLBACK_SENTINEL="$BEHAVIOR_ROOT/rollback-sentinel"
+/bin/mkdir -m 700 "$ROLLBACK_CONTROL"
+/bin/mkdir -m 700 "$ROLLBACK_CONTAINER"
+print -r -- image >"$ROLLBACK_IMAGE"
+/bin/chmod 600 "$ROLLBACK_IMAGE"
+print -r -- key >"$ROLLBACK_KEY"
+/bin/chmod 600 "$ROLLBACK_KEY"
+print -rn -- '' >"$ROLLBACK_LOCK"
+/bin/chmod 600 "$ROLLBACK_LOCK"
+print -r -- preserve >"$ROLLBACK_SENTINEL"
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" \
+ROLLBACK_CONTROL="$ROLLBACK_CONTROL" \
+ROLLBACK_CONTAINER="$ROLLBACK_CONTAINER" \
+ROLLBACK_IMAGE="$ROLLBACK_IMAGE" \
+ROLLBACK_KEY="$ROLLBACK_KEY" \
+ROLLBACK_LOCK="$ROLLBACK_LOCK" \
+ROLLBACK_SENTINEL="$ROLLBACK_SENTINEL" \
+/bin/zsh <<'ENROLLMENTROLLBACKTEST'
+source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
+trap - EXIT HUP INT QUIT TERM
+
+function verify_control_directory_identity() {
+  [[ -d "$TESTFLIGHT_CONTROL_DIRECTORY" \
+      && "$(stat_identity "$TESTFLIGHT_CONTROL_DIRECTORY")" \
+        == "$TESTFLIGHT_CONTROL_DIRECTORY_IDENTITY" ]]
+}
+function verify_image_container_identity() {
+  [[ -d "$TESTFLIGHT_BUILD_IMAGE_CONTAINER" \
+      && "$(stat_identity "$TESTFLIGHT_BUILD_IMAGE_CONTAINER")" \
+        == "$TESTFLIGHT_BUILD_IMAGE_CONTAINER_IDENTITY" ]]
+}
+function verify_image_storage_identity() {
+  [[ -f "$TESTFLIGHT_BUILD_IMAGE_PATH" \
+      && "$(stat_identity "$TESTFLIGHT_BUILD_IMAGE_PATH")" \
+        == "$TESTFLIGHT_BUILD_IMAGE_IDENTITY" ]]
+}
+function current_attachment_is_absent() { return 0 }
+function verify_build_cache_lock_identity() {
+  [[ -f "$ROLLBACK_LOCK" \
+      && ! -L "$ROLLBACK_LOCK" \
+      && -n "$TESTFLIGHT_BUILD_CACHE_LOCK_IDENTITY" \
+      && "$(stat_identity "$ROLLBACK_LOCK")" \
+        == "$TESTFLIGHT_BUILD_CACHE_LOCK_IDENTITY" \
+      && "$TESTFLIGHT_BUILD_CACHE_LOCK_FD" -ge 0 \
+      && -e "/dev/fd/${TESTFLIGHT_BUILD_CACHE_LOCK_FD}" \
+      && "$ROLLBACK_LOCK" -ef "/dev/fd/${TESTFLIGHT_BUILD_CACHE_LOCK_FD}" ]]
+}
+
+TESTFLIGHT_CONTROL_DIRECTORY=$ROLLBACK_CONTROL
+TESTFLIGHT_CONTROL_DIRECTORY_IDENTITY=$(stat_identity "$ROLLBACK_CONTROL")
+TESTFLIGHT_BUILD_IMAGE_CONTAINER=$ROLLBACK_CONTAINER
+TESTFLIGHT_BUILD_IMAGE_CONTAINER_IDENTITY=$(stat_identity "$ROLLBACK_CONTAINER")
+TESTFLIGHT_BUILD_IMAGE_PATH=$ROLLBACK_IMAGE
+TESTFLIGHT_BUILD_IMAGE_IDENTITY=$(stat_identity "$ROLLBACK_IMAGE")
+TESTFLIGHT_BUILD_KEY_PATH=$ROLLBACK_KEY
+TESTFLIGHT_BUILD_KEY_IDENTITY=$(stat_identity "$ROLLBACK_KEY")
+sysopen -r -o nofollow -u TESTFLIGHT_BUILD_KEY_FD "$ROLLBACK_KEY"
+TESTFLIGHT_BUILD_CACHE_LOCK_IDENTITY=$(stat_identity "$ROLLBACK_LOCK")
+zsystem flock -t 0 -f TESTFLIGHT_BUILD_CACHE_LOCK_FD "$ROLLBACK_LOCK"
+TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=1
+TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED=0
+TESTFLIGHT_BUILD_CACHE_ROOT_CREATED=1
+TESTFLIGHT_BUILD_KEY_CREATED=1
+TESTFLIGHT_BUILD_CREATE_ATTEMPTED=1
+TESTFLIGHT_BUILD_IMAGE_CREATED=1
+TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=0
+TESTFLIGHT_BUILD_ATTACHMENT_ACTIVE=0
+TESTFLIGHT_BUILD_MOUNT_POINT=''
+TESTFLIGHT_XCODE_SANDBOX_PROFILE_PATH=''
+
+cleanup_private_build_volume
+[[ ! -e "$ROLLBACK_IMAGE" \
+    && ! -e "$ROLLBACK_CONTAINER" \
+    && ! -e "$ROLLBACK_KEY" \
+    && ! -e "$ROLLBACK_CONTROL" \
+    && -f "$ROLLBACK_LOCK" \
+    && "$(<"$ROLLBACK_SENTINEL")" == preserve \
+    && "$TESTFLIGHT_BUILD_KEY_FD" == -1 \
+    && "$TESTFLIGHT_BUILD_CACHE_LOCK_FD" == -1 \
+    && -z "$TESTFLIGHT_BUILD_CACHE_LOCK_IDENTITY" \
+    && "$TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE" == 0 \
+    && "$TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED" == 0 \
+    && "$TESTFLIGHT_BUILD_CACHE_ROOT_CREATED" == 0 \
+    && "$TESTFLIGHT_BUILD_KEY_CREATED" == 0 ]]
+typeset -i rollback_lock_probe=-1
+zsystem flock -t 0 -f rollback_lock_probe "$ROLLBACK_LOCK"
+zsystem flock -u "$rollback_lock_probe"
+ENROLLMENTROLLBACKTEST
+
+ENROLLED_SIGNAL_CONTROL="$BEHAVIOR_ROOT/enrolled-signal-control"
+ENROLLED_SIGNAL_CONTAINER="$BEHAVIOR_ROOT/enrolled-signal-cache-root"
+ENROLLED_SIGNAL_IMAGE="$ENROLLED_SIGNAL_CONTAINER/cache.sparseimage"
+ENROLLED_SIGNAL_KEY="$BEHAVIOR_ROOT/enrolled-signal.key"
+ENROLLED_SIGNAL_LOCK="$BEHAVIOR_ROOT/enrolled-signal.lock"
+ENROLLED_SIGNAL_SENTINEL="$BEHAVIOR_ROOT/enrolled-signal-sentinel"
+/bin/mkdir -m 700 "$ENROLLED_SIGNAL_CONTROL"
+/bin/mkdir -m 700 "$ENROLLED_SIGNAL_CONTAINER"
+print -r -- image >"$ENROLLED_SIGNAL_IMAGE"
+/bin/chmod 600 "$ENROLLED_SIGNAL_IMAGE"
+print -r -- key >"$ENROLLED_SIGNAL_KEY"
+/bin/chmod 600 "$ENROLLED_SIGNAL_KEY"
+print -rn -- '' >"$ENROLLED_SIGNAL_LOCK"
+/bin/chmod 600 "$ENROLLED_SIGNAL_LOCK"
+print -r -- preserve >"$ENROLLED_SIGNAL_SENTINEL"
+if WRAPPER_PATH="$BEHAVIOR_WRAPPER" \
+    ENROLLED_SIGNAL_CONTROL="$ENROLLED_SIGNAL_CONTROL" \
+    ENROLLED_SIGNAL_CONTAINER="$ENROLLED_SIGNAL_CONTAINER" \
+    ENROLLED_SIGNAL_IMAGE="$ENROLLED_SIGNAL_IMAGE" \
+    ENROLLED_SIGNAL_KEY="$ENROLLED_SIGNAL_KEY" \
+    ENROLLED_SIGNAL_LOCK="$ENROLLED_SIGNAL_LOCK" \
+    /bin/zsh <<'ENROLLEDSIGNALTEST'
+source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
+
+function verify_control_directory_identity() {
+  [[ -d "$TESTFLIGHT_CONTROL_DIRECTORY" \
+      && "$(stat_identity "$TESTFLIGHT_CONTROL_DIRECTORY")" \
+        == "$TESTFLIGHT_CONTROL_DIRECTORY_IDENTITY" ]]
+}
+function verify_image_container_identity() {
+  [[ -d "$TESTFLIGHT_BUILD_IMAGE_CONTAINER" \
+      && "$(stat_identity "$TESTFLIGHT_BUILD_IMAGE_CONTAINER")" \
+        == "$TESTFLIGHT_BUILD_IMAGE_CONTAINER_IDENTITY" ]]
+}
+function verify_image_storage_identity() {
+  [[ -f "$TESTFLIGHT_BUILD_IMAGE_PATH" \
+      && "$(stat_identity "$TESTFLIGHT_BUILD_IMAGE_PATH")" \
+        == "$TESTFLIGHT_BUILD_IMAGE_IDENTITY" ]]
+}
+function verify_build_key_identity() {
+  [[ -f "$TESTFLIGHT_BUILD_KEY_PATH" \
+      && "$(stat_identity "$TESTFLIGHT_BUILD_KEY_PATH")" \
+        == "$TESTFLIGHT_BUILD_KEY_IDENTITY" \
+      && "$TESTFLIGHT_BUILD_KEY_PATH" \
+        -ef "/dev/fd/${TESTFLIGHT_BUILD_KEY_FD}" ]]
+}
+function current_attachment_is_absent() { return 0 }
+function verify_build_cache_lock_identity() {
+  [[ -f "$ENROLLED_SIGNAL_LOCK" \
+      && ! -L "$ENROLLED_SIGNAL_LOCK" \
+      && "$(stat_identity "$ENROLLED_SIGNAL_LOCK")" \
+        == "$TESTFLIGHT_BUILD_CACHE_LOCK_IDENTITY" \
+      && "$TESTFLIGHT_BUILD_CACHE_LOCK_FD" -ge 0 \
+      && -e "/dev/fd/${TESTFLIGHT_BUILD_CACHE_LOCK_FD}" \
+      && "$ENROLLED_SIGNAL_LOCK" \
+        -ef "/dev/fd/${TESTFLIGHT_BUILD_CACHE_LOCK_FD}" ]]
+}
+
+TESTFLIGHT_CONTROL_DIRECTORY=$ENROLLED_SIGNAL_CONTROL
+TESTFLIGHT_CONTROL_DIRECTORY_IDENTITY=$(stat_identity "$ENROLLED_SIGNAL_CONTROL")
+TESTFLIGHT_BUILD_IMAGE_CONTAINER=$ENROLLED_SIGNAL_CONTAINER
+TESTFLIGHT_BUILD_IMAGE_CONTAINER_IDENTITY=$(stat_identity \
+  "$ENROLLED_SIGNAL_CONTAINER")
+TESTFLIGHT_BUILD_IMAGE_PATH=$ENROLLED_SIGNAL_IMAGE
+TESTFLIGHT_BUILD_IMAGE_IDENTITY=$(stat_identity "$ENROLLED_SIGNAL_IMAGE")
+TESTFLIGHT_BUILD_KEY_PATH=$ENROLLED_SIGNAL_KEY
+TESTFLIGHT_BUILD_KEY_IDENTITY=$(stat_identity "$ENROLLED_SIGNAL_KEY")
+sysopen -r -o nofollow -u TESTFLIGHT_BUILD_KEY_FD "$ENROLLED_SIGNAL_KEY"
+TESTFLIGHT_BUILD_CACHE_LOCK_IDENTITY=$(stat_identity "$ENROLLED_SIGNAL_LOCK")
+zsystem flock -t 0 -f TESTFLIGHT_BUILD_CACHE_LOCK_FD \
+  "$ENROLLED_SIGNAL_LOCK"
+TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=1
+TESTFLIGHT_BUILD_CACHE_ENROLLMENT_COMMITTED=1
+TESTFLIGHT_BUILD_CACHE_ROOT_CREATED=1
+TESTFLIGHT_BUILD_KEY_CREATED=1
+TESTFLIGHT_BUILD_CREATE_ATTEMPTED=1
+TESTFLIGHT_BUILD_IMAGE_CREATED=1
+TESTFLIGHT_BUILD_ATTACH_ATTEMPTED=0
+TESTFLIGHT_BUILD_ATTACHMENT_ACTIVE=0
+TESTFLIGHT_BUILD_MOUNT_POINT=''
+TESTFLIGHT_XCODE_SANDBOX_PROFILE_PATH=''
+
+/bin/kill -TERM $$
+exit 99
+ENROLLEDSIGNALTEST
+then
+  print -u2 -r -- 'TERM did not terminate the committed-enrollment behavior child'
+  exit 1
+else
+  ENROLLED_SIGNAL_STATUS=$?
+fi
+[[ $ENROLLED_SIGNAL_STATUS == 143 \
+    && ! -e "$ENROLLED_SIGNAL_CONTROL" \
+    && -d "$ENROLLED_SIGNAL_CONTAINER" \
+    && -f "$ENROLLED_SIGNAL_IMAGE" \
+    && "$(<"$ENROLLED_SIGNAL_IMAGE")" == image \
+    && -f "$ENROLLED_SIGNAL_KEY" \
+    && "$(<"$ENROLLED_SIGNAL_KEY")" == key \
+    && -f "$ENROLLED_SIGNAL_LOCK" \
+    && "$(<"$ENROLLED_SIGNAL_SENTINEL")" == preserve ]]
+typeset -i enrolled_signal_lock_probe=-1
+zsystem flock -t 0 -f enrolled_signal_lock_probe "$ENROLLED_SIGNAL_LOCK"
+zsystem flock -u "$enrolled_signal_lock_probe"
+
+PROCESSING_STATUS="$BEHAVIOR_ROOT/app-store-processing-status.json"
+print -r -- '{
+  "delivery-uuid": "082360c7-b3ee-45dc-9264-68604218c97e",
+  "build-status": "VALID",
+  "import-status": "VALID",
+  "is-on-app-store-connect": true,
+  "build-audience-type": "INTERNAL_ONLY",
+  "app-store-attributes": {
+    "buildAudienceType": "INTERNAL_ONLY",
+    "processingState": "VALID",
+    "version": "51",
+    "expired": false
+  }
+}' >"$PROCESSING_STATUS"
+/bin/chmod 600 "$PROCESSING_STATUS"
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" PROCESSING_STATUS="$PROCESSING_STATUS" \
+/bin/zsh <<'PROCESSINGSTATUSTEST'
+source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
+trap - EXIT HUP INT QUIT TERM
+
+function repin_processing_status() {
+  /bin/chmod 600 "$PROCESSING_STATUS"
+  TESTFLIGHT_PROCESSING_STATUS_IDENTITY=$(stat_identity "$PROCESSING_STATUS")
+}
+function expect_processing_status_rejection() {
+  repin_processing_status
+  if verify_app_store_processing_status >/dev/null 2>&1; then
+    print -u2 -r -- "processing-status mutation unexpectedly passed: $1"
+    exit 1
+  fi
+}
+
+function verify_output_directory_identity() { return 0 }
+TESTFLIGHT_OUTPUT_DIRECTORY=${PROCESSING_STATUS:h}
+TESTFLIGHT_PROCESSING_STATUS_PATH=$PROCESSING_STATUS
+TESTFLIGHT_PROCESSING_STATUS_FD=-1
+TESTFLIGHT_DELIVERY_ID=082360c7-b3ee-45dc-9264-68604218c97e
+repin_processing_status
+verify_app_store_processing_status
+
+/usr/bin/plutil -replace app-store-attributes.processingState \
+  -string PROCESSING "$PROCESSING_STATUS"
+expect_processing_status_rejection processing-state
+/usr/bin/plutil -replace app-store-attributes.processingState \
+  -string VALID "$PROCESSING_STATUS"
+/usr/bin/plutil -replace build-audience-type \
+  -string EXTERNAL_ONLY "$PROCESSING_STATUS"
+expect_processing_status_rejection audience
+/usr/bin/plutil -replace build-audience-type \
+  -string INTERNAL_ONLY "$PROCESSING_STATUS"
+/usr/bin/plutil -replace app-store-attributes.version \
+  -string 52 "$PROCESSING_STATUS"
+expect_processing_status_rejection build
+/usr/bin/plutil -replace app-store-attributes.version \
+  -string 51 "$PROCESSING_STATUS"
+/usr/bin/plutil -replace delivery-uuid \
+  -string 11111111-2222-3333-4444-555555555555 "$PROCESSING_STATUS"
+expect_processing_status_rejection delivery
+/usr/bin/plutil -replace delivery-uuid \
+  -string 082360c7-b3ee-45dc-9264-68604218c97e "$PROCESSING_STATUS"
+typeset valid_status_backup="${PROCESSING_STATUS}.valid"
+/bin/cp -- "$PROCESSING_STATUS" "$valid_status_backup"
+print -r -- '{"incomplete":' >"$PROCESSING_STATUS"
+expect_processing_status_rejection malformed-json
+/bin/mv -- "$valid_status_backup" "$PROCESSING_STATUS"
+repin_processing_status
+verify_app_store_processing_status
+PROCESSINGSTATUSTEST
 
 SIGNAL_MARKER="$BEHAVIOR_ROOT/signal-masked.log"
 if WRAPPER_PATH="$BEHAVIOR_WRAPPER" SIGNAL_MARKER="$SIGNAL_MARKER" \

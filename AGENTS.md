@@ -418,6 +418,40 @@ worker.
   replaced, moved, or its reviewed pins change. A routine release uses the pinned
   evidence recorded in source; a fresh shell process does not make the same Xcode
   installation a new trust decision.
+- Reuse the enrolled, AES-256 encrypted TestFlight build-cache image across routine
+  releases. Keep its key and nonblocking process lock in the private release-credentials
+  directory, mount it at the fixed reviewed path, and detach it without deleting or
+  resetting it. Enrollment is an explicit one-time action; missing, partial, mismatched,
+  or contended cache state fails closed instead of silently falling back to a cold build.
+  The sole legacy-layout migration is creation of the exact empty mode-700 `run-tmp`
+  parent beneath an already identity-pinned workspace; no other cache node is repaired.
+- Treat cache enrollment as a transaction. Publish its exact contract atomically and
+  last, and publish a durable private pending-enrollment marker before creating its key
+  or cache root. If enrollment fails or the process/host dies, the next initialization
+  must use that marker under the same lock to detach an exact idle attachment and remove
+  only the constrained partial key, image, and cache root before retrying. The private
+  lock file may persist.
+  After a killed routine run, recover only an exact idle image-to-mount association
+  while holding that lock. A busy, malformed, unrelated, or ambiguous attachment still
+  fails closed.
+- Share package and module caches across releases, but key DerivedData by the canonical
+  checkout path. Do not bind the cache to a Git commit or build number. Every release
+  still creates a fresh archive destination and independently verifies its signature,
+  entitlements, profile, nested code, metadata, and complete filesystem manifest.
+- Give each release a fresh mode-700 TMPDIR inside the encrypted cache and remove only
+  that identity-pinned run directory during cleanup; never reuse a killed run's scratch
+  directory or delete the shared package/module cache.
+- Preserve release-stage timing output for cache attach, package resolution, effective
+  settings, archive, artifact verification, upload, and post-upload verification. A
+  regression that recreates/deletes the build cache, repeats whole-Xcode traversal, or
+  adds redundant full-archive scans must be rejected by the product-identity mutation
+  suite before it becomes the routine path.
+- In App Store Connect API-key mode, bind Apple's delivery UUID to the uploaded archive,
+  wait for the exact build to become VALID and INTERNAL_ONLY, and retain the parsed JSON
+  status as release evidence. Detach the encrypted cache and release its process lock
+  before waiting on Apple; run that wait from an independent private TMPDIR with a
+  script-level deadline so a stalled network cannot block the next release. Legacy
+  Xcode-account mode must say explicitly that this end-to-end processing wait was skipped.
 - Reuse gates already proven for the same immutable commit and invocation. Do not
   rerun unchanged test suites, source audits, account checks, or artifact checks
   unless their bound identity changed or the previous check failed.
