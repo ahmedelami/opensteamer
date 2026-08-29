@@ -69,12 +69,14 @@ enum WebRTCStatisticsParser {
             route = nil
         }
 
-        let outboundVideo = records.first {
-            $0.type == "outbound-rtp" && mediaKind(in: $0.values) == "video"
-        }
-        let inboundVideo = records.first {
-            $0.type == "inbound-rtp" && mediaKind(in: $0.values) == "video"
-        }
+        let outboundVideo = primaryVideoRTPRecord(
+            type: "outbound-rtp",
+            in: records
+        )
+        let inboundVideo = primaryVideoRTPRecord(
+            type: "inbound-rtp",
+            in: records
+        )
         let audioSource = records.first {
             $0.type == "media-source" && mediaKind(in: $0.values) == "audio"
         }
@@ -540,6 +542,43 @@ enum WebRTCStatisticsParser {
         }
     }
 
+    /// Selects the single primary video stream while excluding repair and redundancy RTP.
+    /// Any unclassified second video stream is treated as ambiguity instead of letting the
+    /// native statistics dictionary's iteration order choose the latency signal.
+    private static func primaryVideoRTPRecord(
+        type: String,
+        in records: [WebRTCStatisticsRecord]
+    ) -> WebRTCStatisticsRecord? {
+        let candidates = records.filter {
+            $0.type == type && mediaKind(in: $0.values) == "video"
+        }
+        let possiblePrimary = candidates.filter { record in
+            guard let codecID = string("codecId", in: record.values) else {
+                return true
+            }
+            let codecs = records.filter {
+                $0.id == codecID && $0.type == "codec"
+            }
+            guard codecs.count == 1,
+                  let codec = codecs.first,
+                  let mimeType = string("mimeType", in: codec.values)?
+                    .lowercased() else {
+                return true
+            }
+            return !auxiliaryVideoMIMETypes.contains(mimeType)
+        }
+        guard possiblePrimary.count == 1 else { return nil }
+        return possiblePrimary[0]
+    }
+
+    private static let auxiliaryVideoMIMETypes: Set<String> = [
+        "video/rtx",
+        "video/red",
+        "video/ulpfec",
+        "video/flexfec",
+        "video/flexfec-03",
+    ]
+
     private static func candidate(
         identifiedBy identifier: String?,
         in records: [WebRTCStatisticsRecord]
@@ -562,6 +601,9 @@ enum WebRTCStatisticsParser {
             bytes: unsigned(outbound ? "bytesSent" : "bytesReceived", in: record.values),
             packets: unsigned(outbound ? "packetsSent" : "packetsReceived", in: record.values),
             packetsLost: signed("packetsLost", in: record.values),
+            totalPacketSendDelay: outbound
+                ? double("totalPacketSendDelay", in: record.values)
+                : nil,
             framesPerSecond: double("framesPerSecond", in: record.values),
             frameWidth: integer("frameWidth", in: record.values),
             frameHeight: integer("frameHeight", in: record.values),

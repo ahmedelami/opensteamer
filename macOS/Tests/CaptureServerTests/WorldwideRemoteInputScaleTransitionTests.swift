@@ -3,6 +3,114 @@ import XCTest
 
 /// Locks the remote-input authorization boundary to the exact live screen-format generation.
 final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
+    func testEveryNativeRouteChangeInvalidatesVideoLatencyHistory() throws {
+        let routeHandler = try serviceSlice(
+            after: "        case .routeChanged(let route):",
+            before: "        case .statistics(let snapshot):"
+        )
+
+        XCTAssertTrue(
+            routeHandler.contains(
+                "screenVideoAdaptationPolicy.invalidateSelectedRoute()"
+            )
+        )
+        XCTAssertFalse(routeHandler.contains("if route.kind"))
+    }
+
+    func testVideoAdaptationRunsAfterCriticalMicrophoneHealthWork() throws {
+        let statisticsHandler = try serviceSlice(
+            after: "        case .statistics(let snapshot):",
+            before: "        case .iceCandidateError(let error):"
+        )
+        let microphoneFreshness = try XCTUnwrap(
+            statisticsHandler.range(of: ".updateInboundMediaFreshness(")
+        )
+        let safeOutputMaintenance = try XCTUnwrap(
+            statisticsHandler.range(
+                of: "await maintainWorldwideSafeOutputInvariant()",
+                range: microphoneFreshness.upperBound..<statisticsHandler.endIndex
+            )
+        )
+        let videoAdaptation = try XCTUnwrap(
+            statisticsHandler.range(
+                of: "await adaptScreenVideoForNetworkConditions(",
+                range: safeOutputMaintenance.upperBound..<statisticsHandler.endIndex
+            )
+        )
+
+        XCTAssertLessThan(
+            microphoneFreshness.lowerBound,
+            safeOutputMaintenance.lowerBound
+        )
+        XCTAssertLessThan(
+            safeOutputMaintenance.lowerBound,
+            videoAdaptation.lowerBound
+        )
+    }
+
+    func testAdaptiveEncoderScalingPreservesAuthoritativeCaptureDimensions() throws {
+        let adaptation = try serviceSlice(
+            after: "    private func adaptScreenVideoForNetworkConditions(",
+            before: "    // MARK: - Screen control protocol"
+        )
+        let senderUpdate = try XCTUnwrap(
+            adaptation.range(of: "recommendation.webRTCLimits")
+        )
+        let captureUpdate = try XCTUnwrap(
+            adaptation.range(
+                of: "capturer.adaptOutput(",
+                range: senderUpdate.upperBound..<adaptation.endIndex
+            )
+        )
+        let unchangedWidth = try XCTUnwrap(
+            adaptation.range(
+                of: "width: Int32(baseDimensions.width)",
+                range: captureUpdate.upperBound..<adaptation.endIndex
+            )
+        )
+        let unchangedHeight = try XCTUnwrap(
+            adaptation.range(
+                of: "height: Int32(baseDimensions.height)",
+                range: unchangedWidth.upperBound..<adaptation.endIndex
+            )
+        )
+        let tierFrameRate = try XCTUnwrap(
+            adaptation.range(
+                of: "recommendation.maximumFramesPerSecond",
+                range: unchangedHeight.upperBound..<adaptation.endIndex
+            )
+        )
+
+        XCTAssertLessThan(senderUpdate.lowerBound, captureUpdate.lowerBound)
+        XCTAssertLessThan(captureUpdate.lowerBound, unchangedWidth.lowerBound)
+        XCTAssertLessThan(unchangedWidth.lowerBound, unchangedHeight.lowerBound)
+        XCTAssertLessThan(unchangedHeight.lowerBound, tierFrameRate.lowerBound)
+        XCTAssertFalse(
+            String(adaptation[captureUpdate.lowerBound..<tierFrameRate.upperBound])
+                .contains("scaleResolutionDownBy")
+        )
+
+        let startup = try serviceSlice(
+            after: "    private func startScreenCapture(\n",
+            before: "    /// Waits only for the first exact image surface selected for this capture generation."
+        )
+        let startupSenderUpdate = try XCTUnwrap(
+            startup.range(of: "encodingRecommendation.webRTCLimits")
+        )
+        let forwardingInstall = try XCTUnwrap(
+            startup.range(
+                of: "sink.beginForwarding(",
+                range: startupSenderUpdate.upperBound..<startup.endIndex
+            )
+        )
+        XCTAssertLessThan(
+            startupSenderUpdate.lowerBound,
+            forwardingInstall.lowerBound
+        )
+        XCTAssertTrue(startup.contains("width: Int32(baseDimensions.width)"))
+        XCTAssertTrue(startup.contains("height: Int32(baseDimensions.height)"))
+    }
+
     func testIrreversibleInputPostHoldsForwardingTokenAcrossFinalSinkCheck() throws {
         let method = try serviceSlice(
             after: "    private func injectRemoteInputIfAuthorized(",

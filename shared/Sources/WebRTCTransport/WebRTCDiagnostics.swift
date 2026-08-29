@@ -58,6 +58,7 @@ public struct WebRTCVideoStatistics: Codable, Equatable, Sendable {
     public let bytes: UInt64?
     public let packets: UInt64?
     public let packetsLost: Int64?
+    public let totalPacketSendDelay: Double?
     public let framesPerSecond: Double?
     public let frameWidth: Int?
     public let frameHeight: Int?
@@ -67,6 +68,7 @@ public struct WebRTCVideoStatistics: Codable, Equatable, Sendable {
         bytes: UInt64? = nil,
         packets: UInt64? = nil,
         packetsLost: Int64? = nil,
+        totalPacketSendDelay: Double? = nil,
         framesPerSecond: Double? = nil,
         frameWidth: Int? = nil,
         frameHeight: Int? = nil,
@@ -75,6 +77,7 @@ public struct WebRTCVideoStatistics: Codable, Equatable, Sendable {
         self.bytes = bytes
         self.packets = packets
         self.packetsLost = packetsLost
+        self.totalPacketSendDelay = totalPacketSendDelay
         self.framesPerSecond = framesPerSecond
         self.frameWidth = frameWidth
         self.frameHeight = frameHeight

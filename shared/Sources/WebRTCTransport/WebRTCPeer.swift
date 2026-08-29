@@ -554,6 +554,54 @@ private struct WebRTCIPhoneMicrophoneSenderStatisticsReportCapture: Sendable {
     let callbackCompletedAt: Date
 }
 
+/// Bridges native callbacks without allowing a lost callback to suspend an actor forever.
+/// Callback and deadline may race on unrelated queues, so the continuation is claimed under one
+/// lock and always resumed outside that lock.
+enum WebRTCBoundedCallback {
+    static func value<Value: Sendable>(
+        timeout: Duration,
+        register: (@escaping @Sendable (Value) -> Void) -> Void
+    ) async -> Value? {
+        precondition(timeout > .zero)
+        return await withCheckedContinuation { continuation in
+            let resolver = WebRTCOneShotContinuation<Value?>(
+                continuation
+            )
+            register { value in
+                resolver.resolve(value)
+            }
+            Task.detached {
+                do {
+                    try await Task.sleep(for: timeout)
+                } catch {
+                    return
+                }
+                resolver.resolve(nil)
+            }
+        }
+    }
+}
+
+private final class WebRTCOneShotContinuation<Value: Sendable>:
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Never>?
+
+    init(_ continuation: CheckedContinuation<Value, Never>) {
+        self.continuation = continuation
+    }
+
+    func resolve(_ value: Value) {
+        let claimed = lock.withLock {
+            let claimed = continuation
+            continuation = nil
+            return claimed
+        }
+        claimed?.resume(returning: value)
+    }
+}
+
 struct WebRTCIPhoneMicrophoneReceiverStatisticsValidation: Equatable, Sendable {
     let peerEpoch: UUID
     let negotiationEpoch: UInt64
@@ -982,6 +1030,46 @@ public struct WebRTCIOSMicrophonePolicyCompletionStamp: Equatable, Sendable {
         self.nativeResult = nativeResult
     }
 }
+
+#if os(iOS)
+private struct WebRTCIOSMicrophoneNativeStageResult {
+    let recordingGeneration: UInt64
+    let failureReason: WebRTCIOSMicrophoneStageFailureReason?
+}
+
+private extension WebRTCIOSMicrophoneStageFailureReason {
+    init(native: ASIOSMicrophoneStageFailureReason) {
+        switch native {
+        case .none:
+            self = .unknown
+        case .delegateUnavailable:
+            self = .delegateUnavailable
+        case .deviceNotInitialized:
+            self = .deviceNotInitialized
+        case .playoutNotReady:
+            self = .playoutNotReady
+        case .nativeRecoveryRequired:
+            self = .nativeRecoveryRequired
+        case .topologyRebuildFailed:
+            self = .topologyRebuildFailed
+        case .topologyStillNotStaged:
+            self = .topologyStillNotStaged
+        case .hostedCall:
+            self = .hostedCall
+        case .interrupted:
+            self = .interrupted
+        case .explicitResumeRequired:
+            self = .explicitResumeRequired
+        case .authorizationInvalid:
+            self = .authorizationInvalid
+        case .recordingGenerationBindFailed:
+            self = .recordingGenerationBindFailed
+        @unknown default:
+            self = .unknown
+        }
+    }
+}
+#endif
 
 /// Deterministic policy state used by race tests without depending on AVAudioSession hardware.
 public struct WebRTCIOSMicrophonePolicySnapshot: Equatable, Sendable {
@@ -2052,12 +2140,15 @@ public actor WebRTCPeer {
     #endif
 
     private let role: RemotePeerRole
+    private let configuredMaximumVideoBitrate: Int?
     private let eventContinuation: AsyncStream<WebRTCTransportEvent>.Continuation
     private let factory: LKRTCPeerConnectionFactory
     private let peerConnection: LKRTCPeerConnection
     private let delegateProxy: WebRTCDelegateProxy
     private let localAudioTrack: LKRTCAudioTrack?
     private let localVideoTrack: LKRTCVideoTrack?
+    private let localVideoSender: LKRTCRtpSender?
+    private var screenVideoEncodingUpdateGeneration: UInt64 = 0
     private let localIPhoneMicrophoneTrack: LKRTCAudioTrack?
     private let iPhoneMicrophoneReceiverID: String?
     private let iPhoneMicrophonePeerEpoch = UUID()
@@ -2109,6 +2200,8 @@ public actor WebRTCPeer {
         (@Sendable (Bool) -> Bool)?
     private var debugIPhoneMicrophoneStageFailureDiagnostics:
         WebRTCIOSPlayoutDiagnostics?
+    private var debugIPhoneMicrophoneStageFailureReason:
+        WebRTCIOSMicrophoneStageFailureReason?
     #endif
     #endif
 
@@ -2195,6 +2288,7 @@ public actor WebRTCPeer {
         events = eventPair.stream
         eventContinuation = eventPair.continuation
         role = configuration.role
+        configuredMaximumVideoBitrate = configuration.maximumVideoBitrate
 
         let encoderFactory = LKRTCDefaultVideoEncoderFactory()
         if let h264 = LKRTCDefaultVideoEncoderFactory.supportedCodecs().first(where: {
@@ -2489,6 +2583,7 @@ public actor WebRTCPeer {
                 )
             )
             localVideoTrack = videoTrack
+            localVideoSender = videoTransceiver.sender
             externalVideoCapturer = MacExternalVideoCapturer(source: videoSource)
 
             let dataChannelConfiguration = LKRTCDataChannelConfiguration()
@@ -2508,16 +2603,22 @@ public actor WebRTCPeer {
             localAudioTrack = nil
             externalAudioCapturer = nil
             localVideoTrack = nil
+            localVideoSender = nil
             externalVideoCapturer = nil
         }
         iPhoneMicrophoneReceiverID = configuredIPhoneMicrophoneReceiverID
 
         if let maximumVideoBitrate = configuration.maximumVideoBitrate {
-            _ = nativePeer.setBweMinBitrateBps(
+            guard maximumVideoBitrate > 0,
+                  nativePeer.setBweMinBitrateBps(
                 nil,
                 currentBitrateBps: nil,
                 maxBitrateBps: NSNumber(value: maximumVideoBitrate)
-            )
+                  ) else {
+                throw WebRTCTransportError.nativeFailure(
+                    "WebRTC rejected the configured total RTP bandwidth ceiling."
+                )
+            }
         }
     }
 
@@ -3817,7 +3918,7 @@ public actor WebRTCPeer {
             authorizationIdentity
 
         do {
-            let recordingGeneration =
+            let stageResult =
                 performIPhoneMicrophoneStageAttempt(
                     authorization,
                     origin: .publicRequest,
@@ -3828,13 +3929,24 @@ public actor WebRTCPeer {
                 previousAuthorization?.revoke()
             }
 
+            let recordingGeneration =
+                stageResult.recordingGeneration
             guard recordingGeneration != 0 else {
-                throw WebRTCTransportError.nativeFailure(
+                let description =
                     WebRTCIOSMicrophoneAdmissionDiagnostics
                         .failureDescription(
                             iPhoneMicrophoneAdmissionFailureDiagnostics()
                         )
-                )
+                guard let reason = stageResult.failureReason else {
+                    throw WebRTCTransportError.nativeFailure(
+                        description
+                    )
+                }
+                throw WebRTCTransportError
+                    .iPhoneMicrophoneStageFailed(
+                        reason: reason,
+                        message: description
+                    )
             }
 
             activeIPhoneMicrophoneAuthorization = authorization
@@ -4230,9 +4342,9 @@ public actor WebRTCPeer {
         _ authorization: WebRTCIOSMicrophoneAuthorization,
         origin: WebRTCIOSMicrophonePolicyAttemptOrigin,
         retiredAuthorizationIdentity: ObjectIdentifier?
-    ) -> UInt64 {
+    ) -> WebRTCIOSMicrophoneNativeStageResult {
         let sequence = advanceIPhoneMicrophonePolicySequence()
-        let recordingGeneration =
+        let result =
             stageNativeIPhoneMicrophonePolicy(authorization)
         latestIPhoneMicrophonePolicyCompletionStamp =
             WebRTCIOSMicrophonePolicyCompletionStamp(
@@ -4243,9 +4355,9 @@ public actor WebRTCPeer {
                 retiredAuthorizationIdentity:
                     retiredAuthorizationIdentity,
                 tokenID: nil,
-                nativeResult: recordingGeneration != 0
+                nativeResult: result.recordingGeneration != 0
             )
-        return recordingGeneration
+        return result
     }
 
     private func performIPhoneMicrophonePolicyAttempt(
@@ -4274,18 +4386,36 @@ public actor WebRTCPeer {
 
     private func stageNativeIPhoneMicrophonePolicy(
         _ authorization: WebRTCIOSMicrophoneAuthorization
-    ) -> UInt64 {
+    ) -> WebRTCIOSMicrophoneNativeStageResult {
         #if DEBUG
         if debugIPhoneMicrophoneStageFailureDiagnostics != nil {
             authorization.revoke()
-            return 0
+            return WebRTCIOSMicrophoneNativeStageResult(
+                recordingGeneration: 0,
+                failureReason:
+                    debugIPhoneMicrophoneStageFailureReason
+            )
         }
         #endif
         guard let device = iOSStereoPlayoutAudioDevice else {
             authorization.revoke()
-            return 0
+            return WebRTCIOSMicrophoneNativeStageResult(
+                recordingGeneration: 0,
+                failureReason: .deviceUnavailable
+            )
         }
-        return device.stageMicrophoneAuthorization(authorization.native)
+        let recordingGeneration =
+            device.stageMicrophoneAuthorization(authorization.native)
+        return WebRTCIOSMicrophoneNativeStageResult(
+            recordingGeneration: recordingGeneration,
+            failureReason: recordingGeneration == 0
+                ? WebRTCIOSMicrophoneStageFailureReason(
+                    native:
+                        authorization.native
+                            .microphoneStageFailureReason
+                )
+                : nil
+        )
     }
 
     private func iPhoneMicrophoneAdmissionFailureDiagnostics()
@@ -4294,6 +4424,7 @@ public actor WebRTCPeer {
         #if DEBUG
         if let diagnostics = debugIPhoneMicrophoneStageFailureDiagnostics {
             debugIPhoneMicrophoneStageFailureDiagnostics = nil
+            debugIPhoneMicrophoneStageFailureReason = nil
             return diagnostics
         }
         #endif
@@ -4461,6 +4592,208 @@ public actor WebRTCPeer {
         role == .host && isTransportHealthyForMedia()
     }
 
+    /// Applies proportional, single-layer screen-video ceilings without changing the capture
+    /// surface or its remote-input coordinate space.
+    public func applyScreenVideoEncodingLimits(
+        _ limits: WebRTCScreenVideoEncodingLimits
+    ) throws -> WebRTCScreenVideoEncodingUpdate {
+        try ensureOpen()
+        guard role == .host, let localVideoSender else {
+            throw WebRTCTransportError.invalidRole
+        }
+        let maximumAllowedBitrate = configuredMaximumVideoBitrate ?? Int.max
+        guard limits.maximumBitrateBps >= 1,
+              limits.maximumBitrateBps <= maximumAllowedBitrate,
+              (1 ... 240).contains(limits.maximumFramesPerSecond),
+              limits.scaleResolutionDownBy.isFinite,
+              (1 ... 16).contains(limits.scaleResolutionDownBy) else {
+            throw WebRTCTransportError.nativeFailure(
+                "Invalid screen-video encoding limits."
+            )
+        }
+
+        guard let previousState = Self.screenVideoEncodingState(
+            from: localVideoSender
+        ) else {
+            throw WebRTCTransportError.nativeFailure(
+                "The screen-video sender did not expose exactly one RTP encoding."
+            )
+        }
+        let requestedState = ScreenVideoNativeEncodingState(
+            maximumBitrateBps: limits.maximumBitrateBps,
+            minimumBitrateBps: nil,
+            maximumFramesPerSecond: limits.maximumFramesPerSecond,
+            scaleResolutionDownBy: limits.scaleResolutionDownBy
+        )
+        guard Self.setScreenVideoEncodingState(
+            requestedState,
+            on: localVideoSender
+        ) else {
+            let restored = Self.setScreenVideoEncodingState(
+                previousState,
+                on: localVideoSender
+            )
+            throw WebRTCTransportError.nativeFailure(
+                restored
+                    ? "WebRTC rejected the screen-video encoding limits."
+                    : "WebRTC rejected the screen-video encoding limits and their rollback."
+            )
+        }
+
+        screenVideoEncodingUpdateGeneration &+= 1
+        return WebRTCScreenVideoEncodingUpdate(
+            generation: screenVideoEncodingUpdateGeneration,
+            previousMaximumBitrateBps: previousState.maximumBitrateBps,
+            previousMinimumBitrateBps: previousState.minimumBitrateBps,
+            previousMaximumFramesPerSecond:
+                previousState.maximumFramesPerSecond,
+            previousScaleResolutionDownBy:
+                previousState.scaleResolutionDownBy,
+            appliedLimits: limits
+        )
+    }
+
+    /// Reverts one stale cross-actor update only if no newer sender mutation has won.
+    @discardableResult
+    public func rollbackScreenVideoEncodingUpdateIfCurrent(
+        _ update: WebRTCScreenVideoEncodingUpdate
+    ) throws -> Bool {
+        try ensureOpen()
+        guard role == .host, let localVideoSender else {
+            throw WebRTCTransportError.invalidRole
+        }
+        guard update.generation == screenVideoEncodingUpdateGeneration else {
+            return false
+        }
+        let appliedState = ScreenVideoNativeEncodingState(
+            maximumBitrateBps: update.appliedLimits.maximumBitrateBps,
+            minimumBitrateBps: nil,
+            maximumFramesPerSecond:
+                update.appliedLimits.maximumFramesPerSecond,
+            scaleResolutionDownBy:
+                update.appliedLimits.scaleResolutionDownBy
+        )
+        guard let currentState = Self.screenVideoEncodingState(
+            from: localVideoSender
+        ), Self.screenVideoEncodingStatesMatch(currentState, appliedState) else {
+            return false
+        }
+        let previousState = ScreenVideoNativeEncodingState(
+            maximumBitrateBps: update.previousMaximumBitrateBps,
+            minimumBitrateBps: update.previousMinimumBitrateBps,
+            maximumFramesPerSecond:
+                update.previousMaximumFramesPerSecond,
+            scaleResolutionDownBy:
+                update.previousScaleResolutionDownBy
+        )
+        guard Self.setScreenVideoEncodingState(
+            previousState,
+            on: localVideoSender
+        ) else {
+            throw WebRTCTransportError.nativeFailure(
+                "WebRTC rejected a stale screen-video encoding rollback."
+            )
+        }
+        screenVideoEncodingUpdateGeneration &+= 1
+        return true
+    }
+
+    #if DEBUG
+    func screenVideoEncodingLimitsForTesting()
+        -> WebRTCScreenVideoEncodingLimits? {
+        localVideoSender.flatMap(Self.screenVideoEncodingLimits)
+    }
+    #endif
+
+    private static func screenVideoEncodingLimits(
+        from sender: LKRTCRtpSender
+    ) -> WebRTCScreenVideoEncodingLimits? {
+        guard let state = screenVideoEncodingState(from: sender),
+              state.minimumBitrateBps == nil,
+              let maximumBitrateBps = state.maximumBitrateBps,
+              let maximumFramesPerSecond = state.maximumFramesPerSecond,
+              let scaleResolutionDownBy = state.scaleResolutionDownBy else {
+            return nil
+        }
+        return WebRTCScreenVideoEncodingLimits(
+            maximumBitrateBps: maximumBitrateBps,
+            maximumFramesPerSecond: maximumFramesPerSecond,
+            scaleResolutionDownBy: scaleResolutionDownBy
+        )
+    }
+
+    private struct ScreenVideoNativeEncodingState {
+        let maximumBitrateBps: Int?
+        let minimumBitrateBps: Int?
+        let maximumFramesPerSecond: Int?
+        let scaleResolutionDownBy: Double?
+    }
+
+    private static func screenVideoEncodingState(
+        from sender: LKRTCRtpSender
+    ) -> ScreenVideoNativeEncodingState? {
+        let encodings = sender.parameters.encodings
+        guard encodings.count == 1,
+              let encoding = encodings.first else {
+            return nil
+        }
+        return ScreenVideoNativeEncodingState(
+            maximumBitrateBps: encoding.maxBitrateBps?.intValue,
+            minimumBitrateBps: encoding.minBitrateBps?.intValue,
+            maximumFramesPerSecond: encoding.maxFramerate?.intValue,
+            scaleResolutionDownBy:
+                encoding.scaleResolutionDownBy?.doubleValue
+        )
+    }
+
+    private static func setScreenVideoEncodingState(
+        _ state: ScreenVideoNativeEncodingState,
+        on sender: LKRTCRtpSender
+    ) -> Bool {
+        let parameters = sender.parameters
+        guard parameters.encodings.count == 1,
+              let encoding = parameters.encodings.first else {
+            return false
+        }
+        encoding.maxBitrateBps = state.maximumBitrateBps.map(NSNumber.init)
+        encoding.minBitrateBps = state.minimumBitrateBps.map(NSNumber.init)
+        encoding.maxFramerate = state.maximumFramesPerSecond.map(NSNumber.init)
+        encoding.scaleResolutionDownBy =
+            state.scaleResolutionDownBy.map(NSNumber.init)
+        sender.parameters = parameters
+        guard let applied = screenVideoEncodingState(from: sender) else {
+            return false
+        }
+        return screenVideoEncodingStatesMatch(applied, state)
+    }
+
+    private static func screenVideoEncodingStatesMatch(
+        _ lhs: ScreenVideoNativeEncodingState,
+        _ rhs: ScreenVideoNativeEncodingState
+    ) -> Bool {
+        lhs.maximumBitrateBps == rhs.maximumBitrateBps
+            && lhs.minimumBitrateBps == rhs.minimumBitrateBps
+            && lhs.maximumFramesPerSecond == rhs.maximumFramesPerSecond
+            && optionalEncodingScaleMatches(
+                lhs.scaleResolutionDownBy,
+                rhs.scaleResolutionDownBy
+            )
+    }
+
+    private static func optionalEncodingScaleMatches(
+        _ lhs: Double?,
+        _ rhs: Double?
+    ) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil):
+            true
+        case let (lhs?, rhs?):
+            abs(lhs - rhs) <= 0.000_001
+        default:
+            false
+        }
+    }
+
     private func isTransportHealthyForMedia() -> Bool {
         guard hasStarted,
               !isClosed,
@@ -4488,8 +4821,13 @@ public actor WebRTCPeer {
     ) async -> WebRTCStatisticsSnapshot {
         let nativeSnapshot = await withCheckedContinuation {
             (continuation: CheckedContinuation<WebRTCStatisticsSnapshot, Never>) in
+            let resolver = WebRTCOneShotContinuation(continuation)
             peerConnection.statistics { report in
-                continuation.resume(returning: WebRTCStatisticsParser.parse(report))
+                resolver.resolve(WebRTCStatisticsParser.parse(report))
+            }
+            Task.detached {
+                try? await Task.sleep(for: .seconds(1))
+                resolver.resolve(WebRTCStatisticsSnapshot())
             }
         }
 
@@ -4511,17 +4849,21 @@ public actor WebRTCPeer {
                             Never
                         >
                 ) in
+                let resolver = WebRTCOneShotContinuation(continuation)
                 peerConnection.statistics(for: capture.receiver) { report in
-                    continuation.resume(
-                        returning:
-                            WebRTCStatisticsParser
-                                .parseIPhoneMicrophoneReceiver(
-                                    report,
-                                    expectedTrackID:
-                                        capture.validation.remoteTrackID,
-                                    expectedMID: capture.validation.mid
-                                )
+                    resolver.resolve(
+                        WebRTCStatisticsParser
+                            .parseIPhoneMicrophoneReceiver(
+                                report,
+                                expectedTrackID:
+                                    capture.validation.remoteTrackID,
+                                expectedMID: capture.validation.mid
+                            )
                     )
+                }
+                Task.detached {
+                    try? await Task.sleep(for: .seconds(1))
+                    resolver.resolve(nil)
                 }
             }
             receiverReport = (capture, parsed)
@@ -4695,33 +5037,36 @@ public actor WebRTCPeer {
             return nil
         }
 
-        let reportCapture = await withCheckedContinuation {
-            (
-                continuation:
-                    CheckedContinuation<
-                        WebRTCIPhoneMicrophoneSenderStatisticsReportCapture,
-                        Never
-                    >
-            ) in
-            peerConnection.statistics(for: captured.sender) { report in
-                let parsed =
-                    WebRTCStatisticsParser.parseIPhoneMicrophoneSender(
-                        report,
-                        expectedSenderID:
-                            captured.validation.senderID,
-                        expectedTrackID:
-                            captured.validation.localTrackID,
-                        expectedMID:
-                            captured.validation.mid
-                    )
-                continuation.resume(
-                    returning:
+        let reportCapture: WebRTCIPhoneMicrophoneSenderStatisticsReportCapture? =
+            await withCheckedContinuation { continuation in
+                let resolver = WebRTCOneShotContinuation(
+                    continuation
+                )
+                peerConnection.statistics(for: captured.sender) { report in
+                    let parsed =
+                        WebRTCStatisticsParser.parseIPhoneMicrophoneSender(
+                            report,
+                            expectedSenderID:
+                                captured.validation.senderID,
+                            expectedTrackID:
+                                captured.validation.localTrackID,
+                            expectedMID:
+                                captured.validation.mid
+                        )
+                    resolver.resolve(
                         WebRTCIPhoneMicrophoneSenderStatisticsReportCapture(
                             parsed: parsed,
                             callbackCompletedAt: Date()
                         )
-                )
+                    )
+                }
+                Task.detached {
+                    try? await Task.sleep(for: .seconds(1))
+                    resolver.resolve(nil)
+                }
             }
+        guard let reportCapture else {
+            return nil
         }
 
         let currentTime = Date()
@@ -6885,6 +7230,15 @@ public actor WebRTCPeer {
         _ diagnostics: WebRTCIOSPlayoutDiagnostics
     ) {
         debugIPhoneMicrophoneStageFailureDiagnostics = diagnostics
+        debugIPhoneMicrophoneStageFailureReason = nil
+    }
+
+    func debugInstallIPhoneMicrophoneStageFailureForTesting(
+        _ diagnostics: WebRTCIOSPlayoutDiagnostics,
+        reason: WebRTCIOSMicrophoneStageFailureReason
+    ) {
+        debugIPhoneMicrophoneStageFailureDiagnostics = diagnostics
+        debugIPhoneMicrophoneStageFailureReason = reason
     }
 
     func debugEnableIPhoneMicrophoneThroughNativeStageForTesting(

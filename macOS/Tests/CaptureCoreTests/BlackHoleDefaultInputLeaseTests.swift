@@ -203,6 +203,121 @@ final class BlackHoleDefaultInputLeaseTests:
         XCTAssertTrue(operations.registeredExactInputAddress)
     }
 
+    func testRetiredVisibleInputCanParkAClockEpochThenReacquireCanonicalInput() {
+        let operations = DefaultInputLeaseOperationsFake()
+        let retiredVisibleDeviceID = AudioDeviceID(6)
+        operations.installDevice(
+            deviceID: retiredVisibleDeviceID,
+            uid: WorldwideVirtualMicrophoneEndpointContract
+                .retiredLegacyVisibleDeviceUID
+        )
+        operations.externalSelect(deviceID: retiredVisibleDeviceID)
+        let lease = makeLease(operations)
+        let targetEndpoint = BlackHoleDeviceEndpointIdentity(
+            deviceID: 2,
+            deviceUID: BlackHoleDefaultInputLease.canonicalDeviceUID
+        )
+
+        XCTAssertEqual(
+            lease.acquisitionResult(
+                generation: 1,
+                targetEndpoint: targetEndpoint
+            ),
+            .acquired
+        )
+        XCTAssertEqual(
+            operations.currentUID,
+            BlackHoleDefaultInputLease.canonicalDeviceUID
+        )
+        let parkingProof: BlackHoleDefaultInputLeaseParkingProof
+        switch lease.parkForClockEpochRecovery(
+            generation: 1,
+            targetEndpoint: targetEndpoint
+        ) {
+        case .parked(let proof):
+            parkingProof = proof
+        case .retryableFailure, .terminalFailure:
+            return XCTFail("Expected an exact listener-bound parking proof.")
+        }
+        XCTAssertEqual(
+            operations.currentUID,
+            WorldwideVirtualMicrophoneEndpointContract
+                .retiredLegacyVisibleDeviceUID,
+            "The retired visible endpoint is an input-only parking route while the canonical pair becomes idle."
+        )
+        XCTAssertTrue(
+            lease.clockEpochParkingProofIsCurrent(parkingProof)
+        )
+        XCTAssertEqual(
+            lease.reacquisitionResult(
+                parkingProof: parkingProof,
+                targetEndpoint: targetEndpoint
+            ),
+            .acquired
+        )
+        XCTAssertEqual(
+            operations.currentUID,
+            BlackHoleDefaultInputLease.canonicalDeviceUID
+        )
+        XCTAssertEqual(
+            operations.writtenDeviceIDs,
+            [2, retiredVisibleDeviceID, 2]
+        )
+    }
+
+    func testClockEpochParkingRejectsExternalAwayAndBackBeforeReacquisition() {
+        let operations = DefaultInputLeaseOperationsFake()
+        let retiredVisibleDeviceID = AudioDeviceID(6)
+        operations.installDevice(
+            deviceID: retiredVisibleDeviceID,
+            uid: WorldwideVirtualMicrophoneEndpointContract
+                .retiredLegacyVisibleDeviceUID
+        )
+        operations.externalSelect(deviceID: retiredVisibleDeviceID)
+        let lease = makeLease(operations)
+        let targetEndpoint = BlackHoleDeviceEndpointIdentity(
+            deviceID: 2,
+            deviceUID: BlackHoleDefaultInputLease.canonicalDeviceUID
+        )
+
+        XCTAssertEqual(
+            lease.acquisitionResult(
+                generation: 1,
+                targetEndpoint: targetEndpoint
+            ),
+            .acquired
+        )
+        let parkingProof: BlackHoleDefaultInputLeaseParkingProof
+        switch lease.parkForClockEpochRecovery(
+            generation: 1,
+            targetEndpoint: targetEndpoint
+        ) {
+        case .parked(let proof):
+            parkingProof = proof
+        case .retryableFailure, .terminalFailure:
+            return XCTFail("Expected an exact listener-bound parking proof.")
+        }
+
+        operations.externalSelect(deviceID: 3)
+        operations.externalSelect(deviceID: retiredVisibleDeviceID)
+
+        XCTAssertFalse(
+            lease.clockEpochParkingProofIsCurrent(parkingProof)
+        )
+        XCTAssertEqual(
+            lease.reacquisitionResult(
+                parkingProof: parkingProof,
+                targetEndpoint: targetEndpoint
+            ),
+            .terminalFailure
+        )
+        XCTAssertEqual(
+            operations.writtenDeviceIDs,
+            [2, retiredVisibleDeviceID],
+            "An external away-and-back must never be overwritten by recovery."
+        )
+    }
+
     func testNoErrWithoutNotificationProofDegradesAndRestoresBestEffort() {
         let operations = DefaultInputLeaseOperationsFake()
         operations.emitsNotifications = false

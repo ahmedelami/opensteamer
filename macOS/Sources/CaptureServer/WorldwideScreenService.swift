@@ -60,6 +60,10 @@ actor WorldwideScreenService {
     private static let maximumDisplayModeStartupRetries = 3
     private static let maximumForwardingStartupProofPolls = 40
     private static let forwardingStartupProofPollInterval = Duration.milliseconds(25)
+    private static let maximumSharedClockEpochQuiescencePolls = 20
+    private static let sharedClockEpochQuiescencePollInterval =
+        Duration.milliseconds(50)
+    private static let requiredSharedClockIdleObservations = 2
 
     private struct ScreenCaptureStartupOwner: Equatable {
         let visibilityCommandEpoch: UInt64
@@ -185,7 +189,15 @@ actor WorldwideScreenService {
                 "is unsafe; automatic restart is blocked until the peer or " +
                 "pair generation changes: " +
                 error.localizedDescription
-        case .sharedClockUnsafe:
+        case .sharedClockUnsafe(let rejection):
+            if WorldwideSharedClockEpochRecoveryPolicy
+                .canRecover(rejection) {
+                return "iPhone microphone forwarding found an expired " +
+                    "virtual microphone clock epoch; bounded idle proof and " +
+                    "exact route cleanup are required before one fresh-epoch " +
+                    "recovery attempt: " +
+                    error.localizedDescription
+            }
             return "iPhone microphone forwarding rejected the current " +
                 "peer and virtual microphone pair because its shared clock is " +
                 "unsafe for FaceTime; automatic restart is blocked until " +
@@ -351,6 +363,8 @@ actor WorldwideScreenService {
     private let maximumWidth: Int
     private let framesPerSecond: Int
     private let maximumVideoBitrate: Int
+    private var screenVideoAdaptationPolicy:
+        WorldwideScreenVideoAdaptationPolicy
     private let remoteInputController: MacRemoteInputController
     private weak var captureLifetime: CaptureServiceLifetime?
     private let captureLifetimeIsRequired: Bool
@@ -402,6 +416,9 @@ actor WorldwideScreenService {
     private var captureForwardingAuthorization: WebRTCControlAuthorization?
     private var captureDisplayID: UInt32?
     private var captureAuthoritativeDisplayBounds: CGRect?
+    private var captureVideoBaseDimensions: ScreenVideoPixelDimensions?
+    private var appliedScreenVideoRecommendation:
+        WorldwideScreenVideoEncodingRecommendation?
     private var audioSource: SystemAudioCaptureSource?
     private var audioSink: WorldwideSystemAudioSampleSink?
     private var audioAuthorization: WebRTCAudioAuthorization?
@@ -430,7 +447,7 @@ actor WorldwideScreenService {
         BlackHoleEndpointPairAuthorization?
     private var blackHoleDefaultInputAuthorization:
         BlackHoleDefaultInputLeaseAuthorization?
-    struct SharedClockBlockedPeerPair: Equatable {
+    struct SharedClockBlockedPeerPair: Equatable, Sendable {
         let monitorEpoch: UUID
         let deviceGeneration: UInt64
         let peerGeneration: UInt64
@@ -477,6 +494,19 @@ actor WorldwideScreenService {
         }
     }
     private var sharedClockBlockedPeerPair:
+        SharedClockBlockedPeerPair?
+    private let virtualMicrophoneEpochStateReader =
+        WorldwideVirtualMicrophoneEpochStateReader()
+    private var sharedClockEpochRecoveryPolicy =
+        WorldwideSharedClockEpochRecoveryPolicy()
+    private var sharedClockEpochRecoveryTask:
+        Task<Void, Never>?
+    private var sharedClockEpochRecoveryTaskGeneration: UInt64 = 0
+    private var sharedClockEpochRecoveryKey:
+        WorldwideIPhoneMicrophoneForwardingKey?
+    private var sharedClockEpochRecoveryReadmissionTaskGeneration:
+        UInt64?
+    private var sharedClockEpochCleanupPendingPair:
         SharedClockBlockedPeerPair?
     private var formatUnsafeBlockedPeerPair:
         FormatUnsafeBlockedPeerPair?
@@ -597,6 +627,10 @@ actor WorldwideScreenService {
         self.maximumWidth = maximumWidth
         self.framesPerSecond = framesPerSecond
         self.maximumVideoBitrate = maximumVideoBitrate
+        screenVideoAdaptationPolicy = WorldwideScreenVideoAdaptationPolicy(
+            configuredTotalRTPBitrateBps: maximumVideoBitrate,
+            baseFramesPerSecond: framesPerSecond
+        )
         self.remoteInputController = remoteInputController
         self.captureLifetime = captureLifetime
         captureLifetimeIsRequired = captureLifetime != nil
@@ -644,6 +678,10 @@ actor WorldwideScreenService {
         self.maximumWidth = maximumWidth
         self.framesPerSecond = framesPerSecond
         self.maximumVideoBitrate = maximumVideoBitrate
+        screenVideoAdaptationPolicy = WorldwideScreenVideoAdaptationPolicy(
+            configuredTotalRTPBitrateBps: maximumVideoBitrate,
+            baseFramesPerSecond: framesPerSecond
+        )
         self.remoteInputController = remoteInputController
         self.captureLifetime = captureLifetime
         captureLifetimeIsRequired = captureLifetime != nil
@@ -727,6 +765,10 @@ actor WorldwideScreenService {
         safeOutputInvariantNeedsRedrive = false
         safeOutputInvariantVerificationWasFailing = false
         safeOutputInvariantRetryPolicy.reset()
+        cancelSharedClockEpochRecovery(
+            resetPolicy: true,
+            clearCompatibilityBlock: true
+        )
 
         shutdownBlackHoleAudioRouting()
         iPhoneMicrophoneForwarding.shutdown()
@@ -924,6 +966,10 @@ actor WorldwideScreenService {
                 maximumVideoBitrate: maximumVideoBitrate
             )
         )
+        cancelSharedClockEpochRecovery(
+            resetPolicy: true,
+            clearCompatibilityBlock: true
+        )
         recordBlackHoleDefaultInputOutcome(
             blackHoleDefaultInput.invalidateCurrentConnection()
         )
@@ -932,6 +978,8 @@ actor WorldwideScreenService {
         safeOutputInvariantRetryPolicy.reset()
         peerGeneration &+= 1
         let generation = peerGeneration
+        screenVideoAdaptationPolicy.bind(toPeerGeneration: generation)
+        appliedScreenVideoRecommendation = nil
         highestRestartRequestID = nil
         peerIsConnected = false
         iceIsConnected = false
@@ -1166,6 +1214,7 @@ actor WorldwideScreenService {
 
         case .routeChanged(let route):
             logger.info("Worldwide WebRTC route: \(route.kind.rawValue)")
+            screenVideoAdaptationPolicy.invalidateSelectedRoute()
 
         case .statistics(let snapshot):
             guard peer === sourcePeer,
@@ -1267,6 +1316,15 @@ actor WorldwideScreenService {
                 logger.info(selection)
             }
             await maintainWorldwideSafeOutputInvariant()
+            guard peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration else {
+                return
+            }
+            await adaptScreenVideoForNetworkConditions(
+                snapshot,
+                sourcePeer: sourcePeer,
+                sourcePeerGeneration: sourcePeerGeneration
+            )
 
         case .iceCandidateError(let error):
             logger.error(
@@ -1285,6 +1343,117 @@ actor WorldwideScreenService {
 
         case .identityReceived, .remoteVideoTrack, .negotiationNeeded:
             break
+        }
+    }
+
+    /// Applies a new sender ceiling only after the current capture and peer identities survive
+    /// the cross-actor parameter update. Failed native updates are retried by the next sample.
+    private func adaptScreenVideoForNetworkConditions(
+        _ snapshot: WebRTCStatisticsSnapshot,
+        sourcePeer: WebRTCPeer,
+        sourcePeerGeneration: UInt64
+    ) async {
+        let forwardingAuthorization = captureForwardingAuthorization
+        let isCaptureActive = captureSource != nil
+            && captureSink != nil
+            && captureAuthorization?.isValid == true
+            && forwardingAuthorization?.isValid == true
+            && forwardingAuthorization.map {
+                captureSink?.allowsActiveUse(authorizedBy: $0) == true
+            } == true
+
+        var proposedPolicy = screenVideoAdaptationPolicy
+        let changedRecommendation = proposedPolicy.update(
+            peerGeneration: sourcePeerGeneration,
+            isCaptureActive: isCaptureActive,
+            availableOutgoingBitrateBps: snapshot.availableOutgoingBitrate,
+            currentRoundTripTimeSeconds: snapshot.currentRoundTripTime,
+            selectedRoute: snapshot.route,
+            outboundVideoPacketsSent: snapshot.outboundVideo?.packets,
+            outboundVideoTotalPacketSendDelaySeconds:
+                snapshot.outboundVideo?.totalPacketSendDelay
+        )
+        let recommendation = changedRecommendation
+            ?? proposedPolicy.currentRecommendation
+        guard isCaptureActive else {
+            if peer === sourcePeer,
+               peerGeneration == sourcePeerGeneration {
+                screenVideoAdaptationPolicy = proposedPolicy
+            }
+            return
+        }
+        guard changedRecommendation != nil
+                || appliedScreenVideoRecommendation != recommendation else {
+            if peer === sourcePeer,
+               peerGeneration == sourcePeerGeneration {
+                screenVideoAdaptationPolicy = proposedPolicy
+            }
+            return
+        }
+        guard isCaptureActive,
+              let source = captureSource,
+              let sink = captureSink,
+              let captureAuthorization,
+              let forwardingAuthorization,
+              let baseDimensions = captureVideoBaseDimensions,
+              let capturer = sourcePeer.externalVideoCapturer else {
+            return
+        }
+
+        do {
+            let senderUpdate = try await sourcePeer.applyScreenVideoEncodingLimits(
+                recommendation.webRTCLimits
+            )
+            guard peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration,
+                  captureSource === source,
+                  captureSink === sink,
+                  self.captureAuthorization === captureAuthorization,
+                  self.captureForwardingAuthorization
+                    === forwardingAuthorization,
+                  captureAuthorization.isValid,
+                  forwardingAuthorization.isValid,
+                  sink.allowsActiveUse(
+                      authorizedBy: forwardingAuthorization
+                  ),
+                  captureVideoBaseDimensions == baseDimensions else {
+                do {
+                    _ = try await sourcePeer
+                        .rollbackScreenVideoEncodingUpdateIfCurrent(
+                            senderUpdate
+                        )
+                } catch {
+                    logger.error(
+                        "Worldwide screen video stale-update rollback failed: "
+                            + error.localizedDescription
+                    )
+                }
+                return
+            }
+            capturer.adaptOutput(
+                width: Int32(baseDimensions.width),
+                height: Int32(baseDimensions.height),
+                framesPerSecond: Int32(
+                    recommendation.maximumFramesPerSecond
+                )
+            )
+            screenVideoAdaptationPolicy = proposedPolicy
+            appliedScreenVideoRecommendation = recommendation
+            logger.info(
+                "Worldwide screen video tier=\(String(describing: recommendation.tier)) "
+                    + "maxKbps=\(recommendation.maximumBitrateBps / 1_000) "
+                    + "fps=\(recommendation.maximumFramesPerSecond) "
+                    + "scale=\(String(format: "%.2f", recommendation.scaleResolutionDownBy))"
+            )
+        } catch {
+            guard peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration else {
+                return
+            }
+            logger.error(
+                "Worldwide screen video adaptation held its previous tier: "
+                    + error.localizedDescription
+            )
         }
     }
 
@@ -2204,7 +2373,11 @@ actor WorldwideScreenService {
 
     /// Keeps the exact output listeners registered through input-only admission.
     /// LAN coexistence retains its legacy policy and never reaches this ownership path.
-    private func admitBlackHoleInputWithinSafeOutputFence()
+    private func admitBlackHoleInputWithinSafeOutputFence(
+        sharedClockRecoveryTaskGeneration: UInt64? = nil,
+        sharedClockRecoveryParkingProof:
+            BlackHoleDefaultInputLeaseParkingProof? = nil
+    )
         -> (
             outputsAreSafe: Bool,
             snapshot: BlackHoleDeviceAvailabilitySnapshot?
@@ -2216,6 +2389,17 @@ actor WorldwideScreenService {
             return (false, nil)
         }
         guard transportAllowsCapture else {
+            return (false, nil)
+        }
+        if let activeRecoveryTaskGeneration =
+                sharedClockEpochRecoveryReadmissionTaskGeneration {
+            guard sharedClockRecoveryTaskGeneration
+                    == activeRecoveryTaskGeneration,
+                  sharedClockRecoveryParkingProof != nil else {
+                return (false, nil)
+            }
+        } else if sharedClockRecoveryTaskGeneration != nil
+                    || sharedClockRecoveryParkingProof != nil {
             return (false, nil)
         }
         guard let monitoringEpoch =
@@ -2261,12 +2445,29 @@ actor WorldwideScreenService {
                         self.blackHoleDefaultInputAuthorization = nil
                         self.iPhoneMicrophoneForwarding
                             .invalidateTransport()
-                        let outcome =
-                            self.blackHoleDefaultInput
+                        let outcome:
+                            WorldwideBlackHoleDefaultInputOutcome
+                        if let sharedClockRecoveryParkingProof,
+                           let snapshot = self
+                            .blackHoleDeviceAvailabilityMonitor
+                            .currentSnapshot(),
+                           self.blackHoleDefaultInput
+                            .sharedClockParkingProofIsCurrent(
+                                sharedClockRecoveryParkingProof,
+                                peerGeneration:
+                                    self.peerGeneration,
+                                snapshot: snapshot
+                            ) {
+                            outcome = .released
+                        } else if sharedClockRecoveryParkingProof != nil {
+                            outcome = .degraded
+                        } else {
+                            outcome = self.blackHoleDefaultInput
                                 .transportDidBecomeUnhealthy(
                                     peerGeneration:
                                         self.peerGeneration
                                 )
+                        }
                         preMutationOutcome = outcome
                         if outcome == .degraded {
                             throw WorldwideScreenServiceError
@@ -2286,11 +2487,23 @@ actor WorldwideScreenService {
                         admittedOutcomes.append(
                             initialRevalidation.outcome
                         )
-                        let initialOutcome = self.blackHoleDefaultInput
-                            .transportDidBecomeHealthy(
-                                peerGeneration:
-                                    self.peerGeneration
-                            )
+                        let initialOutcome:
+                            WorldwideBlackHoleDefaultInputOutcome
+                        if let sharedClockRecoveryParkingProof {
+                            initialOutcome = self.blackHoleDefaultInput
+                                .transportDidBecomeHealthyAfterSharedClockRecovery(
+                                    peerGeneration:
+                                        self.peerGeneration,
+                                    parkingProof:
+                                        sharedClockRecoveryParkingProof
+                                )
+                        } else {
+                            initialOutcome = self.blackHoleDefaultInput
+                                .transportDidBecomeHealthy(
+                                    peerGeneration:
+                                        self.peerGeneration
+                                )
+                        }
                         admittedOutcomes.append(initialOutcome)
                         guard case .selected = initialOutcome else {
                             return nil
@@ -2447,10 +2660,13 @@ actor WorldwideScreenService {
     /// synchronously revokes microphone admission and default-input ownership before
     /// a capped, backed-off mutation attempt can run.
     private func maintainWorldwideSafeOutputInvariant() async {
-        guard iPhoneMicrophoneForwardingPolicy == .enabled,
-              transportAllowsCapture else {
+        guard iPhoneMicrophoneForwardingPolicy == .enabled else {
             return
         }
+        if redriveSharedClockEpochCleanupIfNeeded() {
+            return
+        }
+        guard transportAllowsCapture else { return }
         guard let monitoringEpoch =
                 safeOutputInvariantMonitoringEpoch else {
             safeOutputInvariantNeedsRedrive = true
@@ -2530,17 +2746,20 @@ actor WorldwideScreenService {
         await resumeWorldwideMicrophoneAfterSafeOutputInvariant()
     }
 
-    private func revokeWorldwideMicrophoneForUnsafeOutputInvariant() {
+    @discardableResult
+    private func revokeWorldwideMicrophoneForUnsafeOutputInvariant()
+        -> WorldwideBlackHoleDefaultInputOutcome {
         revokeWorldwideMicrophoneForUnsafeOutputInvariant(
             preservingSharedClockUnsafeFailure: false,
             preservingFormatUnsafeFailure: false
         )
     }
 
+    @discardableResult
     private func revokeWorldwideMicrophoneForUnsafeOutputInvariant(
         preservingSharedClockUnsafeFailure: Bool,
         preservingFormatUnsafeFailure: Bool = false
-    ) {
+    ) -> WorldwideBlackHoleDefaultInputOutcome {
         blackHoleMicrophoneOutputAuthorizationGate?.close()
         safeOutputInvariantAuthorization = nil
         blackHoleEndpointPairAuthorization = nil
@@ -2551,31 +2770,66 @@ actor WorldwideScreenService {
             preservingFormatUnsafeFailure:
                 preservingFormatUnsafeFailure
         )
-        recordBlackHoleDefaultInputOutcome(
-            blackHoleDefaultInput.transportDidBecomeUnhealthy(
-                peerGeneration: peerGeneration
-            )
+        let outcome = blackHoleDefaultInput.transportDidBecomeUnhealthy(
+            peerGeneration: peerGeneration
         )
+        recordBlackHoleDefaultInputOutcome(outcome)
+        return outcome
     }
 
-    private func resumeWorldwideMicrophoneAfterSafeOutputInvariant()
+    private func parkWorldwideMicrophoneForSharedClockRecovery()
+        -> WorldwideBlackHoleClockEpochParkingOutcome {
+        blackHoleMicrophoneOutputAuthorizationGate?.close()
+        safeOutputInvariantAuthorization = nil
+        blackHoleEndpointPairAuthorization = nil
+        blackHoleDefaultInputAuthorization = nil
+        iPhoneMicrophoneForwarding.invalidateTransport(
+            preservingSharedClockUnsafeFailure: true
+        )
+        let outcome = blackHoleDefaultInput
+            .parkForSharedClockEpochRecovery(
+                peerGeneration: peerGeneration
+            )
+        switch outcome {
+        case .parked:
+            recordBlackHoleDefaultInputOutcome(.released)
+        case .degraded:
+            recordBlackHoleDefaultInputOutcome(.degraded)
+        }
+        return outcome
+    }
+
+    private func resumeWorldwideMicrophoneAfterSafeOutputInvariant(
+        sharedClockRecoveryTaskGeneration: UInt64? = nil,
+        sharedClockRecoveryParkingProof:
+            BlackHoleDefaultInputLeaseParkingProof? = nil
+    )
         async {
         guard transportAllowsCapture else { return }
         let routingAdmission =
-            admitBlackHoleInputWithinSafeOutputFence()
+            admitBlackHoleInputWithinSafeOutputFence(
+                sharedClockRecoveryTaskGeneration:
+                    sharedClockRecoveryTaskGeneration,
+                sharedClockRecoveryParkingProof:
+                    sharedClockRecoveryParkingProof
+            )
         guard routingAdmission.outputsAreSafe else { return }
         let currentBlackHoleSnapshot = routingAdmission.snapshot
         if let currentBlackHoleSnapshot {
             await iPhoneMicrophoneForwarding.updateDeviceSnapshot(
                 currentBlackHoleSnapshot
             )
-            await authorizeIPhoneMicrophoneForwardingIfPossible()
+            await authorizeIPhoneMicrophoneForwardingIfPossible(
+                sharedClockRecoveryTaskGeneration:
+                    sharedClockRecoveryTaskGeneration
+            )
         }
     }
 
     /// Holds the captured clock rejection across statistics ticks and transport
-    /// epochs. A genuinely new peer or atomic endpoint-pair generation is the
-    /// only automatic retry boundary for this deterministic incompatibility.
+    /// epochs. Signed-32 headroom exhaustion gets one release-and-idle recovery
+    /// episode; every other rejection, and a repeated exhaustion, remains
+    /// blocked until a genuinely new peer or atomic endpoint-pair generation.
     private func sharedClockBlocksCurrentPeerAndPair() -> Bool {
         Self.sharedClockBlockRemainsActive(
             &sharedClockBlockedPeerPair,
@@ -2662,16 +2916,461 @@ actor WorldwideScreenService {
             }
         }
 
-        sharedClockBlockedPeerPair =
+        let blockedPair =
             SharedClockBlockedPeerPair(forwardingKey: key)
-        revokeWorldwideMicrophoneForUnsafeOutputInvariant(
-            preservingSharedClockUnsafeFailure: true
-        )
+        sharedClockBlockedPeerPair = blockedPair
+        let recoveryDecision = sharedClockEpochRecoveryPolicy
+            .registerFailure(
+                key: key,
+                rejection: rejection
+            )
+        switch recoveryDecision {
+        case .recover(let attempt, let maximumAttemptCount):
+            // Preserve the captured failure while this exact owner releases
+            // both endpoints and proves a real idle gap. No route can reopen
+            // until the task clears the service-level peer/pair block.
+            let parkingOutcome =
+                parkWorldwideMicrophoneForSharedClockRecovery()
+            guard case .parked(let parkingProof) = parkingOutcome,
+                  let parkingRoute =
+                    WorldwideSharedClockEpochRecoveryParkingRoute(
+                        defaultInputUID:
+                            parkingProof.parkingEndpoint.deviceUID
+                    ) else {
+                cancelSharedClockEpochRecovery(
+                    resetPolicy: false,
+                    clearCompatibilityBlock: false
+                )
+                _ = revokeWorldwideMicrophoneForSharedClockFailure(
+                    blockedPair: blockedPair
+                )
+                break
+            }
+            guard scheduleSharedClockEpochRecovery(
+                key: key,
+                blockedPair: blockedPair,
+                parkingProof: parkingProof,
+                parkingRoute: parkingRoute,
+                attempt: attempt,
+                maximumAttemptCount: maximumAttemptCount
+            ) else {
+                _ = revokeWorldwideMicrophoneForSharedClockFailure(
+                    blockedPair: blockedPair
+                )
+                break
+            }
+
+        case .failClosed:
+            cancelSharedClockEpochRecovery(
+                resetPolicy: false,
+                clearCompatibilityBlock: false
+            )
+            revokeWorldwideMicrophoneForSharedClockFailure(
+                blockedPair: blockedPair
+            )
+        }
         logger.error(
             Self.iPhoneMicrophoneRuntimeFailureLogMessage(
                 error: .sharedClockUnsafe(rejection)
             )
         )
+    }
+
+    private func scheduleSharedClockEpochRecovery(
+        key: WorldwideIPhoneMicrophoneForwardingKey,
+        blockedPair: SharedClockBlockedPeerPair,
+        parkingProof: BlackHoleDefaultInputLeaseParkingProof,
+        parkingRoute:
+            WorldwideSharedClockEpochRecoveryParkingRoute,
+        attempt: Int,
+        maximumAttemptCount: Int
+    ) -> Bool {
+        guard let snapshot =
+                blackHoleDeviceAvailabilityMonitor.currentSnapshot(),
+              blockedPair.matches(
+                peerGeneration: peerGeneration,
+                snapshot: snapshot
+              ),
+              let visibleInputEndpoint =
+                snapshot.defaultInputEndpoint,
+              let hiddenWriterEndpoint =
+                snapshot.hiddenMirrorSinkEndpoint else {
+            return false
+        }
+
+        sharedClockEpochRecoveryTask?.cancel()
+        let taskGeneration =
+            advanceSharedClockEpochRecoveryTaskGeneration()
+        sharedClockEpochRecoveryKey = key
+        sharedClockEpochRecoveryTask = Task { [weak self] in
+            await self?.runSharedClockEpochRecovery(
+                key: key,
+                blockedPair: blockedPair,
+                parkingProof: parkingProof,
+                parkingRoute: parkingRoute,
+                visibleInputEndpoint: visibleInputEndpoint,
+                hiddenWriterEndpoint: hiddenWriterEndpoint,
+                taskGeneration: taskGeneration
+            )
+        }
+        logger.info(
+            "Worldwide iPhone microphone released its expired clock " +
+                "epoch and began bounded idle recovery attempt " +
+                "\(attempt)/\(maximumAttemptCount)"
+        )
+        return true
+    }
+
+    private func runSharedClockEpochRecovery(
+        key: WorldwideIPhoneMicrophoneForwardingKey,
+        blockedPair: SharedClockBlockedPeerPair,
+        parkingProof: BlackHoleDefaultInputLeaseParkingProof,
+        parkingRoute:
+            WorldwideSharedClockEpochRecoveryParkingRoute,
+        visibleInputEndpoint: BlackHoleDeviceEndpointIdentity,
+        hiddenWriterEndpoint: BlackHoleDeviceEndpointIdentity,
+        taskGeneration: UInt64
+    ) async {
+        let poller = WorldwideSharedClockEpochRecoveryPoller(
+            maximumPollCount:
+                Self.maximumSharedClockEpochQuiescencePolls,
+            requiredConsecutiveIdleObservations:
+                Self.requiredSharedClockIdleObservations
+        )
+        let pollOutcome = await poller.wait(
+            sleep: {
+                try await Task.sleep(
+                    for: Self.sharedClockEpochQuiescencePollInterval
+                )
+            },
+            isCurrent: {
+                sharedClockEpochRecoveryIsCurrent(
+                    key: key,
+                    blockedPair: blockedPair,
+                    parkingProof: parkingProof,
+                    visibleInputEndpoint: visibleInputEndpoint,
+                    hiddenWriterEndpoint: hiddenWriterEndpoint,
+                    taskGeneration: taskGeneration
+                )
+            },
+            sample: {
+                switch virtualMicrophoneEpochStateReader.observe(
+                    visibleInputDeviceID:
+                        visibleInputEndpoint.deviceID,
+                    hiddenWriterDeviceID:
+                        hiddenWriterEndpoint.deviceID
+                ) {
+                case .success(let observation):
+                    return observation.provesGlobalIdleCandidate(
+                        parkedOn: parkingRoute
+                    )
+                        ? .idle
+                        : .active
+                case .failure:
+                    return .unreadable
+                }
+            }
+        )
+
+        switch pollOutcome {
+        case .idleProven:
+            guard sharedClockEpochRecoveryIsCurrent(
+                key: key,
+                blockedPair: blockedPair,
+                parkingProof: parkingProof,
+                visibleInputEndpoint: visibleInputEndpoint,
+                hiddenWriterEndpoint: hiddenWriterEndpoint,
+                taskGeneration: taskGeneration
+            ) else {
+                if sharedClockEpochRecoveryEpisodeIsCurrent(
+                    key: key,
+                    blockedPair: blockedPair,
+                    visibleInputEndpoint: visibleInputEndpoint,
+                    hiddenWriterEndpoint: hiddenWriterEndpoint,
+                    taskGeneration: taskGeneration
+                ) {
+                    _ = revokeWorldwideMicrophoneForSharedClockFailure(
+                        blockedPair: blockedPair
+                    )
+                }
+                finishSharedClockEpochRecoveryTaskIfCurrent(
+                    taskGeneration: taskGeneration
+                )
+                return
+            }
+
+            // A stable public idle candidate warrants this one bounded retry.
+            // Keep the exact rejected full key until readmission returns: a
+            // track or authorization change during the await must not be
+            // mistaken for this recovery's newly proven clock epoch.
+            sharedClockEpochRecoveryReadmissionTaskGeneration =
+                taskGeneration
+            sharedClockBlockedPeerPair = nil
+            await resumeWorldwideMicrophoneAfterSafeOutputInvariant(
+                sharedClockRecoveryTaskGeneration: taskGeneration,
+                sharedClockRecoveryParkingProof: parkingProof
+            )
+
+            guard sharedClockEpochRecoveryEpisodeIsCurrent(
+                key: key,
+                blockedPair: blockedPair,
+                visibleInputEndpoint: visibleInputEndpoint,
+                hiddenWriterEndpoint: hiddenWriterEndpoint,
+                taskGeneration: taskGeneration
+            ) else {
+                finishSharedClockEpochRecoveryTaskIfCurrent(
+                    taskGeneration: taskGeneration
+                )
+                return
+            }
+
+            let forwarding = iPhoneMicrophoneForwarding.snapshot()
+            guard WorldwideSharedClockEpochRecoveryAdmissionPolicy
+                .accepts(snapshot: forwarding, after: key) else {
+                // This exact peer/pair spent its only recovery attempt. Restore
+                // the compatibility fence before revoking any mismatched route.
+                sharedClockBlockedPeerPair = blockedPair
+                _ = revokeWorldwideMicrophoneForSharedClockFailure(
+                    blockedPair: blockedPair
+                )
+                finishSharedClockEpochRecoveryTaskIfCurrent(
+                    taskGeneration: taskGeneration
+                )
+                logger.error(
+                    "Worldwide iPhone microphone fresh-epoch recovery " +
+                        "failed closed because track or transport ownership " +
+                        "changed during exact readmission"
+                )
+                return
+            }
+
+            cancelSharedClockEpochRecovery(
+                resetPolicy: false,
+                clearCompatibilityBlock: true
+            )
+            logger.info(
+                "Worldwide iPhone microphone established a fresh " +
+                    "FaceTime-safe virtual microphone clock epoch"
+            )
+            return
+
+        case .cancelled, .staleOwner:
+            if sharedClockEpochRecoveryEpisodeIsCurrent(
+                key: key,
+                blockedPair: blockedPair,
+                visibleInputEndpoint: visibleInputEndpoint,
+                hiddenWriterEndpoint: hiddenWriterEndpoint,
+                taskGeneration: taskGeneration
+            ) {
+                _ = revokeWorldwideMicrophoneForSharedClockFailure(
+                    blockedPair: blockedPair
+                )
+            }
+            finishSharedClockEpochRecoveryTaskIfCurrent(
+                taskGeneration: taskGeneration
+            )
+            return
+
+        case .timedOut:
+            if sharedClockEpochRecoveryEpisodeIsCurrent(
+                key: key,
+                blockedPair: blockedPair,
+                visibleInputEndpoint: visibleInputEndpoint,
+                hiddenWriterEndpoint: hiddenWriterEndpoint,
+                taskGeneration: taskGeneration
+            ) {
+                _ = revokeWorldwideMicrophoneForSharedClockFailure(
+                    blockedPair: blockedPair
+                )
+            }
+            finishSharedClockEpochRecoveryTaskIfCurrent(
+                taskGeneration: taskGeneration
+            )
+            logger.error(
+                "Worldwide iPhone microphone fresh-epoch recovery remained " +
+                    "blocked because both virtual endpoints did not become " +
+                    "stably idle on the exact parking route within the " +
+                    "bounded wait"
+            )
+            return
+        }
+    }
+
+    private func sharedClockEpochRecoveryIsCurrent(
+        key: WorldwideIPhoneMicrophoneForwardingKey,
+        blockedPair: SharedClockBlockedPeerPair,
+        parkingProof: BlackHoleDefaultInputLeaseParkingProof,
+        visibleInputEndpoint: BlackHoleDeviceEndpointIdentity,
+        hiddenWriterEndpoint: BlackHoleDeviceEndpointIdentity,
+        taskGeneration: UInt64
+    ) -> Bool {
+        guard !isStopped,
+              transportAllowsCapture,
+              sharedClockEpochRecoveryTaskGeneration
+                == taskGeneration,
+              sharedClockEpochRecoveryKey == key,
+              sharedClockBlockedPeerPair == blockedPair,
+              peerGeneration == key.peerGeneration,
+              safeOutputInvariantAuthorization == nil,
+              blackHoleEndpointPairAuthorization == nil,
+              blackHoleDefaultInputAuthorization == nil,
+              let authorizationGate =
+                blackHoleMicrophoneOutputAuthorizationGate,
+              !authorizationGate.isOpen,
+              let snapshot =
+                blackHoleDeviceAvailabilityMonitor.currentSnapshot(),
+              blockedPair.matches(
+                peerGeneration: peerGeneration,
+                snapshot: snapshot
+              ),
+              snapshot.defaultInputEndpoint
+                == visibleInputEndpoint,
+              snapshot.hiddenMirrorSinkEndpoint
+                == hiddenWriterEndpoint,
+              blackHoleDefaultInput.sharedClockParkingProofIsCurrent(
+                parkingProof,
+                peerGeneration: peerGeneration,
+                snapshot: snapshot
+              ) else {
+            return false
+        }
+
+        let forwarding = iPhoneMicrophoneForwarding.snapshot()
+        return forwarding.monitorEpoch == key.monitorEpoch
+            && forwarding.deviceGeneration
+                == key.deviceGeneration
+            && forwarding.peerGeneration == key.peerGeneration
+            && forwarding.transportAuthorizationEpoch
+                == key.transportAuthorizationEpoch
+            && forwarding.trackGeneration == key.trackGeneration
+            && !forwarding.transportAuthorized
+            && !forwarding.queueRunning
+    }
+
+    private func sharedClockEpochRecoveryEpisodeIsCurrent(
+        key: WorldwideIPhoneMicrophoneForwardingKey,
+        blockedPair: SharedClockBlockedPeerPair,
+        visibleInputEndpoint: BlackHoleDeviceEndpointIdentity,
+        hiddenWriterEndpoint: BlackHoleDeviceEndpointIdentity,
+        taskGeneration: UInt64
+    ) -> Bool {
+        guard !isStopped,
+              transportAllowsCapture,
+              sharedClockEpochRecoveryTaskGeneration
+                == taskGeneration,
+              sharedClockEpochRecoveryKey == key,
+              peerGeneration == key.peerGeneration,
+              let snapshot =
+                blackHoleDeviceAvailabilityMonitor.currentSnapshot(),
+              blockedPair.matches(
+                peerGeneration: peerGeneration,
+                snapshot: snapshot
+              ),
+              snapshot.defaultInputEndpoint
+                == visibleInputEndpoint,
+              snapshot.hiddenMirrorSinkEndpoint
+                == hiddenWriterEndpoint else {
+            return false
+        }
+        return true
+    }
+
+    @discardableResult
+    private func advanceSharedClockEpochRecoveryTaskGeneration()
+        -> UInt64 {
+        sharedClockEpochRecoveryTaskGeneration &+= 1
+        if sharedClockEpochRecoveryTaskGeneration == 0 {
+            sharedClockEpochRecoveryTaskGeneration = 1
+        }
+        return sharedClockEpochRecoveryTaskGeneration
+    }
+
+    private func finishSharedClockEpochRecoveryTaskIfCurrent(
+        taskGeneration: UInt64
+    ) {
+        guard sharedClockEpochRecoveryTaskGeneration
+                == taskGeneration else {
+            return
+        }
+        sharedClockEpochRecoveryTask = nil
+        sharedClockEpochRecoveryKey = nil
+        if sharedClockEpochRecoveryReadmissionTaskGeneration
+                == taskGeneration {
+            sharedClockEpochRecoveryReadmissionTaskGeneration = nil
+        }
+    }
+
+    /// A failed clock-epoch parking transition may retain the exact lease when
+    /// Core Audio is temporarily unreadable. Retry cleanup immediately, then
+    /// retain only the blocked peer/pair identity so statistics ticks can keep
+    /// redriving the safe compare-and-restore path without touching a successor.
+    @discardableResult
+    private func revokeWorldwideMicrophoneForSharedClockFailure(
+        blockedPair: SharedClockBlockedPeerPair
+    ) -> WorldwideBlackHoleDefaultInputOutcome {
+        let outcome =
+            revokeWorldwideMicrophoneForUnsafeOutputInvariant(
+                preservingSharedClockUnsafeFailure: true
+            )
+        switch outcome {
+        case .degraded:
+            sharedClockEpochCleanupPendingPair = blockedPair
+        case .selected, .noChange, .waitingForMonitor,
+             .waitingForDevice, .released, .suppressed:
+            if sharedClockEpochCleanupPendingPair == blockedPair {
+                sharedClockEpochCleanupPendingPair = nil
+            }
+        }
+        return outcome
+    }
+
+    /// Returns true when a still-current cleanup fence consumed this tick. The
+    /// lease release is listener-fenced: an external selector choice
+    /// terminalizes ownership and is never restored over.
+    private func redriveSharedClockEpochCleanupIfNeeded() -> Bool {
+        guard let blockedPair =
+                sharedClockEpochCleanupPendingPair else {
+            return false
+        }
+        guard sharedClockBlockedPeerPair == blockedPair,
+              blockedPair.peerGeneration == peerGeneration else {
+            sharedClockEpochCleanupPendingPair = nil
+            return false
+        }
+        if let snapshot =
+                blackHoleDeviceAvailabilityMonitor.currentSnapshot(),
+           !blockedPair.matches(
+                peerGeneration: peerGeneration,
+                snapshot: snapshot
+           ) {
+            sharedClockEpochCleanupPendingPair = nil
+            return false
+        }
+
+        _ = revokeWorldwideMicrophoneForSharedClockFailure(
+            blockedPair: blockedPair
+        )
+        return true
+    }
+
+    private func cancelSharedClockEpochRecovery(
+        resetPolicy: Bool,
+        clearCompatibilityBlock: Bool
+    ) {
+        sharedClockEpochRecoveryTask?.cancel()
+        sharedClockEpochRecoveryTask = nil
+        sharedClockEpochRecoveryKey = nil
+        sharedClockEpochRecoveryReadmissionTaskGeneration = nil
+        _ = advanceSharedClockEpochRecoveryTaskGeneration()
+        if resetPolicy {
+            sharedClockEpochRecoveryPolicy.reset()
+        }
+        if clearCompatibilityBlock {
+            sharedClockBlockedPeerPair = nil
+        }
+        if resetPolicy || clearCompatibilityBlock {
+            sharedClockEpochCleanupPendingPair = nil
+        }
     }
 
     private func iPhoneMicrophoneFormatDidFail(
@@ -2964,10 +3663,29 @@ actor WorldwideScreenService {
         iPhoneMicrophoneForwarding.snapshot()
     }
 
-    private func authorizeIPhoneMicrophoneForwardingIfPossible()
+    private func authorizeIPhoneMicrophoneForwardingIfPossible(
+        sharedClockRecoveryTaskGeneration: UInt64? = nil
+    )
         async {
+        if let activeRecoveryTaskGeneration =
+                sharedClockEpochRecoveryReadmissionTaskGeneration {
+            guard sharedClockRecoveryTaskGeneration
+                    == activeRecoveryTaskGeneration else {
+                return
+            }
+        } else if sharedClockRecoveryTaskGeneration != nil {
+            return
+        }
         guard transportAllowsCapture,
-              let peer else {
+              let peer,
+              safeOutputInvariantAuthorization != nil,
+              blackHoleEndpointPairAuthorization != nil,
+              blackHoleDefaultInputAuthorization != nil,
+              let authorizationGate =
+                blackHoleMicrophoneOutputAuthorizationGate,
+              authorizationGate.isOpen,
+              !sharedClockBlocksCurrentPeerAndPair(),
+              !formatUnsafeBlocksCurrentPeerAndPair() else {
             return
         }
         await iPhoneMicrophoneForwarding.authorizeTransport(
@@ -3438,16 +4156,60 @@ actor WorldwideScreenService {
                   transportAllowsCapture else {
                 throw WorldwideScreenServiceError.transportUnavailable
             }
+            let baseDimensions = ScreenVideoPixelDimensions(
+                width: format.width,
+                height: format.height
+            )
+            let encodingRecommendation =
+                screenVideoAdaptationPolicy.currentRecommendation
+            let senderUpdate: WebRTCScreenVideoEncodingUpdate?
+            do {
+                senderUpdate = try await peer.applyScreenVideoEncodingLimits(
+                    encodingRecommendation.webRTCLimits
+                )
+            } catch {
+                senderUpdate = nil
+                logger.error(
+                    "Worldwide screen video retained its native sender limits at startup: "
+                        + error.localizedDescription
+                )
+            }
+            guard self.peer === peer,
+                  captureSource === source,
+                  captureAuthorization === authorization,
+                  authorization.isValid,
+                  transportAllowsCapture else {
+                if let senderUpdate {
+                    do {
+                        _ = try await peer
+                            .rollbackScreenVideoEncodingUpdateIfCurrent(
+                                senderUpdate
+                            )
+                    } catch {
+                        logger.error(
+                            "Worldwide screen video startup rollback failed: "
+                                + error.localizedDescription
+                        )
+                    }
+                }
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
+            if senderUpdate != nil {
+                appliedScreenVideoRecommendation = encodingRecommendation
+            }
             captureDisplayID = format.displayID
             captureAuthoritativeDisplayBounds = format.authoritativeDisplayBounds
+            captureVideoBaseDimensions = baseDimensions
             remoteInputController.updateAuthoritativeDisplayBounds(
                 format.authoritativeDisplayBounds,
                 for: format.displayID
             )
             capturer.adaptOutput(
-                width: Int32(format.width),
-                height: Int32(format.height),
-                framesPerSecond: Int32(format.framesPerSecond)
+                width: Int32(baseDimensions.width),
+                height: Int32(baseDimensions.height),
+                framesPerSecond: Int32(
+                    encodingRecommendation.maximumFramesPerSecond
+                )
             )
             guard let forwardingAuthorization = sink.beginForwarding(
                 expectedFrameDimensions: ScreenVideoPixelDimensions(
@@ -3484,8 +4246,11 @@ actor WorldwideScreenService {
                 throw WorldwideScreenServiceError.transportUnavailable
             }
             logger.info(
-                "Worldwide screen capture is visible at " +
-                "\(format.width)x\(format.height)@\(format.framesPerSecond)"
+                "Worldwide screen capture is visible at "
+                    + "\(format.width)x\(format.height)@\(format.framesPerSecond) "
+                    + "encoderTier=\(String(describing: encodingRecommendation.tier)) "
+                    + "encoderFPS=\(encodingRecommendation.maximumFramesPerSecond) "
+                    + "encoderScale=\(String(format: "%.2f", encodingRecommendation.scaleResolutionDownBy))"
             )
             return forwardingAuthorization
         } catch {
@@ -3508,6 +4273,7 @@ actor WorldwideScreenService {
                     captureSink = nil
                     captureDisplayID = nil
                     captureAuthoritativeDisplayBounds = nil
+                    captureVideoBaseDimensions = nil
                 }
             } catch {
                 // Retain the exact source so session shutdown can retry its native stop before
@@ -3571,6 +4337,7 @@ actor WorldwideScreenService {
             captureSink = nil
             captureDisplayID = nil
             captureAuthoritativeDisplayBounds = nil
+            captureVideoBaseDimensions = nil
         }
     }
 
@@ -3586,6 +4353,7 @@ actor WorldwideScreenService {
         captureSink?.stopForwarding()
         captureSink = nil
         captureSource = nil
+        captureVideoBaseDimensions = nil
         logger.error("Worldwide screen capture stopped unexpectedly: \(message)")
         // The viewer's already-acknowledged Show cannot be contradicted by an unsolicited
         // Inactive ACK. Close the session so it cannot retain a frozen visible frame.
@@ -3654,6 +4422,7 @@ actor WorldwideScreenService {
             captureSource = nil
             captureSink = nil
             captureAuthorization = nil
+            captureVideoBaseDimensions = nil
 
             _ = try await startScreenCaptureWithDisplayModeRetries(
                 requiredDisplayID: replacementDisplayID,

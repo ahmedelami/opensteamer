@@ -46,6 +46,24 @@ typedef NS_ENUM(NSInteger, ASIOSHostedCallPlayoutOrigin) {
     ASIOSHostedCallPlayoutOriginStartupConnectedCall = 2,
 };
 
+/// Exact fail-closed outcome of one synchronous staged microphone request. This is deliberately
+/// separate from the broader lifecycle failure code: callers use it to distinguish one safe
+/// audio-recovery retry from call/privacy gates and terminal authorization failures.
+typedef NS_ENUM(NSInteger, ASIOSMicrophoneStageFailureReason) {
+    ASIOSMicrophoneStageFailureNone = 0,
+    ASIOSMicrophoneStageFailureDelegateUnavailable = 1,
+    ASIOSMicrophoneStageFailureDeviceNotInitialized = 2,
+    ASIOSMicrophoneStageFailurePlayoutNotReady = 3,
+    ASIOSMicrophoneStageFailureNativeRecoveryRequired = 4,
+    ASIOSMicrophoneStageFailureTopologyRebuildFailed = 5,
+    ASIOSMicrophoneStageFailureTopologyStillNotStaged = 6,
+    ASIOSMicrophoneStageFailureHostedCall = 7,
+    ASIOSMicrophoneStageFailureInterrupted = 8,
+    ASIOSMicrophoneStageFailureExplicitResumeRequired = 9,
+    ASIOSMicrophoneStageFailureAuthorizationInvalid = 10,
+    ASIOSMicrophoneStageFailureRecordingGenerationBindFailed = 11,
+};
+
 /// A lock-free snapshot of counters written by the RemoteIO render callback plus atomically
 /// mirrored device lifecycle state.
 typedef struct ASIOSStereoPlayoutDiagnostics {
@@ -127,6 +145,8 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
 
 @property(nonatomic, readonly, getter=isValid) BOOL valid;
 @property(nonatomic, readonly) uint64_t microphoneRecordingGeneration;
+@property(nonatomic, readonly)
+    ASIOSMicrophoneStageFailureReason microphoneStageFailureReason;
 
 - (void)revoke;
 
@@ -399,6 +419,16 @@ typedef NS_ENUM(NSInteger, ASIOSExpectedCategoryObservationTestScenario) {
 
 - (void)debugInstallMicrophoneAuthorizationForTesting:
     (ASIOSMicrophoneAuthorization *_Nullable)authorization;
+- (ASIOSMicrophoneStageFailureReason)
+    debugClassifyMicrophoneStageFailureForTestingWithWantsPlayout:
+        (BOOL)wantsPlayout
+                                                       interrupted:
+        (BOOL)interrupted
+                                            explicitResumeRequired:
+        (BOOL)explicitResumeRequired
+                                                  recoveryRequired:
+        (BOOL)recoveryRequired
+    NS_SWIFT_NAME(debugClassifyMicrophoneStageFailureForTesting(wantsPlayout:interrupted:explicitResumeRequired:recoveryRequired:));
 - (BOOL)setMicrophoneAuthorizationForTesting:
     (ASIOSMicrophoneAuthorization *_Nullable)authorization
     NS_SWIFT_NAME(setMicrophoneAuthorizationForTesting(_:));

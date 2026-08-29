@@ -11,6 +11,52 @@ public enum WebRTCVideoRotation: Int, Sendable {
     case twoSeventy = 270
 }
 
+/// Encoder-facing ceilings for the single host screen-video RTP encoding.
+///
+/// Resolution is scaled proportionally at the sender so the complete captured surface remains
+/// visible. The ScreenCaptureKit source dimensions therefore stay authoritative for remote input.
+public struct WebRTCScreenVideoEncodingLimits: Equatable, Sendable {
+    public let maximumBitrateBps: Int
+    public let maximumFramesPerSecond: Int
+    public let scaleResolutionDownBy: Double
+
+    public init(
+        maximumBitrateBps: Int,
+        maximumFramesPerSecond: Int,
+        scaleResolutionDownBy: Double
+    ) {
+        self.maximumBitrateBps = maximumBitrateBps
+        self.maximumFramesPerSecond = maximumFramesPerSecond
+        self.scaleResolutionDownBy = scaleResolutionDownBy
+    }
+}
+
+/// Opaque proof for reverting one sender update only while it remains the newest mutation.
+public struct WebRTCScreenVideoEncodingUpdate: Sendable {
+    let generation: UInt64
+    let previousMaximumBitrateBps: Int?
+    let previousMinimumBitrateBps: Int?
+    let previousMaximumFramesPerSecond: Int?
+    let previousScaleResolutionDownBy: Double?
+    let appliedLimits: WebRTCScreenVideoEncodingLimits
+
+    init(
+        generation: UInt64,
+        previousMaximumBitrateBps: Int?,
+        previousMinimumBitrateBps: Int?,
+        previousMaximumFramesPerSecond: Int?,
+        previousScaleResolutionDownBy: Double?,
+        appliedLimits: WebRTCScreenVideoEncodingLimits
+    ) {
+        self.generation = generation
+        self.previousMaximumBitrateBps = previousMaximumBitrateBps
+        self.previousMinimumBitrateBps = previousMinimumBitrateBps
+        self.previousMaximumFramesPerSecond = previousMaximumFramesPerSecond
+        self.previousScaleResolutionDownBy = previousScaleResolutionDownBy
+        self.appliedLimits = appliedLimits
+    }
+}
+
 /// A sendable lifetime wrapper around LiveKit's thread-safe Objective-C video track.
 ///
 /// LiveKit's track is thread-safe but has no Swift concurrency annotations.

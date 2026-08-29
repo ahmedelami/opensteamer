@@ -65,6 +65,43 @@ public enum BlackHoleDefaultInputLeaseReleaseResult:
     case externallySuperseded
 }
 
+/// Listener-bound proof that one exact lease restored its captured baseline
+/// without relinquishing the selector listener. The same proof must be
+/// consumed to reselect the product input after a verified idle clock gap.
+public struct BlackHoleDefaultInputLeaseParkingProof:
+    Equatable,
+    Sendable
+{
+    public let leaseGeneration: UInt64
+    public let listenerRegistrationID: UUID
+    public let acceptedListenerSequence: UInt64
+    public let parkingEndpoint: BlackHoleDeviceEndpointIdentity
+    public let targetEndpoint: BlackHoleDeviceEndpointIdentity
+
+    public init(
+        leaseGeneration: UInt64,
+        listenerRegistrationID: UUID,
+        acceptedListenerSequence: UInt64,
+        parkingEndpoint: BlackHoleDeviceEndpointIdentity,
+        targetEndpoint: BlackHoleDeviceEndpointIdentity
+    ) {
+        self.leaseGeneration = leaseGeneration
+        self.listenerRegistrationID = listenerRegistrationID
+        self.acceptedListenerSequence = acceptedListenerSequence
+        self.parkingEndpoint = parkingEndpoint
+        self.targetEndpoint = targetEndpoint
+    }
+}
+
+public enum BlackHoleDefaultInputLeaseParkingResult:
+    Equatable,
+    Sendable
+{
+    case parked(BlackHoleDefaultInputLeaseParkingProof)
+    case retryableFailure
+    case terminalFailure
+}
+
 /// One raw notification from the exact default-input selector listener owned by
 /// a lease generation. The callback publishes this event synchronously before
 /// it queues any lease reconciliation work.
@@ -232,6 +269,8 @@ public final class BlackHoleDefaultInputLease:
         var ownsSelection: Bool
         var acceptedSignalSequence: UInt64
         var targetWasRemoved: Bool
+        var clockEpochParkingProof:
+            BlackHoleDefaultInputLeaseParkingProof?
     }
 
     private struct RetryBaseline {
@@ -735,6 +774,7 @@ public final class BlackHoleDefaultInputLease:
                   activeLease.generation == generation,
                   activeLease.targetUID == targetEndpoint.deviceUID,
                   activeLease.targetDeviceID == targetEndpoint.deviceID,
+                  activeLease.clockEpochParkingProof == nil,
                   !activeLease.targetWasRemoved else {
                 return nil
             }
@@ -807,6 +847,45 @@ public final class BlackHoleDefaultInputLease:
     ) -> BlackHoleDefaultInputLeaseReleaseResult {
         onOperationQueue {
             releaseLocked(expectedGeneration: generation)
+        }
+    }
+
+    /// Restores the exact captured baseline while retaining the same default-
+    /// input listener. This closes the release/reacquire gap in which an
+    /// external selector choice could otherwise be mistaken for our baseline.
+    public func parkForClockEpochRecovery(
+        generation: UInt64,
+        targetEndpoint: BlackHoleDeviceEndpointIdentity
+    ) -> BlackHoleDefaultInputLeaseParkingResult {
+        onOperationQueue {
+            parkForClockEpochRecoveryLocked(
+                generation: generation,
+                targetEndpoint: targetEndpoint
+            )
+        }
+    }
+
+    /// Re-proves the parked endpoint under the retained listener. Any external
+    /// change, including an away-and-back ABA, invalidates this proof.
+    public func clockEpochParkingProofIsCurrent(
+        _ proof: BlackHoleDefaultInputLeaseParkingProof
+    ) -> Bool {
+        onOperationQueue {
+            clockEpochParkingProofIsCurrentLocked(proof)
+        }
+    }
+
+    /// Reselects the exact product endpoint under the listener retained by
+    /// `parkForClockEpochRecovery`. No fresh baseline is sampled or adopted.
+    public func reacquisitionResult(
+        parkingProof: BlackHoleDefaultInputLeaseParkingProof,
+        targetEndpoint: BlackHoleDeviceEndpointIdentity
+    ) -> BlackHoleDefaultInputLeaseAcquisitionResult {
+        onOperationQueue {
+            reacquireAfterClockEpochRecoveryLocked(
+                parkingProof: parkingProof,
+                targetEndpoint: targetEndpoint
+            )
         }
     }
 
@@ -1134,7 +1213,8 @@ public final class BlackHoleDefaultInputLease:
                 restoreUID: nil,
                 ownsSelection: false,
                 acceptedSignalSequence: 0,
-                targetWasRemoved: false
+                targetWasRemoved: false,
+                clockEpochParkingProof: nil
             )
             clearRetryBaseline(for: generation)
             return .acquired
@@ -1149,7 +1229,8 @@ public final class BlackHoleDefaultInputLease:
             restoreUID: previousUID,
             ownsSelection: true,
             acceptedSignalSequence: 0,
-            targetWasRemoved: false
+            targetWasRemoved: false,
+            clockEpochParkingProof: nil
         )
 
         switch writeAndProve(
@@ -1245,6 +1326,193 @@ public final class BlackHoleDefaultInputLease:
                  .attemptedButUnproved(_):
                 markTerminal(generation)
             }
+            return .terminalFailure
+        }
+    }
+
+    private func parkForClockEpochRecoveryLocked(
+        generation: UInt64,
+        targetEndpoint: BlackHoleDeviceEndpointIdentity
+    ) -> BlackHoleDefaultInputLeaseParkingResult {
+        guard generation > 0,
+              var activeLease,
+              activeLease.generation == generation,
+              activeLease.targetUID == targetEndpoint.deviceUID,
+              activeLease.targetDeviceID == targetEndpoint.deviceID,
+              activeLease.clockEpochParkingProof == nil,
+              !activeLease.targetWasRemoved,
+              activeLease.ownsSelection,
+              let restoreUID = activeLease.restoreUID,
+              restoreUID != activeLease.targetUID else {
+            return .terminalFailure
+        }
+
+        let parkingDeviceID: AudioDeviceID
+        do {
+            parkingDeviceID = try operations.resolveDeviceID(
+                uid: restoreUID
+            )
+        } catch {
+            return .retryableFailure
+        }
+        guard parkingDeviceID != kAudioObjectUnknown else {
+            return .terminalFailure
+        }
+
+        switch writeAndProve(
+            deviceID: parkingDeviceID,
+            expectedCurrentUID: activeLease.targetUID,
+            expectedUID: restoreUID,
+            expectedReadbackDeviceID: parkingDeviceID,
+            expectedSignalSequence:
+                activeLease.acceptedSignalSequence,
+            registration: activeLease.registration
+        ) {
+        case .proved(let signalSequence):
+            let proof = BlackHoleDefaultInputLeaseParkingProof(
+                leaseGeneration: generation,
+                listenerRegistrationID:
+                    activeLease.registration.id,
+                acceptedListenerSequence: signalSequence,
+                parkingEndpoint: BlackHoleDeviceEndpointIdentity(
+                    deviceID: parkingDeviceID,
+                    deviceUID: restoreUID
+                ),
+                targetEndpoint: targetEndpoint
+            )
+            activeLease.acceptedSignalSequence = signalSequence
+            activeLease.clockEpochParkingProof = proof
+            self.activeLease = activeLease
+            return .parked(proof)
+
+        case .failedWithoutMutation,
+             .prewriteReadFailed:
+            return .retryableFailure
+
+        case .prewriteFenceFailed,
+             .prewriteInputChanged,
+             .contentionDetected:
+            terminalize(
+                activeLease,
+                signalSequence:
+                    activeLease.registration.signal.snapshot()
+            )
+            return .terminalFailure
+
+        case .attemptedButUnproved(let signalSequence):
+            activeLease.acceptedSignalSequence = signalSequence
+            self.activeLease = activeLease
+            _ = releaseLocked(expectedGeneration: generation)
+            return .terminalFailure
+        }
+    }
+
+    private func clockEpochParkingProofIsCurrentLocked(
+        _ proof: BlackHoleDefaultInputLeaseParkingProof
+    ) -> Bool {
+        guard let activeLease,
+              activeLease.generation == proof.leaseGeneration,
+              activeLease.registration.id
+                == proof.listenerRegistrationID,
+              activeLease.clockEpochParkingProof == proof,
+              activeLease.acceptedSignalSequence
+                == proof.acceptedListenerSequence else {
+            return false
+        }
+
+        switch currentInputFenceResult(
+            expectedUID: proof.parkingEndpoint.deviceUID,
+            expectedDeviceID: proof.parkingEndpoint.deviceID,
+            expectedSignalSequence:
+                proof.acceptedListenerSequence,
+            registration: activeLease.registration
+        ) {
+        case .matched:
+            return true
+        case .unreadable:
+            return false
+        case .changed:
+            terminalize(
+                activeLease,
+                signalSequence:
+                    activeLease.registration.signal.snapshot()
+            )
+            return false
+        }
+    }
+
+    private func reacquireAfterClockEpochRecoveryLocked(
+        parkingProof: BlackHoleDefaultInputLeaseParkingProof,
+        targetEndpoint: BlackHoleDeviceEndpointIdentity
+    ) -> BlackHoleDefaultInputLeaseAcquisitionResult {
+        guard var activeLease,
+              activeLease.generation
+                == parkingProof.leaseGeneration,
+              activeLease.registration.id
+                == parkingProof.listenerRegistrationID,
+              activeLease.clockEpochParkingProof == parkingProof,
+              activeLease.acceptedSignalSequence
+                == parkingProof.acceptedListenerSequence,
+              activeLease.targetUID == targetEndpoint.deviceUID,
+              activeLease.targetDeviceID == targetEndpoint.deviceID,
+              parkingProof.targetEndpoint == targetEndpoint else {
+            return .terminalFailure
+        }
+
+        let currentTargetDeviceID: AudioDeviceID
+        do {
+            currentTargetDeviceID = try operations.resolveDeviceID(
+                uid: targetEndpoint.deviceUID
+            )
+        } catch {
+            return .retryableFailure
+        }
+        guard currentTargetDeviceID == targetEndpoint.deviceID else {
+            terminalize(
+                activeLease,
+                signalSequence:
+                    activeLease.registration.signal.snapshot()
+            )
+            return .terminalFailure
+        }
+
+        switch writeAndProve(
+            deviceID: targetEndpoint.deviceID,
+            expectedCurrentUID:
+                parkingProof.parkingEndpoint.deviceUID,
+            expectedUID: targetEndpoint.deviceUID,
+            expectedReadbackDeviceID: targetEndpoint.deviceID,
+            expectedSignalSequence:
+                parkingProof.acceptedListenerSequence,
+            registration: activeLease.registration
+        ) {
+        case .proved(let signalSequence):
+            activeLease.acceptedSignalSequence = signalSequence
+            activeLease.clockEpochParkingProof = nil
+            self.activeLease = activeLease
+            return .acquired
+
+        case .failedWithoutMutation,
+             .prewriteReadFailed:
+            return .retryableFailure
+
+        case .prewriteFenceFailed,
+             .prewriteInputChanged,
+             .contentionDetected:
+            terminalize(
+                activeLease,
+                signalSequence:
+                    activeLease.registration.signal.snapshot()
+            )
+            return .terminalFailure
+
+        case .attemptedButUnproved(let signalSequence):
+            activeLease.acceptedSignalSequence = signalSequence
+            self.activeLease = activeLease
+            _ = releaseLocked(
+                expectedGeneration:
+                    parkingProof.leaseGeneration
+            )
             return .terminalFailure
         }
     }

@@ -10,6 +10,62 @@ import XCTest
 
 private final class SenderStatisticsIdentity {}
 
+private final class DecodedVideoDimensionProbe:
+    NSObject,
+    LKRTCVideoRenderer,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var expectedDimensions: (width: Int32, height: Int32)?
+    private var expectation: XCTestExpectation?
+
+    func expect(width: Int32, height: Int32) -> XCTestExpectation {
+        let expectation = XCTestExpectation(
+            description: "decoded video reached \(width)x\(height)"
+        )
+        lock.withLock {
+            expectedDimensions = (width, height)
+            self.expectation = expectation
+        }
+        return expectation
+    }
+
+    func setSize(_: CGSize) {}
+
+    func renderFrame(_ frame: LKRTCVideoFrame?) {
+        guard let frame else { return }
+        let expectation = lock.withLock { () -> XCTestExpectation? in
+            guard let expectedDimensions,
+                  frame.width == expectedDimensions.width,
+                  frame.height == expectedDimensions.height else {
+                return nil
+            }
+            let expectation = self.expectation
+            self.expectation = nil
+            return expectation
+        }
+        expectation?.fulfill()
+    }
+}
+
+private final class BoundedCallbackProbe<Value: Sendable>:
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var callback: (@Sendable (Value) -> Void)?
+
+    func install(_ callback: @escaping @Sendable (Value) -> Void) {
+        lock.withLock {
+            self.callback = callback
+        }
+    }
+
+    func resolve(_ value: Value) {
+        let callback = lock.withLock { self.callback }
+        callback?(value)
+    }
+}
+
 private final class SemanticNativeWrapper: NSObject {
     let stableIdentity: String
 
@@ -181,6 +237,181 @@ private func sampleIPhoneMicrophoneSenderStatistics(
 /// Exercises two real in-process native peers. Milestones, exact signaling counts, decoded PCM
 /// waveform evidence, media frames, and authorization revocation form the end-to-end oracles.
 final class WebRTCPeerLoopbackTests: XCTestCase {
+    func testScreenVideoEncodingLimitsApplyAtomicallyAndFailClosed() async throws {
+        let host = try WebRTCPeer(
+            configuration: WebRTCTransportConfiguration(
+                role: .host,
+                iceServers: [],
+                maximumVideoBitrate: 12_000_000
+            )
+        )
+        defer {
+            Task { await host.close(reason: .normal) }
+        }
+
+        let profiles = [
+            WebRTCScreenVideoEncodingLimits(
+                maximumBitrateBps: 9_344_000,
+                maximumFramesPerSecond: 60,
+                scaleResolutionDownBy: 1
+            ),
+            WebRTCScreenVideoEncodingLimits(
+                maximumBitrateBps: 6_260_480,
+                maximumFramesPerSecond: 45,
+                scaleResolutionDownBy: 1.25
+            ),
+            WebRTCScreenVideoEncodingLimits(
+                maximumBitrateBps: 3_924_480,
+                maximumFramesPerSecond: 30,
+                scaleResolutionDownBy: 1.5
+            ),
+            WebRTCScreenVideoEncodingLimits(
+                maximumBitrateBps: 1_962_240,
+                maximumFramesPerSecond: 20,
+                scaleResolutionDownBy: 2
+            ),
+            WebRTCScreenVideoEncodingLimits(
+                maximumBitrateBps: 747_520,
+                maximumFramesPerSecond: 10,
+                scaleResolutionDownBy: 3
+            ),
+            WebRTCScreenVideoEncodingLimits(
+                maximumBitrateBps: 280_320,
+                maximumFramesPerSecond: 5,
+                scaleResolutionDownBy: 4
+            ),
+            WebRTCScreenVideoEncodingLimits(
+                maximumBitrateBps: 93_440,
+                maximumFramesPerSecond: 2,
+                scaleResolutionDownBy: 8
+            ),
+            WebRTCScreenVideoEncodingLimits(
+                maximumBitrateBps: 32_000,
+                maximumFramesPerSecond: 1,
+                scaleResolutionDownBy: 12
+            ),
+        ]
+        var firstUpdate: WebRTCScreenVideoEncodingUpdate?
+        for profile in profiles {
+            let update = try await host.applyScreenVideoEncodingLimits(profile)
+            firstUpdate = firstUpdate ?? update
+            let applied = await host.screenVideoEncodingLimitsForTesting()
+            XCTAssertEqual(applied, profile)
+        }
+
+        let staleUpdate = try XCTUnwrap(firstUpdate)
+        let staleRollback = try await host
+            .rollbackScreenVideoEncodingUpdateIfCurrent(
+                staleUpdate
+            )
+        XCTAssertFalse(staleRollback)
+
+        let priorLimits = try XCTUnwrap(profiles.last)
+        let reversibleUpdate = try await host.applyScreenVideoEncodingLimits(
+            profiles[5]
+        )
+        let currentRollback = try await host
+            .rollbackScreenVideoEncodingUpdateIfCurrent(
+                reversibleUpdate
+            )
+        XCTAssertTrue(currentRollback)
+        let limitsAfterRollback =
+            await host.screenVideoEncodingLimitsForTesting()
+        XCTAssertEqual(limitsAfterRollback, priorLimits)
+
+        do {
+            _ = try await host.applyScreenVideoEncodingLimits(
+                WebRTCScreenVideoEncodingLimits(
+                    maximumBitrateBps: 12_000_001,
+                    maximumFramesPerSecond: 5,
+                    scaleResolutionDownBy: 4
+                )
+            )
+            XCTFail("A sender ceiling above the configured cap must fail closed.")
+        } catch let error as WebRTCTransportError {
+            guard case .nativeFailure = error else {
+                XCTFail("Unexpected error: \(error)")
+                return
+            }
+        }
+        let limitsAfterRejection =
+            await host.screenVideoEncodingLimitsForTesting()
+        XCTAssertEqual(
+            limitsAfterRejection,
+            priorLimits,
+            "Rejected limits must not mutate the last native sender profile."
+        )
+    }
+
+    func testBoundedCallbackReturnsNilWhenNativeCallbackNeverArrives()
+        async {
+        let result: Int? = await WebRTCBoundedCallback.value(
+            timeout: .milliseconds(5),
+            register: { _ in }
+        )
+        XCTAssertNil(result)
+    }
+
+    func testBoundedCallbackResumesExactlyOnceAcrossBothRaceOrders()
+        async throws {
+        let callbackFirst: Int? = await WebRTCBoundedCallback.value(
+            timeout: .milliseconds(5),
+            register: { resolve in resolve(41) }
+        )
+        XCTAssertEqual(callbackFirst, 41)
+        try await Task.sleep(for: .milliseconds(10))
+
+        let lateCallback = BoundedCallbackProbe<Int>()
+        let timeoutFirst: Int? = await WebRTCBoundedCallback.value(
+            timeout: .milliseconds(5),
+            register: { resolve in lateCallback.install(resolve) }
+        )
+        XCTAssertNil(timeoutFirst)
+        lateCallback.resolve(42)
+        try await Task.sleep(for: .milliseconds(10))
+    }
+
+    func testIPhoneMicrophoneStageRecoveryClassificationIsFailClosed() {
+        let retryable: [WebRTCIOSMicrophoneStageFailureReason] = [
+            .delegateUnavailable,
+            .deviceNotInitialized,
+            .playoutNotReady,
+            .nativeRecoveryRequired,
+            .topologyRebuildFailed,
+            .topologyStillNotStaged,
+        ]
+        let lifecycleControlled: [WebRTCIOSMicrophoneStageFailureReason] = [
+            .hostedCall,
+            .interrupted,
+            .explicitResumeRequired,
+        ]
+        let terminal: [WebRTCIOSMicrophoneStageFailureReason] = [
+            .authorizationInvalid,
+            .recordingGenerationBindFailed,
+            .deviceUnavailable,
+            .unknown,
+        ]
+
+        XCTAssertTrue(
+            retryable.allSatisfy(\.permitsAutomaticAudioRecovery)
+        )
+        XCTAssertTrue(
+            retryable.allSatisfy { !$0.isLifecycleControlled }
+        )
+        XCTAssertTrue(
+            lifecycleControlled.allSatisfy {
+                !$0.permitsAutomaticAudioRecovery
+                    && $0.isLifecycleControlled
+            }
+        )
+        XCTAssertTrue(
+            terminal.allSatisfy {
+                !$0.permitsAutomaticAudioRecovery
+                    && !$0.isLifecycleControlled
+            }
+        )
+    }
+
     func testIPhoneMicrophoneTrackCreationPolicyMatchesPlatformAndConfiguration() {
         #if os(iOS)
         XCTAssertTrue(
@@ -2412,16 +2643,53 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             )
         ])
 
-        let pixelBuffer = try makePixelBuffer(width: 64, height: 64)
         guard let capturer = host.externalVideoCapturer else {
             XCTFail("The host did not expose its external screen capturer.")
             await host.close(reason: .protocolError)
             return
         }
-        capturer.capture(
-            pixelBuffer: pixelBuffer,
-            timestampNanoseconds: Int64(clamping: DispatchTime.now().uptimeNanoseconds)
-        )
+        let receivedRemoteVideoTrack = await recorder.remoteVideoTrack()
+        let remoteVideoTrack = try XCTUnwrap(receivedRemoteVideoTrack)
+        let decodedDimensions = DecodedVideoDimensionProbe()
+        await MainActor.run {
+            remoteVideoTrack.addRenderer(decodedDimensions)
+        }
+        defer {
+            Task { @MainActor in
+                remoteVideoTrack.removeRenderer(decodedDimensions)
+            }
+        }
+        capturer.adaptOutput(width: 480, height: 960, framesPerSecond: 60)
+        let pixelBuffer = try makePixelBuffer(width: 480, height: 960)
+        let scaleProfiles: [(scale: Double, width: Int32, height: Int32)] = [
+            (1, 480, 960),
+            (1.5, 320, 640),
+            (4, 120, 240),
+            (12, 40, 80),
+        ]
+        for profile in scaleProfiles {
+            _ = try await host.applyScreenVideoEncodingLimits(
+                WebRTCScreenVideoEncodingLimits(
+                    maximumBitrateBps: 9_000_000,
+                    maximumFramesPerSecond: 60,
+                    scaleResolutionDownBy: profile.scale
+                )
+            )
+            let decodedFrame = decodedDimensions.expect(
+                width: profile.width,
+                height: profile.height
+            )
+            for _ in 0..<12 {
+                capturer.capture(
+                    pixelBuffer: pixelBuffer,
+                    timestampNanoseconds: Int64(
+                        clamping: DispatchTime.now().uptimeNanoseconds
+                    )
+                )
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            await fulfillment(of: [decodedFrame], timeout: 3)
+        }
 
         let hideID = try await viewer.setScreenVisible(false)
         do {
@@ -3146,6 +3414,10 @@ private actor LoopbackRecorder {
 
     func remoteAudioTrack() -> WebRTCRemoteAudioTrack? {
         retainedRemoteAudioTrack
+    }
+
+    func remoteVideoTrack() -> WebRTCRemoteVideoTrack? {
+        retainedRemoteTrack
     }
 
     func macHostedCallChallenges() -> [WebRTCMacHostedCallChallenge] {
