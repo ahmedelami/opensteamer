@@ -81,6 +81,10 @@ enum WorldwideScreenVideoAutomaticSuspensionDecision: Equatable, Sendable {
 /// Converts transport capacity into a stable, single-layer screen-video encoding ceiling.
 struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     static let requiredHealthyUpgradeSampleCount = 8
+    /// When native candidate-pair bandwidth is unavailable, use a slower additive probe backed by
+    /// both a stable RTT baseline and advancing low-delay outbound packets. This prevents an
+    /// optional stats field from pinning a healthy session at its conservative startup tier.
+    static let requiredUnavailableBandwidthUpgradeSampleCount = 4
     static let requiredSuspensionPressureSampleCount = 3
     /// A paused sender cannot produce a useful outbound bitrate estimate. Even when the last
     /// estimate remains positive-but-low, a long latency-stable window permits one bounded probe;
@@ -93,6 +97,10 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     private static let referenceMaximumVideoBitrateBps = 9_344_000
     private static let downgradeHeadroomMultiplier = 1.25
     private static let upgradeMarginMultiplier = 1.35
+    /// The native controller is capped at the same configured total. Treat a small estimator gap
+    /// at that ceiling as cap saturation rather than making the final tier require an exact
+    /// floating-point 12 Mbps sample forever.
+    private static let configuredCapacitySaturationRatio = 0.95
     private static let roundTripTimeRelativeInflationMultiplier = 1.5
     private static let roundTripTimeAbsoluteInflationSeconds = 0.050
     private static let maximumRoundTripTimeBaselineFallPerSample = 0.010
@@ -239,37 +247,82 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         let packetQueueIsInflated = averagePacketSendDelaySeconds.map {
             $0 > Self.maximumAveragePacketSendDelaySeconds
         } ?? false
+        let packetQueueAllowsUpgrade = averagePacketSendDelaySeconds.map {
+            $0 <= Self.maximumAveragePacketSendDelaySeconds
+        } ?? false
         let latencyPressure = roundTripTimeIsInflated || packetQueueIsInflated
         lastSampleHasLatencyPressure = latencyPressure
 
         guard let availableOutgoingBitrateBps,
               availableOutgoingBitrateBps.isFinite,
               availableOutgoingBitrateBps > 0 else {
+            if !bandwidthEstimateIsUnavailable {
+                healthyUpgradeSampleCount = 0
+            }
             bandwidthEstimateIsUnavailable = true
-            healthyUpgradeSampleCount = 0
             if unavailableBandwidthSampleCount < Int.max {
                 unavailableBandwidthSampleCount += 1
             }
             // Missing BWE is telemetry, not proof of congestion. A stable RTT and send queue hold
-            // the current tier indefinitely; only positive latency pressure can lower quality.
+            // the current tier; positive latency pressure lowers quality immediately.
             lastSampleHasPositiveSuspensionPressure = latencyPressure
-            guard latencyPressure,
-                  let lowerTier = currentTier.nextLowerQuality else {
+            if latencyPressure {
+                healthyUpgradeSampleCount = 0
+                guard let lowerTier = currentTier.nextLowerQuality else {
+                    return isCaptureActive && didResetForNewPeer
+                        ? currentRecommendation
+                        : nil
+                }
+                currentTier = lowerTier
+                return isCaptureActive ? currentRecommendation : nil
+            }
+
+            // Candidate-pair availableOutgoingBitrate is optional. Once both independent latency
+            // signals are healthy, cautiously probe one tier at a time instead of freezing the
+            // startup scale forever. Each probe must earn a fresh complete window.
+            guard isCaptureActive,
+                  let upgradeTier = currentTier.nextHigherQuality,
+                  requiredOutgoingBitrateBps(for: upgradeTier)
+                    <= Double(configuredTotalRTPBitrateBps),
+                  packetQueueAllowsUpgrade,
+                  roundTripTimeAllowsUpgrade(currentRoundTripTimeSeconds) else {
+                healthyUpgradeSampleCount = 0
                 return isCaptureActive && didResetForNewPeer
                     ? currentRecommendation
                     : nil
             }
-            currentTier = lowerTier
-            return isCaptureActive ? currentRecommendation : nil
+            healthyUpgradeSampleCount += 1
+            guard healthyUpgradeSampleCount
+                    >= Self.requiredUnavailableBandwidthUpgradeSampleCount else {
+                return isCaptureActive && didResetForNewPeer
+                    ? currentRecommendation
+                    : nil
+            }
+            currentTier = upgradeTier
+            healthyUpgradeSampleCount = 0
+            return currentRecommendation
+        }
+        if bandwidthEstimateIsUnavailable {
+            healthyUpgradeSampleCount = 0
         }
         bandwidthEstimateIsUnavailable = false
         unavailableBandwidthSampleCount = 0
+        let effectiveAvailableOutgoingBitrateBps: Double
+        if availableOutgoingBitrateBps
+            >= Double(configuredTotalRTPBitrateBps)
+                * Self.configuredCapacitySaturationRatio {
+            effectiveAvailableOutgoingBitrateBps = Double(
+                configuredTotalRTPBitrateBps
+            )
+        } else {
+            effectiveAvailableOutgoingBitrateBps = availableOutgoingBitrateBps
+        }
         lastSampleHasPositiveSuspensionPressure = latencyPressure
-            || availableOutgoingBitrateBps
+            || effectiveAvailableOutgoingBitrateBps
                 < requiredOutgoingBitrateBps(for: .audioPriority)
 
         var sustainableTier = sustainableTier(
-            for: availableOutgoingBitrateBps
+            for: effectiveAvailableOutgoingBitrateBps
         )
         if latencyPressure,
            let lowerTier = currentTier.nextLowerQuality,
@@ -282,29 +335,26 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             return isCaptureActive ? currentRecommendation : nil
         }
 
-        guard let upgradeTier = currentTier.nextHigherQuality else {
+        guard sustainableTier.rawValue < currentTier.rawValue,
+              let highestUpgradeTier = highestQualifiedUpgradeTier(
+                for: effectiveAvailableOutgoingBitrateBps
+              ) else {
             healthyUpgradeSampleCount = 0
             return isCaptureActive && didResetForNewPeer
                 ? currentRecommendation
                 : nil
         }
-        let requiredUpgradeBitrate = requiredOutgoingBitrateBps(
-            for: upgradeTier
-        )
-        guard requiredUpgradeBitrate
-                <= Double(configuredTotalRTPBitrateBps) else {
-            healthyUpgradeSampleCount = 0
-            return isCaptureActive && didResetForNewPeer
-                ? currentRecommendation
-                : nil
-        }
-        let upgradeThreshold = min(
-            Double(configuredTotalRTPBitrateBps),
-            requiredUpgradeBitrate * Self.upgradeMarginMultiplier
-        )
-        guard availableOutgoingBitrateBps >= upgradeThreshold,
-              !latencyPressure,
-              roundTripTimeAllowsUpgrade(currentRoundTripTimeSeconds) else {
+        // A paused sender cannot supply a fresh trustworthy capacity estimate. Preserve the
+        // historical one-tier recovery probe until exact receiver presentation reopens ordinary
+        // capture; only an active sender may jump directly to the proven target.
+        let upgradeTier = isCaptureActive
+            ? highestUpgradeTier
+            : (currentTier.nextHigherQuality ?? highestUpgradeTier)
+        guard !latencyPressure,
+              (
+                roundTripTimeAllowsUpgrade(currentRoundTripTimeSeconds)
+                    || packetQueueAllowsUpgrade
+              ) else {
             healthyUpgradeSampleCount = 0
             return isCaptureActive && didResetForNewPeer
                 ? currentRecommendation
@@ -318,6 +368,9 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
                 ? currentRecommendation
                 : nil
         }
+        // The estimate already proves this target with both downgrade headroom and its own
+        // upgrade margin. Select the highest independently qualified tier so crossing into the
+        // next tier's raw sustainable band can never make recovery worse.
         currentTier = upgradeTier
         healthyUpgradeSampleCount = 0
         return isCaptureActive ? currentRecommendation : nil
@@ -408,6 +461,23 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             return requiredBitrate <= Double(configuredTotalRTPBitrateBps)
                 && availableOutgoingBitrateBps >= requiredBitrate
         } ?? .audioPriority
+    }
+
+    private func highestQualifiedUpgradeTier(
+        for availableOutgoingBitrateBps: Double
+    ) -> WorldwideScreenVideoAdaptationTier? {
+        WorldwideScreenVideoAdaptationTier.allCases.first { tier in
+            guard tier.rawValue < currentTier.rawValue else { return false }
+            let requiredBitrate = requiredOutgoingBitrateBps(for: tier)
+            guard requiredBitrate <= Double(configuredTotalRTPBitrateBps) else {
+                return false
+            }
+            let upgradeThreshold = min(
+                Double(configuredTotalRTPBitrateBps),
+                requiredBitrate * Self.upgradeMarginMultiplier
+            )
+            return availableOutgoingBitrateBps >= upgradeThreshold
+        }
     }
 
     private func requiredOutgoingBitrateBps(
