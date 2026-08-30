@@ -369,11 +369,10 @@ extension WebRTCDelegateProxy: LKRTCPeerConnectionDelegate {
         _ peerConnection: LKRTCPeerConnection,
         didAdd stream: LKRTCMediaStream
     ) {
-        // Audio is always Unified Plan here. Only the receiver callback below carries the stable
-        // receiver ID, so legacy stream audio must not compete with or duplicate that event.
-        for track in stream.videoTracks {
-            emit(.remoteVideoTrack(WebRTCRemoteVideoTrack(track)))
-        }
+        // This peer is Unified Plan. Only the receiver callback below carries the stable receiver
+        // and SSRC evidence required by screen-resume proof, so the legacy stream callback must
+        // not compete with or duplicate either audio or video delivery.
+        _ = stream
     }
 
     func peerConnection(
@@ -447,7 +446,24 @@ extension WebRTCDelegateProxy: LKRTCPeerConnectionDelegate {
                 receiverID: rtpReceiver.receiverId as String
             )
         case let videoTrack as LKRTCVideoTrack:
-            emit(.remoteVideoTrack(WebRTCRemoteVideoTrack(videoTrack)))
+            let receiverID = rtpReceiver.receiverId as String
+            guard !receiverID.isEmpty else {
+                videoTrack.isEnabled = false
+                emit(
+                    .failure(
+                        "Rejected a remote video receiver without an identity."
+                    )
+                )
+                return
+            }
+            emit(
+                .remoteVideoTrack(
+                    WebRTCRemoteVideoTrack(
+                        videoTrack,
+                        receiver: rtpReceiver
+                    )
+                )
+            )
         default:
             break
         }

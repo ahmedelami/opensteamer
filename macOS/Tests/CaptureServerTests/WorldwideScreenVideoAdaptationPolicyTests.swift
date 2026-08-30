@@ -103,11 +103,11 @@ final class WorldwideScreenVideoAdaptationPolicyTests: XCTestCase {
         XCTAssertEqual(healthyUpdate(&policy)?.tier, .high)
     }
 
-    func testPersistentMissingOrInvalidBandwidthDescendsConservatively() {
+    func testPersistentMissingOrInvalidBandwidthHoldsWithoutLatencyPressure() {
         var policy = makePolicy()
         move(&policy, to: .balanced)
 
-        for _ in 0..<2 {
+        for _ in 0..<64 {
             XCTAssertNil(
                 policy.update(
                     peerGeneration: 1,
@@ -118,16 +118,8 @@ final class WorldwideScreenVideoAdaptationPolicyTests: XCTestCase {
             )
             XCTAssertEqual(policy.currentTier, .balanced)
         }
-        XCTAssertEqual(
-            policy.update(
-                peerGeneration: 1,
-                isCaptureActive: true,
-                availableOutgoingBitrateBps: nil,
-                currentRoundTripTimeSeconds: 0.050
-            )?.tier,
-            .constrained
-        )
-        XCTAssertEqual(policy.unavailableBandwidthSampleCount, 0)
+        XCTAssertEqual(policy.unavailableBandwidthSampleCount, 64)
+        XCTAssertTrue(policy.bandwidthEstimateIsUnavailable)
 
         for invalidBandwidth in [Double.nan, .infinity, 0] {
             _ = policy.update(
@@ -137,7 +129,7 @@ final class WorldwideScreenVideoAdaptationPolicyTests: XCTestCase {
                 currentRoundTripTimeSeconds: 0.050
             )
         }
-        XCTAssertEqual(policy.currentTier, .critical)
+        XCTAssertEqual(policy.currentTier, .balanced)
         XCTAssertEqual(policy.healthyUpgradeSampleCount, 0)
     }
 
@@ -183,7 +175,7 @@ final class WorldwideScreenVideoAdaptationPolicyTests: XCTestCase {
         XCTAssertEqual(policy.currentTier, .emergency)
     }
 
-    func testHiddenCaptureTracksWeakPathAndRampsWithoutApplyingSender() {
+    func testHiddenCaptureIgnoresVideoAbsentStatsAndRestoresInitialTier() {
         var policy = makePolicy()
         move(&policy, to: .constrained)
 
@@ -195,8 +187,9 @@ final class WorldwideScreenVideoAdaptationPolicyTests: XCTestCase {
                 currentRoundTripTimeSeconds: 0.050
             )
         )
-        XCTAssertEqual(policy.currentTier, .audioPriority)
+        XCTAssertEqual(policy.currentTier, .survival)
         XCTAssertEqual(policy.healthyUpgradeSampleCount, 0)
+        XCTAssertEqual(policy.unavailableBandwidthSampleCount, 0)
 
         for _ in 0..<8 {
             XCTAssertNil(
@@ -208,7 +201,7 @@ final class WorldwideScreenVideoAdaptationPolicyTests: XCTestCase {
                 )
             )
         }
-        XCTAssertEqual(policy.currentTier, .emergency)
+        XCTAssertEqual(policy.currentTier, .survival)
     }
 
     func testPeerGenerationResetAndSamePeerRetention() {
@@ -234,7 +227,7 @@ final class WorldwideScreenVideoAdaptationPolicyTests: XCTestCase {
             )
         )
         XCTAssertEqual(policy.peerGeneration, 3)
-        XCTAssertEqual(policy.currentTier, .emergency)
+        XCTAssertEqual(policy.currentTier, .survival)
         XCTAssertNil(policy.roundTripTimeBaselineSeconds)
 
         let activeReset = policy.update(
@@ -389,6 +382,198 @@ final class WorldwideScreenVideoAdaptationPolicyTests: XCTestCase {
 
         XCTAssertEqual(update?.tier, .high)
         XCTAssertEqual(policy.currentTier, .high)
+    }
+
+    func testInactiveMissingBandwidthNeverArmsAutomaticSuspension() {
+        var policy = makePolicy()
+
+        for _ in 0..<64 {
+            XCTAssertNil(
+                policy.update(
+                    peerGeneration: 1,
+                    isCaptureActive: false,
+                    availableOutgoingBitrateBps: nil,
+                    currentRoundTripTimeSeconds: 0.250
+                )
+            )
+            XCTAssertNil(
+                policy.automaticSuspensionDecision(
+                    isCaptureActive: false,
+                    isAutomaticallySuspended: false
+                )
+            )
+        }
+
+        XCTAssertEqual(policy.currentTier, .survival)
+        XCTAssertFalse(policy.bandwidthEstimateIsUnavailable)
+    }
+
+    func testLowValidBandwidthSuspendsOnlyAfterThreeActivePressureSamples() {
+        var policy = makePolicy()
+        move(&policy, to: .audioPriority)
+
+        for sample in 1...3 {
+            _ = policy.update(
+                peerGeneration: 1,
+                isCaptureActive: true,
+                availableOutgoingBitrateBps: 100_000,
+                currentRoundTripTimeSeconds: 0.050
+            )
+            let decision = policy.automaticSuspensionDecision(
+                isCaptureActive: true,
+                isAutomaticallySuspended: false
+            )
+            XCTAssertEqual(decision, sample == 3 ? .suspend : nil)
+        }
+    }
+
+    func testMissingBandwidthSuspendsOnlyWithActiveLatencyPressure() {
+        var policy = makePolicy()
+        move(&policy, to: .audioPriority, roundTripTime: 0.040)
+        for _ in 0..<3 {
+            _ = policy.update(
+                peerGeneration: 1,
+                isCaptureActive: true,
+                availableOutgoingBitrateBps: nil,
+                currentRoundTripTimeSeconds: 0.040
+            )
+        }
+        XCTAssertEqual(policy.roundTripTimeBaselineSeconds, 0.040)
+
+        for sample in 1...3 {
+            _ = policy.update(
+                peerGeneration: 1,
+                isCaptureActive: true,
+                availableOutgoingBitrateBps: nil,
+                currentRoundTripTimeSeconds: 0.200
+            )
+            let decision = policy.automaticSuspensionDecision(
+                isCaptureActive: true,
+                isAutomaticallySuspended: false
+            )
+            XCTAssertEqual(decision, sample == 3 ? .suspend : nil)
+        }
+    }
+
+    func testSuspendedMissingBandwidthNeedsLongStableWindowForOneResumeProbe() {
+        var policy = makePolicy()
+        move(&policy, to: .audioPriority)
+        let requiredSamples = WorldwideScreenVideoAdaptationPolicy
+            .requiredStableSuspensionResumeProbeSampleCount
+
+        for sample in 1...requiredSamples {
+            _ = policy.update(
+                peerGeneration: 1,
+                isCaptureActive: false,
+                isAutomaticallySuspended: true,
+                availableOutgoingBitrateBps: nil,
+                currentRoundTripTimeSeconds: 0.050
+            )
+            let decision = policy.automaticSuspensionDecision(
+                isCaptureActive: false,
+                isAutomaticallySuspended: true
+            )
+            XCTAssertEqual(
+                decision,
+                sample == requiredSamples ? .resume : nil
+            )
+        }
+    }
+
+    func testSuspendedPositiveLowBandwidthGetsPeriodicStableResumeProbeCooldown() {
+        var policy = makePolicy()
+        move(&policy, to: .audioPriority)
+        let requiredSamples = WorldwideScreenVideoAdaptationPolicy
+            .requiredStableSuspensionResumeProbeSampleCount
+
+        for cycle in 0..<2 {
+            for sample in 1...requiredSamples {
+                _ = policy.update(
+                    peerGeneration: 1,
+                    isCaptureActive: false,
+                    isAutomaticallySuspended: true,
+                    availableOutgoingBitrateBps: 100_000,
+                    currentRoundTripTimeSeconds: 0.050
+                )
+                let decision = policy.automaticSuspensionDecision(
+                    isCaptureActive: false,
+                    isAutomaticallySuspended: true
+                )
+                XCTAssertEqual(decision, sample == requiredSamples ? .resume : nil)
+            }
+            if cycle == 0 {
+                policy.automaticResumeAttemptFailed()
+                XCTAssertEqual(policy.currentTier, .audioPriority)
+                XCTAssertEqual(policy.stableSuspensionResumeProbeSampleCount, 0)
+            }
+        }
+    }
+
+    func testSuspendedStableHighRTTEventuallyGetsBoundedProbeAndFullCooldown() {
+        var policy = makePolicy()
+        move(&policy, to: .audioPriority, roundTripTime: 0.040)
+        for _ in 0..<3 {
+            _ = policy.update(
+                peerGeneration: 1,
+                isCaptureActive: true,
+                availableOutgoingBitrateBps: nil,
+                currentRoundTripTimeSeconds: 0.040
+            )
+        }
+        XCTAssertEqual(policy.roundTripTimeBaselineSeconds, 0.040)
+
+        for sample in 1...3 {
+            _ = policy.update(
+                peerGeneration: 1,
+                isCaptureActive: true,
+                availableOutgoingBitrateBps: nil,
+                currentRoundTripTimeSeconds: 0.200
+            )
+            XCTAssertEqual(
+                policy.automaticSuspensionDecision(
+                    isCaptureActive: true,
+                    isAutomaticallySuspended: false
+                ),
+                sample == 3 ? .suspend : nil
+            )
+        }
+
+        let requiredSamples = WorldwideScreenVideoAdaptationPolicy
+            .requiredMaximumSuspensionResumeProbeSampleCount
+        for sample in 1...requiredSamples {
+            _ = policy.update(
+                peerGeneration: 1,
+                isCaptureActive: false,
+                isAutomaticallySuspended: true,
+                availableOutgoingBitrateBps: nil,
+                currentRoundTripTimeSeconds: 0.200
+            )
+            XCTAssertEqual(
+                policy.automaticSuspensionDecision(
+                    isCaptureActive: false,
+                    isAutomaticallySuspended: true
+                ),
+                sample == requiredSamples ? .resume : nil
+            )
+        }
+
+        policy.automaticResumeAttemptFailed()
+        XCTAssertEqual(policy.maximumSuspensionResumeProbeSampleCount, 0)
+        for _ in 0..<(requiredSamples - 1) {
+            _ = policy.update(
+                peerGeneration: 1,
+                isCaptureActive: false,
+                isAutomaticallySuspended: true,
+                availableOutgoingBitrateBps: nil,
+                currentRoundTripTimeSeconds: 0.200
+            )
+            XCTAssertNil(
+                policy.automaticSuspensionDecision(
+                    isCaptureActive: false,
+                    isAutomaticallySuspended: true
+                )
+            )
+        }
     }
 
     func testMinimumSupportedTotalCapCannotSelectFullQuality() {

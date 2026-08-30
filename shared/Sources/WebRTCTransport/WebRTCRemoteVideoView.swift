@@ -9,6 +9,9 @@ import UIKit
 public struct WebRTCVideoRenderObservation: Equatable, Sendable {
     public let frameCount: UInt64
     public let timestampNanoseconds: Int64
+    /// RTP timestamp preserved by the native encoder/decoder path. Unlike `timestampNanoseconds`,
+    /// this value is in the same serial-number domain at both peers and can fence resume frames.
+    public let rtpTimestamp: UInt32
     /// Width of the accepted zero-rotation frame as presented.
     public let width: Int
     /// Height of the accepted zero-rotation frame as presented.
@@ -25,6 +28,7 @@ public struct WebRTCVideoRenderObservation: Equatable, Sendable {
     public init(
         frameCount: UInt64,
         timestampNanoseconds: Int64,
+        rtpTimestamp: UInt32 = 0,
         width: Int,
         height: Int,
         contentDigest: UInt64,
@@ -33,11 +37,109 @@ public struct WebRTCVideoRenderObservation: Equatable, Sendable {
     ) {
         self.frameCount = frameCount
         self.timestampNanoseconds = timestampNanoseconds
+        self.rtpTimestamp = rtpTimestamp
         self.width = width
         self.height = height
         self.contentDigest = contentDigest
         self.contentSampleCount = contentSampleCount
         self.contentChangeCount = contentChangeCount
+    }
+}
+
+/// Lightweight exact-frame evidence emitted only for RTP timestamps armed by the presentation
+/// owner. It bypasses the ordinary 250 ms telemetry throttle but still requires Metal drawable
+/// presentation; no decoded pixels or stable content fingerprint leave the renderer.
+public struct WebRTCVideoPresentationProofObservation: Equatable, Sendable {
+    public let frameSequence: UInt64
+    public let timestampNanoseconds: Int64
+    public let rtpTimestamp: UInt32
+    public let width: Int
+    public let height: Int
+
+    public init(
+        frameSequence: UInt64,
+        timestampNanoseconds: Int64,
+        rtpTimestamp: UInt32,
+        width: Int,
+        height: Int
+    ) {
+        self.frameSequence = frameSequence
+        self.timestampNanoseconds = timestampNanoseconds
+        self.rtpTimestamp = rtpTimestamp
+        self.width = width
+        self.height = height
+    }
+}
+
+/// Drawable-bound proof that the decoded frame carried one exact 128-bit in-band marker. The
+/// renderer retains only this nonce and presentation metadata; decoded pixels are never retained.
+public struct WebRTCVideoMarkerPresentationProofObservation: Equatable, Sendable {
+    public let marker: ScreenVideoInBandMarkerNonce
+    public let frameSequence: UInt64
+    public let timestampNanoseconds: Int64
+    public let rtpTimestamp: UInt32
+    public let width: Int
+    public let height: Int
+
+    public init(
+        marker: ScreenVideoInBandMarkerNonce,
+        frameSequence: UInt64,
+        timestampNanoseconds: Int64,
+        rtpTimestamp: UInt32,
+        width: Int,
+        height: Int
+    ) {
+        self.marker = marker
+        self.frameSequence = frameSequence
+        self.timestampNanoseconds = timestampNanoseconds
+        self.rtpTimestamp = rtpTimestamp
+        self.width = width
+        self.height = height
+    }
+}
+
+/// Bounded privacy-minimal replay cache used when media reaches Metal before MarkerReady reaches
+/// the ordered control channel. It stores no decoded frame or content digest.
+struct WebRTCVideoPresentedMarkerHistory: Sendable {
+    struct Match: Equatable, Sendable {
+        let observation: WebRTCVideoMarkerPresentationProofObservation
+        let dimensionGeneration: UInt64
+    }
+
+    private let capacity: Int
+    private var matches: [Match] = []
+
+    init(capacity: Int = 8) {
+        self.capacity = max(1, capacity)
+    }
+
+    mutating func record(
+        _ observation: WebRTCVideoMarkerPresentationProofObservation,
+        dimensionGeneration: UInt64
+    ) {
+        matches.append(
+            Match(
+                observation: observation,
+                dimensionGeneration: dimensionGeneration
+            )
+        )
+        if matches.count > capacity {
+            matches.removeFirst(matches.count - capacity)
+        }
+    }
+
+    func latest(
+        marker: ScreenVideoInBandMarkerNonce,
+        dimensionGeneration: UInt64
+    ) -> Match? {
+        matches.last {
+            $0.dimensionGeneration == dimensionGeneration
+                && $0.observation.marker == marker
+        }
+    }
+
+    mutating func removeAll() {
+        matches.removeAll(keepingCapacity: false)
     }
 }
 
@@ -288,13 +390,19 @@ final class ObservedVideoRenderer: NSObject, LKRTCVideoRenderer, @unchecked Send
         let dimensionGeneration: UInt64
         let presentationDimensions: WebRTCVideoPresentationDimensions
         let frame: LKRTCVideoFrame
+        let exactMarker: ScreenVideoInBandMarkerNonce?
     }
 
     private static let minimumPublicationIntervalNanoseconds: UInt64 = 250_000_000
+    private static let maximumRecentProofObservationCount = 32
 
     private let downstream: LKRTCVideoRenderer
     private let invalidatePresentation: @Sendable (UInt64) -> Void
     private let publish: @Sendable (WebRTCVideoRenderObservation, UInt64) -> Void
+    private let publishProof:
+        @Sendable (WebRTCVideoPresentationProofObservation, UInt64) -> Void
+    private let publishMarkerProof:
+        @Sendable (WebRTCVideoMarkerPresentationProofObservation, UInt64) -> Void
     private let lock = NSLock()
     private let contentDigestSalt = UInt64.random(in: UInt64.min...UInt64.max)
     private var nextFrameSequence: UInt64 = 0
@@ -310,17 +418,95 @@ final class ObservedVideoRenderer: NSObject, LKRTCVideoRenderer, @unchecked Send
     private var lastContentDigest: UInt64?
     private var contentSampleCount: UInt64 = 0
     private var contentChangeCount: UInt64 = 0
+    private var minimumAcceptedRTPTimestamp: UInt32?
+    private var armedProofRTPTimestamps: Set<UInt32> = []
+    private var recentProofObservations:
+        [WebRTCVideoPresentationProofObservation] = []
+    private var retainsPresentedMarkerCandidates = false
+    private var armedMarkerProof: ScreenVideoInBandMarkerNonce?
+    private var presentedMarkerHistory = WebRTCVideoPresentedMarkerHistory()
     private var isInvalidated = false
 
     init(
         downstream: LKRTCVideoRenderer,
         invalidatePresentation: @escaping @Sendable (UInt64) -> Void,
-        publish: @escaping @Sendable (WebRTCVideoRenderObservation, UInt64) -> Void
+        publish: @escaping @Sendable (WebRTCVideoRenderObservation, UInt64) -> Void,
+        publishProof: @escaping @Sendable (
+            WebRTCVideoPresentationProofObservation,
+            UInt64
+        ) -> Void = { _, _ in },
+        publishMarkerProof: @escaping @Sendable (
+            WebRTCVideoMarkerPresentationProofObservation,
+            UInt64
+        ) -> Void = { _, _ in }
     ) {
         self.downstream = downstream
         self.invalidatePresentation = invalidatePresentation
         self.publish = publish
+        self.publishProof = publishProof
+        self.publishMarkerProof = publishMarkerProof
         super.init()
+    }
+
+    /// Installs an RTP freshness floor and exact timestamps whose Metal presentation must bypass
+    /// ordinary observation throttling. Recent covered presentations are retained so a data-
+    /// channel MarkerReady that arrives after its media frame can still be proven exactly.
+    func updateFreshnessFence(
+        minimumAcceptedRTPTimestamp: UInt32?,
+        proofRTPTimestamps: Set<UInt32>,
+        retainsPresentedMarkerCandidates: Bool,
+        markerProof: ScreenVideoInBandMarkerNonce?
+    ) {
+        let publications: (
+            rtp: [(WebRTCVideoPresentationProofObservation, UInt64)],
+            marker: (WebRTCVideoMarkerPresentationProofObservation, UInt64)?
+        ) =
+            lock.withLock {
+                guard !isInvalidated else { return ([], nil) }
+                if self.minimumAcceptedRTPTimestamp
+                    != minimumAcceptedRTPTimestamp {
+                    self.minimumAcceptedRTPTimestamp =
+                        minimumAcceptedRTPTimestamp
+                    pendingFrame = nil
+                    lastSubmittedTimestampNanoseconds = nil
+                }
+                armedProofRTPTimestamps = proofRTPTimestamps
+                self.retainsPresentedMarkerCandidates =
+                    retainsPresentedMarkerCandidates
+                if !retainsPresentedMarkerCandidates {
+                    presentedMarkerHistory.removeAll()
+                }
+                armedMarkerProof = markerProof
+                var matches: [(
+                    WebRTCVideoPresentationProofObservation,
+                    UInt64
+                )] = []
+                for observation in recentProofObservations
+                where armedProofRTPTimestamps.remove(
+                    observation.rtpTimestamp
+                ) != nil {
+                    matches.append((observation, dimensionGeneration))
+                }
+                let markerMatch: (
+                    WebRTCVideoMarkerPresentationProofObservation,
+                    UInt64
+                )? = markerProof.flatMap { expected in
+                    presentedMarkerHistory.latest(
+                        marker: expected,
+                        dimensionGeneration: dimensionGeneration
+                    ).map { ($0.observation, $0.dimensionGeneration) }
+                }
+                if markerMatch != nil {
+                    armedMarkerProof = nil
+                }
+                return (matches, markerMatch)
+            }
+        for publication in publications.rtp {
+            publishProof(publication.0, publication.1)
+        }
+        if let publication = publications.marker {
+            publishMarkerProof(publication.0, publication.1)
+        }
     }
 
     func setSize(_ size: CGSize) {
@@ -346,6 +532,13 @@ final class ObservedVideoRenderer: NSObject, LKRTCVideoRenderer, @unchecked Send
         let invalidatedGeneration: UInt64? = lock.withLock {
             guard !isInvalidated else { return nil }
             if let frame {
+                let rtpTimestamp = UInt32(bitPattern: frame.timeStamp)
+                guard acceptsRTPTimestamp(rtpTimestamp) else {
+                    // Never let a delayed pre-resume packet replace the proven drawable after
+                    // the cover is removed. Keeping the downstream's current frame is safer than
+                    // forwarding nil, which could itself trigger renderer lifecycle callbacks.
+                    return nil
+                }
                 guard let presentationDimensions = WebRTCVideoPresentationDimensions(
                     unrotatedWidth: Int(frame.width),
                     unrotatedHeight: Int(frame.height),
@@ -373,11 +566,20 @@ final class ObservedVideoRenderer: NSObject, LKRTCVideoRenderer, @unchecked Send
                 let invalidatedGeneration = advanceDimensionGenerationIfNeeded(
                     to: presentationDimensions.size
                 )
+                let exactMarker: ScreenVideoInBandMarkerNonce?
+                if retainsPresentedMarkerCandidates,
+                   case .exactMarker(let marker) =
+                    ScreenVideoInBandMarkerClassifier.classify(frame) {
+                    exactMarker = marker
+                } else {
+                    exactMarker = nil
+                }
                 pendingFrame = PendingFrame(
                     sequence: nextFrameSequence,
                     dimensionGeneration: dimensionGeneration,
                     presentationDimensions: presentationDimensions,
-                    frame: frame
+                    frame: frame,
+                    exactMarker: exactMarker
                 )
                 downstream.renderFrame(frame)
                 return invalidatedGeneration
@@ -390,6 +592,12 @@ final class ObservedVideoRenderer: NSObject, LKRTCVideoRenderer, @unchecked Send
         if let invalidatedGeneration {
             invalidatePresentation(invalidatedGeneration)
         }
+    }
+
+    private func acceptsRTPTimestamp(_ candidate: UInt32) -> Bool {
+        guard let minimumAcceptedRTPTimestamp else { return true }
+        let delta = candidate &- minimumAcceptedRTPTimestamp
+        return delta == 0 || delta < 0x8000_0000
     }
 
     /// The native adapter calls `setSize` immediately before the first frame of a new shape.
@@ -453,24 +661,79 @@ final class ObservedVideoRenderer: NSObject, LKRTCVideoRenderer, @unchecked Send
 
     private func didPresent(_ presentedFrame: PendingFrame) {
         let now = DispatchTime.now().uptimeNanoseconds
-        let publication: (WebRTCVideoRenderObservation, UInt64)? = lock.withLock {
+        let publications: (
+            ordinary: (WebRTCVideoRenderObservation, UInt64)?,
+            proof: (WebRTCVideoPresentationProofObservation, UInt64)?,
+            markerProof: (
+                WebRTCVideoMarkerPresentationProofObservation,
+                UInt64
+            )?
+        ) = lock.withLock {
             guard !isInvalidated,
                   presentedFrame.dimensionGeneration == dimensionGeneration,
                   presentedFrame.sequence > lastPublishedFrameSequence else {
-                return nil
+                return (nil, nil, nil)
             }
             lastPublishedFrameSequence = presentedFrame.sequence
             let frame = presentedFrame.frame
             frameCount &+= 1
             let width = presentedFrame.presentationDimensions.width
             let height = presentedFrame.presentationDimensions.height
+            let rtpTimestamp = UInt32(bitPattern: frame.timeStamp)
+            let proofObservation = WebRTCVideoPresentationProofObservation(
+                frameSequence: presentedFrame.sequence,
+                timestampNanoseconds: frame.timeStampNs,
+                rtpTimestamp: rtpTimestamp,
+                width: width,
+                height: height
+            )
+            recentProofObservations.append(proofObservation)
+            if recentProofObservations.count
+                > Self.maximumRecentProofObservationCount {
+                recentProofObservations.removeFirst(
+                    recentProofObservations.count
+                        - Self.maximumRecentProofObservationCount
+                )
+            }
+            let proofPublication = armedProofRTPTimestamps.remove(
+                rtpTimestamp
+            ) != nil
+                ? (proofObservation, presentedFrame.dimensionGeneration)
+                : nil
+            var markerPublication: (
+                WebRTCVideoMarkerPresentationProofObservation,
+                UInt64
+            )?
+            if retainsPresentedMarkerCandidates,
+               let marker = presentedFrame.exactMarker {
+                let markerObservation =
+                    WebRTCVideoMarkerPresentationProofObservation(
+                        marker: marker,
+                        frameSequence: presentedFrame.sequence,
+                        timestampNanoseconds: frame.timeStampNs,
+                        rtpTimestamp: rtpTimestamp,
+                        width: width,
+                        height: height
+                    )
+                presentedMarkerHistory.record(
+                    markerObservation,
+                    dimensionGeneration: presentedFrame.dimensionGeneration
+                )
+                if armedMarkerProof == marker {
+                    armedMarkerProof = nil
+                    markerPublication = (
+                        markerObservation,
+                        presentedFrame.dimensionGeneration
+                    )
+                }
+            }
             let dimensionsChanged = width != lastPublishedWidth
                 || height != lastPublishedHeight
             guard frameCount == 1
                     || dimensionsChanged
                     || now &- lastPublicationNanoseconds
                         >= Self.minimumPublicationIntervalNanoseconds else {
-                return nil
+                return (nil, proofPublication, markerPublication)
             }
             lastPublicationNanoseconds = now
             lastPublishedWidth = width
@@ -484,10 +747,11 @@ final class ObservedVideoRenderer: NSObject, LKRTCVideoRenderer, @unchecked Send
                 contentChangeCount &+= 1
             }
             lastContentDigest = contentDigest
-            return (
+            let ordinaryPublication = (
                 WebRTCVideoRenderObservation(
                     frameCount: frameCount,
                     timestampNanoseconds: frame.timeStampNs,
+                    rtpTimestamp: rtpTimestamp,
                     width: width,
                     height: height,
                     contentDigest: contentDigest,
@@ -496,9 +760,16 @@ final class ObservedVideoRenderer: NSObject, LKRTCVideoRenderer, @unchecked Send
                 ),
                 presentedFrame.dimensionGeneration
             )
+            return (ordinaryPublication, proofPublication, markerPublication)
         }
-        if let publication {
+        if let publication = publications.ordinary {
             publish(publication.0, publication.1)
+        }
+        if let publication = publications.proof {
+            publishProof(publication.0, publication.1)
+        }
+        if let publication = publications.markerProof {
+            publishMarkerProof(publication.0, publication.1)
         }
     }
 }
@@ -550,6 +821,12 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
     private var currentTrack: WebRTCRemoteVideoTrack?
     private var presentationGenerationFence = WebRTCVideoPresentationGenerationFence()
     private var currentVideoSize = CGSize.zero
+    private var presentationCoverIsForced = false
+    private var minimumAcceptedRTPTimestamp: UInt32?
+    private var proofRTPTimestamps: Set<UInt32> = []
+    private var retainsPresentedMarkerCandidates = false
+    private var markerProof: ScreenVideoInBandMarkerNonce?
+    private var hasCurrentPresentedFrame = false
 
     /// Reports the decoded frame size used by the aspect-fit renderer.
     ///
@@ -558,6 +835,13 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
     public var onVideoSizeChanged: ((CGSize) -> Void)?
     /// Reports decoded frames only after their Metal drawable has been presented.
     public var onVideoFrameRendered: ((WebRTCVideoRenderObservation) -> Void)?
+    /// Reports only exact RTP timestamps armed by the screen-resume owner. This callback is not
+    /// subject to ordinary render-observation throttling.
+    public var onVideoFramePresentedForProof:
+        ((WebRTCVideoPresentationProofObservation) -> Void)?
+    /// Reports an exact decoded nonce only after that same frame's Metal drawable presents.
+    public var onVideoMarkerFramePresentedForProof:
+        ((WebRTCVideoMarkerPresentationProofObservation) -> Void)?
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -567,6 +851,36 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
     public required init?(coder: NSCoder) {
         super.init(coder: coder)
         configureRenderer()
+    }
+
+    /// Forces the privacy cover and installs the receiver-side RTP floor for one resume proof.
+    /// Removing the force reveals media only after a frame accepted under the current floor has
+    /// actually reached a Metal drawable.
+    public func updatePresentationFence(
+        forceCover: Bool,
+        minimumAcceptedRTPTimestamp: UInt32?,
+        proofRTPTimestamps: Set<UInt32>,
+        markerProof: ScreenVideoInBandMarkerNonce? = nil
+    ) {
+        let closesPresentation = forceCover && !presentationCoverIsForced
+            || self.minimumAcceptedRTPTimestamp
+                != minimumAcceptedRTPTimestamp
+        presentationCoverIsForced = forceCover
+        self.minimumAcceptedRTPTimestamp = minimumAcceptedRTPTimestamp
+        self.proofRTPTimestamps = proofRTPTimestamps
+        retainsPresentedMarkerCandidates = forceCover
+        self.markerProof = markerProof
+        if closesPresentation {
+            hasCurrentPresentedFrame = false
+            invalidateCurrentPresentation()
+        }
+        observedRenderer?.updateFreshnessFence(
+            minimumAcceptedRTPTimestamp: minimumAcceptedRTPTimestamp,
+            proofRTPTimestamps: proofRTPTimestamps,
+            retainsPresentedMarkerCandidates: retainsPresentedMarkerCandidates,
+            markerProof: markerProof
+        )
+        updatePresentationCoverVisibility()
     }
 
     /// Atomically detaches the previous renderer binding and attaches `track`.
@@ -582,6 +896,7 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
         }
         metalDelegateProxy?.installDrawHandler(nil)
         observedRenderer = nil
+        hasCurrentPresentedFrame = false
         // A binding reset must not be deduplicated against LiveKit's asynchronous size callback.
         invalidateCurrentPresentation()
 
@@ -591,7 +906,7 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
         if metalDelegateProxy == nil {
             // The native renderer remains usable if LiveKit changes its internal hierarchy, but
             // presentation cannot be proven and remote touch therefore remains disabled.
-            presentationCover.isHidden = true
+            updatePresentationCoverVisibility()
         }
         let observedRenderer = ObservedVideoRenderer(
             downstream: renderer,
@@ -628,12 +943,49 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
                           ) else {
                         return
                     }
-                    self.presentationCover.isHidden = true
+                    self.hasCurrentPresentedFrame = true
+                    self.updatePresentationCoverVisibility()
                     self.onVideoFrameRendered?(observation)
+                }
+            },
+            publishProof: { [weak self] observation, dimensionGeneration in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.currentTrack != nil,
+                          let observedRenderer = self.observedRenderer,
+                          self.presentationGenerationFence.bindingGeneration
+                            == generation,
+                          observedRenderer.isCurrentDimensionGeneration(
+                              dimensionGeneration
+                          ) else {
+                        return
+                    }
+                    self.onVideoFramePresentedForProof?(observation)
+                }
+            },
+            publishMarkerProof: { [weak self] observation, dimensionGeneration in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.currentTrack != nil,
+                          let observedRenderer = self.observedRenderer,
+                          self.presentationGenerationFence.bindingGeneration
+                            == generation,
+                          observedRenderer.isCurrentDimensionGeneration(
+                              dimensionGeneration
+                          ) else {
+                        return
+                    }
+                    self.onVideoMarkerFramePresentedForProof?(observation)
                 }
             }
         )
         self.observedRenderer = observedRenderer
+        observedRenderer.updateFreshnessFence(
+            minimumAcceptedRTPTimestamp: minimumAcceptedRTPTimestamp,
+            proofRTPTimestamps: proofRTPTimestamps,
+            retainsPresentedMarkerCandidates: retainsPresentedMarkerCandidates,
+            markerProof: markerProof
+        )
         metalDelegateProxy?.installDrawHandler { [weak observedRenderer] drawable, draw in
             guard let observedRenderer else {
                 draw()
@@ -691,7 +1043,7 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
         } else {
             // Keep media visible on an unsupported future LiveKit hierarchy, but never claim a
             // presented-frame observation that could authorize touch.
-            presentationCover.isHidden = true
+            updatePresentationCoverVisibility()
         }
     }
 
@@ -721,10 +1073,25 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
     /// can authorize touch again only after Metal confirms that generation's drawable presented.
     private func invalidateCurrentPresentation() {
         currentVideoSize = .zero
+        hasCurrentPresentedFrame = false
         if metalDelegateProxy != nil {
             presentationCover.isHidden = false
+        } else {
+            updatePresentationCoverVisibility()
         }
         onVideoSizeChanged?(.zero)
+    }
+
+    private func updatePresentationCoverVisibility() {
+        if presentationCoverIsForced {
+            presentationCover.isHidden = false
+        } else if metalDelegateProxy == nil {
+            // Preserve legacy visibility on an unsupported renderer hierarchy, but no proof or
+            // touch callback can be emitted through that path.
+            presentationCover.isHidden = true
+        } else {
+            presentationCover.isHidden = !hasCurrentPresentedFrame
+        }
     }
 }
 #endif

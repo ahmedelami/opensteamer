@@ -38,6 +38,8 @@ public struct WebRTCScreenVideoEncodingUpdate: Sendable {
     let previousMinimumBitrateBps: Int?
     let previousMaximumFramesPerSecond: Int?
     let previousScaleResolutionDownBy: Double?
+    let previousIsActive: [Bool]
+    let appliedIsActive: [Bool]
     let appliedLimits: WebRTCScreenVideoEncodingLimits
 
     init(
@@ -46,6 +48,8 @@ public struct WebRTCScreenVideoEncodingUpdate: Sendable {
         previousMinimumBitrateBps: Int?,
         previousMaximumFramesPerSecond: Int?,
         previousScaleResolutionDownBy: Double?,
+        previousIsActive: [Bool],
+        appliedIsActive: [Bool],
         appliedLimits: WebRTCScreenVideoEncodingLimits
     ) {
         self.generation = generation
@@ -53,20 +57,88 @@ public struct WebRTCScreenVideoEncodingUpdate: Sendable {
         self.previousMinimumBitrateBps = previousMinimumBitrateBps
         self.previousMaximumFramesPerSecond = previousMaximumFramesPerSecond
         self.previousScaleResolutionDownBy = previousScaleResolutionDownBy
+        self.previousIsActive = previousIsActive
+        self.appliedIsActive = appliedIsActive
         self.appliedLimits = appliedLimits
+    }
+}
+
+/// Opaque proof for one all-encoding sender activity mutation. Its generation shares the same
+/// transaction sequence as quality-limit updates, so a stale rollback can never overwrite either.
+public struct WebRTCScreenVideoEncodingActivityUpdate: Sendable {
+    let generation: UInt64
+    let previousMaximumBitrateBps: Int?
+    let previousMinimumBitrateBps: Int?
+    let previousMaximumFramesPerSecond: Int?
+    let previousScaleResolutionDownBy: Double?
+    let previousIsActive: [Bool]
+    let appliedIsActive: [Bool]
+
+    init(
+        generation: UInt64,
+        previousMaximumBitrateBps: Int?,
+        previousMinimumBitrateBps: Int?,
+        previousMaximumFramesPerSecond: Int?,
+        previousScaleResolutionDownBy: Double?,
+        previousIsActive: [Bool],
+        appliedIsActive: [Bool]
+    ) {
+        self.generation = generation
+        self.previousMaximumBitrateBps = previousMaximumBitrateBps
+        self.previousMinimumBitrateBps = previousMinimumBitrateBps
+        self.previousMaximumFramesPerSecond = previousMaximumFramesPerSecond
+        self.previousScaleResolutionDownBy = previousScaleResolutionDownBy
+        self.previousIsActive = previousIsActive
+        self.appliedIsActive = appliedIsActive
     }
 }
 
 /// A sendable lifetime wrapper around LiveKit's thread-safe Objective-C video track.
 ///
 /// LiveKit's track is thread-safe but has no Swift concurrency annotations.
+public struct WebRTCRemoteVideoSourceSnapshot: Equatable, Sendable {
+    public let receiverID: String
+    public let sourceIDs: [UInt32]
+    public let rtpTimestamps: [UInt32]
+
+    public init(
+        receiverID: String,
+        sourceIDs: [UInt32],
+        rtpTimestamps: [UInt32]
+    ) {
+        self.receiverID = receiverID
+        self.sourceIDs = sourceIDs
+        self.rtpTimestamps = rtpTimestamps
+    }
+}
+
 public final class WebRTCRemoteVideoTrack: @unchecked Sendable {
     private let nativeTrack: LKRTCVideoTrack
+    private let nativeReceiver: LKRTCRtpReceiver
     public let trackID: String
+    public let receiverID: String
 
-    init(_ nativeTrack: LKRTCVideoTrack) {
+    init(
+        _ nativeTrack: LKRTCVideoTrack,
+        receiver: LKRTCRtpReceiver
+    ) {
         self.nativeTrack = nativeTrack
+        nativeReceiver = receiver
         trackID = nativeTrack.trackId as String
+        receiverID = receiver.receiverId as String
+    }
+
+    /// Returns the recent primary SSRC observations for this exact receiver. Resume proof owners
+    /// require one stable source across marker and real-frame presentation; CSRCs are excluded.
+    public func sourceSnapshot() -> WebRTCRemoteVideoSourceSnapshot {
+        let primarySources = nativeReceiver.sources.filter {
+            $0.sourceType.rawValue == 0
+        }
+        return WebRTCRemoteVideoSourceSnapshot(
+            receiverID: receiverID,
+            sourceIDs: primarySources.map(\.sourceId),
+            rtpTimestamps: primarySources.map(\.rtpTimestamp)
+        )
     }
 
     /// Native renderer mutation is intentionally module-internal and MainActor-owned.

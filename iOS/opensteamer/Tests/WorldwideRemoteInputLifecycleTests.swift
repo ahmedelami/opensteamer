@@ -824,6 +824,414 @@ final class WorldwideRemoteInputLifecycleTests: XCTestCase {
     }
 }
 
+final class WorldwideScreenMediaViewerSuspensionTests: XCTestCase {
+    func testSameSuspensionRetryKeepsExactCoverAndClearsProbeEvidence() throws {
+        let sessionGeneration = UUID()
+        let lease = WorldwideScreenPresentationLease(
+            sessionGeneration: sessionGeneration
+        )
+        let coverID = UUID()
+        let currentFence = WorldwideScreenMediaViewerFence(
+            lease: lease,
+            coverID: coverID,
+            forceCover: true,
+            minimumAcceptedRTPTimestamp: 9_100,
+            proofRTPTimestamps: [9_100],
+            markerProof: nil,
+            proofRequestRevision: 4,
+            statusText: "Resuming screen…"
+        )
+        let notice = WebRTCScreenMediaSuspensionNotice(
+            screenRequestID: 77,
+            suspensionGeneration: 3
+        )
+        let oldAttemptID = UUID()
+        let retry = makeMarkerReady(
+            attemptID: UUID(),
+            notice: notice
+        )
+
+        XCTAssertTrue(
+            WorldwideScreenMediaViewerProofPolicy.isSameSuspensionRetry(
+                retry,
+                replacing: oldAttemptID,
+                notice: notice
+            )
+        )
+        XCTAssertFalse(
+            WorldwideScreenMediaViewerProofPolicy.isSameSuspensionRetry(
+                makeMarkerReady(attemptID: oldAttemptID, notice: notice),
+                replacing: oldAttemptID,
+                notice: notice
+            )
+        )
+        XCTAssertFalse(
+            WorldwideScreenMediaViewerProofPolicy.isSameSuspensionRetry(
+                retry,
+                replacing: oldAttemptID,
+                notice: WebRTCScreenMediaSuspensionNotice(
+                    screenRequestID: notice.screenRequestID,
+                    suspensionGeneration: notice.suspensionGeneration + 1
+                )
+            )
+        )
+
+        let reset = WorldwideScreenMediaViewerProofPolicy.coveredRetryFence(
+            from: currentFence,
+            proofRequestRevision: 5
+        )
+        XCTAssertEqual(reset.lease, lease)
+        XCTAssertEqual(reset.coverID, coverID)
+        XCTAssertTrue(reset.forceCover)
+        XCTAssertNil(reset.minimumAcceptedRTPTimestamp)
+        XCTAssertTrue(reset.proofRTPTimestamps.isEmpty)
+        XCTAssertEqual(reset.proofRequestRevision, 5)
+    }
+
+    func testProofPolicyRequiresOneStablePrimarySourceAndReceiverDomainOrdering() {
+        XCTAssertNil(
+            WorldwideScreenMediaViewerProofPolicy.exactPrimarySource(
+                in: WebRTCRemoteVideoSourceSnapshot(
+                    receiverID: "receiver",
+                    sourceIDs: [11, 12],
+                    rtpTimestamps: [100, 101]
+                )
+            )
+        )
+        let wrappedMarker = WorldwideScreenMediaPrimarySource(
+            receiverID: "receiver",
+            sourceID: 11,
+            rtpTimestamp: 5
+        )
+        XCTAssertFalse(
+            WorldwideScreenMediaViewerProofPolicy.acceptsRealCandidate(
+                rtpTimestamp: 5,
+                width: 480,
+                height: 960,
+                expectedWidth: 480,
+                expectedHeight: 960,
+                minimumRTPTimestamp: 5,
+                receiverID: "receiver",
+                sourceID: 99,
+                current: wrappedMarker
+            )
+        )
+    }
+
+    func testScale12DecodedNonceRejectsDelayedStaleRealBeforeMarkerReady() throws {
+        let attemptID = UUID()
+        let marker = ScreenVideoInBandMarkerNonce(attemptID: attemptID)
+        let staleFrame = makeVideoFrame(
+            pixelBuffer: try makeUniformPixelBuffer(
+                width: 40,
+                height: 80,
+                value: 0x20
+            ),
+            rtpTimestamp: 1_001
+        )
+        let markerFrame = makeVideoFrame(
+            pixelBuffer: try ScreenVideoInBandMarkerPixelBufferFactory.make(
+                width: 40,
+                height: 80,
+                marker: marker
+            ),
+            rtpTimestamp: 1_002
+        )
+        var history = WebRTCVideoPresentedMarkerHistory(capacity: 2)
+        if case .exactMarker(let staleNonce) =
+            ScreenVideoInBandMarkerClassifier.classify(staleFrame) {
+            history.record(
+                WebRTCVideoMarkerPresentationProofObservation(
+                    marker: staleNonce,
+                    frameSequence: 1,
+                    timestampNanoseconds: staleFrame.timeStampNs,
+                    rtpTimestamp: 1_001,
+                    width: 40,
+                    height: 80
+                ),
+                dimensionGeneration: 1
+            )
+        }
+        guard case .exactMarker(let decodedNonce) =
+            ScreenVideoInBandMarkerClassifier.classify(markerFrame) else {
+            XCTFail("The scale-12 marker did not decode exactly.")
+            return
+        }
+        history.record(
+            WebRTCVideoMarkerPresentationProofObservation(
+                marker: decodedNonce,
+                frameSequence: 2,
+                timestampNanoseconds: markerFrame.timeStampNs,
+                rtpTimestamp: 1_002,
+                width: 40,
+                height: 80
+            ),
+            dimensionGeneration: 1
+        )
+
+        let proof = try XCTUnwrap(
+            history.latest(marker: marker, dimensionGeneration: 1)?.observation
+        )
+        XCTAssertEqual(proof.rtpTimestamp, 1_002)
+        XCTAssertEqual(proof.width, 40)
+        XCTAssertEqual(proof.height, 80)
+        let baseline = WorldwideScreenMediaPrimarySource(
+            receiverID: "receiver",
+            sourceID: 11,
+            rtpTimestamp: 1_001
+        )
+        let current = WorldwideScreenMediaPrimarySource(
+            receiverID: "receiver",
+            sourceID: 11,
+            rtpTimestamp: 1_002
+        )
+        XCTAssertTrue(
+            WorldwideScreenMediaViewerProofPolicy.acceptsMarkerProof(
+                proof,
+                expectedMarker: marker,
+                geometry: WebRTCScreenMediaGeometry(
+                    geometryRevision: 4,
+                    captureWidth: 480,
+                    captureHeight: 960
+                ),
+                baseline: baseline,
+                current: current
+            )
+        )
+        XCTAssertFalse(
+            WorldwideScreenMediaViewerProofPolicy.acceptsMarkerProof(
+                proof,
+                expectedMarker: ScreenVideoInBandMarkerNonce(attemptID: UUID()),
+                geometry: WebRTCScreenMediaGeometry(
+                    geometryRevision: 4,
+                    captureWidth: 480,
+                    captureHeight: 960
+                ),
+                baseline: baseline,
+                current: current
+            )
+        )
+    }
+
+    func testFloorPublicationZeroGeometryCallbackDoesNotCancelRealProofShape() {
+        XCTAssertEqual(
+            WorldwideScreenMediaViewerProofPolicy.geometryChangeDisposition(
+                .zero,
+                expectedWidth: 40,
+                expectedHeight: 80
+            ),
+            .localFloorInvalidation
+        )
+        XCTAssertEqual(
+            WorldwideScreenMediaViewerProofPolicy.geometryChangeDisposition(
+                CGSize(width: 40, height: 80),
+                expectedWidth: 40,
+                expectedHeight: 80
+            ),
+            .unchanged
+        )
+        XCTAssertEqual(
+            WorldwideScreenMediaViewerProofPolicy.geometryChangeDisposition(
+                CGSize(width: 41, height: 80),
+                expectedWidth: 40,
+                expectedHeight: 80
+            ),
+            .mutation
+        )
+    }
+
+    @MainActor
+    func testUnmatchedSuspensionCancelsPeerWithoutExistingAttempt() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(
+            peer: peer,
+            screenRequestID: 77
+        )
+        var cancellations: [(WebRTCPeer, String)] = []
+        viewModel.debugInstallScreenMediaCancellationObserver {
+            cancellations.append(($0, $1))
+        }
+
+        viewModel.debugDeliverScreenMediaSuspensionForTests(
+            WebRTCScreenMediaSuspensionNotice(
+                screenRequestID: 77,
+                suspensionGeneration: 1
+            ),
+            sourcePeer: peer
+        )
+
+        XCTAssertFalse(fixture.authorization.isValid)
+        XCTAssertEqual(cancellations.count, 1)
+        XCTAssertTrue(cancellations.first?.0 === peer)
+        XCTAssertTrue(
+            try XCTUnwrap(
+                viewModel.screenMediaViewerFence(for: fixture.lease)
+            ).forceCover
+        )
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testResumedAcknowledgementMustEchoExactPresentationAndFreshInput() {
+        let notice = WebRTCScreenMediaSuspensionNotice(
+            screenRequestID: 77,
+            suspensionGeneration: 3
+        )
+        let ready = makeMarkerReady(attemptID: UUID(), notice: notice)
+        let markerPresentation = WebRTCScreenMediaMarkerPresentation(
+            markerReady: ready,
+            receiverMarkerRTPTimestamp: 1_000,
+            receiverID: "receiver",
+            sourceID: 11,
+            presentedWidth: 480,
+            presentedHeight: 960
+        )
+        let resumeReady = WebRTCScreenMediaResumeReady(
+            markerPresentation: markerPresentation,
+            encoderMarkerRTPTimestamp: ready.encoderMarkerRTPTimestamp,
+            encoderRealFrameRTPTimestamp:
+                ready.encoderMarkerRTPTimestamp &+ 100,
+            receiverMarkerRTPTimestamp: 1_000,
+            receiverRealFrameFloorRTPTimestamp: 1_100,
+            geometry: ready.geometry
+        )
+        let presentation = WebRTCScreenMediaPresentation(
+            resumeReady: resumeReady,
+            presentedRTPTimestamp: 1_101,
+            receiverID: "receiver",
+            sourceID: 11,
+            presentedWidth: 480,
+            presentedHeight: 960
+        )
+        let capability = WebRTCInputCapability(
+            inputSessionID: UUID(),
+            screenRequestID: notice.screenRequestID,
+            supportsPrimaryDrag: true
+        )
+        let request = WebRTCScreenMediaResumeRequest(
+            id: 19,
+            presentation: presentation
+        )
+        let acknowledgement = WebRTCScreenMediaResumedAcknowledgement(
+            request: request,
+            inputCapability: capability
+        )
+
+        XCTAssertTrue(
+            WorldwideScreenMediaViewerProofPolicy.resumedAcknowledgementMatches(
+                acknowledgement,
+                requestID: request.id,
+                presentation: presentation,
+                screenRequestID: notice.screenRequestID,
+                inputAuthorizationIsValid: true
+            )
+        )
+        XCTAssertFalse(
+            WorldwideScreenMediaViewerProofPolicy.resumedAcknowledgementMatches(
+                acknowledgement,
+                requestID: request.id + 1,
+                presentation: presentation,
+                screenRequestID: notice.screenRequestID,
+                inputAuthorizationIsValid: true
+            )
+        )
+        XCTAssertFalse(
+            WorldwideScreenMediaViewerProofPolicy.resumedAcknowledgementMatches(
+                acknowledgement,
+                requestID: request.id,
+                presentation: presentation,
+                screenRequestID: notice.screenRequestID,
+                inputAuthorizationIsValid: false
+            )
+        )
+    }
+
+    @MainActor
+    func testUIKitCoverInstallationReportsEachExactCoverOnlyOnce() {
+        let coordinator = WebRTCRemoteScreenView.Coordinator()
+        let first = UUID()
+        let second = UUID()
+        var reports: [UUID] = []
+
+        coordinator.reportPresentationCoverIfNeeded(first) { reports.append($0) }
+        coordinator.reportPresentationCoverIfNeeded(first) { reports.append($0) }
+        coordinator.reportPresentationCoverIfNeeded(second) { reports.append($0) }
+
+        XCTAssertEqual(reports, [first, second])
+    }
+
+    private func makeMarkerReady(
+        attemptID: UUID,
+        notice: WebRTCScreenMediaSuspensionNotice
+    ) -> WebRTCScreenMediaMarkerReady {
+        WebRTCScreenMediaMarkerReady(
+            attemptID: attemptID,
+            screenRequestID: notice.screenRequestID,
+            suspensionGeneration: notice.suspensionGeneration,
+            encoderGeneration: 9,
+            encoderMarkerRTPTimestamp: 500,
+            boundaryRevision: 12,
+            geometry: WebRTCScreenMediaGeometry(
+                geometryRevision: 4,
+                captureWidth: 480,
+                captureHeight: 960
+            )
+        )
+    }
+
+    @MainActor
+    private func makeScreenPeer() throws -> WebRTCPeer {
+        try WebRTCPeer(
+            configuration: WebRTCTransportConfiguration(
+                role: .viewer,
+                iceServers: []
+            )
+        )
+    }
+
+    private func makeUniformPixelBuffer(
+        width: Int,
+        height: Int,
+        value: UInt8
+    ) throws -> CVPixelBuffer {
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_32BGRA,
+            nil,
+            &pixelBuffer
+        )
+        XCTAssertEqual(status, kCVReturnSuccess)
+        let result = try XCTUnwrap(pixelBuffer)
+        XCTAssertEqual(CVPixelBufferLockBaseAddress(result, []), kCVReturnSuccess)
+        defer { CVPixelBufferUnlockBaseAddress(result, []) }
+        if let base = CVPixelBufferGetBaseAddress(result) {
+            memset(
+                base,
+                Int32(value),
+                CVPixelBufferGetBytesPerRow(result) * height
+            )
+        }
+        return result
+    }
+
+    private func makeVideoFrame(
+        pixelBuffer: CVPixelBuffer,
+        rtpTimestamp: UInt32
+    ) -> LKRTCVideoFrame {
+        let frame = LKRTCVideoFrame(
+            buffer: LKRTCCVPixelBuffer(pixelBuffer: pixelBuffer),
+            rotation: ._0,
+            timeStampNs: Int64(rtpTimestamp) * 1_000
+        )
+        frame.timeStamp = Int32(bitPattern: rtpTimestamp)
+        return frame
+    }
+}
+
 /// Focused tests for session-generation fences shared by statistics and signaling tasks.
 @MainActor
 final class WorldwideSessionGenerationFenceTests: XCTestCase {

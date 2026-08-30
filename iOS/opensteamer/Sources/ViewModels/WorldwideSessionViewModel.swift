@@ -24,6 +24,221 @@ struct WorldwideScreenVisibilityRequestKey: Hashable, Sendable {
     let requestID: UInt64
 }
 
+/// SwiftUI-facing projection of the native renderer fence for one exact screen lease.
+/// The renderer remains mounted while `forceCover` is true so covered marker/real frames can still
+/// reach Metal and satisfy the negotiated resume proof without becoming visible.
+struct WorldwideScreenMediaViewerFence: Equatable, Sendable {
+    let lease: WorldwideScreenPresentationLease
+    let coverID: UUID
+    let forceCover: Bool
+    let minimumAcceptedRTPTimestamp: UInt32?
+    let proofRTPTimestamps: Set<UInt32>
+    let markerProof: ScreenVideoInBandMarkerNonce?
+    let proofRequestRevision: UInt64
+    let statusText: String?
+}
+
+struct WorldwideScreenMediaPrimarySource: Equatable, Sendable {
+    let receiverID: String
+    let sourceID: UInt32
+    let rtpTimestamp: UInt32
+}
+
+enum WorldwideScreenMediaGeometryChangeDisposition: Equatable, Sendable {
+    case localFloorInvalidation
+    case unchanged
+    case mutation
+}
+
+/// Pure validation shared by the MainActor integration and focused iOS tests. No wall clock or
+/// encoder-domain timestamp is accepted at this receiver boundary.
+enum WorldwideScreenMediaViewerProofPolicy {
+    static func geometryChangeDisposition(
+        _ size: CGSize,
+        expectedWidth: Int,
+        expectedHeight: Int
+    ) -> WorldwideScreenMediaGeometryChangeDisposition {
+        if size == .zero { return .localFloorInvalidation }
+        guard size.width.isFinite,
+              size.height.isFinite,
+              Int(size.width.rounded()) == expectedWidth,
+              Int(size.height.rounded()) == expectedHeight else {
+            return .mutation
+        }
+        return .unchanged
+    }
+
+    static func coveredRetryFence(
+        from current: WorldwideScreenMediaViewerFence,
+        proofRequestRevision: UInt64
+    ) -> WorldwideScreenMediaViewerFence {
+        WorldwideScreenMediaViewerFence(
+            lease: current.lease,
+            coverID: current.coverID,
+            forceCover: true,
+            minimumAcceptedRTPTimestamp: nil,
+            proofRTPTimestamps: [],
+            markerProof: nil,
+            proofRequestRevision: proofRequestRevision,
+            statusText: "Resuming screen…"
+        )
+    }
+
+    static func isSameSuspensionRetry(
+        _ ready: WebRTCScreenMediaMarkerReady,
+        replacing currentAttemptID: UUID?,
+        notice: WebRTCScreenMediaSuspensionNotice
+    ) -> Bool {
+        guard let currentAttemptID else { return false }
+        return ready.belongs(to: notice)
+            && ready.attemptID != currentAttemptID
+    }
+
+    static func exactPrimarySource(
+        in snapshot: WebRTCRemoteVideoSourceSnapshot
+    ) -> WorldwideScreenMediaPrimarySource? {
+        guard !snapshot.receiverID.isEmpty,
+              snapshot.sourceIDs.count == 1,
+              snapshot.rtpTimestamps.count == 1,
+              let sourceID = snapshot.sourceIDs.first,
+              sourceID > 0,
+              let rtpTimestamp = snapshot.rtpTimestamps.first else {
+            return nil
+        }
+        return WorldwideScreenMediaPrimarySource(
+            receiverID: snapshot.receiverID,
+            sourceID: sourceID,
+            rtpTimestamp: rtpTimestamp
+        )
+    }
+
+    static func acceptsMarkerProof(
+        _ observation: WebRTCVideoMarkerPresentationProofObservation,
+        expectedMarker: ScreenVideoInBandMarkerNonce,
+        geometry: WebRTCScreenMediaGeometry,
+        baseline: WorldwideScreenMediaPrimarySource?,
+        current: WorldwideScreenMediaPrimarySource
+    ) -> Bool {
+        guard observation.marker == expectedMarker,
+              geometry.isCompatiblePresentation(
+                width: observation.width,
+                height: observation.height
+              ),
+              current.rtpTimestamp == observation.rtpTimestamp else {
+            return false
+        }
+        guard let baseline else { return true }
+        return baseline.receiverID == current.receiverID
+            && baseline.sourceID == current.sourceID
+            && WebRTCRTPSerialComparator.isStrictlyNewer(
+                observation.rtpTimestamp,
+                than: baseline.rtpTimestamp
+            )
+    }
+
+    static func acceptsRealCandidate(
+        rtpTimestamp: UInt32,
+        width: Int,
+        height: Int,
+        expectedWidth: Int,
+        expectedHeight: Int,
+        minimumRTPTimestamp: UInt32,
+        receiverID: String,
+        sourceID: UInt32,
+        current: WorldwideScreenMediaPrimarySource
+    ) -> Bool {
+        width == expectedWidth
+            && height == expectedHeight
+            && receiverID == current.receiverID
+            && sourceID == current.sourceID
+            && current.rtpTimestamp == rtpTimestamp
+            && WebRTCRTPSerialComparator.isSameOrNewer(
+                rtpTimestamp,
+                than: minimumRTPTimestamp
+            )
+    }
+
+    static func resumedAcknowledgementMatches(
+        _ acknowledgement: WebRTCScreenMediaResumedAcknowledgement,
+        requestID: UInt64,
+        presentation: WebRTCScreenMediaPresentation,
+        screenRequestID: UInt64,
+        inputAuthorizationIsValid: Bool
+    ) -> Bool {
+        acknowledgement.isValid
+            && acknowledgement.request.id == requestID
+            && acknowledgement.request.presentation == presentation
+            && (
+                acknowledgement.inputCapability == nil
+                    || acknowledgement.inputCapability?.screenRequestID
+                        == screenRequestID
+            )
+            && (
+                acknowledgement.inputCapability == nil
+                    || inputAuthorizationIsValid
+            )
+    }
+}
+
+private enum WorldwideScreenMediaViewerPhase: Equatable {
+    case awaitingCoverInstallation
+    case sendingCoveredAcknowledgementAndHide
+    case awaitingHideAcknowledgement
+    case awaitingMarkerReady
+    case awaitingMarkerPresentation
+    case sendingMarkerPresentation
+    case awaitingResumeReady
+    case awaitingRealPresentation
+    case sendingResumeRequest
+    case awaitingResumedAcknowledgement
+    case resumed
+}
+
+private final class WorldwideScreenMediaViewerAttempt {
+    let id = UUID()
+    let notice: WebRTCScreenMediaSuspensionNotice
+    let lease: WorldwideScreenPresentationLease
+    let sessionGeneration: UUID
+    let expectedPeer: WebRTCPeer
+    let expectedTrack: WebRTCRemoteVideoTrack
+    let expectedTrackIdentity: ObjectIdentifier
+    let baselineSourceSnapshot: WebRTCRemoteVideoSourceSnapshot
+    var phase: WorldwideScreenMediaViewerPhase = .awaitingCoverInstallation
+    var hideRequestKey: WorldwideScreenVisibilityRequestKey?
+    var markerReady: WebRTCScreenMediaMarkerReady?
+    var markerPresentation: WebRTCScreenMediaMarkerPresentation?
+    var resumeReady: WebRTCScreenMediaResumeReady?
+    var resumePresentation: WebRTCScreenMediaPresentation?
+    var resumeRequestID: UInt64?
+    var receiverID: String?
+    var sourceID: UInt32?
+    var presentedWidth: Int?
+    var presentedHeight: Int?
+    var armedProofRTPTimestamp: UInt32?
+    var minimumAcceptedRTPTimestamp: UInt32?
+    var proofRequestRevision: UInt64 = 0
+    var earlyResumedAcknowledgement: (
+        acknowledgement: WebRTCScreenMediaResumedAcknowledgement,
+        authorization: WebRTCInputAuthorization?
+    )?
+
+    init(
+        notice: WebRTCScreenMediaSuspensionNotice,
+        lease: WorldwideScreenPresentationLease,
+        sessionGeneration: UUID,
+        expectedPeer: WebRTCPeer,
+        expectedTrack: WebRTCRemoteVideoTrack
+    ) {
+        self.notice = notice
+        self.lease = lease
+        self.sessionGeneration = sessionGeneration
+        self.expectedPeer = expectedPeer
+        self.expectedTrack = expectedTrack
+        expectedTrackIdentity = ObjectIdentifier(expectedTrack)
+        baselineSourceSnapshot = expectedTrack.sourceSnapshot()
+    }
+}
+
 #if DEBUG
 // Debug projections intentionally contain only synthetic ownership state and monotonic counters.
 // They expose race-test seams without weakening the production generation/authorization checks.
@@ -399,11 +614,17 @@ final class WorldwideSessionViewModel: ObservableObject {
             let currentIdentity = remoteVideoTrack.map { ObjectIdentifier($0) }
             let nextIdentity = newValue.map { ObjectIdentifier($0) }
             guard currentIdentity != nextIdentity else { return }
+            cancelScreenMediaViewerSuspension(
+                reason: "The remote video track changed during screen resume.",
+                notifyPeer: true
+            )
             discardPendingRemoteScrolls()
         }
     }
     @Published private(set) var screenAcknowledgementOracle:
         WorldwideScreenAcknowledgementOracleSnapshot?
+    @Published private(set) var screenMediaViewerFence:
+        WorldwideScreenMediaViewerFence?
     @Published private(set) var audioStateText = "Inactive"
     @Published private(set) var isRemoteAudioAvailable = false
     @Published private(set) var isRemoteAudioPlaying = false
@@ -433,6 +654,10 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var peer: WebRTCPeer? {
         didSet {
             guard oldValue !== peer else { return }
+            cancelScreenMediaViewerSuspension(
+                reason: "The media peer changed during screen resume.",
+                notifyPeer: oldValue != nil
+            )
             beginMacHostedCallNegotiationBoundary()
             transportAuthorizationGeneration = UUID()
             invalidateRawMicrophoneOracle()
@@ -608,6 +833,13 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var currentScreenPresentationLease: WorldwideScreenPresentationLease?
     private var activeScreenPresentationLease: WorldwideScreenPresentationLease?
     private var remoteScreenOwnerLease: WorldwideScreenPresentationLease?
+    private var activeScreenRequestID: UInt64?
+    private var screenMediaViewerAttempt: WorldwideScreenMediaViewerAttempt?
+    private var screenMediaCoveredHideTask: Task<Void, Never>?
+    private var screenMediaMarkerPresentationTask: Task<Void, Never>?
+    private var screenMediaMarkerPresentationTaskID: UUID?
+    private var screenMediaResumeRequestTask: Task<Void, Never>?
+    private var screenMediaResumeRequestTaskID: UUID?
     private var screenTeardownOperationByLeaseID: [UUID: UUID] = [:]
     private var screenShowOperationByLeaseID: [UUID: UUID] = [:]
     private var screenVisibilityQueue: [QueuedScreenVisibilityOperation] = []
@@ -703,6 +935,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     )?
     private var debugMacHostedCallChallengeAutomaticRetryWaiter:
         (@MainActor () async -> Void)?
+    private var debugScreenMediaCancellationObserver:
+        (@MainActor (WebRTCPeer, String) -> Void)?
     #endif
 
     init(audioLifecycle: WorldwideAudioLifecycleController = WorldwideAudioLifecycleController()) {
@@ -1823,6 +2057,12 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     func retireScreenPresentationLease(_ lease: WorldwideScreenPresentationLease) {
         guard currentScreenPresentationLease == lease else { return }
+        if screenMediaViewerAttempt?.lease == lease {
+            cancelScreenMediaViewerSuspension(
+                reason: "The screen presentation lease was retired.",
+                notifyPeer: true
+            )
+        }
         revokeScreenPresentationLocally(for: lease, clearActiveOwnership: false)
         currentScreenPresentationLease = nil
         #if DEBUG
@@ -1884,6 +2124,949 @@ final class WorldwideSessionViewModel: ObservableObject {
         invalidateRemoteInputState()
     }
 
+    func screenMediaViewerFence(
+        for lease: WorldwideScreenPresentationLease
+    ) -> WorldwideScreenMediaViewerFence? {
+        guard screenPresentationIsCurrent(lease),
+              screenMediaViewerFence?.lease == lease else {
+            return nil
+        }
+        return screenMediaViewerFence
+    }
+
+    /// Called only after `WebRTCRemoteVideoView.updatePresentationFence` has synchronously placed
+    /// its opaque UIKit cover above the Metal renderer. Protocol acknowledgement starts afterward.
+    func screenMediaPresentationCoverDidInstall(
+        coverID: UUID,
+        for lease: WorldwideScreenPresentationLease
+    ) {
+        guard let attempt = screenMediaViewerAttempt,
+              screenMediaViewerAttemptIsCurrent(attempt),
+              attempt.lease == lease,
+              attempt.id == coverID,
+              attempt.phase == .awaitingCoverInstallation else {
+            return
+        }
+        attempt.phase = .sendingCoveredAcknowledgementAndHide
+        startScreenMediaCoveredAcknowledgementAndHide(for: attempt)
+    }
+
+    /// Ordinary Metal presentation nominates only the post-marker real RTP key. Marker authority
+    /// comes from the separate decoded-nonce callback and can never be inferred from freshness.
+    func screenVideoFrameDidRender(
+        _ observation: WebRTCVideoRenderObservation,
+        for lease: WorldwideScreenPresentationLease
+    ) {
+        considerScreenMediaProofCandidate(observation, for: lease)
+        validateScreenMediaSourceContinuity(for: lease)
+    }
+
+    func screenVideoMarkerFrameDidPresentForProof(
+        _ observation: WebRTCVideoMarkerPresentationProofObservation,
+        for lease: WorldwideScreenPresentationLease
+    ) {
+        guard let attempt = screenMediaViewerAttempt,
+              screenMediaViewerAttemptIsCurrent(attempt),
+              attempt.lease == lease,
+              attempt.phase == .awaitingMarkerPresentation,
+              let markerReady = attempt.markerReady else {
+            return
+        }
+        let expectedMarker = ScreenVideoInBandMarkerNonce(
+            attemptID: markerReady.attemptID
+        )
+        // A queued callback from a replaced attempt is not evidence against the retry. Only the
+        // nonce currently armed by MarkerReady can mutate this covered transaction.
+        guard observation.marker == expectedMarker else { return }
+        guard let primary = screenMediaPrimarySource(for: attempt),
+              WorldwideScreenMediaViewerProofPolicy.acceptsMarkerProof(
+                observation,
+                expectedMarker: expectedMarker,
+                geometry: markerReady.geometry,
+                baseline: exactPrimarySource(
+                    in: attempt.baselineSourceSnapshot
+                ),
+                current: primary
+              ) else {
+            failScreenMediaViewerAttempt(
+                attempt,
+                reason: "The decoded marker did not match its receiver, source, or geometry."
+            )
+            return
+        }
+
+        // Freeze the actual decoded dimensions (for example 40x80 at 12x downscale) only after
+        // the exact marker drawable presents. The real proof must use this exact same shape.
+        attempt.receiverID = primary.receiverID
+        attempt.sourceID = primary.sourceID
+        attempt.presentedWidth = observation.width
+        attempt.presentedHeight = observation.height
+        let presentation = WebRTCScreenMediaMarkerPresentation(
+            markerReady: markerReady,
+            receiverMarkerRTPTimestamp: observation.rtpTimestamp,
+            receiverID: primary.receiverID,
+            sourceID: primary.sourceID,
+            presentedWidth: observation.width,
+            presentedHeight: observation.height
+        )
+        guard presentation.isValid else {
+            failScreenMediaViewerAttempt(
+                attempt,
+                reason: "The marker presentation did not match the negotiated geometry."
+            )
+            return
+        }
+        attempt.markerPresentation = presentation
+        attempt.phase = .awaitingResumeReady
+        publishScreenMediaViewerFence(
+            for: attempt,
+            forceCover: true,
+            statusText: "Resuming screen…"
+        )
+        startScreenMediaMarkerPresentationSend(presentation, for: attempt)
+    }
+
+    func screenVideoFrameDidPresentForProof(
+        _ observation: WebRTCVideoPresentationProofObservation,
+        for lease: WorldwideScreenPresentationLease
+    ) {
+        guard let attempt = screenMediaViewerAttempt,
+              screenMediaViewerAttemptIsCurrent(attempt),
+              attempt.lease == lease,
+              attempt.phase == .awaitingRealPresentation else {
+            return
+        }
+        guard attempt.armedProofRTPTimestamp == observation.rtpTimestamp,
+              attempt.presentedWidth == observation.width,
+              attempt.presentedHeight == observation.height,
+              screenMediaSourceIsStable(for: attempt) else {
+            cancelScreenMediaViewerSuspension(
+                reason: "The rendered screen proof changed receiver, source, or geometry.",
+                notifyPeer: true
+            )
+            return
+        }
+
+        guard let ready = attempt.resumeReady,
+              let receiverID = attempt.receiverID,
+              let sourceID = attempt.sourceID else {
+            failScreenMediaViewerAttempt(
+                attempt,
+                reason: "The real-frame presentation was incomplete."
+            )
+            return
+        }
+        let presentation = WebRTCScreenMediaPresentation(
+            resumeReady: ready,
+            presentedRTPTimestamp: observation.rtpTimestamp,
+            receiverID: receiverID,
+            sourceID: sourceID,
+            presentedWidth: observation.width,
+            presentedHeight: observation.height
+        )
+        guard presentation.isValid else {
+            failScreenMediaViewerAttempt(
+                attempt,
+                reason: "The real-frame presentation was older than the resume floor."
+            )
+            return
+        }
+        attempt.resumePresentation = presentation
+        attempt.armedProofRTPTimestamp = nil
+        attempt.phase = .sendingResumeRequest
+        publishScreenMediaViewerFence(
+            for: attempt,
+            forceCover: true,
+            statusText: "Resuming screen…"
+        )
+        startScreenMediaResumeRequest(presentation, for: attempt)
+    }
+
+    func screenVideoPresentationGeometryDidChange(
+        to size: CGSize,
+        for lease: WorldwideScreenPresentationLease
+    ) {
+        guard let attempt = screenMediaViewerAttempt,
+              screenMediaViewerAttemptIsCurrent(attempt),
+              attempt.lease == lease else {
+            return
+        }
+        if size == .zero { return }
+        guard let expectedWidth = attempt.presentedWidth,
+              let expectedHeight = attempt.presentedHeight else {
+            guard let geometry = attempt.markerReady?.geometry else { return }
+            guard size.width.isFinite,
+                  size.height.isFinite else {
+                cancelScreenMediaViewerSuspension(
+                    reason: "The marker screen geometry became invalid during resume.",
+                    notifyPeer: true
+                )
+                return
+            }
+            if !geometry.isCompatiblePresentation(
+                width: Int(size.width.rounded()),
+                height: Int(size.height.rounded())
+            ) {
+                cancelScreenMediaViewerSuspension(
+                    reason: "The marker screen geometry changed during resume.",
+                    notifyPeer: true
+                )
+            }
+            return
+        }
+        switch WorldwideScreenMediaViewerProofPolicy.geometryChangeDisposition(
+            size,
+            expectedWidth: expectedWidth,
+            expectedHeight: expectedHeight
+        ) {
+        case .localFloorInvalidation, .unchanged:
+            return
+        case .mutation:
+            cancelScreenMediaViewerSuspension(
+                reason: "The presented screen geometry changed during resume.",
+                notifyPeer: true
+            )
+        }
+    }
+
+    private func receiveScreenMediaSuspension(
+        _ notice: WebRTCScreenMediaSuspensionNotice,
+        sourcePeer: WebRTCPeer,
+        sourceGeneration: UUID
+    ) {
+        if let existing = screenMediaViewerAttempt {
+            if existing.notice == notice,
+               screenMediaViewerAttemptIsCurrent(existing) {
+                return
+            }
+            guard existing.phase == .resumed else {
+                failScreenMediaViewerAttempt(
+                    existing,
+                    reason: "A conflicting screen suspension replaced the active proof."
+                )
+                return
+            }
+            retireScreenMediaViewerAttempt(preservingFence: true)
+        }
+
+        guard notice.isValid,
+              sourceGeneration == sessionGeneration,
+              peer === sourcePeer,
+              let lease = currentScreenPresentationLease,
+              activeScreenPresentationLease == lease,
+              remoteScreenOwnerLease == lease,
+              isScreenVisible,
+              activeScreenRequestID == notice.screenRequestID,
+              let track = remoteVideoTrack else {
+            failUnmatchedScreenMediaSuspension(
+                notice: notice,
+                sourcePeer: sourcePeer,
+                reason: "A screen suspension did not match the visible presentation.",
+                sourceGeneration: sourceGeneration
+            )
+            return
+        }
+
+        let attempt = WorldwideScreenMediaViewerAttempt(
+            notice: notice,
+            lease: lease,
+            sessionGeneration: sourceGeneration,
+            expectedPeer: sourcePeer,
+            expectedTrack: track
+        )
+        screenMediaViewerAttempt = attempt
+        // Input revocation and cover publication are MainActor-synchronous with receipt. No actor
+        // send begins until the mounted UIKit renderer reports that this exact cover ID is installed.
+        invalidateRemoteInputState()
+        stateText = "Screen paused"
+        publishScreenMediaViewerFence(
+            for: attempt,
+            forceCover: true,
+            statusText: "Screen paused to save bandwidth"
+        )
+    }
+
+    private func receiveScreenMediaMarkerReady(
+        _ ready: WebRTCScreenMediaMarkerReady,
+        sourcePeer: WebRTCPeer,
+        sourceGeneration: UUID
+    ) {
+        guard let attempt = screenMediaViewerAttempt,
+              screenMediaViewerAttemptIsCurrent(
+                attempt,
+                sourcePeer: sourcePeer,
+                sourceGeneration: sourceGeneration
+              ),
+              ready.belongs(to: attempt.notice),
+              ready.isValid else {
+            cancelScreenMediaViewerSuspension(
+                reason: "The marker boundary was stale or out of order.",
+                notifyPeer: true
+            )
+            return
+        }
+        if attempt.phase != .awaitingMarkerReady {
+            if attempt.phase != .resumed,
+               WorldwideScreenMediaViewerProofPolicy.isSameSuspensionRetry(
+                ready,
+                replacing: attempt.markerReady?.attemptID,
+                notice: attempt.notice
+            ) {
+                resetScreenMediaViewerProbeForRetry(attempt)
+            } else if attempt.markerReady == ready {
+                return
+            } else {
+                cancelScreenMediaViewerSuspension(
+                    reason: "The marker boundary was stale or out of order.",
+                    notifyPeer: true
+                )
+                return
+            }
+        }
+        guard attempt.phase == .awaitingMarkerReady else { return }
+        attempt.markerReady = ready
+        attempt.phase = .awaitingMarkerPresentation
+        attempt.proofRequestRevision &+= 1
+        if attempt.proofRequestRevision == 0 {
+            attempt.proofRequestRevision = 1
+        }
+        publishScreenMediaViewerFence(
+            for: attempt,
+            forceCover: true,
+            statusText: "Resuming screen…"
+        )
+    }
+
+    private func resetScreenMediaViewerProbeForRetry(
+        _ attempt: WorldwideScreenMediaViewerAttempt
+    ) {
+        guard screenMediaViewerAttempt === attempt else { return }
+        screenMediaMarkerPresentationTask?.cancel()
+        screenMediaMarkerPresentationTask = nil
+        screenMediaMarkerPresentationTaskID = nil
+        screenMediaResumeRequestTask?.cancel()
+        screenMediaResumeRequestTask = nil
+        screenMediaResumeRequestTaskID = nil
+        attempt.earlyResumedAcknowledgement?.authorization?.revoke()
+        attempt.earlyResumedAcknowledgement = nil
+        attempt.markerReady = nil
+        attempt.markerPresentation = nil
+        attempt.resumeReady = nil
+        attempt.resumePresentation = nil
+        attempt.resumeRequestID = nil
+        attempt.receiverID = nil
+        attempt.sourceID = nil
+        attempt.presentedWidth = nil
+        attempt.presentedHeight = nil
+        attempt.armedProofRTPTimestamp = nil
+        attempt.minimumAcceptedRTPTimestamp = nil
+        attempt.phase = .awaitingMarkerReady
+        attempt.proofRequestRevision &+= 1
+        if attempt.proofRequestRevision == 0 {
+            attempt.proofRequestRevision = 1
+        }
+        // The original cover/Hide transaction and lease binding stay intact. Only evidence owned
+        // by the failed encoder attempt is retired, so no retry can flash old media or regain input.
+        if let currentFence = screenMediaViewerFence,
+           currentFence.lease == attempt.lease,
+           currentFence.coverID == attempt.id {
+            screenMediaViewerFence = WorldwideScreenMediaViewerProofPolicy
+                .coveredRetryFence(
+                    from: currentFence,
+                    proofRequestRevision: attempt.proofRequestRevision
+                )
+        } else {
+            publishScreenMediaViewerFence(
+                for: attempt,
+                forceCover: true,
+                statusText: "Resuming screen…"
+            )
+        }
+    }
+
+    private func receiveScreenMediaResumeReady(
+        _ ready: WebRTCScreenMediaResumeReady,
+        sourcePeer: WebRTCPeer,
+        sourceGeneration: UUID
+    ) {
+        guard let attempt = screenMediaViewerAttempt,
+              screenMediaViewerAttemptIsCurrent(
+                attempt,
+                sourcePeer: sourcePeer,
+                sourceGeneration: sourceGeneration
+              ),
+              attempt.phase == .awaitingResumeReady,
+              let markerPresentation = attempt.markerPresentation,
+              ready.markerPresentation == markerPresentation,
+              ready.isValid,
+              ready.geometry == markerPresentation.markerReady.geometry,
+              screenMediaSourceIsStable(for: attempt) else {
+            cancelScreenMediaViewerSuspension(
+                reason: "The translated receiver resume floor was stale or mismatched.",
+                notifyPeer: true
+            )
+            return
+        }
+        attempt.resumeReady = ready
+        attempt.minimumAcceptedRTPTimestamp =
+            ready.receiverRealFrameFloorRTPTimestamp
+        attempt.phase = .awaitingRealPresentation
+        attempt.proofRequestRevision &+= 1
+        if attempt.proofRequestRevision == 0 {
+            attempt.proofRequestRevision = 1
+        }
+        publishScreenMediaViewerFence(
+            for: attempt,
+            forceCover: true,
+            statusText: "Resuming screen…"
+        )
+    }
+
+    private func receiveScreenMediaResumedAcknowledgement(
+        _ acknowledgement: WebRTCScreenMediaResumedAcknowledgement,
+        inputAuthorization: WebRTCInputAuthorization?,
+        sourcePeer: WebRTCPeer,
+        sourceGeneration: UUID
+    ) {
+        guard let attempt = screenMediaViewerAttempt,
+              screenMediaViewerAttemptIsCurrent(
+                attempt,
+                sourcePeer: sourcePeer,
+                sourceGeneration: sourceGeneration
+              ),
+              attempt.phase == .sendingResumeRequest
+                || attempt.phase == .awaitingResumedAcknowledgement else {
+            inputAuthorization?.revoke()
+            cancelScreenMediaViewerSuspension(
+                reason: "The resumed acknowledgement arrived outside its presentation lease.",
+                notifyPeer: true
+            )
+            return
+        }
+
+        guard let requestID = attempt.resumeRequestID else {
+            attempt.earlyResumedAcknowledgement?.authorization?.revoke()
+            attempt.earlyResumedAcknowledgement = (
+                acknowledgement,
+                inputAuthorization
+            )
+            return
+        }
+        commitScreenMediaResumedAcknowledgement(
+            acknowledgement,
+            inputAuthorization: inputAuthorization,
+            requestID: requestID,
+            for: attempt
+        )
+    }
+
+    private func startScreenMediaCoveredAcknowledgementAndHide(
+        for attempt: WorldwideScreenMediaViewerAttempt
+    ) {
+        screenMediaCoveredHideTask?.cancel()
+        let acknowledgement = WebRTCScreenMediaCoveredAcknowledgement(
+            suspension: attempt.notice
+        )
+        let attemptID = attempt.id
+        let sourcePeer = attempt.expectedPeer
+        screenMediaCoveredHideTask = Task { @MainActor [weak self] in
+            do {
+                try await sourcePeer.sendScreenMediaCoveredAcknowledgement(
+                    acknowledgement
+                )
+                guard let self,
+                      let current = self.screenMediaViewerAttempt,
+                      current.id == attemptID,
+                      self.screenMediaViewerAttemptIsCurrent(current),
+                      current.phase == .sendingCoveredAcknowledgementAndHide else {
+                    return
+                }
+                let requestID = try await sourcePeer.setScreenVisible(false)
+                self.recordScreenMediaHideRequest(
+                    requestID,
+                    sourcePeer: sourcePeer,
+                    for: current
+                )
+            } catch {
+                self?.failScreenMediaViewerAttempt(
+                    attempt,
+                    reason: "The covered screen could not enter its hidden transport state."
+                )
+            }
+        }
+    }
+
+    private func recordScreenMediaHideRequest(
+        _ requestID: UInt64,
+        sourcePeer: WebRTCPeer,
+        for attempt: WorldwideScreenMediaViewerAttempt
+    ) {
+        guard screenMediaViewerAttemptIsCurrent(attempt),
+              attempt.phase == .sendingCoveredAcknowledgementAndHide,
+              requestID > 0 else {
+            return
+        }
+        let key = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: attempt.sessionGeneration,
+            requestID: requestID
+        )
+        attempt.hideRequestKey = key
+        attempt.phase = .awaitingHideAcknowledgement
+        if let early = earlyControlAcknowledgements.removeValue(forKey: key) {
+            guard screenAcknowledgementPeer(
+                early.sourcePeer,
+                matches: sourcePeer
+            ) else {
+                early.inputAuthorization?.revoke()
+                failScreenMediaViewerAttempt(
+                    attempt,
+                    reason: "The suspension Hide acknowledgement came from another peer."
+                )
+                return
+            }
+            handleScreenMediaHideAcknowledgement(
+                early.acknowledgement,
+                inputAuthorization: early.inputAuthorization,
+                sourcePeer: sourcePeer,
+                sourceGeneration: attempt.sessionGeneration,
+                attempt: attempt
+            )
+        }
+    }
+
+    private func handleScreenMediaHideAcknowledgement(
+        _ acknowledgement: WebRTCControlAcknowledgement,
+        inputAuthorization: WebRTCInputAuthorization?,
+        sourcePeer: WebRTCPeer,
+        sourceGeneration: UUID,
+        attempt: WorldwideScreenMediaViewerAttempt
+    ) {
+        inputAuthorization?.revoke()
+        guard screenMediaViewerAttemptIsCurrent(
+                attempt,
+                sourcePeer: sourcePeer,
+                sourceGeneration: sourceGeneration
+              ),
+              attempt.phase == .awaitingHideAcknowledgement,
+              attempt.hideRequestKey?.requestID == acknowledgement.id,
+              acknowledgement.state == .inactive else {
+            failScreenMediaViewerAttempt(
+                attempt,
+                reason: "The suspension Hide did not reach the inactive state."
+            )
+            return
+        }
+        if let key = attempt.hideRequestKey {
+            retireScreenVisibilityRequestKey(key)
+        }
+        screenAcknowledgementOracle = WorldwideScreenAcknowledgementOracleSnapshot(
+            sessionGeneration: sourceGeneration,
+            requestID: acknowledgement.id,
+            command: .hide,
+            state: .inactive
+        )
+        // This Hide is transport-only. The exact lease remains logically visible and owns the
+        // mounted, covered renderer until the typed resumed acknowledgement commits.
+        attempt.phase = .awaitingMarkerReady
+        stateText = "Screen paused"
+    }
+
+    private func considerScreenMediaProofCandidate(
+        _ observation: WebRTCVideoRenderObservation?,
+        for lease: WorldwideScreenPresentationLease
+    ) {
+        guard let observation,
+              let attempt = screenMediaViewerAttempt,
+              screenMediaViewerAttemptIsCurrent(attempt),
+              attempt.lease == lease,
+              attempt.phase == .awaitingRealPresentation,
+              attempt.armedProofRTPTimestamp == nil,
+              let primary = screenMediaPrimarySource(for: attempt),
+              let expectedWidth = attempt.presentedWidth,
+              let expectedHeight = attempt.presentedHeight else {
+            return
+        }
+
+        guard let receiverID = attempt.receiverID,
+              let sourceID = attempt.sourceID,
+              let floor = attempt.minimumAcceptedRTPTimestamp,
+              WorldwideScreenMediaViewerProofPolicy
+                .acceptsRealCandidate(
+                    rtpTimestamp: observation.rtpTimestamp,
+                    width: observation.width,
+                    height: observation.height,
+                    expectedWidth: expectedWidth,
+                    expectedHeight: expectedHeight,
+                    minimumRTPTimestamp: floor,
+                    receiverID: receiverID,
+                    sourceID: sourceID,
+                    current: primary
+                ) else { return }
+
+        attempt.armedProofRTPTimestamp = observation.rtpTimestamp
+        publishScreenMediaViewerFence(
+            for: attempt,
+            forceCover: true,
+            statusText: "Resuming screen…"
+        )
+    }
+
+    private func startScreenMediaMarkerPresentationSend(
+        _ presentation: WebRTCScreenMediaMarkerPresentation,
+        for attempt: WorldwideScreenMediaViewerAttempt
+    ) {
+        screenMediaMarkerPresentationTask?.cancel()
+        let attemptID = attempt.id
+        let taskID = UUID()
+        screenMediaMarkerPresentationTaskID = taskID
+        let sourcePeer = attempt.expectedPeer
+        screenMediaMarkerPresentationTask = Task { @MainActor [weak self] in
+            do {
+                try await sourcePeer.sendScreenMediaMarkerPresentation(
+                    presentation
+                )
+                guard let self,
+                      self.screenMediaMarkerPresentationTaskID == taskID,
+                      let current = self.screenMediaViewerAttempt,
+                      current.id == attemptID,
+                      self.screenMediaViewerAttemptIsCurrent(current),
+                      current.phase == .awaitingResumeReady,
+                      current.markerReady?.attemptID
+                        == presentation.markerReady.attemptID,
+                      current.markerPresentation == presentation else {
+                    return
+                }
+            } catch {
+                guard let self,
+                      self.screenMediaMarkerPresentationTaskID == taskID,
+                      let current = self.screenMediaViewerAttempt,
+                      current === attempt,
+                      current.id == attemptID,
+                      self.screenMediaViewerAttemptIsCurrent(current),
+                      current.phase == .awaitingResumeReady,
+                      current.markerReady?.attemptID
+                        == presentation.markerReady.attemptID,
+                      current.markerPresentation == presentation else {
+                    return
+                }
+                self.failScreenMediaViewerAttempt(
+                    current,
+                    reason: "The marker presentation could not be sent."
+                )
+            }
+        }
+    }
+
+    private func startScreenMediaResumeRequest(
+        _ presentation: WebRTCScreenMediaPresentation,
+        for attempt: WorldwideScreenMediaViewerAttempt
+    ) {
+        screenMediaResumeRequestTask?.cancel()
+        let attemptID = attempt.id
+        let taskID = UUID()
+        screenMediaResumeRequestTaskID = taskID
+        let sourcePeer = attempt.expectedPeer
+        screenMediaResumeRequestTask = Task { @MainActor [weak self] in
+            do {
+                let requestID = try await sourcePeer.requestScreenMediaResume(
+                    presentation: presentation
+                )
+                guard let self,
+                      self.screenMediaResumeRequestTaskID == taskID,
+                      let current = self.screenMediaViewerAttempt,
+                      current.id == attemptID,
+                      self.screenMediaViewerAttemptIsCurrent(current),
+                      current.phase == .sendingResumeRequest,
+                      current.resumePresentation == presentation else {
+                    return
+                }
+                current.resumeRequestID = requestID
+                current.phase = .awaitingResumedAcknowledgement
+                if let early = current.earlyResumedAcknowledgement {
+                    current.earlyResumedAcknowledgement = nil
+                    self.commitScreenMediaResumedAcknowledgement(
+                        early.acknowledgement,
+                        inputAuthorization: early.authorization,
+                        requestID: requestID,
+                        for: current
+                    )
+                }
+            } catch {
+                guard let self,
+                      self.screenMediaResumeRequestTaskID == taskID,
+                      let current = self.screenMediaViewerAttempt,
+                      current === attempt,
+                      current.id == attemptID,
+                      self.screenMediaViewerAttemptIsCurrent(current),
+                      current.phase == .sendingResumeRequest,
+                      current.resumePresentation == presentation,
+                      current.resumeRequestID == nil else {
+                    return
+                }
+                self.failScreenMediaViewerAttempt(
+                    current,
+                    reason: "The exact screen resume request could not be sent."
+                )
+            }
+        }
+    }
+
+    private func commitScreenMediaResumedAcknowledgement(
+        _ acknowledgement: WebRTCScreenMediaResumedAcknowledgement,
+        inputAuthorization: WebRTCInputAuthorization?,
+        requestID: UInt64,
+        for attempt: WorldwideScreenMediaViewerAttempt
+    ) {
+        guard screenMediaViewerAttemptIsCurrent(attempt),
+              attempt.phase == .awaitingResumedAcknowledgement,
+              let presentation = attempt.resumePresentation,
+              WorldwideScreenMediaViewerProofPolicy
+                .resumedAcknowledgementMatches(
+                    acknowledgement,
+                    requestID: requestID,
+                    presentation: presentation,
+                    screenRequestID: attempt.notice.screenRequestID,
+                    inputAuthorizationIsValid:
+                        inputAuthorization?.isValid == true
+                ),
+              screenMediaSourceIsStable(for: attempt) else {
+            inputAuthorization?.revoke()
+            failScreenMediaViewerAttempt(
+                attempt,
+                reason: "The resumed acknowledgement did not match the exact presentation."
+            )
+            return
+        }
+
+        let capability = acknowledgement.inputCapability
+        if capability == nil {
+            inputAuthorization?.revoke()
+        }
+        installRemoteInputCapability(
+            capability,
+            authorization: capability == nil ? nil : inputAuthorization
+        )
+        attempt.phase = .resumed
+        stateText = "Screen live"
+        publishScreenMediaViewerFence(
+            for: attempt,
+            forceCover: false,
+            statusText: nil
+        )
+    }
+
+    private func screenMediaViewerAttemptIsCurrent(
+        _ attempt: WorldwideScreenMediaViewerAttempt,
+        sourcePeer: WebRTCPeer? = nil,
+        sourceGeneration: UUID? = nil
+    ) -> Bool {
+        guard screenMediaViewerAttempt === attempt,
+              attempt.sessionGeneration == sessionGeneration,
+              sourceGeneration == nil || sourceGeneration == sessionGeneration,
+              peer === attempt.expectedPeer,
+              sourcePeer == nil || sourcePeer === attempt.expectedPeer,
+              currentScreenPresentationLease == attempt.lease,
+              activeScreenPresentationLease == attempt.lease,
+              remoteScreenOwnerLease == attempt.lease,
+              activeScreenRequestID == attempt.notice.screenRequestID,
+              isScreenVisible,
+              remoteVideoTrack.map({ ObjectIdentifier($0) })
+                == attempt.expectedTrackIdentity else {
+            return false
+        }
+        return true
+    }
+
+    private func exactPrimarySource(
+        in snapshot: WebRTCRemoteVideoSourceSnapshot
+    ) -> WorldwideScreenMediaPrimarySource? {
+        WorldwideScreenMediaViewerProofPolicy.exactPrimarySource(in: snapshot)
+    }
+
+    private func screenMediaPrimarySource(
+        for attempt: WorldwideScreenMediaViewerAttempt
+    ) -> WorldwideScreenMediaPrimarySource? {
+        guard screenMediaViewerAttemptIsCurrent(attempt),
+              let source = exactPrimarySource(
+                in: attempt.expectedTrack.sourceSnapshot()
+              ),
+              source.receiverID == attempt.expectedTrack.receiverID else {
+            return nil
+        }
+        if let receiverID = attempt.receiverID,
+           receiverID != source.receiverID {
+            return nil
+        }
+        if let sourceID = attempt.sourceID,
+           sourceID != source.sourceID {
+            return nil
+        }
+        return source
+    }
+
+    private func screenMediaSourceIsStable(
+        for attempt: WorldwideScreenMediaViewerAttempt
+    ) -> Bool {
+        guard let source = screenMediaPrimarySource(for: attempt),
+              let receiverID = attempt.receiverID,
+              let sourceID = attempt.sourceID else {
+            return false
+        }
+        return source.receiverID == receiverID && source.sourceID == sourceID
+    }
+
+    private func validateScreenMediaSourceContinuity(
+        for lease: WorldwideScreenPresentationLease
+    ) {
+        guard let attempt = screenMediaViewerAttempt,
+              attempt.lease == lease,
+              attempt.receiverID != nil,
+              attempt.sourceID != nil,
+              !screenMediaSourceIsStable(for: attempt) else {
+            return
+        }
+        cancelScreenMediaViewerSuspension(
+            reason: "The primary screen source changed during resume.",
+            notifyPeer: true
+        )
+    }
+
+    private func publishScreenMediaViewerFence(
+        for attempt: WorldwideScreenMediaViewerAttempt,
+        forceCover: Bool,
+        statusText: String?
+    ) {
+        guard screenMediaViewerAttempt === attempt else { return }
+        let markerProof = attempt.phase == .awaitingMarkerPresentation
+            ? attempt.markerReady.map {
+                ScreenVideoInBandMarkerNonce(attemptID: $0.attemptID)
+            }
+            : nil
+        screenMediaViewerFence = WorldwideScreenMediaViewerFence(
+            lease: attempt.lease,
+            coverID: attempt.id,
+            forceCover: forceCover,
+            minimumAcceptedRTPTimestamp:
+                attempt.minimumAcceptedRTPTimestamp,
+            proofRTPTimestamps: attempt.armedProofRTPTimestamp.map { [$0] } ?? [],
+            markerProof: markerProof,
+            proofRequestRevision: attempt.proofRequestRevision,
+            statusText: statusText
+        )
+    }
+
+    private func failScreenMediaViewerAttempt(
+        _ attempt: WorldwideScreenMediaViewerAttempt,
+        reason: String
+    ) {
+        guard screenMediaViewerAttempt === attempt else { return }
+        cancelScreenMediaViewerSuspension(reason: reason, notifyPeer: true)
+    }
+
+    private func retireScreenMediaViewerAttempt(preservingFence: Bool) {
+        screenMediaCoveredHideTask?.cancel()
+        screenMediaCoveredHideTask = nil
+        screenMediaMarkerPresentationTask?.cancel()
+        screenMediaMarkerPresentationTask = nil
+        screenMediaMarkerPresentationTaskID = nil
+        screenMediaResumeRequestTask?.cancel()
+        screenMediaResumeRequestTask = nil
+        screenMediaResumeRequestTaskID = nil
+        screenMediaViewerAttempt?.earlyResumedAcknowledgement?
+            .authorization?.revoke()
+        screenMediaViewerAttempt = nil
+        if !preservingFence {
+            screenMediaViewerFence = nil
+        }
+    }
+
+    private func cancelScreenMediaViewerSuspension(
+        reason: String,
+        notifyPeer: Bool
+    ) {
+        guard let attempt = screenMediaViewerAttempt else {
+            return
+        }
+        let expectedPeer = attempt.expectedPeer
+        let expectedNotice = attempt.notice
+        let retainedFence = screenMediaViewerFence
+        retireScreenMediaViewerAttempt(preservingFence: true)
+        invalidateRemoteInputState()
+        if let retainedFence {
+            screenMediaViewerFence = WorldwideScreenMediaViewerFence(
+                lease: retainedFence.lease,
+                coverID: retainedFence.coverID,
+                forceCover: true,
+                minimumAcceptedRTPTimestamp:
+                    retainedFence.minimumAcceptedRTPTimestamp,
+                proofRTPTimestamps: [],
+                markerProof: nil,
+                proofRequestRevision: retainedFence.proofRequestRevision,
+                statusText: "Screen paused for privacy"
+            )
+        }
+        stateText = "Screen paused"
+        lastDiagnostic = reason
+        guard notifyPeer else { return }
+        cancelScreenMediaSuspension(
+            on: expectedPeer,
+            matching: expectedNotice,
+            reason: reason
+        )
+    }
+
+    private func failUnmatchedScreenMediaSuspension(
+        notice: WebRTCScreenMediaSuspensionNotice,
+        sourcePeer: WebRTCPeer,
+        reason: String,
+        sourceGeneration: UUID
+    ) {
+        guard sourceGeneration == sessionGeneration,
+              peer === sourcePeer else {
+            return
+        }
+        invalidateRemoteInputState()
+        if let lease = currentScreenPresentationLease,
+           lease.sessionGeneration == sourceGeneration {
+            screenMediaViewerFence = WorldwideScreenMediaViewerFence(
+                lease: lease,
+                coverID: UUID(),
+                forceCover: true,
+                minimumAcceptedRTPTimestamp: nil,
+                proofRTPTimestamps: [],
+                markerProof: nil,
+                proofRequestRevision: 0,
+                statusText: "Screen paused for privacy"
+            )
+        }
+        stateText = "Screen paused"
+        lastDiagnostic = reason
+        cancelScreenMediaSuspension(
+            on: sourcePeer,
+            matching: notice,
+            reason: reason
+        )
+    }
+
+    private func cancelScreenMediaSuspension(
+        on sourcePeer: WebRTCPeer,
+        matching notice: WebRTCScreenMediaSuspensionNotice,
+        reason: String
+    ) {
+        #if DEBUG
+        if let debugScreenMediaCancellationObserver {
+            debugScreenMediaCancellationObserver(sourcePeer, reason)
+            return
+        }
+        #endif
+        Task {
+            await sourcePeer.cancelScreenMediaSuspension(
+                matching: notice,
+                reason: reason
+            )
+        }
+    }
+
     private func supersedeScreenShow(
         for lease: WorldwideScreenPresentationLease
     ) {
@@ -1909,6 +3092,13 @@ final class WorldwideSessionViewModel: ObservableObject {
         guard screenTeardownOperationByLeaseID[lease.id] == nil else { return false }
         guard allowSupersededSameSessionLease || currentScreenPresentationLease == lease else {
             return false
+        }
+
+        if screenMediaViewerAttempt?.lease == lease {
+            cancelScreenMediaViewerSuspension(
+                reason: "The viewer closed during screen resume.",
+                notifyPeer: true
+            )
         }
 
         let operationID = UUID()
@@ -3072,6 +4262,51 @@ final class WorldwideSessionViewModel: ObservableObject {
 
         case .inputSessionInvalidated:
             invalidateRemoteInputState()
+
+        case .screenMediaSuspensionReceived(let notice):
+            receiveScreenMediaSuspension(
+                notice,
+                sourcePeer: sourcePeer,
+                sourceGeneration: generation
+            )
+
+        case .screenMediaMarkerReadyReceived(let ready):
+            receiveScreenMediaMarkerReady(
+                ready,
+                sourcePeer: sourcePeer,
+                sourceGeneration: generation
+            )
+
+        case .screenMediaResumeReadyReceived(let ready):
+            receiveScreenMediaResumeReady(
+                ready,
+                sourcePeer: sourcePeer,
+                sourceGeneration: generation
+            )
+
+        case .screenMediaResumedAcknowledgementReceived(
+            let acknowledgement,
+            inputAuthorization: let inputAuthorization
+        ):
+            receiveScreenMediaResumedAcknowledgement(
+                acknowledgement,
+                inputAuthorization: inputAuthorization,
+                sourcePeer: sourcePeer,
+                sourceGeneration: generation
+            )
+
+        case .screenMediaSuspensionInvalidated(let reason):
+            cancelScreenMediaViewerSuspension(
+                reason: reason,
+                notifyPeer: false
+            )
+
+        case .screenMediaCoveredAcknowledgementReceived,
+             .screenMediaMarkerPresentationReceived,
+             .screenMediaResumeRequestReceived,
+             .screenMediaEncoderResumeProbeEvent:
+            // Host-only events. A viewer must never advance from them.
+            break
 
         case .macHostedCallChallengeReceived:
             // Only the Mac host receives viewer-originated challenges.
@@ -6031,6 +7266,18 @@ final class WorldwideSessionViewModel: ObservableObject {
             inputAuthorization?.revoke()
             return
         }
+        if let attempt = screenMediaViewerAttempt,
+           attempt.hideRequestKey == key,
+           let exactSourcePeer = sourcePeer {
+            handleScreenMediaHideAcknowledgement(
+                acknowledgement,
+                inputAuthorization: inputAuthorization,
+                sourcePeer: exactSourcePeer,
+                sourceGeneration: sourceGeneration,
+                attempt: attempt
+            )
+            return
+        }
         if retiredScreenVisibilityRequestKeys.contains(key) {
             inputAuthorization?.revoke()
             return
@@ -6175,6 +7422,9 @@ final class WorldwideSessionViewModel: ObservableObject {
                    remoteScreenOwnerLease == pending.lease {
                     remoteScreenOwnerLease = nil
                 }
+                if activeScreenRequestID == pending.key.requestID {
+                    activeScreenRequestID = nil
+                }
                 if activeScreenPresentationLease == pending.lease {
                     activeScreenPresentationLease = nil
                 }
@@ -6196,6 +7446,7 @@ final class WorldwideSessionViewModel: ObservableObject {
             }
             activeScreenPresentationLease = pending.lease
             remoteScreenOwnerLease = pending.lease
+            activeScreenRequestID = pending.key.requestID
             isScreenVisible = true
             acceptsActiveScreenAcknowledgement = false
             remoteHideRequired = true
@@ -6224,6 +7475,9 @@ final class WorldwideSessionViewModel: ObservableObject {
 
         if remoteScreenOwnerLease == pending.lease {
             remoteScreenOwnerLease = nil
+        }
+        if activeScreenRequestID == pending.key.requestID {
+            activeScreenRequestID = nil
         }
         if activeScreenPresentationLease == pending.lease {
             activeScreenPresentationLease = nil
@@ -7001,6 +8255,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         currentScreenPresentationLease = lease
         activeScreenPresentationLease = lease
         remoteScreenOwnerLease = lease
+        activeScreenRequestID = focusGeneration
         remoteHideRequired = true
         #if DEBUG
         debugCurrentScreenPresentationLease = lease
@@ -7207,6 +8462,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         currentScreenPresentationLease = lease
         activeScreenPresentationLease = lease
         remoteScreenOwnerLease = lease
+        activeScreenRequestID = screenRequestID
         remoteHideRequired = true
         debugCurrentScreenPresentationLease = lease
         debugActiveScreenPresentationLease = lease
@@ -7218,6 +8474,23 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     func debugScreenPeerIs(_ expectedPeer: WebRTCPeer) -> Bool {
         peer === expectedPeer
+    }
+
+    func debugInstallScreenMediaCancellationObserver(
+        _ observer: @escaping @MainActor (WebRTCPeer, String) -> Void
+    ) {
+        debugScreenMediaCancellationObserver = observer
+    }
+
+    func debugDeliverScreenMediaSuspensionForTests(
+        _ notice: WebRTCScreenMediaSuspensionNotice,
+        sourcePeer: WebRTCPeer
+    ) {
+        receiveScreenMediaSuspension(
+            notice,
+            sourcePeer: sourcePeer,
+            sourceGeneration: sessionGeneration
+        )
     }
 
     var debugScreenPresentationState: WorldwideScreenPresentationDebugState {
@@ -7420,6 +8693,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         rotateQueueGeneration: Bool,
         clearRequestHistory: Bool = false
     ) {
+        retireScreenMediaViewerAttempt(preservingFence: false)
+        activeScreenRequestID = nil
         controlAcknowledgementTimeoutTask?.cancel()
         controlAcknowledgementTimeoutTask = nil
         completePendingScreenVisibilityRequest(success: false)
@@ -7510,6 +8785,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         _ state: String,
         requiresProof: Bool = false
     ) {
+        cancelScreenMediaViewerSuspension(
+            reason: "The secure media transport changed during screen resume.",
+            notifyPeer: true
+        )
         transportAuthorizationGeneration = UUID()
         invalidateMacHostedCallEvidence(notifyLifecycle: false)
         retireIOSHostedCallPlayoutAttempt()

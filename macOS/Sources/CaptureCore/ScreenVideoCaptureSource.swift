@@ -248,6 +248,39 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
         }
     }
 
+    /// Runs a synchronous generation transition behind every ScreenCaptureKit callback already
+    /// enqueued for this source. Resume proof uses this barrier to ensure a pre-marker sample
+    /// cannot acquire a newly opened real-frame gate merely because its callback was delayed.
+    public func performSampleDeliveryBarrier<Result: Sendable>(
+        _ transition: @escaping @Sendable () -> Result
+    ) async throws -> Result {
+        try await withCheckedThrowingContinuation { continuation in
+            sampleQueue.async { [weak self] in
+                guard let self else {
+                    continuation.resume(
+                        throwing: ScreenVideoCaptureError.startCancelled
+                    )
+                    return
+                }
+                let ownsOpenDelivery = self.stateLock.withLock {
+                    self.stream != nil
+                        && self.output != nil
+                        && self.sampleDeliveryPhase == .open
+                        && !self.isStarting
+                        && !self.isStopping
+                        && !self.cancellationRequested
+                }
+                guard ownsOpenDelivery else {
+                    continuation.resume(
+                        throwing: ScreenVideoCaptureError.startCancelled
+                    )
+                    return
+                }
+                continuation.resume(returning: transition())
+            }
+        }
+    }
+
     /// Runs one complete startup transaction under the caller's already-armed watchdog.
     private func startWithoutStartupWatchdog() async throws -> ScreenVideoCaptureFormat {
         guard stateLock.withLock({ () -> Bool in
